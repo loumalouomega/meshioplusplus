@@ -136,6 +136,7 @@ from .. import (
     octree,
     octree_mesh,
     optimize_volume,
+    parameterize,
     partition,
     pipe,
     plate_with_hole,
@@ -4303,6 +4304,36 @@ def tool_geodesic_distance(
     )
 
 
+def tool_parameterize(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    padding=0.02,
+    max_depth=8,
+    max_stretch=2.0,
+):
+    """A UV atlas of a triangle surface: writes point_data uv (the surface split
+    at its seams), texture coordinates in OBJ, glTF and USD."""
+    mesh = _load(input_path, input_format)
+    out, report = parameterize(
+        mesh,
+        padding=padding,
+        max_depth=max_depth,
+        max_stretch=max_stretch,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_charts=int(report["num_charts"]),
+        num_flipped=int(report["num_flipped"]),
+        stretch=float(report["stretch"]),
+        packing_efficiency=float(report["packing_efficiency"]),
+        num_seam_points=int(report["num_seam_points"]),
+    )
+
+
 def tool_sobolev_deform(
     input_path,
     output_path,
@@ -7158,6 +7189,10 @@ TOOL_REGISTRY = OrderedDict(
                 "wraps": ("geodesic_distance",),
                 "gated": None,
             },
+        ),
+        (
+            "parameterize",
+            {"fn": tool_parameterize, "wraps": ("parameterize",), "gated": None},
         ),
         (
             "estimate_error",

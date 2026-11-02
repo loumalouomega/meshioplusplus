@@ -250,6 +250,10 @@ A mesh whose file states its length unit carries it as `field_data["meshio:lengt
 
 ---
 
+## Texture coordinates
+
+A mesh with texture coordinates carries them as `point_data["uv"]`: Float64 `(n, 2)`, one `u, v` per point, `v` up (the convention OBJ and USD use). [`parameterize`](./parameterize.md) makes them. Three writers turn `uv` into their own texture coordinates and their readers turn them back: [OBJ](./formats/obj.md) as `vt` rows named by every face corner (`f v/vt`; a seamed file is split on reading), [glTF](./formats/gltf.md) as `TEXCOORD_0` on the triangles (`v` flipped to glTF's top-left origin), and [USD](./formats/usd.md) as `primvars:st`. Every other format that keeps point data keeps `uv` as an ordinary array.
+
 ## Remote files
 
 With the optional [`fsspec`](https://filesystem-spec.readthedocs.io) (the `remote` extra: `pip install meshioplusplus[remote]`), `read` and `read_metadata` take a URL: `read("https://example.org/cube.vtu")`, `read("s3://bucket/run/step_010.vtu.gz")`, `gs://`, `az://`, `memory://` and every protocol fsspec knows (an object store needs its own filesystem package: `s3fs`, `gcsfs`, `adlfs`). The file is fetched into a private temporary directory under the name its URL ends in (query and fragment dropped), read as a local path and removed, so format inference and [compressed files](#compressed-files) work unchanged; a chained URL such as `simplecache::https://...` keeps a local copy between reads. Sequences and [dataset manifests](./datasets.md) take URLs too, a `*`/`?` pattern being expanded on the remote filesystem.

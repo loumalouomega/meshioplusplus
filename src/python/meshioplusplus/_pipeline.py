@@ -443,6 +443,7 @@ _OP_TABLE = {
         "Tolerance",
         "MaxIterations",
     ),
+    "Parameterize": ("Padding", "MaxDepth", "MaxStretch"),
     "EstimateError": ("Array", "Method", "Marking", "MarkingValue", "Output", "Marked"),
     "ErrorSize": ("Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"),
     "Adapt": (
@@ -2687,6 +2688,20 @@ def _apply_step(mesh, step, steps, warnings):
                 "geodesic_distance: a solve hit its iteration cap; the distance is "
                 "approximate"
             )
+    elif op == "Parameterize":
+        from ._parameterize import parameterize
+
+        mesh, report = parameterize(
+            mesh,
+            padding=_number(step, "Padding", 0.02),
+            max_depth=int(_number(step, "MaxDepth", 8)),
+            max_stretch=_number(step, "MaxStretch", 2.0),
+            return_report=True,
+        )
+        entry["NumCharts"] = float(report["num_charts"])
+        entry["NumFlipped"] = float(report["num_flipped"])
+        entry["Stretch"] = float(report["stretch"])
+        entry["PackingEfficiency"] = float(report["packing_efficiency"])
     elif op == "EstimateError":
         mesh, report = estimate_error(
             mesh,

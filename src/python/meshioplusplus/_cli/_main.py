@@ -53,6 +53,7 @@ from . import (
     _octree,
     _octree_mesh,
     _optimize_volume,
+    _parameterize,
     _partition,
     _periodic,
     _pipeline,
@@ -351,6 +352,13 @@ def build_parser():
     )
     _geodesic.add_args(parser)
     parser.set_defaults(func=_geodesic.geodesic_cmd)
+
+    parser = subparsers.add_parser(
+        "parameterize",
+        help="A UV atlas of a triangle surface (texture coordinates)",
+    )
+    _parameterize.add_args(parser)
+    parser.set_defaults(func=_parameterize.parameterize_cmd)
 
     parser = subparsers.add_parser(
         "graph",

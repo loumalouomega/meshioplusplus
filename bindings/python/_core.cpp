@@ -161,6 +161,7 @@
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/registration.hpp"
@@ -6476,6 +6477,32 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("sources") = std::vector<std::int64_t>{},
         py::arg("source_region") = "", py::arg("time_factor") = 1.0, py::arg("tolerance") = 1e-10,
         py::arg("max_iterations") = 0);
+
+    // A UV atlas of a triangle surface. {mesh, counters}. See
+    // operations/parameterize.hpp.
+    m.def(
+        "parameterize",
+        [](py::object pymesh, double padding, std::int64_t max_depth, double max_stretch) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::ParameterizeOptions options;
+            options.mPadding = padding;
+            options.mMaxDepth = max_depth;
+            options.mMaxStretch = max_stretch;
+            meshioplusplus::ParameterizeResult r =
+                core_nogil([&] { return meshioplusplus::parameterize(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_charts"] = r.mNumCharts;
+            out["num_flipped"] = r.mNumFlipped;
+            out["stretch"] = r.mStretch;
+            out["packing_efficiency"] = r.mPackingEfficiency;
+            out["num_seam_points"] = r.mNumSeamPoints;
+            return out;
+        },
+        py::arg("mesh"), py::arg("padding") = 0.02, py::arg("max_depth") = 8,
+        py::arg("max_stretch") = 2.0);
 
     m.def(
         "hessian",

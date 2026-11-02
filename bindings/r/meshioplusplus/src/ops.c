@@ -1534,6 +1534,30 @@ SEXP R_mio_geodesic_distance(SEXP mesh, SEXP sources, SEXP source_region, SEXP t
     return res;
 }
 
+SEXP R_mio_parameterize(SEXP mesh, SEXP padding, SEXP max_depth, SEXP max_stretch) {
+    mio_parameterize_opts opts;
+    mio_parameterize_report report;
+    mio_parameterize_opts_init(&opts);
+    opts.padding = mio_r_double(padding, "padding");
+    opts.max_depth = (int64_t)mio_r_double(max_depth, "max_depth");
+    opts.max_stretch = mio_r_double(max_stretch, "max_stretch");
+    mio_mesh* out = mio_parameterize(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL)
+        mio_r_fail("parameterize");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP nc = PROTECT(Rf_ScalarReal((double)report.num_charts));
+    SEXP nf = PROTECT(Rf_ScalarReal((double)report.num_flipped));
+    SEXP st = PROTECT(Rf_ScalarReal(report.stretch));
+    SEXP pe = PROTECT(Rf_ScalarReal(report.packing_efficiency));
+    SEXP ns = PROTECT(Rf_ScalarReal((double)report.num_seam_points));
+    const char* names[] = {"mesh",    "num_charts",         "num_flipped",
+                           "stretch", "packing_efficiency", "num_seam_points"};
+    SEXP values[] = {mo, nc, nf, st, pe, ns};
+    SEXP res = PROTECT(mio_r_named_list(6, names, values));
+    UNPROTECT(7);
+    return res;
+}
+
 /* --- combining / comparing ---------------------------------------------- */
 
 SEXP R_mio_merge(SEXP meshes, SEXP weld, SEXP atol, SEXP source_tag, SEXP data_policy,

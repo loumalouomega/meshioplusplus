@@ -2791,8 +2791,9 @@ contains
         integer(int64), allocatable :: s_ids(:), m_ids(:)
         integer(int64), allocatable :: g_ptr(:), g_idx(:)
         integer(int64) :: g_nv, g_ne, g_md
-        type(mio_mesh) :: square, dist
-        real(real64) :: g_far
+        type(mio_mesh) :: square, dist, atlas
+        real(real64) :: g_far, p_stretch
+        integer(int64) :: p_charts, p_flipped
         real(real64) :: g_matrix(4, 4)
         logical :: g_ok
         integer :: ierr
@@ -3018,6 +3019,15 @@ contains
         call dist%free()
         dist = square%geodesic_distance(stat=ierr)
         call check(ierr /= 0, 'geodesic_distance needs a source')
+        ! Parameterize the two triangles: one flat chart, nothing flipped.
+        atlas = square%parameterize(num_charts=p_charts, num_flipped=p_flipped, &
+                                    stretch=p_stretch, stat=ierr)
+        call check(ierr == 0 .and. p_charts == 1_int64 .and. p_flipped == 0_int64, &
+                   'parameterize made one chart')
+        call check(abs(p_stretch - 1.0_real64) < 1.0e-6_real64, 'a flat square keeps its lengths')
+        call atlas%free()
+        atlas = square%parameterize(max_stretch=0.5_real64, stat=ierr)
+        call check(ierr /= 0, 'parameterize refuses max_stretch below 1')
         ! prepare_metric on the square: a missing metric field is refused.
         dist = square%prepare_metric([character(7) :: 'missing'], stat=ierr)
         call check(ierr /= 0, 'prepare_metric refuses a missing metric field')

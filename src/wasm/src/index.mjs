@@ -379,6 +379,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   delaunay2d: (mesh: Mesh) => {mesh: Mesh, numTriangles: number, numDuplicates: number, numBoundary: number},
  *   convertCoordinates: (mesh: Mesh, options?: {system?: 'cylindrical'|'spherical', axis?: ArrayLike<number>, origin?: ArrayLike<number>, reference?: ArrayLike<number>, arrays?: string[], inverse?: boolean, recordCoordinates?: boolean}) => {mesh: Mesh, numArrays: number, numSingular: number},
  *   geodesicDistance: (mesh: Mesh, sources: ArrayLike<number> | number, options?: {sourceRegion?: string, timeFactor?: number, tolerance?: number, maxIterations?: number}) => {mesh: Mesh, numSources: number, numUnreached: number, numDegenerate: number, maxDistance: number, timeStep: number, heatIterations: number, poissonIterations: number, converged: boolean},
+ *   parameterize: (mesh: Mesh, options?: {padding?: number, maxDepth?: number, maxStretch?: number}) => {mesh: Mesh, numCharts: number, numFlipped: number, stretch: number, packingEfficiency: number, numSeamPoints: number},
  *   sobolevDeform: (mesh: Mesh, array: string, lengthScale: number, fixedPointsArray?: string, fixBoundary?: boolean, recordFiltered?: boolean, maxIterations?: number, tolerance?: number) => {mesh: Mesh, numIterations: number, residual: number, converged: boolean, numFixed: number, numIsolated: number, maxDisplacement: number},
  *   split: (mesh: Mesh, by: string, tagName?: string, returnMaps?: boolean) => {key: string, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
  *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
@@ -1298,6 +1299,7 @@ export async function loadMeshioPlusPlus(
                 typeof sources === 'number' ? [sources] : Array.from(sources),
                 options,
             ),
+        parameterize: (mesh, options = {}) => Module.parameterize(mesh, options),
         sobolevDeform: (
             mesh,
             array,

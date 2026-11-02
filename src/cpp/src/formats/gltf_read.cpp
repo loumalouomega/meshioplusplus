@@ -600,6 +600,8 @@ std::string gltfr_field_name(const std::string& rAttr, const GltfrAccessor& rAcc
         return "gltf:color";
     if (rAttr == "NORMAL")
         return Mode == 0 ? "normals" : std::string();
+    if (rAttr == "TEXCOORD_0")
+        return rAcc.mNumComp == 2 ? "uv" : std::string();
     if (rAttr.size() > 1 && rAttr[0] == '_')
         return rAcc.mName.empty() ? rAttr.substr(1) : rAcc.mName;
     return std::string();
@@ -672,7 +674,7 @@ void gltfr_primitive(const GltfrFile& rFile, const GltfrBuffers& rBuffers, const
             if (!member.mValue.IsNumber())
                 continue;
             if (member.mKey.empty() || (member.mKey[0] != '_' && member.mKey != "COLOR_0" &&
-                                        member.mKey != "NORMAL"))
+                                        member.mKey != "NORMAL" && member.mKey != "TEXCOORD_0"))
                 continue;
             const GltfrAccessor acc =
                 gltfr_read_accessor(rFile, rBuffers, gltfr_uint(member.mValue, member.mKey));
@@ -681,7 +683,11 @@ void gltfr_primitive(const GltfrFile& rFile, const GltfrBuffers& rBuffers, const
             const std::string name = gltfr_field_name(member.mKey, acc, static_cast<int>(mode));
             if (name.empty() || acc.mNumComp > 4 || !rState.mpRead->WantsArray(name))
                 continue;
-            if (!local.emplace(name, GltfrField{acc.mNumComp, acc.mValues, false}).second &&
+            std::vector<double> values = acc.mValues;
+            if (member.mKey == "TEXCOORD_0")  // back to a bottom-left origin
+                for (std::size_t i = 1; i < values.size(); i += 2)
+                    values[i] = 1.0 - values[i];
+            if (!local.emplace(name, GltfrField{acc.mNumComp, std::move(values), false}).second &&
                 rState.mWarned.insert("dup:" + name).second)
                 log::warn("gltf: two attributes map to '{}'; the first is kept.", name);
         }

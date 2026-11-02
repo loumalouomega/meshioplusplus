@@ -215,6 +215,7 @@ if TYPE_CHECKING:
     from ._octree import octree
     from ._octree_mesh import octree_mesh
     from ._optimize_volume import optimize_volume
+    from ._parameterize import parameterize
     from ._partition import partition, partition_labels
     from ._periodic import match_periodic_nodes
     from ._pipeline import apply_operations, run_pipeline
@@ -353,6 +354,7 @@ _LAZY_ATTRS = {
     "to_blender": "_blender",
     "adjacency": "_adjacency",
     "geodesic_distance": "_geodesic",
+    "parameterize": "_parameterize",
     "laplacian_eigenmodes": "_eigenmodes",
     "convex_hull": "_hull",
     "delaunay_2d": "_hull",
@@ -718,6 +720,7 @@ __all__ = [
     "adjacency",
     "write_graph",
     "geodesic_distance",
+    "parameterize",
     "laplacian_eigenmodes",
     "convex_hull",
     "delaunay_2d",

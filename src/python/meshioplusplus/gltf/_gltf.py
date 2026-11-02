@@ -29,6 +29,8 @@ underscore-prefixed custom attribute (``temperature`` -> ``_TEMPERATURE``),
 cast to ``float32``. Naming one with ``color_by`` also bakes it through a
 colormap into ``COLOR_0`` (linear, so the colormap's sRGB bytes go through the
 inverse transfer function) and marks the material ``KHR_materials_unlit``.
+``uv`` (two values per point) is written as ``TEXCOORD_0`` on the triangles
+instead, ``v`` flipped to glTF's top-left origin.
 """
 
 from __future__ import annotations
@@ -567,12 +569,31 @@ def _render(
             rgb = colormap_lookup(table, color_param(v, lo_v, hi_v))
         return _linear(rgb[0]), _linear(rgb[1]), _linear(rgb[2])
 
+    # texture coordinates: ``uv``, two finite values per used point, become
+    # TEXCOORD_0 on the triangles, v flipped (glTF's origin is the image's top
+    # left, ``uv``'s the bottom left)
+    texcoord = None
+    if "uv" in mesh.point_data:
+        arr = np.asarray(mesh.point_data["uv"])
+        if n > 0 and arr.ndim == 2 and arr.shape == (n, 2):
+            a = arr.astype(np.float64)
+            tc = np.empty((n, 2), dtype=np.float32)
+            tc[:, 0] = a[:, 0].astype(np.float32)
+            tc[:, 1] = (1.0 - a[:, 1]).astype(np.float32)
+            if np.all(np.isfinite(tc[used])):
+                texcoord = tc
+            else:
+                warn(
+                    "gltf: point_data 'uv' has non-finite values on the exported "
+                    "points; TEXCOORD_0 omitted."
+                )
+
     # raw fields
     fields = []
     if fields_on:
         taken = []
         for name in sorted(mesh.point_data):
-            if name == "normals":
+            if name == "normals" or (name == "uv" and texcoord is not None):
                 continue
             arr = np.asarray(mesh.point_data[name])
             ncomp = 0
@@ -696,6 +717,10 @@ def _render(
                         "gltf: point_data 'normals' has a zero or non-finite row on the "
                         "exported points; NORMAL omitted."
                     )
+            if pb.mode == _MODE_TRIANGLES and texcoord is not None:
+                po["attrs"].append(
+                    ("TEXCOORD_0", add_floats(texcoord[pidx], 2, False, ""))
+                )
             if color_active:
                 rgb = np.array([vertex_color(k) for k in pb.vertices], dtype=np.float32)
                 po["attrs"].append(("COLOR_0", add_floats(rgb, 3, False, "")))

@@ -145,6 +145,7 @@
 #include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
@@ -471,6 +472,7 @@ void print_usage(std::ostream& os) {
           "  metric                  Intersect, normalise, clamp and grade metric fields\n"
           "  delaunay                Delaunay triangulation of the points in the x, y plane\n"
           "  geodesic                Surface distance from source points (heat method)\n"
+          "  parameterize            A UV atlas of a triangle surface (texture coordinates)\n"
           "  graph                   Write a mesh's node or cell graph as a METIS or Scotch file\n"
           "  periodic                Match the nodes of two regions a transform maps together\n"
           "  repair                  Fix a surface's orientation, holes and bowties\n"
@@ -4399,6 +4401,50 @@ int cmd_geodesic(const std::vector<std::string>& rArgs) {
     meshioplusplus::detail::snprintf_c(buf, sizeof(buf), "%.6g", r.mMaxDistance);
     std::cout << "geodesic distance from " << r.mNumSources << " source(s): max " << buf << ", "
               << r.mNumUnreached << " unreached point(s)\n";
+    return 0;
+}
+
+// parameterize: a UV atlas of a triangle surface. See operations/parameterize.hpp
+// and doc/parameterize.md.
+int cmd_parameterize(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"padding", {}, true},
+                                  {"max-depth", {}, true},
+                                  {"max-stretch", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("parameterize requires INFILE OUTFILE");
+    meshioplusplus::ParameterizeOptions o;
+    if (has_opt(p, "padding"))
+        o.mPadding = meshioplusplus::detail::stod_c(opt_value(p, "padding"));
+    if (has_opt(p, "max-depth"))
+        o.mMaxDepth = std::stoll(opt_value(p, "max-depth"));
+    if (has_opt(p, "max-stretch"))
+        o.mMaxStretch = meshioplusplus::detail::stod_c(opt_value(p, "max-stretch"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::ParameterizeResult r = meshioplusplus::parameterize(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_charts", r.mNumCharts);
+        json.Field("num_flipped", r.mNumFlipped);
+        json.Field("stretch", r.mStretch);
+        json.Field("packing_efficiency", r.mPackingEfficiency);
+        json.Field("num_seam_points", r.mNumSeamPoints);
+        json.EndObject();
+        return 0;
+    }
+    char stretch[64], packing[64];
+    meshioplusplus::detail::snprintf_c(stretch, sizeof(stretch), "%.6g", r.mStretch);
+    meshioplusplus::detail::snprintf_c(packing, sizeof(packing), "%.3g", r.mPackingEfficiency);
+    std::cout << r.mNumCharts << " chart(s), " << r.mNumFlipped << " flipped triangle(s), stretch "
+              << stretch << ", packing " << packing << ", " << r.mNumSeamPoints
+              << " seam point(s)\n";
     return 0;
 }
 
@@ -9168,6 +9214,8 @@ int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
         return cmd_coordinates(rest);
     if (cmd == "geodesic")
         return cmd_geodesic(rest);
+    if (cmd == "parameterize")
+        return cmd_parameterize(rest);
     if (cmd == "graph")
         return cmd_graph(rest);
     if (cmd == "periodic")

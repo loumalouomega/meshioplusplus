@@ -2038,6 +2038,13 @@ end
     @test 1.8 < gd.max_distance < 2.6
     close(gd.mesh)
     @test_throws MeshioError geodesic_distance(cube, Int[])
+
+    # A UV atlas of the closed cube: several charts, nothing flipped.
+    pa = parameterize(cube)
+    @test pa.num_charts >= 2 && pa.num_flipped == 0 && pa.num_seam_points > 0
+    @test pa.stretch >= 1.0 - 1e-9
+    close(pa.mesh)
+    @test_throws MeshioError parameterize(cube; max_stretch=0.5)
     @test_throws MeshioError morph(cube, "missing")
     @test_throws MeshioError untangle(cube)  # a surface: no volume cell
     @test_throws MeshioError prepare_metric(cube, ["missing"])

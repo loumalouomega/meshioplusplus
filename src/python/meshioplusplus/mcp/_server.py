@@ -3946,6 +3946,44 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def parameterize(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        padding: float = 0.02,
+        max_depth: int = 8,
+        max_stretch: float = 2.0,
+    ) -> dict:
+        """A UV atlas of a triangle surface: point_data uv, two texture
+        coordinates per point in the unit square, which the OBJ (vt), glTF
+        (TEXCOORD_0) and USD (primvars:st) writers turn into texture
+        coordinates.
+
+        Each edge-connected piece that is a disc is one chart; a closed or holed
+        piece is cut into discs, and one that folds or whose L2 stretch exceeds
+        max_stretch is halved (up to max_depth times). Charts are flattened by
+        least-squares conformal maps (else mean-value coordinates) with no
+        flipped triangle, keep their area, and are shelf-packed padding *
+        sqrt(area) apart. Points on seams are split (point_data
+        parameterize:parent_point names the input point; the first copy keeps
+        its index); cell_data parameterize:chart gives each triangle's chart.
+        The surface is the mesh's triangle blocks; a volume, quad, polygon or
+        higher-order cell is refused naming the operation that makes triangles.
+        Reports num_charts, num_flipped, stretch (1 keeps lengths),
+        packing_efficiency and num_seam_points."""
+        return _guard(
+            _tools.tool_parameterize,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            padding=padding,
+            max_depth=max_depth,
+            max_stretch=max_stretch,
+        )
+
+    @server.tool()
     def sobolev_deform(
         input_path: str,
         output_path: str,

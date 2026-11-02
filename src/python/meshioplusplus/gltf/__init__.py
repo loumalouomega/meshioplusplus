@@ -119,7 +119,8 @@ def read(filename, points_only=False, arrays=None, weld=False):
     sparse, ``KHR_mesh_quantization``) is read; node transforms are applied
     into world space, and the root node meshio++'s writer emits (up axis, scale,
     recentring) is undone. A node name becomes a cell region, ``_NAME``
-    attributes become ``point_data``, ``COLOR_0`` becomes ``gltf:color``.
+    attributes become ``point_data``, ``COLOR_0`` becomes ``gltf:color``,
+    ``TEXCOORD_0`` becomes ``uv`` (``v`` flipped back to a bottom-left origin).
     ``weld=True`` merges vertices with identical positions (the writer splits
     one per smooth fan). Draco and meshopt compression are refused;
     morph targets, skins, animations and textures are skipped with a warning.

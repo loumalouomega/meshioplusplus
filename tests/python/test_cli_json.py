@@ -728,6 +728,17 @@ WRITING = [
         ],
     ),
     (
+        "parameterize",
+        lambda f, out: [
+            "parameterize",
+            f["sphere_a"],
+            out + ".obj",
+            "--padding",
+            "0.05",
+            "--json",
+        ],
+    ),
+    (
         "graph_cell",
         lambda f, out: [
             "graph",

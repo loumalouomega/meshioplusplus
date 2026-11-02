@@ -1401,6 +1401,24 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_parameterize_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_parameterize_opts_t
+        real(c_double) :: padding = 0.02_c_double
+        integer(c_int64_t) :: max_depth = 8
+        real(c_double) :: max_stretch = 2.0_c_double
+        integer(c_int64_t) :: reserved(5) = 0
+    end type
+
+    !> Interop mirror of C `mio_parameterize_report`. Field order/types are ABI.
+    type, bind(c) :: mio_parameterize_report_t
+        integer(c_int64_t) :: num_charts = 0
+        integer(c_int64_t) :: num_flipped = 0
+        integer(c_int64_t) :: num_seam_points = 0
+        real(c_double) :: stretch = 0.0_c_double
+        real(c_double) :: packing_efficiency = 0.0_c_double
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
     !> Interop mirror of C `mio_sobolev_opts`. Field order/types are ABI.
     type, bind(c) :: mio_sobolev_opts_t
         type(c_ptr) :: array = c_null_ptr
@@ -2166,6 +2184,7 @@ module meshioplusplus
         procedure :: repair => mesh_repair
         procedure :: sobolev_deform => mesh_sobolev_deform
         procedure :: geodesic_distance => mesh_geodesic_distance
+        procedure :: parameterize => mesh_parameterize
         procedure :: convert_coordinates => mesh_convert_coordinates
         procedure :: estimate_normals => mesh_estimate_normals
         procedure :: register_rigid => mesh_register_rigid
@@ -3822,6 +3841,20 @@ module meshioplusplus
             type(c_ptr), value :: h
             type(mio_geodesic_opts_t), intent(in) :: opts
             type(mio_geodesic_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_parameterize_opts_init(opts) bind(c, name="mio_parameterize_opts_init")
+            import :: mio_parameterize_opts_t
+            type(mio_parameterize_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_parameterize(h, opts, report) &
+                bind(c, name="mio_parameterize") result(r)
+            import :: c_ptr, mio_parameterize_opts_t, mio_parameterize_report_t
+            type(c_ptr), value :: h
+            type(mio_parameterize_opts_t), intent(in) :: opts
+            type(mio_parameterize_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -10013,6 +10046,42 @@ contains
         if (present(num_unreached)) num_unreached = int(report%num_unreached, int64)
         if (present(max_distance)) max_distance = real(report%max_distance, real64)
         if (present(converged)) converged = report%converged /= 0
+        call clear_status(stat, errmsg)
+    end function
+
+    !> A UV atlas of a triangle surface: a new mesh with point data "uv" (two
+    !> texture coordinates per point in the unit square), split at the seams
+    !> ("parameterize:parent_point" names each point's input point, 0-based),
+    !> and cell data "parameterize:chart". See doc/parameterize.md.
+    function mesh_parameterize(self, padding, max_depth, max_stretch, num_charts, num_flipped, &
+                               stretch, packing_efficiency, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in), optional :: padding, max_stretch
+        integer(int64), intent(in), optional :: max_depth
+        integer(int64), intent(out), optional :: num_charts, num_flipped
+        real(real64), intent(out), optional :: stretch, packing_efficiency
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        type(mio_parameterize_opts_t) :: opts
+        type(mio_parameterize_report_t) :: report
+
+        call c_mio_parameterize_opts_init(opts)
+        if (present(padding)) opts%padding = real(padding, c_double)
+        if (present(max_depth)) opts%max_depth = int(max_depth, c_int64_t)
+        if (present(max_stretch)) opts%max_stretch = real(max_stretch, c_double)
+
+        res = c_mio_parameterize(self%handle, opts, report)
+        if (.not. c_associated(res)) then
+            call handle_failure('parameterize', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(num_charts)) num_charts = int(report%num_charts, int64)
+        if (present(num_flipped)) num_flipped = int(report%num_flipped, int64)
+        if (present(stretch)) stretch = real(report%stretch, real64)
+        if (present(packing_efficiency)) packing_efficiency = real(report%packing_efficiency, real64)
         call clear_status(stat, errmsg)
     end function
 

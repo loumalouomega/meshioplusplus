@@ -266,6 +266,7 @@ export default defineConfig({
           { text: "Mesh morphing", link: "/morph" },
           { text: "Untangling", link: "/untangle" },
           { text: "Geodesic distance (heat method)", link: "/geodesic" },
+          { text: "UV parameterization", link: "/parameterize" },
           { text: "Laplacian eigenmodes", link: "/eigenmodes" },
           { text: "Curved tessellation", link: "/tessellation" },
           { text: "Geometry guardrails", link: "/geometry_guardrails" },

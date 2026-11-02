@@ -83,6 +83,7 @@
 #include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
@@ -7627,6 +7628,49 @@ mio_mesh* mio_geodesic_distance(const mio_mesh* mesh, const mio_geodesic_opts* o
             report->max_distance = r.mMaxDistance;
             report->time_step = r.mTimeStep;
             report->converged = r.mConverged ? 1 : 0;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- parameterize (roadmap 7.3.3) ---------------------------------------------
+
+static_assert(sizeof(mio_parameterize_opts) == 64,
+              "mio_parameterize_opts grew outside its reserved tail");
+static_assert(sizeof(mio_parameterize_report) == 64,
+              "mio_parameterize_report grew outside its reserved tail");
+
+void mio_parameterize_opts_init(mio_parameterize_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_parameterize_opts{};
+    opts->padding = 0.02;
+    opts->max_depth = 8;
+    opts->max_stretch = 2.0;
+}
+
+mio_mesh* mio_parameterize(const mio_mesh* mesh, const mio_parameterize_opts* opts,
+                           mio_parameterize_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw meshioplusplus::ReadError("meshio++: mesh is NULL");
+        if (!opts)
+            throw std::invalid_argument("meshio++: parameterize: opts is NULL");
+        for (const int64_t word : opts->reserved)
+            if (word != 0)
+                throw std::invalid_argument("meshio++: parameterize: reserved must be zero");
+        meshioplusplus::ParameterizeOptions options;
+        options.mPadding = opts->padding;
+        options.mMaxDepth = opts->max_depth;
+        options.mMaxStretch = opts->max_stretch;
+        meshioplusplus::ParameterizeResult r = meshioplusplus::parameterize(mesh->mMesh, options);
+        if (report) {
+            *report = mio_parameterize_report{};
+            report->num_charts = r.mNumCharts;
+            report->num_flipped = r.mNumFlipped;
+            report->num_seam_points = r.mNumSeamPoints;
+            report->stretch = r.mStretch;
+            report->packing_efficiency = r.mPackingEfficiency;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

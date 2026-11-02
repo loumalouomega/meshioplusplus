@@ -2282,6 +2282,18 @@ def test_geodesic_distance_tool(tmp_path):
         _tools.tool_geodesic_distance(src, str(tmp_path / "e.vtu"))
 
 
+def test_parameterize_tool(tmp_path):
+    src = str(tmp_path / "s.vtu")
+    meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))
+    out = _dump(_tools.tool_parameterize(src, str(tmp_path / "s.obj")))
+    assert out["num_charts"] >= 2 and out["num_flipped"] == 0
+    assert out["stretch"] >= 1.0 and 0.0 < out["packing_efficiency"] <= 1.0
+    back = meshioplusplus.read(str(tmp_path / "s.obj"))
+    assert back.point_data["uv"].shape == (len(back.points), 2)
+    with pytest.raises(ValueError, match="max_stretch"):
+        _tools.tool_parameterize(src, str(tmp_path / "e.obj"), max_stretch=0.5)
+
+
 def test_graph_tool(tmp_path):
     src = str(tmp_path / "in.vtu")
     pts = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float)

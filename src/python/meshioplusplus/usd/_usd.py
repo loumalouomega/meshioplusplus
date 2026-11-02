@@ -339,6 +339,16 @@ def _set_primvar(UsdGeom, Sdf, Vt, primvars, name, values, rows, interpolation, 
         return
     token = getattr(UsdGeom.Tokens, interpolation)
     width = values.shape[1]
+    if name == "uv" and width == 2 and interpolation == "vertex":
+        # Texture coordinates are the ``st`` primvar renderers look for.
+        primvar = primvars.CreatePrimvar(
+            "st", Sdf.ValueTypeNames.TexCoord2fArray, token
+        )
+        primvar.Set(
+            Vt.Vec2fArray.FromNumpy(np.ascontiguousarray(values, dtype=np.float32)),
+            code,
+        )
+        return
     if values.dtype.kind in "iub" and width != 3:
         primvar = primvars.CreatePrimvar(name, Sdf.ValueTypeNames.IntArray, token)
         if width != 1:
@@ -542,6 +552,8 @@ def read(filename, time_step=0):
         for primvar in primvars.GetPrimvars():
             name = str(primvar.GetPrimvarName())
             interpolation = str(primvar.GetInterpolation())
+            if name == "st" and interpolation == "vertex":
+                name = "uv"  # texture coordinates, as the writer names them
             values = _primvar_values(primvar, code)
             if values is None:
                 continue

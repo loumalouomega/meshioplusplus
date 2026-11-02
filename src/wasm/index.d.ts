@@ -4309,6 +4309,28 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * A UV atlas of a triangle surface: `mesh` carries the point data `uv` (two
+   * texture coordinates per point in the unit square), split at the seams
+   * (`parameterize:parent_point` names each point's input point) with the
+   * cell data `parameterize:chart`. A chart that folds, or whose L2 stretch
+   * exceeds `maxStretch`, is halved up to `maxDepth` times. See
+   * doc/parameterize.md.
+   * @throws {Error} on a cell type that is not a linear triangle of a surface
+   *   (naming the operation that makes one), or a bad option.
+   */
+  parameterize(
+    mesh: Mesh,
+    options?: { padding?: number; maxDepth?: number; maxStretch?: number },
+  ): {
+    mesh: Mesh;
+    numCharts: number;
+    numFlipped: number;
+    stretch: number;
+    packingEfficiency: number;
+    numSeamPoints: number;
+  };
+
+  /**
    * Sobolev (Helmholtz-filtered) deformation: solve `(M + l^2 K) u = M d`
    * over the mesh's own P1 operators and move the points by `u` -- a
    * screened-Poisson low-pass filter of the raw displacement whose cutoff

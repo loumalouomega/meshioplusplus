@@ -1088,7 +1088,6 @@ def roadmap_map():
             "§7 new capabilities",
             [
                 ("length units: CAD reads", "S"),
-                ("UV parameterization", "M"),
                 ("point-cloud surfaces", "L"),
                 ("providers: heal, mesh, quads", "L"),
                 ("surface booleans (spike first)", "XL"),

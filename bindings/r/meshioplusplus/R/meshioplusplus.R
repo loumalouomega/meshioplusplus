@@ -945,6 +945,31 @@ mio_geodesic_distance <- function(mesh, sources = integer(0), source_region = NU
   )
 }
 
+#' A UV atlas of a triangle surface
+#'
+#' Cuts the surface into charts, flattens each without flipping a triangle
+#' (least-squares conformal maps, else mean-value coordinates) and packs them
+#' into the unit square. The result is split at the seams: point data
+#' `parameterize:parent_point` names each point's input point (0-based) and
+#' cell data `parameterize:chart` each triangle's chart. The mesh's triangle
+#' blocks are the surface; a volume, quad, polygon or higher-order cell is
+#' refused. See `doc/parameterize.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param padding The gap between charts, a fraction of the square root of the
+#'   surface's area.
+#' @param max_depth How many times a piece that does not flatten may be halved.
+#' @param max_stretch A chart whose L2 stretch exceeds this is halved again.
+#' @return A list of `mesh` (with point data `uv`), `num_charts`,
+#'   `num_flipped`, `stretch`, `packing_efficiency` and `num_seam_points`.
+#' @export
+mio_parameterize <- function(mesh, padding = 0.02, max_depth = 8, max_stretch = 2) {
+  .Call(
+    R_mio_parameterize, mesh, as.numeric(padding), as.numeric(max_depth),
+    as.numeric(max_stretch)
+  )
+}
+
 #' Mesh graphs in compressed-sparse-row form
 #'
 #' `mio_adjacency()` returns the mesh's graph as **1-based** `indptr` and

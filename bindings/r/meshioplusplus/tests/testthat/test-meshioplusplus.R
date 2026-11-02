@@ -1680,6 +1680,14 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_gt(gd$max_distance, 1.8)
   expect_lt(gd$max_distance, 2.6)
   expect_error(mio_geodesic_distance(m), "source")
+
+  # A UV atlas of the closed cube: several charts, nothing flipped.
+  pa <- mio_parameterize(m)
+  on.exit(mio_release(pa$mesh), add = TRUE)
+  expect_gte(pa$num_charts, 2)
+  expect_equal(pa$num_flipped, 0)
+  expect_gt(pa$num_seam_points, 0)
+  expect_error(mio_parameterize(m, max_stretch = 0.5), "max_stretch")
   expect_error(mio_morph(m, "missing"))
   expect_error(mio_untangle(m))
   expect_error(mio_prepare_metric(m, "missing"))

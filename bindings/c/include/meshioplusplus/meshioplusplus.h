@@ -4249,6 +4249,40 @@ typedef struct mio_geodesic_report {
 MIO_API mio_mesh* mio_geodesic_distance(const mio_mesh* mesh, const mio_geodesic_opts* opts,
                                         mio_geodesic_report* report);
 
+/** Options for mio_parameterize. Initialize through mio_parameterize_opts_init(). */
+typedef struct mio_parameterize_opts {
+    double padding;      /**< gap between charts, a fraction of sqrt(area) (default 0.02) */
+    int64_t max_depth;   /**< how many times a piece that does not flatten may be halved (8) */
+    double max_stretch;  /**< a chart stretched more is halved again (default 2; >= 1) */
+    int64_t reserved[5]; /**< must be zero; room for additive growth */
+} mio_parameterize_opts;
+
+/** Initialize parameterize options: padding 0.02, depth 8, stretch 2. */
+MIO_API void mio_parameterize_opts_init(mio_parameterize_opts* opts);
+
+/** What mio_parameterize did. */
+typedef struct mio_parameterize_report {
+    int64_t num_charts;  /**< charts in the atlas */
+    int64_t num_flipped; /**< triangles flipped in the plane (0 unless a piece folded at the cap) */
+    int64_t num_seam_points;   /**< points added on seams */
+    double stretch;            /**< area-weighted L2 stretch (1 keeps lengths) */
+    double packing_efficiency; /**< fraction of the unit square the triangles cover */
+    int64_t reserved[3];       /**< must be zero; room for additive growth */
+} mio_parameterize_report;
+
+/**
+ * A UV atlas of a triangle surface: the mesh with point_data "uv" (two texture
+ * coordinates per point in the unit square), split at the seams
+ * ("parameterize:parent_point" names each point's input point; the first copy
+ * keeps its index), and cell_data "parameterize:chart". The surface is the
+ * mesh's triangle blocks; a volume, quad, polygon or higher-order cell is
+ * refused. See doc/parameterize.md.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_parameterize(const mio_mesh* mesh, const mio_parameterize_opts* opts,
+                                   mio_parameterize_report* report);
+
 /* ------------------------------------------------------------------------- */
 /* Data operations                                                           */
 /*                                                                           */

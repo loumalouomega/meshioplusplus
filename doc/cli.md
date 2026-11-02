@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -145,6 +145,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `split-interface` | duplicated-point and cohesive-cell counts |
 | `graph` | `output`, `kind`, `format`, `num_vertices`, `num_edges`, `max_degree` |
 | `geodesic` | `output`, `num_sources`, `num_unreached`, `num_degenerate`, `max_distance`, `time_step`, `heat_iterations`, `poisson_iterations`, `converged` |
+| `parameterize` | `output`, `num_charts`, `num_flipped`, `stretch`, `packing_efficiency`, `num_seam_points` |
 | `eigenmodes` | `output`, `eigenvalues`, `iterations`, `max_residual`, `converged`, `num_degenerate` |
 | `morph` | `output`, `num_constrained`, `num_free`, `num_inverted`, `iterations`, `max_displacement`, `converged` |
 | `untangle` | `output`, `num_inverted_before`, `num_inverted_after`, `min_quality_before`, `min_quality_after`, `sweeps`, `moves` |
@@ -2005,6 +2006,31 @@ The output carries `geodesic:distance` point data; a point in no triangle, or in
 ```sh
 meshioplusplus geodesic skin.stl dist.vtu --source 0
 meshioplusplus geodesic part.vtu dist.vtu --source-region inlet --time-factor 4 --json
+```
+
+---
+
+## meshioplusplus parameterize
+
+A UV atlas of a triangle surface: charts cut, flattened without flipping a triangle and packed into the unit square (see [parameterize](/parameterize)).
+
+```
+meshioplusplus parameterize [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--padding F` | Gap between charts, a fraction of the square root of the surface area (default `0.02`) |
+| `--max-depth N` | How many times a piece that does not flatten may be halved (default `8`) |
+| `--max-stretch S` | A chart whose L2 stretch exceeds `S` is halved again (default `2`; `inf` keeps every chart that does not fold) |
+| `--json` | Emit the report: `output`, `num_charts`, `num_flipped`, `stretch`, `packing_efficiency`, `num_seam_points` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+The output carries `uv` point data, the surface split at its seams; written as OBJ, glTF or USD it becomes texture coordinates. Both CLIs print the same JSON.
+
+```sh
+meshioplusplus parameterize bunny.stl bunny.obj
+meshioplusplus parameterize part.stl part.glb --max-stretch 1.5 --json
 ```
 
 ---

@@ -185,6 +185,7 @@ meshioplusplus regions    in.msh out.msh --union inlet=in_a,in_b --rename "Surfa
 meshioplusplus periodic   in.msh --slave inlet --master outlet --translate 2,0,0  # periodic node pairs
 meshioplusplus graph      in.vtu part.graph --kind cell     # dual graph as a METIS file (or .grf: Scotch)
 meshioplusplus geodesic   skin.stl dist.vtu --source 0     # surface distance from a point (heat method)
+meshioplusplus parameterize bunny.stl bunny.obj             # a UV atlas, written as texture coordinates
 meshioplusplus eigenmodes skin.stl modes.vtu -k 16         # lowest Laplace-Beltrami eigenpairs
 meshioplusplus morph      duct.vtu moved.vtu --array d     # move the boundary, carry it into the mesh
 meshioplusplus untangle   deformed.vtu fixed.vtu          # repair inverted tetrahedra and hexahedra
@@ -654,6 +655,17 @@ Pieces keep the input's block structure 1:1, so they recombine into the input: e
 ```python
 out = meshioplusplus.geodesic_distance(skin, "inlet")   # the points of a region
 d = out.point_data["geodesic:distance"]
+```
+
+#### UV parameterization
+
+**`meshioplusplus.parameterize(mesh)`** gives a triangle surface a UV atlas: it cuts the surface into charts, flattens each without flipping a triangle (least-squares conformal maps, else mean-value coordinates, the kernels `fit_cad` uses), halves a chart that stretches too much, and shelf-packs the charts into the unit square. The result is split at its seams and carries `uv` point data, which the OBJ (`vt`), glTF (`TEXCOORD_0`) and USD (`primvars:st`) writers turn into texture coordinates, and their readers turn back. On every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs (`parameterize`), the pipeline (`Parameterize`) and MCP. See `doc/parameterize.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+out, report = meshioplusplus.parameterize(bunny, return_report=True)
+meshioplusplus.write("bunny.glb", out)   # TEXCOORD_0 from out.point_data["uv"]
 ```
 
 #### Metric toolbox

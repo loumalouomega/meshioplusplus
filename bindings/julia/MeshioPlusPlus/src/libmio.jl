@@ -1860,6 +1860,24 @@ struct _CGeodesicReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_parameterize_opts`."""
+struct _CParameterizeOpts
+    padding::Cdouble
+    max_depth::Int64
+    max_stretch::Cdouble
+    reserved::NTuple{5,Int64}
+end
+
+"""Mirror of C `mio_parameterize_report`."""
+struct _CParameterizeReport
+    num_charts::Int64
+    num_flipped::Int64
+    num_seam_points::Int64
+    stretch::Cdouble
+    packing_efficiency::Cdouble
+    reserved::NTuple{3,Int64}
+end
+
 """Mirror of C `mio_remesh_report`."""
 struct _CRemeshReport
     num_clusters::Int64
@@ -2185,6 +2203,10 @@ function _check_abi_layout()
         error("meshio++: mio_geodesic_opts layout mismatch ($(sizeof(_CGeodesicOpts)) bytes)")
     sizeof(_CGeodesicReport) == 96 ||
         error("meshio++: mio_geodesic_report layout mismatch ($(sizeof(_CGeodesicReport)) bytes)")
+    sizeof(_CParameterizeOpts) == 64 ||
+        error("meshio++: mio_parameterize_opts layout mismatch ($(sizeof(_CParameterizeOpts)) bytes)")
+    sizeof(_CParameterizeReport) == 64 ||
+        error("meshio++: mio_parameterize_report layout mismatch ($(sizeof(_CParameterizeReport)) bytes)")
     sizeof(_CSobolevOpts) == 88 ||
         error("meshio++: mio_sobolev_opts layout mismatch ($(sizeof(_CSobolevOpts)) bytes)")
     sizeof(_CSobolevReport) == 80 ||

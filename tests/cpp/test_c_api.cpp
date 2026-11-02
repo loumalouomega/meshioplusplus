@@ -7262,6 +7262,33 @@ TEST(CApi, GeodesicDistance) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, Parameterize) {
+    mio_mesh* m = capi_cube_surface();
+    mio_parameterize_opts opts;
+    mio_parameterize_opts_init(&opts);
+    EXPECT_EQ(opts.padding, 0.02);
+    EXPECT_EQ(opts.max_depth, 8);
+    EXPECT_EQ(opts.max_stretch, 2.0);
+    mio_parameterize_report report;
+    mio_mesh* out = mio_parameterize(m, &opts, &report);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    // A closed cube needs at least two charts and some seam points.
+    EXPECT_GE(report.num_charts, 2);
+    EXPECT_EQ(report.num_flipped, 0);
+    EXPECT_GT(report.num_seam_points, 0);
+    EXPECT_GE(report.stretch, 1.0 - 1e-9);
+    EXPECT_GT(report.packing_efficiency, 0.0);
+    EXPECT_EQ(mio_mesh_num_points(out), 8 + report.num_seam_points);
+    mio_mesh_free(out);
+    opts.max_stretch = 0.5;  // below 1
+    EXPECT_EQ(mio_parameterize(m, &opts, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("max_stretch"), std::string::npos);
+    mio_parameterize_opts_init(&opts);
+    opts.reserved[0] = 1;
+    EXPECT_EQ(mio_parameterize(m, &opts, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, AdjacencyAndGraphFiles) {
     mio_mesh* m = capi_cube_surface();
     mio_adjacency* g = mio_adjacency_create(m, nullptr);  // "node"

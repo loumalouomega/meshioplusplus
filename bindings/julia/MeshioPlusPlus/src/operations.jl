@@ -4182,6 +4182,31 @@ end
 geodesic_distance(m::Mesh, source::Integer; kwargs...) = geodesic_distance(m, [source]; kwargs...)
 
 """
+    parameterize(m; padding=0.02, max_depth=8, max_stretch=2.0)
+        -> (; mesh, num_charts, num_flipped, stretch, packing_efficiency, num_seam_points)
+
+A UV atlas of a triangle surface: `mesh` carries the point data `uv` (two
+texture coordinates per point in the unit square), split at the seams
+(`parameterize:parent_point` names each point's input point, 0-based), and the
+cell data `parameterize:chart`. A chart that folds, or whose L2 stretch exceeds
+`max_stretch`, is halved up to `max_depth` times. See `doc/parameterize.md`.
+"""
+function parameterize(m::Mesh; padding::Real=0.02, max_depth::Integer=8,
+                      max_stretch::Real=2.0)
+    report = Ref{_CParameterizeReport}()
+    opts = _CParameterizeOpts(Float64(padding), Int64(max_depth), Float64(max_stretch),
+                              ntuple(_ -> Int64(0), 5))
+    ptr = ccall(_sym(:mio_parameterize), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CParameterizeOpts}, Ptr{_CParameterizeReport}),
+                _handle(m), Ref(opts), report)
+    r = _check_ptr(ptr)
+    rep = report[]
+    (mesh=Mesh(r), num_charts=Int(rep.num_charts), num_flipped=Int(rep.num_flipped),
+     stretch=Float64(rep.stretch), packing_efficiency=Float64(rep.packing_efficiency),
+     num_seam_points=Int(rep.num_seam_points))
+end
+
+"""
     surface_watertight_check(m) -> NamedTuple
 
 What is wrong with a surface, in numbers: boundary edges, non-manifold edges,

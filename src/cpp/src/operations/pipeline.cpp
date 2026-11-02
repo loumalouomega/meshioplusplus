@@ -86,6 +86,7 @@
 #include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/sobolev_deform.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
@@ -462,6 +463,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
          {"System", "Axis", "Origin", "Reference", "Arrays", "Inverse", "RecordCoordinates"}},
         {"GeodesicDistance",
          {"Sources", "SourceRegion", "TimeFactor", "Tolerance", "MaxIterations"}},
+        {"Parameterize", {"Padding", "MaxDepth", "MaxStretch"}},
         {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
         {"ErrorSize", {"Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"}},
         {"Adapt",
@@ -2479,6 +2481,19 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             rReport.mWarnings.push_back(
                 "geodesic_distance: a solve hit its iteration cap; the distance is approximate");
         return std::move(gr.mMesh);
+    }
+    if (op == "Parameterize") {
+        ParameterizeOptions opts;
+        opts.mPadding = pipe_number(rStep, "Padding", 0.02);
+        opts.mMaxDepth = static_cast<std::int64_t>(pipe_number(rStep, "MaxDepth", 8));
+        opts.mMaxStretch = pipe_number(rStep, "MaxStretch", 2.0);
+        ParameterizeResult pr = parameterize(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCharts", static_cast<double>(pr.mNumCharts)},
+                        {"NumFlipped", static_cast<double>(pr.mNumFlipped)},
+                        {"Stretch", pr.mStretch},
+                        {"PackingEfficiency", pr.mPackingEfficiency}});
+        return std::move(pr.mMesh);
     }
     if (op == "EstimateError") {
         // A pure data step: geometry is untouched, so the pipeline carries the

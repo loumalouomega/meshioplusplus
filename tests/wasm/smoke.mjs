@@ -5784,6 +5784,15 @@ step('geodesicDistance from a cube corner', () => {
     assert.throws(() => m.geodesicDistance(cubeSurface, []));
 });
 
+step('parameterize a closed cube', () => {
+    const r = m.parameterize(cubeSurface);
+    assert.ok(r.numCharts >= 2);
+    assert.equal(r.numFlipped, 0);
+    assert.ok(r.numSeamPoints > 0);
+    assert.ok('uv' in r.mesh.point_data);
+    assert.throws(() => m.parameterize(cubeSurface, { maxStretch: 0.5 }));
+});
+
 step('adjacency and writeGraph', () => {
     const g = m.adjacency(cubeSurface);
     assert.equal(g.indptr.length, 9);

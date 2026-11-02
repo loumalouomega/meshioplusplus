@@ -140,6 +140,7 @@
 #include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
@@ -7443,6 +7444,34 @@ val geodesic_distance_js(const val& rMeshObj, const val& rSources, const val& rO
     });
 }
 
+/**
+ * @brief A UV atlas of a triangle surface. @p rOptions is `{padding, maxDepth,
+ * maxStretch}`, every key optional. See operations/parameterize.hpp.
+ */
+val parameterize_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ParameterizeOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("padding"))
+                options.mPadding = rOptions["padding"].as<double>();
+            if (rOptions.hasOwnProperty("maxDepth"))
+                options.mMaxDepth = static_cast<std::int64_t>(rOptions["maxDepth"].as<double>());
+            if (rOptions.hasOwnProperty("maxStretch"))
+                options.mMaxStretch = rOptions["maxStretch"].as<double>();
+        }
+        meshioplusplus::ParameterizeResult r =
+            meshioplusplus::parameterize(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numCharts", static_cast<double>(r.mNumCharts));
+        out.set("numFlipped", static_cast<double>(r.mNumFlipped));
+        out.set("stretch", r.mStretch);
+        out.set("packingEfficiency", r.mPackingEfficiency);
+        out.set("numSeamPoints", static_cast<double>(r.mNumSeamPoints));
+        return out;
+    });
+}
+
 val optimize_volume_js(const val& rMeshObj, double maxIterations, bool relocate, bool flip,
                        bool preserveBoundary, double minImprovement, const std::string& rObjective,
                        double maxRingSize) {
@@ -9679,6 +9708,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("shrinkwrap", &shrinkwrap_js);
     emscripten::function("sobolevDeform", &sobolev_deform_js);
     emscripten::function("geodesicDistance", &geodesic_distance_js);
+    emscripten::function("parameterize", &parameterize_js);
     emscripten::function("convertCoordinates", &convert_coordinates_js);
     emscripten::function("prepareMetric", &prepare_metric_js);
     emscripten::function("untangle", &untangle_js);

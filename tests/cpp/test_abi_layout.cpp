@@ -139,6 +139,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -728,6 +729,7 @@ MIO_ABI_LAYOUT(meshioplusplus::PointNormalsOptions, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RegistrationOptions, 160, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RegistrationResult, 168, 8);
 MIO_ABI_LAYOUT(meshioplusplus::EigenmodeOptions, 24, 8);
+MIO_ABI_LAYOUT(meshioplusplus::ParameterizeOptions, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MorphOptions, 136, 8);
 MIO_ABI_LAYOUT(meshioplusplus::UntangleOptions, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PrepareMetricOptions, 104, 8);
