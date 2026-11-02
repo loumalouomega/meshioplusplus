@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `reconstruct`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -153,6 +153,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `coordinates` | `output`, `system`, `num_arrays`, `num_singular` |
 | `hull` | `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
 | `point-normals` | `output`, `num_degenerate`, `num_components` |
+| `reconstruct` | `output`, `num_samples`, `spacing`, `cell_size`, `max_distance`, `num_lattice_points`, `num_undefined`, `num_triangles`, `num_components`, `estimated_normals` |
 | `register` | `output` (with `--output`), `matrix` (4 rows of 4), `initial_rms`, `rms`, `iterations`, `num_pairs`, `converged` |
 | `delaunay` | `output`, `num_triangles`, `num_duplicates`, `num_boundary` |
 | `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face, `below_bound`, `bound_deg`, `min_input_angle_deg` and `corners`), `warnings`, `num_refinement_points`, `num_faces_below_bound`, `num_smoothed`, `angle_histogram` and `num_curved_straightened` |
@@ -1805,6 +1806,36 @@ Both CLIs print the same JSON.
 ```sh
 meshioplusplus point-normals scan.ply scan.pcd
 meshioplusplus point-normals scan.xyz out.xyz --k 24 --orientation viewpoint --viewpoint 0,0,2.5 --json
+```
+
+---
+
+## meshioplusplus reconstruct
+
+A triangle surface through an oriented point cloud (see [surface reconstruction](/reconstruct_surface)): the zero level set of the signed distance to the samples' tangent planes, cut by marching tetrahedra on a band of lattice cells about the samples. The normals are the `normals` point data; without them they are estimated first.
+
+```
+meshioplusplus reconstruct [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--normals NAME` | The normals' point data (default `normals`) |
+| `--k N` | Tangent planes blended per lattice node (default `8`; `1` is Hoppe's field) |
+| `--cell-size H` | The lattice cell size (default `0`: `--resolution`, else the sample spacing) |
+| `--resolution N` | Cells along the cloud's longest axis, with `--cell-size 0` |
+| `--max-distance D` | The trim distance that keeps an open scan open (default `0`: twice the larger of spacing and cell size) |
+| `--no-estimate` | Fail instead of estimating missing normals |
+| `--normals-k N` | Neighbours per estimated normal (default `16`) |
+| `--max-cells N` | The most lattice cells the band may hold (default `20000000`) |
+| `--json` | Emit the report: `output`, `num_samples`, `spacing`, `cell_size`, `max_distance`, `num_lattice_points`, `num_undefined`, `num_triangles`, `num_components`, `estimated_normals` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+Both CLIs print the same JSON.
+
+```sh
+meshioplusplus reconstruct scan.ply surface.stl
+meshioplusplus reconstruct scan.pcd surface.vtu --resolution 128 --k 1 --json
 ```
 
 ---

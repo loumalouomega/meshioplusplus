@@ -3862,6 +3862,49 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def reconstruct_surface(
+        input_path: str,
+        output_path: str,
+        normals: str = "normals",
+        k: int = 8,
+        cell_size: float = 0.0,
+        resolution: int = 0,
+        max_distance: float = 0.0,
+        estimate_normals: bool = True,
+        normals_k: int = 16,
+        max_cells: int = 20_000_000,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """A triangle surface through an oriented point cloud (a PLY, PCD or
+        XYZ scan): the zero level set of the signed distance to the samples'
+        tangent planes (Hoppe et al. 1992), cut by marching tetrahedra on a
+        band of lattice cells about the samples. `normals` names the point
+        data (estimated when absent unless estimate_normals is false, with
+        normals_k neighbours); k tangent planes are blended per lattice node
+        (1 is Hoppe's field). cell_size 0 takes the extent over `resolution`
+        when given, else the sample spacing; max_distance 0 trims at twice
+        the larger of spacing and cell size, which keeps an open scan open.
+        Reports num_samples, spacing, cell_size, max_distance,
+        num_lattice_points, num_undefined, num_triangles, num_components and
+        estimated_normals."""
+        return _guard(
+            _tools.tool_reconstruct_surface,
+            input_path=input_path,
+            output_path=output_path,
+            normals=normals,
+            k=k,
+            cell_size=cell_size,
+            resolution=resolution,
+            max_distance=max_distance,
+            estimate_normals=estimate_normals,
+            normals_k=normals_k,
+            max_cells=max_cells,
+            input_format=input_format,
+            output_format=output_format,
+        )
+
+    @server.tool()
     def convex_hull(
         input_path: str,
         output_path: str,

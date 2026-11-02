@@ -1425,6 +1425,42 @@ SEXP R_mio_estimate_normals(SEXP mesh, SEXP k, SEXP orientation, SEXP viewpoint,
     return res;
 }
 
+SEXP R_mio_reconstruct_surface(SEXP mesh, SEXP normals, SEXP k, SEXP cell_size,
+                               SEXP resolution, SEXP max_distance, SEXP estimate_normals,
+                               SEXP normals_k, SEXP max_cells) {
+    mio_reconstruct_surface_opts opts;
+    mio_reconstruct_surface_opts_init(&opts);
+    opts.normals = mio_r_string(normals, "normals");
+    opts.k = (int64_t)Rf_asReal(k);
+    opts.cell_size = Rf_asReal(cell_size);
+    opts.resolution = (int64_t)Rf_asReal(resolution);
+    opts.max_distance = Rf_asReal(max_distance);
+    opts.estimate_normals = mio_r_bool(estimate_normals, "estimate_normals") ? 1 : 0;
+    opts.normals_k = (int64_t)Rf_asReal(normals_k);
+    opts.max_cells = (int64_t)Rf_asReal(max_cells);
+    mio_reconstruct_surface_report rep;
+    mio_mesh *out = mio_reconstruct_surface(mio_r_mesh(mesh), &opts, &rep);
+    if (out == NULL) mio_r_fail("reconstruct_surface");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP a = PROTECT(Rf_ScalarReal((double)rep.num_samples));
+    SEXP b = PROTECT(Rf_ScalarReal(rep.spacing));
+    SEXP c = PROTECT(Rf_ScalarReal(rep.cell_size));
+    SEXP d = PROTECT(Rf_ScalarReal(rep.max_distance));
+    SEXP e = PROTECT(Rf_ScalarReal((double)rep.num_lattice_points));
+    SEXP f = PROTECT(Rf_ScalarReal((double)rep.num_undefined));
+    SEXP g = PROTECT(Rf_ScalarReal((double)rep.num_triangles));
+    SEXP h = PROTECT(Rf_ScalarReal((double)rep.num_components));
+    SEXP i = PROTECT(Rf_ScalarLogical(rep.estimated_normals != 0));
+    const char *keys[] = {"mesh",          "num_samples",        "spacing",
+                          "cell_size",     "max_distance",       "num_lattice_points",
+                          "num_undefined", "num_triangles",      "num_components",
+                          "estimated_normals"};
+    SEXP values[] = {mo, a, b, c, d, e, f, g, h, i};
+    SEXP res = PROTECT(mio_r_named_list(10, keys, values));
+    UNPROTECT(11);
+    return res;
+}
+
 SEXP R_mio_convex_hull(SEXP mesh, SEXP dimension) {
     const int d = Rf_asInteger(dimension);
     if (d != 0 && d != 2 && d != 3) Rf_error("`dimension` must be 0, 2 or 3");

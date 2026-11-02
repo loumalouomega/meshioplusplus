@@ -1,6 +1,6 @@
 # Point-cloud normals
 
-`estimate_normals(points, k=16)` gives every point of a cloud a normal, from the points alone: a scan read from PLY, PCD or XYZ has positions and no surface, and shading it, offsetting it, registering it point-to-plane or reconstructing a surface from it all need one. The result is `point_data["normals"]`, the array the [PCD](/formats/pcd) and [XYZ](/formats/xyz) writers emit as normal columns. For a mesh with faces, [`compute_normals`](./normals.md) takes them from the faces instead.
+`estimate_normals(points, k=16)` gives every point of a cloud a normal, from the points alone: a scan read from PLY, PCD or XYZ has positions and no surface, and shading it, offsetting it, registering it point-to-plane or reconstructing a surface from it all need one. The result is `point_data["normals"]`, the array the [PCD](/formats/pcd) and [XYZ](/formats/xyz) writers emit as normal columns. For a mesh with faces, [`compute_normals`](./normals.md) takes them from the faces instead. [`reconstruct_surface`](./reconstruct_surface.md) turns the oriented cloud into a triangle surface.
 
 ```python
 import meshioplusplus as mp

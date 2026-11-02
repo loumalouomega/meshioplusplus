@@ -266,6 +266,7 @@ if TYPE_CHECKING:
     )
     from ._quality import attach_quality, compute_quality
     from ._quality_gate import check_quality
+    from ._reconstruct_surface import reconstruct_surface
     from ._refine import refine
     from ._refine_patches import refine_patches
     from ._region_ops import edit_regions
@@ -359,6 +360,7 @@ _LAZY_ATTRS = {
     "convex_hull": "_hull",
     "delaunay_2d": "_hull",
     "estimate_normals": "_point_normals",
+    "reconstruct_surface": "_reconstruct_surface",
     "morph": "_morph",
     "prepare_metric": "_metric",
     "untangle": "_untangle",
@@ -725,6 +727,7 @@ __all__ = [
     "convex_hull",
     "delaunay_2d",
     "estimate_normals",
+    "reconstruct_surface",
     "morph",
     "prepare_metric",
     "untangle",

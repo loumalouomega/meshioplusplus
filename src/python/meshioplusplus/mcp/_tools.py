@@ -149,6 +149,7 @@ from .. import (
     proximity_graph,
     read,
     read_metadata,
+    reconstruct_surface,
     rectangle,
     reference_cells,
     reference_triangle,
@@ -4235,6 +4236,49 @@ def tool_estimate_normals(
     )
 
 
+def tool_reconstruct_surface(
+    input_path,
+    output_path,
+    normals="normals",
+    k=8,
+    cell_size=0.0,
+    resolution=0,
+    max_distance=0.0,
+    estimate_normals=True,
+    normals_k=16,
+    max_cells=20_000_000,
+    input_format=None,
+    output_format=None,
+):
+    """A triangle surface through a file's oriented point cloud."""
+    mesh = _load(input_path, input_format)
+    out, report = reconstruct_surface(
+        mesh,
+        normals=str(normals),
+        k=int(k),
+        cell_size=float(cell_size),
+        resolution=int(resolution),
+        max_distance=float(max_distance),
+        estimate_normals=bool(estimate_normals),
+        normals_k=int(normals_k),
+        max_cells=int(max_cells),
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_samples=int(report["num_samples"]),
+        spacing=float(report["spacing"]),
+        cell_size=float(report["cell_size"]),
+        max_distance=float(report["max_distance"]),
+        num_lattice_points=int(report["num_lattice_points"]),
+        num_undefined=int(report["num_undefined"]),
+        num_triangles=int(report["num_triangles"]),
+        num_components=int(report["num_components"]),
+        estimated_normals=bool(report["estimated_normals"]),
+    )
+
+
 def tool_convex_hull(
     input_path, output_path, dimension=0, input_format=None, output_format=None
 ):
@@ -7155,6 +7199,14 @@ TOOL_REGISTRY = OrderedDict(
             {
                 "fn": tool_estimate_normals,
                 "wraps": ("estimate_normals",),
+                "gated": None,
+            },
+        ),
+        (
+            "reconstruct_surface",
+            {
+                "fn": tool_reconstruct_surface,
+                "wraps": ("reconstruct_surface",),
                 "gated": None,
             },
         ),

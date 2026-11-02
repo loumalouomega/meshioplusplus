@@ -1,5 +1,5 @@
 """Length units as metadata (roadmap 7.1.4): ``field_data["meshio:length_unit"]``
-(metres per unit) filled by the UNV, Radioss, USD, CGNS and MED readers,
+(metres per unit) filled by the UNV, Radioss, USD, CGNS, MED, STEP and IGES readers,
 honoured by their writers and the STEP writer, and updated by ``transform``'s
 ``scale_units`` -- in both engines."""
 
@@ -373,3 +373,38 @@ def test_step_declares_the_length_unit_in_both_engines(tmp_path, unit, entity):
         # The B-rep writers declare it too.
         _core.step_write(str(core), mesh, "planar", 0.0)
         assert entity in core.read_text()
+
+
+# --------------------------------------------------------------------------- #
+# STEP and IGES reads: OpenCASCADE returns millimetres, and says so           #
+# --------------------------------------------------------------------------- #
+def _has_occt():
+    from meshioplusplus._fit_cad import has_occt
+
+    return has_occt()
+
+
+needs_occt = pytest.mark.skipif(not _has_occt(), reason="needs OpenCASCADE")
+BOX_IGS = pathlib.Path(__file__).parents[1] / "wasm" / "fixtures" / "box.igs"
+
+
+@needs_occt
+@pytest.mark.parametrize("unit", [None, 1.0, 0.0254, 0.3048, 1e-3])
+def test_step_read_states_millimetres(tmp_path, unit):
+    path = tmp_path / "x.step"
+    mp.write(str(path), _tet_surface(unit), file_format="step")
+    back = mp.read(str(path))
+    assert _unit(back) == 1e-3
+    # The physical size survives: a unit edge is (unit / 1 mm) millimetres.
+    scale = (unit if unit is not None else 1e-3) / 1e-3
+    assert back.points.max() == pytest.approx(scale, rel=1e-9)
+    # transform's scale_units takes it to metres.
+    metres = mp.transform(back, scale_units=1e-3)
+    assert _unit(metres) == pytest.approx(1.0)
+    assert metres.points.max() == pytest.approx(scale * 1e-3, rel=1e-9)
+
+
+@needs_occt
+def test_iges_read_states_millimetres():
+    back = mp.read(str(BOX_IGS))
+    assert _unit(back) == 1e-3

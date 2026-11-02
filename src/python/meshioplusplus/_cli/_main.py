@@ -63,6 +63,7 @@ from . import (
     _project_to_cad,
     _proximity,
     _quality,
+    _reconstruct,
     _refine,
     _refine_patches,
     _region_adjacency,
@@ -333,6 +334,12 @@ def build_parser():
     )
     _point_normals.add_args(parser)
     parser.set_defaults(func=_point_normals.point_normals_cmd)
+
+    parser = subparsers.add_parser(
+        "reconstruct", help="A triangle surface through an oriented point cloud"
+    )
+    _reconstruct.add_args(parser)
+    parser.set_defaults(func=_reconstruct.reconstruct_cmd)
 
     parser = subparsers.add_parser(
         "hull", help="Convex hull of the points (3-D surface or 2-D loop)"

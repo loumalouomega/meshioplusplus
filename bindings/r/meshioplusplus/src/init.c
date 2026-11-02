@@ -67,6 +67,7 @@ extern SEXP R_mio_convert_coordinates(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, 
 extern SEXP R_mio_convex_hull(SEXP, SEXP);
 extern SEXP R_mio_delaunay_2d(SEXP);
 extern SEXP R_mio_estimate_normals(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_reconstruct_surface(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_register_rigid(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_laplacian_eigenmodes(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_morph(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -316,6 +317,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_convex_hull, 2),
                                               CALLDEF(R_mio_delaunay_2d, 1),
                                               CALLDEF(R_mio_estimate_normals, 5),
+                                              CALLDEF(R_mio_reconstruct_surface, 9),
                                               CALLDEF(R_mio_register_rigid, 7),
                                               CALLDEF(R_mio_laplacian_eigenmodes, 4),
                                               CALLDEF(R_mio_morph, 7),

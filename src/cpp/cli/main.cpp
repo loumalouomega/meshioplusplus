@@ -139,6 +139,7 @@
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -465,6 +466,7 @@ void print_usage(std::ostream& os) {
           "  coordinates             Fields in cylindrical/spherical components about an axis\n"
           "  hull                    Convex hull of the points (3-D surface or 2-D loop)\n"
           "  point-normals           Normals of a point cloud by local plane fits\n"
+          "  reconstruct             A triangle surface through an oriented point cloud\n"
           "  register                Rigid registration of one mesh onto another (ICP)\n"
           "  eigenmodes              Lowest eigenpairs of a surface's Laplace-Beltrami operator\n"
           "  morph                   Move the boundary by a displacement, carried into the mesh\n"
@@ -4206,6 +4208,65 @@ int cmd_point_normals(const std::vector<std::string>& rArgs) {
     if (r.mNumDegenerate > 0)
         std::cout << ", " << r.mNumDegenerate << " degenerate (NaN)";
     std::cout << "\n";
+    return 0;
+}
+
+// reconstruct: a triangle surface through an oriented point cloud. See
+// operations/reconstruct_surface.hpp.
+int cmd_reconstruct(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"normals", {}, true},
+                                  {"k", {}, true},
+                                  {"cell-size", {}, true},
+                                  {"resolution", {}, true},
+                                  {"max-distance", {}, true},
+                                  {"no-estimate", {}, false},
+                                  {"normals-k", {}, true},
+                                  {"max-cells", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("reconstruct requires INFILE OUTFILE");
+    meshioplusplus::ReconstructSurfaceOptions o;
+    if (has_opt(p, "normals"))
+        o.mNormalsName = opt_value(p, "normals");
+    if (has_opt(p, "k"))
+        o.mK = std::stoll(opt_value(p, "k"));
+    if (has_opt(p, "cell-size"))
+        o.mCellSize = meshioplusplus::detail::stod_c(opt_value(p, "cell-size"));
+    if (has_opt(p, "resolution"))
+        o.mResolution = std::stoll(opt_value(p, "resolution"));
+    if (has_opt(p, "max-distance"))
+        o.mMaxDistance = meshioplusplus::detail::stod_c(opt_value(p, "max-distance"));
+    o.mEstimateNormals = !has_flag(p, "no-estimate");
+    if (has_opt(p, "normals-k"))
+        o.mNormalsK = std::stoll(opt_value(p, "normals-k"));
+    if (has_opt(p, "max-cells"))
+        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::ReconstructSurfaceResult r = meshioplusplus::reconstruct_surface(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_samples", r.mNumSamples);
+        json.Field("spacing", r.mSpacing);
+        json.Field("cell_size", r.mCellSize);
+        json.Field("max_distance", r.mMaxDistance);
+        json.Field("num_lattice_points", r.mNumLatticePoints);
+        json.Field("num_undefined", r.mNumUndefined);
+        json.Field("num_triangles", r.mNumTriangles);
+        json.Field("num_components", r.mNumComponents);
+        json.Field("estimated_normals", r.mEstimatedNormals);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mNumTriangles << " triangles in " << r.mNumComponents << " piece(s) through "
+              << r.mNumSamples << " samples" << (r.mEstimatedNormals ? " (normals estimated)" : "")
+              << "\n";
     return 0;
 }
 
@@ -9206,6 +9267,8 @@ int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
         return cmd_register(rest);
     if (cmd == "point-normals")
         return cmd_point_normals(rest);
+    if (cmd == "reconstruct")
+        return cmd_reconstruct(rest);
     if (cmd == "hull")
         return cmd_hull(rest);
     if (cmd == "delaunay")

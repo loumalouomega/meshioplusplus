@@ -7207,6 +7207,37 @@ TEST(CApi, EstimateNormals) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, ReconstructSurface) {
+    // The 8 corners of the unit cube with normals along their diagonals: a
+    // closed, rounded box.
+    mio_mesh* m = capi_cube_surface();
+    const double corners[24] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                                0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    double normals[24];
+    for (int i = 0; i < 24; ++i)
+        normals[i] = corners[i] - 0.5;
+    const int64_t shape[2] = {8, 3};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "normals", MIO_FLOAT64, 2, shape, normals), MIO_OK);
+    mio_reconstruct_surface_opts opts;
+    mio_reconstruct_surface_opts_init(&opts);
+    EXPECT_EQ(opts.k, 8);
+    EXPECT_EQ(opts.estimate_normals, 1);
+    opts.resolution = 12;
+    mio_reconstruct_surface_report rep;
+    mio_mesh* out = mio_reconstruct_surface(m, &opts, &rep);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(rep.num_samples, 8);
+    EXPECT_EQ(rep.estimated_normals, 0);
+    EXPECT_NEAR(rep.cell_size, 1.0 / 12.0, 1e-12);
+    EXPECT_GT(rep.num_triangles, 0);
+    EXPECT_EQ(rep.num_components, 1);
+    mio_mesh_free(out);
+    opts.k = 0;
+    EXPECT_EQ(mio_reconstruct_surface(m, &opts, nullptr), nullptr);
+    EXPECT_EQ(mio_reconstruct_surface(nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, ConvexHullAndDelaunay) {
     mio_mesh* m = capi_cube_surface();  // the unit cube's 8 corners
     mio_hull_report rep;

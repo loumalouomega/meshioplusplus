@@ -4074,6 +4074,43 @@ function estimate_normals(m::Mesh; k::Integer=16, orientation::AbstractString="c
 end
 
 """
+    reconstruct_surface(m; normals="normals", k=8, cell_size=0.0, resolution=0,
+                        max_distance=0.0, estimate_normals=true, normals_k=16,
+                        max_cells=20_000_000)
+        -> (; mesh, num_samples, spacing, cell_size, max_distance, num_lattice_points,
+              num_undefined, num_triangles, num_components, estimated_normals)
+
+A triangle surface through the mesh's points, an oriented point cloud: the zero
+level set of the signed distance to the samples' tangent planes (Hoppe et al.
+1992), cut by marching tetrahedra on a band of lattice cells about the samples.
+The normals are the `normals` point data, estimated when absent unless
+`estimate_normals=false`. See `doc/reconstruct_surface.md`.
+"""
+function reconstruct_surface(m::Mesh; normals::AbstractString="normals", k::Integer=8,
+                             cell_size::Real=0.0, resolution::Integer=0, max_distance::Real=0.0,
+                             estimate_normals::Bool=true, normals_k::Integer=16,
+                             max_cells::Integer=20_000_000)
+    rep = Ref{_CReconstructSurfaceReport}()
+    ptr = GC.@preserve normals begin
+        opts = _CReconstructSurfaceOpts(Base.unsafe_convert(Cstring, normals), Int64(k),
+                                        Float64(cell_size), Int64(resolution),
+                                        Float64(max_distance),
+                                        estimate_normals ? Int32(1) : Int32(0), Int32(0),
+                                        Int64(normals_k), Int64(max_cells),
+                                        ntuple(_ -> Int64(0), 4))
+        ccall(_sym(:mio_reconstruct_surface), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CReconstructSurfaceOpts}, Ref{_CReconstructSurfaceReport}),
+              _handle(m), Ref(opts), rep)
+    end
+    r = _check_ptr(ptr)
+    h = rep[]
+    (mesh=Mesh(r), num_samples=Int(h.num_samples), spacing=h.spacing, cell_size=h.cell_size,
+     max_distance=h.max_distance, num_lattice_points=Int(h.num_lattice_points),
+     num_undefined=Int(h.num_undefined), num_triangles=Int(h.num_triangles),
+     num_components=Int(h.num_components), estimated_normals=h.estimated_normals != 0)
+end
+
+"""
     convex_hull(m; dimension=0)
         -> (; mesh, dimension, num_vertices, num_facets, area, volume, perimeter)
 

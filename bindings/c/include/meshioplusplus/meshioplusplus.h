@@ -4170,6 +4170,57 @@ MIO_API void mio_point_normals_opts_init(mio_point_normals_opts* opts);
 MIO_API mio_mesh* mio_estimate_normals(const mio_mesh* mesh, const mio_point_normals_opts* opts,
                                        int64_t* num_degenerate, int64_t* num_components);
 
+/**
+ * Options for mio_reconstruct_surface. Initialize through
+ * mio_reconstruct_surface_opts_init(): normals "normals", k = 8, automatic
+ * cell size and trim distance, normals estimated when absent (16 neighbours),
+ * at most 20,000,000 band cells.
+ */
+typedef struct mio_reconstruct_surface_opts {
+    const char* normals;      /**< the normals' point data, or NULL for "normals" (borrowed) */
+    int64_t k;                /**< tangent planes blended per lattice node (at least 1) */
+    double cell_size;         /**< the lattice cell size, or 0 for automatic */
+    int64_t resolution;       /**< cells along the longest axis when cell_size is 0; 0: spacing */
+    double max_distance;      /**< Hoppe's trim distance, or 0 for automatic */
+    int32_t estimate_normals; /**< nonzero estimates the normals when the array is absent */
+    int32_t reserved_pad;     /**< must be zero */
+    int64_t normals_k;        /**< neighbours per normal fit, when estimated */
+    int64_t max_cells;        /**< the most lattice cells the band may hold */
+    int64_t reserved[4];      /**< must be zero; room for additive growth */
+} mio_reconstruct_surface_opts;
+
+/** Initialize surface-reconstruction options (see mio_reconstruct_surface_opts). */
+MIO_API void mio_reconstruct_surface_opts_init(mio_reconstruct_surface_opts* opts);
+
+/** What mio_reconstruct_surface built. */
+typedef struct mio_reconstruct_surface_report {
+    int64_t num_samples;        /**< points with a finite, non-zero normal */
+    double spacing;             /**< median distance to the 4th-nearest sample */
+    double cell_size;           /**< the lattice cell size used */
+    double max_distance;        /**< the trim distance used */
+    int64_t num_lattice_points; /**< lattice nodes evaluated (the band's) */
+    int64_t num_undefined;      /**< of which undefined (trimmed) */
+    int64_t num_triangles;      /**< triangles in the surface */
+    int64_t num_components;     /**< their edge-connected pieces */
+    int32_t estimated_normals;  /**< 1 when the normals were estimated */
+    int32_t reserved_pad;       /**< zero */
+    int64_t reserved[4];        /**< zero; room for additive growth */
+} mio_reconstruct_surface_report;
+
+/**
+ * A triangle surface through an oriented point cloud: the zero level set of
+ * the signed distance to the samples' tangent planes (Hoppe et al. 1992), cut
+ * by marching tetrahedra on a band of lattice cells about the samples. The
+ * result holds points and one `triangle` block, wound the way the normals
+ * point. See doc/reconstruct_surface.md. `opts` NULL uses the defaults;
+ * `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_reconstruct_surface(const mio_mesh* mesh,
+                                          const mio_reconstruct_surface_opts* opts,
+                                          mio_reconstruct_surface_report* report);
+
 /** What mio_convex_hull built. */
 typedef struct mio_hull_report {
     int32_t dimension;    /**< the dimension used, 2 or 3 */

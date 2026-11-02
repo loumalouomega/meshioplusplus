@@ -1,6 +1,6 @@
 # Normals
 
-For a point cloud with no faces, see [point-cloud normals](./point_normals.md) (`estimate_normals`).
+For a point cloud with no faces, see [point-cloud normals](./point_normals.md) (`estimate_normals`), and [surface reconstruction](./reconstruct_surface.md) for a surface through one.
 
 `compute_normals(mesh, point_normals=…, cell_normals=…, split_angle=…)` attaches the point and cell normals of a surface, and can split vertices at creases so that every point carries exactly one normal — what a renderer, a shading model or a [glTF export](/formats/gltf) needs, and what a point-cloud learner reads from a `.pcd` or `.xyz` file.
 
