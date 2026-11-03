@@ -1058,6 +1058,32 @@ struct _CTetrahedralizeOpts
     reserved::NTuple{3,Int64}
 end
 
+"""Mirror of C `mio_remesh_quads_opts` (80 bytes; roadmap 7.7.3)."""
+struct _CRemeshQuadsOpts
+    backend::Ptr{UInt8}
+    target_faces::Int64
+    max_cells::Int64
+    sharp::Int32
+    boundary::Int32
+    adaptive::Int32
+    dominant::Int32
+    seed::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_remesh_quads_report` (88 bytes)."""
+struct _CRemeshQuadsReport
+    num_quads::Int64
+    num_triangles::Int64
+    num_points::Int64
+    min_scaled_jacobian::Cdouble
+    mean_scaled_jacobian::Cdouble
+    hausdorff_to_surface::Cdouble
+    backend_name::Ptr{UInt8}
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_mmg_local`."""
 struct _CMmgLocal
     region::Ptr{UInt8}
@@ -2129,6 +2155,11 @@ function _check_abi_layout()
                                  fieldoffset(_CTetrahedralizeOpts, 9) == 56)) ||
         error("meshio++: mio_tetrahedralize_opts layout mismatch " *
               "($(sizeof(_CTetrahedralizeOpts)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CRemeshQuadsOpts) == 80 &&
+                                 fieldoffset(_CRemeshQuadsOpts, 8) == 40 &&
+                                 sizeof(_CRemeshQuadsReport) == 88 &&
+                                 fieldoffset(_CRemeshQuadsReport, 7) == 48)) ||
+        error("meshio++: mio_remesh_quads layout mismatch ($(sizeof(_CRemeshQuadsOpts)) bytes)")
     (sizeof(_CTetrahedralizeReport) == 128 && fieldoffset(_CTetrahedralizeReport, 10) == 72 &&
      fieldoffset(_CTetrahedralizeReport, 12) == 80 &&
      fieldoffset(_CTetrahedralizeReport, 13) == 88) ||

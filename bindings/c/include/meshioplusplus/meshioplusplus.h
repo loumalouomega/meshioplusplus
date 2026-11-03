@@ -4257,6 +4257,62 @@ MIO_API mio_mesh* mio_reconstruct_surface(const mio_mesh* mesh,
                                           const mio_reconstruct_surface_opts* opts,
                                           mio_reconstruct_surface_report* report);
 
+/**
+ * Options for mio_remesh_quads (roadmap 7.7.3; unreleased, after v18.0.0).
+ * Initialize through mio_remesh_quads_opts_init(): backend "auto", automatic
+ * target (half the triangles), the boundary kept, seed 0, at most 50,000,000
+ * faces.
+ */
+typedef struct mio_remesh_quads_opts {
+    const char* backend;  /**< "auto" or a quad remesher's name; NULL is "auto" (borrowed) */
+    int64_t target_faces; /**< faces asked for; 0 takes half the input's triangles */
+    int64_t max_cells;    /**< refuse a target or result of more faces */
+    int32_t sharp;        /**< nonzero aligns with and keeps the sharp edges */
+    int32_t boundary;     /**< nonzero keeps the boundary of an open surface */
+    int32_t adaptive;     /**< nonzero lets the size follow the curvature (QuadriFlow) */
+    int32_t dominant;     /**< nonzero allows triangles (Instant Meshes' quad-dominant mode) */
+    int32_t seed;         /**< the program's random seed */
+    int32_t reserved_pad; /**< must be zero */
+    int64_t reserved[4];  /**< must be zero; room for additive growth */
+} mio_remesh_quads_opts;
+
+/** Initialize quad-remeshing options (see mio_remesh_quads_opts). */
+MIO_API void mio_remesh_quads_opts_init(mio_remesh_quads_opts* opts);
+
+/** What mio_remesh_quads built. */
+typedef struct mio_remesh_quads_report {
+    int64_t num_quads;
+    int64_t num_triangles; /**< left among the quads (quad-dominant) */
+    int64_t num_points;
+    double min_scaled_jacobian; /**< the least of the quads' (Verdict's) */
+    double mean_scaled_jacobian;
+    double hausdorff_to_surface; /**< the two-sided distance to the input */
+    /** The remesher that ran ("quadriflow", ...); static, valid for the
+     *  library's lifetime. */
+    const char* backend_name;
+    int64_t reserved[4]; /**< zero; room for additive growth */
+} mio_remesh_quads_report;
+
+/**
+ * Remesh a triangle surface into field-aligned quads through an installed
+ * quad remesher, QuadriFlow or Instant Meshes, run as a separate process (never
+ * in WebAssembly). The result holds a `quad` block, and a `triangle` block when
+ * the remesher left any. No remesher installed, or none of the name asked,
+ * fails with MIO_ERR_UNSUPPORTED naming the programs. See doc/remesh_quads.md.
+ * `opts` NULL uses the defaults; `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_remesh_quads(const mio_mesh* mesh, const mio_remesh_quads_opts* opts,
+                                   mio_remesh_quads_report* report);
+
+/** The number of quad remeshers mio_remesh_quads takes by name (the installed
+ *  "quadriflow" and "instant_meshes"), sorted; -1 on failure. */
+MIO_API int64_t mio_quad_remesher_count(void);
+/** Quad remesher name `index` (0-based); static, valid for the library's
+ *  lifetime. NULL when out of range. */
+MIO_API const char* mio_quad_remesher_name(int64_t index);
+
 /** What mio_convex_hull built. */
 typedef struct mio_hull_report {
     int32_t dimension;    /**< the dimension used, 2 or 3 */

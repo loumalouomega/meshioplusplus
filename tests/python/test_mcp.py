@@ -2425,6 +2425,7 @@ _NOT_TOOLS = {
     "has_mmg_elas",
     "has_netgen",  # the tetrahedralize tool reports netgen_available
     "tetrahedralize_backends",  # the tetrahedralize tool reports backends_available
+    "remesh_quads_backends",  # the remesh_quads tool reports backends_available
     "to_pyvista",
     "from_pyvista",
     "to_trimesh",
@@ -2740,6 +2741,26 @@ def test_tetrahedralize_tool(tmp_path):
     assert report["boundary_preserved"] and report["backend"] == "netgen"
     assert 4.0 < report["volume"] < 4 / 3 * np.pi
     assert {c.type for c in meshioplusplus.read(out).cells} == {"tetra", "triangle"}
+
+
+def test_remesh_quads_tool(tmp_path):
+    """Roadmap 7.7.3: the tool reports the installed remeshers; with
+    QuadriFlow the sphere's skin comes back all quads, and a name no remesher
+    has is refused."""
+    if not hasattr(_core, "remesh_quads"):
+        pytest.skip("core predates remesh_quads")
+    skin = tmp_path / "sphere.stl"
+    meshioplusplus.write(skin, meshioplusplus.icosa_sphere(1.0, 3))
+    out = tmp_path / "quads.vtu"
+    with pytest.raises(NotImplementedError, match="no-such-remesher"):
+        _tools.tool_remesh_quads(str(skin), str(out), backend="no-such-remesher")
+    if "quadriflow" not in meshioplusplus.remesh_quads_backends():
+        pytest.skip("quadriflow is not installed")
+    report = _tools.tool_remesh_quads(str(skin), str(out), target_faces=600)
+    assert report["backend"] == "quadriflow" and report["num_quads"] > 0
+    assert report["num_triangles"] == 0 and report["min_scaled_jacobian"] >= 0.3
+    assert "quadriflow" in report["backends_available"]
+    assert {c.type for c in meshioplusplus.read(out).cells} == {"quad"}
 
 
 def test_heal_on_cad_reads(tmp_path):

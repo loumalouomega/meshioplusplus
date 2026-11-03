@@ -376,6 +376,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   registerRigid: (source: Mesh, target: Mesh, options?: {method?: 'point_to_point'|'point_to_plane', maxIterations?: number, tolerance?: number, maxDistance?: number, initial?: ArrayLike<number>}) => {matrix: number[], initialRms: number, rms: number, iterations: number, numPairs: number, converged: boolean},
  *   estimateNormals: (mesh: Mesh, options?: {k?: number, orientation?: 'consistent'|'viewpoint'|'none', viewpoint?: ArrayLike<number>, recordVariation?: boolean}) => {mesh: Mesh, numDegenerate: number, numComponents: number},
  *   reconstructSurface: (mesh: Mesh, options?: {normals?: string, k?: number, cellSize?: number, resolution?: number, maxDistance?: number, estimateNormals?: boolean, normalsK?: number, maxCells?: number}) => {mesh: Mesh, numSamples: number, spacing: number, cellSize: number, maxDistance: number, numLatticePoints: number, numUndefined: number, numTriangles: number, numComponents: number, estimatedNormals: boolean},
+ *   remeshQuads: (mesh: Mesh, options?: {targetFaces?: number, backend?: string, sharp?: boolean, boundary?: boolean, adaptive?: boolean, dominant?: boolean, seed?: number, maxCells?: number}) => {mesh: Mesh, numQuads: number, numTriangles: number, numPoints: number, minScaledJacobian: number, meanScaledJacobian: number, hausdorffToSurface: number, backend: string},
  *   convexHull: (mesh: Mesh, options?: {dimension?: 0|2|3}) => {mesh: Mesh, dimension: number, numVertices: number, numFacets: number, area: number, volume: number, perimeter: number},
  *   delaunay2d: (mesh: Mesh) => {mesh: Mesh, numTriangles: number, numDuplicates: number, numBoundary: number},
  *   convertCoordinates: (mesh: Mesh, options?: {system?: 'cylindrical'|'spherical', axis?: ArrayLike<number>, origin?: ArrayLike<number>, reference?: ArrayLike<number>, arrays?: string[], inverse?: boolean, recordCoordinates?: boolean}) => {mesh: Mesh, numArrays: number, numSingular: number},
@@ -1289,6 +1290,10 @@ export async function loadMeshioPlusPlus(
             return Module.estimateNormals(mesh, o);
         },
         reconstructSurface: (mesh, options = {}) => Module.reconstructSurface(mesh, options),
+        // Field-aligned quads through an installed QuadriFlow or Instant
+        // Meshes (roadmap 7.7.3): separate programs, which no WebAssembly
+        // build can run, so this throws naming them.
+        remeshQuads: (mesh, options = {}) => Module.remeshQuads(mesh, options),
         convexHull: (mesh, options = {}) => Module.convexHull(mesh, options),
         delaunay2d: (mesh) => Module.delaunay2d(mesh),
         convertCoordinates: (mesh, options = {}) => {

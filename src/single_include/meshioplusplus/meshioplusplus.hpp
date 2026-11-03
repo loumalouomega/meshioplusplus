@@ -35614,6 +35614,82 @@ MESHIOPLUSPLUS_API RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/remesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/remesh_quads.hpp =====
+/**
+ * @file operations/remesh_quads.hpp
+ * @brief Field-aligned quad remeshing of a triangle surface (roadmap 7.7.3).
+ *
+ * `remesh_quads` hands a triangle surface to a quad remesher and returns its
+ * quads: QuadriFlow (Huang et al. 2018, MIT) or Instant Meshes (Jakob et al.
+ * 2015, BSD-3), installed programs this build runs as separate processes and
+ * registers by name (`quad_remesher_names()`, providers.hpp); a plugin can add
+ * more. They align the quads with a smooth cross field, so a sphere comes out
+ * all quads with no pole of slivers, which recombining a mesher's own
+ * triangles (`mesh_cad_surface(quads=all)`) leaves. The result is a new
+ * surface near the input, not on its points: `mHausdorffToSurface` says how
+ * near. No program runs in WebAssembly.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+struct RemeshQuadsOptions {
+    /// `auto` (QuadriFlow, else Instant Meshes) or a quad remesher's name.
+    std::string mBackend = "auto";
+    /// The number of faces asked for; 0 takes half the input's triangles.
+    std::int64_t mTargetFaces = 0;
+    /// Align with and keep the sharp edges.
+    bool mSharp = false;
+    /// Keep the boundary of an open surface.
+    bool mBoundary = true;
+    /// Let the face size follow the curvature (QuadriFlow).
+    bool mAdaptive = false;
+    /// Allow triangles where quads fit badly (Instant Meshes' quad-dominant mode).
+    bool mDominant = false;
+    /// The program's random seed, so a run repeats.
+    std::int32_t mSeed = 0;
+    /// Refuse a target of more faces.
+    std::int64_t mMaxCells = 50000000;
+};
+
+struct RemeshQuadsResult {
+    /// A `quad` block, and a `triangle` block when the remesher left any.
+    Mesh mMesh;
+    std::int64_t mNumQuads = 0;
+    std::int64_t mNumTriangles = 0;
+    std::int64_t mNumPoints = 0;
+    /// The least and mean scaled Jacobian of the quads (Verdict's, in [-1, 1]).
+    double mMinScaledJacobian = 0.0;
+    double mMeanScaledJacobian = 0.0;
+    /// The two-sided distance between the result and the input surface.
+    double mHausdorffToSurface = 0.0;
+    std::string mBackend;  ///< the remesher that ran
+    std::vector<std::string> mWarnings;
+};
+
+/// The backend names `remesh_quads` takes besides `auto`: every registered quad
+/// remesher (the installed `quadriflow` and `instant_meshes`), sorted.
+MESHIOPLUSPLUS_API std::vector<std::string> remesh_quads_backends();
+
+/**
+ * @brief Remesh the triangle surface `rSurface` into field-aligned quads.
+ * @throws std::invalid_argument for a negative target or one past `mMaxCells`,
+ *         or a surface that is not linear triangles (lines and vertices are
+ *         skipped).
+ * @throws Unsupported when no quad remesher is installed, or none of that name.
+ * @throws std::runtime_error when the remesher fails or writes a bad mesh.
+ */
+MESHIOPLUSPLUS_API RemeshQuadsResult remesh_quads(const Mesh& rSurface,
+                                                  const RemeshQuadsOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/remesh_quads.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/remesh_volume.hpp =====
 /**
  * @file remesh_volume.hpp
@@ -40042,6 +40118,42 @@ struct TetMesherProvider {
     std::function<TetMeshRegionResult(const TetMeshRegionRequest&)> mMeshRegion;
 };
 
+/// A triangle surface handed to a quad remesher (roadmap 7.7.3): its points and
+/// triangles (0-based) and what is asked of the quads.
+struct QuadRemeshRequest {
+    std::vector<std::array<double, 3>> mPoints;
+    std::vector<std::array<std::int64_t, 3>> mTriangles;
+    /// The number of faces asked for (the programs treat it as a target).
+    std::int64_t mTargetFaces = 0;
+    /// Align with and keep the surface's sharp edges.
+    bool mSharp = false;
+    /// Keep the surface's boundary.
+    bool mBoundary = true;
+    /// Let the face size follow the curvature.
+    bool mAdaptive = false;
+    /// Allow triangles where quads fit badly (quad-dominant).
+    bool mDominant = false;
+    /// The program's random seed, so a run repeats.
+    std::int32_t mSeed = 0;
+};
+
+/// What a quad remesher returns: its own points, and quads and (dominant) triangles
+/// into them, 0-based.
+struct QuadRemeshResult {
+    std::vector<std::array<double, 3>> mPoints;
+    std::vector<std::array<std::int64_t, 4>> mQuads;
+    std::vector<std::array<std::int64_t, 3>> mTriangles;
+};
+
+/// A field-aligned quad remesher: `remesh_quads`'s backend (QuadriFlow, Instant
+/// Meshes). Registered by name only; see `add_quad_remesher`.
+struct QuadRemesherProvider {
+    std::string mName;
+    std::string mVersion;
+    /// Remeshes a surface; throws `std::runtime_error` when the remesher fails.
+    std::function<QuadRemeshResult(const QuadRemeshRequest&)> mRemesh;
+};
+
 /// A remesher: `adapt`, `discretize_levelset`, `mesh_domain` and `move` (MMG).
 struct RemesherProvider {
     std::string mName;
@@ -40080,6 +40192,20 @@ MESHIOPLUSPLUS_API std::shared_ptr<const TetMesherProvider> tet_mesher(
     const std::string& rName) noexcept;
 /// The names of every registered tetrahedral mesher, sorted.
 MESHIOPLUSPLUS_API std::vector<std::string> tet_mesher_names();
+
+// Quad remeshers (roadmap 7.7.3), by name only: this build adds `quadriflow` and
+// `instant_meshes` when those programs are installed (separate processes; never
+// in WebAssembly), see `remesh_quads.md`.
+
+/// Registers `Provider` under its `mName`, replacing an earlier one of that name.
+MESHIOPLUSPLUS_API void add_quad_remesher(QuadRemesherProvider Provider);
+/// Removes the quad remesher named `rName`.
+MESHIOPLUSPLUS_API void remove_quad_remesher(const std::string& rName) noexcept;
+/// The quad remesher named `rName`, or null.
+MESHIOPLUSPLUS_API std::shared_ptr<const QuadRemesherProvider> quad_remesher(
+    const std::string& rName) noexcept;
+/// The names of every registered quad remesher, sorted.
+MESHIOPLUSPLUS_API std::vector<std::string> quad_remesher_names();
 
 /// Registers `Provider` as the remesher, replacing any earlier one.
 MESHIOPLUSPLUS_API void register_remesher(RemesherProvider Provider);
@@ -79325,6 +79451,121 @@ TetMeshRegionResult em_gmsh(const std::string& rExe, const TetMeshRegionRequest&
     return em_assemble(rRequest, pts, tets);
 }
 
+// --- quad remeshers (roadmap 7.7.3) ---------------------------------------------
+
+// The surface as a Wavefront OBJ at full precision.
+void em_write_obj(const std::string& rPath, const QuadRemeshRequest& rRequest) {
+    auto obj = detail::make_classic_ofstream(rPath);
+    for (const EmPoint& r_p : rRequest.mPoints)
+        obj << "v " << em_num(r_p[0]) << " " << em_num(r_p[1]) << " " << em_num(r_p[2]) << "\n";
+    for (const auto& r_t : rRequest.mTriangles)
+        obj << "f " << r_t[0] + 1 << " " << r_t[1] + 1 << " " << r_t[2] + 1 << "\n";
+    if (!obj)
+        throw std::runtime_error("cannot write '" + rPath + "'");
+}
+
+// The `v` and `f` records of the program's OBJ (`f` corners as `i`, `i/t` or
+// `i/t/n`, negative indices relative): quads, and triangles where the program
+// left them. A larger face is refused.
+QuadRemeshResult em_read_obj(const std::string& rPath, const char* pProgram) {
+    auto in = detail::make_classic_ifstream(rPath);
+    if (!in)
+        throw std::runtime_error(std::string(pProgram) + " wrote no '" + rPath + "'");
+    QuadRemeshResult out;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.size() < 2 || line[1] != ' ' || (line[0] != 'v' && line[0] != 'f'))
+            continue;
+        std::vector<std::string> tokens;
+        for (std::size_t at = 2; at < line.size();) {
+            while (at < line.size() && (line[at] == ' ' || line[at] == '\t' || line[at] == '\r'))
+                ++at;
+            std::size_t end = at;
+            while (end < line.size() && line[end] != ' ' && line[end] != '\t' && line[end] != '\r')
+                ++end;
+            if (end > at)
+                tokens.push_back(line.substr(at, end - at));
+            at = end;
+        }
+        if (line[0] == 'v') {
+            if (tokens.size() < 3)
+                throw std::runtime_error(std::string(pProgram) +
+                                         " wrote a vertex without 3 coordinates");
+            EmPoint p{};
+            for (std::size_t c = 0; c < 3; ++c) {
+                p[c] = detail::parse_double(tokens[c]);
+                if (!std::isfinite(p[c]))
+                    throw std::runtime_error(std::string(pProgram) + " wrote a non-finite vertex");
+            }
+            out.mPoints.push_back(p);
+            continue;
+        }
+        std::vector<std::int64_t> face;
+        for (const std::string& r_tok : tokens) {
+            const std::string head = r_tok.substr(0, r_tok.find('/'));
+            char* p_end = nullptr;
+            const long long v = std::strtoll(head.c_str(), &p_end, 10);
+            if (head.empty() || p_end != head.c_str() + head.size() || v == 0)
+                throw std::runtime_error(std::string(pProgram) + " wrote a bad face corner '" +
+                                         r_tok + "'");
+            const auto n = static_cast<long long>(out.mPoints.size());
+            face.push_back(v > 0 ? v - 1 : n + v);
+        }
+        for (const std::int64_t v : face)
+            if (v < 0 || v >= static_cast<std::int64_t>(out.mPoints.size()))
+                throw std::runtime_error(std::string(pProgram) + " wrote a face naming no vertex");
+        if (face.size() == 4)
+            out.mQuads.push_back({face[0], face[1], face[2], face[3]});
+        else if (face.size() == 3)
+            out.mTriangles.push_back({face[0], face[1], face[2]});
+        else
+            throw std::runtime_error(std::string(pProgram) + " wrote a face of " +
+                                     std::to_string(face.size()) + " corners");
+    }
+    if (out.mQuads.empty() && out.mTriangles.empty())
+        throw std::runtime_error(std::string(pProgram) + " wrote no face");
+    return out;
+}
+
+// QuadriFlow (Huang et al. 2018): `quadriflow -i in.obj -o out.obj -f N`, an
+// all-quad mesh.
+QuadRemeshResult em_quadriflow(const std::string& rExe, const QuadRemeshRequest& rRequest) {
+    const EmWorkDir dir("quadriflow");
+    em_write_obj(dir.File("in.obj"), rRequest);
+    std::vector<std::string> argv = {rExe};
+    if (rRequest.mSharp)
+        argv.push_back("-sharp");
+    if (rRequest.mBoundary)
+        argv.push_back("-boundary");
+    if (rRequest.mAdaptive)
+        argv.push_back("-adaptive");
+    argv.insert(argv.end(),
+                {"-seed", std::to_string(rRequest.mSeed), "-i", dir.File("in.obj"), "-o",
+                 dir.File("out.obj"), "-f", std::to_string(rRequest.mTargetFaces)});
+    em_run("quadriflow", argv, dir);
+    return em_read_obj(dir.File("out.obj"), "quadriflow");
+}
+
+// Instant Meshes (Jakob et al. 2015) in batch mode: `-o out.obj -f N -d`,
+// deterministic; `-D` quad-dominant, `-b` boundaries kept, `-c` creases.
+QuadRemeshResult em_instant_meshes(const std::string& rExe, const QuadRemeshRequest& rRequest) {
+    const EmWorkDir dir("instant_meshes");
+    em_write_obj(dir.File("in.obj"), rRequest);
+    std::vector<std::string> argv = {
+        rExe, "-d", "-o", dir.File("out.obj"), "-f", std::to_string(rRequest.mTargetFaces)};
+    if (rRequest.mDominant)
+        argv.push_back("-D");
+    if (rRequest.mBoundary)
+        argv.push_back("-b");
+    if (rRequest.mSharp) {
+        argv.push_back("-c");
+        argv.push_back("30");
+    }
+    argv.push_back(dir.File("in.obj"));
+    em_run("instant_meshes", argv, dir);
+    return em_read_obj(dir.File("out.obj"), "instant_meshes");
+}
+
 }  // namespace
 
 namespace providers {
@@ -79353,6 +79594,41 @@ std::vector<TetMesherProvider> make_external_tet_meshers() {
         p.mVersion = "external: " + gmsh;
         p.mMeshRegion = [gmsh](const TetMeshRegionRequest& rRequest) {
             return em_gmsh(gmsh, rRequest);
+        };
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
+std::vector<QuadRemesherProvider> make_external_quad_remeshers() {
+    std::vector<QuadRemesherProvider> out;
+    if (!detail::subprocess_available())
+        return out;
+    const char* p_off = std::getenv("MESHIOPLUSPLUS_NO_EXTERNAL_MESHERS");
+    if (p_off && *p_off && std::string(p_off) != "0")
+        return out;
+    const std::string quadriflow =
+        detail::find_executable("quadriflow", "MESHIOPLUSPLUS_QUADRIFLOW");
+    if (!quadriflow.empty()) {
+        QuadRemesherProvider p;
+        p.mName = "quadriflow";
+        p.mVersion = "external: " + quadriflow;
+        p.mRemesh = [quadriflow](const QuadRemeshRequest& rRequest) {
+            return em_quadriflow(quadriflow, rRequest);
+        };
+        out.push_back(std::move(p));
+    }
+    std::string instant =
+        detail::find_executable("Instant Meshes", "MESHIOPLUSPLUS_INSTANT_MESHES");
+    for (const char* p_alt : {"instant-meshes", "InstantMeshes"})
+        if (instant.empty())
+            instant = detail::find_executable(p_alt);
+    if (!instant.empty()) {
+        QuadRemesherProvider p;
+        p.mName = "instant_meshes";
+        p.mVersion = "external: " + instant;
+        p.mRemesh = [instant](const QuadRemeshRequest& rRequest) {
+            return em_instant_meshes(instant, rRequest);
         };
         out.push_back(std::move(p));
     }
@@ -247330,6 +247606,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         // Tetrahedra filling the closed triangle surface (roadmap 6.7).
         {"Tetrahedralize",
          {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},
+        {"RemeshQuads",
+         {"TargetFaces", "Backend", "Sharp", "Boundary", "Adaptive", "Dominant", "Seed",
+          "MaxCells"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
     };
@@ -248165,6 +248444,36 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"MinDihedralDeg", r.mMinDihedralDeg},
                         {"MaxDihedralDeg", r.mMaxDihedralDeg},
                         {"Volume", r.mVolume}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "RemeshQuads") {
+        // Field-aligned quads through an installed remesher (roadmap 7.7.3).
+        RemeshQuadsOptions o;
+        o.mTargetFaces = static_cast<std::int64_t>(
+            pipe_number(rStep, "TargetFaces", static_cast<double>(o.mTargetFaces)));
+        o.mBackend = pipe_text(rStep, "Backend", "auto");
+        if (o.mBackend.empty())
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Backend' must be 'auto' or a quad remesher's name"));
+        o.mSharp = pipe_flag(rStep, "Sharp", o.mSharp);
+        o.mBoundary = pipe_flag(rStep, "Boundary", o.mBoundary);
+        o.mAdaptive = pipe_flag(rStep, "Adaptive", o.mAdaptive);
+        o.mDominant = pipe_flag(rStep, "Dominant", o.mDominant);
+        o.mSeed =
+            static_cast<std::int32_t>(pipe_number(rStep, "Seed", static_cast<double>(o.mSeed)));
+        o.mMaxCells = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
+        RemeshQuadsResult r = remesh_quads(mesh, o);
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back("RemeshQuads: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumQuads", static_cast<double>(r.mNumQuads)},
+                        {"NumTriangles", static_cast<double>(r.mNumTriangles)},
+                        {"NumPoints", static_cast<double>(r.mNumPoints)},
+                        {"MinScaledJacobian", r.mMinScaledJacobian},
+                        {"MeanScaledJacobian", r.mMeanScaledJacobian},
+                        {"HausdorffToSurface", r.mHausdorffToSurface}});
         return std::move(r.mMesh);
     }
 
@@ -260954,6 +261263,217 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/remesh.cpp =====
+// ===== begin src/cpp/src/operations/remesh_quads.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kRqPrefix = "meshio++: remesh_quads: ";
+
+[[noreturn]] void rq_fail(const std::string& rWhy) {
+    throw std::invalid_argument(std::string(kRqPrefix) + rWhy);
+}
+
+std::string rq_join(const std::vector<std::string>& rNames) {
+    std::string out;
+    for (const std::string& r_name : rNames)
+        out += (out.empty() ? "" : ", ") + r_name;
+    return out.empty() ? std::string("none") : out;
+}
+
+}  // namespace
+
+std::vector<std::string> remesh_quads_backends() {
+    return quad_remesher_names();
+}
+
+RemeshQuadsResult remesh_quads(const Mesh& rSurface, const RemeshQuadsOptions& rOptions) {
+    const RemeshQuadsOptions& o = rOptions;
+    if (o.mMaxCells < 1)
+        rq_fail("max_cells must be positive");
+    if (o.mTargetFaces < 0)
+        rq_fail("target_faces must not be negative");
+    if (o.mTargetFaces > o.mMaxCells)
+        rq_fail("target_faces " + std::to_string(o.mTargetFaces) + " is past max_cells (" +
+                std::to_string(o.mMaxCells) + ")");
+
+    // The triangles, block by block.
+    QuadRemeshRequest request;
+    const std::size_t np = rSurface.NumPoints();
+    const NDArray& r_pts = rSurface.Points();
+    if (np > 0 && (r_pts.Ndim() != 2 || r_pts.Shape()[1] != 3))
+        rq_fail("the surface's points must be three-dimensional");
+    request.mPoints.resize(np);
+    for (std::size_t i = 0; i < np; ++i)
+        for (std::size_t k = 0; k < 3; ++k) {
+            request.mPoints[i][k] = detail::read_double(r_pts, 3 * i + k);
+            if (!std::isfinite(request.mPoints[i][k]))
+                rq_fail("the surface has a non-finite point");
+        }
+    for (std::size_t b = 0; b < rSurface.NumCellBlocks(); ++b) {
+        const auto cells = rSurface.Cells(b);
+        const std::string type(cells.Type());
+        if (type.rfind("line", 0) == 0 || type == "vertex")
+            continue;
+        if (type != "triangle" || cells.IsRagged())
+            rq_fail("a '" + type +
+                    "' block: the surface must be linear triangles (convert_cells, linearize or "
+                    "extract_surface first)");
+        for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+            std::array<std::int64_t, 3> t{};
+            for (std::size_t k = 0; k < 3; ++k) {
+                t[k] = detail::read_int(cells.Conn(), 3 * c + k);
+                if (t[k] < 0 || static_cast<std::size_t>(t[k]) >= np)
+                    rq_fail("a triangle names a point out of range");
+            }
+            request.mTriangles.push_back(t);
+        }
+    }
+    if (request.mTriangles.empty())
+        rq_fail("the surface has no triangle");
+    request.mTargetFaces =
+        o.mTargetFaces > 0
+            ? o.mTargetFaces
+            : std::max<std::int64_t>(1, static_cast<std::int64_t>(request.mTriangles.size() / 2));
+    request.mSharp = o.mSharp;
+    request.mBoundary = o.mBoundary;
+    request.mAdaptive = o.mAdaptive;
+    request.mDominant = o.mDominant;
+    request.mSeed = o.mSeed;
+
+    // The remesher.
+    std::shared_ptr<const QuadRemesherProvider> p_remesher;
+    if (o.mBackend == "auto" || o.mBackend.empty()) {
+        for (const char* p_name : {"quadriflow", "instant_meshes"})
+            if (!p_remesher)
+                p_remesher = quad_remesher(p_name);
+        if (!p_remesher) {
+            const std::vector<std::string> names = quad_remesher_names();
+            if (!names.empty())
+                p_remesher = quad_remesher(names.front());
+        }
+        if (!p_remesher)
+            throw Unsupported(std::string(kRqPrefix) +
+                              "no quad remesher is installed: install QuadriFlow (`quadriflow`) "
+                              "or Instant Meshes (`Instant Meshes`) on PATH, or name them "
+                              "through MESHIOPLUSPLUS_QUADRIFLOW and "
+                              "MESHIOPLUSPLUS_INSTANT_MESHES (roadmap 7.7.3)");
+    } else {
+        p_remesher = quad_remesher(o.mBackend);
+        if (!p_remesher)
+            throw Unsupported(std::string(kRqPrefix) + "no quad remesher named '" + o.mBackend +
+                              "' (available: auto, " + rq_join(quad_remesher_names()) +
+                              "; quadriflow and instant_meshes are found on PATH, or through "
+                              "MESHIOPLUSPLUS_QUADRIFLOW and MESHIOPLUSPLUS_INSTANT_MESHES)");
+    }
+    QuadRemeshResult out;
+    try {
+        out = p_remesher->mRemesh(request);
+    } catch (const std::runtime_error& rErr) {
+        throw std::runtime_error(std::string(kRqPrefix) + p_remesher->mName + ": " + rErr.what());
+    }
+    const std::size_t nq = out.mQuads.size(), nt = out.mTriangles.size(), nop = out.mPoints.size();
+    if (nq + nt == 0)
+        throw std::runtime_error(std::string(kRqPrefix) + p_remesher->mName + " returned no face");
+    if (static_cast<std::int64_t>(nq + nt) > o.mMaxCells)
+        throw std::length_error(std::string(kRqPrefix) + "the result would have more than " +
+                                std::to_string(o.mMaxCells) + " faces (max_cells)");
+    const auto check = [&](std::int64_t V) {
+        if (V < 0 || static_cast<std::size_t>(V) >= nop)
+            throw std::runtime_error(std::string(kRqPrefix) + p_remesher->mName +
+                                     " returned a face naming no point");
+    };
+    for (const auto& r_q : out.mQuads)
+        for (const std::int64_t v : r_q)
+            check(v);
+    for (const auto& r_t : out.mTriangles)
+        for (const std::int64_t v : r_t)
+            check(v);
+    for (const auto& r_p : out.mPoints)
+        for (const double c : r_p)
+            if (!std::isfinite(c))
+                throw std::runtime_error(std::string(kRqPrefix) + p_remesher->mName +
+                                         " returned a non-finite point");
+
+    // The mesh.
+    RemeshQuadsResult result;
+    result.mBackend = p_remesher->mName;
+    NDArray p = NDArray::Uninit(DType::Float64, {nop, std::size_t{3}});
+    double* const p_x = p.As<double>();
+    for (std::size_t i = 0; i < nop; ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            p_x[3 * i + k] = out.mPoints[i][k];
+    result.mMesh.AssignPoints(std::move(p));
+    if (nq) {
+        NDArray q = NDArray::Uninit(DType::Int64, {nq, std::size_t{4}});
+        for (std::size_t c = 0; c < nq; ++c)
+            for (std::size_t k = 0; k < 4; ++k)
+                q.As<std::int64_t>()[4 * c + k] = out.mQuads[c][k];
+        result.mMesh.AddCellBlock("quad", std::move(q));
+    }
+    if (nt) {
+        NDArray t = NDArray::Uninit(DType::Int64, {nt, std::size_t{3}});
+        for (std::size_t c = 0; c < nt; ++c)
+            for (std::size_t k = 0; k < 3; ++k)
+                t.As<std::int64_t>()[3 * c + k] = out.mTriangles[c][k];
+        result.mMesh.AddCellBlock("triangle", std::move(t));
+        result.mWarnings.push_back(std::to_string(nt) + " triangle(s) left among the quads");
+    }
+    const double unit = detail::mesh_length_unit(rSurface);
+    if (unit > 0.0)
+        detail::set_mesh_length_unit(result.mMesh, unit);
+
+    // The measures.
+    result.mNumQuads = static_cast<std::int64_t>(nq);
+    result.mNumTriangles = static_cast<std::int64_t>(nt);
+    result.mNumPoints = static_cast<std::int64_t>(nop);
+    if (nq) {
+        double lo = 1.0, sum = 0.0;
+        for (const auto& r_q : out.mQuads) {
+            const double j = detail::quad_scaled_jacobian(p_x, r_q);
+            lo = std::min(lo, j);
+            sum += j;
+        }
+        result.mMinScaledJacobian = lo;
+        result.mMeanScaledJacobian = sum / static_cast<double>(nq);
+    }
+    Mesh input;
+    {
+        NDArray ip = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
+        for (std::size_t i = 0; i < np; ++i)
+            for (std::size_t k = 0; k < 3; ++k)
+                ip.As<double>()[3 * i + k] = request.mPoints[i][k];
+        input.AssignPoints(std::move(ip));
+        NDArray it = NDArray::Uninit(DType::Int64, {request.mTriangles.size(), std::size_t{3}});
+        for (std::size_t c = 0; c < request.mTriangles.size(); ++c)
+            for (std::size_t k = 0; k < 3; ++k)
+                it.As<std::int64_t>()[3 * c + k] = request.mTriangles[c][k];
+        input.AddCellBlock("triangle", std::move(it));
+    }
+    HausdorffOptions h;
+    h.mFaceSamples = 2;
+    result.mHausdorffToSurface = hausdorff_distance(result.mMesh, input, h).mDistance;
+    for (const std::string& r_w : result.mWarnings)
+        log::warn("{}{}", kRqPrefix, r_w);
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/remesh_quads.cpp =====
 // ===== begin src/cpp/src/operations/remesh_volume.cpp =====
 #include <algorithm>
 #include <array>
@@ -279165,6 +279685,8 @@ RemesherProvider make_mmg_provider();
 /// The external tetrahedral meshers found installed (`tetgen`, `gmsh`), run as
 /// separate processes (detail/external_mesher.cpp); none in WebAssembly.
 std::vector<TetMesherProvider> make_external_tet_meshers();
+/// The external quad remeshers found installed (`quadriflow`, `instant_meshes`).
+std::vector<QuadRemesherProvider> make_external_quad_remeshers();
 
 }  // namespace providers
 
@@ -279194,6 +279716,9 @@ struct ProvidersState {
     /// The named tetrahedral meshers (roadmap 7.7.2), by name; replaced ones
     /// stay in `mTet.mRetained`.
     std::map<std::string, std::shared_ptr<const TetMesherProvider>> mTetNamed;
+    /// The quad remeshers (roadmap 7.7.3), by name, and every one ever added.
+    std::map<std::string, std::shared_ptr<const QuadRemesherProvider>> mQuad;
+    std::vector<std::shared_ptr<const QuadRemesherProvider>> mQuadRetained;
     bool mExternalDone = false;
 };
 
@@ -279282,6 +279807,40 @@ std::shared_ptr<const TetMesherProvider> tet_mesher(const std::string& rName) no
         return r_state.mTet.mCurrent;
     const auto it = r_state.mTetNamed.find(rName);
     return it == r_state.mTetNamed.end() ? nullptr : it->second;
+}
+
+void add_quad_remesher(QuadRemesherProvider Provider) {
+    ProvidersState& r_state = providers_state();
+    auto p_new = std::make_shared<const QuadRemesherProvider>(std::move(Provider));
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    if (t_loading_plugin && r_state.mQuad.count(p_new->mName))
+        return;
+    r_state.mQuadRetained.push_back(p_new);
+    r_state.mQuad[p_new->mName] = std::move(p_new);
+}
+
+void remove_quad_remesher(const std::string& rName) noexcept {
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    r_state.mQuad.erase(rName);
+}
+
+std::shared_ptr<const QuadRemesherProvider> quad_remesher(const std::string& rName) noexcept {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const auto it = r_state.mQuad.find(rName);
+    return it == r_state.mQuad.end() ? nullptr : it->second;
+}
+
+std::vector<std::string> quad_remesher_names() {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    std::vector<std::string> names;
+    for (const auto& r_entry : r_state.mQuad)
+        names.push_back(r_entry.first);
+    return names;
 }
 
 std::vector<std::string> tet_mesher_names() {
@@ -279457,6 +280016,13 @@ static void register_compiled_in_providers() noexcept {
                 auto p_new = std::make_shared<const TetMesherProvider>(std::move(r_p));
                 r_state.mTet.mRetained.push_back(p_new);
                 r_state.mTetNamed[p_new->mName] = std::move(p_new);
+            }
+            for (QuadRemesherProvider& r_p : providers::make_external_quad_remeshers()) {
+                if (r_state.mQuad.count(r_p.mName))
+                    continue;
+                auto p_new = std::make_shared<const QuadRemesherProvider>(std::move(r_p));
+                r_state.mQuadRetained.push_back(p_new);
+                r_state.mQuad[p_new->mName] = std::move(p_new);
             }
         } catch (...) {
         }

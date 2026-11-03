@@ -2013,6 +2013,58 @@ SEXP R_mio_tetrahedralize_backends(void) {
     return out;
 }
 
+/* remesh_quads (roadmap 7.7.3): field-aligned quads through an installed
+ * QuadriFlow or Instant Meshes. */
+SEXP R_mio_remesh_quads(SEXP mesh, SEXP target_faces, SEXP backend, SEXP sharp, SEXP boundary,
+                        SEXP adaptive, SEXP dominant, SEXP seed, SEXP max_cells) {
+    mio_remesh_quads_opts opts;
+    mio_remesh_quads_opts_init(&opts);
+    opts.target_faces = (int64_t)mio_r_double(target_faces, "target_faces");
+    opts.backend = mio_r_string(backend, "backend");
+    opts.sharp = mio_r_bool(sharp, "sharp");
+    opts.boundary = mio_r_bool(boundary, "boundary");
+    opts.adaptive = mio_r_bool(adaptive, "adaptive");
+    opts.dominant = mio_r_bool(dominant, "dominant");
+    opts.seed = (int32_t)mio_r_int(seed, "seed");
+    opts.max_cells = (int64_t)mio_r_double(max_cells, "max_cells");
+    mio_remesh_quads_report report;
+    mio_mesh *out = mio_remesh_quads(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("remesh_quads");
+    SEXP v[8];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_ScalarReal((double)report.num_quads));
+    v[2] = PROTECT(Rf_ScalarReal((double)report.num_triangles));
+    v[3] = PROTECT(Rf_ScalarReal((double)report.num_points));
+    v[4] = PROTECT(Rf_ScalarReal(report.min_scaled_jacobian));
+    v[5] = PROTECT(Rf_ScalarReal(report.mean_scaled_jacobian));
+    v[6] = PROTECT(Rf_ScalarReal(report.hausdorff_to_surface));
+    v[7] = PROTECT(Rf_mkString(report.backend_name != NULL ? report.backend_name : ""));
+    const char *names[] = {"mesh",
+                           "num_quads",
+                           "num_triangles",
+                           "num_points",
+                           "min_scaled_jacobian",
+                           "mean_scaled_jacobian",
+                           "hausdorff_to_surface",
+                           "backend"};
+    SEXP res = PROTECT(mio_r_named_list(8, names, v));
+    UNPROTECT(9);
+    return res;
+}
+
+/* The quad remeshers remesh_quads takes by name. */
+SEXP R_mio_remesh_quads_backends(void) {
+    const int64_t n = mio_quad_remesher_count();
+    if (n < 0) mio_r_fail("remesh_quads_backends");
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t)n));
+    for (int64_t i = 0; i < n; ++i) {
+        const char *name = mio_quad_remesher_name(i);
+        SET_STRING_ELT(out, (R_xlen_t)i, Rf_mkChar(name != NULL ? name : ""));
+    }
+    UNPROTECT(1);
+    return out;
+}
+
 SEXP R_mio_has_mmg(void) {
     return Rf_ScalarLogical(mio_has_mmg() != 0);
 }

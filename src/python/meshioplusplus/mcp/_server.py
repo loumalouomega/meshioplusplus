@@ -4638,6 +4638,50 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def remesh_quads(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        target_faces: int = 0,
+        backend: str = "auto",
+        sharp: bool = False,
+        boundary: bool = True,
+        adaptive: bool = False,
+        dominant: bool = False,
+        seed: int = 0,
+        max_cells: int = 50_000_000,
+    ) -> dict:
+        """Remesh a triangle surface into field-aligned quads (roadmap
+        7.7.3) through an installed QuadriFlow or Instant Meshes, run as a
+        separate process: a sphere comes out all quads, with no pole of poor
+        quads as recombining a mesher's triangles leaves. target_faces (0:
+        half the triangles) is the number asked for; backend "auto"
+        (QuadriFlow, else Instant Meshes), "quadriflow" or "instant_meshes";
+        sharp keeps sharp edges, boundary (default true) an open surface's
+        boundary, adaptive lets the size follow curvature, dominant allows
+        triangles (Instant Meshes), seed repeats a run. No remesher installed
+        returns an error naming the programs. Reports num_quads,
+        num_triangles, num_points, min_scaled_jacobian,
+        mean_scaled_jacobian, hausdorff_to_surface (to the input), backend,
+        warnings and backends_available."""
+        return _guard(
+            _tools.tool_remesh_quads,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            target_faces=target_faces,
+            backend=backend,
+            sharp=sharp,
+            boundary=boundary,
+            adaptive=adaptive,
+            dominant=dominant,
+            seed=seed,
+            max_cells=max_cells,
+        )
+
+    @server.tool()
     def project_to_cad(
         input_path: str,
         model_path: str,

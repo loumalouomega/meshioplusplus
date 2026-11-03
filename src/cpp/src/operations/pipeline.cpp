@@ -81,6 +81,7 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -632,6 +633,9 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         // Tetrahedra filling the closed triangle surface (roadmap 6.7).
         {"Tetrahedralize",
          {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},
+        {"RemeshQuads",
+         {"TargetFaces", "Backend", "Sharp", "Boundary", "Adaptive", "Dominant", "Seed",
+          "MaxCells"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
     };
@@ -1467,6 +1471,36 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"MinDihedralDeg", r.mMinDihedralDeg},
                         {"MaxDihedralDeg", r.mMaxDihedralDeg},
                         {"Volume", r.mVolume}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "RemeshQuads") {
+        // Field-aligned quads through an installed remesher (roadmap 7.7.3).
+        RemeshQuadsOptions o;
+        o.mTargetFaces = static_cast<std::int64_t>(
+            pipe_number(rStep, "TargetFaces", static_cast<double>(o.mTargetFaces)));
+        o.mBackend = pipe_text(rStep, "Backend", "auto");
+        if (o.mBackend.empty())
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Backend' must be 'auto' or a quad remesher's name"));
+        o.mSharp = pipe_flag(rStep, "Sharp", o.mSharp);
+        o.mBoundary = pipe_flag(rStep, "Boundary", o.mBoundary);
+        o.mAdaptive = pipe_flag(rStep, "Adaptive", o.mAdaptive);
+        o.mDominant = pipe_flag(rStep, "Dominant", o.mDominant);
+        o.mSeed =
+            static_cast<std::int32_t>(pipe_number(rStep, "Seed", static_cast<double>(o.mSeed)));
+        o.mMaxCells = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
+        RemeshQuadsResult r = remesh_quads(mesh, o);
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back("RemeshQuads: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumQuads", static_cast<double>(r.mNumQuads)},
+                        {"NumTriangles", static_cast<double>(r.mNumTriangles)},
+                        {"NumPoints", static_cast<double>(r.mNumPoints)},
+                        {"MinScaledJacobian", r.mMinScaledJacobian},
+                        {"MeanScaledJacobian", r.mMeanScaledJacobian},
+                        {"HausdorffToSurface", r.mHausdorffToSurface}});
         return std::move(r.mMesh);
     }
 

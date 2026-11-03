@@ -1087,7 +1087,6 @@ def roadmap_map():
         (
             "§7 new capabilities",
             [
-                ("providers: quad remeshing", "L"),
                 ("surface booleans (spike first)", "XL"),
                 ("v19 defaults", "S"),
             ],

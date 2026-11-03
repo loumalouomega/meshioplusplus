@@ -80,6 +80,7 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -7569,6 +7570,85 @@ mio_mesh* mio_reconstruct_surface(const mio_mesh* mesh, const mio_reconstruct_su
             report->estimated_normals = r.mEstimatedNormals ? 1 : 0;
         }
         return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+// --- field-aligned quad remeshing (roadmap 7.7.3) -----------------------------
+
+namespace {
+// Defined with the tetrahedral meshers' names below: a name kept for the
+// library's lifetime.
+const char* capi_tet_name(const std::string& rName);
+}  // namespace
+
+static_assert(sizeof(mio_remesh_quads_opts) == 80,
+              "mio_remesh_quads_opts grew outside its reserved tail");
+static_assert(offsetof(mio_remesh_quads_opts, seed) == 40, "mio_remesh_quads_opts layout");
+static_assert(sizeof(mio_remesh_quads_report) == 88,
+              "mio_remesh_quads_report grew outside its reserved tail");
+static_assert(offsetof(mio_remesh_quads_report, backend_name) == 48,
+              "mio_remesh_quads_report layout");
+
+void mio_remesh_quads_opts_init(mio_remesh_quads_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_remesh_quads_opts{};
+    const meshioplusplus::RemeshQuadsOptions d;
+    opts->target_faces = d.mTargetFaces;
+    opts->max_cells = d.mMaxCells;
+    opts->sharp = d.mSharp ? 1 : 0;
+    opts->boundary = d.mBoundary ? 1 : 0;
+    opts->adaptive = d.mAdaptive ? 1 : 0;
+    opts->dominant = d.mDominant ? 1 : 0;
+    opts->seed = d.mSeed;
+}
+
+mio_mesh* mio_remesh_quads(const mio_mesh* mesh, const mio_remesh_quads_opts* opts,
+                           mio_remesh_quads_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw std::invalid_argument("meshio++: remesh_quads: mesh is NULL");
+        mio_remesh_quads_opts o;
+        mio_remesh_quads_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::RemeshQuadsOptions options;
+        if (o.backend)
+            options.mBackend = o.backend;
+        options.mTargetFaces = o.target_faces;
+        options.mMaxCells = o.max_cells;
+        options.mSharp = o.sharp != 0;
+        options.mBoundary = o.boundary != 0;
+        options.mAdaptive = o.adaptive != 0;
+        options.mDominant = o.dominant != 0;
+        options.mSeed = o.seed;
+        meshioplusplus::RemeshQuadsResult r = meshioplusplus::remesh_quads(mesh->mMesh, options);
+        if (report) {
+            *report = mio_remesh_quads_report{};
+            report->num_quads = r.mNumQuads;
+            report->num_triangles = r.mNumTriangles;
+            report->num_points = r.mNumPoints;
+            report->min_scaled_jacobian = r.mMinScaledJacobian;
+            report->mean_scaled_jacobian = r.mMeanScaledJacobian;
+            report->hausdorff_to_surface = r.mHausdorffToSurface;
+            report->backend_name = capi_tet_name(r.mBackend);
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_quad_remesher_count(void) {
+    return guarded_ptr(int64_t{-1}, []() -> int64_t {
+        return static_cast<int64_t>(meshioplusplus::remesh_quads_backends().size());
+    });
+}
+
+const char* mio_quad_remesher_name(int64_t index) {
+    return guarded_ptr(static_cast<const char*>(nullptr), [&]() -> const char* {
+        const std::vector<std::string> names = meshioplusplus::remesh_quads_backends();
+        if (index < 0 || static_cast<std::size_t>(index) >= names.size())
+            return nullptr;
+        return capi_tet_name(names[static_cast<std::size_t>(index)]);
     });
 }
 

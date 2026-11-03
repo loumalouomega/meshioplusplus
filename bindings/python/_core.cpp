@@ -165,6 +165,7 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -3990,6 +3991,47 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "tetrahedralize_backends", [] { return meshioplusplus::tetrahedralize_backends(); },
         "The backend names tetrahedralize accepts besides auto (roadmap 7.7.2).");
+
+    // Field-aligned quad remeshing (roadmap 7.7.3) through an installed
+    // QuadriFlow or Instant Meshes. Returns a dict {mesh, num_quads, ...}; no
+    // remesher raises NotImplementedError. See operations/remesh_quads.hpp.
+    m.def(
+        "remesh_quads",
+        [](py::object pymesh, std::int64_t target_faces, const std::string& backend, bool sharp,
+           bool boundary, bool adaptive, bool dominant, std::int32_t seed, std::int64_t max_cells) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::RemeshQuadsOptions o;
+            o.mTargetFaces = target_faces;
+            o.mBackend = backend;
+            o.mSharp = sharp;
+            o.mBoundary = boundary;
+            o.mAdaptive = adaptive;
+            o.mDominant = dominant;
+            o.mSeed = seed;
+            o.mMaxCells = max_cells;
+            meshioplusplus::RemeshQuadsResult r =
+                core_nogil([&] { return meshioplusplus::remesh_quads(mesh, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_quads"] = r.mNumQuads;
+            out["num_triangles"] = r.mNumTriangles;
+            out["num_points"] = r.mNumPoints;
+            out["min_scaled_jacobian"] = r.mMinScaledJacobian;
+            out["mean_scaled_jacobian"] = r.mMeanScaledJacobian;
+            out["hausdorff_to_surface"] = r.mHausdorffToSurface;
+            out["backend"] = r.mBackend;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("target_faces") = std::int64_t{0}, py::arg("backend") = "auto",
+        py::arg("sharp") = false, py::arg("boundary") = true, py::arg("adaptive") = false,
+        py::arg("dominant") = false, py::arg("seed") = 0,
+        py::arg("max_cells") = std::int64_t{50000000});
+    m.def(
+        "remesh_quads_backends", [] { return meshioplusplus::remesh_quads_backends(); },
+        "The quad remeshers remesh_quads accepts besides auto (roadmap 7.7.3).");
 
     // Projection back onto the CAD (roadmap 6.10.1): every point of a mesh
     // whose cells name their CAD face and edge moved onto it. Returns a dict

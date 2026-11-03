@@ -272,6 +272,7 @@ if TYPE_CHECKING:
     from ._region_ops import edit_regions
     from ._registration import register_rigid
     from ._remesh import remesh
+    from ._remesh_quads import remesh_quads, remesh_quads_backends
     from ._remesh_volume import remesh_volume
     from ._render import render_image, render_text, snapshot
     from ._reorder import compute_bandwidth, reorder
@@ -568,6 +569,8 @@ _LAZY_ATTRS = {
     "tetrahedralize": "_tetrahedralize",
     "has_netgen": "_tetrahedralize",
     "tetrahedralize_backends": "_tetrahedralize",
+    "remesh_quads": "_remesh_quads",
+    "remesh_quads_backends": "_remesh_quads",
     "triangulate_polygon_2d": "_mesh_cad",
 }
 
@@ -797,6 +800,8 @@ __all__ = [
     "tetrahedralize",
     "has_netgen",
     "tetrahedralize_backends",
+    "remesh_quads",
+    "remesh_quads_backends",
     "triangulate_polygon_2d",
     "sample_distance",
     "distance_to_surface",

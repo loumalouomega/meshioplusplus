@@ -135,6 +135,7 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -7405,6 +7406,53 @@ val reconstruct_surface_js(const val& rMeshObj, const val& rOptions) {
 }
 
 /**
+ * @brief Field-aligned quad remeshing (roadmap 7.7.3). @p rOptions is
+ * `{targetFaces, backend, sharp, boundary, adaptive, dominant, seed, maxCells}`,
+ * every key optional. The remeshers are installed programs run as separate
+ * processes, which WebAssembly has none of: the call is refused naming them.
+ * See operations/remesh_quads.hpp.
+ */
+val remesh_quads_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RemeshQuadsOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the remeshQuads options",
+                                {"targetFaces", "backend", "sharp", "boundary", "adaptive",
+                                 "dominant", "seed", "maxCells"});
+            const auto flag = [&](const char* pKey, bool& rOut) {
+                if (rOptions.hasOwnProperty(pKey))
+                    rOut = rOptions[pKey].as<bool>();
+            };
+            if (rOptions.hasOwnProperty("targetFaces"))
+                options.mTargetFaces =
+                    static_cast<std::int64_t>(rOptions["targetFaces"].as<double>());
+            if (rOptions.hasOwnProperty("backend"))
+                options.mBackend = rOptions["backend"].as<std::string>();
+            flag("sharp", options.mSharp);
+            flag("boundary", options.mBoundary);
+            flag("adaptive", options.mAdaptive);
+            flag("dominant", options.mDominant);
+            if (rOptions.hasOwnProperty("seed"))
+                options.mSeed = static_cast<std::int32_t>(rOptions["seed"].as<double>());
+            if (rOptions.hasOwnProperty("maxCells"))
+                options.mMaxCells = static_cast<std::int64_t>(rOptions["maxCells"].as<double>());
+        }
+        meshioplusplus::RemeshQuadsResult r =
+            meshioplusplus::remesh_quads(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numQuads", static_cast<double>(r.mNumQuads));
+        out.set("numTriangles", static_cast<double>(r.mNumTriangles));
+        out.set("numPoints", static_cast<double>(r.mNumPoints));
+        out.set("minScaledJacobian", r.mMinScaledJacobian);
+        out.set("meanScaledJacobian", r.mMeanScaledJacobian);
+        out.set("hausdorffToSurface", r.mHausdorffToSurface);
+        out.set("backend", r.mBackend);
+        return out;
+    });
+}
+
+/**
  * @brief The convex hull of a mesh's points. @p rOptions is `{dimension}`
  * (optional: 2, 3, or 0 to decide). See operations/hull.hpp.
  */
@@ -9794,6 +9842,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("registerRigid", &register_rigid_js);
     emscripten::function("estimateNormals", &estimate_normals_js);
     emscripten::function("reconstructSurface", &reconstruct_surface_js);
+    emscripten::function("remeshQuads", &remesh_quads_js);
     emscripten::function("convexHull", &convex_hull_js);
     emscripten::function("delaunay2d", &delaunay_2d_js);
     emscripten::function("cropBbox", &crop_bbox_js);

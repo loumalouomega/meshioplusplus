@@ -657,7 +657,9 @@ jobs:
   # Ubuntu 24.04 packages Netgen 6.2.2401 as libnglib-dev. The same job runs
   # the external meshers (roadmap 7.7.2): Ubuntu's tetgen 1.5 and gmsh 4.12
   # programs, which tetrahedralize runs as separate processes (never linked:
-  # TetGen is AGPL, Gmsh GPL), so their named backends are live here.
+  # TetGen is AGPL, Gmsh GPL), so their named backends are live here; and
+  # QuadriFlow (MIT), remesh_quads's remesher (roadmap 7.7.3), built from its
+  # pinned commit (build/deps-pins.sh) and cached.
   netgen:
     name: Netgen and external tetrahedralize backends
     needs: [lint]
@@ -676,9 +678,31 @@ jobs:
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y libhdf5-dev zlib1g-dev libtbb-dev pkg-config libnglib-dev \
-            tetgen gmsh
+            tetgen gmsh libeigen3-dev libboost-dev
       - name: Install build tools
         run: python -m pip install --upgrade pip pybind11 cmake ninja pytest
+      - name: Read the QuadriFlow pin
+        id: qfpin
+        run: |
+          . build/deps-pins.sh
+          echo "commit=$QUADRIFLOW_COMMIT" >> "$GITHUB_OUTPUT"
+      - name: Cache the QuadriFlow build
+        id: qf-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/quadriflow-bin
+          key: quadriflow-${{ steps.qfpin.outputs.commit }}-${{ runner.os }}
+      - name: Build QuadriFlow from source
+        if: steps.qf-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/hjwdzh/QuadriFlow.git /tmp/qf-src
+          git -C /tmp/qf-src checkout "${{ steps.qfpin.outputs.commit }}"
+          cmake -S /tmp/qf-src -B /tmp/qf-build -DCMAKE_BUILD_TYPE=Release -DBUILD_FREE_LICENSE=ON
+          cmake --build /tmp/qf-build -j
+          mkdir -p ~/quadriflow-bin
+          cp /tmp/qf-build/quadriflow ~/quadriflow-bin/
+      - name: Put QuadriFlow on PATH
+        run: echo "$HOME/quadriflow-bin" >> "$GITHUB_PATH"
       - name: Configure C++ tests with Netgen
         run: >-
           cmake -S . -B build-netgen -G Ninja
@@ -691,7 +715,7 @@ jobs:
       - name: Build
         run: cmake --build build-netgen
       - name: Run the tetrahedralize suite (Netgen, tetgen and gmsh live)
-        run: ctest --test-dir build-netgen -R "Tetrahedralize|Providers|Tetgen|CApi|Pipeline" --output-on-failure
+        run: ctest --test-dir build-netgen -R "Tetrahedralize|RemeshQuads|Providers|Tetgen|CApi|Pipeline" --output-on-failure
       - name: Install meshioplusplus with Netgen
         run: >-
           CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_NETGEN=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF"
@@ -700,7 +724,8 @@ jobs:
         run: |
           python -c "from meshioplusplus import _core; assert _core.__has_netgen__"
           python -c "import meshioplusplus as m; b = m.tetrahedralize_backends(); assert {'tetgen', 'gmsh'} <= set(b), b"
-          python -m pytest tests/python/test_tetrahedralize.py tests/python/test_tetgen.py -v
+          python -c "import meshioplusplus as m; assert 'quadriflow' in m.remesh_quads_backends()"
+          python -m pytest tests/python/test_tetrahedralize.py tests/python/test_tetgen.py tests/python/test_remesh_quads.py -v
 
   # The optional cgnslib backend of the CGNS format (roadmap 7.1.4): ADF
   # containers, NGON_n/NFACE_n and the cgnslib round trips of test_cgns.cpp's

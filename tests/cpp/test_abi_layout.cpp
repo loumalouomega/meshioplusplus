@@ -146,6 +146,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
 
@@ -274,6 +275,12 @@ MIO_ABI_LAYOUT(meshioplusplus::CadKernelProvider, 160, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TetMeshRegionRequest, 72, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TetMeshRegionResult, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TetMesherProvider, 96, 8);
+// ABI 37 (roadmap 7.7.3): the quad remesher (two strings and a function), its
+// request (two vectors, the target, four flags and the seed) and result (three
+// vectors).
+MIO_ABI_LAYOUT(meshioplusplus::QuadRemesherProvider, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::QuadRemeshRequest, 64, 8);
+MIO_ABI_LAYOUT(meshioplusplus::QuadRemeshResult, 72, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RemesherProvider, 200, 8);
 MIO_ABI_LAYOUT(meshioplusplus::CadJsonReadOptions, 12, 4);
 // `MdpaInfo` gained six members in v16.27.0 (roadmap §4, the blocks the
@@ -729,6 +736,9 @@ MIO_ABI_LAYOUT(meshioplusplus::CoordinateOptions, 112, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ConvexHullOptions, 4, 4);
 MIO_ABI_LAYOUT(meshioplusplus::PointNormalsOptions, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ReconstructSurfaceOptions, 88, 8);
+// ABI 37 (roadmap 7.7.3): remesh_quads's options (a string, the target, four
+// flags and the seed, the cap).
+MIO_ABI_LAYOUT(meshioplusplus::RemeshQuadsOptions, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RegistrationOptions, 160, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RegistrationResult, 168, 8);
 MIO_ABI_LAYOUT(meshioplusplus::EigenmodeOptions, 24, 8);

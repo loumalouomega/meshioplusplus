@@ -3427,6 +3427,49 @@ mio_has_netgen <- function() {
   .Call(R_mio_has_netgen)
 }
 
+#' Remesh a triangle surface into field-aligned quads
+#'
+#' The triangle surface `mesh` is remeshed into quads aligned with a smooth
+#' cross field (roadmap 7.7.3) by an installed QuadriFlow or Instant Meshes,
+#' run as a separate process; a sphere comes out all quads. The result is a new
+#' surface near the input (`hausdorff_to_surface` says how near). No remesher
+#' installed fails naming the programs.
+#'
+#' @param mesh A triangle surface.
+#' @param target_faces The number of faces asked for; 0 takes half the
+#'   triangles.
+#' @param backend `"auto"` (QuadriFlow, else Instant Meshes) or a name of
+#'   [mio_remesh_quads_backends()].
+#' @param sharp Align with and keep the sharp edges.
+#' @param boundary Keep the boundary of an open surface.
+#' @param adaptive Let the face size follow the curvature (QuadriFlow).
+#' @param dominant Allow triangles where quads fit badly (Instant Meshes).
+#' @param seed The program's random seed.
+#' @param max_cells Refuse a target or result of more faces.
+#' @return A list: `mesh`, `num_quads`, `num_triangles`, `num_points`,
+#'   `min_scaled_jacobian`, `mean_scaled_jacobian`, `hausdorff_to_surface` and
+#'   `backend`.
+#' @export
+mio_remesh_quads <- function(mesh, target_faces = 0, backend = "auto", sharp = FALSE,
+                             boundary = TRUE, adaptive = FALSE, dominant = FALSE, seed = 0L,
+                             max_cells = 5e7) {
+  .Call(R_mio_remesh_quads, mesh, as.numeric(target_faces), as.character(backend),
+        isTRUE(sharp), isTRUE(boundary), isTRUE(adaptive), isTRUE(dominant),
+        as.integer(seed), as.numeric(max_cells))
+}
+
+#' The quad remeshers mio_remesh_quads() takes
+#'
+#' Besides `"auto"`: every registered quad remesher, the installed
+#' `"quadriflow"` and `"instant_meshes"` programs (found on `PATH`, or through
+#' `MESHIOPLUSPLUS_QUADRIFLOW` and `MESHIOPLUSPLUS_INSTANT_MESHES`), sorted.
+#'
+#' @return A character vector.
+#' @export
+mio_remesh_quads_backends <- function() {
+  .Call(R_mio_remesh_quads_backends)
+}
+
 #' The backend names mio_tetrahedralize() takes
 #'
 #' Besides `"auto"`: `"octree"`, then every registered tetrahedral mesher

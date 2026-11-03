@@ -56,6 +56,7 @@
 
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
+#include "meshioplusplus/providers.hpp"
 
 #include "brep_solids.hpp"
 #include "mesh_fixtures.hpp"
@@ -7268,6 +7269,58 @@ TEST(CApi, EstimateNormals) {
     opts.k = 1;
     EXPECT_EQ(mio_estimate_normals(m, &opts, nullptr, nullptr), nullptr);
     mio_mesh_free(m);
+}
+
+TEST(CApi, RemeshQuads) {
+    mio_remesh_quads_opts o;
+    mio_remesh_quads_opts_init(&o);
+    EXPECT_EQ(o.backend, nullptr);
+    EXPECT_EQ(o.target_faces, 0);
+    EXPECT_EQ(o.boundary, 1);
+    EXPECT_EQ(o.max_cells, 50000000);
+    EXPECT_EQ(mio_remesh_quads(nullptr, &o, nullptr), nullptr);
+    // A fake remesher through the C++ registry: every corner's quad kept.
+    meshioplusplus::QuadRemesherProvider fake;
+    fake.mName = "capi-fake-quads";
+    fake.mRemesh = [](const meshioplusplus::QuadRemeshRequest& rRequest) {
+        meshioplusplus::QuadRemeshResult out;
+        out.mPoints = rRequest.mPoints;
+        out.mQuads = {{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4},
+                      {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}};
+        return out;
+    };
+    meshioplusplus::add_quad_remesher(std::move(fake));
+    const int64_t n = mio_quad_remesher_count();
+    bool listed = false;
+    for (int64_t i = 0; i < n; ++i)
+        listed = listed || std::string(mio_quad_remesher_name(i)) == "capi-fake-quads";
+    EXPECT_TRUE(listed);
+    EXPECT_EQ(mio_quad_remesher_name(n), nullptr);
+
+    mio_mesh* tris = mio_mesh_create();
+    const double points[] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                             0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::int64_t faces[] = {0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4,
+                                  1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7};
+    ASSERT_EQ(mio_mesh_set_points(tris, MIO_FLOAT64, 8, 3, points), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(tris, "triangle", 12, 3, MIO_INT64, faces), MIO_OK);
+    o.backend = "capi-fake-quads";
+    mio_remesh_quads_report r;
+    std::memset(&r, 0xff, sizeof(r));
+    mio_mesh* out = mio_remesh_quads(tris, &o, &r);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(r.num_quads, 6);
+    EXPECT_EQ(r.num_triangles, 0);
+    EXPECT_DOUBLE_EQ(r.min_scaled_jacobian, 1.0);
+    EXPECT_STREQ(r.backend_name, "capi-fake-quads");
+    for (int64_t k : r.reserved)
+        EXPECT_EQ(k, 0);
+    mio_mesh_free(out);
+    o.backend = "no-such-remesher";
+    EXPECT_EQ(mio_remesh_quads(tris, &o, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("no-such-remesher"), std::string::npos);
+    meshioplusplus::remove_quad_remesher("capi-fake-quads");
+    mio_mesh_free(tris);
 }
 
 TEST(CApi, ReconstructSurface) {

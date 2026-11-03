@@ -2066,6 +2066,18 @@ end
     close(rs.mesh)
     @test_throws MeshioError reconstruct_surface(cloud; k=0)
     @test_throws MeshioError reconstruct_surface(cloud; estimate_normals=false)
+    # remesh_quads (roadmap 7.7.3): a name no remesher has is refused; with the
+    # installed QuadriFlow the sphere comes back all quads.
+    qb = remesh_quads_backends()
+    @test issorted(qb)
+    skin = reconstruct_surface(cloud).mesh
+    @test_throws MeshioError remesh_quads(skin; backend="no-such-remesher")
+    if "quadriflow" in qb
+        rq = remesh_quads(skin; backend="quadriflow", target_faces=400)
+        @test rq.backend == "quadriflow" && rq.num_quads > 0 && rq.num_triangles == 0
+        close(rq.mesh)
+    end
+    close(skin)
     close(cloud)
     hh = convex_hull(cube)
     @test hh.dimension == 3 && hh.num_vertices == 8 && hh.num_facets == 12

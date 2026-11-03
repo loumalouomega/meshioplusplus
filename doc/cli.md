@@ -161,6 +161,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `extrude`, `revolve` | the sweep's report: the cell counts by type, `num_flipped`, `min_scaled_jacobian`, `warnings`; `revolve` adds `num_on_axis` and `full` |
 | `mirror` | `num_flipped_cells`, `num_points_on_plane`, `num_dropped_cells`, `num_dropped_sides`, `warnings` |
 | `tetrahedralize` | `tetrahedralize`'s report: `num_tetrahedra`, `num_points`, `num_new_points`, `num_regions`, `num_boundary_triangles`, `boundary_preserved`, `hausdorff_to_surface`, the dihedral range, `volume`, `backend` and `warnings` |
+| `remesh-quads` | `remesh_quads`'s report: `num_quads`, `num_triangles`, `num_points`, `min_scaled_jacobian`, `mean_scaled_jacobian`, `hausdorff_to_surface`, `backend` and `warnings` |
 
 The exit codes are unchanged by `--json`.
 
@@ -2878,6 +2879,34 @@ meshioplusplus mirror INFILE OUTFILE [options]
 meshioplusplus extrude profile.vtu slab.vtu --direction=0,0,-0.5 --num-layers 6 --ratio 1.2
 meshioplusplus revolve section.vtu body.vtu --angle 90 --num-layers 8
 meshioplusplus mirror half.vtu whole.vtu --normal=1,0,0 --keep-original
+```
+
+## `remesh-quads`
+
+Remesh a triangle surface into field-aligned quads through an installed QuadriFlow or Instant Meshes, run as a separate process (see [remesh_quads](/remesh_quads)). Both CLIs; no remesher installed fails naming the programs, and `meshioplusplus --version` lists the ones found. Lines and vertices in the input are skipped; any other cell type is refused by name.
+
+```
+meshioplusplus remesh-quads INFILE OUTFILE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-f/--faces N` | the number of faces asked for (0: half the triangles) |
+| `--backend NAME` | `auto` (QuadriFlow, else Instant Meshes), `quadriflow` or `instant_meshes` |
+| `--sharp` | align with and keep the sharp edges |
+| `--no-boundary` | do not keep the boundary of an open surface |
+| `--adaptive` | let the face size follow the curvature (QuadriFlow) |
+| `--dominant` | allow triangles where quads fit badly (Instant Meshes) |
+| `--seed S` | the program's random seed (0) |
+| `--max-cells N` | refuse a target or result of more faces (50000000) |
+| `--json` / `-q/--quiet` | the report as JSON / no summary |
+| `-i/--input-format` / `-o/--output-format` | force the input / output format |
+
+The summary gives the quads, triangles and points, the least and mean scaled Jacobian, the distance to the input and the remesher; the JSON report has `num_quads`, `num_triangles`, `num_points`, `min_scaled_jacobian`, `mean_scaled_jacobian`, `hausdorff_to_surface`, `backend` and `warnings`.
+
+```sh
+meshioplusplus mesh-cad-surface sphere.cad.json skin.stl --size 0.1 --no-edges
+meshioplusplus remesh-quads skin.stl quads.vtu --json
 ```
 
 ## `tetrahedralize`

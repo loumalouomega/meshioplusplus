@@ -4238,6 +4238,36 @@ export interface MeshioPlusPlusModule {
   ): { mesh: Mesh; numDegenerate: number; numComponents: number };
 
   /**
+   * Field-aligned quad remeshing of a triangle surface (roadmap 7.7.3)
+   * through an installed QuadriFlow or Instant Meshes, run as a separate
+   * process. WebAssembly runs no programs, so here it always throws naming
+   * them; the native builds run it. See doc/remesh_quads.md.
+   * @throws {Error} always in WebAssembly (no quad remesher).
+   */
+  remeshQuads(
+    mesh: Mesh,
+    options?: {
+      targetFaces?: number;
+      backend?: string;
+      sharp?: boolean;
+      boundary?: boolean;
+      adaptive?: boolean;
+      dominant?: boolean;
+      seed?: number;
+      maxCells?: number;
+    }
+  ): {
+    mesh: Mesh;
+    numQuads: number;
+    numTriangles: number;
+    numPoints: number;
+    minScaledJacobian: number;
+    meanScaledJacobian: number;
+    hausdorffToSurface: number;
+    backend: string;
+  };
+
+  /**
    * A triangle surface through an oriented point cloud: the zero level set of
    * the signed distance to the samples' tangent planes (Hoppe et al. 1992),
    * cut by marching tetrahedra on a band of lattice cells about the samples.

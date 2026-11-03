@@ -1711,6 +1711,18 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_gt(rs$num_triangles, 0)
   expect_error(mio_reconstruct_surface(cloud, k = 0), "k must be")
   expect_error(mio_reconstruct_surface(cloud, estimate_normals = FALSE), "normals")
+  # remesh_quads (roadmap 7.7.3): an unknown remesher is refused by name; the
+  # installed QuadriFlow makes the reconstructed sphere all quads.
+  qb <- mio_remesh_quads_backends()
+  expect_true(is.character(qb))
+  expect_error(mio_remesh_quads(rs$mesh, backend = "no-such-remesher"), "no-such-remesher")
+  if ("quadriflow" %in% qb) {
+    rq <- mio_remesh_quads(rs$mesh, backend = "quadriflow", target_faces = 400)
+    on.exit(mio_release(rq$mesh), add = TRUE)
+    expect_equal(rq$backend, "quadriflow")
+    expect_gt(rq$num_quads, 0)
+    expect_equal(rq$num_triangles, 0)
+  }
   hh <- mio_convex_hull(m)
   on.exit(mio_release(hh$mesh), add = TRUE)
   expect_equal(hh$num_vertices, 8)

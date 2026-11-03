@@ -14,11 +14,10 @@
 //  Main authors:    Vicente Mataix Ferrandiz
 //
 //
-// The external tetrahedral meshers (roadmap 7.7.2): TetGen and Gmsh, when
-// installed, run as separate processes on a region's surface and read back,
-// registered by name (`tetrahedralize(..., backend="tetgen")`). Running them
-// as programs, never linking them, is the route the licence decision on
-// TetGen (AGPL) and Gmsh (GPL) leaves open. Never in WebAssembly.
+// The external tetrahedral meshers (roadmap 7.7.2) and quad remeshers (7.7.3): TetGen and Gmsh,
+// when installed, run as separate processes on a region's surface and read back, registered by name
+// (`tetrahedralize(..., backend="tetgen")`). Running them as programs, never linking them, is the
+// route the licence decision on TetGen (AGPL) and Gmsh (GPL) leaves open. Never in WebAssembly.
 
 // System includes
 #include <algorithm>
@@ -451,6 +450,121 @@ TetMeshRegionResult em_gmsh(const std::string& rExe, const TetMeshRegionRequest&
     return em_assemble(rRequest, pts, tets);
 }
 
+// --- quad remeshers (roadmap 7.7.3) ---------------------------------------------
+
+// The surface as a Wavefront OBJ at full precision.
+void em_write_obj(const std::string& rPath, const QuadRemeshRequest& rRequest) {
+    auto obj = detail::make_classic_ofstream(rPath);
+    for (const EmPoint& r_p : rRequest.mPoints)
+        obj << "v " << em_num(r_p[0]) << " " << em_num(r_p[1]) << " " << em_num(r_p[2]) << "\n";
+    for (const auto& r_t : rRequest.mTriangles)
+        obj << "f " << r_t[0] + 1 << " " << r_t[1] + 1 << " " << r_t[2] + 1 << "\n";
+    if (!obj)
+        throw std::runtime_error("cannot write '" + rPath + "'");
+}
+
+// The `v` and `f` records of the program's OBJ (`f` corners as `i`, `i/t` or
+// `i/t/n`, negative indices relative): quads, and triangles where the program
+// left them. A larger face is refused.
+QuadRemeshResult em_read_obj(const std::string& rPath, const char* pProgram) {
+    auto in = detail::make_classic_ifstream(rPath);
+    if (!in)
+        throw std::runtime_error(std::string(pProgram) + " wrote no '" + rPath + "'");
+    QuadRemeshResult out;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.size() < 2 || line[1] != ' ' || (line[0] != 'v' && line[0] != 'f'))
+            continue;
+        std::vector<std::string> tokens;
+        for (std::size_t at = 2; at < line.size();) {
+            while (at < line.size() && (line[at] == ' ' || line[at] == '\t' || line[at] == '\r'))
+                ++at;
+            std::size_t end = at;
+            while (end < line.size() && line[end] != ' ' && line[end] != '\t' && line[end] != '\r')
+                ++end;
+            if (end > at)
+                tokens.push_back(line.substr(at, end - at));
+            at = end;
+        }
+        if (line[0] == 'v') {
+            if (tokens.size() < 3)
+                throw std::runtime_error(std::string(pProgram) +
+                                         " wrote a vertex without 3 coordinates");
+            EmPoint p{};
+            for (std::size_t c = 0; c < 3; ++c) {
+                p[c] = detail::parse_double(tokens[c]);
+                if (!std::isfinite(p[c]))
+                    throw std::runtime_error(std::string(pProgram) + " wrote a non-finite vertex");
+            }
+            out.mPoints.push_back(p);
+            continue;
+        }
+        std::vector<std::int64_t> face;
+        for (const std::string& r_tok : tokens) {
+            const std::string head = r_tok.substr(0, r_tok.find('/'));
+            char* p_end = nullptr;
+            const long long v = std::strtoll(head.c_str(), &p_end, 10);
+            if (head.empty() || p_end != head.c_str() + head.size() || v == 0)
+                throw std::runtime_error(std::string(pProgram) + " wrote a bad face corner '" +
+                                         r_tok + "'");
+            const auto n = static_cast<long long>(out.mPoints.size());
+            face.push_back(v > 0 ? v - 1 : n + v);
+        }
+        for (const std::int64_t v : face)
+            if (v < 0 || v >= static_cast<std::int64_t>(out.mPoints.size()))
+                throw std::runtime_error(std::string(pProgram) + " wrote a face naming no vertex");
+        if (face.size() == 4)
+            out.mQuads.push_back({face[0], face[1], face[2], face[3]});
+        else if (face.size() == 3)
+            out.mTriangles.push_back({face[0], face[1], face[2]});
+        else
+            throw std::runtime_error(std::string(pProgram) + " wrote a face of " +
+                                     std::to_string(face.size()) + " corners");
+    }
+    if (out.mQuads.empty() && out.mTriangles.empty())
+        throw std::runtime_error(std::string(pProgram) + " wrote no face");
+    return out;
+}
+
+// QuadriFlow (Huang et al. 2018): `quadriflow -i in.obj -o out.obj -f N`, an
+// all-quad mesh.
+QuadRemeshResult em_quadriflow(const std::string& rExe, const QuadRemeshRequest& rRequest) {
+    const EmWorkDir dir("quadriflow");
+    em_write_obj(dir.File("in.obj"), rRequest);
+    std::vector<std::string> argv = {rExe};
+    if (rRequest.mSharp)
+        argv.push_back("-sharp");
+    if (rRequest.mBoundary)
+        argv.push_back("-boundary");
+    if (rRequest.mAdaptive)
+        argv.push_back("-adaptive");
+    argv.insert(argv.end(),
+                {"-seed", std::to_string(rRequest.mSeed), "-i", dir.File("in.obj"), "-o",
+                 dir.File("out.obj"), "-f", std::to_string(rRequest.mTargetFaces)});
+    em_run("quadriflow", argv, dir);
+    return em_read_obj(dir.File("out.obj"), "quadriflow");
+}
+
+// Instant Meshes (Jakob et al. 2015) in batch mode: `-o out.obj -f N -d`,
+// deterministic; `-D` quad-dominant, `-b` boundaries kept, `-c` creases.
+QuadRemeshResult em_instant_meshes(const std::string& rExe, const QuadRemeshRequest& rRequest) {
+    const EmWorkDir dir("instant_meshes");
+    em_write_obj(dir.File("in.obj"), rRequest);
+    std::vector<std::string> argv = {
+        rExe, "-d", "-o", dir.File("out.obj"), "-f", std::to_string(rRequest.mTargetFaces)};
+    if (rRequest.mDominant)
+        argv.push_back("-D");
+    if (rRequest.mBoundary)
+        argv.push_back("-b");
+    if (rRequest.mSharp) {
+        argv.push_back("-c");
+        argv.push_back("30");
+    }
+    argv.push_back(dir.File("in.obj"));
+    em_run("instant_meshes", argv, dir);
+    return em_read_obj(dir.File("out.obj"), "instant_meshes");
+}
+
 }  // namespace
 
 namespace providers {
@@ -479,6 +593,41 @@ std::vector<TetMesherProvider> make_external_tet_meshers() {
         p.mVersion = "external: " + gmsh;
         p.mMeshRegion = [gmsh](const TetMeshRegionRequest& rRequest) {
             return em_gmsh(gmsh, rRequest);
+        };
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
+std::vector<QuadRemesherProvider> make_external_quad_remeshers() {
+    std::vector<QuadRemesherProvider> out;
+    if (!detail::subprocess_available())
+        return out;
+    const char* p_off = std::getenv("MESHIOPLUSPLUS_NO_EXTERNAL_MESHERS");
+    if (p_off && *p_off && std::string(p_off) != "0")
+        return out;
+    const std::string quadriflow =
+        detail::find_executable("quadriflow", "MESHIOPLUSPLUS_QUADRIFLOW");
+    if (!quadriflow.empty()) {
+        QuadRemesherProvider p;
+        p.mName = "quadriflow";
+        p.mVersion = "external: " + quadriflow;
+        p.mRemesh = [quadriflow](const QuadRemeshRequest& rRequest) {
+            return em_quadriflow(quadriflow, rRequest);
+        };
+        out.push_back(std::move(p));
+    }
+    std::string instant =
+        detail::find_executable("Instant Meshes", "MESHIOPLUSPLUS_INSTANT_MESHES");
+    for (const char* p_alt : {"instant-meshes", "InstantMeshes"})
+        if (instant.empty())
+            instant = detail::find_executable(p_alt);
+    if (!instant.empty()) {
+        QuadRemesherProvider p;
+        p.mName = "instant_meshes";
+        p.mVersion = "external: " + instant;
+        p.mRemesh = [instant](const QuadRemeshRequest& rRequest) {
+            return em_instant_meshes(instant, rRequest);
         };
         out.push_back(std::move(p));
     }

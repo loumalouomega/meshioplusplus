@@ -140,6 +140,7 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -558,6 +559,12 @@ void print_usage(std::ostream& os) {
           "                            [--face-array NAME]\n"
           "                            [--backend auto|netgen|octree|tetgen|gmsh]\n"
           "                            [--json]\n"
+          "  remesh-quads            Field-aligned quads from a triangle surface through\n"
+          "                            an installed QuadriFlow or Instant Meshes:\n"
+          "                            [--faces N] [--backend auto|quadriflow|\n"
+          "                            instant_meshes] [--sharp] [--no-boundary]\n"
+          "                            [--adaptive] [--dominant] [--seed S]\n"
+          "                            [--max-cells N] [--json]\n"
           "  project-to-cad          Move a mesh's points back onto the CAD faces and\n"
           "                            edges its cells name: INFILE MODEL OUTFILE\n"
           "                            [--face-array NAME] [--edge-array NAME]\n"
@@ -6839,6 +6846,70 @@ int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_remesh_quads(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"faces", {"-f"}, true},
+                                  {"backend", {}, true},
+                                  {"sharp", {}, false},
+                                  {"no-boundary", {}, false},
+                                  {"adaptive", {}, false},
+                                  {"dominant", {}, false},
+                                  {"seed", {}, true},
+                                  {"max-cells", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("remesh-quads requires exactly INFILE and OUTFILE");
+    meshioplusplus::RemeshQuadsOptions o;
+    if (has_opt(p, "faces"))
+        o.mTargetFaces = std::stoll(opt_value(p, "faces"));
+    if (has_opt(p, "backend"))
+        o.mBackend = opt_value(p, "backend");
+    o.mSharp = has_flag(p, "sharp");
+    o.mBoundary = !has_flag(p, "no-boundary");
+    o.mAdaptive = has_flag(p, "adaptive");
+    o.mDominant = has_flag(p, "dominant");
+    if (has_opt(p, "seed"))
+        o.mSeed = std::stoi(opt_value(p, "seed"));
+    if (has_opt(p, "max-cells"))
+        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    auto r = meshioplusplus::remesh_quads(mesh, o);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_quads", r.mNumQuads);
+        json.Field("num_triangles", r.mNumTriangles);
+        json.Field("num_points", r.mNumPoints);
+        json.Field("min_scaled_jacobian", r.mMinScaledJacobian);
+        json.Field("mean_scaled_jacobian", r.mMeanScaledJacobian);
+        json.Field("hausdorff_to_surface", r.mHausdorffToSurface);
+        json.Field("backend", r.mBackend);
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        std::cout << "\n";
+    } else if (!has_flag(p, "quiet")) {
+        char j0[32], j1[32], h[32];
+        meshioplusplus::detail::snprintf_c(j0, sizeof(j0), "%.3f", r.mMinScaledJacobian);
+        meshioplusplus::detail::snprintf_c(j1, sizeof(j1), "%.3f", r.mMeanScaledJacobian);
+        meshioplusplus::detail::snprintf_c(h, sizeof(h), "%.6g", r.mHausdorffToSurface);
+        std::cout << r.mNumQuads << " quads, " << r.mNumTriangles << " triangles, " << r.mNumPoints
+                  << " points; scaled Jacobian " << j0 << " (mean " << j1 << "), " << h
+                  << " from the surface; " << r.mBackend << "\n";
+        for (const std::string& w : r.mWarnings)
+            std::cout << "  warning: " << w << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
 int cmd_project_to_cad(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -9357,6 +9428,8 @@ int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
         return cmd_mirror(rest);
     if (cmd == "tetrahedralize")
         return cmd_tetrahedralize(rest);
+    if (cmd == "remesh-quads")
+        return cmd_remesh_quads(rest);
     if (cmd == "sdf")
         return cmd_sdf(rest);
     if (cmd == "split")
@@ -9649,6 +9722,10 @@ int main(int argc, char** argv) {
         for (const std::string& r_name : meshioplusplus::tetrahedralize_backends())
             meshers += (meshers.empty() ? "" : ", ") + r_name;
         std::cout << "tetrahedralize backends: auto, " << meshers << "\n";
+        std::string quads;
+        for (const std::string& r_name : meshioplusplus::remesh_quads_backends())
+            quads += (quads.empty() ? "" : ", ") + r_name;
+        std::cout << "quad remeshers: " << (quads.empty() ? std::string("none") : quads) << "\n";
         return 0;
     }
     if (cmd == "-h" || cmd == "--help") {

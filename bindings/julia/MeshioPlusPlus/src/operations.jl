@@ -1314,6 +1314,54 @@ function tetrahedralize(mesh::Mesh; backend::AbstractString="auto", max_size::Re
 end
 
 """
+    remesh_quads(mesh; target_faces=0, backend="auto", sharp=false, boundary=true,
+                 adaptive=false, dominant=false, seed=0, max_cells=50_000_000)
+        -> (; mesh, num_quads, num_triangles, num_points, min_scaled_jacobian,
+              mean_scaled_jacobian, hausdorff_to_surface, backend)
+
+Remesh a triangle surface into field-aligned quads (roadmap 7.7.3) through an
+installed QuadriFlow or Instant Meshes, run as a separate process. `target_faces`
+0 takes half the triangles; `backend` is `"auto"` (QuadriFlow, else Instant
+Meshes) or a name of [`remesh_quads_backends`](@ref). No remesher installed
+throws a `MeshioError` naming the programs. See `doc/remesh_quads.md`.
+"""
+function remesh_quads(mesh::Mesh; target_faces::Integer=0, backend::AbstractString="auto",
+                      sharp::Bool=false, boundary::Bool=true, adaptive::Bool=false,
+                      dominant::Bool=false, seed::Integer=0, max_cells::Integer=50_000_000)
+    bname = Vector{UInt8}(codeunits(String(backend)))
+    push!(bname, 0x00)
+    report = Ref{_CRemeshQuadsReport}()
+    ptr = GC.@preserve bname begin
+        opts = _CRemeshQuadsOpts(pointer(bname), Int64(target_faces), Int64(max_cells),
+                                 Int32(sharp), Int32(boundary), Int32(adaptive),
+                                 Int32(dominant), Int32(seed), Int32(0), (0, 0, 0, 0))
+        ccall(_sym(:mio_remesh_quads), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CRemeshQuadsOpts}, Ref{_CRemeshQuadsReport}),
+              _handle(mesh), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = report[]
+    (mesh=out, num_quads=Int(r.num_quads), num_triangles=Int(r.num_triangles),
+     num_points=Int(r.num_points), min_scaled_jacobian=Float64(r.min_scaled_jacobian),
+     mean_scaled_jacobian=Float64(r.mean_scaled_jacobian),
+     hausdorff_to_surface=Float64(r.hausdorff_to_surface),
+     backend=r.backend_name == C_NULL ? "" : unsafe_string(r.backend_name))
+end
+
+"""
+    remesh_quads_backends() -> Vector{String}
+
+The quad remeshers [`remesh_quads`](@ref) takes by name besides `"auto"`, sorted:
+the installed `"quadriflow"` and `"instant_meshes"` programs, found on `PATH`.
+"""
+function remesh_quads_backends()
+    n = ccall(_sym(:mio_quad_remesher_count), Int64, ())
+    n < 0 && throw(MeshioError(MIO_ERR_INTERNAL, last_error()))
+    [unsafe_string(ccall(_sym(:mio_quad_remesher_name), Ptr{UInt8}, (Int64,), i))
+     for i in 0:(n - 1)]
+end
+
+"""
     tetrahedralize_backends() -> Vector{String}
 
 The `backend` names [`tetrahedralize`](@ref) takes besides `"auto"`, sorted:

@@ -158,6 +158,8 @@ from .. import (
     region_adjacency,
     register_rigid,
     remesh,
+    remesh_quads,
+    remesh_quads_backends,
     remesh_volume,
     render_text,
     reorder,
@@ -5589,6 +5591,46 @@ def tool_tetrahedralize(
     )
 
 
+def tool_remesh_quads(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    target_faces=0,
+    backend="auto",
+    sharp=False,
+    boundary=True,
+    adaptive=False,
+    dominant=False,
+    seed=0,
+    max_cells=50_000_000,
+):
+    """Remesh a triangle surface into field-aligned quads through an installed
+    QuadriFlow or Instant Meshes, run as a separate process. Returns
+    num_quads, num_triangles, num_points, min_scaled_jacobian,
+    mean_scaled_jacobian, hausdorff_to_surface, backend and warnings beside
+    the mesh summary, and backends_available (the quad remeshers installed)."""
+    mesh = _load(input_path, input_format)
+    out, report = remesh_quads(
+        mesh,
+        target_faces=target_faces,
+        backend=backend,
+        sharp=sharp,
+        boundary=boundary,
+        adaptive=adaptive,
+        dominant=dominant,
+        seed=seed,
+        max_cells=max_cells,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        backends_available=remesh_quads_backends(),
+        **report,
+    )
+
+
 def tool_project_to_cad(
     input_path,
     model_path,
@@ -7421,6 +7463,14 @@ TOOL_REGISTRY = OrderedDict(
             {
                 "fn": tool_tetrahedralize,
                 "wraps": ("tetrahedralize",),
+                "gated": None,
+            },
+        ),
+        (
+            "remesh_quads",
+            {
+                "fn": tool_remesh_quads,
+                "wraps": ("remesh_quads",),
                 "gated": None,
             },
         ),

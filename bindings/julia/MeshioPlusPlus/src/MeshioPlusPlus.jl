@@ -130,6 +130,7 @@ export boundary_layer
 export extrude, revolve, mirror
 export find_intersections, thickness
 export tetrahedralize, has_netgen, tetrahedralize_backends
+export remesh_quads, remesh_quads_backends
 export has_mmg, has_mmg_elas, adapt, metric_from_hessian, discretize_levelset, mesh_domain, move
 export tessellate
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point

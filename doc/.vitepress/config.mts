@@ -160,6 +160,7 @@ export default defineConfig({
             collapsed: true,
             items: [
               { text: "Surface remeshing (ACVD)", link: "/remesh" },
+              { text: "Field-aligned quad remeshing", link: "/remesh_quads" },
               { text: "Volumetric remeshing (isosurface stuffing)", link: "/remesh_volume" },
               { text: "ODT remeshing (relocate + flip)", link: "/optimize_volume" },
               { text: "Smoothing (Laplacian / Taubin / ODT)", link: "/smooth" },

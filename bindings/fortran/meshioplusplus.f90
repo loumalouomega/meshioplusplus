@@ -77,6 +77,8 @@ module meshioplusplus
     public :: mio_thickness, mio_thickness_report
     public :: mio_tetrahedralize, mio_tetrahedralize_report, mio_has_netgen
     public :: mio_tet_mesher_count, mio_tet_mesher_name, mio_tetrahedralize_backend_name
+    public :: mio_remesh_quads, mio_remesh_quads_report, mio_quad_remesher_count
+    public :: mio_quad_remesher_name, mio_remesh_quads_backend_name
     public :: mio_has_mmg, mio_has_mmg_elas, mio_mmg_index_bits
     public :: mio_adapt, mio_mmg_report, mio_metric_from_hessian
     public :: mio_discretize_levelset, mio_mesh_domain, mio_move
@@ -873,6 +875,33 @@ module meshioplusplus
         !> The name of the backend that ran (static C string; was reserved).
         type(c_ptr) :: backend_name = c_null_ptr
         integer(c_int64_t) :: reserved(5) = 0
+    end type
+
+    !> Interop mirror of C `mio_remesh_quads_opts` (80 bytes; roadmap 7.7.3).
+    type, bind(c) :: mio_remesh_quads_opts_t
+        type(c_ptr) :: backend = c_null_ptr
+        integer(c_int64_t) :: target_faces = 0
+        integer(c_int64_t) :: max_cells = 50000000_c_int64_t
+        integer(c_int32_t) :: sharp = 0
+        integer(c_int32_t) :: boundary = 1
+        integer(c_int32_t) :: adaptive = 0
+        integer(c_int32_t) :: dominant = 0
+        integer(c_int32_t) :: seed = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_remesh_quads_report` (88 bytes): what `mio_remesh_quads` built;
+    !> `mio_remesh_quads_backend_name(report)` names the remesher that ran.
+    type, bind(c) :: mio_remesh_quads_report
+        integer(c_int64_t) :: num_quads = 0
+        integer(c_int64_t) :: num_triangles = 0
+        integer(c_int64_t) :: num_points = 0
+        real(c_double) :: min_scaled_jacobian = 0.0_c_double
+        real(c_double) :: mean_scaled_jacobian = 0.0_c_double
+        real(c_double) :: hausdorff_to_surface = 0.0_c_double
+        type(c_ptr) :: backend_name = c_null_ptr
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_mmg_params` (168 bytes): the parameters every
@@ -5658,6 +5687,26 @@ module meshioplusplus
             type(c_ptr) :: h
         end function
 
+        function c_mio_remesh_quads(mesh, opts, report) &
+                bind(c, name="mio_remesh_quads") result(h)
+            import :: c_ptr, mio_remesh_quads_opts_t, mio_remesh_quads_report
+            type(c_ptr), value :: mesh
+            type(mio_remesh_quads_opts_t), intent(in) :: opts
+            type(mio_remesh_quads_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_quad_remesher_count() bind(c, name="mio_quad_remesher_count") result(n)
+            import :: c_int64_t
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_quad_remesher_name(i) bind(c, name="mio_quad_remesher_name") result(p)
+            import :: c_int64_t, c_ptr
+            integer(c_int64_t), value :: i
+            type(c_ptr) :: p
+        end function
+
         function c_mio_tet_mesher_count() bind(c, name="mio_tet_mesher_count") result(n)
             import :: c_int64_t
             integer(c_int64_t) :: n
@@ -6565,6 +6614,72 @@ contains
         integer, intent(in) :: i
         character(:), allocatable :: name
         name = c_ptr_to_string(c_mio_tet_mesher_name(int(i - 1, c_int64_t)))
+    end function
+
+    !> How many quad remeshers `mio_remesh_quads` takes by name (the installed
+    !> 'quadriflow' and 'instant_meshes'), sorted.
+    function mio_quad_remesher_count() result(n)
+        integer :: n
+        n = int(c_mio_quad_remesher_count())
+    end function
+
+    !> Quad remesher name `i` (1-based); '' when out of range.
+    function mio_quad_remesher_name(i) result(name)
+        integer, intent(in) :: i
+        character(:), allocatable :: name
+        name = c_ptr_to_string(c_mio_quad_remesher_name(int(i - 1, c_int64_t)))
+    end function
+
+    !> The name of the remesher a `mio_remesh_quads_report` says ran.
+    function mio_remesh_quads_backend_name(report) result(name)
+        type(mio_remesh_quads_report), intent(in) :: report
+        character(:), allocatable :: name
+        name = c_ptr_to_string(report%backend_name)
+    end function
+
+    !> Remesh a triangle surface into field-aligned quads (roadmap 7.7.3)
+    !> through an installed QuadriFlow or Instant Meshes, run as a separate
+    !> process: `target_faces` (0: half the triangles), `backend` ('auto' or a
+    !> name of `mio_quad_remesher_name`), `sharp`, `boundary` (.true.),
+    !> `adaptive`, `dominant` and `seed`. No remesher installed fails naming the
+    !> programs. See doc/remesh_quads.md.
+    function mio_remesh_quads(mesh, target_faces, backend, sharp, boundary, adaptive, &
+                              dominant, seed, max_cells, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        integer(int64), intent(in), optional :: target_faces, max_cells
+        character(*), intent(in), optional :: backend
+        logical, intent(in), optional :: sharp, boundary, adaptive, dominant
+        integer, intent(in), optional :: seed
+        type(mio_remesh_quads_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_remesh_quads_opts_t) :: opts
+        type(mio_remesh_quads_report) :: rep
+        character(kind=c_char, len=:), allocatable, target :: bname
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 80_c_size_t .or. c_sizeof(rep) /= 88_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: remesh_quads layout mismatch'
+            error stop 1
+        end if
+        if (present(target_faces)) opts%target_faces = int(target_faces, c_int64_t)
+        if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
+        if (present(backend)) then
+            bname = c_str(backend)
+            opts%backend = c_loc(bname(1:1))
+        end if
+        if (present(sharp)) opts%sharp = merge(1, 0, sharp)
+        if (present(boundary)) opts%boundary = merge(1, 0, boundary)
+        if (present(adaptive)) opts%adaptive = merge(1, 0, adaptive)
+        if (present(dominant)) opts%dominant = merge(1, 0, dominant)
+        if (present(seed)) opts%seed = int(seed, c_int32_t)
+        out%handle = c_mio_remesh_quads(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('remesh_quads', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
     end function
 
     !> The name of the backend a `mio_tetrahedralize_report` says ran.

@@ -90,6 +90,42 @@ struct TetMesherProvider {
     std::function<TetMeshRegionResult(const TetMeshRegionRequest&)> mMeshRegion;
 };
 
+/// A triangle surface handed to a quad remesher (roadmap 7.7.3): its points and
+/// triangles (0-based) and what is asked of the quads.
+struct QuadRemeshRequest {
+    std::vector<std::array<double, 3>> mPoints;
+    std::vector<std::array<std::int64_t, 3>> mTriangles;
+    /// The number of faces asked for (the programs treat it as a target).
+    std::int64_t mTargetFaces = 0;
+    /// Align with and keep the surface's sharp edges.
+    bool mSharp = false;
+    /// Keep the surface's boundary.
+    bool mBoundary = true;
+    /// Let the face size follow the curvature.
+    bool mAdaptive = false;
+    /// Allow triangles where quads fit badly (quad-dominant).
+    bool mDominant = false;
+    /// The program's random seed, so a run repeats.
+    std::int32_t mSeed = 0;
+};
+
+/// What a quad remesher returns: its own points, and quads and (dominant) triangles
+/// into them, 0-based.
+struct QuadRemeshResult {
+    std::vector<std::array<double, 3>> mPoints;
+    std::vector<std::array<std::int64_t, 4>> mQuads;
+    std::vector<std::array<std::int64_t, 3>> mTriangles;
+};
+
+/// A field-aligned quad remesher: `remesh_quads`'s backend (QuadriFlow, Instant
+/// Meshes). Registered by name only; see `add_quad_remesher`.
+struct QuadRemesherProvider {
+    std::string mName;
+    std::string mVersion;
+    /// Remeshes a surface; throws `std::runtime_error` when the remesher fails.
+    std::function<QuadRemeshResult(const QuadRemeshRequest&)> mRemesh;
+};
+
 /// A remesher: `adapt`, `discretize_levelset`, `mesh_domain` and `move` (MMG).
 struct RemesherProvider {
     std::string mName;
@@ -128,6 +164,20 @@ MESHIOPLUSPLUS_API std::shared_ptr<const TetMesherProvider> tet_mesher(
     const std::string& rName) noexcept;
 /// The names of every registered tetrahedral mesher, sorted.
 MESHIOPLUSPLUS_API std::vector<std::string> tet_mesher_names();
+
+// Quad remeshers (roadmap 7.7.3), by name only: this build adds `quadriflow` and
+// `instant_meshes` when those programs are installed (separate processes; never
+// in WebAssembly), see `remesh_quads.md`.
+
+/// Registers `Provider` under its `mName`, replacing an earlier one of that name.
+MESHIOPLUSPLUS_API void add_quad_remesher(QuadRemesherProvider Provider);
+/// Removes the quad remesher named `rName`.
+MESHIOPLUSPLUS_API void remove_quad_remesher(const std::string& rName) noexcept;
+/// The quad remesher named `rName`, or null.
+MESHIOPLUSPLUS_API std::shared_ptr<const QuadRemesherProvider> quad_remesher(
+    const std::string& rName) noexcept;
+/// The names of every registered quad remesher, sorted.
+MESHIOPLUSPLUS_API std::vector<std::string> quad_remesher_names();
 
 /// Registers `Provider` as the remesher, replacing any earlier one.
 MESHIOPLUSPLUS_API void register_remesher(RemesherProvider Provider);
