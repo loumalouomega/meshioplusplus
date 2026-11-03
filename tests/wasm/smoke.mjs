@@ -2882,7 +2882,8 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
         assert.throws(() => m.tetrahedralize(ico, { backend: 'netgen' }), /full: true/);
     }
     assert.throws(() => m.tetrahedralize(ico, { grading: 2 }), /grading/);
-    assert.throws(() => m.tetrahedralize(ico, { backend: 'tetgen' }), /backend/);
+    // TetGen and Gmsh are installed programs, which no WebAssembly build can run (roadmap 7.7.2).
+    assert.throws(() => m.tetrahedralize(ico, { backend: 'tetgen' }), /no tetrahedral mesher named 'tetgen'/);
     assert.throws(() => m.tetrahedralize(ico, { bogus: 1 }), /bogus/);
     assert.ok(['seq', 'openmp'].includes(m.parallelBackend()));
     const { readers, writers } = m.availableFormats();
