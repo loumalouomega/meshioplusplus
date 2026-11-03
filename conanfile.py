@@ -202,7 +202,9 @@ class MeshioplusplusConan(ConanFile):
         tc.cache_variables["MESHIOPLUSPLUS_WITH_LZMA"] = bool(self.options.with_lzma)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_BZIP2"] = bool(self.options.with_bzip2)
         tc.cache_variables["MESHIOPLUSPLUS_WITH_KAHIP"] = bool(self.options.with_kahip)
-        tc.cache_variables["MESHIOPLUSPLUS_WITH_CUTCELLS"] = bool(self.options.with_cutcells)
+        tc.cache_variables["MESHIOPLUSPLUS_WITH_CUTCELLS"] = bool(
+            self.options.with_cutcells
+        )
         tc.cache_variables["MESHIOPLUSPLUS_WITH_NETGEN"] = bool(
             self.options.with_netgen
         )
