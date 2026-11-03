@@ -1087,7 +1087,7 @@ def roadmap_map():
         (
             "§7 new capabilities",
             [
-                ("v19 defaults", "S"),
+                ("v19 defaults · hexahedra", "L"),
             ],
             [],
         ),

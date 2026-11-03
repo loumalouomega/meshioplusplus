@@ -2705,7 +2705,7 @@ meshioplusplus octree-mesh part.stl hexes.vtu --output hex --surface-size 0.05
 | `--grading-layers N` | rings of leaves around the skin at its level |
 | `--skin-grading graded\|uniform` / `--surface-size H` | let the size vary along the skin, or keep it at one level; `H` is also the hexahedral output's cell size |
 | `--winding-threshold W` / `--winding-beta B` | inside where the winding number exceeds `W`; its accuracy (0: exact) |
-| `--conformity stuffing\|cleaving`, `--alpha-long`, `--alpha-short` | how tetrahedra conform to the skin |
+| `--conformity stuffing\|cleaving`, `--alpha-long`, `--alpha-short` | how tetrahedra conform to the skin; `cleaving` gives one material per nested shell, for the tetrahedral and the hexahedral output |
 | `--no-preserve-features`, `--fit-iterations N`, `--no-dihedral-floor-guard` | feature snapping and optimisation |
 | `--fill all\|inside\|cover` | castellated output: every leaf, the inside ones, or inside and cut |
 | `--keep-outside`, `--no-distance`, `--attach-quality` | also mesh the outside; skip `sdf:*`; attach `quality:*` |

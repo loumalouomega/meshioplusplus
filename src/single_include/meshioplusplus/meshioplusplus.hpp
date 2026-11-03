@@ -12539,7 +12539,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 18
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 0
+#define MESHIOPLUSPLUS_VERSION_MINOR 1
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -12549,7 +12549,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "18.0.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "18.1.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -32889,8 +32889,9 @@ inline constexpr const char* kOctreeMeshClosestPointName = "sdf:closest_point";
 /// Cell data (Int64): the lattice shape class of a tetrahedron (1-6), 0 for a
 /// cell the stuffing or the optimiser created.
 inline constexpr const char* kOctreeMeshShapeName = "octree_mesh:shape";
-/// Cell data (Int64): the material of a tetrahedron (0 outside the skin, 1
-/// inside, higher for nested shells under cleaving), when there is more than one.
+/// Cell data (Int64): the material of a tetrahedron or hexahedron (0 outside
+/// the skin, 1 inside, higher for nested shells under cleaving), when there is
+/// more than one.
 inline constexpr const char* kOctreeMeshMaterialName = "octree_mesh:material";
 /// Cell data (Int64): 1 for a hexahedron of the pillow layer along the
 /// boundary of a hexahedral output, 0 for the grid's own.
@@ -32917,7 +32918,8 @@ enum class OctreeMeshOutput {
     Hexa = 2,         ///< all-hexahedra by the octree dual
 };
 
-/// How a tetrahedral output conforms to the skin.
+/// How a tetrahedral output conforms to the skin; `Cleaving` also gives a
+/// hexahedral output one material per nested shell.
 enum class OctreeMeshConformity {
     Stuffing = 0,  ///< isosurface stuffing (Labelle and Shewchuk 2007)
     Cleaving = 1,  ///< lattice cleaving of the winding-number regions (Bronson et al. 2014)
@@ -33012,7 +33014,8 @@ struct OctreeMeshOptions {
     /// Accuracy of the fast winding number (Barill et al.'s β); 0 sums every
     /// triangle exactly.
     double mWindingBeta = 2.0;
-    /// How a tetrahedral output conforms to the skin.
+    /// How a tetrahedral output conforms to the skin, and whether nested shells
+    /// are materials (`Cleaving`, tetrahedral and hexahedral outputs).
     OctreeMeshConformity mConformity = OctreeMeshConformity::Stuffing;
     /// Stuffing's violation threshold on long lattice edges.
     double mAlphaLong = 0.24799;
@@ -46701,6 +46704,7 @@ HexDualMesh hex_dual_mesh(const LinearOctree& rTree);
  */
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -46732,12 +46736,22 @@ struct HexMesh {
  * hexahedra to @p rKept until, around every node, the kept hexahedra and the
  * rest (with the outside of the mesh) are each connected through the faces at
  * that node. A failing node takes the empty hexahedron around it with the
- * largest @p rScore first (ties: the lowest index); sweeps the nodes in
- * ascending order until none fails.
+ * largest @p rScore first (ties: the lowest index), among @p pAllowed when
+ * given; sweeps the nodes in ascending order until none fails.
  * @return the hexahedra added.
  */
 std::int64_t hex_make_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
-                               const std::vector<double>& rScore);
+                               const std::vector<double>& rScore,
+                               const std::vector<std::uint8_t>* pAllowed = nullptr);
+
+/**
+ * @brief The converse of `hex_make_manifold`: remove kept hexahedra (the
+ * smallest @p rScore first, ties: the lowest index) until every node passes.
+ * Removing every kept hexahedron around a node always makes it pass, so this
+ * terminates. @return the hexahedra removed.
+ */
+std::int64_t hex_shrink_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
+                                 const std::vector<double>& rScore);
 
 /// The faces of a hexahedral mesh used by one hexahedron, ordered so their
 /// normal (right-hand rule) points out of it, with the (hexahedron, facet)
@@ -46763,10 +46777,51 @@ HexBoundary hex_boundary(const HexMesh& rMesh);
  */
 std::vector<std::int64_t> hex_pillow(HexMesh& rMesh, const HexBoundary& rBoundary);
 
+/// What `hex_pillow_interface` did.
+struct HexInterface {
+    /// Per point of the mesh after it, the shell node and the inner copy made
+    /// for each interface node (-1 elsewhere).
+    std::vector<std::int64_t> mShell, mInner;
+    /// The interface faces on their original (outer) nodes, each pointing out
+    /// of its inner hexahedron, and that hexahedron.
+    std::vector<std::array<std::int64_t, 4>> mQuads;
+    std::vector<std::int64_t> mInnerHex;
+    /// The first hexahedron added: two per face, the inner layer then the outer.
+    std::size_t mFirstHex = 0;
+};
+
+/**
+ * @brief Pillow both sides of the interface between the hexahedra in
+ * @p rInner and the others: every interface node `v` gets a shell node and an
+ * inner copy (appended), the inner hexahedra move onto the inner copies, and
+ * every interface face gets two hexahedra, one from the inner copies to the
+ * shell nodes and one from the shell nodes to the original nodes, so no
+ * hexahedron has two faces on the interface. The inner set's boundary must be
+ * a manifold of interior faces (`hex_make_manifold`), away from the mesh's
+ * boundary.
+ */
+HexInterface hex_pillow_interface(HexMesh& rMesh, const std::vector<std::uint8_t>& rInner);
+
 /// The smallest scaled Jacobian of a hexahedron's eight corners (-1 for a
 /// corner with a zero-length edge).
 double hex_min_scaled_jacobian(const std::vector<Vec3>& rPoints,
                                const std::array<std::int64_t, 8>& rHex);
+
+/// The scaled Jacobian of each of a hexahedron's eight corners (-1 for a
+/// corner with a zero-length edge).
+std::array<double, 8> hex_corner_scaled_jacobians(const std::vector<Vec3>& rPoints,
+                                                  const std::array<std::int64_t, 8>& rHex);
+
+/**
+ * @brief The unit outward normal of the boundary @p rQuads at each point:
+ * the sum of the area vectors of the quadrilaterals around it, then @p Smooth
+ * times replaced by the sum over itself and its boundary neighbours (in
+ * ascending order, so the result is deterministic). Zero for a point on no
+ * quadrilateral, or where the sum vanishes.
+ */
+std::vector<Vec3> hex_boundary_normals(const std::vector<Vec3>& rPoints,
+                                       const std::vector<std::array<std::int64_t, 4>>& rQuads,
+                                       int Smooth);
 
 /// How a node may move in `hex_untangle`.
 enum class HexNodeMode : std::uint8_t {
@@ -46779,6 +46834,10 @@ enum class HexNodeMode : std::uint8_t {
 struct HexUntangleOptions {
     std::int64_t mIterations = 50;  ///< sweeps at most
     double mTarget = 0.6;           ///< nodes whose worst corner reaches this are left
+    /// Also try each node's trilinear reflection, 26 directions and a line
+    /// search for a node below 0.2, and restart the step once when a sweep
+    /// stalls with a corner below 0.2. False is the plain pattern search.
+    bool mRobust = false;
 };
 
 /// What `hex_untangle` did.
@@ -46787,17 +46846,23 @@ struct HexUntangleReport {
     std::int64_t mSweeps = 0;
 };
 
+/// Projects a candidate position of node `Node` (a sliding one) onto the skin.
+using HexProjector = std::function<Vec3(std::size_t Node, const Vec3& rP)>;
+
 /**
  * @brief Move the nodes of @p rHexes to raise the worst corner scaled
  * Jacobian around each: per sweep, every movable node below the target tries
  * the mean of its edge neighbours and six axis steps (a fifth of its mean
  * edge, halving every ten sweeps), projected by @p rProject when it slides,
- * and takes the best candidate if it improves.
+ * and takes the best candidate if it improves. With `mRobust`, a node also
+ * tries the mean of its trilinear reflections (the position that would make
+ * each corner of it a parallelepiped's), a node below 0.2 steps along the 26
+ * directions of a cube and doubles or halves its best step, and a sweep that
+ * moves nothing while a corner is below 0.2 restarts the step size once.
  */
 HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
                                const std::vector<std::array<std::int64_t, 8>>& rHexes,
-                               const std::vector<HexNodeMode>& rMode,
-                               const std::function<Vec3(const Vec3&)>& rProject,
+                               const std::vector<HexNodeMode>& rMode, const HexProjector& rProject,
                                const HexUntangleOptions& rOptions);
 
 }  // namespace detail
@@ -86602,6 +86667,12 @@ int hexfit_components(unsigned Mask) {
     return n;
 }
 
+// Each VTK corner's position in the unit cube, as bits (x, y, z) = (1, 2, 4).
+constexpr int kHexfitBits[8] = {0, 1, 3, 2, 4, 5, 7, 6};
+
+// The VTK corner at each bit pattern (the inverse of kHexfitBits).
+constexpr int kHexfitAtBits[8] = {0, 1, 3, 2, 4, 5, 7, 6};
+
 // Per mask of kept cells in a 2x2x2 block, whether the boundary is manifold there.
 std::array<std::uint8_t, 256> hexfit_valid_table() {
     std::array<std::uint8_t, 256> t{};
@@ -86672,8 +86743,14 @@ std::int64_t hex_grid_make_manifold(const std::array<std::int64_t, 3>& rN,
     return added;
 }
 
-std::int64_t hex_make_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
-                               const std::vector<double>& rScore) {
+namespace {
+
+// `hex_make_manifold` and `hex_shrink_manifold`: around every node, add the
+// empty hexahedron with the largest score (among @p pAllowed), or, with
+// @p Shrink, remove the kept one with the smallest, until the node passes.
+std::int64_t hexfit_star_repair(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
+                                const std::vector<double>& rScore,
+                                const std::vector<std::uint8_t>* pAllowed, bool Shrink) {
     const std::size_t nh = rMesh.mHexes.size(), np = rMesh.mPoints.size();
     // The hexahedron across each facet (-1: none).
     std::vector<std::array<std::int64_t, 6>> across(nh);
@@ -86779,20 +86856,112 @@ std::int64_t hex_make_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& 
                 if (components(star, true, outside) <= 1 && components(star, false, outside) <= 1)
                     break;
                 std::int64_t best = -1;
-                for (std::int64_t h : star)
-                    if (!rKept[static_cast<std::size_t>(h)] &&
-                        (best < 0 || rScore[static_cast<std::size_t>(h)] >
-                                         rScore[static_cast<std::size_t>(best)]))
+                for (std::int64_t h : star) {
+                    const auto u = static_cast<std::size_t>(h);
+                    if (Shrink) {
+                        if (rKept[u] &&
+                            (best < 0 || rScore[u] < rScore[static_cast<std::size_t>(best)]))
+                            best = h;
+                    } else if (!rKept[u] && (pAllowed == nullptr || (*pAllowed)[u]) &&
+                               (best < 0 || rScore[u] > rScore[static_cast<std::size_t>(best)])) {
                         best = h;
+                    }
+                }
                 if (best < 0)
-                    break;  // only the outside left to add
-                rKept[static_cast<std::size_t>(best)] = 1;
+                    break;  // only the outside (or nothing allowed) left to add
+                rKept[static_cast<std::size_t>(best)] = Shrink ? 0 : 1;
                 ++added;
                 changed = true;
             }
         }
     }
     return added;
+}
+
+}  // namespace
+
+std::int64_t hex_make_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
+                               const std::vector<double>& rScore,
+                               const std::vector<std::uint8_t>* pAllowed) {
+    return hexfit_star_repair(rMesh, rKept, rScore, pAllowed, false);
+}
+
+std::int64_t hex_shrink_manifold(const HexMesh& rMesh, std::vector<std::uint8_t>& rKept,
+                                 const std::vector<double>& rScore) {
+    return hexfit_star_repair(rMesh, rKept, rScore, nullptr, true);
+}
+
+HexInterface hex_pillow_interface(HexMesh& rMesh, const std::vector<std::uint8_t>& rInner) {
+    const std::size_t nh = rMesh.mHexes.size(), np = rMesh.mPoints.size();
+    HexInterface out;
+    out.mShell.assign(np, -1);
+    out.mInner.assign(np, -1);
+    out.mFirstHex = nh;
+    std::vector<std::pair<std::array<std::int64_t, 4>, std::int64_t>> faces;
+    faces.reserve(nh * 6);
+    for (std::size_t h = 0; h < nh; ++h)
+        for (std::int64_t f = 0; f < 6; ++f) {
+            std::array<std::int64_t, 4> key{};
+            for (std::size_t c = 0; c < 4; ++c)
+                key[c] = rMesh.mHexes[h][static_cast<std::size_t>(kHexfitFace[f][c])];
+            std::sort(key.begin(), key.end());
+            faces.emplace_back(key, static_cast<std::int64_t>(h) * 6 + f);
+        }
+    parallel_sort(faces.begin(), faces.end());
+    // The faces between an inner hexahedron and an outer one, from the inner.
+    for (std::size_t i = 0; i + 1 < faces.size(); ++i) {
+        if (faces[i].first != faces[i + 1].first)
+            continue;
+        std::int64_t a = faces[i].second, b = faces[i + 1].second;
+        const bool ia = rInner[static_cast<std::size_t>(a / 6)] != 0;
+        const bool ib = rInner[static_cast<std::size_t>(b / 6)] != 0;
+        if (ia == ib)
+            continue;
+        if (!ia)
+            std::swap(a, b);
+        const auto h = static_cast<std::size_t>(a / 6);
+        const auto f = static_cast<std::size_t>(a % 6);
+        std::array<std::int64_t, 4> q{};
+        for (std::size_t c = 0; c < 4; ++c)
+            q[c] = rMesh.mHexes[h][static_cast<std::size_t>(kHexfitFace[f][c])];
+        out.mQuads.push_back(q);
+        out.mInnerHex.push_back(static_cast<std::int64_t>(h));
+    }
+    for (const auto& q : out.mQuads)
+        for (std::int64_t v : q)
+            out.mShell[static_cast<std::size_t>(v)] = 0;
+    for (std::size_t v = 0; v < np; ++v)
+        if (out.mShell[v] == 0) {
+            out.mShell[v] = static_cast<std::int64_t>(rMesh.mPoints.size());
+            rMesh.mPoints.push_back(rMesh.mPoints[v]);
+            out.mInner[v] = static_cast<std::int64_t>(rMesh.mPoints.size());
+            rMesh.mPoints.push_back(rMesh.mPoints[v]);
+        }
+    // The inner hexahedra move onto the inner copies (all of them at a node:
+    // the inner set is manifold, so they meet the outer ones only there).
+    for (std::size_t h = 0; h < nh; ++h)
+        if (rInner[h])
+            for (std::int64_t& v : rMesh.mHexes[h])
+                if (out.mInner[static_cast<std::size_t>(v)] >= 0)
+                    v = out.mInner[static_cast<std::size_t>(v)];
+    // A face points out of its inner hexahedron, towards the outer side: the
+    // inner layer runs from the inner copies to the shell nodes, the outer one
+    // from the shell nodes to the outer nodes, both on the face's positive side.
+    for (const auto& q : out.mQuads) {
+        std::array<std::int64_t, 8> inner{}, outer{};
+        for (std::size_t c = 0; c < 4; ++c) {
+            const auto v = static_cast<std::size_t>(q[c]);
+            inner[c] = out.mInner[v];
+            inner[c + 4] = out.mShell[v];
+            outer[c] = out.mShell[v];
+            outer[c + 4] = q[c];
+        }
+        rMesh.mHexes.push_back(inner);
+        rMesh.mHexes.push_back(outer);
+    }
+    out.mShell.resize(rMesh.mPoints.size(), -1);
+    out.mInner.resize(rMesh.mPoints.size(), -1);
+    return out;
 }
 
 HexBoundary hex_boundary(const HexMesh& rMesh) {
@@ -86875,10 +87044,58 @@ double hex_min_scaled_jacobian(const std::vector<Vec3>& rPoints,
     return lo;
 }
 
+std::array<double, 8> hex_corner_scaled_jacobians(const std::vector<Vec3>& rPoints,
+                                                  const std::array<std::int64_t, 8>& rHex) {
+    std::array<double, 8> out{};
+    for (int c = 0; c < 8; ++c)
+        out[static_cast<std::size_t>(c)] = hexfit_corner(rPoints, rHex, c);
+    return out;
+}
+
+std::vector<Vec3> hex_boundary_normals(const std::vector<Vec3>& rPoints,
+                                       const std::vector<std::array<std::int64_t, 4>>& rQuads,
+                                       int Smooth) {
+    const std::size_t np = rPoints.size();
+    std::vector<Vec3> n(np, Vec3{0.0, 0.0, 0.0});
+    std::vector<std::vector<std::int64_t>> nbr(np);
+    for (const auto& q : rQuads) {
+        const Vec3 d1 = vec3_sub(rPoints[static_cast<std::size_t>(q[2])],
+                                 rPoints[static_cast<std::size_t>(q[0])]);
+        const Vec3 d2 = vec3_sub(rPoints[static_cast<std::size_t>(q[3])],
+                                 rPoints[static_cast<std::size_t>(q[1])]);
+        const Vec3 area = vec3_scale(vec3_cross(d1, d2), 0.5);
+        for (std::size_t e = 0; e < 4; ++e) {
+            const auto v = static_cast<std::size_t>(q[e]);
+            n[v] = vec3_add(n[v], area);
+            nbr[v].push_back(q[(e + 1) % 4]);
+            nbr[v].push_back(q[(e + 3) % 4]);
+        }
+    }
+    for (auto& a : nbr) {
+        std::sort(a.begin(), a.end());
+        a.erase(std::unique(a.begin(), a.end()), a.end());
+    }
+    for (std::size_t v = 0; v < np; ++v)
+        if (vec3_norm(n[v]) > 0.0)
+            n[v] = vec3_normalize(n[v]);
+    for (int s = 0; s < Smooth; ++s) {
+        std::vector<Vec3> next(np, Vec3{0.0, 0.0, 0.0});
+        for (std::size_t v = 0; v < np; ++v) {
+            if (nbr[v].empty())
+                continue;
+            Vec3 sum = n[v];
+            for (std::int64_t u : nbr[v])
+                sum = vec3_add(sum, n[static_cast<std::size_t>(u)]);
+            next[v] = vec3_norm(sum) > 0.0 ? vec3_normalize(sum) : Vec3{0.0, 0.0, 0.0};
+        }
+        n.swap(next);
+    }
+    return n;
+}
+
 HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
                                const std::vector<std::array<std::int64_t, 8>>& rHexes,
-                               const std::vector<HexNodeMode>& rMode,
-                               const std::function<Vec3(const Vec3&)>& rProject,
+                               const std::vector<HexNodeMode>& rMode, const HexProjector& rProject,
                                const HexUntangleOptions& rOptions) {
     const std::size_t np = rPoints.size();
     // Incident hexahedra and edge neighbours of every node.
@@ -86900,15 +87117,58 @@ HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
             w = std::min(w, hex_min_scaled_jacobian(rPoints, rHexes[static_cast<std::size_t>(h)]));
         return w;
     };
+    // The robust tie-break: the corners around node @p V, each capped at the
+    // target, summed. A hexahedron with two poor corners at different nodes
+    // keeps its minimum when either node moves alone, so a strict rise of
+    // the minimum never comes; a move that keeps the minimum and raises this
+    // sum still makes progress, and the pair only grows, so it cannot cycle.
+    auto capped = [&](std::size_t V) {
+        double sum = 0.0;
+        for (std::int64_t h : inc[V])
+            for (int c = 0; c < 8; ++c)
+                sum += std::min(rOptions.mTarget,
+                                hexfit_corner(rPoints, rHexes[static_cast<std::size_t>(h)], c));
+        return sum;
+    };
+    // The mean of the trilinear reflections of node @p V: per incident
+    // hexahedron, the position that cancels its twist (the alternating sum
+    // of its corners), which a parallelepiped's corner satisfies.
+    auto reflection = [&](std::size_t V) {
+        Vec3 sum{0.0, 0.0, 0.0};
+        for (std::int64_t h : inc[V]) {
+            const auto& hex = rHexes[static_cast<std::size_t>(h)];
+            int at = 0;
+            while (static_cast<std::size_t>(hex[static_cast<std::size_t>(at)]) != V)
+                ++at;
+            const int b0 = kHexfitBits[at];
+            Vec3 p{0.0, 0.0, 0.0};
+            for (int b = 0; b < 8; ++b) {
+                if (b == b0)
+                    continue;
+                int flips = 0;
+                for (int k = 0; k < 3; ++k)
+                    flips += ((b ^ b0) >> k) & 1;
+                const Vec3& x = rPoints[static_cast<std::size_t>(
+                    hex[static_cast<std::size_t>(kHexfitAtBits[b])])];
+                p = flips % 2 ? vec3_add(p, x) : vec3_sub(p, x);
+            }
+            sum = vec3_add(sum, p);
+        }
+        return vec3_scale(sum, 1.0 / static_cast<double>(inc[V].size()));
+    };
     HexUntangleReport rep;
     // Only nodes whose neighbourhood changed (or that are still below the
     // target) can move: the others would be skipped again, so the result is
     // that of visiting every node.
     std::vector<std::uint8_t> active(np, 1), next(np, 0);
+    std::int64_t step_base = 0;  // the sweep the step size counts from
+    bool restarted = false;
+    std::vector<Vec3> cand;
     for (std::int64_t sweep = 0; sweep < rOptions.mIterations; ++sweep) {
         ++rep.mSweeps;
-        const double scale = 0.2 * std::pow(0.5, static_cast<double>(sweep / 10));
+        const double scale = 0.2 * std::pow(0.5, static_cast<double>((sweep - step_base) / 10));
         std::int64_t moves = 0;
+        double low = 1.0;  // the worst corner of the nodes visited
         std::fill(next.begin(), next.end(), 0);
         for (std::size_t v = 0; v < np; ++v) {
             if (!active[v] || rMode[v] == HexNodeMode::Fixed || inc[v].empty())
@@ -86927,25 +87187,65 @@ HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
             }
             edge /= static_cast<double>(nbr[v].size());
             mean = vec3_scale(mean, 1.0 / static_cast<double>(nbr[v].size()));
-            std::array<Vec3, 7> cand{};
-            cand[0] = mean;
-            for (std::size_t k = 0; k < 6; ++k) {
-                cand[k + 1] = keep;
-                cand[k + 1][k / 2] += (k % 2 ? -1.0 : 1.0) * scale * edge;
+            cand.clear();
+            cand.push_back(mean);
+            const bool wide = rOptions.mRobust && now < 0.2;
+            if (rOptions.mRobust)
+                cand.push_back(reflection(v));
+            if (wide) {
+                for (int dz = -1; dz <= 1; ++dz)
+                    for (int dy = -1; dy <= 1; ++dy)
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            if (dx == 0 && dy == 0 && dz == 0)
+                                continue;
+                            const Vec3 d = vec3_normalize(Vec3{static_cast<double>(dx),
+                                                               static_cast<double>(dy),
+                                                               static_cast<double>(dz)});
+                            cand.push_back(vec3_add(keep, vec3_scale(d, scale * edge)));
+                        }
+            } else {
+                for (std::size_t k = 0; k < 6; ++k) {
+                    Vec3 c = keep;
+                    c[k / 2] += (k % 2 ? -1.0 : 1.0) * scale * edge;
+                    cand.push_back(c);
+                }
             }
             double best = now;
+            double best_sum = rOptions.mRobust ? capped(v) : 0.0;
             Vec3 best_at = keep;
-            for (Vec3 c : cand) {
+            auto attempt = [&](Vec3 C) {
                 if (rMode[v] == HexNodeMode::Slide)
-                    c = rProject(c);
-                rPoints[v] = c;
+                    C = rProject(v, C);
+                rPoints[v] = C;
                 const double w = worst(v);
                 if (w > best + 1e-12) {
                     best = w;
-                    best_at = c;
+                    best_at = C;
+                    if (rOptions.mRobust)
+                        best_sum = capped(v);
+                    return true;
                 }
+                if (rOptions.mRobust && w >= best) {
+                    const double sum = capped(v);
+                    if (sum > best_sum + 1e-12) {
+                        best = w;
+                        best_sum = sum;
+                        best_at = C;
+                        return true;
+                    }
+                }
+                return false;
+            };
+            for (const Vec3& c : cand)
+                attempt(c);
+            if (wide && best_at != keep) {
+                // A line search along the best step: further, then shorter.
+                const Vec3 d = vec3_sub(best_at, keep);
+                if (!attempt(vec3_add(keep, vec3_scale(d, 2.0))))
+                    attempt(vec3_add(keep, vec3_scale(d, 0.5)));
             }
             rPoints[v] = best_at;
+            low = std::min(low, best);
             if (best_at != keep) {
                 ++moves;
                 for (std::int64_t h : inc[v])
@@ -86957,8 +87257,13 @@ HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
         }
         active.swap(next);
         rep.mMoves += moves;
-        if (moves == 0)
-            break;
+        if (moves == 0) {
+            if (!rOptions.mRobust || restarted || low >= 0.2)
+                break;
+            // Stalled with a poor corner left: start the steps again, once.
+            restarted = true;
+            step_base = sweep + 1;
+        }
     }
     return rep;
 }
@@ -244209,7 +244514,9 @@ void octree_mesh_castellated(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
+#include <optional>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -244254,18 +244561,48 @@ Vec3 octmh_on_chain(const std::vector<Vec3>& rSkin, const std::vector<std::int64
 // What the feature snap of a hexahedral boundary recovered.
 struct OctmhFeatures {
     std::int64_t mCorners = 0, mCornersSnapped = 0, mChains = 0, mChainsMissed = 0, mMoved = 0;
+    /// The boundary edges the traced chains run along, each (low, high), and
+    /// the chain (an index into the feature graph's chains) of each.
+    std::vector<std::array<std::int64_t, 2>> mPathEdges;
+    std::vector<std::int64_t> mPathChain;
+    /// Per point, the chain a snapped chain node lies on, and the skin point a
+    /// snapped corner node lies on (-1: neither).
+    std::vector<std::int64_t> mNodeChain, mNodeCorner;
 };
+
+// The point at arc length @p At along the polyline through the skin points
+// @p rChain (clamped to its ends).
+Vec3 octmh_along_chain(const std::vector<Vec3>& rSkin, const std::vector<std::int64_t>& rChain,
+                       double At) {
+    for (std::size_t s = 0; s + 1 < rChain.size(); ++s) {
+        const Vec3& a = rSkin[static_cast<std::size_t>(rChain[s])];
+        const Vec3& b = rSkin[static_cast<std::size_t>(rChain[s + 1])];
+        const double l = vec3_norm(vec3_sub(b, a));
+        if (At <= l || s + 2 == rChain.size())
+            return l > 0.0 ? vec3_add(a, vec3_scale(vec3_sub(b, a), std::clamp(At / l, 0.0, 1.0)))
+                           : a;
+        At -= l;
+    }
+    return rSkin[static_cast<std::size_t>(rChain.front())];
+}
 
 // Snap the boundary nodes @p rBoundaryNodes (with the boundary quads' edges as
 // their graph) onto the feature corners and chains of the skin: a corner
 // takes the nearest unclaimed node within 1.5 of its size @p rSize, a chain the
 // shortest path between its corners' nodes in a tube of 1.25 sizes around it. Snapped
-// nodes are set to 1 (corner) or 2 (chain) in @p rFeature.
+// nodes are set to 1 (corner) or 2 (chain) in @p rFeature. A path's inner nodes
+// go to their nearest chain points, or, with @p ArcLength, to the chain points
+// at the same fraction of its length as they are of the path's, which keeps
+// them in order and apart (the nearest point of a node beside a corner can be
+// the corner itself).
 OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
                          const std::vector<std::array<std::int64_t, 4>>& rQuads,
                          const FeatureGraph& rGraph, const std::vector<Vec3>& rSkin,
-                         const std::vector<double>& rSize, std::vector<std::uint8_t>& rFeature) {
+                         const std::vector<double>& rSize, std::vector<std::uint8_t>& rFeature,
+                         bool ArcLength) {
     OctmhFeatures rep;
+    rep.mNodeChain.assign(rPoints.size(), -1);
+    rep.mNodeCorner.assign(rPoints.size(), -1);
     rep.mCorners = static_cast<std::int64_t>(rGraph.mCorners.size());
     rep.mChains = static_cast<std::int64_t>(rGraph.mChains.size());
     std::vector<std::vector<std::int64_t>> adj(rPoints.size());
@@ -244301,12 +244638,14 @@ OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
             continue;
         rPoints[static_cast<std::size_t>(best)] = x;
         rFeature[static_cast<std::size_t>(best)] = 1;
+        rep.mNodeCorner[static_cast<std::size_t>(best)] = c;
         corner_node[static_cast<std::size_t>(c)] = best;
         ++rep.mCornersSnapped;
         ++rep.mMoved;
     }
     // Chains: Dijkstra from one end's node to the other's inside the tube.
-    for (const auto& chain : rGraph.mChains) {
+    for (std::size_t ci = 0; ci < rGraph.mChains.size(); ++ci) {
+        const auto& chain = rGraph.mChains[ci];
         const std::int64_t s = corner_node[static_cast<std::size_t>(chain.front())];
         const std::int64_t t = corner_node[static_cast<std::size_t>(chain.back())];
         if (s < 0 || t < 0 || s == t) {
@@ -244354,22 +244693,59 @@ OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
             ++rep.mChainsMissed;
             continue;
         }
+        for (std::int64_t v = t; v != s; v = prev[static_cast<std::size_t>(v)]) {
+            const std::int64_t u = prev[static_cast<std::size_t>(v)];
+            rep.mPathEdges.push_back({std::min(u, v), std::max(u, v)});
+            rep.mPathChain.push_back(static_cast<std::int64_t>(ci));
+        }
+        if (ArcLength) {
+            std::vector<std::int64_t> path;
+            for (std::int64_t v = t; v >= 0 && v != s; v = prev[static_cast<std::size_t>(v)])
+                path.push_back(v);
+            path.push_back(s);
+            std::reverse(path.begin(), path.end());
+            std::vector<double> at(path.size(), 0.0);
+            for (std::size_t i = 1; i < path.size(); ++i)
+                at[i] =
+                    at[i - 1] + vec3_norm(vec3_sub(rPoints[static_cast<std::size_t>(path[i])],
+                                                   rPoints[static_cast<std::size_t>(path[i - 1])]));
+            double length = 0.0;
+            for (std::size_t i = 0; i + 1 < chain.size(); ++i)
+                length += vec3_norm(vec3_sub(rSkin[static_cast<std::size_t>(chain[i + 1])],
+                                             rSkin[static_cast<std::size_t>(chain[i])]));
+            for (std::size_t i = 1; i + 1 < path.size(); ++i) {
+                const auto v = static_cast<std::size_t>(path[i]);
+                rPoints[v] = octmh_along_chain(rSkin, chain, length * at[i] / at.back());
+                rFeature[v] = 2;
+                rep.mNodeChain[v] = static_cast<std::int64_t>(ci);
+                ++rep.mMoved;
+            }
+            continue;
+        }
         for (std::int64_t v = prev[static_cast<std::size_t>(t)]; v != s;
              v = prev[static_cast<std::size_t>(v)]) {
             double d = 0.0;
             rPoints[static_cast<std::size_t>(v)] =
                 octmh_on_chain(rSkin, chain, rPoints[static_cast<std::size_t>(v)], d);
             rFeature[static_cast<std::size_t>(v)] = 2;
+            rep.mNodeChain[static_cast<std::size_t>(v)] = static_cast<std::int64_t>(ci);
             ++rep.mMoved;
         }
     }
     return rep;
 }
 
+// Per hexahedron of a grid, its winding number and its centre (for materials).
+struct OctmhCells {
+    std::vector<double> mWinding;
+    std::vector<Vec3> mCentre;
+};
+
 // The uniform grid: every cell at the skin's level, the kept ones made
 // manifold. @p rLevel gets each hexahedron's level, @p rSize each node's size.
 void octmh_uniform(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR,
-                   HexMesh& hm, std::vector<std::int64_t>& rLevel, std::vector<double>& rSize) {
+                   HexMesh& hm, std::vector<std::int64_t>& rLevel, std::vector<double>& rSize,
+                   OctmhCells& rCells) {
     const OctreeFrame& frame = rS.mFrame;
     // The grid: every cell at the skin's level.
     const double hs = rO.mSurfaceSize > 0.0 ? rO.mSurfaceSize : rS.mField.mSkinMinSize;
@@ -244443,6 +244819,8 @@ void octmh_uniform(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshR
         };
         hm.mHexes.push_back({at(0, 0, 0), at(1, 0, 0), at(1, 1, 0), at(0, 1, 0), at(0, 0, 1),
                              at(1, 0, 1), at(1, 1, 1), at(0, 1, 1)});
+        rCells.mWinding.push_back(w[static_cast<std::size_t>(c)]);
+        rCells.mCentre.push_back(centres[static_cast<std::size_t>(c)]);
     }
     rLevel.assign(hm.mHexes.size(), level);
     rSize.assign(hm.mPoints.size(), h);
@@ -244453,7 +244831,8 @@ void octmh_uniform(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshR
 // (detail/hex_dual_schemes.hpp). A dual hexahedron is kept when the primal
 // vertex it surrounds is inside; @p rSize is each node's mean edge.
 void octmh_graded(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR,
-                  HexMesh& hm, std::vector<std::int64_t>& rLevel, std::vector<double>& rSize) {
+                  HexMesh& hm, std::vector<std::int64_t>& rLevel, std::vector<double>& rSize,
+                  OctmhCells& rCells) {
     const OctreeFrame& frame = rS.mFrame;
     LinearOctree tree = rS.mOctree.mTree;
     linear_octree_pair(tree, OctreeAdjacency::Full, rO.mMaxCells);
@@ -244469,29 +244848,84 @@ void octmh_graded(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshRe
         centres[c] =
             world(static_cast<double>(dual.mCentre[c][0]), static_cast<double>(dual.mCentre[c][1]),
                   static_cast<double>(dual.mCentre[c][2]));
-    const std::vector<double> w = octree_mesh_winding(rS, centres, rO, rR);
-    std::vector<std::uint8_t> kept(centres.size(), 0);
-    for (std::size_t c = 0; c < kept.size(); ++c)
-        kept[c] = w[c] > rO.mWindingThreshold;
+    std::vector<double> w = octree_mesh_winding(rS, centres, rO, rR);
     // A centre is a primal vertex, on the lattice's planes, and a skin may lie on
     // them too (a cap on a lattice plane): a hexahedron kept by a hair there
     // would be pressed flat by the projection and the pillow. Keep only centres
-    // more than a tenth of their cell inside.
+    // more than a tenth of their cell inside the boundary. A nested shell
+    // inside (cleaving's interfaces) is not the boundary, and dropping the
+    // centres beside it would open a cavity there: a centre within a tenth of
+    // its cell of the skin is dropped only when some point a tenth of its cell
+    // away along an axis, or just past its nearest skin point, is outside (a
+    // plane through the centre always leaves one axis direction outside).
+    // Per close centre: six axis probes, one past its nearest skin point, and
+    // eight along the cube's diagonals (off the lattice's planes, for a centre
+    // on a skin lying on them, where the axis probes are as ambiguous).
+    constexpr std::size_t kProbes = 15;
+    std::vector<std::size_t> close;  // the centres within a tenth of a cell
+    std::vector<double> close_d;
+    std::vector<double> pw;  // their probes' winding numbers, kProbes each
     {
-        std::vector<std::size_t> near;
-        std::vector<Vec3> at;
-        for (std::size_t c = 0; c < kept.size(); ++c)
-            if (kept[c]) {
-                near.push_back(c);
-                at.push_back(centres[c]);
-            }
-        const std::vector<SurfaceProjection> proj = query_surface_projections(rS.mQuery, at);
-        for (std::size_t i = 0; i < near.size(); ++i) {
-            const std::size_t c = near[i];
+        const std::vector<SurfaceProjection> proj = query_surface_projections(rS.mQuery, centres);
+        std::vector<Vec3> probes;
+        for (std::size_t c = 0; c < centres.size(); ++c) {
             const double cell =
                 frame.mRootSize / static_cast<double>(std::int64_t{1} << dual.mLevel[c]);
-            if (vec3_norm(vec3_sub(proj[i].mPoint, centres[c])) < 0.1 * cell)
-                kept[c] = 0;
+            const Vec3 to = vec3_sub(proj[c].mPoint, centres[c]);
+            const double d = vec3_norm(to);
+            if (!(d < 0.1 * cell))
+                continue;
+            close.push_back(c);
+            close_d.push_back(d / cell);
+            for (std::size_t k = 0; k < 6; ++k) {
+                Vec3 p = centres[c];
+                p[k / 2] += (k % 2 ? -0.1 : 0.1) * cell;
+                probes.push_back(p);
+            }
+            probes.push_back(
+                d > 0.0 ? vec3_add(proj[c].mPoint, vec3_scale(to, std::max(d, 0.05 * cell) / d))
+                        : centres[c]);
+            const double step = 0.1 * cell / std::sqrt(3.0);
+            for (int k = 0; k < 8; ++k)
+                probes.push_back(vec3_add(
+                    centres[c],
+                    Vec3{(k & 1 ? -step : step), (k & 2 ? -step : step), (k & 4 ? -step : step)}));
+        }
+        pw = fast_windings(rS.mBvh, probes, rO.mWindingBeta);
+        for (double& v : pw)
+            v *= rS.mWindingSign;
+    }
+    // On the skin itself the winding number is half-way between its two sides
+    // only up to the sign of a zero (a point in a triangle's plane): take the
+    // middle of the diagonal probes' range where it disagrees by more than a
+    // quarter (a nested shell read as the boundary).
+    std::vector<std::uint8_t> on_skin(close.size(), 0);
+    for (std::size_t i = 0; i < close.size(); ++i) {
+        if (close_d[i] > 1e-9)
+            continue;
+        on_skin[i] = 1;
+        double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+        for (std::size_t k = 7; k < kProbes; ++k) {
+            lo = std::min(lo, pw[i * kProbes + k]);
+            hi = std::max(hi, pw[i * kProbes + k]);
+        }
+        const double mid = 0.5 * (lo + hi);
+        if (std::abs(mid - w[close[i]]) > 0.25)
+            w[close[i]] = mid;
+    }
+    std::vector<std::uint8_t> kept(centres.size(), 0);
+    for (std::size_t c = 0; c < kept.size(); ++c)
+        kept[c] = w[c] > rO.mWindingThreshold;
+    for (std::size_t i = 0; i < close.size(); ++i) {
+        if (!kept[close[i]])
+            continue;
+        // On the skin, only the diagonal probes; off it, the axis probes and
+        // the one past the nearest skin point (as before the diagonals).
+        for (std::size_t k = on_skin[i] ? 7 : 0; k < (on_skin[i] ? kProbes : 7); ++k) {
+            if (pw[i * kProbes + k] <= rO.mWindingThreshold) {
+                kept[close[i]] = 0;
+                break;
+            }
         }
     }
     if (std::none_of(kept.begin(), kept.end(), [](std::uint8_t k) { return k != 0; }))
@@ -244525,6 +244959,8 @@ void octmh_graded(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshRe
         }
         hm.mHexes.push_back(hex);
         rLevel.push_back(dual.mLevel[c]);
+        rCells.mWinding.push_back(w[c]);
+        rCells.mCentre.push_back(centres[c]);
     }
     // Each node's size: the mean of its edges.
     rSize.assign(hm.mPoints.size(), 0.0);
@@ -244550,6 +244986,686 @@ void octmh_graded(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshRe
                kOctreeMeshPrefix, dual.mNumTransitionVertices, schemes, dual.mHexes.size());
 }
 
+// The smoothing rounds of the boundary normals the robust fit projects along.
+constexpr int kOctmhNormalSmoothing = 1;
+
+// Below this smallest corner scaled Jacobian the robust fit is compared with
+// the body-fitted one, and the better is kept.
+constexpr double kOctmhFallbackBelow = 0.2;
+
+// Log the quality of the hexahedra after a stage (debug level only).
+void octmh_log_stage(const char* pStage, const std::vector<Vec3>& rPoints,
+                     const std::vector<std::array<std::int64_t, 8>>& rHexes) {
+    if (!log::enabled(log::Level::Debug))
+        return;
+    double worst = 1.0;
+    std::int64_t poor = 0, bad = 0;
+    for (const auto& hex : rHexes) {
+        const double w = hex_min_scaled_jacobian(rPoints, hex);
+        worst = std::min(worst, w);
+        poor += w < 0.2;
+        bad += w <= 0.0;
+    }
+    log::debug(
+        "{}after {}: smallest corner scaled Jacobian {}, {} hexahedra below 0.2, {} at or "
+        "below 0",
+        kOctreeMeshPrefix, pStage, worst, poor, bad);
+}
+
+// How the boundary is placed on the skin.
+enum class OctmhPlacement {
+    /// Along each node's boundary normal, the inward offset held to the local
+    /// thickness, sliding along the normal too (closest point where the
+    /// normal misses).
+    Robust,
+    /// The closest point, as in 18.0.0.
+    BodyFitted,
+};
+
+// The shells of a skin with nested parts, under cleaving: per soup triangle
+// its shell (the material on its inner side: 1 for the outer skin, L for the
+// interface between materials L-1 and L), per skin point the shell of its
+// triangles, and a closest-point query per shell.
+struct OctmhShells {
+    std::vector<std::int32_t> mTriShell;
+    std::vector<std::int32_t> mPointShell;
+    /// Shell L's triangles at L - 1, and their query, which points into its
+    /// soup: the soups are filled before any query is built and never move.
+    std::vector<TriangleSoup> mSoup;
+    std::vector<DistanceQuery> mQuery;
+};
+
+// The interface between materials L-1 and L, pillowed on both sides.
+struct OctmhInterface {
+    std::int32_t mShell = 0;
+    std::vector<std::int64_t> mNodes;                  // the outer-side nodes
+    std::vector<std::int64_t> mShellNode, mInnerNode;  // per node
+    std::vector<Vec3> mNormals;                        // per node, unit, towards L-1
+    std::vector<std::array<std::int64_t, 4>> mQuads;   // on the shell nodes, towards L-1
+    std::optional<FeatureGraph> mGraph;                // the shell's features
+};
+
+// The closest-point query of shell @p Shell (the whole skin without shells).
+const DistanceQuery& octmh_query(const OctreeMeshSetup& rS, const OctmhShells* pShells,
+                                 std::int32_t Shell) {
+    return pShells != nullptr && Shell > 0 ? pShells->mQuery[static_cast<std::size_t>(Shell - 1)]
+                                           : rS.mQuery;
+}
+
+// Each hexahedron corner's three edge neighbours (VTK order).
+constexpr int kOctmhCorner[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {0, 2, 7},
+                                    {7, 5, 0}, {4, 6, 1}, {5, 7, 2}, {6, 4, 3}};
+
+// What the fit works on: the pillowed (or bare) mesh at the grid's positions.
+struct OctmhFitInput {
+    const OctreeMeshSetup& rS;
+    const OctreeMeshOptions& rO;
+    const HexMesh& rMesh;
+    const std::vector<std::int64_t>& rBoundaryNodes;  // the grid's boundary nodes
+    const std::vector<std::int64_t>& rCopy;           // their pillow copies (pillow only)
+    const std::vector<double>& rSize;
+    const std::vector<Vec3>& rNormals;                         // the grid boundary's unit normals
+    const std::vector<std::array<std::int64_t, 4>>& rQuads;    // the fitted mesh's boundary
+    const FeatureGraph* pGraph;                                // null: no feature snap
+    const OctmhShells* pShells = nullptr;                      // cleaving: the shells
+    const std::vector<OctmhInterface>* pInterfaces = nullptr;  // cleaving: the interfaces
+};
+
+// A fitted mesh's positions, features and quality.
+struct OctmhFit {
+    std::vector<Vec3> mPoints;
+    std::vector<std::uint8_t> mFeature;
+    OctmhFeatures mFeatures;
+    std::int64_t mMoves = 0;
+    double mWorst = 1.0;
+    double mRobustWorst = 1.0;  // set when the body-fitted fit was kept
+    bool mFellBack = false;
+    std::int64_t mReleased = 0;      // feature nodes released to untangle
+    std::int64_t mShortChains = 0;   // chains shorter than a cell, not snapped
+    std::int64_t mShortCorners = 0;  // corners only such chains end at
+};
+
+// Where the line through @p rX along the unit @p rDir first meets the skin
+// from outside (a triangle facing along @p rDir), nearest @p rX within
+// @p Reach either way; false when it misses.
+bool octmh_ray_foot(const OctreeMeshSetup& rS, const Vec3& rX, const Vec3& rDir, double Reach,
+                    Vec3& rFoot, const OctmhShells* pShells = nullptr, std::int32_t Shell = 0) {
+    const double sign = rS.mWindingSign;
+    auto facing = [&](std::int64_t T, const Vec3& rN) {
+        return sign * vec3_dot(rN, rDir) > 0.0 &&
+               (pShells == nullptr || pShells->mTriShell[static_cast<std::size_t>(T)] == Shell);
+    };
+    const TriRayHit ahead = tri_bvh_ray_filtered(rS.mBvh, rX, rDir, -1e-12 * Reach, Reach, facing);
+    const TriRayHit behind =
+        tri_bvh_ray_filtered(rS.mBvh, rX, vec3_scale(rDir, -1.0), 0.0, Reach, facing);
+    if (ahead.mTriangle < 0 && behind.mTriangle < 0)
+        return false;
+    const bool use_ahead =
+        ahead.mTriangle >= 0 && (behind.mTriangle < 0 || std::abs(ahead.mT) <= behind.mT);
+    rFoot = use_ahead ? vec3_add(rX, vec3_scale(rDir, ahead.mT))
+                      : vec3_sub(rX, vec3_scale(rDir, behind.mT));
+    return true;
+}
+
+// The distance from the skin point @p rQ inward along -@p rOut (unit,
+// outward) to the far wall of the skin, or @p Reach when it is farther. With
+// shells, any wall counts (a nested shell faces the other way).
+double octmh_thickness(const OctreeMeshSetup& rS, const Vec3& rQ, const Vec3& rOut, double Reach,
+                       const OctmhShells* pShells = nullptr) {
+    const Vec3 in = vec3_scale(rOut, -1.0);
+    const double sign = rS.mWindingSign;
+    auto far_wall = [&](std::int64_t, const Vec3& rN) {
+        return pShells != nullptr || sign * vec3_dot(rN, in) > 0.0;
+    };
+    const TriRayHit hit = tri_bvh_ray_filtered(rS.mBvh, rQ, in, 1e-9 * Reach, Reach, far_wall);
+    return hit.mTriangle < 0 ? Reach : hit.mT;
+}
+
+// Put the grid node @p V of the pillow copy @p Copy half a size @p Size inside
+// the skin along -@p rOut, but no more than 0.45 of the way to the far wall,
+// so a part thinner than a cell does not fold. @return whether it was held.
+bool octmh_inset(const OctreeMeshSetup& rS, std::vector<Vec3>& rPoints, std::size_t V,
+                 std::size_t Copy, const Vec3& rOut, double Size,
+                 const OctmhShells* pShells = nullptr) {
+    const Vec3 q = rPoints[Copy];
+    const double t = octmh_thickness(rS, q, rOut, 1.2 * Size, pShells);
+    const double d = std::min(0.5 * Size, 0.45 * t);
+    rPoints[V] = vec3_sub(q, vec3_scale(rOut, d));
+    return d < 0.5 * Size;
+}
+
+// The robust foot of a point @p rX whose closest skin point is @p Distance
+// away: where the line through it along the unit normal @p rNormal meets the
+// skin, when that is no more than half a size @p Size farther than the
+// closest point; false otherwise (the caller keeps the closest point).
+bool octmh_robust_foot(const OctreeMeshSetup& rS, const Vec3& rX, const Vec3& rNormal,
+                       double Distance, double Size, Vec3& rFoot,
+                       const OctmhShells* pShells = nullptr, std::int32_t Shell = 0) {
+    if (!(vec3_norm(rNormal) > 0.0))
+        return false;
+    Vec3 f{};
+    if (!octmh_ray_foot(rS, rX, rNormal, Distance + 1.5 * Size, f, pShells, Shell))
+        return false;
+    if (vec3_norm(vec3_sub(f, rX)) > Distance + 0.5 * Size)
+        return false;
+    rFoot = f;
+    return true;
+}
+
+// A chain traced on a staircase turns inside a quadrilateral (along two of
+// its edges at one corner), and snapping the three nodes onto the chain's
+// polyline puts them on one line, which flattens the quadrilateral and leaves
+// its hexahedron a corner of zero scaled Jacobian that no move of the pinned
+// nodes can raise. Release the middle node of every such turn from the chain:
+// it slides along the skin instead, tethered to the chain (`octmh_tether`).
+// @return per point, the chain a released node was on, or -1.
+std::vector<std::int64_t> octmh_release_turns(
+    const std::vector<std::array<std::int64_t, 4>>& rQuads, const OctmhFeatures& rFeatures,
+    std::vector<std::uint8_t>& rFeature) {
+    std::vector<std::pair<std::array<std::int64_t, 2>, std::int64_t>> edges;
+    for (std::size_t e = 0; e < rFeatures.mPathEdges.size(); ++e)
+        edges.emplace_back(rFeatures.mPathEdges[e], rFeatures.mPathChain[e]);
+    std::sort(edges.begin(), edges.end());
+    // The chain of a path edge, or -1.
+    auto chain_of = [&](std::int64_t A, std::int64_t B) -> std::int64_t {
+        const std::array<std::int64_t, 2> e{std::min(A, B), std::max(A, B)};
+        const auto it =
+            std::lower_bound(edges.begin(), edges.end(), e,
+                             [](const auto& rItem, const std::array<std::int64_t, 2>& rKey) {
+                                 return rItem.first < rKey;
+                             });
+        return it != edges.end() && it->first == e ? it->second : -1;
+    };
+    std::vector<std::int64_t> released(rFeature.size(), -1);
+    std::int64_t count = 0;
+    for (const auto& q : rQuads)
+        for (std::size_t k = 0; k < 4; ++k) {
+            const std::int64_t o = q[k];
+            if (rFeature[static_cast<std::size_t>(o)] != 2 &&
+                released[static_cast<std::size_t>(o)] < 0)
+                continue;
+            const std::int64_t c = chain_of(q[(k + 3) % 4], o);
+            if (c >= 0 && chain_of(o, q[(k + 1) % 4]) == c &&
+                released[static_cast<std::size_t>(o)] < 0) {
+                released[static_cast<std::size_t>(o)] = c;
+                rFeature[static_cast<std::size_t>(o)] = 0;
+                ++count;
+            }
+        }
+    log::debug("{}{} chain nodes released where their chain turns inside a quadrilateral",
+               kOctreeMeshPrefix, count);
+    return released;
+}
+
+// How far (in sizes) a released chain node may slide from its chain.
+constexpr double kOctmhTether = 0.08;
+
+// Hold the skin point @p rP within @p Reach of the chain @p rChain: pulled
+// straight back towards its nearest chain point.
+Vec3 octmh_tether(const std::vector<Vec3>& rSkin, const std::vector<std::int64_t>& rChain,
+                  const Vec3& rP, double Reach) {
+    double d = 0.0;
+    const Vec3 on = octmh_on_chain(rSkin, rChain, rP, d);
+    if (d <= Reach)
+        return rP;
+    return vec3_add(on, vec3_scale(vec3_sub(rP, on), Reach / d));
+}
+
+// The repair after untangling: when a hexahedron's smallest corner is below
+// this, the feature nodes of every such hexahedron are released (tethered
+// within `kOctmhTether` sizes of their chain or corner) and the mesh is
+// untangled again for a fifth of the sweeps.
+constexpr double kOctmhRepairBelow = 0.05;
+
+// The feature graph without the chains shorter than a cell: on a scanned skin
+// a short crease is noise the boundary cannot follow, and pinning it holds
+// the hexahedra around it flat or inverted. A corner is kept when a kept chain
+// ends at it. @p Uniform is the uniform grid's edge (0: graded, where the
+// cell is the leaf's at the chain's midpoint). @p rDropped counts the chains
+// dropped.
+FeatureGraph octmh_drop_short(const OctreeMeshSetup& rS, const FeatureGraph& rGraph, double Uniform,
+                              std::int64_t& rDropped) {
+    const std::vector<Vec3>& skin = rS.mSkin.mPoints;
+    FeatureGraph out;
+    rDropped = 0;
+    std::vector<std::int64_t> ends;
+    for (const auto& chain : rGraph.mChains) {
+        double length = 0.0;
+        for (std::size_t i = 0; i + 1 < chain.size(); ++i)
+            length += vec3_norm(vec3_sub(skin[static_cast<std::size_t>(chain[i + 1])],
+                                         skin[static_cast<std::size_t>(chain[i])]));
+        const double cell = Uniform > 0.0 ? Uniform
+                                          : octree_mesh_local_size(
+                                                rS, octmh_along_chain(skin, chain, 0.5 * length));
+        if (length < cell) {
+            ++rDropped;
+            continue;
+        }
+        out.mChains.push_back(chain);
+        ends.push_back(chain.front());
+        ends.push_back(chain.back());
+    }
+    std::sort(ends.begin(), ends.end());
+    for (std::int64_t c : rGraph.mCorners)
+        if (std::binary_search(ends.begin(), ends.end(), c))
+            out.mCorners.push_back(c);
+    return out;
+}
+
+// Place the boundary on the skin, snap the features and untangle.
+OctmhFit octmh_fit(const OctmhFitInput& rIn, OctmhPlacement Placement) {
+    const OctreeMeshSetup& rs = rIn.rS;
+    const OctreeMeshOptions& ro = rIn.rO;
+    const OctmhShells* p_shells = rIn.pShells;
+    const bool robust = Placement == OctmhPlacement::Robust;
+    OctmhFit out;
+    out.mPoints = rIn.rMesh.mPoints;
+    std::vector<Vec3>& pts = out.mPoints;
+    const std::vector<double>& size = rIn.rSize;
+    std::vector<Vec3> at_nodes;
+    at_nodes.reserve(rIn.rBoundaryNodes.size());
+    for (std::int64_t v : rIn.rBoundaryNodes)
+        at_nodes.push_back(pts[static_cast<std::size_t>(v)]);
+    const std::vector<SurfaceProjection> proj =
+        query_surface_projections(octmh_query(rs, p_shells, 1), at_nodes);
+    // Per point, the direction a sliding node is projected along (robust).
+    std::vector<Vec3> slide(robust ? pts.size() : 0, Vec3{0.0, 0.0, 0.0});
+    std::vector<HexNodeMode> mode(pts.size(), HexNodeMode::Free);
+    // Per node on the skin (robust): its outward direction, and the nodes that
+    // stay a pillow's depth inside and outside it.
+    std::vector<Vec3> outward(robust ? pts.size() : 0, Vec3{0.0, 0.0, 0.0});
+    std::vector<std::int64_t> inside_of(robust ? pts.size() : 0, -1);
+    std::vector<std::int64_t> outside_of(robust ? pts.size() : 0, -1);
+    // Per point, the shell a sliding node slides on (shells only).
+    std::vector<std::int32_t> shell_of(p_shells != nullptr ? pts.size() : 0, 0);
+    std::int64_t along_normal = 0, held = 0;
+    for (std::size_t b = 0; b < rIn.rBoundaryNodes.size(); ++b) {
+        const auto v = static_cast<std::size_t>(rIn.rBoundaryNodes[b]);
+        Vec3 q = proj[b].mPoint;
+        if (!robust) {
+            if (ro.mPillow) {
+                // The copy on the skin, the grid's node half its size inside it.
+                const Vec3 nrm = vec3_scale(vec3_normalize(proj[b].mNormal), rs.mWindingSign);
+                const auto c = static_cast<std::size_t>(rIn.rCopy[v]);
+                pts[c] = q;
+                mode[c] = HexNodeMode::Slide;
+                pts[v] = vec3_sub(q, vec3_scale(nrm, 0.5 * size[v]));
+            } else {
+                pts[v] = q;
+                mode[v] = HexNodeMode::Slide;
+            }
+            continue;
+        }
+        // Robust: along the boundary's own normal, which the closest point
+        // ignores where two sides of the skin are about as near (a node by an
+        // edge would otherwise put its copy on the side its face does not face).
+        Vec3 out_dir = vec3_scale(vec3_normalize(proj[b].mNormal), rs.mWindingSign);
+        const Vec3& nb = rIn.rNormals[v];
+        Vec3 f{};
+        if (octmh_robust_foot(rs, pts[v], nb, proj[b].mDistance, size[v], f, p_shells, 1)) {
+            q = f;
+            out_dir = nb;
+            ++along_normal;
+        }
+        const std::size_t moved = ro.mPillow ? static_cast<std::size_t>(rIn.rCopy[v]) : v;
+        slide[moved] = nb;
+        pts[moved] = q;
+        mode[moved] = HexNodeMode::Slide;
+        if (!shell_of.empty())
+            shell_of[moved] = 1;
+        if (ro.mPillow) {
+            outward[moved] = out_dir;
+            inside_of[moved] = static_cast<std::int64_t>(v);
+            held += octmh_inset(rs, pts, v, moved, out_dir, size[v], p_shells);
+        }
+    }
+    // The interfaces (cleaving, robust): each shell node on its shell, the
+    // outer node a pillow's depth outside it, the inner copy as deep inside.
+    // An interface can lie half a cell from its shell (the graded dual keeps
+    // the centres more than a tenth of a cell inside), so the node a pillow's
+    // depth out could land on its neighbour: it goes at most half way to the
+    // nearest neighbour on its side that is not on the interface.
+    std::vector<std::vector<std::int64_t>> side_nbr;
+    std::vector<std::uint8_t> on_interface;
+    if (robust && rIn.pInterfaces != nullptr) {
+        on_interface.assign(pts.size(), 0);
+        for (const OctmhInterface& in : *rIn.pInterfaces)
+            for (std::size_t k = 0; k < in.mNodes.size(); ++k) {
+                on_interface[static_cast<std::size_t>(in.mNodes[k])] = 1;
+                on_interface[static_cast<std::size_t>(in.mShellNode[k])] = 1;
+                on_interface[static_cast<std::size_t>(in.mInnerNode[k])] = 1;
+            }
+        side_nbr.resize(pts.size());
+        for (const auto& hex : rIn.rMesh.mHexes)
+            for (std::size_t c = 0; c < 8; ++c) {
+                const auto u = static_cast<std::size_t>(hex[c]);
+                if (!on_interface[u])
+                    continue;
+                for (std::size_t e = 0; e < 3; ++e) {
+                    const std::int64_t n = hex[static_cast<std::size_t>(kOctmhCorner[c][e])];
+                    if (!on_interface[static_cast<std::size_t>(n)])
+                        side_nbr[u].push_back(n);
+                }
+            }
+    }
+    // Move @p V from the shell point @p rFoot along the unit @p rDir by
+    // `octmh_inset`'s depth, held to half the gap to its side's neighbours.
+    auto place_side = [&](std::size_t V, std::size_t Shell, const Vec3& rDir, double Size) {
+        const Vec3 foot = pts[Shell];
+        double gap = std::numeric_limits<double>::infinity();
+        for (std::int64_t n : side_nbr[V]) {
+            const double along = vec3_dot(vec3_sub(pts[static_cast<std::size_t>(n)], foot), rDir);
+            if (along > 1e-9 * Size)
+                gap = std::min(gap, along);
+        }
+        const double t = octmh_thickness(rs, foot, vec3_scale(rDir, -1.0), 1.2 * Size, p_shells);
+        const double d = std::min({0.5 * Size, 0.45 * t, 0.5 * gap});
+        pts[V] = vec3_add(foot, vec3_scale(rDir, d));
+        return d < 0.5 * Size;
+    };
+    if (robust && rIn.pInterfaces != nullptr)
+        for (const OctmhInterface& in : *rIn.pInterfaces) {
+            std::vector<Vec3> at;
+            for (std::int64_t v : in.mNodes)
+                at.push_back(pts[static_cast<std::size_t>(v)]);
+            const std::vector<SurfaceProjection> near =
+                query_surface_projections(octmh_query(rs, p_shells, in.mShell), at);
+            for (std::size_t k = 0; k < in.mNodes.size(); ++k) {
+                const auto v = static_cast<std::size_t>(in.mNodes[k]);
+                const auto sn = static_cast<std::size_t>(in.mShellNode[k]);
+                const auto inner = static_cast<std::size_t>(in.mInnerNode[k]);
+                Vec3 q = near[k].mPoint;
+                Vec3 out_dir = vec3_scale(vec3_normalize(near[k].mNormal), rs.mWindingSign);
+                const Vec3& nb = in.mNormals[k];
+                Vec3 f{};
+                if (octmh_robust_foot(rs, pts[v], nb, near[k].mDistance, size[v], f, p_shells,
+                                      in.mShell)) {
+                    q = f;
+                    out_dir = nb;
+                    ++along_normal;
+                }
+                pts[sn] = q;
+                slide[sn] = nb;
+                mode[sn] = HexNodeMode::Slide;
+                shell_of[sn] = in.mShell;
+                outward[sn] = out_dir;
+                inside_of[sn] = static_cast<std::int64_t>(inner);
+                outside_of[sn] = static_cast<std::int64_t>(v);
+                held += place_side(inner, sn, vec3_scale(out_dir, -1.0), size[v]);
+                held += place_side(v, sn, out_dir, size[v]);
+            }
+        }
+    if (robust)
+        log::debug("{}{} skin nodes placed along their normal, {} held by the thickness",
+                   kOctreeMeshPrefix, along_normal, held);
+    octmh_log_stage(robust ? "robust placement" : "body-fitted placement", pts, rIn.rMesh.mHexes);
+    out.mFeature.assign(pts.size(), 0);
+    // The feature snaps: the outer skin's, then each interface's on its own
+    // shell. The robust fit leaves out creases shorter than a cell.
+    struct Job {
+        const FeatureGraph* pGraph;
+        const std::vector<std::array<std::int64_t, 4>>* pQuads;
+    };
+    std::vector<Job> jobs;
+    if (rIn.pGraph != nullptr)
+        jobs.push_back({rIn.pGraph, &rIn.rQuads});
+    if (robust && rIn.pInterfaces != nullptr)
+        for (const OctmhInterface& in : *rIn.pInterfaces)
+            if (in.mGraph)
+                jobs.push_back({&*in.mGraph, &in.mQuads});
+    // Every snapped chain, across the jobs, and per point the one a node lies
+    // on and what a released node is tethered to (-1: none).
+    std::vector<FeatureGraph> kept(jobs.size());
+    std::vector<const std::vector<std::int64_t>*> chains;
+    std::vector<std::int64_t> node_chain, node_corner, tether_chain, tether_corner;
+    if (robust && !jobs.empty()) {
+        node_chain.assign(pts.size(), -1);
+        node_corner.assign(pts.size(), -1);
+        tether_chain.assign(pts.size(), -1);
+        tether_corner.assign(pts.size(), -1);
+    }
+    for (std::size_t j = 0; j < jobs.size(); ++j) {
+        const FeatureGraph* p_graph = jobs[j].pGraph;
+        std::int64_t short_chains = 0;
+        if (robust) {
+            kept[j] = octmh_drop_short(
+                rs, *p_graph, ro.mHexGrading == OctreeMeshHexGrading::Graded ? 0.0 : size.front(),
+                short_chains);
+            p_graph = &kept[j];
+        }
+        OctmhFeatures f = octmh_snap(pts, *jobs[j].pQuads, *p_graph, rs.mSkin.mPoints, size,
+                                     out.mFeature, robust);
+        // Report against the whole graph: a dropped crease is not recovered.
+        out.mFeatures.mCorners += static_cast<std::int64_t>(jobs[j].pGraph->mCorners.size());
+        out.mFeatures.mChains += static_cast<std::int64_t>(jobs[j].pGraph->mChains.size());
+        out.mFeatures.mCornersSnapped += f.mCornersSnapped;
+        out.mFeatures.mChainsMissed += f.mChainsMissed + short_chains;
+        out.mFeatures.mMoved += f.mMoved;
+        out.mShortChains += short_chains;
+        out.mShortCorners +=
+            static_cast<std::int64_t>(jobs[j].pGraph->mCorners.size() - p_graph->mCorners.size());
+        if (!robust)
+            continue;
+        const auto offset = static_cast<std::int64_t>(chains.size());
+        for (const auto& chain : p_graph->mChains)
+            chains.push_back(&chain);
+        for (std::size_t p = 0; p < pts.size(); ++p) {
+            if (f.mNodeChain[p] >= 0)
+                node_chain[p] = f.mNodeChain[p] + offset;
+            if (f.mNodeCorner[p] >= 0)
+                node_corner[p] = f.mNodeCorner[p];
+        }
+        const std::vector<std::int64_t> turns =
+            octmh_release_turns(*jobs[j].pQuads, f, out.mFeature);
+        for (std::size_t p = 0; p < pts.size(); ++p)
+            if (turns[p] >= 0)
+                tether_chain[p] = turns[p] + offset;
+    }
+    if (!jobs.empty()) {
+        if (robust && ro.mPillow)
+            // A snapped node can move far (up to 1.5 sizes for a corner): the
+            // nodes a pillow's depth from it follow, so its cells keep their height.
+            for (std::size_t p = 0; p < pts.size(); ++p) {
+                if (!out.mFeature[p])
+                    continue;
+                if (outside_of[p] >= 0) {
+                    // An interface's shell node: both sides follow it.
+                    const auto v = static_cast<std::size_t>(outside_of[p]);
+                    place_side(static_cast<std::size_t>(inside_of[p]), p,
+                               vec3_scale(outward[p], -1.0), size[v]);
+                    place_side(v, p, outward[p], size[v]);
+                } else if (inside_of[p] >= 0) {
+                    const auto v = static_cast<std::size_t>(inside_of[p]);
+                    octmh_inset(rs, pts, v, p, outward[p], size[v], p_shells);
+                }
+            }
+        for (std::size_t p = 0; p < out.mFeature.size(); ++p)
+            if (out.mFeature[p])
+                mode[p] = HexNodeMode::Fixed;
+        octmh_log_stage("feature snap", pts, rIn.rMesh.mHexes);
+    }
+    HexUntangleOptions uo;
+    uo.mIterations = ro.mUntangleIterations;
+    uo.mRobust = robust;
+    HexProjector project;
+    if (robust)
+        project = [&](std::size_t Node, const Vec3& rP) {
+            const std::int32_t sh = shell_of.empty() ? 0 : shell_of[Node];
+            const DistanceQuery& query = octmh_query(rs, p_shells, sh);
+            const SurfaceProjection c = query_surface_projections(query, {rP}).front();
+            Vec3 f = c.mPoint;
+            octmh_robust_foot(rs, rP, slide[Node], c.mDistance, size[Node], f, p_shells, sh);
+            if (tether_chain.empty())
+                return f;
+            Vec3 held_at = f;
+            const double within = kOctmhTether * size[Node];
+            if (tether_chain[Node] >= 0) {
+                const auto& chain = *chains[static_cast<std::size_t>(tether_chain[Node])];
+                held_at = octmh_tether(rs.mSkin.mPoints, chain, f, within);
+            } else if (tether_corner[Node] >= 0) {
+                held_at = octmh_tether(rs.mSkin.mPoints, {tether_corner[Node], tether_corner[Node]},
+                                       f, within);
+            }
+            return held_at != f ? query_closest_points(query, {held_at}).front().mPoint : f;
+        };
+    else
+        project = [&](std::size_t, const Vec3& rP) {
+            return query_closest_points(rs.mQuery, {rP}).front().mPoint;
+        };
+    const HexUntangleReport ur = hex_untangle(pts, rIn.rMesh.mHexes, mode, project, uo);
+    out.mMoves = ur.mMoves;
+    for (const auto& hex : rIn.rMesh.mHexes)
+        out.mWorst = std::min(out.mWorst, hex_min_scaled_jacobian(pts, hex));
+    // The repair: a feature node pinned where the boundary cannot follow its
+    // feature (a crease shorter or tighter than a cell, as a scan has) can
+    // hold a corner flat or inverted. Release the feature nodes of the poorest
+    // hexahedra, tethered to their feature, and untangle again.
+    if (robust && !jobs.empty() && ro.mUntangleIterations >= 5 && out.mWorst < kOctmhRepairBelow) {
+        std::vector<std::size_t> freeing;
+        for (const auto& hex : rIn.rMesh.mHexes)
+            if (hex_min_scaled_jacobian(pts, hex) < kOctmhRepairBelow)
+                for (std::int64_t n : hex)
+                    if (out.mFeature[static_cast<std::size_t>(n)])
+                        freeing.push_back(static_cast<std::size_t>(n));
+        std::sort(freeing.begin(), freeing.end());
+        freeing.erase(std::unique(freeing.begin(), freeing.end()), freeing.end());
+        if (!freeing.empty()) {
+            for (std::size_t n : freeing) {
+                out.mFeature[n] = 0;
+                mode[n] = HexNodeMode::Slide;
+                tether_chain[n] = node_chain[n];
+                tether_corner[n] = node_corner[n];
+            }
+            out.mReleased = static_cast<std::int64_t>(freeing.size());
+            HexUntangleOptions again = uo;
+            again.mIterations = ro.mUntangleIterations / 5;
+            const HexUntangleReport more =
+                hex_untangle(pts, rIn.rMesh.mHexes, mode, project, again);
+            out.mMoves += more.mMoves;
+            out.mWorst = 1.0;
+            for (const auto& hex : rIn.rMesh.mHexes)
+                out.mWorst = std::min(out.mWorst, hex_min_scaled_jacobian(pts, hex));
+            log::debug("{}repair: {} feature nodes released, smallest corner {}", kOctreeMeshPrefix,
+                       freeing.size(), out.mWorst);
+        }
+    }
+    log::debug("{}{} fit: smallest corner scaled Jacobian {} after {} sweeps", kOctreeMeshPrefix,
+               robust ? "robust" : "body-fitted", out.mWorst, ur.mSweeps);
+    return out;
+}
+
+// The material of a winding number @p W: 1 inside the skin, L inside the
+// (L-1)-th nested shell, at most @p Levels.
+std::int32_t octmh_material(double W, double Threshold, std::int32_t Levels) {
+    return std::clamp<std::int32_t>(static_cast<std::int32_t>(std::floor(W - Threshold)) + 1, 1,
+                                    Levels);
+}
+
+// The shells of the skin under cleaving: each soup triangle takes the material
+// just inside it (the winding number a thousandth of its shortest edge inside
+// its centroid), each skin point the shell of its triangles, and each shell a
+// closest-point query of its own triangles.
+OctmhShells octmh_shells(const OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
+                         std::int32_t Levels) {
+    const TriangleSoup& soup = rS.mSkin.mSoup;
+    const std::size_t nt = soup.NumTriangles();
+    std::vector<Vec3> probe(nt);
+    for (std::size_t t = 0; t < nt; ++t) {
+        const Vec3& a = soup.mCorners[3 * t];
+        const Vec3& b = soup.mCorners[3 * t + 1];
+        const Vec3& c = soup.mCorners[3 * t + 2];
+        const Vec3 centroid = vec3_scale(vec3_add(vec3_add(a, b), c), 1.0 / 3.0);
+        const Vec3 n = vec3_cross(vec3_sub(b, a), vec3_sub(c, a));
+        const double edge = std::min(
+            {vec3_norm(vec3_sub(b, a)), vec3_norm(vec3_sub(c, b)), vec3_norm(vec3_sub(a, c))});
+        probe[t] =
+            vec3_norm(n) > 0.0
+                ? vec3_sub(centroid,
+                           vec3_scale(vec3_normalize(n),
+                                      rS.mWindingSign * std::max(1e-3 * edge, 1e-9 * rS.mDiagonal)))
+                : centroid;
+    }
+    const std::vector<double> w = fast_windings(rS.mBvh, probe, rO.mWindingBeta);
+    OctmhShells out;
+    out.mTriShell.resize(nt);
+    for (std::size_t t = 0; t < nt; ++t)
+        out.mTriShell[t] = octmh_material(rS.mWindingSign * w[t], rO.mWindingThreshold, Levels);
+    out.mPointShell.assign(rS.mSkin.mPoints.size(), 0);
+    for (std::size_t t = 0; t < rS.mSkin.mTris.size(); ++t)
+        for (std::int64_t v : rS.mSkin.mTris[t])
+            out.mPointShell[static_cast<std::size_t>(v)] = out.mTriShell[t];
+    SurfaceDistanceOptions dopt;
+    dopt.mWatertightCheck = SdfWatertightCheck::Off;
+    out.mSoup.resize(static_cast<std::size_t>(Levels));
+    for (std::int32_t level = 1; level <= Levels; ++level) {
+        TriangleSoup& sub = out.mSoup[static_cast<std::size_t>(level - 1)];
+        sub.mPoints = soup.mPoints;
+        for (std::size_t t = 0; t < nt; ++t)
+            if (out.mTriShell[t] == level) {
+                for (std::size_t k = 0; k < 3; ++k)
+                    sub.mCorners.push_back(soup.mCorners[3 * t + k]);
+                sub.mSourceCell.push_back(soup.mSourceCell[t]);
+                sub.mVertices.push_back(soup.mVertices[t]);
+            }
+    }
+    for (std::int32_t level = 1; level <= Levels; ++level) {
+        const TriangleSoup& sub = out.mSoup[static_cast<std::size_t>(level - 1)];
+        // A shell with no triangle of its own (a level the cells reach only
+        // through the winding number's error) projects onto the whole skin.
+        out.mQuery.push_back(build_distance_query(sub.NumTriangles() > 0 ? sub : soup, dopt));
+    }
+    return out;
+}
+
+// Nest the materials of the hexahedra of @p rMesh (one per hexahedron in
+// @p rMaterial, 1 to @p Levels): for each level L from 2, the set S_L of the
+// hexahedra of material L or more keeps off the nodes of everything outside
+// S_{L-1} and the mesh's boundary (so each interface is interior and one
+// layer from the next), and is made manifold by adding hexahedra of S_{L-1}
+// (the largest @p rScore first), else by removing its own (the smallest
+// first). @return the levels left with no hexahedron.
+std::int32_t octmh_nest(const HexMesh& rMesh, std::vector<std::int32_t>& rMaterial,
+                        const std::vector<double>& rScore, std::int32_t Levels) {
+    const std::size_t nh = rMesh.mHexes.size(), np = rMesh.mPoints.size();
+    std::vector<std::uint8_t> on_boundary(np, 0);
+    for (const auto& q : hex_boundary(rMesh).mQuads)
+        for (std::int64_t v : q)
+            on_boundary[static_cast<std::size_t>(v)] = 1;
+    std::int32_t empty = 0;
+    for (std::int32_t level = 2; level <= Levels; ++level) {
+        std::vector<std::uint8_t> fenced = on_boundary;
+        for (std::size_t h = 0; h < nh; ++h)
+            if (rMaterial[h] < level - 1)
+                for (std::int64_t v : rMesh.mHexes[h])
+                    fenced[static_cast<std::size_t>(v)] = 1;
+        auto touches = [&](std::size_t H) {
+            for (std::int64_t v : rMesh.mHexes[H])
+                if (fenced[static_cast<std::size_t>(v)])
+                    return true;
+            return false;
+        };
+        std::vector<std::uint8_t> kept(nh, 0), allowed(nh, 0);
+        for (std::size_t h = 0; h < nh; ++h) {
+            if (rMaterial[h] < level - 1 || touches(h))
+                continue;
+            allowed[h] = 1;
+            kept[h] = rMaterial[h] >= level;
+        }
+        hex_make_manifold(rMesh, kept, rScore, &allowed);
+        hex_shrink_manifold(rMesh, kept, rScore);
+        bool any = false;
+        for (std::size_t h = 0; h < nh; ++h) {
+            if (kept[h])
+                rMaterial[h] = std::max(rMaterial[h], level);
+            else if (rMaterial[h] >= level)
+                rMaterial[h] = level - 1;
+            any = any || kept[h];
+        }
+        empty += any ? 0 : 1;
+    }
+    return empty;
+}
+
 }  // namespace
 
 void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshResult& rR) {
@@ -244557,11 +245673,54 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
     HexMesh hm;
     std::vector<std::int64_t> cell_level;
     std::vector<double> size;
+    OctmhCells cells;
     if (rO.mHexGrading == OctreeMeshHexGrading::Graded)
-        octmh_graded(rS, rO, rR, hm, cell_level, size);
+        octmh_graded(rS, rO, rR, hm, cell_level, size, cells);
     else
-        octmh_uniform(rS, rO, rR, hm, cell_level, size);
+        octmh_uniform(rS, rO, rR, hm, cell_level, size, cells);
     const std::size_t num_grid = hm.mHexes.size();
+
+    // Materials (cleaving): one per winding level the cells reach, nested and
+    // made manifold, each interface pillowed below.
+    std::int32_t levels = 1;
+    if (rO.mConformity == OctreeMeshConformity::Cleaving) {
+        double wmax = rO.mWindingThreshold;
+        for (double w : cells.mWinding)
+            wmax = std::max(wmax, w);
+        levels = octmh_material(wmax, rO.mWindingThreshold, 16);
+    }
+    std::vector<std::int32_t> material;
+    OctmhShells shells;
+    if (levels > 1) {
+        shells = octmh_shells(rS, rO, levels);
+        material.resize(num_grid);
+        for (std::size_t h = 0; h < num_grid; ++h)
+            material[h] = octmh_material(cells.mWinding[h], rO.mWindingThreshold, levels);
+        if (rO.mHexGrading == OctreeMeshHexGrading::Graded) {
+            // As at the skin: a centre within a tenth of its cell of its
+            // interface (a shell on a lattice plane) is kept by a hair.
+            for (std::size_t h = 0; h < num_grid; ++h) {
+                if (material[h] < 2)
+                    continue;
+                const DistanceQuery& query = octmh_query(rS, &shells, material[h]);
+                const double d = query_closest_points(query, {cells.mCentre[h]}).front().mDistance;
+                const double cell =
+                    rS.mFrame.mRootSize / static_cast<double>(std::int64_t{1} << cell_level[h]);
+                if (d < 0.1 * cell)
+                    --material[h];
+            }
+        }
+        const std::int32_t empty = octmh_nest(hm, material, cells.mWinding, levels);
+        if (empty > 0)
+            octree_mesh_warn(
+                rR,
+                std::string(kOctreeMeshPrefix) + std::to_string(empty) +
+                    " nested shells have no hexahedron between their "
+                    "interfaces; lower " +
+                    (rO.mHexGrading == OctreeMeshHexGrading::Graded ? "min_size" : "surface_size"));
+    }
+    // Per hexahedron, whether it is a pillow cell (grows with the pillows).
+    std::vector<std::uint8_t> is_pillow(num_grid, 0);
 
     // The boundary, pillowed or not, onto the skin.
     const HexBoundary grid_boundary = hex_boundary(hm);
@@ -244590,10 +245749,10 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
     std::sort(boundary_nodes.begin(), boundary_nodes.end());
     boundary_nodes.erase(std::unique(boundary_nodes.begin(), boundary_nodes.end()),
                          boundary_nodes.end());
-    std::vector<Vec3> at_nodes;
-    for (std::int64_t v : boundary_nodes)
-        at_nodes.push_back(hm.mPoints[static_cast<std::size_t>(v)]);
-    const std::vector<SurfaceProjection> proj = query_surface_projections(rS.mQuery, at_nodes);
+    octmh_log_stage("grid", hm.mPoints, hm.mHexes);
+    // The boundary's normals, from the grid's own positions.
+    const std::vector<Vec3> normals =
+        hex_boundary_normals(hm.mPoints, grid_boundary.mQuads, kOctmhNormalSmoothing);
     std::vector<std::int64_t> copy;
     if (rO.mPillow) {
         copy = hex_pillow(hm, grid_boundary);
@@ -244601,66 +245760,181 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
         for (std::size_t v = 0; v < copy.size(); ++v)
             if (copy[v] >= 0)
                 size[static_cast<std::size_t>(copy[v])] = size[v];
-    }
-    std::vector<HexNodeMode> mode(hm.mPoints.size(), HexNodeMode::Free);
-    for (std::size_t b = 0; b < boundary_nodes.size(); ++b) {
-        const auto v = static_cast<std::size_t>(boundary_nodes[b]);
-        const Vec3 q = proj[b].mPoint;
-        if (rO.mPillow) {
-            // The copy on the skin, the grid's node half its size inside it.
-            const Vec3 nrm = vec3_scale(vec3_normalize(proj[b].mNormal), rS.mWindingSign);
-            hm.mPoints[static_cast<std::size_t>(copy[v])] = q;
-            mode[static_cast<std::size_t>(copy[v])] = HexNodeMode::Slide;
-            hm.mPoints[v] = vec3_sub(q, vec3_scale(nrm, 0.5 * size[v]));
-        } else {
-            hm.mPoints[v] = q;
-            mode[v] = HexNodeMode::Slide;
+        for (const auto& side : grid_boundary.mSides) {
+            const auto h = static_cast<std::size_t>(side[0]);
+            const std::int64_t lvl = cell_level[h];
+            cell_level.push_back(lvl);
+            is_pillow.push_back(1);
+            if (!material.empty()) {
+                const std::int32_t mat = material[h];
+                material.push_back(mat);
+            }
         }
     }
     const HexBoundary boundary = rO.mPillow ? hex_boundary(hm) : grid_boundary;
-
-    // Features, then untangling with the skin nodes sliding along it.
-    std::vector<std::uint8_t> feature(hm.mPoints.size(), 0);
-    if (rO.mPreserveFeatures && !rS.mFeatures.empty()) {
+    // The features of shell @p Shell (0: every feature).
+    auto features_of = [&](std::int32_t Shell) -> std::optional<FeatureGraph> {
+        if (!rO.mPreserveFeatures || rS.mFeatures.empty())
+            return std::nullopt;
         std::vector<std::array<std::int64_t, 2>> edges;
         for (const OctreeFeatureEdge& e : rS.mFeatures)
-            edges.push_back({e.mA, e.mB});
-        const FeatureGraph graph = feature_graph(rS.mSkin.mPoints, edges, rO.mCornerAngle);
-        const OctmhFeatures f =
-            octmh_snap(hm.mPoints, boundary.mQuads, graph, rS.mSkin.mPoints, size, feature);
+            if (Shell == 0 || (shells.mPointShell[static_cast<std::size_t>(e.mA)] == Shell &&
+                               shells.mPointShell[static_cast<std::size_t>(e.mB)] == Shell))
+                edges.push_back({e.mA, e.mB});
+        if (edges.empty())
+            return std::nullopt;
+        return feature_graph(rS.mSkin.mPoints, edges, rO.mCornerAngle);
+    };
+    const std::optional<FeatureGraph> graph = features_of(levels > 1 ? 1 : 0);
+    // The interfaces, each pillowed on both sides (cleaving).
+    std::vector<OctmhInterface> interfaces;
+    for (std::int32_t level = 2; level <= levels; ++level) {
+        std::vector<std::uint8_t> inner(hm.mHexes.size(), 0);
+        for (std::size_t h = 0; h < inner.size(); ++h)
+            inner[h] = material[h] >= level;
+        const std::vector<Vec3> before = hm.mPoints;
+        const HexInterface pil = hex_pillow_interface(hm, inner);
+        if (pil.mQuads.empty())
+            continue;
+        OctmhInterface itf;
+        itf.mShell = level;
+        const std::vector<Vec3> nrm =
+            hex_boundary_normals(before, pil.mQuads, kOctmhNormalSmoothing);
+        size.resize(hm.mPoints.size());
+        for (std::size_t v = 0; v < before.size(); ++v)
+            if (pil.mShell[v] >= 0) {
+                itf.mNodes.push_back(static_cast<std::int64_t>(v));
+                itf.mShellNode.push_back(pil.mShell[v]);
+                itf.mInnerNode.push_back(pil.mInner[v]);
+                itf.mNormals.push_back(nrm[v]);
+                size[static_cast<std::size_t>(pil.mShell[v])] = size[v];
+                size[static_cast<std::size_t>(pil.mInner[v])] = size[v];
+            }
+        for (const auto& q : pil.mQuads) {
+            std::array<std::int64_t, 4> on{};
+            for (std::size_t c = 0; c < 4; ++c)
+                on[c] = pil.mShell[static_cast<std::size_t>(q[c])];
+            itf.mQuads.push_back(on);
+        }
+        for (std::size_t f = 0; f < pil.mQuads.size(); ++f) {
+            const std::int64_t lvl = cell_level[static_cast<std::size_t>(pil.mInnerHex[f])];
+            for (std::int32_t layer : {level, level - 1}) {
+                cell_level.push_back(lvl);
+                is_pillow.push_back(1);
+                material.push_back(layer);
+            }
+        }
+        itf.mGraph = features_of(level);
+        interfaces.push_back(std::move(itf));
+    }
+
+    // Fit the boundary to the skin and untangle; keep the body-fitted fit of
+    // 18.0.0 where the robust one does no better.
+    const OctmhFitInput in{rS,
+                           rO,
+                           hm,
+                           boundary_nodes,
+                           copy,
+                           size,
+                           normals,
+                           boundary.mQuads,
+                           graph ? &*graph : nullptr,
+                           levels > 1 ? &shells : nullptr,
+                           levels > 1 ? &interfaces : nullptr};
+    const char* p_env = std::getenv("MESHIOPLUSPLUS_OCTREE_MESH_HEX_FIT");
+    const std::string forced = p_env != nullptr ? std::string(p_env) : std::string();
+    OctmhFit fit;
+    if (levels > 1) {
+        // Materials: the 18.0.0 fit had none to compare with.
+        fit = octmh_fit(in, OctmhPlacement::Robust);
+    } else if (forced == "body_fitted") {
+        fit = octmh_fit(in, OctmhPlacement::BodyFitted);
+    } else {
+        fit = octmh_fit(in, OctmhPlacement::Robust);
+        if (fit.mWorst < kOctmhFallbackBelow && forced != "robust") {
+            OctmhFit body = octmh_fit(in, OctmhPlacement::BodyFitted);
+            log::debug("{}robust fit: smallest corner {}, body-fitted: {}", kOctreeMeshPrefix,
+                       fit.mWorst, body.mWorst);
+            if (body.mWorst > fit.mWorst) {
+                const double robust_worst = fit.mWorst;
+                fit = std::move(body);
+                fit.mRobustWorst = robust_worst;
+                fit.mFellBack = true;
+            }
+        }
+    }
+    hm.mPoints = std::move(fit.mPoints);
+    const std::vector<std::uint8_t>& feature = fit.mFeature;
+    const bool any_features =
+        graph || std::any_of(interfaces.begin(), interfaces.end(),
+                             [](const OctmhInterface& rI) { return rI.mGraph.has_value(); });
+    if (any_features) {
+        const OctmhFeatures& f = fit.mFeatures;
         rR.mNumCorners = f.mCorners;
         rR.mNumCornersSnapped = f.mCornersSnapped;
         rR.mNumFeatureChains = f.mChains;
         rR.mNumFeatureChainsMissed = f.mChainsMissed;
         rR.mNumFeatureMoves = f.mMoved;
-        for (std::size_t p = 0; p < feature.size(); ++p)
-            if (feature[p])
-                mode[p] = HexNodeMode::Fixed;
-        if (f.mCornersSnapped < f.mCorners)
+        if (f.mCornersSnapped + fit.mShortCorners < f.mCorners)
+            octree_mesh_warn(
+                rR, std::string(kOctreeMeshPrefix) +
+                        std::to_string(f.mCorners - f.mCornersSnapped - fit.mShortCorners) +
+                        " of " + std::to_string(f.mCorners) + " feature corners not recovered");
+        if (f.mChainsMissed > fit.mShortChains)
             octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) +
-                                     std::to_string(f.mCorners - f.mCornersSnapped) + " of " +
-                                     std::to_string(f.mCorners) + " feature corners not recovered");
-        if (f.mChainsMissed > 0)
-            octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(f.mChainsMissed) +
+                                     std::to_string(f.mChainsMissed - fit.mShortChains) + " of " +
+                                     std::to_string(f.mChains) + " feature chains not recovered");
+        if (fit.mShortChains > 0)
+            octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(fit.mShortChains) +
                                      " of " + std::to_string(f.mChains) +
-                                     " feature chains not recovered");
+                                     " feature chains are shorter than a cell and were not "
+                                     "snapped, nor the corners only they end at");
     }
-    HexUntangleOptions uo;
-    uo.mIterations = rO.mUntangleIterations;
-    const HexUntangleReport ur = hex_untangle(
-        hm.mPoints, hm.mHexes, mode,
-        [&](const Vec3& rP) { return query_closest_points(rS.mQuery, {rP}).front().mPoint; }, uo);
-    rR.mNumOptimizedMoves = ur.mMoves;
-    double worst = 1.0;
-    for (const auto& hex : hm.mHexes)
-        worst = std::min(worst, hex_min_scaled_jacobian(hm.mPoints, hex));
-    if (worst <= 0.0)
-        octree_mesh_warn(
-            rR, std::string(kOctreeMeshPrefix) +
-                    "untangling left a hexahedron with a non-positive corner "
-                    "Jacobian; raise untangle_iterations or lower " +
-                    (rO.mHexGrading == OctreeMeshHexGrading::Graded ? "min_size" : "surface_size"));
-    else if (worst < 0.2)
+    rR.mNumOptimizedMoves = fit.mMoves;
+    const double worst = fit.mWorst;
+    if (fit.mReleased > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(fit.mReleased) +
+                                 " feature nodes were released from their feature to untangle "
+                                 "the hexahedra around them");
+    if (fit.mFellBack)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) +
+                                 "the robust fit reached a smallest corner scaled Jacobian of " +
+                                 std::to_string(fit.mRobustWorst) +
+                                 "; the body-fitted fit did better and was kept");
+    if (worst <= 0.0) {
+        const char* p_size =
+            rO.mHexGrading == OctreeMeshHexGrading::Graded ? "min_size" : "surface_size";
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) +
+                                 "untangling left a hexahedron with a non-positive corner "
+                                 "Jacobian; raise untangle_iterations or lower " +
+                                 p_size);
+        // Where the skin is thinner than two cells, no fit within the size
+        // floor can help: say how many of those hexahedra lie there.
+        std::vector<Vec3> at;
+        std::vector<double> cell;
+        for (std::size_t h = 0; h < hm.mHexes.size(); ++h) {
+            if (hex_min_scaled_jacobian(hm.mPoints, hm.mHexes[h]) > 0.0)
+                continue;
+            Vec3 c{0.0, 0.0, 0.0};
+            for (std::int64_t v : hm.mHexes[h])
+                c = vec3_add(c, hm.mPoints[static_cast<std::size_t>(v)]);
+            at.push_back(vec3_scale(c, 0.125));
+            cell.push_back(rS.mFrame.mRootSize /
+                           static_cast<double>(std::int64_t{1} << cell_level[h]));
+        }
+        const std::vector<SurfaceProjection> near = query_surface_projections(rS.mQuery, at);
+        std::int64_t thin = 0;
+        for (std::size_t k = 0; k < at.size(); ++k) {
+            const Vec3 out_dir = vec3_scale(vec3_normalize(near[k].mNormal), rS.mWindingSign);
+            thin += octmh_thickness(rS, near[k].mPoint, out_dir, 2.0 * cell[k]) < 2.0 * cell[k];
+        }
+        if (thin > 0)
+            octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(thin) +
+                                     " of the " + std::to_string(at.size()) +
+                                     " hexahedra with a non-positive corner lie where the skin "
+                                     "is thinner than two cells; lower " +
+                                     p_size + " to resolve it");
+    } else if (worst < 0.2)
         octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) +
                                  "the smallest corner scaled Jacobian is " + std::to_string(worst));
 
@@ -244676,11 +245950,8 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
     for (std::size_t c = 0; c < hm.mHexes.size(); ++c) {
         for (std::size_t k = 0; k < 8; ++k)
             conn.As<std::int64_t>()[c * 8 + k] = hm.mHexes[c][k];
-        lv.As<std::int64_t>()[c] =
-            c < num_grid
-                ? cell_level[c]
-                : cell_level[static_cast<std::size_t>(grid_boundary.mSides[c - num_grid][0])];
-        pillow.As<std::int64_t>()[c] = c >= num_grid ? 1 : 0;
+        lv.As<std::int64_t>()[c] = cell_level[c];
+        pillow.As<std::int64_t>()[c] = is_pillow[c];
     }
     Mesh& m = rR.mMesh;
     m.AssignPoints(std::move(points));
@@ -244697,6 +245968,21 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
         all[c] = static_cast<std::int64_t>(c);
     rR.mNumInside = static_cast<std::int64_t>(all.size());
     m.AddRegion(Region(kOctreeMeshInsideRegion, RegionKind::Cell, 3, -1, octmh_ids(all, 1)));
+    if (levels > 1) {
+        NDArray mt = NDArray::Uninit(DType::Int64, {hm.mHexes.size()});
+        std::vector<std::vector<std::int64_t>> by_material(static_cast<std::size_t>(levels) + 1);
+        for (std::size_t c = 0; c < hm.mHexes.size(); ++c) {
+            mt.As<std::int64_t>()[c] = material[c];
+            by_material[static_cast<std::size_t>(material[c])].push_back(
+                static_cast<std::int64_t>(c));
+        }
+        std::vector<NDArray> a;
+        a.push_back(std::move(mt));
+        m.AddCellData(kOctreeMeshMaterialName, std::move(a));
+        for (std::int32_t mat = 1; mat <= levels; ++mat)
+            m.AddRegion(Region("material_" + std::to_string(mat), RegionKind::Cell, 3, mat,
+                               octmh_ids(by_material[static_cast<std::size_t>(mat)], 1)));
+    }
     std::vector<std::array<std::int64_t, 2>> sides = boundary.mSides;
     std::sort(sides.begin(), sides.end());
     std::vector<std::int64_t> flat;
@@ -244722,7 +246008,12 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
     rR.mNumNonManifoldBoundaryEdges = boundary.mNumNonManifoldEdges;
     std::vector<std::array<std::int64_t, 3>> tris;
     tris.reserve(boundary.mQuads.size() * 2);
-    for (const auto& q : boundary.mQuads) {
+    // The surfaces that stand for the skin: the boundary, and under cleaving
+    // the interfaces, which stand for the nested shells.
+    std::vector<std::array<std::int64_t, 4>> surface_quads = boundary.mQuads;
+    for (const OctmhInterface& itf : interfaces)
+        surface_quads.insert(surface_quads.end(), itf.mQuads.begin(), itf.mQuads.end());
+    for (const auto& q : surface_quads) {
         tris.push_back({q[0], q[1], q[2]});
         tris.push_back({q[0], q[2], q[3]});
     }
