@@ -80,7 +80,8 @@ struct CutOptions {
     std::string mBackend = "auto";
     /// quadrays only: the Lagrange degree of the pieces `cut_level_set` gives.
     std::int32_t mDegree = 2;
-    /// lut only: split the pieces into simplices.
+    /// lut only: split the pieces, and the whole cells kept with them, into
+    /// simplices (tetrahedra or triangles).
     bool mTriangulate = false;
     /// `cut_quadrature` only: the polynomial degree the rules integrate exactly.
     std::int32_t mOrder = 2;

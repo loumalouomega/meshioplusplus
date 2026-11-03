@@ -162,6 +162,13 @@ TEST(Cut, APlaneCutGivesExactMeasuresOnEveryFamily) {
         EXPECT_EQ(face.mDimension, dim - 1);
         EXPECT_NEAR(face.mMeasure, 1.0, 1e-12);
         EXPECT_NEAR(tcut_measure(face.mMesh, dim - 1), 1.0, 1e-12);
+        // triangulate splits every piece and every whole cell into simplices.
+        auto t = tcut_plane(0.3, "plane0 > 0");
+        t.mTriangulate = true;
+        const auto simplices = mio::cut_level_set(mesh, t);
+        for (std::size_t b = 0; b < simplices.mMesh.NumCellBlocks(); ++b)
+            EXPECT_EQ(simplices.mMesh.Cells(b).Type(), dim == 3 ? "tetra" : "triangle");
+        EXPECT_NEAR(tcut_measure(simplices.mMesh, dim), 0.7, 1e-12);
         // The pieces are welded: no point appears twice.
         std::size_t refs = 0;
         for (std::size_t b = 0; b < out.mMesh.NumCellBlocks(); ++b)

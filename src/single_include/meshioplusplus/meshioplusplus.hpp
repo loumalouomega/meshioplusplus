@@ -27070,7 +27070,8 @@ struct CutOptions {
     std::string mBackend = "auto";
     /// quadrays only: the Lagrange degree of the pieces `cut_level_set` gives.
     std::int32_t mDegree = 2;
-    /// lut only: split the pieces into simplices.
+    /// lut only: split the pieces, and the whole cells kept with them, into
+    /// simplices (tetrahedra or triangles).
     bool mTriangulate = false;
     /// `cut_quadrature` only: the polynomial degree the rules integrate exactly.
     std::int32_t mOrder = 2;
@@ -220078,6 +220079,15 @@ CutLevelSetResult cut_level_set(const Mesh& rMesh, const CutOptions& rOptions) {
     result.mNumPieces = static_cast<std::int64_t>(pieces.mTypes.size());
     result.mMesh =
         cut_build_mesh(rMesh, in, pieces, is_cut, rOptions.mRecordParentIds, result.mWarnings);
+    if (rOptions.mTriangulate && run->mBackend == "lut") {
+        // CutCells' tables split only the interface quadrilaterals: the
+        // volume pieces of a hexahedron or a prism, and the cells wholly
+        // inside, keep their shape. Split them here; the data, the parent ids
+        // and the regions follow each piece to its simplices.
+        ConvertCellsOptions co;
+        co.mMode = ConvertCellsMode::Simplexify;
+        result.mMesh = std::move(convert_cells(result.mMesh, co).mMesh);
+    }
     for (const std::string& r_w : result.mWarnings)
         log::warn("{}", r_w);
     return result;

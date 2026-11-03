@@ -144,7 +144,8 @@ def cut_level_set(
         (curved Lagrange pieces of ``degree``) or ``"auto"`` (quadrays for a
         quadratic level set, the lookup tables otherwise).
     :param degree: quadrays only: the pieces' Lagrange degree, 1 to 8.
-    :param triangulate: lut only: split the pieces into simplices.
+    :param triangulate: lut only: split the pieces, and the whole cells kept
+        with them, into simplices.
     :param record_parent_ids: add ``cut:parent_cell``, the input cell each
         piece came from (global, block-major).
     :param return_report: also return the report.

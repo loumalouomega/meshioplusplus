@@ -45,6 +45,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/clean.hpp"
+#include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/vtk_common.hpp"
@@ -945,6 +946,15 @@ CutLevelSetResult cut_level_set(const Mesh& rMesh, const CutOptions& rOptions) {
     result.mNumPieces = static_cast<std::int64_t>(pieces.mTypes.size());
     result.mMesh =
         cut_build_mesh(rMesh, in, pieces, is_cut, rOptions.mRecordParentIds, result.mWarnings);
+    if (rOptions.mTriangulate && run->mBackend == "lut") {
+        // CutCells' tables split only the interface quadrilaterals: the
+        // volume pieces of a hexahedron or a prism, and the cells wholly
+        // inside, keep their shape. Split them here; the data, the parent ids
+        // and the regions follow each piece to its simplices.
+        ConvertCellsOptions co;
+        co.mMode = ConvertCellsMode::Simplexify;
+        result.mMesh = std::move(convert_cells(result.mMesh, co).mMesh);
+    }
     for (const std::string& r_w : result.mWarnings)
         log::warn("{}", r_w);
     return result;
