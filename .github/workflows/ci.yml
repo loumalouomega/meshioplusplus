@@ -697,7 +697,9 @@ jobs:
         run: |
           git clone https://github.com/hjwdzh/QuadriFlow.git /tmp/qf-src
           git -C /tmp/qf-src checkout "${{ steps.qfpin.outputs.commit }}"
-          cmake -S /tmp/qf-src -B /tmp/qf-build -DCMAKE_BUILD_TYPE=Release -DBUILD_FREE_LICENSE=ON
+          # QuadriFlow's pinned CMakeLists asks for CMake < 3.5, which CMake 4 refuses.
+          cmake -S /tmp/qf-src -B /tmp/qf-build -DCMAKE_BUILD_TYPE=Release -DBUILD_FREE_LICENSE=ON \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           cmake --build /tmp/qf-build -j
           mkdir -p ~/quadriflow-bin
           cp /tmp/qf-build/quadriflow ~/quadriflow-bin/
