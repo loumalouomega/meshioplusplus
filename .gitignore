@@ -54,6 +54,7 @@ build/*
 !build/occt-recipe.sh
 !build/build-mmg.sh
 !build/build-netgen.sh
+!build/build-cutcells.sh
 !build/build-permissive-libs.sh
 !build/deps-pins.sh
 # ...and the patches it applies to the sources it fetches. The prefix and the
