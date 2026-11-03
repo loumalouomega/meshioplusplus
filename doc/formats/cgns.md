@@ -160,9 +160,11 @@ It is plain C with a CMake build and works on every platform meshio++ targets, W
 | --- | --- |
 | vcpkg | the `cgnslib` feature of this port, which depends on upstream's `cgns` port — the usual route on Windows |
 | Conan | the `with_cgnslib` option. cgnslib is **not** on ConanCenter, so this only flips the CMake flag; supply an install and set `CGNS_ROOT` (the same status KaHIP has) |
-| Debian / Ubuntu | `libcgns-dev` |
+| Debian / Ubuntu | `libcgns-dev` is CGNS 3.4 on Ubuntu 24.04, older than the 4.x API the backend uses; build 4.x from source there |
 | conda-forge | `cgns` — note the package omits the `libz.so` dev symlink its own exported CMake target names, and its cgnslib is linked against conda's HDF5, so take **both** from the same prefix |
-| From source | `cmake -DCGNS_ENABLE_HDF5=ON`; point meshio++ at it with `CGNS_ROOT` or `CGNS_DIR` |
+| From source | `cmake -DCGNS_ENABLE_HDF5=ON`; point meshio++ at it with `CGNS_ROOT` or `CGNS_DIR`. Built against a system HDF5 that has no CMake config (Ubuntu's), cgnslib's exported targets name it `hdf5-shared` or `hdf5-static` without declaring it; meshio++'s configure stands those names in for the HDF5 it found |
+
+CI's `cgnslib` job builds CGNS 4.5.2 from its pinned tag (`build/deps-pins.sh`) against Ubuntu's HDF5 and runs every CGNS test with the backend live, `CgnsMll.LengthUnitsAgreeWithCgnslib` (both [length unit](/formats#length-units) directions against cgnslib's own `cg_units_write` and `cg_units_read`) and the ADF read through `cgnsconvert` included. Its first run (November 2026) found two differences the suite had never seen: a face mesh read through the MLL came back as one ragged `polygon` block where the raw reader gives `polygon<n>` blocks (it now groups them the same way), and an `NGON_n` section that lost its `ElementStartOffset` read as an empty mesh (its offsets are now checked, and it is refused by name).
 
 meshio++'s own Windows CI leg builds every native path off and exercises the Python fallbacks, so no optional C++ dependency is tested there — that is a CI policy of this repository, not a limitation of cgnslib.
 

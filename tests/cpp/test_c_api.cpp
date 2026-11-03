@@ -2383,10 +2383,42 @@ TEST(CApi, Tetrahedralize) {
         EXPECT_GT(report.num_tetrahedra, 0);
         EXPECT_NEAR(report.volume, 1.0, 0.02);
         EXPECT_EQ(report.num_new_points, report.num_points);
+        ASSERT_NE(report.backend_name, nullptr);
+        EXPECT_STREQ(report.backend_name, "octree");
         for (int64_t k : report.reserved)
             EXPECT_EQ(k, 0);
         EXPECT_GE(block_of(out, "triangle"), 0);
         mio_mesh_free(out);
+    }
+    // Named meshers (roadmap 7.7.2): the list, an unknown name, and each
+    // installed external program, which keeps the surface.
+    {
+        const int64_t n = mio_tet_mesher_count();
+        ASSERT_GE(n, 1);
+        std::vector<std::string> names;
+        for (int64_t i = 0; i < n; ++i)
+            names.emplace_back(mio_tet_mesher_name(i));
+        EXPECT_EQ(mio_tet_mesher_name(n), nullptr);
+        EXPECT_NE(std::find(names.begin(), names.end(), "octree"), names.end());
+        mio_tetrahedralize_opts named;
+        mio_tetrahedralize_opts_init(&named);
+        EXPECT_EQ(named.provider, nullptr);
+        named.backend = MIO_TETRAHEDRALIZE_BACKEND_NAMED;
+        named.provider = "no-such-mesher";
+        EXPECT_EQ(mio_tetrahedralize(m, &named, &report), nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("no-such-mesher"), std::string::npos);
+        for (const char* p_name : {"tetgen", "gmsh"}) {
+            if (std::find(names.begin(), names.end(), p_name) == names.end())
+                continue;
+            named.provider = p_name;
+            mio_mesh* out = mio_tetrahedralize(m, &named, &report);
+            ASSERT_NE(out, nullptr) << mio_last_error();
+            EXPECT_EQ(report.backend, MIO_TETRAHEDRALIZE_BACKEND_NAMED);
+            EXPECT_STREQ(report.backend_name, p_name);
+            EXPECT_EQ(report.boundary_preserved, 1);
+            EXPECT_NEAR(report.volume, 1.0, 1e-9);
+            mio_mesh_free(out);
+        }
     }
     if (!mio_has_netgen()) {
         // AUTO falls back to the octree backend; NETGEN is refused by name.
@@ -6806,6 +6838,37 @@ TEST(CApi, StepAndIgesReadOrNameTheBackend) {
         EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_OCCT"),
                   std::string::npos);
     }
+    mio_mesh_free(m);
+}
+
+TEST(CApi, StepReadOptionsHealAndValidate) {
+    mio_cad_read_opts defaults;
+    mio_cad_read_opts_init(&defaults);
+    EXPECT_EQ(defaults.deflection, 0.0);
+    EXPECT_EQ(defaults.angular_deflection, 0.5);
+    EXPECT_EQ(defaults.heal, 0);
+    EXPECT_EQ(defaults.sew_tolerance, 0.0);
+    if (!mio_has_occt())
+        return;
+    mio_mesh* m = capi_cube_surface();
+    const auto step = mt::temp_path(".step");
+    ASSERT_EQ(mio_write(step.c_str(), m, nullptr), MIO_OK) << mio_last_error();
+    mio_cad_read_opts cad = defaults;
+    cad.heal = 1;
+    mio_format_info* info = nullptr;
+    mio_mesh* back = mio_read_with_info2(step.c_str(), nullptr, nullptr, &cad, &info);
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    char buf[1024];
+    const std::int64_t n = mio_brep_info_string(info, MIO_BREP_FILE, 0, 0, buf, sizeof(buf));
+    ASSERT_GT(n, 0);
+    const std::string extra(buf);
+    EXPECT_NE(extra.find("\"heal\":{\"healed\":true"), std::string::npos) << extra;
+    EXPECT_NE(extra.find("\"free_edges_after\":0"), std::string::npos) << extra;
+    mio_format_info_free(info);
+    mio_mesh_free(back);
+    cad.sew_tolerance = -1.0;
+    EXPECT_EQ(mio_read_with_info2(step.c_str(), nullptr, nullptr, &cad, &info), nullptr);
+    EXPECT_EQ(info, nullptr);
     mio_mesh_free(m);
 }
 

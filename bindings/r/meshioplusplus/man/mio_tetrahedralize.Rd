@@ -10,7 +10,8 @@ mio_tetrahedralize(mesh, backend = "auto", max_size = 0, max_volume = 0,
 }
 \arguments{
 \item{mesh}{A closed triangle surface.}
-\item{backend}{\code{"auto"}, \code{"netgen"} or \code{"octree"}.}
+\item{backend}{\code{"auto"}, \code{"netgen"}, \code{"octree"}, or another name of
+\code{\link[=mio_tetrahedralize_backends]{mio_tetrahedralize_backends()}} (\code{"tetgen"}, \code{"gmsh"}).}
 \item{max_size, max_volume}{The largest edge and volume asked of the tetrahedra; 0 is none.}
 \item{grading}{How fast the size grows away from the surface, in [0, 1].}
 \item{optimize_steps}{Passes of the backend's volume optimisation (0 to 100).}
@@ -36,4 +37,7 @@ tetrahedra's boundary with the octree backend) and the cell data
 \code{\link[=mio_has_netgen]{mio_has_netgen()}} is \code{TRUE} and the octree
 backend otherwise; \code{"netgen"} without it fails naming
 \code{MESHIOPLUSPLUS_WITH_NETGEN}.
+\code{"tetgen"} and \code{"gmsh"} run those installed programs on the surface as
+separate processes, its triangles kept (checked); see
+\code{\link[=mio_tetrahedralize_backends]{mio_tetrahedralize_backends()}}.
 }

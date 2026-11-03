@@ -44,13 +44,20 @@ static const mio_format_info *info_of(SEXP x, int allow_null) {
     return info;
 }
 
-SEXP R_mio_read_with_info(SEXP path, SEXP format, SEXP lenient) {
+SEXP R_mio_read_with_info(SEXP path, SEXP format, SEXP lenient, SEXP deflection,
+                          SEXP angular_deflection, SEXP heal, SEXP sew_tolerance) {
     mio_read_opts opts;
     mio_read_opts_init(&opts);
     opts.lenient = mio_r_bool(lenient, "lenient");
+    mio_cad_read_opts cad;
+    mio_cad_read_opts_init(&cad);
+    cad.deflection = mio_r_double(deflection, "deflection");
+    cad.angular_deflection = mio_r_double(angular_deflection, "angular_deflection");
+    cad.heal = mio_r_bool(heal, "heal");
+    cad.sew_tolerance = mio_r_double(sew_tolerance, "sew_tolerance");
     mio_format_info *info = NULL;
-    mio_mesh *m = mio_read_with_info(mio_r_string(path, "path"), mio_r_opt_string(format), &opts,
-                                     &info);
+    mio_mesh *m = mio_read_with_info2(mio_r_string(path, "path"), mio_r_opt_string(format), &opts,
+                                      &cad, &info);
     if (m == NULL) mio_r_fail("read_with_info");
     SEXP values[2];
     values[0] = PROTECT(mio_r_wrap_mesh(m));

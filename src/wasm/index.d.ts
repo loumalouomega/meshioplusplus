@@ -881,6 +881,8 @@ export interface TetrahedralizeOptions {
    * (the surface kept; no WebAssembly build carries it) or `"octree"` (the
    * native isosurface stuffing, the boundary fitted).
    */
+  /** The external `tetgen` and `gmsh` meshers of the native builds never run in
+   * WebAssembly: another name is refused, naming the backends this build has. */
   backend?: 'auto' | 'netgen' | 'octree';
   /** The largest edge asked of the tetrahedra (0, the default, is none). */
   maxSize?: number;
@@ -2216,6 +2218,14 @@ export interface MeshioPlusPlusModule {
    * `.pvtp` or `.pvd` -- every cell with a `vtkGhostType` bit set, and the points
    * only they used. `false` (the default) keeps them. Every other reader ignores it.
    *
+   * `cadRead` (STEP and IGES, the full artifact only) sets how the shape is
+   * read: the triangulation's `deflection` (a length, at most 0 automatic) and
+   * `angularDeflection` (radians, default 0.5), and `heal: true`, which heals
+   * the shape before it is extracted (`ShapeFix_Shape`, then sewing at
+   * `sewTolerance`, at most 0 automatic; a positive `sewTolerance` sews without
+   * `heal`). The heal report is the `heal` member of `JSON.parse` of the B-rep
+   * side channel's file-level `extra` (with `info: true`).
+   *
    * @throws {Error} on an out-of-range `timeStep` or `piece`.
    */
   readMeshSelective(
@@ -2229,6 +2239,12 @@ export interface MeshioPlusPlusModule {
       piece?: number | null;
       dropGhosts?: boolean;
       info?: boolean;
+      cadRead?: {
+        deflection?: number;
+        angularDeflection?: number;
+        heal?: boolean;
+        sewTolerance?: number;
+      } | null;
     }
   ): Mesh;
 

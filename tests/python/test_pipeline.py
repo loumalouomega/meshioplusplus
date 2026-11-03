@@ -1317,7 +1317,15 @@ def test_tetrahedralize_pipeline_step(tmp_path):
     op = {"Op": "Tetrahedralize", "MaxSize": 0.3, "Grading": 0.3, "OptimizeSteps": 3}
     for _, run in _engines():
         with pytest.raises(ValueError, match="Backend"):
-            run(_cad_sphere_doc([dict(op, Backend="tetgen")], tmp_path / "bad.vtu"))
+            run(_cad_sphere_doc([dict(op, Backend="")], tmp_path / "bad.vtu"))
+        # Any other name is a named mesher (roadmap 7.7.2); an unknown one is
+        # refused naming it.
+        with pytest.raises(NotImplementedError, match="no-such-mesher"):
+            run(
+                _cad_sphere_doc(
+                    [dict(op, Backend="no-such-mesher")], tmp_path / "bad.vtu"
+                )
+            )
     fitted = []
     for name, run in _engines():
         report = run(

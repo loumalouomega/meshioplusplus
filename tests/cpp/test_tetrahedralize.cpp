@@ -301,6 +301,44 @@ TEST(Tetrahedralize, TheSphereIsFilledKeepingItsSkin) {
     EXPECT_GT(mio::tetrahedralize(s, o).mNumTetrahedra, r.mNumTetrahedra);
 }
 
+// Roadmap 7.7.2: the installed TetGen and Gmsh as named meshers, run as
+// separate processes; each keeps the sphere's skin (checked by the core).
+TEST(Tetrahedralize, ExternalMeshersKeepTheSkin) {
+    const mio::Mesh s = skin(brep_solids::sphere(1.0), 0.25);
+    int ran = 0;
+    for (const char* p_name : {"tetgen", "gmsh"}) {
+        const auto names = mio::tetrahedralize_backends();
+        if (std::find(names.begin(), names.end(), p_name) == names.end())
+            continue;
+        ++ran;
+        mio::TetrahedralizeOptions o;
+        o.mBackend = mio::TetrahedralizeBackend::Named;
+        o.mProvider = p_name;
+        o.mMaxSize = 0.25;
+        const auto r = mio::tetrahedralize(s, o);
+        EXPECT_EQ(r.mBackend, p_name);
+        EXPECT_TRUE(r.mBoundaryPreserved) << p_name;
+        EXPECT_EQ(r.mHausdorffToSurface, 0.0) << p_name;
+        EXPECT_GT(r.mNumTetrahedra, 0) << p_name;
+        EXPECT_NEAR(r.mVolume, 4.0 / 3.0 * kPi, 0.1) << p_name;
+        const double* p0 = s.Points().As<double>();
+        const double* p1 = r.mMesh.Points().As<double>();
+        for (std::size_t i = 0; i < 3 * s.NumPoints(); ++i)
+            ASSERT_EQ(p0[i], p1[i]) << p_name << " " << i;
+        // Two regions, a box in a box, through the same program.
+        std::vector<double> x;
+        std::vector<std::int64_t> t;
+        add_box(x, t, 0.0, 3.0);
+        add_box(x, t, 1.0, 2.0);
+        const auto two = mio::tetrahedralize(triangles(x, t), o);
+        EXPECT_EQ(two.mNumRegions, 2) << p_name;
+        EXPECT_TRUE(two.mBoundaryPreserved) << p_name;
+        EXPECT_NEAR(two.mVolume, 27.0, 1e-9) << p_name;
+    }
+    if (!ran)
+        GTEST_SKIP() << "neither tetgen nor gmsh is installed";
+}
+
 // Roadmap 6.7.4 and 6.7.6: a box inside a box gives two cell regions that
 // share the inner box's triangles; facing in, a shell is turned.
 TEST(Tetrahedralize, ABoxInABoxGivesTwoRegions) {

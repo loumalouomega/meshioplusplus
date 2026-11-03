@@ -21,7 +21,9 @@ _NEEDS_OCCT = (
 )
 
 
-def _read_cad(fmt, filename, deflection, angular_deflection):
+def _read_cad(
+    fmt, filename, deflection, angular_deflection, heal=False, sew_tolerance=0.0
+):
     if is_buffer(filename, "r"):
         raise NotImplementedError(f"meshio++: {fmt}: reading needs a file path")
     from .._plugins import load_plugins
@@ -30,10 +32,18 @@ def _read_cad(fmt, filename, deflection, angular_deflection):
     reader = getattr(_core, f"{fmt}_read", None) if _core is not None else None
     if reader is None or not getattr(_core, "__has_occt__", False):
         raise NotImplementedError(f"meshio++: {fmt}: {_NEEDS_OCCT}")
-    return reader(str(filename), float(deflection), float(angular_deflection))
+    return reader(
+        str(filename),
+        float(deflection),
+        float(angular_deflection),
+        bool(heal),
+        float(sew_tolerance),
+    )
 
 
-def read(filename, deflection=0.0, angular_deflection=0.5):
+def read(
+    filename, deflection=0.0, angular_deflection=0.5, heal=False, sew_tolerance=0.0
+):
     """Read a STEP file as its triangulation, through OpenCASCADE.
 
     The shape is triangulated by ``BRepMesh`` at ``deflection`` (a length; at
@@ -43,9 +53,38 @@ def read(filename, deflection=0.0, angular_deflection=0.5):
     ``mesh.info["brep"]``, which :func:`meshioplusplus.cad_json.write` writes as
     Kratos CAD JSON.
 
+    ``heal=True`` repairs the shape before it is extracted: ``ShapeFix_Shape``,
+    then sewing (``BRepBuilderAPI_Sewing``) at ``sew_tolerance``, a length; at
+    most 0 takes 1e-5 of the bounding-box diagonal, never below the shape's
+    own largest tolerance. A positive ``sew_tolerance`` sews even without
+    ``heal``. What healing did is the ``heal`` member of
+    ``json.loads(mesh.info["brep"]["extra"])``: ``healed``, ``fixed``,
+    ``sew_tolerance``, ``free_edges_before``, ``free_edges_after``,
+    ``multiple_edges`` and ``degenerated``.
+
     :raises NotImplementedError: in a build without OpenCASCADE.
     """
-    return _read_cad("step", filename, deflection, angular_deflection)
+    return _read_cad(
+        "step", filename, deflection, angular_deflection, heal, sew_tolerance
+    )
+
+
+def _read_healed(filename, file_format=None, heal=False, sew_tolerance=0.0):
+    """Read a STEP or IGES file with the healing options (the CLIs and MCP)."""
+    from pathlib import Path
+
+    from .._helpers import _filetypes_from_path
+
+    fmt = file_format
+    if fmt is None:
+        candidates = _filetypes_from_path(Path(filename))
+        fmt = candidates[0] if candidates else None
+    if fmt not in ("step", "iges"):
+        raise ValueError(
+            "meshio++: heal and sew_tolerance apply to STEP and IGES inputs, "
+            f"not {fmt!r}"
+        )
+    return _read_cad(fmt, filename, 0.0, 0.5, heal, sew_tolerance)
 
 
 _FACES = ("auto", "planar", "fitted", "facet")

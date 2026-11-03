@@ -5601,6 +5601,14 @@ struct CadReadOptions {
     double mDeflection = 0.0;
     /// The angular deflection, in radians.
     double mAngularDeflection = 0.5;
+    /// Heal the shape before it is extracted: `ShapeFix_Shape`, then sewing
+    /// (`BRepBuilderAPI_Sewing`) at `mSewTolerance`. What it did is reported as
+    /// the `heal` member of `BrepInfo::mExtra`.
+    bool mHeal = false;
+    /// The sewing tolerance, as a length. At most 0 takes 1e-5 of the
+    /// bounding-box diagonal (never below the shape's own largest tolerance)
+    /// when `mHeal` is set; a positive value sews even without `mHeal`.
+    double mSewTolerance = 0.0;
 };
 
 /// Whether this build reads STEP and IGES (it carries the OpenCASCADE backend,
@@ -38974,6 +38982,10 @@ enum class TetrahedralizeBackend : std::int32_t {
     Auto = 0,    ///< Netgen when built in, else the octree backend
     Netgen = 1,  ///< Netgen's nglib (MESHIOPLUSPLUS_WITH_NETGEN): the surface kept
     Octree = 2,  ///< native isosurface stuffing (always built): the surface fitted
+    /// The tetrahedral mesher registered under `TetrahedralizeOptions::mProvider`
+    /// (`tet_mesher_names()`: the installed `tetgen` and `gmsh`, a plugin's), the
+    /// surface kept (roadmap 7.7.2).
+    Named = 3,
 };
 
 struct TetrahedralizeOptions {
@@ -38993,6 +39005,8 @@ struct TetrahedralizeOptions {
     /// The cell data naming each triangle's CAD face, carried to the
     /// triangles and made Side regions when present.
     std::string mFaceArray = "cad:face";
+    /// `TetrahedralizeBackend::Named` only: the mesher's name.
+    std::string mProvider;
 };
 
 struct TetrahedralizeResult {
@@ -39017,6 +39031,11 @@ struct TetrahedralizeResult {
 
 /// Whether the Netgen backend is built in (the octree backend always is).
 MESHIOPLUSPLUS_API bool tetrahedralize_has_netgen();
+
+/// The backend names `tetrahedralize` accepts besides `auto`: `octree`, then
+/// every registered tetrahedral mesher (`netgen` when built in, the installed
+/// `tetgen` and `gmsh`, a plugin's), sorted.
+MESHIOPLUSPLUS_API std::vector<std::string> tetrahedralize_backends();
 
 /**
  * @brief Fill the closed triangle surface `rSurface` with tetrahedra (see
@@ -40044,6 +40063,23 @@ MESHIOPLUSPLUS_API void unregister_tet_mesher() noexcept;
 /// The registered tetrahedral mesher, or null.
 MESHIOPLUSPLUS_API std::shared_ptr<const TetMesherProvider> tet_mesher() noexcept;
 
+// Named tetrahedral meshers (roadmap 7.7.2): besides the default one above, any
+// number of meshers registered by name, which `tetrahedralize` picks with
+// `TetrahedralizeBackend::Named`. The default is registered by name too. This
+// build adds `tetgen` and `gmsh` when those programs are installed (it runs
+// them as separate processes; never in WebAssembly), see `tetrahedralize.md`.
+
+/// Registers `Provider` under its `mName` without making it the default,
+/// replacing an earlier one of that name.
+MESHIOPLUSPLUS_API void add_tet_mesher(TetMesherProvider Provider);
+/// Removes the named tetrahedral mesher `rName` (the default stays).
+MESHIOPLUSPLUS_API void remove_tet_mesher(const std::string& rName) noexcept;
+/// The tetrahedral mesher named `rName`, or null.
+MESHIOPLUSPLUS_API std::shared_ptr<const TetMesherProvider> tet_mesher(
+    const std::string& rName) noexcept;
+/// The names of every registered tetrahedral mesher, sorted.
+MESHIOPLUSPLUS_API std::vector<std::string> tet_mesher_names();
+
 /// Registers `Provider` as the remesher, replacing any earlier one.
 MESHIOPLUSPLUS_API void register_remesher(RemesherProvider Provider);
 /// Removes the registered remesher (the builtin is not re-registered).
@@ -40574,6 +40610,37 @@ namespace meshioplusplus::detail {
 /// The shape a STEP (or, with @p Iges, an IGES) file transfers to.
 /// @throws ReadError when OpenCASCADE cannot read or transfer it.
 TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char* pFormat);
+
+/// What `occt_heal_shape` did to a shape read from a STEP or IGES file.
+struct OcctHealReport {
+    /// `ShapeFix_Shape` ran (`CadReadOptions::mHeal`).
+    bool mHealed = false;
+    /// `ShapeFix_Shape` changed the shape.
+    bool mFixed = false;
+    /// The sewing tolerance used, as a length (0 when no sewing ran).
+    double mSewTolerance = 0.0;
+    /// Edges with exactly one face, before and after (degenerate edges excluded).
+    long long mFreeEdgesBefore = 0;
+    long long mFreeEdgesAfter = 0;
+    /// The edges sewing reports as shared by more than two faces.
+    long long mMultipleEdges = 0;
+    /// The degenerate shapes sewing removed.
+    long long mDegenerated = 0;
+    /// The report as a compact JSON object.
+    std::string ToJson() const;
+};
+
+/// Edges of the shape that bound exactly one face (degenerate edges excluded).
+long long occt_count_free_edges(const TopoDS_Shape& rShape);
+
+/**
+ * @brief Heal a shape at read time (`CadReadOptions::mHeal`, `mSewTolerance`):
+ * `ShapeFix_Shape` when healing, then `BRepBuilderAPI_Sewing` when healing or
+ * when a sewing tolerance is given. A tolerance at most 0 takes 1e-5 of the
+ * bounding-box diagonal, never below the shape's own largest tolerance.
+ */
+TopoDS_Shape occt_heal_shape(const TopoDS_Shape& rShape, const CadReadOptions& rOptions,
+                             OcctHealReport& rReport);
 
 /// A shape and its faces, loops and edges as NURBS.
 struct OcctNurbs {
@@ -49531,6 +49598,44 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/streamlines.hpp =====
+// ===== begin src/cpp/src/detail/subprocess.hpp =====
+/**
+ * @file detail/subprocess.hpp
+ * @brief Run an installed program as a separate process (roadmap 7.7.2, the
+ * external tetrahedral meshers): find it on `PATH`, run it with an argument
+ * vector (no shell), its output sent to a log file, and wait for it.
+ *
+ * Core-internal. Compiled out under Emscripten, where `subprocess_available()`
+ * is false and running throws `Unsupported`.
+ */
+
+// System includes
+#include <string>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+/// Whether this build can start processes.
+bool subprocess_available() noexcept;
+
+/// The full path of the program @p rName: the environment variable
+/// @p pOverride when it is set (and names a file), else the first match on
+/// `PATH` (with `.exe` on Windows); empty when there is none.
+std::string find_executable(const std::string& rName, const char* pOverride = nullptr);
+
+/// Runs @p rArgv (`rArgv[0]` the program's full path) in @p rWorkDir, standard
+/// output and error appended to @p rLogPath, and waits. Returns the exit code
+/// (-1 when the process ended by a signal). Throws `std::runtime_error` when it
+/// cannot start.
+int run_process(const std::vector<std::string>& rArgv, const std::string& rWorkDir,
+                const std::string& rLogPath);
+
+/// A fresh, empty directory under the system temporary directory, named after
+/// @p rTag; the caller removes it.
+std::string make_temp_dir(const std::string& rTag);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/subprocess.hpp =====
 // ===== begin src/cpp/src/detail/surface_edge_runs.hpp =====
 /**
  * @file detail/surface_edge_runs.hpp
@@ -78795,6 +78900,467 @@ EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/edge_sampler.cpp =====
+// ===== begin src/cpp/src/detail/external_mesher.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <iterator>
+#include <map>
+#include <stdexcept>
+#include <string>
+#include <system_error>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+using EmPoint = std::array<double, 3>;
+
+// The run's directory, removed afterwards unless MESHIOPLUSPLUS_KEEP_TEMP is set.
+struct EmWorkDir {
+    std::string mPath;
+    explicit EmWorkDir(const std::string& rTag) : mPath(detail::make_temp_dir(rTag)) {}
+    EmWorkDir(const EmWorkDir&) = delete;
+    EmWorkDir& operator=(const EmWorkDir&) = delete;
+    ~EmWorkDir() {
+        const char* p_keep = std::getenv("MESHIOPLUSPLUS_KEEP_TEMP");
+        if (p_keep && *p_keep && std::string(p_keep) != "0") {
+            log::info("external mesher: kept '{}'", mPath);
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::remove_all(mPath, ec);
+    }
+    std::string File(const std::string& rName) const {
+        return (std::filesystem::path(mPath) / rName).string();
+    }
+};
+
+std::string em_num(double Value) {
+    char buf[40];
+    detail::snprintf_c(buf, sizeof(buf), "%.17g", Value);
+    return buf;
+}
+
+// The last lines of the program's log, for an error message.
+std::string em_log_tail(const std::string& rLog) {
+    auto in = detail::make_classic_ifstream(rLog);
+    std::vector<std::string> lines;
+    for (std::string line; std::getline(in, line);)
+        if (!line.empty())
+            lines.push_back(line);
+    std::string out;
+    for (std::size_t i = lines.size() > 6 ? lines.size() - 6 : 0; i < lines.size(); ++i)
+        out += (out.empty() ? "" : " | ") + lines[i];
+    return out;
+}
+
+void em_run(const std::string& rName, const std::vector<std::string>& rArgv,
+            const EmWorkDir& rDir) {
+    const std::string log = rDir.File("mesher.log");
+    const int code = detail::run_process(rArgv, rDir.mPath, log);
+    if (code != 0)
+        throw std::runtime_error(rName + " failed (exit code " + std::to_string(code) +
+                                 "): " + em_log_tail(log));
+}
+
+/**
+ * The region's result from the mesher's points and tetrahedra: the request's
+ * points first, exactly as given, each matched to the mesher's copy of it
+ * (which a text round trip may have rounded in the last digit), then the
+ * points the mesher added. `mBoundaryPreserved` holds when every request
+ * point came back and the tetrahedra's boundary is the request's triangles.
+ */
+TetMeshRegionResult em_assemble(const TetMeshRegionRequest& rRequest,
+                                const std::vector<EmPoint>& rOut,
+                                const std::vector<std::array<std::int64_t, 4>>& rTets) {
+    const std::size_t n_in = rRequest.mPoints.size();
+    EmPoint lo{}, hi{};
+    for (std::size_t k = 0; k < 3; ++k) {
+        lo[k] = hi[k] = n_in ? rRequest.mPoints[0][k] : 0.0;
+        for (const EmPoint& r_p : rRequest.mPoints) {
+            lo[k] = std::min(lo[k], r_p[k]);
+            hi[k] = std::max(hi[k], r_p[k]);
+        }
+    }
+    const double diag =
+        std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                  (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    const double tol = std::max(1e-9 * diag, 1e-300);
+    const double cell = 4.0 * tol;
+    struct KeyHash {
+        std::size_t operator()(const std::array<std::int64_t, 3>& rK) const noexcept {
+            return static_cast<std::size_t>(rK[0] * 73856093LL ^ rK[1] * 19349663LL ^
+                                            rK[2] * 83492791LL);
+        }
+    };
+    const auto key = [&](const EmPoint& rP) {
+        return std::array<std::int64_t, 3>{static_cast<std::int64_t>(std::floor(rP[0] / cell)),
+                                           static_cast<std::int64_t>(std::floor(rP[1] / cell)),
+                                           static_cast<std::int64_t>(std::floor(rP[2] / cell))};
+    };
+    std::unordered_map<std::array<std::int64_t, 3>, std::vector<std::size_t>, KeyHash> grid;
+    for (std::size_t i = 0; i < n_in; ++i)
+        grid[key(rRequest.mPoints[i])].push_back(i);
+
+    TetMeshRegionResult result;
+    result.mPoints = rRequest.mPoints;
+    std::vector<std::int64_t> map(rOut.size(), -1);
+    std::vector<bool> matched(n_in, false);
+    for (std::size_t o = 0; o < rOut.size(); ++o) {
+        const auto k = key(rOut[o]);
+        std::int64_t best = -1;
+        double best_d = tol * tol;
+        for (std::int64_t dx = -1; dx <= 1; ++dx)
+            for (std::int64_t dy = -1; dy <= 1; ++dy)
+                for (std::int64_t dz = -1; dz <= 1; ++dz) {
+                    const auto it = grid.find({k[0] + dx, k[1] + dy, k[2] + dz});
+                    if (it == grid.end())
+                        continue;
+                    for (const std::size_t i : it->second) {
+                        double d = 0.0;
+                        for (std::size_t c = 0; c < 3; ++c)
+                            d += (rOut[o][c] - rRequest.mPoints[i][c]) *
+                                 (rOut[o][c] - rRequest.mPoints[i][c]);
+                        if (d <= best_d && !matched[i]) {
+                            best_d = d;
+                            best = static_cast<std::int64_t>(i);
+                        }
+                    }
+                }
+        if (best >= 0) {
+            matched[static_cast<std::size_t>(best)] = true;
+            map[o] = best;
+        } else {
+            map[o] = static_cast<std::int64_t>(result.mPoints.size());
+            result.mPoints.push_back(rOut[o]);
+        }
+    }
+    result.mBoundaryPreserved =
+        std::all_of(matched.begin(), matched.end(), [](bool B) { return B; });
+    result.mTets.reserve(rTets.size());
+    for (const auto& r_t : rTets) {
+        std::array<std::int64_t, 4> t{};
+        for (std::size_t j = 0; j < 4; ++j) {
+            if (r_t[j] < 0 || static_cast<std::size_t>(r_t[j]) >= map.size())
+                throw std::runtime_error("the mesher returned a tetrahedron naming no point");
+            t[j] = map[static_cast<std::size_t>(r_t[j])];
+        }
+        result.mTets.push_back(t);
+    }
+    // The boundary: faces of one tetrahedron only, against the request's.
+    if (result.mBoundaryPreserved) {
+        std::map<std::array<std::int64_t, 3>, int> faces;
+        static constexpr int kFace[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+        for (const auto& r_t : result.mTets)
+            for (const auto& r_f : kFace) {
+                std::array<std::int64_t, 3> f{r_t[r_f[0]], r_t[r_f[1]], r_t[r_f[2]]};
+                std::sort(f.begin(), f.end());
+                ++faces[f];
+            }
+        std::vector<std::array<std::int64_t, 3>> got, want;
+        for (const auto& r_e : faces)
+            if (r_e.second == 1)
+                got.push_back(r_e.first);
+        for (const auto& r_t : rRequest.mTriangles) {
+            std::array<std::int64_t, 3> f = r_t;
+            std::sort(f.begin(), f.end());
+            want.push_back(f);
+        }
+        std::sort(want.begin(), want.end());
+        result.mBoundaryPreserved = got == want;
+    }
+    return result;
+}
+
+/**
+ * The region's shells (triangles connected across edges), the outer one first
+ * (the largest bounding box), each as triangle indices; and for each inner
+ * shell (a hole of the region) a point inside it: a triangle's centre moved a
+ * little along its normal, which faces out of the region, so into the hole.
+ */
+struct EmShells {
+    std::vector<std::vector<std::size_t>> mShells;
+    std::vector<EmPoint> mHolePoints;
+};
+
+EmShells em_shells(const TetMeshRegionRequest& rRequest) {
+    const std::size_t nt = rRequest.mTriangles.size();
+    std::vector<std::size_t> parent(nt);
+    for (std::size_t t = 0; t < nt; ++t)
+        parent[t] = t;
+    const auto find = [&](std::size_t A) {
+        while (parent[A] != A)
+            A = parent[A] = parent[parent[A]];
+        return A;
+    };
+    std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> edge_owner;
+    for (std::size_t t = 0; t < nt; ++t)
+        for (std::size_t k = 0; k < 3; ++k) {
+            std::int64_t a = rRequest.mTriangles[t][k], b = rRequest.mTriangles[t][(k + 1) % 3];
+            if (a > b)
+                std::swap(a, b);
+            const auto [it, fresh] = edge_owner.emplace(std::make_pair(a, b), t);
+            if (!fresh)
+                parent[find(t)] = find(it->second);
+        }
+    std::map<std::size_t, std::size_t> root_index;
+    EmShells out;
+    for (std::size_t t = 0; t < nt; ++t) {
+        const std::size_t r = find(t);
+        const auto [it, fresh] = root_index.emplace(r, out.mShells.size());
+        if (fresh)
+            out.mShells.emplace_back();
+        out.mShells[it->second].push_back(t);
+    }
+    const auto extent = [&](const std::vector<std::size_t>& rShell) {
+        EmPoint lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
+        for (const std::size_t t : rShell)
+            for (const std::int64_t v : rRequest.mTriangles[t])
+                for (std::size_t c = 0; c < 3; ++c) {
+                    lo[c] = std::min(lo[c], rRequest.mPoints[static_cast<std::size_t>(v)][c]);
+                    hi[c] = std::max(hi[c], rRequest.mPoints[static_cast<std::size_t>(v)][c]);
+                }
+        return (hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+               (hi[2] - lo[2]) * (hi[2] - lo[2]);
+    };
+    std::size_t outer = 0;
+    for (std::size_t s = 1; s < out.mShells.size(); ++s)
+        if (extent(out.mShells[s]) > extent(out.mShells[outer]))
+            outer = s;
+    std::swap(out.mShells[0], out.mShells[outer]);
+    for (std::size_t s = 1; s < out.mShells.size(); ++s) {
+        // The largest triangle of the shell, for a step well inside its size.
+        std::size_t best = out.mShells[s][0];
+        double best_area = -1.0;
+        EmPoint best_n{};
+        for (const std::size_t t : out.mShells[s]) {
+            const auto& r_t = rRequest.mTriangles[t];
+            const EmPoint& a = rRequest.mPoints[static_cast<std::size_t>(r_t[0])];
+            const EmPoint& b = rRequest.mPoints[static_cast<std::size_t>(r_t[1])];
+            const EmPoint& c = rRequest.mPoints[static_cast<std::size_t>(r_t[2])];
+            const EmPoint u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+            const EmPoint v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+            const EmPoint n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                            u[0] * v[1] - u[1] * v[0]};
+            const double area = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            if (area > best_area) {
+                best_area = area;
+                best = t;
+                best_n = n;
+            }
+        }
+        const auto& r_t = rRequest.mTriangles[best];
+        EmPoint centre{};
+        for (const std::int64_t v : r_t)
+            for (std::size_t c = 0; c < 3; ++c)
+                centre[c] += rRequest.mPoints[static_cast<std::size_t>(v)][c] / 3.0;
+        const double len = best_area > 0.0 ? best_area : 1.0;
+        // A step of a tenth of the triangle's size, along the unit normal.
+        const double step = 0.1 * std::sqrt(0.5 * best_area);
+        out.mHolePoints.push_back({centre[0] + step * best_n[0] / len,
+                                   centre[1] + step * best_n[1] / len,
+                                   centre[2] + step * best_n[2] / len});
+    }
+    return out;
+}
+
+// TetGen 1.5/1.6 meshes a piecewise-linear complex (`-p`) without adding
+// points on its boundary (`-Y`), quietly (`-Q`), with quality (`-q`) when the
+// optimisation passes are asked for and a volume bound (`-a`) from the size.
+TetMeshRegionResult em_tetgen(const std::string& rExe, const TetMeshRegionRequest& rRequest) {
+    const EmWorkDir dir("tetgen");
+    Mesh surface;
+    {
+        const std::size_t n = rRequest.mPoints.size();
+        NDArray p(DType::Float64, {n, std::size_t{3}});
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t c = 0; c < 3; ++c)
+                p.As<double>()[3 * i + c] = rRequest.mPoints[i][c];
+        surface.AssignPoints(std::move(p));
+        NDArray t(DType::Int64, {rRequest.mTriangles.size(), std::size_t{3}});
+        for (std::size_t f = 0; f < rRequest.mTriangles.size(); ++f)
+            for (std::size_t c = 0; c < 3; ++c)
+                t.As<std::int64_t>()[3 * f + c] = rRequest.mTriangles[f][c];
+        surface.AddCellBlock("triangle", std::move(t));
+    }
+    const std::string in = dir.File("in.smesh");
+    write_tetgen(in, surface);
+    {
+        // The holes: write_tetgen's `.smesh` ends with empty hole and region
+        // lists, which a region with inner shells replaces.
+        const EmShells shells = em_shells(rRequest);
+        if (!shells.mHolePoints.empty()) {
+            auto text_in = detail::make_classic_ifstream(in);
+            std::string text((std::istreambuf_iterator<char>(text_in)),
+                             std::istreambuf_iterator<char>());
+            text_in.close();
+            const std::string tail = "# part 3: holes\n0\n";
+            const std::size_t at = text.rfind(tail);
+            if (at == std::string::npos)
+                throw std::runtime_error("tetgen: unexpected .smesh layout");
+            std::string holes =
+                "# part 3: holes\n" + std::to_string(shells.mHolePoints.size()) + "\n";
+            for (std::size_t h = 0; h < shells.mHolePoints.size(); ++h)
+                holes += std::to_string(h) + " " + em_num(shells.mHolePoints[h][0]) + " " +
+                         em_num(shells.mHolePoints[h][1]) + " " + em_num(shells.mHolePoints[h][2]) +
+                         "\n";
+            text.replace(at, tail.size(), holes);
+            auto text_out = detail::make_classic_ofstream(in, std::ios::binary);
+            text_out << text;
+        }
+    }
+    std::string switches = "-pYQ";
+    if (rRequest.mOptimizeSteps > 0)
+        switches += "q";
+    if (rRequest.mMaxSize > 0.0) {
+        // The volume of a regular tetrahedron of that edge.
+        const double h = rRequest.mMaxSize;
+        switches += "a" + em_num(h * h * h / (6.0 * std::sqrt(2.0)));
+    }
+    em_run("tetgen", {rExe, switches, in}, dir);
+    const Mesh out = read_tetgen(dir.File("in.1.node"));
+    std::vector<EmPoint> pts(out.NumPoints());
+    const NDArray& r_p = out.Points();
+    for (std::size_t i = 0; i < pts.size(); ++i)
+        for (std::size_t c = 0; c < 3; ++c)
+            pts[i][c] = detail::read_double(r_p, 3 * i + c);
+    std::vector<std::array<std::int64_t, 4>> tets;
+    for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
+        const auto cells = out.Cells(b);
+        if (cells.Type() != "tetra")
+            continue;
+        for (std::size_t c = 0; c < cells.NumCells(); ++c)
+            tets.push_back({detail::read_int(cells.Conn(), 4 * c),
+                            detail::read_int(cells.Conn(), 4 * c + 1),
+                            detail::read_int(cells.Conn(), 4 * c + 2),
+                            detail::read_int(cells.Conn(), 4 * c + 3)});
+    }
+    return em_assemble(rRequest, pts, tets);
+}
+
+// Gmsh meshes the volume a discrete surface (an ASCII STL, full precision)
+// bounds, keeping its triangles: `Surface Loop` and `Volume` over it, `-3`.
+TetMeshRegionResult em_gmsh(const std::string& rExe, const TetMeshRegionRequest& rRequest) {
+    const EmWorkDir dir("gmsh");
+    const EmShells shells = em_shells(rRequest);
+    {
+        // One `solid` per shell: Gmsh makes each a discrete surface, numbered
+        // from 1 in file order.
+        auto stl = detail::make_classic_ofstream(dir.File("in.stl"));
+        for (const auto& r_shell : shells.mShells) {
+            stl << "solid region\n";
+            for (const std::size_t t_index : r_shell) {
+                const auto& r_t = rRequest.mTriangles[t_index];
+                const EmPoint& a = rRequest.mPoints[static_cast<std::size_t>(r_t[0])];
+                const EmPoint& b = rRequest.mPoints[static_cast<std::size_t>(r_t[1])];
+                const EmPoint& c = rRequest.mPoints[static_cast<std::size_t>(r_t[2])];
+                const EmPoint u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+                const EmPoint v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+                EmPoint n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                          u[0] * v[1] - u[1] * v[0]};
+                const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                for (double& rC : n)
+                    rC = len > 0.0 ? rC / len : 0.0;
+                stl << "facet normal " << em_num(n[0]) << " " << em_num(n[1]) << " " << em_num(n[2])
+                    << "\n outer loop\n";
+                for (const EmPoint* p_v : {&a, &b, &c})
+                    stl << "  vertex " << em_num((*p_v)[0]) << " " << em_num((*p_v)[1]) << " "
+                        << em_num((*p_v)[2]) << "\n";
+                stl << " endloop\nendfacet\n";
+            }
+            stl << "endsolid region\n";
+        }
+        auto geo = detail::make_classic_ofstream(dir.File("in.geo"));
+        geo << "Merge \"in.stl\";\n";
+        std::string loops;
+        for (std::size_t k = 1; k <= shells.mShells.size(); ++k) {
+            geo << "Surface Loop(" << k << ") = {" << k << "};\n";
+            loops += (k > 1 ? "," : "") + std::to_string(k);
+        }
+        geo << "Volume(1) = {" << loops << "};\n";
+        if (rRequest.mOptimizeSteps <= 0)
+            geo << "Mesh.Optimize = 0;\n";
+    }
+    std::vector<std::string> argv = {rExe,      "-3",    "-v", "2",
+                                     "-format", "msh41", "-o", dir.File("out.msh")};
+    if (rRequest.mMaxSize > 0.0) {
+        argv.push_back("-clmax");
+        argv.push_back(em_num(rRequest.mMaxSize));
+    }
+    argv.push_back(dir.File("in.geo"));
+    em_run("gmsh", argv, dir);
+    const Mesh out = read_gmsh(dir.File("out.msh"));
+    std::vector<EmPoint> pts(out.NumPoints());
+    const NDArray& r_p = out.Points();
+    for (std::size_t i = 0; i < pts.size(); ++i)
+        for (std::size_t c = 0; c < 3; ++c)
+            pts[i][c] = detail::read_double(r_p, 3 * i + c);
+    std::vector<std::array<std::int64_t, 4>> tets;
+    for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
+        const auto cells = out.Cells(b);
+        if (cells.Type() != "tetra")
+            continue;
+        for (std::size_t c = 0; c < cells.NumCells(); ++c)
+            tets.push_back({detail::read_int(cells.Conn(), 4 * c),
+                            detail::read_int(cells.Conn(), 4 * c + 1),
+                            detail::read_int(cells.Conn(), 4 * c + 2),
+                            detail::read_int(cells.Conn(), 4 * c + 3)});
+    }
+    if (tets.empty())
+        throw std::runtime_error("gmsh produced no tetrahedra: " +
+                                 em_log_tail(dir.File("mesher.log")));
+    return em_assemble(rRequest, pts, tets);
+}
+
+}  // namespace
+
+namespace providers {
+
+std::vector<TetMesherProvider> make_external_tet_meshers() {
+    std::vector<TetMesherProvider> out;
+    if (!detail::subprocess_available())
+        return out;
+    const char* p_off = std::getenv("MESHIOPLUSPLUS_NO_EXTERNAL_MESHERS");
+    if (p_off && *p_off && std::string(p_off) != "0")
+        return out;
+    const std::string tetgen = detail::find_executable("tetgen", "MESHIOPLUSPLUS_TETGEN");
+    if (!tetgen.empty()) {
+        TetMesherProvider p;
+        p.mName = "tetgen";
+        p.mVersion = "external: " + tetgen;
+        p.mMeshRegion = [tetgen](const TetMeshRegionRequest& rRequest) {
+            return em_tetgen(tetgen, rRequest);
+        };
+        out.push_back(std::move(p));
+    }
+    const std::string gmsh = detail::find_executable("gmsh", "MESHIOPLUSPLUS_GMSH");
+    if (!gmsh.empty()) {
+        TetMesherProvider p;
+        p.mName = "gmsh";
+        p.mVersion = "external: " + gmsh;
+        p.mMeshRegion = [gmsh](const TetMeshRegionRequest& rRequest) {
+            return em_gmsh(gmsh, rRequest);
+        };
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
+}  // namespace providers
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/external_mesher.cpp =====
 // ===== begin src/cpp/src/detail/face_color.cpp =====
 
 #include <cmath>
@@ -102948,6 +103514,235 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/streamlines.cpp =====
+// ===== begin src/cpp/src/detail/subprocess.cpp =====
+
+// System includes
+#include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <stdexcept>
+#include <system_error>
+
+// Project includes
+
+#if defined(_WIN32)
+#define NOMINMAX
+#include <windows.h>
+#elif !defined(__EMSCRIPTEN__)
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+namespace meshioplusplus::detail {
+
+namespace {
+
+bool sp_is_file(const std::filesystem::path& rPath) {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(rPath, ec);
+}
+
+}  // namespace
+
+#if defined(__EMSCRIPTEN__)
+
+bool subprocess_available() noexcept {
+    return false;
+}
+
+std::string find_executable(const std::string&, const char*) {
+    return {};
+}
+
+int run_process(const std::vector<std::string>&, const std::string&, const std::string&) {
+    throw Unsupported("meshio++: running an external program is not available in WebAssembly");
+}
+
+#else
+
+bool subprocess_available() noexcept {
+    return true;
+}
+
+std::string find_executable(const std::string& rName, const char* pOverride) {
+    if (pOverride) {
+        const char* p_value = std::getenv(pOverride);
+        if (p_value && *p_value)
+            return sp_is_file(p_value) ? std::string(p_value) : std::string();
+    }
+    const char* p_path = std::getenv("PATH");
+    if (!p_path)
+        return {};
+#if defined(_WIN32)
+    constexpr char kSeparator = ';';
+    const std::string name = rName + ".exe";
+#else
+    constexpr char kSeparator = ':';
+    const std::string& name = rName;
+#endif
+    const std::string path(p_path);
+    std::size_t start = 0;
+    while (start <= path.size()) {
+        std::size_t end = path.find(kSeparator, start);
+        if (end == std::string::npos)
+            end = path.size();
+        const std::string dir = path.substr(start, end - start);
+        start = end + 1;
+        if (dir.empty())
+            continue;
+        const std::filesystem::path candidate = std::filesystem::path(dir) / name;
+        if (!sp_is_file(candidate))
+            continue;
+#if !defined(_WIN32)
+        if (access(candidate.c_str(), X_OK) != 0)
+            continue;
+#endif
+        return candidate.string();
+    }
+    return {};
+}
+
+#if defined(_WIN32)
+
+namespace {
+
+std::wstring sp_wide(const std::string& rText) {
+    const int n = MultiByteToWideChar(CP_UTF8, 0, rText.c_str(), -1, nullptr, 0);
+    std::wstring wide(static_cast<std::size_t>(n > 0 ? n : 1), L'\0');
+    if (n > 0)
+        MultiByteToWideChar(CP_UTF8, 0, rText.c_str(), -1, wide.data(), n);
+    wide.resize(wide.size() - 1);
+    return wide;
+}
+
+// One argument quoted as CommandLineToArgvW reads it back.
+std::wstring sp_quote(const std::wstring& rArg) {
+    if (!rArg.empty() && rArg.find_first_of(L" \t\n\v\"") == std::wstring::npos)
+        return rArg;
+    std::wstring out = L"\"";
+    for (std::size_t i = 0;; ++i) {
+        std::size_t slashes = 0;
+        while (i < rArg.size() && rArg[i] == L'\\') {
+            ++slashes;
+            ++i;
+        }
+        if (i == rArg.size()) {
+            out.append(slashes * 2, L'\\');
+            break;
+        }
+        if (rArg[i] == L'"')
+            out.append(slashes * 2 + 1, L'\\');
+        else
+            out.append(slashes, L'\\');
+        out.push_back(rArg[i]);
+    }
+    out.push_back(L'"');
+    return out;
+}
+
+}  // namespace
+
+int run_process(const std::vector<std::string>& rArgv, const std::string& rWorkDir,
+                const std::string& rLogPath) {
+    if (rArgv.empty())
+        throw std::runtime_error("meshio++: run_process: no program");
+    std::wstring command;
+    for (const std::string& r_arg : rArgv)
+        command += (command.empty() ? L"" : L" ") + sp_quote(sp_wide(r_arg));
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE log = CreateFileW(sp_wide(rLogPath).c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, &sa,
+                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = INVALID_HANDLE_VALUE;
+    si.hStdOutput = log;
+    si.hStdError = log;
+    PROCESS_INFORMATION pi{};
+    const std::wstring dir = sp_wide(rWorkDir);
+    const BOOL ok = CreateProcessW(sp_wide(rArgv[0]).c_str(), command.data(), nullptr, nullptr,
+                                   TRUE, CREATE_NO_WINDOW, nullptr, dir.c_str(), &si, &pi);
+    if (log != INVALID_HANDLE_VALUE)
+        CloseHandle(log);
+    if (!ok)
+        throw std::runtime_error("meshio++: cannot start '" + rArgv[0] + "'");
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+}
+
+#else
+
+int run_process(const std::vector<std::string>& rArgv, const std::string& rWorkDir,
+                const std::string& rLogPath) {
+    if (rArgv.empty())
+        throw std::runtime_error("meshio++: run_process: no program");
+    // fork and exec rather than posix_spawn, which has no portable
+    // working-directory action: the child changes directory, then runs the
+    // program directly (no shell), with its output in the log.
+    std::vector<std::string> args = rArgv;
+    std::vector<char*> argv;
+    for (std::string& r_arg : args)
+        argv.push_back(r_arg.data());
+    argv.push_back(nullptr);
+    const pid_t pid = fork();
+    if (pid < 0)
+        throw std::runtime_error("meshio++: cannot start '" + rArgv[0] + "'");
+    if (pid == 0) {
+        // The child: only async-signal-safe calls from here.
+        const int null = open("/dev/null", O_RDONLY);
+        if (null >= 0)
+            dup2(null, STDIN_FILENO);
+        const int log = open(rLogPath.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (log >= 0) {
+            dup2(log, STDOUT_FILENO);
+            dup2(log, STDERR_FILENO);
+        }
+        if (chdir(rWorkDir.c_str()) != 0)
+            _exit(126);
+        execv(argv[0], argv.data());
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR)
+            throw std::runtime_error("meshio++: lost track of '" + rArgv[0] + "'");
+    }
+    if (WIFEXITED(status))
+        return WEXITSTATUS(status);
+    return -1;
+}
+
+#endif
+
+#endif  // __EMSCRIPTEN__
+
+std::string make_temp_dir(const std::string& rTag) {
+    static std::atomic<unsigned long> s_counter{0};
+    std::error_code ec;
+    const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+    const auto stamp = static_cast<unsigned long long>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        const std::filesystem::path dir =
+            base / ("meshioplusplus_" + rTag + "_" + std::to_string(stamp) + "_" +
+                    std::to_string(s_counter.fetch_add(1)));
+        if (std::filesystem::create_directory(dir, ec))
+            return dir.string();
+    }
+    throw std::runtime_error("meshio++: cannot create a temporary directory for " + rTag);
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/subprocess.cpp =====
 // ===== begin src/cpp/src/detail/subset.cpp =====
 #include <cstring>
 
@@ -121439,6 +122234,24 @@ struct MllFaces {
     std::size_t Count() const { return mOffsets.empty() ? 0 : mOffsets.size() - 1; }
 };
 
+/// The poly offsets cg_poly_elements_read filled, checked before they index
+/// `elems`: starting at 0, never decreasing, ending at the section's data size,
+/// each entry at least `MinPerEntry` long. A 4.x-declared file whose section
+/// lost its ElementStartOffset comes back as all zeros, which this refuses
+/// rather than reading an empty section (roadmap 7.1.4, the first cgnslib run).
+void cgns_mll_check_offsets(const std::vector<cgsize_t>& rOffsets, cgsize_t DataSize,
+                            std::size_t MinPerEntry, const std::string& rSection,
+                            const std::string& rPath) {
+    bool ok = !rOffsets.empty() && rOffsets.front() == 0 && rOffsets.back() == DataSize;
+    for (std::size_t i = 0; ok && i + 1 < rOffsets.size(); ++i)
+        ok = rOffsets[i + 1] - rOffsets[i] >= static_cast<cgsize_t>(MinPerEntry);
+    if (!ok)
+        cgns_mll_fail("section '" + rSection +
+                          "' has no valid ElementStartOffset for its connectivity (a CGNS "
+                          "4.x file written in the 3.x layout?)",
+                      rPath);
+}
+
 MllFaces cgns_mll_read_ngon(int fn, int B, int Z, const MllSection& rSec,
                             const std::string& rPath) {
     const std::size_t nfaces = static_cast<std::size_t>(rSec.mEnd - rSec.mStart + 1);
@@ -121455,6 +122268,7 @@ MllFaces cgns_mll_read_ngon(int fn, int B, int Z, const MllSection& rSec,
         CG_OK)
         cgns_mll_fail("cg_poly_elements_read failed for NGON_n section '" + rSec.mName + "'",
                       rPath);
+    cgns_mll_check_offsets(offsets, data_size, 3, rSec.mName, rPath);
 
     MllFaces out;
     out.mFirstId = rSec.mStart;
@@ -121854,9 +122668,27 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
 
     if (!ngons.empty() && nfaces.empty()) {
         // Faces with no cells referencing them: a face mesh, not a volume one.
+        // Grouped by corner count into `polygon<n>` blocks, as the raw-HDF5
+        // reader groups them, so both engines read a face mesh alike.
         for (const MllFaces& faces : ngons) {
-            if (faces.Count() > 0)
-                mesh.AddPolygonBlock("polygon", faces.mNodes, faces.mOffsets);
+            std::map<std::size_t, std::vector<std::size_t> > by_n;
+            for (std::size_t i = 0; i < faces.Count(); ++i)
+                by_n[static_cast<std::size_t>(faces.mOffsets[i + 1] - faces.mOffsets[i])].push_back(
+                    i);
+            for (const auto& [n, members] : by_n) {
+                std::vector<std::int64_t> flat;
+                std::vector<std::int64_t> offsets(1, 0);
+                flat.reserve(members.size() * n);
+                for (const std::size_t i : members) {
+                    flat.insert(
+                        flat.end(),
+                        faces.mNodes.begin() + static_cast<std::ptrdiff_t>(faces.mOffsets[i]),
+                        faces.mNodes.begin() + static_cast<std::ptrdiff_t>(faces.mOffsets[i + 1]));
+                    offsets.push_back(static_cast<std::int64_t>(flat.size()));
+                }
+                mesh.AddPolygonBlock("polygon" + std::to_string(n), std::move(flat),
+                                     std::move(offsets));
+            }
         }
     } else if (!nfaces.empty()) {
         if (ngons.empty())
@@ -121882,6 +122714,7 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
                                       nullptr) != CG_OK)
                 cgns_mll_fail("cg_poly_elements_read failed for NFACE_n '" + sec->mName + "'",
                               rPath);
+            cgns_mll_check_offsets(offsets, data_size, 1, sec->mName, rPath);
 
             // Stage every cell's faces as one CSR triple (rings reversed in
             // place for a negative id), then group by unique node count into
@@ -193913,11 +194746,180 @@ Parsed parse_text(std::string_view Text, const std::string& rPath) {
 
 }  // namespace
 
+namespace {
+
+bool tg_is_smesh(const std::string& rPath) {
+    return rPath.size() >= 6 && rPath.compare(rPath.size() - 6, 6, ".smesh") == 0;
+}
+
+// A `.smesh` surface (roadmap 7.7.2): part 1 the nodes, part 2 the facets
+// (polygons, an optional boundary marker each), then the holes and the
+// regions, which a surface mesh does not carry. One cell block per run of
+// facets with the same corner count: `triangle`, `quad`, or `polygon`.
+Mesh tg_read_smesh(const std::string& rPath) {
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const Parsed f = parse_text(source.View(), rPath);
+    detail::need_tokens(f.mHeader, 1, "tetgen");
+    const std::size_t limit = f.mData.size();
+    const std::size_t npoints =
+        detail::checked_count(detail::strtoll_token(f.mHeader[0]), limit, "tetgen", "node");
+    const int dim =
+        f.mHeader.size() > 1 ? static_cast<int>(detail::strtoll_token(f.mHeader[1])) : 3;
+    const std::size_t nattr = f.mHeader.size() > 2
+                                  ? detail::checked_count(detail::strtoll_token(f.mHeader[2]),
+                                                          limit, "tetgen", "attribute")
+                                  : 0;
+    const std::size_t nmark =
+        f.mHeader.size() > 3
+            ? detail::checked_count(detail::strtoll_token(f.mHeader[3]), limit, "tetgen", "marker")
+            : 0;
+    if (dim != 3)
+        throw ReadError("TetGen: need 3D points");
+    const std::size_t ncol = 4 + nattr + nmark;
+    if (npoints > limit / ncol)
+        throw ReadError("TetGen: .smesh node section is truncated");
+    std::size_t at = 0;
+    NDArray pts(DType::Float64, {npoints, std::size_t{3}});
+    std::int64_t base = 0;
+    for (std::size_t i = 0; i < npoints; ++i) {
+        const std::int64_t id = detail::strtoll_token(f.mData[at]);
+        if (i == 0)
+            base = id;
+        if (id != base + static_cast<std::int64_t>(i))
+            throw ReadError("TetGen: nodes not numbered consecutively");
+        for (std::size_t c = 0; c < 3; ++c)
+            pts.As<double>()[3 * i + c] = detail::parse_double_prefix(f.mData[at + 1 + c]);
+        at += ncol;
+    }
+    Mesh mesh;
+    mesh.AssignPoints(std::move(pts));
+    const auto next = [&]() -> std::string_view {
+        if (at >= f.mData.size())
+            throw ReadError("TetGen: .smesh facet section is truncated");
+        return f.mData[at++];
+    };
+    const std::size_t nfacets =
+        detail::checked_count(detail::strtoll_token(next()), limit, "tetgen", "facet");
+    const std::size_t fmark =
+        detail::checked_count(detail::strtoll_token(next()), 1, "tetgen", "facet marker");
+    std::vector<std::int64_t> conn, marks;
+    std::size_t run = 0;
+    const auto flush = [&]() {
+        if (conn.empty())
+            return;
+        const std::size_t ncells = conn.size() / run;
+        NDArray c(DType::Int64, {ncells, run});
+        std::copy(conn.begin(), conn.end(), c.As<std::int64_t>());
+        const std::string type = run == 3   ? std::string("triangle")
+                                 : run == 4 ? std::string("quad")
+                                            : std::string("polygon");
+        mesh.AddCellBlock(type, std::move(c));
+        conn.clear();
+    };
+    std::vector<std::size_t> block_sizes;
+    for (std::size_t k = 0; k < nfacets; ++k) {
+        const std::size_t n =
+            detail::checked_count(detail::strtoll_token(next()), limit, "tetgen", "facet corner");
+        if (n < 3)
+            throw ReadError("TetGen: a facet has fewer than three corners");
+        if (n != run) {
+            if (!conn.empty())
+                block_sizes.push_back(conn.size() / run);
+            flush();
+            run = n;
+        }
+        for (std::size_t j = 0; j < n; ++j) {
+            const std::int64_t v = detail::strtoll_token(next()) - base;
+            if (v < 0 || static_cast<std::size_t>(v) >= npoints)
+                throw ReadError("TetGen: a facet names a node out of range");
+            conn.push_back(v);
+        }
+        if (fmark)
+            marks.push_back(detail::strtoll_token(next()));
+    }
+    if (!conn.empty())
+        block_sizes.push_back(conn.size() / run);
+    flush();
+    if (fmark) {
+        std::vector<NDArray> blocks;
+        std::size_t first = 0;
+        for (const std::size_t n : block_sizes) {
+            NDArray a(DType::Int64, {n});
+            std::copy(marks.begin() + static_cast<std::ptrdiff_t>(first),
+                      marks.begin() + static_cast<std::ptrdiff_t>(first + n), a.As<std::int64_t>());
+            blocks.push_back(std::move(a));
+            first += n;
+        }
+        mesh.AddCellData("tetgen:ref", std::move(blocks));
+    }
+    // Holes and regions, when present, describe a volume to mesh: not kept.
+    return mesh;
+}
+
+void tg_write_smesh(const std::string& rPath, const Mesh& rMesh) {
+    if (rMesh.PointDim() != 3)
+        throw WriteError("TetGen: can only write 3D points");
+    const std::size_t npoints = rMesh.NumPoints();
+    auto fh = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!fh)
+        throw WriteError("Could not open file for writing: " + rPath);
+    fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
+    fh << "# part 1: nodes\n" << npoints << " 3 0 0\n";
+    char buf[40];
+    const detail::DoubleView pv(rMesh.Points());
+    for (std::size_t i = 0; i < npoints; ++i) {
+        fh << i;
+        for (std::size_t c = 0; c < 3; ++c) {
+            detail::snprintf_c(buf, sizeof(buf), "%.16e", pv[3 * i + c]);
+            fh << " " << buf;
+        }
+        fh << "\n";
+    }
+    std::size_t nfacets = 0;
+    std::vector<std::size_t> faceted;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cells = rMesh.Cells(b);
+        const std::string type(cells.Type());
+        const bool polygon =
+            type == "triangle" || type == "quad" || (type == "polygon" && !cells.IsRagged());
+        if (!polygon)
+            throw WriteError("TetGen: a .smesh holds polygonal facets, not '" + type + "' cells");
+        faceted.push_back(b);
+        nfacets += cells.NumCells();
+    }
+    const bool marked = rMesh.HasCellData("tetgen:ref");
+    fh << "# part 2: facets\n" << nfacets << " " << (marked ? 1 : 0) << "\n";
+    for (const std::size_t b : faceted) {
+        const auto cells = rMesh.Cells(b);
+        const NDArray& r_conn = cells.Conn();
+        const std::size_t width = r_conn.Ndim() == 2 ? r_conn.Shape()[1] : 0;
+        const detail::Int64View conn(r_conn);
+        std::optional<detail::Int64View> mark;
+        if (marked && b < rMesh.CellDataNumBlocks("tetgen:ref"))
+            mark.emplace(rMesh.CellData("tetgen:ref", b));
+        for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+            fh << width;
+            for (std::size_t j = 0; j < width; ++j)
+                fh << " " << conn[c * width + j];
+            if (marked)
+                fh << " " << (mark ? (*mark)[c] : 0);
+            fh << "\n";
+        }
+    }
+    fh << "# part 3: holes\n0\n# part 4: regions\n0\n";
+    if (!fh)
+        throw WriteError("TetGen: failed writing " + rPath);
+}
+
+}  // namespace
+
 Mesh read_tetgen(const std::string& rPath) {
+    if (tg_is_smesh(rPath))
+        return tg_read_smesh(rPath);
     bool ok = false;
     auto paths = node_ele_paths(rPath, ok);
     if (!ok)
-        throw ReadError("TetGen: expected a .node or .ele file");
+        throw ReadError("TetGen: expected a .node, .ele or .smesh file");
     const std::string& node_path = paths.first;
     const std::string& ele_path = paths.second;
 
@@ -194031,10 +195033,14 @@ void write_value(std::ostream& rOs, double v) {
 }  // namespace
 
 void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
+    if (tg_is_smesh(rPath)) {
+        tg_write_smesh(rPath, rMesh);
+        return;
+    }
     bool ok = false;
     auto paths = node_ele_paths(rPath, ok);
     if (!ok)
-        throw WriteError("TetGen: must specify a .node or .ele file");
+        throw WriteError("TetGen: must specify a .node, .ele or .smesh file");
     const std::string& node_path = paths.first;
     const std::string& ele_path = paths.second;
 
@@ -247128,9 +248134,13 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             o.mBackend = TetrahedralizeBackend::Netgen;
         else if (backend == "octree")
             o.mBackend = TetrahedralizeBackend::Octree;
-        else
-            throw std::invalid_argument(pipe_err(
-                rStep, "'Backend' must be 'auto', 'netgen' or 'octree', not '" + backend + "'"));
+        else if (!backend.empty()) {
+            // A named mesher (roadmap 7.7.2): the installed tetgen or gmsh.
+            o.mBackend = TetrahedralizeBackend::Named;
+            o.mProvider = backend;
+        } else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Backend' must be 'auto', 'netgen', 'octree' or a mesher's name"));
         o.mMaxSize = pipe_number(rStep, "MaxSize", o.mMaxSize);
         o.mMaxVolume = pipe_number(rStep, "MaxVolume", o.mMaxVolume);
         o.mGrading = pipe_number(rStep, "Grading", o.mGrading);
@@ -275656,17 +276666,67 @@ void tet_dihedrals(const std::array<TetV3, 4>& rX, double& rLo, double& rHi) {
         }
 }
 
+// Whether a mesher kept a region's surface, checked here whatever it reports
+// (roadmap 7.7.2): the request's points first and bit-equal, and the faces of
+// exactly one tetrahedron the request's triangles.
+bool tet_region_kept(const TetMeshRegionRequest& rRequest, const TetMeshRegionResult& rRegion) {
+    const std::size_t n_in = rRequest.mPoints.size();
+    if (rRegion.mPoints.size() < n_in)
+        return false;
+    for (std::size_t i = 0; i < n_in; ++i)
+        if (rRegion.mPoints[i] != rRequest.mPoints[i])
+            return false;
+    std::vector<std::array<std::int64_t, 3>> faces;
+    faces.reserve(4 * rRegion.mTets.size());
+    static constexpr int kFace[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+    for (const auto& r_t : rRegion.mTets)
+        for (const auto& r_f : kFace) {
+            std::array<std::int64_t, 3> f{r_t[r_f[0]], r_t[r_f[1]], r_t[r_f[2]]};
+            std::sort(f.begin(), f.end());
+            faces.push_back(f);
+        }
+    std::sort(faces.begin(), faces.end());
+    std::vector<std::array<std::int64_t, 3>> got;
+    for (std::size_t i = 0; i < faces.size();) {
+        std::size_t j = i;
+        while (j < faces.size() && faces[j] == faces[i])
+            ++j;
+        if (j - i == 1)
+            got.push_back(faces[i]);
+        i = j;
+    }
+    std::vector<std::array<std::int64_t, 3>> want;
+    want.reserve(rRequest.mTriangles.size());
+    for (const auto& r_t : rRequest.mTriangles) {
+        std::array<std::int64_t, 3> f = r_t;
+        std::sort(f.begin(), f.end());
+        want.push_back(f);
+    }
+    std::sort(want.begin(), want.end());
+    return got == want;
+}
+
 }  // namespace
 
 bool tetrahedralize_has_netgen() {
     return tet_mesher() != nullptr;
 }
 
+std::vector<std::string> tetrahedralize_backends() {
+    std::vector<std::string> names = tet_mesher_names();
+    names.push_back("octree");
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return names;
+}
+
 TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOptions& rOptions) {
     const TetrahedralizeOptions& o = rOptions;
     if (o.mBackend != TetrahedralizeBackend::Auto && o.mBackend != TetrahedralizeBackend::Netgen &&
-        o.mBackend != TetrahedralizeBackend::Octree)
-        tet_fail("backend must be auto, netgen or octree");
+        o.mBackend != TetrahedralizeBackend::Octree && o.mBackend != TetrahedralizeBackend::Named)
+        tet_fail("backend must be auto, netgen, octree or a named mesher");
+    if (o.mBackend == TetrahedralizeBackend::Named && o.mProvider.empty())
+        tet_fail("a named backend needs the mesher's name");
     if (!(std::isfinite(o.mMaxSize) && o.mMaxSize >= 0.0))
         tet_fail("max_size must be finite and not negative");
     if (!(std::isfinite(o.mMaxVolume) && o.mMaxVolume >= 0.0))
@@ -275750,8 +276810,31 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                           "meshioplusplus[netgen]), or rebuild with "
                           "-DMESHIOPLUSPLUS_WITH_NETGEN=ON and Netgen's nglib installed, or use "
                           "backend=octree (roadmap 6.7)");
-    const bool use_netgen = o.mBackend == TetrahedralizeBackend::Netgen ||
-                            (o.mBackend == TetrahedralizeBackend::Auto && has_netgen);
+    // A named mesher (roadmap 7.7.2): `octree` and `netgen` by name are the
+    // backends themselves; anything else must be registered.
+    std::shared_ptr<const TetMesherProvider> p_named;
+    bool named_octree = false;
+    if (o.mBackend == TetrahedralizeBackend::Named) {
+        if (o.mProvider == "octree") {
+            named_octree = true;
+        } else {
+            p_named = tet_mesher(o.mProvider);
+            if (!p_named && o.mProvider == "netgen")
+                p_named = tet_mesher();
+            if (!p_named) {
+                std::string known;
+                for (const std::string& r_name : tetrahedralize_backends())
+                    known += (known.empty() ? "" : ", ") + r_name;
+                throw Unsupported(std::string(kTetPrefix) + "no tetrahedral mesher named '" +
+                                  o.mProvider + "' (available: auto, " + known +
+                                  "; tetgen and gmsh are found on PATH, or through "
+                                  "MESHIOPLUSPLUS_TETGEN and MESHIOPLUSPLUS_GMSH)");
+            }
+        }
+    }
+    const bool use_netgen =
+        !named_octree && (p_named || o.mBackend == TetrahedralizeBackend::Netgen ||
+                          (o.mBackend == TetrahedralizeBackend::Auto && has_netgen));
     const std::size_t nt = tris.size();
     // Shells: the triangles connected across edges, in the order of their
     // first triangle.
@@ -275860,7 +276943,7 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
     std::vector<std::array<std::int64_t, 3>> bnd;
     std::vector<std::int64_t> bnd_face;
     if (use_netgen) {
-        const std::shared_ptr<const TetMesherProvider> p_mesher = tet_mesher();
+        const std::shared_ptr<const TetMesherProvider> p_mesher = p_named ? p_named : tet_mesher();
         result.mBackend = p_mesher->mName;
         result.mBoundaryPreserved = true;
         points.assign(x.begin(), x.end());
@@ -275893,7 +276976,7 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
             if (static_cast<std::int64_t>(tets.size() + region.mTets.size()) > o.mMaxCells)
                 throw std::length_error(std::string(kTetPrefix) + "the mesh would have more than " +
                                         std::to_string(o.mMaxCells) + " tetrahedra (max_cells)");
-            if (!region.mBoundaryPreserved)
+            if (!region.mBoundaryPreserved || !tet_region_kept(request, region))
                 result.mBoundaryPreserved = false;
             // New points, after every earlier region's: the request's own map
             // back to the surface's.
@@ -275922,8 +277005,8 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
             }
         }
         if (!result.mBoundaryPreserved)
-            throw std::runtime_error(std::string(kTetPrefix) +
-                                     "Netgen moved the surface's points or triangles");
+            throw std::runtime_error(std::string(kTetPrefix) + "the " + p_mesher->mName +
+                                     " mesher moved the surface's points or triangles");
         bnd = tris;
         bnd_face = tri_face;
     } else {
@@ -278048,6 +279131,7 @@ VoxelResult voxelize(const Mesh& rMesh, const VoxelOptions& rOptions) {
 #include <atomic>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <string>
 #include <system_error>
@@ -278076,6 +279160,10 @@ TetMesherProvider make_netgen_provider();
 RemesherProvider make_mmg_provider();
 #endif
 
+/// The external tetrahedral meshers found installed (`tetgen`, `gmsh`), run as
+/// separate processes (detail/external_mesher.cpp); none in WebAssembly.
+std::vector<TetMesherProvider> make_external_tet_meshers();
+
 }  // namespace providers
 
 namespace {
@@ -278101,6 +279189,10 @@ struct ProvidersState {
     ProviderSlot<CadKernelProvider> mCad;
     ProviderSlot<TetMesherProvider> mTet;
     ProviderSlot<RemesherProvider> mRemesher;
+    /// The named tetrahedral meshers (roadmap 7.7.2), by name; replaced ones
+    /// stay in `mTet.mRetained`.
+    std::map<std::string, std::shared_ptr<const TetMesherProvider>> mTetNamed;
+    bool mExternalDone = false;
 };
 
 ProvidersState& providers_state() {
@@ -278160,6 +279252,48 @@ void unregister_tet_mesher() noexcept {
 }
 std::shared_ptr<const TetMesherProvider> tet_mesher() noexcept {
     return slot_get(&ProvidersState::mTet);
+}
+
+void add_tet_mesher(TetMesherProvider Provider) {
+    ProvidersState& r_state = providers_state();
+    auto p_new = std::make_shared<const TetMesherProvider>(std::move(Provider));
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    if (t_loading_plugin && r_state.mTetNamed.count(p_new->mName))
+        return;
+    r_state.mTet.mRetained.push_back(p_new);
+    r_state.mTetNamed[p_new->mName] = std::move(p_new);
+}
+
+void remove_tet_mesher(const std::string& rName) noexcept {
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    r_state.mTetNamed.erase(rName);
+}
+
+std::shared_ptr<const TetMesherProvider> tet_mesher(const std::string& rName) noexcept {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    // The default answers to its own name first, so a plugin's mesher that is
+    // the default is the one `backend=<its name>` runs.
+    if (r_state.mTet.mCurrent && r_state.mTet.mCurrent->mName == rName)
+        return r_state.mTet.mCurrent;
+    const auto it = r_state.mTetNamed.find(rName);
+    return it == r_state.mTetNamed.end() ? nullptr : it->second;
+}
+
+std::vector<std::string> tet_mesher_names() {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    std::vector<std::string> names;
+    if (r_state.mTet.mCurrent)
+        names.push_back(r_state.mTet.mCurrent->mName);
+    for (const auto& r_entry : r_state.mTetNamed)
+        names.push_back(r_entry.first);
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return names;
 }
 
 void register_remesher(RemesherProvider Provider) {
@@ -278310,6 +279444,21 @@ static void register_compiled_in_providers() noexcept {
 #else
     r_state.mRemesher.mBuiltinDone = true;
 #endif
+    // The installed external meshers, by name only: they never become the
+    // default, so `backend=auto` keeps meaning Netgen, else the octree.
+    if (!r_state.mExternalDone) {
+        r_state.mExternalDone = true;
+        try {
+            for (TetMesherProvider& r_p : providers::make_external_tet_meshers()) {
+                if (r_state.mTetNamed.count(r_p.mName))
+                    continue;
+                auto p_new = std::make_shared<const TetMesherProvider>(std::move(r_p));
+                r_state.mTet.mRetained.push_back(p_new);
+                r_state.mTetNamed[p_new->mName] = std::move(p_new);
+            }
+        } catch (...) {
+        }
+    }
 }
 
 void register_builtin_providers() noexcept {
@@ -279157,6 +280306,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".plt", "tecplot"},
         {".ele", "tetgen"},
         {".node", "tetgen"},
+        {".smesh", "tetgen"},
         {".poly", "triangle"},
         {".ugrid", "ugrid"},
         {".unv", "unv"},
@@ -286289,6 +287439,7 @@ FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_NurbsConvert.hxx>
+#include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
@@ -286315,6 +287466,9 @@ FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 #include <Interface_Static.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
+#include <ShapeAnalysis_ShapeTolerance.hxx>
+#include <ShapeExtend_Status.hxx>
+#include <ShapeFix_Shape.hxx>
 #include <Standard_Failure.hxx>
 #include <TColStd_Array1OfInteger.hxx>
 #include <TColStd_Array1OfReal.hxx>
@@ -286324,7 +287478,10 @@ FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_ListOfShape.hxx>
+#include <TopTools_MapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
@@ -286735,6 +287892,78 @@ TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char*
     }
 }
 
+std::string OcctHealReport::ToJson() const {
+    char tol[64];
+    snprintf_c(tol, sizeof(tol), "%.17g", mSewTolerance);
+    return std::string("{\"healed\":") + (mHealed ? "true" : "false") +
+           ",\"fixed\":" + (mFixed ? "true" : "false") + ",\"sew_tolerance\":" + tol +
+           ",\"free_edges_before\":" + std::to_string(mFreeEdgesBefore) +
+           ",\"free_edges_after\":" + std::to_string(mFreeEdgesAfter) +
+           ",\"multiple_edges\":" + std::to_string(mMultipleEdges) +
+           ",\"degenerated\":" + std::to_string(mDegenerated) + "}";
+}
+
+long long occt_count_free_edges(const TopoDS_Shape& rShape) {
+    // Each face counted once per edge: a seam edge appears twice in its face.
+    TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+    for (TopExp_Explorer fx(rShape, TopAbs_FACE); fx.More(); fx.Next()) {
+        TopTools_MapOfShape seen;
+        for (TopExp_Explorer ex(fx.Current(), TopAbs_EDGE); ex.More(); ex.Next()) {
+            const TopoDS_Edge& edge = TopoDS::Edge(ex.Current());
+            if (BRep_Tool::Degenerated(edge) || !seen.Add(edge))
+                continue;
+            if (!edge_faces.Contains(edge))
+                edge_faces.Add(edge, TopTools_ListOfShape());
+            edge_faces.ChangeFromKey(edge).Append(fx.Current());
+        }
+    }
+    long long free_edges = 0;
+    for (int i = 1; i <= edge_faces.Extent(); ++i)
+        if (edge_faces(i).Extent() == 1)
+            ++free_edges;
+    return free_edges;
+}
+
+TopoDS_Shape occt_heal_shape(const TopoDS_Shape& rShape, const CadReadOptions& rOptions,
+                             OcctHealReport& rReport) {
+    rReport = OcctHealReport{};
+    rReport.mFreeEdgesBefore = occt_count_free_edges(rShape);
+    const bool sew = rOptions.mHeal || rOptions.mSewTolerance > 0.0;
+    double tol = rOptions.mSewTolerance;
+    if (!(tol > 0.0)) {
+        Bnd_Box box;
+        BRepBndLib::Add(rShape, box);
+        const double diagonal = box.IsVoid() ? 1.0 : std::sqrt(box.SquareExtent());
+        ShapeAnalysis_ShapeTolerance own;
+        tol = std::max(1e-5 * diagonal, own.Tolerance(rShape, 1));
+    }
+    TopoDS_Shape shape = rShape;
+    if (rOptions.mHeal) {
+        rReport.mHealed = true;
+        ShapeFix_Shape fix(shape);
+        fix.SetPrecision(tol);
+        fix.SetMaxTolerance(tol);
+        fix.Perform();
+        rReport.mFixed = fix.Status(ShapeExtend_DONE);
+        if (!fix.Shape().IsNull())
+            shape = fix.Shape();
+    }
+    if (sew) {
+        rReport.mSewTolerance = tol;
+        BRepBuilderAPI_Sewing sewing(tol);
+        sewing.Add(shape);
+        sewing.Perform();
+        rReport.mMultipleEdges = sewing.NbMultipleEdges();
+        rReport.mDegenerated = sewing.NbDegeneratedShapes();
+        if (!sewing.SewedShape().IsNull())
+            shape = sewing.SewedShape();
+    }
+    rReport.mFreeEdgesAfter = occt_count_free_edges(shape);
+    log::debug("occt: healed the read shape: {} free edge(s) before, {} after (tolerance {})",
+               rReport.mFreeEdgesBefore, rReport.mFreeEdgesAfter, tol);
+    return shape;
+}
+
 namespace {
 
 BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol);
@@ -287109,6 +288338,7 @@ Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double D
 // External includes (OpenCASCADE)
 #include <Standard_Failure.hxx>
 #include <Standard_Version.hxx>
+#include <TopoDS_Shape.hxx>
 
 // Project includes
 
@@ -287128,10 +288358,28 @@ Mesh occt_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
         throw std::invalid_argument(std::string("meshio++: ") + fmt +
                                     ": the deflection must be finite and the angular "
                                     "deflection positive");
+    if (!std::isfinite(rOptions.mSewTolerance) || rOptions.mSewTolerance < 0.0)
+        throw std::invalid_argument(std::string("meshio++: ") + fmt +
+                                    ": the sewing tolerance must be finite and at least 0");
     detail::LibraryLock lock;
     detail::OcctQuiet quiet;
     try {
-        detail::OcctNurbs nurbs = detail::occt_nurbs(detail::occt_read_cad_file(rPath, Iges, fmt));
+        TopoDS_Shape shape = detail::occt_read_cad_file(rPath, Iges, fmt);
+        const bool heal = rOptions.mHeal || rOptions.mSewTolerance > 0.0;
+        detail::OcctHealReport report;
+        if (heal)
+            shape = detail::occt_heal_shape(shape, rOptions, report);
+        detail::OcctNurbs nurbs = detail::occt_nurbs(shape);
+        if (heal) {
+            // The report joins the file's top-level members, `{"version_number":1}`.
+            std::string& r_extra = nurbs.mInfo.mExtra;
+            const std::size_t close = r_extra.rfind('}');
+            if (close == std::string::npos)
+                r_extra = "{\"heal\":" + report.ToJson() + "}";
+            else
+                r_extra.insert(close,
+                               std::string(close > 1 ? "," : "") + "\"heal\":" + report.ToJson());
+        }
         Mesh mesh = detail::occt_tessellate(nurbs.mShape, nurbs.mInfo, rOptions.mDeflection,
                                             rOptions.mAngularDeflection);
         rInfo = std::move(nurbs.mInfo);

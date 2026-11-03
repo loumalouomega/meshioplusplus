@@ -1438,9 +1438,13 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             o.mBackend = TetrahedralizeBackend::Netgen;
         else if (backend == "octree")
             o.mBackend = TetrahedralizeBackend::Octree;
-        else
-            throw std::invalid_argument(pipe_err(
-                rStep, "'Backend' must be 'auto', 'netgen' or 'octree', not '" + backend + "'"));
+        else if (!backend.empty()) {
+            // A named mesher (roadmap 7.7.2): the installed tetgen or gmsh.
+            o.mBackend = TetrahedralizeBackend::Named;
+            o.mProvider = backend;
+        } else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Backend' must be 'auto', 'netgen', 'octree' or a mesher's name"));
         o.mMaxSize = pipe_number(rStep, "MaxSize", o.mMaxSize);
         o.mMaxVolume = pipe_number(rStep, "MaxVolume", o.mMaxVolume);
         o.mGrading = pipe_number(rStep, "Grading", o.mGrading);

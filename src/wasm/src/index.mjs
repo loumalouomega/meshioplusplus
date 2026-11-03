@@ -229,7 +229,7 @@ export class MeshioPlusPlusLoadError extends Error {
  * @returns {Promise<{
  *   FS: object,
  *   readMesh: (path: string, format?: string) => Mesh,
- *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[], timeStep?: number, lenient?: boolean, piece?: number, dropGhosts?: boolean, info?: boolean}) => Mesh,
+ *   readMeshSelective: (path: string, options?: {format?: string, pointsOnly?: boolean, arrays?: string[], timeStep?: number, lenient?: boolean, piece?: number, dropGhosts?: boolean, info?: boolean, cadRead?: {deflection?: number, angularDeflection?: number, heal?: boolean, sewTolerance?: number}}) => Mesh,
  *   readMetadata: (path: string, format?: string) => object,
  *   readerSupportsOptions: (format: string) => boolean,
  *   writeMesh: (path: string, mesh: Mesh, format?: string, options?: {encoding?: string, codec?: string, floatFormat?: string, info?: object}) => string[],
@@ -567,10 +567,12 @@ export async function loadMeshioPlusPlus(
                 piece = null,
                 dropGhosts = false,
                 info = false,
+                cadRead = null,
             } = {},
         ) =>
             Module.readMeshSelective(
                 path, format, pointsOnly, arrays, timeStep, lenient, piece, dropGhosts, info,
+                cadRead,
             ),
         // Summarize a file without loading its heavy arrays. The returned
         // object's `fellBackToFullRead` says whether that was actually cheap.

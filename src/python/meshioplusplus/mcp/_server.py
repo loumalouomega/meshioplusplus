@@ -278,6 +278,8 @@ def _register_conversion(server: FastMCP) -> None:
         elmer_halo: bool = False,
         patran_results: Optional[Dict[str, str]] = None,
         write_nurbs: Optional[bool] = None,
+        heal: bool = False,
+        sew_tolerance: float = 0.0,
     ) -> dict:
         """Convert a mesh between formats (formats inferred from extensions
         unless given). grid_functions ({name: path}) reads MFEM .gf fields onto
@@ -304,7 +306,10 @@ def _register_conversion(server: FastMCP) -> None:
         XDMF time-series reads preserve fixed shared point/cell/side regions.
         An MFEM NURBS input keeps its patches, so an MFEM output is written back
         as the NURBS mesh; write_nurbs=False writes the sampled cells instead,
-        True refuses anything else."""
+        True refuses anything else. heal (STEP/IGES) heals the shape before it
+        is read (ShapeFix_Shape, then sewing at sew_tolerance, a length; 0 is
+        1e-5 of the bounding-box diagonal, and a positive value sews without
+        heal)."""
         return _guard(
             _tools.tool_convert,
             input_path=input_path,
@@ -323,6 +328,8 @@ def _register_conversion(server: FastMCP) -> None:
             elmer_halo=elmer_halo,
             patran_results=patran_results,
             write_nurbs=write_nurbs,
+            heal=heal,
+            sew_tolerance=sew_tolerance,
         )
 
     @server.tool()
@@ -1839,6 +1846,8 @@ def _register_operations(server: FastMCP) -> None:
         untangle: bool = False,
         quads: str = "none",
         quad_pairs: str = "matching",
+        heal: bool = False,
+        sew_tolerance: float = 0.0,
     ) -> dict:
         """Triangulate the faces of a CAD model (Kratos CAD JSON; STEP and
         IGES where OpenCASCADE is linked) into one conforming surface mesh with
@@ -1923,7 +1932,9 @@ def _register_operations(server: FastMCP) -> None:
         writes curved quad9 or quad16 beside triangle6 or triangle10;
         quad_pairs 'matching' (the default, a maximum matching, Blossom-quad)
         or 'greedy' (best pair first) pairs them; reported as num_quads,
-        num_leftover_triangles and min_quad_scaled_jacobian."""
+        num_leftover_triangles and min_quad_scaled_jacobian. heal (STEP/IGES)
+        heals the shape before it is read (ShapeFix_Shape, then sewing at
+        sew_tolerance; 0 is automatic, a positive value sews without heal)."""
         return _guard(
             _tools.tool_mesh_cad_surface,
             input_path=input_path,
@@ -1963,6 +1974,8 @@ def _register_operations(server: FastMCP) -> None:
             untangle=untangle,
             quads=quads,
             quad_pairs=quad_pairs,
+            heal=heal,
+            sew_tolerance=sew_tolerance,
         )
 
     @server.tool()
@@ -4595,7 +4608,9 @@ def _register_operations(server: FastMCP) -> None:
         (roadmap 6.7). backend "netgen" keeps its triangles and points
         exactly; "octree", the native backend always built, fits the boundary
         within the reported hausdorff_to_surface; "auto" (default) takes
-        Netgen when built in, else octree with a warning. Each shell bounds a
+        Netgen when built in, else octree with a warning; "tetgen" and "gmsh"
+        run those installed programs on the surface as separate processes,
+        its triangles kept (checked). Each shell bounds a
         region (a box inside a box gives two), meshed on its own. max_size and max_volume (0: none) bound the
         tetrahedra, grading (0 to 1) is how fast the size grows inward,
         optimize_steps the backend's volume optimisation passes; face_array
@@ -4605,7 +4620,8 @@ def _register_operations(server: FastMCP) -> None:
         both. Reports num_tetrahedra, num_points,
         num_new_points, num_regions, num_boundary_triangles,
         boundary_preserved, hausdorff_to_surface, min_dihedral_deg,
-        max_dihedral_deg, volume, backend, warnings and netgen_available."""
+        max_dihedral_deg, volume, backend, warnings, netgen_available and
+        backends_available (every backend name besides auto)."""
         return _guard(
             _tools.tool_tetrahedralize,
             input_path=input_path,

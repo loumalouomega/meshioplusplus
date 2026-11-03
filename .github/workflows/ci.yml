@@ -654,9 +654,12 @@ jobs:
   # KaHIP's: nglib is LGPL-2.1, bring-your-own and linked dynamically, so no
   # default leg, wheel or WASM artifact carries it, and those legs exercise
   # the named "rebuild with -DMESHIOPLUSPLUS_WITH_NETGEN=ON" error instead.
-  # Ubuntu 24.04 packages Netgen 6.2.2401 as libnglib-dev.
+  # Ubuntu 24.04 packages Netgen 6.2.2401 as libnglib-dev. The same job runs
+  # the external meshers (roadmap 7.7.2): Ubuntu's tetgen 1.5 and gmsh 4.12
+  # programs, which tetrahedralize runs as separate processes (never linked:
+  # TetGen is AGPL, Gmsh GPL), so their named backends are live here.
   netgen:
-    name: Netgen tetrahedralize backend
+    name: Netgen and external tetrahedralize backends
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
@@ -672,7 +675,8 @@ jobs:
         run: |
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
-          sudo apt-get install -y libhdf5-dev zlib1g-dev libtbb-dev pkg-config libnglib-dev
+          sudo apt-get install -y libhdf5-dev zlib1g-dev libtbb-dev pkg-config libnglib-dev \
+            tetgen gmsh
       - name: Install build tools
         run: python -m pip install --upgrade pip pybind11 cmake ninja pytest
       - name: Configure C++ tests with Netgen
@@ -686,8 +690,8 @@ jobs:
           -DMESHIOPLUSPLUS_WITH_NETGEN=ON
       - name: Build
         run: cmake --build build-netgen
-      - name: Run the tetrahedralize suite (Netgen live)
-        run: ctest --test-dir build-netgen -R "Tetrahedralize|CApi|Pipeline" --output-on-failure
+      - name: Run the tetrahedralize suite (Netgen, tetgen and gmsh live)
+        run: ctest --test-dir build-netgen -R "Tetrahedralize|Providers|Tetgen|CApi|Pipeline" --output-on-failure
       - name: Install meshioplusplus with Netgen
         run: >-
           CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_NETGEN=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF"
@@ -695,7 +699,93 @@ jobs:
       - name: Run the Python tetrahedralize suite
         run: |
           python -c "from meshioplusplus import _core; assert _core.__has_netgen__"
-          python -m pytest tests/python/test_tetrahedralize.py -v
+          python -c "import meshioplusplus as m; b = m.tetrahedralize_backends(); assert {'tetgen', 'gmsh'} <= set(b), b"
+          python -m pytest tests/python/test_tetrahedralize.py tests/python/test_tetgen.py -v
+
+  # The optional cgnslib backend of the CGNS format (roadmap 7.1.4): ADF
+  # containers, NGON_n/NFACE_n and the cgnslib round trips of test_cgns.cpp's
+  # CgnsMll suite, which no other leg compiles. Ubuntu 24.04 packages CGNS
+  # 3.4, which lacks the 4.x API the backend uses, so CGNS is built from the
+  # pinned tag (build/deps-pins.sh) against Ubuntu's HDF5 and cached.
+  cgnslib:
+    name: cgnslib CGNS backend
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install native libraries
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev zlib1g-dev libtbb-dev pkg-config
+      - name: Install build tools
+        run: python -m pip install --upgrade pip cmake ninja
+      - name: Read the CGNS pin
+        id: pin
+        run: |
+          . build/deps-pins.sh
+          echo "version=$CGNS_VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$CGNS_COMMIT" >> "$GITHUB_OUTPUT"
+      - name: Cache the CGNS install
+        id: cgns-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/cgns-install
+          key: cgns-${{ steps.pin.outputs.version }}-${{ steps.pin.outputs.commit }}-${{ runner.os }}
+      - name: Build CGNS ${{ steps.pin.outputs.version }} from source
+        if: steps.cgns-cache.outputs.cache-hit != 'true'
+        run: |
+          git -c advice.detachedHead=false clone --depth 1 \
+            --branch "v${{ steps.pin.outputs.version }}" https://github.com/CGNS/CGNS.git /tmp/cgns-src
+          test "$(git -C /tmp/cgns-src rev-parse HEAD)" = "${{ steps.pin.outputs.commit }}"
+          cmake -S /tmp/cgns-src -B /tmp/cgns-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$HOME/cgns-install" -DCGNS_BUILD_SHARED=ON \
+            -DCGNS_ENABLE_HDF5=ON -DCGNS_ENABLE_FORTRAN=OFF -DCGNS_ENABLE_PARALLEL=OFF \
+            -DCGNS_ENABLE_TESTS=OFF -DCGNS_BUILD_TESTING=OFF -DCGNS_BUILD_CGNSTOOLS=OFF \
+            -DCGNS_ENABLE_64BIT=ON
+          cmake --build /tmp/cgns-build
+          cmake --install /tmp/cgns-build
+      - name: Configure C++ tests with cgnslib
+        run: |
+          cmake -S . -B build-cgns -G Ninja \
+            -DMESHIOPLUSPLUS_BUILD_TESTS=ON \
+            -DMESHIOPLUSPLUS_BUILD_C_API=ON \
+            -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+            -DMESHIOPLUSPLUS_WITH_HDF5=ON \
+            -DMESHIOPLUSPLUS_WITH_NETCDF=OFF \
+            -DMESHIOPLUSPLUS_WITH_OCCT=OFF \
+            -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON \
+            -DCGNS_ROOT="$HOME/cgns-install" \
+            -DCMAKE_PREFIX_PATH="$HOME/cgns-install" | tee configure.log
+          # A cgnslib the configure did not find compiles the CgnsMll suite
+          # out silently: fail here instead.
+          grep -q "cgnslib CGNS backend enabled" configure.log
+      - name: Build
+        run: cmake --build build-cgns
+      - name: Run the CGNS suites (cgnslib live)
+        if: steps.lfs.outputs.available != 'false'
+        # cgnsconvert (CGNS's own tools, installed beside the library) turns a
+        # file into an ADF container for the test that reads one.
+        run: |
+          export PATH="$HOME/cgns-install/bin:$PATH"
+          ctest --test-dir build-cgns -R "Cgns" --output-on-failure
 
   # The MMG backend (roadmap 3.2): adapt, discretize_levelset, mesh_domain and
   # move. Its own job, like Netgen's: MMG is LGPL-3.0 and bring-your-own, so no

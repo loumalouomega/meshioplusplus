@@ -3950,11 +3950,16 @@ PYBIND11_MODULE(_core, m) {
                 o.mBackend = meshioplusplus::TetrahedralizeBackend::Netgen;
             else if (backend == "octree")
                 o.mBackend = meshioplusplus::TetrahedralizeBackend::Octree;
-            else
+            else if (!backend.empty()) {
+                // A named mesher (roadmap 7.7.2): the installed tetgen or
+                // gmsh, a plugin's; an unknown name is Unsupported, listing
+                // the available ones.
+                o.mBackend = meshioplusplus::TetrahedralizeBackend::Named;
+                o.mProvider = backend;
+            } else
                 throw py::value_error(
-                    "meshio++: tetrahedralize: backend must be 'auto', 'netgen' or 'octree', not "
-                    "'" +
-                    backend + "'");
+                    "meshio++: tetrahedralize: backend must be 'auto', 'netgen', 'octree' or a "
+                    "mesher's name");
             o.mMaxSize = max_size;
             o.mMaxVolume = max_volume;
             o.mGrading = grading;
@@ -3982,6 +3987,9 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("backend") = "auto", py::arg("max_size") = 0.0,
         py::arg("max_volume") = 0.0, py::arg("grading") = 0.3, py::arg("optimize_steps") = 3,
         py::arg("max_cells") = std::int64_t{50000000}, py::arg("face_array") = "cad:face");
+    m.def(
+        "tetrahedralize_backends", [] { return meshioplusplus::tetrahedralize_backends(); },
+        "The backend names tetrahedralize accepts besides auto (roadmap 7.7.2).");
 
     // Projection back onto the CAD (roadmap 6.10.1): every point of a mesh
     // whose cells name their CAD face and edge moved onto it. Returns a dict
@@ -7955,14 +7963,20 @@ PYBIND11_MODULE(_core, m) {
     for (const char* fmt : {"step", "iges"}) {
         const bool iges = std::string(fmt) == "iges";
         m.def((std::string(fmt) + "_read").c_str(),
-              [iges](const std::string& path, double deflection, double angular) {
+              [iges](const std::string& path, double deflection, double angular, bool heal,
+                     double sew_tolerance) {
                   meshioplusplus::CadReadOptions opts;
                   opts.mDeflection = deflection;
                   opts.mAngularDeflection = angular;
+                  opts.mHeal = heal;
+                  opts.mSewTolerance = sew_tolerance;
                   if (!std::isfinite(deflection) || !(angular > 0.0) || !std::isfinite(angular))
                       throw py::value_error(
                           "meshio++: the deflection must be finite and the "
                           "angular deflection positive");
+                  if (!std::isfinite(sew_tolerance) || sew_tolerance < 0.0)
+                      throw py::value_error(
+                          "meshio++: the sewing tolerance must be finite and at least 0");
                   return guard_read(iges ? "iges" : "step", [&](const std::string& p) {
                       meshioplusplus::BrepInfo info;
                       py::object pymesh = meshioplusplus_py::mesh_to_py(core_nogil([&] {
@@ -7973,7 +7987,8 @@ PYBIND11_MODULE(_core, m) {
                       return pymesh;
                   })(path);
               },
-              py::arg("path"), py::arg("deflection") = 0.0, py::arg("angular_deflection") = 0.5);
+              py::arg("path"), py::arg("deflection") = 0.0, py::arg("angular_deflection") = 0.5,
+              py::arg("heal") = false, py::arg("sew_tolerance") = 0.0);
     }
 
     m.def(

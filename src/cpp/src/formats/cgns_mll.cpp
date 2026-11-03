@@ -213,6 +213,24 @@ struct MllFaces {
     std::size_t Count() const { return mOffsets.empty() ? 0 : mOffsets.size() - 1; }
 };
 
+/// The poly offsets cg_poly_elements_read filled, checked before they index
+/// `elems`: starting at 0, never decreasing, ending at the section's data size,
+/// each entry at least `MinPerEntry` long. A 4.x-declared file whose section
+/// lost its ElementStartOffset comes back as all zeros, which this refuses
+/// rather than reading an empty section (roadmap 7.1.4, the first cgnslib run).
+void cgns_mll_check_offsets(const std::vector<cgsize_t>& rOffsets, cgsize_t DataSize,
+                            std::size_t MinPerEntry, const std::string& rSection,
+                            const std::string& rPath) {
+    bool ok = !rOffsets.empty() && rOffsets.front() == 0 && rOffsets.back() == DataSize;
+    for (std::size_t i = 0; ok && i + 1 < rOffsets.size(); ++i)
+        ok = rOffsets[i + 1] - rOffsets[i] >= static_cast<cgsize_t>(MinPerEntry);
+    if (!ok)
+        cgns_mll_fail("section '" + rSection +
+                          "' has no valid ElementStartOffset for its connectivity (a CGNS "
+                          "4.x file written in the 3.x layout?)",
+                      rPath);
+}
+
 MllFaces cgns_mll_read_ngon(int fn, int B, int Z, const MllSection& rSec,
                             const std::string& rPath) {
     const std::size_t nfaces = static_cast<std::size_t>(rSec.mEnd - rSec.mStart + 1);
@@ -229,6 +247,7 @@ MllFaces cgns_mll_read_ngon(int fn, int B, int Z, const MllSection& rSec,
         CG_OK)
         cgns_mll_fail("cg_poly_elements_read failed for NGON_n section '" + rSec.mName + "'",
                       rPath);
+    cgns_mll_check_offsets(offsets, data_size, 3, rSec.mName, rPath);
 
     MllFaces out;
     out.mFirstId = rSec.mStart;
@@ -628,9 +647,27 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
 
     if (!ngons.empty() && nfaces.empty()) {
         // Faces with no cells referencing them: a face mesh, not a volume one.
+        // Grouped by corner count into `polygon<n>` blocks, as the raw-HDF5
+        // reader groups them, so both engines read a face mesh alike.
         for (const MllFaces& faces : ngons) {
-            if (faces.Count() > 0)
-                mesh.AddPolygonBlock("polygon", faces.mNodes, faces.mOffsets);
+            std::map<std::size_t, std::vector<std::size_t> > by_n;
+            for (std::size_t i = 0; i < faces.Count(); ++i)
+                by_n[static_cast<std::size_t>(faces.mOffsets[i + 1] - faces.mOffsets[i])].push_back(
+                    i);
+            for (const auto& [n, members] : by_n) {
+                std::vector<std::int64_t> flat;
+                std::vector<std::int64_t> offsets(1, 0);
+                flat.reserve(members.size() * n);
+                for (const std::size_t i : members) {
+                    flat.insert(
+                        flat.end(),
+                        faces.mNodes.begin() + static_cast<std::ptrdiff_t>(faces.mOffsets[i]),
+                        faces.mNodes.begin() + static_cast<std::ptrdiff_t>(faces.mOffsets[i + 1]));
+                    offsets.push_back(static_cast<std::int64_t>(flat.size()));
+                }
+                mesh.AddPolygonBlock("polygon" + std::to_string(n), std::move(flat),
+                                     std::move(offsets));
+            }
         }
     } else if (!nfaces.empty()) {
         if (ngons.empty())
@@ -656,6 +693,7 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
                                       nullptr) != CG_OK)
                 cgns_mll_fail("cg_poly_elements_read failed for NFACE_n '" + sec->mName + "'",
                               rPath);
+            cgns_mll_check_offsets(offsets, data_size, 1, sec->mName, rPath);
 
             // Stage every cell's faces as one CSR triple (rings reversed in
             // place for a negative id), then group by unique node count into

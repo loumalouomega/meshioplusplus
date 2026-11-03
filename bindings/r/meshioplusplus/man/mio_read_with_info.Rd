@@ -10,7 +10,15 @@
 \alias{print.mio_format_info}
 \title{Read and write a format's side channel}
 \usage{
-mio_read_with_info(path, format = NULL, lenient = FALSE)
+mio_read_with_info(
+  path,
+  format = NULL,
+  lenient = FALSE,
+  deflection = 0,
+  angular_deflection = 0.5,
+  heal = FALSE,
+  sew_tolerance = 0
+)
 
 mio_write_with_info(mesh, info, path, format = NULL)
 
@@ -30,6 +38,18 @@ mio_format_info_is_open(info)
 \item{format}{Explicit format name, or `NULL` to infer it.}
 
 \item{lenient}{Skip (with a warning) what not even the side channel holds.}
+
+\item{deflection}{STEP and IGES: the chordal deflection of the
+triangulation, as a length; at most 0 is automatic.}
+
+\item{angular_deflection}{STEP and IGES: the angular deflection, in radians.}
+
+\item{heal}{STEP and IGES: heal the shape before it is extracted
+(`ShapeFix_Shape`, then sewing at `sew_tolerance`). The report is the
+`"heal"` member of the B-rep's file-level JSON (`mio_brep_info()`).}
+
+\item{sew_tolerance}{STEP and IGES: the sewing tolerance, as a length; at
+most 0 is automatic when healing, and a positive value sews without `heal`.}
 
 \item{mesh}{A `mio_mesh`.}
 

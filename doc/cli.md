@@ -2556,6 +2556,8 @@ meshioplusplus convert --time-step=-1 run.exo last.vtu  # the last step of a tim
 
 `--drop-ghosts` (both CLIs) removes the ghost cells (halo) of a partitioned `.pvtu`, `.pvtp` or `.pvd` — every cell with a `vtkGhostType` bit set, and the points only they used — so a partition written with `partition --ghost-layers` reads back as the original mesh; every other reader ignores it, and by default ghost cells are kept.
 
+`--heal` (both CLIs) heals a STEP or IGES input before it is read: `ShapeFix_Shape`, then sewing at `--sew-tolerance T` (a length; 0, the default, is 1e-5 of the bounding-box diagonal), and a positive `--sew-tolerance` sews without `--heal` ([STEP reading](formats/step.md#reading)). `convert` and `mesh-cad-surface` take both; on any other input they are refused.
+
 `--piece=N` keeps one piece of a partitioned file (VTKHDF partitions or composite blocks, the pieces of a `.pvtu`/`.pvtp`, or one `part` of a `.pvd` step) instead of the merged mesh: `0` is the first, negative counts from the end (`--piece=-1`). Out of range is an error naming the piece count, and a format with no pieces refuses rather than quietly merging. `compress`/`decompress` deliberately do not handle `vtkhdf`: they rewrite in place from one merged read, which would drop every step but the first from a transient file — use `convert` to a new file instead.
 
 `--lenient` (**native CLI only**) downgrades "this reader cannot represent construct X" errors to a warning plus a skip — currently MDPA's `Table`, `Geometries`, `Mesh` and `Constraints` blocks, which nearly every production `.mdpa` carries, and the missing meshio++ marker of an `.svg` or `.tikz` drawing. It is *not* "ignore all errors": a malformed row, a bad node reference or a duplicate node id still fail, because continuing past those returns a mesh that is quietly wrong rather than merely incomplete. The Python CLI has no such flag, deliberately: its MDPA reader is the pure-Python reference, which already accepts every construct the flag covers.
@@ -2757,6 +2759,7 @@ meshioplusplus mesh-cad-surface part.step part.vtu --size 2 --min-angle 25 --rep
 | `--untangle` | at order 2 or 3, move the high-order nodes of folded elements on the surface to make them valid before any is straightened (Toulorge et al. 2013), then slide the nodes on CAD edges along their edges (quads' nodes too); reported as `num_untangled` |
 | `--quads none\|dominant\|all` | `dominant` recombines triangle pairs into quads by quality (Borouchaki and Frey 1998), `all` splits a mesh at twice the size into quads only and takes no `--virtual-edges`; with `--order 2` or `3` either writes curved `quad9` or `quad16` cells; reported as `num_quads`, `num_leftover_triangles` and `min_quad_scaled_jacobian` |
 | `--quad-pairs matching\|greedy` | how triangles pair into quads: `matching` (the default) a maximum-weight matching per face (Remacle et al. 2012), `greedy` the best pairs first |
+| `--heal` / `--sew-tolerance T` | a STEP or IGES input healed before it is read (`ShapeFix_Shape`, then sewing at `T`, 0 automatic; see [STEP reading](formats/step.md#reading)) |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 
 A face that cannot be meshed is left out and named in the summary with its reason; the exit code is 0 unless `--strict` is given. With `--min-angle`, the summary also names each corner under 60 degrees and each pole that keeps triangles below the bound.
@@ -2893,7 +2896,7 @@ meshioplusplus tetrahedralize INFILE OUTFILE [options]
 | `--optimize-steps N` | passes of the backend's volume optimisation, 0 to 100 (3) |
 | `--max-cells N` | refuse a result of more tetrahedra (50000000) |
 | `--face-array NAME` | the cell data naming each triangle's CAD face, carried to the triangles (`cad:face`) |
-| `--backend auto\|netgen\|octree` | the backend (`auto`: Netgen when built in, else `octree`) |
+| `--backend NAME` | the backend: `auto` (Netgen when built in, else `octree`), `netgen`, `octree`, or `tetgen` / `gmsh`, the installed programs run as separate processes with the surface kept (`meshioplusplus --version` lists the names this install takes) |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 | `-i/--input-format` / `-o/--output-format` | force the input / output format |
 

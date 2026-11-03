@@ -101,17 +101,67 @@ void tet_dihedrals(const std::array<TetV3, 4>& rX, double& rLo, double& rHi) {
         }
 }
 
+// Whether a mesher kept a region's surface, checked here whatever it reports
+// (roadmap 7.7.2): the request's points first and bit-equal, and the faces of
+// exactly one tetrahedron the request's triangles.
+bool tet_region_kept(const TetMeshRegionRequest& rRequest, const TetMeshRegionResult& rRegion) {
+    const std::size_t n_in = rRequest.mPoints.size();
+    if (rRegion.mPoints.size() < n_in)
+        return false;
+    for (std::size_t i = 0; i < n_in; ++i)
+        if (rRegion.mPoints[i] != rRequest.mPoints[i])
+            return false;
+    std::vector<std::array<std::int64_t, 3>> faces;
+    faces.reserve(4 * rRegion.mTets.size());
+    static constexpr int kFace[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+    for (const auto& r_t : rRegion.mTets)
+        for (const auto& r_f : kFace) {
+            std::array<std::int64_t, 3> f{r_t[r_f[0]], r_t[r_f[1]], r_t[r_f[2]]};
+            std::sort(f.begin(), f.end());
+            faces.push_back(f);
+        }
+    std::sort(faces.begin(), faces.end());
+    std::vector<std::array<std::int64_t, 3>> got;
+    for (std::size_t i = 0; i < faces.size();) {
+        std::size_t j = i;
+        while (j < faces.size() && faces[j] == faces[i])
+            ++j;
+        if (j - i == 1)
+            got.push_back(faces[i]);
+        i = j;
+    }
+    std::vector<std::array<std::int64_t, 3>> want;
+    want.reserve(rRequest.mTriangles.size());
+    for (const auto& r_t : rRequest.mTriangles) {
+        std::array<std::int64_t, 3> f = r_t;
+        std::sort(f.begin(), f.end());
+        want.push_back(f);
+    }
+    std::sort(want.begin(), want.end());
+    return got == want;
+}
+
 }  // namespace
 
 bool tetrahedralize_has_netgen() {
     return tet_mesher() != nullptr;
 }
 
+std::vector<std::string> tetrahedralize_backends() {
+    std::vector<std::string> names = tet_mesher_names();
+    names.push_back("octree");
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return names;
+}
+
 TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOptions& rOptions) {
     const TetrahedralizeOptions& o = rOptions;
     if (o.mBackend != TetrahedralizeBackend::Auto && o.mBackend != TetrahedralizeBackend::Netgen &&
-        o.mBackend != TetrahedralizeBackend::Octree)
-        tet_fail("backend must be auto, netgen or octree");
+        o.mBackend != TetrahedralizeBackend::Octree && o.mBackend != TetrahedralizeBackend::Named)
+        tet_fail("backend must be auto, netgen, octree or a named mesher");
+    if (o.mBackend == TetrahedralizeBackend::Named && o.mProvider.empty())
+        tet_fail("a named backend needs the mesher's name");
     if (!(std::isfinite(o.mMaxSize) && o.mMaxSize >= 0.0))
         tet_fail("max_size must be finite and not negative");
     if (!(std::isfinite(o.mMaxVolume) && o.mMaxVolume >= 0.0))
@@ -195,8 +245,31 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                           "meshioplusplus[netgen]), or rebuild with "
                           "-DMESHIOPLUSPLUS_WITH_NETGEN=ON and Netgen's nglib installed, or use "
                           "backend=octree (roadmap 6.7)");
-    const bool use_netgen = o.mBackend == TetrahedralizeBackend::Netgen ||
-                            (o.mBackend == TetrahedralizeBackend::Auto && has_netgen);
+    // A named mesher (roadmap 7.7.2): `octree` and `netgen` by name are the
+    // backends themselves; anything else must be registered.
+    std::shared_ptr<const TetMesherProvider> p_named;
+    bool named_octree = false;
+    if (o.mBackend == TetrahedralizeBackend::Named) {
+        if (o.mProvider == "octree") {
+            named_octree = true;
+        } else {
+            p_named = tet_mesher(o.mProvider);
+            if (!p_named && o.mProvider == "netgen")
+                p_named = tet_mesher();
+            if (!p_named) {
+                std::string known;
+                for (const std::string& r_name : tetrahedralize_backends())
+                    known += (known.empty() ? "" : ", ") + r_name;
+                throw Unsupported(std::string(kTetPrefix) + "no tetrahedral mesher named '" +
+                                  o.mProvider + "' (available: auto, " + known +
+                                  "; tetgen and gmsh are found on PATH, or through "
+                                  "MESHIOPLUSPLUS_TETGEN and MESHIOPLUSPLUS_GMSH)");
+            }
+        }
+    }
+    const bool use_netgen =
+        !named_octree && (p_named || o.mBackend == TetrahedralizeBackend::Netgen ||
+                          (o.mBackend == TetrahedralizeBackend::Auto && has_netgen));
     const std::size_t nt = tris.size();
     // Shells: the triangles connected across edges, in the order of their
     // first triangle.
@@ -305,7 +378,7 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
     std::vector<std::array<std::int64_t, 3>> bnd;
     std::vector<std::int64_t> bnd_face;
     if (use_netgen) {
-        const std::shared_ptr<const TetMesherProvider> p_mesher = tet_mesher();
+        const std::shared_ptr<const TetMesherProvider> p_mesher = p_named ? p_named : tet_mesher();
         result.mBackend = p_mesher->mName;
         result.mBoundaryPreserved = true;
         points.assign(x.begin(), x.end());
@@ -338,7 +411,7 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
             if (static_cast<std::int64_t>(tets.size() + region.mTets.size()) > o.mMaxCells)
                 throw std::length_error(std::string(kTetPrefix) + "the mesh would have more than " +
                                         std::to_string(o.mMaxCells) + " tetrahedra (max_cells)");
-            if (!region.mBoundaryPreserved)
+            if (!region.mBoundaryPreserved || !tet_region_kept(request, region))
                 result.mBoundaryPreserved = false;
             // New points, after every earlier region's: the request's own map
             // back to the surface's.
@@ -367,8 +440,8 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
             }
         }
         if (!result.mBoundaryPreserved)
-            throw std::runtime_error(std::string(kTetPrefix) +
-                                     "Netgen moved the surface's points or triangles");
+            throw std::runtime_error(std::string(kTetPrefix) + "the " + p_mesher->mName +
+                                     " mesher moved the surface's points or triangles");
         bnd = tris;
         bnd_face = tri_face;
     } else {

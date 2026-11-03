@@ -61,10 +61,13 @@ def add_args(parser):
     )
     parser.add_argument(
         "--backend",
-        choices=("auto", "netgen", "octree"),
+        type=str,
         default="auto",
+        metavar="NAME",
         help="the tetrahedra's backend: netgen keeps the surface's triangles, octree "
-        "(native) fits them; auto is netgen when built in, else octree (default auto)",
+        "(native) fits them, tetgen and gmsh run those installed programs (the "
+        "triangles kept); auto is netgen when built in, else octree (default auto). "
+        "tetrahedralize_backends() lists the names this install takes",
     )
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
     parser.add_argument(

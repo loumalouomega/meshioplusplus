@@ -262,7 +262,8 @@ MIO_ABI_LAYOUT(meshioplusplus::BrepEdge, 416, 8);
 MIO_ABI_LAYOUT(meshioplusplus::BrepVertex, 96, 8);
 MIO_ABI_LAYOUT(meshioplusplus::Brep, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::BrepInfo, 152, 8);
-MIO_ABI_LAYOUT(meshioplusplus::CadReadOptions, 16, 8);
+// ABI 37 (roadmap 7.7.1): `mHeal` and `mSewTolerance` appended, 16 -> 32 bytes.
+MIO_ABI_LAYOUT(meshioplusplus::CadReadOptions, 32, 8);
 // v18.0.0 (roadmap 4.7): the CAD kernel a provider registers. Two `std::string`s
 // and three `std::function`s, 32 bytes each with libstdc++. The add-on wheels
 // pin the base wheel's exact version, so this only has to hold within a release.

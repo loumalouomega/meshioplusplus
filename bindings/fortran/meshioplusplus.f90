@@ -76,6 +76,7 @@ module meshioplusplus
     public :: mio_find_intersections, mio_find_intersections_report
     public :: mio_thickness, mio_thickness_report
     public :: mio_tetrahedralize, mio_tetrahedralize_report, mio_has_netgen
+    public :: mio_tet_mesher_count, mio_tet_mesher_name, mio_tetrahedralize_backend_name
     public :: mio_has_mmg, mio_has_mmg_elas, mio_mmg_index_bits
     public :: mio_adapt, mio_mmg_report, mio_metric_from_hessian
     public :: mio_discretize_levelset, mio_mesh_domain, mio_move
@@ -849,11 +850,14 @@ module meshioplusplus
         type(c_ptr) :: face_array = c_null_ptr
         integer(c_int32_t) :: backend = 0
         integer(c_int32_t) :: optimize_steps = 3
-        integer(c_int64_t) :: reserved(4) = 0
+        !> backend 3 (a named mesher): its name (was reserved).
+        type(c_ptr) :: provider = c_null_ptr
+        integer(c_int64_t) :: reserved(3) = 0
     end type
 
     !> `mio_tetrahedralize_report` (128 bytes): what `mio_tetrahedralize` did.
-    !> `backend` is 1 for Netgen, 2 for the octree backend.
+    !> `backend` is 1 for Netgen, 2 for the octree backend, 3 for another named
+    !> mesher (tetgen, gmsh, a plugin's): `mio_tetrahedralize_backend_name(report)`.
     type, bind(c) :: mio_tetrahedralize_report
         integer(c_int64_t) :: num_tetrahedra = 0
         integer(c_int64_t) :: num_points = 0
@@ -866,7 +870,9 @@ module meshioplusplus
         real(c_double) :: volume = 0.0_c_double
         integer(c_int32_t) :: boundary_preserved = 0
         integer(c_int32_t) :: backend = 0
-        integer(c_int64_t) :: reserved(6) = 0
+        !> The name of the backend that ran (static C string; was reserved).
+        type(c_ptr) :: backend_name = c_null_ptr
+        integer(c_int64_t) :: reserved(5) = 0
     end type
 
     !> Interop mirror of C `mio_mmg_params` (168 bytes): the parameters every
@@ -1852,6 +1858,17 @@ module meshioplusplus
         !> `reserved` slot; size unchanged.
         integer(c_int64_t) :: drop_ghosts = 0
         integer(c_int64_t) :: reserved(1) = 0
+    end type
+
+    !> Interop mirror of C `mio_cad_read_opts` (64 bytes): how a STEP or IGES
+    !> file is read by `read_with_info`. Field order and types are ABI.
+    type, bind(c) :: mio_cad_read_opts_t
+        real(c_double) :: deflection = 0.0_c_double
+        real(c_double) :: angular_deflection = 0.5_c_double
+        integer(c_int32_t) :: heal = 0
+        integer(c_int32_t) :: reserved32 = 0
+        real(c_double) :: sew_tolerance = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_refine_opts`. Field order and types are ABI and
@@ -5388,6 +5405,15 @@ module meshioplusplus
             character(kind=c_char), dimension(*), intent(in) :: fmt, enc, codec, ff
         end subroutine
         ! -- format side channels (mio_format_info) --
+        function c_mio_read_with_info2(path, format, opts, cad_opts, info) &
+                bind(c, name="mio_read_with_info2") result(h)
+            import :: c_ptr, c_char
+            character(kind=c_char), dimension(*), intent(in) :: path, format
+            type(c_ptr), value :: opts, cad_opts
+            type(c_ptr), intent(out) :: info
+            type(c_ptr) :: h
+        end function
+
         function c_mio_read_with_info(path, format, opts, info) &
                 bind(c, name="mio_read_with_info") result(h)
             import :: c_ptr, c_char
@@ -5630,6 +5656,17 @@ module meshioplusplus
             type(mio_tetrahedralize_opts_t), intent(in) :: opts
             type(mio_tetrahedralize_report), intent(out) :: report
             type(c_ptr) :: h
+        end function
+
+        function c_mio_tet_mesher_count() bind(c, name="mio_tet_mesher_count") result(n)
+            import :: c_int64_t
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_tet_mesher_name(i) bind(c, name="mio_tet_mesher_name") result(p)
+            import :: c_int64_t, c_ptr
+            integer(c_int64_t), value :: i
+            type(c_ptr) :: p
         end function
 
         function c_mio_has_netgen() bind(c, name="mio_has_netgen") result(r)
@@ -6512,6 +6549,29 @@ contains
     function mio_has_netgen() result(has)
         logical :: has
         has = c_mio_has_netgen() /= 0
+    end function
+
+    !> How many backend names `mio_tetrahedralize` takes besides 'auto':
+    !> 'octree', then every registered mesher ('netgen', the installed 'tetgen'
+    !> and 'gmsh'), sorted.
+    function mio_tet_mesher_count() result(n)
+        integer :: n
+        n = int(c_mio_tet_mesher_count())
+    end function
+
+    !> Backend name `i` (1-based, up to `mio_tet_mesher_count()`); '' when out
+    !> of range.
+    function mio_tet_mesher_name(i) result(name)
+        integer, intent(in) :: i
+        character(:), allocatable :: name
+        name = c_ptr_to_string(c_mio_tet_mesher_name(int(i - 1, c_int64_t)))
+    end function
+
+    !> The name of the backend a `mio_tetrahedralize_report` says ran.
+    function mio_tetrahedralize_backend_name(report) result(name)
+        type(mio_tetrahedralize_report), intent(in) :: report
+        character(:), allocatable :: name
+        name = c_ptr_to_string(report%backend_name)
     end function
 
     !> Whether the library carries the MMG backend (adapt, discretize_levelset,
@@ -14905,7 +14965,11 @@ contains
     !> Read a mesh keeping its format's side channel in `info` (currently MDPA's
     !> tables, geometries, Mesh blocks, sub-model-part data and raw blocks).
     !> A format without one reads as `m%read` and leaves `info` invalid.
-    subroutine mesh_read_with_info(self, path, info, format, lenient, stat, errmsg)
+    !> STEP and IGES take `deflection`, `angular_deflection` (radians), `heal`
+    !> and `sew_tolerance` (see mio_cad_read_opts); the heal report is the
+    !> "heal" member of the MIO_BREP_FILE string.
+    subroutine mesh_read_with_info(self, path, info, format, lenient, stat, errmsg, &
+                                   deflection, angular_deflection, heal, sew_tolerance)
         class(mio_mesh), intent(inout) :: self
         character(*), intent(in) :: path
         class(mio_format_info), intent(inout) :: info
@@ -14914,15 +14978,29 @@ contains
         logical, intent(in), optional :: lenient
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        real(c_double), intent(in), optional :: deflection, angular_deflection, sew_tolerance
+        logical, intent(in), optional :: heal
         character(:), allocatable :: fmt
         type(mio_read_opts_t), target :: opts
+        type(mio_cad_read_opts_t), target :: cad
         type(c_ptr) :: h, ih
         fmt = ''; if (present(format)) fmt = format
         call c_mio_read_opts_init(opts)
         if (present(lenient)) then
             if (lenient) opts%lenient = 1
         end if
-        h = c_mio_read_with_info(c_str(path), c_str(fmt), c_loc(opts), ih)
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(cad) /= 64_c_size_t) then
+            call handle_failure('read_with_info', &
+                'mio_cad_read_opts_t does not match the C layout', stat, errmsg)
+            return
+        end if
+        if (present(deflection)) cad%deflection = deflection
+        if (present(angular_deflection)) cad%angular_deflection = angular_deflection
+        if (present(sew_tolerance)) cad%sew_tolerance = sew_tolerance
+        if (present(heal)) then
+            if (heal) cad%heal = 1
+        end if
+        h = c_mio_read_with_info2(c_str(path), c_str(fmt), c_loc(opts), c_loc(cad), ih)
         if (.not. c_associated(h)) then
             call handle_failure('read_with_info', mio_error_message(), stat, errmsg)
             return
@@ -15892,7 +15970,9 @@ contains
     !> optimisation passes, `max_cells` (50000000) the refusal bound,
     !> `face_array` ('cad:face') the CAD face data carried to the triangles,
     !> and `backend` 'auto' (default: Netgen when built in, else the octree
-    !> backend), 'netgen' or 'octree'. 'netgen' without Netgen
+    !> backend), 'netgen', 'octree', or another name of `mio_tet_mesher_name`
+    !> ('tetgen' and 'gmsh' run those installed programs, the surface kept).
+    !> 'netgen' without Netgen
     !> (`mio_has_netgen()` is false) fails naming MESHIOPLUSPLUS_WITH_NETGEN.
     function mio_tetrahedralize(mesh, max_size, max_volume, grading, optimize_steps, max_cells, &
                                 face_array, backend, report, stat, errmsg) result(out)
@@ -15907,7 +15987,7 @@ contains
         type(mio_mesh) :: out
         type(mio_tetrahedralize_opts_t) :: opts
         type(mio_tetrahedralize_report) :: rep
-        character(kind=c_char, len=:), allocatable, target :: fname
+        character(kind=c_char, len=:), allocatable, target :: fname, pname
         if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
             (c_sizeof(opts) /= 80_c_size_t .or. c_sizeof(rep) /= 128_c_size_t)) then
             write (error_unit, '(a)') 'meshio++: tetrahedralize layout mismatch'
@@ -15930,10 +16010,16 @@ contains
                 opts%backend = 1
             case ('octree')
                 opts%backend = 2
-            case default
+            case ('')
                 call handle_failure('tetrahedralize', &
-                                    "backend must be 'auto', 'netgen' or 'octree'", stat, errmsg)
+                                    "backend must be 'auto', 'netgen', 'octree' or a mesher's name", &
+                                    stat, errmsg)
                 return
+            case default
+                ! A named mesher; the library refuses an unknown name, listing the others.
+                opts%backend = 3
+                pname = c_str(backend)
+                opts%provider = c_loc(pname(1:1))
             end select
         end if
         out%handle = c_mio_tetrahedralize(mesh%handle, opts, rep)

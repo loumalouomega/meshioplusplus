@@ -29,6 +29,25 @@ def add_args(parser):
         default=None,
     )
     parser.add_argument(
+        "--heal",
+        action="store_true",
+        help=(
+            "STEP and IGES: heal the shape before it is read (ShapeFix_Shape, "
+            "then sewing at --sew-tolerance)"
+        ),
+    )
+    parser.add_argument(
+        "--sew-tolerance",
+        type=float,
+        default=0.0,
+        metavar="T",
+        help=(
+            "STEP and IGES: the sewing tolerance, as a length; 0 (default) is "
+            "1e-5 of the bounding-box diagonal when healing, and a positive "
+            "value sews even without --heal"
+        ),
+    )
+    parser.add_argument(
         "--size",
         "-s",
         type=float,
@@ -243,7 +262,14 @@ def _size_pairs(text):
 
 
 def mesh_cad_surface_cmd(args):
-    mesh = read(args.infile, file_format=args.input_format)
+    if args.heal or args.sew_tolerance > 0.0:
+        from ..step import _read_healed
+
+        mesh = _read_healed(
+            args.infile, args.input_format, args.heal, args.sew_tolerance
+        )
+    else:
+        mesh = read(args.infile, file_format=args.input_format)
     out, report = mesh_cad_surface(
         mesh,
         args.size,

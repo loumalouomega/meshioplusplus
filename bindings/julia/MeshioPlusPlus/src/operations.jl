@@ -1271,22 +1271,31 @@ The result has a `tetra` block, a `triangle` block (the surface's with Netgen,
 its input points first; the tetrahedra's boundary with the octree backend) and
 the cell data `tetrahedralize:region`. `backend` is `"auto"` (Netgen when
 [`has_netgen`](@ref), else `"octree"`), `"netgen"` (throws naming
-`MESHIOPLUSPLUS_WITH_NETGEN` without it) or `"octree"`.
+`MESHIOPLUSPLUS_WITH_NETGEN` without it), `"octree"`, or another name of
+[`tetrahedralize_backends`](@ref): `"tetgen"` and `"gmsh"` run those installed
+programs as separate processes, the surface kept (checked).
 See `doc/tetrahedralize.md`.
 """
 function tetrahedralize(mesh::Mesh; backend::AbstractString="auto", max_size::Real=0.0,
                         max_volume::Real=0.0, grading::Real=0.3, optimize_steps::Integer=3,
                         max_cells::Integer=50_000_000, face_array::AbstractString="cad:face")
+    isempty(backend) &&
+        throw(ArgumentError("meshio++: tetrahedralize: backend must be \"auto\", \"netgen\", \"octree\" or a mesher's name"))
+    # Any other name is a named mesher (3); the library refuses an unknown one,
+    # listing the available names.
     backend_c = backend == "auto" ? Int32(0) : backend == "netgen" ? Int32(1) :
-                backend == "octree" ? Int32(2) :
-                throw(ArgumentError("meshio++: tetrahedralize: backend must be \"auto\", \"netgen\" or \"octree\""))
+                backend == "octree" ? Int32(2) : Int32(3)
     fname = Vector{UInt8}(codeunits(String(face_array)))
     push!(fname, 0x00)
+    pname = Vector{UInt8}(codeunits(String(backend)))
+    push!(pname, 0x00)
     report = Ref{_CTetrahedralizeReport}()
-    ptr = GC.@preserve fname begin
+    ptr = GC.@preserve fname pname begin
         opts = _CTetrahedralizeOpts(Cdouble(max_size), Cdouble(max_volume), Cdouble(grading),
                                     Int64(max_cells), pointer(fname), backend_c,
-                                    Int32(optimize_steps), (0, 0, 0, 0))
+                                    Int32(optimize_steps),
+                                    backend_c == 3 ? pointer(pname) : Ptr{UInt8}(C_NULL),
+                                    (0, 0, 0))
         ccall(_sym(:mio_tetrahedralize), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_CTetrahedralizeOpts}, Ref{_CTetrahedralizeReport}),
               _handle(mesh), Ref(opts), report)
@@ -1299,7 +1308,23 @@ function tetrahedralize(mesh::Mesh; backend::AbstractString="auto", max_size::Re
      boundary_preserved=r.boundary_preserved != 0,
      hausdorff_to_surface=Float64(r.hausdorff_to_surface),
      min_dihedral_deg=Float64(r.min_dihedral_deg), max_dihedral_deg=Float64(r.max_dihedral_deg),
-     volume=Float64(r.volume), backend=r.backend == 1 ? "netgen" : "octree")
+     volume=Float64(r.volume),
+     backend=r.backend_name == C_NULL ? (r.backend == 1 ? "netgen" : "octree") :
+             unsafe_string(r.backend_name))
+end
+
+"""
+    tetrahedralize_backends() -> Vector{String}
+
+The `backend` names [`tetrahedralize`](@ref) takes besides `"auto"`, sorted:
+`"octree"`, then every registered mesher (`"netgen"` when built in, the installed
+`"tetgen"` and `"gmsh"`, found on `PATH`).
+"""
+function tetrahedralize_backends()
+    n = ccall(_sym(:mio_tet_mesher_count), Int64, ())
+    n < 0 && throw(MeshioError(MIO_ERR_INTERNAL, last_error()))
+    [unsafe_string(ccall(_sym(:mio_tet_mesher_name), Ptr{UInt8}, (Int64,), i))
+     for i in 0:(n - 1)]
 end
 
 """

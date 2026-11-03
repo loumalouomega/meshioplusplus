@@ -193,6 +193,14 @@ struct CadReadOptions {
     double mDeflection = 0.0;
     /// The angular deflection, in radians.
     double mAngularDeflection = 0.5;
+    /// Heal the shape before it is extracted: `ShapeFix_Shape`, then sewing
+    /// (`BRepBuilderAPI_Sewing`) at `mSewTolerance`. What it did is reported as
+    /// the `heal` member of `BrepInfo::mExtra`.
+    bool mHeal = false;
+    /// The sewing tolerance, as a length. At most 0 takes 1e-5 of the
+    /// bounding-box diagonal (never below the shape's own largest tolerance)
+    /// when `mHeal` is set; a positive value sews even without `mHeal`.
+    double mSewTolerance = 0.0;
 };
 
 /// Whether this build reads STEP and IGES (it carries the OpenCASCADE backend,

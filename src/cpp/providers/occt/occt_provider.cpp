@@ -30,6 +30,7 @@
 // External includes (OpenCASCADE)
 #include <Standard_Failure.hxx>
 #include <Standard_Version.hxx>
+#include <TopoDS_Shape.hxx>
 
 // Project includes
 #include "meshioplusplus/exceptions.hpp"
@@ -53,10 +54,28 @@ Mesh occt_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
         throw std::invalid_argument(std::string("meshio++: ") + fmt +
                                     ": the deflection must be finite and the angular "
                                     "deflection positive");
+    if (!std::isfinite(rOptions.mSewTolerance) || rOptions.mSewTolerance < 0.0)
+        throw std::invalid_argument(std::string("meshio++: ") + fmt +
+                                    ": the sewing tolerance must be finite and at least 0");
     detail::LibraryLock lock;
     detail::OcctQuiet quiet;
     try {
-        detail::OcctNurbs nurbs = detail::occt_nurbs(detail::occt_read_cad_file(rPath, Iges, fmt));
+        TopoDS_Shape shape = detail::occt_read_cad_file(rPath, Iges, fmt);
+        const bool heal = rOptions.mHeal || rOptions.mSewTolerance > 0.0;
+        detail::OcctHealReport report;
+        if (heal)
+            shape = detail::occt_heal_shape(shape, rOptions, report);
+        detail::OcctNurbs nurbs = detail::occt_nurbs(shape);
+        if (heal) {
+            // The report joins the file's top-level members, `{"version_number":1}`.
+            std::string& r_extra = nurbs.mInfo.mExtra;
+            const std::size_t close = r_extra.rfind('}');
+            if (close == std::string::npos)
+                r_extra = "{\"heal\":" + report.ToJson() + "}";
+            else
+                r_extra.insert(close,
+                               std::string(close > 1 ? "," : "") + "\"heal\":" + report.ToJson());
+        }
         Mesh mesh = detail::occt_tessellate(nurbs.mShape, nurbs.mInfo, rOptions.mDeflection,
                                             rOptions.mAngularDeflection);
         rInfo = std::move(nurbs.mInfo);

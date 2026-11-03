@@ -721,6 +721,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".plt", "tecplot"},
         {".ele", "tetgen"},
         {".node", "tetgen"},
+        {".smesh", "tetgen"},
         {".poly", "triangle"},
         {".ugrid", "ugrid"},
         {".unv", "unv"},

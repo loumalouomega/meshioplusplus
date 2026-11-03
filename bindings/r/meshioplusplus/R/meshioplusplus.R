@@ -2962,6 +2962,14 @@ mio_data_integrate <- function(mesh, names = NULL) {
 #' @param path Path of the file to read or write.
 #' @param format Explicit format name, or `NULL` to infer it.
 #' @param lenient Skip (with a warning) what not even the side channel holds.
+#' @param deflection STEP and IGES: the chordal deflection of the
+#'   triangulation, as a length; at most 0 is automatic.
+#' @param angular_deflection STEP and IGES: the angular deflection, in radians.
+#' @param heal STEP and IGES: heal the shape before it is extracted
+#'   (`ShapeFix_Shape`, then sewing at `sew_tolerance`). The report is the
+#'   `"heal"` member of the B-rep's file-level JSON (`mio_brep_info()`).
+#' @param sew_tolerance STEP and IGES: the sewing tolerance, as a length; at
+#'   most 0 is automatic when healing, and a positive value sews without `heal`.
 #' @param mesh A `mio_mesh`.
 #' @param info A `mio_format_info`, or `NULL` (then `mio_write_with_info()` is
 #'   exactly [mio_write()]).
@@ -2978,8 +2986,11 @@ mio_data_integrate <- function(mesh, names = NULL) {
 #' mio_write_with_info(r$mesh, r$info, "copy.mdpa")
 #' }
 #' @export
-mio_read_with_info <- function(path, format = NULL, lenient = FALSE) {
-  .Call(R_mio_read_with_info, as.character(path), format, isTRUE(lenient))
+mio_read_with_info <- function(path, format = NULL, lenient = FALSE, deflection = 0,
+                               angular_deflection = 0.5, heal = FALSE, sew_tolerance = 0) {
+  .Call(R_mio_read_with_info, as.character(path), format, isTRUE(lenient),
+        as.numeric(deflection), as.numeric(angular_deflection), isTRUE(heal),
+        as.numeric(sew_tolerance))
 }
 
 #' @rdname mio_read_with_info
@@ -3416,6 +3427,19 @@ mio_has_netgen <- function() {
   .Call(R_mio_has_netgen)
 }
 
+#' The backend names mio_tetrahedralize() takes
+#'
+#' Besides `"auto"`: `"octree"`, then every registered tetrahedral mesher
+#' (`"netgen"` when built in, the installed `"tetgen"` and `"gmsh"` programs,
+#' found on `PATH` or through `MESHIOPLUSPLUS_TETGEN` and
+#' `MESHIOPLUSPLUS_GMSH`), sorted.
+#'
+#' @return A character vector.
+#' @export
+mio_tetrahedralize_backends <- function() {
+  .Call(R_mio_tetrahedralize_backends)
+}
+
 #' Whether the library carries the MMG backend
 #'
 #' The MMG operations (adapt, discretize_levelset, mesh_domain, move) need a
@@ -3568,9 +3592,13 @@ mio_metric_from_hessian <- function(mesh, hessian, error = 1e-2, hmin = 1e-3, hm
 #' `tetrahedralize:region`. `backend = "auto"` takes Netgen when
 #' [mio_has_netgen()] is `TRUE` and the octree backend otherwise;
 #' `"netgen"` without it fails naming `MESHIOPLUSPLUS_WITH_NETGEN`.
+#' `"tetgen"` and `"gmsh"` run those installed programs on the surface as
+#' separate processes, its triangles kept (checked); see
+#' [mio_tetrahedralize_backends()].
 #'
 #' @param mesh A closed triangle surface.
-#' @param backend `"auto"`, `"netgen"` or `"octree"`.
+#' @param backend `"auto"`, `"netgen"`, `"octree"`, or another name of
+#'   [mio_tetrahedralize_backends()] (`"tetgen"`, `"gmsh"`).
 #' @param max_size,max_volume The largest edge and volume asked of the
 #'   tetrahedra; 0 is none.
 #' @param grading How fast the size grows away from the surface, in [0, 1].

@@ -657,6 +657,41 @@ MIO_API mio_mesh* mio_read_with_info(const char* path, const char* format,
                                      const mio_read_opts* opts, mio_format_info** info);
 
 /**
+ * How a STEP or IGES file is read (`CadReadOptions`, brep.hpp; unreleased,
+ * after v18.0.0). Fill it with mio_cad_read_opts_init(): the defaults are not
+ * all zero (angular_deflection is 0.5).
+ */
+typedef struct mio_cad_read_opts {
+    /** The chordal deflection, as a length; at most 0 takes 1e-3 of the
+     *  bounding-box diagonal. */
+    double deflection;
+    /** The angular deflection, in radians (> 0; default 0.5). */
+    double angular_deflection;
+    /** Nonzero heals the shape before it is extracted: ShapeFix_Shape, then
+     *  sewing at sew_tolerance. What it did is the "heal" member of the
+     *  MIO_BREP_FILE string (compact JSON). */
+    int32_t heal;
+    int32_t reserved32;
+    /** The sewing tolerance, as a length (>= 0). 0 takes 1e-5 of the
+     *  bounding-box diagonal (never below the shape's own largest tolerance)
+     *  when healing; a positive value sews even without heal. */
+    double sew_tolerance;
+    int64_t reserved[4];
+} mio_cad_read_opts;
+
+/** Set `opts` to the defaults (deflection 0, angular deflection 0.5, no healing). */
+MIO_API void mio_cad_read_opts_init(mio_cad_read_opts* opts);
+
+/**
+ * mio_read_with_info() with the STEP and IGES read options. `cad_opts` NULL
+ * is exactly mio_read_with_info(); it is ignored for every other format.
+ * @return the mesh, or NULL on failure (`*info` is then NULL too).
+ */
+MIO_API mio_mesh* mio_read_with_info2(const char* path, const char* format,
+                                      const mio_read_opts* opts, const mio_cad_read_opts* cad_opts,
+                                      mio_format_info** info);
+
+/**
  * Write a mesh, restoring the side channel `info` came back with.
  *
  * `info` NULL is exactly mio_write(). A non-NULL `info` must belong to the
@@ -7098,7 +7133,11 @@ MIO_API int64_t mio_mirror_warnings(char* buf, int64_t buflen);
 typedef enum mio_tetrahedralize_backend {
     MIO_TETRAHEDRALIZE_BACKEND_AUTO = 0,   /**< Netgen when built in, else the octree backend */
     MIO_TETRAHEDRALIZE_BACKEND_NETGEN = 1, /**< Netgen's nglib (MESHIOPLUSPLUS_WITH_NETGEN): kept */
-    MIO_TETRAHEDRALIZE_BACKEND_OCTREE = 2  /**< native isosurface stuffing: the boundary fitted */
+    MIO_TETRAHEDRALIZE_BACKEND_OCTREE = 2, /**< native isosurface stuffing: the boundary fitted */
+    /** The mesher named by mio_tetrahedralize_opts.provider (unreleased, after
+     *  v18.0.0): the installed "tetgen" or "gmsh", run as a separate process,
+     *  or a plugin's; see mio_tet_mesher_name(). */
+    MIO_TETRAHEDRALIZE_BACKEND_NAMED = 3
 } mio_tetrahedralize_backend;
 
 /**
@@ -7114,7 +7153,10 @@ typedef struct mio_tetrahedralize_opts {
     const char* face_array;
     int32_t backend;        /**< a mio_tetrahedralize_backend (init: AUTO) */
     int32_t optimize_steps; /**< passes of the backend's volume optimisation, 0 to 100 (init: 3) */
-    int64_t reserved[4];
+    /** MIO_TETRAHEDRALIZE_BACKEND_NAMED: the mesher's name (borrowed; was
+     *  reserved, unreleased after v18.0.0). */
+    const char* provider;
+    int64_t reserved[3];
 } mio_tetrahedralize_opts;
 
 /** What mio_tetrahedralize did. 128 bytes, with a reserved tail. */
@@ -7130,7 +7172,11 @@ typedef struct mio_tetrahedralize_report {
     double volume;              /**< the tetrahedra's total */
     int32_t boundary_preserved; /**< every surface triangle and point kept exactly */
     int32_t backend;            /**< the mio_tetrahedralize_backend that ran */
-    int64_t reserved[6];
+    /** The name of the backend that ran ("octree", "netgen", "tetgen", ...);
+     *  static, valid for the library's lifetime (was reserved, unreleased
+     *  after v18.0.0). */
+    const char* backend_name;
+    int64_t reserved[5];
 } mio_tetrahedralize_report;
 
 MIO_API void mio_tetrahedralize_opts_init(mio_tetrahedralize_opts* opts);
@@ -7138,6 +7184,14 @@ MIO_API void mio_tetrahedralize_opts_init(mio_tetrahedralize_opts* opts);
 /** Nonzero when this library was built with mio_tetrahedralize's Netgen
  *  backend (-DMESHIOPLUSPLUS_WITH_NETGEN=ON); the octree backend always is. */
 MIO_API int mio_has_netgen(void);
+
+/** The number of backend names mio_tetrahedralize takes besides AUTO:
+ *  "octree", then every registered mesher ("netgen", the installed "tetgen"
+ *  and "gmsh"), sorted (unreleased, after v18.0.0). */
+MIO_API int64_t mio_tet_mesher_count(void);
+/** Backend name `index` (0-based, as mio_tet_mesher_count() counts them);
+ *  static, valid for the library's lifetime. NULL when out of range. */
+MIO_API const char* mio_tet_mesher_name(int64_t index);
 
 /**
  * Fill the closed, manifold, consistently oriented triangle surface `mesh`

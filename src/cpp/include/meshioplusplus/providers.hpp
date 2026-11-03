@@ -112,6 +112,23 @@ MESHIOPLUSPLUS_API void unregister_tet_mesher() noexcept;
 /// The registered tetrahedral mesher, or null.
 MESHIOPLUSPLUS_API std::shared_ptr<const TetMesherProvider> tet_mesher() noexcept;
 
+// Named tetrahedral meshers (roadmap 7.7.2): besides the default one above, any
+// number of meshers registered by name, which `tetrahedralize` picks with
+// `TetrahedralizeBackend::Named`. The default is registered by name too. This
+// build adds `tetgen` and `gmsh` when those programs are installed (it runs
+// them as separate processes; never in WebAssembly), see `tetrahedralize.md`.
+
+/// Registers `Provider` under its `mName` without making it the default,
+/// replacing an earlier one of that name.
+MESHIOPLUSPLUS_API void add_tet_mesher(TetMesherProvider Provider);
+/// Removes the named tetrahedral mesher `rName` (the default stays).
+MESHIOPLUSPLUS_API void remove_tet_mesher(const std::string& rName) noexcept;
+/// The tetrahedral mesher named `rName`, or null.
+MESHIOPLUSPLUS_API std::shared_ptr<const TetMesherProvider> tet_mesher(
+    const std::string& rName) noexcept;
+/// The names of every registered tetrahedral mesher, sorted.
+MESHIOPLUSPLUS_API std::vector<std::string> tet_mesher_names();
+
 /// Registers `Provider` as the remesher, replacing any earlier one.
 MESHIOPLUSPLUS_API void register_remesher(RemesherProvider Provider);
 /// Removes the registered remesher (the builtin is not re-registered).

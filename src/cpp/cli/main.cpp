@@ -412,6 +412,8 @@ void print_usage(std::ostream& os) {
           "                            --piece=N keeps one piece of a partitioned file\n"
           "                            --lenient skips constructs the reader cannot represent\n"
           "                            --drop-ghosts removes a .pvtu/.pvd halo (vtkGhostType)\n"
+          "                            --heal [--sew-tolerance T] heals a STEP/IGES shape\n"
+          "                            (ShapeFix, then sewing) before it is read\n"
           "                            --appended writes a .vtu's arrays as raw binary in\n"
           "                            one <AppendedData> section (no base64)\n"
           "                            'out_*.vtu' (quoted) or repeated --input fans a\n"
@@ -529,6 +531,7 @@ void print_usage(std::ostream& os) {
           "                            [--lop-corners] [--untangle]\n"
           "                            [--quads none|dominant|all]\n"
           "                            [--quad-pairs matching|greedy]\n"
+          "                            [--heal] [--sew-tolerance T]\n"
           "                            [--strict] [--json]\n"
           "  boundary-layer          Prismatic layers grown from a triangle and quad\n"
           "                            surface: --first-height H [--num-layers N]\n"
@@ -552,7 +555,8 @@ void print_usage(std::ostream& os) {
           "                            its triangles kept (Netgen): [--max-size H]\n"
           "                            [--max-volume V] [--grading G]\n"
           "                            [--optimize-steps N] [--max-cells N]\n"
-          "                            [--face-array NAME] [--backend auto|netgen|octree]\n"
+          "                            [--face-array NAME]\n"
+          "                            [--backend auto|netgen|octree|tetgen|gmsh]\n"
           "                            [--json]\n"
           "  project-to-cad          Move a mesh's points back onto the CAD faces and\n"
           "                            edges its cells name: INFILE MODEL OUTFILE\n"
@@ -861,6 +865,15 @@ int convert_sequence(const cli_parsed& rParsed, const std::string& rInfile,
     return 0;
 }
 
+// --heal and --sew-tolerance: how a STEP or IGES input is healed at read time.
+meshioplusplus::CadReadOptions cli_cad_read_options(const cli_parsed& rP) {
+    meshioplusplus::CadReadOptions cad;
+    cad.mHeal = has_flag(rP, "heal");
+    if (has_opt(rP, "sew-tolerance"))
+        cad.mSewTolerance = meshioplusplus::detail::stod_c(opt_value(rP, "sew-tolerance"));
+    return cad;
+}
+
 int cmd_convert(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -891,6 +904,8 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                                   {"time-from", {}, true},
                                   {"sequence", {}, false},
                                   {"no-sequence", {}, false},
+                                  {"heal", {}, false},
+                                  {"sew-tolerance", {}, true},
                                   {"json", {}, false},
                               });
     if (p.positionals.size() != 2)
@@ -1007,11 +1022,20 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                 to = meshioplusplus::resolve_write_format(outfile, out_fmt);
             } catch (const std::exception&) {
             }
+            const meshioplusplus::CadReadOptions cad = cli_cad_read_options(p);
+            const bool healing = cad.mHeal || cad.mSewTolerance > 0.0;
+            if (healing && from != "step" && from != "iges")
+                throw std::invalid_argument("--heal/--sew-tolerance apply to STEP and IGES inputs");
             if (to == "cad_json" && (from == "cad_json" || from == "step" || from == "iges")) {
                 brep.emplace();
                 return from == "cad_json" ? meshioplusplus::read_cad_json(infile, *brep)
-                       : from == "step"   ? meshioplusplus::read_step(infile, *brep)
-                                          : meshioplusplus::read_iges(infile, *brep);
+                       : from == "step"   ? meshioplusplus::read_step(infile, *brep, cad)
+                                          : meshioplusplus::read_iges(infile, *brep, cad);
+            }
+            if (healing) {
+                meshioplusplus::BrepInfo info;
+                return from == "step" ? meshioplusplus::read_step(infile, info, cad)
+                                      : meshioplusplus::read_iges(infile, info, cad);
             }
             return read_mesh_cli(infile, in_fmt, opts);
         }
@@ -2281,7 +2305,8 @@ struct CliIgaModel {
     Mesh mMesh;
 };
 
-CliIgaModel cli_iga_read(const std::string& rPath, const std::string& rFormat) {
+CliIgaModel cli_iga_read(const std::string& rPath, const std::string& rFormat,
+                         const meshioplusplus::CadReadOptions& rCad = {}) {
     CliIgaModel m;
     m.mFormat = meshioplusplus::resolve_format(rPath, rFormat);
     if (m.mFormat == "mfem") {
@@ -2292,8 +2317,8 @@ CliIgaModel cli_iga_read(const std::string& rPath, const std::string& rFormat) {
     } else if (m.mFormat == "cad_json" || m.mFormat == "step" || m.mFormat == "iges") {
         m.mBrep.emplace();
         m.mMesh = m.mFormat == "cad_json" ? meshioplusplus::read_cad_json(rPath, *m.mBrep)
-                  : m.mFormat == "step"   ? meshioplusplus::read_step(rPath, *m.mBrep)
-                                          : meshioplusplus::read_iges(rPath, *m.mBrep);
+                  : m.mFormat == "step"   ? meshioplusplus::read_step(rPath, *m.mBrep, rCad)
+                                          : meshioplusplus::read_iges(rPath, *m.mBrep, rCad);
     } else {
         throw std::runtime_error(
             "'" + m.mFormat +
@@ -2484,6 +2509,8 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   {"untangle", {}, false},
                                   {"quads", {}, true},
                                   {"quad-pairs", {}, true},
+                                  {"heal", {}, false},
+                                  {"sew-tolerance", {}, true},
                                   {"json", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
@@ -2491,7 +2518,8 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
         throw std::runtime_error("mesh-cad-surface requires exactly INFILE and OUTFILE");
     if (!has_opt(p, "size"))
         throw std::runtime_error("mesh-cad-surface requires --size H");
-    CliIgaModel model = cli_iga_read(p.positionals[0], opt_value(p, "input-format"));
+    CliIgaModel model =
+        cli_iga_read(p.positionals[0], opt_value(p, "input-format"), cli_cad_read_options(p));
     if (!model.mBrep)
         throw std::runtime_error("mesh-cad-surface needs a B-rep (CAD JSON, STEP or IGES), not '" +
                                  model.mFormat + "'");
@@ -6751,9 +6779,13 @@ int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
             o.mBackend = meshioplusplus::TetrahedralizeBackend::Netgen;
         else if (b == "octree")
             o.mBackend = meshioplusplus::TetrahedralizeBackend::Octree;
-        else
-            throw std::runtime_error(
-                "tetrahedralize: --backend must be auto, netgen or octree, not '" + b + "'");
+        else if (!b.empty()) {
+            // A named mesher (roadmap 7.7.2): the installed tetgen or gmsh,
+            // a plugin's; an unknown name is refused listing the others.
+            o.mBackend = meshioplusplus::TetrahedralizeBackend::Named;
+            o.mProvider = b;
+        } else
+            throw std::runtime_error("tetrahedralize: --backend needs a name");
     }
     if (has_opt(p, "max-size"))
         o.mMaxSize = meshioplusplus::detail::stod_c(opt_value(p, "max-size"));
@@ -9613,6 +9645,10 @@ int main(int argc, char** argv) {
         std::cout << "providers: OpenCASCADE " << yes_no(meshioplusplus::cad_read_has_occt())
                   << ", Netgen " << yes_no(meshioplusplus::tetrahedralize_has_netgen())
                   << ", MMG " << yes_no(meshioplusplus::mmg_available()) << "\n";
+        std::string meshers;
+        for (const std::string& r_name : meshioplusplus::tetrahedralize_backends())
+            meshers += (meshers.empty() ? "" : ", ") + r_name;
+        std::cout << "tetrahedralize backends: auto, " << meshers << "\n";
         return 0;
     }
     if (cmd == "-h" || cmd == "--help") {

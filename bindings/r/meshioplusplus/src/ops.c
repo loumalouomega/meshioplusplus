@@ -2000,6 +2000,19 @@ SEXP R_mio_has_netgen(void) {
     return Rf_ScalarLogical(mio_has_netgen() != 0);
 }
 
+/* The backend names tetrahedralize takes besides "auto" (roadmap 7.7.2). */
+SEXP R_mio_tetrahedralize_backends(void) {
+    const int64_t n = mio_tet_mesher_count();
+    if (n < 0) mio_r_fail("tetrahedralize_backends");
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t)n));
+    for (int64_t i = 0; i < n; ++i) {
+        const char *name = mio_tet_mesher_name(i);
+        SET_STRING_ELT(out, (R_xlen_t)i, Rf_mkChar(name != NULL ? name : ""));
+    }
+    UNPROTECT(1);
+    return out;
+}
+
 SEXP R_mio_has_mmg(void) {
     return Rf_ScalarLogical(mio_has_mmg() != 0);
 }
@@ -2198,9 +2211,14 @@ SEXP R_mio_tetrahedralize(SEXP mesh, SEXP backend, SEXP max_size, SEXP max_volum
             opts.backend = MIO_TETRAHEDRALIZE_BACKEND_NETGEN;
         else if (strcmp(b, "octree") == 0)
             opts.backend = MIO_TETRAHEDRALIZE_BACKEND_OCTREE;
-        else
-            Rf_error(
-                "meshio++: tetrahedralize: backend must be \"auto\", \"netgen\" or \"octree\"");
+        else if (b[0] != '\0') {
+            /* A named mesher (the installed tetgen or gmsh); an unknown name
+             * fails in the library, listing the available ones. */
+            opts.backend = MIO_TETRAHEDRALIZE_BACKEND_NAMED;
+            opts.provider = b;
+        } else
+            Rf_error("meshio++: tetrahedralize: backend must be \"auto\", \"netgen\", \"octree\" "
+                     "or a mesher's name");
     }
     opts.max_size = mio_r_double(max_size, "max_size");
     opts.max_volume = mio_r_double(max_volume, "max_volume");
@@ -2223,8 +2241,10 @@ SEXP R_mio_tetrahedralize(SEXP mesh, SEXP backend, SEXP max_size, SEXP max_volum
     v[8] = PROTECT(Rf_ScalarReal(report.min_dihedral_deg));
     v[9] = PROTECT(Rf_ScalarReal(report.max_dihedral_deg));
     v[10] = PROTECT(Rf_ScalarReal(report.volume));
-    v[11] = PROTECT(
-        Rf_mkString(report.backend == MIO_TETRAHEDRALIZE_BACKEND_NETGEN ? "netgen" : "octree"));
+    v[11] = PROTECT(Rf_mkString(report.backend_name != NULL ? report.backend_name
+                                : report.backend == MIO_TETRAHEDRALIZE_BACKEND_NETGEN
+                                    ? "netgen"
+                                    : "octree"));
     const char *names[] = {"mesh",
                            "num_tetrahedra",
                            "num_points",

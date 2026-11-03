@@ -140,6 +140,21 @@ struct _CReadOpts
 end
 
 """
+    _CCadReadOpts
+
+Mirror of C `mio_cad_read_opts` (64 bytes): how `read_with_info` reads a STEP
+or IGES file. Field order and padding are ABI.
+"""
+struct _CCadReadOpts
+    deflection::Float64
+    angular_deflection::Float64
+    heal::Int32
+    reserved32::Int32
+    sew_tolerance::Float64
+    reserved::NTuple{4,Int64}
+end
+
+"""
 Mirror of C `mio_refine_opts`. Field order, types and the trailing `reserved`
 padding are ABI: they must match `meshioplusplus.h` exactly. Always build one
 through [`refine`](@ref) rather than by hand.
@@ -1039,7 +1054,8 @@ struct _CTetrahedralizeOpts
     face_array::Ptr{UInt8}
     backend::Int32
     optimize_steps::Int32
-    reserved::NTuple{4,Int64}
+    provider::Ptr{UInt8}  # backend 3 (a named mesher): its name (was reserved)
+    reserved::NTuple{3,Int64}
 end
 
 """Mirror of C `mio_mmg_local`."""
@@ -1156,7 +1172,8 @@ struct _CTetrahedralizeReport
     volume::Cdouble
     boundary_preserved::Int32
     backend::Int32
-    reserved::NTuple{6,Int64}
+    backend_name::Ptr{UInt8}  # the backend that ran, a static C string (was reserved)
+    reserved::NTuple{5,Int64}
 end
 
 """Mirror of C `mio_mesh_cad_surface_report`."""
@@ -1953,6 +1970,8 @@ end
 function _check_abi_layout()
     sizeof(_CReadOpts) == 80 ||
         error("meshio++: mio_read_opts layout mismatch ($(sizeof(_CReadOpts)) bytes)")
+    sizeof(_CCadReadOpts) == 64 ||
+        error("meshio++: mio_cad_read_opts layout mismatch ($(sizeof(_CCadReadOpts)) bytes)")
     sizeof(_CStatsReport) == 144 ||
         error("meshio++: mio_stats_report layout mismatch ($(sizeof(_CStatsReport)) bytes)")
     sizeof(_CRegionInfo) == 32 ||
@@ -2106,11 +2125,13 @@ function _check_abi_layout()
         error("meshio++: mio_thickness_report layout mismatch ($(sizeof(_CThicknessReport)) bytes)")
     (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CTetrahedralizeOpts) == 80 &&
                                  fieldoffset(_CTetrahedralizeOpts, 5) == 32 &&
-                                 fieldoffset(_CTetrahedralizeOpts, 8) == 48)) ||
+                                 fieldoffset(_CTetrahedralizeOpts, 8) == 48 &&
+                                 fieldoffset(_CTetrahedralizeOpts, 9) == 56)) ||
         error("meshio++: mio_tetrahedralize_opts layout mismatch " *
               "($(sizeof(_CTetrahedralizeOpts)) bytes)")
     (sizeof(_CTetrahedralizeReport) == 128 && fieldoffset(_CTetrahedralizeReport, 10) == 72 &&
-     fieldoffset(_CTetrahedralizeReport, 12) == 80) ||
+     fieldoffset(_CTetrahedralizeReport, 12) == 80 &&
+     fieldoffset(_CTetrahedralizeReport, 13) == 88) ||
         error("meshio++: mio_tetrahedralize_report layout mismatch " *
               "($(sizeof(_CTetrahedralizeReport)) bytes)")
     (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CMmgLocal) == 32 && sizeof(_CMmgParams) == 168 &&

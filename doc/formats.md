@@ -85,7 +85,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`svg`](./formats/svg.md) | `.svg` | ✓ (2-D drawing) | ✓ | — | [3/8 cells · no data](./conformance.md#svg) |
 | [`szplt`](./formats/szplt.md) | `.szplt` (Tecplot SZL, also by content) | ✓ | ✓ | TecIO (a core built with it, or a shared TecIO) | [5/8 cells · data C · regions C](./conformance.md#szplt) |
 | [`tecplot`](./formats/tecplot.md) | `.dat` (unless it is a Marc deck), `.tec`, `.plt` (binary) | ✓ | ✓ | — | [5/8 cells · data PC · regions C](./conformance.md#tecplot) |
-| [`tetgen`](./formats/tetgen.md) | `.ele` / `.node` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#tetgen) |
+| [`tetgen`](./formats/tetgen.md) | `.ele` / `.node` / `.smesh` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#tetgen) |
 | [`tikz`](./formats/tikz.md) | `.tikz` | ✓ (2-D drawing) | ✓ | — | [3/8 cells · no data](./conformance.md#tikz) |
 | [`triangle`](./formats/triangle.md) | `.node` / `.ele` / `.poly` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#triangle) |
 | [`ugrid`](./formats/ugrid.md) | `.ugrid` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#ugrid) |
@@ -149,7 +149,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 **Note on `.inp`:** `abaqus` and `ansysInp` both use `.inp`. `abaqus` is registered first, so plain extension-based dispatch resolves to Abaqus by default; pass `file_format="ansysInp"` (or call `meshioplusplus.ansysInp.read`/`write` directly) to select the Ansys/APDL reader for a `.inp` file.
 
-**Note on `tetgen`:** The format spans two files (`.node` + `.ele`). It cannot be read from or written to a buffer.
+**Note on `tetgen`:** The format spans two files (`.node` + `.ele`), or one `.smesh` surface (TetGen's input, its points and polygonal facets). It cannot be read from or written to a buffer.
 
 **Note on `triangle` vs `tetgen` (`.node`/`.ele`):** both formats use `.node`/`.ele`; `tetgen` is registered first, so plain extension dispatch resolves to it. When *reading*, a 2D pair makes tetgen raise and the dispatcher falls through to `triangle` automatically; when *writing*, pass `file_format="triangle"` (or use a `.poly` path, which defaults to `triangle`). Like tetgen, the format spans multiple files and cannot use buffers.
 
@@ -326,7 +326,7 @@ The table below is the audit this fixed: every format's comment syntax (if any),
 | `usd` | The root layer's `documentation` metadata field | Stage metadata, at the top of a `.usda` | Yes (a binary crate layer needs `usd-core` to read it back) |
 | `svg` | XML `<!-- -->` | Anywhere in the document | — |
 | `tecplot` | None named — the `TITLE = "..."` record is the nearest free-text slot | Top of file | Yes |
-| `tetgen` | `#` prefix | Top of each file (`.node`/`.ele`/`.poly`) | Yes |
+| `tetgen` | `#` prefix | Top of each file (`.node`/`.ele`/`.smesh`) | Yes |
 | `tikz` | `%` prefix (LaTeX/TikZ convention) | Anywhere | — |
 | `triangle` | `#` prefix | Top of each file (`.node`/`.ele`/`.poly`) | Yes |
 | `ugrid` | None (fixed columnar numeric format) | n/a | — |

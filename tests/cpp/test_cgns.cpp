@@ -1242,7 +1242,9 @@ TEST(CgnsPoly, AHexahedronAndAPolyhedronCoexistInOneFile) {
 }
 
 // The CGNS 3.x inline-length layout must be refused BY NAME, pointing at the
-// cgnslib backend, rather than misread as the 4.0 one.
+// cgnslib backend, rather than misread as the 4.0 one. With that backend built
+// in the file goes to it, whose empty offsets for the section are refused too
+// (roadmap 7.1.4: the first run with cgnslib live read it as an empty mesh).
 TEST(CgnsPoly, A3xLayoutSectionIsRefusedByName) {
     const meshioplusplus::Mesh m = cgns_poly_cube();
     std::string p = mt::temp_path(".cgns");
@@ -1258,7 +1260,12 @@ TEST(CgnsPoly, A3xLayoutSectionIsRefusedByName) {
         ADD_FAILURE() << "a 3.x-layout section was read rather than refused";
     } catch (const meshioplusplus::ReadError& e) {
         const std::string msg = e.what();
+#ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
+        // cgnslib hands back empty offsets for it, which are refused by name.
+        EXPECT_NE(msg.find("ElementStartOffset"), std::string::npos) << msg;
+#else
         EXPECT_NE(msg.find("CGNSLIB"), std::string::npos) << msg;
+#endif
     }
     std::error_code ec;
     std::filesystem::remove(p, ec);

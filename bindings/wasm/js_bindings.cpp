@@ -1828,7 +1828,8 @@ val exodus_info_to_val(const meshioplusplus::ExodusInfo& rInfo) {
  * @param[out] rInfoOut the format's `info` object (`{format, ...}`).
  */
 Mesh read_with_info(const std::string& rPath, const std::string& rFormat,
-                    const meshioplusplus::ReadOptions& rOptions, val& rInfoOut) {
+                    const meshioplusplus::ReadOptions& rOptions, val& rInfoOut,
+                    const meshioplusplus::CadReadOptions& rCad = {}) {
     if (rFormat == "openfoam") {
         meshioplusplus::OpenFoamInfo info;
         Mesh mesh = meshioplusplus::read_openfoam(rPath, rOptions, info);
@@ -1874,8 +1875,8 @@ Mesh read_with_info(const std::string& rPath, const std::string& rFormat,
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
     if (rFormat == "step" || rFormat == "iges") {
         meshioplusplus::BrepInfo info;
-        Mesh mesh = rFormat == "step" ? meshioplusplus::read_step(rPath, info)
-                                      : meshioplusplus::read_iges(rPath, info);
+        Mesh mesh = rFormat == "step" ? meshioplusplus::read_step(rPath, info, rCad)
+                                      : meshioplusplus::read_iges(rPath, info, rCad);
         rInfoOut = brep_info_to_val(info);
         return mesh;
     }
@@ -2172,12 +2173,17 @@ void med_write_multi_js(const std::string& rPath, const val& rMeshes, const val&
  *   (med, mdpa, gmsh, exodus, unv); openfoam/ansysinp have no selective-read
  *   path with or without info, exactly as they have none without `info`.
  *
+ * @param rCadRead STEP and IGES (the full artifact, with OpenCASCADE):
+ *   `{deflection, angularDeflection, heal, sewTolerance}`, each optional --
+ *   `CadReadOptions`; the heal report is the `heal` member of the B-rep's
+ *   file-level JSON in `.info`.
+ *
  * Formats without a native selective path are read whole and filtered, so the
  * result is the same either way -- only the cost differs.
  */
 val read_mesh_selective(const std::string& rPath, const std::string& rFormat, bool points_only,
                         const val& rArrays, int time_step, bool lenient, const val& rPiece,
-                        bool drop_ghosts, bool info) {
+                        bool drop_ghosts, bool info, const val& rCadRead) {
     return with_js_errors([&]() -> val {
         const std::string fmt = js_resolve_read_format(rPath, rFormat);
         meshioplusplus::ReadOptions opts;
@@ -2195,9 +2201,31 @@ val read_mesh_selective(const std::string& rPath, const std::string& rFormat, bo
         if (!wasm_reads(fmt))
             throw meshioplusplus::ReadError("meshio++ (wasm): unknown or unsupported format '" +
                                             fmt + "'" + compiled_out_hint(fmt));
+        // `cadRead` (STEP and IGES): `{deflection, angularDeflection, heal,
+        // sewTolerance}`, each optional.
+        meshioplusplus::CadReadOptions cad;
+        if (!rCadRead.isNull() && !rCadRead.isUndefined()) {
+            const auto num = [&](const char* pKey, double& rOut) {
+                const val v = rCadRead[pKey];
+                if (!v.isNull() && !v.isUndefined())
+                    rOut = v.as<double>();
+            };
+            num("deflection", cad.mDeflection);
+            num("angularDeflection", cad.mAngularDeflection);
+            num("sewTolerance", cad.mSewTolerance);
+            const val heal = rCadRead["heal"];
+            cad.mHeal = !heal.isNull() && !heal.isUndefined() && heal.as<bool>();
+        }
+        if ((cad.mHeal || cad.mSewTolerance != 0.0 || cad.mDeflection != 0.0 ||
+             cad.mAngularDeflection != 0.5) &&
+            (fmt == "step" || fmt == "iges") && !info) {
+            // The CAD options reach the info-bearing reader only.
+            val info_val;
+            return mesh_to_val(read_with_info(rPath, fmt, opts, info_val, cad));
+        }
         if (info && format_reads_info(fmt)) {
             val info_val;
-            Mesh mesh = read_with_info(rPath, fmt, opts, info_val);
+            Mesh mesh = read_with_info(rPath, fmt, opts, info_val, cad);
             val out = mesh_to_val(mesh);
             out.set("info", info_val);
             return out;
@@ -8810,11 +8838,14 @@ val tetrahedralize_js(const val& rMeshObj, const val& rOptions) {
                     o.mBackend = meshioplusplus::TetrahedralizeBackend::Netgen;
                 else if (b == "octree")
                     o.mBackend = meshioplusplus::TetrahedralizeBackend::Octree;
-                else
+                else if (!b.empty()) {
+                    // A named mesher: the external tetgen and gmsh never run in
+                    // WebAssembly, so the core refuses it, naming what is here.
+                    o.mBackend = meshioplusplus::TetrahedralizeBackend::Named;
+                    o.mProvider = b;
+                } else
                     throw std::invalid_argument(
-                        "meshio++: tetrahedralize: backend must be 'auto', 'netgen' or 'octree', "
-                        "not '" +
-                        b + "'");
+                        "meshio++: tetrahedralize: backend must be 'auto', 'netgen' or 'octree'");
             }
             if (rOptions.hasOwnProperty("maxSize"))
                 o.mMaxSize = rOptions["maxSize"].as<double>();

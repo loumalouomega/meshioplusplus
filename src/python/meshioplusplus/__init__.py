@@ -306,7 +306,7 @@ if TYPE_CHECKING:
     from ._tensor_invariants import tensor_invariants
     from ._tessellation import Tessellation, tessellate
     from ._tet_poly import poly_to_tet, tet_to_poly
-    from ._tetrahedralize import has_netgen, tetrahedralize
+    from ._tetrahedralize import has_netgen, tetrahedralize, tetrahedralize_backends
     from ._thickness import thickness
     from ._transform import transform
     from ._tui import tui
@@ -567,6 +567,7 @@ _LAZY_ATTRS = {
     "poly_to_tet": "_tet_poly",
     "tetrahedralize": "_tetrahedralize",
     "has_netgen": "_tetrahedralize",
+    "tetrahedralize_backends": "_tetrahedralize",
     "triangulate_polygon_2d": "_mesh_cad",
 }
 
@@ -795,6 +796,7 @@ __all__ = [
     "poly_to_tet",
     "tetrahedralize",
     "has_netgen",
+    "tetrahedralize_backends",
     "triangulate_polygon_2d",
     "sample_distance",
     "distance_to_surface",

@@ -1044,6 +1044,18 @@ if(MESHIOPLUSPLUS_WITH_CGNSLIB AND NOT MESHIOPLUSPLUS_WITH_HDF5)
           "meshio++: MESHIOPLUSPLUS_WITH_CGNSLIB needs MESHIOPLUSPLUS_WITH_HDF5=ON - "
           "the cgnslib backend augments the HDF5-backed CGNS format, it does not replace it.")
 endif()
+# A cgnslib built against an HDF5 that FindHDF5 found (Ubuntu's, which ships no
+# CMake config) exports its HDF5 dependency as the bare names `hdf5-shared` /
+# `hdf5-static` without declaring them, so the link asks for `-lhdf5-shared`.
+# Stand them in for the HDF5 found above (roadmap 7.1.4: the cgnslib CI leg).
+if(MESHIOPLUSPLUS_WITH_CGNSLIB AND HDF5_FOUND)
+  foreach(_mio_cgns_hdf5 hdf5-shared hdf5-static)
+    if(NOT TARGET ${_mio_cgns_hdf5})
+      add_library(${_mio_cgns_hdf5} INTERFACE IMPORTED)
+      target_link_libraries(${_mio_cgns_hdf5} INTERFACE ${HDF5_C_LIBRARIES})
+    endif()
+  endforeach()
+endif()
 if(MESHIOPLUSPLUS_WITH_CGNSLIB AND MESHIOPLUSPLUS_PREFER_STATIC_DEPS AND TARGET CGNS::cgns_static)
   message(STATUS "meshio++: cgnslib CGNS backend enabled (static)")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_CGNSLIB)

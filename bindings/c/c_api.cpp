@@ -50,7 +50,9 @@
 #include <exception>
 #include <array>
 #include <memory>
+#include <mutex>
 #include <new>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -1242,8 +1244,25 @@ void capi_index_brep(mio_format_info& rHandle) {
 
 }  // namespace
 
+static_assert(sizeof(mio_cad_read_opts) == 64, "mio_cad_read_opts layout");
+static_assert(offsetof(mio_cad_read_opts, heal) == 16, "mio_cad_read_opts layout");
+static_assert(offsetof(mio_cad_read_opts, sew_tolerance) == 24, "mio_cad_read_opts layout");
+static_assert(offsetof(mio_cad_read_opts, reserved) == 32, "mio_cad_read_opts layout");
+
+void mio_cad_read_opts_init(mio_cad_read_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_cad_read_opts{};
+    opts->angular_deflection = 0.5;
+}
+
 mio_mesh* mio_read_with_info(const char* path, const char* format, const mio_read_opts* opts,
                              mio_format_info** info) {
+    return mio_read_with_info2(path, format, opts, nullptr, info);
+}
+
+mio_mesh* mio_read_with_info2(const char* path, const char* format, const mio_read_opts* opts,
+                              const mio_cad_read_opts* cad_opts, mio_format_info** info) {
     if (info)
         *info = nullptr;
     return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
@@ -1287,10 +1306,17 @@ mio_mesh* mio_read_with_info(const char* path, const char* format, const mio_rea
             auto handle = std::make_unique<mio_format_info>();
             handle->mFormat = fmt;
             meshioplusplus::BrepInfo brep;
+            meshioplusplus::CadReadOptions cad;
+            if (cad_opts) {
+                cad.mDeflection = cad_opts->deflection;
+                cad.mAngularDeflection = cad_opts->angular_deflection;
+                cad.mHeal = cad_opts->heal != 0;
+                cad.mSewTolerance = cad_opts->sew_tolerance;
+            }
             auto mesh = std::make_unique<mio_mesh>(
                 mio_mesh{fmt == "cad_json" ? meshioplusplus::read_cad_json(path, brep)
-                         : fmt == "step"   ? meshioplusplus::read_step(path, brep)
-                                           : meshioplusplus::read_iges(path, brep)});
+                         : fmt == "step"   ? meshioplusplus::read_step(path, brep, cad)
+                                           : meshioplusplus::read_iges(path, brep, cad)});
             handle->mInfo = std::move(brep);
             capi_index_brep(*handle);
             *info = handle.release();
@@ -9250,17 +9276,50 @@ static_assert(sizeof(mio_tetrahedralize_opts) == 80, "mio_tetrahedralize_opts la
 static_assert(offsetof(mio_tetrahedralize_opts, face_array) == 32,
               "mio_tetrahedralize_opts layout");
 static_assert(offsetof(mio_tetrahedralize_opts, backend) == 40, "mio_tetrahedralize_opts layout");
-static_assert(offsetof(mio_tetrahedralize_opts, reserved) == 48, "mio_tetrahedralize_opts layout");
+static_assert(offsetof(mio_tetrahedralize_opts, provider) == 48, "mio_tetrahedralize_opts layout");
+static_assert(offsetof(mio_tetrahedralize_opts, reserved) == 56, "mio_tetrahedralize_opts layout");
 static_assert(sizeof(mio_tetrahedralize_report) == 128, "mio_tetrahedralize_report layout");
 static_assert(offsetof(mio_tetrahedralize_report, boundary_preserved) == 72,
               "mio_tetrahedralize_report layout");
-static_assert(offsetof(mio_tetrahedralize_report, reserved) == 80,
+static_assert(offsetof(mio_tetrahedralize_report, backend_name) == 80,
+              "mio_tetrahedralize_report layout");
+static_assert(offsetof(mio_tetrahedralize_report, reserved) == 88,
               "mio_tetrahedralize_report layout");
 static_assert(static_cast<int>(meshioplusplus::TetrahedralizeBackend::Netgen) ==
                       MIO_TETRAHEDRALIZE_BACKEND_NETGEN &&
                   static_cast<int>(meshioplusplus::TetrahedralizeBackend::Octree) ==
-                      MIO_TETRAHEDRALIZE_BACKEND_OCTREE,
+                      MIO_TETRAHEDRALIZE_BACKEND_OCTREE &&
+                  static_cast<int>(meshioplusplus::TetrahedralizeBackend::Named) ==
+                      MIO_TETRAHEDRALIZE_BACKEND_NAMED,
               "mio_tetrahedralize_backend drifted from TetrahedralizeBackend");
+
+namespace {
+
+// A backend name kept for the library's lifetime, for the `const char*` the
+// report and mio_tet_mesher_name() hand out.
+const char* capi_tet_name(const std::string& rName) {
+    static std::mutex* const s_mutex = new std::mutex;
+    static std::set<std::string>* const s_names = new std::set<std::string>;
+    const std::lock_guard<std::mutex> lock(*s_mutex);
+    return s_names->insert(rName).first->c_str();
+}
+
+}  // namespace
+
+int64_t mio_tet_mesher_count(void) {
+    return guarded_ptr(int64_t{-1}, []() -> int64_t {
+        return static_cast<int64_t>(meshioplusplus::tetrahedralize_backends().size());
+    });
+}
+
+const char* mio_tet_mesher_name(int64_t index) {
+    return guarded_ptr(static_cast<const char*>(nullptr), [&]() -> const char* {
+        const std::vector<std::string> names = meshioplusplus::tetrahedralize_backends();
+        if (index < 0 || static_cast<std::size_t>(index) >= names.size())
+            return nullptr;
+        return capi_tet_name(names[static_cast<std::size_t>(index)]);
+    });
+}
 
 void mio_tetrahedralize_opts_init(mio_tetrahedralize_opts* opts) {
     if (!opts)
@@ -9297,6 +9356,8 @@ mio_mesh* mio_tetrahedralize(const mio_mesh* mesh, const mio_tetrahedralize_opts
         o.mMaxCells = r_in.max_cells;
         if (r_in.face_array)
             o.mFaceArray = r_in.face_array;
+        if (r_in.backend == MIO_TETRAHEDRALIZE_BACKEND_NAMED && r_in.provider)
+            o.mProvider = r_in.provider;
         meshioplusplus::TetrahedralizeResult r = meshioplusplus::tetrahedralize(mesh->mMesh, o);
         if (report) {
             *report = mio_tetrahedralize_report{};
@@ -9310,8 +9371,12 @@ mio_mesh* mio_tetrahedralize(const mio_mesh* mesh, const mio_tetrahedralize_opts
             report->max_dihedral_deg = r.mMaxDihedralDeg;
             report->volume = r.mVolume;
             report->boundary_preserved = r.mBoundaryPreserved ? 1 : 0;
-            report->backend = r.mBackend == "netgen" ? MIO_TETRAHEDRALIZE_BACKEND_NETGEN
-                                                     : MIO_TETRAHEDRALIZE_BACKEND_OCTREE;
+            // The enum names the built-in backends; any other mesher is NAMED,
+            // its name in backend_name.
+            report->backend = r.mBackend == "octree"   ? MIO_TETRAHEDRALIZE_BACKEND_OCTREE
+                              : r.mBackend == "netgen" ? MIO_TETRAHEDRALIZE_BACKEND_NETGEN
+                                                       : MIO_TETRAHEDRALIZE_BACKEND_NAMED;
+            report->backend_name = capi_tet_name(r.mBackend);
         }
         return new mio_mesh{std::move(r.mMesh)};
     });
