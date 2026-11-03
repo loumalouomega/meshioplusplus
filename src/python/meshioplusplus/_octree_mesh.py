@@ -171,7 +171,8 @@ def octree_mesh(
     :param winding_threshold: inside where the winding number exceeds this.
     :param winding_beta: accuracy of the fast winding number; 0 sums every
         triangle.
-    :param conformity: ``"stuffing"`` or ``"cleaving"`` (tetrahedral output).
+    :param conformity: ``"stuffing"`` or ``"cleaving"``; cleaving gives one material
+        per nested shell (tetrahedral and hexahedral outputs).
     :param alpha_long: stuffing's threshold on long lattice edges.
     :param alpha_short: stuffing's threshold on short lattice edges.
     :param preserve_features: snap the boundary to feature corners and edges.

@@ -3191,7 +3191,7 @@ typedef struct mio_octree_mesh_opts {
     int64_t max_cells;            /**< refuse an octree with more leaves (20000000) */
     int64_t max_tets;             /**< refuse an output with more cells (100000000) */
     int32_t output;               /**< a mio_octree_mesh_output (MIO_OCTREE_MESH_TET) */
-    int32_t conformity;           /**< a mio_octree_mesh_conformity */
+    int32_t conformity;           /**< a mio_octree_mesh_conformity (tet and hex) */
     int32_t skin_grading;         /**< a mio_octree_mesh_skin_grading */
     int32_t fill;                 /**< a mio_octree_mesh_fill (castellated; INSIDE) */
     int32_t gap_outside;          /**< nonzero: the gap term also resolves gaps between parts */

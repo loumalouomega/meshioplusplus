@@ -77,8 +77,9 @@ inline constexpr const char* kOctreeMeshClosestPointName = "sdf:closest_point";
 /// Cell data (Int64): the lattice shape class of a tetrahedron (1-6), 0 for a
 /// cell the stuffing or the optimiser created.
 inline constexpr const char* kOctreeMeshShapeName = "octree_mesh:shape";
-/// Cell data (Int64): the material of a tetrahedron (0 outside the skin, 1
-/// inside, higher for nested shells under cleaving), when there is more than one.
+/// Cell data (Int64): the material of a tetrahedron or hexahedron (0 outside
+/// the skin, 1 inside, higher for nested shells under cleaving), when there is
+/// more than one.
 inline constexpr const char* kOctreeMeshMaterialName = "octree_mesh:material";
 /// Cell data (Int64): 1 for a hexahedron of the pillow layer along the
 /// boundary of a hexahedral output, 0 for the grid's own.
@@ -105,7 +106,8 @@ enum class OctreeMeshOutput {
     Hexa = 2,         ///< all-hexahedra by the octree dual
 };
 
-/// How a tetrahedral output conforms to the skin.
+/// How a tetrahedral output conforms to the skin; `Cleaving` also gives a
+/// hexahedral output one material per nested shell.
 enum class OctreeMeshConformity {
     Stuffing = 0,  ///< isosurface stuffing (Labelle and Shewchuk 2007)
     Cleaving = 1,  ///< lattice cleaving of the winding-number regions (Bronson et al. 2014)
@@ -200,7 +202,8 @@ struct OctreeMeshOptions {
     /// Accuracy of the fast winding number (Barill et al.'s β); 0 sums every
     /// triangle exactly.
     double mWindingBeta = 2.0;
-    /// How a tetrahedral output conforms to the skin.
+    /// How a tetrahedral output conforms to the skin, and whether nested shells
+    /// are materials (`Cleaving`, tetrahedral and hexahedral outputs).
     OctreeMeshConformity mConformity = OctreeMeshConformity::Stuffing;
     /// Stuffing's violation threshold on long lattice edges.
     double mAlphaLong = 0.24799;

@@ -1090,7 +1090,7 @@ def roadmap_map():
                 ("length units: cgnslib run", "S"),
                 ("providers: heal, mesh, quads", "L"),
                 ("surface booleans (spike first)", "XL"),
-                ("v19 defaults", "S"),
+                ("v19 defaults · hexahedra", "L"),
             ],
             [],
         ),
