@@ -2090,7 +2090,8 @@ test_that("adapt runs with MMG and names the flag without it (roadmap 3.2)", {
 test_that("tetrahedralize fills a closed surface keeping its skin (roadmap 6.7)", {
   s <- mio_icosa_sphere(subdivisions = 2)
   on.exit(mio_release(s))
-  expect_error(mio_tetrahedralize(s, backend = "tetgen"), "backend")
+  # A mesher name no program answers to is refused naming it (roadmap 7.7.2).
+  expect_error(mio_tetrahedralize(s, backend = "no-such-mesher"), "no-such-mesher")
   expect_error(mio_tetrahedralize(s, grading = 2), "grading")
   if (mio_has_netgen()) {
     t <- mio_tetrahedralize(s, max_size = 0.3)

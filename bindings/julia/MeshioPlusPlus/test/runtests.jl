@@ -1155,7 +1155,10 @@ end
 @testset "operations: tetrahedralize" begin
     # Roadmap 6.7: a closed triangle surface filled with tetrahedra, its skin kept.
     s = icosa_sphere(subdivisions=2)
-    @test_throws ArgumentError tetrahedralize(s; backend="tetgen")
+    # A mesher name is refused by the core when no such program is installed
+    # (roadmap 7.7.2); an empty one by the wrapper.
+    @test_throws ArgumentError tetrahedralize(s; backend="")
+    @test_throws MeshioError tetrahedralize(s; backend="no-such-mesher")
     @test_throws MeshioError tetrahedralize(s; grading=2.0)
     if has_netgen()
         t = tetrahedralize(s; max_size=0.3)
