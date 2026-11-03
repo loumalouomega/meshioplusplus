@@ -80,7 +80,7 @@ def _read_smesh(filename):
         corners = [take() - base for _ in range(n)]
         if min(corners) < 0 or max(corners) >= npoints:
             raise ReadError("TetGen: a facet names a node out of range")
-        if not runs or len(runs[-1][0]) != n:
+        if not runs or len(runs[-1][0][0]) != n:
             runs.append(([], []))
         runs[-1][0].append(corners)
         if marked:
