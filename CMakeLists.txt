@@ -2025,6 +2025,10 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
 
   include(GoogleTest)
   gtest_discover_tests(meshioplusplus_tests)
+  # The surface-boolean spike's measurement harness (roadmap 7.8,
+  # doc/spikes.md; tools/boolean_corpus.py runs it on Thingi10K pairs).
+  add_executable(meshioplusplus_boolean_spike src/cpp/benchmark/boolean_spike.cpp)
+  target_link_libraries(meshioplusplus_boolean_spike PRIVATE meshioplusplus_core_obj)
 
   if(MESHIOPLUSPLUS_BUILD_FORTRAN)
     # Plain Fortran program, nonzero exit on any failed check; argv[1] is a
