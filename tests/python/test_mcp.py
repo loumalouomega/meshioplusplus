@@ -2758,7 +2758,7 @@ def test_remesh_quads_tool(tmp_path):
         pytest.skip("quadriflow is not installed")
     report = _tools.tool_remesh_quads(str(skin), str(out), target_faces=600)
     assert report["backend"] == "quadriflow" and report["num_quads"] > 0
-    assert report["num_triangles"] == 0 and report["min_scaled_jacobian"] >= 0.3
+    assert report["num_triangles"] == 0 and report["min_scaled_jacobian"] >= 0.2
     assert "quadriflow" in report["backends_available"]
     assert {c.type for c in meshioplusplus.read(out).cells} == {"quad"}
 

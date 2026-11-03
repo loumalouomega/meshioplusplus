@@ -16,7 +16,7 @@ print(report["num_quads"], report["min_scaled_jacobian"], report["hausdorff_to_s
 
 ## Measured
 
-On the unit sphere meshed by `mesh_cad_surface` at `h = 0.1` (5,540 triangles), QuadriFlow at its default target of half the triangles makes 2,602 quads, no triangles, whose least scaled Jacobian is 0.368 and mean 0.987, within 0.0037 of the input surface. Recombining the same triangles (`quads="all"`) makes 2,778 quads whose least scaled Jacobian is 0.116, at the poles. `tests/cpp/test_remesh_quads.cpp` and `tests/python/test_remesh_quads.py` pin the probe (at least 0.3, and above recombination's), and CI's external-meshers job builds QuadriFlow from its pinned commit to run them.
+On the unit sphere meshed by `mesh_cad_surface` at `h = 0.1` (5,540 triangles), QuadriFlow at its default target of half the triangles makes 2,602 quads, no triangles, whose least scaled Jacobian is 0.368 and mean 0.987, within 0.0037 of the input surface (seed 0; seed 1 gives 2,571 quads, 0.405). Recombining the same triangles (`quads="all"`) makes 2,778 quads whose least scaled Jacobian is 0.116, at the poles. The worst quad depends on the seed, since it sits at one of the cross field's singularities: on the sphere of the CAD JSON fixture (5,446 triangles) seeds 0, 1 and 2 give 0.25, 0.58 and 0.48, the mean 0.987 every time. So the roadmap's probe, at least 0.3, holds for most seeds but not all; `tests/cpp/test_remesh_quads.cpp` and `tests/python/test_remesh_quads.py` pin what holds for every seed tried (all quads, a mean of at least 0.95, a worst of at least 0.2 and above recombination's), and CI's external-meshers job builds QuadriFlow from its pinned commit to run them.
 
 ## The remeshers
 
