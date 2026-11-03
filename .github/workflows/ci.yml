@@ -670,6 +670,18 @@ jobs:
           lfs: false
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
+      # test_tetgen.py reads the TetGen fixtures under tests/python/meshes, which are Git LFS
+      # objects; see tools/fetch-lfs.sh for the degrade-gracefully behaviour.
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -723,6 +735,7 @@ jobs:
           CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_NETGEN=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF"
           pip install . -v
       - name: Run the Python tetrahedralize suite
+        if: steps.lfs.outputs.available != 'false'
         run: |
           python -c "from meshioplusplus import _core; assert _core.__has_netgen__"
           python -c "import meshioplusplus as m; b = m.tetrahedralize_backends(); assert {'tetgen', 'gmsh'} <= set(b), b"
