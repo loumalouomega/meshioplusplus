@@ -177,12 +177,10 @@ std::string cr_two_face_step(double Gap) {
     };
     const auto ref = [](int Id) { return "#" + std::to_string(Id); };
     const auto num = [](double V) {
+        // A STEP real needs a decimal point in its mantissa: "1e-06" is not one.
         char buf[64];
-        std::snprintf(buf, sizeof(buf), "%.17g", V);
-        std::string s = buf;
-        if (s.find_first_of(".eE") == std::string::npos)
-            s += ".";
-        return s;
+        std::snprintf(buf, sizeof(buf), "%.17E", V);
+        return std::string(buf);
     };
     const auto triple = [&](const double* pV) {
         return "(" + num(pV[0]) + "," + num(pV[1]) + "," + num(pV[2]) + ")";

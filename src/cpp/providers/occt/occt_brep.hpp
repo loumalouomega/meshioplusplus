@@ -84,7 +84,8 @@ long long occt_count_free_edges(const TopoDS_Shape& rShape);
  * @brief Heal a shape at read time (`CadReadOptions::mHeal`, `mSewTolerance`):
  * `ShapeFix_Shape` when healing, then `BRepBuilderAPI_Sewing` when healing or
  * when a sewing tolerance is given. A tolerance at most 0 takes 1e-5 of the
- * bounding-box diagonal, never below the shape's own largest tolerance.
+ * bounding-box diagonal, raised to the shape's own largest tolerance but never
+ * past 1e-3 of the diagonal.
  */
 TopoDS_Shape occt_heal_shape(const TopoDS_Shape& rShape, const CadReadOptions& rOptions,
                              OcctHealReport& rReport);

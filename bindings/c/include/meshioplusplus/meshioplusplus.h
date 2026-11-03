@@ -673,8 +673,9 @@ typedef struct mio_cad_read_opts {
     int32_t heal;
     int32_t reserved32;
     /** The sewing tolerance, as a length (>= 0). 0 takes 1e-5 of the
-     *  bounding-box diagonal (never below the shape's own largest tolerance)
-     *  when healing; a positive value sews even without heal. */
+     *  bounding-box diagonal (raised to the shape's own largest tolerance, at
+     *  most 1e-3 of the diagonal) when healing; a positive value sews even
+     *  without heal. */
     double sew_tolerance;
     int64_t reserved[4];
 } mio_cad_read_opts;

@@ -55,8 +55,8 @@ def read(
 
     ``heal=True`` repairs the shape before it is extracted: ``ShapeFix_Shape``,
     then sewing (``BRepBuilderAPI_Sewing``) at ``sew_tolerance``, a length; at
-    most 0 takes 1e-5 of the bounding-box diagonal, never below the shape's
-    own largest tolerance. A positive ``sew_tolerance`` sews even without
+    most 0 takes 1e-5 of the bounding-box diagonal, raised to the shape's own
+    largest tolerance but never past 1e-3 of the diagonal. A positive ``sew_tolerance`` sews even without
     ``heal``. What healing did is the ``heal`` member of
     ``json.loads(mesh.info["brep"]["extra"])``: ``healed``, ``fixed``,
     ``sew_tolerance``, ``free_edges_before``, ``free_edges_after``,

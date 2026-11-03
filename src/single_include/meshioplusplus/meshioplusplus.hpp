@@ -5606,8 +5606,9 @@ struct CadReadOptions {
     /// the `heal` member of `BrepInfo::mExtra`.
     bool mHeal = false;
     /// The sewing tolerance, as a length. At most 0 takes 1e-5 of the
-    /// bounding-box diagonal (never below the shape's own largest tolerance)
-    /// when `mHeal` is set; a positive value sews even without `mHeal`.
+    /// bounding-box diagonal (raised to the shape's own largest tolerance, at
+    /// most 1e-3 of the diagonal) when `mHeal` is set; a positive value sews
+    /// even without `mHeal`.
     double mSewTolerance = 0.0;
 };
 
@@ -40637,7 +40638,8 @@ long long occt_count_free_edges(const TopoDS_Shape& rShape);
  * @brief Heal a shape at read time (`CadReadOptions::mHeal`, `mSewTolerance`):
  * `ShapeFix_Shape` when healing, then `BRepBuilderAPI_Sewing` when healing or
  * when a sewing tolerance is given. A tolerance at most 0 takes 1e-5 of the
- * bounding-box diagonal, never below the shape's own largest tolerance.
+ * bounding-box diagonal, raised to the shape's own largest tolerance but never
+ * past 1e-3 of the diagonal.
  */
 TopoDS_Shape occt_heal_shape(const TopoDS_Shape& rShape, const CadReadOptions& rOptions,
                              OcctHealReport& rReport);
@@ -287935,7 +287937,9 @@ TopoDS_Shape occt_heal_shape(const TopoDS_Shape& rShape, const CadReadOptions& r
         BRepBndLib::Add(rShape, box);
         const double diagonal = box.IsVoid() ? 1.0 : std::sqrt(box.SquareExtent());
         ShapeAnalysis_ShapeTolerance own;
-        tol = std::max(1e-5 * diagonal, own.Tolerance(rShape, 1));
+        // The shape's own largest tolerance as a floor, but never past 1e-3 of
+        // the diagonal: a badly toleranced file must not sew across features.
+        tol = std::min(std::max(1e-5 * diagonal, own.Tolerance(rShape, 1)), 1e-3 * diagonal);
     }
     TopoDS_Shape shape = rShape;
     if (rOptions.mHeal) {

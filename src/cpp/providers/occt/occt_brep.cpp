@@ -537,7 +537,9 @@ TopoDS_Shape occt_heal_shape(const TopoDS_Shape& rShape, const CadReadOptions& r
         BRepBndLib::Add(rShape, box);
         const double diagonal = box.IsVoid() ? 1.0 : std::sqrt(box.SquareExtent());
         ShapeAnalysis_ShapeTolerance own;
-        tol = std::max(1e-5 * diagonal, own.Tolerance(rShape, 1));
+        // The shape's own largest tolerance as a floor, but never past 1e-3 of
+        // the diagonal: a badly toleranced file must not sew across features.
+        tol = std::min(std::max(1e-5 * diagonal, own.Tolerance(rShape, 1)), 1e-3 * diagonal);
     }
     TopoDS_Shape shape = rShape;
     if (rOptions.mHeal) {

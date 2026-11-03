@@ -297,8 +297,8 @@ def _two_face_step(gap):
         return len(out)
 
     def num(v):
-        text = repr(float(v))
-        return text if ("." in text or "e" in text) else text + "."
+        # A STEP real needs a decimal point in its mantissa: "1e-06" is not one.
+        return f"{float(v):.17E}"
 
     def triple(v):
         return "(" + ",".join(num(c) for c in v) + ")"

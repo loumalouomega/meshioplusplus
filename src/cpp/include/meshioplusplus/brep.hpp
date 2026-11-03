@@ -198,8 +198,9 @@ struct CadReadOptions {
     /// the `heal` member of `BrepInfo::mExtra`.
     bool mHeal = false;
     /// The sewing tolerance, as a length. At most 0 takes 1e-5 of the
-    /// bounding-box diagonal (never below the shape's own largest tolerance)
-    /// when `mHeal` is set; a positive value sews even without `mHeal`.
+    /// bounding-box diagonal (raised to the shape's own largest tolerance, at
+    /// most 1e-3 of the diagonal) when `mHeal` is set; a positive value sews
+    /// even without `mHeal`.
     double mSewTolerance = 0.0;
 };
 
