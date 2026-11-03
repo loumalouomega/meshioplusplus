@@ -5762,7 +5762,7 @@ step('estimateNormals of the cube corners', () => {
 step('remeshQuads is refused by name: no quad remesher runs in WebAssembly', () => {
     const tri = {
         points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
-        pointDim: 3,
+        dim: 3,
         cells: [{ type: 'triangle', data: new Int32Array([0, 2, 1, 0, 1, 3, 1, 2, 3, 0, 3, 2]), nodesPerCell: 3 }],
     };
     assert.throws(() => m.remeshQuads(tri), /quad remesher|QuadriFlow/);

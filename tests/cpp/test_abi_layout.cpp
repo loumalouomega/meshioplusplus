@@ -149,6 +149,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
+#include "meshioplusplus/operations/tetrahedralize.hpp"
 
 namespace {
 
@@ -263,7 +264,7 @@ MIO_ABI_LAYOUT(meshioplusplus::BrepEdge, 416, 8);
 MIO_ABI_LAYOUT(meshioplusplus::BrepVertex, 96, 8);
 MIO_ABI_LAYOUT(meshioplusplus::Brep, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::BrepInfo, 152, 8);
-// ABI 37 (roadmap 7.7.1): `mHeal` and `mSewTolerance` appended, 16 -> 32 bytes.
+// ABI 38 (roadmap 7.7.1): `mHeal` and `mSewTolerance` appended, 16 -> 32 bytes.
 MIO_ABI_LAYOUT(meshioplusplus::CadReadOptions, 32, 8);
 // v18.0.0 (roadmap 4.7): the CAD kernel a provider registers. Two `std::string`s
 // and three `std::function`s, 32 bytes each with libstdc++. The add-on wheels
@@ -275,7 +276,7 @@ MIO_ABI_LAYOUT(meshioplusplus::CadKernelProvider, 160, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TetMeshRegionRequest, 72, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TetMeshRegionResult, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TetMesherProvider, 96, 8);
-// ABI 37 (roadmap 7.7.3): the quad remesher (two strings and a function), its
+// ABI 38 (roadmap 7.7.3): the quad remesher (two strings and a function), its
 // request (two vectors, the target, four flags and the seed) and result (three
 // vectors).
 MIO_ABI_LAYOUT(meshioplusplus::QuadRemesherProvider, 96, 8);
@@ -736,9 +737,12 @@ MIO_ABI_LAYOUT(meshioplusplus::CoordinateOptions, 112, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ConvexHullOptions, 4, 4);
 MIO_ABI_LAYOUT(meshioplusplus::PointNormalsOptions, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ReconstructSurfaceOptions, 88, 8);
-// ABI 37 (roadmap 7.7.3): remesh_quads's options (a string, the target, four
+// ABI 38 (roadmap 7.7.3): remesh_quads's options (a string, the target, four
 // flags and the seed, the cap).
 MIO_ABI_LAYOUT(meshioplusplus::RemeshQuadsOptions, 56, 8);
+// ABI 38 (roadmap 7.7.2): `mProvider` (a `std::string`) appended, 80 -> 112 bytes;
+// `TetrahedralizeOptions` is passed by const-ref through the exported `tetrahedralize()`.
+MIO_ABI_LAYOUT(meshioplusplus::TetrahedralizeOptions, 112, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RegistrationOptions, 160, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RegistrationResult, 168, 8);
 MIO_ABI_LAYOUT(meshioplusplus::EigenmodeOptions, 24, 8);
@@ -804,6 +808,7 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::Brep>("Brep");
     report<meshioplusplus::BrepInfo>("BrepInfo");
     report<meshioplusplus::CadReadOptions>("CadReadOptions");
+    report<meshioplusplus::TetrahedralizeOptions>("TetrahedralizeOptions");
     report<meshioplusplus::CadJsonReadOptions>("CadJsonReadOptions");
     report<meshioplusplus::MdpaInfo>("MdpaInfo");
     report<meshioplusplus::MdpaGeometryBlock>("MdpaGeometryBlock");
