@@ -178,6 +178,7 @@ EXTENSION_MODULES = {
     ".rad": ("radioss",),
     ".rst": ("ansys_rst",),
     ".rth": ("ansys_rst",),
+    ".smesh": ("tetgen",),
     ".sol": ("medit_sol",),
     ".solb": ("medit_sol",),
     ".step": ("step",),
