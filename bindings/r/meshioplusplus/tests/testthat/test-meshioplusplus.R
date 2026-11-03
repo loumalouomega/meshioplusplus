@@ -1723,6 +1723,20 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
     expect_gt(rq$num_quads, 0)
     expect_equal(rq$num_triangles, 0)
   }
+  # cut_level_set (doc/cut.md): the cube skin cut by the plane x = 0.3 -- four
+  # strips of 0.3 and the face x = 0 -- or the refusal naming the build flag.
+  plane <- list(c(0.3, 0, 0, 1, 0, 0))
+  if (mio_has_cutcells()) {
+    cl <- mio_cut_level_set(m, planes = plane)
+    on.exit(mio_release(cl$mesh), add = TRUE)
+    expect_equal(cl$backend, "lut")
+    expect_equal(cl$measure, 2.2, tolerance = 1e-12)
+    cq <- mio_cut_quadrature(m, planes = plane, selection = "plane0 = 0")
+    on.exit(mio_release(cq$mesh), add = TRUE)
+    expect_equal(cq$sum_weights, 4, tolerance = 1e-12)
+  } else {
+    expect_error(mio_cut_level_set(m, planes = plane), "MESHIOPLUSPLUS_WITH_CUTCELLS")
+  }
   hh <- mio_convex_hull(m)
   on.exit(mio_release(hh$mesh), add = TRUE)
   expect_equal(hh$num_vertices, 8)

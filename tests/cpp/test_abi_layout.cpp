@@ -150,6 +150,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
+#include "meshioplusplus/operations/cut.hpp"
 
 namespace {
 
@@ -743,6 +744,10 @@ MIO_ABI_LAYOUT(meshioplusplus::RemeshQuadsOptions, 56, 8);
 // ABI 38 (roadmap 7.7.2): `mProvider` (a `std::string`) appended, 80 -> 112 bytes;
 // `TetrahedralizeOptions` is passed by const-ref through the exported `tetrahedralize()`.
 MIO_ABI_LAYOUT(meshioplusplus::TetrahedralizeOptions, 112, 8);
+// ABI 38 (doc/cut.md): the level-set cut's options, passed by const-ref through
+// the exported cut_level_set() and cut_quadrature().
+MIO_ABI_LAYOUT(meshioplusplus::CutPlane, 48, 8);
+MIO_ABI_LAYOUT(meshioplusplus::CutOptions, 136, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RegistrationOptions, 160, 8);
 MIO_ABI_LAYOUT(meshioplusplus::RegistrationResult, 168, 8);
 MIO_ABI_LAYOUT(meshioplusplus::EigenmodeOptions, 24, 8);
@@ -809,6 +814,7 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::BrepInfo>("BrepInfo");
     report<meshioplusplus::CadReadOptions>("CadReadOptions");
     report<meshioplusplus::TetrahedralizeOptions>("TetrahedralizeOptions");
+    report<meshioplusplus::CutOptions>("CutOptions");
     report<meshioplusplus::CadJsonReadOptions>("CadJsonReadOptions");
     report<meshioplusplus::MdpaInfo>("MdpaInfo");
     report<meshioplusplus::MdpaGeometryBlock>("MdpaGeometryBlock");

@@ -1084,6 +1084,38 @@ struct _CRemeshQuadsReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_cut_opts` (104 bytes; doc/cut.md)."""
+struct _CCutOpts
+    level_sets::Ptr{Cstring}
+    num_level_sets::Int64
+    planes::Ptr{Cdouble}
+    num_planes::Int64
+    selection::Ptr{UInt8}
+    backend::Ptr{UInt8}
+    include_uncut::Int32
+    degree::Int32
+    triangulate::Int32
+    order::Int32
+    record_parent_ids::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_cut_report` (104 bytes)."""
+struct _CCutReport
+    num_cells::Int64
+    num_cut_cells::Int64
+    num_uncut_cells::Int64
+    num_pieces::Int64
+    num_rules::Int64
+    num_points::Int64
+    measure::Cdouble
+    dimension::Int32
+    reserved_pad::Int32
+    backend_name::Ptr{UInt8}
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_mmg_local`."""
 struct _CMmgLocal
     region::Ptr{UInt8}
@@ -2160,6 +2192,10 @@ function _check_abi_layout()
                                  sizeof(_CRemeshQuadsReport) == 88 &&
                                  fieldoffset(_CRemeshQuadsReport, 7) == 48)) ||
         error("meshio++: mio_remesh_quads layout mismatch ($(sizeof(_CRemeshQuadsOpts)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CCutOpts) == 104 && fieldoffset(_CCutOpts, 7) == 48 &&
+                                 sizeof(_CCutReport) == 104 &&
+                                 fieldoffset(_CCutReport, 10) == 64)) ||
+        error("meshio++: mio_cut_opts layout mismatch ($(sizeof(_CCutOpts)) bytes)")
     (sizeof(_CTetrahedralizeReport) == 128 && fieldoffset(_CTetrahedralizeReport, 10) == 72 &&
      fieldoffset(_CTetrahedralizeReport, 12) == 80 &&
      fieldoffset(_CTetrahedralizeReport, 13) == 88) ||

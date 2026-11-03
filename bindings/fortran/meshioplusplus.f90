@@ -79,6 +79,8 @@ module meshioplusplus
     public :: mio_tet_mesher_count, mio_tet_mesher_name, mio_tetrahedralize_backend_name
     public :: mio_remesh_quads, mio_remesh_quads_report, mio_quad_remesher_count
     public :: mio_quad_remesher_name, mio_remesh_quads_backend_name
+    public :: mio_cut_level_set, mio_cut_quadrature, mio_cut_report, mio_has_cutcells
+    public :: mio_cut_backend_name
     public :: mio_has_mmg, mio_has_mmg_elas, mio_mmg_index_bits
     public :: mio_adapt, mio_mmg_report, mio_metric_from_hessian
     public :: mio_discretize_levelset, mio_mesh_domain, mio_move
@@ -900,6 +902,40 @@ module meshioplusplus
         real(c_double) :: min_scaled_jacobian = 0.0_c_double
         real(c_double) :: mean_scaled_jacobian = 0.0_c_double
         real(c_double) :: hausdorff_to_surface = 0.0_c_double
+        type(c_ptr) :: backend_name = c_null_ptr
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_cut_opts` (104 bytes; doc/cut.md).
+    type, bind(c) :: mio_cut_opts_t
+        type(c_ptr) :: level_sets = c_null_ptr
+        integer(c_int64_t) :: num_level_sets = 0
+        type(c_ptr) :: planes = c_null_ptr
+        integer(c_int64_t) :: num_planes = 0
+        type(c_ptr) :: selection = c_null_ptr
+        type(c_ptr) :: backend = c_null_ptr
+        integer(c_int32_t) :: include_uncut = 1
+        integer(c_int32_t) :: degree = 2
+        integer(c_int32_t) :: triangulate = 0
+        integer(c_int32_t) :: order = 2
+        integer(c_int32_t) :: record_parent_ids = 1
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_cut_report` (104 bytes): what `mio_cut_level_set` or
+    !> `mio_cut_quadrature` did; `mio_cut_backend_name(report)` names the
+    !> backend that ran ('lut' or 'quadrays').
+    type, bind(c) :: mio_cut_report
+        integer(c_int64_t) :: num_cells = 0
+        integer(c_int64_t) :: num_cut_cells = 0
+        integer(c_int64_t) :: num_uncut_cells = 0
+        integer(c_int64_t) :: num_pieces = 0
+        integer(c_int64_t) :: num_rules = 0
+        integer(c_int64_t) :: num_points = 0
+        real(c_double) :: measure = 0.0_c_double
+        integer(c_int32_t) :: dimension = 0
+        integer(c_int32_t) :: reserved_pad = 0
         type(c_ptr) :: backend_name = c_null_ptr
         integer(c_int64_t) :: reserved(4) = 0
     end type
@@ -5696,6 +5732,29 @@ module meshioplusplus
             type(c_ptr) :: h
         end function
 
+        function c_mio_cut_level_set(mesh, opts, report) &
+                bind(c, name="mio_cut_level_set") result(h)
+            import :: c_ptr, mio_cut_opts_t, mio_cut_report
+            type(c_ptr), value :: mesh
+            type(mio_cut_opts_t), intent(in) :: opts
+            type(mio_cut_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_cut_quadrature(mesh, opts, report) &
+                bind(c, name="mio_cut_quadrature") result(h)
+            import :: c_ptr, mio_cut_opts_t, mio_cut_report
+            type(c_ptr), value :: mesh
+            type(mio_cut_opts_t), intent(in) :: opts
+            type(mio_cut_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_has_cutcells() bind(c, name="mio_has_cutcells") result(n)
+            import :: c_int32_t
+            integer(c_int32_t) :: n
+        end function
+
         function c_mio_quad_remesher_count() bind(c, name="mio_quad_remesher_count") result(n)
             import :: c_int64_t
             integer(c_int64_t) :: n
@@ -6676,6 +6735,148 @@ contains
         out%handle = c_mio_remesh_quads(mesh%handle, opts, rep)
         if (.not. c_associated(out%handle)) then
             call handle_failure('remesh_quads', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Whether the library carries CutCells, which `mio_cut_level_set` and
+    !> `mio_cut_quadrature` need (a build with MESHIOPLUSPLUS_WITH_CUTCELLS).
+    function mio_has_cutcells() result(has)
+        logical :: has
+        has = c_mio_has_cutcells() /= 0
+    end function
+
+    !> The backend a `mio_cut_report` says ran ('lut' or 'quadrays').
+    function mio_cut_backend_name(report) result(name)
+        type(mio_cut_report), intent(in) :: report
+        character(:), allocatable :: name
+        name = c_ptr_to_string(report%backend_name)
+    end function
+
+    !> The options both cut operations share, filled from the optional
+    !> arguments; `storage`, `cptrs`, `sel`, `bk` and `pl` back the pointers and
+    !> must outlive the C call.
+    subroutine cut_fill_opts(opts, level_sets, planes, selection, include_uncut, backend, &
+                             triangulate, record_parent_ids, storage, cptrs, sel, bk, pl)
+        type(mio_cut_opts_t), intent(inout) :: opts
+        character(*), intent(in), optional :: level_sets(:)
+        real(real64), intent(in), optional :: planes(:, :)
+        character(*), intent(in), optional :: selection, backend
+        logical, intent(in), optional :: include_uncut, triangulate, record_parent_ids
+        character(kind=c_char), allocatable, target, intent(out) :: storage(:, :)
+        type(c_ptr), allocatable, target, intent(out) :: cptrs(:)
+        character(kind=c_char, len=:), allocatable, target, intent(out) :: sel, bk
+        real(c_double), allocatable, target, intent(out) :: pl(:, :)
+        type(c_ptr) :: arr
+        integer(c_int64_t) :: count
+        if (present(level_sets)) then
+            call c_str_array(level_sets, storage, cptrs, arr, count)
+            opts%level_sets = arr
+            opts%num_level_sets = count
+        end if
+        if (present(planes)) then
+            if (size(planes, 1) /= 6) then
+                write (error_unit, '(a)') 'meshio++: cut: planes must be shaped (6, n): origin, then normal'
+                error stop 1
+            end if
+            if (size(planes, 2) > 0) then
+                allocate (pl(6, size(planes, 2)))
+                pl = real(planes, c_double)
+                opts%planes = c_loc(pl(1, 1))
+                opts%num_planes = int(size(planes, 2), c_int64_t)
+            end if
+        end if
+        if (present(selection)) then
+            sel = c_str(selection)
+            opts%selection = c_loc(sel(1:1))
+        end if
+        if (present(backend)) then
+            bk = c_str(backend)
+            opts%backend = c_loc(bk(1:1))
+        end if
+        if (present(include_uncut)) opts%include_uncut = merge(1, 0, include_uncut)
+        if (present(triangulate)) opts%triangulate = merge(1, 0, triangulate)
+        if (present(record_parent_ids)) opts%record_parent_ids = merge(1, 0, record_parent_ids)
+    end subroutine
+
+    !> The part of a mesh that level sets select, through CutCells (doc/cut.md):
+    !> `level_sets` (scalar point-data array names) and `planes` (shaped (6, n):
+    !> origin, then normal; named plane0, plane1, ...), `selection` (such as
+    !> 'phi < 0' or 'a = 0 and b < 0'; empty is '<first> < 0'),
+    !> `include_uncut` (.true.), `backend` ('auto', 'lut' or 'quadrays'),
+    !> `degree` (quadrays pieces), `triangulate` (lut) and `record_parent_ids`.
+    !> A library without CutCells fails naming MESHIOPLUSPLUS_WITH_CUTCELLS.
+    function mio_cut_level_set(mesh, level_sets, planes, selection, include_uncut, backend, &
+                               degree, triangulate, record_parent_ids, report, stat, errmsg) &
+            result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in), optional :: level_sets(:)
+        real(real64), intent(in), optional :: planes(:, :)
+        character(*), intent(in), optional :: selection, backend
+        logical, intent(in), optional :: include_uncut, triangulate, record_parent_ids
+        integer, intent(in), optional :: degree
+        type(mio_cut_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_cut_opts_t) :: opts
+        type(mio_cut_report) :: rep
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        character(kind=c_char, len=:), allocatable, target :: sel, bk
+        real(c_double), allocatable, target :: pl(:, :)
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 104_c_size_t .or. c_sizeof(rep) /= 104_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: cut layout mismatch'
+            error stop 1
+        end if
+        call cut_fill_opts(opts, level_sets, planes, selection, include_uncut, backend, &
+                           triangulate, record_parent_ids, storage, cptrs, sel, bk, pl)
+        if (present(degree)) opts%degree = int(degree, c_int32_t)
+        out%handle = c_mio_cut_level_set(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('cut_level_set', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Quadrature rules of degree `order` (2) on the part `mio_cut_level_set`
+    !> would give, as a point cloud with point data quadrature:weight,
+    !> quadrature:reference, quadrature:rule and quadrature:parent_cell.
+    function mio_cut_quadrature(mesh, level_sets, planes, selection, order, include_uncut, &
+                                backend, triangulate, record_parent_ids, report, stat, errmsg) &
+            result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in), optional :: level_sets(:)
+        real(real64), intent(in), optional :: planes(:, :)
+        character(*), intent(in), optional :: selection, backend
+        integer, intent(in), optional :: order
+        logical, intent(in), optional :: include_uncut, triangulate, record_parent_ids
+        type(mio_cut_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_cut_opts_t) :: opts
+        type(mio_cut_report) :: rep
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        character(kind=c_char, len=:), allocatable, target :: sel, bk
+        real(c_double), allocatable, target :: pl(:, :)
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 104_c_size_t .or. c_sizeof(rep) /= 104_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: cut layout mismatch'
+            error stop 1
+        end if
+        call cut_fill_opts(opts, level_sets, planes, selection, include_uncut, backend, &
+                           triangulate, record_parent_ids, storage, cptrs, sel, bk, pl)
+        if (present(order)) opts%order = int(order, c_int32_t)
+        out%handle = c_mio_cut_quadrature(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('cut_quadrature', mio_error_message(), stat, errmsg)
             return
         end if
         if (present(report)) report = rep

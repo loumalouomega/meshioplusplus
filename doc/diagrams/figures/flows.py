@@ -1088,6 +1088,7 @@ def roadmap_map():
             "§7 new capabilities",
             [
                 ("v19 defaults · hexahedra", "L"),
+                ("cutting in WebAssembly", "S"),
             ],
             [],
         ),

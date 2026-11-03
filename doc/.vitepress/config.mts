@@ -188,6 +188,7 @@ export default defineConfig({
               { text: "Crop (bbox / half-space / predicate)", link: "/crop" },
               { text: "Slicing / cross-sections", link: "/slice" },
               { text: "Isosurfaces / contours", link: "/isosurface" },
+              { text: "Level-set cutting (CutCells)", link: "/cut" },
               { text: "Regular grids / voxelize", link: "/voxelize" },
               { text: "Parametric primitives", link: "/primitives" },
               { text: "Octrees / quadtrees from a skin", link: "/octree" },

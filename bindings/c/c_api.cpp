@@ -81,6 +81,7 @@
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/remesh_quads.hpp"
+#include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -7650,6 +7651,105 @@ const char* mio_quad_remesher_name(int64_t index) {
             return nullptr;
         return capi_tet_name(names[static_cast<std::size_t>(index)]);
     });
+}
+
+// --- level-set cutting (CutCells, doc/cut.md) --------------------------------
+
+static_assert(sizeof(mio_cut_opts) == 104, "mio_cut_opts grew outside its reserved tail");
+static_assert(sizeof(mio_cut_report) == 104, "mio_cut_report grew outside its reserved tail");
+static_assert(offsetof(mio_cut_report, backend_name) == 64, "mio_cut_report layout");
+
+void mio_cut_opts_init(mio_cut_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_cut_opts{};
+    const meshioplusplus::CutOptions d;
+    opts->include_uncut = d.mIncludeUncut ? 1 : 0;
+    opts->degree = d.mDegree;
+    opts->triangulate = d.mTriangulate ? 1 : 0;
+    opts->order = d.mOrder;
+    opts->record_parent_ids = d.mRecordParentIds ? 1 : 0;
+}
+
+namespace {
+meshioplusplus::CutOptions capi_cut_options(const mio_cut_opts* opts) {
+    mio_cut_opts o;
+    mio_cut_opts_init(&o);
+    if (opts)
+        o = *opts;
+    if (o.num_level_sets < 0 || o.num_planes < 0)
+        throw std::invalid_argument("meshio++: cut: negative level-set or plane count");
+    if ((o.num_level_sets > 0 && !o.level_sets) || (o.num_planes > 0 && !o.planes))
+        throw std::invalid_argument("meshio++: cut: a level-set or plane array is NULL");
+    meshioplusplus::CutOptions options;
+    for (int64_t i = 0; i < o.num_level_sets; ++i) {
+        if (!o.level_sets[i])
+            throw std::invalid_argument("meshio++: cut: level set " + std::to_string(i) +
+                                        " is NULL");
+        options.mLevelSets.emplace_back(o.level_sets[i]);
+    }
+    for (int64_t i = 0; i < o.num_planes; ++i) {
+        meshioplusplus::CutPlane pl;
+        const double* p = o.planes + 6 * i;
+        pl.mOrigin = {p[0], p[1], p[2]};
+        pl.mNormal = {p[3], p[4], p[5]};
+        options.mPlanes.push_back(pl);
+    }
+    if (o.selection)
+        options.mSelection = o.selection;
+    if (o.backend)
+        options.mBackend = o.backend;
+    options.mIncludeUncut = o.include_uncut != 0;
+    options.mDegree = o.degree;
+    options.mTriangulate = o.triangulate != 0;
+    options.mOrder = o.order;
+    options.mRecordParentIds = o.record_parent_ids != 0;
+    return options;
+}
+}  // namespace
+
+mio_mesh* mio_cut_level_set(const mio_mesh* mesh, const mio_cut_opts* opts,
+                            mio_cut_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw std::invalid_argument("meshio++: cut: mesh is NULL");
+        meshioplusplus::CutLevelSetResult r =
+            meshioplusplus::cut_level_set(mesh->mMesh, capi_cut_options(opts));
+        if (report) {
+            *report = mio_cut_report{};
+            report->num_cells = r.mNumCells;
+            report->num_cut_cells = r.mNumCutCells;
+            report->num_uncut_cells = r.mNumUncutCells;
+            report->num_pieces = r.mNumPieces;
+            report->measure = r.mMeasure;
+            report->dimension = r.mDimension;
+            report->backend_name = capi_tet_name(r.mBackend);
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_cut_quadrature(const mio_mesh* mesh, const mio_cut_opts* opts,
+                             mio_cut_report* report) {
+    return guarded_ptr(static_cast<mio_mesh*>(nullptr), [&]() -> mio_mesh* {
+        if (!mesh)
+            throw std::invalid_argument("meshio++: cut: mesh is NULL");
+        meshioplusplus::CutQuadratureResult r =
+            meshioplusplus::cut_quadrature(mesh->mMesh, capi_cut_options(opts));
+        if (report) {
+            *report = mio_cut_report{};
+            report->num_rules = r.mNumRules;
+            report->num_points = r.mNumPoints;
+            report->measure = r.mSumWeights;
+            report->dimension = r.mDimension;
+            report->backend_name = capi_tet_name(r.mBackend);
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int32_t mio_has_cutcells(void) {
+    return meshioplusplus::cut_has_cutcells() ? 1 : 0;
 }
 
 // --- convex hull and planar Delaunay (roadmap 7.5.1) --------------------------

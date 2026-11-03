@@ -4313,6 +4313,78 @@ MIO_API int64_t mio_quad_remesher_count(void);
  *  lifetime. NULL when out of range. */
 MIO_API const char* mio_quad_remesher_name(int64_t index);
 
+/**
+ * Options for mio_cut_level_set and mio_cut_quadrature (doc/cut.md; unreleased,
+ * after v18.1.0). Initialize through mio_cut_opts_init(): no level set yet,
+ * the selection "<first> < 0", the whole cells inside kept, backend "auto",
+ * degree 2, quadrature order 2, the parent ids written.
+ */
+typedef struct mio_cut_opts {
+    const char* const* level_sets; /**< scalar point_data array names (borrowed) */
+    int64_t num_level_sets;
+    const double* planes; /**< six per plane: origin, then normal (borrowed) */
+    int64_t num_planes;   /**< planes named plane0, plane1, ... */
+    const char*
+        selection;       /**< such as "phi < 0" or "a = 0 and b < 0"; NULL or "" is "<first> < 0" */
+    const char* backend; /**< "auto", "lut" or "quadrays"; NULL is "auto" (borrowed) */
+    int32_t include_uncut;     /**< nonzero keeps the whole cells inside the part */
+    int32_t degree;            /**< quadrays: the pieces' Lagrange degree, 1 to 8 */
+    int32_t triangulate;       /**< lut: nonzero splits the pieces into simplices */
+    int32_t order;             /**< mio_cut_quadrature: the degree the rules integrate exactly */
+    int32_t record_parent_ids; /**< nonzero writes cut:parent_cell / quadrature:parent_cell */
+    int32_t reserved_pad;      /**< must be zero */
+    int64_t reserved[4];       /**< must be zero; room for additive growth */
+} mio_cut_opts;
+
+/** Initialize cutting options (see mio_cut_opts). */
+MIO_API void mio_cut_opts_init(mio_cut_opts* opts);
+
+/** What mio_cut_level_set or mio_cut_quadrature did. */
+typedef struct mio_cut_report {
+    int64_t num_cells;       /**< input cells of the cut dimension */
+    int64_t num_cut_cells;   /**< of them, those a level set crosses */
+    int64_t num_uncut_cells; /**< of them, those wholly in the part */
+    int64_t num_pieces;      /**< mio_cut_level_set: output cells */
+    int64_t num_rules;       /**< mio_cut_quadrature: rules (cell pieces covered) */
+    int64_t num_points;      /**< mio_cut_quadrature: quadrature points */
+    double measure;          /**< the part's volume, area or length (the weights' sum) */
+    int32_t dimension;       /**< of the part: the cells' or one less */
+    int32_t reserved_pad;    /**< zero */
+    /** The backend that ran ("lut" or "quadrays"); static, valid for the
+     *  library's lifetime. */
+    const char* backend_name;
+    int64_t reserved[4]; /**< zero; room for additive growth */
+} mio_cut_report;
+
+/**
+ * The part of a mesh that level sets select, through CutCells: the pieces of
+ * the cells they cross on one side of them or on their zero sets, and with
+ * include_uncut the whole cells inside; point data interpolated, cell data and
+ * cell regions carried from each piece's parent, `cut:parent_cell` and
+ * `cut:cut` cell data. A build without CutCells fails with
+ * MIO_ERR_UNSUPPORTED naming MESHIOPLUSPLUS_WITH_CUTCELLS. See doc/cut.md.
+ * `opts` NULL uses the defaults (and so fails: it names no level set);
+ * `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_cut_level_set(const mio_mesh* mesh, const mio_cut_opts* opts,
+                                    mio_cut_report* report);
+
+/**
+ * Quadrature rules of degree `order` on that part: a mesh of one `vertex` per
+ * point at its physical position, with point data `quadrature:weight`,
+ * `quadrature:reference`, `quadrature:rule` and `quadrature:parent_cell`.
+ * Fails as mio_cut_level_set does.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_cut_quadrature(const mio_mesh* mesh, const mio_cut_opts* opts,
+                                     mio_cut_report* report);
+
+/** 1 when this library carries CutCells (the cut operations work), else 0. */
+MIO_API int32_t mio_has_cutcells(void);
+
 /** What mio_convex_hull built. */
 typedef struct mio_hull_report {
     int32_t dimension;    /**< the dimension used, 2 or 3 */

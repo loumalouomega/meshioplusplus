@@ -92,6 +92,9 @@
     "kahip": {
       "description": "KaHIP partition backend (no vcpkg port exists: supply an install and set KAHIP_ROOT)"
     },
+    "cutcells": {
+      "description": "CutCells backend of cut_level_set and cut_quadrature (MIT; no vcpkg port exists: supply an install, e.g. build/build-cutcells.sh, and set CUTCELLS_ROOT)"
+    },
     "netgen": {
       "description": "Netgen tetrahedralize backend (LGPL-2.1, linked dynamically; no vcpkg port exists: supply an install and set NETGEN_ROOT)"
     },

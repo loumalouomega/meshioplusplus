@@ -5770,6 +5770,21 @@ step('remeshQuads is refused by name: no quad remesher runs in WebAssembly', () 
     assert.throws(() => m.remeshQuads(tri, { noSuchOption: 1 }), /noSuchOption/);
 });
 
+step('cutLevelSet and cutQuadrature: CutCells, or refused by name', () => {
+    const plane = { planes: [[[0.3, 0, 0], [1, 0, 0]]] };
+    if (!m.hasCutcells()) {
+        assert.throws(() => m.cutLevelSet(cubeSurface, plane), /CutCells/);
+        assert.throws(() => m.cutQuadrature(cubeSurface, plane), /CutCells/);
+        return;
+    }
+    // The cube's skin where x < 0.3: four strips of 0.3 and the face x = 0;
+    // the interface is the square loop around it.
+    const r = m.cutLevelSet(cubeSurface, plane);
+    assert.ok(Math.abs(r.measure - 2.2) < 1e-12, r.measure);
+    const q = m.cutQuadrature(cubeSurface, { ...plane, selection: 'plane0 = 0' });
+    assert.ok(Math.abs(q.sumWeights - 4) < 1e-12, q.sumWeights);
+});
+
 step('reconstructSurface of a sphere cloud', () => {
     const cloud = m.spherePoints(800);
     const r = m.reconstructSurface(cloud);

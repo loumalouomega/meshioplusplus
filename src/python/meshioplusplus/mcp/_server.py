@@ -4638,6 +4638,92 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def cut_level_set(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        level_sets: Optional[List[str]] = None,
+        planes: Optional[List[List[float]]] = None,
+        selection: str = "",
+        include_uncut: bool = True,
+        backend: str = "auto",
+        degree: int = 2,
+        triangulate: bool = False,
+        record_parent_ids: bool = True,
+    ) -> dict:
+        """Cut a mesh by level sets through CutCells (doc/cut.md) and write
+        the part the selection picks: the pieces of the cut cells (every cell
+        family, quadratic level sets on triangle6/tetra10) and, with
+        include_uncut, the whole cells inside. level_sets are scalar
+        point_data arrays; planes are six numbers each (origin, then normal),
+        named plane0, plane1, ...; selection is an expression over the names
+        such as "phi < 0", "phi = 0" (the interface) or "a < 0 and b > 0"
+        (empty: "<first> < 0"). backend "lut" gives straight pieces,
+        "quadrays" curved Lagrange pieces of degree, "auto" picks quadrays for
+        a quadratic level set. Point data is interpolated, cell data and cell
+        regions follow each piece's parent (cut:parent_cell). Without
+        CutCells it returns an error naming MESHIOPLUSPLUS_WITH_CUTCELLS.
+        Reports num_cells, num_cut_cells, num_uncut_cells, num_pieces,
+        dimension, measure, selection, backend, warnings and
+        cutcells_available."""
+        return _guard(
+            _tools.tool_cut_level_set,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            level_sets=level_sets,
+            planes=planes,
+            selection=selection,
+            include_uncut=include_uncut,
+            backend=backend,
+            degree=degree,
+            triangulate=triangulate,
+            record_parent_ids=record_parent_ids,
+        )
+
+    @server.tool()
+    def cut_quadrature(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        level_sets: Optional[List[str]] = None,
+        planes: Optional[List[List[float]]] = None,
+        selection: str = "",
+        order: int = 2,
+        include_uncut: bool = True,
+        backend: str = "auto",
+        triangulate: bool = False,
+        record_parent_ids: bool = True,
+    ) -> dict:
+        """Quadrature rules (cut-cell quadrature for unfitted finite elements)
+        of degree order on the part of a mesh that level sets select, through
+        CutCells (doc/cut.md). The level sets, selection and backend are
+        cut_level_set's. Writes one vertex per quadrature point at its
+        physical position with point data quadrature:weight (physical; they
+        sum to the part's measure), quadrature:reference (in the parent
+        cell), quadrature:rule and quadrature:parent_cell. Reports num_rules,
+        num_points, sum_weights, dimension, selection, backend, warnings and
+        cutcells_available."""
+        return _guard(
+            _tools.tool_cut_quadrature,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            level_sets=level_sets,
+            planes=planes,
+            selection=selection,
+            order=order,
+            include_uncut=include_uncut,
+            backend=backend,
+            triangulate=triangulate,
+            record_parent_ids=record_parent_ids,
+        )
+
+    @server.tool()
     def remesh_quads(
         input_path: str,
         output_path: str,

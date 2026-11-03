@@ -18,6 +18,7 @@ meshio++ itself is MIT ([LICENSE](LICENSE)). The binaries the project publishes 
 | [LZ4](https://lz4.org/) | 1.10.0 | BSD-2-Clause (the library) | yes (Linux, macOS; static) | no |
 | [bzip2](https://sourceware.org/bzip2/) | 1.0.8 | bzip2-1.0.6 (BSD-style) | yes (Linux, macOS; static) | no |
 | [KaHIP](https://kahip.github.io/) | 3.25 | MIT | yes (Linux, macOS; static) | no |
+| [CutCells](https://github.com/sclaus2/CutCells) | 0.5.0 (commit `3ccd9b0`, `build/deps-pins.sh`) | MIT (ships VTK-derived clip tables under BSD-3-Clause) | yes (Linux, macOS; static) | no |
 | [Eigen](https://eigen.tuxfamily.org/) (submodule; header-only) | 3.4-dev | MPL-2.0 | yes (Linux, macOS) | no |
 | [libomp](https://openmp.llvm.org/) (macOS wheels; expected as a shared library, to confirm) | the Homebrew release at build time | to confirm | yes (macOS) | no |
 

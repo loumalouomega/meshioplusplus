@@ -864,6 +864,17 @@ _OP_TABLE = {
         "Seed",
         "MaxCells",
     ),
+    # The part level sets select, through CutCells (doc/cut.md).
+    "CutLevelSet": (
+        "LevelSets",
+        "Planes",
+        "Selection",
+        "IncludeUncut",
+        "Backend",
+        "Degree",
+        "Triangulate",
+        "RecordParentIds",
+    ),
 }
 
 _V2_OP_TABLE = {
@@ -1744,6 +1755,49 @@ def _tetrahedralize_step(mesh, step, entry, warnings):
     return mesh
 
 
+def _cut_level_set_step(mesh, step, entry, warnings):
+    """``CutLevelSet``: :func:`meshioplusplus.cut_level_set`, its counters and
+    warnings the C++ engine's."""
+    import warnings as _warnings
+
+    from ._cut import cut_level_set
+
+    flat = _dvec(step, "Planes") if "Planes" in step else []
+    if len(flat) % 6:
+        raise _err(
+            "CutLevelSet",
+            "'Planes' must hold six numbers per plane (origin, then normal)",
+        )
+    planes = [
+        (tuple(flat[i : i + 3]), tuple(flat[i + 3 : i + 6]))
+        for i in range(0, len(flat), 6)
+    ]
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", RuntimeWarning)
+        mesh, report = cut_level_set(
+            mesh,
+            _svec(step, "LevelSets") if "LevelSets" in step else [],
+            planes=planes,
+            selection=_text(step, "Selection", ""),
+            include_uncut=_flag(step, "IncludeUncut", True),
+            backend=_text(step, "Backend", "auto"),
+            degree=int(_number(step, "Degree", 2)),
+            triangulate=_flag(step, "Triangulate", False),
+            record_parent_ids=_flag(step, "RecordParentIds", True),
+            return_report=True,
+        )
+    warnings.extend("CutLevelSet: " + w for w in report["warnings"])
+    entry.update(
+        NumCells=float(report["num_cells"]),
+        NumCutCells=float(report["num_cut_cells"]),
+        NumUncutCells=float(report["num_uncut_cells"]),
+        NumPieces=float(report["num_pieces"]),
+        Dimension=float(report["dimension"]),
+        Measure=float(report["measure"]),
+    )
+    return mesh
+
+
 def _remesh_quads_step(mesh, step, entry, warnings):
     """``RemeshQuads``: :func:`meshioplusplus.remesh_quads`, its counters and
     warnings the C++ engine's."""
@@ -1880,6 +1934,8 @@ def _apply_step(mesh, step, steps, warnings):
         mesh = _tetrahedralize_step(mesh, step, entry, warnings)
     elif op == "RemeshQuads":
         mesh = _remesh_quads_step(mesh, step, entry, warnings)
+    elif op == "CutLevelSet":
+        mesh = _cut_level_set_step(mesh, step, entry, warnings)
     elif op == "ProjectToCad":
         mesh = _project_to_cad_step(mesh, step, entry, None)
     elif op == "Quality":

@@ -136,6 +136,7 @@
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/remesh_quads.hpp"
+#include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -7453,6 +7454,95 @@ val remesh_quads_js(const val& rMeshObj, const val& rOptions) {
 }
 
 /**
+ * @brief The level-set cut options of cutLevelSet and cutQuadrature (doc/cut.md):
+ * {levelSets, planes (flat, six per plane), selection, includeUncut, backend,
+ * degree, triangulate, order, recordParentIds}.
+ */
+meshioplusplus::CutOptions cut_options_js(const val& rOptions, const char* pWhere) {
+    meshioplusplus::CutOptions o;
+    if (rOptions.isUndefined() || rOptions.isNull())
+        return o;
+    check_settings_keys(rOptions, pWhere,
+                        {"levelSets", "planes", "selection", "includeUncut", "backend", "degree",
+                         "triangulate", "order", "recordParentIds"});
+    if (rOptions.hasOwnProperty("levelSets"))
+        o.mLevelSets = emscripten::vecFromJSArray<std::string>(rOptions["levelSets"]);
+    if (rOptions.hasOwnProperty("planes")) {
+        const std::vector<double> flat = emscripten::vecFromJSArray<double>(rOptions["planes"]);
+        if (flat.size() % 6 != 0)
+            throw std::invalid_argument(
+                "meshio++: cut: planes must hold six numbers per plane (origin, then normal)");
+        for (std::size_t i = 0; i < flat.size(); i += 6) {
+            meshioplusplus::CutPlane pl;
+            pl.mOrigin = {flat[i], flat[i + 1], flat[i + 2]};
+            pl.mNormal = {flat[i + 3], flat[i + 4], flat[i + 5]};
+            o.mPlanes.push_back(pl);
+        }
+    }
+    if (rOptions.hasOwnProperty("selection"))
+        o.mSelection = rOptions["selection"].as<std::string>();
+    if (rOptions.hasOwnProperty("includeUncut"))
+        o.mIncludeUncut = rOptions["includeUncut"].as<bool>();
+    if (rOptions.hasOwnProperty("backend"))
+        o.mBackend = rOptions["backend"].as<std::string>();
+    if (rOptions.hasOwnProperty("degree"))
+        o.mDegree = static_cast<std::int32_t>(rOptions["degree"].as<double>());
+    if (rOptions.hasOwnProperty("triangulate"))
+        o.mTriangulate = rOptions["triangulate"].as<bool>();
+    if (rOptions.hasOwnProperty("order"))
+        o.mOrder = static_cast<std::int32_t>(rOptions["order"].as<double>());
+    if (rOptions.hasOwnProperty("recordParentIds"))
+        o.mRecordParentIds = rOptions["recordParentIds"].as<bool>();
+    return o;
+}
+
+/**
+ * @brief The part of a mesh that level sets select, through CutCells. Neither
+ * WebAssembly artifact links CutCells yet, so this throws naming it there.
+ * See operations/cut.hpp.
+ */
+val cut_level_set_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        const meshioplusplus::CutOptions o = cut_options_js(rOptions, "the cutLevelSet options");
+        meshioplusplus::CutLevelSetResult r =
+            meshioplusplus::cut_level_set(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numCells", static_cast<double>(r.mNumCells));
+        out.set("numCutCells", static_cast<double>(r.mNumCutCells));
+        out.set("numUncutCells", static_cast<double>(r.mNumUncutCells));
+        out.set("numPieces", static_cast<double>(r.mNumPieces));
+        out.set("dimension", r.mDimension);
+        out.set("measure", r.mMeasure);
+        out.set("selection", r.mSelection);
+        out.set("backend", r.mBackend);
+        return out;
+    });
+}
+
+/** @brief Quadrature rules on that part. See operations/cut.hpp. */
+val cut_quadrature_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        const meshioplusplus::CutOptions o = cut_options_js(rOptions, "the cutQuadrature options");
+        meshioplusplus::CutQuadratureResult r =
+            meshioplusplus::cut_quadrature(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numRules", static_cast<double>(r.mNumRules));
+        out.set("numPoints", static_cast<double>(r.mNumPoints));
+        out.set("sumWeights", r.mSumWeights);
+        out.set("dimension", r.mDimension);
+        out.set("selection", r.mSelection);
+        out.set("backend", r.mBackend);
+        return out;
+    });
+}
+
+bool has_cutcells_js() {
+    return meshioplusplus::cut_has_cutcells();
+}
+
+/**
  * @brief The convex hull of a mesh's points. @p rOptions is `{dimension}`
  * (optional: 2, 3, or 0 to decide). See operations/hull.hpp.
  */
@@ -9843,6 +9933,9 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("estimateNormals", &estimate_normals_js);
     emscripten::function("reconstructSurface", &reconstruct_surface_js);
     emscripten::function("remeshQuads", &remesh_quads_js);
+    emscripten::function("cutLevelSet", &cut_level_set_js);
+    emscripten::function("cutQuadrature", &cut_quadrature_js);
+    emscripten::function("hasCutcells", &has_cutcells_js);
     emscripten::function("convexHull", &convex_hull_js);
     emscripten::function("delaunay2d", &delaunay_2d_js);
     emscripten::function("cropBbox", &crop_bbox_js);

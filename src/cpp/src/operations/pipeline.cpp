@@ -82,6 +82,7 @@
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/remesh_quads.hpp"
+#include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -636,6 +637,10 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"RemeshQuads",
          {"TargetFaces", "Backend", "Sharp", "Boundary", "Adaptive", "Dominant", "Seed",
           "MaxCells"}},
+        // The part level sets select, through CutCells (doc/cut.md).
+        {"CutLevelSet",
+         {"LevelSets", "Planes", "Selection", "IncludeUncut", "Backend", "Degree", "Triangulate",
+          "RecordParentIds"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
     };
@@ -1501,6 +1506,39 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"MinScaledJacobian", r.mMinScaledJacobian},
                         {"MeanScaledJacobian", r.mMeanScaledJacobian},
                         {"HausdorffToSurface", r.mHausdorffToSurface}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "CutLevelSet") {
+        CutOptions o;
+        o.mLevelSets = pipe_svec(rStep, "LevelSets");
+        const std::vector<double> planes = pipe_dvec(rStep, "Planes");
+        if (planes.size() % 6 != 0)
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Planes' must hold six numbers per plane (origin, then normal)"));
+        for (std::size_t i = 0; i < planes.size(); i += 6) {
+            CutPlane pl;
+            pl.mOrigin = {planes[i], planes[i + 1], planes[i + 2]};
+            pl.mNormal = {planes[i + 3], planes[i + 4], planes[i + 5]};
+            o.mPlanes.push_back(pl);
+        }
+        o.mSelection = pipe_text(rStep, "Selection", "");
+        o.mIncludeUncut = pipe_flag(rStep, "IncludeUncut", o.mIncludeUncut);
+        o.mBackend = pipe_text(rStep, "Backend", "auto");
+        o.mDegree =
+            static_cast<std::int32_t>(pipe_number(rStep, "Degree", static_cast<double>(o.mDegree)));
+        o.mTriangulate = pipe_flag(rStep, "Triangulate", o.mTriangulate);
+        o.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", o.mRecordParentIds);
+        CutLevelSetResult r = cut_level_set(mesh, o);
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back("CutLevelSet: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCells", static_cast<double>(r.mNumCells)},
+                        {"NumCutCells", static_cast<double>(r.mNumCutCells)},
+                        {"NumUncutCells", static_cast<double>(r.mNumUncutCells)},
+                        {"NumPieces", static_cast<double>(r.mNumPieces)},
+                        {"Dimension", static_cast<double>(r.mDimension)},
+                        {"Measure", r.mMeasure}});
         return std::move(r.mMesh);
     }
 

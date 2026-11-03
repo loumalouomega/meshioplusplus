@@ -1349,6 +1349,84 @@ function remesh_quads(mesh::Mesh; target_faces::Integer=0, backend::AbstractStri
 end
 
 """
+    has_cutcells() -> Bool
+
+Whether the library carries CutCells, which [`cut_level_set`](@ref) and
+[`cut_quadrature`](@ref) need (a build with `MESHIOPLUSPLUS_WITH_CUTCELLS`).
+"""
+has_cutcells() = ccall(_sym(:mio_has_cutcells), Int32, ()) != 0
+
+function _cut_call(sym::Symbol, mesh::Mesh, level_sets, planes, selection, include_uncut,
+                   backend, degree, triangulate, order, record_parent_ids)
+    names = [Vector{UInt8}(codeunits(String(a) * "\0")) for a in level_sets]
+    ptrs = [Cstring(pointer(n)) for n in names]
+    flat = Cdouble[]
+    for (origin, normal) in planes
+        length(origin) == 3 && length(normal) == 3 ||
+            throw(ArgumentError("meshio++: cut: a plane is (origin, normal), three numbers each"))
+        append!(flat, Cdouble.(origin))
+        append!(flat, Cdouble.(normal))
+    end
+    sel = Vector{UInt8}(codeunits(String(selection) * "\0"))
+    bk = Vector{UInt8}(codeunits(String(backend) * "\0"))
+    report = Ref{_CCutReport}()
+    ptr = GC.@preserve names ptrs flat sel bk begin
+        opts = _CCutOpts(isempty(ptrs) ? Ptr{Cstring}(C_NULL) : pointer(ptrs), Int64(length(ptrs)),
+                         isempty(flat) ? Ptr{Cdouble}(C_NULL) : pointer(flat),
+                         Int64(length(flat) ÷ 6), pointer(sel), pointer(bk), Int32(include_uncut),
+                         Int32(degree), Int32(triangulate), Int32(order), Int32(record_parent_ids),
+                         Int32(0), (0, 0, 0, 0))
+        ccall(_sym(sym), Ptr{Cvoid}, (Ptr{Cvoid}, Ref{_CCutOpts}, Ref{_CCutReport}),
+              _handle(mesh), Ref(opts), report)
+    end
+    Mesh(_check_ptr(ptr)), report[]
+end
+
+"""
+    cut_level_set(mesh; level_sets=String[], planes=[], selection="", include_uncut=true,
+                  backend="auto", degree=2, triangulate=false, record_parent_ids=true)
+        -> (; mesh, num_cells, num_cut_cells, num_uncut_cells, num_pieces, dimension,
+              measure, backend)
+
+The part of `mesh` that level sets select, through CutCells (`doc/cut.md`):
+`level_sets` are scalar point-data arrays, `planes` `(origin, normal)` pairs
+named `plane0`, `plane1`, ...; `selection` an expression such as `"phi < 0"`,
+`"phi = 0"` (the interface) or `"a < 0 and b > 0"` (empty: `"<first> < 0"`).
+`backend` is `"lut"` (straight pieces), `"quadrays"` (curved pieces of
+`degree`) or `"auto"`. Without CutCells it throws a `MeshioError` naming
+`MESHIOPLUSPLUS_WITH_CUTCELLS`.
+"""
+function cut_level_set(mesh::Mesh; level_sets=String[], planes=(), selection::AbstractString="",
+                       include_uncut::Bool=true, backend::AbstractString="auto",
+                       degree::Integer=2, triangulate::Bool=false, record_parent_ids::Bool=true)
+    out, r = _cut_call(:mio_cut_level_set, mesh, level_sets, planes, selection, include_uncut,
+                       backend, degree, triangulate, 2, record_parent_ids)
+    (mesh=out, num_cells=Int(r.num_cells), num_cut_cells=Int(r.num_cut_cells),
+     num_uncut_cells=Int(r.num_uncut_cells), num_pieces=Int(r.num_pieces),
+     dimension=Int(r.dimension), measure=Float64(r.measure),
+     backend=r.backend_name == C_NULL ? "" : unsafe_string(r.backend_name))
+end
+
+"""
+    cut_quadrature(mesh; level_sets=String[], planes=[], selection="", order=2, ...)
+        -> (; mesh, num_rules, num_points, sum_weights, dimension, backend)
+
+Quadrature rules of degree `order` on the part [`cut_level_set`](@ref) would
+give: a point cloud with point data `quadrature:weight`, `quadrature:reference`,
+`quadrature:rule` and `quadrature:parent_cell`.
+"""
+function cut_quadrature(mesh::Mesh; level_sets=String[], planes=(), selection::AbstractString="",
+                        order::Integer=2, include_uncut::Bool=true,
+                        backend::AbstractString="auto", triangulate::Bool=false,
+                        record_parent_ids::Bool=true)
+    out, r = _cut_call(:mio_cut_quadrature, mesh, level_sets, planes, selection, include_uncut,
+                       backend, 2, triangulate, order, record_parent_ids)
+    (mesh=out, num_rules=Int(r.num_rules), num_points=Int(r.num_points),
+     sum_weights=Float64(r.measure), dimension=Int(r.dimension),
+     backend=r.backend_name == C_NULL ? "" : unsafe_string(r.backend_name))
+end
+
+"""
     remesh_quads_backends() -> Vector{String}
 
 The quad remeshers [`remesh_quads`](@ref) takes by name besides `"auto"`, sorted:

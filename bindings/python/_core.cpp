@@ -166,6 +166,7 @@
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/remesh_quads.hpp"
+#include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -1603,6 +1604,7 @@ PYBIND11_MODULE(_core, m) {
 #else
     m.attr("__has_kahip__") = false;
 #endif
+    m.attr("__has_cutcells__") = meshioplusplus::cut_has_cutcells();
     // The capabilities a provider supplies -- the CAD kernel (OpenCASCADE), the
     // Netgen tetrahedral mesher, the MMG remesher and whether its MMG has ELAS
     // for move, and MMG's index width. Read live through the module's
@@ -4032,6 +4034,100 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "remesh_quads_backends", [] { return meshioplusplus::remesh_quads_backends(); },
         "The quad remeshers remesh_quads accepts besides auto (roadmap 7.7.3).");
+
+    // Level-set cutting and cut-cell quadrature through CutCells (doc/cut.md).
+    // Both return a dict {mesh, ...report}; a build without CutCells raises
+    // NotImplementedError. See operations/cut.hpp.
+    {
+        const auto cut_options =
+            [](const std::vector<std::string>& level_sets,
+               const std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>& planes,
+               const std::string& selection, bool include_uncut, const std::string& backend,
+               std::int32_t degree, bool triangulate, std::int32_t order, bool record_parent_ids) {
+                meshioplusplus::CutOptions o;
+                o.mLevelSets = level_sets;
+                for (const auto& [origin, normal] : planes) {
+                    meshioplusplus::CutPlane pl;
+                    pl.mOrigin = origin;
+                    pl.mNormal = normal;
+                    o.mPlanes.push_back(pl);
+                }
+                o.mSelection = selection;
+                o.mIncludeUncut = include_uncut;
+                o.mBackend = backend;
+                o.mDegree = degree;
+                o.mTriangulate = triangulate;
+                o.mOrder = order;
+                o.mRecordParentIds = record_parent_ids;
+                return o;
+            };
+        m.def(
+            "cut_level_set",
+            [cut_options](
+                py::object pymesh, const std::vector<std::string>& level_sets,
+                const std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>& planes,
+                const std::string& selection, bool include_uncut, const std::string& backend,
+                std::int32_t degree, bool triangulate, bool record_parent_ids) {
+                meshioplusplus_py::PyMeshRefs refs;
+                meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                    pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+                const meshioplusplus::CutOptions o =
+                    cut_options(level_sets, planes, selection, include_uncut, backend, degree,
+                                triangulate, 2, record_parent_ids);
+                meshioplusplus::CutLevelSetResult r =
+                    core_nogil([&] { return meshioplusplus::cut_level_set(mesh, o); });
+                py::dict out;
+                out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+                out["num_cells"] = r.mNumCells;
+                out["num_cut_cells"] = r.mNumCutCells;
+                out["num_uncut_cells"] = r.mNumUncutCells;
+                out["num_pieces"] = r.mNumPieces;
+                out["dimension"] = r.mDimension;
+                out["measure"] = r.mMeasure;
+                out["selection"] = r.mSelection;
+                out["backend"] = r.mBackend;
+                out["warnings"] = r.mWarnings;
+                return out;
+            },
+            py::arg("mesh"), py::arg("level_sets") = std::vector<std::string>{},
+            py::arg("planes") =
+                std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>{},
+            py::arg("selection") = "", py::arg("include_uncut") = true, py::arg("backend") = "auto",
+            py::arg("degree") = 2, py::arg("triangulate") = false,
+            py::arg("record_parent_ids") = true);
+        m.def(
+            "cut_quadrature",
+            [cut_options](
+                py::object pymesh, const std::vector<std::string>& level_sets,
+                const std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>& planes,
+                const std::string& selection, bool include_uncut, const std::string& backend,
+                std::int32_t order, bool triangulate, bool record_parent_ids) {
+                meshioplusplus_py::PyMeshRefs refs;
+                meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                    pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+                const meshioplusplus::CutOptions o =
+                    cut_options(level_sets, planes, selection, include_uncut, backend, 2,
+                                triangulate, order, record_parent_ids);
+                meshioplusplus::CutQuadratureResult r =
+                    core_nogil([&] { return meshioplusplus::cut_quadrature(mesh, o); });
+                py::dict out;
+                out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+                out["num_rules"] = r.mNumRules;
+                out["num_points"] = r.mNumPoints;
+                out["sum_weights"] = r.mSumWeights;
+                out["dimension"] = r.mDimension;
+                out["selection"] = r.mSelection;
+                out["backend"] = r.mBackend;
+                out["warnings"] = r.mWarnings;
+                return out;
+            },
+            py::arg("mesh"), py::arg("level_sets") = std::vector<std::string>{},
+            py::arg("planes") =
+                std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>{},
+            py::arg("selection") = "", py::arg("include_uncut") = true, py::arg("backend") = "auto",
+            py::arg("order") = 2, py::arg("triangulate") = false,
+            py::arg("record_parent_ids") = true);
+    }
 
     // Projection back onto the CAD (roadmap 6.10.1): every point of a mesh
     // whose cells name their CAD face and edge moved onto it. Returns a dict

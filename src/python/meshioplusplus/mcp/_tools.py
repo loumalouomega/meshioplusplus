@@ -75,6 +75,9 @@ from .. import (
     convex_hull,
     crop,
     cube_sphere,
+    cut_has_cutcells,
+    cut_level_set,
+    cut_quadrature,
     cylinder,
     data_calc,
     data_condition,
@@ -5631,6 +5634,100 @@ def tool_remesh_quads(
     )
 
 
+def _cut_planes(planes):
+    """MCP planes as six numbers each, origin then normal."""
+    if not planes:
+        return None
+    out = []
+    for i, p in enumerate(planes):
+        if len(p) != 6:
+            raise ValueError(
+                f"meshio++: cut: plane {i} must be six numbers, origin then normal"
+            )
+        out.append((tuple(p[:3]), tuple(p[3:])))
+    return out
+
+
+def tool_cut_level_set(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    level_sets=None,
+    planes=None,
+    selection="",
+    include_uncut=True,
+    backend="auto",
+    degree=2,
+    triangulate=False,
+    record_parent_ids=True,
+):
+    """Cut a mesh by level sets (point_data arrays, or planes as six numbers
+    each) through CutCells and write the part the selection picks. Returns
+    num_cells, num_cut_cells, num_uncut_cells, num_pieces, dimension,
+    measure, selection, backend and warnings beside the mesh summary, and
+    cutcells_available."""
+    mesh = _load(input_path, input_format)
+    out, report = cut_level_set(
+        mesh,
+        level_sets,
+        planes=_cut_planes(planes),
+        selection=selection,
+        include_uncut=include_uncut,
+        backend=backend,
+        degree=degree,
+        triangulate=triangulate,
+        record_parent_ids=record_parent_ids,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        cutcells_available=cut_has_cutcells(),
+        **report,
+    )
+
+
+def tool_cut_quadrature(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    level_sets=None,
+    planes=None,
+    selection="",
+    order=2,
+    include_uncut=True,
+    backend="auto",
+    triangulate=False,
+    record_parent_ids=True,
+):
+    """Quadrature rules on the part of a mesh that level sets select, written
+    as a point cloud with point data quadrature:weight, quadrature:reference,
+    quadrature:rule and quadrature:parent_cell. Returns num_rules,
+    num_points, sum_weights, dimension, selection, backend and warnings
+    beside the mesh summary, and cutcells_available."""
+    mesh = _load(input_path, input_format)
+    out, report = cut_quadrature(
+        mesh,
+        level_sets,
+        planes=_cut_planes(planes),
+        selection=selection,
+        order=order,
+        include_uncut=include_uncut,
+        backend=backend,
+        triangulate=triangulate,
+        record_parent_ids=record_parent_ids,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        cutcells_available=cut_has_cutcells(),
+        **report,
+    )
+
+
 def tool_project_to_cad(
     input_path,
     model_path,
@@ -7471,6 +7568,22 @@ TOOL_REGISTRY = OrderedDict(
             {
                 "fn": tool_remesh_quads,
                 "wraps": ("remesh_quads",),
+                "gated": None,
+            },
+        ),
+        (
+            "cut_level_set",
+            {
+                "fn": tool_cut_level_set,
+                "wraps": ("cut_level_set",),
+                "gated": None,
+            },
+        ),
+        (
+            "cut_quadrature",
+            {
+                "fn": tool_cut_quadrature,
+                "wraps": ("cut_quadrature",),
                 "gated": None,
             },
         ),

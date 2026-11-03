@@ -2,7 +2,7 @@
 # build-permissive-libs.sh -- build the permissively licensed libraries the PyPI
 # base wheel links natively (roadmap 4.7.2) as static, position-independent
 # archives in one prefix: zlib is vendored by the main CMake, so this builds
-# bzip2, zstd, lz4, HDF5, netCDF, cgnslib and KaHIP. Eigen is a header-only
+# bzip2, zstd, lz4, HDF5, netCDF, cgnslib, KaHIP and CutCells. Eigen is a header-only
 # submodule and needs nothing here.
 #
 #   build/build-permissive-libs.sh PREFIX
@@ -13,6 +13,7 @@
 #   -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON -DMESHIOPLUSPLUS_WITH_ZSTD=ON
 #   -DMESHIOPLUSPLUS_WITH_LZ4=ON -DMESHIOPLUSPLUS_WITH_BZIP2=ON
 #   -DMESHIOPLUSPLUS_WITH_KAHIP=ON -DKAHIP_ROOT=PREFIX
+#   -DMESHIOPLUSPLUS_WITH_CUTCELLS=ON -DCUTCELLS_ROOT=PREFIX
 #
 # Versions and checksums are build/deps-pins.sh's, shared with the WebAssembly
 # build (build-wasm-deps.sh). Every library is built with -fvisibility=hidden
@@ -50,12 +51,13 @@ usage() {
     cat <<EOF
 Usage: build/build-permissive-libs.sh PREFIX [options]
   --universal      macOS: build x86_64 and arm64 (deployment target 13.3)
-  --only LIB       build one of: bzip2 zstd lz4 hdf5 netcdf cgns kahip
+  --only LIB       build one of: bzip2 zstd lz4 hdf5 netcdf cgns kahip cutcells
   --work DIR       download and build directory (default: PREFIX/_work)
   --jobs N         parallel build jobs (default: all cores)
   --force          rebuild even when PREFIX already holds the library
 Builds static, hidden-visibility archives: bzip2 $BZIP2_VERSION, zstd $ZSTD_VERSION,
-lz4 $LZ4_VERSION, HDF5 $HDF5_VERSION, netCDF $NETCDF_VERSION, cgnslib $CGNS_VERSION, KaHIP $KAHIP_VERSION.
+lz4 $LZ4_VERSION, HDF5 $HDF5_VERSION, netCDF $NETCDF_VERSION, cgnslib $CGNS_VERSION, KaHIP $KAHIP_VERSION,
+CutCells $CUTCELLS_VERSION.
 EOF
 }
 
@@ -306,4 +308,22 @@ if wanted kahip; then
     fi
 fi
 
-echo "== done: -DMESHIOPLUSPLUS_PREFER_STATIC_DEPS=ON -DCMAKE_PREFIX_PATH=$PREFIX -DKAHIP_ROOT=$PREFIX =="
+# -- CutCells (cut_level_set, cut_quadrature; no release tags: a clone of the pin,
+# without OpenMP, as build/build-cutcells.sh builds it) --------------------------
+if wanted cutcells; then
+    if have libcutcells.a; then echo "== CutCells already installed =="; else
+        echo "== CutCells $CUTCELLS_VERSION =="
+        rm -rf "$WORK/CutCells"
+        git -c advice.detachedHead=false clone --quiet https://github.com/sclaus2/CutCells.git "$WORK/CutCells"
+        git -C "$WORK/CutCells" -c advice.detachedHead=false checkout --quiet "$CUTCELLS_COMMIT"
+        got=$(git -C "$WORK/CutCells" rev-parse HEAD)
+        if [ "$got" != "$CUTCELLS_COMMIT" ]; then
+            echo "error: CutCells is $got, expected $CUTCELLS_COMMIT" >&2
+            exit 1
+        fi
+        cmake_build cutcells "$WORK/CutCells/cpp" \
+            -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_DISABLE_FIND_PACKAGE_OpenMP=TRUE
+    fi
+fi
+
+echo "== done: -DMESHIOPLUSPLUS_PREFER_STATIC_DEPS=ON -DCMAKE_PREFIX_PATH=$PREFIX -DKAHIP_ROOT=$PREFIX -DCUTCELLS_ROOT=$PREFIX =="

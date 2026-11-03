@@ -2426,6 +2426,7 @@ _NOT_TOOLS = {
     "has_netgen",  # the tetrahedralize tool reports netgen_available
     "tetrahedralize_backends",  # the tetrahedralize tool reports backends_available
     "remesh_quads_backends",  # the remesh_quads tool reports backends_available
+    "cut_has_cutcells",  # the cut tools report cutcells_available
     "to_pyvista",
     "from_pyvista",
     "to_trimesh",
@@ -4237,3 +4238,30 @@ def test_find_intersections_and_thickness_tools(tmp_path):
     json.dumps(report)
     with pytest.raises(ValueError, match="direction"):
         _tools.tool_thickness(str(a), direction="sideways")
+
+
+def test_cut_tools(tmp_path):
+    from meshioplusplus import _core
+
+    if not hasattr(_core, "cut_level_set"):
+        pytest.skip("core predates cut_level_set")
+    box = tmp_path / "box.vtu"
+    meshioplusplus.write(box, meshioplusplus.box((2, 2, 2)))
+    out = tmp_path / "cut.vtu"
+    plane = [[0.3, 0, 0, 1, 0, 0]]
+    if not meshioplusplus.cut_has_cutcells():
+        with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_CUTCELLS"):
+            _tools.tool_cut_level_set(str(box), str(out), planes=plane)
+        return
+    report = _tools.tool_cut_level_set(str(box), str(out), planes=plane)
+    assert report["cutcells_available"] is True
+    assert report["measure"] == pytest.approx(0.3, abs=1e-12)
+    assert report["dimension"] == 3 and out.exists()
+    quad = tmp_path / "quad.vtu"
+    report = _tools.tool_cut_quadrature(
+        str(box), str(quad), planes=plane, selection="plane0 = 0", order=3
+    )
+    assert report["sum_weights"] == pytest.approx(1.0, abs=1e-12)
+    assert report["dimension"] == 2
+    with pytest.raises(ValueError, match="six numbers"):
+        _tools.tool_cut_level_set(str(box), str(out), planes=[[0.3, 0, 0]])

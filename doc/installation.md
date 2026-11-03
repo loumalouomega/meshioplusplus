@@ -37,6 +37,7 @@ The base wheel, `meshioplusplus`, is MIT and carries no copyleft code. The core 
 | HDF5 1.14.6, netCDF-C 4.9.3, cgnslib 4.5.2 (Linux and macOS; the native HDF5, netCDF and CGNS formats) | BSD-3-Clause, BSD-3-Clause, Zlib |
 | zstd 1.5.7, LZ4 1.10.0, bzip2 1.0.8 (Linux and macOS; the VTK XML codecs and libMesh `.bz2`) | BSD-3-Clause, BSD-2-Clause, BSD-style |
 | KaHIP 3.25 (Linux and macOS; the `kahip` partition method) | MIT |
+| CutCells 0.5.0 (Linux and macOS; `cut_level_set` and `cut_quadrature`) | MIT |
 | Eigen (Linux and macOS; header-only, MED) | MPL-2.0 |
 
 On Linux and macOS (v18.0.0) the libraries above are static archives with hidden symbols, so the formats they serve run natively in the wheel; h5py and netCDF4 still work beside them, because none of the wheel's HDF5 symbols are exported and each package keeps its own copy. The Windows wheels keep HDF5, netCDF and the codecs on h5py, netCDF4 and the standard library until the static build has an MSVC recipe. The three copyleft backends are separate wheels, each pinned to the base wheel's exact version, shipping its library as shared objects beside its own extension, and registering a provider with the base core when `meshioplusplus` first needs one (`MESHIOPLUSPLUS_NO_PLUGINS=1` skips the discovery):

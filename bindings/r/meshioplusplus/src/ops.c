@@ -2065,6 +2065,81 @@ SEXP R_mio_remesh_quads_backends(void) {
     return out;
 }
 
+/* cut_level_set and cut_quadrature (doc/cut.md): the part level sets select,
+ * through CutCells. `planes` is flat, six numbers per plane. */
+static void mio_r_cut_opts(mio_cut_opts *opts, SEXP level_sets, SEXP planes, SEXP selection,
+                           SEXP include_uncut, SEXP backend, SEXP triangulate,
+                           SEXP record_parent_ids) {
+    mio_cut_opts_init(opts);
+    const R_xlen_t n = Rf_xlength(level_sets);
+    const char **names = n > 0 ? (const char **)R_alloc((size_t)n, sizeof(char *)) : NULL;
+    for (R_xlen_t i = 0; i < n; ++i) names[i] = CHAR(STRING_ELT(level_sets, i));
+    opts->level_sets = names;
+    opts->num_level_sets = (int64_t)n;
+    const R_xlen_t np = Rf_xlength(planes);
+    if (np % 6 != 0) Rf_error("meshio++: cut: planes must hold six numbers per plane (origin, then normal)");
+    opts->planes = np > 0 ? REAL(planes) : NULL;
+    opts->num_planes = (int64_t)(np / 6);
+    opts->selection = mio_r_string(selection, "selection");
+    opts->backend = mio_r_string(backend, "backend");
+    opts->include_uncut = mio_r_bool(include_uncut, "include_uncut");
+    opts->triangulate = mio_r_bool(triangulate, "triangulate");
+    opts->record_parent_ids = mio_r_bool(record_parent_ids, "record_parent_ids");
+}
+
+SEXP R_mio_cut_level_set(SEXP mesh, SEXP level_sets, SEXP planes, SEXP selection,
+                         SEXP include_uncut, SEXP backend, SEXP degree, SEXP triangulate,
+                         SEXP record_parent_ids) {
+    mio_cut_opts opts;
+    mio_r_cut_opts(&opts, level_sets, planes, selection, include_uncut, backend, triangulate,
+                   record_parent_ids);
+    opts.degree = (int32_t)mio_r_int(degree, "degree");
+    mio_cut_report report;
+    mio_mesh *out = mio_cut_level_set(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("cut_level_set");
+    SEXP v[8];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_ScalarReal((double)report.num_cells));
+    v[2] = PROTECT(Rf_ScalarReal((double)report.num_cut_cells));
+    v[3] = PROTECT(Rf_ScalarReal((double)report.num_uncut_cells));
+    v[4] = PROTECT(Rf_ScalarReal((double)report.num_pieces));
+    v[5] = PROTECT(Rf_ScalarInteger((int)report.dimension));
+    v[6] = PROTECT(Rf_ScalarReal(report.measure));
+    v[7] = PROTECT(Rf_mkString(report.backend_name != NULL ? report.backend_name : ""));
+    const char *names[] = {"mesh",       "num_cells", "num_cut_cells", "num_uncut_cells",
+                           "num_pieces", "dimension", "measure",       "backend"};
+    SEXP res = PROTECT(mio_r_named_list(8, names, v));
+    UNPROTECT(9);
+    return res;
+}
+
+SEXP R_mio_cut_quadrature(SEXP mesh, SEXP level_sets, SEXP planes, SEXP selection, SEXP order,
+                          SEXP include_uncut, SEXP backend, SEXP triangulate,
+                          SEXP record_parent_ids) {
+    mio_cut_opts opts;
+    mio_r_cut_opts(&opts, level_sets, planes, selection, include_uncut, backend, triangulate,
+                   record_parent_ids);
+    opts.order = (int32_t)mio_r_int(order, "order");
+    mio_cut_report report;
+    mio_mesh *out = mio_cut_quadrature(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("cut_quadrature");
+    SEXP v[6];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_ScalarReal((double)report.num_rules));
+    v[2] = PROTECT(Rf_ScalarReal((double)report.num_points));
+    v[3] = PROTECT(Rf_ScalarReal(report.measure));
+    v[4] = PROTECT(Rf_ScalarInteger((int)report.dimension));
+    v[5] = PROTECT(Rf_mkString(report.backend_name != NULL ? report.backend_name : ""));
+    const char *names[] = {"mesh", "num_rules", "num_points", "sum_weights", "dimension", "backend"};
+    SEXP res = PROTECT(mio_r_named_list(6, names, v));
+    UNPROTECT(7);
+    return res;
+}
+
+SEXP R_mio_has_cutcells(void) {
+    return Rf_ScalarLogical(mio_has_cutcells() != 0);
+}
+
 SEXP R_mio_has_mmg(void) {
     return Rf_ScalarLogical(mio_has_mmg() != 0);
 }

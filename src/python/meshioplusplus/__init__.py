@@ -120,6 +120,7 @@ if TYPE_CHECKING:
     from ._coordinates import convert_coordinates
     from ._crop import crop
     from ._curvature import compute_curvature
+    from ._cut import cut_has_cutcells, cut_level_set, cut_quadrature
     from ._data_average import cell_data_to_point_data, point_data_to_cell_data
     from ._data_calc import data_calc
     from ._data_condition import data_condition
@@ -570,6 +571,9 @@ _LAZY_ATTRS = {
     "has_netgen": "_tetrahedralize",
     "tetrahedralize_backends": "_tetrahedralize",
     "remesh_quads": "_remesh_quads",
+    "cut_has_cutcells": "_cut",
+    "cut_level_set": "_cut",
+    "cut_quadrature": "_cut",
     "remesh_quads_backends": "_remesh_quads",
     "triangulate_polygon_2d": "_mesh_cad",
 }
@@ -802,6 +806,9 @@ __all__ = [
     "tetrahedralize_backends",
     "remesh_quads",
     "remesh_quads_backends",
+    "cut_has_cutcells",
+    "cut_level_set",
+    "cut_quadrature",
     "triangulate_polygon_2d",
     "sample_distance",
     "distance_to_surface",

@@ -8496,3 +8496,52 @@ TEST(CApi, LoadPluginsRegistersAProviderFromADirectory) {
         meshioplusplus::register_cad_kernel(*saved);
 }
 #endif
+
+TEST(CApi, CutLevelSetAndQuadrature) {
+    mio_cut_opts o;
+    mio_cut_opts_init(&o);
+    EXPECT_EQ(o.num_level_sets, 0);
+    EXPECT_EQ(o.include_uncut, 1);
+    EXPECT_EQ(o.degree, 2);
+    EXPECT_EQ(o.order, 2);
+    EXPECT_EQ(o.record_parent_ids, 1);
+    EXPECT_EQ(mio_cut_level_set(nullptr, &o, nullptr), nullptr);
+
+    // One unit hexahedron, cut by the plane x = 0.3.
+    mio_mesh* hex = mio_mesh_create();
+    const double points[] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                             0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::int64_t conn[] = {0, 1, 2, 3, 4, 5, 6, 7};
+    ASSERT_EQ(mio_mesh_set_points(hex, MIO_FLOAT64, 8, 3, points), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(hex, "hexahedron", 1, 8, MIO_INT64, conn), MIO_OK);
+    const double plane[] = {0.3, 0, 0, 1, 0, 0};
+    o.planes = plane;
+    o.num_planes = 1;
+    mio_cut_report rep;
+    mio_mesh* part = mio_cut_level_set(hex, &o, &rep);
+    if (!mio_has_cutcells()) {
+        EXPECT_EQ(part, nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_CUTCELLS"),
+                  std::string::npos);
+        mio_mesh_free(hex);
+        return;
+    }
+    ASSERT_NE(part, nullptr) << mio_last_error();
+    EXPECT_NEAR(rep.measure, 0.3, 1e-12);
+    EXPECT_EQ(rep.dimension, 3);
+    EXPECT_EQ(rep.num_cut_cells, 1);
+    EXPECT_STREQ(rep.backend_name, "lut");
+    mio_mesh_free(part);
+    o.selection = "plane0 = 0";
+    o.order = 3;
+    mio_mesh* q = mio_cut_quadrature(hex, &o, &rep);
+    ASSERT_NE(q, nullptr) << mio_last_error();
+    EXPECT_NEAR(rep.measure, 1.0, 1e-12);
+    EXPECT_EQ(rep.dimension, 2);
+    EXPECT_GT(rep.num_points, 0);
+    EXPECT_EQ(mio_mesh_num_points(q), rep.num_points);
+    mio_mesh_free(q);
+    o.selection = "nope < 0";
+    EXPECT_EQ(mio_cut_level_set(hex, &o, nullptr), nullptr);
+    mio_mesh_free(hex);
+}

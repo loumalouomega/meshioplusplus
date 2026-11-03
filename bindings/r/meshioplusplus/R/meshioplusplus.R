@@ -3470,6 +3470,77 @@ mio_remesh_quads_backends <- function() {
   .Call(R_mio_remesh_quads_backends)
 }
 
+.mio_cut_planes <- function(planes) {
+  if (is.null(planes) || length(planes) == 0) return(numeric(0))
+  flat <- as.numeric(unlist(planes))
+  if (length(flat) %% 6 != 0)
+    stop("meshio++: cut: planes must hold six numbers each (origin, then normal)")
+  flat
+}
+
+#' Cut a mesh by level sets
+#'
+#' The part of `mesh` that level sets select, through CutCells (doc/cut.md):
+#' the pieces of the cells they cross on one side of them or on their zero
+#' sets, and with `include_uncut` the whole cells inside. Point data is
+#' interpolated, cell data and cell regions follow each piece's parent
+#' (`cut:parent_cell`). A library without CutCells fails naming
+#' `MESHIOPLUSPLUS_WITH_CUTCELLS`.
+#'
+#' @param mesh A mesh; its cells of the highest dimension are cut.
+#' @param level_sets Names of scalar point-data arrays that are level sets.
+#' @param planes Plane level sets, each `c(origin, normal)` (six numbers), as
+#'   a list or a 6-row matrix; named `plane0`, `plane1`, ...
+#' @param selection The part, such as `"phi < 0"`, `"phi = 0"` (the
+#'   interface) or `"a < 0 and b > 0"`; empty is `"<first> < 0"`.
+#' @param include_uncut Keep the whole cells inside the part.
+#' @param backend `"auto"`, `"lut"` (straight pieces) or `"quadrays"` (curved
+#'   pieces of `degree`).
+#' @param degree quadrays only: the pieces' Lagrange degree.
+#' @param triangulate lut only: split the pieces into simplices.
+#' @param record_parent_ids Write `cut:parent_cell`.
+#' @return A list: `mesh`, `num_cells`, `num_cut_cells`, `num_uncut_cells`,
+#'   `num_pieces`, `dimension`, `measure` and `backend`.
+#' @export
+mio_cut_level_set <- function(mesh, level_sets = character(0), planes = NULL, selection = "",
+                              include_uncut = TRUE, backend = "auto", degree = 2L,
+                              triangulate = FALSE, record_parent_ids = TRUE) {
+  .Call(R_mio_cut_level_set, mesh, as.character(level_sets), .mio_cut_planes(planes),
+        as.character(selection), isTRUE(include_uncut), as.character(backend),
+        as.integer(degree), isTRUE(triangulate), isTRUE(record_parent_ids))
+}
+
+#' Quadrature rules on the part of a mesh that level sets select
+#'
+#' Cut-cell quadrature through CutCells: rules of degree `order` on the part
+#' [mio_cut_level_set()] would give, as a point cloud with point data
+#' `quadrature:weight`, `quadrature:reference`, `quadrature:rule` and
+#' `quadrature:parent_cell`.
+#'
+#' @inheritParams mio_cut_level_set
+#' @param order The polynomial degree the rules integrate exactly.
+#' @return A list: `mesh`, `num_rules`, `num_points`, `sum_weights`,
+#'   `dimension` and `backend`.
+#' @export
+mio_cut_quadrature <- function(mesh, level_sets = character(0), planes = NULL, selection = "",
+                               order = 2L, include_uncut = TRUE, backend = "auto",
+                               triangulate = FALSE, record_parent_ids = TRUE) {
+  .Call(R_mio_cut_quadrature, mesh, as.character(level_sets), .mio_cut_planes(planes),
+        as.character(selection), as.integer(order), isTRUE(include_uncut),
+        as.character(backend), isTRUE(triangulate), isTRUE(record_parent_ids))
+}
+
+#' Whether the library carries CutCells
+#'
+#' [mio_cut_level_set()] and [mio_cut_quadrature()] need it (a build with
+#' `MESHIOPLUSPLUS_WITH_CUTCELLS`).
+#'
+#' @return `TRUE` or `FALSE`.
+#' @export
+mio_has_cutcells <- function() {
+  .Call(R_mio_has_cutcells)
+}
+
 #' The backend names mio_tetrahedralize() takes
 #'
 #' Besides `"auto"`: `"octree"`, then every registered tetrahedral mesher

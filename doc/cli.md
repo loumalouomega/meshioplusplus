@@ -161,6 +161,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `extrude`, `revolve` | the sweep's report: the cell counts by type, `num_flipped`, `min_scaled_jacobian`, `warnings`; `revolve` adds `num_on_axis` and `full` |
 | `mirror` | `num_flipped_cells`, `num_points_on_plane`, `num_dropped_cells`, `num_dropped_sides`, `warnings` |
 | `tetrahedralize` | `tetrahedralize`'s report: `num_tetrahedra`, `num_points`, `num_new_points`, `num_regions`, `num_boundary_triangles`, `boundary_preserved`, `hausdorff_to_surface`, the dihedral range, `volume`, `backend` and `warnings` |
+| `cut`, `cut-quadrature` | `cut_level_set`'s report (`num_cells`, `num_cut_cells`, `num_uncut_cells`, `num_pieces`, `dimension`, `measure`) or `cut_quadrature`'s (`num_rules`, `num_points`, `sum_weights`, `dimension`), with `selection`, `backend` and `warnings` |
 | `remesh-quads` | `remesh_quads`'s report: `num_quads`, `num_triangles`, `num_points`, `min_scaled_jacobian`, `mean_scaled_jacobian`, `hausdorff_to_surface`, `backend` and `warnings` |
 
 The exit codes are unchanged by `--json`.
@@ -2907,6 +2908,34 @@ The summary gives the quads, triangles and points, the least and mean scaled Jac
 ```sh
 meshioplusplus mesh-cad-surface sphere.cad.json skin.stl --size 0.1 --no-edges
 meshioplusplus remesh-quads skin.stl quads.vtu --json
+```
+
+## `cut`
+
+Cut a mesh by level sets through CutCells and write the part a selection picks (see [level-set cutting](/cut)). Both CLIs; a build without CutCells fails naming `MESHIOPLUSPLUS_WITH_CUTCELLS`.
+
+```
+meshioplusplus cut INFILE OUTFILE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l/--level-set NAME` | a scalar `point_data` array that is a level set (repeatable) |
+| `--plane OX,OY,OZ,NX,NY,NZ` | a plane level set, named `plane0`, `plane1`, ... (repeatable) |
+| `-s/--selection EXPR` | the part: `phi < 0`, `phi = 0` (the interface), `a < 0 and b > 0`, ... (default `<first> < 0`) |
+| `--cut-only` | only the pieces of the cut cells, not the whole cells inside |
+| `--backend B` | `auto`, `lut` (straight pieces) or `quadrays` (curved pieces) |
+| `--degree K` | quadrays: the pieces' Lagrange degree (2) |
+| `--triangulate` | lut: split the pieces into simplices |
+| `--no-parent-ids` | do not write `cut:parent_cell` |
+| `--json` | print the report as JSON |
+
+## `cut-quadrature`
+
+Quadrature rules on the same part, written as a point cloud with `quadrature:weight`, `quadrature:reference`, `quadrature:rule` and `quadrature:parent_cell` point data: the options of `cut`, and `--order K` (2), the polynomial degree the rules integrate exactly.
+
+```
+meshioplusplus cut-quadrature INFILE OUTFILE --plane 0.3,0,0,1,0,0 --selection "plane0 = 0" --order 3
 ```
 
 ## `tetrahedralize`

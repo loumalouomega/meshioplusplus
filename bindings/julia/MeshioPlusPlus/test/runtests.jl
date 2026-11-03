@@ -2079,6 +2079,19 @@ end
     end
     close(skin)
     close(cloud)
+    # cut_level_set (doc/cut.md): the cube skin cut by the plane x = 0.3 -- four
+    # strips of 0.3 and the face x = 0 -- or the refusal naming the build flag.
+    plane = [([0.3, 0.0, 0.0], [1.0, 0.0, 0.0])]
+    if has_cutcells()
+        cl = cut_level_set(cube; planes=plane)
+        @test cl.backend == "lut" && abs(cl.measure - 2.2) < 1e-12 && cl.dimension == 2
+        close(cl.mesh)
+        cq = cut_quadrature(cube; planes=plane, selection="plane0 = 0", order=2)
+        @test abs(cq.sum_weights - 4.0) < 1e-12 && cq.num_points > 0
+        close(cq.mesh)
+    else
+        @test_throws MeshioError cut_level_set(cube; planes=plane)
+    end
     hh = convex_hull(cube)
     @test hh.dimension == 3 && hh.num_vertices == 8 && hh.num_facets == 12
     @test isapprox(hh.volume, 1.0)

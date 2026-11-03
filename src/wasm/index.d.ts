@@ -4238,6 +4238,72 @@ export interface MeshioPlusPlusModule {
   ): { mesh: Mesh; numDegenerate: number; numComponents: number };
 
   /**
+   * The part of a mesh that level sets select, through CutCells
+   * (doc/cut.md): the pieces of the cut cells on one side of the level sets
+   * or on their zero sets, and with `includeUncut` the whole cells inside.
+   * `levelSets` are scalar point-data arrays; `planes` are `[origin, normal]`
+   * pairs (or six numbers each), named `plane0`, `plane1`, ...; `selection`
+   * is an expression such as `'phi < 0'` or `'a = 0 and b < 0'`.
+   * Neither WebAssembly artifact links CutCells yet, so here it throws
+   * naming it; the native builds with CutCells run it.
+   * @throws {Error} without CutCells, or for a bad level set or selection.
+   */
+  cutLevelSet(
+    mesh: Mesh,
+    options?: {
+      levelSets?: string[];
+      planes?: ArrayLike<ArrayLike<number>>;
+      selection?: string;
+      includeUncut?: boolean;
+      backend?: 'auto' | 'lut' | 'quadrays';
+      degree?: number;
+      triangulate?: boolean;
+      recordParentIds?: boolean;
+    }
+  ): {
+    mesh: Mesh;
+    numCells: number;
+    numCutCells: number;
+    numUncutCells: number;
+    numPieces: number;
+    dimension: number;
+    measure: number;
+    selection: string;
+    backend: string;
+  };
+
+  /**
+   * Quadrature rules of degree `order` on that part, as a point cloud with
+   * `quadrature:weight`, `quadrature:reference`, `quadrature:rule` and
+   * `quadrature:parent_cell` point data. See `cutLevelSet`.
+   * @throws {Error} as `cutLevelSet`.
+   */
+  cutQuadrature(
+    mesh: Mesh,
+    options?: {
+      levelSets?: string[];
+      planes?: ArrayLike<ArrayLike<number>>;
+      selection?: string;
+      order?: number;
+      includeUncut?: boolean;
+      backend?: 'auto' | 'lut' | 'quadrays';
+      triangulate?: boolean;
+      recordParentIds?: boolean;
+    }
+  ): {
+    mesh: Mesh;
+    numRules: number;
+    numPoints: number;
+    sumWeights: number;
+    dimension: number;
+    selection: string;
+    backend: string;
+  };
+
+  /** Whether this artifact links CutCells (the cut operations work). */
+  hasCutcells(): boolean;
+
+  /**
    * Field-aligned quad remeshing of a triangle surface (roadmap 7.7.3)
    * through an installed QuadriFlow or Instant Meshes, run as a separate
    * process. WebAssembly runs no programs, so here it always throws naming

@@ -377,6 +377,9 @@ export class MeshioPlusPlusLoadError extends Error {
  *   estimateNormals: (mesh: Mesh, options?: {k?: number, orientation?: 'consistent'|'viewpoint'|'none', viewpoint?: ArrayLike<number>, recordVariation?: boolean}) => {mesh: Mesh, numDegenerate: number, numComponents: number},
  *   reconstructSurface: (mesh: Mesh, options?: {normals?: string, k?: number, cellSize?: number, resolution?: number, maxDistance?: number, estimateNormals?: boolean, normalsK?: number, maxCells?: number}) => {mesh: Mesh, numSamples: number, spacing: number, cellSize: number, maxDistance: number, numLatticePoints: number, numUndefined: number, numTriangles: number, numComponents: number, estimatedNormals: boolean},
  *   remeshQuads: (mesh: Mesh, options?: {targetFaces?: number, backend?: string, sharp?: boolean, boundary?: boolean, adaptive?: boolean, dominant?: boolean, seed?: number, maxCells?: number}) => {mesh: Mesh, numQuads: number, numTriangles: number, numPoints: number, minScaledJacobian: number, meanScaledJacobian: number, hausdorffToSurface: number, backend: string},
+ *   cutLevelSet: (mesh: Mesh, options?: {levelSets?: string[], planes?: ArrayLike<ArrayLike<number>>, selection?: string, includeUncut?: boolean, backend?: 'auto'|'lut'|'quadrays', degree?: number, triangulate?: boolean, recordParentIds?: boolean}) => {mesh: Mesh, numCells: number, numCutCells: number, numUncutCells: number, numPieces: number, dimension: number, measure: number, selection: string, backend: string},
+ *   cutQuadrature: (mesh: Mesh, options?: {levelSets?: string[], planes?: ArrayLike<ArrayLike<number>>, selection?: string, order?: number, includeUncut?: boolean, backend?: 'auto'|'lut'|'quadrays', triangulate?: boolean, recordParentIds?: boolean}) => {mesh: Mesh, numRules: number, numPoints: number, sumWeights: number, dimension: number, selection: string, backend: string},
+ *   hasCutcells: () => boolean,
  *   convexHull: (mesh: Mesh, options?: {dimension?: 0|2|3}) => {mesh: Mesh, dimension: number, numVertices: number, numFacets: number, area: number, volume: number, perimeter: number},
  *   delaunay2d: (mesh: Mesh) => {mesh: Mesh, numTriangles: number, numDuplicates: number, numBoundary: number},
  *   convertCoordinates: (mesh: Mesh, options?: {system?: 'cylindrical'|'spherical', axis?: ArrayLike<number>, origin?: ArrayLike<number>, reference?: ArrayLike<number>, arrays?: string[], inverse?: boolean, recordCoordinates?: boolean}) => {mesh: Mesh, numArrays: number, numSingular: number},
@@ -425,6 +428,21 @@ export class MeshioPlusPlusLoadError extends Error {
  * }>}
  * @throws {MeshioPlusPlusLoadError} if the WASM module fails to instantiate.
  */
+/** Flattens a cut's planes ([origin, normal] or six numbers each). */
+function cutOptions(options) {
+    const o = { ...options };
+    if (o.levelSets !== undefined) o.levelSets = Array.from(o.levelSets, String);
+    if (o.planes !== undefined) {
+        const flat = [];
+        for (const plane of o.planes)
+            for (const part of Array.from(plane))
+                if (typeof part === 'number') flat.push(part);
+                else for (const v of Array.from(part)) flat.push(Number(v));
+        o.planes = flat;
+    }
+    return o;
+}
+
 export async function loadMeshioPlusPlus(
     moduleOverrides = {},
     { variant = 'auto', full = false, fullGlue } = {},
@@ -1294,6 +1312,11 @@ export async function loadMeshioPlusPlus(
         // Meshes (roadmap 7.7.3): separate programs, which no WebAssembly
         // build can run, so this throws naming them.
         remeshQuads: (mesh, options = {}) => Module.remeshQuads(mesh, options),
+        // Level-set cutting and cut-cell quadrature through CutCells
+        // (doc/cut.md); planes are [origin, normal] pairs, flattened here.
+        cutLevelSet: (mesh, options = {}) => Module.cutLevelSet(mesh, cutOptions(options)),
+        cutQuadrature: (mesh, options = {}) => Module.cutQuadrature(mesh, cutOptions(options)),
+        hasCutcells: () => Module.hasCutcells(),
         convexHull: (mesh, options = {}) => Module.convexHull(mesh, options),
         delaunay2d: (mesh) => Module.delaunay2d(mesh),
         convertCoordinates: (mesh, options = {}) => {
