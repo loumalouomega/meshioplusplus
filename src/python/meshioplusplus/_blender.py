@@ -517,16 +517,40 @@ def _to_blender_payload(
 # --------------------------------------------------------------------------- #
 # the pure inverse                                                            #
 # --------------------------------------------------------------------------- #
-def _polygon_edge_keys(loop_vertices, loop_starts, loop_totals):
-    """The sorted vertex pairs already implied by the polygons."""
-    keys = set()
-    for start, total in zip(loop_starts, loop_totals):
-        ring = loop_vertices[start : start + total]
-        for i in range(total):
-            a = int(ring[i])
-            b = int(ring[(i + 1) % total])
-            keys.add((a, b) if a < b else (b, a))
-    return keys
+def _ring_gather(starts, totals):
+    """``concatenate([arange(s, s + t) for s, t in zip(starts, totals)])`` and
+    each entry's position within its ring, without a loop per polygon."""
+    totals = np.asarray(totals, dtype=np.int64)
+    off = np.repeat(np.cumsum(totals) - totals, totals)
+    within = np.arange(int(totals.sum()), dtype=np.int64) - off
+    return np.repeat(np.asarray(starts, dtype=np.int64), totals) + within, within
+
+
+def _implied_edges(pairs, loop_vertices, loop_starts, loop_totals):
+    """Which ``pairs`` (``(m, 2)``, either orientation) are a side of some
+    polygon: the edges the polygons already imply."""
+    totals = np.asarray(loop_totals, dtype=np.int64)
+    gather, within = _ring_gather(loop_starts, totals)
+    ring_total = np.repeat(totals, totals)
+    following = gather + np.where(within + 1 == ring_total, 1 - ring_total, 1)
+    a = np.asarray(loop_vertices, dtype=np.int64)[gather]
+    b = np.asarray(loop_vertices, dtype=np.int64)[following]
+    pa, pb = pairs[:, 0], pairs[:, 1]
+
+    def key(x, y, width):
+        return np.minimum(x, y) * width + np.maximum(x, y)
+
+    width = int(max(a.max(initial=-1), b.max(initial=-1), pairs.max(initial=-1))) + 1
+    if width > 0 and width <= 3_037_000_499:  # width**2 fits in an int64
+        sides = np.sort(key(a, b, width))
+        wanted = key(pa, pb, width)
+        at = np.minimum(np.searchsorted(sides, wanted), max(len(sides) - 1, 0))
+        return sides[at] == wanted if len(sides) else np.zeros(len(pairs), bool)
+    sides = {(x, y) if x < y else (y, x) for x, y in zip(a.tolist(), b.tolist())}
+    return np.array(
+        [((x, y) if x < y else (y, x)) in sides for x, y in pairs.tolist()],
+        dtype=bool,
+    )
 
 
 def _pad_cell_data(values, n_extra, name, notes):
@@ -591,12 +615,7 @@ def _mesh_from_blender_arrays(
     order = np.argsort(loop_totals, kind="stable")
     totals = loop_totals[order]
     starts = loop_starts[order]
-    if len(totals):
-        gather = np.concatenate(
-            [np.arange(s, s + t, dtype=np.int64) for s, t in zip(starts, totals)]
-        )
-    else:
-        gather = np.empty(0, dtype=np.int64)
+    gather = _ring_gather(starts, totals)[0]
     connectivity = np.ascontiguousarray(loop_vertices[gather], dtype=np.int64)
     offsets = np.cumsum(totals, dtype=np.int64)
     types = np.where(totals == 3, 5, np.where(totals == 4, 9, 7)).astype(np.int64)
@@ -620,13 +639,9 @@ def _mesh_from_blender_arrays(
     # positions among the polygons, stay correct.
     if edge_vertices is not None and len(edge_vertices):
         pairs = np.asarray(edge_vertices, dtype=np.int64).reshape(-1, 2)
-        implied = _polygon_edge_keys(loop_vertices, loop_starts, loop_totals)
-        keep = [
-            i
-            for i, (a, b) in enumerate(pairs.tolist())
-            if ((a, b) if a < b else (b, a)) not in implied
-        ]
-        if keep:
+        implied = _implied_edges(pairs, loop_vertices, loop_starts, loop_totals)
+        keep = np.flatnonzero(~implied)
+        if keep.size:
             n_extra = len(keep)
             cells = list(cells) + [CellBlock("line", pairs[keep])]
             for name in list(cell_data):

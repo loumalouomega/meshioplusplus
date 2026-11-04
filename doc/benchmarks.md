@@ -730,6 +730,22 @@ Wall time, Python 3.12, interleaved old and new in fresh interpreters, 15 each, 
 
 The first read of a format pays for loading its subpackage (12.4 ms median for PLY, against 1.1 ms before), so the saving shrinks for a process that touches many formats and is gone for one that lists them all. The MCP server imports the whole package for its tool table, so it gains nothing. The command-line tool used to as well, filling the `choices` of its format options from `reader_map`; since roadmap 5.12.1 they come from the table (`READER_NAMES` and `WRITER_NAMES`, with installed plugins added), and the verbs that write a fixed list of formats import them when they run, so building the parser loads no format subpackage: 488 modules instead of 731 after `build_parser()`. The parser still imports every verb's module, about 270 modules; building subparsers lazily is what is left (`test_format_table.py` keeps the formats off that path). `test_import_footprint.py` keeps the formats, operations and `_core` off the import path and checks that a write and read of one STL file loads `stl` alone.
 
+### The Python layers' graph kernels
+
+Roadmap 5.10.1, 5.10.3 and 5.10.5. The machine-learning and Blender layers stay Python ([non-goals](./roadmap.md#non-goals-and-decisions-taken)) but no longer loop per polygon or per component. `edge_index(kind="node")` expands the core's node adjacency (`_core.adjacency`), whose rows are already sorted and hold both directions, instead of collecting edges in Python and sorting them twice; a mesh with a polyhedron block, whose face rings the core counts and the export skips, keeps the Python path. `bistride_hierarchy` groups each level's components with one stable sort of the labels instead of a `label == c` scan per component, and its BFS keeps depths in an array rather than a dict. The Blender inverse gathers the polygons' loops with offsets instead of one `arange` per polygon, and finds the loose edges by a sorted search over packed edge keys instead of a Python set. Each output is byte-identical to the old one (`test_edge_index_core_path_equals_the_python_twin`, and a differential run against the previous modules).
+
+Python 3.12, one run after a warm-up, SEQ build:
+
+| Call | Input | Old | New |
+| --- | --- | ---: | ---: |
+| `edge_index` | `box(dims=(60, 60, 60), cell_type="tetra")`, 1.3M tetrahedra | 0.76 s | 0.20 s |
+| `edge_index` | 200k ragged polygons, 5 to 8 sides | 2.83 s | 0.08 s |
+| `bistride_hierarchy`, 2 levels | 300 × 300 grid graph, one component | 1.40 s | 0.47 s |
+| `bistride_hierarchy`, 1 level | 20,000 triangles, as many components | 1.78 s | 1.40 s |
+| `_mesh_from_blender_arrays` | 300k polygons and as many edges | 2.00 s | 0.54 s |
+
+The many-component row is now bound by the per-component Python work (the centroid seed and the BFS start), not by the scan.
+
 ### VTP encodings for the browser viewer
 
 Roadmap §3.4.5.1. The viewer's worker writes every operation result as a zlib-compressed VTP and vtk.js parses it on the main thread. `benchmark/bench_vtp_inflate.py` writes a triangulated surface (a point scalar, a float64 cell vector and the int64 `surface:parent_cell`) in three encodings and times the writer and the base64 and inflate steps; `benchmark/vtp_inflate.js` times vtk.js 32.9.0's `XMLPolyDataReader` on the same files (`vtp_inflate.csv`, `vtp_inflate_vtkjs.csv`). Native SEQ build for the writer, Node 22 for vtk.js, minimum of five runs.

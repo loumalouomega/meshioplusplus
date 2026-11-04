@@ -14,6 +14,7 @@ Performance work from the roadmap's §5; output is unchanged.
 
 - **The CLI's parser loads no format** (roadmap 5.12.1, [lazy imports](doc/benchmarks.md#lazy-format-and-operation-imports)): the `choices` of the format options come from the generated `_format_table.py` (`READER_NAMES`, `WRITER_NAMES`, plus installed plugins) instead of `reader_map`, which imported every format subpackage, and `ascii`, `binary`, `compress`, `decompress` and the `iga` verbs import their formats when they run: 488 modules after `build_parser()` instead of 731.
 - **The MCP read cache copies no array for the read-only tools** (roadmap 5.12.2, [read cache](doc/mcp.md#read-cache)): the cached mesh's arrays are frozen; `stats`, `quality`, `check_quality`, `data_info`, `data_integrate`, `regions`, `diff` and `hausdorff` get private containers over them, and an insert no longer copies the mesh for them either. A tool that changes its mesh still gets a private copy.
+- **`edge_index`, `bistride_hierarchy` and the Blender inverse vectorised** (roadmap 5.10.1, 5.10.3, 5.10.5, [benchmarks](doc/benchmarks.md#the-python-layers-graph-kernels)): `edge_index(kind="node")` expands the core's sorted node adjacency (37× faster on 200k ragged polygons, 3.9× on 1.3M tetrahedra); `bistride_hierarchy` drops its per-component scan and dict BFS (3× on a 90k-node grid); the Blender import gathers loops and finds loose edges without Python loops (3.7× on 300k polygons). Outputs are byte-identical.
 
 ## v19.0.0 (2026-11-04)
 

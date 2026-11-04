@@ -35,6 +35,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ._common import warn
+from ._fallback import core_op_declined
 from ._interop import _emit, _frame_columns, _importable, _require, _to_table_payload
 from ._regions import block_bases
 from ._smooth import _REFINE_EDGES
@@ -81,6 +82,9 @@ def edge_index(mesh, kind: str = "node", *, undirected: bool = True):
     ``source < target``.
     """
     if kind == "node":
+        core = _node_edges_from_core(mesh, undirected)
+        if core is not None:
+            return core
         pairs = _node_edge_pairs(mesh)
     elif kind == "cell":
         pairs = _cell_dual_pairs(mesh)
@@ -116,6 +120,61 @@ def _canonical_edges(a, b, undirected):
     dst = np.concatenate([hi, lo])
     order = np.lexsort((dst, src))
     return np.ascontiguousarray(np.vstack([src[order], dst[order]]))
+
+
+def _node_edges_from_core(mesh, undirected):
+    """The node graph from the core's sorted CSR (roadmap 5.10.1), or ``None``.
+
+    ``_core.adjacency(mesh, "node")`` is the same graph as
+    :func:`_node_edge_pairs`: the same edge table, polygon rings, no edge for a
+    type without one, and out-of-range ids and self-loops dropped. It differs
+    on polyhedra alone, whose face rings the core includes and this export
+    skips, so a mesh with a polyhedron block takes the Python path. Its rows
+    are ascending and hold both directions, so expanding them *is* the
+    canonical layout: no lexsort is needed.
+    """
+    if any(
+        block.type.startswith("polyhedron")
+        or not (block.type.startswith("polygon") or _rectangular(block))
+        for block in mesh.cells
+    ):
+        return None
+    try:
+        from . import _core
+
+        indptr, indices = _core.adjacency(mesh, "node")
+    except Exception as exc:
+        if not core_op_declined(exc, "adjacency"):
+            raise
+        return None
+    _warn_no_edge_topology(mesh)
+    indptr = np.asarray(indptr, dtype=np.int64)
+    dst = np.asarray(indices, dtype=np.int64)
+    src = np.repeat(np.arange(len(indptr) - 1, dtype=np.int64), np.diff(indptr))
+    if not undirected:
+        once = src < dst
+        src, dst = src[once], dst[once]
+    return np.ascontiguousarray(np.vstack([src, dst]))
+
+
+def _rectangular(block):
+    return isinstance(block.data, np.ndarray) and block.data.ndim == 2
+
+
+def _warn_no_edge_topology(mesh):
+    """The warning :func:`_node_edge_pairs` gives, for the core path (which
+    takes no polyhedron and no ragged block other than polygons)."""
+    skipped = [
+        block.type
+        for block in mesh.cells
+        if not block.type.startswith("polygon") and block.type not in _REFINE_EDGES
+    ]
+    if skipped:
+        warn(
+            "edge_index: no edge topology for cell type(s) "
+            f"{sorted(set(skipped))}; they contribute no edges — linearize "
+            "with convert_cells to keep their corners"
+        )
 
 
 def _node_edge_pairs(mesh):
