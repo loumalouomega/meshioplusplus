@@ -8,7 +8,7 @@ Keep this file focused on working rules, commands, and architectural constraints
 
 ## Change checklist
 
-- Update `README.md` and relevant `doc/` pages with user-facing changes. Format changes belong in [doc/formats.md](doc/formats.md) and their `doc/formats/<format>.md` page. Registry or binding changes also require the affected [WASM](doc/wasm.md), [C](doc/c_api.md), [Fortran](doc/fortran.md), [Julia](doc/julia.md), and [R](doc/r.md) docs.
+- Update `README.md` and relevant `doc/` pages with user-facing changes. Format changes belong in [doc/formats.md](doc/formats.md) and their `doc/formats/<format>.md` page. Registry or binding changes also require the affected [WASM](doc/wasm.md), [C](doc/c_api.md), [Fortran](doc/fortran.md), [Julia](doc/julia.md), [R](doc/r.md), and [Octave / MATLAB](doc/octave.md) docs.
 - Keep the MCP server in sync with the Python public API: update both `src/python/meshioplusplus/mcp/_tools.py` and `_server.py`, `tests/python/test_mcp.py`, and [doc/mcp.md](doc/mcp.md) in the same change. This includes signatures, defaults, report fields, and format capabilities. The `test_every_operation_has_a_tool` parity guard checks `__all__` against tool `wraps`; use `_NOT_TOOLS` exemptions only for APIs that cannot be expressed through file paths, such as in-memory interop and interactive viewing.
 - When implementing a gap in [doc/roadmap.md](doc/roadmap.md), remove the completed item or narrow it to the remaining work.
 - Demonstrate new user-facing capabilities in `example/python/*.ipynb` with graphical output: PyVista off-screen rendering embedded through matplotlib, with a matplotlib fallback when GL is unavailable. Follow `03_mesh_operations.ipynb`; re-execute and commit outputs. Mirror notable additions in the C++ notebooks where practical.
@@ -35,6 +35,7 @@ Run from the repository root unless specified otherwise.
 | Native CLI | `build/configure.sh --cli --build` |
 | C / Fortran libraries | `build/configure.sh --c-api` or `--fortran`, then build and install the configured tree |
 | Installable C++ API | `build/configure.sh --install-cpp --cpp-backends MESHIO,NATIVE`; see [doc/cpp_api.md](doc/cpp_api.md) |
+| Octave / MATLAB | With the C API installed: `tar -C bindings/octave -czf mio.tgz meshioplusplus` and `octave --eval "pkg install mio.tgz"`, or `addpath bindings/octave/meshioplusplus/inst; mio_build`; then `octave --eval "exit(run_tests() > 0)"` in `bindings/octave/meshioplusplus/tests`. Use only the MATLAB-compatible language subset and the MEX API; see [doc/octave.md](doc/octave.md) |
 | WASM | `build/configure-wasm.sh --build`; requires Emscripten; see [doc/wasm.md](doc/wasm.md) |
 | Single header | `tools/amalgamate.sh` to regenerate; `--check` to check freshness; `--smoke` to regenerate and compile |
 | C++ includes | `tools/include-cleanup.sh --check` with HDF5/netCDF installed; unused includes fail, missing-include suggestions are advisory |
@@ -55,7 +56,7 @@ Run from the repository root unless specified otherwise.
 | Native interfaces and implementations | `src/cpp/include/meshioplusplus/`, `src/cpp/src/` |
 | Python conversion and bindings | `bindings/python/np_conversions.hpp`, `_core.cpp` |
 | Shared native format registry | `src/cpp/src/registry.cpp`; consumed by the native CLI, C API, and WASM |
-| Language bindings | `bindings/{c,fortran,julia,r,wasm}/` |
+| Language bindings | `bindings/{c,fortran,julia,r,octave,wasm}/`; the Octave/MATLAB binding ports the R binding entry point for entry point, and `tests/python/test_octave_binding_parity.py` fails an R change without its Octave counterpart |
 | CLIs | `src/python/meshioplusplus/_cli/`, `src/cpp/cli/` |
 | Browser viewer / npm library | `src/viewer/` / `src/wasm/`; separate packages and dependencies |
 | Tests | `tests/python/`, `tests/cpp/`; per-format round trips use `tests/python/helpers.py` |
@@ -84,12 +85,12 @@ See [architecture](doc/architecture.md), [mesh data model](doc/mesh_data_model.m
 
 Follow [doc/abi.md](doc/abi.md) for every installed C++ header change. Layout changes and changes to existing inline/template bodies or default arguments require a bump to `MESHIOPLUSPLUS_ABI_VERSION` in `abi_version.hpp`. Pure additions use a release-specific [ABI review](doc/abi_reviews.md) naming each changed header. Keep `tests/cpp/test_abi_layout.cpp` current; layout tests cannot detect inline-body changes.
 
-C entry points must catch exceptions through the existing guards and return status/errors. Setters copy; getter borrows expire on mutation. Preserve C option-struct layouts and reserved tails. Update Fortran, Julia, R, and WASM wrappers with native API changes, including layout checks, exports (especially R's `NAMESPACE`), defaults, and reports. See the language-specific docs for indexing and ownership conventions.
+C entry points must catch exceptions through the existing guards and return status/errors. Setters copy; getter borrows expire on mutation. Preserve C option-struct layouts and reserved tails. Update Fortran, Julia, R, Octave/MATLAB, and WASM wrappers with native API changes, including layout checks, exports (especially R's `NAMESPACE` and the matching `inst/+mio/*.m` files), defaults, and reports. See the language-specific docs for indexing and ownership conventions.
 
 ### Adding a new format or operation
 
 1. For a format, add the Python reference and registration under `src/python/meshioplusplus/<format>/`, then export it in the package `__init__.py` (`__all__` and the `TYPE_CHECKING` imports) and run `python tools/gen_format_table.py`: format subpackages load on first use through the generated `_format_table.py`, not through the package import. A native implementation is optional. If added, put it in `src/cpp/{include/meshioplusplus,src}/formats/`, bind it in `_core.cpp`, register readers/writers and extension defaults in `registry.cpp`, and add the C++/Python fallback shim. In the shim, ask `core_declined(exc, "<fmt>", "read"|"write", filename)` from `_fallback.py` inside `except Exception as exc:` and re-raise when it returns `False`; never write a bare `except Exception: pass` (`tests/python/test_no_broad_core_swallow.py` fails it). Set `MESHIOPLUSPLUS_STRICT_CORE=1` to make every fallback an error and prove the core handles a file. An operation's shim asks `core_op_declined(exc, "<op>")` instead (bad arguments propagate; a native kernel declines an input its twin handles by throwing `Unsupported`), and an import-only guard catches `ImportError` alone; the same test fails either mistake.
-2. For a native operation, use `operations/` and expose it through Python, C, Fortran, Julia, R, WASM, and both CLIs as appropriate. Add pipeline support where the operation fits the pipeline contract. Python-only integrations can remain Python-only.
+2. For a native operation, use `operations/` and expose it through Python, C, Fortran, Julia, R, Octave/MATLAB, WASM, and both CLIs as appropriate. Add pipeline support where the operation fits the pipeline contract. Python-only integrations can remain Python-only.
 3. A native reader must return a mesh or throw `ReadError` on any input: check tokens and header counts with `detail/parse_guard.hpp` before indexing or allocating. Every reader crash fix commits its minimized input under `tests/fuzz/regressions/<format>/` ([doc/fuzzing.md](doc/fuzzing.md)), and a new writable format needs a declaration in `tests/python/conformance_spec.py`.
 4. Test direct C++ behavior as well as Python dispatch: broad fallback handlers can hide a broken native implementation. Check cross-compatibility with the Python reference, optional dependencies, relevant mesh backends, and meaningful edge cases. Preserve documented numerical parity; do not silently substitute a different algorithm where parity is unavailable.
 5. Follow the change checklist above, including MCP, docs, examples, and generated outputs.
@@ -111,6 +112,7 @@ Update all of these files to the same release version:
 | `src/viewer/package-lock.json` | Local `@meshioplusplus/wasm` dependency; regenerate with `npm install` in `src/viewer/` using npm ≥10, do not hand-edit |
 | `bindings/julia/MeshioPlusPlus/Project.toml` | `version` |
 | `bindings/r/meshioplusplus/DESCRIPTION` | `Version:` |
+| `bindings/octave/meshioplusplus/DESCRIPTION` | `Version:` and `Date:` |
 | `src/cpp/include/meshioplusplus/version.hpp` | `MESHIOPLUSPLUS_VERSION_MAJOR/MINOR/PATCH` and `MESHIOPLUSPLUS_VERSION_STRING` |
 | `bindings/c/include/meshioplusplus/meshioplusplus.h` | `MIO_VERSION_MAJOR/MINOR/PATCH` |
 
@@ -129,5 +131,5 @@ Use [doc/formats.md](doc/formats.md) and `doc/formats/<format>.md` for supported
 
 - [Provenance](doc/provenance.md), [pipelines](doc/pipeline.md), [sequences](doc/sequences.md), [selective reads](doc/selective_read.md), [codecs](doc/codecs.md).
 - [Viewer](doc/viewer.md), [interop](doc/interop.md), [GPU handoff](doc/gpu.md), [Blender](doc/blender.md), [PhysicsNeMo](doc/physicsnemo.md), [datasets](doc/datasets.md).
-- Notebook setup: [C++](example/cpp/README.md), [Julia](example/julia/README.md), [R](example/r/README.md). Use each language's binding and rendering helpers.
+- Notebook setup: [C++](example/cpp/README.md), [Julia](example/julia/README.md), [R](example/r/README.md), [Octave](example/octave/README.md). Use each language's binding and rendering helpers.
 - Generated visuals: [diagrams](doc/diagrams/README.md), [icons](doc/icons/README.md), [logo](doc/logo/README.md), and `tools/gen_doc_images.py`. Edit sources and regenerate committed assets.

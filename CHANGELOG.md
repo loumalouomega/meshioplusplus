@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Added: an Octave / MATLAB binding** ([Octave / MATLAB](doc/octave.md)): `bindings/octave/meshioplusplus` binds the installed C library for GNU Octave and MATLAB with every function of the R binding, as `mio.<name>` (`mio_read` -> `mio.read`). It is plain C over the MEX API (one gateway, `meshioplusplus_mex`) plus MATLAB-compatible `.m` wrappers, built by Octave's `pkg install` or by `mio_build` (`mkoctfile --mex` / MATLAB `mex`). Arrays put one entity per row (`num_points x dim`, `num_cells x nodes_per_cell`), indices are 1-based, data arrays keep their stored class, and meshes, format side channels, sequences and XDMF/Exodus series are `handle` objects whose ids a generation-checked registry validates, so a released, stale or forged handle raises instead of crashing. The new CI job `octave` runs the suite after both builds; `tests/python/test_octave_binding_parity.py` keeps the binding in step with R (every export and `.Call` entry point, with matching argument counts) and rejects Octave-only syntax. Development and CI use GNU Octave 8; MATLAB is supported through the shared MEX API but not exercised in CI.
+
 ## v18.2.0 (2026-11-04)
 
 A feature release: level-set cutting (`cut_level_set`, `cut_quadrature`, through the new optional dependency CutCells), healing of CAD at read time, external tetrahedral meshers (TetGen, Gmsh), `remesh_quads`, TetGen `.smesh`, materials and a better hexahedral fit in `octree_mesh`, and a cgnslib link fix. **ABI 38 (Tier A):** rebuild native consumers.
