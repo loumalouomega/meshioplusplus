@@ -18,7 +18,7 @@
 // System includes
 #include <algorithm>
 #include <cmath>
-#include <unordered_map>
+#include <vector>
 #include <utility>
 
 // Project includes
@@ -35,15 +35,6 @@ namespace {
 // A directed ring edge, keyed undirected. The BFS below asks "which other face
 // uses this same undirected edge, and in which direction".
 using PolyEdge = std::pair<std::int64_t, std::int64_t>;
-
-struct PolyEdgeHash {
-    std::size_t operator()(const PolyEdge& rE) const {
-        // The surface.cpp mixing constant; the pair is already small ints.
-        const std::size_t a = static_cast<std::size_t>(rE.first);
-        const std::size_t b = static_cast<std::size_t>(rE.second);
-        return a * 0x9E3779B97F4A7C15ULL + b;
-    }
-};
 
 PolyEdge poly_undirected(std::uint32_t a, std::uint32_t b) {
     return a < b ? PolyEdge{a, b} : PolyEdge{b, a};
@@ -198,13 +189,18 @@ RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords) {
         return RingOrientation::Unorientable;
 
     // Map each undirected edge to the (face, directed-as-stored) uses of it. A
-    // closed surface uses every undirected edge exactly twice.
+    // closed surface uses every undirected edge exactly twice. The uses are
+    // one flat list sorted by edge, each edge's uses in the order they were
+    // met (a stable sort), rather than a hash map of vectors: no allocation
+    // per edge, and the scratch is reused across the cells a thread orients
+    // (roadmap 5.4.4).
     struct EdgeUse {
+        PolyEdge mEdge;
         std::size_t mFace;
         bool mForward;  // traversed low->high as stored
     };
-    std::unordered_map<PolyEdge, std::vector<EdgeUse>, PolyEdgeHash> uses;
-    uses.reserve(nf * 4);
+    static thread_local std::vector<EdgeUse> uses;
+    uses.clear();
     for (std::size_t f = 0; f < nf; ++f) {
         const std::size_t n = rRings.FaceSize(f);
         if (n < 3)
@@ -214,13 +210,27 @@ RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords) {
             const std::uint32_t a = ring[i], b = ring[(i + 1) % n];
             if (a == b)
                 return RingOrientation::Unorientable;
-            uses[poly_undirected(a, b)].push_back({f, a < b});
+            uses.push_back({poly_undirected(a, b), f, a < b});
         }
     }
+    std::stable_sort(uses.begin(), uses.end(),
+                     [](const EdgeUse& rX, const EdgeUse& rY) { return rX.mEdge < rY.mEdge; });
+    // The first use of an edge in `uses`.
+    const auto uses_of = [&](const PolyEdge& rEdge) {
+        const auto first =
+            std::lower_bound(uses.begin(), uses.end(), rEdge,
+                             [](const EdgeUse& rU, const PolyEdge& rE) { return rU.mEdge < rE; });
+        return first;
+    };
     bool manifold = true;
-    for (const auto& kv : uses)
-        if (kv.second.size() != 2)
+    for (std::size_t i = 0; i < uses.size();) {
+        std::size_t j = i;
+        while (j < uses.size() && uses[j].mEdge == uses[i].mEdge)
+            ++j;
+        if (j - i != 2)
             manifold = false;
+        i = j;
+    }
     if (!manifold) {
         // An edge used 4, 6, ... times: two lobes of one cell touching along
         // it (agglomerate's grown groups produce exactly this). There is no
@@ -229,12 +239,14 @@ RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords) {
         // form a closed, consistently oriented surface, and the divergence
         // theorem gives its volume. Keep them as stored; only the global
         // inward/outward flip below remains to decide.
-        for (const auto& kv : uses) {
+        for (std::size_t i = 0; i < uses.size();) {
+            std::size_t j = i;
             std::size_t fwd = 0;
-            for (const EdgeUse& u : kv.second)
-                fwd += u.mForward ? 1 : 0;
-            if (2 * fwd != kv.second.size())
+            for (; j < uses.size() && uses[j].mEdge == uses[i].mEdge; ++j)
+                fwd += uses[j].mForward ? 1 : 0;
+            if (2 * fwd != j - i)
                 return RingOrientation::Unorientable;
+            i = j;
         }
         if (poly_measure(rRings, pCoords).mVolume >= 0.0)
             return RingOrientation::Consistent;
@@ -248,8 +260,10 @@ RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords) {
     // BFS the face dual. Two faces sharing an undirected edge are consistently
     // wound iff they traverse it in OPPOSITE directions, so an equal
     // `mForward` means the neighbour must be reversed.
-    std::vector<int> flip(nf, -1);  // -1 unvisited, 0 keep, 1 reverse
-    std::vector<std::size_t> stack;
+    static thread_local std::vector<int> flip;  // -1 unvisited, 0 keep, 1 reverse
+    static thread_local std::vector<std::size_t> stack;
+    flip.assign(nf, -1);
+    stack.clear();
     flip[0] = 0;
     stack.push_back(0);
     std::size_t visited = 0;
@@ -261,7 +275,7 @@ RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords) {
         const std::uint32_t* ring = rRings.Face(f);
         for (std::size_t i = 0; i < n; ++i) {
             const std::uint32_t a = ring[i], b = ring[(i + 1) % n];
-            const auto& u = uses[poly_undirected(a, b)];
+            const auto u = uses_of(poly_undirected(a, b));  // exactly two uses
             const EdgeUse& mine = u[0].mFace == f && u[0].mForward == (a < b) ? u[0] : u[1];
             const EdgeUse& other = (&mine == &u[0]) ? u[1] : u[0];
             if (other.mFace == f)
@@ -317,7 +331,10 @@ PolyMeasure poly_measure(const CellRings& rRings, const Vec3* pCoords) {
         origin = vec3_add(origin, pCoords[i]);
     origin = vec3_scale(origin, 1.0 / static_cast<double>(nn));
 
-    std::vector<Vec3> local(nn);
+    // Scratch reused across the calls a thread makes (one per cell in the
+    // face-table builds): no allocation per cell.
+    static thread_local std::vector<Vec3> local;
+    local.resize(nn);
     for (std::size_t i = 0; i < nn; ++i)
         local[i] = vec3_sub(pCoords[i], origin);
 

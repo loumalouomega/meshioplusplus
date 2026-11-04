@@ -20,7 +20,7 @@
 /**
  * @file detail/point_knn.hpp
  * @brief Exact nearest and k-nearest queries of arbitrary points against a
- * fixed point cloud, over `detail/spatial_hash.hpp`'s bucket grid. Hoisted
+ * fixed point cloud, over a frozen bucket grid (`detail/bucket_build.hpp`). Hoisted
  * from `register_rigid`'s nearest-point search (v18.x), which it serves
  * unchanged with `k = 1`, for `reconstruct_surface`'s tangent planes.
  *
@@ -41,7 +41,9 @@
 #include <vector>
 
 // Project includes
-#include "meshioplusplus/detail/spatial_hash.hpp"
+#include "meshioplusplus/detail/bucket_table.hpp"
+
+#include "bucket_build.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -53,10 +55,11 @@ public:
     PointKnn() = default;
 
     /// Index (a copy of) @p Points with buckets of side @p CellSize (positive).
-    PointKnn(std::vector<Vec> Points, double CellSize)
-        : mPoints(std::move(Points)), mGrid(CellSize) {
+    PointKnn(std::vector<Vec> Points, double CellSize) : mPoints(std::move(Points)) {
+        std::vector<GridKey> keys(mPoints.size());
         for (std::size_t i = 0; i < mPoints.size(); ++i)
-            mGrid.Insert(mGrid.KeyOf(mPoints[i].data()), static_cast<std::int64_t>(i));
+            keys[i] = bucket_key(mPoints[i].data(), CellSize);
+        mGrid = build_bucket_table(CellSize, keys, keys);
     }
 
     /// The indexed points.
@@ -112,7 +115,7 @@ public:
                 if (ring * ring > pOut[K - 1].first)
                     break;
             }
-            mGrid.ForEachInShell(k, r, [&](const std::vector<std::int64_t>& rIds) {
+            mGrid.ForEachInShell(k, r, [&](const BucketView& rIds) {
                 for (const std::int64_t id : rIds) {
                     const Vec& q = pts[static_cast<std::size_t>(id)];
                     const double dx = rP[0] - q[0], dy = rP[1] - q[1], dz = rP[2] - q[2];
@@ -125,7 +128,7 @@ public:
 
 private:
     std::vector<Vec> mPoints;
-    SpatialGrid mGrid{1.0};
+    BucketTable mGrid{1.0};
 };
 
 }  // namespace detail

@@ -40,6 +40,10 @@
 #include <algorithm>
 #include <charconv>
 #include <clocale>
+#include <cmath>
+#include <cstring>
+#include <system_error>
+#include <version>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
@@ -50,6 +54,15 @@
 
 // Project includes
 #include "meshioplusplus/parallel.hpp"
+
+// Floating-point `std::to_chars` with a precision: where the standard library
+// has it (the guard `fast_number.hpp` uses for `from_chars`).
+#if !defined(MESHIOPLUSPLUS_FORCE_NO_FAST_FROM_CHARS) && !defined(__EMSCRIPTEN__) && \
+    defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
+#define MESHIOPLUSPLUS_ROW_WRITER_TO_CHARS 1
+#else
+#define MESHIOPLUSPLUS_ROW_WRITER_TO_CHARS 0
+#endif
 
 namespace meshioplusplus {
 namespace detail {
@@ -64,6 +77,8 @@ public:
         // leaves every other case alone; so does this.
         mRepair = dp != nullptr && dp[0] != '\0' && dp[1] == '\0' && dp[0] != '.';
         mDp = mRepair ? dp[0] : '.';
+        // printf's text then has a '.' after the repair, as `to_chars`' has.
+        mSingleCharPoint = dp != nullptr && dp[0] != '\0' && dp[1] == '\0';
     }
 
     /// `snprintf_c(pBuf, Cap, pFmt, ...)`: the same bytes and return value.
@@ -85,6 +100,10 @@ public:
 
     /// Appends `v` formatted by the printf format `pFmt` (one double).
     void Append(std::string& rOut, const char* pFmt, double v) const {
+#if MESHIOPLUSPLUS_ROW_WRITER_TO_CHARS
+        if (mSingleCharPoint && std::isfinite(v) && AppendToChars(rOut, pFmt, v))
+            return;
+#endif
         char buf[64];
         const int n = std::snprintf(buf, sizeof buf, pFmt, v);
         if (n <= 0)
@@ -100,7 +119,56 @@ public:
     }
 
 private:
+#if MESHIOPLUSPLUS_ROW_WRITER_TO_CHARS
+    /// The fast path for the plain precisions (roadmap 5.7.1): a format that
+    /// is a literal prefix, `%.<P>e` or `%.<P>g`, and a literal suffix -- no
+    /// flag, width or case -- is `std::to_chars` with that precision, which
+    /// the standard specifies to produce what printf does in the "C" locale.
+    /// That is also what `snprintf` gives here after the decimal-point repair,
+    /// since the constructor accepts only a single-character separator. Any
+    /// other format, a non-finite value (printf spells NaN signs its own way)
+    /// or text the 64-byte buffer would have truncated takes `snprintf`.
+    /// `test_row_writer_to_chars` compares the two over random bit patterns.
+    static bool AppendToChars(std::string& rOut, const char* pFmt, double v) {
+        const char* pct = std::strchr(pFmt, '%');
+        if (pct == nullptr || pct[1] != '.' || pct[2] < '0' || pct[2] > '9')
+            return false;
+        const char* p = pct + 2;
+        int precision = 0;
+        while (*p >= '0' && *p <= '9') {
+            precision = precision * 10 + (*p - '0');
+            if (precision > 40)
+                return false;
+            ++p;
+        }
+        std::chars_format format;
+        if (*p == 'e')
+            format = std::chars_format::scientific;
+        else if (*p == 'g')
+            format = std::chars_format::general;
+        else
+            return false;
+        const char* suffix = p + 1;
+        if (std::strchr(suffix, '%') != nullptr)
+            return false;
+        char buf[64];
+        const std::to_chars_result r = std::to_chars(buf, buf + sizeof buf, v, format, precision);
+        if (r.ec != std::errc{})
+            return false;
+        const std::size_t prefix_len = static_cast<std::size_t>(pct - pFmt);
+        const std::size_t number_len = static_cast<std::size_t>(r.ptr - buf);
+        const std::size_t suffix_len = std::strlen(suffix);
+        if (prefix_len + number_len + suffix_len > 63)
+            return false;
+        rOut.append(pFmt, prefix_len);
+        rOut.append(buf, number_len);
+        rOut.append(suffix, suffix_len);
+        return true;
+    }
+#endif
+
     bool mRepair = false;
+    bool mSingleCharPoint = true;
     char mDp = '.';
 };
 

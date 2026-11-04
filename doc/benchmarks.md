@@ -751,9 +751,28 @@ Tier L (750,000 tetrahedra, about 30,000 skin triangles), SEQ, median of three r
 | `read_stl` (ASCII) | 34.8 ms | 21.0 ms |
 | `feature_edges` | 1.17 s | 1.17 s |
 
-The skin-only `feature_edges` saves memory rather than time: two thirds of its instructions are `orient_rings`, the per-cell orientation every face table runs, not the table assembly. The new rows `read_stl_binary`, `read_gltf_weld` and `read_wkt` take 5.1, 2.0 and 71.8 ms at tier L.
+The skin-only `feature_edges` saved memory rather than time: two thirds of its instructions were `orient_rings`, the per-cell orientation every face table runs, which the next section takes on. The new rows `read_stl_binary`, `read_gltf_weld` and `read_wkt` take 5.1, 2.0 and 71.8 ms at tier L.
 
 **`select_points(method="farthest")`** (roadmap 5.10.2) runs its greedy loop in the core (`detail/farthest_points.hpp`, bound to Python only): one fused sweep per selection updates the distances and finds the farthest, with numpy's arithmetic, NaN propagation and first-maximum rule, so the selection is the numpy loop's. 1,000 of 1,000,000 points: 6.0 s in numpy, 2.5 s native on one thread.
+
+### Spatial grids, orientation and number formatting
+
+Roadmap 5.4.1 and 5.7.1, and the cost the previous section found in `orient_rings`; landed the same way, every digest equal to the previous commit's on SEQ and OpenMP at 1 and 4 threads.
+
+- **Frozen grids in the interpolation family.** `interpolate`, `conservative_interpolate`, `periodic`, `check_conformity`, the triangle-pair search under `find_intersections` and the point k-NN of `register_rigid` and `reconstruct_surface` built a `SpatialGrid`, an `unordered_map` from cell key to a heap vector, and only searched it afterwards. They now build the `BucketTable` the distance query uses (`detail/bucket_build.hpp`, which the distance query's own grid build moved into too): one serial sweep numbers the cells in first-seen order through a flat open-addressing table and a second places the ids, so every bucket lists its ids ascending, as the serial inserts left them, and every shell and box visit is unchanged. The sweep is serial on purpose: the parallel grouping the distance query had used cost more on one thread than the inserts it replaced. `GridKeyHash`'s low bits cluster for neighbouring cells, and under linear probing that made the first version eight times slower than the map; a splitmix64 finalizer on the probe index fixed it. `merge`'s weld keeps its growable grid, since it inserts as it welds.
+- **`orient_rings` without a map.** The per-cell orientation every face table runs (`build_global_faces`, the selection skin, the OpenFOAM and CGNS writers) kept an `unordered_map` of vectors from edge to uses for each cell; the uses are now one list sorted stably by edge, and the scratch, with `poly_measure`'s, is reused across the cells a thread orients.
+- **`to_chars` for the plain precisions.** `CNumber::Append` (`detail/row_writer.hpp`) formats a format that is a literal prefix, `%.<P>e` or `%.<P>g` and a literal suffix with `std::to_chars`, which the standard specifies to give printf's bytes in the "C" locale; a non-finite value, any other format, a multi-character decimal point or a library without floating-point `to_chars` keeps `snprintf`. `test_row_writer_to_chars.cpp` compares the two byte for byte over 400,000 values (subnormals, signed zeros, both extremes, infinities and NaNs) in 17 formats. 333 to 96 ns a value for `%.17g`, 248 to 69 for `%.16e`. The OBJ writer, which called `snprintf_c` with three numbers at a time, now appends each through `CNumber`, which also repairs every decimal separator in a comma locale rather than the first of the line.
+
+Tier L, median of three runs, the pre-change binaries against these:
+
+| Row | SEQ old | SEQ new | OpenMP ×4 old | OpenMP ×4 new |
+| --- | ---: | ---: | ---: | ---: |
+| `interpolate` | 1.59 s | 1.02 s | 1.44 s | 0.90 s |
+| `interpolate_cells` | 4.11 s | 2.58 s | 2.02 s | 0.90 s |
+| `compute_sdf` | 3.02 s | 2.88 s | 0.83 s | 0.75 s |
+| `distance_build` | 8.2 ms | 6.1 ms | 5.2 ms | 5.0 ms |
+| `feature_edges` | 1.40 s | 0.92 s | | |
+| `write_obj` | 27.1 ms | 17.6 ms | | |
 
 ### The Python layers' graph kernels
 

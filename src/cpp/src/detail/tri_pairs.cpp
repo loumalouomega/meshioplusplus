@@ -25,7 +25,8 @@
 
 // Project includes
 #include "tri_pairs.hpp"
-#include "meshioplusplus/detail/spatial_hash.hpp"
+#include "bucket_build.hpp"
+#include "meshioplusplus/detail/bucket_table.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus::detail {
@@ -84,10 +85,13 @@ void soup_box_pairs(const TriangleSoup& rA, const TriangleSoup* pB, const TriPai
     double cell = std::max(extent_sum / static_cast<double>(r_grid_boxes.size()), diag / 256.0);
     if (!(cell > 0.0) || !std::isfinite(cell))
         cell = 1.0;
-    SpatialGrid grid(cell);
-    for (std::size_t t = 0; t < r_grid_boxes.size(); ++t)
-        grid.InsertBox(grid.KeyOf(r_grid_boxes[t].data()), grid.KeyOf(r_grid_boxes[t].data() + 3),
-                       static_cast<std::int64_t>(t));
+    std::vector<GridKey> grid_lo(r_grid_boxes.size());
+    std::vector<GridKey> grid_hi(r_grid_boxes.size());
+    parallel_for(r_grid_boxes.size(), [&](std::size_t t) {
+        grid_lo[t] = bucket_key(r_grid_boxes[t].data(), cell);
+        grid_hi[t] = bucket_key(r_grid_boxes[t].data() + 3, cell);
+    });
+    const BucketTable grid = build_bucket_table(cell, grid_lo, grid_hi);
 
     const bool self = pB == nullptr;
     parallel_for(
@@ -96,7 +100,7 @@ void soup_box_pairs(const TriangleSoup& rA, const TriangleSoup* pB, const TriPai
             const TpBox& bi = box_a[i];
             std::vector<std::int64_t> near;
             grid.ForEachInBox(grid.KeyOf(bi.data()), grid.KeyOf(bi.data() + 3),
-                              [&](const std::vector<std::int64_t>& rIds) {
+                              [&](const BucketView& rIds) {
                                   for (std::int64_t id : rIds)
                                       if (!self || static_cast<std::size_t>(id) > i)
                                           near.push_back(id);

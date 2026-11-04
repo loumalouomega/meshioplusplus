@@ -42330,6 +42330,45 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/bspline_fit.hpp =====
+// ===== begin src/cpp/src/detail/bucket_build.hpp =====
+/**
+ * @file detail/bucket_build.hpp
+ * @brief Build a frozen `BucketTable` from boxes of grid keys, in parallel.
+ *
+ * A **core-private** header (the `detail/slot_runs.hpp` precedent). The table
+ * is the one serial `SpatialGrid::InsertBox(rLo[i], rHi[i], i)` calls for
+ * `i = 0 .. n-1` would leave -- every bucket's ids ascending, the buckets in
+ * the order those inserts first met them, the occupied box covering every
+ * box's two corners -- in compressed-sparse-row form, with no per-cell node
+ * or vector. A point is the box whose corners are its key. The distance
+ * query builds its triangle grid with it, and the interpolation family its
+ * point and simplex grids (roadmap 5.4.1).
+ */
+
+// System includes
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The cell key of a (z-padded, 3-component) coordinate: `SpatialGrid::KeyOf`.
+inline GridKey bucket_key(const double* pCoords, double Cell) {
+    return GridKey{grid_quantize(pCoords[0], Cell), grid_quantize(pCoords[1], Cell),
+                   grid_quantize(pCoords[2], Cell)};
+}
+
+/**
+ * @brief The bucket table of `rLo.size()` key boxes (`rLo[i]` to `rHi[i]`,
+ * inclusive), id `i` for box `i`. Empty input gives an empty table.
+ */
+BucketTable build_bucket_table(double Cell, const std::vector<GridKey>& rLo,
+                               const std::vector<GridKey>& rHi);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/bucket_build.hpp =====
 // ===== begin src/cpp/src/detail/cdt2d.hpp =====
 /**
  * @file detail/cdt2d.hpp
@@ -48961,7 +49000,7 @@ std::string png_encode_rgba(const unsigned char* pRgba, std::size_t Width, std::
 /**
  * @file detail/point_knn.hpp
  * @brief Exact nearest and k-nearest queries of arbitrary points against a
- * fixed point cloud, over `detail/spatial_hash.hpp`'s bucket grid. Hoisted
+ * fixed point cloud, over a frozen bucket grid (`detail/bucket_build.hpp`). Hoisted
  * from `register_rigid`'s nearest-point search (v18.x), which it serves
  * unchanged with `k = 1`, for `reconstruct_surface`'s tangent planes.
  *
@@ -48983,6 +49022,7 @@ std::string png_encode_rgba(const unsigned char* pRgba, std::size_t Width, std::
 
 // Project includes
 
+
 namespace meshioplusplus {
 namespace detail {
 
@@ -48993,10 +49033,11 @@ public:
     PointKnn() = default;
 
     /// Index (a copy of) @p Points with buckets of side @p CellSize (positive).
-    PointKnn(std::vector<Vec> Points, double CellSize)
-        : mPoints(std::move(Points)), mGrid(CellSize) {
+    PointKnn(std::vector<Vec> Points, double CellSize) : mPoints(std::move(Points)) {
+        std::vector<GridKey> keys(mPoints.size());
         for (std::size_t i = 0; i < mPoints.size(); ++i)
-            mGrid.Insert(mGrid.KeyOf(mPoints[i].data()), static_cast<std::int64_t>(i));
+            keys[i] = bucket_key(mPoints[i].data(), CellSize);
+        mGrid = build_bucket_table(CellSize, keys, keys);
     }
 
     /// The indexed points.
@@ -49052,7 +49093,7 @@ public:
                 if (ring * ring > pOut[K - 1].first)
                     break;
             }
-            mGrid.ForEachInShell(k, r, [&](const std::vector<std::int64_t>& rIds) {
+            mGrid.ForEachInShell(k, r, [&](const BucketView& rIds) {
                 for (const std::int64_t id : rIds) {
                     const Vec& q = pts[static_cast<std::size_t>(id)];
                     const double dx = rP[0] - q[0], dy = rP[1] - q[1], dz = rP[2] - q[2];
@@ -49065,7 +49106,7 @@ public:
 
 private:
     std::vector<Vec> mPoints;
-    SpatialGrid mGrid{1.0};
+    BucketTable mGrid{1.0};
 };
 
 }  // namespace detail
@@ -49711,6 +49752,10 @@ bool render_triangle_contour(const double* pXyz, const double* pValue, double Le
 #include <algorithm>
 #include <charconv>
 #include <clocale>
+#include <cmath>
+#include <cstring>
+#include <system_error>
+#include <version>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
@@ -49720,6 +49765,15 @@ bool render_triangle_contour(const double* pXyz, const double* pValue, double Le
 #include <vector>
 
 // Project includes
+
+// Floating-point `std::to_chars` with a precision: where the standard library
+// has it (the guard `fast_number.hpp` uses for `from_chars`).
+#if !defined(MESHIOPLUSPLUS_FORCE_NO_FAST_FROM_CHARS) && !defined(__EMSCRIPTEN__) && \
+    defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
+#define MESHIOPLUSPLUS_ROW_WRITER_TO_CHARS 1
+#else
+#define MESHIOPLUSPLUS_ROW_WRITER_TO_CHARS 0
+#endif
 
 namespace meshioplusplus {
 namespace detail {
@@ -49734,6 +49788,8 @@ public:
         // leaves every other case alone; so does this.
         mRepair = dp != nullptr && dp[0] != '\0' && dp[1] == '\0' && dp[0] != '.';
         mDp = mRepair ? dp[0] : '.';
+        // printf's text then has a '.' after the repair, as `to_chars`' has.
+        mSingleCharPoint = dp != nullptr && dp[0] != '\0' && dp[1] == '\0';
     }
 
     /// `snprintf_c(pBuf, Cap, pFmt, ...)`: the same bytes and return value.
@@ -49755,6 +49811,10 @@ public:
 
     /// Appends `v` formatted by the printf format `pFmt` (one double).
     void Append(std::string& rOut, const char* pFmt, double v) const {
+#if MESHIOPLUSPLUS_ROW_WRITER_TO_CHARS
+        if (mSingleCharPoint && std::isfinite(v) && AppendToChars(rOut, pFmt, v))
+            return;
+#endif
         char buf[64];
         const int n = std::snprintf(buf, sizeof buf, pFmt, v);
         if (n <= 0)
@@ -49770,7 +49830,56 @@ public:
     }
 
 private:
+#if MESHIOPLUSPLUS_ROW_WRITER_TO_CHARS
+    /// The fast path for the plain precisions (roadmap 5.7.1): a format that
+    /// is a literal prefix, `%.<P>e` or `%.<P>g`, and a literal suffix -- no
+    /// flag, width or case -- is `std::to_chars` with that precision, which
+    /// the standard specifies to produce what printf does in the "C" locale.
+    /// That is also what `snprintf` gives here after the decimal-point repair,
+    /// since the constructor accepts only a single-character separator. Any
+    /// other format, a non-finite value (printf spells NaN signs its own way)
+    /// or text the 64-byte buffer would have truncated takes `snprintf`.
+    /// `test_row_writer_to_chars` compares the two over random bit patterns.
+    static bool AppendToChars(std::string& rOut, const char* pFmt, double v) {
+        const char* pct = std::strchr(pFmt, '%');
+        if (pct == nullptr || pct[1] != '.' || pct[2] < '0' || pct[2] > '9')
+            return false;
+        const char* p = pct + 2;
+        int precision = 0;
+        while (*p >= '0' && *p <= '9') {
+            precision = precision * 10 + (*p - '0');
+            if (precision > 40)
+                return false;
+            ++p;
+        }
+        std::chars_format format;
+        if (*p == 'e')
+            format = std::chars_format::scientific;
+        else if (*p == 'g')
+            format = std::chars_format::general;
+        else
+            return false;
+        const char* suffix = p + 1;
+        if (std::strchr(suffix, '%') != nullptr)
+            return false;
+        char buf[64];
+        const std::to_chars_result r = std::to_chars(buf, buf + sizeof buf, v, format, precision);
+        if (r.ec != std::errc{})
+            return false;
+        const std::size_t prefix_len = static_cast<std::size_t>(pct - pFmt);
+        const std::size_t number_len = static_cast<std::size_t>(r.ptr - buf);
+        const std::size_t suffix_len = std::strlen(suffix);
+        if (prefix_len + number_len + suffix_len > 63)
+            return false;
+        rOut.append(pFmt, prefix_len);
+        rOut.append(buf, number_len);
+        rOut.append(suffix, suffix_len);
+        return true;
+    }
+#endif
+
     bool mRepair = false;
+    bool mSingleCharPoint = true;
     char mDp = '.';
 };
 
@@ -50751,7 +50860,7 @@ BsplineFitResult thb_fit_patch(const std::vector<PatchVec>& rPts,
  * overlap, found over a bucket grid: the candidate search of
  * `find_intersections`.
  *
- * The grid is `check_conformity`'s (a `SpatialGrid` over the boxes, a cell
+ * The grid is `check_conformity`'s (a frozen `BucketTable` over the boxes, a cell
  * as large as the triangles' mean extent and never finer than 1/256 of the
  * diagonal), so a large triangle among small ones spans a bounded number of
  * buckets. Each triangle's candidates are collected, sorted and made unique
@@ -71652,6 +71761,118 @@ double bspline_project(const BsplineSurface& rS, const double* pP, double& rU, d
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/bspline_lsq.cpp =====
+// ===== begin src/cpp/src/detail/bucket_build.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+// One serial sweep over the (id, z, y, x) pairs -- the serial `InsertBox`
+// loop's order -- numbering each cell the first time it is met through a flat
+// open-addressing table, and counting its ids; then a second sweep places
+// every id at its bucket's next slot. The buckets come out in first-seen
+// order with their ids ascending: exactly what the serial inserts left in
+// `SpatialGrid`, with one probe per pair and no allocation per cell. A
+// parallel grouping (`group_slots`) gave the same table, but on one thread it
+// cost more than the hash-map inserts it replaced, which the landing gate
+// ("SEQ not slower") does not allow (roadmap 5.4.1).
+BucketTable build_bucket_table(double Cell, const std::vector<GridKey>& rLo,
+                               const std::vector<GridKey>& rHi) {
+    const std::size_t n = rLo.size();
+    if (n == 0)
+        return BucketTable(Cell);
+    std::uint64_t npairs = 0;
+    for (std::size_t t = 0; t < n; ++t) {
+        const std::int64_t nx = rHi[t].x - rLo[t].x + 1;
+        const std::int64_t ny = rHi[t].y - rLo[t].y + 1;
+        const std::int64_t nz = rHi[t].z - rLo[t].z + 1;
+        if (nx > 0 && ny > 0 && nz > 0)
+            npairs += static_cast<std::uint64_t>(nx) * static_cast<std::uint64_t>(ny) *
+                      static_cast<std::uint64_t>(nz);
+    }
+    // A power of two at least twice the most buckets there can be.
+    std::size_t cap = 16;
+    while (cap < 2 * npairs)
+        cap <<= 1;
+    const std::size_t mask = cap - 1;
+    constexpr std::uint64_t kEmpty = ~std::uint64_t{0};
+    std::vector<std::uint64_t> slot(cap, kEmpty);
+    std::vector<GridKey> bucket_keys;
+    std::vector<std::uint64_t> bucket_count;
+    std::vector<std::uint64_t> bucket_of_pair(static_cast<std::size_t>(npairs));
+    const GridKeyHash hash;
+    std::size_t pair = 0;
+    for (std::size_t t = 0; t < n; ++t)
+        for (std::int64_t z = rLo[t].z; z <= rHi[t].z; ++z)
+            for (std::int64_t y = rLo[t].y; y <= rHi[t].y; ++y)
+                for (std::int64_t x = rLo[t].x; x <= rHi[t].x; ++x) {
+                    const GridKey key{x, y, z};
+                    // GridKeyHash's low bits cluster for neighbouring cells;
+                    // the splitmix64 finalizer spreads them over the mask.
+                    std::uint64_t h = static_cast<std::uint64_t>(hash(key));
+                    h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ULL;
+                    h = (h ^ (h >> 27)) * 0x94d049bb133111ebULL;
+                    h ^= h >> 31;
+                    std::size_t at = static_cast<std::size_t>(h) & mask;
+                    for (;; at = (at + 1) & mask) {
+                        if (slot[at] == kEmpty) {
+                            slot[at] = bucket_keys.size();
+                            bucket_keys.push_back(key);
+                            bucket_count.push_back(0);
+                            break;
+                        }
+                        if (bucket_keys[static_cast<std::size_t>(slot[at])] == key)
+                            break;
+                    }
+                    ++bucket_count[static_cast<std::size_t>(slot[at])];
+                    bucket_of_pair[pair++] = slot[at];
+                }
+    std::vector<std::uint64_t>().swap(slot);
+    const std::size_t nb = bucket_keys.size();
+    std::vector<std::uint64_t> bucket_offset(nb + 1);
+    bucket_offset[0] = 0;
+    for (std::size_t b = 0; b < nb; ++b)
+        bucket_offset[b + 1] = bucket_offset[b] + bucket_count[b];
+    std::vector<std::uint64_t>& next = bucket_count;  // reused as the fill cursor
+    std::copy(bucket_offset.begin(), bucket_offset.end() - 1, next.begin());
+    std::vector<std::int64_t> bucket_ids(static_cast<std::size_t>(npairs));
+    pair = 0;
+    for (std::size_t t = 0; t < n; ++t) {
+        const std::int64_t nx = rHi[t].x - rLo[t].x + 1;
+        const std::int64_t ny = rHi[t].y - rLo[t].y + 1;
+        const std::int64_t nz = rHi[t].z - rLo[t].z + 1;
+        if (nx <= 0 || ny <= 0 || nz <= 0)
+            continue;
+        const std::uint64_t count = static_cast<std::uint64_t>(nx) *
+                                    static_cast<std::uint64_t>(ny) * static_cast<std::uint64_t>(nz);
+        for (std::uint64_t k = 0; k < count; ++k)
+            bucket_ids[static_cast<std::size_t>(next[bucket_of_pair[pair++]]++)] =
+                static_cast<std::int64_t>(t);
+    }
+    // The occupied box: InsertBox covers every box's low and high key.
+    GridKey lo = rLo[0];
+    GridKey hi = rHi[0];
+    for (std::size_t t = 0; t < n; ++t) {
+        lo = GridKey{std::min(lo.x, std::min(rLo[t].x, rHi[t].x)),
+                     std::min(lo.y, std::min(rLo[t].y, rHi[t].y)),
+                     std::min(lo.z, std::min(rLo[t].z, rHi[t].z))};
+        hi = GridKey{std::max(hi.x, std::max(rLo[t].x, rHi[t].x)),
+                     std::max(hi.y, std::max(rLo[t].y, rHi[t].y)),
+                     std::max(hi.z, std::max(rLo[t].z, rHi[t].z))};
+    }
+    return BucketTable(Cell, std::move(bucket_keys), std::move(bucket_offset),
+                       std::move(bucket_ids), lo, hi);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/bucket_build.cpp =====
 // ===== begin src/cpp/src/detail/cdt2d.cpp =====
 #include <algorithm>
 #include <array>
@@ -96724,7 +96945,7 @@ std::string png_encode_rgba(const unsigned char* pRgba, std::size_t Width, std::
 // ===== begin src/cpp/src/detail/polyhedron.cpp =====
 #include <algorithm>
 #include <cmath>
-#include <unordered_map>
+#include <vector>
 #include <utility>
 
 // Project includes
@@ -96737,15 +96958,6 @@ namespace {
 // A directed ring edge, keyed undirected. The BFS below asks "which other face
 // uses this same undirected edge, and in which direction".
 using PolyEdge = std::pair<std::int64_t, std::int64_t>;
-
-struct PolyEdgeHash {
-    std::size_t operator()(const PolyEdge& rE) const {
-        // The surface.cpp mixing constant; the pair is already small ints.
-        const std::size_t a = static_cast<std::size_t>(rE.first);
-        const std::size_t b = static_cast<std::size_t>(rE.second);
-        return a * 0x9E3779B97F4A7C15ULL + b;
-    }
-};
 
 PolyEdge poly_undirected(std::uint32_t a, std::uint32_t b) {
     return a < b ? PolyEdge{a, b} : PolyEdge{b, a};
@@ -96900,13 +97112,18 @@ RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords) {
         return RingOrientation::Unorientable;
 
     // Map each undirected edge to the (face, directed-as-stored) uses of it. A
-    // closed surface uses every undirected edge exactly twice.
+    // closed surface uses every undirected edge exactly twice. The uses are
+    // one flat list sorted by edge, each edge's uses in the order they were
+    // met (a stable sort), rather than a hash map of vectors: no allocation
+    // per edge, and the scratch is reused across the cells a thread orients
+    // (roadmap 5.4.4).
     struct EdgeUse {
+        PolyEdge mEdge;
         std::size_t mFace;
         bool mForward;  // traversed low->high as stored
     };
-    std::unordered_map<PolyEdge, std::vector<EdgeUse>, PolyEdgeHash> uses;
-    uses.reserve(nf * 4);
+    static thread_local std::vector<EdgeUse> uses;
+    uses.clear();
     for (std::size_t f = 0; f < nf; ++f) {
         const std::size_t n = rRings.FaceSize(f);
         if (n < 3)
@@ -96916,13 +97133,27 @@ RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords) {
             const std::uint32_t a = ring[i], b = ring[(i + 1) % n];
             if (a == b)
                 return RingOrientation::Unorientable;
-            uses[poly_undirected(a, b)].push_back({f, a < b});
+            uses.push_back({poly_undirected(a, b), f, a < b});
         }
     }
+    std::stable_sort(uses.begin(), uses.end(),
+                     [](const EdgeUse& rX, const EdgeUse& rY) { return rX.mEdge < rY.mEdge; });
+    // The first use of an edge in `uses`.
+    const auto uses_of = [&](const PolyEdge& rEdge) {
+        const auto first =
+            std::lower_bound(uses.begin(), uses.end(), rEdge,
+                             [](const EdgeUse& rU, const PolyEdge& rE) { return rU.mEdge < rE; });
+        return first;
+    };
     bool manifold = true;
-    for (const auto& kv : uses)
-        if (kv.second.size() != 2)
+    for (std::size_t i = 0; i < uses.size();) {
+        std::size_t j = i;
+        while (j < uses.size() && uses[j].mEdge == uses[i].mEdge)
+            ++j;
+        if (j - i != 2)
             manifold = false;
+        i = j;
+    }
     if (!manifold) {
         // An edge used 4, 6, ... times: two lobes of one cell touching along
         // it (agglomerate's grown groups produce exactly this). There is no
@@ -96931,12 +97162,14 @@ RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords) {
         // form a closed, consistently oriented surface, and the divergence
         // theorem gives its volume. Keep them as stored; only the global
         // inward/outward flip below remains to decide.
-        for (const auto& kv : uses) {
+        for (std::size_t i = 0; i < uses.size();) {
+            std::size_t j = i;
             std::size_t fwd = 0;
-            for (const EdgeUse& u : kv.second)
-                fwd += u.mForward ? 1 : 0;
-            if (2 * fwd != kv.second.size())
+            for (; j < uses.size() && uses[j].mEdge == uses[i].mEdge; ++j)
+                fwd += uses[j].mForward ? 1 : 0;
+            if (2 * fwd != j - i)
                 return RingOrientation::Unorientable;
+            i = j;
         }
         if (poly_measure(rRings, pCoords).mVolume >= 0.0)
             return RingOrientation::Consistent;
@@ -96950,8 +97183,10 @@ RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords) {
     // BFS the face dual. Two faces sharing an undirected edge are consistently
     // wound iff they traverse it in OPPOSITE directions, so an equal
     // `mForward` means the neighbour must be reversed.
-    std::vector<int> flip(nf, -1);  // -1 unvisited, 0 keep, 1 reverse
-    std::vector<std::size_t> stack;
+    static thread_local std::vector<int> flip;  // -1 unvisited, 0 keep, 1 reverse
+    static thread_local std::vector<std::size_t> stack;
+    flip.assign(nf, -1);
+    stack.clear();
     flip[0] = 0;
     stack.push_back(0);
     std::size_t visited = 0;
@@ -96963,7 +97198,7 @@ RingOrientation orient_rings(CellRings& rRings, const Vec3* pCoords) {
         const std::uint32_t* ring = rRings.Face(f);
         for (std::size_t i = 0; i < n; ++i) {
             const std::uint32_t a = ring[i], b = ring[(i + 1) % n];
-            const auto& u = uses[poly_undirected(a, b)];
+            const auto u = uses_of(poly_undirected(a, b));  // exactly two uses
             const EdgeUse& mine = u[0].mFace == f && u[0].mForward == (a < b) ? u[0] : u[1];
             const EdgeUse& other = (&mine == &u[0]) ? u[1] : u[0];
             if (other.mFace == f)
@@ -97019,7 +97254,10 @@ PolyMeasure poly_measure(const CellRings& rRings, const Vec3* pCoords) {
         origin = vec3_add(origin, pCoords[i]);
     origin = vec3_scale(origin, 1.0 / static_cast<double>(nn));
 
-    std::vector<Vec3> local(nn);
+    // Scratch reused across the calls a thread makes (one per cell in the
+    // face-table builds): no allocation per cell.
+    static thread_local std::vector<Vec3> local;
+    local.resize(nn);
     for (std::size_t i = 0; i < nn; ++i)
         local[i] = vec3_sub(pCoords[i], origin);
 
@@ -106407,98 +106645,22 @@ SurfaceQuality soup_quality(const TriangleSoup& rSoup, const SurfaceEdgeMap& rEd
 
 namespace {
 
-// Grid insertion (roadmap §3): every (bucket, triangle) pair of the
-// triangles' quantized boxes, laid out in (triangle, z, y, x) order -- the
-// serial `InsertBox` loop's order -- and grouped by bucket with the
-// sort-based table (slot_runs.hpp), whose runs keep their slots ascending.
-// Every bucket therefore lists its triangles in ascending order, exactly as
-// the serial inserts appended them, and the occupied box is the same.
+// Grid insertion: the triangles' quantized boxes, grouped by
+// `build_bucket_table` (detail/bucket_build.hpp), which lists every bucket's
+// triangles ascending, exactly as serial `InsertBox` calls appended them, and
+// covers the same occupied box.
 BucketTable sd_build_grid(double Cell, const std::vector<Vec3>& rLo,
                           const std::vector<Vec3>& rHi) {
     const std::size_t ntri = rLo.size();
     std::vector<GridKey> key_lo(ntri);
     std::vector<GridKey> key_hi(ntri);
-    std::vector<std::uint64_t> count(ntri);
     parallel_for(ntri, [&](std::size_t t) {
         key_lo[t] = GridKey{grid_quantize(rLo[t][0], Cell), grid_quantize(rLo[t][1], Cell),
                             grid_quantize(rLo[t][2], Cell)};
         key_hi[t] = GridKey{grid_quantize(rHi[t][0], Cell), grid_quantize(rHi[t][1], Cell),
                             grid_quantize(rHi[t][2], Cell)};
-        const std::int64_t nx = key_hi[t].x - key_lo[t].x + 1;
-        const std::int64_t ny = key_hi[t].y - key_lo[t].y + 1;
-        const std::int64_t nz = key_hi[t].z - key_lo[t].z + 1;
-        count[t] = nx > 0 && ny > 0 && nz > 0
-                       ? static_cast<std::uint64_t>(nx) * static_cast<std::uint64_t>(ny) *
-                             static_cast<std::uint64_t>(nz)
-                       : 0;
     });
-    std::vector<std::uint64_t> offset(ntri);
-    const std::uint64_t npairs =
-        parallel_exclusive_scan(count.data(), ntri, offset.data(), std::uint64_t{0});
-    std::vector<GridKey> keys(npairs);
-    parallel_for(ntri, [&](std::size_t t) {
-        GridKey* out = keys.data() + offset[t];
-        for (std::int64_t z = key_lo[t].z; z <= key_hi[t].z; ++z)
-            for (std::int64_t y = key_lo[t].y; y <= key_hi[t].y; ++y)
-                for (std::int64_t x = key_lo[t].x; x <= key_hi[t].x; ++x)
-                    *out++ = GridKey{x, y, z};
-    });
-    // About four pairs per counting-sort bucket; any bucket function gives the
-    // same runs, since a run is one key.
-    const std::size_t nbuckets = static_cast<std::size_t>(npairs / 4) + 1;
-    const SlotRuns runs = group_slots(
-        keys, nbuckets, [nbuckets](const GridKey& rK) { return GridKeyHash{}(rK) % nbuckets; },
-        [](const GridKey& rA, const GridKey& rB) {
-            if (rA.x != rB.x)
-                return rA.x < rB.x;
-            if (rA.y != rB.y)
-                return rA.y < rB.y;
-            return rA.z < rB.z;
-        });
-    // Slot -> triangle: the slots of triangle t are [offset[t], offset[t] + count[t]).
-    std::vector<std::int64_t> tri_of(npairs);
-    parallel_for(ntri, [&](std::size_t t) {
-        for (std::uint64_t k = 0; k < count[t]; ++k)
-            tri_of[offset[t] + k] = static_cast<std::int64_t>(t);
-    });
-    // Buckets in first-seen order, as the serial inserts met them, so the table
-    // lists them in the order the map once did. The ids of every bucket go
-    // into one flat array, each bucket at the offset the scan of the run sizes
-    // gives it, rather than into a vector per bucket.
-    const FirstSeen first = number_first_seen(runs, static_cast<std::size_t>(npairs));
-    const std::size_t nbuckets_out = first.NumIds();
-    std::vector<GridKey> bucket_keys(nbuckets_out);
-    std::vector<std::uint64_t> bucket_size(nbuckets_out);
-    parallel_for(nbuckets_out, [&](std::size_t b) {
-        const std::size_t r = static_cast<std::size_t>(first.mRunOfId[b]);
-        bucket_keys[b] = keys[runs.Head(r)];
-        bucket_size[b] = static_cast<std::uint64_t>(runs.Size(r));
-    });
-    std::vector<std::uint64_t> bucket_offset(nbuckets_out + 1);
-    const std::uint64_t total =
-        parallel_exclusive_scan(bucket_size.data(), nbuckets_out, bucket_offset.data(),
-                                std::uint64_t{0});
-    bucket_offset[nbuckets_out] = total;
-    std::vector<std::int64_t> bucket_ids(static_cast<std::size_t>(total));
-    parallel_for(nbuckets_out, [&](std::size_t b) {
-        const std::size_t r = static_cast<std::size_t>(first.mRunOfId[b]);
-        std::int64_t* out = bucket_ids.data() + bucket_offset[b];
-        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p)
-            *out++ = tri_of[*p];
-    });
-    // The occupied box: InsertBox covers every triangle's low and high key.
-    GridKey lo = key_lo[0];
-    GridKey hi = key_hi[0];
-    for (std::size_t t = 0; t < ntri; ++t) {
-        lo = GridKey{std::min(lo.x, std::min(key_lo[t].x, key_hi[t].x)),
-                     std::min(lo.y, std::min(key_lo[t].y, key_hi[t].y)),
-                     std::min(lo.z, std::min(key_lo[t].z, key_hi[t].z))};
-        hi = GridKey{std::max(hi.x, std::max(key_lo[t].x, key_hi[t].x)),
-                     std::max(hi.y, std::max(key_lo[t].y, key_hi[t].y)),
-                     std::max(hi.z, std::max(key_lo[t].z, key_hi[t].z))};
-    }
-    return BucketTable(Cell, std::move(bucket_keys), std::move(bucket_offset),
-                       std::move(bucket_ids), lo, hi);
+    return build_bucket_table(Cell, key_lo, key_hi);
 }
 
 }  // namespace
@@ -109154,10 +109316,13 @@ void soup_box_pairs(const TriangleSoup& rA, const TriangleSoup* pB, const TriPai
     double cell = std::max(extent_sum / static_cast<double>(r_grid_boxes.size()), diag / 256.0);
     if (!(cell > 0.0) || !std::isfinite(cell))
         cell = 1.0;
-    SpatialGrid grid(cell);
-    for (std::size_t t = 0; t < r_grid_boxes.size(); ++t)
-        grid.InsertBox(grid.KeyOf(r_grid_boxes[t].data()), grid.KeyOf(r_grid_boxes[t].data() + 3),
-                       static_cast<std::int64_t>(t));
+    std::vector<GridKey> grid_lo(r_grid_boxes.size());
+    std::vector<GridKey> grid_hi(r_grid_boxes.size());
+    parallel_for(r_grid_boxes.size(), [&](std::size_t t) {
+        grid_lo[t] = bucket_key(r_grid_boxes[t].data(), cell);
+        grid_hi[t] = bucket_key(r_grid_boxes[t].data() + 3, cell);
+    });
+    const BucketTable grid = build_bucket_table(cell, grid_lo, grid_hi);
 
     const bool self = pB == nullptr;
     parallel_for(
@@ -109166,7 +109331,7 @@ void soup_box_pairs(const TriangleSoup& rA, const TriangleSoup* pB, const TriPai
             const TpBox& bi = box_a[i];
             std::vector<std::int64_t> near;
             grid.ForEachInBox(grid.KeyOf(bi.data()), grid.KeyOf(bi.data() + 3),
-                              [&](const std::vector<std::int64_t>& rIds) {
+                              [&](const BucketView& rIds) {
                                   for (std::int64_t id : rIds)
                                       if (!self || static_cast<std::size_t>(id) > i)
                                           near.push_back(id);
@@ -179033,14 +179198,25 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t dim = rMesh.PointDim();
 
     os << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
-    char buf[96];
+    // One `CNumber::Append` per value (row_writer.hpp: `to_chars` for the
+    // plain precisions, roadmap 5.7.1) into a line, written whole. Each value
+    // gets its own decimal-point repair, where one `snprintf_c` over the line
+    // repaired the first number alone under a comma locale.
+    const detail::CNumber number;
+    std::string line;
     const detail::DoubleView point_values(points);
     for (std::size_t r = 0; r < num_points; ++r) {
         double x = (0 < dim) ? point_values[r * dim + 0] : 0.0;
         double y = (1 < dim) ? point_values[r * dim + 1] : 0.0;
         double z = (2 < dim) ? point_values[r * dim + 2] : 0.0;
-        detail::snprintf_c(buf, sizeof(buf), "v %.17g %.17g %.17g\n", x, y, z);
-        os << buf;
+        line.assign("v ");
+        number.Append(line, "%.17g", x);
+        line.push_back(' ');
+        number.Append(line, "%.17g", y);
+        line.push_back(' ');
+        number.Append(line, "%.17g", z);
+        line.push_back('\n');
+        os << line;
     }
 
     auto write_pd = [&](const char* key, const char* tag) {
@@ -179050,12 +179226,11 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
         std::size_t nc = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
         const detail::DoubleView values(d);
         for (std::size_t r = 0; r < (d.Shape().empty() ? 0 : d.Shape()[0]); ++r) {
-            os << tag;
-            for (std::size_t c = 0; c < nc; ++c) {
-                detail::snprintf_c(buf, sizeof(buf), " %.17g", values[r * nc + c]);
-                os << buf;
-            }
-            os << '\n';
+            line.assign(tag);
+            for (std::size_t c = 0; c < nc; ++c)
+                number.Append(line, " %.17g", values[r * nc + c]);
+            line.push_back('\n');
+            os << line;
         }
     };
     write_pd("obj:vn", "vn");
@@ -179074,8 +179249,12 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
             double u = values[r * nc], v = values[r * nc + 1];
             if (!std::isfinite(u) || !std::isfinite(v))
                 u = v = 0.0;  // a point no face uses
-            detail::snprintf_c(buf, sizeof(buf), "vt %.17g %.17g\n", u, v);
-            os << buf;
+            line.assign("vt ");
+            number.Append(line, "%.17g", u);
+            line.push_back(' ');
+            number.Append(line, "%.17g", v);
+            line.push_back('\n');
+            os << line;
         }
     } else {
         write_pd("obj:vt", "vt");
@@ -216343,10 +216522,13 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
         double cell = std::max(extent_sum / static_cast<double>(nf), diag / 256.0);
         if (!(cell > 0.0))
             cell = 1.0;
-        detail::SpatialGrid grid(cell);
-        for (std::size_t f = 0; f < nf; ++f)
-            grid.InsertBox(grid.KeyOf(box[f].data()), grid.KeyOf(box[f].data() + 3),
-                           static_cast<std::int64_t>(f));
+        std::vector<detail::GridKey> box_lo(nf);
+        std::vector<detail::GridKey> box_hi(nf);
+        parallel_for(nf, [&](std::size_t f) {
+            box_lo[f] = detail::bucket_key(box[f].data(), cell);
+            box_hi[f] = detail::bucket_key(box[f].data() + 3, cell);
+        });
+        const detail::BucketTable grid = detail::build_bucket_table(cell, box_lo, box_hi);
 
         // One view per block, and the nodes of a facet's owner on demand.
         const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
@@ -216381,11 +216563,11 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
         parallel_for(candidates.size(), [&](std::size_t i) {
             const std::int64_t p = candidates[i];
             const detail::Vec3 x = cc_point(xyz, p);
-            const std::vector<std::int64_t>* bucket = grid.Find(grid.KeyOf(x.data()));
-            if (bucket == nullptr)
+            detail::BucketView bucket(nullptr, 0);
+            if (!grid.Find(grid.KeyOf(x.data()), bucket))
                 return;
             std::vector<std::int64_t> scratch;
-            for (std::int64_t id : *bucket) {
+            for (std::int64_t id : bucket) {
                 const std::size_t f = static_cast<std::size_t>(id);
                 const std::array<double, 6>& b = box[f];
                 if (x[0] < b[0] || x[1] < b[1] || x[2] < b[2] || x[0] > b[3] || x[1] > b[4] ||
@@ -216419,7 +216601,7 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
         parallel_for(nf, [&](std::size_t f) {
             std::vector<std::int64_t> near;
             grid.ForEachInBox(grid.KeyOf(box[f].data()), grid.KeyOf(box[f].data() + 3),
-                              [&](const std::vector<std::int64_t>& rIds) {
+                              [&](const detail::BucketView& rIds) {
                                   for (std::int64_t id : rIds)
                                       if (static_cast<std::size_t>(id) > f)
                                           near.push_back(id);
@@ -217029,6 +217211,7 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
 
 // Project includes
 
+
 namespace meshioplusplus {
 
 namespace {
@@ -217428,8 +217611,10 @@ ConsOverlap cons_build_overlap(const Mesh& rSource, const Mesh& rTarget, const M
         ++r;
     const double cell = max_extent > 0.0 ? max_extent / static_cast<double>(r) : 1.0;
 
-    detail::SpatialGrid grid(cell);
-    std::vector<std::pair<detail::GridKey, detail::GridKey>> src_boxes(nsrc);
+    // The source boxes, grouped into a frozen grid whose buckets list their
+    // simplices ascending, as serial inserts in source order did (roadmap 5.4.1).
+    std::vector<detail::GridKey> box_lo(nsrc);
+    std::vector<detail::GridKey> box_hi(nsrc);
     parallel_for(nsrc, [&](std::size_t s) {
         detail::Vec3 blo = scoord(s, 0);
         detail::Vec3 bhi = blo;
@@ -217442,10 +217627,10 @@ ConsOverlap cons_build_overlap(const Mesh& rSource, const Mesh& rTarget, const M
                     bhi[d] = p[d];
             }
         }
-        src_boxes[s] = {grid.KeyOf(blo.data()), grid.KeyOf(bhi.data())};
+        box_lo[s] = detail::bucket_key(blo.data(), cell);
+        box_hi[s] = detail::bucket_key(bhi.data(), cell);
     });
-    for (std::size_t s = 0; s < nsrc; ++s)
-        grid.InsertBox(src_boxes[s].first, src_boxes[s].second, static_cast<std::int64_t>(s));
+    const detail::BucketTable grid = detail::build_bucket_table(cell, box_lo, box_hi);
 
     // Narrow phase, independent per target simplex -> parallel-safe.
     parallel_for(ntgt, [&](std::size_t t) {
@@ -217464,7 +217649,7 @@ ConsOverlap cons_build_overlap(const Mesh& rSource, const Mesh& rTarget, const M
 
         std::vector<std::int64_t> cand;
         grid.ForEachInBox(grid.KeyOf(tblo.data()), grid.KeyOf(tbhi.data()),
-                          [&](const std::vector<std::int64_t>& rIds) {
+                          [&](const detail::BucketView& rIds) {
                               cand.insert(cand.end(), rIds.begin(), rIds.end());
                           });
         std::sort(cand.begin(), cand.end());
@@ -233746,18 +233931,19 @@ void interp_bbox(std::size_t n, TCoord&& coord, double* pLo, double* pHi) {
     }
 }
 
-// Fill `rGrid` with one id per coordinate: parallel key fill into disjoint
-// slots, then a serial ascending insert (surface.cpp's phase-split idiom, so
-// every bucket vector is ascending and scans over it are deterministic).
+// The point grid of `n` coordinates, id `i` for coordinate `i`: keys filled
+// in parallel, then grouped by `build_bucket_table` -- every bucket ascending,
+// as serial inserts in id order left the map this replaced (roadmap 5.4.1).
 template <class TCoord>
-void interp_fill_grid(detail::SpatialGrid& rGrid, std::size_t n, TCoord&& coord) {
+detail::BucketTable interp_point_grid(double Cell, std::size_t n, TCoord&& coord) {
     std::vector<detail::GridKey> keys(n);
     parallel_for(n, [&](std::size_t i) {
         const detail::Vec3 c = coord(i);
-        keys[i] = rGrid.KeyOf(c.data());
+        keys[i] =
+            detail::GridKey{detail::grid_quantize(c[0], Cell), detail::grid_quantize(c[1], Cell),
+                            detail::grid_quantize(c[2], Cell)};
     });
-    for (std::size_t i = 0; i < n; ++i)
-        rGrid.Insert(keys[i], static_cast<std::int64_t>(i));
+    return detail::build_bucket_table(Cell, keys, keys);
 }
 
 // Nearest id in `rGrid` to `rP` by expanding-shell search: any candidate in a
@@ -233767,7 +233953,7 @@ void interp_fill_grid(detail::SpatialGrid& rGrid, std::size_t n, TCoord&& coord)
 // Tie-break: smallest squared distance, then lowest id — enforced by the
 // strict comparison plus the ascending id order within every bucket.
 template <class TCoord>
-std::int64_t interp_nearest(const detail::SpatialGrid& rGrid, TCoord&& coord,
+std::int64_t interp_nearest(const detail::BucketTable& rGrid, TCoord&& coord,
                             const detail::Vec3& rP) {
     const detail::GridKey k = rGrid.KeyOf(rP.data());
     const detail::GridKey& klo = rGrid.OccupiedLo();
@@ -233804,7 +233990,7 @@ std::int64_t interp_nearest(const detail::SpatialGrid& rGrid, TCoord&& coord,
         }
         if (r > rcap)
             break;
-        rGrid.ForEachInShell(k, r, [&](const std::vector<std::int64_t>& rIds) {
+        rGrid.ForEachInShell(k, r, [&](const detail::BucketView& rIds) {
             for (std::int64_t id : rIds) {
                 const detail::Vec3 q = coord(id);
                 double d2 = 0.0;
@@ -234045,9 +234231,9 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             double lo[3], hi[3];
             interp_bbox(
                 ns, [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); }, lo, hi);
-            detail::SpatialGrid grid(interp_cell_size(lo, hi, ns));
-            interp_fill_grid(grid, ns,
-                             [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); });
+            const detail::BucketTable grid = interp_point_grid(
+                interp_cell_size(lo, hi, ns), ns,
+                [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); });
 
             std::vector<std::int64_t> nearest(nt);
             parallel_for(nt, [&](std::size_t t) {
@@ -234108,17 +234294,25 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             double lo[3], hi[3];
             interp_bbox(
                 ns, [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); }, lo, hi);
-            detail::SpatialGrid grid(interp_cell_size(lo, hi, nsimp));
+            const double cell = interp_cell_size(lo, hi, nsimp);
 
-            // Per-simplex quantized bbox keys: parallel fill, serial insert.
-            std::vector<std::pair<detail::GridKey, detail::GridKey>> boxes(nsimp);
+            // Per-simplex quantized bbox keys, filled in parallel and grouped
+            // into the frozen grid: each bucket ascending, as serial inserts
+            // in simplex order left it.
+            std::vector<detail::GridKey> box_lo(nsimp);
+            std::vector<detail::GridKey> box_hi(nsimp);
+            const auto key_of = [cell](const double* pC) {
+                return detail::GridKey{detail::grid_quantize(pC[0], cell),
+                                       detail::grid_quantize(pC[1], cell),
+                                       detail::grid_quantize(pC[2], cell)};
+            };
             parallel_for(nsimp, [&](std::size_t s) {
                 double blo[3], bhi[3];
                 interp_bbox(nv, [&](std::size_t k) { return scoord(sconn[s * nv + k]); }, blo, bhi);
-                boxes[s] = {grid.KeyOf(blo), grid.KeyOf(bhi)};
+                box_lo[s] = key_of(blo);
+                box_hi[s] = key_of(bhi);
             });
-            for (std::size_t s = 0; s < nsimp; ++s)
-                grid.InsertBox(boxes[s].first, boxes[s].second, static_cast<std::int64_t>(s));
+            const detail::BucketTable grid = detail::build_bucket_table(cell, box_lo, box_hi);
 
             // Containment: first containing simplex in ascending index (the
             // bucket vectors are ascending by construction).
@@ -234126,11 +234320,11 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             std::vector<std::array<double, 4>> wts(nt);
             parallel_for(nt, [&](std::size_t t) {
                 const detail::Vec3 p = detail::read_point(tpts, tdim, static_cast<std::int64_t>(t));
-                const std::vector<std::int64_t>* p_cand = grid.Find(grid.KeyOf(p.data()));
-                if (p_cand == nullptr)
+                detail::BucketView cand(nullptr, 0);
+                if (!grid.Find(grid.KeyOf(p.data()), cand))
                     return;
                 double w[4] = {0.0, 0.0, 0.0, 0.0};
-                for (std::int64_t s : *p_cand) {
+                for (std::int64_t s : cand) {
                     const std::int64_t* nodes = &sconn[static_cast<std::size_t>(s) * nv];
                     const bool inside = nv == 4 ? interp_tet_contains(spts, sdim, nodes, p, w)
                                                 : interp_tri_contains(spts, sdim, nodes, p, w);
@@ -234150,9 +234344,9 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
 
             std::vector<std::int64_t> near_of;
             if (n_outside > 0 && rOptions.mExtrapolate) {
-                detail::SpatialGrid pgrid(interp_cell_size(lo, hi, ns));
-                interp_fill_grid(
-                    pgrid, ns, [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); });
+                const detail::BucketTable pgrid = interp_point_grid(
+                    interp_cell_size(lo, hi, ns), ns,
+                    [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); });
                 near_of.assign(nt, -1);
                 parallel_for(nt, [&](std::size_t t) {
                     if (simplex_of[t] >= 0)
@@ -234226,9 +234420,9 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             interp_bbox(
                 src_total, [&](std::size_t i) { return ccoord(static_cast<std::int64_t>(i)); }, lo,
                 hi);
-            detail::SpatialGrid grid(interp_cell_size(lo, hi, src_total));
-            interp_fill_grid(grid, src_total,
-                             [&](std::size_t i) { return ccoord(static_cast<std::int64_t>(i)); });
+            const detail::BucketTable grid = interp_point_grid(
+                interp_cell_size(lo, hi, src_total), src_total,
+                [&](std::size_t i) { return ccoord(static_cast<std::int64_t>(i)); });
 
             std::vector<std::int64_t> nearest_cell(tgt_total);
             parallel_for(tgt_total, [&](std::size_t t) {
@@ -250907,6 +251101,7 @@ PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions) {
 
 // Project includes
 
+
 namespace meshioplusplus {
 namespace {
 
@@ -250994,12 +251189,14 @@ PeriodicPairs match_periodic_nodes(const Mesh& rMesh, const RegionSelector& rSla
             extent = std::max(extent, std::fabs(c));
     }
     const double cell = std::max(rOptions.mAtol, extent * 1e-12);
-    detail::SpatialGrid grid(cell);
     std::vector<detail::Vec3> master_xyz(master.size());
+    std::vector<detail::GridKey> master_key(master.size());
     for (std::size_t k = 0; k < master.size(); ++k) {
         master_xyz[k] = point(master[k]);
-        grid.Insert(grid.KeyOf(master_xyz[k].data()), static_cast<std::int64_t>(k));
+        master_key[k] = detail::bucket_key(master_xyz[k].data(), cell);
     }
+    // A frozen grid of the master nodes, each bucket ascending (roadmap 5.4.1).
+    const detail::BucketTable grid = detail::build_bucket_table(cell, master_key, master_key);
 
     const std::array<double, 16>& m = rOptions.mTransform.mMatrix;
     const double atol2 = rOptions.mAtol * rOptions.mAtol;
@@ -251012,20 +251209,23 @@ PeriodicPairs match_periodic_nodes(const Mesh& rMesh, const RegionSelector& rSla
             q[r] = m[r * 4 + 0] * p[0] + m[r * 4 + 1] * p[1] + m[r * 4 + 2] * p[2] + m[r * 4 + 3];
         double best = std::numeric_limits<double>::infinity();
         std::int64_t hit = -1;
-        grid.ForEachIn27(grid.KeyOf(q.data()), [&](const std::vector<std::int64_t>& rBucket) {
-            for (std::int64_t k : rBucket) {
-                const detail::Vec3& c = master_xyz[static_cast<std::size_t>(k)];
-                const double d2 = (c[0] - q[0]) * (c[0] - q[0]) + (c[1] - q[1]) * (c[1] - q[1]) +
-                                  (c[2] - q[2]) * (c[2] - q[2]);
-                if (d2 <= atol2 &&
-                    (d2 < best || (d2 == best && master[static_cast<std::size_t>(k)] <
-                                                     master[static_cast<std::size_t>(hit)]))) {
-                    best = d2;
-                    hit = k;
+        // The 3 x 3 x 3 cells around the image, in ascending z -> y -> x order.
+        const detail::GridKey at = grid.KeyOf(q.data());
+        grid.ForEachInBox(
+            detail::GridKey{at.x - 1, at.y - 1, at.z - 1},
+            detail::GridKey{at.x + 1, at.y + 1, at.z + 1}, [&](const detail::BucketView& rBucket) {
+                for (std::int64_t k : rBucket) {
+                    const detail::Vec3& c = master_xyz[static_cast<std::size_t>(k)];
+                    const double d2 = (c[0] - q[0]) * (c[0] - q[0]) +
+                                      (c[1] - q[1]) * (c[1] - q[1]) + (c[2] - q[2]) * (c[2] - q[2]);
+                    if (d2 <= atol2 &&
+                        (d2 < best || (d2 == best && master[static_cast<std::size_t>(k)] <
+                                                         master[static_cast<std::size_t>(hit)]))) {
+                        best = d2;
+                        hit = k;
+                    }
                 }
-            }
-            return true;
-        });
+            });
         match[i] = hit;
         residual[i] = hit >= 0 ? std::sqrt(best) : 0.0;
     });

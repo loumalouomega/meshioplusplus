@@ -39,6 +39,7 @@
 #include "meshioplusplus/region.hpp"
 
 // Project includes (private, not installed)
+#include "bucket_build.hpp"
 #include "slot_runs.hpp"
 #include "surface_edge_runs.hpp"
 
@@ -263,98 +264,22 @@ SurfaceQuality soup_quality(const TriangleSoup& rSoup, const SurfaceEdgeMap& rEd
 
 namespace {
 
-// Grid insertion (roadmap §3): every (bucket, triangle) pair of the
-// triangles' quantized boxes, laid out in (triangle, z, y, x) order -- the
-// serial `InsertBox` loop's order -- and grouped by bucket with the
-// sort-based table (slot_runs.hpp), whose runs keep their slots ascending.
-// Every bucket therefore lists its triangles in ascending order, exactly as
-// the serial inserts appended them, and the occupied box is the same.
+// Grid insertion: the triangles' quantized boxes, grouped by
+// `build_bucket_table` (detail/bucket_build.hpp), which lists every bucket's
+// triangles ascending, exactly as serial `InsertBox` calls appended them, and
+// covers the same occupied box.
 BucketTable sd_build_grid(double Cell, const std::vector<Vec3>& rLo,
                           const std::vector<Vec3>& rHi) {
     const std::size_t ntri = rLo.size();
     std::vector<GridKey> key_lo(ntri);
     std::vector<GridKey> key_hi(ntri);
-    std::vector<std::uint64_t> count(ntri);
     parallel_for(ntri, [&](std::size_t t) {
         key_lo[t] = GridKey{grid_quantize(rLo[t][0], Cell), grid_quantize(rLo[t][1], Cell),
                             grid_quantize(rLo[t][2], Cell)};
         key_hi[t] = GridKey{grid_quantize(rHi[t][0], Cell), grid_quantize(rHi[t][1], Cell),
                             grid_quantize(rHi[t][2], Cell)};
-        const std::int64_t nx = key_hi[t].x - key_lo[t].x + 1;
-        const std::int64_t ny = key_hi[t].y - key_lo[t].y + 1;
-        const std::int64_t nz = key_hi[t].z - key_lo[t].z + 1;
-        count[t] = nx > 0 && ny > 0 && nz > 0
-                       ? static_cast<std::uint64_t>(nx) * static_cast<std::uint64_t>(ny) *
-                             static_cast<std::uint64_t>(nz)
-                       : 0;
     });
-    std::vector<std::uint64_t> offset(ntri);
-    const std::uint64_t npairs =
-        parallel_exclusive_scan(count.data(), ntri, offset.data(), std::uint64_t{0});
-    std::vector<GridKey> keys(npairs);
-    parallel_for(ntri, [&](std::size_t t) {
-        GridKey* out = keys.data() + offset[t];
-        for (std::int64_t z = key_lo[t].z; z <= key_hi[t].z; ++z)
-            for (std::int64_t y = key_lo[t].y; y <= key_hi[t].y; ++y)
-                for (std::int64_t x = key_lo[t].x; x <= key_hi[t].x; ++x)
-                    *out++ = GridKey{x, y, z};
-    });
-    // About four pairs per counting-sort bucket; any bucket function gives the
-    // same runs, since a run is one key.
-    const std::size_t nbuckets = static_cast<std::size_t>(npairs / 4) + 1;
-    const SlotRuns runs = group_slots(
-        keys, nbuckets, [nbuckets](const GridKey& rK) { return GridKeyHash{}(rK) % nbuckets; },
-        [](const GridKey& rA, const GridKey& rB) {
-            if (rA.x != rB.x)
-                return rA.x < rB.x;
-            if (rA.y != rB.y)
-                return rA.y < rB.y;
-            return rA.z < rB.z;
-        });
-    // Slot -> triangle: the slots of triangle t are [offset[t], offset[t] + count[t]).
-    std::vector<std::int64_t> tri_of(npairs);
-    parallel_for(ntri, [&](std::size_t t) {
-        for (std::uint64_t k = 0; k < count[t]; ++k)
-            tri_of[offset[t] + k] = static_cast<std::int64_t>(t);
-    });
-    // Buckets in first-seen order, as the serial inserts met them, so the table
-    // lists them in the order the map once did. The ids of every bucket go
-    // into one flat array, each bucket at the offset the scan of the run sizes
-    // gives it, rather than into a vector per bucket.
-    const FirstSeen first = number_first_seen(runs, static_cast<std::size_t>(npairs));
-    const std::size_t nbuckets_out = first.NumIds();
-    std::vector<GridKey> bucket_keys(nbuckets_out);
-    std::vector<std::uint64_t> bucket_size(nbuckets_out);
-    parallel_for(nbuckets_out, [&](std::size_t b) {
-        const std::size_t r = static_cast<std::size_t>(first.mRunOfId[b]);
-        bucket_keys[b] = keys[runs.Head(r)];
-        bucket_size[b] = static_cast<std::uint64_t>(runs.Size(r));
-    });
-    std::vector<std::uint64_t> bucket_offset(nbuckets_out + 1);
-    const std::uint64_t total =
-        parallel_exclusive_scan(bucket_size.data(), nbuckets_out, bucket_offset.data(),
-                                std::uint64_t{0});
-    bucket_offset[nbuckets_out] = total;
-    std::vector<std::int64_t> bucket_ids(static_cast<std::size_t>(total));
-    parallel_for(nbuckets_out, [&](std::size_t b) {
-        const std::size_t r = static_cast<std::size_t>(first.mRunOfId[b]);
-        std::int64_t* out = bucket_ids.data() + bucket_offset[b];
-        for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p)
-            *out++ = tri_of[*p];
-    });
-    // The occupied box: InsertBox covers every triangle's low and high key.
-    GridKey lo = key_lo[0];
-    GridKey hi = key_hi[0];
-    for (std::size_t t = 0; t < ntri; ++t) {
-        lo = GridKey{std::min(lo.x, std::min(key_lo[t].x, key_hi[t].x)),
-                     std::min(lo.y, std::min(key_lo[t].y, key_hi[t].y)),
-                     std::min(lo.z, std::min(key_lo[t].z, key_hi[t].z))};
-        hi = GridKey{std::max(hi.x, std::max(key_lo[t].x, key_hi[t].x)),
-                     std::max(hi.y, std::max(key_lo[t].y, key_hi[t].y)),
-                     std::max(hi.z, std::max(key_lo[t].z, key_hi[t].z))};
-    }
-    return BucketTable(Cell, std::move(bucket_keys), std::move(bucket_offset),
-                       std::move(bucket_ids), lo, hi);
+    return build_bucket_table(Cell, key_lo, key_hi);
 }
 
 }  // namespace

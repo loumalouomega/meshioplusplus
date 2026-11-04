@@ -39,12 +39,13 @@
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
-#include "meshioplusplus/detail/spatial_hash.hpp"
+#include "meshioplusplus/detail/bucket_table.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/bucket_build.hpp"
 #include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
@@ -197,18 +198,19 @@ void interp_bbox(std::size_t n, TCoord&& coord, double* pLo, double* pHi) {
     }
 }
 
-// Fill `rGrid` with one id per coordinate: parallel key fill into disjoint
-// slots, then a serial ascending insert (surface.cpp's phase-split idiom, so
-// every bucket vector is ascending and scans over it are deterministic).
+// The point grid of `n` coordinates, id `i` for coordinate `i`: keys filled
+// in parallel, then grouped by `build_bucket_table` -- every bucket ascending,
+// as serial inserts in id order left the map this replaced (roadmap 5.4.1).
 template <class TCoord>
-void interp_fill_grid(detail::SpatialGrid& rGrid, std::size_t n, TCoord&& coord) {
+detail::BucketTable interp_point_grid(double Cell, std::size_t n, TCoord&& coord) {
     std::vector<detail::GridKey> keys(n);
     parallel_for(n, [&](std::size_t i) {
         const detail::Vec3 c = coord(i);
-        keys[i] = rGrid.KeyOf(c.data());
+        keys[i] =
+            detail::GridKey{detail::grid_quantize(c[0], Cell), detail::grid_quantize(c[1], Cell),
+                            detail::grid_quantize(c[2], Cell)};
     });
-    for (std::size_t i = 0; i < n; ++i)
-        rGrid.Insert(keys[i], static_cast<std::int64_t>(i));
+    return detail::build_bucket_table(Cell, keys, keys);
 }
 
 // Nearest id in `rGrid` to `rP` by expanding-shell search: any candidate in a
@@ -218,7 +220,7 @@ void interp_fill_grid(detail::SpatialGrid& rGrid, std::size_t n, TCoord&& coord)
 // Tie-break: smallest squared distance, then lowest id — enforced by the
 // strict comparison plus the ascending id order within every bucket.
 template <class TCoord>
-std::int64_t interp_nearest(const detail::SpatialGrid& rGrid, TCoord&& coord,
+std::int64_t interp_nearest(const detail::BucketTable& rGrid, TCoord&& coord,
                             const detail::Vec3& rP) {
     const detail::GridKey k = rGrid.KeyOf(rP.data());
     const detail::GridKey& klo = rGrid.OccupiedLo();
@@ -255,7 +257,7 @@ std::int64_t interp_nearest(const detail::SpatialGrid& rGrid, TCoord&& coord,
         }
         if (r > rcap)
             break;
-        rGrid.ForEachInShell(k, r, [&](const std::vector<std::int64_t>& rIds) {
+        rGrid.ForEachInShell(k, r, [&](const detail::BucketView& rIds) {
             for (std::int64_t id : rIds) {
                 const detail::Vec3 q = coord(id);
                 double d2 = 0.0;
@@ -496,9 +498,9 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             double lo[3], hi[3];
             interp_bbox(
                 ns, [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); }, lo, hi);
-            detail::SpatialGrid grid(interp_cell_size(lo, hi, ns));
-            interp_fill_grid(grid, ns,
-                             [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); });
+            const detail::BucketTable grid = interp_point_grid(
+                interp_cell_size(lo, hi, ns), ns,
+                [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); });
 
             std::vector<std::int64_t> nearest(nt);
             parallel_for(nt, [&](std::size_t t) {
@@ -559,17 +561,25 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             double lo[3], hi[3];
             interp_bbox(
                 ns, [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); }, lo, hi);
-            detail::SpatialGrid grid(interp_cell_size(lo, hi, nsimp));
+            const double cell = interp_cell_size(lo, hi, nsimp);
 
-            // Per-simplex quantized bbox keys: parallel fill, serial insert.
-            std::vector<std::pair<detail::GridKey, detail::GridKey>> boxes(nsimp);
+            // Per-simplex quantized bbox keys, filled in parallel and grouped
+            // into the frozen grid: each bucket ascending, as serial inserts
+            // in simplex order left it.
+            std::vector<detail::GridKey> box_lo(nsimp);
+            std::vector<detail::GridKey> box_hi(nsimp);
+            const auto key_of = [cell](const double* pC) {
+                return detail::GridKey{detail::grid_quantize(pC[0], cell),
+                                       detail::grid_quantize(pC[1], cell),
+                                       detail::grid_quantize(pC[2], cell)};
+            };
             parallel_for(nsimp, [&](std::size_t s) {
                 double blo[3], bhi[3];
                 interp_bbox(nv, [&](std::size_t k) { return scoord(sconn[s * nv + k]); }, blo, bhi);
-                boxes[s] = {grid.KeyOf(blo), grid.KeyOf(bhi)};
+                box_lo[s] = key_of(blo);
+                box_hi[s] = key_of(bhi);
             });
-            for (std::size_t s = 0; s < nsimp; ++s)
-                grid.InsertBox(boxes[s].first, boxes[s].second, static_cast<std::int64_t>(s));
+            const detail::BucketTable grid = detail::build_bucket_table(cell, box_lo, box_hi);
 
             // Containment: first containing simplex in ascending index (the
             // bucket vectors are ascending by construction).
@@ -577,11 +587,11 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             std::vector<std::array<double, 4>> wts(nt);
             parallel_for(nt, [&](std::size_t t) {
                 const detail::Vec3 p = detail::read_point(tpts, tdim, static_cast<std::int64_t>(t));
-                const std::vector<std::int64_t>* p_cand = grid.Find(grid.KeyOf(p.data()));
-                if (p_cand == nullptr)
+                detail::BucketView cand(nullptr, 0);
+                if (!grid.Find(grid.KeyOf(p.data()), cand))
                     return;
                 double w[4] = {0.0, 0.0, 0.0, 0.0};
-                for (std::int64_t s : *p_cand) {
+                for (std::int64_t s : cand) {
                     const std::int64_t* nodes = &sconn[static_cast<std::size_t>(s) * nv];
                     const bool inside = nv == 4 ? interp_tet_contains(spts, sdim, nodes, p, w)
                                                 : interp_tri_contains(spts, sdim, nodes, p, w);
@@ -601,9 +611,9 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
 
             std::vector<std::int64_t> near_of;
             if (n_outside > 0 && rOptions.mExtrapolate) {
-                detail::SpatialGrid pgrid(interp_cell_size(lo, hi, ns));
-                interp_fill_grid(
-                    pgrid, ns, [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); });
+                const detail::BucketTable pgrid = interp_point_grid(
+                    interp_cell_size(lo, hi, ns), ns,
+                    [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); });
                 near_of.assign(nt, -1);
                 parallel_for(nt, [&](std::size_t t) {
                     if (simplex_of[t] >= 0)
@@ -677,9 +687,9 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             interp_bbox(
                 src_total, [&](std::size_t i) { return ccoord(static_cast<std::int64_t>(i)); }, lo,
                 hi);
-            detail::SpatialGrid grid(interp_cell_size(lo, hi, src_total));
-            interp_fill_grid(grid, src_total,
-                             [&](std::size_t i) { return ccoord(static_cast<std::int64_t>(i)); });
+            const detail::BucketTable grid = interp_point_grid(
+                interp_cell_size(lo, hi, src_total), src_total,
+                [&](std::size_t i) { return ccoord(static_cast<std::int64_t>(i)); });
 
             std::vector<std::int64_t> nearest_cell(tgt_total);
             parallel_for(tgt_total, [&](std::size_t t) {
