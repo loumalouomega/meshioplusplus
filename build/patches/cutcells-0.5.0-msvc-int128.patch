@@ -1,0 +1,113 @@
+diff --git a/cpp/src/quadrays/box_bernstein.cpp b/cpp/src/quadrays/box_bernstein.cpp
+index a7ca282..7001139 100644
+--- a/cpp/src/quadrays/box_bernstein.cpp
++++ b/cpp/src/quadrays/box_bernstein.cpp
+@@ -13,6 +13,10 @@
+ #include <string>
+ #include <utility>
+ 
++#if defined(_MSC_VER) && !defined(__clang__)
++#include <intrin.h>
++#endif
++
+ namespace cutcells::quadrays
+ {
+ 
+@@ -186,7 +190,97 @@ int contract_constants(const BoxBernstein<T>& p, std::span<const T> origin, cons
+ // Simplex to box: fixed matrices in exact rational arithmetic
+ // ============================================================================
+ 
++#if defined(_MSC_VER) && !defined(__clang__)
++// MSVC has no __int128: a two's complement 128-bit integer with the few
++// operations the exact sums below use (the matrices are built once and cached).
++struct int128
++{
++    unsigned long long lo = 0, hi = 0;
++    int128() = default;
++    int128(long long v) : lo(static_cast<unsigned long long>(v)), hi(v < 0 ? ~0ULL : 0ULL) {}
++    bool negative() const { return (hi >> 63) != 0; }
++    explicit operator long double() const
++    {
++        const bool neg = negative();
++        const int128 m = neg ? -*this : *this;
++        const long double r = static_cast<long double>(m.hi) * 18446744073709551616.0L
++                              + static_cast<long double>(m.lo);
++        return neg ? -r : r;
++    }
++    friend int128 operator-(const int128& a)
++    {
++        int128 r;
++        r.lo = ~a.lo + 1;
++        r.hi = ~a.hi + (r.lo == 0 ? 1 : 0);
++        return r;
++    }
++    friend int128 operator+(const int128& a, const int128& b)
++    {
++        int128 r;
++        r.lo = a.lo + b.lo;
++        r.hi = a.hi + b.hi + (r.lo < a.lo ? 1 : 0);
++        return r;
++    }
++    friend int128 operator-(const int128& a, const int128& b) { return a + (-b); }
++    friend int128 operator*(const int128& a, const int128& b)
++    {
++        unsigned long long carry = 0;
++        int128 r;
++        r.lo = _umul128(a.lo, b.lo, &carry);
++        r.hi = carry + a.lo * b.hi + a.hi * b.lo;
++        return r;
++    }
++    // Unsigned long division; the quotient truncates toward zero and the
++    // remainder takes the dividend's sign, as for the built-in types.
++    static void divmod(const int128& a, const int128& b, int128& q, int128& r)
++    {
++        const bool na = a.negative(), nb = b.negative();
++        const int128 ua = na ? -a : a, ub = nb ? -b : b;
++        int128 quot, rem;
++        for (int i = 127; i >= 0; --i)
++        {
++            rem.hi = (rem.hi << 1) | (rem.lo >> 63);
++            rem.lo = (rem.lo << 1) | (((i >= 64 ? ua.hi >> (i - 64) : ua.lo >> i)) & 1ULL);
++            if (rem.hi > ub.hi || (rem.hi == ub.hi && rem.lo >= ub.lo))
++            {
++                const unsigned long long lo = rem.lo - ub.lo;
++                rem.hi = rem.hi - ub.hi - (rem.lo < ub.lo ? 1 : 0);
++                rem.lo = lo;
++                (i >= 64 ? quot.hi : quot.lo) |= 1ULL << (i % 64);
++            }
++        }
++        q = na != nb ? -quot : quot;
++        r = na ? -rem : rem;
++    }
++    friend int128 operator/(const int128& a, const int128& b)
++    {
++        int128 q, r;
++        divmod(a, b, q, r);
++        return q;
++    }
++    friend int128 operator%(const int128& a, const int128& b)
++    {
++        int128 q, r;
++        divmod(a, b, q, r);
++        return r;
++    }
++    int128& operator+=(const int128& b) { return *this = *this + b; }
++    int128& operator*=(const int128& b) { return *this = *this * b; }
++    friend bool operator==(const int128& a, const int128& b) { return a.lo == b.lo && a.hi == b.hi; }
++    friend bool operator!=(const int128& a, const int128& b) { return !(a == b); }
++    friend bool operator<(const int128& a, const int128& b)
++    {
++        if (a.negative() != b.negative())
++            return a.negative();
++        return a.hi < b.hi || (a.hi == b.hi && a.lo < b.lo);
++    }
++    friend bool operator>(const int128& a, const int128& b) { return b < a; }
++    friend bool operator>=(const int128& a, const int128& b) { return !(a < b); }
++    friend bool operator<=(const int128& a, const int128& b) { return !(b < a); }
++};
++#else
+ __extension__ typedef __int128 int128; // exact sums of the simplex-to-box matrices
++#endif
+ 
+ int128 gcd128(int128 a, int128 b)
+ {

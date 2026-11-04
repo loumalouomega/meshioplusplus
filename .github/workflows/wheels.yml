@@ -65,7 +65,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/cutcells-win
-          key: cutcells-wheels-windows-${{ hashFiles('build/build-cutcells.sh', 'build/deps-pins.sh') }}
+          key: cutcells-wheels-windows-${{ hashFiles('build/build-cutcells.sh', 'build/deps-pins.sh', 'build/patches/cutcells-*.patch') }}
 
       - name: Build CutCells (static, Windows)
         if: runner.os == 'Windows'

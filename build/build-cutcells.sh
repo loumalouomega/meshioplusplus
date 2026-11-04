@@ -74,6 +74,16 @@ git -C "$SRC" checkout --quiet "$CUTCELLS_COMMIT"
 [ "$(git -C "$SRC" rev-parse HEAD)" = "$CUTCELLS_COMMIT" ] || {
     echo "build-cutcells: the clone is not at $CUTCELLS_COMMIT" >&2; exit 1; }
 
+# MSVC has no __int128, which CutCells' quadrays code uses for exact rational
+# sums: the patch gives it a small 128-bit integer there and leaves every other
+# compiler on the original typedef. Applied once (a rerun finds it applied).
+PATCH="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/patches/cutcells-$CUTCELLS_VERSION-msvc-int128.patch"
+if git -C "$SRC" apply --reverse --check "$PATCH" 2>/dev/null; then
+    :   # already applied
+else
+    git -C "$SRC" apply "$PATCH"
+fi
+
 # shellcheck disable=SC2086  # PLATFORM_CMAKE is meant to word-split
 cmake -S "$SRC/cpp" -B "$WORK/build" -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib \
