@@ -16,6 +16,7 @@ source checkout's ``src`` directory; it is pure Python) or as an installed
 Usage (see also 01_benchmark.ipynb)::
 
     python benchmark/bench.py --sizes S,M --formats vtu,gmsh --out results_all.csv
+    python benchmark/bench.py --sizes L --formats vtu,stl_binary --memory
 
 or, from Python::
 
@@ -89,6 +90,10 @@ SIZES = {"S": 16, "M": 36, "L": 56}
 SINGLE_TYPE_INPUTS = {"mfm": "volume"}
 POINT_FIELD_INPUTS = {"dex": "benchmark:field"}
 
+# Rows for an encoding a format's default write does not reach: name ->
+# (format, write keyword arguments, input kind). STL writes ASCII by default.
+VARIANTS = {"stl_binary": ("stl", {"binary": True}, "surface")}
+
 
 def all_formats():
     """One spec per format meshio++ both writes and reads back, by input kind.
@@ -120,7 +125,8 @@ def all_formats():
             out.append((fmt, "surface"))
         elif spec["points"] in ("exact", "approx"):
             out.append((fmt, "points"))
-    return out
+    out += [(name, kind) for name, (_, _, kind) in VARIANTS.items()]
+    return sorted(out)
 
 
 def _median(fn, repeats, warmup=1):
@@ -232,17 +238,119 @@ def _input_for_format(mesh, fmt):
     )
 
 
-def run_all(sizes=("S",), formats=None, repeats=3):
-    """Time a write and a read of every registry format; returns records."""
+def _status_mb(field):
+    """``VmRSS`` or ``VmHWM`` from ``/proc/self/status``, in MB (Linux)."""
+    with open("/proc/self/status") as fh:
+        for line in fh:
+            if line.startswith(field + ":"):
+                return int(line.split()[1]) / 1024
+    raise OSError(field)
+
+
+def _reset_peak():
+    """Start a fresh high-water mark: the RSS now, with ``VmHWM`` reset to it
+    where the kernel allows (Linux ``clear_refs`` 5); elsewhere the process's
+    peak so far (``ru_maxrss``, KB on Linux and bytes on macOS), which the
+    measurement then only exceeds."""
+    try:
+        with open("/proc/self/clear_refs", "w") as fh:
+            fh.write("5")
+        return _status_mb("VmRSS")
+    except OSError:
+        import resource
+
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return peak / (1 << 20) if sys.platform == "darwin" else peak / 1024
+
+
+def _peak_mb():
+    try:
+        return _status_mb("VmHWM")
+    except OSError:
+        import resource
+
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return peak / (1 << 20) if sys.platform == "darwin" else peak / 1024
+
+
+def _save_input(mesh, path):
+    """The input geometry as an ``.npz`` a fresh process loads without the
+    transient peak of building it (``extract_surface`` and the like)."""
+    arrays = {"points": mesh.points}
+    for k, block in enumerate(mesh.cells):
+        arrays[f"cells{k}_{block.type}"] = block.data
+    for name, values in mesh.point_data.items():
+        arrays[f"point_data:{name}"] = values
+    np.savez(path, **arrays)
+
+
+def _load_input(path):
+    with np.load(path) as z:
+        cells = [
+            (key.split("_", 1)[1], z[key]) for key in z.files if key.startswith("cells")
+        ]
+        point_data = {
+            key.split(":", 1)[1]: z[key]
+            for key in z.files
+            if key.startswith("point_data:")
+        }
+        return pp.Mesh(z["points"], cells, point_data=point_data)
+
+
+def _measure(argv):
+    """The child of ``--memory``: one write or one read, then the peak RSS it
+    added over what the process held before it, printed in MB."""
+    op, fmt, path, input_path, write_kwargs = argv[0], argv[1], argv[2], argv[3], {}
+    import json
+
+    write_kwargs = json.loads(argv[4])
+    mesh = _load_input(input_path) if op == "write" else None
+    # Load the format and the core first: the measurement is the operation's.
+    from meshioplusplus import _core  # noqa: F401
+    from meshioplusplus._helpers import _ensure_format
+
+    _ensure_format(fmt)
+    before = _reset_peak()
+    if op == "write":
+        pp.write(path, mesh, file_format=fmt, **write_kwargs)
+    else:
+        pp.read(path, file_format=fmt)
+    print(f"{_peak_mb() - before:.1f}")
+    return 0
+
+
+def _peak_in_child(op, fmt, path, input_path, write_kwargs):
+    """Peak RSS (MB) one write or read adds, in a fresh interpreter, so one
+    row's high-water mark cannot hide the next one's."""
+    import json
+    import subprocess
+
+    out = subprocess.run(
+        [sys.executable, __file__, "--_measure", op, fmt, str(path), str(input_path)]
+        + [json.dumps(write_kwargs)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return float(out.stdout.strip().splitlines()[-1])
+
+
+def run_all(sizes=("S",), formats=None, repeats=3, memory=False):
+    """Time a write and a read of every registry format; returns records.
+
+    With ``memory``, each row also carries the peak resident memory its write
+    and its read add (``write_peak_mb``, ``read_peak_mb``), measured in a
+    fresh process per operation (roadmap 5.1.3)."""
     import conformance_spec as cs
 
     wanted = set(formats) if formats else None
     records = []
     for size in sizes:
         meshes = _inputs(size)
-        for fmt, kind in all_formats():
-            if wanted and fmt not in wanted:
+        for name, kind in all_formats():
+            if wanted and name not in wanted:
                 continue
+            fmt, write_kwargs, _ = VARIANTS.get(name, (name, {}, kind))
             mesh = _input_for_format(meshes[kind], fmt)
             with tempfile.TemporaryDirectory() as tmp:
                 path = cs._target(pathlib.Path(tmp), fmt)
@@ -250,28 +358,43 @@ def run_all(sizes=("S",), formats=None, repeats=3):
                     path.mkdir(parents=True, exist_ok=True)
                 read_as = cs._READ_AS.get(fmt, fmt)
                 try:
-                    pp.write(path, mesh, file_format=fmt)
+                    pp.write(path, mesh, file_format=fmt, **write_kwargs)
                     pp.read(path, file_format=read_as)
                 except Exception as exc:  # reported, not fatal: the sweep goes on
-                    print(f"  skip {fmt} ({size}): {type(exc).__name__}: {exc}")
+                    print(f"  skip {name} ({size}): {type(exc).__name__}: {exc}")
                     continue
                 rec = {
                     "size": size,
-                    "format": fmt,
+                    "format": name,
                     "input": kind,
                     "cells": sum(len(b.data) for b in mesh.cells),
                     "bytes": _total_size(path),
                     "write_s": _median(
-                        lambda: pp.write(path, mesh, file_format=fmt), repeats
+                        lambda: pp.write(path, mesh, file_format=fmt, **write_kwargs),
+                        repeats,
                     ),
                     "read_s": _median(
                         lambda: pp.read(path, file_format=read_as), repeats
                     ),
                 }
+                if memory:
+                    saved = pathlib.Path(tmp) / "input.npz"
+                    _save_input(mesh, saved)
+                    rec["write_peak_mb"] = _peak_in_child(
+                        "write", fmt, path, saved, write_kwargs
+                    )
+                    rec["read_peak_mb"] = _peak_in_child(
+                        "read", read_as, path, saved, {}
+                    )
             records.append(rec)
+            peaks = (
+                f"  peak +{rec['write_peak_mb']:7.1f} / +{rec['read_peak_mb']:7.1f} MB"
+                if memory
+                else ""
+            )
             print(
-                f"  {size} {fmt:14s} {kind:8s} write {rec['write_s'] * 1e3:8.1f} ms  "
-                f"read {rec['read_s'] * 1e3:8.1f} ms"
+                f"  {size} {name:14s} {kind:8s} write {rec['write_s'] * 1e3:8.1f} ms  "
+                f"read {rec['read_s'] * 1e3:8.1f} ms{peaks}"
             )
     return records
 
@@ -295,12 +418,22 @@ def main(argv=None):
     ap.add_argument("--formats", default="", help="comma-separated subset")
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--out", default="results_all.csv")
+    ap.add_argument(
+        "--memory",
+        action="store_true",
+        help="also record each write's and read's peak RSS, one subprocess each",
+    )
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--_measure"]:
+        return _measure(argv[1:])
     args = ap.parse_args(argv)
     sizes = [s for s in args.sizes.split(",") if s]
     unknown = set(sizes) - set(SIZES)
     if unknown:
         ap.error(f"unknown size(s): {', '.join(sorted(unknown))}")
-    records = run_all(sizes, [f for f in args.formats.split(",") if f], args.repeats)
+    records = run_all(
+        sizes, [f for f in args.formats.split(",") if f], args.repeats, args.memory
+    )
     write_csv(records, args.out)
     print(f"wrote {len(records)} rows to {args.out}")
     return 0

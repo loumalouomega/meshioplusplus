@@ -799,7 +799,16 @@ An explicitly tested single-type exception also participates: MFM rejects the mi
 python benchmark/bench.py --sizes S,M --out results_all.csv            # every format
 python benchmark/bench.py --sizes L --formats vtu,gmsh22,xdmf,med      # a subset
 python benchmark/bench.py --sizes M,L --formats mfm --repeats 7      # single-type MFM
+python benchmark/bench.py --sizes L --formats vtu,stl_binary --memory  # with peak RSS
 ```
+
+A format's default write is one encoding; `VARIANTS` adds a row for another, so far `stl_binary` (STL written with `binary=True`, read back by the same reader). `--memory` adds `write_peak_mb` and `read_peak_mb` (roadmap 5.1.3): each write and each read runs again in a fresh interpreter that first loads the input (from an `.npz`, without the transient peak of building it), the format and `_core`, then resets the high-water mark (`/proc/self/clear_refs`, Linux) and reports how far the operation raised it above the resident set it started from. Elsewhere the reset is not available and the column is the rise over the process's earlier peak, a lower bound. One subprocess per operation makes the sweep slower, so the flag is off by default.
+
+| `--sizes M --memory` | write | read | write peak | read peak |
+| --- | ---: | ---: | ---: | ---: |
+| `stl` (ASCII) | 55.8 ms | 18.6 ms | +2.2 MB | +9.1 MB |
+| `stl_binary` | 2.7 ms | 3.5 ms | +2.1 MB | +2.7 MB |
+| `vtu` | 160.0 ms | 70.9 ms | +17.7 MB | +27.1 MB |
 
 The sizes are 6·(n−1)³ tetrahedra for n = 16, 36 and 56 points per edge (about 20k, 250k and 1M). Legacy meshio is optional here: with `MESHIO_LEGACY_SRC` pointing at a source checkout's `src`, or `meshio` installed, the curated comparison above fills its legacy columns; without it only the meshio++ columns are written.
 
