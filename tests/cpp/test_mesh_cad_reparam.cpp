@@ -183,10 +183,18 @@ void report(const char* pName, const MeshCadSurfaceResult& rR,
         std::printf("      warning: %s\n", r_w.c_str());
 }
 
+// Every extra off: the baseline the options are compared with. Model
+// tolerances and virtual faces are on by default since v19.0.0.
+mio::MeshCadSurfaceExtras extras_off() {
+    mio::MeshCadSurfaceExtras e;
+    e.mModelTolerances = false;
+    e.mVirtualFaces = false;
+    return e;
+}
+
 MeshCadSurfaceResult run(const mio::BrepInfo& rB, const MeshCadSurfaceOptions& rO,
                          mio::MeshCadSurfaceExtrasReport* pX = nullptr) {
-    return mio::mesh_cad_surface(rB, rO, mio::MeshCadSizeSources{}, mio::MeshCadSurfaceExtras{},
-                                 nullptr, pX);
+    return mio::mesh_cad_surface(rB, rO, mio::MeshCadSizeSources{}, extras_off(), nullptr, pX);
 }
 
 // Three plates in the plane z = 0, each its own patch: [0, 1] x [0, 1], the
@@ -538,7 +546,7 @@ TEST(MeshCadVirtualFaces, ASliverStripIsMeshedWithItsNeighbour) {
         const double w = h / 20.0;
         const mio::BrepInfo b = sliver_strip(w);
         const auto alone = run(b, quality(h, 25.0));
-        mio::MeshCadSurfaceExtras extras;
+        mio::MeshCadSurfaceExtras extras = extras_off();
         extras.mVirtualFaces = true;
         mio::MeshCadSurfaceExtrasReport x;
         const auto r = mio::mesh_cad_surface(b, quality(h, 25.0), mio::MeshCadSizeSources{}, extras,
@@ -600,7 +608,7 @@ TEST(MeshCadVirtualFaces, ASliverStripIsMeshedWithItsNeighbour) {
 TEST(MeshCadVirtualFaces, ACreaseIsDeclinedAndOptionsAreChecked) {
     const double h = 0.2;
     const mio::BrepInfo b = sliver_strip(h / 20.0, true);
-    mio::MeshCadSurfaceExtras extras;
+    mio::MeshCadSurfaceExtras extras = extras_off();
     extras.mVirtualFaces = true;
     mio::MeshCadSurfaceExtrasReport x;
     const auto r =
@@ -630,7 +638,7 @@ TEST(MeshCadTolerances, ADeclaredToleranceJoinsAClosedEdgesStarts) {
     const MeshCadSurfaceOptions o = quality(0.2, 0.0);
     const auto off = run(b, o);
     EXPECT_EQ(off.mNumFailed, 1);
-    mio::MeshCadSurfaceExtras extras;
+    mio::MeshCadSurfaceExtras extras = extras_off();
     extras.mModelTolerances = true;
     mio::MeshCadSurfaceExtrasReport x;
     const auto r = mio::mesh_cad_surface(b, o, mio::MeshCadSizeSources{}, extras, nullptr, &x);
@@ -688,7 +696,7 @@ TEST(MeshCadTolerances, TheModelsTolerancePairsTheTrimsNoEdgeNames) {
     const MeshCadSurfaceOptions o = quality(0.2, 0.0);
     const auto off = run(b, o);
     EXPECT_EQ(off.mNumEdges, 16);
-    mio::MeshCadSurfaceExtras extras;
+    mio::MeshCadSurfaceExtras extras = extras_off();
     extras.mModelTolerances = true;
     mio::MeshCadSurfaceExtrasReport x;
     const auto r = mio::mesh_cad_surface(b, o, mio::MeshCadSizeSources{}, extras, nullptr, &x);
@@ -731,7 +739,7 @@ TEST(MeshCadTolerances, AVertexsToleranceAcceptsItsCorner) {
     for (std::size_t e = 0; e < b.mEdges.size(); ++e)
         b.mEdges[e].mExtra = top[e] ? R"({"tolerance":0.01})" : R"({"tolerance":1e-6})";
     const MeshCadSurfaceOptions o = quality(0.2, 0.0);
-    mio::MeshCadSurfaceExtras extras;
+    mio::MeshCadSurfaceExtras extras = extras_off();
     extras.mModelTolerances = true;
     const auto edges_only = mio::mesh_cad_surface(b, o, mio::MeshCadSizeSources{}, extras);
     EXPECT_GT(edges_only.mNumFailed, 0);
@@ -974,7 +982,7 @@ TEST(MeshCadVirtualFaces, AChainOfSliverStripsJoinsOneHost) {
     const double h = 0.2, w = h / 20.0;
     const mio::BrepInfo b = sliver_chain(w, 3, false);
     const auto alone = run(b, quality(h, 25.0));
-    mio::MeshCadSurfaceExtras extras;
+    mio::MeshCadSurfaceExtras extras = extras_off();
     extras.mVirtualFaces = true;
     mio::MeshCadSurfaceExtrasReport x;
     const auto r =
@@ -1024,7 +1032,7 @@ TEST(MeshCadVirtualFaces, AChainOfSliversAloneIsHostedByItsWidest) {
     const std::vector<double> ys{0.0, w, 3.0 * w, 4.0 * w};
     const mio::BrepInfo b = bands(ys);
     const auto alone = run(b, quality(h, 25.0));
-    mio::MeshCadSurfaceExtras extras;
+    mio::MeshCadSurfaceExtras extras = extras_off();
     extras.mVirtualFaces = true;
     mio::MeshCadSurfaceExtrasReport x;
     const auto r =
@@ -1062,7 +1070,7 @@ TEST(MeshCadVirtualFaces, AChainOfSliversAloneIsHostedByItsWidest) {
 TEST(MeshCadVirtualFaces, ASliverBetweenTwoMergedGroupsJoinsOne) {
     const double h = 0.2, w = h / 20.0;
     const mio::BrepInfo b = sliver_chain(w, 3, true);
-    mio::MeshCadSurfaceExtras extras;
+    mio::MeshCadSurfaceExtras extras = extras_off();
     extras.mVirtualFaces = true;
     mio::MeshCadSurfaceExtrasReport x;
     const auto r =
