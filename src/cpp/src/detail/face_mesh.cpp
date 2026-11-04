@@ -30,6 +30,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "face_skin.hpp"
 #include "slot_runs.hpp"
 
 namespace meshioplusplus {
@@ -61,8 +62,27 @@ GlobalFaces build_global_faces(const Mesh& rMesh) {
     return build_global_faces(rMesh, {});
 }
 
-GlobalFaces build_global_faces(const Mesh& rMesh, const std::vector<std::size_t>& rBlocks) {
-    GlobalFaces out;
+namespace {
+
+// Phases 0 to 2 of build_global_faces, shared with build_selection_skin:
+// the compact cell space and every cell's outward-wound face rings, one slot
+// per (compact cell, local face), ascending.
+struct FmSlots {
+    std::vector<std::size_t> mNonCellBlocks;
+    std::vector<std::int64_t> mCellToGlobal;
+    std::vector<std::int64_t> mCellFaceStart;  ///< `n_cells + 1` slot offsets
+    std::vector<std::int64_t> mSlotSize;       ///< per slot: its ring's size
+    std::vector<std::int64_t> mSlotStart;      ///< `n_slots + 1` offsets into mSlotNodes
+    std::vector<std::int64_t> mSlotNodes;
+    std::int64_t mNumFlipped = 0;
+    std::int64_t mNumUnorientable = 0;
+
+    std::size_t NumCells() const { return mCellToGlobal.size(); }
+    std::size_t NumSlots() const { return mSlotSize.size(); }
+};
+
+FmSlots fm_build_slots(const Mesh& rMesh, const std::vector<std::size_t>& rBlocks) {
+    FmSlots out;
 
     // Empty means "every block"; that is what the one-argument form passes, so
     // there is exactly one implementation rather than two that could drift.
@@ -103,29 +123,14 @@ GlobalFaces build_global_faces(const Mesh& rMesh, const std::vector<std::size_t>
             out.mCellToGlobal[d.mFirstCell + i] = base + static_cast<std::int64_t>(i);
     }
 
-    // ---- Phase 1: face counts and ring sizes ----------------------------
+    // ---- Phase 1: face and ring-node counts per cell --------------------
     // `cell_rings` is a gather, so running it twice is cheap; `orient_rings`
     // (the BFS) runs only in phase 2. Counting first is what lets phase 2 write
     // straight into pre-sized buffers instead of holding a per-cell vector pair
-    // for the whole mesh -- on a ten-million-cell case that is gigabytes.
+    // for the whole mesh -- on a ten-million-cell case that is gigabytes. The
+    // node count is what lets phase 2 place each ring without a third pass.
     std::vector<std::int64_t> n_cell_faces(n_cells, 0);
-    for (const FmBlockDesc& d : descs) {
-        const auto cb = rMesh.Cells(d.mBlock);
-        parallel_for(d.mNumCells, [&](std::size_t i) {
-            static thread_local CellRings rings;
-            static thread_local std::vector<Vec3> coords;
-            if (cell_rings(cb, i, points, dim, rings, coords))
-                n_cell_faces[d.mFirstCell + i] = static_cast<std::int64_t>(rings.NumFaces());
-        });
-    }
-
-    out.mCellFaceStart.resize(n_cells + 1);
-    out.mCellFaceStart[n_cells] = parallel_exclusive_scan(
-        n_cell_faces.data(), n_cells, out.mCellFaceStart.data(), std::int64_t{0});
-    const std::size_t n_slots = static_cast<std::size_t>(out.mCellFaceStart[n_cells]);
-
-    // Ring sizes per slot, then their prefix, so phase 2's writes are disjoint.
-    std::vector<std::int64_t> slot_size(n_slots, 0);
+    std::vector<std::int64_t> n_cell_nodes(n_cells, 0);
     for (const FmBlockDesc& d : descs) {
         const auto cb = rMesh.Cells(d.mBlock);
         parallel_for(d.mNumCells, [&](std::size_t i) {
@@ -133,18 +138,31 @@ GlobalFaces build_global_faces(const Mesh& rMesh, const std::vector<std::size_t>
             static thread_local std::vector<Vec3> coords;
             if (!cell_rings(cb, i, points, dim, rings, coords))
                 return;
-            const std::size_t base = static_cast<std::size_t>(out.mCellFaceStart[d.mFirstCell + i]);
+            std::int64_t nodes = 0;
             for (std::size_t f = 0; f < rings.NumFaces(); ++f)
-                slot_size[base + f] = static_cast<std::int64_t>(rings.FaceSize(f));
+                nodes += static_cast<std::int64_t>(rings.FaceSize(f));
+            n_cell_faces[d.mFirstCell + i] = static_cast<std::int64_t>(rings.NumFaces());
+            n_cell_nodes[d.mFirstCell + i] = nodes;
         });
     }
 
-    std::vector<std::int64_t> slot_start(n_slots + 1);
-    slot_start[n_slots] =
-        parallel_exclusive_scan(slot_size.data(), n_slots, slot_start.data(), std::int64_t{0});
+    out.mCellFaceStart.resize(n_cells + 1);
+    out.mCellFaceStart[n_cells] = parallel_exclusive_scan(
+        n_cell_faces.data(), n_cells, out.mCellFaceStart.data(), std::int64_t{0});
+    const std::size_t n_slots = static_cast<std::size_t>(out.mCellFaceStart[n_cells]);
+    std::vector<std::int64_t> cell_node_start(n_cells + 1);
+    cell_node_start[n_cells] = parallel_exclusive_scan(n_cell_nodes.data(), n_cells,
+                                                       cell_node_start.data(), std::int64_t{0});
+    std::vector<std::int64_t>().swap(n_cell_faces);
+    std::vector<std::int64_t>().swap(n_cell_nodes);
 
     // ---- Phase 2: build every cell's outward-wound rings ----------------
-    std::vector<std::int64_t> slot_nodes(static_cast<std::size_t>(slot_start[n_slots]));
+    // A cell's rings are contiguous and in local-face order, so each slot's
+    // start is its cell's node start plus the sizes of the slots before it.
+    out.mSlotSize.assign(n_slots, 0);
+    out.mSlotStart.resize(n_slots + 1);
+    out.mSlotStart[n_slots] = cell_node_start[n_cells];
+    out.mSlotNodes.resize(static_cast<std::size_t>(cell_node_start[n_cells]));
     std::vector<std::uint8_t> cell_flipped(n_cells, 0);
     std::vector<std::uint8_t> cell_unorientable(n_cells, 0);
 
@@ -166,12 +184,16 @@ GlobalFaces build_global_faces(const Mesh& rMesh, const std::vector<std::size_t>
                 cell_unorientable[cell] = 1;
 
             const std::size_t base = static_cast<std::size_t>(out.mCellFaceStart[cell]);
+            std::int64_t at = cell_node_start[cell];
             for (std::size_t f = 0; f < rings.NumFaces(); ++f) {
                 const std::uint32_t* ring = rings.Face(f);
                 const std::size_t n = rings.FaceSize(f);
-                std::int64_t* dst = slot_nodes.data() + slot_start[base + f];
+                out.mSlotSize[base + f] = static_cast<std::int64_t>(n);
+                out.mSlotStart[base + f] = at;
+                std::int64_t* dst = out.mSlotNodes.data() + at;
                 for (std::size_t k = 0; k < n; ++k)
                     dst[k] = rings.mNodes[ring[k]];
+                at += static_cast<std::int64_t>(n);
             }
         });
     }
@@ -180,6 +202,41 @@ GlobalFaces build_global_faces(const Mesh& rMesh, const std::vector<std::size_t>
         out.mNumFlipped += cell_flipped[c];
         out.mNumUnorientable += cell_unorientable[c];
     }
+    return out;
+}
+
+// Phase 3's grouping: the slots holding one corner set, as runs, and each
+// slot's compact cell.
+SlotRuns fm_group_slots(const Mesh& rMesh, const FmSlots& rSlots,
+                        std::vector<std::int64_t>& rCellOfSlot) {
+    const std::size_t n_cells = rSlots.NumCells();
+    const std::size_t n_slots = rSlots.NumSlots();
+    rCellOfSlot.resize(n_slots);
+    parallel_for(n_cells, [&](std::size_t c) {
+        for (auto s = rSlots.mCellFaceStart[c]; s < rSlots.mCellFaceStart[c + 1]; ++s)
+            rCellOfSlot[static_cast<std::size_t>(s)] = static_cast<std::int64_t>(c);
+    });
+    std::vector<FacetKey> keys(n_slots);
+    parallel_for(n_slots, [&](std::size_t s) {
+        keys[s] = FacetKey(rSlots.mSlotNodes.data() + rSlots.mSlotStart[s],
+                           static_cast<std::size_t>(rSlots.mSlotSize[s]));
+    });
+    return group_facet_slots(
+        keys, [](const FacetKey& rK) -> const FacetKey& { return rK; }, rMesh.NumPoints());
+}
+
+}  // namespace
+
+GlobalFaces build_global_faces(const Mesh& rMesh, const std::vector<std::size_t>& rBlocks) {
+    GlobalFaces out;
+    FmSlots slots = fm_build_slots(rMesh, rBlocks);
+    out.mNonCellBlocks = std::move(slots.mNonCellBlocks);
+    out.mNumFlipped = slots.mNumFlipped;
+    out.mNumUnorientable = slots.mNumUnorientable;
+    const std::size_t n_slots = slots.NumSlots();
+    const std::vector<std::int64_t>& slot_size = slots.mSlotSize;
+    const std::vector<std::int64_t>& slot_start = slots.mSlotStart;
+    const std::vector<std::int64_t>& slot_nodes = slots.mSlotNodes;
 
     // ---- Phase 3: first-seen dedup ---------------------------------------
     // Slot order is ascending (compact cell, local face), and face ids are
@@ -190,19 +247,8 @@ GlobalFaces build_global_faces(const Mesh& rMesh, const std::vector<std::size_t>
     // sweep from a parallel sort: a face's owner is the cell of its first slot,
     // its neighbour the cell of its second, and every further slot is one more
     // non-manifold use.
-    std::vector<std::int64_t> cell_of_slot(n_slots);
-    parallel_for(n_cells, [&](std::size_t c) {
-        for (auto s = out.mCellFaceStart[c]; s < out.mCellFaceStart[c + 1]; ++s)
-            cell_of_slot[static_cast<std::size_t>(s)] = static_cast<std::int64_t>(c);
-    });
-    std::vector<FacetKey> keys(n_slots);
-    parallel_for(n_slots, [&](std::size_t s) {
-        keys[s] =
-            FacetKey(slot_nodes.data() + slot_start[s], static_cast<std::size_t>(slot_size[s]));
-    });
-    const SlotRuns runs = group_facet_slots(
-        keys, [](const FacetKey& rK) -> const FacetKey& { return rK; }, rMesh.NumPoints());
-    std::vector<FacetKey>().swap(keys);
+    std::vector<std::int64_t> cell_of_slot;
+    const SlotRuns runs = fm_group_slots(rMesh, slots, cell_of_slot);
     const FirstSeen seen = number_first_seen(runs, n_slots);
     const std::size_t n_faces = seen.NumIds();
 
@@ -244,6 +290,53 @@ GlobalFaces build_global_faces(const Mesh& rMesh, const std::vector<std::size_t>
         },
         [](std::int64_t acc, std::int64_t part) { return acc + part; });
 
+    out.mCellToGlobal = std::move(slots.mCellToGlobal);
+    out.mCellFaceStart = std::move(slots.mCellFaceStart);
+    return out;
+}
+
+SelectionSkin build_selection_skin(const Mesh& rMesh, const std::vector<std::uint8_t>& rSelected) {
+    SelectionSkin out;
+    const FmSlots slots = fm_build_slots(rMesh, {});
+    out.mNumCells = slots.NumCells();
+    if (out.mNumCells == 0)
+        return out;
+    std::vector<std::int64_t> cell_of_slot;
+    const SlotRuns runs = fm_group_slots(rMesh, slots, cell_of_slot);
+    const auto in = [&](std::uint64_t Slot) {
+        const std::int64_t global =
+            slots.mCellToGlobal[static_cast<std::size_t>(cell_of_slot[Slot])];
+        return rSelected[static_cast<std::size_t>(global)] != 0;
+    };
+    // A face is on the skin when exactly one of its first two cells (its
+    // owner and neighbour in `build_global_faces`) is selected; a further,
+    // non-manifold use does not count, as it does not there. Keep the head
+    // slot, marked when the face is wound out of the neighbour (reversed).
+    const std::size_t nruns = runs.NumRuns();
+    std::vector<std::uint64_t> pick(nruns);
+    parallel_for(nruns, [&](std::size_t r) {
+        const std::uint64_t head = runs.Head(r);
+        const bool own = in(head);
+        const bool nb = runs.Size(r) > 1 && in(runs.Begin(r)[1]);
+        // Slot ids fit in 63 bits; bit 0 carries the reversal, so sorting the
+        // packed values sorts by head slot.
+        pick[r] = own == nb ? ~std::uint64_t{0} : (head << 1) | (own ? 0u : 1u);
+    });
+    // Face ids ascend with their head slot, so this is face-id order.
+    pick.erase(std::remove(pick.begin(), pick.end(), ~std::uint64_t{0}), pick.end());
+    parallel_sort(pick.begin(), pick.end());
+    out.mFaceStart.resize(pick.size() + 1);
+    out.mFaceStart[0] = 0;
+    for (std::size_t f = 0; f < pick.size(); ++f)
+        out.mFaceStart[f + 1] = out.mFaceStart[f] + slots.mSlotSize[pick[f] >> 1];
+    out.mFaceNodes.resize(static_cast<std::size_t>(out.mFaceStart[pick.size()]));
+    out.mReversed.resize(pick.size());
+    parallel_for(pick.size(), [&](std::size_t f) {
+        const std::uint64_t head = pick[f] >> 1;
+        out.mReversed[f] = static_cast<std::uint8_t>(pick[f] & 1u);
+        std::copy_n(slots.mSlotNodes.data() + slots.mSlotStart[head], slots.mSlotSize[head],
+                    out.mFaceNodes.data() + out.mFaceStart[f]);
+    });
     return out;
 }
 

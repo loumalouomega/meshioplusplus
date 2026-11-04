@@ -288,11 +288,40 @@ inline meshioplusplus::CellBlock ragged_cellblock_from_py(std::string type, py::
     cb.mType = std::move(type);
     // Straight into the CSR storage (backends/meshio_mesh.hpp), one row at a
     // time: no per-cell vector.
+    //
+    // A row that is already a C-contiguous int64 1-D array is taken by
+    // reference, without `ensure`'s conversion call, and rows that sit back to
+    // back in memory -- the views into one buffer that `mesh_to_py` and the
+    // readers hand out -- are gathered into one span and copied in a single
+    // insert (roadmap 5.6). Every row stays alive in `data_obj` meanwhile.
+    using I64Row = py::array_t<std::int64_t, py::array::c_style>;
+    const std::int64_t* span_begin = nullptr;
+    const std::int64_t* span_end = nullptr;
+    const auto flush = [&]() {
+        if (span_begin != span_end)
+            cb.mFlat.insert(cb.mFlat.end(), span_begin, span_end);
+        span_begin = span_end = nullptr;
+    };
     const auto append_row = [&](py::handle seq) {
-        // A row that is already a 1-D integer array (what `mesh_to_py` hands out,
-        // and what most callers build) is copied in one go. `ensure` without
-        // `forcecast` converts only safe casts (int32 -> int64) and otherwise
-        // returns null, leaving the per-element loop below to raise as before.
+        if (py::isinstance<I64Row>(seq)) {
+            const auto arr = py::reinterpret_borrow<I64Row>(seq);
+            if (arr.ndim() == 1) {
+                const std::int64_t* first = arr.data();
+                const std::int64_t* last = first + arr.size();
+                if (span_begin == nullptr || first != span_end) {
+                    flush();
+                    span_begin = first;
+                }
+                span_end = last;
+                cb.mRowOffsets.push_back(
+                    static_cast<std::int64_t>(cb.mFlat.size() + (span_end - span_begin)));
+                return;
+            }
+        }
+        flush();
+        // Any other 1-D integer array: `ensure` without `forcecast` converts
+        // only safe casts (int32 -> int64) and otherwise returns null, leaving
+        // the per-element loop below to raise as before.
         bool done = false;
         if (py::isinstance<py::array>(seq)) {
             auto arr = py::array_t<std::int64_t, py::array::c_style>::ensure(seq);
@@ -308,6 +337,7 @@ inline meshioplusplus::CellBlock ragged_cellblock_from_py(std::string type, py::
     };
     cb.mRowOffsets.push_back(0);
     if (cb.mType.rfind("polyhedron", 0) == 0) {
+        cb.mFaceOffsets.reserve(py::len(data_obj) + 1);
         cb.mFaceOffsets.push_back(0);
         for (py::handle cell : data_obj) {
             for (py::handle face : cell)
@@ -315,9 +345,11 @@ inline meshioplusplus::CellBlock ragged_cellblock_from_py(std::string type, py::
             cb.mFaceOffsets.push_back(static_cast<std::int64_t>(cb.mRowOffsets.size() - 1));
         }
     } else {
+        cb.mRowOffsets.reserve(py::len(data_obj) + 1);
         for (py::handle row : data_obj)
             append_row(row);
     }
+    flush();
     return cb;
 }
 

@@ -730,6 +730,31 @@ Wall time, Python 3.12, interleaved old and new in fresh interpreters, 15 each, 
 
 The first read of a format pays for loading its subpackage (12.4 ms median for PLY, against 1.1 ms before), so the saving shrinks for a process that touches many formats and is gone for one that lists them all. The MCP server imports the whole package for its tool table, so it gains nothing. The command-line tool used to as well, filling the `choices` of its format options from `reader_map`; since roadmap 5.12.1 they come from the table (`READER_NAMES` and `WRITER_NAMES`, with installed plugins added), and the verbs that write a fixed list of formats import them when they run, so building the parser loads no format subpackage: 488 modules instead of 731 after `build_parser()`. The parser still imports every verb's module, about 270 modules; building subparsers lazily is what is left (`test_format_table.py` keeps the formats off that path). `test_import_footprint.py` keeps the formats, operations and `_core` off the import path and checks that a write and read of one STL file loads `stl` alone.
 
+### Flat tables in the facet and weld paths
+
+Roadmap 5.4.2, 5.4.4, 5.5.1, 5.6 and 5.7.3, landed through [landing a performance change](#landing-a-performance-change): every changed row's digest equals the one before the change, on SEQ and OpenMP at 1 and 4 threads, tiers S and M.
+
+- **`smooth`'s inversion guard** computes a cell's before-move measure once per Jacobi pass instead of once per probing node, and ODT's per-tetrahedron circumcentre and volume likewise; both depend on the previous iterate alone. The after-move measure keeps its own direct calls: folding all four measures into one dispatch stopped the compiler inlining the corner reader and made the surface row 2.5 times slower, which callgrind showed before it landed.
+- **Point welding on raw bits.** The STL, glTF and WKT readers used to weld through a hash map keyed on a heap string or vector per vertex; `detail/exact_weld.hpp` groups fixed-size keys with `group_slots` and numbers them with `number_first_seen`, the ids a serial sweep gives. STL compares bytes, glTF and WKT compare values (`-0.0` meets `+0.0`; a NaN meets nothing), which for glTF fixes a hash that only sometimes let the two zeros meet.
+- **`feature_edges` from the skin alone.** `detail/face_skin.hpp` builds the cell rings `build_global_faces` builds and keeps the faces with one selected side, without the face table's node copy, owner and neighbour arrays or signed cell faces. The ring build, shared, counts nodes in its first pass and so runs `cell_rings` twice instead of three times.
+- **`region_adjacency` and the boundary facets** (`find_interface`, `split_interface`) collect flat records grouped by `group_facet_slots` instead of a `std::map` keyed on a vector per facet, membership is CSR, and the pairs are sorted by (region a, region b, key), the map's order.
+- **Ragged rows into the core** (`np_conversions.hpp`): a row that is a C-contiguous int64 array is taken by reference, and rows back to back in memory, the views `mesh_to_py` and the readers hand out, are copied as one span: 97 to 51 ns a row in a pybind11 harness of the old and new loops over a million views of one buffer, 100 to 92 ns over separate arrays. The way out, one numpy view per row, is what is left of 5.6.
+
+Tier L (750,000 tetrahedra, about 30,000 skin triangles), SEQ, median of three runs, the old and new `meshioplusplus_bench_ops` back to back:
+
+| Row | Old | New |
+| --- | ---: | ---: |
+| `smooth_volume` | 9.86 s | 6.58 s |
+| `smooth` (the skin, guard on) | 58.2 ms | 47.3 ms |
+| `region_adjacency` | 1.55 s | 0.64 s |
+| `find_interface` | 1.45 s | 0.54 s |
+| `read_stl` (ASCII) | 34.8 ms | 21.0 ms |
+| `feature_edges` | 1.17 s | 1.17 s |
+
+The skin-only `feature_edges` saves memory rather than time: two thirds of its instructions are `orient_rings`, the per-cell orientation every face table runs, not the table assembly. The new rows `read_stl_binary`, `read_gltf_weld` and `read_wkt` take 5.1, 2.0 and 71.8 ms at tier L.
+
+**`select_points(method="farthest")`** (roadmap 5.10.2) runs its greedy loop in the core (`detail/farthest_points.hpp`, bound to Python only): one fused sweep per selection updates the distances and finds the farthest, with numpy's arithmetic, NaN propagation and first-maximum rule, so the selection is the numpy loop's. 1,000 of 1,000,000 points: 6.0 s in numpy, 2.5 s native on one thread.
+
 ### The Python layers' graph kernels
 
 Roadmap 5.10.1, 5.10.3 and 5.10.5. The machine-learning and Blender layers stay Python ([non-goals](./roadmap.md#non-goals-and-decisions-taken)) but no longer loop per polygon or per component. `edge_index(kind="node")` expands the core's node adjacency (`_core.adjacency`), whose rows are already sorted and hold both directions, instead of collecting edges in Python and sorting them twice; a mesh with a polyhedron block, whose face rings the core counts and the export skips, keeps the Python path. `bistride_hierarchy` groups each level's components with one stable sort of the labels instead of a `label == c` scan per component, and its BFS keeps depths in an array rather than a dict. The Blender inverse gathers the polygons' loops with offsets instead of one `arange` per polygon, and finds the loose edges by a sorted search over packed edge keys instead of a Python set. Each output is byte-identical to the old one (`test_edge_index_core_path_equals_the_python_twin`, and a differential run against the previous modules).

@@ -33,7 +33,6 @@
 #include "meshioplusplus/detail/cell_edges.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
-#include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
@@ -42,6 +41,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/crease_edges.hpp"
+#include "../detail/face_skin.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -87,31 +87,19 @@ void fe_rings(const Mesh& rMesh, const std::vector<std::uint8_t>& rSelected,
         rStart.push_back(static_cast<std::int64_t>(rNodes.size()));
     };
 
-    const detail::GlobalFaces gf = detail::build_global_faces(rMesh);
-    if (gf.NumCells() > 0) {
-        // A face is on the skin of the selection when exactly one side of it
-        // is selected; it is wound out of that side.
-        auto in = [&](std::int64_t Compact) {
-            return Compact >= 0 && rSelected[static_cast<std::size_t>(
-                                       gf.mCellToGlobal[static_cast<std::size_t>(Compact)])] != 0;
-        };
-        // Count the skin faces first: the rings reserve once, at an upper
-        // bound (push drops a face naming a missing point).
-        std::size_t skin_faces = 0, skin_nodes = 0;
-        for (std::size_t f = 0; f < gf.NumFaces(); ++f)
-            if (in(gf.mOwner[f]) != in(gf.mNeighbour[f])) {
-                ++skin_faces;
-                skin_nodes += gf.FaceSize(f);
-            }
-        rStart.reserve(skin_faces + 1);
-        rNodes.reserve(skin_nodes);
-        for (std::size_t f = 0; f < gf.NumFaces(); ++f) {
-            const bool own = in(gf.mOwner[f]);
-            const bool nb = in(gf.mNeighbour[f]);
-            if (own == nb)
-                continue;
-            push(gf.Face(f), gf.FaceSize(f), !own);
-        }
+    // A face is on the skin of the selection when exactly one side of it is
+    // selected; it is wound out of that side. Only the skin is built, not the
+    // whole face table (roadmap 5.4.4).
+    const detail::SelectionSkin skin = detail::build_selection_skin(rMesh, rSelected);
+    if (skin.mNumCells > 0) {
+        // The rings reserve once, at an upper bound (push drops a face naming
+        // a missing point).
+        rStart.reserve(skin.NumFaces() + 1);
+        rNodes.reserve(skin.mFaceNodes.size());
+        for (std::size_t f = 0; f < skin.NumFaces(); ++f)
+            push(skin.mFaceNodes.data() + skin.mFaceStart[f],
+                 static_cast<std::size_t>(skin.mFaceStart[f + 1] - skin.mFaceStart[f]),
+                 skin.mReversed[f] != 0);
         return;
     }
 

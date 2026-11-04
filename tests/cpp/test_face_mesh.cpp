@@ -33,6 +33,8 @@
 // External includes
 #include <gtest/gtest.h>
 
+#include "../../src/cpp/src/detail/face_skin.hpp"
+
 // Project includes
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/face_mesh.hpp"
@@ -462,4 +464,68 @@ TEST(FaceMesh, NonManifoldFacesAreCounted) {
                                                 {4, 5, 6, 7, 15, 14, 13, 12}}));
     const GlobalFaces f = build_global_faces(m);
     EXPECT_EQ(f.mNumNonManifold, 1) << "a face used by three cells was not reported";
+}
+
+// --------------------------------------------------------------------------
+// The selection skin (roadmap 5.4.4): the faces of the full table with one
+// selected side, in its face order and winding, without building it.
+// --------------------------------------------------------------------------
+
+TEST(FaceMesh, SelectionSkinIsTheFaceTablesSkin) {
+    // A 4 x 3 x 3 grid of hexahedra, one of them inverted, and a tetrahedron
+    // block after it; the selection is an irregular pattern of cells.
+    const std::size_t nx = 5, ny = 4, nz = 4;
+    std::vector<std::vector<double>> pts;
+    for (std::size_t k = 0; k < nz; ++k)
+        for (std::size_t j = 0; j < ny; ++j)
+            for (std::size_t i = 0; i < nx; ++i)
+                pts.push_back({double(i), double(j) * 1.1, double(k) * 0.9});
+    const auto id = [&](std::size_t i, std::size_t j, std::size_t k) {
+        return static_cast<std::int64_t>(i + nx * (j + ny * k));
+    };
+    std::vector<std::vector<std::int64_t>> hexes;
+    for (std::size_t k = 0; k + 1 < nz; ++k)
+        for (std::size_t j = 0; j + 1 < ny; ++j)
+            for (std::size_t i = 0; i + 1 < nx; ++i)
+                hexes.push_back({id(i, j, k), id(i + 1, j, k), id(i + 1, j + 1, k), id(i, j + 1, k),
+                                 id(i, j, k + 1), id(i + 1, j, k + 1), id(i + 1, j + 1, k + 1),
+                                 id(i, j + 1, k + 1)});
+    std::swap(hexes[5][0], hexes[5][4]);  // an inverted cell, rewound by the table
+    Mesh m;
+    m.AssignPoints(mt::points_from(pts));
+    m.AddCellBlock("hexahedron", mt::conn_from(hexes));
+    m.AddCellBlock("tetra", mt::conn_from({{0, 1, 5, 20}, {1, 2, 6, 21}}));
+    const std::size_t ncells = hexes.size() + 2;
+
+    for (int pattern = 0; pattern < 3; ++pattern) {
+        std::vector<std::uint8_t> selected(ncells, 0);
+        for (std::size_t c = 0; c < ncells; ++c)
+            selected[c] = pattern == 0 ? 1 : static_cast<std::uint8_t>((c * 7 + pattern) % 3 != 0);
+        const GlobalFaces gf = build_global_faces(m);
+        const auto in = [&](std::int64_t Compact) {
+            return Compact >= 0 &&
+                   selected[static_cast<std::size_t>(gf.mCellToGlobal[Compact])] != 0;
+        };
+        std::vector<std::vector<std::int64_t>> want;
+        for (std::size_t f = 0; f < gf.NumFaces(); ++f) {
+            const bool own = in(gf.mOwner[f]);
+            if (own == in(gf.mNeighbour[f]))
+                continue;
+            std::vector<std::int64_t> ring(gf.Face(f), gf.Face(f) + gf.FaceSize(f));
+            if (!own)
+                std::reverse(ring.begin(), ring.end());
+            want.push_back(ring);
+        }
+        const meshioplusplus::detail::SelectionSkin skin =
+            meshioplusplus::detail::build_selection_skin(m, selected);
+        ASSERT_EQ(skin.mNumCells, gf.NumCells());
+        ASSERT_EQ(skin.NumFaces(), want.size()) << "pattern " << pattern;
+        for (std::size_t f = 0; f < want.size(); ++f) {
+            std::vector<std::int64_t> ring(skin.mFaceNodes.begin() + skin.mFaceStart[f],
+                                           skin.mFaceNodes.begin() + skin.mFaceStart[f + 1]);
+            if (skin.mReversed[f])
+                std::reverse(ring.begin(), ring.end());
+            EXPECT_EQ(ring, want[f]) << "pattern " << pattern << ", face " << f;
+        }
+    }
 }

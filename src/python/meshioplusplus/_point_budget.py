@@ -225,6 +225,14 @@ class PointBudget:
 # --------------------------------------------------------------------------- #
 # the three selectors (all over a local (M, 3) candidate array)               #
 # --------------------------------------------------------------------------- #
+def _fps_exhausted(selected, n, count, prefix):
+    raise ValueError(
+        f"{prefix}the cloud has only {selected} distinct positions among its "
+        f"{n} candidates, fewer than the requested {count}; lower the count "
+        "or weld the duplicates first"
+    )
+
+
 def _fps(points, count, first, prefix):
     """Exact greedy farthest-point sampling; ``O(len(points) * count)``.
 
@@ -240,6 +248,20 @@ def _fps(points, count, first, prefix):
     is what dominated a row-wise version.
     """
     n = len(points)
+    try:
+        from . import _core
+    except ImportError:  # a pure-Python install: the loop below
+        _core = None
+    kernel = getattr(_core, "farthest_point_order", None)
+    if kernel is not None:
+        # The same arithmetic in one native sweep per selection, without the
+        # numpy temporaries (roadmap 5.10.2): the selection is identical.
+        order, selected = kernel(
+            np.ascontiguousarray(points, dtype=np.float64), count, first
+        )
+        if selected < count:
+            _fps_exhausted(selected, n, count, prefix)
+        return np.asarray(order, dtype=np.int64)
     order = np.empty(count, dtype=np.int64)
     order[0] = first
     x = np.ascontiguousarray(points[:, 0])
@@ -252,11 +274,7 @@ def _fps(points, count, first, prefix):
     for i in range(1, count):
         nxt = int(np.argmax(d2))
         if d2[nxt] <= 0.0:
-            raise ValueError(
-                f"{prefix}the cloud has only {i} distinct positions among its "
-                f"{n} candidates, fewer than the requested {count}; lower the count "
-                "or weld the duplicates first"
-            )
+            _fps_exhausted(i, n, count, prefix)
         order[i] = nxt
         np.subtract(x, x[nxt], out=bx)
         np.multiply(bx, bx, out=bx)

@@ -40,6 +40,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/version.hpp"
 #include "../../src/cpp/cli/tui/loop.hpp"
+#include "../../src/cpp/src/detail/farthest_points.hpp"
 #include "../../src/cpp/cli/tui/series.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
@@ -4618,6 +4619,31 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("points"), py::arg("method"), py::arg("radius") = 0.0, py::arg("k") = 0,
         py::arg("box") = std::vector<double>{}, py::arg("cell_size") = 0.0);
+    m.def(
+        "farthest_point_order",
+        [](py::array_t<double, py::array::c_style | py::array::forcecast> points,
+           std::int64_t count, std::int64_t first) {
+            // select_points(method="farthest")'s greedy loop
+            // (src/cpp/src/detail/farthest_points.hpp); the Python layer
+            // validates and raises. Returns (order, selected).
+            if (points.ndim() != 2 || points.shape(1) != 3)
+                throw std::invalid_argument(
+                    "meshio++: farthest_point_order: points must be (N, 3)");
+            const auto n = static_cast<std::size_t>(points.shape(0));
+            if (count < 1 || static_cast<std::size_t>(count) > n || first < 0 ||
+                static_cast<std::size_t>(first) >= n)
+                throw std::invalid_argument(
+                    "meshio++: farthest_point_order: count or first out of range");
+            const double* xyz = points.data();
+            meshioplusplus::detail::FarthestPoints fps = core_nogil([&] {
+                return meshioplusplus::detail::farthest_point_order(
+                    xyz, n, static_cast<std::size_t>(count), static_cast<std::size_t>(first));
+            });
+            py::array_t<std::int64_t> order(static_cast<py::ssize_t>(fps.mOrder.size()));
+            std::copy(fps.mOrder.begin(), fps.mOrder.end(), order.mutable_data());
+            return py::make_tuple(order, static_cast<std::int64_t>(fps.mSelected));
+        },
+        py::arg("points"), py::arg("count"), py::arg("first"));
     m.def(
         "sample_distance",
         [](py::object pysurface, py::array points, const std::string& sign,
