@@ -118,6 +118,7 @@ module meshioplusplus
     public :: mio_data_array_info
     public :: mio_field_integral_info
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
+    public :: mio_cell_type_dimension, mio_cell_type_num_nodes
     public :: mio_pipeline_run_file, mio_pipeline_run_json, mio_pipeline_has_json
     public :: mio_has_occt
     public :: mio_pipeline_run_file_report, mio_pipeline_run_json_report
@@ -2026,6 +2027,23 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_decimate_volume_opts`. Field order and types
+    !> are ABI and must match bindings/c/include/meshioplusplus/meshioplusplus.h
+    !> exactly; `reserved` is padding for additive growth and must stay zero.
+    !> Unlike mio_decimate_opts_t, `preserve_boundary` defaults OFF.
+    type, bind(c) :: mio_decimate_volume_opts_t
+        real(c_double) :: target_ratio = -1.0_c_double
+        integer(c_int64_t) :: target_cells = -1_c_int64_t
+        real(c_double) :: max_error = -1.0_c_double
+        type(c_ptr) :: placement = c_null_ptr
+        integer(c_int32_t) :: preserve_boundary = 0
+        integer(c_int32_t) :: preserve_features = 1
+        real(c_double) :: feature_angle = 30.0_c_double
+        type(c_ptr) :: frozen = c_null_ptr
+        integer(c_int64_t) :: num_frozen = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_remesh_opts`. Field order and types are ABI
     !> and must match bindings/c/include/meshioplusplus/meshioplusplus.h
     !> exactly; `reserved`/`reserved_d` are padding for additive growth and
@@ -2316,6 +2334,7 @@ module meshioplusplus
         procedure :: refine => mesh_refine
         procedure :: tessellate => mesh_tessellate
         procedure :: decimate => mesh_decimate
+        procedure :: decimate_volume => mesh_decimate_volume
         procedure :: partition => mesh_partition
         procedure :: partition_labels => mesh_partition_labels
         procedure :: stats => mesh_stats
@@ -2708,6 +2727,24 @@ module meshioplusplus
         function c_mio_version() bind(c, name="mio_version") result(p)
             import :: c_ptr
             type(c_ptr) :: p
+        end function
+
+        function c_mio_cell_type_from_name(name) bind(c, name="mio_cell_type_from_name") result(t)
+            import :: c_char, c_int
+            character(kind=c_char), dimension(*), intent(in) :: name
+            integer(c_int) :: t
+        end function
+
+        function c_mio_cell_type_num_nodes(t) bind(c, name="mio_cell_type_num_nodes") result(n)
+            import :: c_int
+            integer(c_int), value :: t
+            integer(c_int) :: n
+        end function
+
+        function c_mio_cell_type_dimension(t) bind(c, name="mio_cell_type_dimension") result(d)
+            import :: c_int
+            integer(c_int), value :: t
+            integer(c_int) :: d
         end function
 
         function c_mio_mesh_backend() bind(c, name="mio_mesh_backend") result(p)
@@ -4652,6 +4689,70 @@ module meshioplusplus
             type(c_ptr), value :: r
         end subroutine
 
+        subroutine c_mio_decimate_volume_opts_init(opts) &
+                bind(c, name="mio_decimate_volume_opts_init")
+            import :: mio_decimate_volume_opts_t
+            type(mio_decimate_volume_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_decimate_volume_ex(h, opts) bind(c, name="mio_decimate_volume_ex") result(r)
+            import :: c_ptr, mio_decimate_volume_opts_t
+            type(c_ptr), value :: h
+            type(mio_decimate_volume_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_decimate_volume_result_take_mesh(r) &
+                bind(c, name="mio_decimate_volume_result_take_mesh") result(m)
+            import :: c_ptr
+            type(c_ptr), value :: r
+            type(c_ptr) :: m
+        end function
+
+        function c_mio_decimate_volume_result_point_map(r, data, dtype, n) &
+                bind(c, name="mio_decimate_volume_result_point_map") result(s)
+            import :: c_ptr, c_int, c_int64_t
+            type(c_ptr), value :: r
+            type(c_ptr), intent(out) :: data
+            integer(c_int), intent(out) :: dtype
+            integer(c_int64_t), intent(out) :: n
+            integer(c_int) :: s
+        end function
+
+        function c_mio_decimate_volume_result_tets_removed(r) &
+                bind(c, name="mio_decimate_volume_result_tets_removed") result(v)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t) :: v
+        end function
+
+        function c_mio_decimate_volume_result_points_removed(r) &
+                bind(c, name="mio_decimate_volume_result_points_removed") result(v)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t) :: v
+        end function
+
+        function c_mio_decimate_volume_result_collapses_rejected(r) &
+                bind(c, name="mio_decimate_volume_result_collapses_rejected") result(v)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t) :: v
+        end function
+
+        function c_mio_decimate_volume_result_max_error_applied(r) &
+                bind(c, name="mio_decimate_volume_result_max_error_applied") result(v)
+            import :: c_ptr, c_double
+            type(c_ptr), value :: r
+            real(c_double) :: v
+        end function
+
+        subroutine c_mio_decimate_volume_result_free(r) &
+                bind(c, name="mio_decimate_volume_result_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
         function c_mio_partition(h, nparts, method, imbalance, mode, seed, record_ids, &
                                  ghost_layers, weights_key) &
                 bind(c, name="mio_partition") result(r)
@@ -6425,6 +6526,24 @@ contains
     function mio_version() result(v)
         character(:), allocatable :: v
         v = c_ptr_to_string(c_mio_version())
+    end function
+
+    !> The topological dimension (0-3) of the meshio cell type `name` (e.g.
+    !> 'tetra10' -> 3), or -1 for an unknown name. The counterpart of Python's
+    !> `topological_dimension` and R/Octave's `cell_type_dimension`.
+    function mio_cell_type_dimension(name) result(d)
+        character(*), intent(in) :: name
+        integer :: d
+        d = int(c_mio_cell_type_dimension(c_mio_cell_type_from_name(c_str(name))))
+    end function
+
+    !> The fixed nodes-per-cell of the meshio cell type `name` (e.g.
+    !> 'tetra10' -> 10), or -1 for a variable-size type (polygon, polyhedron,
+    !> VTK Lagrange/Bezier) or an unknown name.
+    function mio_cell_type_num_nodes(name) result(n)
+        character(*), intent(in) :: name
+        integer :: n
+        n = int(c_mio_cell_type_num_nodes(c_mio_cell_type_from_name(c_str(name))))
     end function
 
     !> The compile-time mesh backend: "meshio", "native", or "kratos".
@@ -13097,6 +13216,123 @@ contains
         call c_mio_decimate_result_free(res)
         if (.not. c_associated(out%handle)) then
             call handle_failure('decimate', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> One-time ABI layout guard for mio_decimate_volume_opts_t.
+    subroutine check_decimate_volume_opts_layout()
+        logical, save :: checked = .false.
+        type(mio_decimate_volume_opts_t) :: probe
+        if (checked) return
+        checked = .true.
+        if (c_sizeof(probe) /= 96_c_size_t) then
+            write (error_unit, '(a,i0,a)') &
+                'meshio++: mio_decimate_volume_opts_t layout mismatch (', c_sizeof(probe), ' bytes)'
+            error stop 1
+        end if
+    end subroutine
+
+    !> Decimate a TET mesh by quadric-error-metric tet-edge collapse — the
+    !> volume sibling of decimate (doc/decimate_volume.md). Exactly one of
+    !> `ratio`, `target_cells`, `max_error` must be given. Tet-only input;
+    !> other 3D blocks fail by name pointing at convert_cells('simplexify').
+    !> Unlike decimate, boundary vertices participate by default
+    !> (`preserve_boundary` defaults to .false.). The optional `point_map`
+    !> receives, 1-based, each input point's surviving output index (0 when
+    !> the survivor itself was pruned).
+    function mesh_decimate_volume(self, ratio, target_cells, max_error, placement, &
+                                  preserve_boundary, preserve_features, feature_angle, &
+                                  tets_removed, points_removed, collapses_rejected, &
+                                  max_error_applied, point_map, stat, errmsg, frozen) result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in), optional :: ratio
+        integer(int64), intent(in), optional :: target_cells
+        real(real64), intent(in), optional :: max_error
+        character(*), intent(in), optional :: placement
+        logical, intent(in), optional :: preserve_boundary
+        logical, intent(in), optional :: preserve_features
+        real(real64), intent(in), optional :: feature_angle
+        integer(int64), intent(out), optional :: tets_removed
+        integer(int64), intent(out), optional :: points_removed
+        integer(int64), intent(out), optional :: collapses_rejected
+        real(real64), intent(out), optional :: max_error_applied
+        integer(int64), allocatable, intent(out), optional :: point_map(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        !> 1-based point ids to pin outright. Shifted to the C API's 0-based
+        !> numbering inside.
+        integer(int64), intent(in), optional :: frozen(:)
+        type(mio_mesh) :: out
+        type(c_ptr) :: res, cdata
+        integer(c_int64_t) :: nlen
+        integer(c_int) :: s, dt
+        integer(c_int64_t), pointer :: fp(:)
+        type(mio_decimate_volume_opts_t) :: opts
+        character(kind=c_char, len=STRBUF_LEN), target :: placement_buf
+        integer(c_int64_t), allocatable, target :: frozen_ids(:)
+
+        call check_decimate_volume_opts_layout()
+        call c_mio_decimate_volume_opts_init(opts)
+        if (present(ratio)) opts%target_ratio = real(ratio, c_double)
+        if (present(target_cells)) opts%target_cells = int(target_cells, c_int64_t)
+        if (present(max_error)) opts%max_error = real(max_error, c_double)
+        if (present(placement)) then
+            placement_buf = trim(placement)//c_null_char
+            opts%placement = c_loc(placement_buf(1:1))
+        end if
+        if (present(preserve_boundary)) then
+            opts%preserve_boundary = 0
+            if (preserve_boundary) opts%preserve_boundary = 1
+        end if
+        if (present(preserve_features)) then
+            opts%preserve_features = 0
+            if (preserve_features) opts%preserve_features = 1
+        end if
+        if (present(feature_angle)) opts%feature_angle = real(feature_angle, c_double)
+        if (present(frozen)) then
+            allocate (frozen_ids(max(size(frozen), 1)))
+            frozen_ids = 0_c_int64_t
+            if (size(frozen) > 0) frozen_ids(1:size(frozen)) = int(frozen, c_int64_t) - 1_c_int64_t
+            opts%frozen = c_loc(frozen_ids(1))
+            opts%num_frozen = int(size(frozen), c_int64_t)
+        end if
+
+        res = c_mio_decimate_volume_ex(self%handle, opts)
+        if (.not. c_associated(res)) then
+            call handle_failure('decimate_volume', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(tets_removed)) then
+            tets_removed = int(c_mio_decimate_volume_result_tets_removed(res), int64)
+        end if
+        if (present(points_removed)) then
+            points_removed = int(c_mio_decimate_volume_result_points_removed(res), int64)
+        end if
+        if (present(collapses_rejected)) then
+            collapses_rejected = int(c_mio_decimate_volume_result_collapses_rejected(res), int64)
+        end if
+        if (present(max_error_applied)) then
+            max_error_applied = real(c_mio_decimate_volume_result_max_error_applied(res), real64)
+        end if
+        if (present(point_map)) then
+            s = c_mio_decimate_volume_result_point_map(res, cdata, dt, nlen)
+            if (s /= 0_c_int) then
+                call c_mio_decimate_volume_result_free(res)
+                call handle_failure('decimate_volume', mio_error_message(), stat, errmsg)
+                return
+            end if
+            allocate (point_map(nlen))
+            if (nlen > 0) then
+                call c_f_pointer(cdata, fp, [nlen])
+                point_map = int(fp, int64) + 1_int64  ! 0-based -> 1-based
+            end if
+        end if
+        out%handle = c_mio_decimate_volume_result_take_mesh(res)
+        call c_mio_decimate_volume_result_free(res)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('decimate_volume', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

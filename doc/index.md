@@ -41,7 +41,7 @@ features:
     link: /architecture#the-operations-layer
   - icon: 🌐
     title: Six language surfaces
-    details: Python, a pure-C99 API with a versioned ABI, Fortran, Julia, R and a WebAssembly package, plus an installable C++ API and a single-header build, all over the same core and the same format registry.
+    details: Python, a pure-C99 API with a versioned ABI, Fortran, Julia, R, Octave/MATLAB and a WebAssembly package, plus an installable C++ API and a single-header build, all over the same core and the same format registry.
     link: /c_api
   - icon: ⌨️
     title: Two CLIs and a pipeline engine

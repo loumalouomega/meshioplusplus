@@ -1,0 +1,18 @@
+Name: meshioplusplus
+Version: 18.2.0
+Date: 2026-11-04
+Author: Vicente Mataix Ferrandiz <tote1989@gmail.com>
+Maintainer: Vicente Mataix Ferrandiz <tote1989@gmail.com>
+Title: Read, write and operate on scientific computing and FEM mesh formats
+Description: Bindings to the meshio++ C library for reading and writing the
+ mesh file formats used in scientific computing and finite element analysis
+ (Gmsh, VTK, VTU, Abaqus, Exodus, MED, XDMF and many others), together with
+ its operations layer: surface extraction, mesh quality metrics, refinement,
+ decimation, partitioning, smoothing, slicing and isosurfaces. The same
+ sources also run in MATLAB (see mio_build). The meshio++ C library must be
+ installed separately; see the package README.
+Categories: Mesh, Input/Output, Geometry
+Depends: octave (>= 8.0.0)
+License: MIT
+Url: https://github.com/loumalouomega/meshioplusplus
+SystemRequirements: meshio++ C library (libmeshioplusplus)

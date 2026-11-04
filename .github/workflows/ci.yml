@@ -2537,3 +2537,97 @@ jobs:
           fi
           grep -q 'configure.sh --c-api' err.log
           echo "ok: failed by name"
+
+  # The Octave/MATLAB binding (bindings/octave/), against the same installed
+  # prefix. It is built the two ways users build it -- Octave's `pkg install`
+  # from a tarball (src/Makefile) and `mio_build` (what MATLAB users run) --
+  # and the suite runs against each. MATLAB itself is not available on hosted
+  # runners; the sources stick to the MEX API and the MATLAB-compatible
+  # language subset, which tests/python/test_octave_binding_parity.py checks.
+  octave:
+    name: Octave binding
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Octave and native libraries
+        run: |
+          # See the r job: an unused, flaky third-party apt source must not
+          # take `apt-get update` down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends octave octave-dev \
+            libhdf5-dev zlib1g-dev pkg-config
+      - name: Install build tools
+        run: python -m pip install --upgrade pip cmake ninja pytest
+
+      - name: Binding parity with R (static)
+        run: python -m pytest -q tests/python/test_octave_binding_parity.py
+
+      - name: Build and install the C API
+        run: |
+          cmake -S . -B build-capi -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+            -DMESHIOPLUSPLUS_BUILD_C_API=ON \
+            -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+          cmake --build build-capi
+          cmake --install build-capi --prefix "$PWD/inst"
+
+      - name: pkg install and run the tests
+        if: steps.lfs.outputs.available != 'false'
+        env:
+          PKG_CONFIG_PATH: ${{ github.workspace }}/inst/lib/pkgconfig
+          LD_LIBRARY_PATH: ${{ github.workspace }}/inst/lib
+        run: |
+          tar -C bindings/octave -czf meshioplusplus.tar.gz meshioplusplus
+          octave --no-gui --eval "pkg install meshioplusplus.tar.gz"
+          cd bindings/octave/meshioplusplus/tests
+          octave --no-gui --eval "pkg load meshioplusplus; exit(run_tests() > 0)"
+
+      - name: mio_build (the MATLAB route) and run the tests
+        if: steps.lfs.outputs.available != 'false'
+        env:
+          MESHIOPLUSPLUS_HOME: ${{ github.workspace }}/inst
+          LD_LIBRARY_PATH: ${{ github.workspace }}/inst/lib
+        run: |
+          octave --no-gui --eval "pkg uninstall meshioplusplus"
+          octave --no-gui --eval "addpath('bindings/octave/meshioplusplus/inst'); mio_build()"
+          cd bindings/octave/meshioplusplus/tests
+          octave --no-gui --eval "exit(run_tests() > 0)"
+
+      - name: Run the doc example
+        if: steps.lfs.outputs.available != 'false'
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/inst/lib
+        run: |
+          # run() changes into the script's folder: the path must be absolute.
+          octave --no-gui --eval "addpath('$PWD/bindings/octave/meshioplusplus/inst'); run('$PWD/doc/examples/octave_example.m')"
+
+      # The build must explain how to install the library rather than failing
+      # with a bare compiler error.
+      - name: A missing library fails by name
+        run: |
+          cd bindings/octave/meshioplusplus/src
+          if env -u PKG_CONFIG_PATH -u MESHIOPLUSPLUS_HOME make 2>err.log; then
+            echo "expected the build to fail without the library" && exit 1
+          fi
+          grep -q 'configure.sh --c-api' err.log
+          echo "ok: failed by name"

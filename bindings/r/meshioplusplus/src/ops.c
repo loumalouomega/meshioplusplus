@@ -2600,9 +2600,10 @@ SEXP R_mio_split(SEXP mesh, SEXP by, SEXP tag_name) {
     return pieces;
 }
 
-/* convert_cells / refine / decimate share a result shape: one mesh, a point
- * map, and one cell map per input block. `kind` selects which family of C
- * getters to use. */
+/* convert_cells / refine / decimate / decimate_volume share a result shape:
+ * one mesh, a point map, and one cell map per input block. `kind` selects
+ * which family of C getters to use (0 convert_cells, 1 refine, 2 decimate,
+ * 3 decimate_volume). */
 static SEXP result_maps(void *r, int kind, SEXP *point_map, SEXP *cell_maps) {
     const void *data = NULL;
     mio_dtype dt;
@@ -2612,8 +2613,11 @@ static SEXP result_maps(void *r, int kind, SEXP *point_map, SEXP *cell_maps) {
         st = mio_convert_cells_result_point_map((mio_convert_cells_result *)r, &data, &dt, &n);
     } else if (kind == 1) {
         st = mio_refine_result_point_map((mio_refine_result *)r, &data, &dt, &n);
-    } else {
+    } else if (kind == 2) {
         st = mio_decimate_result_point_map((mio_decimate_result *)r, &data, &dt, &n);
+    } else {
+        st = mio_decimate_volume_result_point_map((mio_decimate_volume_result *)r, &data, &dt,
+                                                  &n);
     }
     if (st != MIO_OK) return NULL;
     *point_map = PROTECT(mio_r_shift_map((const int64_t *)data, n));
@@ -2623,8 +2627,10 @@ static SEXP result_maps(void *r, int kind, SEXP *point_map, SEXP *cell_maps) {
         nmaps = mio_convert_cells_result_num_cell_maps((mio_convert_cells_result *)r);
     } else if (kind == 1) {
         nmaps = mio_refine_result_num_cell_maps((mio_refine_result *)r);
-    } else {
+    } else if (kind == 2) {
         nmaps = mio_decimate_result_num_cell_maps((mio_decimate_result *)r);
+    } else {
+        nmaps = mio_decimate_volume_result_num_cell_maps((mio_decimate_volume_result *)r);
     }
     if (nmaps < 0) nmaps = 0;
     *cell_maps = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)nmaps));
@@ -2636,8 +2642,11 @@ static SEXP result_maps(void *r, int kind, SEXP *point_map, SEXP *cell_maps) {
                                                    &len);
         } else if (kind == 1) {
             st = mio_refine_result_cell_map((mio_refine_result *)r, b, &d, &dt, &len);
-        } else {
+        } else if (kind == 2) {
             st = mio_decimate_result_cell_map((mio_decimate_result *)r, b, &d, &dt, &len);
+        } else {
+            st = mio_decimate_volume_result_cell_map((mio_decimate_volume_result *)r, b, &d,
+                                                     &dt, &len);
         }
         if (st != MIO_OK) {
             UNPROTECT(2);
@@ -2995,6 +3004,54 @@ SEXP R_mio_decimate(SEXP mesh, SEXP target_ratio, SEXP target_faces, SEXP max_er
                            "faces_removed",  "points_removed",     "collapses_rejected",
                            "max_error_applied"};
     SEXP values[] = {mo, pm, cm, fr, pr, cr, me};
+    SEXP res = PROTECT(mio_r_named_list(7, names, values));
+    UNPROTECT(8);
+    return res;
+}
+
+/* decimate_volume(mesh, ratio, target_cells, max_error, placement,
+ *                 preserve_boundary, preserve_features, feature_angle, frozen) --
+ * the tet counterpart of R_mio_decimate, through mio_decimate_volume_ex so the
+ * `frozen` pin list crosses too. */
+SEXP R_mio_decimate_volume(SEXP mesh, SEXP target_ratio, SEXP target_cells, SEXP max_error,
+                           SEXP placement, SEXP preserve_boundary, SEXP preserve_features,
+                           SEXP feature_angle, SEXP frozen) {
+    mio_decimate_volume_opts opts;
+    R_xlen_t n_frozen = 0;
+
+    mio_decimate_volume_opts_init(&opts);
+    opts.target_ratio = mio_r_double(target_ratio, "target_ratio");
+    opts.target_cells = mio_r_int64(target_cells, "target_cells");
+    opts.max_error = mio_r_double(max_error, "max_error");
+    opts.placement = mio_r_opt_string(placement);
+    opts.preserve_boundary = mio_r_bool(preserve_boundary, "preserve_boundary");
+    opts.preserve_features = mio_r_bool(preserve_features, "preserve_features");
+    opts.feature_angle = mio_r_double(feature_angle, "feature_angle");
+    opts.frozen = r_ids_0based(frozen, &n_frozen);
+    opts.num_frozen = (int64_t)n_frozen;
+
+    mio_decimate_volume_result *r = mio_decimate_volume_ex(mio_r_mesh(mesh), &opts);
+    if (r == NULL) mio_r_fail("decimate_volume");
+    SEXP pm = R_NilValue, cm = R_NilValue;
+    if (result_maps(r, 3, &pm, &cm) == NULL) {
+        mio_decimate_volume_result_free(r);
+        mio_r_fail("decimate_volume maps");
+    }
+    SEXP tr = PROTECT(Rf_ScalarReal((double)mio_decimate_volume_result_tets_removed(r)));
+    SEXP pr = PROTECT(Rf_ScalarReal((double)mio_decimate_volume_result_points_removed(r)));
+    SEXP cr = PROTECT(Rf_ScalarReal((double)mio_decimate_volume_result_collapses_rejected(r)));
+    SEXP me = PROTECT(Rf_ScalarReal(mio_decimate_volume_result_max_error_applied(r)));
+    mio_mesh *out = mio_decimate_volume_result_take_mesh(r);
+    mio_decimate_volume_result_free(r);
+    if (out == NULL) {
+        UNPROTECT(6);
+        mio_r_fail("decimate_volume take_mesh");
+    }
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const char *names[] = {"mesh",          "point_map",          "cell_maps",
+                           "tets_removed",  "points_removed",     "collapses_rejected",
+                           "max_error_applied"};
+    SEXP values[] = {mo, pm, cm, tr, pr, cr, me};
     SEXP res = PROTECT(mio_r_named_list(7, names, values));
     UNPROTECT(8);
     return res;

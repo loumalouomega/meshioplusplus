@@ -45,6 +45,14 @@ program test_fortran_api
     ! ---- module-level introspection ------------------------------------
     call check(len(mio_version()) > 0, 'mio_version() is non-empty')
     call check(len(mio_mesh_backend()) > 0, 'mio_mesh_backend() is non-empty')
+    call check(mio_cell_type_dimension('tetra10') == 3, 'tetra10 is 3D')
+    call check(mio_cell_type_dimension('triangle') == 2, 'triangle is 2D')
+    call check(mio_cell_type_dimension('line') == 1, 'line is 1D')
+    call check(mio_cell_type_dimension('vertex') == 0, 'vertex is 0D')
+    call check(mio_cell_type_dimension('nope') == -1, 'an unknown cell type has dimension -1')
+    call check(mio_cell_type_num_nodes('tetra10') == 10, 'tetra10 has 10 nodes')
+    call check(mio_cell_type_num_nodes('polygon') == -1, 'polygon is variable-size')
+    call check(mio_cell_type_num_nodes('nope') == -1, 'an unknown cell type has -1 nodes')
     call check(mio_format_readable('vtu'), 'vtu is readable')
     call check(mio_format_writable('vtu'), 'vtu is writable')
     call check(mio_format_writable('openfoam'), 'openfoam is writable since v9.20.0')
@@ -1480,6 +1488,55 @@ program test_fortran_api
         end block
 
         call fan%free()
+    end block
+
+    ! -- decimate_volume: QEM tet-edge collapse of a tet mesh --
+    block
+        type(mio_mesh) :: tets, coarse, bad
+        integer(int64), allocatable :: pmap(:)
+        integer(int64) :: ntets, npts, nrej, nin
+        real(real64) :: err_applied
+        integer :: st, i
+        character(:), allocatable :: errmsg
+
+        tets = mio_box(dims=[3, 3, 3], cell_type='tetra', stat=st)
+        call check(st == 0, 'box for decimate_volume')
+        nin = 0_int64
+        do i = 1, int(tets%num_cell_blocks())
+            nin = nin + tets%cell_block_num_cells(i)
+        end do
+
+        coarse = tets%decimate_volume(ratio=0.5_real64, tets_removed=ntets, &
+                                      points_removed=npts, collapses_rejected=nrej, &
+                                      max_error_applied=err_applied, point_map=pmap, stat=st)
+        call check(st == 0, 'decimate_volume succeeded')
+        call check(ntets > 0_int64, 'decimate_volume removed tets')
+        call check(npts > 0_int64, 'decimate_volume removed points')
+        call check(nrej >= 0_int64, 'decimate_volume reported a rejection count')
+        call check(err_applied >= 0.0_real64, 'decimate_volume reported a max error')
+        call check(allocated(pmap) .and. size(pmap) == tets%num_points(), &
+                   'decimate_volume returned a full point map')
+        call check(all(pmap >= 0_int64 .and. pmap <= coarse%num_points()), &
+                   'the point map is 1-based with 0 for an absent survivor')
+        call check(any(pmap == 1_int64), 'the point map is 1-based')
+        call check(coarse%num_cell_blocks() >= 1_int64, 'decimate_volume kept a cell block')
+        do i = 1, int(coarse%num_cell_blocks())
+            call check(coarse%cell_block_type(i) == 'tetra', 'decimate_volume output is tet-only')
+        end do
+        call check(sum([(coarse%cell_block_num_cells(i), i=1, int(coarse%num_cell_blocks()))]) &
+                   == nin - ntets, 'tets_removed matches the cell-count drop')
+        call coarse%free()
+
+        ! Exactly one stopping criterion is required; two fail by name.
+        bad = tets%decimate_volume(ratio=0.5_real64, target_cells=10_int64, stat=st, errmsg=errmsg)
+        call check(st /= 0, 'decimate_volume rejects two criteria')
+        call check(index(errmsg, 'exactly one of') > 0, 'the two-criteria error names the rule')
+
+        ! frozen ids are 1-based; an out-of-range one fails through stat.
+        bad = tets%decimate_volume(ratio=0.5_real64, frozen=[100000_int64], stat=st)
+        call check(st /= 0, 'decimate_volume rejects an out-of-range frozen id')
+
+        call tets%free()
     end block
 
     ! -- remesh: ACVD surface remeshing (a brand-new mesh, no maps) --

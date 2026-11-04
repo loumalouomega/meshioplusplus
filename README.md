@@ -6,7 +6,7 @@
 
 [![PyPi Version](https://img.shields.io/pypi/v/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![npm Version](https://img.shields.io/npm/v/%40meshioplusplus%2Fwasm.svg?style=flat-square)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![PyPI pyversions](https://img.shields.io/pypi/pyversions/meshioplusplus.svg?style=flat-square)](https://pypi.org/project/meshioplusplus/) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21629061.svg?style=flat-square)](https://doi.org/10.5281/zenodo.21629061)
 
-[![C++][c++-image]][c++standard] [![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab.svg?style=flat-square&logo=python&logoColor=white)](https://pypi.org/project/meshioplusplus/) [![C](https://img.shields.io/badge/C-99-a8b9cc.svg?style=flat-square&logo=c&logoColor=white)](doc/c_api.md) [![Fortran](https://img.shields.io/badge/Fortran-2008-734f96.svg?style=flat-square&logo=fortran&logoColor=white)](doc/fortran.md) [![Julia](https://img.shields.io/badge/Julia-1.9%2B-9558b2.svg?style=flat-square&logo=julia&logoColor=white)](doc/julia.md) [![R](https://img.shields.io/badge/R-4.0%2B-276dc3.svg?style=flat-square&logo=r&logoColor=white)](doc/r.md) [![WebAssembly](https://img.shields.io/badge/WebAssembly-npm-654ff0.svg?style=flat-square&logo=webassembly&logoColor=white)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![TypeScript](https://img.shields.io/badge/TypeScript-viewer-3178c6.svg?style=flat-square&logo=typescript&logoColor=white)](src/viewer/) [![Spack](https://img.shields.io/badge/spack-meshioplusplus-1f79c2.svg?style=flat-square)](https://packages.spack.io/package.html?name=meshioplusplus) [![Blender](https://img.shields.io/badge/Blender-4.2%2B-ea7600.svg?style=flat-square&logo=blender&logoColor=white)](doc/blender.md)
+[![C++][c++-image]][c++standard] [![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab.svg?style=flat-square&logo=python&logoColor=white)](https://pypi.org/project/meshioplusplus/) [![C](https://img.shields.io/badge/C-99-a8b9cc.svg?style=flat-square&logo=c&logoColor=white)](doc/c_api.md) [![Fortran](https://img.shields.io/badge/Fortran-2008-734f96.svg?style=flat-square&logo=fortran&logoColor=white)](doc/fortran.md) [![Julia](https://img.shields.io/badge/Julia-1.9%2B-9558b2.svg?style=flat-square&logo=julia&logoColor=white)](doc/julia.md) [![R](https://img.shields.io/badge/R-4.0%2B-276dc3.svg?style=flat-square&logo=r&logoColor=white)](doc/r.md) [![Octave](https://img.shields.io/badge/Octave%20%2F%20MATLAB-MEX-0076a8.svg?style=flat-square&logo=octave&logoColor=white)](doc/octave.md) [![WebAssembly](https://img.shields.io/badge/WebAssembly-npm-654ff0.svg?style=flat-square&logo=webassembly&logoColor=white)](https://www.npmjs.com/package/@meshioplusplus/wasm) [![TypeScript](https://img.shields.io/badge/TypeScript-viewer-3178c6.svg?style=flat-square&logo=typescript&logoColor=white)](src/viewer/) [![Spack](https://img.shields.io/badge/spack-meshioplusplus-1f79c2.svg?style=flat-square)](https://packages.spack.io/package.html?name=meshioplusplus) [![Blender](https://img.shields.io/badge/Blender-4.2%2B-ea7600.svg?style=flat-square&logo=blender&logoColor=white)](doc/blender.md)
 
 [![GitHub stars](https://img.shields.io/github/stars/loumalouomega/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/loumalouomega/meshioplusplus) [![PyPi downloads](https://img.shields.io/pypi/dm/meshioplusplus.svg?style=flat-square)](https://pypistats.org/packages/meshioplusplus)
 [![GitHub release date](https://img.shields.io/github/release-date/loumalouomega/meshioplusplus?style=flat-square&label=release)](https://github.com/loumalouomega/meshioplusplus/releases/latest) [![Commits since latest release](https://img.shields.io/github/commits-since/loumalouomega/meshioplusplus/latest?style=flat-square&label=commits%20since)](https://github.com/loumalouomega/meshioplusplus/compare/v16.22.0...master) [![GitHub last commit](https://img.shields.io/github/last-commit/loumalouomega/meshioplusplus?style=flat-square&label=latest%20commit)](https://github.com/loumalouomega/meshioplusplus/commit/master)
@@ -1534,6 +1534,24 @@ Julia and R are both **column-major**, so — as in Fortran — points shaped `(
 > **The Julia binding is not MIT.** [`bindings/julia/`](bindings/julia) is released under the **GNU General Public License, version 3 (GPL-3.0)** — a copyleft license, not a permission-required one: anyone may use, modify or sell it commercially with no permission needed, but distributing it or a modified version of it must be under GPL-3.0 too, with source available; purely private use carries no obligation. Everything else in this repository, including the C API it calls and the R binding, remains MIT.
 
 See the [Julia](https://loumalouomega.github.io/meshioplusplus/julia) and [R](https://loumalouomega.github.io/meshioplusplus/r) doc pages.
+
+</details>
+
+<details>
+<summary><b>Octave / MATLAB binding</b> (click to expand)</summary>
+
+### Octave / MATLAB binding
+
+[`bindings/octave/meshioplusplus`](bindings/octave/meshioplusplus) binds the same installed C library for **GNU Octave** and **MATLAB**, with every function of the R binding under the `mio.` package namespace. It is plain C over the MEX API, so one set of sources builds with Octave's `pkg install` (or `mkoctfile --mex`) and with MATLAB's `mex` (`mio_build`):
+
+```matlab
+m = mio.read('bracket.msh');
+mio.write(mio.extract_surface(m), 'surface.vtu');
+p = mio.points(m);              % num_points x 3, one point per row
+c = mio.connectivity(m, 1);     % num_cells x nodes_per_cell, 1-based
+```
+
+Arrays follow the MATLAB convention of **one entity per row**, so `trisurf(c, p(:,1), p(:,2), p(:,3))` works directly. Indices are **1-based**, data arrays keep their stored class (`int32`, `single`, ...), and meshes are `handle` objects that free the native mesh when their last reference goes. Development and CI use GNU Octave. See the [Octave / MATLAB](https://loumalouomega.github.io/meshioplusplus/octave) doc page.
 
 </details>
 

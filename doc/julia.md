@@ -93,7 +93,7 @@ so nothing is ever transposed — exactly the reasoning the Fortran module docum
 
 A borrow cannot be shifted without copying it, which is the whole point of a borrow — hence the two names. `point_data_ptr`, `cell_data_ptr` and `field_data_ptr` follow the same pattern.
 
-Index maps and permutations (`refine`, `convert_cells`, `subdivide`, `agglomerate`, `decimate`, `partition`, `reorder`) are copies, so they are 1-based too, and the C API's `-1` "pruned / absent" sentinel becomes **`0`** — never a valid 1-based index. That is verbatim the Fortran rule; the bindings agree deliberately.
+Index maps and permutations (`refine`, `convert_cells`, `subdivide`, `agglomerate`, `decimate`, `decimate_volume`, `partition`, `reorder`) are copies, so they are 1-based too, and the C API's `-1` "pruned / absent" sentinel becomes **`0`** — never a valid 1-based index. That is verbatim the Fortran rule; the bindings agree deliberately.
 
 `partition_labels` is the exception: those are part **ids**, not indices, so they stay in `0:nparts-1`.
 
@@ -118,7 +118,7 @@ A `Mesh` releases its handle through a **finalizer** — the one real difference
 
 `refine` takes an optional cell selection: at most one of `cells` (global block-major, **1-based** here), `region` (a cell region selects its cells, a point region every cell with any node in it; a side region is an error) and `where_array` + `where_op` + `where_value`, plus `closure` (`"redgreen"`, local, or `"propagate"`, which reaches the whole edge-connected component) and `record_levels`. With no selector every cell is refined. `record_hierarchy` attaches `refine:cell_id`/`refine:parent_id` — the persistent parent/child hierarchy a multigrid caller resolves across the sequence of meshes it keeps, riding the raw C-side numbering unshifted like `partition_labels`' part ids — and forces `refine:entity` (the multigrid prolongation stencil) to be attached even when the closure leaves no hanging node. See [refine](/refine#refinecell_id-and-refineparent_id).
 
-Operations producing an opaque C result (`split`, `partition`, `reorder`, `refine`, `decimate`, `convert_cells`, `subdivide`, `agglomerate`) always **transfer ownership** of the mesh out of that result rather than handing back a borrow into it, so a piece stays valid after the result is gone:
+Operations producing an opaque C result (`split`, `partition`, `reorder`, `refine`, `decimate`, `decimate_volume`, `convert_cells`, `subdivide`, `agglomerate`) always **transfer ownership** of the mesh out of that result rather than handing back a borrow into it, so a piece stays valid after the result is gone:
 
 ```julia
 for (key, piece) in mio.split(m; by="type")
@@ -228,7 +228,7 @@ These are gaps in the **C ABI**, shared with the [Fortran](/fortran) and [R](/r)
 
 - **Four Python-only formats.** `pmsh`, `zarr`, `cae` and `usd` (v10.35.0, the physics-ML data path) are registered in the Python layer only, not in the shared C++ dispatch registry, so this surface cannot read or write them. They are export targets for a training pipeline rather than interchange formats; see [formats](/formats).
 
-- the **`frozen` pin mask** of `smooth` and `decimate`;
+- ~~the `frozen` pin mask~~ — **closed**: `smooth`, `decimate` and `decimate_volume` take `frozen` (1-based point ids, range-checked);
 - **per-cell-type counts** in `stats` — use `cell_block_types` with `cell_block_info`;
 - ~~ragged block connectivity~~ — **closed in v9.15.0**: `polygon_block` / `polyhedron_block` read them as nested 1-based vectors and `add_polygon_block!` / `add_polyhedron_block!` build them. `connectivity` still throws, since a ragged block has no matrix. See [Polyhedra and ragged cells](/polyhedra);
 - the combined **`data_manage`** — `data_drop` / `data_keep` / `data_rename` compose to the same effect;
@@ -272,6 +272,10 @@ write_snapshot("part.png", mesh)                       # .png .txt .ansi .html .
 
 - `tet_to_poly(mesh; feature_angle=1.0, point_data_to_cell_data=false, record_vertex_ids=false) -> (; mesh, vertex_map, num_new_points, num_boundary_faces, num_split_vertices)` — the median dual of a tetrahedral mesh, one polyhedron per vertex; `vertex_map` is a single flat 1-based array, output cell → input vertex. See [tetrahedral ⇄ polyhedral](/tet_poly).
 - `poly_to_tet(mesh; record_parent_ids=false) -> (; mesh, point_map, cell_maps, num_exact_tets, num_fanned_cells)` — `convert_cells(mesh, "simplexify")`, except that a polyhedron that already is a tetrahedron becomes that one tetra.
+
+## Volume decimation
+
+- `decimate_volume(mesh; ratio=-1.0, target_cells=-1, max_error=-1.0, placement="optimal", preserve_boundary=false, preserve_features=true, feature_angle=30.0, frozen=nothing) -> (; mesh, point_map, cell_maps, tets_removed, points_removed, collapses_rejected, max_error_applied)` — quadric-error tet-edge collapse of a tet-only mesh, the volume sibling of `decimate`, through `mio_decimate_volume_ex`. Exactly one of `ratio`, `target_cells` and `max_error` must be set (negative = unset), or the call raises a `MeshioError`. Boundary vertices participate by default (`preserve_boundary=false`, the opposite of `decimate`). `frozen` takes **1-based** point ids, shifted to 0-based across the ABI; an out-of-range id raises by name. The maps are 1-based with `0` for a cell that did not survive. A non-tet block fails by name: simplexify first with `convert_cells(mesh, "simplexify")`. See [volume decimation](/decimate_volume).
 
 ## v16.25.0 additions
 

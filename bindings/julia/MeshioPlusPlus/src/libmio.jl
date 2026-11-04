@@ -244,6 +244,24 @@ struct _CDecimateOpts
     reserved::NTuple{4,Int64}
 end
 
+"""
+Mirror of C `mio_decimate_volume_opts`. Field order, types and the trailing
+`reserved` padding are ABI: they must match `meshioplusplus.h` exactly.
+Always build one through [`decimate_volume`](@ref) rather than by hand.
+"""
+struct _CDecimateVolumeOpts
+    target_ratio::Cdouble
+    target_cells::Int64
+    max_error::Cdouble
+    placement::Cstring
+    preserve_boundary::Int32
+    preserve_features::Int32
+    feature_angle::Cdouble
+    frozen::Ptr{Int64}
+    num_frozen::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_stats_report`."""
 struct _CStatsReport
     num_points::Int64
@@ -2045,6 +2063,9 @@ function _check_abi_layout()
         error("meshio++: mio_smooth_opts layout mismatch ($(sizeof(_CSmoothOpts)) bytes)")
     sizeof(_CDecimateOpts) == 96 ||
         error("meshio++: mio_decimate_opts layout mismatch ($(sizeof(_CDecimateOpts)) bytes)")
+    sizeof(_CDecimateVolumeOpts) == 96 ||
+        error("meshio++: mio_decimate_volume_opts layout mismatch " *
+              "($(sizeof(_CDecimateVolumeOpts)) bytes)")
     sizeof(_CCellBlockInfo) == 88 ||
         error("meshio++: mio_cell_block_info layout mismatch ($(sizeof(_CCellBlockInfo)) bytes)")
     sizeof(_CPolyConnShape) == 64 ||

@@ -1080,7 +1080,7 @@ mio_write_graph <- function(mesh, path, kind = "node", format = NULL) {
 #'   convention).
 #' @param guard_inversion Reject any move that would flip a cell's signed
 #'   measure.
-#' @param frozen For `mio_smooth()` and `mio_decimate()`, an optional vector of
+#' @param frozen For `mio_smooth()`, `mio_decimate()` and `mio_decimate_volume()`, an optional vector of
 #'   1-based point ids to pin outright (unioned with the boundary/feature pins
 #'   for `mio_smooth()`). Shifted to 0-based across the C ABI, as every index
 #'   array in this binding; an out-of-range id raises by name.
@@ -1171,6 +1171,9 @@ mio_write_graph <- function(mesh, path, kind = "node", format = NULL) {
 #' @param levels How many times to apply the refinement templates.
 #' @param ratio Fraction of faces to KEEP, in (0, 1]; negative = unset.
 #' @param target_faces Absolute face count to stop at; negative = unset.
+#' @param target_cells `mio_decimate_volume()`: absolute tet count to stop at;
+#'   negative = unset. Its `ratio` is the fraction of tets to keep, and the
+#'   result reports `tets_removed` instead of `faces_removed`.
 #' @param max_error Quadric-error ceiling; negative = unset.
 #' @param placement `"optimal"`, `"midpoint"` or `"endpoint"`.
 #' @param nparts Number of partitions.
@@ -2703,6 +2706,18 @@ mio_decimate <- function(mesh, ratio = -1, target_faces = -1, max_error = -1,
                          preserve_features = TRUE, feature_angle = 30, frozen = NULL) {
   .Call(
     R_mio_decimate, mesh, as.numeric(ratio), as.numeric(target_faces),
+    as.numeric(max_error), as.character(placement), isTRUE(preserve_boundary),
+    isTRUE(preserve_features), as.numeric(feature_angle), frozen
+  )
+}
+
+#' @rdname mio_extract_surface
+#' @export
+mio_decimate_volume <- function(mesh, ratio = -1, target_cells = -1, max_error = -1,
+                                placement = "optimal", preserve_boundary = FALSE,
+                                preserve_features = TRUE, feature_angle = 30, frozen = NULL) {
+  .Call(
+    R_mio_decimate_volume, mesh, as.numeric(ratio), as.numeric(target_cells),
     as.numeric(max_error), as.character(placement), isTRUE(preserve_boundary),
     isTRUE(preserve_features), as.numeric(feature_angle), frozen
   )

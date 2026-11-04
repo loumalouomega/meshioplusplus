@@ -1033,6 +1033,43 @@ end
     close(fan)
 end
 
+@testset "operations: decimate_volume" begin
+    # A 3x3x3 hex block simplexified into tets through the binding itself.
+    hexes = box(dims=(3, 3, 3))
+    c = convert_cells(hexes, "simplexify")
+    tets = c.mesh
+    close(hexes)
+    @test cell_block_types(tets) == ["tetra"]
+    n_in = num_cells(tets)
+    np_in = num_points(tets)
+
+    d = decimate_volume(tets; ratio=0.5)
+    @test d.tets_removed > 0
+    @test num_cells(d.mesh) == n_in - d.tets_removed
+    @test all(==("tetra"), cell_block_types(d.mesh))
+    # Maps are 1-based copies with 0 for "absent" -- never a -1 leaking through.
+    @test length(d.point_map) == np_in
+    @test all(i -> 1 <= i <= num_points(d.mesh), d.point_map)
+    @test length(d.cell_maps) == 1
+    @test length(d.cell_maps[1]) == n_in
+    @test all(i -> 0 <= i <= num_cells(d.mesh), d.cell_maps[1])
+    @test count(==(0), d.cell_maps[1]) == d.tets_removed
+    @test sort(filter(!=(0), d.cell_maps[1])) == collect(1:num_cells(d.mesh))
+    @test d.max_error_applied >= 0.0
+    close(d.mesh)
+
+    # Exactly one criterion: two set is an error, as is none.
+    @test_throws MeshioError decimate_volume(tets; ratio=0.5, target_cells=10)
+    @test_throws MeshioError decimate_volume(tets)
+    # An out-of-range (1-based) frozen id raises by name.
+    @test_throws MeshioError decimate_volume(tets; ratio=0.5, frozen=[np_in + 1])
+    # An in-range frozen id is accepted.
+    f = decimate_volume(tets; ratio=0.5, frozen=[1])
+    @test f.tets_removed > 0
+    close(f.mesh)
+    close(tets)
+end
+
 @testset "operations: slice and isosurface" begin
     m = fixture()
 

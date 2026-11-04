@@ -1,0 +1,16 @@
+function write(mesh, path, varargin)
+%WRITE  Write a mesh file.
+%   mio.write(MESH, PATH) infers the format from the extension. Options:
+%     'format'        explicit format name ([] to infer)
+%     'encoding'      'default', 'ascii', 'binary' or 'raw_appended'
+%     'codec'         'default', 'none', 'zlib', 'lz4', 'zstd' or 'lzf' (PCD)
+%     'float_format'  printf-style format for supported ASCII writers
+
+    o = mio.internal.opts(varargin, {'format', [], 'encoding', 'default', ...
+        'codec', 'default', 'float_format', []}, 'mio.write');
+    meshioplusplus_mex('mio_write', mesh, mio.internal.str(path, 'path'), ...
+        mio.internal.str(o.format, 'format'), ...
+        mio.internal.choice(o.encoding, {'default', 'ascii', 'binary', 'raw_appended'}, 'encoding'), ...
+        mio.internal.choice(o.codec, {'default', 'none', 'zlib', 'lz4', 'zstd', 'lzf'}, 'codec'), ...
+        mio.internal.str(o.float_format, 'float_format'));
+end

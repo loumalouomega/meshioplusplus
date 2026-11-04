@@ -700,6 +700,27 @@ test_that("decimate collapses a fan and honours frozen", {
               "frozen node id 998")
 })
 
+test_that("decimate_volume collapses tets and reports its maps", {
+  tets <- mio_box(dims = c(3, 3, 3), cell_type = "tetra")
+  on.exit(mio_release(tets))
+  n_in <- mio_num_cells(tets)
+
+  d <- mio_decimate_volume(tets, ratio = 0.5)
+  on.exit(mio_release(d$mesh), add = TRUE)
+  expect_gt(d$tets_removed, 0)
+  expect_equal(mio_num_cells(d$mesh), n_in - d$tets_removed)
+  expect_equal(mio_cell_block_types(d$mesh), "tetra")
+  # 1-based maps, 0 for a cell that did not survive.
+  expect_length(d$point_map, mio_num_points(tets))
+  expect_length(d$cell_maps[[1]], n_in)
+  expect_true(all(d$cell_maps[[1]] >= 0))
+  expect_equal(sum(d$cell_maps[[1]] > 0), mio_num_cells(d$mesh))
+
+  # Exactly one criterion, and frozen ids are range-checked.
+  expect_error(mio_decimate_volume(tets, ratio = 0.5, target_cells = 10))
+  expect_error(mio_decimate_volume(tets, ratio = 0.5, frozen = c(99999)), "frozen")
+})
+
 test_that("slice and isosurface work", {
   m <- fixture()
   on.exit(mio_release(m))
