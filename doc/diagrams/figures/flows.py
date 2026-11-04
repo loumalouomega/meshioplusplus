@@ -1084,13 +1084,6 @@ def roadmap_map():
             ],
             [(0, 1), (5, 6)],
         ),
-        (
-            "§7 new capabilities",
-            [
-                ("hexahedra of creased scans", "L"),
-            ],
-            [],
-        ),
     ]
     per_row = 4
     col_w = 176
