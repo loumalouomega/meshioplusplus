@@ -1,0 +1,19 @@
+function r = shrinkwrap(mesh, target, varargin)
+%SHRINKWRAP  Project MESH's points onto the surface TARGET.
+%   x' = x + w (p + offset n - x), p the closest target point and n the
+%   feature pseudonormal there. Options: 'offset' (0), 'max_distance' (0:
+%   unlimited), 'weights' ('' moves every point; else a point-data array),
+%   'target_region' (''), 'normal_weight' ('angle' or 'area'),
+%   'record_distance' (false) and 'record_closest_cell' (false). Returns a
+%   struct: mesh, quality (the target's), num_projected, num_missed,
+%   num_skipped and max_displacement.
+
+    o = mio.internal.opts(varargin, {'offset', 0, 'max_distance', 0, 'weights', '', ...
+        'target_region', '', 'normal_weight', 'angle', 'record_distance', false, ...
+        'record_closest_cell', false}, 'mio.shrinkwrap');
+    r = meshioplusplus_mex('mio_shrinkwrap', mesh, target, double(o.offset), ...
+        double(o.max_distance), mio.internal.str(o.weights, 'weights'), ...
+        mio.internal.str(o.target_region, 'target_region'), ...
+        mio.internal.str(o.normal_weight, 'normal_weight'), logical(o.record_distance), ...
+        logical(o.record_closest_cell));
+end
