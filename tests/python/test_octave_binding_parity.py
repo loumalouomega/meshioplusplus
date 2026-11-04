@@ -29,13 +29,18 @@ def _r_exports():
 
 def _r_calldefs():
     text = (R_PKG / "src" / "init.c").read_text()
-    return {name[2:]: int(n) for name, n in re.findall(r"CALLDEF\((R_mio_\w+),\s*(\d+)\)", text)}
+    return {
+        name[2:]: int(n)
+        for name, n in re.findall(r"CALLDEF\((R_mio_\w+),\s*(\d+)\)", text)
+    }
 
 
 def _octave_entries():
     entries = {}
     for path in sorted((OCT_PKG / "src").glob("*.c")):
-        for name, n in re.findall(r"MIO_O_ENTRY\((mio_\w+),\s*(\d+)\)", path.read_text()):
+        for name, n in re.findall(
+            r"MIO_O_ENTRY\((mio_\w+),\s*(\d+)\)", path.read_text()
+        ):
             assert name not in entries, f"{name} registered twice"
             entries[name] = int(n)
     return entries
@@ -46,7 +51,9 @@ def _m_files():
 
 
 def test_every_r_export_has_an_octave_wrapper():
-    missing = [e for e in _r_exports() if not (MIO_DIR / f"{e[len('mio_'):]}.m").exists()]
+    missing = [
+        e for e in _r_exports() if not (MIO_DIR / f"{e[len('mio_'):]}.m").exists()
+    ]
     assert not missing, f"R exports without an inst/+mio/<name>.m wrapper: {missing}"
 
 
@@ -55,7 +62,9 @@ def test_every_r_entry_point_has_a_mex_command_with_the_same_arity():
     oct_entries = _octave_entries()
     missing = sorted(set(r_defs) - set(oct_entries))
     assert not missing, f"R .Call entry points without a MEX command: {missing}"
-    wrong = {k: (r_defs[k], oct_entries[k]) for k in r_defs if oct_entries[k] != r_defs[k]}
+    wrong = {
+        k: (r_defs[k], oct_entries[k]) for k in r_defs if oct_entries[k] != r_defs[k]
+    }
     assert not wrong, f"argument counts differ (R, Octave): {wrong}"
 
 
@@ -83,7 +92,10 @@ def test_no_case_insensitive_name_collisions():
 _OCTAVE_ONLY = [
     (re.compile(r"^\s*#"), "'#' comment"),
     (re.compile(r"!="), "'!=' (use '~=')"),
-    (re.compile(r"\bend(function|if|for|while|switch|_try_catch|_unwind_protect)\b"), "Octave end keyword"),
+    (
+        re.compile(r"\bend(function|if|for|while|switch|_try_catch|_unwind_protect)\b"),
+        "Octave end keyword",
+    ),
     (re.compile(r"\+\+|--(?=\s*;)|[+\-*/]="), "increment/compound assignment"),
     (re.compile(r"(^|[^\w.])printf\("), "printf (use fprintf)"),
     (re.compile(r"(^|[^\w'])!\w"), "'!' negation (use '~')"),
@@ -130,7 +142,7 @@ def test_m_files_use_shared_matlab_octave_syntax(path):
             continue
         code = _code_part(line)
         if '"' in code:
-            problems.append(f'{lineno}: double-quoted string (use single quotes)')
+            problems.append(f"{lineno}: double-quoted string (use single quotes)")
         for pattern, what in _OCTAVE_ONLY[1:]:
             if pattern.search(code):
                 problems.append(f"{lineno}: {what}")
