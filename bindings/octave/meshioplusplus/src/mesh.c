@@ -119,7 +119,17 @@ static mxArray *O_mio_read(const mxArray **a) {
 static mxArray *O_mio_write(const mxArray **a) {
     mio_write_opts opts;
     mio_write_opts_init(&opts);
-    opts.encoding = mio_o_int(a[3], "encoding");
+    /* The wrapper passes R's 0-based choice index (default, ascii, binary,
+     * raw_appended). Map it through the symbolic names rather than passing
+     * the number: the header's render-text `#define MIO_ENCODING_ASCII 4`
+     * shadows the mio_write_encoding enumerator of the same name, and the C
+     * API's own switch compares against the macro, so the literal 1 is
+     * rejected. The names stay right whichever way that clash is resolved. */
+    static const int kEncodings[] = {MIO_ENCODING_DEFAULT, MIO_ENCODING_ASCII,
+                                     MIO_ENCODING_BINARY, MIO_ENCODING_RAW_APPENDED};
+    int enc = mio_o_int(a[3], "encoding");
+    if (enc < 0 || enc > 3) mio_o_error("write", "invalid encoding code %d", enc);
+    opts.encoding = kEncodings[enc];
     opts.codec = mio_o_int(a[4], "codec");
     opts.float_format = mio_o_opt_string(a[5]);
     mio_o_check(mio_write_ex(mio_o_string(a[1], "path"), mio_o_mesh(a[0]),

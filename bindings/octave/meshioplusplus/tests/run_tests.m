@@ -14,6 +14,11 @@ function failures = run_tests(pattern)
     end
     here = fileparts(mfilename('fullpath'));
     addpath(here);
+    % Octave flags package functions named like built-ins (mio.diff,
+    % mio.merge, mio.pipe) as shadowing them; they do not.
+    if exist('OCTAVE_VERSION', 'builtin') ~= 0
+        warning('off', 'Octave:shadowed-function');
+    end
     inst = fullfile(here, '..', 'inst');
     if exist(fullfile(inst, '+mio'), 'dir') && isempty(which('mio.read'))
         addpath(inst);

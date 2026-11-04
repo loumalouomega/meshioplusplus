@@ -90,6 +90,14 @@ function t_roundtrip()
     mio.convert(path, out);
     expect_equal(mio.points(mio.read(out)), fixture_points());
     expect_equal(mio.sniff_format(out), 'gmsh');
+    % Every write encoding reaches the C API (ASCII once tripped over a macro
+    % in the C header shadowing its enumerator).
+    for enc = {'ascii', 'binary', 'raw_appended'}
+        p2 = [tempname() '.vtu'];
+        mio.write(m, p2, 'encoding', enc{1});
+        expect_equal(mio.points(mio.read(p2)), fixture_points());
+        delete(p2);
+    end
 end
 
 function t_struct()
