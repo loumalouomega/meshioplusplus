@@ -1,7 +1,7 @@
 import numpy as np
 
 from .._common import warn
-from .._helpers import read, read_metadata, reader_map
+from .._helpers import _reader_names, read, read_metadata
 from ._json import emit_json
 
 
@@ -11,7 +11,7 @@ def add_args(parser):
         "--input-format",
         "-i",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input file format",
         default=None,
     )

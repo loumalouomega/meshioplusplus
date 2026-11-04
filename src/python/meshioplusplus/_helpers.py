@@ -20,7 +20,13 @@ from ._files import (
     is_radioss_th_filename,
     is_z88_filename,
 )
-from ._format_table import ALL_MODULES, EXTENSION_MODULES, FORMAT_MODULES
+from ._format_table import (
+    ALL_MODULES,
+    EXTENSION_MODULES,
+    FORMAT_MODULES,
+    READER_NAMES,
+    WRITER_NAMES,
+)
 from ._mesh import CellBlock, Mesh
 
 _LOG = logging.getLogger("meshioplusplus")
@@ -123,6 +129,29 @@ def _ensure_format(name: str) -> None:
     module = FORMAT_MODULES.get(name)
     if module is not None:
         _load_format(module)
+
+
+def _registered_names(registry: dict, built_in: tuple) -> list:
+    """``sorted(registry)`` without importing every format subpackage first.
+
+    The built-in names come from the generated table; the installed plugins
+    register into the dict itself, so its keys are added. Once everything is
+    loaded the dict alone is the answer (a ``deregister_format`` is honoured).
+    """
+    _ensure_plugins()
+    if _ALL_LOADED:
+        return sorted(dict.keys(registry))
+    return sorted(set(built_in).union(dict.keys(registry)))
+
+
+def _reader_names() -> list:
+    """Every readable format name, sorted (a CLI's ``--input-format`` choices)."""
+    return _registered_names(reader_map, READER_NAMES)
+
+
+def _writer_names() -> list:
+    """Every writer name, sorted (a CLI's ``--output-format`` choices)."""
+    return _registered_names(_writer_map, WRITER_NAMES)
 
 
 def _get_reader(name: str):

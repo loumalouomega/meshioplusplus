@@ -72,3 +72,37 @@ def test_a_name_resolves_to_its_subpackage_alone():
         [sys.executable, "-c", code], check=True, capture_output=True, text=True
     )
     assert json.loads(out.stdout.strip().splitlines()[-1]) == ["gmsh", "marc"]
+
+
+def test_the_name_lists_match_the_registries():
+    """``READER_NAMES``/``WRITER_NAMES`` are the CLI's choices: the same as
+    ``sorted(reader_map)`` and ``sorted(_writer_map)`` once everything loads."""
+    code = (
+        "import json\n"
+        "from meshioplusplus import _helpers as h\n"
+        "lazy = (h._reader_names(), h._writer_names())\n"
+        "assert lazy == (sorted(h.reader_map), sorted(h._writer_map))\n"
+        "assert lazy == (h._reader_names(), h._writer_names())\n"
+        "print(json.dumps(len(lazy[0])))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], check=True, capture_output=True, text=True
+    )
+    assert int(out.stdout.strip().splitlines()[-1]) > 50
+
+
+def test_building_the_cli_parser_imports_no_format():
+    """Roadmap 5.12.1: ``meshioplusplus --help`` must not import every format
+    subpackage to fill the ``choices`` of the format options."""
+    code = (
+        "import json, sys\n"
+        "from meshioplusplus._cli._main import build_parser\n"
+        "from meshioplusplus._format_table import ALL_MODULES\n"
+        "build_parser()\n"
+        "print(json.dumps([m for m in ALL_MODULES\n"
+        "                  if f'meshioplusplus.{m}' in sys.modules]))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], check=True, capture_output=True, text=True
+    )
+    assert json.loads(out.stdout.strip().splitlines()[-1]) == []

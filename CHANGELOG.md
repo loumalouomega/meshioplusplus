@@ -8,6 +8,13 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+Performance work from the roadmap's §5; output is unchanged.
+
+- **The CLI's parser loads no format** (roadmap 5.12.1, [lazy imports](doc/benchmarks.md#lazy-format-and-operation-imports)): the `choices` of the format options come from the generated `_format_table.py` (`READER_NAMES`, `WRITER_NAMES`, plus installed plugins) instead of `reader_map`, which imported every format subpackage, and `ascii`, `binary`, `compress`, `decompress` and the `iga` verbs import their formats when they run: 488 modules after `build_parser()` instead of 731.
+- **The MCP read cache copies no array for the read-only tools** (roadmap 5.12.2, [read cache](doc/mcp.md#read-cache)): the cached mesh's arrays are frozen; `stats`, `quality`, `check_quality`, `data_info`, `data_integrate`, `regions`, `diff` and `hausdorff` get private containers over them, and an insert no longer copies the mesh for them either. A tool that changes its mesh still gets a private copy.
+
 ## v19.0.0 (2026-11-04)
 
 A major release: `mesh_cad_surface` accepts the model's own tolerances and meshes sliver faces with their neighbours by default. **ABI 39 (Tier B):** rebuild native consumers.

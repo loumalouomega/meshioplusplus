@@ -624,6 +624,35 @@ def test_cached_mesh_is_never_handed_out(mesh_file):
     assert not np.any(again.point_data["t"] == -7.0)
 
 
+def test_read_only_tools_share_the_cached_arrays_frozen(mesh_file):
+    """Roadmap 5.12.2: a read-only tool is handed the cached arrays themselves
+    (no copy), read-only, inside containers of its own."""
+    _tools._load(mesh_file)  # fill the cache
+    view = _tools._load(mesh_file, readonly=True)
+    other = _tools._load(mesh_file, readonly=True)
+    assert np.shares_memory(view.points, other.points)
+    assert not view.points.flags.writeable
+    assert not view.point_data["t"].flags.writeable
+    with pytest.raises(ValueError):
+        view.points[:] = -7.0
+    # The containers are private: dropping an entry does not reach the cache.
+    view.point_data.pop("t")
+    view.cells.clear()
+    again = _tools._load(mesh_file)
+    assert "t" in again.point_data and again.cells
+    # A mutating caller still gets writable, private arrays.
+    assert again.points.flags.writeable
+    assert not np.shares_memory(again.points, other.points)
+
+
+def test_read_only_tools_agree_on_a_hit(mesh_file):
+    first = _dump(_tools.tool_stats(mesh_file))
+    assert _dump(_tools.tool_stats(mesh_file)) == first
+    assert _dump(_tools.tool_data_info(mesh_file)) == _dump(
+        _tools.tool_data_info(mesh_file)
+    )
+
+
 def test_a_changed_input_is_read_again(mesh_file, count_parses):
     assert len(_tools._load(mesh_file).points) == 5
     # Rewrite the file outside the server, as an agent's own tool would.

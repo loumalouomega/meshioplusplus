@@ -32,6 +32,7 @@ Design rules (the contracts the tests pin):
 
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 import os
@@ -492,7 +493,51 @@ def _heal_kwargs(heal, sew_tolerance):
     return out
 
 
-def _load(input_path, input_format=None, **read_kwargs):
+def _mesh_arrays(mesh):
+    """Every ndarray reachable from ``mesh`` through its containers, cell
+    blocks and regions (``info`` included), each once."""
+    from .._mesh import CellBlock
+    from .._regions import Region
+
+    out, seen, stack = [], set(), [mesh.__dict__]
+    while stack:
+        obj = stack.pop()
+        if id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        if isinstance(obj, np.ndarray):
+            out.append(obj)
+        elif isinstance(obj, dict):
+            stack.extend(obj.values())
+        elif isinstance(obj, (list, tuple)):
+            stack.extend(obj)
+        elif isinstance(obj, CellBlock):
+            stack.extend(vars(obj).values())
+        elif isinstance(obj, Region):
+            stack.extend(getattr(obj, name) for name in Region.__slots__)
+    return out
+
+
+def _freeze(mesh):
+    """Make a cached mesh's arrays read-only: what is shared cannot be written."""
+    for array in _mesh_arrays(mesh):
+        array.flags.writeable = False
+
+
+def _hand_out(cached, readonly):
+    """What a tool gets from the cache. A tool that mutates its mesh (and the
+    pipeline) gets a private deep copy; a read-only tool gets private
+    containers over the cached, frozen arrays, so a hit copies no array
+    (roadmap 5.12.2) and a write to one raises instead of corrupting the cache."""
+    if not readonly:
+        return cached.copy()
+    return copy.deepcopy(cached, {id(a): a for a in _mesh_arrays(cached)})
+
+
+def _load(input_path, input_format=None, *, readonly=False, **read_kwargs):
+    """Read ``input_path`` through the cache. ``readonly=True`` promises the
+    caller never writes to the mesh's arrays: it is then handed the cached
+    arrays themselves, read-only, rather than a copy."""
     resolved = _resolve(input_path, must_exist=True)
     limit = _cache_limit()
     key = _cache_key(resolved, input_format, read_kwargs) if limit else None
@@ -501,8 +546,7 @@ def _load(input_path, input_format=None, **read_kwargs):
             hit = _CACHE.get(key)
             if hit is not None:
                 _CACHE.move_to_end(key)
-                # A private copy: tools (and the pipeline) mutate what they get.
-                return hit[0].copy()
+                return _hand_out(hit[0], readonly)
     heal = bool(read_kwargs.pop("heal", False))
     sew_tolerance = float(read_kwargs.pop("sew_tolerance", 0.0) or 0.0)
     if heal or sew_tolerance > 0.0:
@@ -529,13 +573,16 @@ def _load(input_path, input_format=None, **read_kwargs):
     if key is not None:
         nbytes = _mesh_nbytes(mesh)
         if nbytes <= limit:
-            kept = mesh.copy()
+            # The parsed mesh itself is kept, its arrays frozen; the caller
+            # gets what a hit would hand out (one copy, as before, or none).
+            _freeze(mesh)
             with _CACHE_LOCK:
                 if key not in _CACHE:
-                    _CACHE[key] = (kept, nbytes)
+                    _CACHE[key] = (mesh, nbytes)
                     _CACHE_BYTES[0] += nbytes
                 while _CACHE_BYTES[0] > limit and _CACHE:
                     _CACHE_BYTES[0] -= _CACHE.popitem(last=False)[1][1]
+            return _hand_out(mesh, readonly)
     return mesh
 
 
@@ -639,7 +686,12 @@ def tool_info(input_path, file_format=None):
 def tool_stats(input_path, file_format=None, time_step=0, piece=None, ghosts="keep"):
     """Geometric statistics: bbox, centroid, areas/volumes, inverted cells."""
     mesh = _load(
-        input_path, file_format, time_step=time_step, piece=piece, ghosts=ghosts
+        input_path,
+        file_format,
+        time_step=time_step,
+        piece=piece,
+        ghosts=ghosts,
+        readonly=True,
     )
     return _json_safe(compute_stats(mesh))
 
@@ -651,7 +703,7 @@ def tool_quality(input_path, file_format=None, output_path=None, output_format=N
     mesh); pass ``output_path`` to write a copy of the mesh carrying them as
     ``quality:<metric>`` cell_data instead.
     """
-    mesh = _load(input_path, file_format)
+    mesh = _load(input_path, file_format, readonly=True)
     report = compute_quality(mesh)
     report.pop("cell_arrays", None)
     report["cell_arrays"] = (
@@ -668,7 +720,7 @@ def tool_check_quality(
 ):
     """Quality gate: pass/fail thresholds over the per-cell quality metrics and
     the inverted/degenerate counts; the report names every check."""
-    mesh = _load(input_path, file_format)
+    mesh = _load(input_path, file_format, readonly=True)
     return _json_safe(
         check_quality(
             mesh, require, max_inverted=max_inverted, max_degenerate=max_degenerate
@@ -777,20 +829,20 @@ def tool_thickness(
 
 def tool_data_info(input_path, file_format=None):
     """Describe every data array: dtype, shape, ranges, NaN/Inf counts."""
-    mesh = _load(input_path, file_format)
+    mesh = _load(input_path, file_format, readonly=True)
     return _json_safe({"arrays": data_info(mesh)})
 
 
 def tool_data_integrate(input_path, file_format=None, arrays=None):
     """Cell-measure-weighted total/mean of cell_data arrays, whole mesh and
     per named Cell region."""
-    mesh = _load(input_path, file_format)
+    mesh = _load(input_path, file_format, readonly=True)
     return _json_safe({"arrays": data_integrate(mesh, arrays=arrays)})
 
 
 def tool_regions(input_path, file_format=None):
     """List the mesh's named regions (point/cell/side groups)."""
-    mesh = _load(input_path, file_format)
+    mesh = _load(input_path, file_format, readonly=True)
     regions = [
         {
             "name": r.name,
@@ -868,8 +920,8 @@ def tool_diff(
     max_reported=10,
 ):
     """Compare two mesh files; the report carries a verdict and per-section detail."""
-    mesh_a = _load(path_a, format_a)
-    mesh_b = _load(path_b, format_b)
+    mesh_a = _load(path_a, format_a, readonly=True)
+    mesh_b = _load(path_b, format_b, readonly=True)
     report = diff(
         mesh_a,
         mesh_b,
@@ -3875,8 +3927,8 @@ def tool_hausdorff(
     """The (sampled) Hausdorff distance between the surfaces of two mesh files;
     with max_distance, also whether it stays within that limit."""
     report = hausdorff_distance(
-        _load(path_a, format_a),
-        _load(path_b, format_b),
+        _load(path_a, format_a, readonly=True),
+        _load(path_b, format_b, readonly=True),
         face_samples=face_samples,
         region_a=region_a,
         region_b=region_b,

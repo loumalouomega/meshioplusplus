@@ -1,7 +1,7 @@
 """The MMG backend's subcommands (roadmap 3.2): ``adapt``,
 ``discretize-levelset``, ``mesh-2d`` and ``move``."""
 
-from .._helpers import _writer_map, read, reader_map, write
+from .._helpers import _reader_names, _writer_names, read, write
 from .._mmg import adapt, discretize_levelset, mesh_domain, move
 
 
@@ -12,7 +12,7 @@ def _add_io_args(parser, what):
         "--input-format",
         "-i",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input file format",
         default=None,
     )
@@ -20,7 +20,7 @@ def _add_io_args(parser, what):
         "--output-format",
         "-o",
         type=str,
-        choices=sorted(list(_writer_map.keys())),
+        choices=_writer_names(),
         help="output file format",
         default=None,
     )

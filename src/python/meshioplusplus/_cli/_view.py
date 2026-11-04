@@ -1,7 +1,7 @@
 import sys
 import warnings
 
-from .._helpers import read, reader_map
+from .._helpers import _reader_names, read
 from .._viewer import has_viewer, screenshot, view
 
 
@@ -11,7 +11,7 @@ def _common_args(parser):
         "--input-format",
         "-i",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input file format",
         default=None,
     )

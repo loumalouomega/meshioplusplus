@@ -2,7 +2,7 @@ import numpy as np
 
 from .._fit_cad import DEFAULT_RANSAC_SEED, fit_cad
 from .._fit_primitives import TYPES, fit_primitives
-from .._helpers import read, reader_map, write
+from .._helpers import _reader_names, read, write
 from .._segment import segment
 from ._json import emit_json
 from ._refine_patches import parse_seed
@@ -15,7 +15,7 @@ def add_args(parser):
         "--input-format",
         "-i",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input file format",
         default=None,
     )

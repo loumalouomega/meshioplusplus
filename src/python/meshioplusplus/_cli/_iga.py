@@ -1,5 +1,4 @@
-from .._helpers import _writer_map, read, reader_map, write
-from .._iga import iga_evaluate, iga_refine, iga_sample
+from .._helpers import _reader_names, _writer_names, read, write
 from ._json import emit_json
 
 
@@ -15,7 +14,7 @@ def _add_io(parser, what):
             "--output-format",
             "-o",
             type=str,
-            choices=sorted(list(_writer_map.keys())),
+            choices=_writer_names(),
             help="output file format",
             default=None,
         )
@@ -23,7 +22,7 @@ def _add_io(parser, what):
         "--input-format",
         "-i",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input file format",
         default=None,
     )
@@ -90,6 +89,8 @@ def add_refine_args(parser):
 
 
 def refine_cmd(args):
+    from .._iga import iga_refine  # cad_json is loaded only when a verb runs
+
     mesh = read(args.infile, file_format=args.input_format)
     out = iga_refine(
         mesh,
@@ -123,6 +124,8 @@ def add_sample_args(parser):
 
 
 def sample_cmd(args):
+    from .._iga import iga_sample  # cad_json is loaded only when a verb runs
+
     mesh = read(args.infile, file_format=args.input_format)
     out = iga_sample(
         mesh,
@@ -197,6 +200,8 @@ def add_evaluate_args(parser):
 
 
 def evaluate_cmd(args):
+    from .._iga import iga_evaluate  # cad_json is loaded only when a verb runs
+
     mesh = read(args.infile, file_format=args.input_format)
     params = [[float(v) for v in text.split(",")] for text in args.param]
     res = iga_evaluate(

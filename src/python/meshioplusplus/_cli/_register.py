@@ -1,7 +1,7 @@
 """The ``register`` verb: the rigid motion laying SOURCE onto TARGET, by
 iterative closest points (``doc/registration.md``)."""
 
-from .._helpers import read, reader_map, write
+from .._helpers import _reader_names, read, write
 from .._registration import register_rigid
 from .._transform import transform
 from ._json import emit_json
@@ -14,7 +14,7 @@ def add_args(parser):
         parser.add_argument(
             f"--input-format-{side}",
             type=str,
-            choices=sorted(list(reader_map.keys())),
+            choices=_reader_names(),
             default=None,
             help=f"input format of the {side}",
         )

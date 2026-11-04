@@ -728,7 +728,7 @@ Wall time, Python 3.12, interleaved old and new in fresh interpreters, 15 each, 
 | modules loaded after the import | 556 | 221 |
 | modules loaded after the PLY read | 556 | 232 |
 
-The first read of a format pays for loading its subpackage (12.4 ms median for PLY, against 1.1 ms before), so the saving shrinks for a process that touches many formats and is gone for one that lists them all. The command-line tool and the MCP server import the whole package for their option lists and tool tables, so they gain nothing. `test_import_footprint.py` keeps the formats, operations and `_core` off the import path and checks that a write and read of one STL file loads `stl` alone.
+The first read of a format pays for loading its subpackage (12.4 ms median for PLY, against 1.1 ms before), so the saving shrinks for a process that touches many formats and is gone for one that lists them all. The MCP server imports the whole package for its tool table, so it gains nothing. The command-line tool used to as well, filling the `choices` of its format options from `reader_map`; since roadmap 5.12.1 they come from the table (`READER_NAMES` and `WRITER_NAMES`, with installed plugins added), and the verbs that write a fixed list of formats import them when they run, so building the parser loads no format subpackage: 488 modules instead of 731 after `build_parser()`. The parser still imports every verb's module, about 270 modules; building subparsers lazily is what is left (`test_format_table.py` keeps the formats off that path). `test_import_footprint.py` keeps the formats, operations and `_core` off the import path and checks that a write and read of one STL file loads `stl` alone.
 
 ### VTP encodings for the browser viewer
 

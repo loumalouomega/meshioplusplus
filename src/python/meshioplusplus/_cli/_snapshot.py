@@ -7,7 +7,7 @@ so the two verbs take the same command lines.
 import shutil
 import sys
 
-from .._helpers import read, reader_map
+from .._helpers import _reader_names, read
 from .._render import _core_module, _environment_color_depth
 from .._render import parse_color as _rgba
 from .._render import parse_cutaway, render_text, snapshot
@@ -327,7 +327,7 @@ def add_args(parser):
         "--input-format",
         "-i",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input file format",
         default=None,
     )
