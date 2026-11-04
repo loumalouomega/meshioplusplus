@@ -45,7 +45,7 @@ On a unit cube cut by the plane `x = 0.3`, every family (hexahedra, tetrahedra, 
 
 ## Building with CutCells
 
-CutCells is bring-your-own, never vendored or downloaded by CMake. `build/build-cutcells.sh PREFIX` builds the commit `build/deps-pins.sh` pins (CutCells has no release tags), static and without OpenMP; then configure meshio++ with `-DMESHIOPLUSPLUS_WITH_CUTCELLS=ON -DCUTCELLS_ROOT=PREFIX` (or `build/configure.sh --cutcells-root PREFIX`). The PyPI wheels for Linux and macOS link it (`build/build-permissive-libs.sh`); the Windows wheels, both WebAssembly artifacts and the default source build do not, and refuse by name. `cut_has_cutcells()` (C++, Python), `_core.__has_cutcells__`, `mio_has_cutcells()` (C) and their binding twins report it.
+CutCells is bring-your-own, never vendored or downloaded by CMake. `build/build-cutcells.sh PREFIX` builds the commit `build/deps-pins.sh` pins (CutCells has no release tags), static and without OpenMP; then configure meshio++ with `-DMESHIOPLUSPLUS_WITH_CUTCELLS=ON -DCUTCELLS_ROOT=PREFIX` (or `build/configure.sh --cutcells-root PREFIX`). The PyPI wheels for Linux, macOS and Windows link it (`build/build-permissive-libs.sh`); the Windows wheels link it too (a static MSVC build, `build/build-cutcells.sh`), and so does the full WebAssembly artifact (`build/build-wasm-deps.sh --full`); the lean WebAssembly artifact and the default source build do not, and refuse by name. `cut_has_cutcells()` (C++, Python), `_core.__has_cutcells__`, `mio_has_cutcells()` (C) and their binding twins report it.
 
 ## Bindings
 
@@ -58,4 +58,4 @@ CutCells is bring-your-own, never vendored or downloaded by CMake. `build/build-
 
 ## Limits
 
-Straight-sided geometry only (CutCells' affine cells); polygons and polyhedra are refused; quadratic level sets only on meshes of `triangle6` or `tetra10` cells; at most 64 level sets in one cut (CutCells' mask); serial. The WebAssembly artifacts do not link CutCells yet.
+Straight-sided geometry only (CutCells' affine cells); polygons and polyhedra are refused; quadratic level sets only on meshes of `triangle6` or `tetra10` cells; at most 64 level sets in one cut (CutCells' mask); serial. CutCells is in the full WebAssembly artifact only (static, built without OpenMP, with `-fwasm-exceptions`); the lean one refuses by name.

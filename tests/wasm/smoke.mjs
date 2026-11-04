@@ -20,7 +20,7 @@
 // The full artifact (roadmap 6.2; `configure-wasm.sh --full`) runs the same
 // suite with MESHIOPLUSPLUS_WASM_VARIANT=full (threaded) or full-seq: every
 // step holds there too, the capability steps assert the larger set, and the
-// full-only steps (STEP/IGES reading, fitCad, zstd/lz4/bzip2) run.
+// full-only steps (STEP/IGES reading, fitCad, zstd/lz4/bzip2, CutCells) run.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -5772,6 +5772,9 @@ step('remeshQuads is refused by name: no quad remesher runs in WebAssembly', () 
 
 step('cutLevelSet and cutQuadrature: CutCells, or refused by name', () => {
     const plane = { planes: [[[0.3, 0, 0], [1, 0, 0]]] };
+    // The full artifact links CutCells (build-wasm-deps.sh --full); the lean
+    // one refuses by name.
+    assert.equal(m.hasCutcells(), requested.startsWith('full'));
     if (!m.hasCutcells()) {
         assert.throws(() => m.cutLevelSet(cubeSurface, plane), /CutCells/);
         assert.throws(() => m.cutQuadrature(cubeSurface, plane), /CutCells/);

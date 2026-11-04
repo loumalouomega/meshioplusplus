@@ -12,7 +12,7 @@ meshio++ itself is MIT ([LICENSE](LICENSE)). The binaries the project publishes 
 | [Netgen](https://ngsolve.org/) (nglib) | 6.2.2401 | LGPL-2.1-only | add-on wheel only (shared) | no |
 | [MMG](https://www.mmgtools.org/) | 5.8.0 | LGPL-3.0-or-later | add-on wheel only (shared, without ELAS) | no |
 | [HDF5](https://www.hdfgroup.org/solutions/hdf5/) | 1.14.6 | BSD-3-Clause | yes (Linux, macOS; static, symbols hidden) | no |
-| [netCDF-C](https://www.unidata.ucar.edu/software/netcdf/) | 4.9.3 | BSD-3-Clause | yes (Linux, macOS; static) | no |
+| [netCDF-C](https://www.unidata.ucar.edu/software/netcdf/) | 4.9.3 | BSD-3-Clause | yes (Linux, macOS, Windows; static) | no |
 | [CGNS](https://cgns.github.io/) (cgnslib) | 4.5.2 | Zlib | yes (Linux, macOS; static) | no |
 | [zstd](https://facebook.github.io/zstd/) | 1.5.7 | BSD-3-Clause (the library is dual-licensed BSD/GPL-2.0; the BSD option is used) | yes (Linux, macOS; static) | no |
 | [LZ4](https://lz4.org/) | 1.10.0 | BSD-2-Clause (the library) | yes (Linux, macOS; static) | no |

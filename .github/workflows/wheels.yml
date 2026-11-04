@@ -57,6 +57,29 @@ jobs:
         if: runner.os == 'macOS'
         run: echo "DEPS_PREFIX=$PWD/build/deps" >> "$GITHUB_ENV"
 
+      # CutCells (cut_level_set, cut_quadrature) is the one native library the
+      # Windows wheel links: a small static MSVC build of the commit
+      # build/deps-pins.sh pins, without OpenMP, into the core DLL.
+      - name: Cache CutCells (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: build/cutcells-win
+          key: cutcells-wheels-windows-${{ hashFiles('build/build-cutcells.sh', 'build/deps-pins.sh') }}
+
+      - name: Build CutCells (static, Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: sh build/build-cutcells.sh build/cutcells-win
+
+      - name: Locate CutCells (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # Forward-slash path: cibuildwheel evaluates CIBW_ENVIRONMENT like a shell.
+          here="$( (pwd -W 2>/dev/null || pwd) )"
+          echo "CUTCELLS_PREFIX=$here/build/cutcells-win" >> "$GITHUB_ENV"
+
       - name: Build wheels
         # v2.21's manylinux alias table predates _2_34, and it hardcodes cp38 for its
         # own before_all bootstrapping - manylinux_2_34 (AlmaLinux 9) doesn't ship
@@ -132,7 +155,7 @@ jobs:
           # The core DLL's export table is generated (cmake/gen_core_def.py): the
           # auto-exported one exceeds the linker's 65,535-export limit (LNK1189).
           CIBW_ENVIRONMENT_WINDOWS: >-
-            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON -DMESHIOPLUSPLUS_WITH_CUTCELLS=ON -DCUTCELLS_ROOT=${{ env.CUTCELLS_PREFIX }}"
           # The core DLL already ships inside the wheel (meshioplusplus/lib); delvewheel
           # must not look for it elsewhere, only bundle the runtime DLLs.
           CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: "delvewheel repair --no-dll meshioplusplus_core_meshio.dll -w {dest_dir} {wheel}"
