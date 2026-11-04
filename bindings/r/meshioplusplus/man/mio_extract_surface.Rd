@@ -29,6 +29,7 @@
 \alias{mio_agglomerate}
 \alias{mio_refine}
 \alias{mio_decimate}
+\alias{mio_decimate_volume}
 \alias{mio_partition}
 \alias{mio_partition_labels}
 \title{Mesh operations}
@@ -168,6 +169,18 @@ mio_decimate(
   frozen = NULL
 )
 
+mio_decimate_volume(
+  mesh,
+  ratio = -1,
+  target_cells = -1,
+  max_error = -1,
+  placement = "optimal",
+  preserve_boundary = FALSE,
+  preserve_features = TRUE,
+  feature_angle = 30,
+  frozen = NULL
+)
+
 mio_partition(
   mesh,
   nparts,
@@ -236,7 +249,7 @@ convention).}
 \item{guard_inversion}{Reject any move that would flip a cell's signed
 measure.}
 
-\item{frozen}{For \code{mio_smooth()} and \code{mio_decimate()}, an optional vector of
+\item{frozen}{For \code{mio_smooth()}, \code{mio_decimate()} and \code{mio_decimate_volume()}, an optional vector of
 1-based point ids to pin outright (unioned with the boundary/feature pins
 for \code{mio_smooth()}). Shifted to 0-based across the C ABI, as every index
 array in this binding; an out-of-range id raises by name.}
@@ -333,6 +346,10 @@ reports \code{num_rejected}.}
 \item{ratio}{Fraction of faces to KEEP, in (0, 1]; negative = unset.}
 
 \item{target_faces}{Absolute face count to stop at; negative = unset.}
+
+\item{target_cells}{\code{mio_decimate_volume()}: absolute tet count to stop at;
+negative = unset. Its \code{ratio} is the fraction of tets to keep, and the
+result reports \code{tets_removed} instead of \code{faces_removed}.}
 
 \item{max_error}{Quadric-error ceiling; negative = unset.}
 

@@ -15,6 +15,7 @@ function tests = test_ops_combine()
         'split and partition pieces own their handles', @t_split_partition
         'reorder returns 1-based permutations', @t_reorder
         'decimate honours target_faces and frozen', @t_decimate
+        'decimate_volume collapses tets and reports its maps', @t_decimate_volume
         'error_size turns the indicator into a size field', @t_error_size
         'check_conformity reports a conforming mesh', @t_conformity
         'merge and interpolate work', @t_merge_interpolate
@@ -592,4 +593,22 @@ function t_capabilities()
     assert(iscellstr(tb));
     assert(any(strcmp('octree', tb)));
     expect_equal(size(tb, 2), 1);
+end
+
+function t_decimate_volume()
+    tets = mio.box('dims', [3 3 3], 'cell_type', 'tetra');
+    n_in = mio.num_cells(tets);
+    d = mio.decimate_volume(tets, 'ratio', 0.5);
+    assert(d.tets_removed > 0);
+    expect_equal(mio.num_cells(d.mesh), n_in - d.tets_removed);
+    expect_equal(mio.cell_block_types(d.mesh), {'tetra'});
+    % 1-based maps, 0 for an entity that did not survive.
+    expect_equal(size(d.point_map), [mio.num_points(tets), 1]);
+    cm = d.cell_maps{1};
+    expect_equal(size(cm), [n_in, 1]);
+    assert(all(cm >= 0));
+    expect_equal(sum(cm > 0), mio.num_cells(d.mesh));
+    % Exactly one criterion, and frozen ids are range-checked.
+    expect_error(@() mio.decimate_volume(tets, 'ratio', 0.5, 'target_cells', 10));
+    expect_error(@() mio.decimate_volume(tets, 'ratio', 0.5, 'frozen', 99999), 'frozen');
 end

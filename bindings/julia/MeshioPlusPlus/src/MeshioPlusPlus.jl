@@ -125,7 +125,7 @@ export repair, shrinkwrap, sobolev_deform, geodesic_distance, parameterize, conv
        convex_hull, delaunay_2d, estimate_normals, reconstruct_surface, register_rigid, laplacian_eigenmodes, morph,
        untangle, prepare_metric
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
-export reorder, convert_cells, subdivide, agglomerate, tet_to_poly, poly_to_tet, refine, undo_green, decimate, partition, partition_labels
+export reorder, convert_cells, subdivide, agglomerate, tet_to_poly, poly_to_tet, refine, undo_green, decimate, decimate_volume, partition, partition_labels
 export boundary_layer
 export extrude, revolve, mirror
 export find_intersections, thickness

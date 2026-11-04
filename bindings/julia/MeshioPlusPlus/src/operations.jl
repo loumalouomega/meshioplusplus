@@ -2029,6 +2029,65 @@ function decimate(m::Mesh; ratio::Real=-1.0, target_faces::Integer=-1,
 end
 
 """
+    decimate_volume(mesh; ratio=-1.0, target_cells=-1, max_error=-1.0, placement="optimal",
+                    preserve_boundary=false, preserve_features=true, feature_angle=30.0,
+                    frozen=nothing)
+        -> (; mesh, point_map, cell_maps, tets_removed, points_removed,
+              collapses_rejected, max_error_applied)
+
+Reduce a **tet** mesh's cell count by greedy quadric-error-metric tet-edge
+collapse — the volume-mesh sibling of [`decimate`](@ref). Exactly one of
+`ratio` (fraction of tets to KEEP), `target_cells` and `max_error` must be set;
+a negative value means "unset".
+
+The mesh must be tet-only: hexahedron/wedge/pyramid/polyhedron, ragged,
+higher-order or mixed lower-dimensional blocks fail by name (simplexify first
+with [`convert_cells`](@ref)). Unlike `decimate`, boundary vertices participate
+by default (`preserve_boundary=false`). `frozen` is an optional vector of
+**1-based** point ids to pin outright; shifted to 0-based across the C ABI, as
+every index array in this binding. An out-of-range id raises by name. The maps
+are 1-based with 0 for "absent". See `doc/decimate_volume.md`.
+"""
+function decimate_volume(m::Mesh; ratio::Real=-1.0, target_cells::Integer=-1,
+                         max_error::Real=-1.0, placement::AbstractString="optimal",
+                         preserve_boundary::Bool=false, preserve_features::Bool=true,
+                         feature_angle::Real=30.0, frozen=nothing)
+    placement_c = Vector{UInt8}(codeunits(String(placement)))
+    push!(placement_c, 0x00)
+    ids = frozen === nothing ? Int64[] : Vector{Int64}(vec(collect(frozen))) .- Int64(1)
+    result = GC.@preserve ids placement_c begin
+        opts = _CDecimateVolumeOpts(Cdouble(ratio), Int64(target_cells), Cdouble(max_error),
+                                    Cstring(pointer(placement_c)),
+                                    preserve_boundary ? Int32(1) : Int32(0),
+                                    preserve_features ? Int32(1) : Int32(0),
+                                    Cdouble(feature_angle),
+                                    isempty(ids) ? Ptr{Int64}(C_NULL) : pointer(ids),
+                                    Int64(length(ids)), (Int64(0), Int64(0), Int64(0), Int64(0)))
+        _check_ptr(ccall(_sym(:mio_decimate_volume_ex), Ptr{Cvoid},
+                         (Ptr{Cvoid}, Ref{_CDecimateVolumeOpts}), _handle(m), Ref(opts)))
+    end
+    try
+        pm = _result_map(result, :mio_decimate_volume_result_point_map)
+        cm = _result_cell_maps(result, :mio_decimate_volume_result_num_cell_maps,
+                               :mio_decimate_volume_result_cell_map)
+        tr = ccall(_sym(:mio_decimate_volume_result_tets_removed), Int64, (Ptr{Cvoid},), result)
+        pr = ccall(_sym(:mio_decimate_volume_result_points_removed), Int64, (Ptr{Cvoid},),
+                   result)
+        cr = ccall(_sym(:mio_decimate_volume_result_collapses_rejected), Int64, (Ptr{Cvoid},),
+                   result)
+        me = ccall(_sym(:mio_decimate_volume_result_max_error_applied), Cdouble, (Ptr{Cvoid},),
+                   result)
+        out = Mesh(_check_ptr(ccall(_sym(:mio_decimate_volume_result_take_mesh), Ptr{Cvoid},
+                                    (Ptr{Cvoid},), result)))
+        (mesh=out, point_map=pm, cell_maps=cm, tets_removed=Int(tr),
+         points_removed=Int(pr), collapses_rejected=Int(cr),
+         max_error_applied=Float64(me))
+    finally
+        ccall(_sym(:mio_decimate_volume_result_free), Cvoid, (Ptr{Cvoid},), result)
+    end
+end
+
+"""
     partition(mesh, nparts; method="auto", imbalance=0.03, mode="eco", seed=0,
               record_ids=false, ghost_layers=0, weights="")
         -> Vector{@NamedTuple{part_id::Int, mesh::Mesh, point_map::Vector{Int},

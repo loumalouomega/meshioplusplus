@@ -984,9 +984,10 @@ static mxArray *O_mio_split(const mxArray **a) {
     return mio_o_struct(2, names, values);
 }
 
-/* convert_cells / refine / decimate share a result shape: one mesh, a point
- * map, and one cell map per input block. `kind` selects which family of C
- * getters to use. Returns 0 on failure (nothing is raised, so the caller can
+/* convert_cells / refine / decimate / decimate_volume share a result shape:
+ * one mesh, a point map, and one cell map per input block. `kind` selects
+ * which family of C getters to use (0 convert_cells, 1 refine, 2 decimate,
+ * 3 decimate_volume). Returns 0 on failure (nothing is raised, so the caller can
  * free the result first); on success *point_map and *cell_maps are set. */
 static int oc_result_maps(void *r, int kind, mxArray **point_map, mxArray **cell_maps) {
     const void *data = NULL;
@@ -997,8 +998,11 @@ static int oc_result_maps(void *r, int kind, mxArray **point_map, mxArray **cell
         st = mio_convert_cells_result_point_map((mio_convert_cells_result *)r, &data, &dt, &n);
     } else if (kind == 1) {
         st = mio_refine_result_point_map((mio_refine_result *)r, &data, &dt, &n);
-    } else {
+    } else if (kind == 2) {
         st = mio_decimate_result_point_map((mio_decimate_result *)r, &data, &dt, &n);
+    } else {
+        st = mio_decimate_volume_result_point_map((mio_decimate_volume_result *)r, &data, &dt,
+                                                  &n);
     }
     if (st != MIO_OK) return 0;
     mxArray *pm = mio_o_shift_map((const int64_t *)data, n);
@@ -1008,8 +1012,10 @@ static int oc_result_maps(void *r, int kind, mxArray **point_map, mxArray **cell
         nmaps = mio_convert_cells_result_num_cell_maps((mio_convert_cells_result *)r);
     } else if (kind == 1) {
         nmaps = mio_refine_result_num_cell_maps((mio_refine_result *)r);
-    } else {
+    } else if (kind == 2) {
         nmaps = mio_decimate_result_num_cell_maps((mio_decimate_result *)r);
+    } else {
+        nmaps = mio_decimate_volume_result_num_cell_maps((mio_decimate_volume_result *)r);
     }
     if (nmaps < 0) nmaps = 0;
     mxArray *cm = mio_o_cell(nmaps);
@@ -1021,8 +1027,11 @@ static int oc_result_maps(void *r, int kind, mxArray **point_map, mxArray **cell
                                                    &len);
         } else if (kind == 1) {
             st = mio_refine_result_cell_map((mio_refine_result *)r, b, &d, &dt, &len);
-        } else {
+        } else if (kind == 2) {
             st = mio_decimate_result_cell_map((mio_decimate_result *)r, b, &d, &dt, &len);
+        } else {
+            st = mio_decimate_volume_result_cell_map((mio_decimate_volume_result *)r, b, &d,
+                                                     &dt, &len);
         }
         if (st != MIO_OK) {
             mxDestroyArray(pm);
@@ -1315,6 +1324,43 @@ static mxArray *O_mio_decimate(const mxArray **a) {
     return mio_o_struct(7, names, values);
 }
 
+/* decimate_volume(mesh, ratio, target_cells, max_error, placement,
+ *                 preserve_boundary, preserve_features, feature_angle, frozen) */
+static mxArray *O_mio_decimate_volume(const mxArray **a) {
+    mio_decimate_volume_opts opts;
+    mio_decimate_volume_opts_init(&opts);
+    opts.target_ratio = mio_o_double(a[1], "target_ratio");
+    opts.target_cells = mio_o_int64(a[2], "target_cells");
+    opts.max_error = mio_o_double(a[3], "max_error");
+    opts.placement = mio_o_opt_string(a[4]);
+    opts.preserve_boundary = mio_o_bool(a[5], "preserve_boundary");
+    opts.preserve_features = mio_o_bool(a[6], "preserve_features");
+    opts.feature_angle = mio_o_double(a[7], "feature_angle");
+    int64_t n_frozen = 0;
+    opts.frozen = oc_ids_0based(a[8], &n_frozen, "frozen");
+    opts.num_frozen = n_frozen;
+
+    mio_decimate_volume_result *r = mio_decimate_volume_ex(mio_o_mesh(a[0]), &opts);
+    if (r == NULL) mio_o_fail("decimate_volume");
+    mxArray *pm = NULL, *cm = NULL;
+    if (!oc_result_maps(r, 3, &pm, &cm)) {
+        mio_decimate_volume_result_free(r);
+        mio_o_fail("decimate_volume maps");
+    }
+    mxArray *tr = mio_o_scalar((double)mio_decimate_volume_result_tets_removed(r));
+    mxArray *pr = mio_o_scalar((double)mio_decimate_volume_result_points_removed(r));
+    mxArray *cr = mio_o_scalar((double)mio_decimate_volume_result_collapses_rejected(r));
+    mxArray *me = mio_o_scalar(mio_decimate_volume_result_max_error_applied(r));
+    mio_mesh *out = mio_decimate_volume_result_take_mesh(r);
+    mio_decimate_volume_result_free(r);
+    if (out == NULL) mio_o_fail("decimate_volume take_mesh");
+    const char *names[] = {"mesh",          "point_map",          "cell_maps",
+                           "tets_removed",  "points_removed",     "collapses_rejected",
+                           "max_error_applied"};
+    mxArray *values[] = {mio_o_wrap_mesh(out), pm, cm, tr, pr, cr, me};
+    return mio_o_struct(7, names, values);
+}
+
 static const char *kPartitionFields[] = {"part_id", "mesh", "point_map", "cell_maps"};
 
 /* partition(mesh, nparts, method, imbalance, mode, seed, record_ids,
@@ -1437,6 +1483,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_refine, 11),
     MIO_O_ENTRY(mio_tessellate, 5),
     MIO_O_ENTRY(mio_decimate, 9),
+    MIO_O_ENTRY(mio_decimate_volume, 9),
     MIO_O_ENTRY(mio_partition, 9),
     MIO_O_ENTRY(mio_partition_labels, 8),
 };
