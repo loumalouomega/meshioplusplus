@@ -58,6 +58,38 @@ namespace meshioplusplus::detail {
 /// @throws ReadError when OpenCASCADE cannot read or transfer it.
 TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char* pFormat);
 
+/// What `occt_heal_shape` did to a shape read from a STEP or IGES file.
+struct OcctHealReport {
+    /// `ShapeFix_Shape` ran (`CadReadOptions::mHeal`).
+    bool mHealed = false;
+    /// `ShapeFix_Shape` changed the shape.
+    bool mFixed = false;
+    /// The sewing tolerance used, as a length (0 when no sewing ran).
+    double mSewTolerance = 0.0;
+    /// Edges with exactly one face, before and after (degenerate edges excluded).
+    long long mFreeEdgesBefore = 0;
+    long long mFreeEdgesAfter = 0;
+    /// The edges sewing reports as shared by more than two faces.
+    long long mMultipleEdges = 0;
+    /// The degenerate shapes sewing removed.
+    long long mDegenerated = 0;
+    /// The report as a compact JSON object.
+    std::string ToJson() const;
+};
+
+/// Edges of the shape that bound exactly one face (degenerate edges excluded).
+long long occt_count_free_edges(const TopoDS_Shape& rShape);
+
+/**
+ * @brief Heal a shape at read time (`CadReadOptions::mHeal`, `mSewTolerance`):
+ * `ShapeFix_Shape` when healing, then `BRepBuilderAPI_Sewing` when healing or
+ * when a sewing tolerance is given. A tolerance at most 0 takes 1e-5 of the
+ * bounding-box diagonal, raised to the shape's own largest tolerance but never
+ * past 1e-3 of the diagonal.
+ */
+TopoDS_Shape occt_heal_shape(const TopoDS_Shape& rShape, const CadReadOptions& rOptions,
+                             OcctHealReport& rReport);
+
 /// A shape and its faces, loops and edges as NURBS.
 struct OcctNurbs {
     /// The converted shape, or the shape itself when the conversion failed.

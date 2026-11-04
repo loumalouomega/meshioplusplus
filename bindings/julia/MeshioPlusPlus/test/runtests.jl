@@ -1155,7 +1155,10 @@ end
 @testset "operations: tetrahedralize" begin
     # Roadmap 6.7: a closed triangle surface filled with tetrahedra, its skin kept.
     s = icosa_sphere(subdivisions=2)
-    @test_throws ArgumentError tetrahedralize(s; backend="tetgen")
+    # A mesher name is refused by the core when no such program is installed
+    # (roadmap 7.7.2); an empty one by the wrapper.
+    @test_throws ArgumentError tetrahedralize(s; backend="")
+    @test_throws MeshioError tetrahedralize(s; backend="no-such-mesher")
     @test_throws MeshioError tetrahedralize(s; grading=2.0)
     if has_netgen()
         t = tetrahedralize(s; max_size=0.3)
@@ -2066,7 +2069,32 @@ end
     close(rs.mesh)
     @test_throws MeshioError reconstruct_surface(cloud; k=0)
     @test_throws MeshioError reconstruct_surface(cloud; estimate_normals=false)
+    # remesh_quads (roadmap 7.7.3): a name no remesher has is refused; with the
+    # installed QuadriFlow the sphere comes back all quads.
+    qb = remesh_quads_backends()
+    @test issorted(qb)
+    skin = reconstruct_surface(cloud).mesh
+    @test_throws MeshioError remesh_quads(skin; backend="no-such-remesher")
+    if "quadriflow" in qb
+        rq = remesh_quads(skin; backend="quadriflow", target_faces=400)
+        @test rq.backend == "quadriflow" && rq.num_quads > 0 && rq.num_triangles == 0
+        close(rq.mesh)
+    end
+    close(skin)
     close(cloud)
+    # cut_level_set (doc/cut.md): the cube skin cut by the plane x = 0.3 -- four
+    # strips of 0.3 and the face x = 0 -- or the refusal naming the build flag.
+    plane = [([0.3, 0.0, 0.0], [1.0, 0.0, 0.0])]
+    if has_cutcells()
+        cl = cut_level_set(cube; planes=plane)
+        @test cl.backend == "lut" && abs(cl.measure - 2.2) < 1e-12 && cl.dimension == 2
+        close(cl.mesh)
+        cq = cut_quadrature(cube; planes=plane, selection="plane0 = 0", order=2)
+        @test abs(cq.sum_weights - 4.0) < 1e-12 && cq.num_points > 0
+        close(cq.mesh)
+    else
+        @test_throws MeshioError cut_level_set(cube; planes=plane)
+    end
     hh = convex_hull(cube)
     @test hh.dimension == 3 && hh.num_vertices == 8 && hh.num_facets == 12
     @test isapprox(hh.volume, 1.0)

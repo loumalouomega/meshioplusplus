@@ -160,6 +160,7 @@ export default defineConfig({
             collapsed: true,
             items: [
               { text: "Surface remeshing (ACVD)", link: "/remesh" },
+              { text: "Field-aligned quad remeshing", link: "/remesh_quads" },
               { text: "Volumetric remeshing (isosurface stuffing)", link: "/remesh_volume" },
               { text: "ODT remeshing (relocate + flip)", link: "/optimize_volume" },
               { text: "Smoothing (Laplacian / Taubin / ODT)", link: "/smooth" },
@@ -187,6 +188,7 @@ export default defineConfig({
               { text: "Crop (bbox / half-space / predicate)", link: "/crop" },
               { text: "Slicing / cross-sections", link: "/slice" },
               { text: "Isosurfaces / contours", link: "/isosurface" },
+              { text: "Level-set cutting (CutCells)", link: "/cut" },
               { text: "Regular grids / voxelize", link: "/voxelize" },
               { text: "Parametric primitives", link: "/primitives" },
               { text: "Octrees / quadtrees from a skin", link: "/octree" },

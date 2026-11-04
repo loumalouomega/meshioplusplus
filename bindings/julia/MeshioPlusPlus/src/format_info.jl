@@ -66,18 +66,34 @@ function _handle(info::FormatInfo)
 end
 
 """
-    read_with_info(path; format="", options=nothing) -> (Mesh, Union{FormatInfo,Nothing})
+    read_with_info(path; format="", options=nothing, deflection=0.0,
+                   angular_deflection=0.5, heal=false, sew_tolerance=0.0)
+        -> (Mesh, Union{FormatInfo,Nothing})
 
 Read a mesh, keeping what it cannot hold. For a format with a side channel
-(currently `"mdpa"`, `"gmsh"` and `"mfem"`) the second value is a [`FormatInfo`](@ref); for every other
+(currently `"mdpa"`, `"gmsh"`, `"mfem"` and `"cad_json"`, plus `"step"` and
+`"iges"` in a build with OpenCASCADE) the second value is a [`FormatInfo`](@ref); for every other
 format it is `nothing` and the read is exactly [`read`](@ref)'s.
+
+STEP and IGES take the triangulation's `deflection` (a length, at most 0
+automatic) and `angular_deflection` (radians), and `heal=true` heals the shape
+before it is extracted (`ShapeFix_Shape`, then sewing at `sew_tolerance`, at
+most 0 automatic; a positive `sew_tolerance` sews without `heal`). The heal
+report is the `"heal"` member of the file-level JSON string of the B-rep side
+channel.
 """
 function read_with_info(path::AbstractString; format::AbstractString="",
-                        options::Union{Nothing,ReadOptions}=nothing)
+                        options::Union{Nothing,ReadOptions}=nothing,
+                        deflection::Real=0.0, angular_deflection::Real=0.5,
+                        heal::Bool=false, sew_tolerance::Real=0.0)
     info = Ref{Ptr{Cvoid}}(C_NULL)
+    cad = Ref(_CCadReadOpts(Float64(deflection), Float64(angular_deflection),
+                            heal ? Int32(1) : Int32(0), Int32(0), Float64(sew_tolerance),
+                            (0, 0, 0, 0)))
     ptr = _with_read_opts(options === nothing ? ReadOptions() : options) do ref
-        ccall(_sym(:mio_read_with_info), Ptr{Cvoid},
-              (Cstring, Cstring, Ptr{_CReadOpts}, Ptr{Ptr{Cvoid}}), path, format, ref, info)
+        ccall(_sym(:mio_read_with_info2), Ptr{Cvoid},
+              (Cstring, Cstring, Ptr{_CReadOpts}, Ptr{_CCadReadOpts}, Ptr{Ptr{Cvoid}}),
+              path, format, ref, cad, info)
     end
     mesh = Mesh(_check_ptr(ptr))
     mesh, info[] == C_NULL ? nothing : FormatInfo(info[])

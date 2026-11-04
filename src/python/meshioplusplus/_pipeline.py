@@ -853,6 +853,28 @@ _OP_TABLE = {
         "MaxCells",
         "FaceArray",
     ),
+    # Field-aligned quads through an installed remesher (roadmap 7.7.3).
+    "RemeshQuads": (
+        "TargetFaces",
+        "Backend",
+        "Sharp",
+        "Boundary",
+        "Adaptive",
+        "Dominant",
+        "Seed",
+        "MaxCells",
+    ),
+    # The part level sets select, through CutCells (doc/cut.md).
+    "CutLevelSet": (
+        "LevelSets",
+        "Planes",
+        "Selection",
+        "IncludeUncut",
+        "Backend",
+        "Degree",
+        "Triangulate",
+        "RecordParentIds",
+    ),
 }
 
 _V2_OP_TABLE = {
@@ -1698,10 +1720,10 @@ def _tetrahedralize_step(mesh, step, entry, warnings):
     from ._tetrahedralize import tetrahedralize
 
     backend = _text(step, "Backend", "auto")
-    if backend not in ("auto", "netgen", "octree"):
+    if not backend:
         raise _err(
             "Tetrahedralize",
-            f"'Backend' must be 'auto', 'netgen' or 'octree', not '{backend}'",
+            "'Backend' must be 'auto', 'netgen', 'octree' or a mesher's name",
         )
     with _warnings.catch_warnings():
         # The report carries them, as the C++ engine's does.
@@ -1729,6 +1751,85 @@ def _tetrahedralize_step(mesh, step, entry, warnings):
         MinDihedralDeg=float(report["min_dihedral_deg"]),
         MaxDihedralDeg=float(report["max_dihedral_deg"]),
         Volume=float(report["volume"]),
+    )
+    return mesh
+
+
+def _cut_level_set_step(mesh, step, entry, warnings):
+    """``CutLevelSet``: :func:`meshioplusplus.cut_level_set`, its counters and
+    warnings the C++ engine's."""
+    import warnings as _warnings
+
+    from ._cut import cut_level_set
+
+    flat = _dvec(step, "Planes") if "Planes" in step else []
+    if len(flat) % 6:
+        raise _err(
+            "CutLevelSet",
+            "'Planes' must hold six numbers per plane (origin, then normal)",
+        )
+    planes = [
+        (tuple(flat[i : i + 3]), tuple(flat[i + 3 : i + 6]))
+        for i in range(0, len(flat), 6)
+    ]
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", RuntimeWarning)
+        mesh, report = cut_level_set(
+            mesh,
+            _svec(step, "LevelSets") if "LevelSets" in step else [],
+            planes=planes,
+            selection=_text(step, "Selection", ""),
+            include_uncut=_flag(step, "IncludeUncut", True),
+            backend=_text(step, "Backend", "auto"),
+            degree=int(_number(step, "Degree", 2)),
+            triangulate=_flag(step, "Triangulate", False),
+            record_parent_ids=_flag(step, "RecordParentIds", True),
+            return_report=True,
+        )
+    warnings.extend("CutLevelSet: " + w for w in report["warnings"])
+    entry.update(
+        NumCells=float(report["num_cells"]),
+        NumCutCells=float(report["num_cut_cells"]),
+        NumUncutCells=float(report["num_uncut_cells"]),
+        NumPieces=float(report["num_pieces"]),
+        Dimension=float(report["dimension"]),
+        Measure=float(report["measure"]),
+    )
+    return mesh
+
+
+def _remesh_quads_step(mesh, step, entry, warnings):
+    """``RemeshQuads``: :func:`meshioplusplus.remesh_quads`, its counters and
+    warnings the C++ engine's."""
+    import warnings as _warnings
+
+    from ._remesh_quads import remesh_quads
+
+    backend = _text(step, "Backend", "auto")
+    if not backend:
+        raise _err("RemeshQuads", "'Backend' must be 'auto' or a quad remesher's name")
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", RuntimeWarning)
+        mesh, report = remesh_quads(
+            mesh,
+            target_faces=int(_number(step, "TargetFaces", 0)),
+            backend=backend,
+            sharp=_flag(step, "Sharp", False),
+            boundary=_flag(step, "Boundary", True),
+            adaptive=_flag(step, "Adaptive", False),
+            dominant=_flag(step, "Dominant", False),
+            seed=int(_number(step, "Seed", 0)),
+            max_cells=int(_number(step, "MaxCells", 50_000_000)),
+            return_report=True,
+        )
+    warnings.extend("RemeshQuads: " + w for w in report["warnings"])
+    entry.update(
+        NumQuads=float(report["num_quads"]),
+        NumTriangles=float(report["num_triangles"]),
+        NumPoints=float(report["num_points"]),
+        MinScaledJacobian=float(report["min_scaled_jacobian"]),
+        MeanScaledJacobian=float(report["mean_scaled_jacobian"]),
+        HausdorffToSurface=float(report["hausdorff_to_surface"]),
     )
     return mesh
 
@@ -1831,6 +1932,10 @@ def _apply_step(mesh, step, steps, warnings):
         )
     elif op == "Tetrahedralize":
         mesh = _tetrahedralize_step(mesh, step, entry, warnings)
+    elif op == "RemeshQuads":
+        mesh = _remesh_quads_step(mesh, step, entry, warnings)
+    elif op == "CutLevelSet":
+        mesh = _cut_level_set_step(mesh, step, entry, warnings)
     elif op == "ProjectToCad":
         mesh = _project_to_cad_step(mesh, step, entry, None)
     elif op == "Quality":

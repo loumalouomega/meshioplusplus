@@ -88,7 +88,7 @@ Usage: $0 [options]
                                   to build both, since the npm package ships both
   --full                         also build the full pair
                                   (meshioplusplus_wasm_full[_mt]): OpenCASCADE,
-                                  zstd, lz4, bzip2, KaHIP and Netgen linked in
+                                  zstd, lz4, bzip2, KaHIP, Netgen, MMG and CutCells linked in
   --full-only                    build only the full pair
   --without-occt                 leave OpenCASCADE out of the full pair
   --build                        run the build after configuring
@@ -200,7 +200,7 @@ full_deps_prefix() {  # full_deps_prefix <seq|mt>
     # shellcheck disable=SC2086
     fprefix=$("$SCRIPT_DIR/build-wasm-deps.sh" $occt_arg --print-full-prefix "$1")
     if [ ! -f "$fprefix/lib/libzstd.a" ] || [ ! -f "$fprefix/lib/liblz4.a" ] ||
-       [ ! -f "$fprefix/lib/libnglib.a" ] || [ ! -f "$fprefix/lib/libmmg.a" ] ||
+       [ ! -f "$fprefix/lib/libnglib.a" ] || [ ! -f "$fprefix/lib/libmmg.a" ] || [ ! -f "$fprefix/lib/libcutcells.a" ] ||
        { [ "$WITH_OCCT" = "ON" ] && [ ! -f "$fprefix/lib/libTKernel.a" ]; }; then
         echo "== building the full artifact's libraries ($1; one-off, OpenCASCADE takes long) ==" >&2
         # shellcheck disable=SC2086
@@ -242,6 +242,7 @@ configure_variant() {
             full_args="$full_args -DMESHIOPLUSPLUS_WITH_KAHIP=ON -DKAHIP_ROOT=$fprefix"
             full_args="$full_args -DMESHIOPLUSPLUS_WITH_NETGEN=ON -DNETGEN_ROOT=$fprefix"
             full_args="$full_args -DMESHIOPLUSPLUS_WITH_MMG=ON -Dmmg_DIR=$fprefix/lib/cmake/mmg"
+            full_args="$full_args -DMESHIOPLUSPLUS_WITH_CUTCELLS=ON -DCUTCELLS_ROOT=$fprefix"
             if [ -n "$DEPS_PREFIX" ]; then
                 variant_root_arg="-DCMAKE_FIND_ROOT_PATH=$DEPS_PREFIX;$fprefix"
             else
@@ -263,7 +264,7 @@ configure_variant() {
     echo "  cgnslib:   $WITH_CGNSLIB"
     echo "  gidpost:   $WITH_GIDPOST"
     case "$variant" in
-        full*) echo "  full:      OCCT $WITH_OCCT, zstd, lz4, bzip2, KaHIP, Netgen ($fprefix)" ;;
+        full*) echo "  full:      OCCT $WITH_OCCT, zstd, lz4, bzip2, KaHIP, Netgen, MMG, CutCells ($fprefix)" ;;
     esac
     [ "$WITH_HDF5" = "OFF" ] || echo "  deps:      $DEPS_PREFIX"
     echo "  emcc:      $(command -v emcc)"

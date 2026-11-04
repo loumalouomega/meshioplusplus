@@ -259,7 +259,7 @@ typedef struct mio_region_info {
  * project(... VERSION ...), so the copies cannot drift.
  */
 #define MIO_VERSION_MAJOR 18
-#define MIO_VERSION_MINOR 1
+#define MIO_VERSION_MINOR 2
 #define MIO_VERSION_PATCH 0
 #define MIO_VERSION (MIO_VERSION_MAJOR * 10000 + MIO_VERSION_MINOR * 100 + MIO_VERSION_PATCH)
 
@@ -655,6 +655,42 @@ typedef struct mio_format_info mio_format_info;
  */
 MIO_API mio_mesh* mio_read_with_info(const char* path, const char* format,
                                      const mio_read_opts* opts, mio_format_info** info);
+
+/**
+ * How a STEP or IGES file is read (`CadReadOptions`, brep.hpp; unreleased,
+ * after v18.0.0). Fill it with mio_cad_read_opts_init(): the defaults are not
+ * all zero (angular_deflection is 0.5).
+ */
+typedef struct mio_cad_read_opts {
+    /** The chordal deflection, as a length; at most 0 takes 1e-3 of the
+     *  bounding-box diagonal. */
+    double deflection;
+    /** The angular deflection, in radians (> 0; default 0.5). */
+    double angular_deflection;
+    /** Nonzero heals the shape before it is extracted: ShapeFix_Shape, then
+     *  sewing at sew_tolerance. What it did is the "heal" member of the
+     *  MIO_BREP_FILE string (compact JSON). */
+    int32_t heal;
+    int32_t reserved32;
+    /** The sewing tolerance, as a length (>= 0). 0 takes 1e-5 of the
+     *  bounding-box diagonal (raised to the shape's own largest tolerance, at
+     *  most 1e-3 of the diagonal) when healing; a positive value sews even
+     *  without heal. */
+    double sew_tolerance;
+    int64_t reserved[4];
+} mio_cad_read_opts;
+
+/** Set `opts` to the defaults (deflection 0, angular deflection 0.5, no healing). */
+MIO_API void mio_cad_read_opts_init(mio_cad_read_opts* opts);
+
+/**
+ * mio_read_with_info() with the STEP and IGES read options. `cad_opts` NULL
+ * is exactly mio_read_with_info(); it is ignored for every other format.
+ * @return the mesh, or NULL on failure (`*info` is then NULL too).
+ */
+MIO_API mio_mesh* mio_read_with_info2(const char* path, const char* format,
+                                      const mio_read_opts* opts, const mio_cad_read_opts* cad_opts,
+                                      mio_format_info** info);
 
 /**
  * Write a mesh, restoring the side channel `info` came back with.
@@ -4221,6 +4257,134 @@ MIO_API mio_mesh* mio_reconstruct_surface(const mio_mesh* mesh,
                                           const mio_reconstruct_surface_opts* opts,
                                           mio_reconstruct_surface_report* report);
 
+/**
+ * Options for mio_remesh_quads (roadmap 7.7.3; unreleased, after v18.0.0).
+ * Initialize through mio_remesh_quads_opts_init(): backend "auto", automatic
+ * target (half the triangles), the boundary kept, seed 0, at most 50,000,000
+ * faces.
+ */
+typedef struct mio_remesh_quads_opts {
+    const char* backend;  /**< "auto" or a quad remesher's name; NULL is "auto" (borrowed) */
+    int64_t target_faces; /**< faces asked for; 0 takes half the input's triangles */
+    int64_t max_cells;    /**< refuse a target or result of more faces */
+    int32_t sharp;        /**< nonzero aligns with and keeps the sharp edges */
+    int32_t boundary;     /**< nonzero keeps the boundary of an open surface */
+    int32_t adaptive;     /**< nonzero lets the size follow the curvature (QuadriFlow) */
+    int32_t dominant;     /**< nonzero allows triangles (Instant Meshes' quad-dominant mode) */
+    int32_t seed;         /**< the program's random seed */
+    int32_t reserved_pad; /**< must be zero */
+    int64_t reserved[4];  /**< must be zero; room for additive growth */
+} mio_remesh_quads_opts;
+
+/** Initialize quad-remeshing options (see mio_remesh_quads_opts). */
+MIO_API void mio_remesh_quads_opts_init(mio_remesh_quads_opts* opts);
+
+/** What mio_remesh_quads built. */
+typedef struct mio_remesh_quads_report {
+    int64_t num_quads;
+    int64_t num_triangles; /**< left among the quads (quad-dominant) */
+    int64_t num_points;
+    double min_scaled_jacobian; /**< the least of the quads' (Verdict's) */
+    double mean_scaled_jacobian;
+    double hausdorff_to_surface; /**< the two-sided distance to the input */
+    /** The remesher that ran ("quadriflow", ...); static, valid for the
+     *  library's lifetime. */
+    const char* backend_name;
+    int64_t reserved[4]; /**< zero; room for additive growth */
+} mio_remesh_quads_report;
+
+/**
+ * Remesh a triangle surface into field-aligned quads through an installed
+ * quad remesher, QuadriFlow or Instant Meshes, run as a separate process (never
+ * in WebAssembly). The result holds a `quad` block, and a `triangle` block when
+ * the remesher left any. No remesher installed, or none of the name asked,
+ * fails with MIO_ERR_UNSUPPORTED naming the programs. See doc/remesh_quads.md.
+ * `opts` NULL uses the defaults; `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_remesh_quads(const mio_mesh* mesh, const mio_remesh_quads_opts* opts,
+                                   mio_remesh_quads_report* report);
+
+/** The number of quad remeshers mio_remesh_quads takes by name (the installed
+ *  "quadriflow" and "instant_meshes"), sorted; -1 on failure. */
+MIO_API int64_t mio_quad_remesher_count(void);
+/** Quad remesher name `index` (0-based); static, valid for the library's
+ *  lifetime. NULL when out of range. */
+MIO_API const char* mio_quad_remesher_name(int64_t index);
+
+/**
+ * Options for mio_cut_level_set and mio_cut_quadrature (doc/cut.md; unreleased,
+ * after v18.1.0). Initialize through mio_cut_opts_init(): no level set yet,
+ * the selection "<first> < 0", the whole cells inside kept, backend "auto",
+ * degree 2, quadrature order 2, the parent ids written.
+ */
+typedef struct mio_cut_opts {
+    const char* const* level_sets; /**< scalar point_data array names (borrowed) */
+    int64_t num_level_sets;
+    const double* planes; /**< six per plane: origin, then normal (borrowed) */
+    int64_t num_planes;   /**< planes named plane0, plane1, ... */
+    const char*
+        selection;       /**< such as "phi < 0" or "a = 0 and b < 0"; NULL or "" is "<first> < 0" */
+    const char* backend; /**< "auto", "lut" or "quadrays"; NULL is "auto" (borrowed) */
+    int32_t include_uncut;     /**< nonzero keeps the whole cells inside the part */
+    int32_t degree;            /**< quadrays: the pieces' Lagrange degree, 1 to 8 */
+    int32_t triangulate;       /**< lut: nonzero splits the pieces into simplices */
+    int32_t order;             /**< mio_cut_quadrature: the degree the rules integrate exactly */
+    int32_t record_parent_ids; /**< nonzero writes cut:parent_cell / quadrature:parent_cell */
+    int32_t reserved_pad;      /**< must be zero */
+    int64_t reserved[4];       /**< must be zero; room for additive growth */
+} mio_cut_opts;
+
+/** Initialize cutting options (see mio_cut_opts). */
+MIO_API void mio_cut_opts_init(mio_cut_opts* opts);
+
+/** What mio_cut_level_set or mio_cut_quadrature did. */
+typedef struct mio_cut_report {
+    int64_t num_cells;       /**< input cells of the cut dimension */
+    int64_t num_cut_cells;   /**< of them, those a level set crosses */
+    int64_t num_uncut_cells; /**< of them, those wholly in the part */
+    int64_t num_pieces;      /**< mio_cut_level_set: output cells */
+    int64_t num_rules;       /**< mio_cut_quadrature: rules (cell pieces covered) */
+    int64_t num_points;      /**< mio_cut_quadrature: quadrature points */
+    double measure;          /**< the part's volume, area or length (the weights' sum) */
+    int32_t dimension;       /**< of the part: the cells' or one less */
+    int32_t reserved_pad;    /**< zero */
+    /** The backend that ran ("lut" or "quadrays"); static, valid for the
+     *  library's lifetime. */
+    const char* backend_name;
+    int64_t reserved[4]; /**< zero; room for additive growth */
+} mio_cut_report;
+
+/**
+ * The part of a mesh that level sets select, through CutCells: the pieces of
+ * the cells they cross on one side of them or on their zero sets, and with
+ * include_uncut the whole cells inside; point data interpolated, cell data and
+ * cell regions carried from each piece's parent, `cut:parent_cell` and
+ * `cut:cut` cell data. A build without CutCells fails with
+ * MIO_ERR_UNSUPPORTED naming MESHIOPLUSPLUS_WITH_CUTCELLS. See doc/cut.md.
+ * `opts` NULL uses the defaults (and so fails: it names no level set);
+ * `report` may be NULL.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_cut_level_set(const mio_mesh* mesh, const mio_cut_opts* opts,
+                                    mio_cut_report* report);
+
+/**
+ * Quadrature rules of degree `order` on that part: a mesh of one `vertex` per
+ * point at its physical position, with point data `quadrature:weight`,
+ * `quadrature:reference`, `quadrature:rule` and `quadrature:parent_cell`.
+ * Fails as mio_cut_level_set does.
+ *
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_cut_quadrature(const mio_mesh* mesh, const mio_cut_opts* opts,
+                                     mio_cut_report* report);
+
+/** 1 when this library carries CutCells (the cut operations work), else 0. */
+MIO_API int32_t mio_has_cutcells(void);
+
 /** What mio_convex_hull built. */
 typedef struct mio_hull_report {
     int32_t dimension;    /**< the dimension used, 2 or 3 */
@@ -7098,7 +7262,11 @@ MIO_API int64_t mio_mirror_warnings(char* buf, int64_t buflen);
 typedef enum mio_tetrahedralize_backend {
     MIO_TETRAHEDRALIZE_BACKEND_AUTO = 0,   /**< Netgen when built in, else the octree backend */
     MIO_TETRAHEDRALIZE_BACKEND_NETGEN = 1, /**< Netgen's nglib (MESHIOPLUSPLUS_WITH_NETGEN): kept */
-    MIO_TETRAHEDRALIZE_BACKEND_OCTREE = 2  /**< native isosurface stuffing: the boundary fitted */
+    MIO_TETRAHEDRALIZE_BACKEND_OCTREE = 2, /**< native isosurface stuffing: the boundary fitted */
+    /** The mesher named by mio_tetrahedralize_opts.provider (unreleased, after
+     *  v18.0.0): the installed "tetgen" or "gmsh", run as a separate process,
+     *  or a plugin's; see mio_tet_mesher_name(). */
+    MIO_TETRAHEDRALIZE_BACKEND_NAMED = 3
 } mio_tetrahedralize_backend;
 
 /**
@@ -7114,7 +7282,10 @@ typedef struct mio_tetrahedralize_opts {
     const char* face_array;
     int32_t backend;        /**< a mio_tetrahedralize_backend (init: AUTO) */
     int32_t optimize_steps; /**< passes of the backend's volume optimisation, 0 to 100 (init: 3) */
-    int64_t reserved[4];
+    /** MIO_TETRAHEDRALIZE_BACKEND_NAMED: the mesher's name (borrowed; was
+     *  reserved, unreleased after v18.0.0). */
+    const char* provider;
+    int64_t reserved[3];
 } mio_tetrahedralize_opts;
 
 /** What mio_tetrahedralize did. 128 bytes, with a reserved tail. */
@@ -7130,7 +7301,11 @@ typedef struct mio_tetrahedralize_report {
     double volume;              /**< the tetrahedra's total */
     int32_t boundary_preserved; /**< every surface triangle and point kept exactly */
     int32_t backend;            /**< the mio_tetrahedralize_backend that ran */
-    int64_t reserved[6];
+    /** The name of the backend that ran ("octree", "netgen", "tetgen", ...);
+     *  static, valid for the library's lifetime (was reserved, unreleased
+     *  after v18.0.0). */
+    const char* backend_name;
+    int64_t reserved[5];
 } mio_tetrahedralize_report;
 
 MIO_API void mio_tetrahedralize_opts_init(mio_tetrahedralize_opts* opts);
@@ -7138,6 +7313,14 @@ MIO_API void mio_tetrahedralize_opts_init(mio_tetrahedralize_opts* opts);
 /** Nonzero when this library was built with mio_tetrahedralize's Netgen
  *  backend (-DMESHIOPLUSPLUS_WITH_NETGEN=ON); the octree backend always is. */
 MIO_API int mio_has_netgen(void);
+
+/** The number of backend names mio_tetrahedralize takes besides AUTO:
+ *  "octree", then every registered mesher ("netgen", the installed "tetgen"
+ *  and "gmsh"), sorted (unreleased, after v18.0.0). */
+MIO_API int64_t mio_tet_mesher_count(void);
+/** Backend name `index` (0-based, as mio_tet_mesher_count() counts them);
+ *  static, valid for the library's lifetime. NULL when out of range. */
+MIO_API const char* mio_tet_mesher_name(int64_t index);
 
 /**
  * Fill the closed, manifold, consistently oriented triangle surface `mesh`

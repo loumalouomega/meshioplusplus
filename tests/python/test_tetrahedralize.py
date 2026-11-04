@@ -182,7 +182,7 @@ def test_a_smaller_size_gives_more_tetrahedra():
 def test_refusals_are_by_name():
     box = _boxes((0.0, 1.0))
     for kwargs, name in [
-        ({"backend": "tetgen"}, "backend"),
+        ({"backend": ""}, "backend"),
         ({"max_size": -1.0}, "max_size"),
         ({"max_volume": float("nan")}, "max_volume"),
         ({"grading": 2.0}, "grading"),
@@ -279,3 +279,43 @@ def test_the_octree_backend_keeps_two_regions():
     assert set(regions.tolist()) == {0, 1}
     with pytest.raises(ValueError, match="max_cells"):
         mio.tetrahedralize(surface, backend="octree", max_cells=10)
+
+
+@needs_core
+def test_backends_are_listed_and_an_unknown_one_is_named():
+    """Roadmap 7.7.2: the backend names besides auto, and a name no mesher is
+    registered under refused listing them."""
+    names = mio.tetrahedralize_backends()
+    assert "octree" in names and names == sorted(names)
+    assert ("netgen" in names) == HAS_NETGEN
+    with pytest.raises(NotImplementedError, match="no-such-mesher"):
+        mio.tetrahedralize(_boxes((0.0, 1.0)), backend="no-such-mesher")
+    _, report = mio.tetrahedralize(
+        _boxes((0.0, 1.0)), backend="octree", return_report=True
+    )
+    assert report["backend"] == "octree"
+
+
+@needs_core
+@pytest.mark.parametrize("name", ["tetgen", "gmsh"])
+def test_an_external_mesher_keeps_the_skin(name):
+    """Roadmap 7.7.2: the installed TetGen or Gmsh program, run as a separate
+    process, fills the sphere and a box in a box with the surface kept."""
+    if name not in mio.tetrahedralize_backends():
+        pytest.skip(f"{name} is not installed")
+    skin = _sphere_skin(0.3)
+    out, report = mio.tetrahedralize(
+        skin, backend=name, max_size=0.3, return_report=True
+    )
+    assert report["backend"] == name
+    assert report["boundary_preserved"] is True
+    assert report["hausdorff_to_surface"] == 0.0
+    n = len(skin.points)
+    assert np.array_equal(out.points[:n], skin.points)
+    assert report["volume"] == pytest.approx(_enclosed_volume(skin), rel=1e-9)
+    two, report = mio.tetrahedralize(
+        _boxes((0.0, 3.0), (1.0, 2.0)), backend=name, return_report=True
+    )
+    assert report["num_regions"] == 2
+    assert report["boundary_preserved"] is True
+    assert report["volume"] == pytest.approx(27.0)

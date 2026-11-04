@@ -19,6 +19,7 @@ from . import (
     _coordinates,
     _crop,
     _curvature,
+    _cut,
     _data,
     _dataset,
     _decimate,
@@ -70,6 +71,7 @@ from . import (
     _regions,
     _register,
     _remesh,
+    _remesh_quads,
     _remesh_volume,
     _reorder,
     _repair,
@@ -545,6 +547,27 @@ def build_parser():
     )
     _tetrahedralize.add_args(parser)
     parser.set_defaults(func=_tetrahedralize.tetrahedralize_cmd)
+
+    parser = subparsers.add_parser(
+        "remesh-quads",
+        help="Field-aligned quads from a triangle surface (QuadriFlow, Instant Meshes)",
+    )
+    _remesh_quads.add_args(parser)
+    parser.set_defaults(func=_remesh_quads.remesh_quads_cmd)
+
+    parser = subparsers.add_parser(
+        "cut",
+        help="Cut a mesh by level sets: the pieces either side or the interface (CutCells)",
+    )
+    _cut.add_args(parser)
+    parser.set_defaults(func=_cut.cut_cmd)
+
+    parser = subparsers.add_parser(
+        "cut-quadrature",
+        help="Quadrature rules on the part of a mesh that level sets select (CutCells)",
+    )
+    _cut.add_quadrature_args(parser)
+    parser.set_defaults(func=_cut.cut_quadrature_cmd)
 
     parser = subparsers.add_parser(
         "grid-sample",

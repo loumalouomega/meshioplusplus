@@ -1,6 +1,6 @@
 # Tetrahedra from a skin — `tetrahedralize`
 
-`tetrahedralize` fills a closed triangle surface with tetrahedra: a [`mesh_cad_surface`](./mesh_cad.md) result, a [boundary layer](./boundary_layer.md)'s cap, any watertight skin. It has two backends. **Netgen** keeps the surface's triangles exactly: every input triangle is a facet of the result and every input point a point of it at its index, so the volume conforms to the skin and to whatever else shares it. The **octree** backend is native and always built: [`octree_mesh`](./octree_mesh.md)'s isosurface stuffing, whose boundary is fitted to the skin within a measured distance rather than kept, with dihedral angles bounded where the stuffing's guarantee holds. `backend="auto"`, the default, takes Netgen when the build has it (`-DMESHIOPLUSPLUS_WITH_NETGEN=ON`) and the octree backend otherwise, with a warning saying so; `backend="netgen"` in a build without it throws `Unsupported` naming the flag. So `tetrahedralize` works in every wheel, CLI and WebAssembly build, and Netgen is the upgrade that keeps the skin.
+`tetrahedralize` fills a closed triangle surface with tetrahedra: a [`mesh_cad_surface`](./mesh_cad.md) result, a [boundary layer](./boundary_layer.md)'s cap, any watertight skin. It has two backends. **Netgen** keeps the surface's triangles exactly: every input triangle is a facet of the result and every input point a point of it at its index, so the volume conforms to the skin and to whatever else shares it. The **octree** backend is native and always built: [`octree_mesh`](./octree_mesh.md)'s isosurface stuffing, whose boundary is fitted to the skin within a measured distance rather than kept, with dihedral angles bounded where the stuffing's guarantee holds. `backend="auto"`, the default, takes Netgen when the build has it (`-DMESHIOPLUSPLUS_WITH_NETGEN=ON`) and the octree backend otherwise, with a warning saying so; `backend="netgen"` in a build without it throws `Unsupported` naming the flag. So `tetrahedralize` works in every wheel, CLI and WebAssembly build, and Netgen is the upgrade that keeps the skin. The installed **TetGen** and **Gmsh** programs are two more backends that keep it (`backend="tetgen"`, `"gmsh"`): `tetrahedralize` writes each region's surface, runs the program as a separate process and reads the tetrahedra back ([external meshers](#external-meshers-tetgen-and-gmsh)).
 
 ```python
 import meshioplusplus as mp
@@ -26,6 +26,17 @@ The result holds the points, a `tetra` block (positively oriented, region by reg
 Netgen (J. Schöberl, 1997) meshes the volume by an advancing front with Delaunay insertion and then optimises it: its volume mesher keeps the surface mesh it is given, which `tetrahedralize` checks (`boundary_preserved`, with `hausdorff_to_surface` zero when it holds), and `optimize_steps` passes of its volume optimisation follow. `max_size` bounds the tetrahedra's edges, `max_volume` adds the edge of a regular tetrahedron of that volume, `(6 √2 V)^(1/3)`, to the bound, and `grading` sets how fast the size grows away from the surface; with neither bound the surface's triangles size the inside. nglib keeps global state, so calls into it are serialised behind one lock and a region is meshed in one thread: the result is deterministic, the same bytes run after run.
 
 Netgen is LGPL-2.1. Natively it is linked dynamically, never vendored, and not in the base wheel or the CLI binaries ([third-party notices](https://github.com/loumalouomega/meshioplusplus/blob/main/THIRD_PARTY_NOTICES.md)): the PyPI route is the `meshioplusplus-netgen` add-on wheel (`pip install "meshioplusplus[netgen]"`, `has_netgen()` reports it), and the CLI and C API can load it as a [plugin](./cpp_api.md#providers-and-plugins); `build/configure.sh --with-netgen` (or `--netgen-root <prefix>`) enables it against a distribution's `libnglib-dev` or an install of its own. In the browser the [full WebAssembly artifact](./wasm.md#lean-and-full-builds) links Netgen 6.2.2401 statically (`hasNetgen()` is true there), built from source by `build/build-wasm-deps.sh --full`; the lean artifact has none, so `tetrahedralize` there is the octree backend.
+
+## External meshers: TetGen and Gmsh
+
+A tetrahedral mesher is a [provider](./cpp_api.md#providers-and-plugins), and besides the default one (Netgen) any number can be registered by name and chosen with `backend="<name>"` (C++ `TetrahedralizeBackend::Named` and `TetrahedralizeOptions::mProvider`; `tetrahedralize_backends()` lists them). Two come with every native build and register themselves when their programs are installed, found on `PATH` or named by `MESHIOPLUSPLUS_TETGEN` and `MESHIOPLUSPLUS_GMSH` (`MESHIOPLUSPLUS_NO_EXTERNAL_MESHERS=1` turns both off):
+
+- **`tetgen`** writes the region's surface as a TetGen [`.smesh`](./formats/tetgen.md) (its inner shells as holes, a point inside each) and runs `tetgen -pYQ`: a constrained tetrahedralisation that adds no point on the boundary (`-Y`), with quality (`-q`) when `optimize_steps` is positive and a volume bound (`-a`) from `max_size`, the volume of a regular tetrahedron of that edge. It reads back `.1.node` and `.1.ele`.
+- **`gmsh`** writes the surface as a full-precision ASCII STL, one `solid` per shell, with a `.geo` that makes each shell a surface loop of one volume, and runs `gmsh -3` (`-clmax` from `max_size`; `optimize_steps` 0 turns its optimisation off). It reads back the MSH 4.1 output's tetrahedra.
+
+The core checks what either returns, as it checks Netgen and any provider since: every input point back, matched to the program's copy of it within 1e-9 of the region's diagonal (a text round trip rounds the last digit) and then given the input's exact coordinates, and the faces of exactly one tetrahedron the input's triangles. A program that moves the boundary is refused naming it, so `boundary_preserved` is true and `hausdorff_to_surface` zero whenever the call returns. `grading` is Netgen's alone. The programs run in a fresh temporary directory, removed afterwards (`MESHIOPLUSPLUS_KEEP_TEMP=1` keeps it), with no shell, their output in a log whose last lines a failure quotes. They never run in WebAssembly, where the names are not registered.
+
+Running them as programs, never linking them, is what their licences leave open: TetGen is AGPL-3.0 and Gmsh GPL-2.0-or-later, and meshio++ neither ships nor links either (the [decision](./roadmap.md#non-goals-and-decisions-taken) on them stands for linking). On Ubuntu `apt install tetgen gmsh` provides both, and CI's `netgen` job runs the tests against them.
 
 ## Octree: the skin fitted
 
@@ -55,7 +66,7 @@ On Netgen's raw output the energy objective halves the slivers; after Netgen's t
 
 | option | meaning |
 |---|---|
-| `backend` | `auto` (Netgen when built in, else the octree backend, with a warning), `netgen` or `octree` |
+| `backend` | `auto` (Netgen when built in, else the octree backend, with a warning), `netgen`, `octree`, or a registered mesher's name (`tetgen`, `gmsh`; `tetrahedralize_backends()`) |
 | `max_size` | the largest edge asked of the tetrahedra (0: none) |
 | `max_volume` | the largest volume asked of a tetrahedron (0: none) |
 | `grading` | how fast the size grows away from the surface, in `[0, 1]` (0.3; Netgen) |
@@ -67,7 +78,7 @@ The report has `num_tetrahedra`, `num_points` (every point), `num_new_points` (o
 
 ## Other backends
 
-Geogram (BSD-3) was the first candidate and was rejected: its `mesh_tetrahedralize`, the constrained tetrahedralisation of a closed surface, creates its Delaunay kernel as `Delaunay::create(3, "tetgen")`, and TetGen is AGPL-3.0, which this repository excludes with CGAL's `Mesh_3` and Gmsh (GPL). Two candidates stay recorded for a third backend under the same contract (`TetrahedralizeBackend`):
+Geogram (BSD-3) was the first candidate and was rejected: its `mesh_tetrahedralize`, the constrained tetrahedralisation of a closed surface, creates its Delaunay kernel as `Delaunay::create(3, "tetgen")`, and TetGen is AGPL-3.0, which this repository excludes from what it links, with CGAL's `Mesh_3` and Gmsh (GPL); TetGen and Gmsh are reachable as [external meshers](#external-meshers-tetgen-and-gmsh) instead. Two candidates stay recorded for another backend under the same contract (a named `TetMesherProvider`):
 
 - **fTetWild** (MPL-2.0; Hu et al. 2020) meshes within an envelope around the surface, so it survives dirty input and does not keep the triangles exactly: it would report `boundary_preserved` false and a Hausdorff distance. It depends on Geogram's Delaunay kernel (without TetGen) and libigl.
 - **The exact constrained Delaunay tetrahedralisation** of Diazzi, Panozzo, Vaxman and Attene (2023), on Attene's indirect predicates (Attene 2020), recovers every input triangle without approximation and meshed all valid Thingi10K models in its authors' tests. Its reference code is LGPL only when built with `-DLGPL=ON` (its default links GPL components), and it ships as an executable, so it would be a file route like the [vendor routes](./vendor_routes.md), not a link.
@@ -78,15 +89,15 @@ A native constrained tetrahedralisation stays a non-goal: the Delaunay kernel is
 
 | surface | entry |
 |---|---|
-| Python | `meshioplusplus.tetrahedralize(mesh, *, backend="auto", max_size=0.0, max_volume=0.0, grading=0.3, optimize_steps=3, max_cells=50_000_000, face_array="cad:face", return_report=False)`; `meshioplusplus._core.__has_netgen__`; no numpy twin |
-| C++ | `tetrahedralize(const Mesh&, const TetrahedralizeOptions&)` → `TetrahedralizeResult`, `tetrahedralize_has_netgen()` (`operations/tetrahedralize.hpp`) |
-| C | `mio_tetrahedralize(mesh, &opts, &report)` with `mio_tetrahedralize_opts` (through `mio_tetrahedralize_opts_init`) and `mio_tetrahedralize_report`; `mio_has_netgen()` |
-| Fortran | `mio_tetrahedralize(...)`, see [Fortran](./fortran.md) |
-| Julia | `tetrahedralize(mesh; backend, max_size, max_volume, grading, optimize_steps, max_cells, face_array)` |
-| R | `mio_tetrahedralize(mesh, ...)` |
-| WASM | `tetrahedralize(mesh, {backend, maxSize, maxVolume, grading, optimizeSteps, maxCells, faceArray})`: Netgen in the full artifact (`hasNetgen()` is `true`), the octree backend in the lean one, where `backend: "netgen"` throws naming the full artifact |
-| CLI | `tetrahedralize INFILE OUTFILE [--max-size H] [--max-volume V] [--grading G] [--optimize-steps N] [--max-cells N] [--face-array NAME] [--backend auto\|netgen\|octree] [--json]`, both CLIs |
-| MCP | `tetrahedralize(input_path, output_path, ...)` |
+| Python | `meshioplusplus.tetrahedralize(mesh, *, backend="auto", max_size=0.0, max_volume=0.0, grading=0.3, optimize_steps=3, max_cells=50_000_000, face_array="cad:face", return_report=False)`; `has_netgen()`, `tetrahedralize_backends()`; no numpy twin |
+| C++ | `tetrahedralize(const Mesh&, const TetrahedralizeOptions&)` → `TetrahedralizeResult`, `tetrahedralize_has_netgen()`, `tetrahedralize_backends()` (`operations/tetrahedralize.hpp`); `add_tet_mesher`, `tet_mesher(name)`, `tet_mesher_names()` (`providers.hpp`) |
+| C | `mio_tetrahedralize(mesh, &opts, &report)` with `mio_tetrahedralize_opts` (through `mio_tetrahedralize_opts_init`; `MIO_TETRAHEDRALIZE_BACKEND_NAMED` with `provider`) and `mio_tetrahedralize_report` (`backend_name`); `mio_has_netgen()`, `mio_tet_mesher_count()`, `mio_tet_mesher_name(i)` |
+| Fortran | `mio_tetrahedralize(...)`, `mio_tet_mesher_count()`, `mio_tet_mesher_name(i)`, `mio_tetrahedralize_backend_name(report)`, see [Fortran](./fortran.md) |
+| Julia | `tetrahedralize(mesh; backend, max_size, max_volume, grading, optimize_steps, max_cells, face_array)`, `tetrahedralize_backends()` |
+| R | `mio_tetrahedralize(mesh, ...)`, `mio_tetrahedralize_backends()` |
+| WASM | `tetrahedralize(mesh, {backend, maxSize, maxVolume, grading, optimizeSteps, maxCells, faceArray})`: Netgen in the full artifact (`hasNetgen()` is `true`), the octree backend in the lean one, where `backend: "netgen"` throws naming the full artifact; no external mesher |
+| CLI | `tetrahedralize INFILE OUTFILE [--max-size H] [--max-volume V] [--grading G] [--optimize-steps N] [--max-cells N] [--face-array NAME] [--backend NAME] [--json]`, both CLIs; `meshioplusplus --version` lists the backends |
+| MCP | `tetrahedralize(input_path, output_path, ...)`, reporting `netgen_available` and `backends_available` |
 | Pipeline | `Tetrahedralize` with `Backend`, `MaxSize`, `MaxVolume`, `Grading`, `OptimizeSteps`, `MaxCells`, `FaceArray` |
 
 ## References

@@ -7,7 +7,7 @@ connected shells are oriented outward, and each shell bounds a region (the
 inside of the shell minus the shells directly inside it): a box inside a box
 gives two regions.
 
-Two backends. Netgen's nglib (J. Schöberl, *NETGEN: an advancing front
+Backends. Netgen's nglib (J. Schöberl, *NETGEN: an advancing front
 2D/3D-mesh generator based on abstract rules*, 1997), linked when the core is
 built with ``MESHIOPLUSPLUS_WITH_NETGEN``, keeps the surface's triangles and
 points exactly, which is checked, so neighbouring regions conform. The native
@@ -15,7 +15,9 @@ octree backend, always built, is :func:`meshioplusplus.octree_mesh`'s
 isosurface stuffing at the surface's own size: its boundary is fitted to the
 surface within the reported ``hausdorff_to_surface``. ``backend="auto"`` takes
 Netgen when ``meshioplusplus._core.__has_netgen__`` and the octree backend
-otherwise, with a warning. See ``doc/tetrahedralize.md``.
+otherwise, with a warning. The installed TetGen and Gmsh programs are named
+meshers too (``backend="tetgen"``, ``"gmsh"``; :func:`tetrahedralize_backends`),
+run as separate processes with the surface kept. See ``doc/tetrahedralize.md``.
 
 The C++ core does the work; there is no numpy twin.
 """
@@ -27,11 +29,28 @@ import warnings
 
 from ._mesh_cad import _core_or_raise
 
-__all__ = ["tetrahedralize", "has_netgen"]
+__all__ = ["tetrahedralize", "has_netgen", "tetrahedralize_backends"]
 
 _PREFIX = "meshio++: tetrahedralize: "
 
 _BACKENDS = ("auto", "netgen", "octree")
+
+
+def tetrahedralize_backends() -> list:
+    """The ``backend`` names :func:`tetrahedralize` accepts besides ``"auto"``,
+    sorted: ``"octree"``, then every registered tetrahedral mesher --
+    ``"netgen"`` when built in or added, and the installed ``"tetgen"`` and
+    ``"gmsh"`` programs, found on ``PATH`` (or through ``MESHIOPLUSPLUS_TETGEN``
+    and ``MESHIOPLUSPLUS_GMSH``) and run as separate processes."""
+    try:
+        from . import _core
+    except ImportError:
+        return ["octree"]
+    from ._plugins import load_plugins
+
+    load_plugins()
+    names = getattr(_core, "tetrahedralize_backends", None)
+    return sorted(set(names())) if names is not None else ["octree"]
 
 
 def has_netgen() -> bool:
@@ -89,8 +108,11 @@ def tetrahedralize(
         degenerate triangles; quads, polygons, higher-order and volume cells
         are refused.
     :param backend: ``"auto"`` (Netgen when built in, else ``"octree"``),
-        ``"netgen"`` (the surface's triangles kept) or ``"octree"`` (the
-        native backend, the boundary fitted).
+        ``"netgen"`` (the surface's triangles kept), ``"octree"`` (the
+        native backend, the boundary fitted), or another name of
+        :func:`tetrahedralize_backends`: ``"tetgen"`` and ``"gmsh"`` run the
+        installed programs on the surface as separate processes, the surface
+        kept (checked); never in WebAssembly.
     :param max_size: the largest edge asked of the tetrahedra (0, the
         default, is none: the surface's triangles size the inside).
     :param max_volume: the largest volume asked of a tetrahedron (0 is none);
@@ -116,13 +138,15 @@ def tetrahedralize(
         triangle, another cell type, or is open, non-manifold, misoriented or
         degenerate, or a result past ``max_cells``.
     :raises NotImplementedError: for ``backend="netgen"`` in a core built
-        without ``MESHIOPLUSPLUS_WITH_NETGEN``.
+        without ``MESHIOPLUSPLUS_WITH_NETGEN``, or a backend no mesher is
+        registered under (the message lists the available ones).
     :raises RuntimeError: when the backend fails (a self-intersecting
         surface, for one).
     """
-    if not isinstance(backend, str) or backend not in _BACKENDS:
+    if not isinstance(backend, str) or not backend.strip():
         raise ValueError(
-            f"{_PREFIX}backend must be 'auto', 'netgen' or 'octree', not {backend!r}"
+            f"{_PREFIX}backend must be 'auto', 'netgen', 'octree' or a mesher's "
+            f"name (tetrahedralize_backends()), not {backend!r}"
         )
     max_size = float(max_size)
     if not (math.isfinite(max_size) and max_size >= 0.0):

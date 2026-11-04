@@ -881,6 +881,8 @@ export interface TetrahedralizeOptions {
    * (the surface kept; no WebAssembly build carries it) or `"octree"` (the
    * native isosurface stuffing, the boundary fitted).
    */
+  /** The external `tetgen` and `gmsh` meshers of the native builds never run in
+   * WebAssembly: another name is refused, naming the backends this build has. */
   backend?: 'auto' | 'netgen' | 'octree';
   /** The largest edge asked of the tetrahedra (0, the default, is none). */
   maxSize?: number;
@@ -2216,6 +2218,14 @@ export interface MeshioPlusPlusModule {
    * `.pvtp` or `.pvd` -- every cell with a `vtkGhostType` bit set, and the points
    * only they used. `false` (the default) keeps them. Every other reader ignores it.
    *
+   * `cadRead` (STEP and IGES, the full artifact only) sets how the shape is
+   * read: the triangulation's `deflection` (a length, at most 0 automatic) and
+   * `angularDeflection` (radians, default 0.5), and `heal: true`, which heals
+   * the shape before it is extracted (`ShapeFix_Shape`, then sewing at
+   * `sewTolerance`, at most 0 automatic; a positive `sewTolerance` sews without
+   * `heal`). The heal report is the `heal` member of `JSON.parse` of the B-rep
+   * side channel's file-level `extra` (with `info: true`).
+   *
    * @throws {Error} on an out-of-range `timeStep` or `piece`.
    */
   readMeshSelective(
@@ -2229,6 +2239,12 @@ export interface MeshioPlusPlusModule {
       piece?: number | null;
       dropGhosts?: boolean;
       info?: boolean;
+      cadRead?: {
+        deflection?: number;
+        angularDeflection?: number;
+        heal?: boolean;
+        sewTolerance?: number;
+      } | null;
     }
   ): Mesh;
 
@@ -4220,6 +4236,102 @@ export interface MeshioPlusPlusModule {
       recordVariation?: boolean;
     },
   ): { mesh: Mesh; numDegenerate: number; numComponents: number };
+
+  /**
+   * The part of a mesh that level sets select, through CutCells
+   * (doc/cut.md): the pieces of the cut cells on one side of the level sets
+   * or on their zero sets, and with `includeUncut` the whole cells inside.
+   * `levelSets` are scalar point-data arrays; `planes` are `[origin, normal]`
+   * pairs (or six numbers each), named `plane0`, `plane1`, ...; `selection`
+   * is an expression such as `'phi < 0'` or `'a = 0 and b < 0'`.
+   * Neither WebAssembly artifact links CutCells yet, so here it throws
+   * naming it; the native builds with CutCells run it.
+   * @throws {Error} without CutCells, or for a bad level set or selection.
+   */
+  cutLevelSet(
+    mesh: Mesh,
+    options?: {
+      levelSets?: string[];
+      planes?: ArrayLike<ArrayLike<number>>;
+      selection?: string;
+      includeUncut?: boolean;
+      backend?: 'auto' | 'lut' | 'quadrays';
+      degree?: number;
+      triangulate?: boolean;
+      recordParentIds?: boolean;
+    }
+  ): {
+    mesh: Mesh;
+    numCells: number;
+    numCutCells: number;
+    numUncutCells: number;
+    numPieces: number;
+    dimension: number;
+    measure: number;
+    selection: string;
+    backend: string;
+  };
+
+  /**
+   * Quadrature rules of degree `order` on that part, as a point cloud with
+   * `quadrature:weight`, `quadrature:reference`, `quadrature:rule` and
+   * `quadrature:parent_cell` point data. See `cutLevelSet`.
+   * @throws {Error} as `cutLevelSet`.
+   */
+  cutQuadrature(
+    mesh: Mesh,
+    options?: {
+      levelSets?: string[];
+      planes?: ArrayLike<ArrayLike<number>>;
+      selection?: string;
+      order?: number;
+      includeUncut?: boolean;
+      backend?: 'auto' | 'lut' | 'quadrays';
+      triangulate?: boolean;
+      recordParentIds?: boolean;
+    }
+  ): {
+    mesh: Mesh;
+    numRules: number;
+    numPoints: number;
+    sumWeights: number;
+    dimension: number;
+    selection: string;
+    backend: string;
+  };
+
+  /** Whether this artifact links CutCells (the cut operations work). */
+  hasCutcells(): boolean;
+
+  /**
+   * Field-aligned quad remeshing of a triangle surface (roadmap 7.7.3)
+   * through an installed QuadriFlow or Instant Meshes, run as a separate
+   * process. WebAssembly runs no programs, so here it always throws naming
+   * them; the native builds run it. See doc/remesh_quads.md.
+   * @throws {Error} always in WebAssembly (no quad remesher).
+   */
+  remeshQuads(
+    mesh: Mesh,
+    options?: {
+      targetFaces?: number;
+      backend?: string;
+      sharp?: boolean;
+      boundary?: boolean;
+      adaptive?: boolean;
+      dominant?: boolean;
+      seed?: number;
+      maxCells?: number;
+    }
+  ): {
+    mesh: Mesh;
+    numQuads: number;
+    numTriangles: number;
+    numPoints: number;
+    minScaledJacobian: number;
+    meanScaledJacobian: number;
+    hausdorffToSurface: number;
+    backend: string;
+  };
 
   /**
    * A triangle surface through an oriented point cloud: the zero level set of

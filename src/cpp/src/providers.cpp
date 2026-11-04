@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <string>
 #include <system_error>
@@ -54,6 +55,12 @@ TetMesherProvider make_netgen_provider();
 RemesherProvider make_mmg_provider();
 #endif
 
+/// The external tetrahedral meshers found installed (`tetgen`, `gmsh`), run as
+/// separate processes (detail/external_mesher.cpp); none in WebAssembly.
+std::vector<TetMesherProvider> make_external_tet_meshers();
+/// The external quad remeshers found installed (`quadriflow`, `instant_meshes`).
+std::vector<QuadRemesherProvider> make_external_quad_remeshers();
+
 }  // namespace providers
 
 namespace {
@@ -79,6 +86,13 @@ struct ProvidersState {
     ProviderSlot<CadKernelProvider> mCad;
     ProviderSlot<TetMesherProvider> mTet;
     ProviderSlot<RemesherProvider> mRemesher;
+    /// The named tetrahedral meshers (roadmap 7.7.2), by name; replaced ones
+    /// stay in `mTet.mRetained`.
+    std::map<std::string, std::shared_ptr<const TetMesherProvider>> mTetNamed;
+    /// The quad remeshers (roadmap 7.7.3), by name, and every one ever added.
+    std::map<std::string, std::shared_ptr<const QuadRemesherProvider>> mQuad;
+    std::vector<std::shared_ptr<const QuadRemesherProvider>> mQuadRetained;
+    bool mExternalDone = false;
 };
 
 ProvidersState& providers_state() {
@@ -138,6 +152,82 @@ void unregister_tet_mesher() noexcept {
 }
 std::shared_ptr<const TetMesherProvider> tet_mesher() noexcept {
     return slot_get(&ProvidersState::mTet);
+}
+
+void add_tet_mesher(TetMesherProvider Provider) {
+    ProvidersState& r_state = providers_state();
+    auto p_new = std::make_shared<const TetMesherProvider>(std::move(Provider));
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    if (t_loading_plugin && r_state.mTetNamed.count(p_new->mName))
+        return;
+    r_state.mTet.mRetained.push_back(p_new);
+    r_state.mTetNamed[p_new->mName] = std::move(p_new);
+}
+
+void remove_tet_mesher(const std::string& rName) noexcept {
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    r_state.mTetNamed.erase(rName);
+}
+
+std::shared_ptr<const TetMesherProvider> tet_mesher(const std::string& rName) noexcept {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    // The default answers to its own name first, so a plugin's mesher that is
+    // the default is the one `backend=<its name>` runs.
+    if (r_state.mTet.mCurrent && r_state.mTet.mCurrent->mName == rName)
+        return r_state.mTet.mCurrent;
+    const auto it = r_state.mTetNamed.find(rName);
+    return it == r_state.mTetNamed.end() ? nullptr : it->second;
+}
+
+void add_quad_remesher(QuadRemesherProvider Provider) {
+    ProvidersState& r_state = providers_state();
+    auto p_new = std::make_shared<const QuadRemesherProvider>(std::move(Provider));
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    if (t_loading_plugin && r_state.mQuad.count(p_new->mName))
+        return;
+    r_state.mQuadRetained.push_back(p_new);
+    r_state.mQuad[p_new->mName] = std::move(p_new);
+}
+
+void remove_quad_remesher(const std::string& rName) noexcept {
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    r_state.mQuad.erase(rName);
+}
+
+std::shared_ptr<const QuadRemesherProvider> quad_remesher(const std::string& rName) noexcept {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const auto it = r_state.mQuad.find(rName);
+    return it == r_state.mQuad.end() ? nullptr : it->second;
+}
+
+std::vector<std::string> quad_remesher_names() {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    std::vector<std::string> names;
+    for (const auto& r_entry : r_state.mQuad)
+        names.push_back(r_entry.first);
+    return names;
+}
+
+std::vector<std::string> tet_mesher_names() {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    std::vector<std::string> names;
+    if (r_state.mTet.mCurrent)
+        names.push_back(r_state.mTet.mCurrent->mName);
+    for (const auto& r_entry : r_state.mTetNamed)
+        names.push_back(r_entry.first);
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return names;
 }
 
 void register_remesher(RemesherProvider Provider) {
@@ -288,6 +378,28 @@ static void register_compiled_in_providers() noexcept {
 #else
     r_state.mRemesher.mBuiltinDone = true;
 #endif
+    // The installed external meshers, by name only: they never become the
+    // default, so `backend=auto` keeps meaning Netgen, else the octree.
+    if (!r_state.mExternalDone) {
+        r_state.mExternalDone = true;
+        try {
+            for (TetMesherProvider& r_p : providers::make_external_tet_meshers()) {
+                if (r_state.mTetNamed.count(r_p.mName))
+                    continue;
+                auto p_new = std::make_shared<const TetMesherProvider>(std::move(r_p));
+                r_state.mTet.mRetained.push_back(p_new);
+                r_state.mTetNamed[p_new->mName] = std::move(p_new);
+            }
+            for (QuadRemesherProvider& r_p : providers::make_external_quad_remeshers()) {
+                if (r_state.mQuad.count(r_p.mName))
+                    continue;
+                auto p_new = std::make_shared<const QuadRemesherProvider>(std::move(r_p));
+                r_state.mQuadRetained.push_back(p_new);
+                r_state.mQuad[p_new->mName] = std::move(p_new);
+            }
+        } catch (...) {
+        }
+    }
 }
 
 void register_builtin_providers() noexcept {

@@ -45,7 +45,7 @@ full.hasOcct();        // true; hasZstd(), hasLz4(), hasBzip2(), hasNetgen(), ha
 | --- | --- | --- | --- |
 | `meshioplusplus_wasm` (lean) | 13.5 MB (4.5 MB gzipped) | 94 kB | HDF5, netCDF, CGNS, zlib, gidpost, Eigen (MED transpose, MPL-2.0) |
 | `meshioplusplus_wasm_mt` (lean, threaded) | 14.2 MB (4.7 MB gzipped) | 113 kB | the same, with OpenMP over pthreads |
-| `meshioplusplus_wasm_full` | 26.2 MB (8.8 MB gzipped) | 98 kB | the lean libraries, plus OpenCASCADE, zstd, lz4, bzip2, KaHIP (serial kaffpa), Netgen (nglib) and MMG (libmmg) |
+| `meshioplusplus_wasm_full` | 26.2 MB (8.8 MB gzipped) | 98 kB | the lean libraries, plus OpenCASCADE, zstd, lz4, bzip2, KaHIP (serial kaffpa), Netgen (nglib), MMG (libmmg) and CutCells |
 | `meshioplusplus_wasm_full_mt` (threaded) | 26.6 MB (9.0 MB gzipped) | 118 kB | the same, with OpenMP over pthreads |
 
 Measured for v17.2.0 with Emscripten 6.0.3 (`gzip -9` in parentheses; a server's Brotli does better). OpenCASCADE's modelling, healing, meshing and STEP/IGES toolkits about double the binary, which is why the full pair is opt-in. MMG (October 2026, Emscripten 6.0.3, roadmap 3.1.8) adds 0.99 MB to the full `.wasm` (0.35 MB gzipped) and nothing to the `.mjs`: measured on the sequential full artifact built twice in the same configuration (OpenCASCADE and HDF5 left out to keep the comparison quick), 14.76 MB (5.12 MB gzipped) without MMG and 15.75 MB (5.47 MB gzipped) with it, 6.7% more.
@@ -60,6 +60,7 @@ The lean pair is MIT, and its bundled libraries (zlib, HDF5, netCDF, CGNS, the v
 
 Some libraries are in neither pair, each for a reason, and each still answers by name:
 
+- **CutCells in the lean pair**: `cutLevelSet` and `cutQuadrature` ([level-set cutting](cut.md)) run in the full artifact only (CutCells 0.5.0 at the commit `build/deps-pins.sh` pins, static, without OpenMP, built by `build-wasm-deps.sh --full`); on lean, `hasCutcells()` is false and both throw naming `MESHIOPLUSPLUS_WITH_CUTCELLS`.
 - **KaHIP in the lean pair**: the graph partitioner ships only in the full artifact (serial kaffpa, Emscripten port of v3.25 built by `build-wasm-deps.sh --full`); on lean, `partition(..., 'kahip')` throws naming `MESHIOPLUSPLUS_WITH_KAHIP`, and `'auto'` resolves to the SFC method.
 - **ADIOS2** (`vtx`): no one has made a wasm build of it; `vtx` is absent from `availableFormats()`, and a `.bp` path names ADIOS2.
 - **TecIO** (`szplt`): its redistribution terms; absent, and named, the same way.
@@ -301,6 +302,8 @@ Each format's `info` shape (see `doc/wasm.md`'s TypeScript-adjacent field names 
 
 Every shape includes a `format` discriminator matching the table's left column. `pointsOnly`/`arrays`/`timeStep` (`readMeshSelective`'s other selective-read options) reach the read only for the formats whose info-bearing reader takes them natively (`med`/`mdpa`/`gmsh`/`exodus`/`unv`/`mfem`); `openfoam`/`ansysinp` have no selective-read path with or without `info`, exactly as they have none without it. `info: true` for a format with no side channel is silently ignored (no `.info` on the result) rather than thrown, so a caller can always pass it and check `mesh.info` itself; writing `info` for a format with no Info-bearing writer (`exodus`, or any other format) throws naming it. There is no generic `registry_read_info`/`registry_write_info` hook in the C++ core reaching every flat binding — this is a WASM-only dispatch table calling each format's own Info-bearing reader/writer directly, the same per-format special-casing the Python bindings already do; a shared core hook is a roadmap remainder.
 
+STEP and IGES (the full artifact) also take `cadRead: {deflection, angularDeflection, heal, sewTolerance}`: the triangulation's deflections, and `heal: true`, which heals the shape before it is read (`ShapeFix_Shape`, then sewing at `sewTolerance`, 0 automatic); the heal report is the `heal` member of `JSON.parse(mesh.info.extra)` with `info: true` ([STEP reading](formats/step.md#reading)). `tetrahedralize`'s external meshers (`backend: 'tetgen'`, `'gmsh'`) run separate programs and never exist in WebAssembly, where the name is refused listing the backends the build has; for the same reason `remeshQuads(mesh, options)` ([remesh_quads](remesh_quads.md)) is bound for parity with the C API but always throws there, naming the QuadriFlow and Instant Meshes programs the native builds run. `cutLevelSet(mesh, {levelSets, planes, selection, includeUncut, backend, degree, triangulate, recordParentIds})` and `cutQuadrature(mesh, {..., order})` ([level-set cutting](cut.md); `planes` as `[origin, normal]` pairs) are bound too, but neither artifact links CutCells yet (`hasCutcells()` is false), so both throw naming it.
+
 MDPA's `info.subModelParts` entries carry `name`, `data`, `tables`, `geometryIds` and `constraintIds`; the last two retain raw file ids, ordering and duplicates and are not remapped by operations. `writeMesh(path, mesh, 'mdpa', {info})` restores nested membership-only parts. Constraints themselves remain opaque `rawBlocks` content. Omitting the two new fields on write is equivalent to empty lists.
 
 ## Mesh operations
@@ -496,7 +499,7 @@ node tests/wasm/smoke.mjs
 `--full` adds the [full pair](#lean-and-full-builds) (`--full-only` builds only it; `--without-occt` leaves OpenCASCADE out of it, for a codecs-only full build that stays MIT), configured with `-DMESHIOPLUSPLUS_WASM_FULL=ON` in its own trees (`build/wasm-<type>-full[-mt]`). Only under that option does CMake look for OpenCASCADE, zstd, lz4 and KaHIP on a wasm target, in the prefixes `build/build-wasm-deps.sh --full` builds, one per threading flavour (OpenCASCADE's reference counts are `std::atomic`, and an object built without `-pthread` cannot join the threaded link); bzip2 is Emscripten's port, like zlib. A full build never drops a library it was asked for: one not found is a configure error, not a smaller artifact. OpenCASCADE is a long build, most of an hour per flavour on four cores; CI caches its prefix apart from the lean one, and the release job assembles the package from both builds' artifacts.
 
 ```sh
-./build/build-wasm-deps.sh --full                       # lean deps + OpenCASCADE, zstd, lz4 and KaHIP (seq and mt)
+./build/build-wasm-deps.sh --full                       # lean deps + OpenCASCADE, zstd, lz4, KaHIP, Netgen, MMG and CutCells (seq and mt)
 ./build/configure-wasm.sh --full --build                # all four artifacts
 MESHIOPLUSPLUS_WASM_VARIANT=full node tests/wasm/smoke.mjs
 ```

@@ -274,3 +274,131 @@ def test_opencascade_reads_a_valid_solid(tmp_path, name, faces):
     assert found == solids
     if volume is not None:
         assert total == pytest.approx(volume, rel=1e-9)
+
+
+def _two_face_step(gap):
+    """Two planar 100 x 100 mm quads side by side whose shared edge is written
+    twice, ``gap`` apart (roadmap 7.7.1): each face has its own four vertices
+    and edges, in one open shell."""
+    pts = [
+        (0, 0, 0),
+        (100, 0, 0),
+        (100, 100, 0),
+        (0, 100, 0),
+        (100 + gap, 0, gap),
+        (200, 0, 0),
+        (200, 100, 0),
+        (100 + gap, 100, gap),
+    ]
+    out = []
+
+    def ent(body):
+        out.append(f"#{len(out) + 1}={body};")
+        return len(out)
+
+    def num(v):
+        # A STEP real needs a decimal point in its mantissa: "1e-06" is not one.
+        return f"{float(v):.17E}"
+
+    def triple(v):
+        return "(" + ",".join(num(c) for c in v) + ")"
+
+    app = ent(
+        "APPLICATION_CONTEXT('core data for automotive mechanical design processes')"
+    )
+    ent(
+        "APPLICATION_PROTOCOL_DEFINITION('international standard',"
+        f"'automotive_design',2000,#{app})"
+    )
+    pctx = ent(f"PRODUCT_CONTEXT('',#{app},'mechanical')")
+    pdctx = ent(f"PRODUCT_DEFINITION_CONTEXT('part definition',#{app},'design')")
+    prod = ent(f"PRODUCT('two','two','',(#{pctx}))")
+    form = ent(f"PRODUCT_DEFINITION_FORMATION('','',#{prod})")
+    pdef = ent(f"PRODUCT_DEFINITION('design','',#{form},#{pdctx})")
+    pshape = ent(f"PRODUCT_DEFINITION_SHAPE('','',#{pdef})")
+    length = ent("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))")
+    angle = ent("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))")
+    solid = ent("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())")
+    unc = ent(
+        f"UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07),#{length},"
+        "'distance_accuracy_value','confusion accuracy')"
+    )
+    gctx = ent(
+        "(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT("
+        f"(#{unc}))GLOBAL_UNIT_ASSIGNED_CONTEXT((#{length},#{angle},#{solid}))"
+        "REPRESENTATION_CONTEXT('Context #1','3D Context'))"
+    )
+    o_pt = ent("CARTESIAN_POINT('',(0.,0.,0.))")
+    o_z = ent("DIRECTION('',(0.,0.,1.))")
+    o_x = ent("DIRECTION('',(1.,0.,0.))")
+    origin = ent(f"AXIS2_PLACEMENT_3D('',#{o_pt},#{o_z},#{o_x})")
+    point = [ent(f"CARTESIAN_POINT('',{triple(p)})") for p in pts]
+    vertex = [ent(f"VERTEX_POINT('',#{p})") for p in point]
+    faces = []
+    for f in range(2):
+        loop = []
+        for k in range(4):
+            a, b = 4 * f + k, 4 * f + (k + 1) % 4
+            d = np.subtract(pts[b], pts[a], dtype=float)
+            ln = float(np.linalg.norm(d))
+            direction = ent(f"DIRECTION('',{triple(d / ln)})")
+            vec = ent(f"VECTOR('',#{direction},{num(ln)})")
+            line = ent(f"LINE('',#{point[a]},#{vec})")
+            edge = ent(f"EDGE_CURVE('',#{vertex[a]},#{vertex[b]},#{line},.T.)")
+            oriented = ent(f"ORIENTED_EDGE('',*,*,#{edge},.T.)")
+            loop.append(f"#{oriented}")
+        el = ent(f"EDGE_LOOP('',({','.join(loop)}))")
+        bound = ent(f"FACE_OUTER_BOUND('',#{el},.T.)")
+        place = ent(f"AXIS2_PLACEMENT_3D('',#{point[4 * f]},#{o_z},#{o_x})")
+        plane = ent(f"PLANE('',#{place})")
+        face = ent(f"ADVANCED_FACE('',(#{bound}),#{plane},.T.)")
+        faces.append(f"#{face}")
+    shell = ent(f"OPEN_SHELL('',({','.join(faces)}))")
+    model = ent(f"SHELL_BASED_SURFACE_MODEL('',(#{shell}))")
+    rep = ent(f"MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(#{origin},#{model}),#{gctx})")
+    ent(f"SHAPE_DEFINITION_REPRESENTATION(#{pshape},#{rep})")
+    head = (
+        "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('two faces'),'2;1');\n"
+        "FILE_NAME('two','1970-01-01T00:00:00',(''),(''),'','','');\n"
+        "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\n"
+        "ENDSEC;\nDATA;\n"
+    )
+    return head + "\n".join(out) + "\nENDSEC;\nEND-ISO-10303-21;\n"
+
+
+def _open_edges(mesh):
+    return sum(1 for e in mesh.info["brep"]["edges"] if len(e["topology"]) == 1)
+
+
+@pytest.mark.skipif(
+    not HAS_OCCT, reason="core built without -DMESHIOPLUSPLUS_WITH_OCCT=ON"
+)
+def test_heal_sews_a_duplicated_shared_edge(tmp_path):
+    """Roadmap 7.7.1's probe: two faces whose shared edge is written twice,
+    1e-4 apart, have no open shared edge once healed."""
+    import json
+
+    path = tmp_path / "two.step"
+    path.write_text(_two_face_step(1e-4))
+    raw = mio.step.read(path)
+    assert len(raw.info["brep"]["faces"]) == 2
+    assert _open_edges(raw) == 8
+    assert "heal" not in json.loads(raw.info["brep"]["extra"])
+    healed = mio.step.read(path, heal=True)
+    assert _open_edges(healed) == 6
+    report = json.loads(healed.info["brep"]["extra"])["heal"]
+    assert report["healed"] is True
+    assert report["free_edges_before"] == 8
+    assert report["free_edges_after"] == 6
+    assert report["sew_tolerance"] > 1e-4
+    sewn = mio.step.read(path, sew_tolerance=1e-3)
+    assert _open_edges(sewn) == 6
+    assert json.loads(sewn.info["brep"]["extra"])["heal"]["healed"] is False
+    with pytest.raises(ValueError, match="sewing tolerance"):
+        mio.step.read(path, sew_tolerance=-1.0)
+    # The CLI and MCP route: the helper behind --heal.
+    from meshioplusplus.step import _read_healed
+
+    assert _open_edges(_read_healed(path, None, True, 0.0)) == 6
+    with pytest.raises(ValueError, match="STEP and IGES"):
+        _read_healed(tmp_path / "x.vtu", None, True, 0.0)

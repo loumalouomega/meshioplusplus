@@ -2424,6 +2424,9 @@ _NOT_TOOLS = {
     "has_mmg",  # capability probes; the adapt tool reports mmg_available
     "has_mmg_elas",
     "has_netgen",  # the tetrahedralize tool reports netgen_available
+    "tetrahedralize_backends",  # the tetrahedralize tool reports backends_available
+    "remesh_quads_backends",  # the remesh_quads tool reports backends_available
+    "cut_has_cutcells",  # the cut tools report cutcells_available
     "to_pyvista",
     "from_pyvista",
     "to_trimesh",
@@ -2721,6 +2724,15 @@ def test_tetrahedralize_tool(tmp_path):
     assert fitted["backend"] == "octree" and not fitted["boundary_preserved"]
     assert fitted["num_tetrahedra"] > 0 and fitted["hausdorff_to_surface"] > 0.0
     assert fitted["netgen_available"] is meshioplusplus.has_netgen()
+    backends = fitted["backends_available"]
+    assert backends == meshioplusplus.tetrahedralize_backends()
+    assert "octree" in backends
+    for name in ("tetgen", "gmsh"):
+        if name in backends:  # roadmap 7.7.2: the installed program, the skin kept
+            kept = _tools.tool_tetrahedralize(
+                str(skin), str(out), backend=name, max_size=0.3
+            )
+            assert kept["backend"] == name and kept["boundary_preserved"]
     if not meshioplusplus.has_netgen():
         with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_NETGEN"):
             _tools.tool_tetrahedralize(str(skin), str(out), backend="netgen")
@@ -2730,6 +2742,56 @@ def test_tetrahedralize_tool(tmp_path):
     assert report["boundary_preserved"] and report["backend"] == "netgen"
     assert 4.0 < report["volume"] < 4 / 3 * np.pi
     assert {c.type for c in meshioplusplus.read(out).cells} == {"tetra", "triangle"}
+
+
+def test_remesh_quads_tool(tmp_path):
+    """Roadmap 7.7.3: the tool reports the installed remeshers; with
+    QuadriFlow the sphere's skin comes back all quads, and a name no remesher
+    has is refused."""
+    if not hasattr(_core, "remesh_quads"):
+        pytest.skip("core predates remesh_quads")
+    skin = tmp_path / "sphere.stl"
+    meshioplusplus.write(skin, meshioplusplus.icosa_sphere(1.0, 3))
+    out = tmp_path / "quads.vtu"
+    with pytest.raises(NotImplementedError, match="no-such-remesher"):
+        _tools.tool_remesh_quads(str(skin), str(out), backend="no-such-remesher")
+    if "quadriflow" not in meshioplusplus.remesh_quads_backends():
+        pytest.skip("quadriflow is not installed")
+    report = _tools.tool_remesh_quads(str(skin), str(out), target_faces=600)
+    assert report["backend"] == "quadriflow" and report["num_quads"] > 0
+    assert report["num_triangles"] == 0 and report["min_scaled_jacobian"] >= 0.2
+    assert "quadriflow" in report["backends_available"]
+    assert {c.type for c in meshioplusplus.read(out).cells} == {"quad"}
+
+
+def test_heal_on_cad_reads(tmp_path):
+    """Roadmap 7.7.1: convert and mesh_cad_surface heal a STEP input as it is
+    read; on another input the options are refused."""
+    from meshioplusplus._fit_cad import has_occt
+
+    if not has_occt():
+        pytest.skip("core built without OpenCASCADE")
+    from .test_step import _two_face_step
+
+    step = tmp_path / "two.step"
+    step.write_text(_two_face_step(1e-4))
+    out = tmp_path / "two.cad.json"
+    _tools.tool_convert(str(step), str(out), heal=True)
+    import json
+
+    # The heal record is a member of the B-rep's file-level JSON, which the
+    # CAD JSON write keeps.
+    assert json.loads(out.read_text())["heal"]["free_edges_after"] == 6
+    healed = meshioplusplus.read(out)
+    edges = healed.info["brep"]["edges"]
+    assert sum(1 for e in edges if len(e["topology"]) == 1) == 6
+    surface = tmp_path / "two.vtu"
+    report = _tools.tool_mesh_cad_surface(
+        str(step), str(surface), 20.0, heal=True, sew_tolerance=1e-3
+    )
+    assert report["num_points"] > 0
+    with pytest.raises(ValueError, match="STEP and IGES"):
+        _tools.tool_convert(str(surface), str(tmp_path / "x.vtk"), heal=True)
 
 
 def test_project_to_cad_tool(tmp_path):
@@ -4176,3 +4238,30 @@ def test_find_intersections_and_thickness_tools(tmp_path):
     json.dumps(report)
     with pytest.raises(ValueError, match="direction"):
         _tools.tool_thickness(str(a), direction="sideways")
+
+
+def test_cut_tools(tmp_path):
+    from meshioplusplus import _core
+
+    if not hasattr(_core, "cut_level_set"):
+        pytest.skip("core predates cut_level_set")
+    box = tmp_path / "box.vtu"
+    meshioplusplus.write(box, meshioplusplus.box((2, 2, 2)))
+    out = tmp_path / "cut.vtu"
+    plane = [[0.3, 0, 0, 1, 0, 0]]
+    if not meshioplusplus.cut_has_cutcells():
+        with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_CUTCELLS"):
+            _tools.tool_cut_level_set(str(box), str(out), planes=plane)
+        return
+    report = _tools.tool_cut_level_set(str(box), str(out), planes=plane)
+    assert report["cutcells_available"] is True
+    assert report["measure"] == pytest.approx(0.3, abs=1e-12)
+    assert report["dimension"] == 3 and out.exists()
+    quad = tmp_path / "quad.vtu"
+    report = _tools.tool_cut_quadrature(
+        str(box), str(quad), planes=plane, selection="plane0 = 0", order=3
+    )
+    assert report["sum_weights"] == pytest.approx(1.0, abs=1e-12)
+    assert report["dimension"] == 2
+    with pytest.raises(ValueError, match="six numbers"):
+        _tools.tool_cut_level_set(str(box), str(out), planes=[[0.3, 0, 0]])

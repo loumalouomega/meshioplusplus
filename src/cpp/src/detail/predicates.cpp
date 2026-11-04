@@ -26,6 +26,7 @@
 #include <vector>
 
 // Project includes
+#include "expansion.hpp"
 #include "predicates.hpp"
 
 // The error-free transforms below are exact only when every product is
@@ -322,6 +323,36 @@ double pred_lens_angle_exact(const double* pA, const double* pB, const double* p
 
 void predicates_two_product(double A, double B, double& rX, double& rY) {
     pred_two_product(A, B, rX, rY);
+}
+
+// The expansion arithmetic for exact constructions (detail/expansion.hpp).
+Expansion exp_diff(double A, double B) {
+    return pred_diff(A, B);
+}
+Expansion exp_of(double A) {
+    return A == 0.0 ? Expansion{} : Expansion{A};
+}
+Expansion exp_sum(const Expansion& rE, const Expansion& rF) {
+    return pred_sum(rE, rF);
+}
+Expansion exp_sub(const Expansion& rE, const Expansion& rF) {
+    return pred_sub(rE, rF);
+}
+Expansion exp_scale(const Expansion& rE, double B) {
+    return pred_scale(rE, B);
+}
+Expansion exp_mul(const Expansion& rE, const Expansion& rF) {
+    // The shorter one scaled by: one scaling per component of `rF`.
+    return rE.size() < rF.size() ? pred_mul(rF, rE) : pred_mul(rE, rF);
+}
+double exp_estimate(const Expansion& rE) {
+    return pred_estimate(rE);
+}
+int exp_sign(const Expansion& rE) {
+    // Nonoverlapping and increasing: the largest component has the sign.
+    if (rE.empty())
+        return 0;
+    return rE.back() > 0.0 ? 1 : (rE.back() < 0.0 ? -1 : 0);
 }
 
 double orient2d(const double* pA, const double* pB, const double* pC) {

@@ -122,6 +122,25 @@ def add_args(parser):
             "reader ignores it. By default ghost cells are kept."
         ),
     )
+    parser.add_argument(
+        "--heal",
+        action="store_true",
+        help=(
+            "STEP and IGES: heal the shape before it is read (ShapeFix_Shape, "
+            "then sewing at --sew-tolerance)"
+        ),
+    )
+    parser.add_argument(
+        "--sew-tolerance",
+        type=float,
+        default=0.0,
+        metavar="T",
+        help=(
+            "STEP and IGES: the sewing tolerance, as a length; 0 (default) is "
+            "1e-5 of the bounding-box diagonal when healing, and a positive "
+            "value sews even without --heal"
+        ),
+    )
     seq = parser.add_argument_group(
         "transient sequences (multi-file datasets)",
         "Treat a set of files, or the steps inside one file, as one ordered "
@@ -468,6 +487,12 @@ def convert(args):
                 "--mesh-name cannot be combined with selective arrays or pieces"
             )
         mesh = med.read(args.infile, time_step=args.time_step, mesh_name=args.mesh_name)
+    elif getattr(args, "heal", False) or getattr(args, "sew_tolerance", 0.0) > 0.0:
+        from ..step import _read_healed
+
+        mesh = _read_healed(
+            args.infile, args.input_format, args.heal, args.sew_tolerance
+        )
     else:
         mesh = read(
             args.infile,

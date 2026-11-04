@@ -32,6 +32,7 @@ vcpkg_check_features(
         bzip2   MESHIOPLUSPLUS_WITH_BZIP2
         adios2  MESHIOPLUSPLUS_WITH_ADIOS2
         kahip   MESHIOPLUSPLUS_WITH_KAHIP
+        cutcells MESHIOPLUSPLUS_WITH_CUTCELLS
         netgen  MESHIOPLUSPLUS_WITH_NETGEN
         mmg     MESHIOPLUSPLUS_WITH_MMG
         occt    MESHIOPLUSPLUS_WITH_OCCT

@@ -278,6 +278,8 @@ def _register_conversion(server: FastMCP) -> None:
         elmer_halo: bool = False,
         patran_results: Optional[Dict[str, str]] = None,
         write_nurbs: Optional[bool] = None,
+        heal: bool = False,
+        sew_tolerance: float = 0.0,
     ) -> dict:
         """Convert a mesh between formats (formats inferred from extensions
         unless given). grid_functions ({name: path}) reads MFEM .gf fields onto
@@ -304,7 +306,10 @@ def _register_conversion(server: FastMCP) -> None:
         XDMF time-series reads preserve fixed shared point/cell/side regions.
         An MFEM NURBS input keeps its patches, so an MFEM output is written back
         as the NURBS mesh; write_nurbs=False writes the sampled cells instead,
-        True refuses anything else."""
+        True refuses anything else. heal (STEP/IGES) heals the shape before it
+        is read (ShapeFix_Shape, then sewing at sew_tolerance, a length; 0 is
+        1e-5 of the bounding-box diagonal, and a positive value sews without
+        heal)."""
         return _guard(
             _tools.tool_convert,
             input_path=input_path,
@@ -323,6 +328,8 @@ def _register_conversion(server: FastMCP) -> None:
             elmer_halo=elmer_halo,
             patran_results=patran_results,
             write_nurbs=write_nurbs,
+            heal=heal,
+            sew_tolerance=sew_tolerance,
         )
 
     @server.tool()
@@ -1839,6 +1846,8 @@ def _register_operations(server: FastMCP) -> None:
         untangle: bool = False,
         quads: str = "none",
         quad_pairs: str = "matching",
+        heal: bool = False,
+        sew_tolerance: float = 0.0,
     ) -> dict:
         """Triangulate the faces of a CAD model (Kratos CAD JSON; STEP and
         IGES where OpenCASCADE is linked) into one conforming surface mesh with
@@ -1923,7 +1932,9 @@ def _register_operations(server: FastMCP) -> None:
         writes curved quad9 or quad16 beside triangle6 or triangle10;
         quad_pairs 'matching' (the default, a maximum matching, Blossom-quad)
         or 'greedy' (best pair first) pairs them; reported as num_quads,
-        num_leftover_triangles and min_quad_scaled_jacobian."""
+        num_leftover_triangles and min_quad_scaled_jacobian. heal (STEP/IGES)
+        heals the shape before it is read (ShapeFix_Shape, then sewing at
+        sew_tolerance; 0 is automatic, a positive value sews without heal)."""
         return _guard(
             _tools.tool_mesh_cad_surface,
             input_path=input_path,
@@ -1963,6 +1974,8 @@ def _register_operations(server: FastMCP) -> None:
             untangle=untangle,
             quads=quads,
             quad_pairs=quad_pairs,
+            heal=heal,
+            sew_tolerance=sew_tolerance,
         )
 
     @server.tool()
@@ -4595,7 +4608,9 @@ def _register_operations(server: FastMCP) -> None:
         (roadmap 6.7). backend "netgen" keeps its triangles and points
         exactly; "octree", the native backend always built, fits the boundary
         within the reported hausdorff_to_surface; "auto" (default) takes
-        Netgen when built in, else octree with a warning. Each shell bounds a
+        Netgen when built in, else octree with a warning; "tetgen" and "gmsh"
+        run those installed programs on the surface as separate processes,
+        its triangles kept (checked). Each shell bounds a
         region (a box inside a box gives two), meshed on its own. max_size and max_volume (0: none) bound the
         tetrahedra, grading (0 to 1) is how fast the size grows inward,
         optimize_steps the backend's volume optimisation passes; face_array
@@ -4605,7 +4620,8 @@ def _register_operations(server: FastMCP) -> None:
         both. Reports num_tetrahedra, num_points,
         num_new_points, num_regions, num_boundary_triangles,
         boundary_preserved, hausdorff_to_surface, min_dihedral_deg,
-        max_dihedral_deg, volume, backend, warnings and netgen_available."""
+        max_dihedral_deg, volume, backend, warnings, netgen_available and
+        backends_available (every backend name besides auto)."""
         return _guard(
             _tools.tool_tetrahedralize,
             input_path=input_path,
@@ -4619,6 +4635,136 @@ def _register_operations(server: FastMCP) -> None:
             optimize_steps=optimize_steps,
             max_cells=max_cells,
             face_array=face_array,
+        )
+
+    @server.tool()
+    def cut_level_set(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        level_sets: Optional[List[str]] = None,
+        planes: Optional[List[List[float]]] = None,
+        selection: str = "",
+        include_uncut: bool = True,
+        backend: str = "auto",
+        degree: int = 2,
+        triangulate: bool = False,
+        record_parent_ids: bool = True,
+    ) -> dict:
+        """Cut a mesh by level sets through CutCells (doc/cut.md) and write
+        the part the selection picks: the pieces of the cut cells (every cell
+        family, quadratic level sets on triangle6/tetra10) and, with
+        include_uncut, the whole cells inside. level_sets are scalar
+        point_data arrays; planes are six numbers each (origin, then normal),
+        named plane0, plane1, ...; selection is an expression over the names
+        such as "phi < 0", "phi = 0" (the interface) or "a < 0 and b > 0"
+        (empty: "<first> < 0"). backend "lut" gives straight pieces,
+        "quadrays" curved Lagrange pieces of degree, "auto" picks quadrays for
+        a quadratic level set. Point data is interpolated, cell data and cell
+        regions follow each piece's parent (cut:parent_cell). Without
+        CutCells it returns an error naming MESHIOPLUSPLUS_WITH_CUTCELLS.
+        Reports num_cells, num_cut_cells, num_uncut_cells, num_pieces,
+        dimension, measure, selection, backend, warnings and
+        cutcells_available."""
+        return _guard(
+            _tools.tool_cut_level_set,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            level_sets=level_sets,
+            planes=planes,
+            selection=selection,
+            include_uncut=include_uncut,
+            backend=backend,
+            degree=degree,
+            triangulate=triangulate,
+            record_parent_ids=record_parent_ids,
+        )
+
+    @server.tool()
+    def cut_quadrature(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        level_sets: Optional[List[str]] = None,
+        planes: Optional[List[List[float]]] = None,
+        selection: str = "",
+        order: int = 2,
+        include_uncut: bool = True,
+        backend: str = "auto",
+        triangulate: bool = False,
+        record_parent_ids: bool = True,
+    ) -> dict:
+        """Quadrature rules (cut-cell quadrature for unfitted finite elements)
+        of degree order on the part of a mesh that level sets select, through
+        CutCells (doc/cut.md). The level sets, selection and backend are
+        cut_level_set's. Writes one vertex per quadrature point at its
+        physical position with point data quadrature:weight (physical; they
+        sum to the part's measure), quadrature:reference (in the parent
+        cell), quadrature:rule and quadrature:parent_cell. Reports num_rules,
+        num_points, sum_weights, dimension, selection, backend, warnings and
+        cutcells_available."""
+        return _guard(
+            _tools.tool_cut_quadrature,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            level_sets=level_sets,
+            planes=planes,
+            selection=selection,
+            order=order,
+            include_uncut=include_uncut,
+            backend=backend,
+            triangulate=triangulate,
+            record_parent_ids=record_parent_ids,
+        )
+
+    @server.tool()
+    def remesh_quads(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        target_faces: int = 0,
+        backend: str = "auto",
+        sharp: bool = False,
+        boundary: bool = True,
+        adaptive: bool = False,
+        dominant: bool = False,
+        seed: int = 0,
+        max_cells: int = 50_000_000,
+    ) -> dict:
+        """Remesh a triangle surface into field-aligned quads (roadmap
+        7.7.3) through an installed QuadriFlow or Instant Meshes, run as a
+        separate process: a sphere comes out all quads, with no pole of poor
+        quads as recombining a mesher's triangles leaves. target_faces (0:
+        half the triangles) is the number asked for; backend "auto"
+        (QuadriFlow, else Instant Meshes), "quadriflow" or "instant_meshes";
+        sharp keeps sharp edges, boundary (default true) an open surface's
+        boundary, adaptive lets the size follow curvature, dominant allows
+        triangles (Instant Meshes), seed repeats a run. No remesher installed
+        returns an error naming the programs. Reports num_quads,
+        num_triangles, num_points, min_scaled_jacobian,
+        mean_scaled_jacobian, hausdorff_to_surface (to the input), backend,
+        warnings and backends_available."""
+        return _guard(
+            _tools.tool_remesh_quads,
+            input_path=input_path,
+            output_path=output_path,
+            input_format=input_format,
+            output_format=output_format,
+            target_faces=target_faces,
+            backend=backend,
+            sharp=sharp,
+            boundary=boundary,
+            adaptive=adaptive,
+            dominant=dominant,
+            seed=seed,
+            max_cells=max_cells,
         )
 
     @server.tool()

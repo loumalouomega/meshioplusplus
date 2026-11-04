@@ -120,6 +120,7 @@ if TYPE_CHECKING:
     from ._coordinates import convert_coordinates
     from ._crop import crop
     from ._curvature import compute_curvature
+    from ._cut import cut_has_cutcells, cut_level_set, cut_quadrature
     from ._data_average import cell_data_to_point_data, point_data_to_cell_data
     from ._data_calc import data_calc
     from ._data_condition import data_condition
@@ -272,6 +273,7 @@ if TYPE_CHECKING:
     from ._region_ops import edit_regions
     from ._registration import register_rigid
     from ._remesh import remesh
+    from ._remesh_quads import remesh_quads, remesh_quads_backends
     from ._remesh_volume import remesh_volume
     from ._render import render_image, render_text, snapshot
     from ._reorder import compute_bandwidth, reorder
@@ -306,7 +308,7 @@ if TYPE_CHECKING:
     from ._tensor_invariants import tensor_invariants
     from ._tessellation import Tessellation, tessellate
     from ._tet_poly import poly_to_tet, tet_to_poly
-    from ._tetrahedralize import has_netgen, tetrahedralize
+    from ._tetrahedralize import has_netgen, tetrahedralize, tetrahedralize_backends
     from ._thickness import thickness
     from ._transform import transform
     from ._tui import tui
@@ -567,6 +569,12 @@ _LAZY_ATTRS = {
     "poly_to_tet": "_tet_poly",
     "tetrahedralize": "_tetrahedralize",
     "has_netgen": "_tetrahedralize",
+    "tetrahedralize_backends": "_tetrahedralize",
+    "remesh_quads": "_remesh_quads",
+    "cut_has_cutcells": "_cut",
+    "cut_level_set": "_cut",
+    "cut_quadrature": "_cut",
+    "remesh_quads_backends": "_remesh_quads",
     "triangulate_polygon_2d": "_mesh_cad",
 }
 
@@ -795,6 +803,12 @@ __all__ = [
     "poly_to_tet",
     "tetrahedralize",
     "has_netgen",
+    "tetrahedralize_backends",
+    "remesh_quads",
+    "remesh_quads_backends",
+    "cut_has_cutcells",
+    "cut_level_set",
+    "cut_quadrature",
     "triangulate_polygon_2d",
     "sample_distance",
     "distance_to_surface",

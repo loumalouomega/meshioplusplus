@@ -97,7 +97,7 @@ Usage: $0 [options]
   --without-netcdf          skip netCDF
   --without-cgnslib         skip cgnslib (the CGNS MLL backend)
   --full                    also build the full artifact's libraries (OCCT,
-                            zstd, lz4, KaHIP, Netgen, MMG) into their own prefix(es)
+                            zstd, lz4, KaHIP, Netgen, MMG, CutCells) into their own prefix(es)
   --full-only               build only those (skip HDF5/netCDF/cgnslib)
   --threads <seq|mt|both>   which flavours of the full libraries (default: both)
   --without-occt            leave OpenCASCADE out of the full prefix
@@ -109,7 +109,7 @@ Usage: $0 [options]
 
 Pinned versions: HDF5 $HDF5_VERSION, netcdf-c $NETCDF_VERSION, cgnslib $CGNS_VERSION,
                  OCCT $OCCT_VERSION, zstd $ZSTD_VERSION, lz4 $LZ4_VERSION, KaHIP $KAHIP_VERSION,
-                 Netgen $NETGEN_VERSION, MMG $MMG_VERSION (full only)
+                 Netgen $NETGEN_VERSION, MMG $MMG_VERSION, CutCells $CUTCELLS_VERSION (full only)
 EOF
 }
 
@@ -144,7 +144,7 @@ full_prefix() {  # full_prefix <seq|mt>
     name="full"
     [ "$WITH_OCCT" = "yes" ] && name="$name-occt-$OCCT_VERSION"
     name="$name-zstd-$ZSTD_VERSION-lz4-$LZ4_VERSION-kahip-$KAHIP_VERSION-netgen-$NETGEN_VERSION"
-    name="$name-mmg-$MMG_VERSION"
+    name="$name-mmg-$MMG_VERSION-cutcells-$CUTCELLS_VERSION"
     [ "$1" = "mt" ] && name="$name-mt"
     echo "$DEPS_ROOT/$name"
 }
@@ -739,6 +739,48 @@ build_full_flavour() {  # build_full_flavour <seq|mt>
         rm -f "$fprefix/bin/mmg2d_O3" "$fprefix/bin/mmgs_O3" "$fprefix/bin/mmg3d_O3" \
               "$fprefix"/bin/mmg*.wasm "$fprefix"/bin/mmg*.js
         rm -rf "$WORK_DIR/build-mmg-$flavour"
+    fi
+
+    # ------------------------------------------------------------------
+    # CutCells (cut_level_set and cut_quadrature; full artifact only)
+    #
+    # Static, -fwasm-exceptions like the core (CutCells reports a bad
+    # selection or a degenerate cell by throwing, and the core catches it),
+    # and without OpenMP, which Emscripten has no use for here: the lookup
+    # table cuts are serial. CutCells has no release tags, so the sources
+    # are a clone refused unless it is CUTCELLS_COMMIT (build/deps-pins.sh);
+    # they are a git archive, with the clone's history left behind.
+    # ------------------------------------------------------------------
+    if [ "$FORCE" = "no" ] && [ -f "$fprefix/lib/libcutcells.a" ]; then
+        echo "== CutCells $CUTCELLS_VERSION ($flavour) already installed, skipping =="
+    else
+        echo "== CutCells $CUTCELLS_VERSION ($flavour) =="
+        dir="$DL_DIR/cutcells-$CUTCELLS_VERSION.git"
+        if [ ! -d "$dir/.git" ] || [ "$(git -C "$dir" rev-parse HEAD)" != "$CUTCELLS_COMMIT" ]; then
+            rm -rf "$dir"
+            git clone --quiet https://github.com/sclaus2/CutCells.git "$dir"
+            git -C "$dir" -c advice.detachedHead=false checkout --quiet "$CUTCELLS_COMMIT"
+            got=$(git -C "$dir" rev-parse HEAD)
+            if [ "$got" != "$CUTCELLS_COMMIT" ]; then
+                rm -rf "$dir"
+                echo "error: CutCells is $got, expected $CUTCELLS_COMMIT" >&2
+                exit 1
+            fi
+        fi
+        rm -rf "$WORK_DIR/cutcells-$CUTCELLS_VERSION" "$WORK_DIR/build-cutcells-$flavour"
+        mkdir -p "$WORK_DIR/cutcells-$CUTCELLS_VERSION"
+        (cd "$dir" && git archive --format=tar HEAD) |
+            tar -xf - -C "$WORK_DIR/cutcells-$CUTCELLS_VERSION"
+        CFLAGS="-Oz $pt" CXXFLAGS="-fwasm-exceptions $pt" \
+        emcmake cmake -S "$WORK_DIR/cutcells-$CUTCELLS_VERSION/cpp" \
+            -B "$WORK_DIR/build-cutcells-$flavour" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$fprefix" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF \
+            -DCMAKE_DISABLE_FIND_PACKAGE_OpenMP=ON
+        cmake --build "$WORK_DIR/build-cutcells-$flavour" -j "$JOBS"
+        cmake --install "$WORK_DIR/build-cutcells-$flavour"
+        rm -rf "$WORK_DIR/build-cutcells-$flavour"
     fi
 
     [ "$WITH_OCCT" = "yes" ] || return 0

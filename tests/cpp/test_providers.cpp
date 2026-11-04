@@ -27,6 +27,7 @@
 #include <gtest/gtest.h>
 
 // System includes
+#include <algorithm>
 #include <atomic>
 #include <stdexcept>
 #include <string>
@@ -205,6 +206,84 @@ TEST(Providers, MesherThatMovesTheBoundaryIsRefused) {
     TetrahedralizeOptions options;
     options.mBackend = TetrahedralizeBackend::Netgen;
     EXPECT_THROW(tetrahedralize(tetra_surface(), options), std::runtime_error);
+}
+
+TEST(Providers, NamedMesherIsChosenByNameAndNotTheDefault) {
+    MesherGuard guard;
+    int calls = 0;
+    TetMesherProvider named = fake_mesher(calls);
+    named.mName = "fake-named";
+    add_tet_mesher(std::move(named));
+    unregister_tet_mesher();
+    EXPECT_FALSE(tetrahedralize_has_netgen());  // the default slot stays empty
+    ASSERT_NE(tet_mesher("fake-named"), nullptr);
+    const std::vector<std::string> names = tetrahedralize_backends();
+    EXPECT_NE(std::find(names.begin(), names.end(), "fake-named"), names.end());
+    EXPECT_NE(std::find(names.begin(), names.end(), "octree"), names.end());
+
+    TetrahedralizeOptions options;
+    options.mBackend = TetrahedralizeBackend::Named;
+    options.mProvider = "fake-named";
+    const TetrahedralizeResult result = tetrahedralize(tetra_surface(), options);
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(result.mBackend, "fake-named");
+    EXPECT_TRUE(result.mBoundaryPreserved);
+
+    // Auto never picks a named mesher: with no default it is the octree.
+    options.mBackend = TetrahedralizeBackend::Auto;
+    EXPECT_EQ(tetrahedralize(tetra_surface(), options).mBackend, "octree");
+    EXPECT_EQ(calls, 1);
+
+    // `octree` by name is the native backend.
+    options.mBackend = TetrahedralizeBackend::Named;
+    options.mProvider = "octree";
+    EXPECT_EQ(tetrahedralize(tetra_surface(), options).mBackend, "octree");
+
+    remove_tet_mesher("fake-named");
+    EXPECT_EQ(tet_mesher("fake-named"), nullptr);
+}
+
+TEST(Providers, UnknownMesherNameListsTheAvailable) {
+    MesherGuard guard;
+    TetrahedralizeOptions options;
+    options.mBackend = TetrahedralizeBackend::Named;
+    options.mProvider = "no-such-mesher";
+    try {
+        tetrahedralize(tetra_surface(), options);
+        FAIL() << "expected Unsupported";
+    } catch (const Unsupported& rErr) {
+        const std::string what = rErr.what();
+        EXPECT_NE(what.find("'no-such-mesher'"), std::string::npos) << what;
+        EXPECT_NE(what.find("octree"), std::string::npos) << what;
+    }
+    options.mProvider.clear();
+    EXPECT_THROW(tetrahedralize(tetra_surface(), options), std::invalid_argument);
+}
+
+TEST(Providers, ABoundaryClaimIsCheckedNotTrusted) {
+    MesherGuard guard;
+    TetMesherProvider liar;
+    liar.mName = "fake-liar";
+    liar.mMeshRegion = [](const TetMeshRegionRequest& rRequest) {
+        TetMeshRegionResult result;
+        result.mPoints = rRequest.mPoints;
+        result.mPoints[0][0] += 1e-3;  // moved, yet claims the surface was kept
+        result.mTets = {{0, 1, 2, 3}};
+        result.mBoundaryPreserved = true;
+        return result;
+    };
+    add_tet_mesher(std::move(liar));
+    TetrahedralizeOptions options;
+    options.mBackend = TetrahedralizeBackend::Named;
+    options.mProvider = "fake-liar";
+    try {
+        tetrahedralize(tetra_surface(), options);
+        FAIL() << "expected a refusal";
+    } catch (const std::runtime_error& rErr) {
+        EXPECT_NE(std::string(rErr.what()).find("fake-liar mesher moved"), std::string::npos)
+            << rErr.what();
+    }
+    remove_tet_mesher("fake-liar");
 }
 
 TEST(Providers, MesherFailureNamesTheRegion) {

@@ -165,6 +165,8 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/remesh_quads.hpp"
+#include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -1602,6 +1604,7 @@ PYBIND11_MODULE(_core, m) {
 #else
     m.attr("__has_kahip__") = false;
 #endif
+    m.attr("__has_cutcells__") = meshioplusplus::cut_has_cutcells();
     // The capabilities a provider supplies -- the CAD kernel (OpenCASCADE), the
     // Netgen tetrahedral mesher, the MMG remesher and whether its MMG has ELAS
     // for move, and MMG's index width. Read live through the module's
@@ -3950,11 +3953,16 @@ PYBIND11_MODULE(_core, m) {
                 o.mBackend = meshioplusplus::TetrahedralizeBackend::Netgen;
             else if (backend == "octree")
                 o.mBackend = meshioplusplus::TetrahedralizeBackend::Octree;
-            else
+            else if (!backend.empty()) {
+                // A named mesher (roadmap 7.7.2): the installed tetgen or
+                // gmsh, a plugin's; an unknown name is Unsupported, listing
+                // the available ones.
+                o.mBackend = meshioplusplus::TetrahedralizeBackend::Named;
+                o.mProvider = backend;
+            } else
                 throw py::value_error(
-                    "meshio++: tetrahedralize: backend must be 'auto', 'netgen' or 'octree', not "
-                    "'" +
-                    backend + "'");
+                    "meshio++: tetrahedralize: backend must be 'auto', 'netgen', 'octree' or a "
+                    "mesher's name");
             o.mMaxSize = max_size;
             o.mMaxVolume = max_volume;
             o.mGrading = grading;
@@ -3982,6 +3990,144 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("backend") = "auto", py::arg("max_size") = 0.0,
         py::arg("max_volume") = 0.0, py::arg("grading") = 0.3, py::arg("optimize_steps") = 3,
         py::arg("max_cells") = std::int64_t{50000000}, py::arg("face_array") = "cad:face");
+    m.def(
+        "tetrahedralize_backends", [] { return meshioplusplus::tetrahedralize_backends(); },
+        "The backend names tetrahedralize accepts besides auto (roadmap 7.7.2).");
+
+    // Field-aligned quad remeshing (roadmap 7.7.3) through an installed
+    // QuadriFlow or Instant Meshes. Returns a dict {mesh, num_quads, ...}; no
+    // remesher raises NotImplementedError. See operations/remesh_quads.hpp.
+    m.def(
+        "remesh_quads",
+        [](py::object pymesh, std::int64_t target_faces, const std::string& backend, bool sharp,
+           bool boundary, bool adaptive, bool dominant, std::int32_t seed, std::int64_t max_cells) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+            meshioplusplus::RemeshQuadsOptions o;
+            o.mTargetFaces = target_faces;
+            o.mBackend = backend;
+            o.mSharp = sharp;
+            o.mBoundary = boundary;
+            o.mAdaptive = adaptive;
+            o.mDominant = dominant;
+            o.mSeed = seed;
+            o.mMaxCells = max_cells;
+            meshioplusplus::RemeshQuadsResult r =
+                core_nogil([&] { return meshioplusplus::remesh_quads(mesh, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_quads"] = r.mNumQuads;
+            out["num_triangles"] = r.mNumTriangles;
+            out["num_points"] = r.mNumPoints;
+            out["min_scaled_jacobian"] = r.mMinScaledJacobian;
+            out["mean_scaled_jacobian"] = r.mMeanScaledJacobian;
+            out["hausdorff_to_surface"] = r.mHausdorffToSurface;
+            out["backend"] = r.mBackend;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("target_faces") = std::int64_t{0}, py::arg("backend") = "auto",
+        py::arg("sharp") = false, py::arg("boundary") = true, py::arg("adaptive") = false,
+        py::arg("dominant") = false, py::arg("seed") = 0,
+        py::arg("max_cells") = std::int64_t{50000000});
+    m.def(
+        "remesh_quads_backends", [] { return meshioplusplus::remesh_quads_backends(); },
+        "The quad remeshers remesh_quads accepts besides auto (roadmap 7.7.3).");
+
+    // Level-set cutting and cut-cell quadrature through CutCells (doc/cut.md).
+    // Both return a dict {mesh, ...report}; a build without CutCells raises
+    // NotImplementedError. See operations/cut.hpp.
+    {
+        const auto cut_options =
+            [](const std::vector<std::string>& level_sets,
+               const std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>& planes,
+               const std::string& selection, bool include_uncut, const std::string& backend,
+               std::int32_t degree, bool triangulate, std::int32_t order, bool record_parent_ids) {
+                meshioplusplus::CutOptions o;
+                o.mLevelSets = level_sets;
+                for (const auto& [origin, normal] : planes) {
+                    meshioplusplus::CutPlane pl;
+                    pl.mOrigin = origin;
+                    pl.mNormal = normal;
+                    o.mPlanes.push_back(pl);
+                }
+                o.mSelection = selection;
+                o.mIncludeUncut = include_uncut;
+                o.mBackend = backend;
+                o.mDegree = degree;
+                o.mTriangulate = triangulate;
+                o.mOrder = order;
+                o.mRecordParentIds = record_parent_ids;
+                return o;
+            };
+        m.def(
+            "cut_level_set",
+            [cut_options](
+                py::object pymesh, const std::vector<std::string>& level_sets,
+                const std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>& planes,
+                const std::string& selection, bool include_uncut, const std::string& backend,
+                std::int32_t degree, bool triangulate, bool record_parent_ids) {
+                meshioplusplus_py::PyMeshRefs refs;
+                meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                    pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+                const meshioplusplus::CutOptions o =
+                    cut_options(level_sets, planes, selection, include_uncut, backend, degree,
+                                triangulate, 2, record_parent_ids);
+                meshioplusplus::CutLevelSetResult r =
+                    core_nogil([&] { return meshioplusplus::cut_level_set(mesh, o); });
+                py::dict out;
+                out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+                out["num_cells"] = r.mNumCells;
+                out["num_cut_cells"] = r.mNumCutCells;
+                out["num_uncut_cells"] = r.mNumUncutCells;
+                out["num_pieces"] = r.mNumPieces;
+                out["dimension"] = r.mDimension;
+                out["measure"] = r.mMeasure;
+                out["selection"] = r.mSelection;
+                out["backend"] = r.mBackend;
+                out["warnings"] = r.mWarnings;
+                return out;
+            },
+            py::arg("mesh"), py::arg("level_sets") = std::vector<std::string>{},
+            py::arg("planes") =
+                std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>{},
+            py::arg("selection") = "", py::arg("include_uncut") = true, py::arg("backend") = "auto",
+            py::arg("degree") = 2, py::arg("triangulate") = false,
+            py::arg("record_parent_ids") = true);
+        m.def(
+            "cut_quadrature",
+            [cut_options](
+                py::object pymesh, const std::vector<std::string>& level_sets,
+                const std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>& planes,
+                const std::string& selection, bool include_uncut, const std::string& backend,
+                std::int32_t order, bool triangulate, bool record_parent_ids) {
+                meshioplusplus_py::PyMeshRefs refs;
+                meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                    pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+                const meshioplusplus::CutOptions o =
+                    cut_options(level_sets, planes, selection, include_uncut, backend, 2,
+                                triangulate, order, record_parent_ids);
+                meshioplusplus::CutQuadratureResult r =
+                    core_nogil([&] { return meshioplusplus::cut_quadrature(mesh, o); });
+                py::dict out;
+                out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+                out["num_rules"] = r.mNumRules;
+                out["num_points"] = r.mNumPoints;
+                out["sum_weights"] = r.mSumWeights;
+                out["dimension"] = r.mDimension;
+                out["selection"] = r.mSelection;
+                out["backend"] = r.mBackend;
+                out["warnings"] = r.mWarnings;
+                return out;
+            },
+            py::arg("mesh"), py::arg("level_sets") = std::vector<std::string>{},
+            py::arg("planes") =
+                std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>{},
+            py::arg("selection") = "", py::arg("include_uncut") = true, py::arg("backend") = "auto",
+            py::arg("order") = 2, py::arg("triangulate") = false,
+            py::arg("record_parent_ids") = true);
+    }
 
     // Projection back onto the CAD (roadmap 6.10.1): every point of a mesh
     // whose cells name their CAD face and edge moved onto it. Returns a dict
@@ -7955,14 +8101,20 @@ PYBIND11_MODULE(_core, m) {
     for (const char* fmt : {"step", "iges"}) {
         const bool iges = std::string(fmt) == "iges";
         m.def((std::string(fmt) + "_read").c_str(),
-              [iges](const std::string& path, double deflection, double angular) {
+              [iges](const std::string& path, double deflection, double angular, bool heal,
+                     double sew_tolerance) {
                   meshioplusplus::CadReadOptions opts;
                   opts.mDeflection = deflection;
                   opts.mAngularDeflection = angular;
+                  opts.mHeal = heal;
+                  opts.mSewTolerance = sew_tolerance;
                   if (!std::isfinite(deflection) || !(angular > 0.0) || !std::isfinite(angular))
                       throw py::value_error(
                           "meshio++: the deflection must be finite and the "
                           "angular deflection positive");
+                  if (!std::isfinite(sew_tolerance) || sew_tolerance < 0.0)
+                      throw py::value_error(
+                          "meshio++: the sewing tolerance must be finite and at least 0");
                   return guard_read(iges ? "iges" : "step", [&](const std::string& p) {
                       meshioplusplus::BrepInfo info;
                       py::object pymesh = meshioplusplus_py::mesh_to_py(core_nogil([&] {
@@ -7973,7 +8125,8 @@ PYBIND11_MODULE(_core, m) {
                       return pymesh;
                   })(path);
               },
-              py::arg("path"), py::arg("deflection") = 0.0, py::arg("angular_deflection") = 0.5);
+              py::arg("path"), py::arg("deflection") = 0.0, py::arg("angular_deflection") = 0.5,
+              py::arg("heal") = false, py::arg("sew_tolerance") = 0.0);
     }
 
     m.def(

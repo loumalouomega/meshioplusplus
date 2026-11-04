@@ -161,6 +161,8 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `extrude`, `revolve` | the sweep's report: the cell counts by type, `num_flipped`, `min_scaled_jacobian`, `warnings`; `revolve` adds `num_on_axis` and `full` |
 | `mirror` | `num_flipped_cells`, `num_points_on_plane`, `num_dropped_cells`, `num_dropped_sides`, `warnings` |
 | `tetrahedralize` | `tetrahedralize`'s report: `num_tetrahedra`, `num_points`, `num_new_points`, `num_regions`, `num_boundary_triangles`, `boundary_preserved`, `hausdorff_to_surface`, the dihedral range, `volume`, `backend` and `warnings` |
+| `cut`, `cut-quadrature` | `cut_level_set`'s report (`num_cells`, `num_cut_cells`, `num_uncut_cells`, `num_pieces`, `dimension`, `measure`) or `cut_quadrature`'s (`num_rules`, `num_points`, `sum_weights`, `dimension`), with `selection`, `backend` and `warnings` |
+| `remesh-quads` | `remesh_quads`'s report: `num_quads`, `num_triangles`, `num_points`, `min_scaled_jacobian`, `mean_scaled_jacobian`, `hausdorff_to_surface`, `backend` and `warnings` |
 
 The exit codes are unchanged by `--json`.
 
@@ -2556,6 +2558,8 @@ meshioplusplus convert --time-step=-1 run.exo last.vtu  # the last step of a tim
 
 `--drop-ghosts` (both CLIs) removes the ghost cells (halo) of a partitioned `.pvtu`, `.pvtp` or `.pvd` — every cell with a `vtkGhostType` bit set, and the points only they used — so a partition written with `partition --ghost-layers` reads back as the original mesh; every other reader ignores it, and by default ghost cells are kept.
 
+`--heal` (both CLIs) heals a STEP or IGES input before it is read: `ShapeFix_Shape`, then sewing at `--sew-tolerance T` (a length; 0, the default, is 1e-5 of the bounding-box diagonal), and a positive `--sew-tolerance` sews without `--heal` ([STEP reading](formats/step.md#reading)). `convert` and `mesh-cad-surface` take both; on any other input they are refused.
+
 `--piece=N` keeps one piece of a partitioned file (VTKHDF partitions or composite blocks, the pieces of a `.pvtu`/`.pvtp`, or one `part` of a `.pvd` step) instead of the merged mesh: `0` is the first, negative counts from the end (`--piece=-1`). Out of range is an error naming the piece count, and a format with no pieces refuses rather than quietly merging. `compress`/`decompress` deliberately do not handle `vtkhdf`: they rewrite in place from one merged read, which would drop every step but the first from a transient file — use `convert` to a new file instead.
 
 `--lenient` (**native CLI only**) downgrades "this reader cannot represent construct X" errors to a warning plus a skip — currently MDPA's `Table`, `Geometries`, `Mesh` and `Constraints` blocks, which nearly every production `.mdpa` carries, and the missing meshio++ marker of an `.svg` or `.tikz` drawing. It is *not* "ignore all errors": a malformed row, a bad node reference or a duplicate node id still fail, because continuing past those returns a mesh that is quietly wrong rather than merely incomplete. The Python CLI has no such flag, deliberately: its MDPA reader is the pure-Python reference, which already accepts every construct the flag covers.
@@ -2757,6 +2761,7 @@ meshioplusplus mesh-cad-surface part.step part.vtu --size 2 --min-angle 25 --rep
 | `--untangle` | at order 2 or 3, move the high-order nodes of folded elements on the surface to make them valid before any is straightened (Toulorge et al. 2013), then slide the nodes on CAD edges along their edges (quads' nodes too); reported as `num_untangled` |
 | `--quads none\|dominant\|all` | `dominant` recombines triangle pairs into quads by quality (Borouchaki and Frey 1998), `all` splits a mesh at twice the size into quads only and takes no `--virtual-edges`; with `--order 2` or `3` either writes curved `quad9` or `quad16` cells; reported as `num_quads`, `num_leftover_triangles` and `min_quad_scaled_jacobian` |
 | `--quad-pairs matching\|greedy` | how triangles pair into quads: `matching` (the default) a maximum-weight matching per face (Remacle et al. 2012), `greedy` the best pairs first |
+| `--heal` / `--sew-tolerance T` | a STEP or IGES input healed before it is read (`ShapeFix_Shape`, then sewing at `T`, 0 automatic; see [STEP reading](formats/step.md#reading)) |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 
 A face that cannot be meshed is left out and named in the summary with its reason; the exit code is 0 unless `--strict` is given. With `--min-angle`, the summary also names each corner under 60 degrees and each pole that keeps triangles below the bound.
@@ -2877,6 +2882,62 @@ meshioplusplus revolve section.vtu body.vtu --angle 90 --num-layers 8
 meshioplusplus mirror half.vtu whole.vtu --normal=1,0,0 --keep-original
 ```
 
+## `remesh-quads`
+
+Remesh a triangle surface into field-aligned quads through an installed QuadriFlow or Instant Meshes, run as a separate process (see [remesh_quads](/remesh_quads)). Both CLIs; no remesher installed fails naming the programs, and `meshioplusplus --version` lists the ones found. Lines and vertices in the input are skipped; any other cell type is refused by name.
+
+```
+meshioplusplus remesh-quads INFILE OUTFILE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-f/--faces N` | the number of faces asked for (0: half the triangles) |
+| `--backend NAME` | `auto` (QuadriFlow, else Instant Meshes), `quadriflow` or `instant_meshes` |
+| `--sharp` | align with and keep the sharp edges |
+| `--no-boundary` | do not keep the boundary of an open surface |
+| `--adaptive` | let the face size follow the curvature (QuadriFlow) |
+| `--dominant` | allow triangles where quads fit badly (Instant Meshes) |
+| `--seed S` | the program's random seed (0) |
+| `--max-cells N` | refuse a target or result of more faces (50000000) |
+| `--json` / `-q/--quiet` | the report as JSON / no summary |
+| `-i/--input-format` / `-o/--output-format` | force the input / output format |
+
+The summary gives the quads, triangles and points, the least and mean scaled Jacobian, the distance to the input and the remesher; the JSON report has `num_quads`, `num_triangles`, `num_points`, `min_scaled_jacobian`, `mean_scaled_jacobian`, `hausdorff_to_surface`, `backend` and `warnings`.
+
+```sh
+meshioplusplus mesh-cad-surface sphere.cad.json skin.stl --size 0.1 --no-edges
+meshioplusplus remesh-quads skin.stl quads.vtu --json
+```
+
+## `cut`
+
+Cut a mesh by level sets through CutCells and write the part a selection picks (see [level-set cutting](/cut)). Both CLIs; a build without CutCells fails naming `MESHIOPLUSPLUS_WITH_CUTCELLS`.
+
+```
+meshioplusplus cut INFILE OUTFILE [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l/--level-set NAME` | a scalar `point_data` array that is a level set (repeatable) |
+| `--plane OX,OY,OZ,NX,NY,NZ` | a plane level set, named `plane0`, `plane1`, ... (repeatable) |
+| `-s/--selection EXPR` | the part: `phi < 0`, `phi = 0` (the interface), `a < 0 and b > 0`, ... (default `<first> < 0`) |
+| `--cut-only` | only the pieces of the cut cells, not the whole cells inside |
+| `--backend B` | `auto`, `lut` (straight pieces) or `quadrays` (curved pieces) |
+| `--degree K` | quadrays: the pieces' Lagrange degree (2) |
+| `--triangulate` | lut: split the pieces into simplices |
+| `--no-parent-ids` | do not write `cut:parent_cell` |
+| `--json` | print the report as JSON |
+
+## `cut-quadrature`
+
+Quadrature rules on the same part, written as a point cloud with `quadrature:weight`, `quadrature:reference`, `quadrature:rule` and `quadrature:parent_cell` point data: the options of `cut`, and `--order K` (2), the polynomial degree the rules integrate exactly.
+
+```
+meshioplusplus cut-quadrature INFILE OUTFILE --plane 0.3,0,0,1,0,0 --selection "plane0 = 0" --order 3
+```
+
 ## `tetrahedralize`
 
 Fill a closed, manifold, consistently oriented triangle surface with tetrahedra, its triangles and points kept exactly through Netgen, or its boundary fitted through the native octree backend (see [tetrahedralize](/tetrahedralize)). Each shell bounds a region, so a box inside a box gives two. Both CLIs; `--backend auto` takes Netgen when the build has it (`-DMESHIOPLUSPLUS_WITH_NETGEN=ON`) and `octree` otherwise, and `--backend netgen` without it fails naming the flag. Lines and vertices in the input are skipped; quads, polygons and an open, non-manifold or misoriented surface are refused by name.
@@ -2893,7 +2954,7 @@ meshioplusplus tetrahedralize INFILE OUTFILE [options]
 | `--optimize-steps N` | passes of the backend's volume optimisation, 0 to 100 (3) |
 | `--max-cells N` | refuse a result of more tetrahedra (50000000) |
 | `--face-array NAME` | the cell data naming each triangle's CAD face, carried to the triangles (`cad:face`) |
-| `--backend auto\|netgen\|octree` | the backend (`auto`: Netgen when built in, else `octree`) |
+| `--backend NAME` | the backend: `auto` (Netgen when built in, else `octree`), `netgen`, `octree`, or `tetgen` / `gmsh`, the installed programs run as separate processes with the surface kept (`meshioplusplus --version` lists the names this install takes) |
 | `--json` / `-q/--quiet` | the report as JSON / no summary |
 | `-i/--input-format` / `-o/--output-format` | force the input / output format |
 

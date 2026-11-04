@@ -1543,6 +1543,32 @@ program test_fortran_api
             if (tst == 0) call tet_out%free()
         end block
 
+        ! -- cut_level_set (doc/cut.md): the octahedron's skin cut at z = 0.25,
+        ! whose interface is the square |x| + |y| = 0.75 (perimeter 3 sqrt 2) --
+        block
+            type(mio_mesh) :: cut_out
+            type(mio_cut_report) :: crep
+            integer :: cst
+            character(:), allocatable :: cmsg
+            real(real64) :: plane(6, 1)
+            plane(:, 1) = [0.0_real64, 0.0_real64, 0.25_real64, 0.0_real64, 0.0_real64, 1.0_real64]
+            cut_out = mio_cut_level_set(octa, planes=plane, selection='plane0 = 0', report=crep, &
+                                        stat=cst, errmsg=cmsg)
+            if (mio_has_cutcells()) then
+                call check(cst == 0 .and. crep%dimension == 1 .and. &
+                           abs(crep%measure - 3.0_real64*sqrt(2.0_real64)) < 1.0e-12_real64 .and. &
+                           mio_cut_backend_name(crep) == 'lut', &
+                           'cut_level_set gives the octahedron''s cross-section')
+                if (cst == 0) call cut_out%free()
+                cut_out = mio_cut_quadrature(octa, planes=plane, order=2, report=crep, stat=cst)
+                call check(cst == 0 .and. crep%num_points > 0, 'cut_quadrature on the octahedron')
+                if (cst == 0) call cut_out%free()
+            else
+                call check(cst /= 0 .and. index(cmsg, 'MESHIOPLUSPLUS_WITH_CUTCELLS') > 0, &
+                           'cut_level_set names the build flag without CutCells')
+            end if
+        end block
+
         ! The MMG backend (roadmap 3.2): adapt with it, its refusal by name
         ! without it; metric_from_hessian needs no MMG.
         block

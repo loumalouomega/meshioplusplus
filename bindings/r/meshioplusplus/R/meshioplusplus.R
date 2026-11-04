@@ -2962,6 +2962,14 @@ mio_data_integrate <- function(mesh, names = NULL) {
 #' @param path Path of the file to read or write.
 #' @param format Explicit format name, or `NULL` to infer it.
 #' @param lenient Skip (with a warning) what not even the side channel holds.
+#' @param deflection STEP and IGES: the chordal deflection of the
+#'   triangulation, as a length; at most 0 is automatic.
+#' @param angular_deflection STEP and IGES: the angular deflection, in radians.
+#' @param heal STEP and IGES: heal the shape before it is extracted
+#'   (`ShapeFix_Shape`, then sewing at `sew_tolerance`). The report is the
+#'   `"heal"` member of the B-rep's file-level JSON (`mio_brep_info()`).
+#' @param sew_tolerance STEP and IGES: the sewing tolerance, as a length; at
+#'   most 0 is automatic when healing, and a positive value sews without `heal`.
 #' @param mesh A `mio_mesh`.
 #' @param info A `mio_format_info`, or `NULL` (then `mio_write_with_info()` is
 #'   exactly [mio_write()]).
@@ -2978,8 +2986,11 @@ mio_data_integrate <- function(mesh, names = NULL) {
 #' mio_write_with_info(r$mesh, r$info, "copy.mdpa")
 #' }
 #' @export
-mio_read_with_info <- function(path, format = NULL, lenient = FALSE) {
-  .Call(R_mio_read_with_info, as.character(path), format, isTRUE(lenient))
+mio_read_with_info <- function(path, format = NULL, lenient = FALSE, deflection = 0,
+                               angular_deflection = 0.5, heal = FALSE, sew_tolerance = 0) {
+  .Call(R_mio_read_with_info, as.character(path), format, isTRUE(lenient),
+        as.numeric(deflection), as.numeric(angular_deflection), isTRUE(heal),
+        as.numeric(sew_tolerance))
 }
 
 #' @rdname mio_read_with_info
@@ -3416,6 +3427,133 @@ mio_has_netgen <- function() {
   .Call(R_mio_has_netgen)
 }
 
+#' Remesh a triangle surface into field-aligned quads
+#'
+#' The triangle surface `mesh` is remeshed into quads aligned with a smooth
+#' cross field (roadmap 7.7.3) by an installed QuadriFlow or Instant Meshes,
+#' run as a separate process; a sphere comes out all quads. The result is a new
+#' surface near the input (`hausdorff_to_surface` says how near). No remesher
+#' installed fails naming the programs.
+#'
+#' @param mesh A triangle surface.
+#' @param target_faces The number of faces asked for; 0 takes half the
+#'   triangles.
+#' @param backend `"auto"` (QuadriFlow, else Instant Meshes) or a name of
+#'   [mio_remesh_quads_backends()].
+#' @param sharp Align with and keep the sharp edges.
+#' @param boundary Keep the boundary of an open surface.
+#' @param adaptive Let the face size follow the curvature (QuadriFlow).
+#' @param dominant Allow triangles where quads fit badly (Instant Meshes).
+#' @param seed The program's random seed.
+#' @param max_cells Refuse a target or result of more faces.
+#' @return A list: `mesh`, `num_quads`, `num_triangles`, `num_points`,
+#'   `min_scaled_jacobian`, `mean_scaled_jacobian`, `hausdorff_to_surface` and
+#'   `backend`.
+#' @export
+mio_remesh_quads <- function(mesh, target_faces = 0, backend = "auto", sharp = FALSE,
+                             boundary = TRUE, adaptive = FALSE, dominant = FALSE, seed = 0L,
+                             max_cells = 5e7) {
+  .Call(R_mio_remesh_quads, mesh, as.numeric(target_faces), as.character(backend),
+        isTRUE(sharp), isTRUE(boundary), isTRUE(adaptive), isTRUE(dominant),
+        as.integer(seed), as.numeric(max_cells))
+}
+
+#' The quad remeshers mio_remesh_quads() takes
+#'
+#' Besides `"auto"`: every registered quad remesher, the installed
+#' `"quadriflow"` and `"instant_meshes"` programs (found on `PATH`, or through
+#' `MESHIOPLUSPLUS_QUADRIFLOW` and `MESHIOPLUSPLUS_INSTANT_MESHES`), sorted.
+#'
+#' @return A character vector.
+#' @export
+mio_remesh_quads_backends <- function() {
+  .Call(R_mio_remesh_quads_backends)
+}
+
+.mio_cut_planes <- function(planes) {
+  if (is.null(planes) || length(planes) == 0) return(numeric(0))
+  flat <- as.numeric(unlist(planes))
+  if (length(flat) %% 6 != 0)
+    stop("meshio++: cut: planes must hold six numbers each (origin, then normal)")
+  flat
+}
+
+#' Cut a mesh by level sets
+#'
+#' The part of `mesh` that level sets select, through CutCells (doc/cut.md):
+#' the pieces of the cells they cross on one side of them or on their zero
+#' sets, and with `include_uncut` the whole cells inside. Point data is
+#' interpolated, cell data and cell regions follow each piece's parent
+#' (`cut:parent_cell`). A library without CutCells fails naming
+#' `MESHIOPLUSPLUS_WITH_CUTCELLS`.
+#'
+#' @param mesh A mesh; its cells of the highest dimension are cut.
+#' @param level_sets Names of scalar point-data arrays that are level sets.
+#' @param planes Plane level sets, each `c(origin, normal)` (six numbers), as
+#'   a list or a 6-row matrix; named `plane0`, `plane1`, ...
+#' @param selection The part, such as `"phi < 0"`, `"phi = 0"` (the
+#'   interface) or `"a < 0 and b > 0"`; empty is `"<first> < 0"`.
+#' @param include_uncut Keep the whole cells inside the part.
+#' @param backend `"auto"`, `"lut"` (straight pieces) or `"quadrays"` (curved
+#'   pieces of `degree`).
+#' @param degree quadrays only: the pieces' Lagrange degree.
+#' @param triangulate lut only: split the pieces into simplices.
+#' @param record_parent_ids Write `cut:parent_cell`.
+#' @return A list: `mesh`, `num_cells`, `num_cut_cells`, `num_uncut_cells`,
+#'   `num_pieces`, `dimension`, `measure` and `backend`.
+#' @export
+mio_cut_level_set <- function(mesh, level_sets = character(0), planes = NULL, selection = "",
+                              include_uncut = TRUE, backend = "auto", degree = 2L,
+                              triangulate = FALSE, record_parent_ids = TRUE) {
+  .Call(R_mio_cut_level_set, mesh, as.character(level_sets), .mio_cut_planes(planes),
+        as.character(selection), isTRUE(include_uncut), as.character(backend),
+        as.integer(degree), isTRUE(triangulate), isTRUE(record_parent_ids))
+}
+
+#' Quadrature rules on the part of a mesh that level sets select
+#'
+#' Cut-cell quadrature through CutCells: rules of degree `order` on the part
+#' [mio_cut_level_set()] would give, as a point cloud with point data
+#' `quadrature:weight`, `quadrature:reference`, `quadrature:rule` and
+#' `quadrature:parent_cell`.
+#'
+#' @inheritParams mio_cut_level_set
+#' @param order The polynomial degree the rules integrate exactly.
+#' @return A list: `mesh`, `num_rules`, `num_points`, `sum_weights`,
+#'   `dimension` and `backend`.
+#' @export
+mio_cut_quadrature <- function(mesh, level_sets = character(0), planes = NULL, selection = "",
+                               order = 2L, include_uncut = TRUE, backend = "auto",
+                               triangulate = FALSE, record_parent_ids = TRUE) {
+  .Call(R_mio_cut_quadrature, mesh, as.character(level_sets), .mio_cut_planes(planes),
+        as.character(selection), as.integer(order), isTRUE(include_uncut),
+        as.character(backend), isTRUE(triangulate), isTRUE(record_parent_ids))
+}
+
+#' Whether the library carries CutCells
+#'
+#' [mio_cut_level_set()] and [mio_cut_quadrature()] need it (a build with
+#' `MESHIOPLUSPLUS_WITH_CUTCELLS`).
+#'
+#' @return `TRUE` or `FALSE`.
+#' @export
+mio_has_cutcells <- function() {
+  .Call(R_mio_has_cutcells)
+}
+
+#' The backend names mio_tetrahedralize() takes
+#'
+#' Besides `"auto"`: `"octree"`, then every registered tetrahedral mesher
+#' (`"netgen"` when built in, the installed `"tetgen"` and `"gmsh"` programs,
+#' found on `PATH` or through `MESHIOPLUSPLUS_TETGEN` and
+#' `MESHIOPLUSPLUS_GMSH`), sorted.
+#'
+#' @return A character vector.
+#' @export
+mio_tetrahedralize_backends <- function() {
+  .Call(R_mio_tetrahedralize_backends)
+}
+
 #' Whether the library carries the MMG backend
 #'
 #' The MMG operations (adapt, discretize_levelset, mesh_domain, move) need a
@@ -3568,9 +3706,13 @@ mio_metric_from_hessian <- function(mesh, hessian, error = 1e-2, hmin = 1e-3, hm
 #' `tetrahedralize:region`. `backend = "auto"` takes Netgen when
 #' [mio_has_netgen()] is `TRUE` and the octree backend otherwise;
 #' `"netgen"` without it fails naming `MESHIOPLUSPLUS_WITH_NETGEN`.
+#' `"tetgen"` and `"gmsh"` run those installed programs on the surface as
+#' separate processes, its triangles kept (checked); see
+#' [mio_tetrahedralize_backends()].
 #'
 #' @param mesh A closed triangle surface.
-#' @param backend `"auto"`, `"netgen"` or `"octree"`.
+#' @param backend `"auto"`, `"netgen"`, `"octree"`, or another name of
+#'   [mio_tetrahedralize_backends()] (`"tetgen"`, `"gmsh"`).
 #' @param max_size,max_volume The largest edge and volume asked of the
 #'   tetrahedra; 0 is none.
 #' @param grading How fast the size grows away from the surface, in [0, 1].

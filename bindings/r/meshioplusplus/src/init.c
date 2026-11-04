@@ -148,6 +148,12 @@ extern SEXP R_mio_boundary_layer(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                                  SEXP);
 extern SEXP R_mio_tetrahedralize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_has_netgen(void);
+extern SEXP R_mio_tetrahedralize_backends(void);
+extern SEXP R_mio_remesh_quads(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_remesh_quads_backends(void);
+extern SEXP R_mio_cut_level_set(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_cut_quadrature(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_has_cutcells(void);
 extern SEXP R_mio_has_mmg(void);
 extern SEXP R_mio_has_mmg_elas(void);
 extern SEXP R_mio_adapt(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -216,7 +222,7 @@ extern SEXP R_mio_pipeline_run_json(SEXP);
 extern SEXP R_mio_pipeline_has_json(void);
 
 /* format_info.c */
-extern SEXP R_mio_read_with_info(SEXP, SEXP, SEXP);
+extern SEXP R_mio_read_with_info(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_write_with_info(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_format_info_release(SEXP);
 extern SEXP R_mio_format_info_is_open(SEXP);
@@ -382,6 +388,12 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_boundary_layer, 11),
                                               CALLDEF(R_mio_tetrahedralize, 8),
                                               CALLDEF(R_mio_has_netgen, 0),
+                                              CALLDEF(R_mio_tetrahedralize_backends, 0),
+                                              CALLDEF(R_mio_remesh_quads, 9),
+                                              CALLDEF(R_mio_remesh_quads_backends, 0),
+                                              CALLDEF(R_mio_cut_level_set, 9),
+                                              CALLDEF(R_mio_cut_quadrature, 9),
+                                              CALLDEF(R_mio_has_cutcells, 0),
                                               CALLDEF(R_mio_has_mmg, 0),
                                               CALLDEF(R_mio_has_mmg_elas, 0),
                                               CALLDEF(R_mio_adapt, 11),
@@ -447,7 +459,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_sequence_pipeline_run_json, 1),
                                               CALLDEF(R_mio_pipeline_run_json, 1),
                                               CALLDEF(R_mio_pipeline_has_json, 0),
-                                              CALLDEF(R_mio_read_with_info, 3),
+                                              CALLDEF(R_mio_read_with_info, 7),
                                               CALLDEF(R_mio_write_with_info, 4),
                                               CALLDEF(R_mio_format_info_release, 1),
                                               CALLDEF(R_mio_format_info_is_open, 1),

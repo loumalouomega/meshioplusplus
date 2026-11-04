@@ -36,6 +36,7 @@
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_NurbsConvert.hxx>
+#include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
@@ -62,6 +63,9 @@
 #include <Interface_Static.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
+#include <ShapeAnalysis_ShapeTolerance.hxx>
+#include <ShapeExtend_Status.hxx>
+#include <ShapeFix_Shape.hxx>
 #include <Standard_Failure.hxx>
 #include <TColStd_Array1OfInteger.hxx>
 #include <TColStd_Array1OfReal.hxx>
@@ -71,7 +75,10 @@
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_ListOfShape.hxx>
+#include <TopTools_MapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
@@ -81,6 +88,7 @@
 
 // Project includes
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
@@ -484,6 +492,80 @@ TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char*
         throw ReadError(prefix + "OpenCASCADE failed reading '" + rPath +
                         "': " + rErr.GetMessageString());
     }
+}
+
+std::string OcctHealReport::ToJson() const {
+    char tol[64];
+    snprintf_c(tol, sizeof(tol), "%.17g", mSewTolerance);
+    return std::string("{\"healed\":") + (mHealed ? "true" : "false") +
+           ",\"fixed\":" + (mFixed ? "true" : "false") + ",\"sew_tolerance\":" + tol +
+           ",\"free_edges_before\":" + std::to_string(mFreeEdgesBefore) +
+           ",\"free_edges_after\":" + std::to_string(mFreeEdgesAfter) +
+           ",\"multiple_edges\":" + std::to_string(mMultipleEdges) +
+           ",\"degenerated\":" + std::to_string(mDegenerated) + "}";
+}
+
+long long occt_count_free_edges(const TopoDS_Shape& rShape) {
+    // Each face counted once per edge: a seam edge appears twice in its face.
+    TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+    for (TopExp_Explorer fx(rShape, TopAbs_FACE); fx.More(); fx.Next()) {
+        TopTools_MapOfShape seen;
+        for (TopExp_Explorer ex(fx.Current(), TopAbs_EDGE); ex.More(); ex.Next()) {
+            const TopoDS_Edge& edge = TopoDS::Edge(ex.Current());
+            if (BRep_Tool::Degenerated(edge) || !seen.Add(edge))
+                continue;
+            if (!edge_faces.Contains(edge))
+                edge_faces.Add(edge, TopTools_ListOfShape());
+            edge_faces.ChangeFromKey(edge).Append(fx.Current());
+        }
+    }
+    long long free_edges = 0;
+    for (int i = 1; i <= edge_faces.Extent(); ++i)
+        if (edge_faces(i).Extent() == 1)
+            ++free_edges;
+    return free_edges;
+}
+
+TopoDS_Shape occt_heal_shape(const TopoDS_Shape& rShape, const CadReadOptions& rOptions,
+                             OcctHealReport& rReport) {
+    rReport = OcctHealReport{};
+    rReport.mFreeEdgesBefore = occt_count_free_edges(rShape);
+    const bool sew = rOptions.mHeal || rOptions.mSewTolerance > 0.0;
+    double tol = rOptions.mSewTolerance;
+    if (!(tol > 0.0)) {
+        Bnd_Box box;
+        BRepBndLib::Add(rShape, box);
+        const double diagonal = box.IsVoid() ? 1.0 : std::sqrt(box.SquareExtent());
+        ShapeAnalysis_ShapeTolerance own;
+        // The shape's own largest tolerance as a floor, but never past 1e-3 of
+        // the diagonal: a badly toleranced file must not sew across features.
+        tol = std::min(std::max(1e-5 * diagonal, own.Tolerance(rShape, 1)), 1e-3 * diagonal);
+    }
+    TopoDS_Shape shape = rShape;
+    if (rOptions.mHeal) {
+        rReport.mHealed = true;
+        ShapeFix_Shape fix(shape);
+        fix.SetPrecision(tol);
+        fix.SetMaxTolerance(tol);
+        fix.Perform();
+        rReport.mFixed = fix.Status(ShapeExtend_DONE);
+        if (!fix.Shape().IsNull())
+            shape = fix.Shape();
+    }
+    if (sew) {
+        rReport.mSewTolerance = tol;
+        BRepBuilderAPI_Sewing sewing(tol);
+        sewing.Add(shape);
+        sewing.Perform();
+        rReport.mMultipleEdges = sewing.NbMultipleEdges();
+        rReport.mDegenerated = sewing.NbDegeneratedShapes();
+        if (!sewing.SewedShape().IsNull())
+            shape = sewing.SewedShape();
+    }
+    rReport.mFreeEdgesAfter = occt_count_free_edges(shape);
+    log::debug("occt: healed the read shape: {} free edge(s) before, {} after (tolerance {})",
+               rReport.mFreeEdgesBefore, rReport.mFreeEdgesAfter, tol);
+    return shape;
 }
 
 namespace {

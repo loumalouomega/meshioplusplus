@@ -2000,6 +2000,146 @@ SEXP R_mio_has_netgen(void) {
     return Rf_ScalarLogical(mio_has_netgen() != 0);
 }
 
+/* The backend names tetrahedralize takes besides "auto" (roadmap 7.7.2). */
+SEXP R_mio_tetrahedralize_backends(void) {
+    const int64_t n = mio_tet_mesher_count();
+    if (n < 0) mio_r_fail("tetrahedralize_backends");
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t)n));
+    for (int64_t i = 0; i < n; ++i) {
+        const char *name = mio_tet_mesher_name(i);
+        SET_STRING_ELT(out, (R_xlen_t)i, Rf_mkChar(name != NULL ? name : ""));
+    }
+    UNPROTECT(1);
+    return out;
+}
+
+/* remesh_quads (roadmap 7.7.3): field-aligned quads through an installed
+ * QuadriFlow or Instant Meshes. */
+SEXP R_mio_remesh_quads(SEXP mesh, SEXP target_faces, SEXP backend, SEXP sharp, SEXP boundary,
+                        SEXP adaptive, SEXP dominant, SEXP seed, SEXP max_cells) {
+    mio_remesh_quads_opts opts;
+    mio_remesh_quads_opts_init(&opts);
+    opts.target_faces = (int64_t)mio_r_double(target_faces, "target_faces");
+    opts.backend = mio_r_string(backend, "backend");
+    opts.sharp = mio_r_bool(sharp, "sharp");
+    opts.boundary = mio_r_bool(boundary, "boundary");
+    opts.adaptive = mio_r_bool(adaptive, "adaptive");
+    opts.dominant = mio_r_bool(dominant, "dominant");
+    opts.seed = (int32_t)mio_r_int(seed, "seed");
+    opts.max_cells = (int64_t)mio_r_double(max_cells, "max_cells");
+    mio_remesh_quads_report report;
+    mio_mesh *out = mio_remesh_quads(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("remesh_quads");
+    SEXP v[8];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_ScalarReal((double)report.num_quads));
+    v[2] = PROTECT(Rf_ScalarReal((double)report.num_triangles));
+    v[3] = PROTECT(Rf_ScalarReal((double)report.num_points));
+    v[4] = PROTECT(Rf_ScalarReal(report.min_scaled_jacobian));
+    v[5] = PROTECT(Rf_ScalarReal(report.mean_scaled_jacobian));
+    v[6] = PROTECT(Rf_ScalarReal(report.hausdorff_to_surface));
+    v[7] = PROTECT(Rf_mkString(report.backend_name != NULL ? report.backend_name : ""));
+    const char *names[] = {"mesh",
+                           "num_quads",
+                           "num_triangles",
+                           "num_points",
+                           "min_scaled_jacobian",
+                           "mean_scaled_jacobian",
+                           "hausdorff_to_surface",
+                           "backend"};
+    SEXP res = PROTECT(mio_r_named_list(8, names, v));
+    UNPROTECT(9);
+    return res;
+}
+
+/* The quad remeshers remesh_quads takes by name. */
+SEXP R_mio_remesh_quads_backends(void) {
+    const int64_t n = mio_quad_remesher_count();
+    if (n < 0) mio_r_fail("remesh_quads_backends");
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t)n));
+    for (int64_t i = 0; i < n; ++i) {
+        const char *name = mio_quad_remesher_name(i);
+        SET_STRING_ELT(out, (R_xlen_t)i, Rf_mkChar(name != NULL ? name : ""));
+    }
+    UNPROTECT(1);
+    return out;
+}
+
+/* cut_level_set and cut_quadrature (doc/cut.md): the part level sets select,
+ * through CutCells. `planes` is flat, six numbers per plane. */
+static void mio_r_cut_opts(mio_cut_opts *opts, SEXP level_sets, SEXP planes, SEXP selection,
+                           SEXP include_uncut, SEXP backend, SEXP triangulate,
+                           SEXP record_parent_ids) {
+    mio_cut_opts_init(opts);
+    const R_xlen_t n = Rf_xlength(level_sets);
+    const char **names = n > 0 ? (const char **)R_alloc((size_t)n, sizeof(char *)) : NULL;
+    for (R_xlen_t i = 0; i < n; ++i) names[i] = CHAR(STRING_ELT(level_sets, i));
+    opts->level_sets = names;
+    opts->num_level_sets = (int64_t)n;
+    const R_xlen_t np = Rf_xlength(planes);
+    if (np % 6 != 0) Rf_error("meshio++: cut: planes must hold six numbers per plane (origin, then normal)");
+    opts->planes = np > 0 ? REAL(planes) : NULL;
+    opts->num_planes = (int64_t)(np / 6);
+    opts->selection = mio_r_string(selection, "selection");
+    opts->backend = mio_r_string(backend, "backend");
+    opts->include_uncut = mio_r_bool(include_uncut, "include_uncut");
+    opts->triangulate = mio_r_bool(triangulate, "triangulate");
+    opts->record_parent_ids = mio_r_bool(record_parent_ids, "record_parent_ids");
+}
+
+SEXP R_mio_cut_level_set(SEXP mesh, SEXP level_sets, SEXP planes, SEXP selection,
+                         SEXP include_uncut, SEXP backend, SEXP degree, SEXP triangulate,
+                         SEXP record_parent_ids) {
+    mio_cut_opts opts;
+    mio_r_cut_opts(&opts, level_sets, planes, selection, include_uncut, backend, triangulate,
+                   record_parent_ids);
+    opts.degree = (int32_t)mio_r_int(degree, "degree");
+    mio_cut_report report;
+    mio_mesh *out = mio_cut_level_set(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("cut_level_set");
+    SEXP v[8];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_ScalarReal((double)report.num_cells));
+    v[2] = PROTECT(Rf_ScalarReal((double)report.num_cut_cells));
+    v[3] = PROTECT(Rf_ScalarReal((double)report.num_uncut_cells));
+    v[4] = PROTECT(Rf_ScalarReal((double)report.num_pieces));
+    v[5] = PROTECT(Rf_ScalarInteger((int)report.dimension));
+    v[6] = PROTECT(Rf_ScalarReal(report.measure));
+    v[7] = PROTECT(Rf_mkString(report.backend_name != NULL ? report.backend_name : ""));
+    const char *names[] = {"mesh",       "num_cells", "num_cut_cells", "num_uncut_cells",
+                           "num_pieces", "dimension", "measure",       "backend"};
+    SEXP res = PROTECT(mio_r_named_list(8, names, v));
+    UNPROTECT(9);
+    return res;
+}
+
+SEXP R_mio_cut_quadrature(SEXP mesh, SEXP level_sets, SEXP planes, SEXP selection, SEXP order,
+                          SEXP include_uncut, SEXP backend, SEXP triangulate,
+                          SEXP record_parent_ids) {
+    mio_cut_opts opts;
+    mio_r_cut_opts(&opts, level_sets, planes, selection, include_uncut, backend, triangulate,
+                   record_parent_ids);
+    opts.order = (int32_t)mio_r_int(order, "order");
+    mio_cut_report report;
+    mio_mesh *out = mio_cut_quadrature(mio_r_mesh(mesh), &opts, &report);
+    if (out == NULL) mio_r_fail("cut_quadrature");
+    SEXP v[6];
+    v[0] = PROTECT(mio_r_wrap_mesh(out));
+    v[1] = PROTECT(Rf_ScalarReal((double)report.num_rules));
+    v[2] = PROTECT(Rf_ScalarReal((double)report.num_points));
+    v[3] = PROTECT(Rf_ScalarReal(report.measure));
+    v[4] = PROTECT(Rf_ScalarInteger((int)report.dimension));
+    v[5] = PROTECT(Rf_mkString(report.backend_name != NULL ? report.backend_name : ""));
+    const char *names[] = {"mesh", "num_rules", "num_points", "sum_weights", "dimension", "backend"};
+    SEXP res = PROTECT(mio_r_named_list(6, names, v));
+    UNPROTECT(7);
+    return res;
+}
+
+SEXP R_mio_has_cutcells(void) {
+    return Rf_ScalarLogical(mio_has_cutcells() != 0);
+}
+
 SEXP R_mio_has_mmg(void) {
     return Rf_ScalarLogical(mio_has_mmg() != 0);
 }
@@ -2198,9 +2338,14 @@ SEXP R_mio_tetrahedralize(SEXP mesh, SEXP backend, SEXP max_size, SEXP max_volum
             opts.backend = MIO_TETRAHEDRALIZE_BACKEND_NETGEN;
         else if (strcmp(b, "octree") == 0)
             opts.backend = MIO_TETRAHEDRALIZE_BACKEND_OCTREE;
-        else
-            Rf_error(
-                "meshio++: tetrahedralize: backend must be \"auto\", \"netgen\" or \"octree\"");
+        else if (b[0] != '\0') {
+            /* A named mesher (the installed tetgen or gmsh); an unknown name
+             * fails in the library, listing the available ones. */
+            opts.backend = MIO_TETRAHEDRALIZE_BACKEND_NAMED;
+            opts.provider = b;
+        } else
+            Rf_error("meshio++: tetrahedralize: backend must be \"auto\", \"netgen\", \"octree\" "
+                     "or a mesher's name");
     }
     opts.max_size = mio_r_double(max_size, "max_size");
     opts.max_volume = mio_r_double(max_volume, "max_volume");
@@ -2223,8 +2368,10 @@ SEXP R_mio_tetrahedralize(SEXP mesh, SEXP backend, SEXP max_size, SEXP max_volum
     v[8] = PROTECT(Rf_ScalarReal(report.min_dihedral_deg));
     v[9] = PROTECT(Rf_ScalarReal(report.max_dihedral_deg));
     v[10] = PROTECT(Rf_ScalarReal(report.volume));
-    v[11] = PROTECT(
-        Rf_mkString(report.backend == MIO_TETRAHEDRALIZE_BACKEND_NETGEN ? "netgen" : "octree"));
+    v[11] = PROTECT(Rf_mkString(report.backend_name != NULL ? report.backend_name
+                                : report.backend == MIO_TETRAHEDRALIZE_BACKEND_NETGEN
+                                    ? "netgen"
+                                    : "octree"));
     const char *names[] = {"mesh",
                            "num_tetrahedra",
                            "num_points",

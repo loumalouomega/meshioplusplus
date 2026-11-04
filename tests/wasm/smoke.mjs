@@ -20,7 +20,7 @@
 // The full artifact (roadmap 6.2; `configure-wasm.sh --full`) runs the same
 // suite with MESHIOPLUSPLUS_WASM_VARIANT=full (threaded) or full-seq: every
 // step holds there too, the capability steps assert the larger set, and the
-// full-only steps (STEP/IGES reading, fitCad, zstd/lz4/bzip2) run.
+// full-only steps (STEP/IGES reading, fitCad, zstd/lz4/bzip2, CutCells) run.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -2882,7 +2882,8 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
         assert.throws(() => m.tetrahedralize(ico, { backend: 'netgen' }), /full: true/);
     }
     assert.throws(() => m.tetrahedralize(ico, { grading: 2 }), /grading/);
-    assert.throws(() => m.tetrahedralize(ico, { backend: 'tetgen' }), /backend/);
+    // TetGen and Gmsh are installed programs, which no WebAssembly build can run (roadmap 7.7.2).
+    assert.throws(() => m.tetrahedralize(ico, { backend: 'tetgen' }), /no tetrahedral mesher named 'tetgen'/);
     assert.throws(() => m.tetrahedralize(ico, { bogus: 1 }), /bogus/);
     assert.ok(['seq', 'openmp'].includes(m.parallelBackend()));
     const { readers, writers } = m.availableFormats();
@@ -5757,6 +5758,34 @@ step('estimateNormals of the cube corners', () => {
     assert.equal(r.numComponents, 1);
     assert.ok('normals' in r.mesh.point_data);
     assert.throws(() => m.estimateNormals(cubeSurface, { orientation: 'inward' }));
+});
+
+step('remeshQuads is refused by name: no quad remesher runs in WebAssembly', () => {
+    const tri = {
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]),
+        dim: 3,
+        cells: [{ type: 'triangle', data: new Int32Array([0, 2, 1, 0, 1, 3, 1, 2, 3, 0, 3, 2]), nodesPerCell: 3 }],
+    };
+    assert.throws(() => m.remeshQuads(tri), /quad remesher|QuadriFlow/);
+    assert.throws(() => m.remeshQuads(tri, { noSuchOption: 1 }), /noSuchOption/);
+});
+
+step('cutLevelSet and cutQuadrature: CutCells, or refused by name', () => {
+    const plane = { planes: [[[0.3, 0, 0], [1, 0, 0]]] };
+    // The full artifact links CutCells (build-wasm-deps.sh --full); the lean
+    // one refuses by name.
+    assert.equal(m.hasCutcells(), requested.startsWith('full'));
+    if (!m.hasCutcells()) {
+        assert.throws(() => m.cutLevelSet(cubeSurface, plane), /CutCells/);
+        assert.throws(() => m.cutQuadrature(cubeSurface, plane), /CutCells/);
+        return;
+    }
+    // The cube's skin where x < 0.3: four strips of 0.3 and the face x = 0;
+    // the interface is the square loop around it.
+    const r = m.cutLevelSet(cubeSurface, plane);
+    assert.ok(Math.abs(r.measure - 2.2) < 1e-12, r.measure);
+    const q = m.cutQuadrature(cubeSurface, { ...plane, selection: 'plane0 = 0' });
+    assert.ok(Math.abs(q.sumWeights - 4) < 1e-12, q.sumWeights);
 });
 
 step('reconstructSurface of a sphere cloud', () => {

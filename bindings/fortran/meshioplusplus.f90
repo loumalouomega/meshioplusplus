@@ -76,6 +76,11 @@ module meshioplusplus
     public :: mio_find_intersections, mio_find_intersections_report
     public :: mio_thickness, mio_thickness_report
     public :: mio_tetrahedralize, mio_tetrahedralize_report, mio_has_netgen
+    public :: mio_tet_mesher_count, mio_tet_mesher_name, mio_tetrahedralize_backend_name
+    public :: mio_remesh_quads, mio_remesh_quads_report, mio_quad_remesher_count
+    public :: mio_quad_remesher_name, mio_remesh_quads_backend_name
+    public :: mio_cut_level_set, mio_cut_quadrature, mio_cut_report, mio_has_cutcells
+    public :: mio_cut_backend_name
     public :: mio_has_mmg, mio_has_mmg_elas, mio_mmg_index_bits
     public :: mio_adapt, mio_mmg_report, mio_metric_from_hessian
     public :: mio_discretize_levelset, mio_mesh_domain, mio_move
@@ -849,11 +854,14 @@ module meshioplusplus
         type(c_ptr) :: face_array = c_null_ptr
         integer(c_int32_t) :: backend = 0
         integer(c_int32_t) :: optimize_steps = 3
-        integer(c_int64_t) :: reserved(4) = 0
+        !> backend 3 (a named mesher): its name (was reserved).
+        type(c_ptr) :: provider = c_null_ptr
+        integer(c_int64_t) :: reserved(3) = 0
     end type
 
     !> `mio_tetrahedralize_report` (128 bytes): what `mio_tetrahedralize` did.
-    !> `backend` is 1 for Netgen, 2 for the octree backend.
+    !> `backend` is 1 for Netgen, 2 for the octree backend, 3 for another named
+    !> mesher (tetgen, gmsh, a plugin's): `mio_tetrahedralize_backend_name(report)`.
     type, bind(c) :: mio_tetrahedralize_report
         integer(c_int64_t) :: num_tetrahedra = 0
         integer(c_int64_t) :: num_points = 0
@@ -866,7 +874,70 @@ module meshioplusplus
         real(c_double) :: volume = 0.0_c_double
         integer(c_int32_t) :: boundary_preserved = 0
         integer(c_int32_t) :: backend = 0
-        integer(c_int64_t) :: reserved(6) = 0
+        !> The name of the backend that ran (static C string; was reserved).
+        type(c_ptr) :: backend_name = c_null_ptr
+        integer(c_int64_t) :: reserved(5) = 0
+    end type
+
+    !> Interop mirror of C `mio_remesh_quads_opts` (80 bytes; roadmap 7.7.3).
+    type, bind(c) :: mio_remesh_quads_opts_t
+        type(c_ptr) :: backend = c_null_ptr
+        integer(c_int64_t) :: target_faces = 0
+        integer(c_int64_t) :: max_cells = 50000000_c_int64_t
+        integer(c_int32_t) :: sharp = 0
+        integer(c_int32_t) :: boundary = 1
+        integer(c_int32_t) :: adaptive = 0
+        integer(c_int32_t) :: dominant = 0
+        integer(c_int32_t) :: seed = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_remesh_quads_report` (88 bytes): what `mio_remesh_quads` built;
+    !> `mio_remesh_quads_backend_name(report)` names the remesher that ran.
+    type, bind(c) :: mio_remesh_quads_report
+        integer(c_int64_t) :: num_quads = 0
+        integer(c_int64_t) :: num_triangles = 0
+        integer(c_int64_t) :: num_points = 0
+        real(c_double) :: min_scaled_jacobian = 0.0_c_double
+        real(c_double) :: mean_scaled_jacobian = 0.0_c_double
+        real(c_double) :: hausdorff_to_surface = 0.0_c_double
+        type(c_ptr) :: backend_name = c_null_ptr
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_cut_opts` (104 bytes; doc/cut.md).
+    type, bind(c) :: mio_cut_opts_t
+        type(c_ptr) :: level_sets = c_null_ptr
+        integer(c_int64_t) :: num_level_sets = 0
+        type(c_ptr) :: planes = c_null_ptr
+        integer(c_int64_t) :: num_planes = 0
+        type(c_ptr) :: selection = c_null_ptr
+        type(c_ptr) :: backend = c_null_ptr
+        integer(c_int32_t) :: include_uncut = 1
+        integer(c_int32_t) :: degree = 2
+        integer(c_int32_t) :: triangulate = 0
+        integer(c_int32_t) :: order = 2
+        integer(c_int32_t) :: record_parent_ids = 1
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_cut_report` (104 bytes): what `mio_cut_level_set` or
+    !> `mio_cut_quadrature` did; `mio_cut_backend_name(report)` names the
+    !> backend that ran ('lut' or 'quadrays').
+    type, bind(c) :: mio_cut_report
+        integer(c_int64_t) :: num_cells = 0
+        integer(c_int64_t) :: num_cut_cells = 0
+        integer(c_int64_t) :: num_uncut_cells = 0
+        integer(c_int64_t) :: num_pieces = 0
+        integer(c_int64_t) :: num_rules = 0
+        integer(c_int64_t) :: num_points = 0
+        real(c_double) :: measure = 0.0_c_double
+        integer(c_int32_t) :: dimension = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        type(c_ptr) :: backend_name = c_null_ptr
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_mmg_params` (168 bytes): the parameters every
@@ -1852,6 +1923,17 @@ module meshioplusplus
         !> `reserved` slot; size unchanged.
         integer(c_int64_t) :: drop_ghosts = 0
         integer(c_int64_t) :: reserved(1) = 0
+    end type
+
+    !> Interop mirror of C `mio_cad_read_opts` (64 bytes): how a STEP or IGES
+    !> file is read by `read_with_info`. Field order and types are ABI.
+    type, bind(c) :: mio_cad_read_opts_t
+        real(c_double) :: deflection = 0.0_c_double
+        real(c_double) :: angular_deflection = 0.5_c_double
+        integer(c_int32_t) :: heal = 0
+        integer(c_int32_t) :: reserved32 = 0
+        real(c_double) :: sew_tolerance = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_refine_opts`. Field order and types are ABI and
@@ -5388,6 +5470,15 @@ module meshioplusplus
             character(kind=c_char), dimension(*), intent(in) :: fmt, enc, codec, ff
         end subroutine
         ! -- format side channels (mio_format_info) --
+        function c_mio_read_with_info2(path, format, opts, cad_opts, info) &
+                bind(c, name="mio_read_with_info2") result(h)
+            import :: c_ptr, c_char
+            character(kind=c_char), dimension(*), intent(in) :: path, format
+            type(c_ptr), value :: opts, cad_opts
+            type(c_ptr), intent(out) :: info
+            type(c_ptr) :: h
+        end function
+
         function c_mio_read_with_info(path, format, opts, info) &
                 bind(c, name="mio_read_with_info") result(h)
             import :: c_ptr, c_char
@@ -5630,6 +5721,60 @@ module meshioplusplus
             type(mio_tetrahedralize_opts_t), intent(in) :: opts
             type(mio_tetrahedralize_report), intent(out) :: report
             type(c_ptr) :: h
+        end function
+
+        function c_mio_remesh_quads(mesh, opts, report) &
+                bind(c, name="mio_remesh_quads") result(h)
+            import :: c_ptr, mio_remesh_quads_opts_t, mio_remesh_quads_report
+            type(c_ptr), value :: mesh
+            type(mio_remesh_quads_opts_t), intent(in) :: opts
+            type(mio_remesh_quads_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_cut_level_set(mesh, opts, report) &
+                bind(c, name="mio_cut_level_set") result(h)
+            import :: c_ptr, mio_cut_opts_t, mio_cut_report
+            type(c_ptr), value :: mesh
+            type(mio_cut_opts_t), intent(in) :: opts
+            type(mio_cut_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_cut_quadrature(mesh, opts, report) &
+                bind(c, name="mio_cut_quadrature") result(h)
+            import :: c_ptr, mio_cut_opts_t, mio_cut_report
+            type(c_ptr), value :: mesh
+            type(mio_cut_opts_t), intent(in) :: opts
+            type(mio_cut_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_has_cutcells() bind(c, name="mio_has_cutcells") result(n)
+            import :: c_int32_t
+            integer(c_int32_t) :: n
+        end function
+
+        function c_mio_quad_remesher_count() bind(c, name="mio_quad_remesher_count") result(n)
+            import :: c_int64_t
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_quad_remesher_name(i) bind(c, name="mio_quad_remesher_name") result(p)
+            import :: c_int64_t, c_ptr
+            integer(c_int64_t), value :: i
+            type(c_ptr) :: p
+        end function
+
+        function c_mio_tet_mesher_count() bind(c, name="mio_tet_mesher_count") result(n)
+            import :: c_int64_t
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_tet_mesher_name(i) bind(c, name="mio_tet_mesher_name") result(p)
+            import :: c_int64_t, c_ptr
+            integer(c_int64_t), value :: i
+            type(c_ptr) :: p
         end function
 
         function c_mio_has_netgen() bind(c, name="mio_has_netgen") result(r)
@@ -6512,6 +6657,237 @@ contains
     function mio_has_netgen() result(has)
         logical :: has
         has = c_mio_has_netgen() /= 0
+    end function
+
+    !> How many backend names `mio_tetrahedralize` takes besides 'auto':
+    !> 'octree', then every registered mesher ('netgen', the installed 'tetgen'
+    !> and 'gmsh'), sorted.
+    function mio_tet_mesher_count() result(n)
+        integer :: n
+        n = int(c_mio_tet_mesher_count())
+    end function
+
+    !> Backend name `i` (1-based, up to `mio_tet_mesher_count()`); '' when out
+    !> of range.
+    function mio_tet_mesher_name(i) result(name)
+        integer, intent(in) :: i
+        character(:), allocatable :: name
+        name = c_ptr_to_string(c_mio_tet_mesher_name(int(i - 1, c_int64_t)))
+    end function
+
+    !> How many quad remeshers `mio_remesh_quads` takes by name (the installed
+    !> 'quadriflow' and 'instant_meshes'), sorted.
+    function mio_quad_remesher_count() result(n)
+        integer :: n
+        n = int(c_mio_quad_remesher_count())
+    end function
+
+    !> Quad remesher name `i` (1-based); '' when out of range.
+    function mio_quad_remesher_name(i) result(name)
+        integer, intent(in) :: i
+        character(:), allocatable :: name
+        name = c_ptr_to_string(c_mio_quad_remesher_name(int(i - 1, c_int64_t)))
+    end function
+
+    !> The name of the remesher a `mio_remesh_quads_report` says ran.
+    function mio_remesh_quads_backend_name(report) result(name)
+        type(mio_remesh_quads_report), intent(in) :: report
+        character(:), allocatable :: name
+        name = c_ptr_to_string(report%backend_name)
+    end function
+
+    !> Remesh a triangle surface into field-aligned quads (roadmap 7.7.3)
+    !> through an installed QuadriFlow or Instant Meshes, run as a separate
+    !> process: `target_faces` (0: half the triangles), `backend` ('auto' or a
+    !> name of `mio_quad_remesher_name`), `sharp`, `boundary` (.true.),
+    !> `adaptive`, `dominant` and `seed`. No remesher installed fails naming the
+    !> programs. See doc/remesh_quads.md.
+    function mio_remesh_quads(mesh, target_faces, backend, sharp, boundary, adaptive, &
+                              dominant, seed, max_cells, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        integer(int64), intent(in), optional :: target_faces, max_cells
+        character(*), intent(in), optional :: backend
+        logical, intent(in), optional :: sharp, boundary, adaptive, dominant
+        integer, intent(in), optional :: seed
+        type(mio_remesh_quads_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_remesh_quads_opts_t) :: opts
+        type(mio_remesh_quads_report) :: rep
+        character(kind=c_char, len=:), allocatable, target :: bname
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 80_c_size_t .or. c_sizeof(rep) /= 88_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: remesh_quads layout mismatch'
+            error stop 1
+        end if
+        if (present(target_faces)) opts%target_faces = int(target_faces, c_int64_t)
+        if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
+        if (present(backend)) then
+            bname = c_str(backend)
+            opts%backend = c_loc(bname(1:1))
+        end if
+        if (present(sharp)) opts%sharp = merge(1, 0, sharp)
+        if (present(boundary)) opts%boundary = merge(1, 0, boundary)
+        if (present(adaptive)) opts%adaptive = merge(1, 0, adaptive)
+        if (present(dominant)) opts%dominant = merge(1, 0, dominant)
+        if (present(seed)) opts%seed = int(seed, c_int32_t)
+        out%handle = c_mio_remesh_quads(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('remesh_quads', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Whether the library carries CutCells, which `mio_cut_level_set` and
+    !> `mio_cut_quadrature` need (a build with MESHIOPLUSPLUS_WITH_CUTCELLS).
+    function mio_has_cutcells() result(has)
+        logical :: has
+        has = c_mio_has_cutcells() /= 0
+    end function
+
+    !> The backend a `mio_cut_report` says ran ('lut' or 'quadrays').
+    function mio_cut_backend_name(report) result(name)
+        type(mio_cut_report), intent(in) :: report
+        character(:), allocatable :: name
+        name = c_ptr_to_string(report%backend_name)
+    end function
+
+    !> The options both cut operations share, filled from the optional
+    !> arguments; `storage`, `cptrs`, `sel`, `bk` and `pl` back the pointers and
+    !> must outlive the C call.
+    subroutine cut_fill_opts(opts, level_sets, planes, selection, include_uncut, backend, &
+                             triangulate, record_parent_ids, storage, cptrs, sel, bk, pl)
+        type(mio_cut_opts_t), intent(inout) :: opts
+        character(*), intent(in), optional :: level_sets(:)
+        real(real64), intent(in), optional :: planes(:, :)
+        character(*), intent(in), optional :: selection, backend
+        logical, intent(in), optional :: include_uncut, triangulate, record_parent_ids
+        character(kind=c_char), allocatable, target, intent(out) :: storage(:, :)
+        type(c_ptr), allocatable, target, intent(out) :: cptrs(:)
+        character(kind=c_char, len=:), allocatable, target, intent(out) :: sel, bk
+        real(c_double), allocatable, target, intent(out) :: pl(:, :)
+        type(c_ptr) :: arr
+        integer(c_int64_t) :: count
+        if (present(level_sets)) then
+            call c_str_array(level_sets, storage, cptrs, arr, count)
+            opts%level_sets = arr
+            opts%num_level_sets = count
+        end if
+        if (present(planes)) then
+            if (size(planes, 1) /= 6) then
+                write (error_unit, '(a)') 'meshio++: cut: planes must be shaped (6, n): origin, then normal'
+                error stop 1
+            end if
+            if (size(planes, 2) > 0) then
+                allocate (pl(6, size(planes, 2)))
+                pl = real(planes, c_double)
+                opts%planes = c_loc(pl(1, 1))
+                opts%num_planes = int(size(planes, 2), c_int64_t)
+            end if
+        end if
+        if (present(selection)) then
+            sel = c_str(selection)
+            opts%selection = c_loc(sel(1:1))
+        end if
+        if (present(backend)) then
+            bk = c_str(backend)
+            opts%backend = c_loc(bk(1:1))
+        end if
+        if (present(include_uncut)) opts%include_uncut = merge(1, 0, include_uncut)
+        if (present(triangulate)) opts%triangulate = merge(1, 0, triangulate)
+        if (present(record_parent_ids)) opts%record_parent_ids = merge(1, 0, record_parent_ids)
+    end subroutine
+
+    !> The part of a mesh that level sets select, through CutCells (doc/cut.md):
+    !> `level_sets` (scalar point-data array names) and `planes` (shaped (6, n):
+    !> origin, then normal; named plane0, plane1, ...), `selection` (such as
+    !> 'phi < 0' or 'a = 0 and b < 0'; empty is '<first> < 0'),
+    !> `include_uncut` (.true.), `backend` ('auto', 'lut' or 'quadrays'),
+    !> `degree` (quadrays pieces), `triangulate` (lut) and `record_parent_ids`.
+    !> A library without CutCells fails naming MESHIOPLUSPLUS_WITH_CUTCELLS.
+    function mio_cut_level_set(mesh, level_sets, planes, selection, include_uncut, backend, &
+                               degree, triangulate, record_parent_ids, report, stat, errmsg) &
+            result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in), optional :: level_sets(:)
+        real(real64), intent(in), optional :: planes(:, :)
+        character(*), intent(in), optional :: selection, backend
+        logical, intent(in), optional :: include_uncut, triangulate, record_parent_ids
+        integer, intent(in), optional :: degree
+        type(mio_cut_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_cut_opts_t) :: opts
+        type(mio_cut_report) :: rep
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        character(kind=c_char, len=:), allocatable, target :: sel, bk
+        real(c_double), allocatable, target :: pl(:, :)
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 104_c_size_t .or. c_sizeof(rep) /= 104_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: cut layout mismatch'
+            error stop 1
+        end if
+        call cut_fill_opts(opts, level_sets, planes, selection, include_uncut, backend, &
+                           triangulate, record_parent_ids, storage, cptrs, sel, bk, pl)
+        if (present(degree)) opts%degree = int(degree, c_int32_t)
+        out%handle = c_mio_cut_level_set(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('cut_level_set', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Quadrature rules of degree `order` (2) on the part `mio_cut_level_set`
+    !> would give, as a point cloud with point data quadrature:weight,
+    !> quadrature:reference, quadrature:rule and quadrature:parent_cell.
+    function mio_cut_quadrature(mesh, level_sets, planes, selection, order, include_uncut, &
+                                backend, triangulate, record_parent_ids, report, stat, errmsg) &
+            result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in), optional :: level_sets(:)
+        real(real64), intent(in), optional :: planes(:, :)
+        character(*), intent(in), optional :: selection, backend
+        integer, intent(in), optional :: order
+        logical, intent(in), optional :: include_uncut, triangulate, record_parent_ids
+        type(mio_cut_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_cut_opts_t) :: opts
+        type(mio_cut_report) :: rep
+        character(kind=c_char), allocatable, target :: storage(:, :)
+        type(c_ptr), allocatable, target :: cptrs(:)
+        character(kind=c_char, len=:), allocatable, target :: sel, bk
+        real(c_double), allocatable, target :: pl(:, :)
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 104_c_size_t .or. c_sizeof(rep) /= 104_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: cut layout mismatch'
+            error stop 1
+        end if
+        call cut_fill_opts(opts, level_sets, planes, selection, include_uncut, backend, &
+                           triangulate, record_parent_ids, storage, cptrs, sel, bk, pl)
+        if (present(order)) opts%order = int(order, c_int32_t)
+        out%handle = c_mio_cut_quadrature(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('cut_quadrature', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The name of the backend a `mio_tetrahedralize_report` says ran.
+    function mio_tetrahedralize_backend_name(report) result(name)
+        type(mio_tetrahedralize_report), intent(in) :: report
+        character(:), allocatable :: name
+        name = c_ptr_to_string(report%backend_name)
     end function
 
     !> Whether the library carries the MMG backend (adapt, discretize_levelset,
@@ -14905,7 +15281,11 @@ contains
     !> Read a mesh keeping its format's side channel in `info` (currently MDPA's
     !> tables, geometries, Mesh blocks, sub-model-part data and raw blocks).
     !> A format without one reads as `m%read` and leaves `info` invalid.
-    subroutine mesh_read_with_info(self, path, info, format, lenient, stat, errmsg)
+    !> STEP and IGES take `deflection`, `angular_deflection` (radians), `heal`
+    !> and `sew_tolerance` (see mio_cad_read_opts); the heal report is the
+    !> "heal" member of the MIO_BREP_FILE string.
+    subroutine mesh_read_with_info(self, path, info, format, lenient, stat, errmsg, &
+                                   deflection, angular_deflection, heal, sew_tolerance)
         class(mio_mesh), intent(inout) :: self
         character(*), intent(in) :: path
         class(mio_format_info), intent(inout) :: info
@@ -14914,15 +15294,29 @@ contains
         logical, intent(in), optional :: lenient
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        real(c_double), intent(in), optional :: deflection, angular_deflection, sew_tolerance
+        logical, intent(in), optional :: heal
         character(:), allocatable :: fmt
         type(mio_read_opts_t), target :: opts
+        type(mio_cad_read_opts_t), target :: cad
         type(c_ptr) :: h, ih
         fmt = ''; if (present(format)) fmt = format
         call c_mio_read_opts_init(opts)
         if (present(lenient)) then
             if (lenient) opts%lenient = 1
         end if
-        h = c_mio_read_with_info(c_str(path), c_str(fmt), c_loc(opts), ih)
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(cad) /= 64_c_size_t) then
+            call handle_failure('read_with_info', &
+                'mio_cad_read_opts_t does not match the C layout', stat, errmsg)
+            return
+        end if
+        if (present(deflection)) cad%deflection = deflection
+        if (present(angular_deflection)) cad%angular_deflection = angular_deflection
+        if (present(sew_tolerance)) cad%sew_tolerance = sew_tolerance
+        if (present(heal)) then
+            if (heal) cad%heal = 1
+        end if
+        h = c_mio_read_with_info2(c_str(path), c_str(fmt), c_loc(opts), c_loc(cad), ih)
         if (.not. c_associated(h)) then
             call handle_failure('read_with_info', mio_error_message(), stat, errmsg)
             return
@@ -15892,7 +16286,9 @@ contains
     !> optimisation passes, `max_cells` (50000000) the refusal bound,
     !> `face_array` ('cad:face') the CAD face data carried to the triangles,
     !> and `backend` 'auto' (default: Netgen when built in, else the octree
-    !> backend), 'netgen' or 'octree'. 'netgen' without Netgen
+    !> backend), 'netgen', 'octree', or another name of `mio_tet_mesher_name`
+    !> ('tetgen' and 'gmsh' run those installed programs, the surface kept).
+    !> 'netgen' without Netgen
     !> (`mio_has_netgen()` is false) fails naming MESHIOPLUSPLUS_WITH_NETGEN.
     function mio_tetrahedralize(mesh, max_size, max_volume, grading, optimize_steps, max_cells, &
                                 face_array, backend, report, stat, errmsg) result(out)
@@ -15907,7 +16303,7 @@ contains
         type(mio_mesh) :: out
         type(mio_tetrahedralize_opts_t) :: opts
         type(mio_tetrahedralize_report) :: rep
-        character(kind=c_char, len=:), allocatable, target :: fname
+        character(kind=c_char, len=:), allocatable, target :: fname, pname
         if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
             (c_sizeof(opts) /= 80_c_size_t .or. c_sizeof(rep) /= 128_c_size_t)) then
             write (error_unit, '(a)') 'meshio++: tetrahedralize layout mismatch'
@@ -15930,10 +16326,16 @@ contains
                 opts%backend = 1
             case ('octree')
                 opts%backend = 2
-            case default
+            case ('')
                 call handle_failure('tetrahedralize', &
-                                    "backend must be 'auto', 'netgen' or 'octree'", stat, errmsg)
+                                    "backend must be 'auto', 'netgen', 'octree' or a mesher's name", &
+                                    stat, errmsg)
                 return
+            case default
+                ! A named mesher; the library refuses an unknown name, listing the others.
+                opts%backend = 3
+                pname = c_str(backend)
+                opts%provider = c_loc(pname(1:1))
             end select
         end if
         out%handle = c_mio_tetrahedralize(mesh%handle, opts, rep)

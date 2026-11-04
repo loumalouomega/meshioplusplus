@@ -1,7 +1,7 @@
 """Smoke test of the base wheel alone (wheels.yml's CIBW_TEST_COMMAND;
 standalone, no pytest): it carries no OpenCASCADE, so STEP reading raises an
 error naming the add-on, ``fit_cad`` falls back to the native backend, the
-shared core and its CMake package are in the wheel, and (Linux and macOS) the
+shared core and its CMake package are in the wheel, CutCells cuts on every platform, and (Linux and macOS) the
 native HDF5, netCDF, cgnslib and codec paths are active without their symbols
 leaking, beside h5py and netCDF4 in the same process."""
 
@@ -39,6 +39,12 @@ else:
 
 cmake_dir = mp.get_cmake_dir()
 assert os.path.isfile(os.path.join(cmake_dir, "meshioplusplusConfig.cmake")), cmake_dir
+
+# --- CutCells (cut_level_set, cut_quadrature): every platform's wheel ------------
+assert mp.cut_has_cutcells(), "the wheel was built without CutCells"
+plane = [((0.3, 0.0, 0.0), (1.0, 0.0, 0.0))]
+_, report = mp.cut_level_set(mp.box((2, 2, 2)), planes=plane, return_report=True)
+assert abs(report["measure"] - 0.3) < 1e-12, report
 
 # --- the permissive libraries (roadmap 4.7.2): Linux and macOS wheels ------------
 # Windows keeps HDF5, netCDF and the codecs on h5py, netCDF4 and the stdlib.

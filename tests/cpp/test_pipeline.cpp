@@ -181,8 +181,13 @@ TEST(Pipeline, TetrahedralizeFillsTheSurface) {
     PipelineReport report;
     EXPECT_THROW(
         meshioplusplus::apply_pipeline_step(
-            clone_mesh(sphere), step("Tetrahedralize", {{"Backend", std::string("tetgen")}}), report),
+            clone_mesh(sphere), step("Tetrahedralize", {{"Backend", std::string("")}}), report),
         std::invalid_argument);
+    // Any other name is a named mesher (roadmap 7.7.2); an unknown one is refused.
+    EXPECT_THROW(meshioplusplus::apply_pipeline_step(
+                     clone_mesh(sphere),
+                     step("Tetrahedralize", {{"Backend", std::string("no-such-mesher")}}), report),
+                 meshioplusplus::Unsupported);
     EXPECT_THROW(meshioplusplus::apply_pipeline_step(
                      clone_mesh(sphere), step("Tetrahedralize", {{"Grading", 2.0}}), report),
                  std::invalid_argument);

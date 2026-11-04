@@ -80,6 +80,10 @@ enum class TetrahedralizeBackend : std::int32_t {
     Auto = 0,    ///< Netgen when built in, else the octree backend
     Netgen = 1,  ///< Netgen's nglib (MESHIOPLUSPLUS_WITH_NETGEN): the surface kept
     Octree = 2,  ///< native isosurface stuffing (always built): the surface fitted
+    /// The tetrahedral mesher registered under `TetrahedralizeOptions::mProvider`
+    /// (`tet_mesher_names()`: the installed `tetgen` and `gmsh`, a plugin's), the
+    /// surface kept (roadmap 7.7.2).
+    Named = 3,
 };
 
 struct TetrahedralizeOptions {
@@ -99,6 +103,8 @@ struct TetrahedralizeOptions {
     /// The cell data naming each triangle's CAD face, carried to the
     /// triangles and made Side regions when present.
     std::string mFaceArray = "cad:face";
+    /// `TetrahedralizeBackend::Named` only: the mesher's name.
+    std::string mProvider;
 };
 
 struct TetrahedralizeResult {
@@ -123,6 +129,11 @@ struct TetrahedralizeResult {
 
 /// Whether the Netgen backend is built in (the octree backend always is).
 MESHIOPLUSPLUS_API bool tetrahedralize_has_netgen();
+
+/// The backend names `tetrahedralize` accepts besides `auto`: `octree`, then
+/// every registered tetrahedral mesher (`netgen` when built in, the installed
+/// `tetgen` and `gmsh`, a plugin's), sorted.
+MESHIOPLUSPLUS_API std::vector<std::string> tetrahedralize_backends();
 
 /**
  * @brief Fill the closed triangle surface `rSurface` with tetrahedra (see

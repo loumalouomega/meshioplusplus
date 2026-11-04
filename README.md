@@ -87,7 +87,7 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [PVD](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.pvd`; a time-indexed collection of serial or parallel VTK XML files, read by ParaView),
 > [PVTP](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.pvtp`; a parallel index over per-piece `.vtp` files) and
 > [PVTU](https://docs.vtk.org/en/latest/vtk_file_formats/vtkxml_file_format.html) (`.pvtu`; a parallel index over per-piece `.vtu` files, ghost cells and `partition` output included),
-> [STEP](https://en.wikipedia.org/wiki/ISO_10303-21) (a closed surface written as an AP214 solid that CAD tools open, one face per plane, cylinder, cone, sphere or torus; read through OpenCASCADE as a triangulation plus its NURBS B-rep) (`.step`, `.stp`),
+> [STEP](https://en.wikipedia.org/wiki/ISO_10303-21) (a closed surface written as an AP214 solid that CAD tools open, one face per plane, cylinder, cone, sphere or torus; read through OpenCASCADE as a triangulation plus its NURBS B-rep, healed and sewn on request with `heal=True`) (`.step`, `.stp`),
 > [STL](<https://en.wikipedia.org/wiki/STL_(file_format)>) (`.stl`),
 > [Tecplot](http://paulbourke.net/dataformats/tp/) (`.dat`, `.tec`, and binary `.plt`; FE, ordered, polygonal and polyhedral zones; `.szplt` through a TecIO you supply),
 > [TetGen .node/.ele](https://wias-berlin.de/software/tetgen/fformats.html),
@@ -838,7 +838,9 @@ print(report["num_failed"], report["num_open_edges"], report["min_angle_deg"])
 
 **`meshioplusplus.extrude`** and **`meshioplusplus.revolve`** sweep a surface into a volume, or a curve into a surface, along a vector (graded layers) or around an axis (the cells on the axis collapsing into pyramids, tetrahedra and wedges): the swept cells only, with `bottom`/`top` (`start`/`end`) and `side` regions, the input's regions and data carried; extruding `rectangle` gives `box` exactly. See `doc/extrude.md`.
 
-**`meshioplusplus.tetrahedralize`** fills a closed triangle surface (a `mesh_cad_surface` result, a boundary layer's cap) with tetrahedra, nested shells becoming regions and `cad:face` side regions: through its native octree backend in every build (isosurface stuffing, the boundary fitted within a reported distance), or through Netgen's nglib, an optional backend that keeps the surface's triangles exactly (LGPL-2.1, linked dynamically when built with `-DMESHIOPLUSPLUS_WITH_NETGEN=ON`; `backend="auto"` takes it when present). See `doc/tetrahedralize.md`.
+**`meshioplusplus.tetrahedralize`** fills a closed triangle surface (a `mesh_cad_surface` result, a boundary layer's cap) with tetrahedra, nested shells becoming regions and `cad:face` side regions: through its native octree backend in every build (isosurface stuffing, the boundary fitted within a reported distance), or through Netgen's nglib, an optional backend that keeps the surface's triangles exactly (LGPL-2.1, linked dynamically when built with `-DMESHIOPLUSPLUS_WITH_NETGEN=ON`; `backend="auto"` takes it when present), or through an installed TetGen or Gmsh program run as a separate process (`backend="tetgen"`, `"gmsh"`), the surface kept too. See `doc/tetrahedralize.md`. **`meshioplusplus.remesh_quads`** remeshes a triangle surface into field-aligned quads through an installed QuadriFlow or Instant Meshes, also run as a separate process: a sphere comes out all quads with a mean scaled Jacobian of 0.99 and its worst quad at 0.25 to 0.58 (by seed) where recombining a mesher's triangles leaves 0.12 at its poles. See `doc/remesh_quads.md`.
+
+**`meshioplusplus.cut_level_set`** returns the part of a mesh that one or several level sets select (`point_data` arrays or planes, combined by an expression such as `"wall < 0 and hole > 0"`): the pieces of every cell family they cross, on one side or on the interface, the uncut cells inside, point data interpolated and cell data and regions carried; **`cut_quadrature`** gives quadrature rules on that part, the cut-cell quadrature of unfitted finite elements, quadratic level sets included on `triangle6`/`tetra10`. Both run [CutCells](https://github.com/sclaus2/CutCells) (MIT), an optional dependency (`-DMESHIOPLUSPLUS_WITH_CUTCELLS=ON`, `build/build-cutcells.sh`) the Linux and macOS wheels link. See `doc/cut.md`.
 
 **`meshioplusplus.error_size`** turns `estimate_error`'s per-cell indicator into a per-point size by Zienkiewicz and Zhu's adaptive procedure, a `background` for `mesh_cad_surface`, so an adaptation re-meshes from the CAD model. See `doc/error_size.md`.
 
@@ -1442,7 +1444,7 @@ cmake --build build && cmake --install build --prefix /opt/meshioplusplus
 ```
 
 ```cmake
-find_package(meshioplusplus 18.1.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
+find_package(meshioplusplus 18.2.0 EXACT CONFIG REQUIRED COMPONENTS CXX)
 target_link_libraries(my_solver PRIVATE meshioplusplus::core)
 ```
 

@@ -16,6 +16,7 @@
 //
 
 // System includes
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -258,11 +259,69 @@ TEST(Tetgen, AMissingElementFileCannotBeOpened) {
     EXPECT_NE(what.find(".ele"), std::string::npos) << what;
 }
 
-TEST(Tetgen, OnlyNodeAndEleSuffixesAreRead) {
+TEST(Tetgen, OnlyNodeEleAndSmeshSuffixesAreRead) {
     try {
         meshioplusplus::read_tetgen(mt::temp_path(".vtk"));
         FAIL() << "expected a ReadError";
     } catch (const meshioplusplus::ReadError& rExc) {
-        EXPECT_STREQ(rExc.what(), "TetGen: expected a .node or .ele file");
+        EXPECT_STREQ(rExc.what(), "TetGen: expected a .node, .ele or .smesh file");
     }
+}
+
+// Roadmap 7.7.2: the `.smesh` surface TetGen meshes, written and read back.
+TEST(Tetgen, SmeshSurfaceRoundTrips) {
+    meshioplusplus::Mesh m =
+        mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 1, 1}}, "triangle",
+                      {{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {0, 3, 2}});
+    m.AddCellBlock("quad", [] {
+        meshioplusplus::NDArray q(meshioplusplus::DType::Int64, {1, 4});
+        const std::int64_t v[4] = {1, 2, 4, 3};
+        std::copy(v, v + 4, q.As<std::int64_t>());
+        return q;
+    }());
+    const std::string path = mt::temp_path(".smesh");
+    meshioplusplus::write_tetgen(path, m);
+    const meshioplusplus::Mesh back = meshioplusplus::read_tetgen(path);
+    ASSERT_EQ(back.NumPoints(), 5u);
+    for (std::size_t i = 0; i < 15; ++i)
+        EXPECT_EQ(back.Points().As<double>()[i], m.Points().As<double>()[i]);
+    ASSERT_EQ(back.NumCellBlocks(), 2u);
+    EXPECT_EQ(back.Cells(0).Type(), "triangle");
+    EXPECT_EQ(back.Cells(0).NumCells(), 4u);
+    EXPECT_EQ(back.Cells(1).Type(), "quad");
+    EXPECT_EQ(back.Cells(1).NumCells(), 1u);
+    EXPECT_EQ(back.Cells(1).Conn().As<std::int64_t>()[2], 4);
+    EXPECT_FALSE(back.HasCellData("tetgen:ref"));
+
+    // A tetrahedron is no facet.
+    meshioplusplus::Mesh tet =
+        mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, "tetra", {{0, 1, 2, 3}});
+    EXPECT_THROW(meshioplusplus::write_tetgen(path, tet), meshioplusplus::WriteError);
+    std::filesystem::remove(path);
+}
+
+TEST(Tetgen, SmeshMarkersAndBadFacetsAreRead) {
+    const std::string path = mt::temp_path(".smesh");
+    {
+        std::ofstream out(path);
+        out << "# a 1-based surface with markers\n4 3 0 0\n1 0 0 0\n2 1 0 0\n3 0 1 0\n4 0 0 1\n"
+               "4 1\n3 1 3 2 7\n3 1 2 4 7\n3 2 3 4 8\n3 1 4 3 8\n0\n0\n";
+    }
+    const meshioplusplus::Mesh m = meshioplusplus::read_tetgen(path);
+    ASSERT_EQ(m.NumCellBlocks(), 1u);
+    EXPECT_EQ(m.Cells(0).NumCells(), 4u);
+    EXPECT_EQ(m.Cells(0).Conn().As<std::int64_t>()[0], 0);
+    ASSERT_TRUE(m.HasCellData("tetgen:ref"));
+    EXPECT_EQ(m.CellData("tetgen:ref", 0).As<std::int64_t>()[2], 8);
+    {
+        std::ofstream out(path);
+        out << "3 3 0 0\n0 0 0 0\n1 1 0 0\n2 0 1 0\n1 0\n3 0 1 9\n";
+    }
+    EXPECT_THROW(meshioplusplus::read_tetgen(path), meshioplusplus::ReadError);
+    {
+        std::ofstream out(path);
+        out << "3 3 0 0\n0 0 0 0\n1 1 0 0\n2 0 1 0\n5 0\n3 0 1\n";
+    }
+    EXPECT_THROW(meshioplusplus::read_tetgen(path), meshioplusplus::ReadError);
+    std::filesystem::remove(path);
 }

@@ -1271,22 +1271,31 @@ The result has a `tetra` block, a `triangle` block (the surface's with Netgen,
 its input points first; the tetrahedra's boundary with the octree backend) and
 the cell data `tetrahedralize:region`. `backend` is `"auto"` (Netgen when
 [`has_netgen`](@ref), else `"octree"`), `"netgen"` (throws naming
-`MESHIOPLUSPLUS_WITH_NETGEN` without it) or `"octree"`.
+`MESHIOPLUSPLUS_WITH_NETGEN` without it), `"octree"`, or another name of
+[`tetrahedralize_backends`](@ref): `"tetgen"` and `"gmsh"` run those installed
+programs as separate processes, the surface kept (checked).
 See `doc/tetrahedralize.md`.
 """
 function tetrahedralize(mesh::Mesh; backend::AbstractString="auto", max_size::Real=0.0,
                         max_volume::Real=0.0, grading::Real=0.3, optimize_steps::Integer=3,
                         max_cells::Integer=50_000_000, face_array::AbstractString="cad:face")
+    isempty(backend) &&
+        throw(ArgumentError("meshio++: tetrahedralize: backend must be \"auto\", \"netgen\", \"octree\" or a mesher's name"))
+    # Any other name is a named mesher (3); the library refuses an unknown one,
+    # listing the available names.
     backend_c = backend == "auto" ? Int32(0) : backend == "netgen" ? Int32(1) :
-                backend == "octree" ? Int32(2) :
-                throw(ArgumentError("meshio++: tetrahedralize: backend must be \"auto\", \"netgen\" or \"octree\""))
+                backend == "octree" ? Int32(2) : Int32(3)
     fname = Vector{UInt8}(codeunits(String(face_array)))
     push!(fname, 0x00)
+    pname = Vector{UInt8}(codeunits(String(backend)))
+    push!(pname, 0x00)
     report = Ref{_CTetrahedralizeReport}()
-    ptr = GC.@preserve fname begin
+    ptr = GC.@preserve fname pname begin
         opts = _CTetrahedralizeOpts(Cdouble(max_size), Cdouble(max_volume), Cdouble(grading),
                                     Int64(max_cells), pointer(fname), backend_c,
-                                    Int32(optimize_steps), (0, 0, 0, 0))
+                                    Int32(optimize_steps),
+                                    backend_c == 3 ? pointer(pname) : Ptr{UInt8}(C_NULL),
+                                    (0, 0, 0))
         ccall(_sym(:mio_tetrahedralize), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_CTetrahedralizeOpts}, Ref{_CTetrahedralizeReport}),
               _handle(mesh), Ref(opts), report)
@@ -1299,7 +1308,149 @@ function tetrahedralize(mesh::Mesh; backend::AbstractString="auto", max_size::Re
      boundary_preserved=r.boundary_preserved != 0,
      hausdorff_to_surface=Float64(r.hausdorff_to_surface),
      min_dihedral_deg=Float64(r.min_dihedral_deg), max_dihedral_deg=Float64(r.max_dihedral_deg),
-     volume=Float64(r.volume), backend=r.backend == 1 ? "netgen" : "octree")
+     volume=Float64(r.volume),
+     backend=r.backend_name == C_NULL ? (r.backend == 1 ? "netgen" : "octree") :
+             unsafe_string(r.backend_name))
+end
+
+"""
+    remesh_quads(mesh; target_faces=0, backend="auto", sharp=false, boundary=true,
+                 adaptive=false, dominant=false, seed=0, max_cells=50_000_000)
+        -> (; mesh, num_quads, num_triangles, num_points, min_scaled_jacobian,
+              mean_scaled_jacobian, hausdorff_to_surface, backend)
+
+Remesh a triangle surface into field-aligned quads (roadmap 7.7.3) through an
+installed QuadriFlow or Instant Meshes, run as a separate process. `target_faces`
+0 takes half the triangles; `backend` is `"auto"` (QuadriFlow, else Instant
+Meshes) or a name of [`remesh_quads_backends`](@ref). No remesher installed
+throws a `MeshioError` naming the programs. See `doc/remesh_quads.md`.
+"""
+function remesh_quads(mesh::Mesh; target_faces::Integer=0, backend::AbstractString="auto",
+                      sharp::Bool=false, boundary::Bool=true, adaptive::Bool=false,
+                      dominant::Bool=false, seed::Integer=0, max_cells::Integer=50_000_000)
+    bname = Vector{UInt8}(codeunits(String(backend)))
+    push!(bname, 0x00)
+    report = Ref{_CRemeshQuadsReport}()
+    ptr = GC.@preserve bname begin
+        opts = _CRemeshQuadsOpts(pointer(bname), Int64(target_faces), Int64(max_cells),
+                                 Int32(sharp), Int32(boundary), Int32(adaptive),
+                                 Int32(dominant), Int32(seed), Int32(0), (0, 0, 0, 0))
+        ccall(_sym(:mio_remesh_quads), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CRemeshQuadsOpts}, Ref{_CRemeshQuadsReport}),
+              _handle(mesh), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = report[]
+    (mesh=out, num_quads=Int(r.num_quads), num_triangles=Int(r.num_triangles),
+     num_points=Int(r.num_points), min_scaled_jacobian=Float64(r.min_scaled_jacobian),
+     mean_scaled_jacobian=Float64(r.mean_scaled_jacobian),
+     hausdorff_to_surface=Float64(r.hausdorff_to_surface),
+     backend=r.backend_name == C_NULL ? "" : unsafe_string(r.backend_name))
+end
+
+"""
+    has_cutcells() -> Bool
+
+Whether the library carries CutCells, which [`cut_level_set`](@ref) and
+[`cut_quadrature`](@ref) need (a build with `MESHIOPLUSPLUS_WITH_CUTCELLS`).
+"""
+has_cutcells() = ccall(_sym(:mio_has_cutcells), Int32, ()) != 0
+
+function _cut_call(sym::Symbol, mesh::Mesh, level_sets, planes, selection, include_uncut,
+                   backend, degree, triangulate, order, record_parent_ids)
+    names = [Vector{UInt8}(codeunits(String(a) * "\0")) for a in level_sets]
+    ptrs = [Cstring(pointer(n)) for n in names]
+    flat = Cdouble[]
+    for (origin, normal) in planes
+        length(origin) == 3 && length(normal) == 3 ||
+            throw(ArgumentError("meshio++: cut: a plane is (origin, normal), three numbers each"))
+        append!(flat, Cdouble.(origin))
+        append!(flat, Cdouble.(normal))
+    end
+    sel = Vector{UInt8}(codeunits(String(selection) * "\0"))
+    bk = Vector{UInt8}(codeunits(String(backend) * "\0"))
+    report = Ref{_CCutReport}()
+    ptr = GC.@preserve names ptrs flat sel bk begin
+        opts = _CCutOpts(isempty(ptrs) ? Ptr{Cstring}(C_NULL) : pointer(ptrs), Int64(length(ptrs)),
+                         isempty(flat) ? Ptr{Cdouble}(C_NULL) : pointer(flat),
+                         Int64(length(flat) ÷ 6), pointer(sel), pointer(bk), Int32(include_uncut),
+                         Int32(degree), Int32(triangulate), Int32(order), Int32(record_parent_ids),
+                         Int32(0), (0, 0, 0, 0))
+        ccall(_sym(sym), Ptr{Cvoid}, (Ptr{Cvoid}, Ref{_CCutOpts}, Ref{_CCutReport}),
+              _handle(mesh), Ref(opts), report)
+    end
+    Mesh(_check_ptr(ptr)), report[]
+end
+
+"""
+    cut_level_set(mesh; level_sets=String[], planes=[], selection="", include_uncut=true,
+                  backend="auto", degree=2, triangulate=false, record_parent_ids=true)
+        -> (; mesh, num_cells, num_cut_cells, num_uncut_cells, num_pieces, dimension,
+              measure, backend)
+
+The part of `mesh` that level sets select, through CutCells (`doc/cut.md`):
+`level_sets` are scalar point-data arrays, `planes` `(origin, normal)` pairs
+named `plane0`, `plane1`, ...; `selection` an expression such as `"phi < 0"`,
+`"phi = 0"` (the interface) or `"a < 0 and b > 0"` (empty: `"<first> < 0"`).
+`backend` is `"lut"` (straight pieces), `"quadrays"` (curved pieces of
+`degree`) or `"auto"`. Without CutCells it throws a `MeshioError` naming
+`MESHIOPLUSPLUS_WITH_CUTCELLS`.
+"""
+function cut_level_set(mesh::Mesh; level_sets=String[], planes=(), selection::AbstractString="",
+                       include_uncut::Bool=true, backend::AbstractString="auto",
+                       degree::Integer=2, triangulate::Bool=false, record_parent_ids::Bool=true)
+    out, r = _cut_call(:mio_cut_level_set, mesh, level_sets, planes, selection, include_uncut,
+                       backend, degree, triangulate, 2, record_parent_ids)
+    (mesh=out, num_cells=Int(r.num_cells), num_cut_cells=Int(r.num_cut_cells),
+     num_uncut_cells=Int(r.num_uncut_cells), num_pieces=Int(r.num_pieces),
+     dimension=Int(r.dimension), measure=Float64(r.measure),
+     backend=r.backend_name == C_NULL ? "" : unsafe_string(r.backend_name))
+end
+
+"""
+    cut_quadrature(mesh; level_sets=String[], planes=[], selection="", order=2, ...)
+        -> (; mesh, num_rules, num_points, sum_weights, dimension, backend)
+
+Quadrature rules of degree `order` on the part [`cut_level_set`](@ref) would
+give: a point cloud with point data `quadrature:weight`, `quadrature:reference`,
+`quadrature:rule` and `quadrature:parent_cell`.
+"""
+function cut_quadrature(mesh::Mesh; level_sets=String[], planes=(), selection::AbstractString="",
+                        order::Integer=2, include_uncut::Bool=true,
+                        backend::AbstractString="auto", triangulate::Bool=false,
+                        record_parent_ids::Bool=true)
+    out, r = _cut_call(:mio_cut_quadrature, mesh, level_sets, planes, selection, include_uncut,
+                       backend, 2, triangulate, order, record_parent_ids)
+    (mesh=out, num_rules=Int(r.num_rules), num_points=Int(r.num_points),
+     sum_weights=Float64(r.measure), dimension=Int(r.dimension),
+     backend=r.backend_name == C_NULL ? "" : unsafe_string(r.backend_name))
+end
+
+"""
+    remesh_quads_backends() -> Vector{String}
+
+The quad remeshers [`remesh_quads`](@ref) takes by name besides `"auto"`, sorted:
+the installed `"quadriflow"` and `"instant_meshes"` programs, found on `PATH`.
+"""
+function remesh_quads_backends()
+    n = ccall(_sym(:mio_quad_remesher_count), Int64, ())
+    n < 0 && throw(MeshioError(MIO_ERR_INTERNAL, last_error()))
+    [unsafe_string(ccall(_sym(:mio_quad_remesher_name), Ptr{UInt8}, (Int64,), i))
+     for i in 0:(n - 1)]
+end
+
+"""
+    tetrahedralize_backends() -> Vector{String}
+
+The `backend` names [`tetrahedralize`](@ref) takes besides `"auto"`, sorted:
+`"octree"`, then every registered mesher (`"netgen"` when built in, the installed
+`"tetgen"` and `"gmsh"`, found on `PATH`).
+"""
+function tetrahedralize_backends()
+    n = ccall(_sym(:mio_tet_mesher_count), Int64, ())
+    n < 0 && throw(MeshioError(MIO_ERR_INTERNAL, last_error()))
+    [unsafe_string(ccall(_sym(:mio_tet_mesher_name), Ptr{UInt8}, (Int64,), i))
+     for i in 0:(n - 1)]
 end
 
 """

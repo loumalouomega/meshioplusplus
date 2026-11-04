@@ -56,6 +56,7 @@
 
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
+#include "meshioplusplus/providers.hpp"
 
 #include "brep_solids.hpp"
 #include "mesh_fixtures.hpp"
@@ -2383,10 +2384,42 @@ TEST(CApi, Tetrahedralize) {
         EXPECT_GT(report.num_tetrahedra, 0);
         EXPECT_NEAR(report.volume, 1.0, 0.02);
         EXPECT_EQ(report.num_new_points, report.num_points);
+        ASSERT_NE(report.backend_name, nullptr);
+        EXPECT_STREQ(report.backend_name, "octree");
         for (int64_t k : report.reserved)
             EXPECT_EQ(k, 0);
         EXPECT_GE(block_of(out, "triangle"), 0);
         mio_mesh_free(out);
+    }
+    // Named meshers (roadmap 7.7.2): the list, an unknown name, and each
+    // installed external program, which keeps the surface.
+    {
+        const int64_t n = mio_tet_mesher_count();
+        ASSERT_GE(n, 1);
+        std::vector<std::string> names;
+        for (int64_t i = 0; i < n; ++i)
+            names.emplace_back(mio_tet_mesher_name(i));
+        EXPECT_EQ(mio_tet_mesher_name(n), nullptr);
+        EXPECT_NE(std::find(names.begin(), names.end(), "octree"), names.end());
+        mio_tetrahedralize_opts named;
+        mio_tetrahedralize_opts_init(&named);
+        EXPECT_EQ(named.provider, nullptr);
+        named.backend = MIO_TETRAHEDRALIZE_BACKEND_NAMED;
+        named.provider = "no-such-mesher";
+        EXPECT_EQ(mio_tetrahedralize(m, &named, &report), nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("no-such-mesher"), std::string::npos);
+        for (const char* p_name : {"tetgen", "gmsh"}) {
+            if (std::find(names.begin(), names.end(), p_name) == names.end())
+                continue;
+            named.provider = p_name;
+            mio_mesh* out = mio_tetrahedralize(m, &named, &report);
+            ASSERT_NE(out, nullptr) << mio_last_error();
+            EXPECT_EQ(report.backend, MIO_TETRAHEDRALIZE_BACKEND_NAMED);
+            EXPECT_STREQ(report.backend_name, p_name);
+            EXPECT_EQ(report.boundary_preserved, 1);
+            EXPECT_NEAR(report.volume, 1.0, 1e-9);
+            mio_mesh_free(out);
+        }
     }
     if (!mio_has_netgen()) {
         // AUTO falls back to the octree backend; NETGEN is refused by name.
@@ -6809,6 +6842,37 @@ TEST(CApi, StepAndIgesReadOrNameTheBackend) {
     mio_mesh_free(m);
 }
 
+TEST(CApi, StepReadOptionsHealAndValidate) {
+    mio_cad_read_opts defaults;
+    mio_cad_read_opts_init(&defaults);
+    EXPECT_EQ(defaults.deflection, 0.0);
+    EXPECT_EQ(defaults.angular_deflection, 0.5);
+    EXPECT_EQ(defaults.heal, 0);
+    EXPECT_EQ(defaults.sew_tolerance, 0.0);
+    if (!mio_has_occt())
+        return;
+    mio_mesh* m = capi_cube_surface();
+    const auto step = mt::temp_path(".step");
+    ASSERT_EQ(mio_write(step.c_str(), m, nullptr), MIO_OK) << mio_last_error();
+    mio_cad_read_opts cad = defaults;
+    cad.heal = 1;
+    mio_format_info* info = nullptr;
+    mio_mesh* back = mio_read_with_info2(step.c_str(), nullptr, nullptr, &cad, &info);
+    ASSERT_NE(back, nullptr) << mio_last_error();
+    char buf[1024];
+    const std::int64_t n = mio_brep_info_string(info, MIO_BREP_FILE, 0, 0, buf, sizeof(buf));
+    ASSERT_GT(n, 0);
+    const std::string extra(buf);
+    EXPECT_NE(extra.find("\"heal\":{\"healed\":true"), std::string::npos) << extra;
+    EXPECT_NE(extra.find("\"free_edges_after\":0"), std::string::npos) << extra;
+    mio_format_info_free(info);
+    mio_mesh_free(back);
+    cad.sew_tolerance = -1.0;
+    EXPECT_EQ(mio_read_with_info2(step.c_str(), nullptr, nullptr, &cad, &info), nullptr);
+    EXPECT_EQ(info, nullptr);
+    mio_mesh_free(m);
+}
+
 TEST(CApi, WritesAStepSolid) {
     mio_mesh* m = capi_cube_surface();
     const std::string path =
@@ -7205,6 +7269,58 @@ TEST(CApi, EstimateNormals) {
     opts.k = 1;
     EXPECT_EQ(mio_estimate_normals(m, &opts, nullptr, nullptr), nullptr);
     mio_mesh_free(m);
+}
+
+TEST(CApi, RemeshQuads) {
+    mio_remesh_quads_opts o;
+    mio_remesh_quads_opts_init(&o);
+    EXPECT_EQ(o.backend, nullptr);
+    EXPECT_EQ(o.target_faces, 0);
+    EXPECT_EQ(o.boundary, 1);
+    EXPECT_EQ(o.max_cells, 50000000);
+    EXPECT_EQ(mio_remesh_quads(nullptr, &o, nullptr), nullptr);
+    // A fake remesher through the C++ registry: every corner's quad kept.
+    meshioplusplus::QuadRemesherProvider fake;
+    fake.mName = "capi-fake-quads";
+    fake.mRemesh = [](const meshioplusplus::QuadRemeshRequest& rRequest) {
+        meshioplusplus::QuadRemeshResult out;
+        out.mPoints = rRequest.mPoints;
+        out.mQuads = {{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4},
+                      {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}};
+        return out;
+    };
+    meshioplusplus::add_quad_remesher(std::move(fake));
+    const int64_t n = mio_quad_remesher_count();
+    bool listed = false;
+    for (int64_t i = 0; i < n; ++i)
+        listed = listed || std::string(mio_quad_remesher_name(i)) == "capi-fake-quads";
+    EXPECT_TRUE(listed);
+    EXPECT_EQ(mio_quad_remesher_name(n), nullptr);
+
+    mio_mesh* tris = mio_mesh_create();
+    const double points[] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                             0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::int64_t faces[] = {0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4,
+                                  1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7};
+    ASSERT_EQ(mio_mesh_set_points(tris, MIO_FLOAT64, 8, 3, points), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(tris, "triangle", 12, 3, MIO_INT64, faces), MIO_OK);
+    o.backend = "capi-fake-quads";
+    mio_remesh_quads_report r;
+    std::memset(&r, 0xff, sizeof(r));
+    mio_mesh* out = mio_remesh_quads(tris, &o, &r);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(r.num_quads, 6);
+    EXPECT_EQ(r.num_triangles, 0);
+    EXPECT_DOUBLE_EQ(r.min_scaled_jacobian, 1.0);
+    EXPECT_STREQ(r.backend_name, "capi-fake-quads");
+    for (int64_t k : r.reserved)
+        EXPECT_EQ(k, 0);
+    mio_mesh_free(out);
+    o.backend = "no-such-remesher";
+    EXPECT_EQ(mio_remesh_quads(tris, &o, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("no-such-remesher"), std::string::npos);
+    meshioplusplus::remove_quad_remesher("capi-fake-quads");
+    mio_mesh_free(tris);
 }
 
 TEST(CApi, ReconstructSurface) {
@@ -8380,3 +8496,52 @@ TEST(CApi, LoadPluginsRegistersAProviderFromADirectory) {
         meshioplusplus::register_cad_kernel(*saved);
 }
 #endif
+
+TEST(CApi, CutLevelSetAndQuadrature) {
+    mio_cut_opts o;
+    mio_cut_opts_init(&o);
+    EXPECT_EQ(o.num_level_sets, 0);
+    EXPECT_EQ(o.include_uncut, 1);
+    EXPECT_EQ(o.degree, 2);
+    EXPECT_EQ(o.order, 2);
+    EXPECT_EQ(o.record_parent_ids, 1);
+    EXPECT_EQ(mio_cut_level_set(nullptr, &o, nullptr), nullptr);
+
+    // One unit hexahedron, cut by the plane x = 0.3.
+    mio_mesh* hex = mio_mesh_create();
+    const double points[] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                             0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1};
+    const std::int64_t conn[] = {0, 1, 2, 3, 4, 5, 6, 7};
+    ASSERT_EQ(mio_mesh_set_points(hex, MIO_FLOAT64, 8, 3, points), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(hex, "hexahedron", 1, 8, MIO_INT64, conn), MIO_OK);
+    const double plane[] = {0.3, 0, 0, 1, 0, 0};
+    o.planes = plane;
+    o.num_planes = 1;
+    mio_cut_report rep;
+    mio_mesh* part = mio_cut_level_set(hex, &o, &rep);
+    if (!mio_has_cutcells()) {
+        EXPECT_EQ(part, nullptr);
+        EXPECT_NE(std::string(mio_last_error()).find("MESHIOPLUSPLUS_WITH_CUTCELLS"),
+                  std::string::npos);
+        mio_mesh_free(hex);
+        return;
+    }
+    ASSERT_NE(part, nullptr) << mio_last_error();
+    EXPECT_NEAR(rep.measure, 0.3, 1e-12);
+    EXPECT_EQ(rep.dimension, 3);
+    EXPECT_EQ(rep.num_cut_cells, 1);
+    EXPECT_STREQ(rep.backend_name, "lut");
+    mio_mesh_free(part);
+    o.selection = "plane0 = 0";
+    o.order = 3;
+    mio_mesh* q = mio_cut_quadrature(hex, &o, &rep);
+    ASSERT_NE(q, nullptr) << mio_last_error();
+    EXPECT_NEAR(rep.measure, 1.0, 1e-12);
+    EXPECT_EQ(rep.dimension, 2);
+    EXPECT_GT(rep.num_points, 0);
+    EXPECT_EQ(mio_mesh_num_points(q), rep.num_points);
+    mio_mesh_free(q);
+    o.selection = "nope < 0";
+    EXPECT_EQ(mio_cut_level_set(hex, &o, nullptr), nullptr);
+    mio_mesh_free(hex);
+}

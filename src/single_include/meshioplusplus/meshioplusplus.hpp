@@ -125,7 +125,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 37
+#define MESHIOPLUSPLUS_ABI_VERSION 38
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -5601,6 +5601,15 @@ struct CadReadOptions {
     double mDeflection = 0.0;
     /// The angular deflection, in radians.
     double mAngularDeflection = 0.5;
+    /// Heal the shape before it is extracted: `ShapeFix_Shape`, then sewing
+    /// (`BRepBuilderAPI_Sewing`) at `mSewTolerance`. What it did is reported as
+    /// the `heal` member of `BrepInfo::mExtra`.
+    bool mHeal = false;
+    /// The sewing tolerance, as a length. At most 0 takes 1e-5 of the
+    /// bounding-box diagonal (raised to the shape's own largest tolerance, at
+    /// most 1e-3 of the diagonal) when `mHeal` is set; a positive value sews
+    /// even without `mHeal`.
+    double mSewTolerance = 0.0;
 };
 
 /// Whether this build reads STEP and IGES (it carries the OpenCASCADE backend,
@@ -12530,7 +12539,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 18
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 1
+#define MESHIOPLUSPLUS_VERSION_MINOR 2
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -12540,7 +12549,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "18.1.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "18.2.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -26998,6 +27007,132 @@ MESHIOPLUSPLUS_API CurvatureResult compute_curvature(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/curvature.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/cut.hpp =====
+/**
+ * @file operations/cut.hpp
+ * @brief Cut a mesh by level sets: the pieces of its cells on one side of one
+ * or several level sets, or on their zero sets, and quadrature rules on those
+ * pieces (cut-cell quadrature for unfitted finite elements).
+ *
+ * The cutting is CutCells' (S. Claus, MIT), an optional dependency
+ * (`MESHIOPLUSPLUS_WITH_CUTCELLS`; `cut_has_cutcells()`). Without it both
+ * operations throw `Unsupported` naming the option.
+ *
+ *  - **Level sets.** Each is a scalar `point_data` array (`mLevelSets`), one
+ *    value per node, or a plane (`mPlanes`: `(x - origin) . normal`, named
+ *    `plane0`, `plane1`, ...). On `triangle6`/`tetra10` cells a level set is
+ *    quadratic (all ten or six nodes); on every other cell it is linear in the
+ *    cell's corners.
+ *  - **Selection.** `mSelection` is CutCells' expression over the level sets'
+ *    names: `phi < 0`, `phi > 0`, `phi = 0` (the interface), joined with `and`
+ *    and `or`, such as `"wall < 0 and hole > 0"`. Empty means `<first> < 0`.
+ *  - **Cells.** The cells of the highest topological dimension are cut
+ *    (`line`, `triangle`, `quad`, `tetra`, `hexahedron`, `wedge`, `pyramid`,
+ *    and their higher-order forms through their corners); lower-dimensional
+ *    blocks are left out with a warning. Polygons and polyhedra are refused.
+ *    Geometry is straight-sided: a curved higher-order cell is cut through
+ *    its corners.
+ *  - **Backends.** `"lut"` cuts by lookup tables into straight pieces of the
+ *    cell's own family (a hexahedron cut by a plane through two of its faces
+ *    stays one hexahedron); `"quadrays"` integrates curved interfaces to high
+ *    order and gives Lagrange pieces of degree `mDegree`. `"auto"` takes
+ *    quadrays for a quadratic level set, the lookup tables otherwise.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// A plane level set, `(x - mOrigin) . mNormal` (the normal is normalised).
+struct CutPlane {
+    std::array<double, 3> mOrigin = {0.0, 0.0, 0.0};
+    std::array<double, 3> mNormal = {1.0, 0.0, 0.0};
+};
+
+struct CutOptions {
+    /// Scalar `point_data` arrays that are level sets; their names are the
+    /// names `mSelection` uses.
+    std::vector<std::string> mLevelSets;
+    /// Plane level sets, named `plane0`, `plane1`, ... after `mLevelSets`.
+    std::vector<CutPlane> mPlanes;
+    /// The part to keep; empty means `<first level set> < 0`.
+    std::string mSelection;
+    /// Keep the whole cells that lie wholly in the part, besides the pieces of
+    /// the cut ones.
+    bool mIncludeUncut = true;
+    /// `auto`, `lut` or `quadrays` (see the file comment).
+    std::string mBackend = "auto";
+    /// quadrays only: the Lagrange degree of the pieces `cut_level_set` gives.
+    std::int32_t mDegree = 2;
+    /// lut only: split the pieces, and the whole cells kept with them, into
+    /// simplices (tetrahedra or triangles).
+    bool mTriangulate = false;
+    /// `cut_quadrature` only: the polynomial degree the rules integrate exactly.
+    std::int32_t mOrder = 2;
+    /// Write `cut:parent_cell` (`cut_level_set`) and `quadrature:parent_cell`.
+    bool mRecordParentIds = true;
+};
+
+struct CutLevelSetResult {
+    /// The pieces, and the whole cells with `mIncludeUncut`: point data
+    /// interpolated in each piece's parent cell, cell data and cell regions
+    /// carried from it, cell data `cut:parent_cell` (the input cell, global
+    /// block-major) and `cut:cut` (1 on a piece of a cut cell).
+    Mesh mMesh;
+    std::int64_t mNumCells = 0;       ///< input cells of the cut dimension
+    std::int64_t mNumCutCells = 0;    ///< of them, those a level set crosses
+    std::int64_t mNumUncutCells = 0;  ///< of them, those wholly in the part
+    std::int64_t mNumPieces = 0;      ///< output cells
+    std::int32_t mDimension = 0;      ///< of the part: the cells' or one less
+    double mMeasure = 0.0;            ///< volume, area or length of the part
+    std::string mSelection;           ///< as applied
+    std::string mBackend;             ///< as applied: `lut` or `quadrays`
+    std::vector<std::string> mWarnings;
+};
+
+struct CutQuadratureResult {
+    /// One `vertex` per quadrature point, at its physical position, with point
+    /// data `quadrature:weight` (physical), `quadrature:reference` (in the
+    /// parent cell's reference element), `quadrature:rule` and, with
+    /// `mRecordParentIds`, `quadrature:parent_cell`.
+    Mesh mMesh;
+    std::int64_t mNumRules = 0;  ///< one per cell piece the rules cover
+    std::int64_t mNumPoints = 0;
+    double mSumWeights = 0.0;  ///< the measure of the part, to the rules' accuracy
+    std::int32_t mDimension = 0;
+    std::string mSelection;
+    std::string mBackend;
+    std::vector<std::string> mWarnings;
+};
+
+/// Whether this build carries CutCells.
+MESHIOPLUSPLUS_API bool cut_has_cutcells();
+
+/**
+ * @brief The part of `rMesh` that `rOptions.mSelection` picks (see the file
+ * comment).
+ * @throws std::invalid_argument for no level set, a missing or non-scalar
+ *         array, a bad selection, an unknown backend, or no cell to cut.
+ * @throws Unsupported without CutCells, or for polygons and polyhedra.
+ */
+MESHIOPLUSPLUS_API CutLevelSetResult cut_level_set(const Mesh& rMesh,
+                                                   const CutOptions& rOptions = {});
+
+/**
+ * @brief Quadrature rules of degree `rOptions.mOrder` on that part.
+ * @throws as `cut_level_set`.
+ */
+MESHIOPLUSPLUS_API CutQuadratureResult cut_quadrature(const Mesh& rMesh,
+                                                      const CutOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/cut.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/data_average.hpp =====
 /**
  * @file operations/data_average.hpp
@@ -35608,6 +35743,82 @@ MESHIOPLUSPLUS_API RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/remesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/remesh_quads.hpp =====
+/**
+ * @file operations/remesh_quads.hpp
+ * @brief Field-aligned quad remeshing of a triangle surface (roadmap 7.7.3).
+ *
+ * `remesh_quads` hands a triangle surface to a quad remesher and returns its
+ * quads: QuadriFlow (Huang et al. 2018, MIT) or Instant Meshes (Jakob et al.
+ * 2015, BSD-3), installed programs this build runs as separate processes and
+ * registers by name (`quad_remesher_names()`, providers.hpp); a plugin can add
+ * more. They align the quads with a smooth cross field, so a sphere comes out
+ * all quads with no pole of slivers, which recombining a mesher's own
+ * triangles (`mesh_cad_surface(quads=all)`) leaves. The result is a new
+ * surface near the input, not on its points: `mHausdorffToSurface` says how
+ * near. No program runs in WebAssembly.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+struct RemeshQuadsOptions {
+    /// `auto` (QuadriFlow, else Instant Meshes) or a quad remesher's name.
+    std::string mBackend = "auto";
+    /// The number of faces asked for; 0 takes half the input's triangles.
+    std::int64_t mTargetFaces = 0;
+    /// Align with and keep the sharp edges.
+    bool mSharp = false;
+    /// Keep the boundary of an open surface.
+    bool mBoundary = true;
+    /// Let the face size follow the curvature (QuadriFlow).
+    bool mAdaptive = false;
+    /// Allow triangles where quads fit badly (Instant Meshes' quad-dominant mode).
+    bool mDominant = false;
+    /// The program's random seed, so a run repeats.
+    std::int32_t mSeed = 0;
+    /// Refuse a target of more faces.
+    std::int64_t mMaxCells = 50000000;
+};
+
+struct RemeshQuadsResult {
+    /// A `quad` block, and a `triangle` block when the remesher left any.
+    Mesh mMesh;
+    std::int64_t mNumQuads = 0;
+    std::int64_t mNumTriangles = 0;
+    std::int64_t mNumPoints = 0;
+    /// The least and mean scaled Jacobian of the quads (Verdict's, in [-1, 1]).
+    double mMinScaledJacobian = 0.0;
+    double mMeanScaledJacobian = 0.0;
+    /// The two-sided distance between the result and the input surface.
+    double mHausdorffToSurface = 0.0;
+    std::string mBackend;  ///< the remesher that ran
+    std::vector<std::string> mWarnings;
+};
+
+/// The backend names `remesh_quads` takes besides `auto`: every registered quad
+/// remesher (the installed `quadriflow` and `instant_meshes`), sorted.
+MESHIOPLUSPLUS_API std::vector<std::string> remesh_quads_backends();
+
+/**
+ * @brief Remesh the triangle surface `rSurface` into field-aligned quads.
+ * @throws std::invalid_argument for a negative target or one past `mMaxCells`,
+ *         or a surface that is not linear triangles (lines and vertices are
+ *         skipped).
+ * @throws Unsupported when no quad remesher is installed, or none of that name.
+ * @throws std::runtime_error when the remesher fails or writes a bad mesh.
+ */
+MESHIOPLUSPLUS_API RemeshQuadsResult remesh_quads(const Mesh& rSurface,
+                                                  const RemeshQuadsOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/remesh_quads.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/remesh_volume.hpp =====
 /**
  * @file remesh_volume.hpp
@@ -38977,6 +39188,10 @@ enum class TetrahedralizeBackend : std::int32_t {
     Auto = 0,    ///< Netgen when built in, else the octree backend
     Netgen = 1,  ///< Netgen's nglib (MESHIOPLUSPLUS_WITH_NETGEN): the surface kept
     Octree = 2,  ///< native isosurface stuffing (always built): the surface fitted
+    /// The tetrahedral mesher registered under `TetrahedralizeOptions::mProvider`
+    /// (`tet_mesher_names()`: the installed `tetgen` and `gmsh`, a plugin's), the
+    /// surface kept (roadmap 7.7.2).
+    Named = 3,
 };
 
 struct TetrahedralizeOptions {
@@ -38996,6 +39211,8 @@ struct TetrahedralizeOptions {
     /// The cell data naming each triangle's CAD face, carried to the
     /// triangles and made Side regions when present.
     std::string mFaceArray = "cad:face";
+    /// `TetrahedralizeBackend::Named` only: the mesher's name.
+    std::string mProvider;
 };
 
 struct TetrahedralizeResult {
@@ -39020,6 +39237,11 @@ struct TetrahedralizeResult {
 
 /// Whether the Netgen backend is built in (the octree backend always is).
 MESHIOPLUSPLUS_API bool tetrahedralize_has_netgen();
+
+/// The backend names `tetrahedralize` accepts besides `auto`: `octree`, then
+/// every registered tetrahedral mesher (`netgen` when built in, the installed
+/// `tetgen` and `gmsh`, a plugin's), sorted.
+MESHIOPLUSPLUS_API std::vector<std::string> tetrahedralize_backends();
 
 /**
  * @brief Fill the closed triangle surface `rSurface` with tetrahedra (see
@@ -40025,6 +40247,42 @@ struct TetMesherProvider {
     std::function<TetMeshRegionResult(const TetMeshRegionRequest&)> mMeshRegion;
 };
 
+/// A triangle surface handed to a quad remesher (roadmap 7.7.3): its points and
+/// triangles (0-based) and what is asked of the quads.
+struct QuadRemeshRequest {
+    std::vector<std::array<double, 3>> mPoints;
+    std::vector<std::array<std::int64_t, 3>> mTriangles;
+    /// The number of faces asked for (the programs treat it as a target).
+    std::int64_t mTargetFaces = 0;
+    /// Align with and keep the surface's sharp edges.
+    bool mSharp = false;
+    /// Keep the surface's boundary.
+    bool mBoundary = true;
+    /// Let the face size follow the curvature.
+    bool mAdaptive = false;
+    /// Allow triangles where quads fit badly (quad-dominant).
+    bool mDominant = false;
+    /// The program's random seed, so a run repeats.
+    std::int32_t mSeed = 0;
+};
+
+/// What a quad remesher returns: its own points, and quads and (dominant) triangles
+/// into them, 0-based.
+struct QuadRemeshResult {
+    std::vector<std::array<double, 3>> mPoints;
+    std::vector<std::array<std::int64_t, 4>> mQuads;
+    std::vector<std::array<std::int64_t, 3>> mTriangles;
+};
+
+/// A field-aligned quad remesher: `remesh_quads`'s backend (QuadriFlow, Instant
+/// Meshes). Registered by name only; see `add_quad_remesher`.
+struct QuadRemesherProvider {
+    std::string mName;
+    std::string mVersion;
+    /// Remeshes a surface; throws `std::runtime_error` when the remesher fails.
+    std::function<QuadRemeshResult(const QuadRemeshRequest&)> mRemesh;
+};
+
 /// A remesher: `adapt`, `discretize_levelset`, `mesh_domain` and `move` (MMG).
 struct RemesherProvider {
     std::string mName;
@@ -40046,6 +40304,37 @@ MESHIOPLUSPLUS_API void register_tet_mesher(TetMesherProvider Provider);
 MESHIOPLUSPLUS_API void unregister_tet_mesher() noexcept;
 /// The registered tetrahedral mesher, or null.
 MESHIOPLUSPLUS_API std::shared_ptr<const TetMesherProvider> tet_mesher() noexcept;
+
+// Named tetrahedral meshers (roadmap 7.7.2): besides the default one above, any
+// number of meshers registered by name, which `tetrahedralize` picks with
+// `TetrahedralizeBackend::Named`. The default is registered by name too. This
+// build adds `tetgen` and `gmsh` when those programs are installed (it runs
+// them as separate processes; never in WebAssembly), see `tetrahedralize.md`.
+
+/// Registers `Provider` under its `mName` without making it the default,
+/// replacing an earlier one of that name.
+MESHIOPLUSPLUS_API void add_tet_mesher(TetMesherProvider Provider);
+/// Removes the named tetrahedral mesher `rName` (the default stays).
+MESHIOPLUSPLUS_API void remove_tet_mesher(const std::string& rName) noexcept;
+/// The tetrahedral mesher named `rName`, or null.
+MESHIOPLUSPLUS_API std::shared_ptr<const TetMesherProvider> tet_mesher(
+    const std::string& rName) noexcept;
+/// The names of every registered tetrahedral mesher, sorted.
+MESHIOPLUSPLUS_API std::vector<std::string> tet_mesher_names();
+
+// Quad remeshers (roadmap 7.7.3), by name only: this build adds `quadriflow` and
+// `instant_meshes` when those programs are installed (separate processes; never
+// in WebAssembly), see `remesh_quads.md`.
+
+/// Registers `Provider` under its `mName`, replacing an earlier one of that name.
+MESHIOPLUSPLUS_API void add_quad_remesher(QuadRemesherProvider Provider);
+/// Removes the quad remesher named `rName`.
+MESHIOPLUSPLUS_API void remove_quad_remesher(const std::string& rName) noexcept;
+/// The quad remesher named `rName`, or null.
+MESHIOPLUSPLUS_API std::shared_ptr<const QuadRemesherProvider> quad_remesher(
+    const std::string& rName) noexcept;
+/// The names of every registered quad remesher, sorted.
+MESHIOPLUSPLUS_API std::vector<std::string> quad_remesher_names();
 
 /// Registers `Provider` as the remesher, replacing any earlier one.
 MESHIOPLUSPLUS_API void register_remesher(RemesherProvider Provider);
@@ -40577,6 +40866,38 @@ namespace meshioplusplus::detail {
 /// The shape a STEP (or, with @p Iges, an IGES) file transfers to.
 /// @throws ReadError when OpenCASCADE cannot read or transfer it.
 TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char* pFormat);
+
+/// What `occt_heal_shape` did to a shape read from a STEP or IGES file.
+struct OcctHealReport {
+    /// `ShapeFix_Shape` ran (`CadReadOptions::mHeal`).
+    bool mHealed = false;
+    /// `ShapeFix_Shape` changed the shape.
+    bool mFixed = false;
+    /// The sewing tolerance used, as a length (0 when no sewing ran).
+    double mSewTolerance = 0.0;
+    /// Edges with exactly one face, before and after (degenerate edges excluded).
+    long long mFreeEdgesBefore = 0;
+    long long mFreeEdgesAfter = 0;
+    /// The edges sewing reports as shared by more than two faces.
+    long long mMultipleEdges = 0;
+    /// The degenerate shapes sewing removed.
+    long long mDegenerated = 0;
+    /// The report as a compact JSON object.
+    std::string ToJson() const;
+};
+
+/// Edges of the shape that bound exactly one face (degenerate edges excluded).
+long long occt_count_free_edges(const TopoDS_Shape& rShape);
+
+/**
+ * @brief Heal a shape at read time (`CadReadOptions::mHeal`, `mSewTolerance`):
+ * `ShapeFix_Shape` when healing, then `BRepBuilderAPI_Sewing` when healing or
+ * when a sewing tolerance is given. A tolerance at most 0 takes 1e-5 of the
+ * bounding-box diagonal, raised to the shape's own largest tolerance but never
+ * past 1e-3 of the diagonal.
+ */
+TopoDS_Shape occt_heal_shape(const TopoDS_Shape& rShape, const CadReadOptions& rOptions,
+                             OcctHealReport& rReport);
 
 /// A shape and its faces, loops and edges as NURBS.
 struct OcctNurbs {
@@ -45138,6 +45459,47 @@ EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/edge_sampler.hpp =====
+// ===== begin src/cpp/src/detail/expansion.hpp =====
+/**
+ * @file detail/expansion.hpp
+ * @brief Shewchuk's exact expansion arithmetic, as the predicates of
+ * `detail/predicates.hpp` use it, for exact constructions (roadmap 7.8, the
+ * surface-boolean spike: points on an edge and a plane as exact homogeneous
+ * coordinates).
+ *
+ * An expansion is a vector of nonoverlapping doubles in increasing
+ * magnitude, zeros eliminated; its value is their exact sum, and empty is
+ * zero. The functions are defined in `predicates.cpp`, where floating-point
+ * contraction is switched off, and are not inline on purpose: whoever calls
+ * them gets the paper's arithmetic whatever its own compilation flags.
+ *
+ * Core-private: nothing installed names it.
+ */
+
+// System includes
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+using Expansion = std::vector<double>;
+
+/// `A - B` exactly.
+Expansion exp_diff(double A, double B);
+/// `A` itself (empty for zero).
+Expansion exp_of(double A);
+Expansion exp_sum(const Expansion& rE, const Expansion& rF);
+Expansion exp_sub(const Expansion& rE, const Expansion& rF);
+Expansion exp_scale(const Expansion& rE, double B);
+Expansion exp_mul(const Expansion& rE, const Expansion& rF);
+/// The value rounded to a double; its sign is the exact sign.
+double exp_estimate(const Expansion& rE);
+/// The exact sign: -1, 0 or 1.
+int exp_sign(const Expansion& rE);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/expansion.hpp =====
 // ===== begin src/cpp/src/detail/feature_fit.hpp =====
 /**
  * @file feature_fit.hpp
@@ -47081,6 +47443,100 @@ void lsq_levenberg_marquardt(std::vector<double>& rTheta, const std::vector<doub
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/lsq_fit.hpp =====
+// ===== begin src/cpp/src/detail/mesh_boolean.hpp =====
+/**
+ * @file detail/mesh_boolean.hpp
+ * @brief The surface-boolean spike (roadmap 7.8): union, intersection and
+ * difference of two closed triangle surfaces through an exact arrangement.
+ * Not a public operation; `doc/spikes.md` records what it measured and the
+ * decision it led to.
+ *
+ * The method:
+ *
+ *  - **Pairs.** Triangle pairs of A and B whose boxes overlap
+ *    (`soup_box_pairs`), decided exactly (`tri_tri_intersect`).
+ *  - **Exact points.** Every arrangement vertex is an input vertex or the
+ *    point where an edge of one surface crosses the plane of a triangle of
+ *    the other, held as exact homogeneous coordinates `(x, y, z, w)` in
+ *    expansion arithmetic (`detail/expansion.hpp`): with `d_p = n . (p - a)`
+ *    for the plane's normal `n`, the edge `pq` meets it at
+ *    `(d_p q - d_q p) / (d_p - d_q)`. As long as neither surface intersects
+ *    itself no other kind of point arises: two intersection segments inside
+ *    one triangle meet only where the other surface's triangles meet, on its
+ *    edges. Each pair's segment is the set of these points lying in both
+ *    triangles, decided by exact `orient2d` on the homogeneous coordinates.
+ *  - **Retriangulation.** Each cut triangle is retriangulated in its own
+ *    plane (the dominant axis dropped) with its points and segments: the
+ *    points inserted by exact point location, the segments recovered by edge
+ *    flips. Points on a shared edge are inserted into both triangles beside
+ *    it, so the result stays welded.
+ *  - **Classification.** The pieces of each surface are grouped into patches
+ *    bounded by the intersection curves; each patch is inside or outside the
+ *    other surface by the parity of an exact ray cast from one sample point
+ *    (re-cast along another direction when the ray grazes an edge).
+ *  - **Selection.** Union keeps the outside patches of both; intersection the
+ *    inside patches of both; difference A's outside and B's inside, turned.
+ *
+ * Coplanar contact (two triangles in one plane) is not handled: the call
+ * fails naming it. Output points are rounded to doubles; the topology is
+ * exact.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+enum class BooleanOp { Union, Intersection, Difference };
+
+struct BooleanReport {
+    std::int64_t mNumCandidatePairs = 0;  ///< triangle pairs whose boxes overlap
+    std::int64_t mNumIntersectingPairs = 0;
+    std::int64_t mNumCoplanarPairs = 0;
+    std::int64_t mNumImplicitPoints = 0;  ///< edge-plane points made
+    std::int64_t mNumSegments = 0;        ///< intersection segments
+    std::int64_t mNumCutTriangles = 0;
+    std::int64_t mNumSubTriangles = 0;
+    std::int64_t mNumPatchesA = 0;
+    std::int64_t mNumPatchesB = 0;
+    std::int64_t mNumRayRetries = 0;
+    std::int64_t mNumLabelConflicts = 0;  ///< neighbours across a curve on the same side
+    std::int64_t mNumOutputTriangles = 0;
+    /// Output pieces that rounding the points to doubles left collinear or
+    /// turned over (every piece is positive exactly).
+    std::int64_t mNumRoundingInverted = 0;
+    double mSecondsPairs = 0.0;
+    double mSecondsArrangement = 0.0;
+    double mSecondsTriangulate = 0.0;
+    double mSecondsClassify = 0.0;
+};
+
+struct BooleanResult {
+    bool mOk = false;
+    /// Why it failed (empty when `mOk`): "coplanar contact", "not closed", ...
+    std::string mFailure;
+    /// Points (rounded) and one `triangle` block; cell data `boolean:source`
+    /// (0 from A, 1 from B).
+    Mesh mMesh;
+    BooleanReport mReport;
+};
+
+/// The boolean of two closed, manifold, consistently oriented triangle
+/// surfaces (see the file comment). Never throws for geometry: a case it
+/// cannot do comes back with `mOk` false and `mFailure`.
+BooleanResult mesh_boolean_spike(const Mesh& rA, const Mesh& rB, BooleanOp Op);
+
+/// The volume a closed triangle surface encloses (divergence theorem about
+/// its centroid), the spike's oracle.
+double closed_surface_volume(const Mesh& rSurface);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/mesh_boolean.hpp =====
 // ===== begin src/cpp/src/detail/mesh_cad_reparam.hpp =====
 /**
  * @file detail/mesh_cad_reparam.hpp
@@ -49596,6 +50052,44 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/streamlines.hpp =====
+// ===== begin src/cpp/src/detail/subprocess.hpp =====
+/**
+ * @file detail/subprocess.hpp
+ * @brief Run an installed program as a separate process (roadmap 7.7.2, the
+ * external tetrahedral meshers): find it on `PATH`, run it with an argument
+ * vector (no shell), its output sent to a log file, and wait for it.
+ *
+ * Core-internal. Compiled out under Emscripten, where `subprocess_available()`
+ * is false and running throws `Unsupported`.
+ */
+
+// System includes
+#include <string>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+/// Whether this build can start processes.
+bool subprocess_available() noexcept;
+
+/// The full path of the program @p rName: the environment variable
+/// @p pOverride when it is set (and names a file), else the first match on
+/// `PATH` (with `.exe` on Windows); empty when there is none.
+std::string find_executable(const std::string& rName, const char* pOverride = nullptr);
+
+/// Runs @p rArgv (`rArgv[0]` the program's full path) in @p rWorkDir, standard
+/// output and error appended to @p rLogPath, and waits. Returns the exit code
+/// (-1 when the process ended by a signal). Throws `std::runtime_error` when it
+/// cannot start.
+int run_process(const std::vector<std::string>& rArgv, const std::string& rWorkDir,
+                const std::string& rLogPath);
+
+/// A fresh, empty directory under the system temporary directory, named after
+/// @p rTag; the caller removes it.
+std::string make_temp_dir(const std::string& rTag);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/subprocess.hpp =====
 // ===== begin src/cpp/src/detail/surface_edge_runs.hpp =====
 /**
  * @file detail/surface_edge_runs.hpp
@@ -78860,6 +79354,617 @@ EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/edge_sampler.cpp =====
+// ===== begin src/cpp/src/detail/external_mesher.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <iterator>
+#include <map>
+#include <stdexcept>
+#include <string>
+#include <system_error>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+using EmPoint = std::array<double, 3>;
+
+// The run's directory, removed afterwards unless MESHIOPLUSPLUS_KEEP_TEMP is set.
+struct EmWorkDir {
+    std::string mPath;
+    explicit EmWorkDir(const std::string& rTag) : mPath(detail::make_temp_dir(rTag)) {}
+    EmWorkDir(const EmWorkDir&) = delete;
+    EmWorkDir& operator=(const EmWorkDir&) = delete;
+    ~EmWorkDir() {
+        const char* p_keep = std::getenv("MESHIOPLUSPLUS_KEEP_TEMP");
+        if (p_keep && *p_keep && std::string(p_keep) != "0") {
+            log::info("external mesher: kept '{}'", mPath);
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::remove_all(mPath, ec);
+    }
+    std::string File(const std::string& rName) const {
+        return (std::filesystem::path(mPath) / rName).string();
+    }
+};
+
+std::string em_num(double Value) {
+    char buf[40];
+    detail::snprintf_c(buf, sizeof(buf), "%.17g", Value);
+    return buf;
+}
+
+// The last lines of the program's log, for an error message.
+std::string em_log_tail(const std::string& rLog) {
+    auto in = detail::make_classic_ifstream(rLog);
+    std::vector<std::string> lines;
+    for (std::string line; std::getline(in, line);)
+        if (!line.empty())
+            lines.push_back(line);
+    std::string out;
+    for (std::size_t i = lines.size() > 6 ? lines.size() - 6 : 0; i < lines.size(); ++i)
+        out += (out.empty() ? "" : " | ") + lines[i];
+    return out;
+}
+
+void em_run(const std::string& rName, const std::vector<std::string>& rArgv,
+            const EmWorkDir& rDir) {
+    const std::string log = rDir.File("mesher.log");
+    const int code = detail::run_process(rArgv, rDir.mPath, log);
+    if (code != 0)
+        throw std::runtime_error(rName + " failed (exit code " + std::to_string(code) +
+                                 "): " + em_log_tail(log));
+}
+
+/**
+ * The region's result from the mesher's points and tetrahedra: the request's
+ * points first, exactly as given, each matched to the mesher's copy of it
+ * (which a text round trip may have rounded in the last digit), then the
+ * points the mesher added. `mBoundaryPreserved` holds when every request
+ * point came back and the tetrahedra's boundary is the request's triangles.
+ */
+TetMeshRegionResult em_assemble(const TetMeshRegionRequest& rRequest,
+                                const std::vector<EmPoint>& rOut,
+                                const std::vector<std::array<std::int64_t, 4>>& rTets) {
+    const std::size_t n_in = rRequest.mPoints.size();
+    EmPoint lo{}, hi{};
+    for (std::size_t k = 0; k < 3; ++k) {
+        lo[k] = hi[k] = n_in ? rRequest.mPoints[0][k] : 0.0;
+        for (const EmPoint& r_p : rRequest.mPoints) {
+            lo[k] = std::min(lo[k], r_p[k]);
+            hi[k] = std::max(hi[k], r_p[k]);
+        }
+    }
+    const double diag =
+        std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                  (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    const double tol = std::max(1e-9 * diag, 1e-300);
+    const double cell = 4.0 * tol;
+    struct KeyHash {
+        std::size_t operator()(const std::array<std::int64_t, 3>& rK) const noexcept {
+            return static_cast<std::size_t>(rK[0] * 73856093LL ^ rK[1] * 19349663LL ^
+                                            rK[2] * 83492791LL);
+        }
+    };
+    const auto key = [&](const EmPoint& rP) {
+        return std::array<std::int64_t, 3>{static_cast<std::int64_t>(std::floor(rP[0] / cell)),
+                                           static_cast<std::int64_t>(std::floor(rP[1] / cell)),
+                                           static_cast<std::int64_t>(std::floor(rP[2] / cell))};
+    };
+    std::unordered_map<std::array<std::int64_t, 3>, std::vector<std::size_t>, KeyHash> grid;
+    for (std::size_t i = 0; i < n_in; ++i)
+        grid[key(rRequest.mPoints[i])].push_back(i);
+
+    TetMeshRegionResult result;
+    result.mPoints = rRequest.mPoints;
+    std::vector<std::int64_t> map(rOut.size(), -1);
+    std::vector<bool> matched(n_in, false);
+    for (std::size_t o = 0; o < rOut.size(); ++o) {
+        const auto k = key(rOut[o]);
+        std::int64_t best = -1;
+        double best_d = tol * tol;
+        for (std::int64_t dx = -1; dx <= 1; ++dx)
+            for (std::int64_t dy = -1; dy <= 1; ++dy)
+                for (std::int64_t dz = -1; dz <= 1; ++dz) {
+                    const auto it = grid.find({k[0] + dx, k[1] + dy, k[2] + dz});
+                    if (it == grid.end())
+                        continue;
+                    for (const std::size_t i : it->second) {
+                        double d = 0.0;
+                        for (std::size_t c = 0; c < 3; ++c)
+                            d += (rOut[o][c] - rRequest.mPoints[i][c]) *
+                                 (rOut[o][c] - rRequest.mPoints[i][c]);
+                        if (d <= best_d && !matched[i]) {
+                            best_d = d;
+                            best = static_cast<std::int64_t>(i);
+                        }
+                    }
+                }
+        if (best >= 0) {
+            matched[static_cast<std::size_t>(best)] = true;
+            map[o] = best;
+        } else {
+            map[o] = static_cast<std::int64_t>(result.mPoints.size());
+            result.mPoints.push_back(rOut[o]);
+        }
+    }
+    result.mBoundaryPreserved =
+        std::all_of(matched.begin(), matched.end(), [](bool B) { return B; });
+    result.mTets.reserve(rTets.size());
+    for (const auto& r_t : rTets) {
+        std::array<std::int64_t, 4> t{};
+        for (std::size_t j = 0; j < 4; ++j) {
+            if (r_t[j] < 0 || static_cast<std::size_t>(r_t[j]) >= map.size())
+                throw std::runtime_error("the mesher returned a tetrahedron naming no point");
+            t[j] = map[static_cast<std::size_t>(r_t[j])];
+        }
+        result.mTets.push_back(t);
+    }
+    // The boundary: faces of one tetrahedron only, against the request's.
+    if (result.mBoundaryPreserved) {
+        std::map<std::array<std::int64_t, 3>, int> faces;
+        static constexpr int kFace[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+        for (const auto& r_t : result.mTets)
+            for (const auto& r_f : kFace) {
+                std::array<std::int64_t, 3> f{r_t[r_f[0]], r_t[r_f[1]], r_t[r_f[2]]};
+                std::sort(f.begin(), f.end());
+                ++faces[f];
+            }
+        std::vector<std::array<std::int64_t, 3>> got, want;
+        for (const auto& r_e : faces)
+            if (r_e.second == 1)
+                got.push_back(r_e.first);
+        for (const auto& r_t : rRequest.mTriangles) {
+            std::array<std::int64_t, 3> f = r_t;
+            std::sort(f.begin(), f.end());
+            want.push_back(f);
+        }
+        std::sort(want.begin(), want.end());
+        result.mBoundaryPreserved = got == want;
+    }
+    return result;
+}
+
+/**
+ * The region's shells (triangles connected across edges), the outer one first
+ * (the largest bounding box), each as triangle indices; and for each inner
+ * shell (a hole of the region) a point inside it: a triangle's centre moved a
+ * little along its normal, which faces out of the region, so into the hole.
+ */
+struct EmShells {
+    std::vector<std::vector<std::size_t>> mShells;
+    std::vector<EmPoint> mHolePoints;
+};
+
+EmShells em_shells(const TetMeshRegionRequest& rRequest) {
+    const std::size_t nt = rRequest.mTriangles.size();
+    std::vector<std::size_t> parent(nt);
+    for (std::size_t t = 0; t < nt; ++t)
+        parent[t] = t;
+    const auto find = [&](std::size_t A) {
+        while (parent[A] != A)
+            A = parent[A] = parent[parent[A]];
+        return A;
+    };
+    std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> edge_owner;
+    for (std::size_t t = 0; t < nt; ++t)
+        for (std::size_t k = 0; k < 3; ++k) {
+            std::int64_t a = rRequest.mTriangles[t][k], b = rRequest.mTriangles[t][(k + 1) % 3];
+            if (a > b)
+                std::swap(a, b);
+            const auto [it, fresh] = edge_owner.emplace(std::make_pair(a, b), t);
+            if (!fresh)
+                parent[find(t)] = find(it->second);
+        }
+    std::map<std::size_t, std::size_t> root_index;
+    EmShells out;
+    for (std::size_t t = 0; t < nt; ++t) {
+        const std::size_t r = find(t);
+        const auto [it, fresh] = root_index.emplace(r, out.mShells.size());
+        if (fresh)
+            out.mShells.emplace_back();
+        out.mShells[it->second].push_back(t);
+    }
+    const auto extent = [&](const std::vector<std::size_t>& rShell) {
+        EmPoint lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
+        for (const std::size_t t : rShell)
+            for (const std::int64_t v : rRequest.mTriangles[t])
+                for (std::size_t c = 0; c < 3; ++c) {
+                    lo[c] = std::min(lo[c], rRequest.mPoints[static_cast<std::size_t>(v)][c]);
+                    hi[c] = std::max(hi[c], rRequest.mPoints[static_cast<std::size_t>(v)][c]);
+                }
+        return (hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+               (hi[2] - lo[2]) * (hi[2] - lo[2]);
+    };
+    std::size_t outer = 0;
+    for (std::size_t s = 1; s < out.mShells.size(); ++s)
+        if (extent(out.mShells[s]) > extent(out.mShells[outer]))
+            outer = s;
+    std::swap(out.mShells[0], out.mShells[outer]);
+    for (std::size_t s = 1; s < out.mShells.size(); ++s) {
+        // The largest triangle of the shell, for a step well inside its size.
+        std::size_t best = out.mShells[s][0];
+        double best_area = -1.0;
+        EmPoint best_n{};
+        for (const std::size_t t : out.mShells[s]) {
+            const auto& r_t = rRequest.mTriangles[t];
+            const EmPoint& a = rRequest.mPoints[static_cast<std::size_t>(r_t[0])];
+            const EmPoint& b = rRequest.mPoints[static_cast<std::size_t>(r_t[1])];
+            const EmPoint& c = rRequest.mPoints[static_cast<std::size_t>(r_t[2])];
+            const EmPoint u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+            const EmPoint v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+            const EmPoint n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                            u[0] * v[1] - u[1] * v[0]};
+            const double area = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            if (area > best_area) {
+                best_area = area;
+                best = t;
+                best_n = n;
+            }
+        }
+        const auto& r_t = rRequest.mTriangles[best];
+        EmPoint centre{};
+        for (const std::int64_t v : r_t)
+            for (std::size_t c = 0; c < 3; ++c)
+                centre[c] += rRequest.mPoints[static_cast<std::size_t>(v)][c] / 3.0;
+        const double len = best_area > 0.0 ? best_area : 1.0;
+        // A step of a tenth of the triangle's size, along the unit normal.
+        const double step = 0.1 * std::sqrt(0.5 * best_area);
+        out.mHolePoints.push_back({centre[0] + step * best_n[0] / len,
+                                   centre[1] + step * best_n[1] / len,
+                                   centre[2] + step * best_n[2] / len});
+    }
+    return out;
+}
+
+// TetGen 1.5/1.6 meshes a piecewise-linear complex (`-p`) without adding
+// points on its boundary (`-Y`), quietly (`-Q`), with quality (`-q`) when the
+// optimisation passes are asked for and a volume bound (`-a`) from the size.
+TetMeshRegionResult em_tetgen(const std::string& rExe, const TetMeshRegionRequest& rRequest) {
+    const EmWorkDir dir("tetgen");
+    Mesh surface;
+    {
+        const std::size_t n = rRequest.mPoints.size();
+        NDArray p(DType::Float64, {n, std::size_t{3}});
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t c = 0; c < 3; ++c)
+                p.As<double>()[3 * i + c] = rRequest.mPoints[i][c];
+        surface.AssignPoints(std::move(p));
+        NDArray t(DType::Int64, {rRequest.mTriangles.size(), std::size_t{3}});
+        for (std::size_t f = 0; f < rRequest.mTriangles.size(); ++f)
+            for (std::size_t c = 0; c < 3; ++c)
+                t.As<std::int64_t>()[3 * f + c] = rRequest.mTriangles[f][c];
+        surface.AddCellBlock("triangle", std::move(t));
+    }
+    const std::string in = dir.File("in.smesh");
+    write_tetgen(in, surface);
+    {
+        // The holes: write_tetgen's `.smesh` ends with empty hole and region
+        // lists, which a region with inner shells replaces.
+        const EmShells shells = em_shells(rRequest);
+        if (!shells.mHolePoints.empty()) {
+            auto text_in = detail::make_classic_ifstream(in);
+            std::string text((std::istreambuf_iterator<char>(text_in)),
+                             std::istreambuf_iterator<char>());
+            text_in.close();
+            const std::string tail = "# part 3: holes\n0\n";
+            const std::size_t at = text.rfind(tail);
+            if (at == std::string::npos)
+                throw std::runtime_error("tetgen: unexpected .smesh layout");
+            std::string holes =
+                "# part 3: holes\n" + std::to_string(shells.mHolePoints.size()) + "\n";
+            for (std::size_t h = 0; h < shells.mHolePoints.size(); ++h)
+                holes += std::to_string(h) + " " + em_num(shells.mHolePoints[h][0]) + " " +
+                         em_num(shells.mHolePoints[h][1]) + " " + em_num(shells.mHolePoints[h][2]) +
+                         "\n";
+            text.replace(at, tail.size(), holes);
+            auto text_out = detail::make_classic_ofstream(in, std::ios::binary);
+            text_out << text;
+        }
+    }
+    std::string switches = "-pYQ";
+    if (rRequest.mOptimizeSteps > 0)
+        switches += "q";
+    if (rRequest.mMaxSize > 0.0) {
+        // The volume of a regular tetrahedron of that edge.
+        const double h = rRequest.mMaxSize;
+        switches += "a" + em_num(h * h * h / (6.0 * std::sqrt(2.0)));
+    }
+    em_run("tetgen", {rExe, switches, in}, dir);
+    const Mesh out = read_tetgen(dir.File("in.1.node"));
+    std::vector<EmPoint> pts(out.NumPoints());
+    const NDArray& r_p = out.Points();
+    for (std::size_t i = 0; i < pts.size(); ++i)
+        for (std::size_t c = 0; c < 3; ++c)
+            pts[i][c] = detail::read_double(r_p, 3 * i + c);
+    std::vector<std::array<std::int64_t, 4>> tets;
+    for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
+        const auto cells = out.Cells(b);
+        if (cells.Type() != "tetra")
+            continue;
+        for (std::size_t c = 0; c < cells.NumCells(); ++c)
+            tets.push_back({detail::read_int(cells.Conn(), 4 * c),
+                            detail::read_int(cells.Conn(), 4 * c + 1),
+                            detail::read_int(cells.Conn(), 4 * c + 2),
+                            detail::read_int(cells.Conn(), 4 * c + 3)});
+    }
+    return em_assemble(rRequest, pts, tets);
+}
+
+// Gmsh meshes the volume a discrete surface (an ASCII STL, full precision)
+// bounds, keeping its triangles: `Surface Loop` and `Volume` over it, `-3`.
+TetMeshRegionResult em_gmsh(const std::string& rExe, const TetMeshRegionRequest& rRequest) {
+    const EmWorkDir dir("gmsh");
+    const EmShells shells = em_shells(rRequest);
+    {
+        // One `solid` per shell: Gmsh makes each a discrete surface, numbered
+        // from 1 in file order.
+        auto stl = detail::make_classic_ofstream(dir.File("in.stl"));
+        for (const auto& r_shell : shells.mShells) {
+            stl << "solid region\n";
+            for (const std::size_t t_index : r_shell) {
+                const auto& r_t = rRequest.mTriangles[t_index];
+                const EmPoint& a = rRequest.mPoints[static_cast<std::size_t>(r_t[0])];
+                const EmPoint& b = rRequest.mPoints[static_cast<std::size_t>(r_t[1])];
+                const EmPoint& c = rRequest.mPoints[static_cast<std::size_t>(r_t[2])];
+                const EmPoint u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+                const EmPoint v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+                EmPoint n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                          u[0] * v[1] - u[1] * v[0]};
+                const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                for (double& rC : n)
+                    rC = len > 0.0 ? rC / len : 0.0;
+                stl << "facet normal " << em_num(n[0]) << " " << em_num(n[1]) << " " << em_num(n[2])
+                    << "\n outer loop\n";
+                for (const EmPoint* p_v : {&a, &b, &c})
+                    stl << "  vertex " << em_num((*p_v)[0]) << " " << em_num((*p_v)[1]) << " "
+                        << em_num((*p_v)[2]) << "\n";
+                stl << " endloop\nendfacet\n";
+            }
+            stl << "endsolid region\n";
+        }
+        auto geo = detail::make_classic_ofstream(dir.File("in.geo"));
+        geo << "Merge \"in.stl\";\n";
+        std::string loops;
+        for (std::size_t k = 1; k <= shells.mShells.size(); ++k) {
+            geo << "Surface Loop(" << k << ") = {" << k << "};\n";
+            loops += (k > 1 ? "," : "") + std::to_string(k);
+        }
+        geo << "Volume(1) = {" << loops << "};\n";
+        if (rRequest.mOptimizeSteps <= 0)
+            geo << "Mesh.Optimize = 0;\n";
+    }
+    std::vector<std::string> argv = {rExe,      "-3",    "-v", "2",
+                                     "-format", "msh41", "-o", dir.File("out.msh")};
+    if (rRequest.mMaxSize > 0.0) {
+        argv.push_back("-clmax");
+        argv.push_back(em_num(rRequest.mMaxSize));
+    }
+    argv.push_back(dir.File("in.geo"));
+    em_run("gmsh", argv, dir);
+    const Mesh out = read_gmsh(dir.File("out.msh"));
+    std::vector<EmPoint> pts(out.NumPoints());
+    const NDArray& r_p = out.Points();
+    for (std::size_t i = 0; i < pts.size(); ++i)
+        for (std::size_t c = 0; c < 3; ++c)
+            pts[i][c] = detail::read_double(r_p, 3 * i + c);
+    std::vector<std::array<std::int64_t, 4>> tets;
+    for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
+        const auto cells = out.Cells(b);
+        if (cells.Type() != "tetra")
+            continue;
+        for (std::size_t c = 0; c < cells.NumCells(); ++c)
+            tets.push_back({detail::read_int(cells.Conn(), 4 * c),
+                            detail::read_int(cells.Conn(), 4 * c + 1),
+                            detail::read_int(cells.Conn(), 4 * c + 2),
+                            detail::read_int(cells.Conn(), 4 * c + 3)});
+    }
+    if (tets.empty())
+        throw std::runtime_error("gmsh produced no tetrahedra: " +
+                                 em_log_tail(dir.File("mesher.log")));
+    return em_assemble(rRequest, pts, tets);
+}
+
+// --- quad remeshers (roadmap 7.7.3) ---------------------------------------------
+
+// The surface as a Wavefront OBJ at full precision.
+void em_write_obj(const std::string& rPath, const QuadRemeshRequest& rRequest) {
+    auto obj = detail::make_classic_ofstream(rPath);
+    for (const EmPoint& r_p : rRequest.mPoints)
+        obj << "v " << em_num(r_p[0]) << " " << em_num(r_p[1]) << " " << em_num(r_p[2]) << "\n";
+    for (const auto& r_t : rRequest.mTriangles)
+        obj << "f " << r_t[0] + 1 << " " << r_t[1] + 1 << " " << r_t[2] + 1 << "\n";
+    if (!obj)
+        throw std::runtime_error("cannot write '" + rPath + "'");
+}
+
+// The `v` and `f` records of the program's OBJ (`f` corners as `i`, `i/t` or
+// `i/t/n`, negative indices relative): quads, and triangles where the program
+// left them. A larger face is refused.
+QuadRemeshResult em_read_obj(const std::string& rPath, const char* pProgram) {
+    auto in = detail::make_classic_ifstream(rPath);
+    if (!in)
+        throw std::runtime_error(std::string(pProgram) + " wrote no '" + rPath + "'");
+    QuadRemeshResult out;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.size() < 2 || line[1] != ' ' || (line[0] != 'v' && line[0] != 'f'))
+            continue;
+        std::vector<std::string> tokens;
+        for (std::size_t at = 2; at < line.size();) {
+            while (at < line.size() && (line[at] == ' ' || line[at] == '\t' || line[at] == '\r'))
+                ++at;
+            std::size_t end = at;
+            while (end < line.size() && line[end] != ' ' && line[end] != '\t' && line[end] != '\r')
+                ++end;
+            if (end > at)
+                tokens.push_back(line.substr(at, end - at));
+            at = end;
+        }
+        if (line[0] == 'v') {
+            if (tokens.size() < 3)
+                throw std::runtime_error(std::string(pProgram) +
+                                         " wrote a vertex without 3 coordinates");
+            EmPoint p{};
+            for (std::size_t c = 0; c < 3; ++c) {
+                p[c] = detail::parse_double(tokens[c]);
+                if (!std::isfinite(p[c]))
+                    throw std::runtime_error(std::string(pProgram) + " wrote a non-finite vertex");
+            }
+            out.mPoints.push_back(p);
+            continue;
+        }
+        std::vector<std::int64_t> face;
+        for (const std::string& r_tok : tokens) {
+            const std::string head = r_tok.substr(0, r_tok.find('/'));
+            char* p_end = nullptr;
+            const long long v = std::strtoll(head.c_str(), &p_end, 10);
+            if (head.empty() || p_end != head.c_str() + head.size() || v == 0)
+                throw std::runtime_error(std::string(pProgram) + " wrote a bad face corner '" +
+                                         r_tok + "'");
+            const auto n = static_cast<long long>(out.mPoints.size());
+            face.push_back(v > 0 ? v - 1 : n + v);
+        }
+        for (const std::int64_t v : face)
+            if (v < 0 || v >= static_cast<std::int64_t>(out.mPoints.size()))
+                throw std::runtime_error(std::string(pProgram) + " wrote a face naming no vertex");
+        if (face.size() == 4)
+            out.mQuads.push_back({face[0], face[1], face[2], face[3]});
+        else if (face.size() == 3)
+            out.mTriangles.push_back({face[0], face[1], face[2]});
+        else
+            throw std::runtime_error(std::string(pProgram) + " wrote a face of " +
+                                     std::to_string(face.size()) + " corners");
+    }
+    if (out.mQuads.empty() && out.mTriangles.empty())
+        throw std::runtime_error(std::string(pProgram) + " wrote no face");
+    return out;
+}
+
+// QuadriFlow (Huang et al. 2018): `quadriflow -i in.obj -o out.obj -f N`, an
+// all-quad mesh.
+QuadRemeshResult em_quadriflow(const std::string& rExe, const QuadRemeshRequest& rRequest) {
+    const EmWorkDir dir("quadriflow");
+    em_write_obj(dir.File("in.obj"), rRequest);
+    std::vector<std::string> argv = {rExe};
+    if (rRequest.mSharp)
+        argv.push_back("-sharp");
+    if (rRequest.mBoundary)
+        argv.push_back("-boundary");
+    if (rRequest.mAdaptive)
+        argv.push_back("-adaptive");
+    argv.insert(argv.end(),
+                {"-seed", std::to_string(rRequest.mSeed), "-i", dir.File("in.obj"), "-o",
+                 dir.File("out.obj"), "-f", std::to_string(rRequest.mTargetFaces)});
+    em_run("quadriflow", argv, dir);
+    return em_read_obj(dir.File("out.obj"), "quadriflow");
+}
+
+// Instant Meshes (Jakob et al. 2015) in batch mode: `-o out.obj -f N -d`,
+// deterministic; `-D` quad-dominant, `-b` boundaries kept, `-c` creases.
+QuadRemeshResult em_instant_meshes(const std::string& rExe, const QuadRemeshRequest& rRequest) {
+    const EmWorkDir dir("instant_meshes");
+    em_write_obj(dir.File("in.obj"), rRequest);
+    std::vector<std::string> argv = {
+        rExe, "-d", "-o", dir.File("out.obj"), "-f", std::to_string(rRequest.mTargetFaces)};
+    if (rRequest.mDominant)
+        argv.push_back("-D");
+    if (rRequest.mBoundary)
+        argv.push_back("-b");
+    if (rRequest.mSharp) {
+        argv.push_back("-c");
+        argv.push_back("30");
+    }
+    argv.push_back(dir.File("in.obj"));
+    em_run("instant_meshes", argv, dir);
+    return em_read_obj(dir.File("out.obj"), "instant_meshes");
+}
+
+}  // namespace
+
+namespace providers {
+
+std::vector<TetMesherProvider> make_external_tet_meshers() {
+    std::vector<TetMesherProvider> out;
+    if (!detail::subprocess_available())
+        return out;
+    const char* p_off = std::getenv("MESHIOPLUSPLUS_NO_EXTERNAL_MESHERS");
+    if (p_off && *p_off && std::string(p_off) != "0")
+        return out;
+    const std::string tetgen = detail::find_executable("tetgen", "MESHIOPLUSPLUS_TETGEN");
+    if (!tetgen.empty()) {
+        TetMesherProvider p;
+        p.mName = "tetgen";
+        p.mVersion = "external: " + tetgen;
+        p.mMeshRegion = [tetgen](const TetMeshRegionRequest& rRequest) {
+            return em_tetgen(tetgen, rRequest);
+        };
+        out.push_back(std::move(p));
+    }
+    const std::string gmsh = detail::find_executable("gmsh", "MESHIOPLUSPLUS_GMSH");
+    if (!gmsh.empty()) {
+        TetMesherProvider p;
+        p.mName = "gmsh";
+        p.mVersion = "external: " + gmsh;
+        p.mMeshRegion = [gmsh](const TetMeshRegionRequest& rRequest) {
+            return em_gmsh(gmsh, rRequest);
+        };
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
+std::vector<QuadRemesherProvider> make_external_quad_remeshers() {
+    std::vector<QuadRemesherProvider> out;
+    if (!detail::subprocess_available())
+        return out;
+    const char* p_off = std::getenv("MESHIOPLUSPLUS_NO_EXTERNAL_MESHERS");
+    if (p_off && *p_off && std::string(p_off) != "0")
+        return out;
+    const std::string quadriflow =
+        detail::find_executable("quadriflow", "MESHIOPLUSPLUS_QUADRIFLOW");
+    if (!quadriflow.empty()) {
+        QuadRemesherProvider p;
+        p.mName = "quadriflow";
+        p.mVersion = "external: " + quadriflow;
+        p.mRemesh = [quadriflow](const QuadRemeshRequest& rRequest) {
+            return em_quadriflow(quadriflow, rRequest);
+        };
+        out.push_back(std::move(p));
+    }
+    std::string instant =
+        detail::find_executable("Instant Meshes", "MESHIOPLUSPLUS_INSTANT_MESHES");
+    for (const char* p_alt : {"instant-meshes", "InstantMeshes"})
+        if (instant.empty())
+            instant = detail::find_executable(p_alt);
+    if (!instant.empty()) {
+        QuadRemesherProvider p;
+        p.mName = "instant_meshes";
+        p.mVersion = "external: " + instant;
+        p.mRemesh = [instant](const QuadRemeshRequest& rRequest) {
+            return em_instant_meshes(instant, rRequest);
+        };
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
+}  // namespace providers
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/external_mesher.cpp =====
 // ===== begin src/cpp/src/detail/face_color.cpp =====
 
 #include <cmath>
@@ -89178,6 +90283,919 @@ Mesh marching_cut(const MarchingInput& rInput, const std::vector<double>& rNodeV
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/marching.cpp =====
+// ===== begin src/cpp/src/detail/mesh_boolean.cpp =====
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <tuple>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+using MbVec = std::array<double, 3>;
+using MbTri = std::array<std::int64_t, 3>;
+
+/// A point as exact homogeneous coordinates; `mApprox` its rounded position.
+struct MbPoint {
+    std::array<Expansion, 3> mX;
+    Expansion mW;
+    MbVec mApprox{};
+    bool mExplicit = false;
+};
+
+/// The failure the spike reports instead of a result.
+struct MbFailure {
+    std::string mWhy;
+};
+
+struct MbSurface {
+    std::vector<MbVec> mP;
+    std::vector<MbTri> mT;
+};
+
+double mb_seconds_since(const std::chrono::steady_clock::time_point& rT0) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - rT0).count();
+}
+
+MbSurface mb_surface(const Mesh& rMesh, const char* pName) {
+    MbSurface s;
+    const std::size_t np = rMesh.NumPoints();
+    const NDArray& r_p = rMesh.Points();
+    if (np > 0 && (r_p.Ndim() != 2 || r_p.Shape()[1] != 3))
+        throw MbFailure{std::string(pName) + ": points must be three-dimensional"};
+    s.mP.resize(np);
+    for (std::size_t i = 0; i < np; ++i)
+        for (std::size_t k = 0; k < 3; ++k) {
+            s.mP[i][k] = read_double(r_p, 3 * i + k);
+            if (!std::isfinite(s.mP[i][k]))
+                throw MbFailure{std::string(pName) + ": a non-finite point"};
+        }
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cells = rMesh.Cells(b);
+        if (cells.Type() != "triangle" || cells.IsRagged())
+            throw MbFailure{std::string(pName) + ": not a triangle surface ('" +
+                            std::string(cells.Type()) + "' block)"};
+        for (std::size_t c = 0; c < cells.NumCells(); ++c)
+            s.mT.push_back({read_int(cells.Conn(), 3 * c), read_int(cells.Conn(), 3 * c + 1),
+                            read_int(cells.Conn(), 3 * c + 2)});
+    }
+    if (s.mT.empty())
+        throw MbFailure{std::string(pName) + ": no triangle"};
+    const SurfaceQuality q = surface_watertight_check(rMesh);
+    if (!q.mWatertight)
+        throw MbFailure{std::string(pName) + ": not closed, manifold and oriented"};
+    return s;
+}
+
+MbPoint mb_explicit(const MbVec& rP) {
+    MbPoint q;
+    for (std::size_t k = 0; k < 3; ++k)
+        q.mX[k] = exp_of(rP[k]);
+    q.mW = exp_of(1.0);
+    q.mApprox = rP;
+    q.mExplicit = true;
+    return q;
+}
+
+/// The exact normal `(b - a) x (c - a)`.
+std::array<Expansion, 3> mb_normal(const MbVec& rA, const MbVec& rB, const MbVec& rC) {
+    std::array<Expansion, 3> u, v, n;
+    for (std::size_t k = 0; k < 3; ++k) {
+        u[k] = exp_diff(rB[k], rA[k]);
+        v[k] = exp_diff(rC[k], rA[k]);
+    }
+    for (std::size_t k = 0; k < 3; ++k) {
+        const std::size_t i = (k + 1) % 3, j = (k + 2) % 3;
+        n[k] = exp_sub(exp_mul(u[i], v[j]), exp_mul(u[j], v[i]));
+    }
+    return n;
+}
+
+/// The edge `pq` meets the plane of `abc` (the caller has checked that `p`
+/// and `q` lie strictly on opposite sides).
+MbPoint mb_lpi(const MbVec& rP, const MbVec& rQ, const MbVec& rA, const MbVec& rB,
+               const MbVec& rC) {
+    const std::array<Expansion, 3> n = mb_normal(rA, rB, rC);
+    Expansion dp, dq;
+    for (std::size_t k = 0; k < 3; ++k) {
+        dp = exp_sum(dp, exp_mul(n[k], exp_diff(rP[k], rA[k])));
+        dq = exp_sum(dq, exp_mul(n[k], exp_diff(rQ[k], rA[k])));
+    }
+    MbPoint out;
+    for (std::size_t k = 0; k < 3; ++k)
+        out.mX[k] = exp_sub(exp_scale(dp, rQ[k]), exp_scale(dq, rP[k]));
+    out.mW = exp_sub(dp, dq);
+    const double w = exp_estimate(out.mW);
+    for (std::size_t k = 0; k < 3; ++k)
+        out.mApprox[k] = exp_estimate(out.mX[k]) / w;
+    return out;
+}
+
+bool mb_equal(const MbPoint& rP, const MbPoint& rQ) {
+    if (rP.mExplicit && rQ.mExplicit)
+        return rP.mApprox == rQ.mApprox;
+    for (std::size_t k = 0; k < 3; ++k)
+        if (exp_sign(exp_sub(exp_mul(rP.mX[k], rQ.mW), exp_mul(rQ.mX[k], rP.mW))) != 0)
+            return false;
+    return true;
+}
+
+/// The sign of `P_k - Q_k`, exactly.
+int mb_cmp_coord(const MbPoint& rP, const MbPoint& rQ, std::size_t K) {
+    if (rP.mExplicit && rQ.mExplicit)
+        return rP.mApprox[K] < rQ.mApprox[K] ? -1 : (rP.mApprox[K] > rQ.mApprox[K] ? 1 : 0);
+    const int s = exp_sign(exp_sub(exp_mul(rP.mX[K], rQ.mW), exp_mul(rQ.mX[K], rP.mW)));
+    return s * exp_sign(rP.mW) * exp_sign(rQ.mW);
+}
+
+/// The sign of `orient2d` of three points with axis `Ax` dropped.
+int mb_orient2d(const MbPoint& r1, const MbPoint& r2, const MbPoint& r3, std::size_t Ax) {
+    const std::size_t u = (Ax + 1) % 3, v = (Ax + 2) % 3;
+    if (r1.mExplicit && r2.mExplicit && r3.mExplicit) {
+        const double a[2] = {r1.mApprox[u], r1.mApprox[v]};
+        const double b[2] = {r2.mApprox[u], r2.mApprox[v]};
+        const double c[2] = {r3.mApprox[u], r3.mApprox[v]};
+        const double o = orient2d(a, b, c);
+        return o > 0.0 ? 1 : (o < 0.0 ? -1 : 0);
+    }
+    const auto minor = [&](const MbPoint& rI, const MbPoint& rJ) {
+        return exp_sub(exp_mul(rI.mX[v], rJ.mW), exp_mul(rJ.mX[v], rI.mW));
+    };
+    Expansion det = exp_mul(r1.mX[u], minor(r2, r3));
+    det = exp_sub(det, exp_mul(r2.mX[u], minor(r1, r3)));
+    det = exp_sum(det, exp_mul(r3.mX[u], minor(r1, r2)));
+    return exp_sign(det) * exp_sign(r1.mW) * exp_sign(r2.mW) * exp_sign(r3.mW);
+}
+
+int mb_sign(double V) {
+    return V > 0.0 ? 1 : (V < 0.0 ? -1 : 0);
+}
+
+/// The points, deduplicated exactly: a bucket grid on the rounded positions,
+/// then an exact comparison with the candidates in the 27 cells around.
+class MbStore {
+public:
+    explicit MbStore(double Cell) : mCell(Cell) {}
+
+    std::int64_t Add(MbPoint&& rP) {
+        const auto key = Key(rP.mApprox);
+        for (std::int64_t dx = -1; dx <= 1; ++dx)
+            for (std::int64_t dy = -1; dy <= 1; ++dy)
+                for (std::int64_t dz = -1; dz <= 1; ++dz) {
+                    const auto it = mGrid.find(Hash({key[0] + dx, key[1] + dy, key[2] + dz}));
+                    if (it == mGrid.end())
+                        continue;
+                    for (const std::int64_t id : it->second)
+                        if (mb_equal(mPoints[static_cast<std::size_t>(id)], rP))
+                            return id;
+                }
+        const auto id = static_cast<std::int64_t>(mPoints.size());
+        mGrid[Hash(key)].push_back(id);
+        mPoints.push_back(std::move(rP));
+        return id;
+    }
+
+    const MbPoint& operator[](std::int64_t Id) const {
+        return mPoints[static_cast<std::size_t>(Id)];
+    }
+    std::size_t Size() const { return mPoints.size(); }
+
+private:
+    std::array<std::int64_t, 3> Key(const MbVec& rP) const {
+        return {static_cast<std::int64_t>(std::floor(rP[0] / mCell)),
+                static_cast<std::int64_t>(std::floor(rP[1] / mCell)),
+                static_cast<std::int64_t>(std::floor(rP[2] / mCell))};
+    }
+    static std::uint64_t Hash(const std::array<std::int64_t, 3>& rK) {
+        return static_cast<std::uint64_t>(rK[0]) * 73856093ULL ^
+               static_cast<std::uint64_t>(rK[1]) * 19349663ULL ^
+               static_cast<std::uint64_t>(rK[2]) * 83492791ULL;
+    }
+
+    double mCell;
+    std::vector<MbPoint> mPoints;
+    std::unordered_map<std::uint64_t, std::vector<std::int64_t>> mGrid;
+};
+
+/// One triangle of a surface as the arrangement cuts it.
+struct MbCut {
+    std::vector<std::int64_t> mPoints;                             ///< global ids
+    std::vector<std::pair<std::int64_t, std::int64_t>> mSegments;  ///< global ids
+};
+
+std::uint64_t mb_edge_key(std::int64_t A, std::int64_t B) {
+    if (A > B)
+        std::swap(A, B);
+    return (static_cast<std::uint64_t>(A) << 32) ^ static_cast<std::uint64_t>(B);
+}
+
+/// The dropped axis of a triangle (its normal's largest component) and the
+/// sign that makes its own corners turn positively in that projection.
+std::pair<std::size_t, int> mb_axis(const MbVec& rA, const MbVec& rB, const MbVec& rC) {
+    const MbVec u{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
+    const MbVec v{rC[0] - rA[0], rC[1] - rA[1], rC[2] - rA[2]};
+    const MbVec n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+    std::size_t ax = 0;
+    for (std::size_t k = 1; k < 3; ++k)
+        if (std::fabs(n[k]) > std::fabs(n[ax]))
+            ax = k;
+    const std::size_t i = (ax + 1) % 3, j = (ax + 2) % 3;
+    const double a[2] = {rA[i], rA[j]}, b[2] = {rB[i], rB[j]}, c[2] = {rC[i], rC[j]};
+    return {ax, mb_sign(orient2d(a, b, c))};
+}
+
+/// A small constrained triangulation of one triangle in its plane: points
+/// located exactly, segments recovered by flips. `mT` holds local ids, every
+/// triangle positive (`Orient` > 0).
+class MbTriangulation {
+public:
+    MbTriangulation(const MbStore& rStore, std::size_t Ax, int Sign,
+                    const std::array<std::int64_t, 3>& rCorners)
+        : mStore(rStore), mAx(Ax), mSign(Sign) {
+        mV = {rCorners[0], rCorners[1], rCorners[2]};
+        mT.push_back({0, 1, 2});
+    }
+
+    int Orient(int A, int B, int C) const {
+        return mSign * mb_orient2d(mStore[mV[static_cast<std::size_t>(A)]],
+                                   mStore[mV[static_cast<std::size_t>(B)]],
+                                   mStore[mV[static_cast<std::size_t>(C)]], mAx);
+    }
+
+    /// The local id of global point `Id`, inserting it.
+    int Insert(std::int64_t Id) {
+        for (std::size_t i = 0; i < mV.size(); ++i)
+            if (mV[i] == Id)
+                return static_cast<int>(i);
+        const int p = static_cast<int>(mV.size());
+        mV.push_back(Id);
+        for (std::size_t t = 0; t < mT.size(); ++t) {
+            const auto tri = mT[t];
+            int o[3];
+            for (int k = 0; k < 3; ++k)
+                o[k] = Orient(tri[k], tri[(k + 1) % 3], p);
+            if (o[0] < 0 || o[1] < 0 || o[2] < 0)
+                continue;
+            const int zeros = (o[0] == 0) + (o[1] == 0) + (o[2] == 0);
+            if (zeros == 0) {
+                mT[t] = {tri[0], tri[1], p};
+                mT.push_back({tri[1], tri[2], p});
+                mT.push_back({tri[2], tri[0], p});
+                return p;
+            }
+            if (zeros == 1) {
+                const int k = o[0] == 0 ? 0 : (o[1] == 0 ? 1 : 2);
+                SplitEdge(tri[k], tri[(k + 1) % 3], p);
+                return p;
+            }
+            throw MbFailure{"a point coincides with a vertex it was not identified with"};
+        }
+        throw MbFailure{"a point lies outside the triangle it was found in"};
+    }
+
+    /// Recover the segment between local `A` and `B` (both inserted), through
+    /// the points lying on it.
+    void Constrain(int A, int B, int Depth = 0) {
+        if (A == B)
+            return;
+        if (Depth > 64)
+            throw MbFailure{"segment splitting did not terminate"};
+        // Points strictly inside the segment split it.
+        // The projected coordinate the segment moves most along.
+        const std::size_t u = (mAx + 1) % 3, v = (mAx + 2) % 3;
+        const std::size_t axis = std::fabs(Pt(A).mApprox[u] - Pt(B).mApprox[u]) >=
+                                         std::fabs(Pt(A).mApprox[v] - Pt(B).mApprox[v])
+                                     ? u
+                                     : v;
+        const int dir = mb_cmp_coord(Pt(B), Pt(A), axis);
+        if (dir == 0)
+            throw MbFailure{"a segment's ends coincide in its triangle's plane"};
+        std::vector<int> on;
+        for (int q = 0; q < static_cast<int>(mV.size()); ++q) {
+            if (q == A || q == B || Orient(A, B, q) != 0)
+                continue;
+            if (mb_cmp_coord(Pt(q), Pt(A), axis) == dir && mb_cmp_coord(Pt(B), Pt(q), axis) == dir)
+                on.push_back(q);
+        }
+        if (!on.empty()) {
+            std::sort(on.begin(), on.end(),
+                      [&](int P, int Q) { return mb_cmp_coord(Pt(P), Pt(Q), axis) == dir; });
+            int prev = A;
+            for (const int q : on) {
+                Constrain(prev, q, Depth + 1);
+                prev = q;
+            }
+            Constrain(prev, B, Depth + 1);
+            return;
+        }
+        for (int guard = 0; guard < 100000; ++guard) {
+            if (HasEdge(A, B)) {
+                mConstrained.insert(
+                    mb_edge_key(mV[static_cast<std::size_t>(A)], mV[static_cast<std::size_t>(B)]));
+                return;
+            }
+            bool flipped = false;
+            for (std::size_t t = 0; t < mT.size() && !flipped; ++t)
+                for (int e = 0; e < 3 && !flipped; ++e) {
+                    const int c = mT[t][e], d = mT[t][(e + 1) % 3], x = mT[t][(e + 2) % 3];
+                    if (c == A || c == B || d == A || d == B)
+                        continue;
+                    if (Orient(A, B, c) * Orient(A, B, d) >= 0 ||
+                        Orient(c, d, A) * Orient(c, d, B) >= 0)
+                        continue;
+                    // The triangle across (c, d): (d, c, y).
+                    for (std::size_t u = 0; u < mT.size(); ++u) {
+                        int y = -1;
+                        for (int f = 0; f < 3; ++f)
+                            if (mT[u][f] == d && mT[u][(f + 1) % 3] == c)
+                                y = mT[u][(f + 2) % 3];
+                        if (y < 0)
+                            continue;
+                        if (Orient(x, y, c) * Orient(x, y, d) >= 0)
+                            break;  // not convex: another crossing edge first
+                        mT[t] = {c, y, x};
+                        mT[u] = {y, d, x};
+                        flipped = true;
+                        break;
+                    }
+                }
+            if (!flipped)
+                throw MbFailure{"a segment could not be recovered by flips"};
+        }
+        throw MbFailure{"segment recovery did not finish"};
+    }
+
+    /// Every triangle positive, or the step named fails.
+    void Check(const char* pStep) const {
+        for (const auto& r_t : mT)
+            if (Orient(r_t[0], r_t[1], r_t[2]) <= 0)
+                throw MbFailure{std::string("a non-positive piece after ") + pStep};
+    }
+
+    std::vector<MbTri> Triangles() const {
+        std::vector<MbTri> out;
+        out.reserve(mT.size());
+        for (const auto& r_t : mT)
+            out.push_back({mV[static_cast<std::size_t>(r_t[0])],
+                           mV[static_cast<std::size_t>(r_t[1])],
+                           mV[static_cast<std::size_t>(r_t[2])]});
+        return out;
+    }
+
+    const std::unordered_set<std::uint64_t>& Constrained() const { return mConstrained; }
+
+private:
+    const MbPoint& Pt(int L) const { return mStore[mV[static_cast<std::size_t>(L)]]; }
+
+    bool HasEdge(int A, int B) const {
+        for (const auto& r_t : mT)
+            for (int k = 0; k < 3; ++k)
+                if ((r_t[k] == A && r_t[(k + 1) % 3] == B) ||
+                    (r_t[k] == B && r_t[(k + 1) % 3] == A))
+                    return true;
+        return false;
+    }
+
+    void SplitEdge(int A, int B, int P) {
+        // Every triangle with the edge (A, B) or (B, A) is split at P.
+        const std::size_t n = mT.size();
+        for (std::size_t t = 0; t < n; ++t)
+            for (int k = 0; k < 3; ++k) {
+                const int u = mT[t][k], v = mT[t][(k + 1) % 3], w = mT[t][(k + 2) % 3];
+                if ((u == A && v == B) || (u == B && v == A)) {
+                    mT[t] = {u, P, w};
+                    mT.push_back({P, v, w});
+                    break;
+                }
+            }
+    }
+
+    const MbStore& mStore;
+    std::size_t mAx;
+    int mSign;
+    std::vector<std::int64_t> mV;
+    std::vector<std::array<int, 3>> mT;
+    std::unordered_set<std::uint64_t> mConstrained;
+};
+
+/// Whether the segment pq crosses triangle abc properly (exact); `rDegenerate`
+/// is set when it touches an edge, a vertex or the plane at an end.
+bool mb_ray_crosses(const MbVec& rP, const MbVec& rQ, const MbVec& rA, const MbVec& rB,
+                    const MbVec& rC, bool& rDegenerate) {
+    const int s1 = mb_sign(orient3d(rA.data(), rB.data(), rC.data(), rP.data()));
+    const int s2 = mb_sign(orient3d(rA.data(), rB.data(), rC.data(), rQ.data()));
+    if (s1 == s2 && s1 != 0)
+        return false;
+    if (s1 == 0 || s2 == 0) {
+        rDegenerate = true;
+        return false;
+    }
+    const int t1 = mb_sign(orient3d(rP.data(), rQ.data(), rA.data(), rB.data()));
+    const int t2 = mb_sign(orient3d(rP.data(), rQ.data(), rB.data(), rC.data()));
+    const int t3 = mb_sign(orient3d(rP.data(), rQ.data(), rC.data(), rA.data()));
+    const bool pos = t1 >= 0 && t2 >= 0 && t3 >= 0, neg = t1 <= 0 && t2 <= 0 && t3 <= 0;
+    if (!pos && !neg)
+        return false;
+    if (t1 == 0 || t2 == 0 || t3 == 0) {
+        rDegenerate = true;
+        return false;
+    }
+    return true;
+}
+
+/// Whether `rP` lies inside the closed surface `rS` (exact ray parity; a ray
+/// that touches an edge, a vertex or a plane is cast again elsewhere).
+bool mb_inside(const MbVec& rP, const MbSurface& rS, const MbVec& rLo, const MbVec& rHi,
+               std::int64_t& rRetries) {
+    static const double kDirs[8][3] = {
+        {0.5773502691896258, 0.6123724356957945, 0.5400617248673217},
+        {-0.4472135954999579, 0.7745966692414834, 0.4472135954999579},
+        {0.8017837257372732, -0.2672612419124244, 0.5345224838248488},
+        {0.1543033499620919, 0.6172133998483676, -0.7715167498104595},
+        {-0.6666666666666666, -0.3333333333333333, 0.6666666666666666},
+        {0.2357022603955158, -0.9428090415820634, 0.2357022603955158},
+        {0.7071067811865476, 0.5, -0.5},
+        {-0.3015113445777636, 0.3015113445777636, 0.9045340337332909}};
+    double diag = 0.0;
+    for (std::size_t k = 0; k < 3; ++k)
+        diag += (rHi[k] - rLo[k]) * (rHi[k] - rLo[k]);
+    const double len = 4.0 * std::sqrt(diag) + 1.0;
+    for (const auto& r_d : kDirs) {
+        const MbVec q{rP[0] + len * r_d[0], rP[1] + len * r_d[1], rP[2] + len * r_d[2]};
+        MbVec lo{}, hi{};
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] = std::min(rP[k], q[k]);
+            hi[k] = std::max(rP[k], q[k]);
+        }
+        bool degenerate = false;
+        std::int64_t crossings = 0;
+        for (const auto& r_t : rS.mT) {
+            const MbVec& a = rS.mP[static_cast<std::size_t>(r_t[0])];
+            const MbVec& b = rS.mP[static_cast<std::size_t>(r_t[1])];
+            const MbVec& c = rS.mP[static_cast<std::size_t>(r_t[2])];
+            bool outside = false;
+            for (std::size_t k = 0; k < 3 && !outside; ++k)
+                outside =
+                    std::max({a[k], b[k], c[k]}) < lo[k] || std::min({a[k], b[k], c[k]}) > hi[k];
+            if (outside)
+                continue;
+            if (mb_ray_crosses(rP, q, a, b, c, degenerate))
+                ++crossings;
+            if (degenerate)
+                break;
+        }
+        if (!degenerate)
+            return crossings % 2 == 1;
+        ++rRetries;
+    }
+    throw MbFailure{"every ray from a patch's sample touched the other surface"};
+}
+
+/// The pieces of one surface after the arrangement, and their patches.
+struct MbPieces {
+    std::vector<MbTri> mT;             ///< global point ids
+    std::vector<MbVec> mNormal;        ///< the parent triangle's normal, rounded
+    std::vector<std::int64_t> mPatch;  ///< patch of each piece
+    std::int64_t mNumPatches = 0;
+};
+
+void mb_patches(MbPieces& rPieces, const std::unordered_set<std::uint64_t>& rCurves) {
+    std::unordered_map<std::uint64_t, std::vector<std::size_t>> edges;
+    for (std::size_t t = 0; t < rPieces.mT.size(); ++t)
+        for (int k = 0; k < 3; ++k)
+            edges[mb_edge_key(rPieces.mT[t][k], rPieces.mT[t][(k + 1) % 3])].push_back(t);
+    rPieces.mPatch.assign(rPieces.mT.size(), -1);
+    std::vector<std::size_t> stack;
+    for (std::size_t s = 0; s < rPieces.mT.size(); ++s) {
+        if (rPieces.mPatch[s] >= 0)
+            continue;
+        const std::int64_t id = rPieces.mNumPatches++;
+        rPieces.mPatch[s] = id;
+        stack.push_back(s);
+        while (!stack.empty()) {
+            const std::size_t t = stack.back();
+            stack.pop_back();
+            for (int k = 0; k < 3; ++k) {
+                const std::uint64_t key = mb_edge_key(rPieces.mT[t][k], rPieces.mT[t][(k + 1) % 3]);
+                if (rCurves.count(key))
+                    continue;
+                for (const std::size_t u : edges[key])
+                    if (rPieces.mPatch[u] < 0) {
+                        rPieces.mPatch[u] = id;
+                        stack.push_back(u);
+                    }
+            }
+        }
+    }
+}
+
+}  // namespace
+
+double closed_surface_volume(const Mesh& rSurface) {
+    const std::size_t np = rSurface.NumPoints();
+    const NDArray& r_p = rSurface.Points();
+    MbVec c{};
+    for (std::size_t i = 0; i < np; ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            c[k] += read_double(r_p, 3 * i + k) / static_cast<double>(np);
+    double vol = 0.0;
+    for (std::size_t b = 0; b < rSurface.NumCellBlocks(); ++b) {
+        const auto cells = rSurface.Cells(b);
+        if (cells.Type() != "triangle")
+            continue;
+        for (std::size_t t = 0; t < cells.NumCells(); ++t) {
+            MbVec q[3];
+            for (std::size_t j = 0; j < 3; ++j) {
+                const auto v = static_cast<std::size_t>(read_int(cells.Conn(), 3 * t + j));
+                for (std::size_t k = 0; k < 3; ++k)
+                    q[j][k] = read_double(r_p, 3 * v + k) - c[k];
+            }
+            vol += (q[0][0] * (q[1][1] * q[2][2] - q[1][2] * q[2][1]) -
+                    q[0][1] * (q[1][0] * q[2][2] - q[1][2] * q[2][0]) +
+                    q[0][2] * (q[1][0] * q[2][1] - q[1][1] * q[2][0])) /
+                   6.0;
+        }
+    }
+    return vol;
+}
+
+BooleanResult mesh_boolean_spike(const Mesh& rA, const Mesh& rB, BooleanOp Op) {
+    BooleanResult result;
+    BooleanReport& r_rep = result.mReport;
+    try {
+        const MbSurface sa = mb_surface(rA, "A");
+        const MbSurface sb = mb_surface(rB, "B");
+
+        // The bounding box of both, for the point grid and the rays.
+        MbVec lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
+        for (const MbSurface* p_s : {&sa, &sb})
+            for (const MbVec& r_p : p_s->mP)
+                for (std::size_t k = 0; k < 3; ++k) {
+                    lo[k] = std::min(lo[k], r_p[k]);
+                    hi[k] = std::max(hi[k], r_p[k]);
+                }
+        const double diag =
+            std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                      (hi[2] - lo[2]) * (hi[2] - lo[2]));
+        MbStore store(std::max(diag * 1e-9, 1e-300));
+        std::vector<std::int64_t> ida(sa.mP.size()), idb(sb.mP.size());
+        for (std::size_t i = 0; i < sa.mP.size(); ++i)
+            ida[i] = store.Add(mb_explicit(sa.mP[i]));
+        for (std::size_t i = 0; i < sb.mP.size(); ++i)
+            idb[i] = store.Add(mb_explicit(sb.mP[i]));
+
+        // The candidate pairs.
+        auto t0 = std::chrono::steady_clock::now();
+        const TriangleSoup soup_a = build_triangle_soup(rA, "");
+        const TriangleSoup soup_b = build_triangle_soup(rB, "");
+        std::vector<std::vector<std::int64_t>> cand(sa.mT.size());
+        soup_box_pairs(soup_a, &soup_b,
+                       [&](std::size_t I, const std::vector<std::int64_t>& rJs) { cand[I] = rJs; });
+        std::vector<std::pair<std::size_t, std::size_t>> pairs;
+        for (std::size_t i = 0; i < sa.mT.size(); ++i) {
+            r_rep.mNumCandidatePairs += static_cast<std::int64_t>(cand[i].size());
+            const auto& ta = sa.mT[i];
+            for (const std::int64_t jj : cand[i]) {
+                const auto j = static_cast<std::size_t>(jj);
+                const auto& tb = sb.mT[j];
+                if (tri_tri_intersect(sa.mP[ta[0]].data(), sa.mP[ta[1]].data(), sa.mP[ta[2]].data(),
+                                      sb.mP[tb[0]].data(), sb.mP[tb[1]].data(),
+                                      sb.mP[tb[2]].data()))
+                    pairs.emplace_back(i, j);
+            }
+        }
+        r_rep.mNumIntersectingPairs = static_cast<std::int64_t>(pairs.size());
+        r_rep.mSecondsPairs = mb_seconds_since(t0);
+
+        // The arrangement: each pair's exact segment.
+        t0 = std::chrono::steady_clock::now();
+        std::vector<MbCut> cut_a(sa.mT.size()), cut_b(sb.mT.size());
+        std::map<std::tuple<int, std::int64_t, std::int64_t, std::int64_t>, std::int64_t> lpi_ids;
+        const auto lpi = [&](int Mesh_, const MbSurface& rS, std::int64_t P, std::int64_t Q,
+                             const MbSurface& rO, std::size_t Tri) {
+            const auto key = std::make_tuple(Mesh_, std::min(P, Q), std::max(P, Q),
+                                             static_cast<std::int64_t>(Tri));
+            const auto it = lpi_ids.find(key);
+            if (it != lpi_ids.end())
+                return it->second;
+            const auto& t = rO.mT[Tri];
+            const std::int64_t id = store.Add(
+                mb_lpi(rS.mP[static_cast<std::size_t>(P)], rS.mP[static_cast<std::size_t>(Q)],
+                       rO.mP[static_cast<std::size_t>(t[0])], rO.mP[static_cast<std::size_t>(t[1])],
+                       rO.mP[static_cast<std::size_t>(t[2])]));
+            ++r_rep.mNumImplicitPoints;
+            lpi_ids.emplace(key, id);
+            return id;
+        };
+        // Whether global point Id (on the plane of `rS`'s triangle Tri) lies in it.
+        const auto in_tri = [&](std::int64_t Id, const MbSurface& rS,
+                                const std::vector<std::int64_t>& rIds, std::size_t Tri) {
+            const auto& t = rS.mT[Tri];
+            const auto [ax, sign] = mb_axis(rS.mP[static_cast<std::size_t>(t[0])],
+                                            rS.mP[static_cast<std::size_t>(t[1])],
+                                            rS.mP[static_cast<std::size_t>(t[2])]);
+            for (int k = 0; k < 3; ++k) {
+                const int o =
+                    sign * mb_orient2d(store[rIds[static_cast<std::size_t>(t[k])]],
+                                       store[rIds[static_cast<std::size_t>(t[(k + 1) % 3])]],
+                                       store[Id], ax);
+                if (o < 0)
+                    return false;
+            }
+            return true;
+        };
+        for (const auto& [i, j] : pairs) {
+            const auto& ta = sa.mT[i];
+            const auto& tb = sb.mT[j];
+            int s_a[3], s_b[3];
+            for (int k = 0; k < 3; ++k) {
+                s_a[k] = mb_sign(orient3d(sb.mP[tb[0]].data(), sb.mP[tb[1]].data(),
+                                          sb.mP[tb[2]].data(), sa.mP[ta[k]].data()));
+                s_b[k] = mb_sign(orient3d(sa.mP[ta[0]].data(), sa.mP[ta[1]].data(),
+                                          sa.mP[ta[2]].data(), sb.mP[tb[k]].data()));
+            }
+            if (s_a[0] == 0 && s_a[1] == 0 && s_a[2] == 0) {
+                ++r_rep.mNumCoplanarPairs;
+                continue;
+            }
+            std::vector<std::int64_t> pts;
+            const auto collect = [&](const int* pS, const MbSurface& rS,
+                                     const std::vector<std::int64_t>& rIds, const MbTri& rT,
+                                     int Mesh_, const MbSurface& rO,
+                                     const std::vector<std::int64_t>& rOIds, std::size_t OTri) {
+                for (int k = 0; k < 3; ++k) {
+                    const int l = (k + 1) % 3;
+                    std::int64_t id = -1;
+                    if (pS[k] == 0)
+                        id = rIds[static_cast<std::size_t>(rT[k])];
+                    else if (pS[k] * pS[l] < 0)
+                        id = lpi(Mesh_, rS, rT[k], rT[l], rO, OTri);
+                    if (id >= 0 && in_tri(id, rO, rOIds, OTri))
+                        pts.push_back(id);
+                }
+            };
+            collect(s_a, sa, ida, ta, 0, sb, idb, j);
+            collect(s_b, sb, idb, tb, 1, sa, ida, i);
+            std::sort(pts.begin(), pts.end());
+            pts.erase(std::unique(pts.begin(), pts.end()), pts.end());
+            if (pts.empty())
+                continue;
+            if (pts.size() > 2) {
+                // Collinear along the planes' line: ordered by the exact
+                // coordinate the line moves most along.
+                const MbPoint& p0 = store[pts[0]];
+                std::size_t axis = 0;
+                double far = -1.0;
+                for (std::size_t k = 0; k < 3; ++k)
+                    for (const std::int64_t q : pts)
+                        if (std::fabs(store[q].mApprox[k] - p0.mApprox[k]) > far) {
+                            far = std::fabs(store[q].mApprox[k] - p0.mApprox[k]);
+                            axis = k;
+                        }
+                std::sort(pts.begin(), pts.end(), [&](std::int64_t P, std::int64_t Q) {
+                    return mb_cmp_coord(store[P], store[Q], axis) < 0;
+                });
+            }
+            for (const std::int64_t q : pts) {
+                cut_a[i].mPoints.push_back(q);
+                cut_b[j].mPoints.push_back(q);
+            }
+            for (std::size_t k = 0; k + 1 < pts.size(); ++k) {
+                cut_a[i].mSegments.emplace_back(pts[k], pts[k + 1]);
+                cut_b[j].mSegments.emplace_back(pts[k], pts[k + 1]);
+                ++r_rep.mNumSegments;
+            }
+        }
+        if (r_rep.mNumCoplanarPairs > 0)
+            throw MbFailure{"coplanar contact"};
+
+        // Points on an edge go to both triangles beside it.
+        const auto share_edges = [&](const MbSurface& rS, const std::vector<std::int64_t>& rIds,
+                                     std::vector<MbCut>& rCut) {
+            std::unordered_map<std::uint64_t, std::vector<std::int64_t>> on_edge;
+            for (std::size_t t = 0; t < rS.mT.size(); ++t) {
+                if (rCut[t].mPoints.empty())
+                    continue;
+                const auto& tri = rS.mT[t];
+                const auto [ax, sign] = mb_axis(rS.mP[static_cast<std::size_t>(tri[0])],
+                                                rS.mP[static_cast<std::size_t>(tri[1])],
+                                                rS.mP[static_cast<std::size_t>(tri[2])]);
+                (void)sign;
+                for (const std::int64_t q : rCut[t].mPoints)
+                    for (int k = 0; k < 3; ++k) {
+                        const std::int64_t u = rIds[static_cast<std::size_t>(tri[k])];
+                        const std::int64_t v = rIds[static_cast<std::size_t>(tri[(k + 1) % 3])];
+                        if (q != u && q != v && mb_orient2d(store[u], store[v], store[q], ax) == 0)
+                            on_edge[mb_edge_key(u, v)].push_back(q);
+                    }
+            }
+            for (std::size_t t = 0; t < rS.mT.size(); ++t) {
+                const auto& tri = rS.mT[t];
+                for (int k = 0; k < 3; ++k) {
+                    const auto it =
+                        on_edge.find(mb_edge_key(rIds[static_cast<std::size_t>(tri[k])],
+                                                 rIds[static_cast<std::size_t>(tri[(k + 1) % 3])]));
+                    if (it != on_edge.end())
+                        rCut[t].mPoints.insert(rCut[t].mPoints.end(), it->second.begin(),
+                                               it->second.end());
+                }
+            }
+        };
+        share_edges(sa, ida, cut_a);
+        share_edges(sb, idb, cut_b);
+        r_rep.mSecondsArrangement = mb_seconds_since(t0);
+
+        // Retriangulation.
+        t0 = std::chrono::steady_clock::now();
+        std::unordered_set<std::uint64_t> curves;
+        const auto pieces = [&](const MbSurface& rS, const std::vector<std::int64_t>& rIds,
+                                std::vector<MbCut>& rCut) {
+            MbPieces out;
+            for (std::size_t t = 0; t < rS.mT.size(); ++t) {
+                const auto& tri = rS.mT[t];
+                const std::array<std::int64_t, 3> corners{rIds[static_cast<std::size_t>(tri[0])],
+                                                          rIds[static_cast<std::size_t>(tri[1])],
+                                                          rIds[static_cast<std::size_t>(tri[2])]};
+                const MbVec& pa_ = rS.mP[static_cast<std::size_t>(tri[0])];
+                const MbVec& pb_ = rS.mP[static_cast<std::size_t>(tri[1])];
+                const MbVec& pc_ = rS.mP[static_cast<std::size_t>(tri[2])];
+                const MbVec e1{pb_[0] - pa_[0], pb_[1] - pa_[1], pb_[2] - pa_[2]};
+                const MbVec e2{pc_[0] - pa_[0], pc_[1] - pa_[1], pc_[2] - pa_[2]};
+                const MbVec nrm{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+                                e1[0] * e2[1] - e1[1] * e2[0]};
+                if (rCut[t].mPoints.empty()) {
+                    out.mT.push_back(corners);
+                    out.mNormal.push_back(nrm);
+                    continue;
+                }
+                ++r_rep.mNumCutTriangles;
+                const auto [ax, sign] = mb_axis(rS.mP[static_cast<std::size_t>(tri[0])],
+                                                rS.mP[static_cast<std::size_t>(tri[1])],
+                                                rS.mP[static_cast<std::size_t>(tri[2])]);
+                if (sign == 0)
+                    throw MbFailure{"a degenerate input triangle is cut"};
+                MbTriangulation tr(store, ax, sign, corners);
+                std::vector<std::int64_t>& r_pts = rCut[t].mPoints;
+                std::sort(r_pts.begin(), r_pts.end());
+                r_pts.erase(std::unique(r_pts.begin(), r_pts.end()), r_pts.end());
+                for (const std::int64_t q : r_pts)
+                    tr.Insert(q);
+                for (const auto& [u, v] : rCut[t].mSegments)
+                    tr.Constrain(tr.Insert(u), tr.Insert(v));
+                tr.Check("retriangulation");
+                curves.insert(tr.Constrained().begin(), tr.Constrained().end());
+                for (const MbTri& r_sub : tr.Triangles()) {
+                    out.mT.push_back(r_sub);
+                    out.mNormal.push_back(nrm);
+                }
+            }
+            r_rep.mNumSubTriangles += static_cast<std::int64_t>(out.mT.size());
+            return out;
+        };
+        MbPieces pa = pieces(sa, ida, cut_a);
+        MbPieces pb = pieces(sb, idb, cut_b);
+        r_rep.mSecondsTriangulate = mb_seconds_since(t0);
+
+        // Classification.
+        t0 = std::chrono::steady_clock::now();
+        mb_patches(pa, curves);
+        mb_patches(pb, curves);
+        r_rep.mNumPatchesA = pa.mNumPatches;
+        r_rep.mNumPatchesB = pb.mNumPatches;
+        const auto classify = [&](const MbPieces& rP, const MbSurface& rOther) {
+            // One sample per patch: the centroid of its largest piece.
+            std::vector<double> best(static_cast<std::size_t>(rP.mNumPatches), -1.0);
+            std::vector<MbVec> sample(static_cast<std::size_t>(rP.mNumPatches));
+            for (std::size_t t = 0; t < rP.mT.size(); ++t) {
+                const MbVec& a = store[rP.mT[t][0]].mApprox;
+                const MbVec& b = store[rP.mT[t][1]].mApprox;
+                const MbVec& c = store[rP.mT[t][2]].mApprox;
+                const MbVec u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+                const MbVec v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+                const double area2 = std::pow(u[1] * v[2] - u[2] * v[1], 2) +
+                                     std::pow(u[2] * v[0] - u[0] * v[2], 2) +
+                                     std::pow(u[0] * v[1] - u[1] * v[0], 2);
+                const auto p = static_cast<std::size_t>(rP.mPatch[t]);
+                if (area2 > best[p]) {
+                    best[p] = area2;
+                    sample[p] = {(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0,
+                                 (a[2] + b[2] + c[2]) / 3.0};
+                }
+            }
+            std::vector<char> inside(sample.size());
+            for (std::size_t p = 0; p < sample.size(); ++p)
+                inside[p] = mb_inside(sample[p], rOther, lo, hi, r_rep.mNumRayRetries) ? 1 : 0;
+            return inside;
+        };
+        const std::vector<char> in_a = classify(pa, sb);
+        const std::vector<char> in_b = classify(pb, sa);
+        // Neighbours across a curve should differ (a touching contact need not).
+        const auto conflicts = [&](const MbPieces& rP, const std::vector<char>& rIn) {
+            std::unordered_map<std::uint64_t, std::vector<std::size_t>> edges;
+            for (std::size_t t = 0; t < rP.mT.size(); ++t)
+                for (int k = 0; k < 3; ++k) {
+                    const std::uint64_t key = mb_edge_key(rP.mT[t][k], rP.mT[t][(k + 1) % 3]);
+                    if (curves.count(key))
+                        edges[key].push_back(t);
+                }
+            for (const auto& r_e : edges)
+                if (r_e.second.size() == 2 &&
+                    rIn[static_cast<std::size_t>(rP.mPatch[r_e.second[0]])] ==
+                        rIn[static_cast<std::size_t>(rP.mPatch[r_e.second[1]])])
+                    ++r_rep.mNumLabelConflicts;
+        };
+        conflicts(pa, in_a);
+        conflicts(pb, in_b);
+        r_rep.mSecondsClassify = mb_seconds_since(t0);
+
+        // Selection.
+        std::vector<MbTri> out;
+        std::vector<MbVec> parent_normal;
+        std::vector<std::int64_t> source;
+        const bool keep_a_inside = Op == BooleanOp::Intersection;
+        const bool keep_b_inside = Op != BooleanOp::Union;
+        for (std::size_t t = 0; t < pa.mT.size(); ++t)
+            if ((in_a[static_cast<std::size_t>(pa.mPatch[t])] != 0) == keep_a_inside) {
+                out.push_back(pa.mT[t]);
+                parent_normal.push_back(pa.mNormal[t]);
+                source.push_back(0);
+            }
+        for (std::size_t t = 0; t < pb.mT.size(); ++t)
+            if ((in_b[static_cast<std::size_t>(pb.mPatch[t])] != 0) == keep_b_inside) {
+                MbTri tri = pb.mT[t];
+                MbVec nrm = pb.mNormal[t];
+                if (Op == BooleanOp::Difference) {
+                    std::swap(tri[1], tri[2]);
+                    nrm = {-nrm[0], -nrm[1], -nrm[2]};
+                }
+                out.push_back(tri);
+                parent_normal.push_back(nrm);
+                source.push_back(1);
+            }
+
+        // The mesh: the points used, rounded.
+        std::unordered_map<std::int64_t, std::int64_t> local;
+        std::vector<std::int64_t> order;
+        for (const MbTri& r_t : out)
+            for (const std::int64_t v : r_t)
+                if (local.emplace(v, static_cast<std::int64_t>(order.size())).second)
+                    order.push_back(v);
+        NDArray p = NDArray::Uninit(DType::Float64, {order.size(), std::size_t{3}});
+        for (std::size_t i = 0; i < order.size(); ++i)
+            for (std::size_t k = 0; k < 3; ++k)
+                p.As<double>()[3 * i + k] = store[order[i]].mApprox[k];
+        result.mMesh.AssignPoints(std::move(p));
+        NDArray c = NDArray::Uninit(DType::Int64, {out.size(), std::size_t{3}});
+        for (std::size_t t = 0; t < out.size(); ++t)
+            for (std::size_t k = 0; k < 3; ++k)
+                c.As<std::int64_t>()[3 * t + k] = local.at(out[t][k]);
+        result.mMesh.AddCellBlock("triangle", std::move(c));
+        NDArray src = NDArray::Uninit(DType::Int64, {source.size()});
+        std::copy(source.begin(), source.end(), src.As<std::int64_t>());
+        std::vector<NDArray> blocks;
+        blocks.push_back(std::move(src));
+        result.mMesh.AddCellData("boolean:source", std::move(blocks));
+        r_rep.mNumOutputTriangles = static_cast<std::int64_t>(out.size());
+        // What rounding the points to doubles cost: pieces whose rounded
+        // corners are collinear or turn against the exact piece (its parent's
+        // normal), though every piece is positive exactly.
+        for (std::size_t t = 0; t < out.size(); ++t) {
+            const MbVec& a = store[out[t][0]].mApprox;
+            const MbVec& b = store[out[t][1]].mApprox;
+            const MbVec& c = store[out[t][2]].mApprox;
+            const MbVec u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+            const MbVec v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+            const MbVec n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                          u[0] * v[1] - u[1] * v[0]};
+            const MbVec& rn = parent_normal[t];
+            if (n[0] * rn[0] + n[1] * rn[1] + n[2] * rn[2] <= 0.0)
+                ++r_rep.mNumRoundingInverted;
+        }
+        result.mOk = true;
+    } catch (const MbFailure& rF) {
+        result.mOk = false;
+        result.mFailure = rF.mWhy;
+    }
+    return result;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/mesh_boolean.cpp =====
 // ===== begin src/cpp/src/detail/mesh_cad_reparam.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -94972,6 +96990,36 @@ double pred_lens_angle_exact(const double* pA, const double* pB, const double* p
 
 void predicates_two_product(double A, double B, double& rX, double& rY) {
     pred_two_product(A, B, rX, rY);
+}
+
+// The expansion arithmetic for exact constructions (detail/expansion.hpp).
+Expansion exp_diff(double A, double B) {
+    return pred_diff(A, B);
+}
+Expansion exp_of(double A) {
+    return A == 0.0 ? Expansion{} : Expansion{A};
+}
+Expansion exp_sum(const Expansion& rE, const Expansion& rF) {
+    return pred_sum(rE, rF);
+}
+Expansion exp_sub(const Expansion& rE, const Expansion& rF) {
+    return pred_sub(rE, rF);
+}
+Expansion exp_scale(const Expansion& rE, double B) {
+    return pred_scale(rE, B);
+}
+Expansion exp_mul(const Expansion& rE, const Expansion& rF) {
+    // The shorter one scaled by: one scaling per component of `rF`.
+    return rE.size() < rF.size() ? pred_mul(rF, rE) : pred_mul(rE, rF);
+}
+double exp_estimate(const Expansion& rE) {
+    return pred_estimate(rE);
+}
+int exp_sign(const Expansion& rE) {
+    // Nonoverlapping and increasing: the largest component has the sign.
+    if (rE.empty())
+        return 0;
+    return rE.back() > 0.0 ? 1 : (rE.back() < 0.0 ? -1 : 0);
 }
 
 double orient2d(const double* pA, const double* pB, const double* pC) {
@@ -103253,6 +105301,235 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/streamlines.cpp =====
+// ===== begin src/cpp/src/detail/subprocess.cpp =====
+
+// System includes
+#include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <stdexcept>
+#include <system_error>
+
+// Project includes
+
+#if defined(_WIN32)
+#define NOMINMAX
+#include <windows.h>
+#elif !defined(__EMSCRIPTEN__)
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
+namespace meshioplusplus::detail {
+
+namespace {
+
+bool sp_is_file(const std::filesystem::path& rPath) {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(rPath, ec);
+}
+
+}  // namespace
+
+#if defined(__EMSCRIPTEN__)
+
+bool subprocess_available() noexcept {
+    return false;
+}
+
+std::string find_executable(const std::string&, const char*) {
+    return {};
+}
+
+int run_process(const std::vector<std::string>&, const std::string&, const std::string&) {
+    throw Unsupported("meshio++: running an external program is not available in WebAssembly");
+}
+
+#else
+
+bool subprocess_available() noexcept {
+    return true;
+}
+
+std::string find_executable(const std::string& rName, const char* pOverride) {
+    if (pOverride) {
+        const char* p_value = std::getenv(pOverride);
+        if (p_value && *p_value)
+            return sp_is_file(p_value) ? std::string(p_value) : std::string();
+    }
+    const char* p_path = std::getenv("PATH");
+    if (!p_path)
+        return {};
+#if defined(_WIN32)
+    constexpr char kSeparator = ';';
+    const std::string name = rName + ".exe";
+#else
+    constexpr char kSeparator = ':';
+    const std::string& name = rName;
+#endif
+    const std::string path(p_path);
+    std::size_t start = 0;
+    while (start <= path.size()) {
+        std::size_t end = path.find(kSeparator, start);
+        if (end == std::string::npos)
+            end = path.size();
+        const std::string dir = path.substr(start, end - start);
+        start = end + 1;
+        if (dir.empty())
+            continue;
+        const std::filesystem::path candidate = std::filesystem::path(dir) / name;
+        if (!sp_is_file(candidate))
+            continue;
+#if !defined(_WIN32)
+        if (access(candidate.c_str(), X_OK) != 0)
+            continue;
+#endif
+        return candidate.string();
+    }
+    return {};
+}
+
+#if defined(_WIN32)
+
+namespace {
+
+std::wstring sp_wide(const std::string& rText) {
+    const int n = MultiByteToWideChar(CP_UTF8, 0, rText.c_str(), -1, nullptr, 0);
+    std::wstring wide(static_cast<std::size_t>(n > 0 ? n : 1), L'\0');
+    if (n > 0)
+        MultiByteToWideChar(CP_UTF8, 0, rText.c_str(), -1, wide.data(), n);
+    wide.resize(wide.size() - 1);
+    return wide;
+}
+
+// One argument quoted as CommandLineToArgvW reads it back.
+std::wstring sp_quote(const std::wstring& rArg) {
+    if (!rArg.empty() && rArg.find_first_of(L" \t\n\v\"") == std::wstring::npos)
+        return rArg;
+    std::wstring out = L"\"";
+    for (std::size_t i = 0;; ++i) {
+        std::size_t slashes = 0;
+        while (i < rArg.size() && rArg[i] == L'\\') {
+            ++slashes;
+            ++i;
+        }
+        if (i == rArg.size()) {
+            out.append(slashes * 2, L'\\');
+            break;
+        }
+        if (rArg[i] == L'"')
+            out.append(slashes * 2 + 1, L'\\');
+        else
+            out.append(slashes, L'\\');
+        out.push_back(rArg[i]);
+    }
+    out.push_back(L'"');
+    return out;
+}
+
+}  // namespace
+
+int run_process(const std::vector<std::string>& rArgv, const std::string& rWorkDir,
+                const std::string& rLogPath) {
+    if (rArgv.empty())
+        throw std::runtime_error("meshio++: run_process: no program");
+    std::wstring command;
+    for (const std::string& r_arg : rArgv)
+        command += (command.empty() ? L"" : L" ") + sp_quote(sp_wide(r_arg));
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    HANDLE log = CreateFileW(sp_wide(rLogPath).c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, &sa,
+                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = INVALID_HANDLE_VALUE;
+    si.hStdOutput = log;
+    si.hStdError = log;
+    PROCESS_INFORMATION pi{};
+    const std::wstring dir = sp_wide(rWorkDir);
+    const BOOL ok = CreateProcessW(sp_wide(rArgv[0]).c_str(), command.data(), nullptr, nullptr,
+                                   TRUE, CREATE_NO_WINDOW, nullptr, dir.c_str(), &si, &pi);
+    if (log != INVALID_HANDLE_VALUE)
+        CloseHandle(log);
+    if (!ok)
+        throw std::runtime_error("meshio++: cannot start '" + rArgv[0] + "'");
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return static_cast<int>(code);
+}
+
+#else
+
+int run_process(const std::vector<std::string>& rArgv, const std::string& rWorkDir,
+                const std::string& rLogPath) {
+    if (rArgv.empty())
+        throw std::runtime_error("meshio++: run_process: no program");
+    // fork and exec rather than posix_spawn, which has no portable
+    // working-directory action: the child changes directory, then runs the
+    // program directly (no shell), with its output in the log.
+    std::vector<std::string> args = rArgv;
+    std::vector<char*> argv;
+    for (std::string& r_arg : args)
+        argv.push_back(r_arg.data());
+    argv.push_back(nullptr);
+    const pid_t pid = fork();
+    if (pid < 0)
+        throw std::runtime_error("meshio++: cannot start '" + rArgv[0] + "'");
+    if (pid == 0) {
+        // The child: only async-signal-safe calls from here.
+        const int null = open("/dev/null", O_RDONLY);
+        if (null >= 0)
+            dup2(null, STDIN_FILENO);
+        const int log = open(rLogPath.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (log >= 0) {
+            dup2(log, STDOUT_FILENO);
+            dup2(log, STDERR_FILENO);
+        }
+        if (chdir(rWorkDir.c_str()) != 0)
+            _exit(126);
+        execv(argv[0], argv.data());
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR)
+            throw std::runtime_error("meshio++: lost track of '" + rArgv[0] + "'");
+    }
+    if (WIFEXITED(status))
+        return WEXITSTATUS(status);
+    return -1;
+}
+
+#endif
+
+#endif  // __EMSCRIPTEN__
+
+std::string make_temp_dir(const std::string& rTag) {
+    static std::atomic<unsigned long> s_counter{0};
+    std::error_code ec;
+    const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+    const auto stamp = static_cast<unsigned long long>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        const std::filesystem::path dir =
+            base / ("meshioplusplus_" + rTag + "_" + std::to_string(stamp) + "_" +
+                    std::to_string(s_counter.fetch_add(1)));
+        if (std::filesystem::create_directory(dir, ec))
+            return dir.string();
+    }
+    throw std::runtime_error("meshio++: cannot create a temporary directory for " + rTag);
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/subprocess.cpp =====
 // ===== begin src/cpp/src/detail/subset.cpp =====
 #include <cstring>
 
@@ -121744,6 +124021,24 @@ struct MllFaces {
     std::size_t Count() const { return mOffsets.empty() ? 0 : mOffsets.size() - 1; }
 };
 
+/// The poly offsets cg_poly_elements_read filled, checked before they index
+/// `elems`: starting at 0, never decreasing, ending at the section's data size,
+/// each entry at least `MinPerEntry` long. A 4.x-declared file whose section
+/// lost its ElementStartOffset comes back as all zeros, which this refuses
+/// rather than reading an empty section (roadmap 7.1.4, the first cgnslib run).
+void cgns_mll_check_offsets(const std::vector<cgsize_t>& rOffsets, cgsize_t DataSize,
+                            std::size_t MinPerEntry, const std::string& rSection,
+                            const std::string& rPath) {
+    bool ok = !rOffsets.empty() && rOffsets.front() == 0 && rOffsets.back() == DataSize;
+    for (std::size_t i = 0; ok && i + 1 < rOffsets.size(); ++i)
+        ok = rOffsets[i + 1] - rOffsets[i] >= static_cast<cgsize_t>(MinPerEntry);
+    if (!ok)
+        cgns_mll_fail("section '" + rSection +
+                          "' has no valid ElementStartOffset for its connectivity (a CGNS "
+                          "4.x file written in the 3.x layout?)",
+                      rPath);
+}
+
 MllFaces cgns_mll_read_ngon(int fn, int B, int Z, const MllSection& rSec,
                             const std::string& rPath) {
     const std::size_t nfaces = static_cast<std::size_t>(rSec.mEnd - rSec.mStart + 1);
@@ -121760,6 +124055,7 @@ MllFaces cgns_mll_read_ngon(int fn, int B, int Z, const MllSection& rSec,
         CG_OK)
         cgns_mll_fail("cg_poly_elements_read failed for NGON_n section '" + rSec.mName + "'",
                       rPath);
+    cgns_mll_check_offsets(offsets, data_size, 3, rSec.mName, rPath);
 
     MllFaces out;
     out.mFirstId = rSec.mStart;
@@ -122159,9 +124455,27 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
 
     if (!ngons.empty() && nfaces.empty()) {
         // Faces with no cells referencing them: a face mesh, not a volume one.
+        // Grouped by corner count into `polygon<n>` blocks, as the raw-HDF5
+        // reader groups them, so both engines read a face mesh alike.
         for (const MllFaces& faces : ngons) {
-            if (faces.Count() > 0)
-                mesh.AddPolygonBlock("polygon", faces.mNodes, faces.mOffsets);
+            std::map<std::size_t, std::vector<std::size_t> > by_n;
+            for (std::size_t i = 0; i < faces.Count(); ++i)
+                by_n[static_cast<std::size_t>(faces.mOffsets[i + 1] - faces.mOffsets[i])].push_back(
+                    i);
+            for (const auto& [n, members] : by_n) {
+                std::vector<std::int64_t> flat;
+                std::vector<std::int64_t> offsets(1, 0);
+                flat.reserve(members.size() * n);
+                for (const std::size_t i : members) {
+                    flat.insert(
+                        flat.end(),
+                        faces.mNodes.begin() + static_cast<std::ptrdiff_t>(faces.mOffsets[i]),
+                        faces.mNodes.begin() + static_cast<std::ptrdiff_t>(faces.mOffsets[i + 1]));
+                    offsets.push_back(static_cast<std::int64_t>(flat.size()));
+                }
+                mesh.AddPolygonBlock("polygon" + std::to_string(n), std::move(flat),
+                                     std::move(offsets));
+            }
         }
     } else if (!nfaces.empty()) {
         if (ngons.empty())
@@ -122187,6 +124501,7 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
                                       nullptr) != CG_OK)
                 cgns_mll_fail("cg_poly_elements_read failed for NFACE_n '" + sec->mName + "'",
                               rPath);
+            cgns_mll_check_offsets(offsets, data_size, 1, sec->mName, rPath);
 
             // Stage every cell's faces as one CSR triple (rings reversed in
             // place for a negative id), then group by unique node count into
@@ -194218,11 +196533,180 @@ Parsed parse_text(std::string_view Text, const std::string& rPath) {
 
 }  // namespace
 
+namespace {
+
+bool tg_is_smesh(const std::string& rPath) {
+    return rPath.size() >= 6 && rPath.compare(rPath.size() - 6, 6, ".smesh") == 0;
+}
+
+// A `.smesh` surface (roadmap 7.7.2): part 1 the nodes, part 2 the facets
+// (polygons, an optional boundary marker each), then the holes and the
+// regions, which a surface mesh does not carry. One cell block per run of
+// facets with the same corner count: `triangle`, `quad`, or `polygon`.
+Mesh tg_read_smesh(const std::string& rPath) {
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const Parsed f = parse_text(source.View(), rPath);
+    detail::need_tokens(f.mHeader, 1, "tetgen");
+    const std::size_t limit = f.mData.size();
+    const std::size_t npoints =
+        detail::checked_count(detail::strtoll_token(f.mHeader[0]), limit, "tetgen", "node");
+    const int dim =
+        f.mHeader.size() > 1 ? static_cast<int>(detail::strtoll_token(f.mHeader[1])) : 3;
+    const std::size_t nattr = f.mHeader.size() > 2
+                                  ? detail::checked_count(detail::strtoll_token(f.mHeader[2]),
+                                                          limit, "tetgen", "attribute")
+                                  : 0;
+    const std::size_t nmark =
+        f.mHeader.size() > 3
+            ? detail::checked_count(detail::strtoll_token(f.mHeader[3]), limit, "tetgen", "marker")
+            : 0;
+    if (dim != 3)
+        throw ReadError("TetGen: need 3D points");
+    const std::size_t ncol = 4 + nattr + nmark;
+    if (npoints > limit / ncol)
+        throw ReadError("TetGen: .smesh node section is truncated");
+    std::size_t at = 0;
+    NDArray pts(DType::Float64, {npoints, std::size_t{3}});
+    std::int64_t base = 0;
+    for (std::size_t i = 0; i < npoints; ++i) {
+        const std::int64_t id = detail::strtoll_token(f.mData[at]);
+        if (i == 0)
+            base = id;
+        if (id != base + static_cast<std::int64_t>(i))
+            throw ReadError("TetGen: nodes not numbered consecutively");
+        for (std::size_t c = 0; c < 3; ++c)
+            pts.As<double>()[3 * i + c] = detail::parse_double_prefix(f.mData[at + 1 + c]);
+        at += ncol;
+    }
+    Mesh mesh;
+    mesh.AssignPoints(std::move(pts));
+    const auto next = [&]() -> std::string_view {
+        if (at >= f.mData.size())
+            throw ReadError("TetGen: .smesh facet section is truncated");
+        return f.mData[at++];
+    };
+    const std::size_t nfacets =
+        detail::checked_count(detail::strtoll_token(next()), limit, "tetgen", "facet");
+    const std::size_t fmark =
+        detail::checked_count(detail::strtoll_token(next()), 1, "tetgen", "facet marker");
+    std::vector<std::int64_t> conn, marks;
+    std::size_t run = 0;
+    const auto flush = [&]() {
+        if (conn.empty())
+            return;
+        const std::size_t ncells = conn.size() / run;
+        NDArray c(DType::Int64, {ncells, run});
+        std::copy(conn.begin(), conn.end(), c.As<std::int64_t>());
+        const std::string type = run == 3   ? std::string("triangle")
+                                 : run == 4 ? std::string("quad")
+                                            : std::string("polygon");
+        mesh.AddCellBlock(type, std::move(c));
+        conn.clear();
+    };
+    std::vector<std::size_t> block_sizes;
+    for (std::size_t k = 0; k < nfacets; ++k) {
+        const std::size_t n =
+            detail::checked_count(detail::strtoll_token(next()), limit, "tetgen", "facet corner");
+        if (n < 3)
+            throw ReadError("TetGen: a facet has fewer than three corners");
+        if (n != run) {
+            if (!conn.empty())
+                block_sizes.push_back(conn.size() / run);
+            flush();
+            run = n;
+        }
+        for (std::size_t j = 0; j < n; ++j) {
+            const std::int64_t v = detail::strtoll_token(next()) - base;
+            if (v < 0 || static_cast<std::size_t>(v) >= npoints)
+                throw ReadError("TetGen: a facet names a node out of range");
+            conn.push_back(v);
+        }
+        if (fmark)
+            marks.push_back(detail::strtoll_token(next()));
+    }
+    if (!conn.empty())
+        block_sizes.push_back(conn.size() / run);
+    flush();
+    if (fmark) {
+        std::vector<NDArray> blocks;
+        std::size_t first = 0;
+        for (const std::size_t n : block_sizes) {
+            NDArray a(DType::Int64, {n});
+            std::copy(marks.begin() + static_cast<std::ptrdiff_t>(first),
+                      marks.begin() + static_cast<std::ptrdiff_t>(first + n), a.As<std::int64_t>());
+            blocks.push_back(std::move(a));
+            first += n;
+        }
+        mesh.AddCellData("tetgen:ref", std::move(blocks));
+    }
+    // Holes and regions, when present, describe a volume to mesh: not kept.
+    return mesh;
+}
+
+void tg_write_smesh(const std::string& rPath, const Mesh& rMesh) {
+    if (rMesh.PointDim() != 3)
+        throw WriteError("TetGen: can only write 3D points");
+    const std::size_t npoints = rMesh.NumPoints();
+    auto fh = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!fh)
+        throw WriteError("Could not open file for writing: " + rPath);
+    fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
+    fh << "# part 1: nodes\n" << npoints << " 3 0 0\n";
+    char buf[40];
+    const detail::DoubleView pv(rMesh.Points());
+    for (std::size_t i = 0; i < npoints; ++i) {
+        fh << i;
+        for (std::size_t c = 0; c < 3; ++c) {
+            detail::snprintf_c(buf, sizeof(buf), "%.16e", pv[3 * i + c]);
+            fh << " " << buf;
+        }
+        fh << "\n";
+    }
+    std::size_t nfacets = 0;
+    std::vector<std::size_t> faceted;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cells = rMesh.Cells(b);
+        const std::string type(cells.Type());
+        const bool polygon =
+            type == "triangle" || type == "quad" || (type == "polygon" && !cells.IsRagged());
+        if (!polygon)
+            throw WriteError("TetGen: a .smesh holds polygonal facets, not '" + type + "' cells");
+        faceted.push_back(b);
+        nfacets += cells.NumCells();
+    }
+    const bool marked = rMesh.HasCellData("tetgen:ref");
+    fh << "# part 2: facets\n" << nfacets << " " << (marked ? 1 : 0) << "\n";
+    for (const std::size_t b : faceted) {
+        const auto cells = rMesh.Cells(b);
+        const NDArray& r_conn = cells.Conn();
+        const std::size_t width = r_conn.Ndim() == 2 ? r_conn.Shape()[1] : 0;
+        const detail::Int64View conn(r_conn);
+        std::optional<detail::Int64View> mark;
+        if (marked && b < rMesh.CellDataNumBlocks("tetgen:ref"))
+            mark.emplace(rMesh.CellData("tetgen:ref", b));
+        for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+            fh << width;
+            for (std::size_t j = 0; j < width; ++j)
+                fh << " " << conn[c * width + j];
+            if (marked)
+                fh << " " << (mark ? (*mark)[c] : 0);
+            fh << "\n";
+        }
+    }
+    fh << "# part 3: holes\n0\n# part 4: regions\n0\n";
+    if (!fh)
+        throw WriteError("TetGen: failed writing " + rPath);
+}
+
+}  // namespace
+
 Mesh read_tetgen(const std::string& rPath) {
+    if (tg_is_smesh(rPath))
+        return tg_read_smesh(rPath);
     bool ok = false;
     auto paths = node_ele_paths(rPath, ok);
     if (!ok)
-        throw ReadError("TetGen: expected a .node or .ele file");
+        throw ReadError("TetGen: expected a .node, .ele or .smesh file");
     const std::string& node_path = paths.first;
     const std::string& ele_path = paths.second;
 
@@ -194336,10 +196820,14 @@ void write_value(std::ostream& rOs, double v) {
 }  // namespace
 
 void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
+    if (tg_is_smesh(rPath)) {
+        tg_write_smesh(rPath, rMesh);
+        return;
+    }
     bool ok = false;
     auto paths = node_ele_paths(rPath, ok);
     if (!ok)
-        throw WriteError("TetGen: must specify a .node or .ele file");
+        throw WriteError("TetGen: must specify a .node, .ele or .smesh file");
     const std::string& node_path = paths.first;
     const std::string& ele_path = paths.second;
 
@@ -216677,6 +219165,1024 @@ CurvatureResult compute_curvature(const Mesh& rMesh, const CurvatureOptions& rOp
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/curvature.cpp =====
+// ===== begin src/cpp/src/operations/cut.cpp =====
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <map>
+#include <memory>
+#include <optional>
+#include <set>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+#ifdef MESHIOPLUSPLUS_HAS_CUTCELLS
+// External includes
+#include <cutcells/cell_types.h>
+#include <cutcells/level_set.h>
+#include <cutcells/lut/cut_mesh.h>
+#include <cutcells/mesh_view.h>
+#include <cutcells/part/cut_result.h>
+#include <cutcells/part/mesh_part.h>
+#include <cutcells/part/output.h>
+#include <cutcells/quadrature.h>
+#include <cutcells/quadrays/leaves.h>
+#include <cutcells/reference_cell.h>
+#endif
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kCutPrefix = "meshio++: cut: ";
+
+#ifdef MESHIOPLUSPLUS_HAS_CUTCELLS
+
+[[noreturn]] void cut_fail(const std::string& rWhy) {
+    throw std::invalid_argument(std::string(kCutPrefix) + rWhy);
+}
+
+/// A cuttable cell type: its CutCells family (cutcells::cell::type's value),
+/// topological dimension, corner count, node count when the level set may be
+/// quadratic on it (0: linear only), its corners' VTK type, and whether its
+/// meshio corner order differs from VTK's (the wedge).
+struct CutKind {
+    int mFamily = 0;
+    int mTdim = 0;
+    int mCorners = 0;
+    int mQuadraticNodes = 0;
+    int mVtk = 0;
+    bool mWedge = false;
+};
+
+std::optional<CutKind> cut_kind(const std::string& rType) {
+    // cutcells::cell::type: interval 1, triangle 2, tetrahedron 3,
+    // quadrilateral 4, hexahedron 5, prism 6, pyramid 7.
+    if (rType == "line" || rType == "line3")
+        return CutKind{1, 1, 2, 0, 3, false};
+    if (rType == "triangle" || rType == "triangle7")
+        return CutKind{2, 2, 3, 0, 5, false};
+    if (rType == "triangle6")
+        return CutKind{2, 2, 3, 6, 5, false};
+    if (rType == "quad" || rType == "quad8" || rType == "quad9")
+        return CutKind{4, 2, 4, 0, 9, false};
+    if (rType == "tetra")
+        return CutKind{3, 3, 4, 0, 10, false};
+    if (rType == "tetra10")
+        return CutKind{3, 3, 4, 10, 10, false};
+    if (rType == "hexahedron" || rType == "hexahedron20" || rType == "hexahedron27")
+        return CutKind{5, 3, 8, 0, 12, false};
+    if (rType == "wedge" || rType == "wedge15" || rType == "wedge18")
+        return CutKind{6, 3, 6, 0, 13, true};
+    if (rType == "pyramid" || rType == "pyramid13" || rType == "pyramid14")
+        return CutKind{7, 3, 5, 0, 14, false};
+    return std::nullopt;
+}
+
+/// meshio wedge corners -> VTK order (meshio_to_vtk_order("wedge")); its own inverse.
+constexpr int kCutWedgeOrder[6] = {0, 2, 1, 3, 5, 4};
+
+/// Per CutCells family, VTK corner j is Basix corner kCutVtkToBasix[f][j] and
+/// back (cutcells::cell::vtk_to_basix_vertex_permutation; each is its own
+/// inverse). CutCells' straight pieces and whole cells come in Basix order.
+constexpr int kCutVtkToBasix[8][8] = {{0},
+                                      {0, 1},
+                                      {0, 1, 2},
+                                      {0, 1, 2, 3},
+                                      {0, 1, 3, 2},
+                                      {0, 1, 3, 2, 4, 5, 7, 6},
+                                      {0, 1, 2, 3, 4, 5},
+                                      {0, 1, 3, 2, 4}};
+
+// --- reference maps of the parent cells, for interpolating point data ------
+//
+// Each family is parametrised over its own reference cell (corners in VTK
+// order): the map x(p) = sum N_i(p) X_i with the cell's linear shape
+// functions. A piece's vertex is located in its parent by Gauss-Newton, and
+// point data is evaluated with the same functions (quadratic ones on the
+// triangle6/tetra10 parents of a quadratic level set).
+
+void cut_linear_shape(int Family, const double* pP, double* pN) {
+    const double u = pP[0], v = pP[1], w = pP[2];
+    switch (Family) {
+        case 1:
+            pN[0] = 1.0 - u;
+            pN[1] = u;
+            return;
+        case 2:
+            pN[0] = 1.0 - u - v;
+            pN[1] = u;
+            pN[2] = v;
+            return;
+        case 3:
+            pN[0] = 1.0 - u - v - w;
+            pN[1] = u;
+            pN[2] = v;
+            pN[3] = w;
+            return;
+        case 4:
+            pN[0] = (1.0 - u) * (1.0 - v);
+            pN[1] = u * (1.0 - v);
+            pN[2] = u * v;
+            pN[3] = (1.0 - u) * v;
+            return;
+        case 5: {
+            const double a[8] = {(1 - u) * (1 - v), u * (1 - v), u * v, (1 - u) * v,
+                                 (1 - u) * (1 - v), u * (1 - v), u * v, (1 - u) * v};
+            for (int i = 0; i < 8; ++i)
+                pN[i] = a[i] * (i < 4 ? 1.0 - w : w);
+            return;
+        }
+        case 6: {
+            const double l[3] = {1.0 - u - v, u, v};
+            for (int i = 0; i < 3; ++i) {
+                pN[i] = l[i] * (1.0 - w);
+                pN[i + 3] = l[i] * w;
+            }
+            return;
+        }
+        case 7: {
+            // The base bilinear, shrunk towards the apex: a collapsed hexahedron.
+            const double b[4] = {(1 - u) * (1 - v), u * (1 - v), u * v, (1 - u) * v};
+            for (int i = 0; i < 4; ++i)
+                pN[i] = b[i] * (1.0 - w);
+            pN[4] = w;
+            return;
+        }
+        default:
+            return;
+    }
+}
+
+int cut_family_tdim(int Family) {
+    return Family == 1 ? 1 : (Family == 2 || Family == 4) ? 2 : 3;
+}
+
+int cut_family_corners(int Family) {
+    static constexpr int kCorners[8] = {1, 2, 3, 4, 4, 8, 6, 5};
+    return kCorners[Family];
+}
+
+/// The reference coordinates of `pX` in the cell with corners `rX` (gdim
+/// each), by Gauss-Newton from the centroid with a difference Jacobian.
+std::array<double, 3> cut_locate(int Family, const std::vector<double>& rX, std::size_t Gdim,
+                                 const double* pX) {
+    const int tdim = cut_family_tdim(Family);
+    const int nc = cut_family_corners(Family);
+    std::array<double, 3> p = {0.25, 0.25, 0.25};
+    if (Family == 4 || Family == 5)
+        p = {0.5, 0.5, 0.5};
+    if (Family == 1)
+        p = {0.5, 0.0, 0.0};
+    if (Family == 6 || Family == 7)
+        p = {0.25, 0.25, 0.5};
+    double n[8];
+    const auto map = [&](const std::array<double, 3>& rP, double* pOut) {
+        cut_linear_shape(Family, rP.data(), n);
+        for (std::size_t k = 0; k < Gdim; ++k) {
+            pOut[k] = 0.0;
+            for (int i = 0; i < nc; ++i)
+                pOut[k] += n[i] * rX[static_cast<std::size_t>(i) * Gdim + k];
+        }
+    };
+    double scale = 0.0;
+    for (int i = 1; i < nc; ++i)
+        for (std::size_t k = 0; k < Gdim; ++k)
+            scale = std::max(scale, std::fabs(rX[static_cast<std::size_t>(i) * Gdim + k] - rX[k]));
+    if (scale == 0.0)
+        return p;
+    double x[3], xp[3], xm[3];
+    for (int it = 0; it < 40; ++it) {
+        map(p, x);
+        double r[3] = {0, 0, 0};
+        double rnorm = 0.0;
+        for (std::size_t k = 0; k < Gdim; ++k) {
+            r[k] = pX[k] - x[k];
+            rnorm = std::max(rnorm, std::fabs(r[k]));
+        }
+        if (rnorm <= 1e-15 * scale)
+            break;
+        double jac[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};  // jac[k][j] = dx_k / dp_j
+        const double h = 1e-6;
+        for (int j = 0; j < tdim; ++j) {
+            std::array<double, 3> pp = p, pm = p;
+            pp[static_cast<std::size_t>(j)] += h;
+            pm[static_cast<std::size_t>(j)] -= h;
+            map(pp, xp);
+            map(pm, xm);
+            for (std::size_t k = 0; k < Gdim; ++k)
+                jac[k][j] = (xp[k] - xm[k]) / (2.0 * h);
+        }
+        // Normal equations (J^T J) d = J^T r, tdim <= 3, by Gaussian elimination.
+        double a[3][4] = {{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}};
+        for (int i = 0; i < tdim; ++i) {
+            for (int j = 0; j < tdim; ++j)
+                for (std::size_t k = 0; k < Gdim; ++k)
+                    a[i][j] += jac[k][i] * jac[k][j];
+            for (std::size_t k = 0; k < Gdim; ++k)
+                a[i][3] += jac[k][i] * r[k];
+        }
+        bool singular = false;
+        for (int c = 0; c < tdim; ++c) {
+            int piv = c;
+            for (int i = c + 1; i < tdim; ++i)
+                if (std::fabs(a[i][c]) > std::fabs(a[piv][c]))
+                    piv = i;
+            if (std::fabs(a[piv][c]) < 1e-300) {
+                singular = true;
+                break;
+            }
+            for (int j = 0; j < 4; ++j)
+                std::swap(a[c][j], a[piv][j]);
+            for (int i = 0; i < tdim; ++i) {
+                if (i == c)
+                    continue;
+                const double f = a[i][c] / a[c][c];
+                for (int j = c; j < 4; ++j)
+                    a[i][j] -= f * a[c][j];
+            }
+        }
+        if (singular)
+            break;
+        double step = 0.0;
+        for (int i = 0; i < tdim; ++i) {
+            const double d = a[i][3] / a[i][i];
+            p[static_cast<std::size_t>(i)] += d;
+            step = std::max(step, std::fabs(d));
+        }
+        if (step < 1e-15)
+            break;
+    }
+    return p;
+}
+
+/// The weights of the parent's nodes at reference point `rP`: its quadratic
+/// Lagrange functions when `Quadratic` (triangle6, tetra10, VTK edge order),
+/// else its linear ones on the corners.
+void cut_node_weights(int Family, bool Quadratic, const std::array<double, 3>& rP,
+                      std::vector<double>& rW) {
+    if (!Quadratic) {
+        rW.assign(static_cast<std::size_t>(cut_family_corners(Family)), 0.0);
+        cut_linear_shape(Family, rP.data(), rW.data());
+        return;
+    }
+    if (Family == 2) {
+        const double l[3] = {1.0 - rP[0] - rP[1], rP[0], rP[1]};
+        static constexpr int kE[3][2] = {{0, 1}, {1, 2}, {0, 2}};
+        rW.assign(6, 0.0);
+        for (int i = 0; i < 3; ++i)
+            rW[static_cast<std::size_t>(i)] = l[i] * (2.0 * l[i] - 1.0);
+        for (int e = 0; e < 3; ++e)
+            rW[static_cast<std::size_t>(3 + e)] = 4.0 * l[kE[e][0]] * l[kE[e][1]];
+        return;
+    }
+    const double l[4] = {1.0 - rP[0] - rP[1] - rP[2], rP[0], rP[1], rP[2]};
+    static constexpr int kE[6][2] = {{0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}};
+    rW.assign(10, 0.0);
+    for (int i = 0; i < 4; ++i)
+        rW[static_cast<std::size_t>(i)] = l[i] * (2.0 * l[i] - 1.0);
+    for (int e = 0; e < 6; ++e)
+        rW[static_cast<std::size_t>(4 + e)] = 4.0 * l[kE[e][0]] * l[kE[e][1]];
+}
+
+/// The cells being cut, flattened: the top-dimensional blocks' cells.
+struct CutInput {
+    std::size_t mGdim = 3;
+    int mTdim = 0;
+    bool mQuadratic = false;       // every cut cell is triangle6/tetra10
+    std::vector<double> mPoints;   // n * mGdim
+    std::vector<double> mPoints3;  // n * 3
+    std::vector<int> mCorners;     // CSR, VTK corner order
+    std::vector<int> mOffsets;     // num cells + 1
+    std::vector<int> mFamily;      // per cell
+    std::vector<int> mDofs;        // CSR, Basix order, the level set's dofs
+    std::vector<int> mDofOffsets;
+    std::vector<std::int64_t> mNodes;  // CSR: every node of the cell, meshio order
+    std::vector<std::int64_t> mNodeOffsets;
+    std::vector<std::int64_t> mGlobal;         // per cell, its global input cell (block-major)
+    std::vector<std::size_t> mBlock;           // per cell, its input block
+    std::vector<std::size_t> mLocal;           // per cell, its index in that block
+    std::vector<std::size_t> mTopBlocks;       // the cut blocks
+    std::vector<std::string> mNames;           // level-set names
+    std::vector<std::vector<double>> mValues;  // per level set, one value per point
+    std::string mSelection;
+    std::vector<std::string> mWarnings;
+};
+
+std::string cut_backend(const CutOptions& rOptions, bool Quadratic) {
+    const std::string& b = rOptions.mBackend;
+    if (b == "auto" || b.empty())
+        return Quadratic ? "quadrays" : "lut";
+    if (b == "lut" || b == "quadrays")
+        return b;
+    cut_fail("unknown backend '" + b + "' (auto, lut or quadrays)");
+}
+
+CutInput cut_prepare(const Mesh& rMesh, const CutOptions& rOptions) {
+    CutInput in;
+    if (rOptions.mLevelSets.empty() && rOptions.mPlanes.empty())
+        cut_fail("give a level set: a point_data array (level_sets) or a plane (planes)");
+    if (rOptions.mOrder < 0 || rOptions.mOrder > 20)
+        cut_fail("order must be 0 to 20, not " + std::to_string(rOptions.mOrder));
+    if (rOptions.mDegree < 1 || rOptions.mDegree > 8)
+        cut_fail("degree must be 1 to 8, not " + std::to_string(rOptions.mDegree));
+    const std::size_t np = rMesh.NumPoints();
+    const std::size_t gdim = rMesh.PointDim();
+    if (np == 0)
+        cut_fail("the mesh has no points");
+    if (gdim < 1 || gdim > 3)
+        cut_fail("points must have 1 to 3 coordinates, not " + std::to_string(gdim));
+    in.mGdim = gdim;
+    const NDArray& r_p = rMesh.Points();
+    in.mPoints.resize(np * gdim);
+    in.mPoints3.assign(np * 3, 0.0);
+    for (std::size_t i = 0; i < np; ++i)
+        for (std::size_t k = 0; k < gdim; ++k) {
+            const double x = detail::read_double(r_p, i * gdim + k);
+            in.mPoints[i * gdim + k] = x;
+            in.mPoints3[i * 3 + k] = x;
+        }
+
+    // The blocks of the highest dimension a cuttable type reaches.
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cells = rMesh.Cells(b);
+        if (const auto kind = cut_kind(cells.Type()))
+            in.mTdim = std::max(in.mTdim, kind->mTdim);
+    }
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cells = rMesh.Cells(b);
+        const std::string type = cells.Type();
+        const bool polyhedron = cells.IsPolyhedron() || type.rfind("polyhedron", 0) == 0;
+        const bool polygon = !polyhedron && type.rfind("polygon", 0) == 0;
+        if (cells.NumCells() > 0 && (polyhedron || (polygon && in.mTdim <= 2)))
+            throw Unsupported(std::string(kCutPrefix) +
+                              "polygon and polyhedron cells are not cut ('" + type +
+                              "'); convert_cells(mode='simplexify') first");
+    }
+    if (in.mTdim == 0)
+        cut_fail(
+            "no cell to cut: lines, triangles, quads, tetrahedra, hexahedra, wedges or pyramids");
+    bool all_quadratic = true;
+    std::int64_t global = 0;
+    std::set<std::string> skipped;
+    in.mOffsets.push_back(0);
+    in.mNodeOffsets.push_back(0);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cells = rMesh.Cells(b);
+        const std::size_t nc = cells.NumCells();
+        const auto kind = cut_kind(cells.Type());
+        if (!kind || kind->mTdim != in.mTdim || cells.IsRagged()) {
+            if (nc > 0 && cells.Type() != "vertex")
+                skipped.insert(cells.Type());
+            global += static_cast<std::int64_t>(nc);
+            continue;
+        }
+        in.mTopBlocks.push_back(b);
+        if (kind->mQuadraticNodes == 0)
+            all_quadratic = false;
+        const NDArray& r_c = cells.Conn();
+        const std::size_t npc = cells.NodesPerCell();
+        if (npc < static_cast<std::size_t>(kind->mCorners))
+            cut_fail("a '" + cells.Type() + "' block has " + std::to_string(npc) +
+                     " nodes per cell");
+        for (std::size_t c = 0; c < nc; ++c) {
+            int corner[8];
+            for (int v = 0; v < kind->mCorners; ++v) {
+                const int src = kind->mWedge ? kCutWedgeOrder[v] : v;
+                const std::int64_t node =
+                    detail::read_int(r_c, c * npc + static_cast<std::size_t>(src));
+                if (node < 0 || static_cast<std::size_t>(node) >= np)
+                    cut_fail("a '" + cells.Type() + "' cell names node " + std::to_string(node) +
+                             " of " + std::to_string(np));
+                corner[v] = static_cast<int>(node);
+                in.mCorners.push_back(corner[v]);
+            }
+            in.mOffsets.push_back(static_cast<int>(in.mCorners.size()));
+            for (std::size_t k = 0; k < npc; ++k)
+                in.mNodes.push_back(detail::read_int(r_c, c * npc + k));
+            in.mNodeOffsets.push_back(static_cast<std::int64_t>(in.mNodes.size()));
+            in.mFamily.push_back(kind->mFamily);
+            in.mGlobal.push_back(global + static_cast<std::int64_t>(c));
+            in.mBlock.push_back(b);
+            in.mLocal.push_back(c);
+        }
+        global += static_cast<std::int64_t>(nc);
+    }
+    if (in.mFamily.empty())
+        cut_fail("no cell to cut in the blocks of dimension " + std::to_string(in.mTdim));
+    for (const std::string& r_t : skipped)
+        in.mWarnings.push_back(std::string(kCutPrefix) + "the '" + r_t +
+                               "' cells are not of dimension " + std::to_string(in.mTdim) +
+                               " and are left out");
+    in.mQuadratic = all_quadratic;
+
+    // The level sets' names and values, at every point.
+    for (const std::string& r_name : rOptions.mLevelSets) {
+        if (!rMesh.HasPointData(r_name))
+            cut_fail("no point_data array '" + r_name + "' to cut by");
+        const NDArray& r_a = rMesh.PointData(r_name);
+        if (detail::rows(r_a) != np || detail::cols(r_a) != 1)
+            cut_fail("the level set '" + r_name + "' must be one value per point");
+        std::vector<double> v(np);
+        for (std::size_t i = 0; i < np; ++i) {
+            v[i] = detail::read_double(r_a, i);
+            if (!std::isfinite(v[i]))
+                cut_fail("the level set '" + r_name + "' is not finite at point " +
+                         std::to_string(i));
+        }
+        in.mNames.push_back(r_name);
+        in.mValues.push_back(std::move(v));
+    }
+    for (std::size_t q = 0; q < rOptions.mPlanes.size(); ++q) {
+        const CutPlane& r_pl = rOptions.mPlanes[q];
+        const double len =
+            std::sqrt(r_pl.mNormal[0] * r_pl.mNormal[0] + r_pl.mNormal[1] * r_pl.mNormal[1] +
+                      r_pl.mNormal[2] * r_pl.mNormal[2]);
+        if (!(len > 0.0) || !std::isfinite(len))
+            cut_fail("plane " + std::to_string(q) + " has no normal");
+        std::vector<double> v(np);
+        for (std::size_t i = 0; i < np; ++i) {
+            double s = 0.0;
+            for (std::size_t k = 0; k < 3; ++k)
+                s += (in.mPoints3[i * 3 + k] - r_pl.mOrigin[k]) * r_pl.mNormal[k];
+            v[i] = s / len;
+        }
+        in.mNames.push_back("plane" + std::to_string(q));
+        in.mValues.push_back(std::move(v));
+    }
+    for (std::size_t i = 0; i < in.mNames.size(); ++i) {
+        const std::string& r_n = in.mNames[i];
+        if (r_n.empty() || !(std::isalpha(static_cast<unsigned char>(r_n[0])) || r_n[0] == '_'))
+            cut_fail("the level set '" + r_n +
+                     "' needs a name that starts with a letter, to be selected");
+        for (const char ch : r_n)
+            if (!(std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'))
+                cut_fail("the level set '" + r_n +
+                         "' needs a name of letters, digits and '_', to be selected");
+        for (std::size_t j = 0; j < i; ++j)
+            if (in.mNames[j] == r_n)
+                cut_fail("two level sets are named '" + r_n + "'");
+    }
+    in.mSelection = rOptions.mSelection.empty() ? in.mNames.front() + " < 0" : rOptions.mSelection;
+
+    // The level set's dofs on each cell, in Basix order: the corners
+    // (permuted from VTK's), or for a quadratic one all ten or six nodes
+    // (Basix numbers a P2 tetrahedron's edges 23, 13, 12, 03, 02, 01 and a
+    // P2 triangle's 12, 02, 01; VTK 01, 12, 02, 03, 13, 23 and 01, 12, 02).
+    static constexpr int kTet10[10] = {0, 1, 2, 3, 9, 8, 5, 7, 6, 4};
+    static constexpr int kTri6[6] = {0, 1, 2, 4, 5, 3};
+    in.mDofOffsets.push_back(0);
+    for (std::size_t c = 0; c < in.mFamily.size(); ++c) {
+        const int fam = in.mFamily[c];
+        if (in.mQuadratic) {
+            const std::int64_t* p_n = in.mNodes.data() + in.mNodeOffsets[c];
+            const int n = fam == 2 ? 6 : 10;
+            for (int i = 0; i < n; ++i)
+                in.mDofs.push_back(static_cast<int>(p_n[fam == 2 ? kTri6[i] : kTet10[i]]));
+        } else {
+            const int* p_c = in.mCorners.data() + in.mOffsets[c];
+            for (int i = 0; i < cut_family_corners(fam); ++i)
+                in.mDofs.push_back(p_c[kCutVtkToBasix[fam][i]]);
+        }
+        in.mDofOffsets.push_back(static_cast<int>(in.mDofs.size()));
+    }
+    return in;
+}
+
+/// meshio name and VTK -> meshio node order of a CutCells piece family.
+std::string cut_family_name(int Family) {
+    static const char* kNames[8] = {"vertex", "line",       "triangle", "tetra",
+                                    "quad",   "hexahedron", "wedge",    "pyramid"};
+    return kNames[Family];
+}
+
+/// Raw pieces: points (3 per node), cells (CSR, meshio order) with their
+/// meshio type and parent (an index into CutInput's cells).
+struct CutPieces {
+    std::vector<double> mPoints;
+    std::vector<std::int64_t> mConn;
+    std::vector<std::int64_t> mOffsets = {0};
+    std::vector<std::string> mTypes;
+    std::vector<std::int64_t> mParents;
+};
+
+/// The output mesh of the pieces: welded points, blocks by type, point data
+/// interpolated in the parents, cell data, cell regions and field data
+/// carried, the cut:* arrays.
+Mesh cut_build_mesh(const Mesh& rMesh, const CutInput& rIn, const CutPieces& rPieces,
+                    const std::vector<char>& rIsCut, bool RecordParentIds,
+                    std::vector<std::string>& rWarnings) {
+    const std::size_t gdim = rIn.mGdim;
+    const std::size_t npts = rPieces.mPoints.size() / 3;
+    const std::size_t ncells = rPieces.mTypes.size();
+
+    // Blocks: one per (type, node count), in order of first appearance.
+    std::vector<std::pair<std::string, std::size_t>> keys;
+    std::vector<std::vector<std::size_t>> members;
+    for (std::size_t c = 0; c < ncells; ++c) {
+        const std::size_t nn =
+            static_cast<std::size_t>(rPieces.mOffsets[c + 1] - rPieces.mOffsets[c]);
+        std::size_t k = 0;
+        while (k < keys.size() && !(keys[k].first == rPieces.mTypes[c] && keys[k].second == nn))
+            ++k;
+        if (k == keys.size()) {
+            keys.emplace_back(rPieces.mTypes[c], nn);
+            members.emplace_back();
+        }
+        members[k].push_back(c);
+    }
+
+    Mesh out;
+    NDArray pts = NDArray::Uninit(DType::Float64, {npts, gdim});
+    for (std::size_t i = 0; i < npts; ++i)
+        for (std::size_t k = 0; k < gdim; ++k)
+            pts.As<double>()[i * gdim + k] = rPieces.mPoints[i * 3 + k];
+    out.AssignPoints(std::move(pts));
+    std::vector<std::int64_t> order;  // output cells in block order -> piece
+    for (std::size_t k = 0; k < keys.size(); ++k) {
+        const std::size_t nn = keys[k].second;
+        NDArray conn = NDArray::Uninit(DType::Int64, {members[k].size(), nn});
+        for (std::size_t r = 0; r < members[k].size(); ++r) {
+            const std::size_t c = members[k][r];
+            for (std::size_t j = 0; j < nn; ++j)
+                conn.As<std::int64_t>()[r * nn + j] =
+                    rPieces.mConn[static_cast<std::size_t>(rPieces.mOffsets[c]) + j];
+            order.push_back(static_cast<std::int64_t>(c));
+        }
+        out.AddCellBlock(keys[k].first, std::move(conn));
+    }
+
+    // Point data, interpolated in each point's first parent.
+    std::vector<std::int64_t> owner(npts, -1);
+    for (std::size_t c = 0; c < ncells; ++c)
+        for (std::int64_t j = rPieces.mOffsets[c]; j < rPieces.mOffsets[c + 1]; ++j) {
+            const std::size_t node =
+                static_cast<std::size_t>(rPieces.mConn[static_cast<std::size_t>(j)]);
+            if (owner[node] < 0)
+                owner[node] = rPieces.mParents[c];
+        }
+    const std::vector<std::string> pnames = rMesh.PointDataNames();
+    if (!pnames.empty()) {
+        std::vector<std::vector<double>> weights(npts);
+        std::vector<double> corners;
+        for (std::size_t i = 0; i < npts; ++i) {
+            if (owner[i] < 0)
+                continue;
+            const std::size_t c = static_cast<std::size_t>(owner[i]);
+            const int fam = rIn.mFamily[c];
+            corners.clear();
+            for (int j = rIn.mOffsets[c]; j < rIn.mOffsets[c + 1]; ++j)
+                for (std::size_t k = 0; k < gdim; ++k)
+                    corners.push_back(rIn.mPoints[static_cast<std::size_t>(
+                                                      rIn.mCorners[static_cast<std::size_t>(j)]) *
+                                                      gdim +
+                                                  k]);
+            const auto ref = cut_locate(fam, corners, gdim, &rPieces.mPoints[i * 3]);
+            cut_node_weights(fam, rIn.mQuadratic, ref, weights[i]);
+        }
+        for (const std::string& r_name : pnames) {
+            const NDArray& r_a = rMesh.PointData(r_name);
+            const std::size_t comps = detail::cols(r_a);
+            const bool is_float = detail::is_float_dtype(r_a.Dtype());
+            std::vector<std::size_t> shape = r_a.Shape();
+            shape[0] = npts;
+            NDArray a = NDArray::Uninit(is_float ? DType::Float64 : r_a.Dtype(), shape);
+            for (std::size_t i = 0; i < npts; ++i) {
+                const std::size_t c = owner[i] < 0 ? 0 : static_cast<std::size_t>(owner[i]);
+                // The parent's nodes the weights refer to: all of them for a
+                // quadratic parent, else its corners (meshio order -> VTK order).
+                std::vector<std::int64_t> nodes;
+                if (rIn.mQuadratic) {
+                    for (std::int64_t j = rIn.mNodeOffsets[c]; j < rIn.mNodeOffsets[c + 1]; ++j)
+                        nodes.push_back(rIn.mNodes[static_cast<std::size_t>(j)]);
+                } else {
+                    for (int j = rIn.mOffsets[c]; j < rIn.mOffsets[c + 1]; ++j)
+                        nodes.push_back(rIn.mCorners[static_cast<std::size_t>(j)]);
+                }
+                const std::vector<double>& r_w = weights[i];
+                for (std::size_t k = 0; k < comps; ++k) {
+                    if (is_float) {
+                        double s = 0.0;
+                        for (std::size_t j = 0; j < nodes.size() && j < r_w.size(); ++j)
+                            s += r_w[j] * detail::read_double(
+                                              r_a, static_cast<std::size_t>(nodes[j]) * comps + k);
+                        a.As<double>()[i * comps + k] = s;
+                    } else {
+                        std::size_t best = 0;
+                        for (std::size_t j = 1; j < nodes.size() && j < r_w.size(); ++j)
+                            if (r_w[j] > r_w[best])
+                                best = j;
+                        detail::write_int(
+                            a, i * comps + k,
+                            detail::read_int(r_a,
+                                             static_cast<std::size_t>(nodes[best]) * comps + k));
+                    }
+                }
+            }
+            out.AddPointData(r_name, std::move(a));
+        }
+    }
+
+    // Cell data, from each piece's parent.
+    for (const std::string& r_name : rMesh.CellDataNames()) {
+        const NDArray& r_first = rMesh.CellData(r_name, rIn.mTopBlocks.front());
+        bool uniform = true;
+        for (const std::size_t b : rIn.mTopBlocks) {
+            const NDArray& r_b = rMesh.CellData(r_name, b);
+            if (r_b.Dtype() != r_first.Dtype() || detail::cols(r_b) != detail::cols(r_first))
+                uniform = false;
+        }
+        if (!uniform) {
+            rWarnings.push_back(
+                std::string(kCutPrefix) + "cell_data '" + r_name +
+                "' differs in type or width between the cut blocks and is left out");
+            continue;
+        }
+        const std::size_t row_bytes = detail::cols(r_first) * dtype_size(r_first.Dtype());
+        std::vector<NDArray> blocks;
+        std::size_t at = 0;
+        for (std::size_t k = 0; k < keys.size(); ++k) {
+            std::vector<std::size_t> shape = r_first.Shape();
+            shape[0] = members[k].size();
+            NDArray a = NDArray::Uninit(r_first.Dtype(), shape);
+            for (std::size_t r = 0; r < members[k].size(); ++r, ++at) {
+                const std::size_t parent =
+                    static_cast<std::size_t>(rPieces.mParents[static_cast<std::size_t>(order[at])]);
+                const NDArray& r_src = rMesh.CellData(r_name, rIn.mBlock[parent]);
+                std::memcpy(a.As<std::byte>() + r * row_bytes,
+                            r_src.As<std::byte>() + rIn.mLocal[parent] * row_bytes, row_bytes);
+            }
+            blocks.push_back(std::move(a));
+        }
+        out.AddCellData(r_name, std::move(blocks));
+    }
+    {
+        std::vector<NDArray> parent_blocks, cut_blocks;
+        std::size_t at = 0;
+        for (std::size_t k = 0; k < keys.size(); ++k) {
+            NDArray pa = NDArray::Uninit(DType::Int64, {members[k].size()});
+            NDArray ca = NDArray::Uninit(DType::Int8, {members[k].size()});
+            for (std::size_t r = 0; r < members[k].size(); ++r, ++at) {
+                const std::size_t parent =
+                    static_cast<std::size_t>(rPieces.mParents[static_cast<std::size_t>(order[at])]);
+                pa.As<std::int64_t>()[r] = rIn.mGlobal[parent];
+                ca.As<std::int8_t>()[r] = rIsCut[parent] ? 1 : 0;
+            }
+            parent_blocks.push_back(std::move(pa));
+            cut_blocks.push_back(std::move(ca));
+        }
+        if (RecordParentIds)
+            out.AddCellData("cut:parent_cell", std::move(parent_blocks));
+        out.AddCellData("cut:cut", std::move(cut_blocks));
+    }
+
+    // Cell regions follow the parents; point and side regions do not survive.
+    std::vector<std::int64_t> parent_global(order.size());
+    for (std::size_t i = 0; i < order.size(); ++i)
+        parent_global[i] = rIn.mGlobal[static_cast<std::size_t>(
+            rPieces.mParents[static_cast<std::size_t>(order[i])])];
+    std::string dropped;
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const meshioplusplus::Region& r_reg = rMesh.Region(r);
+        if (r_reg.mKind != RegionKind::Cell) {
+            dropped += (dropped.empty() ? "'" : ", '") + r_reg.mName + "'";
+            continue;
+        }
+        std::set<std::int64_t> in_reg(r_reg.Entries(), r_reg.Entries() + r_reg.NumEntries());
+        std::vector<std::int64_t> kept;
+        for (std::size_t i = 0; i < parent_global.size(); ++i)
+            if (in_reg.count(parent_global[i]))
+                kept.push_back(static_cast<std::int64_t>(i));
+        NDArray entries = NDArray::Uninit(DType::Int64, {kept.size()});
+        std::copy(kept.begin(), kept.end(), entries.As<std::int64_t>());
+        out.AddRegion(meshioplusplus::Region(r_reg.mName, RegionKind::Cell, r_reg.mDim, r_reg.mTag,
+                                             std::move(entries)));
+    }
+    if (!dropped.empty())
+        rWarnings.push_back(std::string(kCutPrefix) + "the point and side regions " + dropped +
+                            " are not carried to the pieces");
+    for (const std::string& r_name : rMesh.FieldDataNames())
+        out.AddFieldData(r_name, rMesh.FieldData(r_name));
+
+    // Weld the pieces' coincident points (each piece has its own).
+    double diag = 0.0;
+    {
+        std::array<double, 3> lo = {0, 0, 0}, hi = {0, 0, 0};
+        for (std::size_t i = 0; i < rIn.mPoints3.size() / 3; ++i)
+            for (std::size_t k = 0; k < 3; ++k) {
+                const double x = rIn.mPoints3[i * 3 + k];
+                lo[k] = i == 0 ? x : std::min(lo[k], x);
+                hi[k] = i == 0 ? x : std::max(hi[k], x);
+            }
+        for (std::size_t k = 0; k < 3; ++k)
+            diag += (hi[k] - lo[k]) * (hi[k] - lo[k]);
+        diag = std::sqrt(diag);
+    }
+    CleanOptions co;
+    co.weld = true;
+    co.atol = 1e-10 * (diag > 0.0 ? diag : 1.0);
+    co.remove_orphans = true;
+    co.drop_degenerate = false;
+    co.drop_duplicate_cells = false;
+    return std::move(clean(out, co).mMesh);
+}
+
+using CutLs = cutcells::LevelSetFunction<double, int>;
+
+/// CutCells' view of the cut cells and its classification of them, kept
+/// together because the part points into both.
+struct CutRun {
+    CutInput mIn;
+    std::vector<cutcells::cell::type> mTypes;
+    cutcells::MeshView<double, int> mView;
+    std::vector<CutLs> mLevelSets;
+    cutcells::part::CutResult<double, int> mResult;
+    cutcells::part::MeshPart<double, int> mPart;
+    std::string mBackend;
+};
+
+std::unique_ptr<CutRun> cut_run(const Mesh& rMesh, const CutOptions& rOptions) {
+    auto run = std::make_unique<CutRun>();
+    run->mIn = cut_prepare(rMesh, rOptions);
+    CutInput& in = run->mIn;
+    run->mBackend = cut_backend(rOptions, in.mQuadratic);
+    for (const int f : in.mFamily)
+        run->mTypes.push_back(static_cast<cutcells::cell::type>(f));
+    auto& view = run->mView;
+    view.gdim = static_cast<int>(in.mGdim);
+    view.tdim = in.mTdim;
+    view.coordinates = std::span<const double>(in.mPoints);
+    view.coordinate_stride = in.mGdim;
+    view.connectivity = std::span<const int>(in.mCorners);
+    view.offsets = std::span<const int>(in.mOffsets);
+    view.cell_count = static_cast<int>(in.mFamily.size());
+    view.cell_types = std::span<const cutcells::cell::type>(run->mTypes);
+    view.vtk_vertex_order = true;
+    try {
+        for (std::size_t i = 0; i < in.mNames.size(); ++i) {
+            auto data = cutcells::create_level_set_mesh_data<double, int>(
+                static_cast<int>(in.mGdim), in.mTdim, in.mQuadratic ? 2 : 1,
+                std::span<const double>(in.mPoints), std::span<const int>(in.mDofs),
+                std::span<const int>(in.mDofOffsets),
+                std::span<const cutcells::cell::type>(run->mTypes));
+            run->mLevelSets.push_back(cutcells::create_level_set_function<double, int>(
+                std::move(data), std::span<const double>(in.mValues[i]), in.mNames[i]));
+        }
+        run->mResult = cutcells::part::cut<double, int>(
+            view, std::span<const CutLs>(run->mLevelSets), cutcells::part::ClassifyOptions{});
+    } catch (const std::exception& rE) {
+        throw std::runtime_error(std::string(kCutPrefix) +
+                                 "CutCells could not classify the cells: " + rE.what());
+    }
+    try {
+        run->mPart = cutcells::part::select(run->mResult, std::string_view(in.mSelection));
+    } catch (const std::exception& rE) {
+        cut_fail("the selection '" + in.mSelection + "': " + rE.what() + " (level sets: " + [&] {
+            std::string s;
+            for (const std::string& r_n : in.mNames)
+                s += (s.empty() ? "" : ", ") + r_n;
+            return s;
+        }() + ")");
+    }
+    return run;
+}
+
+cutcells::quadrature::QuadratureRules<double> cut_rules(const CutRun& rRun,
+                                                        const CutOptions& rOptions, int Order) {
+    if (rRun.mBackend == "lut") {
+        cutcells::lut::Options o;
+        o.triangulate = rOptions.mTriangulate;
+        return cutcells::part::quadrature_rules(rRun.mPart, Order, rOptions.mIncludeUncut, o);
+    }
+    cutcells::quadrays::Options o;
+    return cutcells::part::quadrature_rules(rRun.mPart, Order, rOptions.mIncludeUncut, o);
+}
+
+#endif
+
+}  // namespace
+
+bool cut_has_cutcells() {
+#ifdef MESHIOPLUSPLUS_HAS_CUTCELLS
+    return true;
+#else
+    return false;
+#endif
+}
+
+#ifndef MESHIOPLUSPLUS_HAS_CUTCELLS
+namespace {
+[[noreturn]] void cut_unavailable() {
+    throw Unsupported(
+        std::string(kCutPrefix) +
+        "this build has no CutCells: build meshio++ with -DMESHIOPLUSPLUS_WITH_CUTCELLS=ON "
+        "(CutCells, build/build-cutcells.sh), see doc/cut.md");
+}
+}  // namespace
+
+CutLevelSetResult cut_level_set(const Mesh& rMesh, const CutOptions& rOptions) {
+    (void)rMesh;
+    (void)rOptions;
+    cut_unavailable();
+}
+
+CutQuadratureResult cut_quadrature(const Mesh& rMesh, const CutOptions& rOptions) {
+    (void)rMesh;
+    (void)rOptions;
+    cut_unavailable();
+}
+
+#else
+
+CutLevelSetResult cut_level_set(const Mesh& rMesh, const CutOptions& rOptions) {
+    const auto run = cut_run(rMesh, rOptions);
+    const CutInput& in = run->mIn;
+    CutLevelSetResult result;
+    result.mWarnings = in.mWarnings;
+    result.mSelection = in.mSelection;
+    result.mBackend = run->mBackend;
+    result.mNumCells = static_cast<std::int64_t>(in.mFamily.size());
+    result.mNumCutCells = static_cast<std::int64_t>(run->mResult.cut_cells.size());
+    result.mNumUncutCells = static_cast<std::int64_t>(run->mPart.n_uncut_cells());
+    result.mDimension = run->mPart.dim;
+    std::vector<char> is_cut(in.mFamily.size(), 0);
+    for (const int c : run->mResult.cut_cells)
+        is_cut[static_cast<std::size_t>(c)] = 1;
+
+    CutPieces pieces;
+    try {
+        if (run->mBackend == "lut") {
+            cutcells::lut::Options o;
+            o.triangulate = rOptions.mTriangulate;
+            const auto cm =
+                cutcells::part::visualization_mesh(run->mPart, rOptions.mIncludeUncut, o);
+            const std::size_t g = static_cast<std::size_t>(cm._gdim);
+            for (int i = 0; i < cm._num_vertices; ++i)
+                for (std::size_t k = 0; k < 3; ++k)
+                    pieces.mPoints.push_back(
+                        k < g ? cm._vertex_coords[static_cast<std::size_t>(i) * g + k] : 0.0);
+            for (int c = 0; c < cm._num_cells; ++c) {
+                const int fam = static_cast<int>(cm._types[static_cast<std::size_t>(c)]);
+                const int begin = cm._offset[static_cast<std::size_t>(c)];
+                const int count = cm._offset[static_cast<std::size_t>(c) + 1] - begin;
+                for (int j = 0; j < count; ++j) {
+                    // meshio position j <- VTK position (the wedge's swap) <- Basix position.
+                    const int vtk = fam == 6 ? kCutWedgeOrder[j] : j;
+                    const int src =
+                        count == cut_family_corners(fam) ? kCutVtkToBasix[fam][vtk] : vtk;
+                    pieces.mConn.push_back(cm._connectivity[static_cast<std::size_t>(begin + src)]);
+                }
+                pieces.mOffsets.push_back(static_cast<std::int64_t>(pieces.mConn.size()));
+                pieces.mTypes.push_back(cut_family_name(fam));
+                pieces.mParents.push_back(cm._parent_map[static_cast<std::size_t>(c)]);
+            }
+        } else {
+            cutcells::quadrays::Options o;
+            const auto lm = cutcells::part::visualization_mesh(run->mPart, rOptions.mDegree,
+                                                               rOptions.mIncludeUncut, o);
+            pieces.mPoints = lm.points;
+            const auto& vmap = vtk_to_meshio_type();
+            for (int c = 0; c < lm.n_cells(); ++c) {
+                const int vtk = static_cast<int>(lm.vtk_types[static_cast<std::size_t>(c)]);
+                const auto it = vmap.find(vtk);
+                if (it == vmap.end())
+                    throw std::runtime_error(
+                        std::string(kCutPrefix) + "CutCells gave a VTK cell of type " +
+                        std::to_string(vtk) + ", which meshio++ has no name for");
+                const std::vector<int> perm = vtk_to_meshio_order(vtk);
+                const int begin = lm.offsets[static_cast<std::size_t>(c)];
+                const int count = lm.offsets[static_cast<std::size_t>(c) + 1] - begin;
+                for (int j = 0; j < count; ++j) {
+                    const int src = perm.empty() ? j : perm[static_cast<std::size_t>(j)];
+                    pieces.mConn.push_back(lm.connectivity[static_cast<std::size_t>(begin + src)]);
+                }
+                pieces.mOffsets.push_back(static_cast<std::int64_t>(pieces.mConn.size()));
+                pieces.mTypes.push_back(it->second);
+                pieces.mParents.push_back(lm.parent[static_cast<std::size_t>(c)]);
+            }
+        }
+        const auto rules = cut_rules(*run, rOptions, 1);
+        for (const double w : rules._weights)
+            result.mMeasure += w;
+    } catch (const std::invalid_argument&) {
+        throw;
+    } catch (const std::exception& rE) {
+        throw std::runtime_error(std::string(kCutPrefix) + "CutCells failed: " + rE.what());
+    }
+    result.mNumPieces = static_cast<std::int64_t>(pieces.mTypes.size());
+    result.mMesh =
+        cut_build_mesh(rMesh, in, pieces, is_cut, rOptions.mRecordParentIds, result.mWarnings);
+    if (rOptions.mTriangulate && run->mBackend == "lut") {
+        // CutCells' tables split only the interface quadrilaterals: the
+        // volume pieces of a hexahedron or a prism, and the cells wholly
+        // inside, keep their shape. Split them here; the data, the parent ids
+        // and the regions follow each piece to its simplices.
+        ConvertCellsOptions co;
+        co.mMode = ConvertCellsMode::Simplexify;
+        result.mMesh = std::move(convert_cells(result.mMesh, co).mMesh);
+    }
+    for (const std::string& r_w : result.mWarnings)
+        log::warn("{}", r_w);
+    return result;
+}
+
+CutQuadratureResult cut_quadrature(const Mesh& rMesh, const CutOptions& rOptions) {
+    const auto run = cut_run(rMesh, rOptions);
+    const CutInput& in = run->mIn;
+    CutQuadratureResult result;
+    result.mWarnings = in.mWarnings;
+    result.mSelection = in.mSelection;
+    result.mBackend = run->mBackend;
+    result.mDimension = run->mPart.dim;
+    cutcells::quadrature::QuadratureRules<double> rules;
+    try {
+        rules = cut_rules(*run, rOptions, rOptions.mOrder);
+    } catch (const std::exception& rE) {
+        throw std::runtime_error(std::string(kCutPrefix) + "CutCells failed: " + rE.what());
+    }
+    const std::size_t n = rules._weights.size();
+    const std::size_t tdim = static_cast<std::size_t>(rules._tdim);
+    const std::size_t gdim = in.mGdim;
+    // The points' physical positions: each rule's reference points (in the
+    // parent's Basix reference cell) through the parent's shape functions.
+    // The reference cells are this file's parametrisations, except the
+    // pyramid's, whose collapsed coordinates come first.
+    std::vector<double> phys(n * 3, 0.0);
+    {
+        double shape[8];
+        for (std::size_t r = 0; r < rules._parent_map.size(); ++r) {
+            const std::size_t c = static_cast<std::size_t>(rules._parent_map[r]);
+            const int fam = in.mFamily[c];
+            for (std::int32_t i = rules._offset[r]; i < rules._offset[r + 1]; ++i) {
+                const std::size_t ii = static_cast<std::size_t>(i);
+                std::array<double, 3> ref = {0.0, 0.0, 0.0};
+                for (std::size_t k = 0; k < tdim; ++k)
+                    ref[k] = rules._points[ii * tdim + k];
+                if (fam == 7)
+                    ref = ref[2] < 1.0 - 1e-14
+                              ? std::array<double, 3>{ref[0] / (1.0 - ref[2]),
+                                                      ref[1] / (1.0 - ref[2]), ref[2]}
+                              : std::array<double, 3>{0.0, 0.0, 1.0};
+                cut_linear_shape(fam, ref.data(), shape);
+                for (int j = in.mOffsets[c]; j < in.mOffsets[c + 1]; ++j) {
+                    const double wgt = shape[j - in.mOffsets[c]];
+                    const std::size_t node =
+                        static_cast<std::size_t>(in.mCorners[static_cast<std::size_t>(j)]);
+                    for (std::size_t k = 0; k < 3; ++k)
+                        phys[ii * 3 + k] += wgt * in.mPoints3[node * 3 + k];
+                }
+            }
+        }
+    }
+    Mesh& out = result.mMesh;
+    NDArray pts = NDArray::Uninit(DType::Float64, {n, gdim});
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t k = 0; k < gdim; ++k)
+            pts.As<double>()[i * gdim + k] = phys[i * 3 + k];
+    out.AssignPoints(std::move(pts));
+    NDArray verts = NDArray::Uninit(DType::Int64, {n, std::size_t{1}});
+    for (std::size_t i = 0; i < n; ++i)
+        verts.As<std::int64_t>()[i] = static_cast<std::int64_t>(i);
+    out.AddCellBlock("vertex", std::move(verts));
+    NDArray w = NDArray::Uninit(DType::Float64, {n});
+    NDArray ref = NDArray::Uninit(DType::Float64, {n, tdim});
+    NDArray rule = NDArray::Uninit(DType::Int64, {n});
+    NDArray parent = NDArray::Uninit(DType::Int64, {n});
+    const std::size_t nrules = rules._parent_map.size();
+    for (std::size_t r = 0; r < nrules; ++r)
+        for (std::int32_t i = rules._offset[r]; i < rules._offset[r + 1]; ++i) {
+            const std::size_t ii = static_cast<std::size_t>(i);
+            w.As<double>()[ii] = rules._weights[ii];
+            result.mSumWeights += rules._weights[ii];
+            for (std::size_t k = 0; k < tdim; ++k)
+                ref.As<double>()[ii * tdim + k] = rules._points[ii * tdim + k];
+            rule.As<std::int64_t>()[ii] = static_cast<std::int64_t>(r);
+            parent.As<std::int64_t>()[ii] =
+                in.mGlobal[static_cast<std::size_t>(rules._parent_map[r])];
+        }
+    out.AddPointData("quadrature:weight", std::move(w));
+    out.AddPointData("quadrature:reference", std::move(ref));
+    out.AddPointData("quadrature:rule", std::move(rule));
+    if (rOptions.mRecordParentIds)
+        out.AddPointData("quadrature:parent_cell", std::move(parent));
+    result.mNumRules = static_cast<std::int64_t>(nrules);
+    result.mNumPoints = static_cast<std::int64_t>(n);
+    for (const std::string& r_w : result.mWarnings)
+        log::warn("{}", r_w);
+    return result;
+}
+
+#endif
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/cut.cpp =====
 // ===== begin src/cpp/src/operations/data_average.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -247613,6 +251119,13 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         // Tetrahedra filling the closed triangle surface (roadmap 6.7).
         {"Tetrahedralize",
          {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},
+        {"RemeshQuads",
+         {"TargetFaces", "Backend", "Sharp", "Boundary", "Adaptive", "Dominant", "Seed",
+          "MaxCells"}},
+        // The part level sets select, through CutCells (doc/cut.md).
+        {"CutLevelSet",
+         {"LevelSets", "Planes", "Selection", "IncludeUncut", "Backend", "Degree", "Triangulate",
+          "RecordParentIds"}},
         {"IgaRefine",
          {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
     };
@@ -248419,9 +251932,13 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             o.mBackend = TetrahedralizeBackend::Netgen;
         else if (backend == "octree")
             o.mBackend = TetrahedralizeBackend::Octree;
-        else
-            throw std::invalid_argument(pipe_err(
-                rStep, "'Backend' must be 'auto', 'netgen' or 'octree', not '" + backend + "'"));
+        else if (!backend.empty()) {
+            // A named mesher (roadmap 7.7.2): the installed tetgen or gmsh.
+            o.mBackend = TetrahedralizeBackend::Named;
+            o.mProvider = backend;
+        } else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Backend' must be 'auto', 'netgen', 'octree' or a mesher's name"));
         o.mMaxSize = pipe_number(rStep, "MaxSize", o.mMaxSize);
         o.mMaxVolume = pipe_number(rStep, "MaxVolume", o.mMaxVolume);
         o.mGrading = pipe_number(rStep, "Grading", o.mGrading);
@@ -248444,6 +251961,69 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"MinDihedralDeg", r.mMinDihedralDeg},
                         {"MaxDihedralDeg", r.mMaxDihedralDeg},
                         {"Volume", r.mVolume}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "RemeshQuads") {
+        // Field-aligned quads through an installed remesher (roadmap 7.7.3).
+        RemeshQuadsOptions o;
+        o.mTargetFaces = static_cast<std::int64_t>(
+            pipe_number(rStep, "TargetFaces", static_cast<double>(o.mTargetFaces)));
+        o.mBackend = pipe_text(rStep, "Backend", "auto");
+        if (o.mBackend.empty())
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Backend' must be 'auto' or a quad remesher's name"));
+        o.mSharp = pipe_flag(rStep, "Sharp", o.mSharp);
+        o.mBoundary = pipe_flag(rStep, "Boundary", o.mBoundary);
+        o.mAdaptive = pipe_flag(rStep, "Adaptive", o.mAdaptive);
+        o.mDominant = pipe_flag(rStep, "Dominant", o.mDominant);
+        o.mSeed =
+            static_cast<std::int32_t>(pipe_number(rStep, "Seed", static_cast<double>(o.mSeed)));
+        o.mMaxCells = static_cast<std::int64_t>(
+            pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
+        RemeshQuadsResult r = remesh_quads(mesh, o);
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back("RemeshQuads: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumQuads", static_cast<double>(r.mNumQuads)},
+                        {"NumTriangles", static_cast<double>(r.mNumTriangles)},
+                        {"NumPoints", static_cast<double>(r.mNumPoints)},
+                        {"MinScaledJacobian", r.mMinScaledJacobian},
+                        {"MeanScaledJacobian", r.mMeanScaledJacobian},
+                        {"HausdorffToSurface", r.mHausdorffToSurface}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "CutLevelSet") {
+        CutOptions o;
+        o.mLevelSets = pipe_svec(rStep, "LevelSets");
+        const std::vector<double> planes = pipe_dvec(rStep, "Planes");
+        if (planes.size() % 6 != 0)
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Planes' must hold six numbers per plane (origin, then normal)"));
+        for (std::size_t i = 0; i < planes.size(); i += 6) {
+            CutPlane pl;
+            pl.mOrigin = {planes[i], planes[i + 1], planes[i + 2]};
+            pl.mNormal = {planes[i + 3], planes[i + 4], planes[i + 5]};
+            o.mPlanes.push_back(pl);
+        }
+        o.mSelection = pipe_text(rStep, "Selection", "");
+        o.mIncludeUncut = pipe_flag(rStep, "IncludeUncut", o.mIncludeUncut);
+        o.mBackend = pipe_text(rStep, "Backend", "auto");
+        o.mDegree =
+            static_cast<std::int32_t>(pipe_number(rStep, "Degree", static_cast<double>(o.mDegree)));
+        o.mTriangulate = pipe_flag(rStep, "Triangulate", o.mTriangulate);
+        o.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", o.mRecordParentIds);
+        CutLevelSetResult r = cut_level_set(mesh, o);
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back("CutLevelSet: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCells", static_cast<double>(r.mNumCells)},
+                        {"NumCutCells", static_cast<double>(r.mNumCutCells)},
+                        {"NumUncutCells", static_cast<double>(r.mNumUncutCells)},
+                        {"NumPieces", static_cast<double>(r.mNumPieces)},
+                        {"Dimension", static_cast<double>(r.mDimension)},
+                        {"Measure", r.mMeasure}});
         return std::move(r.mMesh);
     }
 
@@ -261233,6 +264813,217 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/remesh.cpp =====
+// ===== begin src/cpp/src/operations/remesh_quads.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kRqPrefix = "meshio++: remesh_quads: ";
+
+[[noreturn]] void rq_fail(const std::string& rWhy) {
+    throw std::invalid_argument(std::string(kRqPrefix) + rWhy);
+}
+
+std::string rq_join(const std::vector<std::string>& rNames) {
+    std::string out;
+    for (const std::string& r_name : rNames)
+        out += (out.empty() ? "" : ", ") + r_name;
+    return out.empty() ? std::string("none") : out;
+}
+
+}  // namespace
+
+std::vector<std::string> remesh_quads_backends() {
+    return quad_remesher_names();
+}
+
+RemeshQuadsResult remesh_quads(const Mesh& rSurface, const RemeshQuadsOptions& rOptions) {
+    const RemeshQuadsOptions& o = rOptions;
+    if (o.mMaxCells < 1)
+        rq_fail("max_cells must be positive");
+    if (o.mTargetFaces < 0)
+        rq_fail("target_faces must not be negative");
+    if (o.mTargetFaces > o.mMaxCells)
+        rq_fail("target_faces " + std::to_string(o.mTargetFaces) + " is past max_cells (" +
+                std::to_string(o.mMaxCells) + ")");
+
+    // The triangles, block by block.
+    QuadRemeshRequest request;
+    const std::size_t np = rSurface.NumPoints();
+    const NDArray& r_pts = rSurface.Points();
+    if (np > 0 && (r_pts.Ndim() != 2 || r_pts.Shape()[1] != 3))
+        rq_fail("the surface's points must be three-dimensional");
+    request.mPoints.resize(np);
+    for (std::size_t i = 0; i < np; ++i)
+        for (std::size_t k = 0; k < 3; ++k) {
+            request.mPoints[i][k] = detail::read_double(r_pts, 3 * i + k);
+            if (!std::isfinite(request.mPoints[i][k]))
+                rq_fail("the surface has a non-finite point");
+        }
+    for (std::size_t b = 0; b < rSurface.NumCellBlocks(); ++b) {
+        const auto cells = rSurface.Cells(b);
+        const std::string type(cells.Type());
+        if (type.rfind("line", 0) == 0 || type == "vertex")
+            continue;
+        if (type != "triangle" || cells.IsRagged())
+            rq_fail("a '" + type +
+                    "' block: the surface must be linear triangles (convert_cells, linearize or "
+                    "extract_surface first)");
+        for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+            std::array<std::int64_t, 3> t{};
+            for (std::size_t k = 0; k < 3; ++k) {
+                t[k] = detail::read_int(cells.Conn(), 3 * c + k);
+                if (t[k] < 0 || static_cast<std::size_t>(t[k]) >= np)
+                    rq_fail("a triangle names a point out of range");
+            }
+            request.mTriangles.push_back(t);
+        }
+    }
+    if (request.mTriangles.empty())
+        rq_fail("the surface has no triangle");
+    request.mTargetFaces =
+        o.mTargetFaces > 0
+            ? o.mTargetFaces
+            : std::max<std::int64_t>(1, static_cast<std::int64_t>(request.mTriangles.size() / 2));
+    request.mSharp = o.mSharp;
+    request.mBoundary = o.mBoundary;
+    request.mAdaptive = o.mAdaptive;
+    request.mDominant = o.mDominant;
+    request.mSeed = o.mSeed;
+
+    // The remesher.
+    std::shared_ptr<const QuadRemesherProvider> p_remesher;
+    if (o.mBackend == "auto" || o.mBackend.empty()) {
+        for (const char* p_name : {"quadriflow", "instant_meshes"})
+            if (!p_remesher)
+                p_remesher = quad_remesher(p_name);
+        if (!p_remesher) {
+            const std::vector<std::string> names = quad_remesher_names();
+            if (!names.empty())
+                p_remesher = quad_remesher(names.front());
+        }
+        if (!p_remesher)
+            throw Unsupported(std::string(kRqPrefix) +
+                              "no quad remesher is installed: install QuadriFlow (`quadriflow`) "
+                              "or Instant Meshes (`Instant Meshes`) on PATH, or name them "
+                              "through MESHIOPLUSPLUS_QUADRIFLOW and "
+                              "MESHIOPLUSPLUS_INSTANT_MESHES (roadmap 7.7.3)");
+    } else {
+        p_remesher = quad_remesher(o.mBackend);
+        if (!p_remesher)
+            throw Unsupported(std::string(kRqPrefix) + "no quad remesher named '" + o.mBackend +
+                              "' (available: auto, " + rq_join(quad_remesher_names()) +
+                              "; quadriflow and instant_meshes are found on PATH, or through "
+                              "MESHIOPLUSPLUS_QUADRIFLOW and MESHIOPLUSPLUS_INSTANT_MESHES)");
+    }
+    QuadRemeshResult out;
+    try {
+        out = p_remesher->mRemesh(request);
+    } catch (const std::runtime_error& rErr) {
+        throw std::runtime_error(std::string(kRqPrefix) + p_remesher->mName + ": " + rErr.what());
+    }
+    const std::size_t nq = out.mQuads.size(), nt = out.mTriangles.size(), nop = out.mPoints.size();
+    if (nq + nt == 0)
+        throw std::runtime_error(std::string(kRqPrefix) + p_remesher->mName + " returned no face");
+    if (static_cast<std::int64_t>(nq + nt) > o.mMaxCells)
+        throw std::length_error(std::string(kRqPrefix) + "the result would have more than " +
+                                std::to_string(o.mMaxCells) + " faces (max_cells)");
+    const auto check = [&](std::int64_t V) {
+        if (V < 0 || static_cast<std::size_t>(V) >= nop)
+            throw std::runtime_error(std::string(kRqPrefix) + p_remesher->mName +
+                                     " returned a face naming no point");
+    };
+    for (const auto& r_q : out.mQuads)
+        for (const std::int64_t v : r_q)
+            check(v);
+    for (const auto& r_t : out.mTriangles)
+        for (const std::int64_t v : r_t)
+            check(v);
+    for (const auto& r_p : out.mPoints)
+        for (const double c : r_p)
+            if (!std::isfinite(c))
+                throw std::runtime_error(std::string(kRqPrefix) + p_remesher->mName +
+                                         " returned a non-finite point");
+
+    // The mesh.
+    RemeshQuadsResult result;
+    result.mBackend = p_remesher->mName;
+    NDArray p = NDArray::Uninit(DType::Float64, {nop, std::size_t{3}});
+    double* const p_x = p.As<double>();
+    for (std::size_t i = 0; i < nop; ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            p_x[3 * i + k] = out.mPoints[i][k];
+    result.mMesh.AssignPoints(std::move(p));
+    if (nq) {
+        NDArray q = NDArray::Uninit(DType::Int64, {nq, std::size_t{4}});
+        for (std::size_t c = 0; c < nq; ++c)
+            for (std::size_t k = 0; k < 4; ++k)
+                q.As<std::int64_t>()[4 * c + k] = out.mQuads[c][k];
+        result.mMesh.AddCellBlock("quad", std::move(q));
+    }
+    if (nt) {
+        NDArray t = NDArray::Uninit(DType::Int64, {nt, std::size_t{3}});
+        for (std::size_t c = 0; c < nt; ++c)
+            for (std::size_t k = 0; k < 3; ++k)
+                t.As<std::int64_t>()[3 * c + k] = out.mTriangles[c][k];
+        result.mMesh.AddCellBlock("triangle", std::move(t));
+        result.mWarnings.push_back(std::to_string(nt) + " triangle(s) left among the quads");
+    }
+    const double unit = detail::mesh_length_unit(rSurface);
+    if (unit > 0.0)
+        detail::set_mesh_length_unit(result.mMesh, unit);
+
+    // The measures.
+    result.mNumQuads = static_cast<std::int64_t>(nq);
+    result.mNumTriangles = static_cast<std::int64_t>(nt);
+    result.mNumPoints = static_cast<std::int64_t>(nop);
+    if (nq) {
+        double lo = 1.0, sum = 0.0;
+        for (const auto& r_q : out.mQuads) {
+            const double j = detail::quad_scaled_jacobian(p_x, r_q);
+            lo = std::min(lo, j);
+            sum += j;
+        }
+        result.mMinScaledJacobian = lo;
+        result.mMeanScaledJacobian = sum / static_cast<double>(nq);
+    }
+    Mesh input;
+    {
+        NDArray ip = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
+        for (std::size_t i = 0; i < np; ++i)
+            for (std::size_t k = 0; k < 3; ++k)
+                ip.As<double>()[3 * i + k] = request.mPoints[i][k];
+        input.AssignPoints(std::move(ip));
+        NDArray it = NDArray::Uninit(DType::Int64, {request.mTriangles.size(), std::size_t{3}});
+        for (std::size_t c = 0; c < request.mTriangles.size(); ++c)
+            for (std::size_t k = 0; k < 3; ++k)
+                it.As<std::int64_t>()[3 * c + k] = request.mTriangles[c][k];
+        input.AddCellBlock("triangle", std::move(it));
+    }
+    HausdorffOptions h;
+    h.mFaceSamples = 2;
+    result.mHausdorffToSurface = hausdorff_distance(result.mMesh, input, h).mDistance;
+    for (const std::string& r_w : result.mWarnings)
+        log::warn("{}{}", kRqPrefix, r_w);
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/remesh_quads.cpp =====
 // ===== begin src/cpp/src/operations/remesh_volume.cpp =====
 #include <algorithm>
 #include <array>
@@ -276947,17 +280738,67 @@ void tet_dihedrals(const std::array<TetV3, 4>& rX, double& rLo, double& rHi) {
         }
 }
 
+// Whether a mesher kept a region's surface, checked here whatever it reports
+// (roadmap 7.7.2): the request's points first and bit-equal, and the faces of
+// exactly one tetrahedron the request's triangles.
+bool tet_region_kept(const TetMeshRegionRequest& rRequest, const TetMeshRegionResult& rRegion) {
+    const std::size_t n_in = rRequest.mPoints.size();
+    if (rRegion.mPoints.size() < n_in)
+        return false;
+    for (std::size_t i = 0; i < n_in; ++i)
+        if (rRegion.mPoints[i] != rRequest.mPoints[i])
+            return false;
+    std::vector<std::array<std::int64_t, 3>> faces;
+    faces.reserve(4 * rRegion.mTets.size());
+    static constexpr int kFace[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+    for (const auto& r_t : rRegion.mTets)
+        for (const auto& r_f : kFace) {
+            std::array<std::int64_t, 3> f{r_t[r_f[0]], r_t[r_f[1]], r_t[r_f[2]]};
+            std::sort(f.begin(), f.end());
+            faces.push_back(f);
+        }
+    std::sort(faces.begin(), faces.end());
+    std::vector<std::array<std::int64_t, 3>> got;
+    for (std::size_t i = 0; i < faces.size();) {
+        std::size_t j = i;
+        while (j < faces.size() && faces[j] == faces[i])
+            ++j;
+        if (j - i == 1)
+            got.push_back(faces[i]);
+        i = j;
+    }
+    std::vector<std::array<std::int64_t, 3>> want;
+    want.reserve(rRequest.mTriangles.size());
+    for (const auto& r_t : rRequest.mTriangles) {
+        std::array<std::int64_t, 3> f = r_t;
+        std::sort(f.begin(), f.end());
+        want.push_back(f);
+    }
+    std::sort(want.begin(), want.end());
+    return got == want;
+}
+
 }  // namespace
 
 bool tetrahedralize_has_netgen() {
     return tet_mesher() != nullptr;
 }
 
+std::vector<std::string> tetrahedralize_backends() {
+    std::vector<std::string> names = tet_mesher_names();
+    names.push_back("octree");
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return names;
+}
+
 TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOptions& rOptions) {
     const TetrahedralizeOptions& o = rOptions;
     if (o.mBackend != TetrahedralizeBackend::Auto && o.mBackend != TetrahedralizeBackend::Netgen &&
-        o.mBackend != TetrahedralizeBackend::Octree)
-        tet_fail("backend must be auto, netgen or octree");
+        o.mBackend != TetrahedralizeBackend::Octree && o.mBackend != TetrahedralizeBackend::Named)
+        tet_fail("backend must be auto, netgen, octree or a named mesher");
+    if (o.mBackend == TetrahedralizeBackend::Named && o.mProvider.empty())
+        tet_fail("a named backend needs the mesher's name");
     if (!(std::isfinite(o.mMaxSize) && o.mMaxSize >= 0.0))
         tet_fail("max_size must be finite and not negative");
     if (!(std::isfinite(o.mMaxVolume) && o.mMaxVolume >= 0.0))
@@ -277041,8 +280882,31 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                           "meshioplusplus[netgen]), or rebuild with "
                           "-DMESHIOPLUSPLUS_WITH_NETGEN=ON and Netgen's nglib installed, or use "
                           "backend=octree (roadmap 6.7)");
-    const bool use_netgen = o.mBackend == TetrahedralizeBackend::Netgen ||
-                            (o.mBackend == TetrahedralizeBackend::Auto && has_netgen);
+    // A named mesher (roadmap 7.7.2): `octree` and `netgen` by name are the
+    // backends themselves; anything else must be registered.
+    std::shared_ptr<const TetMesherProvider> p_named;
+    bool named_octree = false;
+    if (o.mBackend == TetrahedralizeBackend::Named) {
+        if (o.mProvider == "octree") {
+            named_octree = true;
+        } else {
+            p_named = tet_mesher(o.mProvider);
+            if (!p_named && o.mProvider == "netgen")
+                p_named = tet_mesher();
+            if (!p_named) {
+                std::string known;
+                for (const std::string& r_name : tetrahedralize_backends())
+                    known += (known.empty() ? "" : ", ") + r_name;
+                throw Unsupported(std::string(kTetPrefix) + "no tetrahedral mesher named '" +
+                                  o.mProvider + "' (available: auto, " + known +
+                                  "; tetgen and gmsh are found on PATH, or through "
+                                  "MESHIOPLUSPLUS_TETGEN and MESHIOPLUSPLUS_GMSH)");
+            }
+        }
+    }
+    const bool use_netgen =
+        !named_octree && (p_named || o.mBackend == TetrahedralizeBackend::Netgen ||
+                          (o.mBackend == TetrahedralizeBackend::Auto && has_netgen));
     const std::size_t nt = tris.size();
     // Shells: the triangles connected across edges, in the order of their
     // first triangle.
@@ -277151,7 +281015,7 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
     std::vector<std::array<std::int64_t, 3>> bnd;
     std::vector<std::int64_t> bnd_face;
     if (use_netgen) {
-        const std::shared_ptr<const TetMesherProvider> p_mesher = tet_mesher();
+        const std::shared_ptr<const TetMesherProvider> p_mesher = p_named ? p_named : tet_mesher();
         result.mBackend = p_mesher->mName;
         result.mBoundaryPreserved = true;
         points.assign(x.begin(), x.end());
@@ -277184,7 +281048,7 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
             if (static_cast<std::int64_t>(tets.size() + region.mTets.size()) > o.mMaxCells)
                 throw std::length_error(std::string(kTetPrefix) + "the mesh would have more than " +
                                         std::to_string(o.mMaxCells) + " tetrahedra (max_cells)");
-            if (!region.mBoundaryPreserved)
+            if (!region.mBoundaryPreserved || !tet_region_kept(request, region))
                 result.mBoundaryPreserved = false;
             // New points, after every earlier region's: the request's own map
             // back to the surface's.
@@ -277213,8 +281077,8 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
             }
         }
         if (!result.mBoundaryPreserved)
-            throw std::runtime_error(std::string(kTetPrefix) +
-                                     "Netgen moved the surface's points or triangles");
+            throw std::runtime_error(std::string(kTetPrefix) + "the " + p_mesher->mName +
+                                     " mesher moved the surface's points or triangles");
         bnd = tris;
         bnd_face = tri_face;
     } else {
@@ -279339,6 +283203,7 @@ VoxelResult voxelize(const Mesh& rMesh, const VoxelOptions& rOptions) {
 #include <atomic>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <string>
 #include <system_error>
@@ -279367,6 +283232,12 @@ TetMesherProvider make_netgen_provider();
 RemesherProvider make_mmg_provider();
 #endif
 
+/// The external tetrahedral meshers found installed (`tetgen`, `gmsh`), run as
+/// separate processes (detail/external_mesher.cpp); none in WebAssembly.
+std::vector<TetMesherProvider> make_external_tet_meshers();
+/// The external quad remeshers found installed (`quadriflow`, `instant_meshes`).
+std::vector<QuadRemesherProvider> make_external_quad_remeshers();
+
 }  // namespace providers
 
 namespace {
@@ -279392,6 +283263,13 @@ struct ProvidersState {
     ProviderSlot<CadKernelProvider> mCad;
     ProviderSlot<TetMesherProvider> mTet;
     ProviderSlot<RemesherProvider> mRemesher;
+    /// The named tetrahedral meshers (roadmap 7.7.2), by name; replaced ones
+    /// stay in `mTet.mRetained`.
+    std::map<std::string, std::shared_ptr<const TetMesherProvider>> mTetNamed;
+    /// The quad remeshers (roadmap 7.7.3), by name, and every one ever added.
+    std::map<std::string, std::shared_ptr<const QuadRemesherProvider>> mQuad;
+    std::vector<std::shared_ptr<const QuadRemesherProvider>> mQuadRetained;
+    bool mExternalDone = false;
 };
 
 ProvidersState& providers_state() {
@@ -279451,6 +283329,82 @@ void unregister_tet_mesher() noexcept {
 }
 std::shared_ptr<const TetMesherProvider> tet_mesher() noexcept {
     return slot_get(&ProvidersState::mTet);
+}
+
+void add_tet_mesher(TetMesherProvider Provider) {
+    ProvidersState& r_state = providers_state();
+    auto p_new = std::make_shared<const TetMesherProvider>(std::move(Provider));
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    if (t_loading_plugin && r_state.mTetNamed.count(p_new->mName))
+        return;
+    r_state.mTet.mRetained.push_back(p_new);
+    r_state.mTetNamed[p_new->mName] = std::move(p_new);
+}
+
+void remove_tet_mesher(const std::string& rName) noexcept {
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    r_state.mTetNamed.erase(rName);
+}
+
+std::shared_ptr<const TetMesherProvider> tet_mesher(const std::string& rName) noexcept {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    // The default answers to its own name first, so a plugin's mesher that is
+    // the default is the one `backend=<its name>` runs.
+    if (r_state.mTet.mCurrent && r_state.mTet.mCurrent->mName == rName)
+        return r_state.mTet.mCurrent;
+    const auto it = r_state.mTetNamed.find(rName);
+    return it == r_state.mTetNamed.end() ? nullptr : it->second;
+}
+
+void add_quad_remesher(QuadRemesherProvider Provider) {
+    ProvidersState& r_state = providers_state();
+    auto p_new = std::make_shared<const QuadRemesherProvider>(std::move(Provider));
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    if (t_loading_plugin && r_state.mQuad.count(p_new->mName))
+        return;
+    r_state.mQuadRetained.push_back(p_new);
+    r_state.mQuad[p_new->mName] = std::move(p_new);
+}
+
+void remove_quad_remesher(const std::string& rName) noexcept {
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    r_state.mQuad.erase(rName);
+}
+
+std::shared_ptr<const QuadRemesherProvider> quad_remesher(const std::string& rName) noexcept {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const auto it = r_state.mQuad.find(rName);
+    return it == r_state.mQuad.end() ? nullptr : it->second;
+}
+
+std::vector<std::string> quad_remesher_names() {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    std::vector<std::string> names;
+    for (const auto& r_entry : r_state.mQuad)
+        names.push_back(r_entry.first);
+    return names;
+}
+
+std::vector<std::string> tet_mesher_names() {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    std::vector<std::string> names;
+    if (r_state.mTet.mCurrent)
+        names.push_back(r_state.mTet.mCurrent->mName);
+    for (const auto& r_entry : r_state.mTetNamed)
+        names.push_back(r_entry.first);
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return names;
 }
 
 void register_remesher(RemesherProvider Provider) {
@@ -279601,6 +283555,28 @@ static void register_compiled_in_providers() noexcept {
 #else
     r_state.mRemesher.mBuiltinDone = true;
 #endif
+    // The installed external meshers, by name only: they never become the
+    // default, so `backend=auto` keeps meaning Netgen, else the octree.
+    if (!r_state.mExternalDone) {
+        r_state.mExternalDone = true;
+        try {
+            for (TetMesherProvider& r_p : providers::make_external_tet_meshers()) {
+                if (r_state.mTetNamed.count(r_p.mName))
+                    continue;
+                auto p_new = std::make_shared<const TetMesherProvider>(std::move(r_p));
+                r_state.mTet.mRetained.push_back(p_new);
+                r_state.mTetNamed[p_new->mName] = std::move(p_new);
+            }
+            for (QuadRemesherProvider& r_p : providers::make_external_quad_remeshers()) {
+                if (r_state.mQuad.count(r_p.mName))
+                    continue;
+                auto p_new = std::make_shared<const QuadRemesherProvider>(std::move(r_p));
+                r_state.mQuadRetained.push_back(p_new);
+                r_state.mQuad[p_new->mName] = std::move(p_new);
+            }
+        } catch (...) {
+        }
+    }
 }
 
 void register_builtin_providers() noexcept {
@@ -280448,6 +284424,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".plt", "tecplot"},
         {".ele", "tetgen"},
         {".node", "tetgen"},
+        {".smesh", "tetgen"},
         {".poly", "triangle"},
         {".ugrid", "ugrid"},
         {".unv", "unv"},
@@ -287580,6 +291557,7 @@ FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_NurbsConvert.hxx>
+#include <BRepBuilderAPI_Sewing.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
@@ -287606,6 +291584,9 @@ FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 #include <Interface_Static.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
+#include <ShapeAnalysis_ShapeTolerance.hxx>
+#include <ShapeExtend_Status.hxx>
+#include <ShapeFix_Shape.hxx>
 #include <Standard_Failure.hxx>
 #include <TColStd_Array1OfInteger.hxx>
 #include <TColStd_Array1OfReal.hxx>
@@ -287615,7 +291596,10 @@ FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
 #include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_ListOfShape.hxx>
+#include <TopTools_MapOfShape.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
@@ -288026,6 +292010,80 @@ TopoDS_Shape occt_read_cad_file(const std::string& rPath, bool Iges, const char*
     }
 }
 
+std::string OcctHealReport::ToJson() const {
+    char tol[64];
+    snprintf_c(tol, sizeof(tol), "%.17g", mSewTolerance);
+    return std::string("{\"healed\":") + (mHealed ? "true" : "false") +
+           ",\"fixed\":" + (mFixed ? "true" : "false") + ",\"sew_tolerance\":" + tol +
+           ",\"free_edges_before\":" + std::to_string(mFreeEdgesBefore) +
+           ",\"free_edges_after\":" + std::to_string(mFreeEdgesAfter) +
+           ",\"multiple_edges\":" + std::to_string(mMultipleEdges) +
+           ",\"degenerated\":" + std::to_string(mDegenerated) + "}";
+}
+
+long long occt_count_free_edges(const TopoDS_Shape& rShape) {
+    // Each face counted once per edge: a seam edge appears twice in its face.
+    TopTools_IndexedDataMapOfShapeListOfShape edge_faces;
+    for (TopExp_Explorer fx(rShape, TopAbs_FACE); fx.More(); fx.Next()) {
+        TopTools_MapOfShape seen;
+        for (TopExp_Explorer ex(fx.Current(), TopAbs_EDGE); ex.More(); ex.Next()) {
+            const TopoDS_Edge& edge = TopoDS::Edge(ex.Current());
+            if (BRep_Tool::Degenerated(edge) || !seen.Add(edge))
+                continue;
+            if (!edge_faces.Contains(edge))
+                edge_faces.Add(edge, TopTools_ListOfShape());
+            edge_faces.ChangeFromKey(edge).Append(fx.Current());
+        }
+    }
+    long long free_edges = 0;
+    for (int i = 1; i <= edge_faces.Extent(); ++i)
+        if (edge_faces(i).Extent() == 1)
+            ++free_edges;
+    return free_edges;
+}
+
+TopoDS_Shape occt_heal_shape(const TopoDS_Shape& rShape, const CadReadOptions& rOptions,
+                             OcctHealReport& rReport) {
+    rReport = OcctHealReport{};
+    rReport.mFreeEdgesBefore = occt_count_free_edges(rShape);
+    const bool sew = rOptions.mHeal || rOptions.mSewTolerance > 0.0;
+    double tol = rOptions.mSewTolerance;
+    if (!(tol > 0.0)) {
+        Bnd_Box box;
+        BRepBndLib::Add(rShape, box);
+        const double diagonal = box.IsVoid() ? 1.0 : std::sqrt(box.SquareExtent());
+        ShapeAnalysis_ShapeTolerance own;
+        // The shape's own largest tolerance as a floor, but never past 1e-3 of
+        // the diagonal: a badly toleranced file must not sew across features.
+        tol = std::min(std::max(1e-5 * diagonal, own.Tolerance(rShape, 1)), 1e-3 * diagonal);
+    }
+    TopoDS_Shape shape = rShape;
+    if (rOptions.mHeal) {
+        rReport.mHealed = true;
+        ShapeFix_Shape fix(shape);
+        fix.SetPrecision(tol);
+        fix.SetMaxTolerance(tol);
+        fix.Perform();
+        rReport.mFixed = fix.Status(ShapeExtend_DONE);
+        if (!fix.Shape().IsNull())
+            shape = fix.Shape();
+    }
+    if (sew) {
+        rReport.mSewTolerance = tol;
+        BRepBuilderAPI_Sewing sewing(tol);
+        sewing.Add(shape);
+        sewing.Perform();
+        rReport.mMultipleEdges = sewing.NbMultipleEdges();
+        rReport.mDegenerated = sewing.NbDegeneratedShapes();
+        if (!sewing.SewedShape().IsNull())
+            shape = sewing.SewedShape();
+    }
+    rReport.mFreeEdgesAfter = occt_count_free_edges(shape);
+    log::debug("occt: healed the read shape: {} free edge(s) before, {} after (tolerance {})",
+               rReport.mFreeEdgesBefore, rReport.mFreeEdgesAfter, tol);
+    return shape;
+}
+
 namespace {
 
 BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol);
@@ -288400,6 +292458,7 @@ Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double D
 // External includes (OpenCASCADE)
 #include <Standard_Failure.hxx>
 #include <Standard_Version.hxx>
+#include <TopoDS_Shape.hxx>
 
 // Project includes
 
@@ -288419,10 +292478,28 @@ Mesh occt_read_shape(const std::string& rPath, bool Iges, BrepInfo& rInfo,
         throw std::invalid_argument(std::string("meshio++: ") + fmt +
                                     ": the deflection must be finite and the angular "
                                     "deflection positive");
+    if (!std::isfinite(rOptions.mSewTolerance) || rOptions.mSewTolerance < 0.0)
+        throw std::invalid_argument(std::string("meshio++: ") + fmt +
+                                    ": the sewing tolerance must be finite and at least 0");
     detail::LibraryLock lock;
     detail::OcctQuiet quiet;
     try {
-        detail::OcctNurbs nurbs = detail::occt_nurbs(detail::occt_read_cad_file(rPath, Iges, fmt));
+        TopoDS_Shape shape = detail::occt_read_cad_file(rPath, Iges, fmt);
+        const bool heal = rOptions.mHeal || rOptions.mSewTolerance > 0.0;
+        detail::OcctHealReport report;
+        if (heal)
+            shape = detail::occt_heal_shape(shape, rOptions, report);
+        detail::OcctNurbs nurbs = detail::occt_nurbs(shape);
+        if (heal) {
+            // The report joins the file's top-level members, `{"version_number":1}`.
+            std::string& r_extra = nurbs.mInfo.mExtra;
+            const std::size_t close = r_extra.rfind('}');
+            if (close == std::string::npos)
+                r_extra = "{\"heal\":" + report.ToJson() + "}";
+            else
+                r_extra.insert(close,
+                               std::string(close > 1 ? "," : "") + "\"heal\":" + report.ToJson());
+        }
         Mesh mesh = detail::occt_tessellate(nurbs.mShape, nurbs.mInfo, rOptions.mDeflection,
                                             rOptions.mAngularDeflection);
         rInfo = std::move(nurbs.mInfo);

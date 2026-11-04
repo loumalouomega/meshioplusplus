@@ -10,15 +10,20 @@ from .._helpers import register_format
 from ..step import _read_cad
 
 
-def read(filename, deflection=0.0, angular_deflection=0.5):
+def read(
+    filename, deflection=0.0, angular_deflection=0.5, heal=False, sew_tolerance=0.0
+):
     """Read an IGES file as its triangulation, through OpenCASCADE.
 
-    See :func:`meshioplusplus.step.read` for ``deflection`` and
-    ``angular_deflection`` and what the mesh carries.
+    See :func:`meshioplusplus.step.read` for ``deflection``,
+    ``angular_deflection``, ``heal``, ``sew_tolerance`` and what the mesh
+    carries.
 
     :raises NotImplementedError: in a build without OpenCASCADE.
     """
-    return _read_cad("iges", filename, deflection, angular_deflection)
+    return _read_cad(
+        "iges", filename, deflection, angular_deflection, heal, sew_tolerance
+    )
 
 
 register_format("iges", [".igs", ".iges"], read, {})

@@ -29,6 +29,7 @@
 // System includes
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <string>
 
@@ -154,6 +155,148 @@ TEST(CadRead, ReadsAreInMillimetresWhateverTheFileUnit) {
             hi = std::max(hi, p[i]);
         EXPECT_NEAR(hi, unit * 1000.0, 1e-6 * unit * 1000.0) << unit;
     }
+}
+
+namespace {
+
+// Two planar 100 x 100 mm quads side by side whose shared edge is written
+// twice, the second copy `Gap` away from the first (roadmap 7.7.1): each face
+// has its own four vertices and edges, in one open shell.
+std::string cr_two_face_step(double Gap) {
+    const double pts[8][3] = {{0, 0, 0},     {100, 0, 0},          {100, 100, 0},
+                              {0, 100, 0},   {100 + Gap, 0, Gap},  {200, 0, 0},
+                              {200, 100, 0}, {100 + Gap, 100, Gap}};
+    std::string out =
+        "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('two faces'),'2;1');\n"
+        "FILE_NAME('two','1970-01-01T00:00:00',(''),(''),'','','');\n"
+        "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n";
+    int n = 0;
+    const auto ent = [&](const std::string& rBody) {
+        out += "#" + std::to_string(++n) + "=" + rBody + ";\n";
+        return n;
+    };
+    const auto ref = [](int Id) { return "#" + std::to_string(Id); };
+    const auto num = [](double V) {
+        // A STEP real needs a decimal point in its mantissa: "1e-06" is not one.
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%.17E", V);
+        return std::string(buf);
+    };
+    const auto triple = [&](const double* pV) {
+        return "(" + num(pV[0]) + "," + num(pV[1]) + "," + num(pV[2]) + ")";
+    };
+    const int app =
+        ent("APPLICATION_CONTEXT('core data for automotive mechanical design "
+            "processes')");
+    ent("APPLICATION_PROTOCOL_DEFINITION('international standard','automotive_design',2000," +
+        ref(app) + ")");
+    const int pctx = ent("PRODUCT_CONTEXT(''," + ref(app) + ",'mechanical')");
+    const int pdctx =
+        ent("PRODUCT_DEFINITION_CONTEXT('part definition'," + ref(app) + ",'design')");
+    const int prod = ent("PRODUCT('two','two','',(" + ref(pctx) + "))");
+    const int form = ent("PRODUCT_DEFINITION_FORMATION('',''," + ref(prod) + ")");
+    const int pdef = ent("PRODUCT_DEFINITION('design',''," + ref(form) + "," + ref(pdctx) + ")");
+    const int pshape = ent("PRODUCT_DEFINITION_SHAPE(''," + ref(pdef) + ")");
+    const int len = ent("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
+    const int ang = ent("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))");
+    const int sol = ent("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())");
+    const int unc = ent("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07)," + ref(len) +
+                        ",'distance_accuracy_value','confusion accuracy')");
+    const int gctx =
+        ent("(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_"
+            "CONTEXT((" +
+            ref(unc) + "))GLOBAL_UNIT_ASSIGNED_CONTEXT((" + ref(len) + "," + ref(ang) + "," +
+            ref(sol) + "))REPRESENTATION_CONTEXT('Context #1','3D Context'))");
+    const int o_pt = ent("CARTESIAN_POINT('',(0.,0.,0.))");
+    const int o_z = ent("DIRECTION('',(0.,0.,1.))");
+    const int o_x = ent("DIRECTION('',(1.,0.,0.))");
+    const int origin =
+        ent("AXIS2_PLACEMENT_3D(''," + ref(o_pt) + "," + ref(o_z) + "," + ref(o_x) + ")");
+    int point[8], vertex[8];
+    for (int i = 0; i < 8; ++i) {
+        point[i] = ent("CARTESIAN_POINT(''," + triple(pts[i]) + ")");
+        vertex[i] = ent("VERTEX_POINT(''," + ref(point[i]) + ")");
+    }
+    std::string faces;
+    for (int f = 0; f < 2; ++f) {
+        std::string loop;
+        for (int k = 0; k < 4; ++k) {
+            const int a = 4 * f + k, b = 4 * f + (k + 1) % 4;
+            double d[3] = {pts[b][0] - pts[a][0], pts[b][1] - pts[a][1], pts[b][2] - pts[a][2]};
+            const double ln = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            for (double& rV : d)
+                rV /= ln;
+            const int dir = ent("DIRECTION(''," + triple(d) + ")");
+            const int vec = ent("VECTOR(''," + ref(dir) + "," + num(ln) + ")");
+            const int line = ent("LINE(''," + ref(point[a]) + "," + ref(vec) + ")");
+            const int edge = ent("EDGE_CURVE(''," + ref(vertex[a]) + "," + ref(vertex[b]) + "," +
+                                 ref(line) + ",.T.)");
+            const int oe = ent("ORIENTED_EDGE('',*,*," + ref(edge) + ",.T.)");
+            loop += (k ? "," : "") + ref(oe);
+        }
+        const int el = ent("EDGE_LOOP('',(" + loop + "))");
+        const int bound = ent("FACE_OUTER_BOUND(''," + ref(el) + ",.T.)");
+        const int place = ent("AXIS2_PLACEMENT_3D(''," + ref(point[4 * f]) + "," + ref(o_z) + "," +
+                              ref(o_x) + ")");
+        const int plane = ent("PLANE(''," + ref(place) + ")");
+        const int face = ent("ADVANCED_FACE('',(" + ref(bound) + ")," + ref(plane) + ",.T.)");
+        faces += (f ? "," : "") + ref(face);
+    }
+    const int shell = ent("OPEN_SHELL('',(" + faces + "))");
+    const int model = ent("SHELL_BASED_SURFACE_MODEL('',(" + ref(shell) + "))");
+    const int rep = ent("MANIFOLD_SURFACE_SHAPE_REPRESENTATION('',(" + ref(origin) + "," +
+                        ref(model) + ")," + ref(gctx) + ")");
+    ent("SHAPE_DEFINITION_REPRESENTATION(" + ref(pshape) + "," + ref(rep) + ")");
+    out += "ENDSEC;\nEND-ISO-10303-21;\n";
+    return out;
+}
+
+// Edges of the B-rep that bound exactly one face.
+std::size_t cr_open_edges(const BrepInfo& rInfo) {
+    std::size_t open = 0;
+    for (const auto& r_edge : rInfo.mEdges)
+        if (r_edge.mTopology.size() == 1)
+            ++open;
+    return open;
+}
+
+}  // namespace
+
+TEST(CadRead, HealSewsADuplicatedSharedEdge) {
+    const std::string path = mt::temp_path(".step");
+    {
+        std::ofstream out(path);
+        out << cr_two_face_step(1e-4);
+    }
+    BrepInfo raw;
+    meshioplusplus::read_step(path, raw);
+    ASSERT_EQ(raw.mFaces.size(), 2u);
+    EXPECT_EQ(cr_open_edges(raw), 8u);  // the shared edge is two open edges
+    EXPECT_EQ(raw.mExtra.find("heal"), std::string::npos);
+
+    meshioplusplus::CadReadOptions heal;
+    heal.mHeal = true;
+    BrepInfo healed;
+    const Mesh mesh = meshioplusplus::read_step(path, healed, heal);
+    ASSERT_EQ(healed.mFaces.size(), 2u);
+    EXPECT_EQ(cr_open_edges(healed), 6u);  // only the outer boundary is open
+    EXPECT_GT(mesh.NumPoints(), 0u);
+    EXPECT_NE(healed.mExtra.find("\"heal\":{\"healed\":true"), std::string::npos) << healed.mExtra;
+    EXPECT_NE(healed.mExtra.find("\"free_edges_before\":8"), std::string::npos);
+    EXPECT_NE(healed.mExtra.find("\"free_edges_after\":6"), std::string::npos);
+    EXPECT_NE(healed.mExtra.find("\"version_number\":1"), std::string::npos);
+
+    // A positive tolerance sews without heal.
+    meshioplusplus::CadReadOptions sew_only;
+    sew_only.mSewTolerance = 1e-3;
+    BrepInfo sewn;
+    meshioplusplus::read_step(path, sewn, sew_only);
+    EXPECT_EQ(cr_open_edges(sewn), 6u);
+    EXPECT_NE(sewn.mExtra.find("\"healed\":false"), std::string::npos) << sewn.mExtra;
+
+    meshioplusplus::CadReadOptions bad;
+    bad.mSewTolerance = -1.0;
+    EXPECT_THROW(meshioplusplus::read_step(path, healed, bad), std::invalid_argument);
 }
 
 TEST(CadRead, MalformedFilesAreReadErrors) {

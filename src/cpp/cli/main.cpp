@@ -140,6 +140,8 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/remesh_quads.hpp"
+#include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -412,6 +414,8 @@ void print_usage(std::ostream& os) {
           "                            --piece=N keeps one piece of a partitioned file\n"
           "                            --lenient skips constructs the reader cannot represent\n"
           "                            --drop-ghosts removes a .pvtu/.pvd halo (vtkGhostType)\n"
+          "                            --heal [--sew-tolerance T] heals a STEP/IGES shape\n"
+          "                            (ShapeFix, then sewing) before it is read\n"
           "                            --appended writes a .vtu's arrays as raw binary in\n"
           "                            one <AppendedData> section (no base64)\n"
           "                            'out_*.vtu' (quoted) or repeated --input fans a\n"
@@ -529,6 +533,7 @@ void print_usage(std::ostream& os) {
           "                            [--lop-corners] [--untangle]\n"
           "                            [--quads none|dominant|all]\n"
           "                            [--quad-pairs matching|greedy]\n"
+          "                            [--heal] [--sew-tolerance T]\n"
           "                            [--strict] [--json]\n"
           "  boundary-layer          Prismatic layers grown from a triangle and quad\n"
           "                            surface: --first-height H [--num-layers N]\n"
@@ -552,8 +557,23 @@ void print_usage(std::ostream& os) {
           "                            its triangles kept (Netgen): [--max-size H]\n"
           "                            [--max-volume V] [--grading G]\n"
           "                            [--optimize-steps N] [--max-cells N]\n"
-          "                            [--face-array NAME] [--backend auto|netgen|octree]\n"
+          "                            [--face-array NAME]\n"
+          "                            [--backend auto|netgen|octree|tetgen|gmsh]\n"
           "                            [--json]\n"
+          "  remesh-quads            Field-aligned quads from a triangle surface through\n"
+          "                            an installed QuadriFlow or Instant Meshes:\n"
+          "                            [--faces N] [--backend auto|quadriflow|\n"
+          "                            instant_meshes] [--sharp] [--no-boundary]\n"
+          "                            [--adaptive] [--dominant] [--seed S]\n"
+          "                            [--max-cells N] [--json]\n"
+          "  cut                     Cut a mesh by level sets (CutCells): the part a\n"
+          "                            selection picks: [--level-set NAME]...\n"
+          "                            [--plane OX,OY,OZ,NX,NY,NZ]... [--selection EXPR]\n"
+          "                            [--cut-only] [--backend auto|lut|quadrays]\n"
+          "                            [--degree K] [--triangulate] [--no-parent-ids]\n"
+          "                            [--json]\n"
+          "  cut-quadrature          Quadrature points on that part: the options of\n"
+          "                            cut, and [--order K]\n"
           "  project-to-cad          Move a mesh's points back onto the CAD faces and\n"
           "                            edges its cells name: INFILE MODEL OUTFILE\n"
           "                            [--face-array NAME] [--edge-array NAME]\n"
@@ -861,6 +881,15 @@ int convert_sequence(const cli_parsed& rParsed, const std::string& rInfile,
     return 0;
 }
 
+// --heal and --sew-tolerance: how a STEP or IGES input is healed at read time.
+meshioplusplus::CadReadOptions cli_cad_read_options(const cli_parsed& rP) {
+    meshioplusplus::CadReadOptions cad;
+    cad.mHeal = has_flag(rP, "heal");
+    if (has_opt(rP, "sew-tolerance"))
+        cad.mSewTolerance = meshioplusplus::detail::stod_c(opt_value(rP, "sew-tolerance"));
+    return cad;
+}
+
 int cmd_convert(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, {
                                   {"input-format", {"-i"}, true},
@@ -891,6 +920,8 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                                   {"time-from", {}, true},
                                   {"sequence", {}, false},
                                   {"no-sequence", {}, false},
+                                  {"heal", {}, false},
+                                  {"sew-tolerance", {}, true},
                                   {"json", {}, false},
                               });
     if (p.positionals.size() != 2)
@@ -1007,11 +1038,20 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
                 to = meshioplusplus::resolve_write_format(outfile, out_fmt);
             } catch (const std::exception&) {
             }
+            const meshioplusplus::CadReadOptions cad = cli_cad_read_options(p);
+            const bool healing = cad.mHeal || cad.mSewTolerance > 0.0;
+            if (healing && from != "step" && from != "iges")
+                throw std::invalid_argument("--heal/--sew-tolerance apply to STEP and IGES inputs");
             if (to == "cad_json" && (from == "cad_json" || from == "step" || from == "iges")) {
                 brep.emplace();
                 return from == "cad_json" ? meshioplusplus::read_cad_json(infile, *brep)
-                       : from == "step"   ? meshioplusplus::read_step(infile, *brep)
-                                          : meshioplusplus::read_iges(infile, *brep);
+                       : from == "step"   ? meshioplusplus::read_step(infile, *brep, cad)
+                                          : meshioplusplus::read_iges(infile, *brep, cad);
+            }
+            if (healing) {
+                meshioplusplus::BrepInfo info;
+                return from == "step" ? meshioplusplus::read_step(infile, info, cad)
+                                      : meshioplusplus::read_iges(infile, info, cad);
             }
             return read_mesh_cli(infile, in_fmt, opts);
         }
@@ -2281,7 +2321,8 @@ struct CliIgaModel {
     Mesh mMesh;
 };
 
-CliIgaModel cli_iga_read(const std::string& rPath, const std::string& rFormat) {
+CliIgaModel cli_iga_read(const std::string& rPath, const std::string& rFormat,
+                         const meshioplusplus::CadReadOptions& rCad = {}) {
     CliIgaModel m;
     m.mFormat = meshioplusplus::resolve_format(rPath, rFormat);
     if (m.mFormat == "mfem") {
@@ -2292,8 +2333,8 @@ CliIgaModel cli_iga_read(const std::string& rPath, const std::string& rFormat) {
     } else if (m.mFormat == "cad_json" || m.mFormat == "step" || m.mFormat == "iges") {
         m.mBrep.emplace();
         m.mMesh = m.mFormat == "cad_json" ? meshioplusplus::read_cad_json(rPath, *m.mBrep)
-                  : m.mFormat == "step"   ? meshioplusplus::read_step(rPath, *m.mBrep)
-                                          : meshioplusplus::read_iges(rPath, *m.mBrep);
+                  : m.mFormat == "step"   ? meshioplusplus::read_step(rPath, *m.mBrep, rCad)
+                                          : meshioplusplus::read_iges(rPath, *m.mBrep, rCad);
     } else {
         throw std::runtime_error(
             "'" + m.mFormat +
@@ -2484,6 +2525,8 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   {"untangle", {}, false},
                                   {"quads", {}, true},
                                   {"quad-pairs", {}, true},
+                                  {"heal", {}, false},
+                                  {"sew-tolerance", {}, true},
                                   {"json", {}, false},
                                   {"quiet", {"-q"}, false},
                               });
@@ -2491,7 +2534,8 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
         throw std::runtime_error("mesh-cad-surface requires exactly INFILE and OUTFILE");
     if (!has_opt(p, "size"))
         throw std::runtime_error("mesh-cad-surface requires --size H");
-    CliIgaModel model = cli_iga_read(p.positionals[0], opt_value(p, "input-format"));
+    CliIgaModel model =
+        cli_iga_read(p.positionals[0], opt_value(p, "input-format"), cli_cad_read_options(p));
     if (!model.mBrep)
         throw std::runtime_error("mesh-cad-surface needs a B-rep (CAD JSON, STEP or IGES), not '" +
                                  model.mFormat + "'");
@@ -6751,9 +6795,13 @@ int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
             o.mBackend = meshioplusplus::TetrahedralizeBackend::Netgen;
         else if (b == "octree")
             o.mBackend = meshioplusplus::TetrahedralizeBackend::Octree;
-        else
-            throw std::runtime_error(
-                "tetrahedralize: --backend must be auto, netgen or octree, not '" + b + "'");
+        else if (!b.empty()) {
+            // A named mesher (roadmap 7.7.2): the installed tetgen or gmsh,
+            // a plugin's; an unknown name is refused listing the others.
+            o.mBackend = meshioplusplus::TetrahedralizeBackend::Named;
+            o.mProvider = b;
+        } else
+            throw std::runtime_error("tetrahedralize: --backend needs a name");
     }
     if (has_opt(p, "max-size"))
         o.mMaxSize = meshioplusplus::detail::stod_c(opt_value(p, "max-size"));
@@ -6802,6 +6850,177 @@ int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
                   << r.mNumBoundaryTriangles << " triangles)\n";
         for (const std::string& w : r.mWarnings)
             std::cout << "  warning: " << w << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_remesh_quads(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"faces", {"-f"}, true},
+                                  {"backend", {}, true},
+                                  {"sharp", {}, false},
+                                  {"no-boundary", {}, false},
+                                  {"adaptive", {}, false},
+                                  {"dominant", {}, false},
+                                  {"seed", {}, true},
+                                  {"max-cells", {}, true},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("remesh-quads requires exactly INFILE and OUTFILE");
+    meshioplusplus::RemeshQuadsOptions o;
+    if (has_opt(p, "faces"))
+        o.mTargetFaces = std::stoll(opt_value(p, "faces"));
+    if (has_opt(p, "backend"))
+        o.mBackend = opt_value(p, "backend");
+    o.mSharp = has_flag(p, "sharp");
+    o.mBoundary = !has_flag(p, "no-boundary");
+    o.mAdaptive = has_flag(p, "adaptive");
+    o.mDominant = has_flag(p, "dominant");
+    if (has_opt(p, "seed"))
+        o.mSeed = std::stoi(opt_value(p, "seed"));
+    if (has_opt(p, "max-cells"))
+        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    auto r = meshioplusplus::remesh_quads(mesh, o);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_quads", r.mNumQuads);
+        json.Field("num_triangles", r.mNumTriangles);
+        json.Field("num_points", r.mNumPoints);
+        json.Field("min_scaled_jacobian", r.mMinScaledJacobian);
+        json.Field("mean_scaled_jacobian", r.mMeanScaledJacobian);
+        json.Field("hausdorff_to_surface", r.mHausdorffToSurface);
+        json.Field("backend", r.mBackend);
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        std::cout << "\n";
+    } else if (!has_flag(p, "quiet")) {
+        char j0[32], j1[32], h[32];
+        meshioplusplus::detail::snprintf_c(j0, sizeof(j0), "%.3f", r.mMinScaledJacobian);
+        meshioplusplus::detail::snprintf_c(j1, sizeof(j1), "%.3f", r.mMeanScaledJacobian);
+        meshioplusplus::detail::snprintf_c(h, sizeof(h), "%.6g", r.mHausdorffToSurface);
+        std::cout << r.mNumQuads << " quads, " << r.mNumTriangles << " triangles, " << r.mNumPoints
+                  << " points; scaled Jacobian " << j0 << " (mean " << j1 << "), " << h
+                  << " from the surface; " << r.mBackend << "\n";
+        for (const std::string& w : r.mWarnings)
+            std::cout << "  warning: " << w << "\n";
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+int cmd_cut(const std::vector<std::string>& rArgs, bool Quadrature) {
+    const char* p_name = Quadrature ? "cut-quadrature" : "cut";
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"level-set", {"-l"}, true},
+                                  {"plane", {}, true},
+                                  {"selection", {"-s"}, true},
+                                  {"cut-only", {}, false},
+                                  {"backend", {}, true},
+                                  {"degree", {}, true},
+                                  {"order", {}, true},
+                                  {"triangulate", {}, false},
+                                  {"no-parent-ids", {}, false},
+                                  {"json", {}, false},
+                                  {"quiet", {"-q"}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error(std::string(p_name) + " requires exactly INFILE and OUTFILE");
+    meshioplusplus::CutOptions o;
+    o.mLevelSets = opt_values(p, "level-set");
+    for (const std::string& r_text : opt_values(p, "plane")) {
+        const std::vector<double> v = parse_doubles(r_text);
+        if (v.size() != 6)
+            throw std::runtime_error(
+                std::string(p_name) +
+                ": a plane is six comma-separated numbers, origin then normal");
+        meshioplusplus::CutPlane pl;
+        pl.mOrigin = {v[0], v[1], v[2]};
+        pl.mNormal = {v[3], v[4], v[5]};
+        o.mPlanes.push_back(pl);
+    }
+    o.mSelection = opt_value(p, "selection");
+    o.mIncludeUncut = !has_flag(p, "cut-only");
+    if (has_opt(p, "backend"))
+        o.mBackend = opt_value(p, "backend");
+    if (has_opt(p, "degree"))
+        o.mDegree = std::stoi(opt_value(p, "degree"));
+    if (has_opt(p, "order"))
+        o.mOrder = std::stoi(opt_value(p, "order"));
+    o.mTriangulate = has_flag(p, "triangulate");
+    o.mRecordParentIds = !has_flag(p, "no-parent-ids");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    const auto print_warnings = [](const std::vector<std::string>& rWarnings) {
+        for (const std::string& w : rWarnings)
+            std::cout << "  warning: " << w << "\n";
+    };
+    if (Quadrature) {
+        auto r = meshioplusplus::cut_quadrature(mesh, o);
+        if (has_flag(p, "json")) {
+            meshioplusplus::cli::JsonOut json(std::cout);
+            json.BeginObject();
+            json.Field("num_rules", r.mNumRules);
+            json.Field("num_points", r.mNumPoints);
+            json.Field("sum_weights", r.mSumWeights);
+            json.Field("dimension", static_cast<std::int64_t>(r.mDimension));
+            json.Field("selection", r.mSelection);
+            json.Field("backend", r.mBackend);
+            json.Key("warnings");
+            json.BeginArray();
+            for (const std::string& w : r.mWarnings)
+                json.String(w);
+            json.EndArray();
+            json.EndObject();
+            std::cout << "\n";
+        } else if (!has_flag(p, "quiet")) {
+            char s[32];
+            meshioplusplus::detail::snprintf_c(s, sizeof(s), "%.10g", r.mSumWeights);
+            std::cout << "'" << r.mSelection << "': " << r.mNumPoints << " points in "
+                      << r.mNumRules << " rules, weights sum " << s << " (dimension "
+                      << r.mDimension << "); " << r.mBackend << "\n";
+            print_warnings(r.mWarnings);
+        }
+        write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+        return 0;
+    }
+    auto r = meshioplusplus::cut_level_set(mesh, o);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_cells", r.mNumCells);
+        json.Field("num_cut_cells", r.mNumCutCells);
+        json.Field("num_uncut_cells", r.mNumUncutCells);
+        json.Field("num_pieces", r.mNumPieces);
+        json.Field("dimension", static_cast<std::int64_t>(r.mDimension));
+        json.Field("measure", r.mMeasure);
+        json.Field("selection", r.mSelection);
+        json.Field("backend", r.mBackend);
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        std::cout << "\n";
+    } else if (!has_flag(p, "quiet")) {
+        char m[32];
+        meshioplusplus::detail::snprintf_c(m, sizeof(m), "%.10g", r.mMeasure);
+        std::cout << "'" << r.mSelection << "': " << r.mNumPieces << " cells (" << r.mNumCutCells
+                  << " of " << r.mNumCells << " cut), measure " << m << " (dimension "
+                  << r.mDimension << "); " << r.mBackend << "\n";
+        print_warnings(r.mWarnings);
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
@@ -9325,6 +9544,12 @@ int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
         return cmd_mirror(rest);
     if (cmd == "tetrahedralize")
         return cmd_tetrahedralize(rest);
+    if (cmd == "remesh-quads")
+        return cmd_remesh_quads(rest);
+    if (cmd == "cut")
+        return cmd_cut(rest, false);
+    if (cmd == "cut-quadrature")
+        return cmd_cut(rest, true);
     if (cmd == "sdf")
         return cmd_sdf(rest);
     if (cmd == "split")
@@ -9613,6 +9838,14 @@ int main(int argc, char** argv) {
         std::cout << "providers: OpenCASCADE " << yes_no(meshioplusplus::cad_read_has_occt())
                   << ", Netgen " << yes_no(meshioplusplus::tetrahedralize_has_netgen())
                   << ", MMG " << yes_no(meshioplusplus::mmg_available()) << "\n";
+        std::string meshers;
+        for (const std::string& r_name : meshioplusplus::tetrahedralize_backends())
+            meshers += (meshers.empty() ? "" : ", ") + r_name;
+        std::cout << "tetrahedralize backends: auto, " << meshers << "\n";
+        std::string quads;
+        for (const std::string& r_name : meshioplusplus::remesh_quads_backends())
+            quads += (quads.empty() ? "" : ", ") + r_name;
+        std::cout << "quad remeshers: " << (quads.empty() ? std::string("none") : quads) << "\n";
         return 0;
     }
     if (cmd == "-h" || cmd == "--help") {

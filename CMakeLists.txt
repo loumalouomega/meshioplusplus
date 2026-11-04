@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 18.1.0
+  VERSION 18.2.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -239,7 +239,7 @@ endif()
 option(MESHIOPLUSPLUS_PREFER_STATIC_DEPS
        "Prefer static archives for HDF5, netCDF, CGNS, zstd, lz4, bzip2 and KaHIP" OFF)
 set(MESHIOPLUSPLUS_HIDDEN_ARCHIVES
-    "libhdf5.a;libhdf5_hl.a;libnetcdf.a;libcgns.a;libzstd.a;liblz4.a;libbz2.a;libkahip_static.a;libkahip.a;libz.a"
+    "libhdf5.a;libhdf5_hl.a;libnetcdf.a;libcgns.a;libzstd.a;liblz4.a;libbz2.a;libkahip_static.a;libkahip.a;libcutcells.a;libz.a"
     CACHE STRING "Static archives whose symbols the shared core must not export (GNU ld)")
 option(MESHIOPLUSPLUS_WITH_ZSTD "Build the VTK XML zstd compression path" OFF)
 option(MESHIOPLUSPLUS_WITH_LZ4 "Build the VTK XML lz4 compression path" OFF)
@@ -300,6 +300,24 @@ option(MESHIOPLUSPLUS_WITH_KAHIP "Build the KaHIP partition backend" OFF)
 if(MESHIOPLUSPLUS_WITH_KAHIP AND (NOT EMSCRIPTEN OR KAHIP_ROOT OR DEFINED ENV{KAHIP_ROOT}))
   list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
   find_package(KaHIP QUIET)
+endif()
+
+# CutCells (MIT), the backend of the level-set cutting operations cut_level_set
+# and cut_quadrature (doc/cut.md): cut cells of every type by one or several
+# level sets into the pieces either side and the interface, and cut-cell
+# quadrature. OFF by default and bring-your-own, as KaHIP is: CutCells ships its
+# own CMake package (CUTCELLS::cutcells); point CUTCELLS_ROOT (or
+# CMAKE_PREFIX_PATH) at an install, or build the pinned one with
+# build/build-cutcells.sh. Never vendored, never auto-downloaded.
+option(MESHIOPLUSPLUS_WITH_CUTCELLS "Build the CutCells level-set cutting backend" OFF)
+if(MESHIOPLUSPLUS_WITH_CUTCELLS AND (NOT EMSCRIPTEN OR CUTCELLS_ROOT OR DEFINED ENV{CUTCELLS_ROOT}))
+  set(_mio_cutcells_hints)
+  if(CUTCELLS_ROOT)
+    list(APPEND _mio_cutcells_hints "${CUTCELLS_ROOT}")
+  elseif(DEFINED ENV{CUTCELLS_ROOT})
+    list(APPEND _mio_cutcells_hints "$ENV{CUTCELLS_ROOT}")
+  endif()
+  find_package(CutCells CONFIG QUIET HINTS ${_mio_cutcells_hints})
 endif()
 
 # Netgen (LGPL-2.1), the backend of the tetrahedralize operation (roadmap
@@ -944,6 +962,15 @@ elseif(MESHIOPLUSPLUS_WITH_KAHIP)
                  "partition method 'kahip' will raise")
 endif()
 
+if(MESHIOPLUSPLUS_WITH_CUTCELLS AND TARGET CUTCELLS::cutcells)
+  message(STATUS "meshio++: CutCells cutting backend enabled (${CutCells_VERSION})")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_CUTCELLS)
+  list(APPEND _mio_core_libs CUTCELLS::cutcells)
+elseif(MESHIOPLUSPLUS_WITH_CUTCELLS)
+  message(STATUS "meshio++: CutCells requested but not found (set CUTCELLS_ROOT) - "
+                 "cut_level_set and cut_quadrature will raise")
+endif()
+
 # A provider (providers.hpp) compiled into the core: its sources join the core's,
 # and reach the private headers (detail/...) from src/cpp/src. A split build
 # leaves the option off and builds the same sources into the add-on instead
@@ -1043,6 +1070,18 @@ if(MESHIOPLUSPLUS_WITH_CGNSLIB AND NOT MESHIOPLUSPLUS_WITH_HDF5)
   message(FATAL_ERROR
           "meshio++: MESHIOPLUSPLUS_WITH_CGNSLIB needs MESHIOPLUSPLUS_WITH_HDF5=ON - "
           "the cgnslib backend augments the HDF5-backed CGNS format, it does not replace it.")
+endif()
+# A cgnslib built against an HDF5 that FindHDF5 found (Ubuntu's, which ships no
+# CMake config) exports its HDF5 dependency as the bare names `hdf5-shared` /
+# `hdf5-static` without declaring them, so the link asks for `-lhdf5-shared`.
+# Stand them in for the HDF5 found above (roadmap 7.1.4: the cgnslib CI leg).
+if(MESHIOPLUSPLUS_WITH_CGNSLIB AND HDF5_FOUND)
+  foreach(_mio_cgns_hdf5 hdf5-shared hdf5-static)
+    if(NOT TARGET ${_mio_cgns_hdf5})
+      add_library(${_mio_cgns_hdf5} INTERFACE IMPORTED)
+      target_link_libraries(${_mio_cgns_hdf5} INTERFACE ${HDF5_C_LIBRARIES})
+    endif()
+  endforeach()
 endif()
 if(MESHIOPLUSPLUS_WITH_CGNSLIB AND MESHIOPLUSPLUS_PREFER_STATIC_DEPS AND TARGET CGNS::cgns_static)
   message(STATUS "meshio++: cgnslib CGNS backend enabled (static)")
@@ -1590,7 +1629,7 @@ endif()
 # it reports what the build actually compiled in: `-DMESHIOPLUSPLUS_WITH_HDF5=OFF`
 # on a machine that happens to have HDF5 now correctly reports "no HDF5".
 # ---------------------------------------------------------------------------
-foreach(_f ZLIB ZSTD LZ4 LZMA BZIP2 KAHIP HDF5 NETCDF EIGEN JSON CGNSLIB ADIOS2 TECIO OCCT NETGEN MMG)
+foreach(_f ZLIB ZSTD LZ4 LZMA BZIP2 KAHIP CUTCELLS HDF5 NETCDF EIGEN JSON CGNSLIB ADIOS2 TECIO OCCT NETGEN MMG)
   if("MESHIOPLUSPLUS_HAS_${_f}" IN_LIST _mio_core_defs)
     set(_mio_has_${_f} TRUE)
   else()
@@ -1649,6 +1688,9 @@ if(_mio_has_BZIP2)
 endif()
 if(_mio_has_KAHIP)
   string(APPEND MIO_PC_LIBS_PRIVATE " -lkahip")
+endif()
+if(_mio_has_CUTCELLS)
+  string(APPEND MIO_PC_LIBS_PRIVATE " -lcutcells")
 endif()
 if(_mio_has_NETGEN)
   string(APPEND MIO_PC_LIBS_PRIVATE " -lnglib -lngcore")
@@ -2013,6 +2055,10 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
 
   include(GoogleTest)
   gtest_discover_tests(meshioplusplus_tests)
+  # The surface-boolean spike's measurement harness (roadmap 7.8,
+  # doc/spikes.md; tools/boolean_corpus.py runs it on Thingi10K pairs).
+  add_executable(meshioplusplus_boolean_spike src/cpp/benchmark/boolean_spike.cpp)
+  target_link_libraries(meshioplusplus_boolean_spike PRIVATE meshioplusplus_core_obj)
 
   if(MESHIOPLUSPLUS_BUILD_FORTRAN)
     # Plain Fortran program, nonzero exit on any failed check; argv[1] is a

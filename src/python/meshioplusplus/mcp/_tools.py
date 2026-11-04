@@ -75,6 +75,9 @@ from .. import (
     convex_hull,
     crop,
     cube_sphere,
+    cut_has_cutcells,
+    cut_level_set,
+    cut_quadrature,
     cylinder,
     data_calc,
     data_condition,
@@ -158,6 +161,8 @@ from .. import (
     region_adjacency,
     register_rigid,
     remesh,
+    remesh_quads,
+    remesh_quads_backends,
     remesh_volume,
     render_text,
     reorder,
@@ -192,6 +197,7 @@ from .. import (
     tet_to_poly,
     tetra_sphere,
     tetrahedralize,
+    tetrahedralize_backends,
     thickness,
     torus,
     transform,
@@ -476,6 +482,16 @@ def _cache_invalidate(path=None):
             _CACHE_BYTES[0] -= _CACHE.pop(key)[1]
 
 
+def _heal_kwargs(heal, sew_tolerance):
+    """The STEP/IGES healing options for `_load`, only when asked for."""
+    out = {}
+    if heal:
+        out["heal"] = True
+    if sew_tolerance:
+        out["sew_tolerance"] = float(sew_tolerance)
+    return out
+
+
 def _load(input_path, input_format=None, **read_kwargs):
     resolved = _resolve(input_path, must_exist=True)
     limit = _cache_limit()
@@ -487,7 +503,29 @@ def _load(input_path, input_format=None, **read_kwargs):
                 _CACHE.move_to_end(key)
                 # A private copy: tools (and the pipeline) mutate what they get.
                 return hit[0].copy()
-    mesh = read(resolved, file_format=input_format, **read_kwargs)
+    heal = bool(read_kwargs.pop("heal", False))
+    sew_tolerance = float(read_kwargs.pop("sew_tolerance", 0.0) or 0.0)
+    if heal or sew_tolerance > 0.0:
+        # STEP and IGES healing (roadmap 7.7.1) goes through the CAD reader.
+        from ..step import _read_healed
+
+        defaults = {
+            "points_only": False,
+            "arrays": None,
+            "time_step": 0,
+            "piece": None,
+            "ghosts": "keep",
+        }
+        chosen = sorted(k for k, v in read_kwargs.items() if defaults.get(k, v) != v)
+        chosen += sorted(k for k in read_kwargs if k not in defaults)
+        if chosen:
+            raise ValueError(
+                "meshio++: heal/sew_tolerance cannot be combined with "
+                f"{', '.join(chosen)}"
+            )
+        mesh = _read_healed(resolved, input_format, heal, sew_tolerance)
+    else:
+        mesh = read(resolved, file_format=input_format, **read_kwargs)
     if key is not None:
         nbytes = _mesh_nbytes(mesh)
         if nbytes <= limit:
@@ -1025,6 +1063,8 @@ def tool_convert(
     elmer_halo=False,
     patran_results=None,
     write_nurbs=None,
+    heal=False,
+    sew_tolerance=0.0,
 ):
     """Convert between mesh formats, optionally selecting variant/compression.
 
@@ -1046,7 +1086,11 @@ def tool_convert(
 
     An MFEM NURBS input keeps its patches (``mesh.info["nurbs"]``), so an MFEM
     output is written back as the NURBS mesh; ``write_nurbs=False`` writes the
-    sampled cells instead and ``True`` refuses anything else."""
+    sampled cells instead and ``True`` refuses anything else.
+
+    ``heal`` (STEP and IGES) heals the shape before it is read
+    (``ShapeFix_Shape``, then sewing at ``sew_tolerance``, at most 0 automatic;
+    a positive ``sew_tolerance`` sews without ``heal``)."""
     if grid_functions and patran_results:
         raise ValueError(
             "meshio++: mcp: grid_functions (MFEM) and patran_results (Patran) "
@@ -1082,6 +1126,7 @@ def tool_convert(
             time_step=time_step,
             piece=piece,
             ghosts=ghosts,
+            **_heal_kwargs(heal, sew_tolerance),
         )
     out_fmt = output_format
     if out_fmt is None:
@@ -2543,6 +2588,8 @@ def tool_mesh_cad_surface(
     untangle=False,
     quads="none",
     quad_pairs="matching",
+    heal=False,
+    sew_tolerance=0.0,
 ):
     """Triangulate a CAD model's faces (CAD JSON, STEP, IGES) into one
     conforming surface mesh at a target edge size, optionally sized by
@@ -2552,8 +2599,9 @@ def tool_mesh_cad_surface(
     flattened, slivers merged, the model's own tolerances accepted, acute
     corners lopped, and the triangles recombined into quads (curved quad9 or
     quad16 at order 2 or 3). Reports min_metric_angle with a metric
-    background."""
-    mesh = _load(input_path, input_format)
+    background. ``heal`` heals a STEP or IGES shape before it is read
+    (``ShapeFix_Shape``, then sewing at ``sew_tolerance``)."""
+    mesh = _load(input_path, input_format, **_heal_kwargs(heal, sew_tolerance))
     out, report = mesh_cad_surface(
         mesh,
         target_size,
@@ -5520,9 +5568,11 @@ def tool_tetrahedralize(
     Netgen when built in). Returns num_tetrahedra, num_points, num_new_points,
     num_regions, num_boundary_triangles, boundary_preserved,
     hausdorff_to_surface, min_dihedral_deg, max_dihedral_deg, volume,
-    backend and warnings alongside the mesh summary, and netgen_available
+    backend and warnings alongside the mesh summary, netgen_available
     (whether the Netgen backend is installed: the meshioplusplus-netgen
-    package)."""
+    package) and backends_available (every name backend takes besides auto:
+    octree, netgen, and the installed tetgen and gmsh programs, run as
+    separate processes with the surface kept)."""
     mesh = _load(input_path, input_format)
     out, report = tetrahedralize(
         mesh,
@@ -5539,6 +5589,141 @@ def tool_tetrahedralize(
         _store(out, output_path, output_format),
         out,
         netgen_available=has_netgen(),
+        backends_available=tetrahedralize_backends(),
+        **report,
+    )
+
+
+def tool_remesh_quads(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    target_faces=0,
+    backend="auto",
+    sharp=False,
+    boundary=True,
+    adaptive=False,
+    dominant=False,
+    seed=0,
+    max_cells=50_000_000,
+):
+    """Remesh a triangle surface into field-aligned quads through an installed
+    QuadriFlow or Instant Meshes, run as a separate process. Returns
+    num_quads, num_triangles, num_points, min_scaled_jacobian,
+    mean_scaled_jacobian, hausdorff_to_surface, backend and warnings beside
+    the mesh summary, and backends_available (the quad remeshers installed)."""
+    mesh = _load(input_path, input_format)
+    out, report = remesh_quads(
+        mesh,
+        target_faces=target_faces,
+        backend=backend,
+        sharp=sharp,
+        boundary=boundary,
+        adaptive=adaptive,
+        dominant=dominant,
+        seed=seed,
+        max_cells=max_cells,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        backends_available=remesh_quads_backends(),
+        **report,
+    )
+
+
+def _cut_planes(planes):
+    """MCP planes as six numbers each, origin then normal."""
+    if not planes:
+        return None
+    out = []
+    for i, p in enumerate(planes):
+        if len(p) != 6:
+            raise ValueError(
+                f"meshio++: cut: plane {i} must be six numbers, origin then normal"
+            )
+        out.append((tuple(p[:3]), tuple(p[3:])))
+    return out
+
+
+def tool_cut_level_set(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    level_sets=None,
+    planes=None,
+    selection="",
+    include_uncut=True,
+    backend="auto",
+    degree=2,
+    triangulate=False,
+    record_parent_ids=True,
+):
+    """Cut a mesh by level sets (point_data arrays, or planes as six numbers
+    each) through CutCells and write the part the selection picks. Returns
+    num_cells, num_cut_cells, num_uncut_cells, num_pieces, dimension,
+    measure, selection, backend and warnings beside the mesh summary, and
+    cutcells_available."""
+    mesh = _load(input_path, input_format)
+    out, report = cut_level_set(
+        mesh,
+        level_sets,
+        planes=_cut_planes(planes),
+        selection=selection,
+        include_uncut=include_uncut,
+        backend=backend,
+        degree=degree,
+        triangulate=triangulate,
+        record_parent_ids=record_parent_ids,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        cutcells_available=cut_has_cutcells(),
+        **report,
+    )
+
+
+def tool_cut_quadrature(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    level_sets=None,
+    planes=None,
+    selection="",
+    order=2,
+    include_uncut=True,
+    backend="auto",
+    triangulate=False,
+    record_parent_ids=True,
+):
+    """Quadrature rules on the part of a mesh that level sets select, written
+    as a point cloud with point data quadrature:weight, quadrature:reference,
+    quadrature:rule and quadrature:parent_cell. Returns num_rules,
+    num_points, sum_weights, dimension, selection, backend and warnings
+    beside the mesh summary, and cutcells_available."""
+    mesh = _load(input_path, input_format)
+    out, report = cut_quadrature(
+        mesh,
+        level_sets,
+        planes=_cut_planes(planes),
+        selection=selection,
+        order=order,
+        include_uncut=include_uncut,
+        backend=backend,
+        triangulate=triangulate,
+        record_parent_ids=record_parent_ids,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        cutcells_available=cut_has_cutcells(),
         **report,
     )
 
@@ -7375,6 +7560,30 @@ TOOL_REGISTRY = OrderedDict(
             {
                 "fn": tool_tetrahedralize,
                 "wraps": ("tetrahedralize",),
+                "gated": None,
+            },
+        ),
+        (
+            "remesh_quads",
+            {
+                "fn": tool_remesh_quads,
+                "wraps": ("remesh_quads",),
+                "gated": None,
+            },
+        ),
+        (
+            "cut_level_set",
+            {
+                "fn": tool_cut_level_set,
+                "wraps": ("cut_level_set",),
+                "gated": None,
+            },
+        ),
+        (
+            "cut_quadrature",
+            {
+                "fn": tool_cut_quadrature,
+                "wraps": ("cut_quadrature",),
                 "gated": None,
             },
         ),

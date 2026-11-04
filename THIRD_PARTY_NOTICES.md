@@ -12,12 +12,13 @@ meshio++ itself is MIT ([LICENSE](LICENSE)). The binaries the project publishes 
 | [Netgen](https://ngsolve.org/) (nglib) | 6.2.2401 | LGPL-2.1-only | add-on wheel only (shared) | no |
 | [MMG](https://www.mmgtools.org/) | 5.8.0 | LGPL-3.0-or-later | add-on wheel only (shared, without ELAS) | no |
 | [HDF5](https://www.hdfgroup.org/solutions/hdf5/) | 1.14.6 | BSD-3-Clause | yes (Linux, macOS; static, symbols hidden) | no |
-| [netCDF-C](https://www.unidata.ucar.edu/software/netcdf/) | 4.9.3 | BSD-3-Clause | yes (Linux, macOS; static) | no |
+| [netCDF-C](https://www.unidata.ucar.edu/software/netcdf/) | 4.9.3 | BSD-3-Clause | yes (Linux, macOS, Windows; static) | no |
 | [CGNS](https://cgns.github.io/) (cgnslib) | 4.5.2 | Zlib | yes (Linux, macOS; static) | no |
 | [zstd](https://facebook.github.io/zstd/) | 1.5.7 | BSD-3-Clause (the library is dual-licensed BSD/GPL-2.0; the BSD option is used) | yes (Linux, macOS; static) | no |
 | [LZ4](https://lz4.org/) | 1.10.0 | BSD-2-Clause (the library) | yes (Linux, macOS; static) | no |
 | [bzip2](https://sourceware.org/bzip2/) | 1.0.8 | bzip2-1.0.6 (BSD-style) | yes (Linux, macOS; static) | no |
 | [KaHIP](https://kahip.github.io/) | 3.25 | MIT | yes (Linux, macOS; static) | no |
+| [CutCells](https://github.com/sclaus2/CutCells) | 0.5.0 (commit `3ccd9b0`, `build/deps-pins.sh`) | MIT (ships VTK-derived clip tables under BSD-3-Clause) | yes (Linux, macOS; static) | no |
 | [Eigen](https://eigen.tuxfamily.org/) (submodule; header-only) | 3.4-dev | MPL-2.0 | yes (Linux, macOS) | no |
 | [libomp](https://openmp.llvm.org/) (macOS wheels; expected as a shared library, to confirm) | the Homebrew release at build time | to confirm | yes (macOS) | no |
 
@@ -25,7 +26,7 @@ meshio++ itself is MIT ([LICENSE](LICENSE)). The binaries the project publishes 
 
 ## Robust geometric predicates
 
-The exact `orient2d`, `incircle`, `orient3d` and `insphere` tests of `mesh_cad_surface`'s triangulator (`src/cpp/src/detail/predicates.cpp`) implement the method of J. R. Shewchuk, *Adaptive Precision Floating-Point Arithmetic and Fast Robust Geometric Predicates* (Discrete & Computational Geometry 18, 1997), whose reference code Shewchuk placed in the public domain. They are written from the paper, are MIT like the rest of meshio++, and add no component to the table above; the attribution is recorded here and in `CITATION.cff`. No code from Triangle, TetGen, Gmsh, CGAL or the CDT library is used.
+The exact `orient2d`, `incircle`, `orient3d` and `insphere` tests of `mesh_cad_surface`'s triangulator (`src/cpp/src/detail/predicates.cpp`) implement the method of J. R. Shewchuk, *Adaptive Precision Floating-Point Arithmetic and Fast Robust Geometric Predicates* (Discrete & Computational Geometry 18, 1997), whose reference code Shewchuk placed in the public domain. They are written from the paper, are MIT like the rest of meshio++, and add no component to the table above; the attribution is recorded here and in `CITATION.cff`. No code from Triangle, TetGen, Gmsh, CGAL or the CDT library is used. `tetrahedralize(backend="tetgen")` and `backend="gmsh"` run a TetGen (AGPL-3.0) or Gmsh (GPL-2.0-or-later) program the user installed, as a separate process that exchanges files with meshio++ (`src/cpp/src/detail/external_mesher.cpp`); neither is linked, vendored or shipped, so neither adds a component to the table. `remesh_quads` runs a QuadriFlow (MIT) or Instant Meshes (BSD-3) program the user installed the same way, and adds no component either.
 
 ## Hexahedral transition schemes (CinoLib)
 

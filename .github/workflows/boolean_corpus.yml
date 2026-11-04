@@ -1,0 +1,87 @@
+name: boolean_corpus
+
+# The surface-boolean spike (formerly roadmap 7.8, doc/spikes.md) on a
+# seeded sample of Thingi10K: the closed, manifold, oriented STL models its
+# metadata lists, drawn by the seed in tools/boolean_corpus/manifest.json at
+# the dataset's pinned revision and fetched here, never stored in the
+# repository (each model carries its own licence; only ids and hashes are
+# committed). Each model is paired with itself moved and with the next model;
+# the harness (meshioplusplus_boolean_spike, built with the C++ tests) runs
+# union, intersection and difference on each pair in its own process under a
+# time limit. The job summary is the table doc/spikes.md's Thingi10K row
+# takes; the synthetic corpus runs first as a reference. Weekly and on
+# demand: the prototype's own tests run in ci.yml with the other C++ tests.
+on:
+  schedule:
+    - cron: "17 6 * * 3"  # weekly, Wednesday 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "a comma-separated subset of model ids (empty: the whole sample)"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  corpus:
+    name: Booleans on the Thingi10K sample
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install native libraries
+        run: |
+          # See ci.yml's kahip job: an unused, preinstalled third-party apt
+          # source must not take the whole step down.
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y zlib1g-dev libtbb-dev pkg-config ninja-build
+      - name: Install meshioplusplus
+        run: |
+          python -m pip install --upgrade pip
+          CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_OCCT=OFF" python -m pip install .
+      - name: Build the harness
+        run: |
+          cmake -S . -B build-boolean -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DMESHIOPLUSPLUS_BUILD_TESTS=ON -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+            -DMESHIOPLUSPLUS_WITH_OCCT=OFF
+          cmake --build build-boolean --target meshioplusplus_boolean_spike
+      - name: Synthetic corpus
+        run: |
+          python tools/boolean_corpus.py synthetic \
+            --harness build-boolean/meshioplusplus_boolean_spike --out boolean-synthetic.jsonl
+      - name: Fetch the sample
+        run: python tools/boolean_corpus.py fetch --dest boolean-corpus --record boolean-corpus-hashes.json
+      - name: Run every pair
+        env:
+          MODELS: ${{ inputs.models }}
+        run: |
+          python tools/boolean_corpus.py run --dest boolean-corpus \
+            --harness build-boolean/meshioplusplus_boolean_spike --out boolean-corpus.jsonl \
+            --strict ${MODELS:+--models "$MODELS"}
+      - name: Job summary
+        if: always()
+        run: |
+          for f in boolean-synthetic.jsonl boolean-corpus.jsonl; do
+            if [ -f "$f" ]; then
+              echo "### $f" >> "$GITHUB_STEP_SUMMARY"
+              python tools/boolean_corpus.py summary "$f" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: boolean-corpus
+          path: |
+            boolean-synthetic.jsonl
+            boolean-corpus.jsonl
+            boolean-corpus-hashes.json
+          if-no-files-found: ignore

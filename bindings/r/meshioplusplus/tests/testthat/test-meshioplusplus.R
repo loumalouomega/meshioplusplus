@@ -1711,6 +1711,32 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_gt(rs$num_triangles, 0)
   expect_error(mio_reconstruct_surface(cloud, k = 0), "k must be")
   expect_error(mio_reconstruct_surface(cloud, estimate_normals = FALSE), "normals")
+  # remesh_quads (roadmap 7.7.3): an unknown remesher is refused by name; the
+  # installed QuadriFlow makes the reconstructed sphere all quads.
+  qb <- mio_remesh_quads_backends()
+  expect_true(is.character(qb))
+  expect_error(mio_remesh_quads(rs$mesh, backend = "no-such-remesher"), "no-such-remesher")
+  if ("quadriflow" %in% qb) {
+    rq <- mio_remesh_quads(rs$mesh, backend = "quadriflow", target_faces = 400)
+    on.exit(mio_release(rq$mesh), add = TRUE)
+    expect_equal(rq$backend, "quadriflow")
+    expect_gt(rq$num_quads, 0)
+    expect_equal(rq$num_triangles, 0)
+  }
+  # cut_level_set (doc/cut.md): the cube skin cut by the plane x = 0.3 -- four
+  # strips of 0.3 and the face x = 0 -- or the refusal naming the build flag.
+  plane <- list(c(0.3, 0, 0, 1, 0, 0))
+  if (mio_has_cutcells()) {
+    cl <- mio_cut_level_set(m, planes = plane)
+    on.exit(mio_release(cl$mesh), add = TRUE)
+    expect_equal(cl$backend, "lut")
+    expect_equal(cl$measure, 2.2, tolerance = 1e-12)
+    cq <- mio_cut_quadrature(m, planes = plane, selection = "plane0 = 0")
+    on.exit(mio_release(cq$mesh), add = TRUE)
+    expect_equal(cq$sum_weights, 4, tolerance = 1e-12)
+  } else {
+    expect_error(mio_cut_level_set(m, planes = plane), "MESHIOPLUSPLUS_WITH_CUTCELLS")
+  }
   hh <- mio_convex_hull(m)
   on.exit(mio_release(hh$mesh), add = TRUE)
   expect_equal(hh$num_vertices, 8)
@@ -2064,7 +2090,8 @@ test_that("adapt runs with MMG and names the flag without it (roadmap 3.2)", {
 test_that("tetrahedralize fills a closed surface keeping its skin (roadmap 6.7)", {
   s <- mio_icosa_sphere(subdivisions = 2)
   on.exit(mio_release(s))
-  expect_error(mio_tetrahedralize(s, backend = "tetgen"), "backend")
+  # A mesher name no program answers to is refused naming it (roadmap 7.7.2).
+  expect_error(mio_tetrahedralize(s, backend = "no-such-mesher"), "no-such-mesher")
   expect_error(mio_tetrahedralize(s, grading = 2), "grading")
   if (mio_has_netgen()) {
     t <- mio_tetrahedralize(s, max_size = 0.3)

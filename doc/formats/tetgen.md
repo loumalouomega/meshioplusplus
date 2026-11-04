@@ -1,11 +1,11 @@
-# TetGen (`.node` / `.ele`)
+# TetGen (`.node` / `.ele`, `.smesh`)
 
-The [TetGen](https://wias-berlin.de/software/tetgen/fformats.html) mesh format: a pair of sibling files sharing a stem — `<name>.node` (points, attributes, boundary markers) and `<name>.ele` (tetrahedra, region attributes).
+The [TetGen](https://wias-berlin.de/software/tetgen/fformats.html) mesh format: a pair of sibling files sharing a stem — `<name>.node` (points, attributes, boundary markers) and `<name>.ele` (tetrahedra, region attributes) — and the single-file `.smesh` surface TetGen meshes (its points and polygonal facets).
 
 | | |
 |---|---|
 | **Format name** | `tetgen` |
-| **Extensions** | `.node`, `.ele` |
+| **Extensions** | `.node`, `.ele`, `.smesh` |
 | **Read / Write** | ✓ / ✓ |
 | **Extra dependencies** | — |
 
@@ -20,7 +20,14 @@ meshioplusplus.tetgen.write("out.node", mesh, float_fmt=".16e")
 
 - **`float_fmt`** — coordinate format (default `".16e"`; the C++ fast path is only used at this default).
 
-Either path (`.node` or `.ele`) selects the sibling pair.
+Either path (`.node` or `.ele`) selects the sibling pair. A `.smesh` path reads or writes the surface file instead (below).
+
+## The `.smesh` surface
+
+A `.smesh` (TetGen's [surface mesh](https://wias-berlin.de/software/tetgen/fformats.smesh.html) file, a `.poly` whose facets are plain polygons) holds a surface for TetGen to mesh: part 1 the nodes (a `.node` section, header and rows in one file), part 2 the facets, one line each, `n v1 .. vn [marker]` under a header `nfacets markers`, then the holes and the regions. It is what [`tetrahedralize(backend="tetgen")`](../tetrahedralize.md#external-meshers-tetgen-and-gmsh) hands TetGen (since roadmap 7.7.2), and it reads and writes in both engines:
+
+- **Writing** takes `triangle`, `quad` and rectangular `polygon` blocks, in block order, and the cell data `tetgen:ref` as each facet's boundary marker (0 for a block without it); any other cell type is refused by name. Points are written at `%.16e`, so they read back bit-equal. The hole and region lists are written empty.
+- **Reading** gives one cell block per run of facets with the same corner count (`triangle`, `quad`, or `polygon`), in file order, and the markers as `cell_data["tetgen:ref"]`; node attributes and point markers in part 1 are skipped, and the holes and regions (which describe a volume to mesh, not the surface) are not kept.
 
 ## File structure
 
@@ -32,7 +39,7 @@ Write: for `.node`, attribute/marker keys are partitioned into at most one "ref"
 
 ## Cell types
 
-`tetra` only — TetGen only ever represents tetrahedra by construction.
+`tetra` only in a `.node`/`.ele` pair — TetGen only ever represents tetrahedra by construction; `triangle`, `quad` and `polygon` facets in a `.smesh`.
 
 ## Data mapping
 

@@ -34,6 +34,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/parse_guard.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
@@ -93,11 +94,180 @@ Parsed parse_text(std::string_view Text, const std::string& rPath) {
 
 }  // namespace
 
+namespace {
+
+bool tg_is_smesh(const std::string& rPath) {
+    return rPath.size() >= 6 && rPath.compare(rPath.size() - 6, 6, ".smesh") == 0;
+}
+
+// A `.smesh` surface (roadmap 7.7.2): part 1 the nodes, part 2 the facets
+// (polygons, an optional boundary marker each), then the holes and the
+// regions, which a surface mesh does not carry. One cell block per run of
+// facets with the same corner count: `triangle`, `quad`, or `polygon`.
+Mesh tg_read_smesh(const std::string& rPath) {
+    const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
+    const Parsed f = parse_text(source.View(), rPath);
+    detail::need_tokens(f.mHeader, 1, "tetgen");
+    const std::size_t limit = f.mData.size();
+    const std::size_t npoints =
+        detail::checked_count(detail::strtoll_token(f.mHeader[0]), limit, "tetgen", "node");
+    const int dim =
+        f.mHeader.size() > 1 ? static_cast<int>(detail::strtoll_token(f.mHeader[1])) : 3;
+    const std::size_t nattr = f.mHeader.size() > 2
+                                  ? detail::checked_count(detail::strtoll_token(f.mHeader[2]),
+                                                          limit, "tetgen", "attribute")
+                                  : 0;
+    const std::size_t nmark =
+        f.mHeader.size() > 3
+            ? detail::checked_count(detail::strtoll_token(f.mHeader[3]), limit, "tetgen", "marker")
+            : 0;
+    if (dim != 3)
+        throw ReadError("TetGen: need 3D points");
+    const std::size_t ncol = 4 + nattr + nmark;
+    if (npoints > limit / ncol)
+        throw ReadError("TetGen: .smesh node section is truncated");
+    std::size_t at = 0;
+    NDArray pts(DType::Float64, {npoints, std::size_t{3}});
+    std::int64_t base = 0;
+    for (std::size_t i = 0; i < npoints; ++i) {
+        const std::int64_t id = detail::strtoll_token(f.mData[at]);
+        if (i == 0)
+            base = id;
+        if (id != base + static_cast<std::int64_t>(i))
+            throw ReadError("TetGen: nodes not numbered consecutively");
+        for (std::size_t c = 0; c < 3; ++c)
+            pts.As<double>()[3 * i + c] = detail::parse_double_prefix(f.mData[at + 1 + c]);
+        at += ncol;
+    }
+    Mesh mesh;
+    mesh.AssignPoints(std::move(pts));
+    const auto next = [&]() -> std::string_view {
+        if (at >= f.mData.size())
+            throw ReadError("TetGen: .smesh facet section is truncated");
+        return f.mData[at++];
+    };
+    const std::size_t nfacets =
+        detail::checked_count(detail::strtoll_token(next()), limit, "tetgen", "facet");
+    const std::size_t fmark =
+        detail::checked_count(detail::strtoll_token(next()), 1, "tetgen", "facet marker");
+    std::vector<std::int64_t> conn, marks;
+    std::size_t run = 0;
+    const auto flush = [&]() {
+        if (conn.empty())
+            return;
+        const std::size_t ncells = conn.size() / run;
+        NDArray c(DType::Int64, {ncells, run});
+        std::copy(conn.begin(), conn.end(), c.As<std::int64_t>());
+        const std::string type = run == 3   ? std::string("triangle")
+                                 : run == 4 ? std::string("quad")
+                                            : std::string("polygon");
+        mesh.AddCellBlock(type, std::move(c));
+        conn.clear();
+    };
+    std::vector<std::size_t> block_sizes;
+    for (std::size_t k = 0; k < nfacets; ++k) {
+        const std::size_t n =
+            detail::checked_count(detail::strtoll_token(next()), limit, "tetgen", "facet corner");
+        if (n < 3)
+            throw ReadError("TetGen: a facet has fewer than three corners");
+        if (n != run) {
+            if (!conn.empty())
+                block_sizes.push_back(conn.size() / run);
+            flush();
+            run = n;
+        }
+        for (std::size_t j = 0; j < n; ++j) {
+            const std::int64_t v = detail::strtoll_token(next()) - base;
+            if (v < 0 || static_cast<std::size_t>(v) >= npoints)
+                throw ReadError("TetGen: a facet names a node out of range");
+            conn.push_back(v);
+        }
+        if (fmark)
+            marks.push_back(detail::strtoll_token(next()));
+    }
+    if (!conn.empty())
+        block_sizes.push_back(conn.size() / run);
+    flush();
+    if (fmark) {
+        std::vector<NDArray> blocks;
+        std::size_t first = 0;
+        for (const std::size_t n : block_sizes) {
+            NDArray a(DType::Int64, {n});
+            std::copy(marks.begin() + static_cast<std::ptrdiff_t>(first),
+                      marks.begin() + static_cast<std::ptrdiff_t>(first + n), a.As<std::int64_t>());
+            blocks.push_back(std::move(a));
+            first += n;
+        }
+        mesh.AddCellData("tetgen:ref", std::move(blocks));
+    }
+    // Holes and regions, when present, describe a volume to mesh: not kept.
+    return mesh;
+}
+
+void tg_write_smesh(const std::string& rPath, const Mesh& rMesh) {
+    if (rMesh.PointDim() != 3)
+        throw WriteError("TetGen: can only write 3D points");
+    const std::size_t npoints = rMesh.NumPoints();
+    auto fh = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!fh)
+        throw WriteError("Could not open file for writing: " + rPath);
+    fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
+    fh << "# part 1: nodes\n" << npoints << " 3 0 0\n";
+    char buf[40];
+    const detail::DoubleView pv(rMesh.Points());
+    for (std::size_t i = 0; i < npoints; ++i) {
+        fh << i;
+        for (std::size_t c = 0; c < 3; ++c) {
+            detail::snprintf_c(buf, sizeof(buf), "%.16e", pv[3 * i + c]);
+            fh << " " << buf;
+        }
+        fh << "\n";
+    }
+    std::size_t nfacets = 0;
+    std::vector<std::size_t> faceted;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cells = rMesh.Cells(b);
+        const std::string type(cells.Type());
+        const bool polygon =
+            type == "triangle" || type == "quad" || (type == "polygon" && !cells.IsRagged());
+        if (!polygon)
+            throw WriteError("TetGen: a .smesh holds polygonal facets, not '" + type + "' cells");
+        faceted.push_back(b);
+        nfacets += cells.NumCells();
+    }
+    const bool marked = rMesh.HasCellData("tetgen:ref");
+    fh << "# part 2: facets\n" << nfacets << " " << (marked ? 1 : 0) << "\n";
+    for (const std::size_t b : faceted) {
+        const auto cells = rMesh.Cells(b);
+        const NDArray& r_conn = cells.Conn();
+        const std::size_t width = r_conn.Ndim() == 2 ? r_conn.Shape()[1] : 0;
+        const detail::Int64View conn(r_conn);
+        std::optional<detail::Int64View> mark;
+        if (marked && b < rMesh.CellDataNumBlocks("tetgen:ref"))
+            mark.emplace(rMesh.CellData("tetgen:ref", b));
+        for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+            fh << width;
+            for (std::size_t j = 0; j < width; ++j)
+                fh << " " << conn[c * width + j];
+            if (marked)
+                fh << " " << (mark ? (*mark)[c] : 0);
+            fh << "\n";
+        }
+    }
+    fh << "# part 3: holes\n0\n# part 4: regions\n0\n";
+    if (!fh)
+        throw WriteError("TetGen: failed writing " + rPath);
+}
+
+}  // namespace
+
 Mesh read_tetgen(const std::string& rPath) {
+    if (tg_is_smesh(rPath))
+        return tg_read_smesh(rPath);
     bool ok = false;
     auto paths = node_ele_paths(rPath, ok);
     if (!ok)
-        throw ReadError("TetGen: expected a .node or .ele file");
+        throw ReadError("TetGen: expected a .node, .ele or .smesh file");
     const std::string& node_path = paths.first;
     const std::string& ele_path = paths.second;
 
@@ -211,10 +381,14 @@ void write_value(std::ostream& rOs, double v) {
 }  // namespace
 
 void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
+    if (tg_is_smesh(rPath)) {
+        tg_write_smesh(rPath, rMesh);
+        return;
+    }
     bool ok = false;
     auto paths = node_ele_paths(rPath, ok);
     if (!ok)
-        throw WriteError("TetGen: must specify a .node or .ele file");
+        throw WriteError("TetGen: must specify a .node, .ele or .smesh file");
     const std::string& node_path = paths.first;
     const std::string& ele_path = paths.second;
 

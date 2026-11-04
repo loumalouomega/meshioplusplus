@@ -1,0 +1,19 @@
+{
+  "Version": 1,
+  "comment": "Roadmap 7.8: the surface-boolean spike's Thingi10K pairs (Zhou and Jacobson 2016) at a pinned revision, run by tools/boolean_corpus.py. Each model carries its own licence, so only ids and SHA-256 hashes are stored here; `fetch --record` writes the hashes a run lacks, to commit under models.",
+  "models": {},
+  "pairs": {
+    "seed": 7808
+  },
+  "sample": {
+    "count": 120,
+    "seed": 7807
+  },
+  "source": {
+    "archive": "Thingi10K.tar.gz",
+    "base": "https://huggingface.co/datasets/Thingi10K/Thingi10K/resolve/v1.5.0",
+    "geometry": "metadata/geometry_data.csv",
+    "members": "Thingi10K/raw_meshes",
+    "summary": "metadata/input_summary.csv"
+  }
+}
