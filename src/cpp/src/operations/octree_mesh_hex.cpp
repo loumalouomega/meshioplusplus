@@ -603,11 +603,6 @@ struct OctmhFit {
     std::int64_t mReleased = 0;      // feature nodes released to untangle
     std::int64_t mShortChains = 0;   // chains shorter than a cell, not snapped
     std::int64_t mShortCorners = 0;  // corners only such chains end at
-    // The relief (roadmap 7.9.2): skin nodes allowed off the skin to untangle.
-    std::int64_t mRelieved = 0;   // nodes in the relieved region
-    std::int64_t mOffSkin = 0;    // of them, left off the skin
-    double mOffSkinMax = 0.0;     // their largest distance from it, in sizes
-    double mReliefTol = 0.0;      // the tolerance taken, in sizes (0: no relief)
 };
 
 // Where the line through @p rX along the unit @p rDir first meets the skin
@@ -742,23 +737,6 @@ Vec3 octmh_tether(const std::vector<Vec3>& rSkin, const std::vector<std::int64_t
 // untangled again for a fifth of the sweeps.
 constexpr double kOctmhRepairBelow = 0.05;
 
-// The relief (roadmap 7.9.2): when a corner is still at or below zero after
-// the repair, the skin nodes within this many edge rings of the hexahedra
-// with such a corner may leave the skin by a tolerance of their size, tried in
-// `kOctmhReliefTol` order, and are pulled back onto it afterwards under a
-// corner guard. A skin held exactly is what keeps those corners inverted where
-// a scan creases or curves within a cell; letting the nodes off by a fraction
-// of a cell frees them.
-constexpr int kOctmhReliefRings = 2;
-constexpr double kOctmhReliefTol[] = {0.1, 0.25, 0.5};
-
-// Whether the relief is on (`MESHIOPLUSPLUS_OCTREE_MESH_HEX_RELIEF=0` turns it
-// off, a test hook that gives the fit of 18.x).
-bool octmh_relief_enabled() {
-    const char* p_env = std::getenv("MESHIOPLUSPLUS_OCTREE_MESH_HEX_RELIEF");
-    return p_env == nullptr || std::string(p_env) != "0";
-}
-
 // The feature graph without the chains shorter than a cell: on a scanned skin
 // a short crease is noise the boundary cannot follow, and pinning it holds
 // the hexahedra around it flat or inverted. A corner is kept when a kept chain
@@ -792,143 +770,6 @@ FeatureGraph octmh_drop_short(const OctreeMeshSetup& rS, const FeatureGraph& rGr
         if (std::binary_search(ends.begin(), ends.end(), c))
             out.mCorners.push_back(c);
     return out;
-}
-
-// The relief (roadmap 7.9.2) of a fit whose smallest corner is at or below
-// zero: the sliding nodes near those hexahedra untangle again, each allowed
-// within a tolerance of its size of the skin foot @p rProject gives, the
-// smallest of `kOctmhReliefTol` that leaves no such corner (else the one that
-// leaves the largest smallest corner); then each, in ascending order, moves
-// back to its foot, or half or a quarter of the way, where the worst corner
-// around it stays at least the lesser of its own and `kOctmhRepairBelow`.
-void octmh_relieve(const std::vector<std::array<std::int64_t, 8>>& rHexes, std::vector<Vec3>& rPts,
-                   const std::vector<HexNodeMode>& rMode, const HexProjector& rProject,
-                   const std::vector<double>& rSize, std::int64_t Sweeps, OctmhFit& rOut) {
-    const std::size_t np = rPts.size();
-    std::vector<std::vector<std::int64_t>> inc(np), nbr(np);
-    for (std::size_t h = 0; h < rHexes.size(); ++h)
-        for (std::size_t c = 0; c < 8; ++c) {
-            const auto v = static_cast<std::size_t>(rHexes[h][c]);
-            inc[v].push_back(static_cast<std::int64_t>(h));
-            for (std::size_t e = 0; e < 3; ++e)
-                nbr[v].push_back(rHexes[h][static_cast<std::size_t>(kOctmhCorner[c][e])]);
-        }
-    // The region: the nodes of the hexahedra with a corner at or below zero,
-    // grown by edge rings.
-    std::vector<std::uint8_t> in(np, 0);
-    std::vector<std::size_t> front;
-    for (const auto& hex : rHexes)
-        if (hex_min_scaled_jacobian(rPts, hex) <= 0.0)
-            for (std::int64_t v : hex)
-                if (!in[static_cast<std::size_t>(v)]) {
-                    in[static_cast<std::size_t>(v)] = 1;
-                    front.push_back(static_cast<std::size_t>(v));
-                }
-    for (int ring = 0; ring < kOctmhReliefRings; ++ring) {
-        std::vector<std::size_t> grown;
-        for (std::size_t v : front)
-            for (std::int64_t n : nbr[v])
-                if (!in[static_cast<std::size_t>(n)]) {
-                    in[static_cast<std::size_t>(n)] = 1;
-                    grown.push_back(static_cast<std::size_t>(n));
-                }
-        front.swap(grown);
-    }
-    std::vector<std::size_t> relieved;
-    for (std::size_t v = 0; v < np; ++v)
-        if (in[v] && rMode[v] == HexNodeMode::Slide)
-            relieved.push_back(v);
-    if (relieved.empty())
-        return;
-    auto worst_all = [&](const std::vector<Vec3>& rP) {
-        double w = 1.0;
-        for (const auto& hex : rHexes)
-            w = std::min(w, hex_min_scaled_jacobian(rP, hex));
-        return w;
-    };
-    auto worst_at = [&](std::size_t V) {
-        double w = 1.0;
-        for (std::int64_t h : inc[V])
-            w = std::min(w, hex_min_scaled_jacobian(rPts, rHexes[static_cast<std::size_t>(h)]));
-        return w;
-    };
-    const std::vector<Vec3> start = rPts;
-    std::vector<Vec3> best_pts = rPts;
-    double best_worst = rOut.mWorst, best_tol = 0.0;
-    std::int64_t moves = 0;
-    HexUntangleOptions uo;
-    uo.mIterations = Sweeps;
-    uo.mRobust = true;
-    for (const double tol : kOctmhReliefTol) {
-        rPts = start;
-        const HexProjector held = [&](std::size_t Node, const Vec3& rP) {
-            const Vec3 foot = rProject(Node, rP);
-            if (!in[Node])
-                return foot;
-            const Vec3 d = vec3_sub(rP, foot);
-            const double len = vec3_norm(d);
-            const double reach = tol * rSize[Node];
-            return len <= reach ? rP : vec3_add(foot, vec3_scale(d, reach / len));
-        };
-        // From the usual step down to a 256th of it: the corners this is for
-        // are the ones a step of a fifth of an edge only lowers elsewhere.
-        std::int64_t tol_moves = 0;
-        for (const double step : {0.2, 0.05, 0.0125, 0.003125, 0.00078125}) {
-            uo.mStep = step;
-            tol_moves += hex_untangle(rPts, rHexes, rMode, held, uo).mMoves;
-            if (worst_all(rPts) > 0.0)
-                break;
-        }
-        const double w = worst_all(rPts);
-        log::debug("{}relief at {} of a size: smallest corner {}", kOctreeMeshPrefix, tol, w);
-        if (w > best_worst) {
-            best_worst = w;
-            best_pts = rPts;
-            best_tol = tol;
-            moves = tol_moves;
-        }
-        if (w > 0.0)
-            break;
-    }
-    rPts = std::move(best_pts);
-    if (best_tol == 0.0)
-        return;  // no tolerance did better: the fit stays as the repair left it
-    // Back onto the skin wherever the corners allow.
-    for (int pass = 0; pass < 3; ++pass) {
-        std::int64_t back = 0;
-        for (std::size_t v : relieved) {
-            const Vec3 keep = rPts[v];
-            const Vec3 foot = rProject(v, keep);
-            if (vec3_norm(vec3_sub(keep, foot)) <= 1e-9 * rSize[v])
-                continue;
-            const double floor = std::min(worst_at(v), kOctmhRepairBelow);
-            for (const double t : {1.0, 0.5, 0.25}) {
-                rPts[v] = vec3_add(keep, vec3_scale(vec3_sub(foot, keep), t));
-                if (worst_at(v) >= floor) {
-                    ++back;
-                    break;
-                }
-                rPts[v] = keep;
-            }
-        }
-        if (back == 0)
-            break;
-    }
-    rOut.mRelieved = static_cast<std::int64_t>(relieved.size());
-    rOut.mReliefTol = best_tol;
-    rOut.mMoves += moves;
-    for (std::size_t v : relieved) {
-        const double d = vec3_norm(vec3_sub(rPts[v], rProject(v, rPts[v]))) / rSize[v];
-        if (d > 1e-9) {
-            ++rOut.mOffSkin;
-            rOut.mOffSkinMax = std::max(rOut.mOffSkinMax, d);
-        }
-    }
-    rOut.mWorst = worst_all(rPts);
-    log::debug("{}relief: {} nodes at {} of a size, {} left off the skin (at most {}), smallest "
-               "corner {}",
-               kOctreeMeshPrefix, relieved.size(), best_tol, rOut.mOffSkin, rOut.mOffSkinMax,
-               rOut.mWorst);
 }
 
 // Place the boundary on the skin, snap the features and untangle.
@@ -1228,8 +1069,6 @@ OctmhFit octmh_fit(const OctmhFitInput& rIn, OctmhPlacement Placement) {
                        freeing.size(), out.mWorst);
         }
     }
-    if (robust && ro.mUntangleIterations >= 5 && out.mWorst <= 0.0 && octmh_relief_enabled())
-        octmh_relieve(rIn.rMesh.mHexes, pts, mode, project, size, ro.mUntangleIterations, out);
     log::debug("{}{} fit: smallest corner scaled Jacobian {} after {} sweeps", kOctreeMeshPrefix,
                robust ? "robust" : "body-fitted", out.mWorst, ur.mSweeps);
     return out;
@@ -1577,12 +1416,6 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
         octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(fit.mReleased) +
                                  " feature nodes were released from their feature to untangle "
                                  "the hexahedra around them");
-    if (fit.mOffSkin > 0)
-        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(fit.mOffSkin) +
-                                 " boundary nodes were left off the skin to untangle the "
-                                 "hexahedra around them, at most " +
-                                 std::to_string(fit.mOffSkinMax) + " cells (tolerance " +
-                                 std::to_string(fit.mReliefTol) + " cells)");
     if (fit.mFellBack)
         octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) +
                                  "the robust fit reached a smallest corner scaled Jacobian of " +

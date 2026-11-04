@@ -170,11 +170,6 @@ struct HexUntangleOptions {
     /// search for a node below 0.2, and restart the step once when a sweep
     /// stalls with a corner below 0.2. False is the plain pattern search.
     bool mRobust = false;
-    /// The first step, as a fraction of a node's mean edge; it halves every ten
-    /// sweeps. A sweep that moves nothing ends the run (after one restart with
-    /// `mRobust`), so a corner that only a smaller step raises needs a smaller
-    /// start (the relief of roadmap 7.9.2 tries several).
-    double mStep = 0.2;
 };
 
 /// What `hex_untangle` did.
