@@ -8658,6 +8658,10 @@ void mio_mesh_cad_surface_opts_ex_init(mio_mesh_cad_surface_opts_ex* opts) {
         return;
     *opts = mio_mesh_cad_surface_opts_ex{};
     opts->metric = MIO_MESH_CAD_METRIC_MEAN;
+    // On by default since v19.0.0, as MeshCadSurfaceExtras is.
+    const meshioplusplus::MeshCadSurfaceExtras d;
+    opts->model_tolerances = d.mModelTolerances ? 1 : 0;
+    opts->virtual_faces = d.mVirtualFaces ? 1 : 0;
 }
 
 mio_mesh* mio_mesh_cad_surface(const mio_format_info* info, const mio_mesh_cad_surface_opts* opts,

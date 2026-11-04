@@ -10,7 +10,7 @@ mio_mesh_cad_surface(info, target_size, max_chordal_deviation = 0,
   pole_rings = 0, face_sizes = NULL, edge_sizes = NULL, background = NULL,
   background_array = "size", metric = c("mean", "varying"),
   virtual_edges = FALSE, reparam_condition_number = 0,
-  model_tolerances = FALSE, virtual_faces = FALSE, lop_corners = FALSE,
+  model_tolerances = TRUE, virtual_faces = TRUE, lop_corners = FALSE,
   metric_background = NULL, metric_array = "", metric_error = 0,
   untangle = FALSE, quads = c("none", "dominant", "all"),
   quad_pairs = c("matching", "greedy"))
@@ -59,9 +59,11 @@ its coarse mesh passes this in a flattening of that mesh instead of its
 parameters (v17.20.0); 0 is off, otherwise above 1; at order 2 or 3 the curved
 nodes sit at the flattening's coordinates.}
 \item{model_tolerances}{Accept the gaps the model itself declares (an edge's
-\code{"tolerance"} and \code{"end_tolerances"} in its extra JSON).}
+\code{"tolerance"} and \code{"end_tolerances"} in its extra JSON); on by
+default since v19.0.0.}
 \item{virtual_faces}{Mesh a face narrower than \code{target_size} with the
-neighbour it meets tangentially along the most edge; any order.}
+neighbour it meets tangentially along the most edge; any order. On by
+default since v19.0.0.}
 \item{lop_corners}{Lop acute corners (Pav and Walkington 2005) in place of
 concentric shells; only with refinement (\code{min_angle} or sizes).}
 \item{metric_background}{A mesh whose 9-component point data

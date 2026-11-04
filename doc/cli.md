@@ -2728,7 +2728,7 @@ meshioplusplus mesh-cad-surface part.cad.json part.msh -o gmsh --size 0.2 --orde
 meshioplusplus mesh-cad-surface part.step part.vtu --size 2 --curvature-deviation 0.01 --cells-across-gaps 2 --min-angle 25
 meshioplusplus mesh-cad-surface sphere.cad.json sphere.vtu --size 0.2 --min-angle 25 --pole-rings 2
 meshioplusplus mesh-cad-surface part.step part.vtu --size 2 --face-sizes 3=0.5 --edge-sizes 12=0.2 --background sizes.vtu --metric varying --virtual-edges --min-angle 25 --json
-meshioplusplus mesh-cad-surface part.step part.vtu --size 2 --min-angle 25 --reparam-condition-number 4 --virtual-faces --model-tolerances --json
+meshioplusplus mesh-cad-surface part.step part.vtu --size 2 --min-angle 25 --reparam-condition-number 4 --json
 ```
 
 | flag | meaning |
@@ -2754,8 +2754,8 @@ meshioplusplus mesh-cad-surface part.step part.vtu --size 2 --min-angle 25 --rep
 | `--metric mean\|varying` | `mean` (the default), one affine map per face, or `varying`, the surface's own metric |
 | `--virtual-edges` | suppress the corners between slivers of edges and their neighbours (order 1 only); the chains are reported as `virtual_edges` |
 | `--reparam-condition-number K` | mesh a face whose parameters stretch the surface more than `K` (above 1) in a flattening of its coarse mesh instead (any order; 0, the default, is off); reported as `reparametrised` |
-| `--virtual-faces` | mesh a sliver face, narrower than the size, with the neighbour it meets tangentially (any order); reported as `merged_faces` |
-| `--model-tolerances` | accept the gaps each edge's own declared tolerance or vertex's own declared tolerance allows (a STEP or IGES read declares OpenCASCADE's; a Kratos file's `tolerances.model_tolerance` is their floor and pairs the trims no edge names); reported as `tolerance_uses` |
+| `--no-virtual-faces` | do not mesh a sliver face, narrower than the size, with the neighbour it meets tangentially (on by default since v19.0.0, at any order; `--virtual-faces` is still accepted); reported as `merged_faces` |
+| `--no-model-tolerances` | do not accept (on by default since v19.0.0; `--model-tolerances` is still accepted) the gaps each edge's own declared tolerance or vertex's own declared tolerance allows (a STEP or IGES read declares OpenCASCADE's; a Kratos file's `tolerances.model_tolerance` is their floor and pairs the trims no edge names); reported as `tolerance_uses` |
 | `--lop-corners` | lop acute corners (Pav and Walkington 2005) in place of concentric shells, and state the angle bound they prove on a planar face; reported as `lopped_corners` |
 | `--metric-background PATH` / `--metric-array NAME` / `--metric-error E` | a mesh whose 9-component point data `NAME` is a field's Hessian (`hessian` writes `<array>:hessian`), or whose 1-component one is the field itself (its Hessian then taken), and the interpolation error `E` (> 0) to reach: the anisotropic metric `R \|Λ\| Rᵀ / (8 E)` sizes and stretches the triangles at any order; reported as `min_metric_angle`, the least corner angle in the metric |
 | `--untangle` | at order 2 or 3, move the high-order nodes of folded elements on the surface to make them valid before any is straightened (Toulorge et al. 2013), then slide the nodes on CAD edges along their edges (quads' nodes too); reported as `num_untangled` |

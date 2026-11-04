@@ -1210,7 +1210,9 @@ def test_virtual_faces_mesh_a_sliver_with_its_neighbour():
     triangles, each triangle keeps its own face in cad:face, the shared edge
     leaves the line block and the merge is reported."""
     model = _read("sliver_strip.cad.json")
-    _, alone = mio.mesh_cad_surface(model, 0.2, min_angle=25, return_report=True)
+    _, alone = mio.mesh_cad_surface(
+        model, 0.2, min_angle=25, virtual_faces=False, return_report=True
+    )
     out, merged = mio.mesh_cad_surface(
         model, 0.2, min_angle=25, virtual_faces=True, return_report=True
     )
@@ -1230,6 +1232,9 @@ def test_virtual_faces_mesh_a_sliver_with_its_neighbour():
     # Roadmap 6.5.2: curved on the merged face too.
     curved = mio.mesh_cad_surface(model, 0.2, virtual_faces=True, order=2)
     assert "triangle6" in {c.type for c in curved.cells}
+    # On by default since v19.0.0 (roadmap 7.9.1): the same mesh.
+    default = mio.mesh_cad_surface(model, 0.2, min_angle=25)
+    np.testing.assert_array_equal(default.points, out.points)
 
 
 def _planar_lens(path, length=4.0, theta_deg=2.5):
@@ -1354,7 +1359,7 @@ def test_the_models_tolerance_pairs_the_trims_no_edge_names():
     extra = json.loads(brep["extra"]) if brep["extra"] else {}
     extra["tolerances"] = {"model_tolerance": 1e-4}
     brep["extra"] = json.dumps(extra)
-    _, off = mio.mesh_cad_surface(brep, 0.2, return_report=True)
+    _, off = mio.mesh_cad_surface(brep, 0.2, model_tolerances=False, return_report=True)
     assert off["num_edges"] == 16
     _, on = mio.mesh_cad_surface(brep, 0.2, model_tolerances=True, return_report=True)
     _watertight(on)
@@ -1405,7 +1410,9 @@ def test_virtual_faces_join_a_chain_of_slivers_into_one_host(tmp_path):
     h, w = 0.2, 0.01
     ys = [0.0, 1.0, 1.0 + w, 1.0 + 2 * w, 1.0 + 3 * w]
     model = _stacked_plates(tmp_path / "chain.cad.json", ys)
-    _, alone = mio.mesh_cad_surface(model, h, min_angle=25, return_report=True)
+    _, alone = mio.mesh_cad_surface(
+        model, h, min_angle=25, virtual_faces=False, return_report=True
+    )
     out, merged = mio.mesh_cad_surface(
         model, h, min_angle=25, virtual_faces=True, return_report=True
     )
@@ -1529,7 +1536,9 @@ def test_a_chain_of_slivers_alone_is_hosted_by_its_widest(tmp_path):
     h, w = 0.2, 0.01
     ys = [0.0, w, 3 * w, 4 * w]
     model = _stacked_plates(tmp_path / "strips.cad.json", ys)
-    _, alone = mio.mesh_cad_surface(model, h, min_angle=25, return_report=True)
+    _, alone = mio.mesh_cad_surface(
+        model, h, min_angle=25, virtual_faces=False, return_report=True
+    )
     out, merged = mio.mesh_cad_surface(
         model, h, min_angle=25, virtual_faces=True, return_report=True
     )

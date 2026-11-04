@@ -6736,8 +6736,12 @@ typedef struct mio_mesh_cad_surface_opts_ex {
      *  otherwise above 1; at order 2 or 3 the curved nodes sit at the
      *  flattening's coordinates. */
     double reparam_condition_number;
-    int32_t model_tolerances; /**< v17.20.0: nonzero: accept the gaps the model declares (6.5.1) */
-    int32_t virtual_faces;    /**< v17.20.0: nonzero: mesh sliver faces with a neighbour (6.5.2) */
+    /** v17.20.0: nonzero: accept the gaps the model declares (6.5.1); 1 from
+     *  mio_mesh_cad_surface_opts_ex_init() since v19.0.0, zero is off. */
+    int32_t model_tolerances;
+    /** v17.20.0: nonzero: mesh sliver faces with a neighbour (6.5.2); 1 from
+     *  mio_mesh_cad_surface_opts_ex_init() since v19.0.0, zero is off. */
+    int32_t virtual_faces;
     /** v17.20.0: nonzero: lop acute corners (Pav and Walkington 2005) in place
      *  of concentric shells (6.2.3); only with refinement. */
     int32_t lop_corners;
@@ -6786,9 +6790,10 @@ typedef enum mio_mesh_cad_quad_pairs {
 } mio_mesh_cad_quad_pairs;
 
 /** Initialize the extended options: the mean metric, no virtual edges, no
- *  given sizes, no background, no reparametrisation, no model tolerances, no
- *  virtual faces, no corner lopping, no metric background, no untangling and
- *  no quads. */
+ *  given sizes, no background, no reparametrisation, the model's tolerances
+ *  and virtual faces (both 1 since v19.0.0: a struct zeroed by hand has them
+ *  off), no corner lopping, no metric background, no untangling and no
+ *  quads. */
 MIO_API void mio_mesh_cad_surface_opts_ex_init(mio_mesh_cad_surface_opts_ex* opts);
 
 /**

@@ -1974,8 +1974,9 @@ TEST(CApi, MeshCadSurfaceMeshesABrepAndReportsItsFaces) {
         // v17.20.0: the reparametrisation, virtual faces and model
         // tolerances; a planar face is never flattened, nothing is a sliver.
         EXPECT_EQ(ex.reparam_condition_number, 0.0);
-        EXPECT_EQ(ex.model_tolerances, 0);
-        EXPECT_EQ(ex.virtual_faces, 0);
+        // Both on from the initializer since v19.0.0, as in the C++ core.
+        EXPECT_EQ(ex.model_tolerances, 1);
+        EXPECT_EQ(ex.virtual_faces, 1);
         ex.reparam_condition_number = 4.0;
         ex.model_tolerances = 1;
         ex.virtual_faces = 1;

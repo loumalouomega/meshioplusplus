@@ -8,6 +8,13 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## v19.0.0 (unreleased)
+
+A major release: `mesh_cad_surface` accepts the model's own tolerances and meshes sliver faces with their neighbours by default. **ABI 39 (Tier B):** rebuild native consumers.
+
+- **Breaking: `model_tolerances` and `virtual_faces` are on by default** ([mesh generation from CAD](doc/mesh_cad.md), roadmap 7.9.1). On the CAD corpus the two lose no face and together mesh 55 more of its 16,503, with 1,025 fewer open edges; they stayed off until a major version because the C API's released `mio_mesh_cad_surface_opts_ex` read zero as off. Every surface takes the new defaults: Python (`model_tolerances=True`, `virtual_faces=True`), the C++ `MeshCadSurfaceExtras` and so its two- and four-argument overloads, the pipeline's `ModelTolerances`/`VirtualFaces`, MCP, WASM, Julia, R, Octave / MATLAB and Fortran. The C struct keeps its layout and zero still means off: `mio_mesh_cad_surface_opts_ex_init` now sets both fields to 1, a NULL `opts_ex` takes them, and a struct zeroed by hand keeps them off. Both CLIs take `--no-model-tolerances` and `--no-virtual-faces`; `--model-tolerances` and `--virtual-faces` are still accepted and change nothing. Pass `model_tolerances=False, virtual_faces=False` for version 18's mesh.
+- **ABI:** `MESHIOPLUSPLUS_ABI_VERSION` 38 -> 39 (Tier B): the default member initializers of `MeshCadSurfaceExtras` changed; no layout moved. See [the ABI history](doc/abi.md).
+
 ## v18.3.0 (2026-11-04)
 
 A feature release: an Octave / MATLAB binding and `decimate_volume` in the remaining language bindings. No C++ ABI change (ABI stays 38). Note: v18.2.0 was never tagged; this tag carries its changes too.

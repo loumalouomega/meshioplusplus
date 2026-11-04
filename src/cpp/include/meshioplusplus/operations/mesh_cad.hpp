@@ -390,8 +390,10 @@ enum class MeshCadQuadPairs : std::int32_t {
 };
 
 /// Inputs beside the options and the sources (v17.20.0), whose layouts have
-/// no room left: each off by default, and with all off the mesh is the
-/// four-argument overload's byte for byte.
+/// no room left. `mModelTolerances` and `mVirtualFaces` are on by default
+/// since v19.0.0 (on the CAD corpus they lose no face and mesh 55 more of
+/// 16,503), and so they are in the two- and four-argument overloads too; every
+/// other input is off by default, and with all off the mesh is version 18's.
 struct MeshCadSurfaceExtras {
     /// Accept the gaps the model itself declares (roadmap 6.5.1): an edge's
     /// `"tolerance"` and its ends' `"end_tolerances"` in its `mExtra` JSON
@@ -401,12 +403,14 @@ struct MeshCadSurfaceExtras {
     /// and the file's `tolerances.model_tolerance` (Kratos CAD JSON, kept in
     /// `BrepInfo::mExtra`) is the floor of them all and pairs the trims no
     /// edge names (`mMatchUnreferencedTrims`). Degeneracy stays on the global
-    /// tolerance: a declared one never makes an edge a pole.
-    bool mModelTolerances = false;
+    /// tolerance: a declared one never makes an edge a pole. On by default
+    /// since v19.0.0.
+    bool mModelTolerances = true;
     /// Merge a sliver face, narrower than `h` and with no interior point, into
     /// the neighbour it meets tangentially along the most edge, through their
-    /// common discrete parameterisation (roadmap 6.5.2), at every order.
-    bool mVirtualFaces = false;
+    /// common discrete parameterisation (roadmap 6.5.2), at every order. On by
+    /// default since v19.0.0.
+    bool mVirtualFaces = true;
     /// Corner lopping (roadmap 6.2.3; S. E. Pav and N. J. Walkington,
     /// "Delaunay refinement by corner lopping", IMR 2005) in place of
     /// concentric shells: each acute corner of a face gets a ball of radius

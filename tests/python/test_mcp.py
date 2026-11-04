@@ -17,6 +17,7 @@ tool's ``wraps`` (or consciously exempted in ``_NOT_TOOLS``).
 """
 
 import importlib.util
+import inspect
 import json
 import os
 import pathlib
@@ -2942,6 +2943,10 @@ def test_mesh_cad_surface_tool(tmp_path):
         str(sphere), str(out), 0.2, virtual_faces=True, model_tolerances=True
     )
     assert other["merged_faces"] == [] and other["tolerance_uses"] == []
+    # Both are on by default since v19.0.0, in the tool as in the function.
+    defaults = inspect.signature(_tools.tool_mesh_cad_surface).parameters
+    assert defaults["virtual_faces"].default is True
+    assert defaults["model_tolerances"].default is True
     # Corner lopping: the sphere's faces have no acute corner to lop.
     lopped = _tools.tool_mesh_cad_surface(
         str(sphere), str(out), 0.2, min_angle=20.0, lop_corners=True

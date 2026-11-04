@@ -208,15 +208,22 @@ def add_args(parser):
         "flattening of its coarse mesh (default: 0, off)",
     )
     parser.add_argument(
-        "--model-tolerances",
+        "--no-model-tolerances",
         action="store_true",
-        help="accept the gaps the model itself declares",
+        help="do not accept the gaps the model itself declares (on by default "
+        "since v19.0.0)",
     )
     parser.add_argument(
-        "--virtual-faces",
+        "--no-virtual-faces",
         action="store_true",
-        help="mesh a sliver face with the neighbour it meets tangentially",
+        help="do not mesh a sliver face with the neighbour it meets "
+        "tangentially (on by default since v19.0.0)",
     )
+    # Before v19.0.0 these turned the two on; they are still accepted.
+    parser.add_argument(
+        "--model-tolerances", action="store_true", help=argparse.SUPPRESS
+    )
+    parser.add_argument("--virtual-faces", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--lop-corners",
         action="store_true",
@@ -296,8 +303,8 @@ def mesh_cad_surface_cmd(args):
         metric=args.metric,
         virtual_edges=args.virtual_edges,
         reparam_condition_number=args.reparam_condition_number,
-        model_tolerances=args.model_tolerances,
-        virtual_faces=args.virtual_faces,
+        model_tolerances=not args.no_model_tolerances,
+        virtual_faces=not args.no_virtual_faces,
         lop_corners=args.lop_corners,
         metric_background=(
             None if args.metric_background is None else read(args.metric_background)

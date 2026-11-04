@@ -4418,8 +4418,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("face_sizes") = py::none(), py::arg("edge_sizes") = py::none(),
         py::arg("background") = py::none(), py::arg("background_array") = "size",
         py::arg("virtual_edges") = false, py::arg("metric") = "mean",
-        py::arg("reparam_condition_number") = 0.0, py::arg("model_tolerances") = false,
-        py::arg("virtual_faces") = false, py::arg("lop_corners") = false,
+        py::arg("reparam_condition_number") = 0.0, py::arg("model_tolerances") = true,
+        py::arg("virtual_faces") = true, py::arg("lop_corners") = false,
         py::arg("metric_background") = py::none(), py::arg("metric_array") = "",
         py::arg("metric_error") = 0.0, py::arg("untangle") = false, py::arg("quads") = "none",
         py::arg("quad_pairs") = "matching");

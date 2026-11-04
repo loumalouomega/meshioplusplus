@@ -1193,8 +1193,8 @@ Mesh pipe_apply_model_step(const PipelineStep& rStep, PipelineReport& rReport, P
         o.mReparamConditionNumber =
             pipe_number(rStep, "ReparamConditionNumber", o.mReparamConditionNumber);
         MeshCadSurfaceExtras extras;
-        extras.mModelTolerances = pipe_flag(rStep, "ModelTolerances", false);
-        extras.mVirtualFaces = pipe_flag(rStep, "VirtualFaces", false);
+        extras.mModelTolerances = pipe_flag(rStep, "ModelTolerances", true);
+        extras.mVirtualFaces = pipe_flag(rStep, "VirtualFaces", true);
         extras.mLopCorners = pipe_flag(rStep, "LopCorners", false);
         // Roadmap 6.6.3 and 6.8.
         extras.mUntangle = pipe_flag(rStep, "Untangle", false);

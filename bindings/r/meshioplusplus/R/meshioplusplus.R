@@ -3158,9 +3158,11 @@ mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples
 #'   its parameters (v17.20.0); 0 is off, otherwise above 1; at order 2 or 3
 #'   the curved nodes sit at the flattening's coordinates.
 #' @param model_tolerances Accept the gaps the model itself declares (an
-#'   edge's `"tolerance"` and `"end_tolerances"` in its extra JSON).
+#'   edge's `"tolerance"` and `"end_tolerances"` in its extra JSON); on by
+#'   default since v19.0.0.
 #' @param virtual_faces Mesh a face narrower than `target_size` with the
-#'   neighbour it meets tangentially along the most edge; any order.
+#'   neighbour it meets tangentially along the most edge; any order. On by
+#'   default since v19.0.0.
 #' @param lop_corners Lop acute corners (Pav and Walkington 2005) in place of
 #'   concentric shells; only with refinement (`min_angle` or sizes).
 #' @param metric_background A mesh whose 9-component point data
@@ -3217,8 +3219,8 @@ mio_mesh_cad_surface <- function(info, target_size, max_chordal_deviation = 0,
                                  face_sizes = NULL, edge_sizes = NULL, background = NULL,
                                  background_array = "size",
                                  metric = c("mean", "varying"), virtual_edges = FALSE,
-                                 reparam_condition_number = 0, model_tolerances = FALSE,
-                                 virtual_faces = FALSE, lop_corners = FALSE,
+                                 reparam_condition_number = 0, model_tolerances = TRUE,
+                                 virtual_faces = TRUE, lop_corners = FALSE,
                                  metric_background = NULL, metric_array = "",
                                  metric_error = 0, untangle = FALSE,
                                  quads = c("none", "dominant", "all"),
