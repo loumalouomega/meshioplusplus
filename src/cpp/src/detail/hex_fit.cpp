@@ -564,7 +564,8 @@ HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
     std::vector<Vec3> cand;
     for (std::int64_t sweep = 0; sweep < rOptions.mIterations; ++sweep) {
         ++rep.mSweeps;
-        const double scale = 0.2 * std::pow(0.5, static_cast<double>((sweep - step_base) / 10));
+        const double scale =
+            rOptions.mStep * std::pow(0.5, static_cast<double>((sweep - step_base) / 10));
         std::int64_t moves = 0;
         double low = 1.0;  // the worst corner of the nodes visited
         std::fill(next.begin(), next.end(), 0);
