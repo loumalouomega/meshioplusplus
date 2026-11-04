@@ -16,7 +16,7 @@ function r = voxelize(mesh, varargin)
 %     'watertight_check'  'off', 'warn' or 'error' ('warn')
 %     'plane'             'auto', 'xy', 'xz' or 'yz': the plane of a 2-D skin
 %                         ('auto')
-%   R is a struct: mesh, dims, origin and spacing (3 x 1 columns) and
+%   R is a struct: mesh, dims, origin and spacing (1 x 3 rows) and
 %   num_occupied.
 
     o = mio.internal.opts(varargin, {'resolution', [], 'cell_size', 0, 'bounds', [], ...

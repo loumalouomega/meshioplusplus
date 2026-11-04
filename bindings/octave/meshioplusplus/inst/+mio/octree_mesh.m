@@ -59,7 +59,7 @@ function r = octree_mesh(mesh, varargin)
 %     'max_tets'             refuse an output with more cells (100000000)
 %   R is a struct: mesh, the report fields of mio_octree_mesh_report (output
 %   as its name, guarantee_applies as a logical, origin and root_cells as
-%   3 x 1 columns, every count as a double) and warnings, an n x 1 cellstr
+%   1 x 3 rows, every count as a double) and warnings, an n x 1 cellstr
 %   with one entry per warning.
 
     names = {'output', 'min_size', 'max_size', 'max_level', 'bounds', 'padding', ...

@@ -390,9 +390,9 @@ function t_voxelize()
 
     v = mio.voxelize(cube, 'resolution', [4 4 4]);
     expect_equal(v.num_occupied, 64);
-    expect_equal(v.dims, [4; 4; 4]);
+    expect_equal(v.dims, [4 4 4]);
     expect_equal(v.spacing(1), 0.25);
-    expect_equal(size(v.origin), [3, 1]);
+    expect_equal(size(v.origin), [1, 3]);
 
     inside = mio.voxelize(cube, 'resolution', [5 5 5], ...
         'bounds', [-0.5 -0.5 -0.5 1.5 1.5 1.5], 'fill', 'inside', 'watertight_check', 'off');
@@ -406,7 +406,7 @@ function t_voxelize()
     expect_equal(tree.dimension, 3);
     assert(tree.num_leaves > 0);
     expect_equal(tree.finest_level, 3);
-    expect_equal(size(tree.origin), [3, 1]);
+    expect_equal(size(tree.origin), [1, 3]);
     expect_error(@() mio.octree(cube, 'balance', 'diagonal'), 'balance');
     expect_error(@() mio.octree(cube, 'transition', 'wedges'), 'transition');
     templ = mio.octree(cube, 'max_level', 3, 'bounds', [-0.5 -0.5 -0.5 1.5 1.5 1.5], ...
@@ -418,7 +418,7 @@ function t_voxelize()
     % An unknown fill fails by name rather than silently defaulting.
     expect_error(@() mio.voxelize(cube, 'resolution', [2 2 2], 'fill', 'solid'), 'fill');
     flat = mio.voxelize(cube, 'resolution', [4 4 0], 'plane', 'xy');
-    expect_equal(flat.dims, [4; 4; 1]);
+    expect_equal(flat.dims, [4 4 1]);
     expect_error(@() mio.voxelize(cube, 'resolution', [4 4 0], 'plane', 'uv'), 'plane');
     expect_error(@() mio.voxelize(cube, 'resolution', [4 4]), 'resolution');
 end
@@ -433,8 +433,8 @@ function t_octree_mesh()
     expect_equal(tets.num_inverted, 0);
     assert(iscell(tets.warnings));
     expect_equal(numel(tets.warnings), tets.num_warnings);
-    expect_equal(size(tets.origin), [3, 1]);
-    expect_equal(size(tets.root_cells), [3, 1]);
+    expect_equal(size(tets.origin), [1, 3]);
+    expect_equal(size(tets.root_cells), [1, 3]);
     assert(islogical(tets.guarantee_applies));
     cells = mio.octree_mesh(cube, 'output', 'castellated', 'max_size', 0.5, 'min_size', 0.125);
     expect_equal(cells.output, 'castellated');
@@ -490,7 +490,7 @@ function t_compute_sdf()
     cube = cube_surface();
 
     sdf = mio.compute_sdf(cube, 'resolution', [4 4 4], 'watertight_check', 'off');
-    expect_equal(sdf.dims, [4; 4; 4]);
+    expect_equal(sdf.dims, [4 4 4]);
     expect_equal(sdf.max_depth, 0);
     assert(any(strcmp('sdf:distance', mio.point_data_names(sdf.mesh))));
     info = mio.cell_block_info(sdf.mesh, 1);

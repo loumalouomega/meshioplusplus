@@ -150,7 +150,26 @@ These follow the R binding exactly, apart from the layout rules above:
 
 ## Software rendering
 
-`mio.render(mesh, ...)` rasterises a mesh with the core's software renderer and returns the frame as an `H x W x 4` `uint8` RGBA array, the first row being the top of the image. `image(frame(:, :, 1:3))` shows it, and `imwrite(frame(:, :, 1:3), 'view.png', 'Alpha', frame(:, :, 4))` saves it. `mio.render_png` and `mio.write_snapshot` write PNG files directly, and `mio.render_text` returns terminal art. See [terminal rendering](/tui) for every option.
+`f = mio.render(mesh, ...)` rasterises a mesh with the core's software renderer. Every option is a name/value pair named after its `mio_render_opts` field, exactly as in R. The frame is a struct:
+
+- `f.rgba` is an `H x W x 4` `uint8` array with straight alpha. Row 1 is the top of the picture and column 1 its left edge, so `image(f.rgba(:, :, 1:3))` shows it upright and `imwrite(f.rgba(:, :, 1:3), 'view.png', 'Alpha', f.rgba(:, :, 4))` saves it.
+- `f.cell_ids` is `H x W` in the same orientation, holding **1-based** cell ids with `0` where no cell is drawn. R returns 0-based ids, with `-1` for none.
+- `f.range` is `[vmin vmax]`, or `[]` when no field is mapped.
+- `f.notes` is an `n x 1` cellstr.
+
+`mio.frame_array(f)` is `double(f.rgba) / 255`. `mio.render_png` returns the encoded PNG as a `uint8` column, `mio.write_snapshot` writes a file, and `mio.render_text` returns terminal art as a char row (UTF-8 decoded). See [terminal rendering](/tui) for every option.
+
+## Where the shapes differ from R
+
+Lists follow one rule. A named list becomes a 1x1 struct. A list of same-shaped records (regions, partitions, data_info entries) becomes an `n x 1` struct array. An unnamed list becomes an `n x 1` cell, and a character vector an `n x 1` cellstr. An R data frame becomes a struct of `n x 1` columns. The few other differences:
+
+- `[pieces, keys] = mio.split(m, ...)` returns an `n x 1` cell of meshes and an `n x 1` cellstr of keys, where R returns a named list.
+- A single coordinate (an origin, a spacing, a bbox corner, a centroid, a worst point) is a `1 x 3` row, like one row of `mio.points`. Statistics triples (min, mean, max) are `3 x 1` columns.
+- Warning texts that R returns as one string with newlines come back as an `n x 1` cellstr.
+- `mio.line` names R's `end` option `'stop'`, because `end` is reserved.
+- Index arguments (`frozen` nodes, `sources`, refined `cells`) must be positive integers. A `0` or a fraction raises "is 1-based here", where R would pass it on to the library.
+
+Octave prints `warning: function .../+mio/diff.m shadows a built-in function` (and the same for `merge` and `pipe`) when the package is added to the path. Package functions cannot shadow anything, so the built-in `diff`, `merge` and `pipe` keep working. `warning('off', 'Octave:shadowed-function')` silences the message.
 
 ## Tests
 

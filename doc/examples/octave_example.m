@@ -3,7 +3,7 @@
 %
 % Run with the binding on the path and the C library on the loader path, e.g.
 %   LD_LIBRARY_PATH=/opt/meshioplusplus/lib octave --eval ...
-%     "addpath('bindings/octave/meshioplusplus/inst'); run('doc/examples/octave_example.m')"
+%     "addpath('<repo>/bindings/octave/meshioplusplus/inst'); run('<repo>/doc/examples/octave_example.m')"
 
 fprintf('meshio++ %s (backend: %s)\n', mio.version(), mio.mesh_backend());
 

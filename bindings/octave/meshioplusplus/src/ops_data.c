@@ -408,14 +408,16 @@ static mxArray *od_quality_struct(const mio_surface_quality *q) {
     return mio_o_struct(5, names, values);
 }
 
-static mxArray *od_column3(const double *v) {
-    mxArray *out = mio_o_column(3);
+/* A length-3 coordinate result (origin, spacing, dims) is a 1 x 3 row, the
+ * shape of one point -- the convention every port shares. */
+static mxArray *od_row3(const double *v) {
+    mxArray *out = mio_o_matrix(1, 3);
     memcpy(mxGetPr(out), v, 3 * sizeof(double));
     return out;
 }
 
-static mxArray *od_column3_i64(const int64_t *v) {
-    mxArray *out = mio_o_column(3);
+static mxArray *od_row3_i64(const int64_t *v) {
+    mxArray *out = mio_o_matrix(1, 3);
     for (int i = 0; i < 3; ++i) mxGetPr(out)[i] = (double)v[i];
     return out;
 }
@@ -571,8 +573,8 @@ static mxArray *O_mio_voxelize(const mxArray **a) {
     if (out == NULL) mio_o_fail("voxelize");
 
     const char *names[] = {"mesh", "dims", "origin", "spacing", "num_occupied"};
-    mxArray *values[] = {mio_o_wrap_mesh(out), od_column3_i64(cdims), od_column3(origin),
-                         od_column3(spacing), mio_o_scalar((double)occupied)};
+    mxArray *values[] = {mio_o_wrap_mesh(out), od_row3_i64(cdims), od_row3(origin),
+                         od_row3(spacing), mio_o_scalar((double)occupied)};
     return mio_o_struct(5, names, values);
 }
 
@@ -627,7 +629,7 @@ static mxArray *O_mio_octree(const mxArray **a) {
                          mio_o_scalar((double)report.num_leaves),
                          mio_o_scalar((double)report.num_hanging),
                          mio_o_scalar((double)report.finest_level),
-                         od_column3(report.origin),
+                         od_row3(report.origin),
                          mio_o_scalar(report.root_size),
                          mio_o_scalar((double)report.num_snapped),
                          mio_o_scalar((double)report.num_refused)};
@@ -735,9 +737,9 @@ static mxArray *O_mio_octree_mesh(const mxArray **a) {
     OD_SET("mesh", mo);
     OD_SET("output", mio_o_str(output_name));
     OD_SET("guarantee_applies", mio_o_logical(report.guarantee_applies != 0));
-    OD_SET("origin", od_column3(report.origin));
+    OD_SET("origin", od_row3(report.origin));
     OD_NUM(root_size);
-    OD_SET("root_cells", od_column3_i64(report.root_cells));
+    OD_SET("root_cells", od_row3_i64(report.root_cells));
     OD_NUM(max_level);
     OD_NUM(finest_level);
     OD_NUM(surface_level);
@@ -819,8 +821,8 @@ static mxArray *O_mio_compute_sdf(const mxArray **a) {
 
     const char *names[] = {"mesh",      "dims",       "origin", "spacing",
                            "max_depth", "num_banded", "quality"};
-    mxArray *values[] = {mio_o_wrap_mesh(out),         od_column3_i64(cdims),
-                         od_column3(origin),           od_column3(spacing),
+    mxArray *values[] = {mio_o_wrap_mesh(out),         od_row3_i64(cdims),
+                         od_row3(origin),           od_row3(spacing),
                          mio_o_scalar((double)depth),  mio_o_scalar((double)banded),
                          od_quality_struct(&q)};
     return mio_o_struct(7, names, values);

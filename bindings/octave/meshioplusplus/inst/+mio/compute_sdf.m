@@ -25,7 +25,7 @@ function r = compute_sdf(mesh, varargin)
 %     'band'              clamp distances beyond this; 0 is the full field (0)
 %     'watertight_check'  'off', 'warn' or 'error' ('warn')
 %   R is a struct: mesh (carrying sdf:distance), dims, origin and spacing
-%   (3 x 1 columns), max_depth, num_banded and quality (see
+%   (1 x 3 rows), max_depth, num_banded and quality (see
 %   mio.surface_watertight_check).
 
     o = mio.internal.opts(varargin, {'structure', 'voxel', 'resolution', [], 'cell_size', 0, ...

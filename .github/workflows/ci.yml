@@ -2618,7 +2618,8 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/inst/lib
         run: |
-          octave --no-gui --eval "addpath('bindings/octave/meshioplusplus/inst'); run('doc/examples/octave_example.m')"
+          # run() changes into the script's folder: the path must be absolute.
+          octave --no-gui --eval "addpath('$PWD/bindings/octave/meshioplusplus/inst'); run('$PWD/doc/examples/octave_example.m')"
 
       # The build must explain how to install the library rather than failing
       # with a bare compiler error.

@@ -34,7 +34,7 @@ function r = octree(mesh, varargin)
 %     'plane'                'auto', 'xy', 'xz' or 'yz': the plane of a 2-D
 %                            skin ('auto')
 %   R is a struct: mesh, dimension, num_leaves, num_hanging, finest_level,
-%   origin (3 x 1), root_size, num_snapped and num_refused.
+%   origin (1 x 3), root_size, num_snapped and num_refused.
 
     o = mio.internal.opts(varargin, {'root_cells', [], 'min_level', 0, 'max_level', 4, ...
         'bounds', [], 'padding', 0, 'padding_relative', 0, 'dimension', 0, ...
