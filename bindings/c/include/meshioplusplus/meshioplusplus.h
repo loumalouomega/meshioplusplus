@@ -3284,7 +3284,11 @@ typedef struct mio_octree_mesh_report {
     /** Winding numbers flooded in deep inside a closed skin, not evaluated
      *  (from the reserved tail; the struct is still 392 bytes). */
     int64_t num_winding_skipped;
-    int64_t reserved[7]; /**< zeroed */
+    /** Notches between consecutive feature-chain nodes filled with tetrahedra,
+     *  and left open (from the reserved tail; the struct is still 392 bytes). */
+    int64_t num_gaps_filled;
+    int64_t num_gaps_skipped;
+    int64_t reserved[5]; /**< zeroed */
 } mio_octree_mesh_report;
 
 /** Initialize octree_mesh options to their defaults. */

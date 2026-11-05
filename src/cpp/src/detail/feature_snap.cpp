@@ -42,6 +42,9 @@ namespace {
 
 constexpr double kFeatsnapPi = 3.14159265358979323846;
 constexpr double kFeatsnapFloorDeg = 2.0;
+// Lower floor for the nodes of a chain: its last step onto the edge can leave a
+// sliver beside a free interior node, which the optimization repairs.
+constexpr double kFeatsnapChainFloorDeg = 0.1;
 
 double featsnap_volume(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
     return triple_product(vec3_sub(rB, rA), vec3_sub(rC, rA), vec3_sub(rD, rA)) / 6.0;
@@ -282,15 +285,18 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         }
         return true;
     };
-    auto try_move = [&](std::int64_t V, const Vec3& rTarget) {
+    auto try_move = [&](std::int64_t V, const Vec3& rTarget, double Floor) {
         bool positive = true;
         const double before = min_dihedral(V, rPoints[static_cast<std::size_t>(V)], positive);
         double after = min_dihedral(V, rTarget, positive);
-        if (!positive) {
-            // Make room: move the free interior nodes of the tetrahedra the
-            // move would invert to the centroid of their stars.
+        // Blocked if the target inverts a guarded tetrahedron, or drops the
+        // dihedral below the lower of its old value and the floor.
+        auto blocked = [&]() { return !positive || after < std::min(before, Floor); };
+        if (blocked()) {
+            // Make room: move the free interior nodes of the tetrahedra around V
+            // to the centroid of their stars.
             std::vector<std::pair<std::int64_t, Vec3>> undo;
-            for (int pass = 0; pass < 2 && !positive; ++pass) {
+            for (int pass = 0; pass < 2 && blocked(); ++pass) {
                 for (std::int64_t t : inc[static_cast<std::size_t>(V)])
                     for (std::int64_t u : rTets[static_cast<std::size_t>(t)]) {
                         const auto ui = static_cast<std::size_t>(u);
@@ -316,13 +322,11 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                 positive = true;
                 after = min_dihedral(V, rTarget, positive);
             }
-            if (!positive || after < std::min(before, kFeatsnapFloorDeg)) {
+            if (blocked()) {
                 for (auto it = undo.rbegin(); it != undo.rend(); ++it)
                     rPoints[static_cast<std::size_t>(it->first)] = it->second;
                 return false;
             }
-        } else if (after < std::min(before, kFeatsnapFloorDeg)) {
-            return false;
         }
         rPoints[static_cast<std::size_t>(V)] = rTarget;
         ++report.mNumMoved;
@@ -330,10 +334,10 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
     };
     // A move in four steps, each making room around it as it goes; a refused
     // step keeps the steps before it.
-    auto move_by_steps = [&](std::int64_t V, const Vec3& rTarget) {
+    auto move_by_steps = [&](std::int64_t V, const Vec3& rTarget, double Floor) {
         const Vec3 at = rPoints[static_cast<std::size_t>(V)];
         for (int k = 1; k <= 4; ++k)
-            if (!try_move(V, vec3_add(at, vec3_scale(vec3_sub(rTarget, at), 0.25 * k))))
+            if (!try_move(V, vec3_add(at, vec3_scale(vec3_sub(rTarget, at), 0.25 * k)), Floor))
                 return false;
         return true;
     };
@@ -357,7 +361,7 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         std::sort(cand.begin(), cand.end());
         for (const auto& [d, v] : cand) {
             const Vec3 was = rPoints[static_cast<std::size_t>(v)];
-            if (!move_by_steps(v, cp)) {
+            if (!move_by_steps(v, cp, kFeatsnapFloorDeg)) {
                 rPoints[static_cast<std::size_t>(v)] = was;
                 continue;
             }
@@ -456,26 +460,90 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                 even = true;
             last = arc[i];
         }
-        if (even)
-            for (std::size_t i = 0; i < path.size(); ++i)
+        if (even) {
+            for (std::size_t i = 0; i < path.size(); ++i) {
                 arc[i] = total * static_cast<double>(i + 1) / static_cast<double>(path.size() + 1);
+            }
+        }
+        // The nodes advance together in quarter steps, so neighbours do not hold each other back;
+        // a refused step is tried again at the next
+        std::vector<Vec3> start(path.size());
+        std::vector<Vec3> target(path.size());
+        std::vector<std::uint8_t> arrived(path.size(), 0);
+        for (std::size_t i = 0; i < path.size(); ++i) {
+            start[i] = rPoints[static_cast<std::size_t>(path[i])];
+            target[i] = featsnap_at_arc(rSkinPoints, chain, arc[i]);
+        }
+        for (int k = 1; k <= 4; ++k)
+            for (std::size_t i = 0; i < path.size(); ++i)
+                arrived[i] = try_move(
+                    path[i],
+                    vec3_add(start[i], vec3_scale(vec3_sub(target[i], start[i]), 0.25 * k)),
+                    kFeatsnapChainFloorDeg);
+        // A node held back by a free boundary neighbour lying between it and its target gives the
+        // place to that neighbour, and so on along the column
+        const auto nearer_free = [&](std::int64_t U, const Vec3& rTarget) {
+            std::vector<std::pair<double, std::int64_t>> nearer;
+            const double d_now = vec3_norm(vec3_sub(rPoints[static_cast<std::size_t>(U)], rTarget));
+            for (std::int64_t u : badj[static_cast<std::size_t>(U)]) {
+                const double d_u =
+                    vec3_norm(vec3_sub(rPoints[static_cast<std::size_t>(u)], rTarget));
+                if (!rPinned[static_cast<std::size_t>(u)] &&
+                    std::find(path.begin(), path.end(), u) == path.end() && d_u < d_now)
+                    nearer.emplace_back(d_u, u);
+            }
+            std::sort(nearer.begin(), nearer.end());
+            return nearer;
+        };
+        const std::function<std::int64_t(std::int64_t, const Vec3&, int)> take_place =
+            [&](std::int64_t U, const Vec3& rTarget, int Depth) -> std::int64_t {
+            const Vec3 was = rPoints[static_cast<std::size_t>(U)];
+            if (move_by_steps(U, rTarget, kFeatsnapChainFloorDeg))
+                return U;
+            rPoints[static_cast<std::size_t>(U)] = was;
+            if (Depth == 0)
+                return -1;
+            for (const auto& cand : nearer_free(U, rTarget)) {
+                const std::int64_t taken = take_place(cand.second, rTarget, Depth - 1);
+                if (taken >= 0)
+                    return taken;
+            }
+            return -1;
+        };
+        for (std::size_t i = 0; i < path.size(); ++i) {
+            if (arrived[i])
+                continue;
+            for (const auto& cand : nearer_free(path[i], target[i])) {
+                const std::int64_t taken = take_place(cand.second, target[i], 3);
+                if (taken >= 0) {
+                    path[i] = taken;
+                    arrived[i] = 1;
+                    break;
+                }
+            }
+        }
         bool all = true;
         std::int64_t refused = 0;
         for (std::size_t i = 0; i < path.size(); ++i) {
-            const std::int64_t v = path[i];
-            const Vec3 target = featsnap_at_arc(rSkinPoints, chain, arc[i]);
-            const Vec3 at = rPoints[static_cast<std::size_t>(v)];
-            (void)at;
-            const bool moved = move_by_steps(v, target);
-            all = all && moved;
-            refused += !moved;
-            rPinned[static_cast<std::size_t>(v)] = 1;
-            rFeature[static_cast<std::size_t>(v)] = 2;
+            all = all && arrived[i];
+            refused += !arrived[i];
+            rPinned[static_cast<std::size_t>(path[i])] = 1;
+            rFeature[static_cast<std::size_t>(path[i])] = 2;
         }
         if (!all) {
             log::debug("feature_snap: a chain of {} points ({} nodes) kept {} off it", chain.size(),
                        path.size(), refused);
             ++report.mNumChainsMissed;
+            continue;
+        }
+        // The chain nodes the boundary edges left apart.
+        std::int64_t previous = from;
+        for (std::size_t i = 0; i <= path.size(); ++i) {
+            const std::int64_t next = i < path.size() ? path[i] : to;
+            const auto& adj = badj[static_cast<std::size_t>(previous)];
+            if (previous != next && !std::binary_search(adj.begin(), adj.end(), next))
+                report.mGaps.push_back({previous, next});
+            previous = next;
         }
     }
     return report;

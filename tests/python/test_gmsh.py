@@ -910,7 +910,10 @@ def test_reference_file_with_entities(
     helpers.write_read(tmp_path, writer, meshioplusplus.gmsh.read, mesh, 1.0e-15)
 
 
-_ENTITY_FILES = ["tests/python/meshes/msh/insulated-4.1.msh", "example/example.msh"]
+_ENTITY_FILES = [
+    "tests/python/meshes/msh/insulated-4.1.msh",
+    "example/data/example.msh",
+]
 
 
 def _assert_same_mesh(a, b, compare_sets=True):
@@ -1006,7 +1009,7 @@ def test_a_41_file_with_no_physical_groups_has_no_physical_cell_data():
     from meshioplusplus import _core
 
     root = pathlib.Path(__file__).resolve().parents[2]
-    mesh = _core.gmsh_read(str(root / "example/example.msh"))
+    mesh = _core.gmsh_read(str(root / "example/data/example.msh"))
     assert "gmsh:physical" not in mesh.cell_data
     assert mesh.regions == []
     assert "gmsh:geometrical" in mesh.cell_data

@@ -490,7 +490,7 @@ TEST(Gmsh, EntitiesAscii) {
 }
 
 TEST(Gmsh, EntitiesBinary) {
-    // Both size_t widths: gmsh writes 4 as readily as 8 (example/example.msh
+    // Both size_t widths: gmsh writes 4 as readily as 8 (example/data/example.msh
     // is a `4.1 0 4` file), and assuming 8 silently misreads every count.
     for (int data_size : {4, 8}) {
         const std::string path = gmsh_write_fixture_binary(data_size);

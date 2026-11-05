@@ -278,6 +278,8 @@ struct OctreeMeshResult {
     std::int64_t mNumFeatureMoves = 0;              ///< Boundary nodes moved onto features.
     std::int64_t mNumOptimizedMoves = 0;            ///< Nodes the optimisation moved.
     std::int64_t mNumFlips = 0;                     ///< Flips the optimisation kept.
+    std::int64_t mNumGapsFilled = 0;                ///< Chain gaps filled with tetrahedra.
+    std::int64_t mNumGapsSkipped = 0;               ///< Chain gaps left open.
     /// The Labelle-Shewchuk dihedral bound applies to every tetrahedron:
     /// `Uniform` grading, nothing snapped to features, nothing refused.
     bool mGuaranteeApplies = false;

@@ -5260,6 +5260,10 @@ export interface OctreeMeshResult {
   numWindingRechecks: number;
   /** Winding numbers flooded in deep inside a closed skin, not evaluated. */
   numWindingSkipped: number;
+  /** Notches between consecutive feature-chain nodes filled with tetrahedra. */
+  numGapsFilled: number;
+  /** Notches left open. */
+  numGapsSkipped: number;
   /** Seconds spent in each stage, in order, as `[stage, seconds]` pairs. */
   timings: Array<[string, number]>;
   /** Everything that did not meet its target, in order. */

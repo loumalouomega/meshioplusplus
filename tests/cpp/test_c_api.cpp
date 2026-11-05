@@ -5486,6 +5486,9 @@ TEST(CApi, OctreeMeshTetrahedraAndCastellatedCells) {
     EXPECT_EQ(report.num_corners, 8);
     EXPECT_EQ(report.num_corners_snapped, 8);
     EXPECT_EQ(report.num_boundary_edges_open, 0);
+    // The chain-gap counts come from the reserved tail; the box has no notch.
+    EXPECT_GE(report.num_gaps_filled, 0);
+    EXPECT_GE(report.num_gaps_skipped, 0);
     std::int64_t nc = 0, npc = 0;
     ASSERT_EQ(mio_mesh_cell_block_info(tets, 0, &nc, &npc, nullptr), MIO_OK);
     EXPECT_EQ(nc, report.num_tetrahedra);
@@ -5501,6 +5504,7 @@ TEST(CApi, OctreeMeshTetrahedraAndCastellatedCells) {
     ASSERT_NE(cells, nullptr) << mio_last_error();
     EXPECT_GT(report.num_hexahedra, 0);
     EXPECT_GT(report.num_surrogate_faces, 0);
+    EXPECT_EQ(report.num_gaps_filled + report.num_gaps_skipped, 0);
     mio_mesh_free(cells);
 
     opts.output = MIO_OCTREE_MESH_HEX;

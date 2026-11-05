@@ -25,7 +25,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -229,6 +231,7 @@ void octree_mesh_snap_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
     rR.mNumFeatureChains = rep.mNumChains;
     rR.mNumFeatureChainsMissed = rep.mNumChainsMissed;
     rR.mNumFeatureMoves = rep.mNumMoved;
+    rTets.mChainGaps = rep.mGaps;
     for (std::size_t p = 0; p < claimed.size(); ++p)
         if (claimed[p])
             rTets.mOnSkin[p] = 1;
@@ -241,6 +244,230 @@ void octree_mesh_snap_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
         octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rep.mNumChainsMissed) +
                                  " of " + std::to_string(rep.mNumChains) +
                                  " feature chains not recovered");
+}
+
+void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
+                                 OctreeMeshResult& rR, OctreeMeshTets& rTets) {
+    // The pocket of a notch holds outside tetrahedra, which would overlap the
+    // filling if they were kept.
+    if (rTets.mChainGaps.empty() || rO.mKeepOutside)
+        return;
+    using Index = std::int64_t;
+    // The boundary triangles of the inside: the owner tetrahedron and the
+    // point opposite the face.
+    struct BoundaryTriangle {
+        std::array<Index, 3> mNodes;
+        std::size_t mTet;
+        Index mOpposite;
+    };
+    std::vector<BoundaryTriangle> triangles;
+    std::unordered_map<Index, std::vector<std::size_t>> incident;
+    const auto build_boundary = [&]() {
+        triangles.clear();
+        incident.clear();
+        std::vector<std::pair<std::array<Index, 3>, std::size_t>> faces;
+        for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+            if (rTets.mMaterial[t] <= 0)
+                continue;
+            for (const auto& f : kOctmtFacet) {
+                std::array<Index, 3> key{rTets.mTets[t][f[0]], rTets.mTets[t][f[1]],
+                                         rTets.mTets[t][f[2]]};
+                std::sort(key.begin(), key.end());
+                faces.emplace_back(key, t);
+            }
+        }
+        std::sort(faces.begin(), faces.end());
+        for (std::size_t i = 0; i < faces.size();) {
+            std::size_t j = i;
+            while (j < faces.size() && faces[j].first == faces[i].first)
+                ++j;
+            if (j - i == 1) {
+                const std::size_t t = faces[i].second;
+                // The point of the tetrahedron which is not on the face.
+                Index opposite = -1;
+                for (const Index v : rTets.mTets[t])
+                    if (v != faces[i].first[0] && v != faces[i].first[1] &&
+                        v != faces[i].first[2])
+                        opposite = v;
+                for (const Index v : faces[i].first)
+                    incident[v].push_back(triangles.size());
+                triangles.push_back({faces[i].first, t, opposite});
+            }
+            i = j;
+        }
+    };
+    const double volume_floor = 1e-12 * std::pow(rS.mFrame.mMinSize, 3.0);
+    const auto point = [&](const Index I) -> const Vec3& {
+        return rTets.mPoints[static_cast<std::size_t>(I)];
+    };
+    const auto volume = [&](const Index A, const Index B, const Index C, const Index D) {
+        return vec3_dot(vec3_cross(vec3_sub(point(B), point(A)), vec3_sub(point(C), point(A))),
+                        vec3_sub(point(D), point(A))) /
+               6.0;
+    };
+    const auto is_chain = [&](const Index I) {
+        return static_cast<std::size_t>(I) < rTets.mFeature.size() &&
+               rTets.mFeature[static_cast<std::size_t>(I)] != 0;
+    };
+    // The tetrahedra filling the pyramid over the path from the apex, or none
+    // when the fan does not make a valid pocket.
+    const auto fill = [&](const Index C, const std::vector<Index>& rPath,
+                          const std::vector<std::size_t>& rFan) {
+        std::vector<std::array<Index, 4>> tets;
+        const std::size_t k = rPath.size() - 1;
+        const Index a = rPath.front();
+        const Index b = rPath.back();
+        // The polygon is planar: its points lie on the plane through the chain
+        // line and the point furthest from it.
+        const Vec3 line = vec3_sub(point(b), point(a));
+        Vec3 normal{0.0, 0.0, 0.0};
+        for (const Index p : rPath) {
+            const Vec3 n = vec3_cross(line, vec3_sub(point(p), point(a)));
+            if (vec3_norm(n) > vec3_norm(normal))
+                normal = n;
+        }
+        const double normal_norm = vec3_norm(normal);
+        const double tolerance = 1e-6 * octree_mesh_local_size(rS, point(a));
+        if (normal_norm <= 0.0)
+            return tets;
+        for (const Index p : rPath)
+            if (std::abs(vec3_dot(normal, vec3_sub(point(p), point(a)))) / normal_norm > tolerance)
+                return tets;
+        // One material over the patch.
+        for (const std::size_t tri : rFan)
+            if (rTets.mMaterial[triangles[tri].mTet] !=
+                rTets.mMaterial[triangles[rFan.front()].mTet])
+                return tets;
+        // Fan of the cap from the chain node a: all tetrahedra on one side,
+        // none flat.
+        double sign = 0.0;
+        for (std::size_t i = 1; i < k; ++i) {
+            const double v = volume(C, a, rPath[i], rPath[i + 1]);
+            if (std::abs(v) <= volume_floor || (sign != 0.0 && v * sign < 0.0))
+                return std::vector<std::array<Index, 4>>{};
+            sign = v;
+            tets.push_back(v > 0.0 ? std::array<Index, 4>{C, a, rPath[i], rPath[i + 1]}
+                                   : std::array<Index, 4>{C, a, rPath[i + 1], rPath[i]});
+        }
+        // Each patch triangle must border a new tetrahedron on the opposite
+        // side from its owner.
+        for (std::size_t j = 0; j < k; ++j) {
+            const std::size_t i = std::min(std::max<std::size_t>(j, 1), k - 1);
+            Index off = -1;
+            for (const Index v : {a, rPath[i], rPath[i + 1]})
+                if (v != rPath[j] && v != rPath[j + 1])
+                    off = v;
+            const double owner = volume(C, rPath[j], rPath[j + 1], triangles[rFan[j]].mOpposite);
+            const double added = volume(C, rPath[j], rPath[j + 1], off);
+            if (owner * added >= 0.0)
+                return std::vector<std::array<Index, 4>>{};
+        }
+        return tets;
+    };
+    build_boundary();
+    for (const auto& gap : rTets.mChainGaps) {
+        const Index a = gap[0];
+        const Index b = gap[1];
+        // Nodes joined to a node by a boundary edge.
+        const auto neighbours = [&](const Index I) {
+            std::vector<Index> result;
+            const auto it = incident.find(I);
+            if (it != incident.end())
+                for (const std::size_t tri : it->second)
+                    for (const Index v : triangles[tri].mNodes)
+                        if (v != I)
+                            result.push_back(v);
+            std::sort(result.begin(), result.end());
+            result.erase(std::unique(result.begin(), result.end()), result.end());
+            return result;
+        };
+        const std::vector<Index> near_a = neighbours(a);
+        const std::vector<Index> near_b = neighbours(b);
+        // A gap closed by an earlier fill has a boundary edge now.
+        bool filled = std::binary_search(near_a.begin(), near_a.end(), b);
+        std::vector<Index> apexes;
+        std::set_intersection(near_a.begin(), near_a.end(), near_b.begin(), near_b.end(),
+                              std::back_inserter(apexes));
+        for (std::size_t n = 0; n < apexes.size() && !filled; ++n) {
+            const Index c = apexes[n];
+            // The link of the apex: per node, the nodes beside it on the fan,
+            // with the triangle of each step.
+            std::unordered_map<Index, std::vector<std::pair<Index, std::size_t>>> link;
+            for (const std::size_t tri : incident[c]) {
+                std::array<Index, 2> others{};
+                std::size_t m = 0;
+                for (const Index v : triangles[tri].mNodes)
+                    if (v != c)
+                        others[m++] = v;
+                link[others[0]].push_back({others[1], tri});
+                link[others[1]].push_back({others[0], tri});
+            }
+            // The two arcs of the fan from a to b, the shorter first.
+            std::vector<std::pair<std::vector<Index>, std::vector<std::size_t>>> arcs;
+            const auto la = link.find(a);
+            if (la == link.end() || la->second.size() != 2)
+                continue;
+            for (const auto& [first, first_tri] : la->second) {
+                std::vector<Index> path{a};
+                std::vector<std::size_t> fan;
+                Index previous = a;
+                Index current = first;
+                std::size_t tri = first_tri;
+                bool closed = false;
+                for (std::size_t step = 0; step < 64; ++step) {
+                    path.push_back(current);
+                    fan.push_back(tri);
+                    if (current == b) {
+                        closed = true;
+                        break;
+                    }
+                    const auto lc = link.find(current);
+                    if (current == a || is_chain(current) || lc == link.end() ||
+                        lc->second.size() != 2)
+                        break;
+                    const auto& next = lc->second[0].first == previous ? lc->second[1]
+                                                                       : lc->second[0];
+                    previous = current;
+                    current = next.first;
+                    tri = next.second;
+                }
+                if (closed)
+                    arcs.push_back({path, fan});
+            }
+            std::sort(arcs.begin(), arcs.end(), [](const auto& rA, const auto& rB) {
+                return rA.first.size() < rB.first.size();
+            });
+            for (const auto& [path, fan] : arcs) {
+                std::vector<std::array<Index, 4>> tets = fill(c, path, fan);
+                if (tets.empty()) {
+                    // The fan from the other chain node may avoid a flat tetrahedron.
+                    const std::vector<Index> reversed(path.rbegin(), path.rend());
+                    const std::vector<std::size_t> reversed_fan(fan.rbegin(), fan.rend());
+                    tets = fill(c, reversed, reversed_fan);
+                }
+                if (tets.empty())
+                    continue;
+                const std::size_t owner = triangles[fan.front()].mTet;
+                for (const auto& tet : tets) {
+                    rTets.mTets.push_back(tet);
+                    rTets.mMaterial.push_back(rTets.mMaterial[owner]);
+                    rTets.mCut.push_back(1);
+                    rTets.mLevel.push_back(rTets.mLevel[owner]);
+                    rTets.mShape.push_back(0);
+                }
+                filled = true;
+                build_boundary();
+                break;
+            }
+        }
+        if (filled)
+            ++rR.mNumGapsFilled;
+        else
+            ++rR.mNumGapsSkipped;
+    }
+    if (rR.mNumGapsSkipped > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumGapsSkipped) +
+                                 " gaps along feature chains not filled");
 }
 
 double octree_mesh_hausdorff_to_skin(const OctreeMeshSetup& rS, const std::vector<Vec3>& rPoints,

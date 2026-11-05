@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the TikZ mesh-icon for the meshio++ logo: the Stanford Bunny.
 
-Reads ``example/Bunny.stl`` ("Stanford Bunny -- Digitized!" by MakerBot,
+Reads ``example/data/Bunny.stl`` ("Stanford Bunny -- Digitized!" by MakerBot,
 CC-BY, https://www.thingiverse.com/thing:88208) with meshio++ itself,
 decimates it to a logo-friendly triangle count with PyVista, projects it
 through meshio++'s own 3D rendering machinery (`meshioplusplus._projection`
@@ -35,7 +35,7 @@ import meshioplusplus
 from meshioplusplus._projection import ISO_AZIMUTH, ISO_ELEVATION, project_surface
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-BUNNY = os.path.join(HERE, "..", "..", "example", "Bunny.stl")
+BUNNY = os.path.join(HERE, "..", "..", "example", "data", "Bunny.stl")
 OUT = os.path.join(HERE, "_mesh_icon.tex")
 
 # Palette (RGB 0-255): deep blue -> bright teal, as before.

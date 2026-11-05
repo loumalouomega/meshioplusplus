@@ -2,7 +2,7 @@
 
 Two inputs:
 
-* ``example_geometry()`` -- the bundled ``example/example.msh`` bracket reduced
+* ``example_geometry()`` -- the bundled ``example/data/example.msh`` bracket reduced
   to its portable geometry (surface triangles + solid tetrahedra).
 * ``synthetic_tet_grid(n)`` -- a numpy-generated structured tetrahedral mesh
   (a unit cube split into 6 tets per voxel), sized to make read/write timings
@@ -20,7 +20,7 @@ import os
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-EXAMPLE = os.path.normpath(os.path.join(HERE, "..", "example", "example.msh"))
+EXAMPLE = os.path.normpath(os.path.join(HERE, "..", "example", "data", "example.msh"))
 
 
 def example_geometry():

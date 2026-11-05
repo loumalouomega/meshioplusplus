@@ -3,7 +3,7 @@
 A headless run of the bridge, for checking an install end to end.
 
 ```sh
-blender --background --python example/blender/import_demo.py -- ../example.msh
+blender --background --python example/blender/import_demo.py -- ../data/example.msh
 ```
 
 It reads the bracket with meshio++, converts it to a `bpy.types.Mesh`, prints

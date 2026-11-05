@@ -651,6 +651,7 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
             clock.Lap(result, "features");
             detail::octree_mesh_optimize(*setup, rOptions, result, tets);
             clock.Lap(result, "optimize");
+            detail::octree_mesh_fill_chain_gaps(*setup, rOptions, result, tets);
             detail::octree_mesh_emit_tets(*setup, rOptions, result, tets);
             result.mGuaranteeApplies = rOptions.mSkinGrading == OctreeMeshSkinGrading::Uniform &&
                                        result.mNumWarpRefused == 0 &&

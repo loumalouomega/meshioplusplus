@@ -4727,6 +4727,8 @@ val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
             {"numFlips", r.mNumFlips},
             {"numWindingRechecks", r.mNumWindingRechecks},
             {"numWindingSkipped", r.mNumWindingSkipped},
+            {"numGapsFilled", r.mNumGapsFilled},
+            {"numGapsSkipped", r.mNumGapsSkipped},
         };
         for (const auto& [name, value] : counters)
             out.set(name, static_cast<double>(value));
