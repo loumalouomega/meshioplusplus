@@ -723,7 +723,7 @@ static mxArray *O_mio_octree_mesh(const mxArray **a) {
     const char *output_name =
         (report.output >= 0 && report.output <= 2) ? outputs[report.output] : "unknown";
 
-    enum { OD_OCTREE_MESH_N = 41 };
+    enum { OD_OCTREE_MESH_N = 43 };
     const char *names[OD_OCTREE_MESH_N];
     mxArray *values[OD_OCTREE_MESH_N];
     int k = 0;

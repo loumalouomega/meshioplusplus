@@ -3910,7 +3910,7 @@ SEXP R_mio_octree_mesh(SEXP mesh, SEXP output, SEXP conformity, SEXP skin_gradin
     const char *output_name =
         (report.output >= 0 && report.output <= 2) ? outputs[report.output] : "unknown";
 
-    enum { R_OCTREE_MESH_N = 41 };
+    enum { R_OCTREE_MESH_N = 43 };
     SEXP res = PROTECT(Rf_allocVector(VECSXP, R_OCTREE_MESH_N));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_OCTREE_MESH_N));
     int k = 0;
