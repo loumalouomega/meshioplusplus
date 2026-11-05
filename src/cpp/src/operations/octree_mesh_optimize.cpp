@@ -314,6 +314,7 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
     out.mPoints = rTets.mPoints;
     out.mOnSkin = rTets.mOnSkin;
     out.mFeature = rTets.mFeature;
+    out.mChainGaps = rTets.mChainGaps;
     out.mNumMaterials = rTets.mNumMaterials;
     const LinearOctree& tree = rS.mOctree.mTree;
     for (const auto& t : tets) {

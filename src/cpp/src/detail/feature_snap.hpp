@@ -77,6 +77,8 @@ struct FeatureSnapReport {
     std::int64_t mNumChains = 0;
     std::int64_t mNumChainsMissed = 0;
     std::int64_t mNumMoved = 0;  ///< boundary vertices moved
+    /// Pairs of consecutive nodes of a recovered chain that share no boundary edge.
+    std::vector<std::array<std::int64_t, 2>> mGaps;
 };
 
 /**

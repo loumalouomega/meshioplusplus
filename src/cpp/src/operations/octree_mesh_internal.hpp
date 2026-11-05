@@ -146,6 +146,8 @@ struct OctreeMeshTets {
     std::vector<std::uint8_t> mOnSkin;
     /// Per point, 1 on a feature corner, 2 on a feature chain.
     std::vector<std::uint8_t> mFeature;
+    /// Pairs of consecutive feature chain points that share no boundary edge.
+    std::vector<std::array<std::int64_t, 2>> mChainGaps;
     std::int32_t mNumMaterials = 2;
 };
 
@@ -161,6 +163,14 @@ void octree_mesh_snap_features(OctreeMeshSetup& rSetup, const OctreeMeshOptions&
 /// flips) under the dihedral-floor guard.
 void octree_mesh_optimize(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
                           OctreeMeshResult& rResult, OctreeMeshTets& rTets);
+
+/// Fill with tetrahedra the notches the feature snap left on its chains: the
+/// pyramid from an apex over the planar polygon the boundary fan walks between
+/// two consecutive chain nodes that share no boundary edge. A gap whose fan is
+/// not planar, not single-material or would invert a tetrahedron is skipped.
+/// Nothing is added when the output keeps the outside tetrahedra.
+void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
+                                 OctreeMeshResult& rResult, OctreeMeshTets& rTets);
 
 /// The two-sided distance between the triangles @p rFaces over @p rPoints
 /// (an output's boundary) and the skin.

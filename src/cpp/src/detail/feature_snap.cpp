@@ -534,6 +534,16 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
             log::debug("feature_snap: a chain of {} points ({} nodes) kept {} off it", chain.size(),
                        path.size(), refused);
             ++report.mNumChainsMissed;
+            continue;
+        }
+        // The chain nodes the boundary edges left apart.
+        std::int64_t previous = from;
+        for (std::size_t i = 0; i <= path.size(); ++i) {
+            const std::int64_t next = i < path.size() ? path[i] : to;
+            const auto& adj = badj[static_cast<std::size_t>(previous)];
+            if (previous != next && !std::binary_search(adj.begin(), adj.end(), next))
+                report.mGaps.push_back({previous, next});
+            previous = next;
         }
     }
     return report;
