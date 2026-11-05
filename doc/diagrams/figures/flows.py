@@ -1058,10 +1058,9 @@ def roadmap_map():
             "§5 performance",
             [
                 ("harness: gate, rows", "M"),
-                ("parallel backend, Linux wheels", "M"),
-                ("smaller facet records", "M"),
+                ("wheel runtimes: CI probe", "S"),
                 ("ragged rows across Python", "M"),
-                ("text I/O: snprintf_c, parallel", "M"),
+                ("text I/O: chunked parse, rest", "S"),
                 ("HDF5: appends, lock scope", "L"),
                 ("WASM copies · profile ODT", "S"),
                 ("Python layers · sequences", "M"),
