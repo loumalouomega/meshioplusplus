@@ -910,7 +910,10 @@ def test_reference_file_with_entities(
     helpers.write_read(tmp_path, writer, meshioplusplus.gmsh.read, mesh, 1.0e-15)
 
 
-_ENTITY_FILES = ["tests/python/meshes/msh/insulated-4.1.msh", "example/data/example.msh"]
+_ENTITY_FILES = [
+    "tests/python/meshes/msh/insulated-4.1.msh",
+    "example/data/example.msh",
+]
 
 
 def _assert_same_mesh(a, b, compare_sets=True):
