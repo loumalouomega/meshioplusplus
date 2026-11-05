@@ -1,6 +1,6 @@
 # Example notebooks
 
-Jupyter notebooks demonstrating meshio++'s Python bindings on the bundled [`example.msh`](https://github.com/loumalouomega/meshioplusplus/blob/main/example.msh) (a Gmsh 4.1 mesh of a mechanical bracket, ~52k nodes / ~298k elements), committed **with their outputs** so they render on GitHub with no setup — the links below go straight there. Source: [`example/python/`](https://github.com/loumalouomega/meshioplusplus/tree/main/example/python).
+Jupyter notebooks demonstrating meshio++'s Python bindings on the bundled [`example.msh`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/data/example.msh) (a Gmsh 4.1 mesh of a mechanical bracket, ~52k nodes / ~298k elements), committed **with their outputs** so they render on GitHub with no setup — the links below go straight there. Source: [`example/python/`](https://github.com/loumalouomega/meshioplusplus/tree/main/example/python).
 
 | Notebook | What it shows |
 |----------|---------------|

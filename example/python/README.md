@@ -1,7 +1,7 @@
 # Examples (Python)
 
 Jupyter notebooks demonstrating meshio++'s Python bindings on the bundled
-[`../example.msh`](../example.msh) (a Gmsh 4.1 mesh of a mechanical bracket,
+[`../data/example.msh`](../data/example.msh) (a Gmsh 4.1 mesh of a mechanical bracket,
 ~52k nodes / ~298k elements).
 
 | Notebook | What it shows |

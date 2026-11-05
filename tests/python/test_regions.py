@@ -192,7 +192,7 @@ def test_the_escape_hatch_keeps_non_index_cell_sets_verbatim():
 
 
 def test_a_real_gmsh_file_keeps_its_bounding_entities():
-    mesh = meshioplusplus.read("example/example.msh")
+    mesh = meshioplusplus.read("example/data/example.msh")
     assert "gmsh:bounding_entities" in mesh.cell_sets
     blocks = mesh.cell_sets["gmsh:bounding_entities"]
     assert len(blocks) == len(mesh.cells)

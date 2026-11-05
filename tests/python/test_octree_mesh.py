@@ -266,7 +266,7 @@ def test_hexahedral_cleaving_gives_the_tetrahedral_materials(grading):
     assert "octree_mesh:material" not in plain.cell_data
 
 
-_BUNNY = Path(__file__).resolve().parents[2] / "example" / "Bunny.stl"
+_BUNNY = Path(__file__).resolve().parents[2] / "example" / "data" / "Bunny.stl"
 
 
 @needs_core

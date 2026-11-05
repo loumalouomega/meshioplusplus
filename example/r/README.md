@@ -31,10 +31,10 @@ captures as an inline PNG, needing no extra package at all.
   use (`convert_cells`, `refine`, `smooth`, `interpolate`, `slice`, `isosurface`), mirroring the C++, Python
   and Julia notebooks' equivalents.
 
-## `example.vtu`, not `example/example.msh`
+## `example.vtu`, not `example/data/example.msh`
 
 The input here is [`example.vtu`](example.vtu), copied verbatim from [`../cpp/example.vtu`](../cpp/example.vtu)
-(both are Git-LFS-tracked, so this costs no meaningful repo size) rather than reading `example/example.msh`
+(both are Git-LFS-tracked, so this costs no meaningful repo size) rather than reading `example/data/example.msh`
 directly: this binding sits on the same **C++ reader** as the C++ notebooks, and Gmsh 4.1's `$Entities`
 section (present in the original file) was a gap there until v9.7.0. The C++ reader handles `$Entities`
 now, so the `.msh` would work; the `.vtu` is kept because these notebooks are committed with outputs. See

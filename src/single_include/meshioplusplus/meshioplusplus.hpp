@@ -143404,7 +143404,7 @@ struct GmshWriteEntity41 {
  * assigns one to every object needed to describe the geometry — but not quite:
  * a straight curve whose only nodes are its two endpoints has its nodes on the
  * *points*, so it owns none of its own while still carrying line elements
- * (`example/example.msh` has six such curves). Taking the union is what keeps
+ * (`example/data/example.msh` has six such curves). Taking the union is what keeps
  * their physical tags and bounding entities from being dropped; gmsh is happy
  * with an entity that has no `$Nodes` block.
  *

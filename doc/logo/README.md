@@ -1,8 +1,8 @@
 # meshio++ logo
 
-The current logo is built with **TikZ**: the **Stanford Bunny** mesh, read and rendered by meshio++ itself — `gen_logo_tikz.py` loads `example/Bunny.stl`, decimates it with PyVista, projects it through meshio++'s own 3D skin-rendering machinery (`meshioplusplus._projection`: orthographic isometric camera + painter's-algorithm depth sort, the same code that powers the SVG/TikZ writers for 3D meshes), and colours the triangles with the blue→teal gradient (a faux finite-element field), plus the `meshio++` wordmark.
+The current logo is built with **TikZ**: the **Stanford Bunny** mesh, read and rendered by meshio++ itself — `gen_logo_tikz.py` loads `example/data/Bunny.stl`, decimates it with PyVista, projects it through meshio++'s own 3D skin-rendering machinery (`meshioplusplus._projection`: orthographic isometric camera + painter's-algorithm depth sort, the same code that powers the SVG/TikZ writers for 3D meshes), and colours the triangles with the blue→teal gradient (a faux finite-element field), plus the `meshio++` wordmark.
 
-**Attribution**: the bunny mesh is ["Stanford Bunny -- Digitized!"](https://www.thingiverse.com/thing:88208) by MakerBot, licensed under the [Creative Commons - Attribution](https://creativecommons.org/licenses/by/3.0/) license (committed as `example/Bunny.stl`).
+**Attribution**: the bunny mesh is ["Stanford Bunny -- Digitized!"](https://www.thingiverse.com/thing:88208) by MakerBot, licensed under the [Creative Commons - Attribution](https://creativecommons.org/licenses/by/3.0/) license (committed as `example/data/Bunny.stl`).
 
 ## Regenerate
 

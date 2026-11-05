@@ -1,6 +1,6 @@
 """Headless Blender demo: read a mesh with meshio++ and inspect it in Blender.
 
-    blender --background --python example/blender/import_demo.py -- example/example.msh
+    blender --background --python example/blender/import_demo.py -- example/data/example.msh
 
 A script rather than a notebook, deliberately: the notebooks in ``example/`` are
 re-executed in CI, and ``bpy`` is a several-hundred-megabyte dependency pinned

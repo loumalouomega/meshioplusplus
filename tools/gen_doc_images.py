@@ -45,7 +45,7 @@ sys.path.insert(0, str(REPO / "src"))
 
 import meshioplusplus  # noqa: E402
 
-SAMPLE = REPO / "example" / "example.msh"
+SAMPLE = REPO / "example" / "data" / "example.msh"
 IMAGES = REPO / "doc" / "public" / "images"
 VIEWER = REPO / "doc" / "public" / "viewer"
 
@@ -258,7 +258,7 @@ TERMINAL_FIGURES = [
 
 def _bunny():
     """The Stanford bunny of ``example/``, with its height as a point field."""
-    mesh = meshioplusplus.read(REPO / "example" / "Bunny.stl")
+    mesh = meshioplusplus.read(REPO / "example" / "data" / "Bunny.stl")
     return meshioplusplus.Mesh(
         mesh.points, mesh.cells, point_data={"height": mesh.points[:, 2].copy()}
     )
@@ -277,7 +277,7 @@ def _bunny_flow():
 
 def _bunny_series(folder: pathlib.Path, steps: int = 4) -> list:
     """A short time series: a travelling wave over the bunny's height."""
-    mesh = meshioplusplus.read(REPO / "example" / "Bunny.stl")
+    mesh = meshioplusplus.read(REPO / "example" / "data" / "Bunny.stl")
     z = mesh.points[:, 2] / 100.0
     paths = []
     for k in range(steps):

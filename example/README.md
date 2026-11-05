@@ -1,6 +1,6 @@
 # Examples
 
-Jupyter notebooks demonstrating meshio++ on the bundled `example.msh` (a Gmsh
+Jupyter notebooks demonstrating meshio++ on the bundled `data/example.msh` (a Gmsh
 4.1 mesh of a mechanical bracket, ~52k nodes / ~298k elements), in two
 languages against the same geometry:
 
@@ -13,9 +13,9 @@ Each has its own three-notebook tour (read/visualize, convert/inspect,
 operations); see the READMEs in each subfolder for the per-notebook
 breakdown and how to re-run them.
 
-## Shared files (this folder)
+## Shared files (`data/`)
 
-`example.msh` is the bracket geometry both languages' notebooks read.
+The meshes live in [`data/`](data/). `example.msh` is the bracket geometry both languages' notebooks read.
 `example.stp` / `example.stp.geo` / `example.stp.mesh.json` are the CAD source
 and meshing options it was generated from.
 

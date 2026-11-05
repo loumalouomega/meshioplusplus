@@ -50,10 +50,10 @@ works around for the project's static doc figures. `03_mesh_operations.ipynb`
 computes a reusable `vizCorner` crop early and reuses (or re-derives, e.g.
 centred on a deformation rather than a domain corner) it throughout.
 
-## `example.vtu`, not `example/example.msh`
+## `example.vtu`, not `example/data/example.msh`
 
 The input here is [`example.vtu`](example.vtu), not the original
-`example/example.msh`. That was originally because Gmsh 4.1's `$Entities`
+`example/data/example.msh`. That was originally because Gmsh 4.1's `$Entities`
 section (present in that file) was a gap in meshio++'s **C++** reader, which
 the Python bindings papered over with a fallback a C++-only kernel does not
 have. **Since v9.7.0 the C++ reader handles `$Entities`**, so the `.msh` could
@@ -65,7 +65,7 @@ once, from the repo root, with the Python bindings:
 .venv/bin/python3 -c "
 import numpy as np
 import meshioplusplus as mp
-src = mp.read('example/example.msh')
+src = mp.read('example/data/example.msh')
 tri = np.concatenate([cb.data for cb in src.cells if cb.type == 'triangle'])
 tet = np.concatenate([cb.data for cb in src.cells if cb.type == 'tetra'])
 mesh = mp.Mesh(src.points, [('triangle', tri), ('tetra', tet)])
