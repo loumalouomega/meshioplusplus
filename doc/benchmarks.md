@@ -861,6 +861,52 @@ Tier L (750,000 tetrahedra, about 30,000 skin triangles), median of three runs, 
 
 At tier XL (the 10,368,000-tetrahedron cube, about 173,000 skin triangles; `SEQ`, one thread, a warmup and one timed run, each row in its own process on a 15 GiB machine) the three rows that timed out in the [XL spike](./spikes.md) finish: `sample_distance` in 9.56 s, `distance_to_surface` in 9.51 s and `remesh_volume` in 18.87 s, with peak resident sets of 6.3, 6.3 and 10.0 GB, the setup's and `remesh_volume`'s own lattice. `compute_sdf` takes 0.62 s, `hausdorff` 5.18 s, `shrinkwrap` 0.42 s, `find_interface` 13.94 s and `find_interface_proximity` 13.84 s, its matching no longer the cost; the rows are in [`benchmark/xl_ops_seq.csv`](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/xl_ops_seq.csv). That machine's harness setup took 14 s where the spike's took 62 s, so only the timeouts compare across the two.
 
+### Facet keys without records
+
+Roadmap 5.4.3, landed through [landing a performance change](#landing-a-performance-change): every row's digest equals the one before the change on SEQ, THREADS at 1 and 4 threads and OpenMP at 1 and 4 threads, tiers S and M.
+
+Every facet table grouped a record per facet: `extract_surface`'s held a 64-byte `FacetKey` (a size, four inline ids and a `std::vector` for longer faces), three indices and a parent, 88 bytes, and `group_facet_slots` copied each key into a 40-byte flat key again before sorting; `smooth`'s boundary marking (80 bytes), the dual graph behind `adjacency(kind="cell")` and KaHIP's `partition` (72 bytes) and the global face table (a `FacetKey` per slot) repeated the layout. `detail::group_facets` now takes a facet's id count and its ids straight from the mesh: at most four ids below `2^32 - 1` points are two to four `uint32` padded with `0xFFFFFFFF` (12 bytes for a tetrahedron's face), other short keys the flat key, and polyhedron faces sorted CSR rows. The record is gone: a slot's cell and local facet follow from its block's slot range, and the passes that emit the boundary walk blocks, cells and facets in slot order, which is the order they walked the records in. `FacetKey` itself, part of the exported `FaceLookup`, is unchanged.
+
+Tier L, SEQ, one thread, the old and new `meshioplusplus_bench_ops` alternated, the median of two medians of three runs, seconds; peak resident set of the whole process (the setup included, which extracts the surface once itself):
+
+| Row | Old | New |
+| --- | ---: | ---: |
+| `extract_surface` | 0.556 | 0.218 |
+| `extract_skin` | 0.601 | 0.209 |
+| `extract_surface_ragged` (polyhedra) | 0.539 | 0.206 |
+| `adjacency_cell` | 0.537 | 0.269 |
+| `adjacency_cell_ragged` | 0.528 | 0.281 |
+| `smooth_volume` | 6.97 | 6.43 |
+| `region_adjacency` | 0.668 | 0.600 |
+| `find_interface` | 0.572 | 0.538 |
+| `tet_to_poly` | 2.62 | 2.35 |
+| `read_openfoam` (three alternating runs of five) | 1.05 to 1.09 | 1.01 to 1.03 |
+| peak, `extract_surface`, tier L | 474 MB | 353 MB |
+| peak, `extract_surface`, tier XL (10,368,000 tetrahedra) | 6.46 GB | 4.69 GB |
+| peak, `adjacency_cell`, tier XL | 6.54 GB | 4.69 GB |
+
+### Profiling `optimize_volume`
+
+Roadmap 5.5.2. `valgrind --tool=callgrind --toggle-collect='meshioplusplus::optimize_volume*'` over the `optimize_volume` row at tier S (SEQ, RelWithDebInfo), inclusive instructions:
+
+| Function | Share |
+| --- | ---: |
+| `optimize_volume` (63.2 G instructions) | 100% |
+| `optvol_smooth_worst` (worst-cell smoothing) | 73.1% |
+| `optvol_min_dihedral` (within it, mostly) | 70.2% |
+| `acos` | 30.9% |
+| `optvol_pass_edge_removal` | 10.7% |
+| `optvol_pass_multi_face` | 7.3% |
+| `optvol_guarded_odt` | 6.0% |
+| `optvol_pass_23` | 2.6% |
+| the five comparison sorts of the face and edge tables, together | 7.4% |
+
+The comparison sorts of each sweep's face and edge tables, which the roadmap named as the likely cost, come to 7.4% between them: replacing them with `group_slots` would save at most that, and was not taken. `optvol_min_dihedral` took `acos` of all six edges of every tet a probe evaluates; `acos` is decreasing, with a slope of magnitude at least 1 and an error of about an ulp, so a cosine more than `1e-12` below the largest one already evaluated cannot give the least angle, and its `acos` is now skipped. The result is the same bit for bit (the row's digest at tiers S and M on every backend). Tier S, SEQ: 4.56 s to 3.34 s. What is left is the smoothing's algorithm, every tet of a star at every probe ([roadmap](./roadmap.md#performance)).
+
+### VTK XML parsed in place
+
+Roadmap 5.7.4. The VTK XML readers gave pugixml's `load_buffer` the file's bytes, which it copies, so a read held the file twice; they now parse with `load_buffer_inplace` in a private copy-on-write mapping ([memory-mapped reading](./mmap.md#coverage)). A 960 MB inline-binary VTU of 20,000,000 points, read in a fresh process through the single header of the commit before and after (`ru_maxrss`, one thread): peak 2,715 MB to 1,799 MB, the file's size less the pages pugixml writes, and 4.1 s to 3.3 s.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.

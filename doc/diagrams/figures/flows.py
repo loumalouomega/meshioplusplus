@@ -1062,7 +1062,7 @@ def roadmap_map():
                 ("ragged rows across Python", "M"),
                 ("text I/O: chunked parse, rest", "S"),
                 ("HDF5: appends, lock scope", "L"),
-                ("WASM copies · profile ODT", "S"),
+                ("WASM copies · worst-cell smoothing", "M"),
                 ("Python layers · sequences", "M"),
             ],
             [(0, 1)],
