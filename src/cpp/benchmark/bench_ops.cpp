@@ -420,6 +420,17 @@ int main(int argc, char** argv) {
                 }
             });
         });
+        // The cube with every coordinate cubed: a graded lattice, its cells
+        // from about h^3 near the origin corner to about 3h at the far one
+        // (the map is monotone, so no cell inverts). The distance rows' graded
+        // target (roadmap 5.3.2), where a uniform bucket grid is at its worst.
+        const BenchLazyMesh graded([&] {
+            return bench_ops_moved(volume, [](std::size_t, double* pP) {
+                for (int d = 0; d < 3; ++d)
+                    pP[d] = pP[d] * pP[d] * pP[d];
+            });
+        });
+        const BenchLazyMesh graded_surface([&] { return mio::extract_surface(graded); });
         const BenchLazyMesh inflated([&] {
             return bench_ops_moved(surface, [](std::size_t, double* pP) {
                 for (int d = 0; d < 3; ++d)
@@ -851,6 +862,24 @@ int main(int argc, char** argv) {
             if (pD) {
                 pD->U64(static_cast<std::uint64_t>(r.mReport.mNumPairs));
                 pD->Bytes(&r.mReport.mArea, sizeof r.mReport.mArea);
+            }
+        });
+        // The same halves matched by proximity (roadmap 5.4.2): every lower
+        // boundary facet projected onto the upper side's.
+        row("find_interface_proximity", [&](MeshDigest* pD) {
+            mio::FindInterfaceOptions o;
+            o.mMode = mio::InterfaceMode::Proximity;
+            auto r = mio::find_interface(with_halves, mio::RegionSelector{"lower"},
+                                         mio::RegionSelector{"upper"}, o);
+            of(pD, r.mMesh);
+            if (pD) {
+                pD->U64(static_cast<std::uint64_t>(r.mReport.mNumPairs));
+                pD->U64(static_cast<std::uint64_t>(r.mReport.mUnmatchedA));
+                pD->U64(static_cast<std::uint64_t>(r.mReport.mUnmatchedB));
+                pD->Bytes(&r.mReport.mArea, sizeof r.mReport.mArea);
+                pD->Bytes(&r.mReport.mMaxGap, sizeof r.mReport.mMaxGap);
+                pD->Array(r.mSideA.mEntries);
+                pD->Array(r.mSideB.mEntries);
             }
         });
         row("split", [&](MeshDigest* pD) {
@@ -1503,6 +1532,10 @@ int main(int argc, char** argv) {
         });
         row("distance_to_surface",
             [&](MeshDigest* pD) { of(pD, mio::distance_to_surface(jittered, surface).mMesh); });
+        // Every point of the graded cube against its own graded skin.
+        row("distance_to_surface_graded", [&](MeshDigest* pD) {
+            of(pD, mio::distance_to_surface(graded, graded_surface).mMesh);
+        });
         // The accelerator alone (roadmap §3.3.1.2): the bucket grid and the
         // normal tables of a surface's triangle soup, per call. The soup is
         // made once, by the hashed warm-up call, so it is outside the timed
