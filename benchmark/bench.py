@@ -125,7 +125,14 @@ def all_formats():
             out.append((fmt, "surface"))
         elif spec["points"] in ("exact", "approx"):
             out.append((fmt, "points"))
-    out += [(name, kind) for name, (_, _, kind) in VARIANTS.items()]
+    # A variant rides on its base format's row: swept only when the spec chose
+    # that format, and for the input kind it chose.
+    selected = dict(out)
+    out += [
+        (name, kind)
+        for name, (base, _, kind) in VARIANTS.items()
+        if selected.get(base) == kind
+    ]
     return sorted(out)
 
 

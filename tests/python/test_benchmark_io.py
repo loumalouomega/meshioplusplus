@@ -38,6 +38,18 @@ def test_mfm_single_type_selection_does_not_change_conformance(bench):
     assert set(before["cells"].values()) == {"?"}
 
 
+def test_a_variant_row_rides_on_its_base_format(bench, monkeypatch):
+    """Roadmap 5.1.2: ``stl_binary`` is swept next to ``stl`` and nowhere else,
+    so a conformance table narrowed to another format gets no extra row."""
+    import conformance_spec as cs
+
+    full = cs.SPEC
+    monkeypatch.setattr(cs, "SPEC", {"stl": full["stl"]})
+    assert ("stl_binary", "surface") in bench.all_formats()
+    monkeypatch.setattr(cs, "SPEC", {"mfm": full["mfm"]})
+    assert ("stl_binary", "surface") not in bench.all_formats()
+
+
 def test_unknown_conformance_cells_are_not_implicitly_benchmarked(bench, monkeypatch):
     import conformance_spec as cs
 
