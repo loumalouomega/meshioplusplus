@@ -278,7 +278,7 @@ def test_unsigned_is_never_negative():
 
 
 def test_the_bucket_size_does_not_change_the_answer():
-    """The reason every candidate comparison is totally ordered."""
+    """``grid_cell_size`` sized the search grid a BVH replaced; it stays inert."""
     box = _box(1.0)
     q = np.random.default_rng(3).uniform(-2.0, 2.0, size=(200, 3))
     reference = np.asarray(sample_distance(box, q))
@@ -358,10 +358,10 @@ def test_bad_option_names_raise_by_name():
 def test_distance_cpp_matches_python(weight, surface):
     """Byte-identity of the distance field across the C++/numpy boundary.
 
-    The numpy reference deliberately has no accelerator: the bucket grid is
-    provably unable to change the answer (see
-    ``test_the_bucket_size_does_not_change_the_answer``), so a brute-force scan in
-    ascending triangle order is the same computation.
+    The numpy reference deliberately has no accelerator: the core's is provably
+    unable to change the answer (every comparison is totally ordered on
+    distance, then triangle id), so a brute-force scan in ascending triangle
+    order is the same computation.
     """
     core = pytest.importorskip("meshioplusplus._core")
     from meshioplusplus._sdf import _sample_py

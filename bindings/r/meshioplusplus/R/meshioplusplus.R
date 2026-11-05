@@ -2455,8 +2455,8 @@ mio_sobolev_deform <- function(mesh, array, length_scale, fixed_points_array = "
 #'   watertight: `"off"`, `"warn"` (default) or `"error"`.
 #' @param surface_region Restrict the surface to a named `Cell` region;
 #'   `""` (default) is all of it.
-#' @param grid_cell_size Bucket size of the search grid; `0` (default)
-#'   derives one from the triangle sizes.
+#' @param grid_cell_size Ignored: it sized the search grid that a
+#'   bounding-volume hierarchy replaced. Kept so existing calls still work.
 #' @param max_winding_work Refuse a `"winding-number"` query above this cost.
 #' @return A list of `mesh`, `num_tets`, `num_vertices_warped`,
 #'   `num_tets_rejected`, `num_non_manifold_edges` and `input_quality` (the

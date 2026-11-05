@@ -70,7 +70,8 @@ struct HausdorffOptions {
     std::string mRegionA;
     /// The same, for mesh B.
     std::string mRegionB;
-    /// The bucket size of the nearest-triangle search, 0 for the automatic one.
+    /// Ignored since ABI 40: the bucket size of the grid the nearest-triangle
+    /// search used before a bounding-volume hierarchy replaced it.
     double mGridCellSize = 0.0;
 };
 

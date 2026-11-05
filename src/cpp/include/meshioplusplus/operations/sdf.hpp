@@ -193,12 +193,9 @@ struct SurfaceDistanceOptions {
     SdfWatertightCheck mWatertightCheck = SdfWatertightCheck::Warn;
     /// Restrict the surface to a named `Cell` region; empty means all of it.
     std::string mSurfaceRegion;
-    /// Bucket size of the search grid; 0 derives one from the triangle sizes.
-    ///
-    /// This is a tuning knob, but it is public mainly so that the accelerator
-    /// can be *proved* not to affect the answer: the same query at several cell
-    /// sizes must give byte-identical distances and nearest-cell ids. See
-    /// `doc/sdf.md`.
+    /// Ignored since ABI 40: it sized the buckets of the search grid that a
+    /// bounding-volume hierarchy replaced (roadmap 5.3, `doc/sdf.md`). Kept so
+    /// that callers which set it need no change; no value changes the answer.
     double mGridCellSize = 0.0;
     /// Refuse a `WindingNumber` query whose `n_query * n_tri` exceeds this,
     /// naming the option, rather than silently running for an hour.

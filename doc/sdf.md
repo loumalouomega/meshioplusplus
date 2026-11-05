@@ -64,14 +64,14 @@ Inside the band, a banded run is **byte-identical** to a full-field one — the 
 
 ## The accelerator cannot change the answer
 
-The nearest-triangle search runs over a bucket grid, and every candidate comparison is totally ordered on `(squared distance, triangle id)`. That makes the accelerator *provably unobservable*: the same query at any bucket size returns byte-identical distances **and** the same nearest cell.
+The nearest-triangle search runs over a bounding-volume hierarchy of axis-aligned boxes, and every candidate comparison is totally ordered on `(squared distance, triangle id)`. That makes the accelerator *provably unobservable*: whatever the tree visits, and in whatever order, the answer is the minimum over every triangle, so the distances **and** the nearest cell are byte-identical to a scan of every triangle, which a test asserts, ties included.
 
 Two things follow, and both are load-bearing rather than incidental:
 
-- `grid_cell_size` is a public option mainly so a test can prove the invariance (`test_the_bucket_size_does_not_change_the_answer`). It is also a legitimate tuning knob.
+- The search could change from a bucket grid to the tree (ABI 40) without re-validating a single distance: every digest of the operations harness, and every golden, was unchanged ([benchmarks](./benchmarks.md#a-bounding-volume-hierarchy-for-the-distance-query-and-a-grid-for-find_interface)). `grid_cell_size`, which sized the grid's buckets, is accepted and ignored since, so existing calls keep working.
 - The numpy reference implementation has **no accelerator at all** — a brute-force scan in ascending triangle order is the same computation, which is why the two are bit-identical.
 
-The bucket-size heuristic was retuned once, after measurement, without re-validating a single distance: sizing buckets by the mean triangle alone made a 64³ inside-fill of the 112k-triangle Stanford bunny take 19 seconds, because a query far from the surface had to expand through hundreds of empty shells. Adding the domain's own extent to the rule cut that to 2.9 seconds with **identical** output.
+The grid it replaced searched Chebyshev shells of buckets outwards from the query's own bucket, so a point at a distance `d` from the surface probed `O((d / cell)^3)` buckets, of the order of the triangle count for a point deep inside a volume; the operations harness's 10-million-cell tier timed out there. A box is as tight as its triangles, so the tree opens only the few leaves near the nearest one.
 
 ## Where byte-parity stops
 

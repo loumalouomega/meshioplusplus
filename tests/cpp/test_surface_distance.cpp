@@ -429,7 +429,9 @@ TEST(SurfaceDistance, UnsignedIsAlwaysNonNegative) {
 
 TEST(SurfaceDistance, TheBucketSizeDoesNotChangeTheAnswer) {
     // The reason every comparison is totally ordered on (distance, triangle id).
-    // A cube axis-aligned with the query lattice is chosen deliberately: its
+    // `mGridCellSize` sized the bucket grid the tree replaced (ABI 40) and is
+    // ignored since; it must stay so. A cube axis-aligned with the query
+    // lattice is chosen deliberately: its
     // coplanar triangle pairs are exactly equidistant from the points above them,
     // so ties are constant rather than rare. A fixture that avoids ties would
     // test nothing here.
@@ -566,10 +568,11 @@ void expect_brute_force_agreement(const Mesh& rSurface, const std::vector<d::Vec
 }  // namespace
 
 TEST(SurfaceDistance, TheSearchFindsWhatAScanOfEveryTriangleFinds) {
-    // The occupancy pyramid skips empty space and far blocks (roadmap 5.3.1);
-    // the answer must still be the minimum over every triangle under the
-    // total order, ties included, at any bucket size: near, deep inside, far
-    // outside, around negative coordinates and far from the origin.
+    // The tree prunes every node whose box is farther than the best hit
+    // (roadmap 5.3); the answer must still be the minimum over every triangle
+    // under the total order, ties included: near, deep inside, far outside,
+    // around negative coordinates and far from the origin. The cell sizes are
+    // the ignored `mGridCellSize` of the grid the tree replaced.
     std::mt19937 rng(7);
     const auto queries = [&](double Lo, double Hi, std::size_t N) {
         std::vector<d::Vec3> q(N);
@@ -596,7 +599,7 @@ TEST(SurfaceDistance, TheSearchFindsWhatAScanOfEveryTriangleFinds) {
 }
 
 TEST(SurfaceDistance, ABandStillReturnsTheNearestWithinIt) {
-    // The band only stops blocks beyond it being opened: a query whose nearest
+    // The band only stops nodes beyond it being opened: a query whose nearest
     // triangle is within the band gets exactly the unbanded answer, the rest
     // are clamped.
     const Mesh surface = random_soup(300, 2.0, {0.0, 0.0, 0.0}, 11);
@@ -630,16 +633,44 @@ TEST(SurfaceDistance, ABandStillReturnsTheNearestWithinIt) {
     EXPECT_LT(inside, pts.size());
 }
 
-TEST(SurfaceDistance, AFarSurfaceBuildsAPyramidWithASmallTop) {
-    const d::TriangleSoup soup = d::build_triangle_soup(uv_sphere(1.0, 32, 64), "");
-    SurfaceDistanceOptions o;
-    o.mGridCellSize = 0.01;
-    const d::DistanceQuery query = d::build_distance_query(soup, o);
-    ASSERT_GT(query.mPyramid.NumLevels(), 0u);
-    const d::OccupancyLevel& top = query.mPyramid.Level(query.mPyramid.NumLevels());
-    EXPECT_LE(top.mHi.x - top.mLo.x, 3);
-    EXPECT_LE(top.mHi.y - top.mLo.y, 3);
-    EXPECT_LE(top.mHi.z - top.mLo.z, 3);
+TEST(SurfaceDistance, TheTreeHoldsEveryTriangleOnceInsideItsBoxes) {
+    // The accelerator's own invariants: every triangle in exactly one leaf,
+    // leaves of at most four, every box bounding its triangles' corners and
+    // its children's boxes, and the same tree from the same soup.
+    const d::TriangleSoup soup = d::build_triangle_soup(random_soup(997, 3.0, {1.0, -2.0, 0.5}, 17), "");
+    const d::DistanceQuery query = d::build_distance_query(soup, SurfaceDistanceOptions{});
+    const d::SurfaceBvh& bvh = query.mBvh;
+    ASSERT_EQ(bvh.mOrder.size(), soup.NumTriangles());
+    std::vector<int> seen(soup.NumTriangles(), 0);
+    for (std::size_t i = 0; i < bvh.mNodes.size(); ++i) {
+        const d::SurfaceBvhNode& node = bvh.mNodes[i];
+        const auto inside = [&](const d::Vec3& rP) {
+            for (int k = 0; k < 3; ++k)
+                if (rP[k] < node.mLo[k] || rP[k] > node.mHi[k])
+                    return false;
+            return true;
+        };
+        for (std::int64_t j = 0; j < node.mCount; ++j) {
+            const auto t = static_cast<std::size_t>(bvh.mOrder[static_cast<std::size_t>(node.mBegin + j)]);
+            for (int c = 0; c < 3; ++c)
+                ASSERT_TRUE(inside(soup.mCorners[3 * t + static_cast<std::size_t>(c)]));
+            if (node.mRight < 0)
+                ++seen[t];
+        }
+        if (node.mRight < 0) {
+            EXPECT_LE(node.mCount, 4);
+            continue;
+        }
+        const d::SurfaceBvhNode& left = bvh.mNodes[i + 1];
+        const d::SurfaceBvhNode& right = bvh.mNodes[static_cast<std::size_t>(node.mRight)];
+        EXPECT_EQ(left.mBegin, node.mBegin);
+        EXPECT_EQ(left.mCount + right.mCount, node.mCount);
+        EXPECT_EQ(right.mBegin, node.mBegin + left.mCount);
+    }
+    for (std::size_t t = 0; t < seen.size(); ++t)
+        ASSERT_EQ(seen[t], 1) << "triangle " << t;
+    const d::DistanceQuery again = d::build_distance_query(soup, SurfaceDistanceOptions{});
+    EXPECT_EQ(again.mBvh.mOrder, bvh.mOrder);
 }
 
 // --- what is wrong with the surface -----------------------------------------

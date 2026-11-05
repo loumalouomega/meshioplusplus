@@ -9,14 +9,15 @@ the thin shim plus a pure-numpy reference.
 
 ### Why the reference can be brute force
 
-The C++ kernel accelerates its nearest-triangle search with a bucket grid, and
-this module has none. That is not a shortcut: the accelerator is *provably*
-unable to change the answer, because every candidate comparison is totally
-ordered on ``(squared distance, triangle id)``. A brute-force scan in ascending
-triangle order therefore produces the identical result -- which is what
-``tests/python/test_sdf.py::test_cpp_matches_python`` asserts, and what
-``SurfaceDistance.TheBucketSizeDoesNotChangeTheAnswer`` asserts from the other
-side.
+The C++ kernel accelerates its nearest-triangle search with a bounding-volume
+hierarchy (a bucket grid until ABI 40), and this module has none. That is not a
+shortcut: the accelerator is *provably* unable to change the answer, because
+every candidate comparison is totally ordered on ``(squared distance, triangle
+id)``. A brute-force scan in ascending triangle order therefore produces the
+identical result -- which is what ``tests/python/test_voxelize.py::
+test_distance_cpp_matches_python`` asserts, and what
+``SurfaceDistance.TheSearchFindsWhatAScanOfEveryTriangleFinds`` asserts from
+the other side.
 
 ### Where byte-parity stops
 
@@ -683,7 +684,8 @@ def compute_sdf(
         Refuse by name above this many cells, re-checked after every octree pass.
     sign, weight, location, band, record_closest_cell, record_inside,
     watertight_check, surface_region, grid_cell_size, max_winding_work :
-        Passed through to :func:`distance_to_surface`.
+        Passed through to :func:`distance_to_surface` (``grid_cell_size`` is
+        ignored: it sized the search grid a bounding-volume hierarchy replaced).
     return_report :
         Also return the grid geometry, the surface verdict and the banded count.
 

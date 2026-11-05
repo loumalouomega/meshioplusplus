@@ -126,10 +126,6 @@
 #include "meshioplusplus/skin.hpp"
 #include "mesh_digest.hpp"
 
-// The triangle BVH is core-private; the distance rows compare it with the
-// bucket grid (roadmap 5.3.2), as boolean_spike.cpp reaches its prototype.
-#include "../src/detail/tri_bvh.hpp"
-
 using meshioplusplus::DType;
 using meshioplusplus::Mesh;
 using meshioplusplus::NDArray;
@@ -1540,12 +1536,13 @@ int main(int argc, char** argv) {
         row("distance_to_surface_graded", [&](MeshDigest* pD) {
             of(pD, mio::distance_to_surface(graded, graded_surface).mMesh);
         });
-        // The accelerator alone (roadmap §3.3.1.2): the bucket grid and the
-        // normal tables of a surface's triangle soup, per call. The soup is
-        // made once, by the hashed warm-up call, so it is outside the timed
-        // runs. In hash mode the digest also walks the grid -- every bucket of
-        // the occupied key box, in the traversal order queries use -- so a
-        // change of its layout cannot hide behind the tables.
+        // The accelerator alone (roadmap §3.3.1.2): the tree and the normal
+        // tables of a surface's triangle soup, per call. The soup is made
+        // once, by the hashed warm-up call, so it is outside the timed runs.
+        // In hash mode the digest also walks the tree -- every node's box and
+        // range, and the leaf order -- so a change of its layout cannot hide
+        // behind the tables. (A bucket grid until ABI 40, roadmap 5.3: the
+        // digest changed with it.)
         std::optional<mio::detail::TriangleSoup> distance_soup;
         row("distance_build", [&](MeshDigest* pD) {
             if (!distance_soup)
@@ -1554,27 +1551,24 @@ int main(int argc, char** argv) {
                 mio::detail::build_distance_query(*distance_soup, mio::SurfaceDistanceOptions{});
             if (!pD)
                 return;
-            pD->Bytes(&q.mCellSize, sizeof q.mCellSize);
             pD->Bytes(q.mFaceNormal.data(), q.mFaceNormal.size() * sizeof(mio::detail::Vec3));
             pD->Bytes(q.mVertexNormal.data(), q.mVertexNormal.size() * sizeof(mio::detail::Vec3));
             pD->Bytes(q.mEdgeOfCorner.data(), q.mEdgeOfCorner.size() * sizeof(std::int64_t));
             pD->Bytes(q.mEdgeNormals.data(), q.mEdgeNormals.size() * sizeof(mio::detail::Vec3));
-            const mio::detail::GridKey lo = q.mGrid.OccupiedLo();
-            const mio::detail::GridKey hi = q.mGrid.OccupiedHi();
-            pD->Bytes(&lo, sizeof lo);
-            pD->Bytes(&hi, sizeof hi);
-            q.mGrid.ForEachInBox(lo, hi, [&](const auto& rIds) {
-                pD->U64(rIds.size());
-                for (const std::int64_t t : rIds)
-                    pD->U64(static_cast<std::uint64_t>(t));
-            });
+            pD->Bytes(q.mBvh.mOrder.data(), q.mBvh.mOrder.size() * sizeof(std::int64_t));
+            for (const mio::detail::SurfaceBvhNode& rNode : q.mBvh.mNodes) {
+                pD->Bytes(rNode.mLo.data(), sizeof(double) * 3);
+                pD->Bytes(rNode.mHi.data(), sizeof(double) * 3);
+                pD->U64(static_cast<std::uint64_t>(rNode.mBegin));
+                pD->U64(static_cast<std::uint64_t>(rNode.mCount));
+                pD->U64(static_cast<std::uint64_t>(rNode.mRight));
+            }
         });
-        // The nearest point from every point of a mesh to a skin, through the
-        // distance query's bucket grid and through the triangle BVH (roadmap
-        // 5.3.2): each accelerator built and searched per call, the soup and
-        // the query points made once outside the timed runs. Both rows of a
-        // pair digest (point, distance, source cell) per query the same way,
-        // so their digests must be equal: the two searches agree bit for bit.
+        // The nearest point from every point of a mesh to a skin through the
+        // distance query alone (roadmap 5.3): the accelerator built and
+        // searched per call, the soup and the query points made once outside
+        // the timed runs, the hits digested as (point, distance, source cell).
+        // On the graded cube too, where a uniform grid was at its worst.
         struct ClosestInput {
             mio::detail::TriangleSoup mSoup;
             std::vector<mio::detail::Vec3> mPoints;
@@ -1589,15 +1583,9 @@ int main(int argc, char** argv) {
                     in.mPoints[i][d] = d < dim ? mio::detail::read_double(pts, i * dim + d) : 0.0;
             return in;
         };
-        const auto closest_digest = [](MeshDigest* pD, const mio::detail::Vec3& rPoint,
-                                       double Distance, std::int64_t Source) {
-            pD->Bytes(rPoint.data(), sizeof(double) * 3);
-            pD->Bytes(&Distance, sizeof Distance);
-            pD->U64(static_cast<std::uint64_t>(Source));
-        };
         std::optional<ClosestInput> closest_uniform, closest_graded;
-        const auto closest_grid_row = [&](const char* pOp, std::optional<ClosestInput>& rIn,
-                                          const std::function<ClosestInput()>& rMake) {
+        const auto closest_row = [&](const char* pOp, std::optional<ClosestInput>& rIn,
+                                     const std::function<ClosestInput()>& rMake) {
             row(pOp, [&](MeshDigest* pD) {
                 if (!rIn)
                     rIn = rMake();
@@ -1605,33 +1593,17 @@ int main(int argc, char** argv) {
                     mio::detail::build_distance_query(rIn->mSoup, mio::SurfaceDistanceOptions{});
                 const auto hits = mio::detail::query_closest_points(q, rIn->mPoints);
                 if (pD)
-                    for (const auto& rHit : hits)
-                        closest_digest(pD, rHit.mPoint, rHit.mDistance, rHit.mSourceCell);
+                    for (const auto& rHit : hits) {
+                        pD->Bytes(rHit.mPoint.data(), sizeof(double) * 3);
+                        pD->Bytes(&rHit.mDistance, sizeof rHit.mDistance);
+                        pD->U64(static_cast<std::uint64_t>(rHit.mSourceCell));
+                    }
             });
         };
-        const auto closest_bvh_row = [&](const char* pOp, std::optional<ClosestInput>& rIn,
-                                         const std::function<ClosestInput()>& rMake) {
-            row(pOp, [&](MeshDigest* pD) {
-                if (!rIn)
-                    rIn = rMake();
-                const mio::detail::TriBvh tree = mio::detail::build_tri_bvh(rIn->mSoup);
-                std::vector<mio::detail::TriNearestHit> hits(rIn->mPoints.size());
-                mio::parallel_for(hits.size(), [&](std::size_t i) {
-                    hits[i] = mio::detail::tri_bvh_nearest(tree, rIn->mPoints[i]);
-                });
-                if (pD)
-                    for (const auto& rHit : hits)
-                        closest_digest(
-                            pD, rHit.mHit.mPoint, std::sqrt(rHit.mHit.mDistanceSq),
-                            rIn->mSoup.mSourceCell[static_cast<std::size_t>(rHit.mTriangle)]);
-            });
-        };
-        const auto make_uniform = [&] { return closest_input(surface, jittered); };
-        const auto make_graded = [&] { return closest_input(graded_surface, graded); };
-        closest_grid_row("closest_points", closest_uniform, make_uniform);
-        closest_bvh_row("closest_points_bvh", closest_uniform, make_uniform);
-        closest_grid_row("closest_points_graded", closest_graded, make_graded);
-        closest_bvh_row("closest_points_bvh_graded", closest_graded, make_graded);
+        closest_row("closest_points", closest_uniform,
+                    [&] { return closest_input(surface, jittered); });
+        closest_row("closest_points_graded", closest_graded,
+                    [&] { return closest_input(graded_surface, graded); });
         row("isosurface", [&](MeshDigest* pD) {
             mio::IsosurfaceOptions o;
             o.mArrayName = "u";

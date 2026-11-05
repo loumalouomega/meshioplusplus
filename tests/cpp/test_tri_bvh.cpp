@@ -189,36 +189,6 @@ TEST(TriBvh, RaysHitWhatABruteForceHits) {
     }
 }
 
-TEST(TriBvh, TheNearestTriangleIsTheDistanceQuerysBitForBit) {
-    // roadmap 5.3.2's probe: the BVH's nearest-point search and the distance
-    // query's grid both answer the minimum under (distance squared, triangle
-    // id), so they must agree on the triangle and on every bit of the hit,
-    // ties included (the doubled torus is nothing but ties).
-    const mio::Mesh torus = analytic::torus(1.0, 0.4, 32, 16);
-    const mio::Mesh twice = mio::merge({&torus, &torus}).mMesh;  // every triangle twice
-    for (const mio::Mesh* pSkin : {&torus, &twice}) {
-        const auto soup = mio::detail::build_triangle_soup(*pSkin, "");
-        const auto tree = mio::detail::build_tri_bvh(soup, 3);
-        auto queries = tb_points(500, -2.0, 2.0, 17u);
-        for (const Vec3& q : tb_points(50, -40.0, 40.0, 19u))
-            queries.push_back(q);
-        for (const double cell : {0.0, 0.05, 2.0}) {
-            mio::SurfaceDistanceOptions o;
-            o.mGridCellSize = cell;
-            const auto query = mio::detail::build_distance_query(soup, o);
-            const auto grid = mio::detail::query_surface_projections(query, queries);
-            for (std::size_t i = 0; i < queries.size(); ++i) {
-                const mio::detail::TriNearestHit hit = mio::detail::tri_bvh_nearest(tree, queries[i]);
-                ASSERT_EQ(hit.mTriangle, grid[i].mTriangle) << "query " << i << ", cell " << cell;
-                for (int k = 0; k < 3; ++k)
-                    ASSERT_EQ(hit.mHit.mPoint[k], grid[i].mPoint[k]);
-                ASSERT_EQ(std::sqrt(hit.mHit.mDistanceSq), grid[i].mDistance);
-                ASSERT_EQ(hit.mHit.mFeature, grid[i].mFeature);
-            }
-        }
-    }
-}
-
 TEST(TriBvh, WindingIsTheSameOnEveryThreadCount) {
     const mio::Mesh skin = analytic::torus(1.0, 0.4, 48, 24);
     const auto soup = mio::detail::build_triangle_soup(skin, "");

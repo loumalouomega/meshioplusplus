@@ -64,7 +64,6 @@
 
 // Project includes
 #include "meshioplusplus/detail/geometry.hpp"
-#include "meshioplusplus/detail/point_triangle.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 
 namespace meshioplusplus {
@@ -112,25 +111,6 @@ double fast_winding(const TriBvh& rTree, const Vec3& rQ, double Beta);
 /// `fast_winding` at every point, in parallel.
 std::vector<double> fast_windings(const TriBvh& rTree, const std::vector<Vec3>& rPoints,
                                   double Beta);
-
-/// The nearest triangle to a point.
-struct TriNearestHit {
-    std::int64_t mTriangle = -1;  ///< Soup triangle id; -1 only for an empty tree.
-    PointTriangleHit mHit;        ///< `closest_point_on_triangle` against it.
-};
-
-/**
- * @brief The nearest triangle to @p rQ under the total order (distance
- * squared, triangle id): the triangle `query_closest_points` and
- * `query_surface_projections` find, with the same `PointTriangleHit` bits.
- *
- * Depth first, the nearer child first, opening a node only while its box's
- * lower bound (less a rounding slack) does not exceed the best distance, so no
- * triangle that could win or tie is pruned and the visit order is
- * unobservable. The distance query's measured alternative to its bucket grid
- * (roadmap 5.3.2); `test_tri_bvh.cpp` pins the two byte for byte.
- */
-TriNearestHit tri_bvh_nearest(const TriBvh& rTree, const Vec3& rQ);
 
 /// The nearest hit of a ray.
 struct TriRayHit {

@@ -135,8 +135,8 @@ def hausdorff_distance(
         the (lower-bound) estimate.
     :param region_a: restrict ``a`` to this named cell region of surface cells.
     :param region_b: the same, for ``b``.
-    :param grid_cell_size: bucket size of the nearest-triangle search; 0 picks
-        one automatically.
+    :param grid_cell_size: ignored; it sized the search grid that a
+        bounding-volume hierarchy replaced (``doc/sdf.md``).
     :returns: ``{"distance", "a_to_b", "b_to_a", "mean_a_to_b", "rms_a_to_b",
         "mean_b_to_a", "rms_b_to_a", "num_samples_a", "num_samples_b",
         "worst_point_a", "worst_point_b"}``.

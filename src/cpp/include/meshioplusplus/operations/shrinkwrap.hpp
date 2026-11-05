@@ -57,8 +57,8 @@
  * a pure coordinate move. The points array keeps its input dtype.
  *
  * **Determinism.** The nearest-triangle search is totally ordered on
- * `(distance^2, triangle id)`, so the bucket size cannot change the answer
- * (`mGridCellSize` is public precisely so a test can prove it); the update is
+ * `(distance^2, triangle id)`, so the accelerator cannot change the answer
+ * (`doc/sdf.md`); the update is
  * per-point and elementwise. Byte-identical across backends and thread counts,
  * and -- the pseudonormal's own `acos` aside -- across the C++/numpy boundary.
  */
@@ -102,8 +102,8 @@ struct ShrinkwrapOptions {
     bool mRecordDistance = false;
     /// Attach `shrinkwrap:closest_cell`.
     bool mRecordClosestCell = false;
-    /// Bucket size of the nearest-triangle accelerator; 0 derives one from the
-    /// target. Public so a test can prove the accelerator is unobservable.
+    /// Ignored since ABI 40: the bucket size of the grid the nearest-triangle
+    /// search used before a bounding-volume hierarchy replaced it.
     double mGridCellSize = 0.0;
 };
 
