@@ -43,6 +43,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/chunked_parse.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/vtk_hex_order.hpp"
@@ -139,6 +140,33 @@ struct VtkCursor : detail::TextCursor {
         NDArray a = NDArray::Uninit(dt, {count});  // every element written below
         if (is_ascii) {
             const bool flt = detail::is_float_dtype(dt);
+            // A large array is parsed in parallel chunks, each value by the
+            // same prefix parser over its whole token (roadmap 5.7.2); a token
+            // that parser would not take whole sends it to the serial loop
+            // below, which gives the same values and the same error.
+            if (detail::chunked_parse_worthwhile(count)) {
+                const std::size_t end = detail::parse_tokens(
+                    mBuf, mPos, count, [&](std::string_view Token, std::size_t i) {
+                        detail::TextCursor tc(Token);
+                        if (flt) {
+                            double x = 0.0;
+                            if (!tc.DoublePrefix(x) || tc.Pos() != Token.size())
+                                return false;
+                            store(a, i, x, 0);
+                        } else {
+                            std::int64_t x = 0;
+                            if (!tc.IntPrefix(x) || tc.Pos() != Token.size())
+                                return false;
+                            store(a, i, 0.0, x);
+                        }
+                        return true;
+                    });
+                if (end != std::string_view::npos) {
+                    mPos = end;
+                    ConsumeEol();
+                    return a;
+                }
+            }
             // Shared bounded prefix parsing retains the C-library semantics.
             for (std::size_t i = 0; i < count; ++i) {
                 if (flt) {

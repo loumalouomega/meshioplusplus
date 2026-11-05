@@ -57,6 +57,7 @@
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/chunked_parse.hpp"
 #include "../detail/row_writer.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
@@ -144,6 +145,36 @@ struct GmshCursor : detail::TextCursor {
         return v;
     }
     std::int64_t next_int() { return detail::checked_integer<std::int64_t>(next_double(), "Gmsh"); }
+    // The next `N` numbers, parsed in parallel chunks when there are enough
+    // (roadmap 5.7.2): `rStore(i, x)` takes number i, or refuses it by
+    // returning false (it must not throw). False, the cursor unmoved, when
+    // the caller's serial loop must run instead -- too few numbers, or a
+    // token `next_double` would not take whole -- which then gives the same
+    // values and the same error.
+    template <class Store>
+    bool parallel_numbers(std::size_t N, Store&& rStore) {
+        if (!detail::chunked_parse_worthwhile(N))
+            return false;
+        const std::size_t end =
+            detail::parse_tokens(mBuf, mPos, N, [&](std::string_view Token, std::size_t i) {
+                detail::TextCursor tc(Token);
+                double x = 0.0;
+                return tc.DoublePrefix(x) && tc.Pos() == Token.size() && rStore(i, x);
+            });
+        if (end == std::string_view::npos)
+            return false;
+        mPos = end;
+        return true;
+    }
+    // `next_int`'s integer of `x`, or false where it would throw.
+    static bool integer_of(double x, std::int64_t& rOut) {
+        try {
+            rOut = detail::checked_integer<std::int64_t>(x, "Gmsh");
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
 
     // Every binary read and skip stays inside the buffer.
     void need(std::size_t N) const {
@@ -626,7 +657,17 @@ void read_nodes(GmshCursor& rCur, bool is_ascii, NDArray& rPoints,
     rPoints = NDArray(DType::Float64, {static_cast<std::size_t>(num), 3});
     rPointTags.resize(num);
     double* pp = rPoints.As<double>();
-    if (is_ascii) {
+    if (is_ascii && rCur.parallel_numbers(static_cast<std::size_t>(num) * 4,
+                                          [&](std::size_t k, double x) {
+                                              const std::size_t i = k / 4;
+                                              if (k % 4 != 0) {
+                                                  pp[i * 3 + k % 4 - 1] = x;
+                                                  return true;
+                                              }
+                                              return GmshCursor::integer_of(x, rPointTags[i]);
+                                          })) {
+        // parsed in parallel
+    } else if (is_ascii) {
         for (std::int64_t i = 0; i < num; ++i) {
             rPointTags[i] = rCur.next_int();
             pp[i * 3 + 0] = rCur.next_double();
@@ -1002,12 +1043,25 @@ void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoi
             std::memcpy(pp + idx * 3, rCur.mBuf.data() + rCur.mPos, nbz * 3 * 8);
             rCur.mPos += nbz * 3 * 8;
         } else {
-            for (std::int64_t i = 0; i < nb; ++i)
-                rTags[idx + i] = rd_size() - 1;
-            for (std::int64_t i = 0; i < nb; ++i) {
-                pp[(idx + i) * 3 + 0] = rd_dbl();
-                pp[(idx + i) * 3 + 1] = rd_dbl();
-                pp[(idx + i) * 3 + 2] = rd_dbl();
+            if (!is_ascii || !rCur.parallel_numbers(nbz, [&](std::size_t i, double x) {
+                    std::int64_t tag = 0;
+                    if (!GmshCursor::integer_of(x, tag))
+                        return false;
+                    rTags[idx + i] = tag - 1;
+                    return true;
+                })) {
+                for (std::int64_t i = 0; i < nb; ++i)
+                    rTags[idx + i] = rd_size() - 1;
+            }
+            if (!is_ascii || !rCur.parallel_numbers(nbz * 3, [&](std::size_t i, double x) {
+                    pp[idx * 3 + i] = x;
+                    return true;
+                })) {
+                for (std::int64_t i = 0; i < nb; ++i) {
+                    pp[(idx + i) * 3 + 0] = rd_dbl();
+                    pp[(idx + i) * 3 + 1] = rd_dbl();
+                    pp[(idx + i) * 3 + 2] = rd_dbl();
+                }
             }
         }
         if (!version40)
