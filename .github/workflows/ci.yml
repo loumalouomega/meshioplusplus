@@ -61,6 +61,8 @@ jobs:
         include:
           - { mesh: MESHIO, parallel: STL,    python: ON,  json: OFF }
           - { mesh: MESHIO, parallel: OPENMP, python: ON,  json: ON }
+          # The std::thread pool the Linux wheels build (roadmap 5.2).
+          - { mesh: MESHIO, parallel: THREADS, python: ON, json: ON }
           - { mesh: NATIVE, parallel: OPENMP, python: OFF, json: ON }
           - { mesh: KRATOS, parallel: OPENMP, python: OFF, json: ON }
     steps:

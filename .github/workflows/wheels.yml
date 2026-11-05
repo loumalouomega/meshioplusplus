@@ -102,7 +102,7 @@ jobs:
           # compression and gid write support with no new runtime dependency.
           # The parallel backend is AUTO -> OpenMP (MSVC's built-in OpenMP on Windows,
           # libomp on macOS; delvewheel/delocate bundle it automatically). Linux wheels
-          # are forced to SEQ instead - see the manylinux_2_34 comment below.
+          # build THREADS instead - see the manylinux_2_34 comment below.
           # macOS 13.3+ is required for std::format (its floating-point
           # formatting symbols live in the OS libc++ dylib).
           CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-*"
@@ -132,17 +132,19 @@ jobs:
           CIBW_MANYLINUX_X86_64_IMAGE: "quay.io/pypa/manylinux_2_34_x86_64"
           CIBW_MANYLINUX_AARCH64_IMAGE: "quay.io/pypa/manylinux_2_34_aarch64"
           CIBW_BEFORE_ALL_LINUX: "yum install -y gcc-toolset-13-gcc gcc-toolset-13-gcc-c++"
-          # AUTO's OpenMP preference is forced to SEQ here too: gcc-toolset-13's libgomp
+          # AUTO's OpenMP preference is replaced by THREADS here: gcc-toolset-13's libgomp
           # has no static-link option GCC recognizes ("-static-libgomp" isn't a real GCC
           # flag, unlike -static-libgcc/-static-libstdc++), so it would stay a dynamic
-          # dependency and could still hit a versioned-symbol rejection. These wheels
-          # already trade a parallel runtime for portability - SEQ keeps that trade
-          # consistent; TBB/OpenMP builds remain available from source.
+          # dependency and could still hit a versioned-symbol rejection. THREADS is a
+          # std::thread pool inside the core (roadmap 5.2): it needs nothing beyond the
+          # statically linked libstdc++ and glibc 2.34's built-in libpthread, so the
+          # wheels run the parallel paths with no runtime to bundle. TBB/OpenMP builds
+          # remain available from source.
           CIBW_ENVIRONMENT_LINUX: >-
             CC="/opt/rh/gcc-toolset-13/root/usr/bin/gcc"
             CXX="/opt/rh/gcc-toolset-13/root/usr/bin/g++"
             CMAKE_PREFIX_PATH="/project/build/deps"
-            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON -DMESHIOPLUSPLUS_WITH_ZSTD=ON -DMESHIOPLUSPLUS_WITH_LZ4=ON -DMESHIOPLUSPLUS_WITH_BZIP2=ON -DMESHIOPLUSPLUS_WITH_KAHIP=ON -DMESHIOPLUSPLUS_PREFER_STATIC_DEPS=ON -DKAHIP_ROOT=/project/build/deps -DMESHIOPLUSPLUS_WITH_CUTCELLS=ON -DCUTCELLS_ROOT=/project/build/deps -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ -DMESHIOPLUSPLUS_STATIC_RUNTIME=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
+            CMAKE_ARGS="-DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON -DMESHIOPLUSPLUS_WITH_CGNSLIB=ON -DMESHIOPLUSPLUS_WITH_ZSTD=ON -DMESHIOPLUSPLUS_WITH_LZ4=ON -DMESHIOPLUSPLUS_WITH_BZIP2=ON -DMESHIOPLUSPLUS_WITH_KAHIP=ON -DMESHIOPLUSPLUS_PREFER_STATIC_DEPS=ON -DKAHIP_ROOT=/project/build/deps -DMESHIOPLUSPLUS_WITH_CUTCELLS=ON -DCUTCELLS_ROOT=/project/build/deps -DMESHIOPLUSPLUS_WITH_ZLIB=ON -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_PARALLEL_BACKEND=THREADS -DMESHIOPLUSPLUS_STATIC_RUNTIME=ON -DMESHIOPLUSPLUS_WITH_OCCT=OFF -DMESHIOPLUSPLUS_PYTHON_SHARED_CORE=ON"
           # -v surfaces which specific symbol/library trips the manylinux policy check,
           # instead of auditwheel's generic "too-recent versioned symbols" message.
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "auditwheel -v repair -w {dest_dir} {wheel}"

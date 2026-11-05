@@ -53,13 +53,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <thread>
 #include <utility>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
+#include "parallel_workers.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -86,19 +88,7 @@ namespace slot_runs_impl {
 /// the chunk count of `group_slots`' counting sort, whose output does not
 /// depend on it (a stable counting sort gives one order for any chunking).
 inline std::size_t workers() {
-#if defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
-    return static_cast<std::size_t>(std::max(1, omp_get_max_threads()));
-#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
-    return std::max<std::size_t>(
-        1, tbb::global_control::active_value(tbb::global_control::max_allowed_parallelism));
-#elif defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
-    detail::kokkos_ensure_initialized();
-    return static_cast<std::size_t>(std::max(1, Kokkos::DefaultHostExecutionSpace().concurrency()));
-#elif defined(MESHIOPLUSPLUS_PARALLEL_STL)
-    return std::max<std::size_t>(1, std::thread::hardware_concurrency());
-#else
-    return 1;
-#endif
+    return parallel_workers();
 }
 
 /**

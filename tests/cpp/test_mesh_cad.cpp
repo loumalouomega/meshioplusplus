@@ -42,9 +42,7 @@
 // External includes
 #include <gtest/gtest.h>
 
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-#include <omp.h>
-#endif
+#include "thread_sweep.hpp"
 
 // Project includes
 #include "analytic_surfaces.hpp"
@@ -578,16 +576,16 @@ TEST(MeshCad, ABoundaryCrossingAtACoarseSizeIsSplit) {
     EXPECT_GE(near_rim, 3u);
     // The same mesh on every run and thread count.
     const std::uint64_t ref = digest(r.mMesh);
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (int threads : {1, 2, 4}) {
-        omp_set_num_threads(threads);
+        mio_test::set_threads(threads);
         EXPECT_EQ(
             digest(mio::mesh_cad_surface(brep_solids::disc_with_hole(R, Rh, Cx), size(1.1)).mMesh),
             ref)
             << threads;
     }
-    omp_set_num_threads(saved);
+    mio_test::set_threads(saved);
 #endif
     EXPECT_EQ(
         digest(mio::mesh_cad_surface(brep_solids::disc_with_hole(R, Rh, Cx), size(1.1)).mMesh),
@@ -762,13 +760,13 @@ TEST(MeshCad, AnEmbeddedEdgeThatCannotBeInsertedIsLeftOut) {
 TEST(MeshCad, EmbeddedEdgesAreTheSameOnEveryThreadCount) {
     const mio::BrepInfo info = brep_solids::plate_with_fin();
     const std::uint64_t ref = digest(mio::mesh_cad_surface(info, size(0.05)).mMesh);
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (int threads : {1, 2, 4}) {
-        omp_set_num_threads(threads);
+        mio_test::set_threads(threads);
         EXPECT_EQ(digest(mio::mesh_cad_surface(info, size(0.05)).mMesh), ref) << threads;
     }
-    omp_set_num_threads(saved);
+    mio_test::set_threads(saved);
 #endif
     EXPECT_EQ(digest(mio::mesh_cad_surface(info, size(0.05)).mMesh), ref);
 }
@@ -814,13 +812,13 @@ TEST(MeshCad, IsTheSameOnEveryThreadCount) {
     const mio::BrepInfo info = brep_solids::capped_cylinder(1.0, 2.0);
     const std::uint64_t ref = digest(mio::mesh_cad_surface(info, size(0.1)).mMesh);
     EXPECT_EQ(digest(mio::mesh_cad_surface(info, size(0.1)).mMesh), ref);
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (int threads : {1, 2, 4}) {
-        omp_set_num_threads(threads);
+        mio_test::set_threads(threads);
         EXPECT_EQ(digest(mio::mesh_cad_surface(info, size(0.1)).mMesh), ref) << threads;
     }
-    omp_set_num_threads(saved);
+    mio_test::set_threads(saved);
 #endif
 }
 

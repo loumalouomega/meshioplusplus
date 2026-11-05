@@ -383,8 +383,9 @@ int main(int argc, char** argv) {
     }
     if (chosen.empty())
         chosen = {"S", "M", "L"};
-    // OMP_NUM_THREADS is honoured by OpenMP itself; TBB has no such variable,
-    // so the same one caps it here, keeping tools/bench_ops.sh's sweep uniform.
+    // OMP_NUM_THREADS is honoured by OpenMP itself and read by the THREADS
+    // pool (after MESHIOPLUSPLUS_NUM_THREADS); TBB has no such variable, so the
+    // same one caps it here, keeping tools/bench_ops.sh's sweep uniform.
     const char* env_threads = std::getenv("OMP_NUM_THREADS");
     const std::string threads =
         env_threads ? env_threads : std::to_string(std::thread::hardware_concurrency());

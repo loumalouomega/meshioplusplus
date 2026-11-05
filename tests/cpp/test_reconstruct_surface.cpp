@@ -27,9 +27,7 @@
 
 #include <gtest/gtest.h>
 
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-#include <omp.h>
-#endif
+#include "thread_sweep.hpp"
 
 #include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -207,10 +205,10 @@ TEST(ReconstructSurface, SameOnEveryThreadCount) {
     const Mesh m = rs_sphere(2500, 1.0);
     std::vector<double> ref_p;
     std::vector<std::int64_t> ref_c;
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (int threads : {1, 2, 4}) {
-        omp_set_num_threads(threads);
+        mio_test::set_threads(threads);
 #else
     for (int threads : {1, 2}) {
         (void)threads;
@@ -227,8 +225,8 @@ TEST(ReconstructSurface, SameOnEveryThreadCount) {
         EXPECT_EQ(vp, ref_p);
         EXPECT_EQ(vc, ref_c);
     }
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    omp_set_num_threads(saved);
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    mio_test::set_threads(saved);
 #endif
 }
 

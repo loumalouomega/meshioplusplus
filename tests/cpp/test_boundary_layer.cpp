@@ -32,9 +32,7 @@
 // External includes
 #include <gtest/gtest.h>
 
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-#include <omp.h>
-#endif
+#include "thread_sweep.hpp"
 
 // Project includes
 #include "brep_solids.hpp"
@@ -187,14 +185,14 @@ TEST(BoundaryLayer, TheSphereGrowsBothWays) {
         const double shell = reverse ? 4.0 / 3.0 * kPi * (1.0 - std::pow(1.0 - t, 3))
                                      : 4.0 / 3.0 * kPi * (std::pow(1.0 + t, 3) - 1.0);
         EXPECT_NEAR(vol / shell, 1.0, 0.03) << reverse;
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
         const std::uint64_t ref = digest(r.mMesh);
-        const int saved = omp_get_max_threads();
+        const int saved = mio_test::max_threads();
         for (int threads : {1, 3}) {
-            omp_set_num_threads(threads);
+            mio_test::set_threads(threads);
             EXPECT_EQ(digest(mio::boundary_layer(s, o).mMesh), ref) << threads;
         }
-        omp_set_num_threads(saved);
+        mio_test::set_threads(saved);
 #endif
     }
 }

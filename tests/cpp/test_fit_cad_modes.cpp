@@ -32,9 +32,7 @@
 
 #include <gtest/gtest.h>
 
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-#include <omp.h>
-#endif
+#include "thread_sweep.hpp"
 
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
@@ -420,8 +418,8 @@ TEST(FitCadModes, NativeAdaptiveIsDeterministic) {
     o.mFreeformMode = FitCadFreeformMode::Adaptive;
     std::string ref;
     for (int threads : {1, 2, 8, 1}) {
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-        omp_set_num_threads(threads);
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+        mio_test::set_threads(threads);
 #endif
         const std::string path = temp_step("adaptive_det.step");
         fit_cad(fitted, path, o);
@@ -431,8 +429,8 @@ TEST(FitCadModes, NativeAdaptiveIsDeterministic) {
         else
             EXPECT_EQ(bytes, ref) << threads;
     }
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    omp_set_num_threads(omp_get_num_procs());
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    mio_test::set_threads(mio_test::num_procs());
 #endif
 }
 

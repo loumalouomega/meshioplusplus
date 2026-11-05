@@ -28,9 +28,7 @@
 
 // External includes
 #include <gtest/gtest.h>
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-#include <omp.h>
-#endif
+#include "thread_sweep.hpp"
 
 // Project includes
 #include "brep_solids.hpp"
@@ -226,13 +224,13 @@ TEST(MeshCadSize, SizedMeshesAreDeterministic) {
     o.mMinAngleDeg = 25.0;
     const mio::BrepInfo cylinder = brep_solids::capped_cylinder(0.5, 1.0);
     const std::uint64_t ref = digest(mio::mesh_cad_surface(cylinder, o).mMesh);
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (const int n : {1, 3}) {
-        omp_set_num_threads(n);
+        mio_test::set_threads(n);
         EXPECT_EQ(digest(mio::mesh_cad_surface(cylinder, o).mMesh), ref) << n;
     }
-    omp_set_num_threads(saved);
+    mio_test::set_threads(saved);
 #endif
     for (const std::uint64_t seed : {1ull, 7ull}) {
         mio::detail::mesh_cad_set_face_order_seed(seed);

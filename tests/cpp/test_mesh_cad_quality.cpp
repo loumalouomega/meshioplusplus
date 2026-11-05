@@ -38,9 +38,7 @@
 // External includes
 #include <gtest/gtest.h>
 
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-#include <omp.h>
-#endif
+#include "thread_sweep.hpp"
 
 // Project includes
 #include "brep_solids.hpp"
@@ -522,13 +520,13 @@ TEST(MeshCadQuality, TheMeshDoesNotDependOnTheFaceOrderOrThreads) {
         EXPECT_EQ(digest(mio::mesh_cad_surface(box, quality(0.3, 30.0, 2)).mMesh), ref_box) << seed;
     }
     mio::detail::mesh_cad_set_face_order_seed(0);
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (int threads : {1, 2, 4}) {
-        omp_set_num_threads(threads);
+        mio_test::set_threads(threads);
         EXPECT_EQ(digest(mio::mesh_cad_surface(cyl, quality(0.2, 30.0)).mMesh), ref_cyl) << threads;
     }
-    omp_set_num_threads(saved);
+    mio_test::set_threads(saved);
 #endif
 }
 
@@ -850,14 +848,14 @@ TEST(MeshCadVaryingMetric, StretchedFacesMeetTheBound) {
         EXPECT_GT(mio::mesh_cad_surface(r_c.mB, plain).mMinAngleDeg,
                   mio::mesh_cad_surface(r_c.mB, plain_mean).mMinAngleDeg + 5.0)
             << r_c.mName;
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
         const std::uint64_t ref = digest(v.mMesh);
-        const int saved = omp_get_max_threads();
+        const int saved = mio_test::max_threads();
         for (int threads : {1, 2, 4}) {
-            omp_set_num_threads(threads);
+            mio_test::set_threads(threads);
             EXPECT_EQ(digest(mio::mesh_cad_surface(r_c.mB, varying).mMesh), ref) << threads;
         }
-        omp_set_num_threads(saved);
+        mio_test::set_threads(saved);
 #endif
     }
     // The solids of the suite mesh under it too, watertight.

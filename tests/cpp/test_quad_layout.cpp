@@ -25,9 +25,7 @@
 
 #include <gtest/gtest.h>
 
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-#include <omp.h>
-#endif
+#include "thread_sweep.hpp"
 
 #include "analytic_surfaces.hpp"
 
@@ -181,10 +179,10 @@ TEST(QuadLayout, DeterministicAcrossThreads) {
     detail::QuadLayoutOptions o;
     o.mTargetSize = 0.25 * ql_diag(p);
     std::vector<std::int64_t> ref;
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (int threads : {1, 2, 8}) {
-        omp_set_num_threads(threads);
+        mio_test::set_threads(threads);
 #else
     for (int threads : {1}) {
         (void)threads;
@@ -195,7 +193,7 @@ TEST(QuadLayout, DeterministicAcrossThreads) {
         else
             EXPECT_EQ(l.mPatchOfTri, ref);
     }
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    omp_set_num_threads(saved);
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    mio_test::set_threads(saved);
 #endif
 }

@@ -36,9 +36,7 @@
 // External includes
 #include <gtest/gtest.h>
 
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-#include <omp.h>
-#endif
+#include "thread_sweep.hpp"
 
 // Project includes
 #include "../../src/cpp/src/detail/bcc_octree_tets.hpp"
@@ -213,10 +211,10 @@ TEST(BccOctreeTets, EqualLeavesAreT1AwayFromTheBoundary) {
 TEST(BccOctreeTets, IsTheSameOnEveryThreadCount) {
     const LinearOctree t = bt_tree({{2, 2, 1}}, 6, 9u, 6, 3);
     BccLattice ref;
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (int threads : {1, 2, 4}) {
-        omp_set_num_threads(threads);
+        mio_test::set_threads(threads);
 #else
     for (int threads : {1}) {
         (void)threads;
@@ -228,8 +226,8 @@ TEST(BccOctreeTets, IsTheSameOnEveryThreadCount) {
         EXPECT_EQ(L.mTets, ref.mTets);
         EXPECT_EQ(L.mShape, ref.mShape);
     }
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    omp_set_num_threads(saved);
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    mio_test::set_threads(saved);
 #endif
 }
 
