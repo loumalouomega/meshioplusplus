@@ -430,6 +430,31 @@ def _turned(skin, a, b):
     return skin
 
 
+def _skew_skin(shape):
+    """A cylinder or a box turned off the lattice axes (rims and edges skew to it)."""
+    if shape == "cylinder":
+        surface = mio.extract_surface(mio.cylinder(0.5, 0.5607, 24, 8))
+        angles = 0.7127, 1.1053
+    else:
+        surface = mio.extract_surface(
+            mio.box([8, 8, 8], [1.37, 1.0, 0.6463], [-0.6, -0.6, -0.7])
+        )
+        angles = 0.6121, 0.7236
+    return _turned(mio.convert_cells(surface, mode="simplexify"), *angles)
+
+
+def _tet_volumes(mesh):
+    c, p = mesh.cells[0].data, mesh.points
+    return (
+        np.einsum(
+            "ij,ij->i",
+            np.cross(p[c[:, 1]] - p[c[:, 0]], p[c[:, 2]] - p[c[:, 0]]),
+            p[c[:, 3]] - p[c[:, 0]],
+        )
+        / 6.0
+    )
+
+
 @needs_core
 @pytest.mark.parametrize(
     "shape, num_chains, max_missed",
@@ -442,31 +467,32 @@ def test_a_node_held_back_by_a_free_neighbour_gets_its_place(
     # its target gives the place to that neighbour, and so on along the column.
     # Without it all four rims of this skew cylinder, and two of the box's
     # twelve edges, stayed off their chains.
-    if shape == "cylinder":
-        skin = _turned(
-            mio.convert_cells(
-                mio.extract_surface(mio.cylinder(0.5, 0.5607, 24, 8)),
-                mode="simplexify",
-            ),
-            0.7127,
-            1.1053,
-        )
-    else:
-        skin = _turned(
-            mio.convert_cells(
-                mio.extract_surface(
-                    mio.box([8, 8, 8], [1.37, 1.0, 0.6463], [-0.6, -0.6, -0.7])
-                ),
-                mode="simplexify",
-            ),
-            0.6121,
-            0.7236,
-        )
+    skin = _skew_skin(shape)
     _, report = mio.octree_mesh(skin, max_size=0.25, min_size=0.05, return_report=True)
     assert report["num_feature_chains"] == num_chains
     assert report["num_feature_chains_missed"] <= max_missed
     assert report["num_corners_snapped"] == report["num_corners"]
     assert report["num_inverted"] == 0
+
+
+@needs_core
+@pytest.mark.parametrize(
+    "shape, max_hausdorff",
+    [("cylinder", 0.0085), ("box", 0.006)],
+)
+def test_notches_between_chain_nodes_are_filled(shape, max_hausdorff):
+    # Consecutive chain nodes the boundary edges left apart leave a notch; the
+    # pyramid over the planar fan between them closes it. Unfilled, these
+    # skins' boundaries stayed 0.0091 and 0.0081 from the skin.
+    skin = _skew_skin(shape)
+    out, report = mio.octree_mesh(
+        skin, max_size=0.25, min_size=0.05, return_report=True
+    )
+    assert report["hausdorff_to_skin"] < max_hausdorff
+    assert report["num_inverted"] == 0
+    assert _tet_volumes(out).min() > 0.0
+    _, conformity = mio.check_conformity(out, return_report=True)
+    assert conformity["conforming"]
 
 
 @needs_core
