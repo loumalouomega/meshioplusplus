@@ -70,9 +70,9 @@ Of 76 rows, 70 completed, 54 of them in under 30 seconds on one thread; the slow
 | `shrinkwrap` | 6.36 | 6.3 |  |
 | `voxelize` | 0.02 | 6.3 |  |
 | `remesh` | 1.08 | 6.3 |  |
-| `remesh_volume` | > 450 | 10.0 | timeout |
-| `sample_distance` | > 450 | 6.3 | timeout |
-| `distance_to_surface` | > 450 | 6.3 | timeout |
+| `remesh_volume` | > 450 | 10.0 | timeout; 18.87 s after the [distance query's BVH](./benchmarks.md#a-bounding-volume-hierarchy-for-the-distance-query-and-a-grid-for-find_interface) |
+| `sample_distance` | > 450 | 6.3 | timeout; 9.56 s after the [distance query's BVH](./benchmarks.md#a-bounding-volume-hierarchy-for-the-distance-query-and-a-grid-for-find_interface) |
+| `distance_to_surface` | > 450 | 6.3 | timeout; 9.51 s after the [distance query's BVH](./benchmarks.md#a-bounding-volume-hierarchy-for-the-distance-query-and-a-grid-for-find_interface) |
 | `distance_build` | 0.12 | 6.3 |  |
 | `isosurface` | 3.09 | 6.3 |  |
 | `slice` | 2.12 | 6.3 |  |
@@ -105,7 +105,7 @@ Of 76 rows, 70 completed, 54 of them in under 30 seconds on one thread; the slow
 
 **Decision on 6.1.1 (streaming writes of one mesh).** No writer needs more than three times the mesh it writes, and most need about one: a mesh that fits in memory writes. A mesh that does *not* fit has no producer in meshio++ to begin with — every reader, operation and binding builds a whole `Mesh` — so a general streaming writer would serve only callers that generate a mesh piecewise, and none has asked. The item is narrowed to the one real multiple: the VTU writer holds every array's compressed form beside the raw one; compressing and writing block by block brings it to the others' footprint. **Kept, narrowed, S–M.**
 
-**Decision on 6.1.2 (out-of-core operations).** Not needed for 10M cells: every operation that failed did so holding at most a few copies of a mesh that itself fits comfortably, and the ones that ran long did so in memory. Streaming the block-local operations through a mesh that does not fit would not fix any row above. The item is replaced by what the measurement did find: the **peak memory of the copying paths** — the ragged (polyhedral) paths of `reorder` and `convert_cells` and `undo_green` hold their input, their output and full-size scratch at once, more than 7 GB over the setup peak for a 0.4 GB tetrahedral cube at XL, and are the first to fail as meshes grow. **Replaced, S–M**, with `--tier XL --ops` as the probe. The two distance rows' run time is a performance question, recorded here rather than reopened: the roadmap's performance section is closed and its [landing rules](./benchmarks.md#landing-a-performance-change) apply to any change.
+**Decision on 6.1.2 (out-of-core operations).** Not needed for 10M cells: every operation that failed did so holding at most a few copies of a mesh that itself fits comfortably, and the ones that ran long did so in memory. Streaming the block-local operations through a mesh that does not fit would not fix any row above. The item is replaced by what the measurement did find: the **peak memory of the copying paths** — the ragged (polyhedral) paths of `reorder` and `convert_cells` and `undo_green` hold their input, their output and full-size scratch at once, more than 7 GB over the setup peak for a 0.4 GB tetrahedral cube at XL, and are the first to fail as meshes grow. **Replaced, S–M**, with `--tier XL --ops` as the probe. The two distance rows' run time is a performance question, recorded here rather than reopened: the roadmap's performance section is closed and its [landing rules](./benchmarks.md#landing-a-performance-change) apply to any change. The two rows, and `remesh_volume`, finish in 10 to 19 seconds since the nearest-triangle search became a bounding-volume hierarchy (roadmap 5.3, [benchmarks](./benchmarks.md#a-bounding-volume-hierarchy-for-the-distance-query-and-a-grid-for-find_interface)).
 
 ### What landed
 

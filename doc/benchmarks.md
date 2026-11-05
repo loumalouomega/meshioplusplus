@@ -859,6 +859,8 @@ Tier L (750,000 tetrahedra, about 30,000 skin triangles), median of three runs, 
 
 `distance_build` and the conforming `find_interface` are within run-to-run noise of their old times (three alternating runs of five each: 5.9 to 9.0 ms and 0.79 to 0.83 s old, 5.8 to 5.9 ms and 0.73 to 0.80 s new); the conforming mode's matching was never its cost, which is the boundary facets both modes collect.
 
+At tier XL (the 10,368,000-tetrahedron cube, about 173,000 skin triangles; `SEQ`, one thread, a warmup and one timed run, each row in its own process on a 15 GiB machine) the three rows that timed out in the [XL spike](./spikes.md) finish: `sample_distance` in 9.56 s, `distance_to_surface` in 9.51 s and `remesh_volume` in 18.87 s, with peak resident sets of 6.3, 6.3 and 10.0 GB, the setup's and `remesh_volume`'s own lattice. `compute_sdf` takes 0.62 s, `hausdorff` 5.18 s, `shrinkwrap` 0.42 s, `find_interface` 13.94 s and `find_interface_proximity` 13.84 s, its matching no longer the cost; the rows are in [`benchmark/xl_ops_seq.csv`](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/xl_ops_seq.csv). That machine's harness setup took 14 s where the spike's took 62 s, so only the timeouts compare across the two.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
