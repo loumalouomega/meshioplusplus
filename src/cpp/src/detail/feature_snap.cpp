@@ -460,9 +460,11 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                 even = true;
             last = arc[i];
         }
-        if (even)
-            for (std::size_t i = 0; i < path.size(); ++i)
+        if (even) {
+            for (std::size_t i = 0; i < path.size(); ++i) {
                 arc[i] = total * static_cast<double>(i + 1) / static_cast<double>(path.size() + 1);
+            }
+        }
         // The nodes advance together in quarter steps, so neighbours do not hold each other back;
         // a refused step is tried again at the next
         std::vector<Vec3> start(path.size());
@@ -478,6 +480,47 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                     path[i],
                     vec3_add(start[i], vec3_scale(vec3_sub(target[i], start[i]), 0.25 * k)),
                     kFeatsnapChainFloorDeg);
+        // A node held back by a free boundary neighbour lying between it and its target gives the place
+        // to that neighbour, and so on along the column
+        const auto nearer_free = [&](std::int64_t U, const Vec3& rTarget) {
+            std::vector<std::pair<double, std::int64_t>> nearer;
+            const double d_now = vec3_norm(vec3_sub(rPoints[static_cast<std::size_t>(U)], rTarget));
+            for (std::int64_t u : badj[static_cast<std::size_t>(U)]) {
+                const double d_u = vec3_norm(vec3_sub(rPoints[static_cast<std::size_t>(u)], rTarget));
+                if (!rPinned[static_cast<std::size_t>(u)] &&
+                    std::find(path.begin(), path.end(), u) == path.end() && d_u < d_now)
+                    nearer.emplace_back(d_u, u);
+            }
+            std::sort(nearer.begin(), nearer.end());
+            return nearer;
+        };
+        const std::function<std::int64_t(std::int64_t, const Vec3&, int)> take_place =
+            [&](std::int64_t U, const Vec3& rTarget, int Depth) -> std::int64_t {
+            const Vec3 was = rPoints[static_cast<std::size_t>(U)];
+            if (move_by_steps(U, rTarget, kFeatsnapChainFloorDeg))
+                return U;
+            rPoints[static_cast<std::size_t>(U)] = was;
+            if (Depth == 0)
+                return -1;
+            for (const auto& cand : nearer_free(U, rTarget)) {
+                const std::int64_t taken = take_place(cand.second, rTarget, Depth - 1);
+                if (taken >= 0)
+                    return taken;
+            }
+            return -1;
+        };
+        for (std::size_t i = 0; i < path.size(); ++i) {
+            if (arrived[i])
+                continue;
+            for (const auto& cand : nearer_free(path[i], target[i])) {
+                const std::int64_t taken = take_place(cand.second, target[i], 3);
+                if (taken >= 0) {
+                    path[i] = taken;
+                    arrived[i] = 1;
+                    break;
+                }
+            }
+        }
         bool all = true;
         std::int64_t refused = 0;
         for (std::size_t i = 0; i < path.size(); ++i) {
