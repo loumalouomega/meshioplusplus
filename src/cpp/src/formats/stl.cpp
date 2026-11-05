@@ -350,17 +350,17 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
             rBuf.push_back('\n');
         };
         os << "solid\n";
-        detail::write_row_chunks(
-            os, tris.size(), [&](std::size_t First, std::size_t Last, std::string& rBuf) {
-                for (std::size_t i = First; i < Last; ++i) {
-                    wr3(rBuf, "facet normal", normals[i].data());
-                    rBuf += " outer loop\n";
-                    wr3(rBuf, "  vertex", &tris[i][0]);
-                    wr3(rBuf, "  vertex", &tris[i][3]);
-                    wr3(rBuf, "  vertex", &tris[i][6]);
-                    rBuf += " endloop\nendfacet\n";
-                }
-            });
+        detail::write_row_chunks(os, tris.size(),
+                                 [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                                     for (std::size_t i = First; i < Last; ++i) {
+                                         wr3(rBuf, "facet normal", normals[i].data());
+                                         rBuf += " outer loop\n";
+                                         wr3(rBuf, "  vertex", &tris[i][0]);
+                                         wr3(rBuf, "  vertex", &tris[i][3]);
+                                         wr3(rBuf, "  vertex", &tris[i][6]);
+                                         rBuf += " endloop\nendfacet\n";
+                                     }
+                                 });
         os << "endsolid\n";
     }
 }

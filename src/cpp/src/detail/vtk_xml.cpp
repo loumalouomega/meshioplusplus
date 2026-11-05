@@ -220,27 +220,27 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
             dispatch_dtype(dt, [&]<class T>() {
                 T* out = a.As<T>();
                 parsed = parse_tokens(text, 0, total, [&](std::string_view Token, std::size_t i) {
-                    const char* b = Token.data();
-                    const char* e = b + Token.size();
-                    if (isflt) {
-                        const char* fend = nullptr;
-                        const double x = detail::parse_double(b, fend);
-                        if (fend != e)
-                            return false;
-                        out[i] = static_cast<T>(x);
-                    } else if (dt == DType::UInt64) {
-                        std::uint64_t x = 0;
-                        if (vtkxml_parse_decimal(b, e, x) != e)
-                            return false;
-                        out[i] = static_cast<T>(static_cast<std::int64_t>(x));
-                    } else {
-                        std::int64_t x = 0;
-                        if (vtkxml_parse_decimal(b, e, x) != e)
-                            return false;
-                        out[i] = static_cast<T>(x);
-                    }
-                    return true;
-                }) != std::string_view::npos;
+                             const char* b = Token.data();
+                             const char* e = b + Token.size();
+                             if (isflt) {
+                                 const char* fend = nullptr;
+                                 const double x = detail::parse_double(b, fend);
+                                 if (fend != e)
+                                     return false;
+                                 out[i] = static_cast<T>(x);
+                             } else if (dt == DType::UInt64) {
+                                 std::uint64_t x = 0;
+                                 if (vtkxml_parse_decimal(b, e, x) != e)
+                                     return false;
+                                 out[i] = static_cast<T>(static_cast<std::int64_t>(x));
+                             } else {
+                                 std::int64_t x = 0;
+                                 if (vtkxml_parse_decimal(b, e, x) != e)
+                                     return false;
+                                 out[i] = static_cast<T>(x);
+                             }
+                             return true;
+                         }) != std::string_view::npos;
             });
             if (parsed)
                 return a;

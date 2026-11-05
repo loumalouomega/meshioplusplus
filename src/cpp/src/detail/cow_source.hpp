@@ -47,8 +47,7 @@ class CowSource {
 public:
     /// Opens @p rPath; `ReadError(rMessage)` when it cannot be read. Maps it
     /// at or above @p MapAtOrAbove bytes (0: the `Auto` threshold).
-    CowSource(const std::string& rPath, const std::string& rMessage,
-              std::size_t MapAtOrAbove = 0);
+    CowSource(const std::string& rPath, const std::string& rMessage, std::size_t MapAtOrAbove = 0);
     ~CowSource();
 
     CowSource(const CowSource&) = delete;

@@ -657,15 +657,15 @@ void read_nodes(GmshCursor& rCur, bool is_ascii, NDArray& rPoints,
     rPoints = NDArray(DType::Float64, {static_cast<std::size_t>(num), 3});
     rPointTags.resize(num);
     double* pp = rPoints.As<double>();
-    if (is_ascii && rCur.parallel_numbers(static_cast<std::size_t>(num) * 4,
-                                          [&](std::size_t k, double x) {
-                                              const std::size_t i = k / 4;
-                                              if (k % 4 != 0) {
-                                                  pp[i * 3 + k % 4 - 1] = x;
-                                                  return true;
-                                              }
-                                              return GmshCursor::integer_of(x, rPointTags[i]);
-                                          })) {
+    if (is_ascii &&
+        rCur.parallel_numbers(static_cast<std::size_t>(num) * 4, [&](std::size_t k, double x) {
+            const std::size_t i = k / 4;
+            if (k % 4 != 0) {
+                pp[i * 3 + k % 4 - 1] = x;
+                return true;
+            }
+            return GmshCursor::integer_of(x, rPointTags[i]);
+        })) {
         // parsed in parallel
     } else if (is_ascii) {
         for (std::int64_t i = 0; i < num; ++i) {
@@ -2744,9 +2744,8 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
                 os << e.mDim << " " << e.mTag << " 0 " << nb << "\n";
                 for (std::size_t i = 0; i < nb; ++i)
                     os << (e.mNodes[i] + 1) << "\n";
-                put_coords_ascii(nb, [&](std::size_t r) {
-                    return static_cast<std::size_t>(e.mNodes[r]);
-                });
+                put_coords_ascii(
+                    nb, [&](std::size_t r) { return static_cast<std::size_t>(e.mNodes[r]); });
             }
         }
         if (binary)

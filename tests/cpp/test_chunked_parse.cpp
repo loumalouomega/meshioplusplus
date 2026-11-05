@@ -107,7 +107,9 @@ std::size_t cp_parallel(std::string_view Text, std::size_t Count, std::vector<do
 }
 
 struct CpThreads {
-    explicit CpThreads(int Count) : mSaved(mio_test::max_threads()) { mio_test::set_threads(Count); }
+    explicit CpThreads(int Count) : mSaved(mio_test::max_threads()) {
+        mio_test::set_threads(Count);
+    }
     ~CpThreads() { mio_test::set_threads(mSaved); }
     int mSaved;
 };

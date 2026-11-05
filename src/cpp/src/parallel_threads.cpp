@@ -206,8 +206,12 @@ std::mutex gPthrCreate;
 std::atomic<PthrPool*> gPthrPool{nullptr};
 
 #if !defined(_WIN32)
-void pthr_atfork_prepare() { gPthrCreate.lock(); }
-void pthr_atfork_parent() { gPthrCreate.unlock(); }
+void pthr_atfork_prepare() {
+    gPthrCreate.lock();
+}
+void pthr_atfork_parent() {
+    gPthrCreate.unlock();
+}
 void pthr_atfork_child() {
     // The forking thread is the child's only thread and holds gPthrCreate;
     // the pool's workers did not survive, so it is abandoned (not freed: its

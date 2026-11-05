@@ -437,8 +437,8 @@ SlotRuns group_facets(std::size_t NumSlots, std::size_t NumPoints, SizeOf&& rSiz
     std::vector<std::uint64_t> offsets(NumSlots + 1);
     parallel_for_bw(NumSlots,
                     [&](std::size_t i) { offsets[i] = static_cast<std::uint64_t>(rSizeOf(i)); });
-    offsets[NumSlots] = parallel_exclusive_scan(offsets.data(), NumSlots, offsets.data(),
-                                                std::uint64_t{0});
+    offsets[NumSlots] =
+        parallel_exclusive_scan(offsets.data(), NumSlots, offsets.data(), std::uint64_t{0});
     std::vector<std::int64_t> values(static_cast<std::size_t>(offsets[NumSlots]));
     parallel_for(NumSlots, [&](std::size_t i) {
         std::int64_t* row = values.data() + offsets[i];

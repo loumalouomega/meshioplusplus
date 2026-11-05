@@ -50,12 +50,12 @@ namespace fs = std::filesystem;
 // writer has numbers with a fractional part to format.
 mio::Mesh clw_mesh() {
     mio::Mesh m = mt::make_mesh({{0.125, 0, 0},
-                             {1.5, 0.25, 0},
-                             {1.25, 1.75, 0.0625},
-                             {0, 1.5, 0},
-                             {0.5, 0.5, 0.75},
-                             {0.625, 0.375, -1.25}},
-                            "tetra", {{0, 1, 2, 4}, {0, 2, 3, 4}, {0, 2, 1, 5}});
+                                 {1.5, 0.25, 0},
+                                 {1.25, 1.75, 0.0625},
+                                 {0, 1.5, 0},
+                                 {0.5, 0.5, 0.75},
+                                 {0.625, 0.375, -1.25}},
+                                "tetra", {{0, 1, 2, 4}, {0, 2, 3, 4}, {0, 2, 1, 5}});
     mio::NDArray u(mio::DType::Float64, {6});
     for (std::size_t i = 0; i < 6; ++i)
         u.As<double>()[i] = 0.1 * static_cast<double>(i) - 0.35;
@@ -124,7 +124,8 @@ TEST(CommaLocaleWriters, EveryWriterIgnoresTheProcessLocale) {
     std::vector<std::pair<std::string, ClwWrite>> writers;
     for (const auto& [name, fn] : mio::registry_writers()) {
         const std::string ext = clw_extension(name);
-        writers.emplace_back(name, [&mesh, fn, ext](const std::string& rPath) { fn(rPath + ext, mesh); });
+        writers.emplace_back(name,
+                             [&mesh, fn, ext](const std::string& rPath) { fn(rPath + ext, mesh); });
         writers.emplace_back(name + "_ascii", [&mesh, name, ext](const std::string& rPath) {
             mio::WriteOptions o;
             o.mEncoding = mio::WriteEncoding::Ascii;

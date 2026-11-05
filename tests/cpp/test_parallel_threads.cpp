@@ -52,9 +52,9 @@ constexpr bool kPtThreads = true;
 constexpr bool kPtThreads = false;
 #endif
 
-#define PT_REQUIRE_THREADS()                                     \
-    do {                                                         \
-        if (!kPtThreads)                                         \
+#define PT_REQUIRE_THREADS()                                      \
+    do {                                                          \
+        if (!kPtThreads)                                          \
             GTEST_SKIP() << "needs the THREADS parallel backend"; \
     } while (0)
 
@@ -72,9 +72,10 @@ TEST(ParallelThreads, NestedLoopsComplete) {
     mio::parallel_for(
         64,
         [&](std::size_t i) {
-            mio::parallel_for(5000, [&](std::size_t j) {
-                out[i * 5000 + j] = static_cast<std::int64_t>(i * 5000 + j);
-            }, 16);
+            mio::parallel_for(
+                5000,
+                [&](std::size_t j) { out[i * 5000 + j] = static_cast<std::int64_t>(i * 5000 + j); },
+                16);
         },
         1);
     for (std::size_t k = 0; k < out.size(); ++k)

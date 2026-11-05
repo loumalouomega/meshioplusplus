@@ -146,7 +146,8 @@ SrFacets sr_facets(std::size_t n, std::size_t MaxWidth, std::int64_t NumPoints, 
         const std::size_t w = next() % (MaxWidth + 1);
         std::vector<std::int64_t> k;
         for (std::size_t j = 0; j < w; ++j) {
-            std::int64_t id = static_cast<std::int64_t>(next() % static_cast<std::uint64_t>(NumPoints));
+            std::int64_t id =
+                static_cast<std::int64_t>(next() % static_cast<std::uint64_t>(NumPoints));
             if (Bad && next() % 50 == 0)
                 id = next() % 2 ? -1 - id : NumPoints + id;
             k.push_back(id);

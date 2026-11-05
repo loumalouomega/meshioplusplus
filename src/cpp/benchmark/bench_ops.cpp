@@ -861,7 +861,9 @@ int main(int argc, char** argv) {
         file_row("read_gmsh_ascii", ".msh", ascii_write("gmsh"), registry_reader("gmsh"));
         file_row(
             "read_gmsh22_ascii", ".msh",
-            [&](const std::string& rPath) { mio::write_gmsh22(rPath, with_field, /*binary=*/false); },
+            [&](const std::string& rPath) {
+                mio::write_gmsh22(rPath, with_field, /*binary=*/false);
+            },
             registry_reader("gmsh"));
         read_row("read_medit", "medit", ".mesh", with_field);
         const auto write_row = [&](const char* pOp, const char* pFormat, const char* pExt,
