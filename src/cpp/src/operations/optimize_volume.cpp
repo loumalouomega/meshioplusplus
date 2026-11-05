@@ -453,7 +453,16 @@ double optvol_min_dihedral(const Vec3& rA, const Vec3& rB, const Vec3& rC, const
     // angle between the normals of faces (i, j, k) and (i, j, l).
     constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
                                  {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
+    // The acos of a cosine more than kOptvolAcosSkip below the largest one
+    // evaluated is larger than that one's by more than acos's own error (it
+    // is decreasing, with a slope of magnitude at least 1, and accurate to an
+    // ulp or so), so it cannot be the least: it is skipped, and the least is
+    // the one evaluating all six gives, bit for bit (roadmap 5.5.2: acos was
+    // 31% of optimize_volume's instructions). A NaN cosine is skipped, as
+    // std::min skipped its NaN angle.
+    constexpr double kOptvolAcosSkip = 1e-12;
     double least = 180.0;
+    double c_most = -2.0;  // the largest cosine whose acos was evaluated
     for (const auto& e : kEdge) {
         const Vec3& a = p[e[0]];
         const Vec3 ab = detail::vec3_sub(p[e[1]], a);
@@ -463,7 +472,10 @@ double optvol_min_dihedral(const Vec3& rA, const Vec3& rB, const Vec3& rC, const
         if (!(den > 0.0))
             return 0.0;
         const double c = std::clamp(detail::vec3_dot(n1, n2) / den, -1.0, 1.0);
+        if (!(c > c_most - kOptvolAcosSkip))
+            continue;
         least = std::min(least, std::acos(c) * kOptvolRadToDeg);
+        c_most = std::max(c_most, c);
     }
     return least;
 }
