@@ -907,6 +907,37 @@ The comparison sorts of each sweep's face and edge tables, which the roadmap nam
 
 Roadmap 5.7.4. The VTK XML readers gave pugixml's `load_buffer` the file's bytes, which it copies, so a read held the file twice; they now parse with `load_buffer_inplace` in a private copy-on-write mapping ([memory-mapped reading](./mmap.md#coverage)). A 960 MB inline-binary VTU of 20,000,000 points, read in a fresh process through the single header of the commit before and after (`ru_maxrss`, one thread): peak 2,715 MB to 1,799 MB, the file's size less the pages pugixml writes, and 4.1 s to 3.3 s.
 
+### A THREADS backend for the Linux wheels
+
+Roadmap 5.2. The manylinux wheels were built SEQ because gcc-toolset's libgomp cannot be linked statically, so none of the parallel paths on this page reached a pip user on Linux. The THREADS backend ([installation](./installation.md)) is a pool of `std::thread` workers inside the core: one pool per process, the caller taking chunks beside the workers, OpenMP's chunk of `max(grain / 4, 1)` claimed dynamically. Its digests equal SEQ's and OpenMP's on every row at tiers S and M, at one and four threads. Tier L, median of two medians of five runs, seconds (`benchmark/threads_text_io_L.csv`):
+
+| Row | SEQ | THREADS ×1 | THREADS ×4 | OpenMP ×4 |
+| --- | ---: | ---: | ---: | ---: |
+| `sample_distance` | 0.595 | 0.594 | 0.164 | 0.161 |
+| `clean_weld` | 0.848 | 0.867 | 0.342 | 0.327 |
+| `extract_surface` | 0.210 | 0.200 | 0.109 | 0.098 |
+| `smooth_volume` | 6.27 | 6.76 | 1.95 | 1.85 |
+| `merge` | 0.187 | 0.187 | 0.098 | 0.090 |
+| `refine` | 0.623 | 0.632 | 0.378 | 0.365 |
+
+THREADS runs within 11% of OpenMP at four threads. At one thread it adds an indirect call per `parallel_for` and the exception guard, which `smooth_volume`, many short loops per pass, shows at 8%. Whether the wheels themselves gain this is the probe the roadmap keeps (5.2): only CI builds a manylinux wheel.
+
+### Chunked number parsing, and writers one number at a time
+
+Roadmap 5.7.2 and 5.7.1. `detail/chunked_parse.hpp` cuts a run of numbers at blanks into chunks, counts each chunk's tokens in parallel, prefix-sums the counts and parses each chunk into its slots in parallel; a token the reader's own parser would not take whole sends the reader back to its serial loop, so the values and errors are the serial ones (`test_chunked_parse`). The writers format their rows in parallel chunks through `CNumber` (`to_chars` for `%.16e` and `%.17g`). Tier L, same runs as above, seconds; "before" is the commit before the batch:
+
+| Row | SEQ before | SEQ after | THREADS ×4 | OpenMP ×4 before | OpenMP ×4 after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `read_vtu_ascii` | 0.258 | 0.244 | 0.111 | 0.230 | 0.113 |
+| `read_vtk_ascii` | 0.062 | 0.070 | 0.055 | 0.066 | 0.056 |
+| `read_gmsh_ascii` (4.1) | 0.096 | 0.098 | 0.101 | 0.102 | 0.095 |
+| `read_gmsh22_ascii` | 0.266 | 0.254 | 0.241 | 0.248 | 0.236 |
+| `write_gmsh` (ASCII) | 0.356 | 0.305 | 0.323 | 0.343 | 0.307 |
+| `write_off` | 0.0142 | 0.0094 | 0.0091 | 0.0178 | 0.0072 |
+| `write_stl` (ASCII) | 0.077 | 0.030 | 0.0153 | 0.083 | 0.0158 |
+
+`read_vtk_ascii`'s SEQ row reads 10% slower inside `bench_ops`, where the chunked path is never taken; callgrind counts the same instructions for the read before and after, and the read of the same file alone, through the single header, times the same either way (0.085 to 0.090 s), so it is the benchmark process's heap, not the reader. Alone, the legacy VTK read of that 31 MB file goes from 0.080 s at one thread to 0.051 s at four. The Gmsh rows barely move: their nodes are parsed in parallel, but their element blocks, still serial, are most of the read ([roadmap](./roadmap.md#performance), 5.7.2).
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
