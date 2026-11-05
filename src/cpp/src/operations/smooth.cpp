@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -557,13 +558,6 @@ SmoothCsr smooth_build_incidence(const SmoothCellTable& rTable, std::size_t n) {
 
 // --- boundary + feature detection -------------------------------------------
 
-// Sorted corner ids of one facet, of any arity. detail::FacetKey rather than
-// the fixed array<int64_t,4> this used before v9.16.1, for the reason
-// surface.cpp switched: a polyhedron's face can have any number of corners, and
-// ONE shared key type is what lets a hexahedron and a polyhedron meeting on a
-// face cancel each other out instead of both reporting it as boundary.
-using SmoothFacetKey = detail::FacetKey;
-
 // One facet of a cell, corners only: unifies CellFaceDef (3D) and CellEdgeDef
 // (2D) so the two-phase extractor is dimension-agnostic.
 struct SmoothFacetDef {
@@ -577,17 +571,11 @@ struct SmoothFacetBlock {
     std::size_t mNumCells = 0;
     std::vector<SmoothFacetDef> mFacets;
     std::size_t mFirstFacet = 0;
-    // Polyhedron blocks: faces per cell vary, so record offsets are tabulated.
+    // Polyhedron blocks: faces per cell vary, so slot offsets are tabulated.
     bool mPolyhedron = false;
     std::size_t mBlock = 0;
-    std::vector<std::size_t> mFaceStart;  // mNumCells + 1
-};
-
-struct SmoothFacetRecord {
-    SmoothFacetKey mKey;
-    std::uint32_t mBlock = 0;
-    std::uint32_t mCell = 0;
-    std::uint32_t mSlot = 0;
+    std::vector<std::size_t> mFaceStart;     // mNumCells + 1
+    std::vector<std::uint32_t> mCellOfFace;  // per face slot of the block: its cell
 };
 
 // Face rings, CSR: what the shared crease test (detail/crease_edges.hpp) reads.
@@ -687,105 +675,133 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
     if (total_facets == 0)
         return;
 
-    // --- phase 1: build facet keys into disjoint slots (parallel-safe) ---
-    std::vector<SmoothFacetRecord> recs(total_facets);
-    for (std::uint32_t bi = 0; bi < blocks.size(); ++bi) {
-        const SmoothFacetBlock& b = blocks[bi];
-        if (b.mPolyhedron) {
-            const auto cb = rMesh.Cells(b.mBlock);
-            parallel_for(b.mNumCells, [&, bi](std::size_t cell) {
-                const std::size_t nf = cb.NumFaces(cell);
-                for (std::size_t f = 0; f < nf; ++f) {
-                    const auto face = cb.Face(cell, f);
-                    SmoothFacetRecord& r = recs[b.mFirstFacet + b.mFaceStart[cell] + f];
-                    r.mKey = SmoothFacetKey(face.first, face.second);
-                    r.mBlock = bi;
-                    r.mCell = static_cast<std::uint32_t>(cell);
-                    r.mSlot = static_cast<std::uint32_t>(f);
-                }
-            });
+    // --- phase 1: count each facet key's occurrences ---
+    // Slot ri is facet (cell, slot) of the block whose range holds it; the
+    // keys are the facets' corner ids (at most four of a table facet, every
+    // corner of a polyhedron face), all in ONE key space, which is what lets a
+    // hexahedron and a polyhedron meeting on a face cancel each other out
+    // instead of both reporting it as boundary. Counted as run sizes of
+    // detail::group_facets, with no record per facet (roadmap 5.4.3).
+    using SmoothCellView = decltype(rMesh.Cells(0));
+    std::vector<std::optional<SmoothCellView>> poly_blocks(blocks.size());
+    std::vector<std::optional<detail::Int64View>> conn_views(blocks.size());
+    std::vector<std::size_t> first_facets(blocks.size());
+    for (std::size_t bi = 0; bi < blocks.size(); ++bi) {
+        SmoothFacetBlock& b = blocks[bi];
+        first_facets[bi] = b.mFirstFacet;
+        if (!b.mPolyhedron) {
+            conn_views[bi].emplace(*b.mpConn);
             continue;
         }
-        const NDArray& conn = *b.mpConn;
-        const detail::Int64View conn_v(conn);
-        const std::size_t npc = b.mNpc;
-        const std::size_t fpc = b.mFacets.size();
-        parallel_for(b.mNumCells * fpc, [&, bi](std::size_t j) {
-            const std::size_t cell = j / fpc;
-            const std::size_t slot = j % fpc;
-            const SmoothFacetDef& fd = b.mFacets[slot];
-            SmoothFacetRecord& r = recs[b.mFirstFacet + j];
-            std::array<std::int64_t, 4> ids{};
-            const std::uint8_t nk = fd.mNumCorners < 4 ? fd.mNumCorners : 4;
-            for (std::uint8_t k = 0; k < nk; ++k)
-                ids[k] = conn_v[cell * npc + fd.mNodes[k]];
-            r.mKey = SmoothFacetKey(ids.data(), nk);
-            r.mBlock = bi;
-            r.mCell = static_cast<std::uint32_t>(cell);
-            r.mSlot = static_cast<std::uint32_t>(slot);
+        poly_blocks[bi].emplace(rMesh.Cells(b.mBlock));
+        b.mCellOfFace.resize(b.mFaceStart.back());
+        parallel_for(b.mNumCells, [&](std::size_t c) {
+            for (std::size_t f = b.mFaceStart[c]; f < b.mFaceStart[c + 1]; ++f)
+                b.mCellOfFace[f] = static_cast<std::uint32_t>(c);
         });
     }
-
-    // --- phase 2, pass A: count key occurrences ---
-    // Run sizes of the sorted (key, slot) pairs (detail/slot_runs.hpp).
-    const std::vector<std::uint32_t> counts = detail::slot_multiplicity(
-        detail::group_facet_slots(
-            recs, [](const SmoothFacetRecord& rR) -> const SmoothFacetKey& { return rR.mKey; }, n),
-        recs.size());
-
-    // --- phase 2, pass B: mark once-used facets (serial, stored order) ---
-    for (std::size_t ri = 0; ri < recs.size(); ++ri) {
-        const SmoothFacetRecord& r = recs[ri];
-        if (counts[ri] != 1)
-            continue;
-        const SmoothFacetBlock& b = blocks[r.mBlock];
+    const auto block_of = [&](std::size_t ri) -> std::size_t {
+        if (first_facets.size() == 1)
+            return 0;
+        return static_cast<std::size_t>(
+                   std::upper_bound(first_facets.begin(), first_facets.end(), ri) -
+                   first_facets.begin()) -
+               1;
+    };
+    const auto size_of = [&](std::size_t ri) -> std::size_t {
+        const std::size_t bi = block_of(ri);
+        const SmoothFacetBlock& b = blocks[bi];
+        const std::size_t j = ri - b.mFirstFacet;
         if (b.mPolyhedron) {
-            const auto cb = rMesh.Cells(b.mBlock);
-            const auto face =
-                cb.Face(static_cast<std::size_t>(r.mCell), static_cast<std::size_t>(r.mSlot));
-            bool ok = true;
-            for (std::size_t k = 0; k < face.second; ++k) {
-                const std::int64_t id = face.first[k];
-                if (id < 0 || static_cast<std::size_t>(id) >= n) {
-                    ok = false;
-                    break;
-                }
-                rBoundary[static_cast<std::size_t>(id)] = 1;
-            }
-            if (ok && pRings != nullptr && face.second >= 3)
-                pRings->Push(face.first, face.second);  // the whole ring, every corner
-            continue;
+            const std::size_t c = b.mCellOfFace[j];
+            return poly_blocks[bi]->Face(c, j - b.mFaceStart[c]).second;
         }
-        const SmoothFacetDef& fd = b.mFacets[r.mSlot];
-        const std::size_t row = static_cast<std::size_t>(r.mCell) * b.mNpc;
+        const std::uint8_t corners = b.mFacets[j % b.mFacets.size()].mNumCorners;
+        return corners < 4 ? corners : 4;
+    };
+    const auto fill = [&](std::size_t ri, std::int64_t* pOut) {
+        const std::size_t bi = block_of(ri);
+        const SmoothFacetBlock& b = blocks[bi];
+        const std::size_t j = ri - b.mFirstFacet;
+        if (b.mPolyhedron) {
+            const std::size_t c = b.mCellOfFace[j];
+            const auto face = poly_blocks[bi]->Face(c, j - b.mFaceStart[c]);
+            std::copy(face.first, face.first + face.second, pOut);
+            return;
+        }
+        const std::size_t fpc = b.mFacets.size();
+        const SmoothFacetDef& fd = b.mFacets[j % fpc];
+        const std::size_t row = (j / fpc) * b.mNpc;
+        const detail::Int64View& conn_v = *conn_views[bi];
+        const std::uint8_t nk = fd.mNumCorners < 4 ? fd.mNumCorners : 4;
+        for (std::uint8_t k = 0; k < nk; ++k)
+            pOut[k] = conn_v[row + fd.mNodes[k]];
+    };
+    const std::vector<std::uint32_t> counts = detail::slot_multiplicity(
+        detail::group_facets(total_facets, n, size_of, fill), total_facets);
 
-        SmoothBoundaryFacet bf;
-        bf.mNumCorners = fd.mNumCorners;
-        bool ok = true;
-        for (std::uint8_t k = 0; k < fd.mNumCorners && k < 4; ++k) {
-            const std::int64_t id = detail::read_int(*b.mpConn, row + fd.mNodes[k]);
-            if (id < 0 || static_cast<std::size_t>(id) >= n) {
-                ok = false;
-                break;
+    // --- phase 2: mark once-used facets (serial, slot order) ---
+    for (std::size_t bi = 0; bi < blocks.size(); ++bi) {
+        const SmoothFacetBlock& b = blocks[bi];
+        if (b.mPolyhedron) {
+            const auto& cb = *poly_blocks[bi];
+            for (std::size_t c = 0; c < b.mNumCells; ++c) {
+                for (std::size_t f = 0; f < b.mFaceStart[c + 1] - b.mFaceStart[c]; ++f) {
+                    if (counts[b.mFirstFacet + b.mFaceStart[c] + f] != 1)
+                        continue;
+                    const auto face = cb.Face(c, f);
+                    bool ok = true;
+                    for (std::size_t k = 0; k < face.second; ++k) {
+                        const std::int64_t id = face.first[k];
+                        if (id < 0 || static_cast<std::size_t>(id) >= n) {
+                            ok = false;
+                            break;
+                        }
+                        rBoundary[static_cast<std::size_t>(id)] = 1;
+                    }
+                    if (ok && pRings != nullptr && face.second >= 3)
+                        pRings->Push(face.first, face.second);  // the whole ring, every corner
+                }
             }
-            bf.mNodes[k] = id;
-            rBoundary[static_cast<std::size_t>(id)] = 1;
-        }
-        if (!ok)
-            continue;
-        if (fd.mNumCorners >= 3) {
-            if (pRings != nullptr)
-                pRings->Push(bf.mNodes.data(), std::min<std::size_t>(fd.mNumCorners, 4));
             continue;
         }
-        if (pFacets == nullptr)
-            continue;
-        // A 2D boundary edge: its 3-D direction, so the corners of the
-        // boundary polyline read as features (in the XY plane this is the
-        // pre-v16.23.0 in-plane perpendicular test, dot for dot).
-        const SmoothCornerReader at{&rXyz, bf.mNodes.data(), -1, nullptr};
-        bf.mNormal = detail::vec3_normalize(detail::vec3_sub(at(1), at(0)));
-        pFacets->push_back(bf);
+        const std::size_t fpc = b.mFacets.size();
+        for (std::size_t cell = 0; cell < b.mNumCells; ++cell) {
+            for (std::size_t slot = 0; slot < fpc; ++slot) {
+                if (counts[b.mFirstFacet + cell * fpc + slot] != 1)
+                    continue;
+                const SmoothFacetDef& fd = b.mFacets[slot];
+                const std::size_t row = cell * b.mNpc;
+
+                SmoothBoundaryFacet bf;
+                bf.mNumCorners = fd.mNumCorners;
+                bool ok = true;
+                for (std::uint8_t k = 0; k < fd.mNumCorners && k < 4; ++k) {
+                    const std::int64_t id = detail::read_int(*b.mpConn, row + fd.mNodes[k]);
+                    if (id < 0 || static_cast<std::size_t>(id) >= n) {
+                        ok = false;
+                        break;
+                    }
+                    bf.mNodes[k] = id;
+                    rBoundary[static_cast<std::size_t>(id)] = 1;
+                }
+                if (!ok)
+                    continue;
+                if (fd.mNumCorners >= 3) {
+                    if (pRings != nullptr)
+                        pRings->Push(bf.mNodes.data(), std::min<std::size_t>(fd.mNumCorners, 4));
+                    continue;
+                }
+                if (pFacets == nullptr)
+                    continue;
+                // A 2D boundary edge: its 3-D direction, so the corners of the
+                // boundary polyline read as features (in the XY plane this is
+                // the pre-v16.23.0 in-plane perpendicular test, dot for dot).
+                const SmoothCornerReader at{&rXyz, bf.mNodes.data(), -1, nullptr};
+                bf.mNormal = detail::vec3_normalize(detail::vec3_sub(at(1), at(0)));
+                pFacets->push_back(bf);
+            }
+        }
     }
 }
 
