@@ -532,12 +532,11 @@ public:
         double scale = 0.0;
         for (std::size_t t = 0; t < n; ++t) {
             std::array<double, 6>& rBox = box[t];
-            rBox = {{std::numeric_limits<double>::infinity(),
-                     std::numeric_limits<double>::infinity(),
-                     std::numeric_limits<double>::infinity(),
-                     -std::numeric_limits<double>::infinity(),
-                     -std::numeric_limits<double>::infinity(),
-                     -std::numeric_limits<double>::infinity()}};
+            rBox = {
+                {std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
+                 std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
+                 -std::numeric_limits<double>::infinity(),
+                 -std::numeric_limits<double>::infinity()}};
             for (std::int64_t node : rFacets[t].mNodes) {
                 const auto p = ra_point(rMesh.Points(), rMesh.PointDim(), node);
                 for (int d = 0; d < 3; ++d) {
@@ -1210,10 +1209,10 @@ FindInterfaceResult find_interface(const Mesh& rMeshA, const RegionSelector& rRe
     std::vector<std::pair<std::int64_t, std::int64_t>> side_a, side_b;
     InterfaceReport report;
     report.mNumPairs = static_cast<std::int64_t>(matches.size());
-    report.mUnmatchedA = static_cast<std::int64_t>(
-        std::count(matched_a.begin(), matched_a.end(), char{0}));
-    report.mUnmatchedB = static_cast<std::int64_t>(
-        std::count(matched_b.begin(), matched_b.end(), char{0}));
+    report.mUnmatchedA =
+        static_cast<std::int64_t>(std::count(matched_a.begin(), matched_a.end(), char{0}));
+    report.mUnmatchedB =
+        static_cast<std::int64_t>(std::count(matched_b.begin(), matched_b.end(), char{0}));
     for (const IfMatch& match : matches) {
         side_a.push_back({match.mA.mCell, match.mA.mFacet});
         side_b.push_back({match.mB.mCell, match.mB.mFacet});

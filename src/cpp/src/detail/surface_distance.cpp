@@ -326,12 +326,13 @@ SurfaceBvh sd_build_bvh(const std::vector<Vec3>& rLo, const std::vector<Vec3>& r
     for (std::size_t i = bvh.mNodes.size(); i-- > 0;) {
         SurfaceBvhNode& rNode = bvh.mNodes[i];
         if (rNode.mRight < 0) {
-            const auto first = static_cast<std::size_t>(bvh.mOrder[static_cast<std::size_t>(rNode.mBegin)]);
+            const auto first =
+                static_cast<std::size_t>(bvh.mOrder[static_cast<std::size_t>(rNode.mBegin)]);
             rNode.mLo = rLo[first];
             rNode.mHi = rHi[first];
             for (std::int64_t k = 1; k < rNode.mCount; ++k) {
-                const auto t =
-                    static_cast<std::size_t>(bvh.mOrder[static_cast<std::size_t>(rNode.mBegin + k)]);
+                const auto t = static_cast<std::size_t>(
+                    bvh.mOrder[static_cast<std::size_t>(rNode.mBegin + k)]);
                 for (std::size_t d = 0; d < 3; ++d) {
                     rNode.mLo[d] = std::min(rNode.mLo[d], rLo[t][d]);
                     rNode.mHi[d] = std::max(rNode.mHi[d], rHi[t][d]);
@@ -464,10 +465,11 @@ struct SdNearestTriangle {
 // request: queries, nodes opened, leaves opened, triangles measured.
 std::atomic<std::uint64_t> g_sd_queries{0}, g_sd_nodes{0}, g_sd_leaves{0}, g_sd_triangles{0};
 void sd_report_probes(const char* pWhat) {
-    log::info("surface distance: {}: {} queries opened {} nodes and {} leaves and measured {} "
-              "triangles",
-              pWhat, g_sd_queries.exchange(0), g_sd_nodes.exchange(0), g_sd_leaves.exchange(0),
-              g_sd_triangles.exchange(0));
+    log::info(
+        "surface distance: {}: {} queries opened {} nodes and {} leaves and measured {} "
+        "triangles",
+        pWhat, g_sd_queries.exchange(0), g_sd_nodes.exchange(0), g_sd_leaves.exchange(0),
+        g_sd_triangles.exchange(0));
 }
 #define MIO_SD_COUNT(counter, n) counter.fetch_add(n, std::memory_order_relaxed)
 #else

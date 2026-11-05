@@ -637,7 +637,8 @@ TEST(SurfaceDistance, TheTreeHoldsEveryTriangleOnceInsideItsBoxes) {
     // The accelerator's own invariants: every triangle in exactly one leaf,
     // leaves of at most four, every box bounding its triangles' corners and
     // its children's boxes, and the same tree from the same soup.
-    const d::TriangleSoup soup = d::build_triangle_soup(random_soup(997, 3.0, {1.0, -2.0, 0.5}, 17), "");
+    const d::TriangleSoup soup =
+        d::build_triangle_soup(random_soup(997, 3.0, {1.0, -2.0, 0.5}, 17), "");
     const d::DistanceQuery query = d::build_distance_query(soup, SurfaceDistanceOptions{});
     const d::SurfaceBvh& bvh = query.mBvh;
     ASSERT_EQ(bvh.mOrder.size(), soup.NumTriangles());
@@ -651,7 +652,8 @@ TEST(SurfaceDistance, TheTreeHoldsEveryTriangleOnceInsideItsBoxes) {
             return true;
         };
         for (std::int64_t j = 0; j < node.mCount; ++j) {
-            const auto t = static_cast<std::size_t>(bvh.mOrder[static_cast<std::size_t>(node.mBegin + j)]);
+            const auto t =
+                static_cast<std::size_t>(bvh.mOrder[static_cast<std::size_t>(node.mBegin + j)]);
             for (int c = 0; c < 3; ++c)
                 ASSERT_TRUE(inside(soup.mCorners[3 * t + static_cast<std::size_t>(c)]));
             if (node.mRight < 0)
