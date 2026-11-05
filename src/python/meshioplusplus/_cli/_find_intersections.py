@@ -1,7 +1,7 @@
 import sys
 
 from .._find_intersections import find_intersections
-from .._helpers import _writer_map, read, reader_map, write
+from .._helpers import _reader_names, _writer_names, read, write
 from ._json import emit_json
 
 _JSON_KEYS = (
@@ -29,7 +29,7 @@ def add_args(parser):
         "--input-format",
         "-i",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input file format",
         default=None,
     )
@@ -37,7 +37,7 @@ def add_args(parser):
         "--output-format",
         "-o",
         type=str,
-        choices=sorted(list(_writer_map.keys())),
+        choices=_writer_names(),
         help="output file format",
         default=None,
     )
@@ -51,7 +51,7 @@ def add_args(parser):
     parser.add_argument(
         "--other-format",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input format of --other",
         default=None,
     )

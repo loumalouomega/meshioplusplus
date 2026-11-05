@@ -1,5 +1,5 @@
 from .._hausdorff import hausdorff_distance
-from .._helpers import read, reader_map
+from .._helpers import _reader_names, read
 from ._json import emit_json
 
 
@@ -10,7 +10,7 @@ def add_args(parser):
         parser.add_argument(
             f"--input-format-{side}",
             type=str,
-            choices=sorted(list(reader_map.keys())),
+            choices=_reader_names(),
             help=f"input format of the {'first' if side == 'a' else 'second'} file",
             default=None,
         )

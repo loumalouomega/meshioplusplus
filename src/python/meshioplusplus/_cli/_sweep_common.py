@@ -2,7 +2,7 @@
 
 import json
 
-from .._helpers import _writer_map, reader_map
+from .._helpers import _reader_names, _writer_names
 
 
 def add_io_args(parser, out_help):
@@ -12,7 +12,7 @@ def add_io_args(parser, out_help):
         "--input-format",
         "-i",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input file format",
         default=None,
     )
@@ -20,7 +20,7 @@ def add_io_args(parser, out_help):
         "--output-format",
         "-o",
         type=str,
-        choices=sorted(list(_writer_map.keys())),
+        choices=_writer_names(),
         help="output file format",
         default=None,
     )

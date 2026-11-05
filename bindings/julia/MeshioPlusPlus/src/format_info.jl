@@ -481,8 +481,8 @@ const _MESH_CAD_SMOOTH_METHODS = ("laplacian", "odt")
                      curvature_deviation=0.0, cells_across_gaps=0.0, pole_rings=0,
                      face_sizes=nothing, edge_sizes=nothing, background=nothing,
                      background_array="size", metric="mean", virtual_edges=false,
-                     reparam_condition_number=0.0, model_tolerances=false,
-                     virtual_faces=false, lop_corners=false,
+                     reparam_condition_number=0.0, model_tolerances=true,
+                     virtual_faces=true, lop_corners=false,
                      metric_background=nothing, metric_array="", metric_error=0.0)
         -> (; mesh, num_points, num_triangles, ..., faces, warnings,
               angle_histogram, corners, virtual_edges, reparametrised, merged_faces,
@@ -513,7 +513,8 @@ record lists the 1-based edges that `limited_by_edges` its given size;
 (v17.19.0). `reparam_condition_number` meshes a face whose metric's condition
 number over its coarse mesh passes it in a flattening of that mesh,
 `model_tolerances` accepts the gaps the model declares, `virtual_faces`
-meshes a sliver face with its neighbour and `lop_corners` lops acute corners
+meshes a sliver face with its neighbour (both on by default since v19.0.0)
+and `lop_corners` lops acute corners
 (Pav and Walkington 2005) in place of concentric shells (v17.20.0);
 `reparametrised`, `merged_faces`, `tolerance_uses` and `lopped_corners` report
 them, every index 1-based. A `metric_background` mesh whose 9-component point
@@ -544,8 +545,8 @@ function mesh_cad_surface(info::FormatInfo; target_size::Real, max_chordal_devia
                           background::Union{Nothing,Mesh}=nothing,
                           background_array::AbstractString="size",
                           metric::AbstractString="mean", virtual_edges::Bool=false,
-                          reparam_condition_number::Real=0.0, model_tolerances::Bool=false,
-                          virtual_faces::Bool=false, lop_corners::Bool=false,
+                          reparam_condition_number::Real=0.0, model_tolerances::Bool=true,
+                          virtual_faces::Bool=true, lop_corners::Bool=false,
                           metric_background::Union{Nothing,Mesh}=nothing,
                           metric_array::AbstractString="", metric_error::Real=0.0,
                           untangle::Bool=false, quads::AbstractString="none",

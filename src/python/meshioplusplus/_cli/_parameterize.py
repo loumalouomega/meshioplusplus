@@ -1,7 +1,7 @@
 """The ``parameterize`` verb: a UV atlas of a triangle surface
 (``doc/parameterize.md``)."""
 
-from .._helpers import read, reader_map, write
+from .._helpers import _reader_names, read, write
 from .._parameterize import parameterize
 from ._json import emit_json
 
@@ -17,7 +17,7 @@ def add_args(parser):
         "--input-format",
         "-i",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input file format",
         default=None,
     )

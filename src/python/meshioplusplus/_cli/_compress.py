@@ -1,9 +1,8 @@
 import os
 import pathlib
 
-from .. import ansys, cgns, gmsh, h5m, mdpa, pcd, ply, stl, vtk, vtp, vtu, xdmf
 from .._common import error
-from .._helpers import _filetypes_from_path, read, reader_map
+from .._helpers import _filetypes_from_path, _reader_names, read
 
 
 def add_args(parser):
@@ -12,7 +11,7 @@ def add_args(parser):
         "--input-format",
         "-i",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input file format",
         default=None,
     )
@@ -38,6 +37,9 @@ def add_args(parser):
 
 
 def compress(args):
+    # Imported when the verb runs, so building the parser loads no format.
+    from .. import ansys, cgns, gmsh, h5m, mdpa, pcd, ply, stl, vtk, vtp, vtu, xdmf
+
     if args.input_format:
         fmts = [args.input_format]
     else:

@@ -135,8 +135,8 @@ def mesh_cad_surface(
     virtual_edges: bool = False,
     metric: str = "mean",
     reparam_condition_number: float = 0.0,
-    model_tolerances: bool = False,
-    virtual_faces: bool = False,
+    model_tolerances: bool = True,
+    virtual_faces: bool = True,
     lop_corners: bool = False,
     metric_background=None,
     metric_array: str = "",
@@ -216,12 +216,14 @@ def mesh_cad_surface(
     :param model_tolerances: accept the gaps the model itself declares, the
         ``"tolerance"`` and ``"end_tolerances"`` in an edge's ``extra`` JSON
         (a STEP or IGES read writes OpenCASCADE's), where a closed edge's
-        uses start and how far its uses and corners may lie apart.
+        uses start and how far its uses and corners may lie apart. On by
+        default since v19.0.0.
     :param virtual_faces: mesh a face narrower than ``target_size`` together
         with the neighbour it meets tangentially along the most edge, through
         their common flattening; each triangle keeps the face it lies in, and
         the edges they share leave the ``line`` block. With ``order`` 2 or 3
-        the curved nodes sit at the flattening's coordinates.
+        the curved nodes sit at the flattening's coordinates. On by default
+        since v19.0.0.
     :param lop_corners: protect every acute corner by corner lopping (S. E.
         Pav and N. J. Walkington, "Delaunay refinement by corner lopping",
         IMR 2005) in place of concentric shells: a ball of radius

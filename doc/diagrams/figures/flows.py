@@ -1057,14 +1057,14 @@ def roadmap_map():
         (
             "§5 performance",
             [
-                ("harness: gate, rows, peak RSS", "M"),
+                ("harness: gate, rows", "M"),
                 ("parallel backend, Linux wheels", "M"),
                 ("distance query: empty space", "M"),
                 ("flat grids and facet tables", "M"),
                 ("ragged rows across Python", "M"),
-                ("text I/O: to_chars, parallel", "M"),
+                ("text I/O: snprintf_c, parallel", "M"),
                 ("HDF5: appends, lock scope", "L"),
-                ("WASM copies · smooth guard", "S"),
+                ("WASM copies · profile ODT", "S"),
                 ("Python layers · sequences", "M"),
             ],
             [(0, 1)],
@@ -1083,13 +1083,6 @@ def roadmap_map():
                 ("bundle per ParaView Python", "M"),
             ],
             [(0, 1), (5, 6)],
-        ),
-        (
-            "§7 new capabilities",
-            [
-                ("v19 defaults · hexahedra", "L"),
-            ],
-            [],
         ),
     ]
     per_row = 4

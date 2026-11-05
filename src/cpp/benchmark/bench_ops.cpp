@@ -65,6 +65,10 @@
 #include "meshioplusplus/mesh_api.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/write_options.hpp"
+#include "meshioplusplus/formats/gltf.hpp"
+#include "meshioplusplus/formats/stl.hpp"
+#include "meshioplusplus/formats/wkt.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -79,6 +83,12 @@
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/crop.hpp"
+#include "meshioplusplus/operations/extrude.hpp"
+#include "meshioplusplus/operations/find_intersections.hpp"
+#include "meshioplusplus/operations/neighbors.hpp"
+#include "meshioplusplus/operations/tet_poly.hpp"
+#include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
@@ -701,6 +711,46 @@ int main(int argc, char** argv) {
         // The registry's STL writer is ASCII, so this times the ASCII reader
         // over a triangle surface (roadmap §3.1.1.1).
         read_row("read_stl", "stl", ".stl", surface);
+        // Reads of a file written some other way than the registry's default
+        // writer: the binary STL, the glTF the writer splits per smooth fan
+        // (read back welded) and the WKT TIN -- the three readers that weld
+        // vertices by exact position (roadmap 5.7.3).
+        const auto file_row = [&](const char* pOp, const char* pExt,
+                                  const std::function<void(const std::string&)>& rWrite,
+                                  const std::function<Mesh(const std::string&)>& rRead) {
+            if (!wanted(pOp))
+                return;
+            const std::filesystem::path dir = std::filesystem::temp_directory_path() /
+                                              (std::string("meshioplusplus_bench_") + pOp);
+            std::filesystem::create_directories(dir);
+            const std::string path = (dir / (std::string("mesh") + pExt)).string();
+            try {
+                rWrite(path);
+                row(pOp, [&](MeshDigest* pD) { of(pD, rRead(path)); });
+            } catch (const std::exception& rExc) {
+                std::fprintf(stderr, "skip %s: %s\n", pOp, rExc.what());
+            }
+            std::filesystem::remove_all(dir);
+        };
+        file_row(
+            "read_stl_binary", ".stl",
+            [&](const std::string& rPath) {
+                mio::WriteOptions o;
+                o.mEncoding = mio::WriteEncoding::Binary;
+                mio::registry_write_ex(rPath, surface, "stl", o);
+            },
+            [](const std::string& rPath) { return mio::read_stl(rPath); });
+        file_row(
+            "read_gltf_weld", ".glb",
+            [&](const std::string& rPath) { mio::write_gltf(rPath, surface); },
+            [](const std::string& rPath) {
+                mio::GltfReadOptions o;
+                o.mWeld = true;
+                return mio::read_gltf(rPath, o);
+            });
+        file_row(
+            "read_wkt", ".wkt", [&](const std::string& rPath) { mio::write_wkt(rPath, surface); },
+            [](const std::string& rPath) { return mio::read_wkt(rPath); });
         // OBJ over the cube's triangle surface with a normal and a texture
         // coordinate per point, so the `vn` and `vt` lines are parsed too; the
         // write row times the same mesh (roadmap §3.1.1.1 keeps an OBJ writer
@@ -829,6 +879,51 @@ int main(int argc, char** argv) {
             [&](MeshDigest* pD) { of(pD, mio::compute_normals(surface).mMesh); });
         row("compute_curvature",
             [&](MeshDigest* pD) { of(pD, mio::compute_curvature(surface).mMesh); });
+        // Rows for operations that had none (roadmap 5.1.2). `decimate_volume`
+        // and `conservative_interpolate` have none yet: both grow far faster than
+        // the cell count (over 17 min and about 3 s at tier M and S), so a row
+        // here would stall the sweep.
+        const BenchLazyMesh shifted([&] {
+            return bench_ops_moved(surface, [](std::size_t, double* pP) {
+                pP[0] += 0.31;
+                pP[1] += 0.17;
+                pP[2] += 0.07;
+            });
+        });
+        const BenchLazyMesh polyhedral([&] { return mio::tet_to_poly(volume).mMesh; });
+        row("find_intersections", [&](MeshDigest* pD) {
+            auto r = mio::find_intersections(surface, shifted);
+            of(pD, r.mSegments);
+            if (pD)
+                pD->U64(static_cast<std::uint64_t>(r.mNumPairs));
+        });
+        row("tet_to_poly", [&](MeshDigest* pD) { of(pD, mio::tet_to_poly(volume).mMesh); });
+        row("poly_to_tet", [&](MeshDigest* pD) { of(pD, mio::poly_to_tet(polyhedral).mMesh); });
+        row("thickness", [&](MeshDigest* pD) { of(pD, mio::thickness(surface).mMesh); });
+        row("extrude", [&](MeshDigest* pD) {
+            mio::ExtrudeOptions o;
+            o.mNumLayers = 3;
+            // Oblique, so no face of the cube's skin is parallel to it.
+            o.mDirection = {{0.1, 0.2, 0.3}};
+            of(pD, mio::extrude(surface, o).mMesh);
+        });
+        row("crop", [&](MeshDigest* pD) {
+            const double lo[3] = {0.2, 0.2, 0.2};
+            const double hi[3] = {0.7, 0.8, 0.9};
+            auto r = mio::crop_bbox(volume, lo, hi);
+            of(pD, r.mMesh);
+            if (pD)
+                pD->Array(r.mPointMap);
+        });
+        row("neighbors", [&](MeshDigest* pD) {
+            mio::NeighborOptions o;
+            o.mRadius = 1.5 * h;
+            auto r = mio::neighbor_pairs(volume.Points(), o);
+            if (pD) {
+                pD->Array(r.mSource);
+                pD->Array(r.mTarget);
+            }
+        });
         // Rows for roadmap §5's analysis operations (v16.23.0).
         row("feature_edges", [&](MeshDigest* pD) { of(pD, mio::feature_edges(volume).mMesh); });
         // Rows for roadmap §6.3's skin to CAD: the cube's skin segments into its

@@ -1837,8 +1837,8 @@ def _register_operations(server: FastMCP) -> None:
         metric: str = "mean",
         virtual_edges: bool = False,
         reparam_condition_number: float = 0.0,
-        model_tolerances: bool = False,
-        virtual_faces: bool = False,
+        model_tolerances: bool = True,
+        virtual_faces: bool = True,
         lop_corners: bool = False,
         metric_background_path: Optional[str] = None,
         metric_array: str = "",
@@ -1906,7 +1906,8 @@ def _register_operations(server: FastMCP) -> None:
         listed in tolerance_uses; virtual_faces (any order) meshes a face
         narrower than target_size with the neighbour it meets tangentially
         along the most edge, a chain of slivers joining the group the first
-        forms, each triangle keeping its own face, listed in merged_faces;
+        forms, each triangle keeping its own face, listed in merged_faces
+        (model_tolerances and virtual_faces are on by default since v19.0.0);
         a metric_background_path mesh whose 9-component point_data
         metric_array is a field's Hessian (hessian writes "<array>:hessian"),
         or whose 1-component one is the field itself (its Hessian then

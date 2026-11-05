@@ -529,7 +529,7 @@ void print_usage(std::ostream& os) {
           "                             --metric-error E]\n"
           "                            [--metric mean|varying] [--virtual-edges]\n"
           "                            [--reparam-condition-number K]\n"
-          "                            [--model-tolerances] [--virtual-faces]\n"
+          "                            [--no-model-tolerances] [--no-virtual-faces]\n"
           "                            [--lop-corners] [--untangle]\n"
           "                            [--quads none|dominant|all]\n"
           "                            [--quad-pairs matching|greedy]\n"
@@ -2519,6 +2519,9 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                   {"metric", {}, true},
                                   {"virtual-edges", {}, false},
                                   {"reparam-condition-number", {}, true},
+                                  {"no-model-tolerances", {}, false},
+                                  {"no-virtual-faces", {}, false},
+                                  // On by default since v19.0.0: still accepted.
                                   {"model-tolerances", {}, false},
                                   {"virtual-faces", {}, false},
                                   {"lop-corners", {}, false},
@@ -2627,8 +2630,10 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
         o.mReparamConditionNumber =
             meshioplusplus::detail::stod_c(opt_value(p, "reparam-condition-number"));
     meshioplusplus::MeshCadSurfaceExtras extras;
-    extras.mModelTolerances = has_flag(p, "model-tolerances");
-    extras.mVirtualFaces = has_flag(p, "virtual-faces");
+    // On by default since v19.0.0; `--model-tolerances`/`--virtual-faces`
+    // are still accepted and change nothing.
+    extras.mModelTolerances = !has_flag(p, "no-model-tolerances");
+    extras.mVirtualFaces = !has_flag(p, "no-virtual-faces");
     extras.mLopCorners = has_flag(p, "lop-corners");
     extras.mUntangle = has_flag(p, "untangle");
     if (has_opt(p, "quads")) {

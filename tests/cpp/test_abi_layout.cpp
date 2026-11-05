@@ -424,6 +424,9 @@ MIO_ABI_LAYOUT(meshioplusplus::MeshCadSizeReport, 48, 8);
 // report (roadmap 6.4.4, 6.5.1, 6.5.2; 6.2.3 laid out).
 // ABI 36: untangling (6.6.3) and quadrilaterals (6.8) appended to the
 // extras, their counts to the report.
+// ABI 39 (Tier B, roadmap 7.9.1): `mModelTolerances` and `mVirtualFaces`
+// default to true, which changes the implicit constructor and not the layout,
+// so nothing here can see it.
 MIO_ABI_LAYOUT(meshioplusplus::MeshCadSurfaceExtras, 12, 4);
 static_assert(offsetof(meshioplusplus::MeshCadSurfaceExtras, mUntangle) == 3,
               "MeshCadSurfaceExtras::mUntangle moved");

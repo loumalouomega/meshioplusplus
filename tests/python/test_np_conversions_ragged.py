@@ -136,3 +136,27 @@ def test_big_endian_points_are_normalised():
     mesh = Mesh(pts, [("tetra", np.array([[0, 1, 2, 3]], np.dtype(">i8")))])
     out = _roundtrip(mesh)
     np.testing.assert_array_equal(out.points, np.asarray(pts, float))
+
+
+@needs_core
+def test_rows_sharing_one_buffer_are_read_as_spans():
+    """Roadmap 5.6: rows that are back-to-back views of one buffer are copied
+    as one span; views that skip, overlap or repeat memory, separate arrays,
+    int32 rows and lists, interleaved, still give each row its own values."""
+    flat = np.arange(40, dtype=np.int64) % 8
+    rows = [
+        flat[0:3],
+        flat[3:7],
+        flat[7:10],  # three back to back
+        flat[12:15],  # a gap
+        flat[11:14],  # backwards, overlapping
+        flat[11:14],  # the same view again
+        np.array([1, 2, 3, 4], dtype=np.int32),
+        [5, 6, 7],
+        flat[20:25],
+        flat[25:28],
+        flat[30:36:2],  # strided: not C-contiguous
+    ]
+    out = _roundtrip(_polygon_mesh(rows))
+    got = [np.asarray(r).tolist() for r in out.cells[0].data]
+    assert got == [np.asarray(r).tolist() for r in rows]

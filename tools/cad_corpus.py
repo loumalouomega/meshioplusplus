@@ -344,8 +344,8 @@ def measure_one(
     virtual_edges=False,
     metric="mean",
     reparam=0.0,
-    model_tolerances=False,
-    virtual_faces=False,
+    model_tolerances=True,
+    virtual_faces=True,
     lop_corners=False,
     gmsh=None,
     gmsh_timeout=900.0,
@@ -571,8 +571,8 @@ def run(args):
             **({"virtual_edges": True} if args.virtual_edges else {}),
             **({"metric": args.metric} if args.metric != "mean" else {}),
             **({"reparam_condition_number": args.reparam} if args.reparam > 0 else {}),
-            **({"model_tolerances": True} if args.model_tolerances else {}),
-            **({"virtual_faces": True} if args.virtual_faces else {}),
+            **({"model_tolerances": False} if not args.model_tolerances else {}),
+            **({"virtual_faces": False} if not args.virtual_faces else {}),
             **({"lop_corners": True} if args.lop_corners else {}),
             **({"order": args.order} if args.order > 1 else {}),
             **({"untangle": True} if args.untangle else {}),
@@ -827,15 +827,18 @@ def main(argv=None):
         metavar="K",
         help="flatten faces whose condition number passes K (6.4.4); 0 is off",
     )
+    # Both on by default since v19.0.0, as in mesh_cad_surface.
     p.add_argument(
-        "--model-tolerances",
-        action="store_true",
-        help="accept the gaps the models declare (6.5.1)",
+        "--no-model-tolerances",
+        dest="model_tolerances",
+        action="store_false",
+        help="do not accept the gaps the models declare (6.5.1; on by default)",
     )
     p.add_argument(
-        "--virtual-faces",
-        action="store_true",
-        help="mesh sliver faces with a neighbour (6.5.2)",
+        "--no-virtual-faces",
+        dest="virtual_faces",
+        action="store_false",
+        help="do not mesh sliver faces with a neighbour (6.5.2; on by default)",
     )
     p.add_argument(
         "--lop-corners",
@@ -884,8 +887,8 @@ def main(argv=None):
         virtual = len(argv) > 5 and argv[5] == "1"
         metric = argv[6] if len(argv) > 6 else "mean"
         reparam = float(argv[7]) if len(argv) > 7 else 0.0
-        tolerances = len(argv) > 8 and argv[8] == "1"
-        virtual_faces = len(argv) > 9 and argv[9] == "1"
+        tolerances = len(argv) <= 8 or argv[8] == "1"
+        virtual_faces = len(argv) <= 9 or argv[9] == "1"
         lop_corners = len(argv) > 10 and argv[10] == "1"
         gmsh = argv[11] if len(argv) > 11 and argv[11] else None
         gmsh_timeout = float(argv[12]) if len(argv) > 12 else 900.0

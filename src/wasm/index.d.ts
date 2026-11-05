@@ -436,9 +436,9 @@ export interface MeshCadSurfaceOptions {
    * flattening's coordinates.
    */
   reparamConditionNumber?: number;
-  /** Accept the gaps the model itself declares in its edges' extras (default false). */
+  /** Accept the gaps the model itself declares in its edges' extras (default true since v19.0.0). */
   modelTolerances?: boolean;
-  /** Mesh a sliver face with the neighbour it meets tangentially, at any order (default false). */
+  /** Mesh a sliver face with the neighbour it meets tangentially, at any order (default true since v19.0.0). */
   virtualFaces?: boolean;
   /**
    * Lop acute corners (Pav and Walkington 2005) in place of concentric

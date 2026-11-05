@@ -664,16 +664,17 @@ def _components(indptr, adjncy, n):
     return label, current
 
 
-def _parity_selection(indptr, adjncy, positions, rows):
+def _parity_selection(indptr, adjncy, positions, rows, depth):
     """The smaller of a component's two BFS parity classes (tie -> even).
 
     The BFS is seeded at the node nearest the component's own centroid, so the
     two classes are the geometric checkerboard rather than an artefact of the
-    node numbering.
+    node numbering. ``depth`` is a per-node scratch array, ``-1`` on the
+    component's nodes; components are disjoint, so one array serves them all.
     """
     centre = positions[rows].mean(axis=0)
     seed = rows[int(np.argmin(np.linalg.norm(positions[rows] - centre, axis=1)))]
-    depth = {int(seed): 0}
+    depth[seed] = 0
     frontier = np.array([seed], dtype=np.int64)
     level = 0
     while frontier.size:
@@ -684,15 +685,15 @@ def _parity_selection(indptr, adjncy, positions, rows):
             break
         off = np.repeat(np.cumsum(counts) - counts, counts)
         t = np.arange(total, dtype=np.int64) - off
-        nxt = adjncy[np.repeat(indptr[frontier], counts) + t]
-        nxt = np.unique(nxt)
-        nxt = nxt[[int(v) not in depth for v in nxt]] if nxt.size else nxt
-        for v in nxt:
-            depth[int(v)] = level
+        nxt = np.unique(adjncy[np.repeat(indptr[frontier], counts) + t])
+        nxt = nxt[depth[nxt] < 0]
+        depth[nxt] = level
         frontier = nxt
-    even = [v for v, lv in depth.items() if lv % 2 == 0]
-    odd = [v for v, lv in depth.items() if lv % 2 == 1]
-    if not odd:
+    # The BFS reaches the whole component, so its rows are the visited set.
+    parity = depth[rows] % 2
+    even = rows[parity == 0]
+    odd = rows[parity == 1]
+    if not odd.size:
         return even
     return even if len(even) <= len(odd) else odd
 
@@ -757,11 +758,16 @@ def bistride_hierarchy(edge_index, positions, *, num_levels: int = 1):
             )
         indptr, adjncy = _adjacency(ei, n)
         label, ncomp = _components(indptr, adjncy, n)
-        kept = []
+        # Each component's rows, ascending, from one stable sort of the labels
+        # rather than a full `label == c` scan per component.
+        order = np.argsort(label, kind="stable")
+        ends = np.cumsum(np.bincount(label, minlength=ncomp))
+        depth = np.full(n, -1, dtype=np.int64)
+        kept = [np.empty(0, dtype=np.int64)]
         for c in range(ncomp):
-            rows = np.flatnonzero(label == c)
-            kept.extend(_parity_selection(indptr, adjncy, pos, rows))
-        kept = np.unique(np.asarray(kept, dtype=np.int64))
+            rows = order[(ends[c - 1] if c else 0) : ends[c]]
+            kept.append(_parity_selection(indptr, adjncy, pos, rows, depth))
+        kept = np.unique(np.concatenate(kept))
         if kept.size < 2:
             raise ValueError(
                 f"{prefix}coarsening level {level} leaves {kept.size} node(s), "

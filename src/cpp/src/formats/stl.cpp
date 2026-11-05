@@ -24,7 +24,6 @@
 #include <fstream>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 // Project includes
@@ -34,9 +33,11 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/exact_weld.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
@@ -45,27 +46,28 @@ namespace meshioplusplus {
 
 namespace {
 
-// First-occurrence de-duplication of 3-component rows. Returns per-row unique
-// index; appends unique rows (raw bytes) to `rOutPoints`.
+// First-occurrence de-duplication of 3-component rows, on their bytes.
+// Returns per-row unique index; appends unique rows (raw bytes) to
+// `rOutPoints`. The rows of an STL file sit at any alignment, so each
+// coordinate's bytes are copied into its key word rather than read as a float.
 std::vector<std::int64_t> dedup(const unsigned char* pRows, std::size_t nrows, std::size_t isz,
                                 std::vector<unsigned char>& rOutPoints) {
-    std::unordered_map<std::string, std::int64_t> seen;
-    seen.reserve(nrows);
-    std::vector<std::int64_t> idx(nrows);
     const std::size_t rowbytes = 3 * isz;
-    for (std::size_t i = 0; i < nrows; ++i) {
-        std::string key(reinterpret_cast<const char*>(pRows) + i * rowbytes, rowbytes);
-        auto it = seen.find(key);
-        if (it == seen.end()) {
-            std::int64_t id = static_cast<std::int64_t>(seen.size());
-            seen.emplace(std::move(key), id);
-            rOutPoints.insert(rOutPoints.end(), pRows + i * rowbytes, pRows + (i + 1) * rowbytes);
-            idx[i] = id;
-        } else {
-            idx[i] = it->second;
-        }
-    }
-    return idx;
+    std::vector<detail::ExactWeldKey> keys(nrows);
+    parallel_for(nrows, [&](std::size_t i) {
+        detail::ExactWeldKey& key = keys[i];
+        key.mWidth = 3;
+        for (std::size_t j = 0; j < 3; ++j)
+            std::memcpy(&key.mWords[j], pRows + i * rowbytes + j * isz, isz);
+    });
+    detail::ExactWeld weld = detail::exact_weld_keys(keys);
+    const std::size_t base = rOutPoints.size();
+    rOutPoints.resize(base + weld.NumIds() * rowbytes);
+    parallel_for(weld.NumIds(), [&](std::size_t id) {
+        std::memcpy(rOutPoints.data() + base + id * rowbytes, pRows + weld.mFirstRow[id] * rowbytes,
+                    rowbytes);
+    });
+    return std::move(weld.mIdOfRow);
 }
 
 Mesh build_mesh(std::vector<unsigned char>& rVertBytes, DType dt,

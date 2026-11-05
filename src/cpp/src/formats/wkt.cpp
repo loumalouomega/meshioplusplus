@@ -20,12 +20,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
-#include <functional>
 #include <iterator>
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 // Project includes
@@ -34,6 +32,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/exact_weld.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
@@ -51,19 +50,6 @@ std::vector<double> parse_point(const std::string& rS) {
     return p;
 }
 
-// Hash for exact-value coordinate dedup. Uses std::hash<double> (which maps
-// +0.0 and -0.0 to the same hash, matching operator== equality) combined
-// boost-style, so equal coordinate vectors always hash equal.
-struct CoordHash {
-    std::size_t operator()(const std::vector<double>& rV) const {
-        std::size_t h = rV.size();
-        std::hash<double> hd;
-        for (double x : rV)
-            h ^= hd(x) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
-
 }  // namespace
 
 Mesh read_wkt(const std::string& rPath) {
@@ -75,9 +61,12 @@ Mesh read_wkt(const std::string& rPath) {
     if (tin == std::string::npos)
         throw ReadError("Invalid WKT TIN");
 
-    std::unordered_map<std::vector<double>, std::int64_t, CoordHash>
-        point_index;                          // exact-value dedup
-    std::vector<std::vector<double>> points;  // insertion order
+    // Every vertex tuple as written (at most four coordinates, XYZM, padded),
+    // its dimensionality, and how many each triangle's linestring holds; the
+    // weld that numbers them runs once all are read.
+    std::vector<double> coords;
+    std::vector<std::size_t> dims;
+    std::vector<std::size_t> ring_sizes;
     std::vector<std::array<std::int64_t, 3>> tris;
 
     // Each triangle's linestring lives at parenthesis depth 3
@@ -110,7 +99,7 @@ Mesh read_wkt(const std::string& rPath) {
 
     for (const std::string& inner : triangle_strs) {
         // Split the triangle's vertices on commas; each is a coordinate tuple.
-        std::vector<std::int64_t> idxs;
+        std::size_t count = 0;
         std::size_t start = 0;
         while (start <= inner.size()) {
             std::size_t comma = inner.find(',', start);
@@ -118,25 +107,43 @@ Mesh read_wkt(const std::string& rPath) {
                 inner.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
             std::vector<double> pt = parse_point(part);
             if (!pt.empty()) {
-                auto it = point_index.find(pt);
-                std::int64_t id;
-                if (it == point_index.end()) {
-                    id = static_cast<std::int64_t>(points.size());
-                    point_index.emplace(pt, id);
-                    points.push_back(pt);
-                } else {
-                    id = it->second;
-                }
-                idxs.push_back(id);
+                if (pt.size() > 4)
+                    throw ReadError("WKT point has more than four coordinates");
+                dims.push_back(pt.size());
+                pt.resize(4, 0.0);
+                coords.insert(coords.end(), pt.begin(), pt.end());
+                ++count;
             }
             if (comma == std::string::npos)
                 break;
             start = comma + 1;
         }
+        ring_sizes.push_back(count);
+    }
 
-        if (idxs.size() != 4 || idxs.front() != idxs.back())
+    // Exact-value weld (`==`: -0.0 meets +0.0, a NaN meets nothing), first
+    // appearance first -- the numbering the per-vertex hash map gave.
+    const std::size_t nverts = dims.size();
+    std::vector<detail::ExactWeldKey> keys(nverts);
+    for (std::size_t i = 0; i < nverts; ++i)
+        keys[i] = detail::exact_weld_key(coords.data() + i * 4, dims[i],
+                                         detail::ExactWeldMode::Values, i);
+    const detail::ExactWeld weld = detail::exact_weld_keys(keys);
+
+    std::size_t at = 0;
+    for (const std::size_t count : ring_sizes) {
+        const std::int64_t* idxs = weld.mIdOfRow.data() + at;
+        at += count;
+        if (count != 4 || idxs[0] != idxs[3])
             throw ReadError("WKT triangle is not a closed linestring");
         tris.push_back({idxs[0], idxs[1], idxs[2]});
+    }
+
+    std::vector<std::vector<double>> points(weld.NumIds());
+    for (std::size_t id = 0; id < points.size(); ++id) {
+        const std::size_t row = weld.mFirstRow[id];
+        points[id].assign(coords.begin() + static_cast<std::ptrdiff_t>(row * 4),
+                          coords.begin() + static_cast<std::ptrdiff_t>(row * 4 + dims[row]));
     }
 
     // Points: all must share a dimensionality.

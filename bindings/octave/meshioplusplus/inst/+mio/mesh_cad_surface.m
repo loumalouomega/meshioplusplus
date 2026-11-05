@@ -39,8 +39,8 @@ function r = mesh_cad_surface(info, target_size, varargin)
 %                              (false)
 %     'reparam_condition_number'  flatten a face whose metric's condition
 %                              number passes this; 0 off, else > 1 (0)
-%     'model_tolerances'       accept the gaps the model declares (false)
-%     'virtual_faces'          mesh a narrow face with its neighbour (false)
+%     'model_tolerances'       accept the gaps the model declares (true)
+%     'virtual_faces'          mesh a narrow face with its neighbour (true)
 %     'lop_corners'            lop acute corners; only with refinement
 %                              (false)
 %     'metric_background'      a mesh with a 9-component Hessian (or the
@@ -83,7 +83,7 @@ function r = mesh_cad_surface(info, target_size, varargin)
         'grading', 0, 'curvature_deviation', 0, 'cells_across_gaps', 0, 'pole_rings', 0, ...
         'face_sizes', [], 'edge_sizes', [], 'background', [], 'background_array', 'size', ...
         'metric', 'mean', 'virtual_edges', false, 'reparam_condition_number', 0, ...
-        'model_tolerances', false, 'virtual_faces', false, 'lop_corners', false, ...
+        'model_tolerances', true, 'virtual_faces', true, 'lop_corners', false, ...
         'metric_background', [], 'metric_array', '', 'metric_error', 0, 'untangle', false, ...
         'quads', 'none', 'quad_pairs', 'matching'}, 'mio.mesh_cad_surface');
     smooth_method = mio.internal.choice(o.smooth_method, {'laplacian', 'odt'}, 'smooth_method');

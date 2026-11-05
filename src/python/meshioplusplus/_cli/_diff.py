@@ -1,5 +1,5 @@
 from .._diff import _format_report, diff
-from .._helpers import read, reader_map
+from .._helpers import _reader_names, read
 from ._json import emit_json
 
 
@@ -9,14 +9,14 @@ def add_args(parser):
     parser.add_argument(
         "--input-format-a",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input format of the first file",
         default=None,
     )
     parser.add_argument(
         "--input-format-b",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input format of the second file",
         default=None,
     )

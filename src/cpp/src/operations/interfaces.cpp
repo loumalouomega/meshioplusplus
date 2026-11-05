@@ -25,10 +25,13 @@
 #include "meshioplusplus/detail/facet_index.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/point_triangle.hpp"
+#include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/subset.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
+
+#include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -39,13 +42,6 @@ struct RaFacet {
     std::vector<std::int64_t> mNodes;
     std::int64_t mCell = -1;
     std::int64_t mFacet = -1;
-};
-
-struct RaPairFacet {
-    RaFacet mA;
-    RaFacet mB;
-    std::set<std::int64_t> mCellsA;
-    std::set<std::int64_t> mCellsB;
 };
 
 struct RaOutputFacet {
@@ -88,24 +84,60 @@ std::size_t ra_find_region(const Mesh& rMesh, const RegionSelector& rSelector) {
     return found;
 }
 
-void ra_add_facet(std::map<std::vector<std::int64_t>, std::vector<RaFacet>>& rFacets,
-                  const std::int64_t* pNodes, std::size_t N, std::int64_t Cell, std::int64_t Facet,
-                  std::size_t NumPoints) {
+// Every facet of the selected cells, flat: one record per (cell, local
+// facet), in cell order. The map these replaced (keyed on a heap vector per
+// facet, two allocations a record) is a grouping, which `group_facet_slots`
+// gives from the keys alone (roadmap 5.4.2).
+struct RaRecords {
+    std::vector<std::int64_t> mNodes;  ///< each facet's nodes as its cell winds them
+    std::vector<std::int64_t> mStart{0};
+    std::vector<std::int64_t> mCell;
+    std::vector<std::int64_t> mFacet;
+    std::vector<detail::FacetKey> mKeys;  ///< the sorted node set
+
+    std::size_t Size() const { return mCell.size(); }
+    RaFacet Facet(std::size_t Rec) const {
+        return RaFacet{std::vector<std::int64_t>(mNodes.begin() + mStart[Rec],
+                                                 mNodes.begin() + mStart[Rec + 1]),
+                       mCell[Rec], mFacet[Rec]};
+    }
+};
+
+void ra_add_facet(RaRecords& rRecords, const std::int64_t* pNodes, std::size_t N, std::int64_t Cell,
+                  std::int64_t Facet, std::size_t NumPoints) {
     if (N < 2)
         return;
-    std::vector<std::int64_t> nodes(pNodes, pNodes + N);
-    for (std::int64_t node : nodes)
-        if (node < 0 || static_cast<std::size_t>(node) >= NumPoints)
+    for (std::size_t k = 0; k < N; ++k)
+        if (pNodes[k] < 0 || static_cast<std::size_t>(pNodes[k]) >= NumPoints)
             return;
-    std::vector<std::int64_t> key = nodes;
-    std::sort(key.begin(), key.end());
-    if (std::adjacent_find(key.begin(), key.end()) != key.end())
+    detail::FacetKey key(pNodes, N);
+    if (std::adjacent_find(key.Data(), key.Data() + key.Size()) != key.Data() + key.Size())
         return;
-    rFacets[key].push_back(RaFacet{std::move(nodes), Cell, Facet});
+    rRecords.mNodes.insert(rRecords.mNodes.end(), pNodes, pNodes + N);
+    rRecords.mStart.push_back(static_cast<std::int64_t>(rRecords.mNodes.size()));
+    rRecords.mCell.push_back(Cell);
+    rRecords.mFacet.push_back(Facet);
+    rRecords.mKeys.push_back(std::move(key));
 }
 
-void ra_collect_facets(const Mesh& rMesh, const std::vector<std::vector<std::size_t>>& rMembership,
-                       std::map<std::vector<std::int64_t>, std::vector<RaFacet>>& rFacets) {
+// The records grouped by node set: each run's records ascend, so they are in
+// the order the map used to hold them.
+detail::SlotRuns ra_group(const Mesh& rMesh, const RaRecords& rRecords) {
+    return detail::group_facet_slots(
+        rRecords.mKeys, [](const detail::FacetKey& rK) -> const detail::FacetKey& { return rK; },
+        rMesh.NumPoints());
+}
+
+/// `std::vector` ordering of two sorted node sets, which the map was keyed on.
+bool ra_key_less(const detail::FacetKey& rA, const detail::FacetKey& rB) {
+    return std::lexicographical_compare(rA.Data(), rA.Data() + rA.Size(), rB.Data(),
+                                        rB.Data() + rB.Size());
+}
+
+// `rMemberStart` is the CSR offset array of each cell's region memberships;
+// a cell with none contributes no facet.
+void ra_collect_facets(const Mesh& rMesh, const std::vector<std::int64_t>& rMemberStart,
+                       RaRecords& rFacets) {
     const std::size_t num_points = rMesh.NumPoints();
     std::int64_t base = 0;
     std::vector<std::int64_t> row_nodes;
@@ -118,7 +150,8 @@ void ra_collect_facets(const Mesh& rMesh, const std::vector<std::vector<std::siz
 
         for (std::size_t row = 0; row < num_cells; ++row) {
             const std::int64_t global_cell = base + static_cast<std::int64_t>(row);
-            if (rMembership[static_cast<std::size_t>(global_cell)].empty())
+            if (rMemberStart[static_cast<std::size_t>(global_cell)] ==
+                rMemberStart[static_cast<std::size_t>(global_cell) + 1])
                 continue;
 
             if (cb.IsPolyhedron()) {
@@ -157,10 +190,10 @@ void ra_collect_facets(const Mesh& rMesh, const std::vector<std::vector<std::siz
                 const auto& faces = detail::cell_faces(type);
                 for (std::size_t face = 0; face < faces.size(); ++face) {
                     const detail::CellFaceDef& def = faces[face];
-                    std::vector<std::int64_t> nodes(def.mNumCorners);
+                    row_nodes.resize(def.mNumCorners);
                     for (std::size_t k = 0; k < def.mNumCorners; ++k)
-                        nodes[k] = detail::read_int(conn, row_offset + def.mNodes[k]);
-                    ra_add_facet(rFacets, nodes.data(), nodes.size(), global_cell,
+                        row_nodes[k] = detail::read_int(conn, row_offset + def.mNodes[k]);
+                    ra_add_facet(rFacets, row_nodes.data(), row_nodes.size(), global_cell,
                                  static_cast<std::int64_t>(face), num_points);
                 }
             } else if (dim == 2) {
@@ -289,24 +322,30 @@ std::vector<char> ra_region_mask(const Mesh& rMesh, const RegionSelector& rSelec
 }
 
 std::vector<RaFacet> ra_boundary_facets(const Mesh& rMesh, const std::vector<char>& rMask) {
-    std::vector<std::vector<std::size_t>> membership(rMask.size());
+    std::vector<std::int64_t> member_start(rMask.size() + 1, 0);
     for (std::size_t c = 0; c < rMask.size(); ++c)
-        if (rMask[c])
-            membership[c].push_back(0);
-    std::map<std::vector<std::int64_t>, std::vector<RaFacet>> indexed;
-    ra_collect_facets(rMesh, membership, indexed);
+        member_start[c + 1] = member_start[c] + (rMask[c] ? 1 : 0);
+    RaRecords records;
+    ra_collect_facets(rMesh, member_start, records);
+    const detail::SlotRuns runs = ra_group(rMesh, records);
+    // A facet is on the boundary when one cell alone holds it (a cell may hold
+    // it twice); that cell's lowest local facet stands for it.
     std::vector<RaFacet> out;
-    for (auto& [key, owners] : indexed) {
-        (void)key;
-        std::sort(owners.begin(), owners.end(), [](const RaFacet& rA, const RaFacet& rB) {
-            return std::tie(rA.mCell, rA.mFacet) < std::tie(rB.mCell, rB.mFacet);
-        });
-        owners.erase(
-            std::unique(owners.begin(), owners.end(),
-                        [](const RaFacet& rA, const RaFacet& rB) { return rA.mCell == rB.mCell; }),
-            owners.end());
-        if (owners.size() == 1)
-            out.push_back(owners.front());
+    for (std::size_t r = 0; r < runs.NumRuns(); ++r) {
+        const std::uint64_t* slot = runs.Begin(r);
+        const std::int64_t cell = records.mCell[slot[0]];
+        std::uint64_t best = slot[0];
+        bool alone = true;
+        for (; slot != runs.End(r); ++slot) {
+            if (records.mCell[*slot] != cell) {
+                alone = false;
+                break;
+            }
+            if (records.mFacet[*slot] < records.mFacet[best])
+                best = *slot;
+        }
+        if (alone)
+            out.push_back(records.Facet(best));
     }
     std::sort(out.begin(), out.end(), [](const RaFacet& rA, const RaFacet& rB) {
         return std::tie(rA.mCell, rA.mFacet, rA.mNodes) < std::tie(rB.mCell, rB.mFacet, rB.mNodes);
@@ -648,75 +687,139 @@ Mesh region_adjacency(const Mesh& rMesh, const std::vector<RegionSelector>& rReg
 
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const std::size_t num_cells = static_cast<std::size_t>(detail::total_cells(bases));
-    std::vector<std::vector<std::size_t>> membership(num_cells);
-    if (block_groups) {
-        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
-            for (std::int64_t cell = bases[b]; cell < bases[b + 1]; ++cell)
-                membership[static_cast<std::size_t>(cell)].push_back(b);
-    } else {
-        region_names.reserve(region_indices.size());
-        for (std::size_t i = 0; i < region_indices.size(); ++i) {
-            const Region& region = rMesh.Region(region_indices[i]);
-            region_names.push_back(region.mName);
-            for (std::size_t e = 0; e < region.mEntries.Size(); ++e) {
-                const std::int64_t cell = detail::read_int(region.mEntries, e);
-                if (cell >= 0 && static_cast<std::size_t>(cell) < num_cells)
-                    membership[static_cast<std::size_t>(cell)].push_back(i);
+    // Each cell's regions, CSR, in the order the lists used to hold them.
+    std::vector<std::int64_t> member_start(num_cells + 1, 0);
+    std::vector<std::size_t> members;
+    {
+        const auto visit = [&](const auto& rEmit) {
+            if (block_groups) {
+                for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+                    for (std::int64_t cell = bases[b]; cell < bases[b + 1]; ++cell)
+                        rEmit(static_cast<std::size_t>(cell), b);
+                return;
             }
+            for (std::size_t i = 0; i < region_indices.size(); ++i) {
+                const Region& region = rMesh.Region(region_indices[i]);
+                for (std::size_t e = 0; e < region.mEntries.Size(); ++e) {
+                    const std::int64_t cell = detail::read_int(region.mEntries, e);
+                    if (cell >= 0 && static_cast<std::size_t>(cell) < num_cells)
+                        rEmit(static_cast<std::size_t>(cell), i);
+                }
+            }
+        };
+        visit([&](std::size_t Cell, std::size_t) { ++member_start[Cell + 1]; });
+        for (std::size_t c = 0; c < num_cells; ++c)
+            member_start[c + 1] += member_start[c];
+        members.resize(static_cast<std::size_t>(member_start[num_cells]));
+        std::vector<std::int64_t> fill(member_start.begin(), member_start.end() - 1);
+        visit([&](std::size_t Cell, std::size_t Region) {
+            members[static_cast<std::size_t>(fill[Cell]++)] = Region;
+        });
+        if (!block_groups) {
+            region_names.reserve(region_indices.size());
+            for (std::size_t i = 0; i < region_indices.size(); ++i)
+                region_names.push_back(rMesh.Region(region_indices[i]).mName);
         }
     }
 
-    std::map<std::vector<std::int64_t>, std::vector<RaFacet>> facets;
-    ra_collect_facets(rMesh, membership, facets);
+    RaRecords facets;
+    ra_collect_facets(rMesh, member_start, facets);
+    const detail::SlotRuns runs = ra_group(rMesh, facets);
 
-    using PairKey = std::tuple<std::size_t, std::size_t, std::vector<std::int64_t>>;
-    std::map<PairKey, RaPairFacet> pair_facets;
-    for (const auto& [key, owners] : facets) {
-        for (std::size_t i = 0; i < owners.size(); ++i) {
-            for (std::size_t j = i + 1; j < owners.size(); ++j) {
-                if (owners[i].mCell == owners[j].mCell)
+    // One entry per (region a, region b, facet key): the least (cell, facet)
+    // record on each side and the distinct cells on each. A key's records are
+    // one run, so each run is aggregated on its own.
+    struct RaPair {
+        std::size_t mRegionA = 0;
+        std::size_t mRegionB = 0;
+        std::size_t mRun = 0;
+        std::size_t mA = 0;
+        std::size_t mB = 0;
+        std::vector<std::int64_t> mCellsA;
+        std::vector<std::int64_t> mCellsB;
+    };
+    const auto rec_less = [&](std::size_t X, std::size_t Y) {
+        return std::tie(facets.mCell[X], facets.mFacet[X]) <
+               std::tie(facets.mCell[Y], facets.mFacet[Y]);
+    };
+    std::vector<RaPair> pairs;
+    std::vector<RaPair> local;
+    for (std::size_t r = 0; r < runs.NumRuns(); ++r) {
+        const std::size_t size = runs.Size(r);
+        if (size < 2)
+            continue;
+        const std::uint64_t* owners = runs.Begin(r);
+        local.clear();
+        for (std::size_t i = 0; i < size; ++i) {
+            for (std::size_t j = i + 1; j < size; ++j) {
+                const std::size_t oi = owners[i];
+                const std::size_t oj = owners[j];
+                if (facets.mCell[oi] == facets.mCell[oj])
                     continue;
-                const auto& mem_i = membership[static_cast<std::size_t>(owners[i].mCell)];
-                const auto& mem_j = membership[static_cast<std::size_t>(owners[j].mCell)];
-                for (std::size_t a : mem_i)
-                    for (std::size_t b : mem_j) {
+                const auto ci = static_cast<std::size_t>(facets.mCell[oi]);
+                const auto cj = static_cast<std::size_t>(facets.mCell[oj]);
+                for (auto ma = member_start[ci]; ma < member_start[ci + 1]; ++ma)
+                    for (auto mb = member_start[cj]; mb < member_start[cj + 1]; ++mb) {
+                        const std::size_t a = members[static_cast<std::size_t>(ma)];
+                        const std::size_t b = members[static_cast<std::size_t>(mb)];
                         if (a == b)
                             continue;
                         const bool forward = a < b;
                         const std::size_t region_a = forward ? a : b;
                         const std::size_t region_b = forward ? b : a;
-                        RaPairFacet& pair = pair_facets[{region_a, region_b, key}];
-                        const RaFacet& facet_a = forward ? owners[i] : owners[j];
-                        const RaFacet& facet_b = forward ? owners[j] : owners[i];
-                        if (pair.mCellsA.empty() || std::tie(facet_a.mCell, facet_a.mFacet) <
-                                                        std::tie(pair.mA.mCell, pair.mA.mFacet))
-                            pair.mA = facet_a;
-                        if (pair.mCellsB.empty() || std::tie(facet_b.mCell, facet_b.mFacet) <
-                                                        std::tie(pair.mB.mCell, pair.mB.mFacet))
-                            pair.mB = facet_b;
-                        pair.mCellsA.insert(facet_a.mCell);
-                        pair.mCellsB.insert(facet_b.mCell);
+                        const std::size_t facet_a = forward ? oi : oj;
+                        const std::size_t facet_b = forward ? oj : oi;
+                        RaPair* pPair = nullptr;
+                        for (RaPair& rP : local)
+                            if (rP.mRegionA == region_a && rP.mRegionB == region_b)
+                                pPair = &rP;
+                        if (pPair == nullptr) {
+                            local.push_back(
+                                RaPair{region_a, region_b, r, facet_a, facet_b, {}, {}});
+                            pPair = &local.back();
+                        }
+                        if (rec_less(facet_a, pPair->mA))
+                            pPair->mA = facet_a;
+                        if (rec_less(facet_b, pPair->mB))
+                            pPair->mB = facet_b;
+                        pPair->mCellsA.push_back(facets.mCell[facet_a]);
+                        pPair->mCellsB.push_back(facets.mCell[facet_b]);
                     }
             }
         }
+        for (RaPair& rP : local)
+            pairs.push_back(std::move(rP));
     }
+    // The order the (region a, region b, key) map iterated in.
+    std::sort(pairs.begin(), pairs.end(), [&](const RaPair& rX, const RaPair& rY) {
+        if (rX.mRegionA != rY.mRegionA)
+            return rX.mRegionA < rY.mRegionA;
+        if (rX.mRegionB != rY.mRegionB)
+            return rX.mRegionB < rY.mRegionB;
+        return ra_key_less(facets.mKeys[runs.Head(rX.mRun)], facets.mKeys[runs.Head(rY.mRun)]);
+    });
+    const auto distinct = [](std::vector<std::int64_t>& rCells) {
+        std::sort(rCells.begin(), rCells.end());
+        return static_cast<std::int64_t>(std::unique(rCells.begin(), rCells.end()) -
+                                         rCells.begin());
+    };
 
     std::map<std::string, RaOutputBlock> output_blocks;
-    for (const auto& [pair_key, pair] : pair_facets) {
-        const auto [region_a, region_b, key] = pair_key;
-        (void)key;
-        const std::size_t node_count = pair.mA.mNodes.size();
+    for (RaPair& rPair : pairs) {
+        RaFacet facet_a = facets.Facet(rPair.mA);
+        const std::size_t node_count = facet_a.mNodes.size();
         const std::string type = node_count == 2   ? "line"
                                  : node_count == 3 ? "triangle"
                                  : node_count == 4 ? "quad"
                                                    : "polygon";
         RaOutputBlock& block = output_blocks[type];
         block.mType = type;
-        block.mFacets.push_back(RaOutputFacet{
-            pair.mA.mNodes, static_cast<std::int64_t>(region_a),
-            static_cast<std::int64_t>(region_b), pair.mA.mCell, pair.mA.mFacet, pair.mB.mCell,
-            pair.mB.mFacet, static_cast<std::int64_t>(pair.mCellsA.size() + pair.mCellsB.size()),
-            ra_measure(rMesh.Points(), rMesh.PointDim(), pair.mA.mNodes)});
+        const double measure = ra_measure(rMesh.Points(), rMesh.PointDim(), facet_a.mNodes);
+        block.mFacets.push_back(
+            RaOutputFacet{std::move(facet_a.mNodes), static_cast<std::int64_t>(rPair.mRegionA),
+                          static_cast<std::int64_t>(rPair.mRegionB), facets.mCell[rPair.mA],
+                          facets.mFacet[rPair.mA], facets.mCell[rPair.mB], facets.mFacet[rPair.mB],
+                          distinct(rPair.mCellsA) + distinct(rPair.mCellsB), measure});
     }
 
     Mesh out;

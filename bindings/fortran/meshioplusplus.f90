@@ -1069,8 +1069,9 @@ module meshioplusplus
         type(c_ptr) :: background = c_null_ptr
         type(c_ptr) :: background_array = c_null_ptr
         real(c_double) :: reparam_condition_number = 0
-        integer(c_int32_t) :: model_tolerances = 0
-        integer(c_int32_t) :: virtual_faces = 0
+        ! On by default since v19.0.0, as mio_mesh_cad_surface_opts_ex_init sets them.
+        integer(c_int32_t) :: model_tolerances = 1
+        integer(c_int32_t) :: virtual_faces = 1
         integer(c_int32_t) :: lop_corners = 0
         integer(c_int32_t) :: untangle = 0
         type(c_ptr) :: metric_background = c_null_ptr
@@ -15849,7 +15850,8 @@ contains
     !> limited a face given a size (v17.19.0). `reparam_condition_number`
     !> flattens a face whose metric's condition number passes it,
     !> `model_tolerances` accepts the gaps the model declares and
-    !> `virtual_faces` meshes slivers with a neighbour and `lop_corners` lops
+    !> `virtual_faces` meshes slivers with a neighbour (both default
+    !> `.true.` since v19.0.0) and `lop_corners` lops
     !> acute corners in place of concentric shells (v17.20.0; read back by
     !> `mio_mesh_cad_get_reparametrised`, `_merged_face`, `_tolerance_use`,
     !> `_lopped_corner`). A `metric_background` mesh whose 9-component point

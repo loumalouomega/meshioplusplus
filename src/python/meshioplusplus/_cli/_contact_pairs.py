@@ -1,7 +1,7 @@
 import csv
 import sys
 
-from .._helpers import read, reader_map
+from .._helpers import _reader_names, read
 from .._interfaces import contact_pairs
 from ._json import emit_json
 
@@ -15,8 +15,8 @@ def add_args(parser):
     )
     parser.add_argument("--slave-region", required=True, help="Point region to project")
     parser.add_argument("--master-region", required=True, help="master Cell region")
-    parser.add_argument("--slave-format", choices=sorted(reader_map), default=None)
-    parser.add_argument("--master-format", choices=sorted(reader_map), default=None)
+    parser.add_argument("--slave-format", choices=_reader_names(), default=None)
+    parser.add_argument("--master-format", choices=_reader_names(), default=None)
     parser.add_argument(
         "--output", "-o", default=None, help="optional CSV file for the pair table"
     )

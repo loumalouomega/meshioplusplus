@@ -1,5 +1,5 @@
 from .. import _primitives
-from .._helpers import _writer_map, write
+from .._helpers import _writer_names, write
 
 QUAD_OR_TRIANGLE = {"cell_type": ("quad", ["quad", "triangle"])}
 HEX_OR_TETRA = {"cell_type": ("hexahedron", ["hexahedron", "tetra"])}
@@ -297,7 +297,7 @@ def add_args(parser):
             "--output-format",
             "-o",
             type=str,
-            choices=sorted(list(_writer_map.keys())),
+            choices=_writer_names(),
             help="output file format",
             default=None,
         )

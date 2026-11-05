@@ -1,6 +1,6 @@
 import json
 
-from .._helpers import _writer_map, read, reader_map, write
+from .._helpers import _reader_names, _writer_names, read, write
 from .._interfaces import split_interface
 from .._regions import Region
 from ._json import emit_json
@@ -17,12 +17,8 @@ def add_args(parser):
         default=None,
         help='JSON list of [global_cell, local_facet] pairs, e.g. "[[4, 2], [7, 0]]"',
     )
-    parser.add_argument(
-        "--input-format", "-i", choices=sorted(reader_map), default=None
-    )
-    parser.add_argument(
-        "--output-format", "-o", choices=sorted(_writer_map), default=None
-    )
+    parser.add_argument("--input-format", "-i", choices=_reader_names(), default=None)
+    parser.add_argument("--output-format", "-o", choices=_writer_names(), default=None)
     parser.add_argument("--add-cohesive", action="store_true")
     parser.add_argument("--json", action="store_true", help="emit a JSON report")
 

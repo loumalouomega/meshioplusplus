@@ -37,12 +37,13 @@
 #include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/point_triangle.hpp"
-#include "meshioplusplus/detail/spatial_hash.hpp"
+#include "meshioplusplus/detail/bucket_table.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/bucket_build.hpp"
 #include "../detail/surface_rings.hpp"
 
 namespace meshioplusplus {
@@ -476,10 +477,13 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
         double cell = std::max(extent_sum / static_cast<double>(nf), diag / 256.0);
         if (!(cell > 0.0))
             cell = 1.0;
-        detail::SpatialGrid grid(cell);
-        for (std::size_t f = 0; f < nf; ++f)
-            grid.InsertBox(grid.KeyOf(box[f].data()), grid.KeyOf(box[f].data() + 3),
-                           static_cast<std::int64_t>(f));
+        std::vector<detail::GridKey> box_lo(nf);
+        std::vector<detail::GridKey> box_hi(nf);
+        parallel_for(nf, [&](std::size_t f) {
+            box_lo[f] = detail::bucket_key(box[f].data(), cell);
+            box_hi[f] = detail::bucket_key(box[f].data() + 3, cell);
+        });
+        const detail::BucketTable grid = detail::build_bucket_table(cell, box_lo, box_hi);
 
         // One view per block, and the nodes of a facet's owner on demand.
         const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
@@ -514,11 +518,11 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
         parallel_for(candidates.size(), [&](std::size_t i) {
             const std::int64_t p = candidates[i];
             const detail::Vec3 x = cc_point(xyz, p);
-            const std::vector<std::int64_t>* bucket = grid.Find(grid.KeyOf(x.data()));
-            if (bucket == nullptr)
+            detail::BucketView bucket(nullptr, 0);
+            if (!grid.Find(grid.KeyOf(x.data()), bucket))
                 return;
             std::vector<std::int64_t> scratch;
-            for (std::int64_t id : *bucket) {
+            for (std::int64_t id : bucket) {
                 const std::size_t f = static_cast<std::size_t>(id);
                 const std::array<double, 6>& b = box[f];
                 if (x[0] < b[0] || x[1] < b[1] || x[2] < b[2] || x[0] > b[3] || x[1] > b[4] ||
@@ -552,7 +556,7 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
         parallel_for(nf, [&](std::size_t f) {
             std::vector<std::int64_t> near;
             grid.ForEachInBox(grid.KeyOf(box[f].data()), grid.KeyOf(box[f].data() + 3),
-                              [&](const std::vector<std::int64_t>& rIds) {
+                              [&](const detail::BucketView& rIds) {
                                   for (std::int64_t id : rIds)
                                       if (static_cast<std::size_t>(id) > f)
                                           near.push_back(id);

@@ -271,3 +271,36 @@ def test_a_point_cloud_writes_and_reads_back(tmp_path, ext):
     back = mio.read(path)
     assert len(back.points) == 30
     assert np.allclose(back.points, out.points)
+
+
+@pytest.mark.parametrize("decimals", [1, 3, 8])
+def test_the_native_farthest_kernel_is_the_numpy_loop(decimals, monkeypatch):
+    """Roadmap 5.10.2: the core's sweep selects exactly what the numpy loop
+    does -- ties, repeated positions, NaNs and running out of positions."""
+    from meshioplusplus import _core, _point_budget
+
+    if not hasattr(_core, "farthest_point_order"):
+        pytest.skip("the native core has no farthest_point_order")
+    rng = np.random.default_rng(decimals)
+    pts = rng.random((4000, 3)).round(decimals)
+    if decimals == 3:
+        pts[[17, 900]] = np.nan
+
+    def both(count, first):
+        out = []
+        for native in (True, False):
+            with monkeypatch.context() as m:
+                if not native:
+                    m.delattr(_core, "farthest_point_order")
+                try:
+                    out.append(_point_budget._fps(pts, count, first, "p: "))
+                except ValueError as exc:
+                    out.append(str(exc))
+        return out
+
+    for count, first in ((1, 0), (50, 7), (900, 3999), (4000, 1)):
+        native, twin = both(count, first)
+        if isinstance(twin, str):
+            assert native == twin
+        else:
+            assert native.dtype == twin.dtype and np.array_equal(native, twin)

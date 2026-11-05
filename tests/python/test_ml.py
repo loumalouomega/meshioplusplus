@@ -123,6 +123,49 @@ def test_edge_index_is_deterministic():
         assert np.array_equal(meshioplusplus.edge_index(mesh), first)
 
 
+_CORNERS = {
+    "line": 2,
+    "triangle": 3,
+    "quad": 4,
+    "tetra": 4,
+    "pyramid": 5,
+    "wedge": 6,
+    "hexahedron": 8,
+    "triangle6": 6,
+    "polygon": 5,
+}
+
+
+@pytest.mark.parametrize("undirected", [True, False])
+def test_edge_index_core_path_equals_the_python_twin(undirected, monkeypatch):
+    """Roadmap 5.10.1: the core's CSR, expanded, is byte-identical to the
+    Python collection and its two lexsorts -- every edge table, uniform and
+    ragged polygons, a 2-gon, a type with no edges, degenerate rows and ids
+    out of range."""
+    monkeypatch.setattr(_ml, "warn", lambda s, highlight=True: None)
+    rng = np.random.default_rng(7)
+    n = 40
+    cells = [(t, rng.integers(0, n, (25, k))) for t, k in _CORNERS.items()]
+    cells.append(("polygon", [rng.integers(0, n, k) for k in (3, 5, 2, 7, 4)]))
+    cells.append(("triangle", np.array([[0, 0, 1], [3, 4, n + 5], [-1, 2, 3]])))
+    mesh = Mesh(rng.random((n, 3)), cells)
+    fast = _ml._node_edges_from_core(mesh, undirected)
+    if fast is None:
+        pytest.skip("the native core is not available")
+    slow = _ml._canonical_edges(*_ml._node_edge_pairs(mesh), undirected)
+    assert fast.dtype == slow.dtype and fast.shape == slow.shape
+    assert np.array_equal(fast, slow)
+    assert np.array_equal(meshioplusplus.edge_index(mesh, undirected=undirected), slow)
+
+
+def test_edge_index_polyhedra_keep_the_python_path():
+    mesh = Mesh(
+        np.zeros((4, 3)),
+        [("polyhedron4", [[[0, 1, 2], [0, 1, 3], [1, 2, 3], [0, 2, 3]]])],
+    )
+    assert _ml._node_edges_from_core(mesh, True) is None
+
+
 def test_edge_index_ragged_polygon_ring():
     mesh = Mesh(
         np.zeros((5, 3)),

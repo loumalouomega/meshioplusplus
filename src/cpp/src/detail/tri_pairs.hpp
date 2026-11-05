@@ -22,7 +22,7 @@
  * overlap, found over a bucket grid: the candidate search of
  * `find_intersections`.
  *
- * The grid is `check_conformity`'s (a `SpatialGrid` over the boxes, a cell
+ * The grid is `check_conformity`'s (a frozen `BucketTable` over the boxes, a cell
  * as large as the triangles' mean extent and never finer than 1/256 of the
  * diagonal), so a large triangle among small ones spans a bounded number of
  * buckets. Each triangle's candidates are collected, sorted and made unique

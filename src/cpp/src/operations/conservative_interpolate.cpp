@@ -42,10 +42,12 @@
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/polyhedron.hpp"
-#include "meshioplusplus/detail/spatial_hash.hpp"
+#include "meshioplusplus/detail/bucket_table.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+#include "../detail/bucket_build.hpp"
 
 namespace meshioplusplus {
 
@@ -446,8 +448,10 @@ ConsOverlap cons_build_overlap(const Mesh& rSource, const Mesh& rTarget, const M
         ++r;
     const double cell = max_extent > 0.0 ? max_extent / static_cast<double>(r) : 1.0;
 
-    detail::SpatialGrid grid(cell);
-    std::vector<std::pair<detail::GridKey, detail::GridKey>> src_boxes(nsrc);
+    // The source boxes, grouped into a frozen grid whose buckets list their
+    // simplices ascending, as serial inserts in source order did (roadmap 5.4.1).
+    std::vector<detail::GridKey> box_lo(nsrc);
+    std::vector<detail::GridKey> box_hi(nsrc);
     parallel_for(nsrc, [&](std::size_t s) {
         detail::Vec3 blo = scoord(s, 0);
         detail::Vec3 bhi = blo;
@@ -460,10 +464,10 @@ ConsOverlap cons_build_overlap(const Mesh& rSource, const Mesh& rTarget, const M
                     bhi[d] = p[d];
             }
         }
-        src_boxes[s] = {grid.KeyOf(blo.data()), grid.KeyOf(bhi.data())};
+        box_lo[s] = detail::bucket_key(blo.data(), cell);
+        box_hi[s] = detail::bucket_key(bhi.data(), cell);
     });
-    for (std::size_t s = 0; s < nsrc; ++s)
-        grid.InsertBox(src_boxes[s].first, src_boxes[s].second, static_cast<std::int64_t>(s));
+    const detail::BucketTable grid = detail::build_bucket_table(cell, box_lo, box_hi);
 
     // Narrow phase, independent per target simplex -> parallel-safe.
     parallel_for(ntgt, [&](std::size_t t) {
@@ -482,7 +486,7 @@ ConsOverlap cons_build_overlap(const Mesh& rSource, const Mesh& rTarget, const M
 
         std::vector<std::int64_t> cand;
         grid.ForEachInBox(grid.KeyOf(tblo.data()), grid.KeyOf(tbhi.data()),
-                          [&](const std::vector<std::int64_t>& rIds) {
+                          [&](const detail::BucketView& rIds) {
                               cand.insert(cand.end(), rIds.begin(), rIds.end());
                           });
         std::sort(cand.begin(), cand.end());

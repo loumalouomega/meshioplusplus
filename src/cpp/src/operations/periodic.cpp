@@ -36,10 +36,12 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/node_adjacency.hpp"
-#include "meshioplusplus/detail/spatial_hash.hpp"
+#include "meshioplusplus/detail/bucket_table.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
+
+#include "../detail/bucket_build.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -128,12 +130,14 @@ PeriodicPairs match_periodic_nodes(const Mesh& rMesh, const RegionSelector& rSla
             extent = std::max(extent, std::fabs(c));
     }
     const double cell = std::max(rOptions.mAtol, extent * 1e-12);
-    detail::SpatialGrid grid(cell);
     std::vector<detail::Vec3> master_xyz(master.size());
+    std::vector<detail::GridKey> master_key(master.size());
     for (std::size_t k = 0; k < master.size(); ++k) {
         master_xyz[k] = point(master[k]);
-        grid.Insert(grid.KeyOf(master_xyz[k].data()), static_cast<std::int64_t>(k));
+        master_key[k] = detail::bucket_key(master_xyz[k].data(), cell);
     }
+    // A frozen grid of the master nodes, each bucket ascending (roadmap 5.4.1).
+    const detail::BucketTable grid = detail::build_bucket_table(cell, master_key, master_key);
 
     const std::array<double, 16>& m = rOptions.mTransform.mMatrix;
     const double atol2 = rOptions.mAtol * rOptions.mAtol;
@@ -146,20 +150,23 @@ PeriodicPairs match_periodic_nodes(const Mesh& rMesh, const RegionSelector& rSla
             q[r] = m[r * 4 + 0] * p[0] + m[r * 4 + 1] * p[1] + m[r * 4 + 2] * p[2] + m[r * 4 + 3];
         double best = std::numeric_limits<double>::infinity();
         std::int64_t hit = -1;
-        grid.ForEachIn27(grid.KeyOf(q.data()), [&](const std::vector<std::int64_t>& rBucket) {
-            for (std::int64_t k : rBucket) {
-                const detail::Vec3& c = master_xyz[static_cast<std::size_t>(k)];
-                const double d2 = (c[0] - q[0]) * (c[0] - q[0]) + (c[1] - q[1]) * (c[1] - q[1]) +
-                                  (c[2] - q[2]) * (c[2] - q[2]);
-                if (d2 <= atol2 &&
-                    (d2 < best || (d2 == best && master[static_cast<std::size_t>(k)] <
-                                                     master[static_cast<std::size_t>(hit)]))) {
-                    best = d2;
-                    hit = k;
+        // The 3 x 3 x 3 cells around the image, in ascending z -> y -> x order.
+        const detail::GridKey at = grid.KeyOf(q.data());
+        grid.ForEachInBox(
+            detail::GridKey{at.x - 1, at.y - 1, at.z - 1},
+            detail::GridKey{at.x + 1, at.y + 1, at.z + 1}, [&](const detail::BucketView& rBucket) {
+                for (std::int64_t k : rBucket) {
+                    const detail::Vec3& c = master_xyz[static_cast<std::size_t>(k)];
+                    const double d2 = (c[0] - q[0]) * (c[0] - q[0]) +
+                                      (c[1] - q[1]) * (c[1] - q[1]) + (c[2] - q[2]) * (c[2] - q[2]);
+                    if (d2 <= atol2 &&
+                        (d2 < best || (d2 == best && master[static_cast<std::size_t>(k)] <
+                                                         master[static_cast<std::size_t>(hit)]))) {
+                        best = d2;
+                        hit = k;
+                    }
                 }
-            }
-            return true;
-        });
+            });
         match[i] = hit;
         residual[i] = hit >= 0 ? std::sqrt(best) : 0.0;
     });

@@ -328,7 +328,8 @@ struct SmoothCornerReader {
 //
 // Term-for-term the same computation as quality.cpp's quality_facefan_volume,
 // deliberately kept as a separate flat-buffer variant: the guard evaluates this
-// twice per incident cell per free node per pass, and routing it through
+// once per cell per pass (the "before" value) and once per incident cell per
+// free node per pass (the "after" value), and routing it through
 // quality's `const std::vector<Vec3>&` signature would put a heap allocation and
 // a gather in the hottest loop in this file.
 double smooth_facefan_volume(const SmoothCornerReader& rAt, std::size_t NumCorners,
@@ -428,6 +429,7 @@ Vec3 smooth_newell_normal(const SmoothCornerReader& rAt, std::size_t NumCorners)
 }
 
 // Would moving `Node` to `rCand` turn cell `Cell` from valid into inverted?
+// `rBefore` is smooth_cell_measure of the cell before the move.
 //
 // The rule is strictly "do no harm", not "preserve the sign":
 //
@@ -448,48 +450,74 @@ Vec3 smooth_newell_normal(const SmoothCornerReader& rAt, std::size_t NumCorners)
 // mode has no absolute convention available -- a facet in 3D has no intrinsic
 // orientation -- so there it stays purely relative: did this facet just fold
 // back over itself?
-bool smooth_cell_flips(std::size_t Cell, const SmoothCellTable& rTable,
-                       const std::vector<double>& rXyz, std::int64_t Node, const Vec3& rCand) {
+// A cell's orientation measure over the positions `rXyz`: the signed volume or
+// area in [0] for the scalar modes, the Newell normal for NormalFlip. Within a
+// Jacobi pass `rXyz` is the frozen previous iterate, so this "before" value is
+// the same for every free node of the cell: smooth_run_passes computes it once
+// per cell per pass (roadmap 5.5.1) instead of once per probing node.
+Vec3 smooth_cell_measure(std::size_t Cell, const SmoothCellTable& rTable,
+                         const SmoothCornerReader& rAt) {
     const std::int64_t off = rTable.mCornerOffset[Cell];
     const std::size_t ncorner = static_cast<std::size_t>(rTable.mCornerOffset[Cell + 1] - off);
-    const std::int64_t* corners = rTable.mCornerNodes.data() + off;
-
-    SmoothCornerReader before{&rXyz, corners, Node, nullptr};
-    SmoothCornerReader after{&rXyz, corners, Node, &rCand};
-
     switch (rTable.mMeasure[Cell]) {
-        case SmoothMeasure::PolyFan: {
+        case SmoothMeasure::PolyFan:
             // Measured WITHOUT re-orienting: a polyhedron's stored winding is
             // arbitrary but fixed for the whole run, so the sign is consistent
             // between `before` and `after` -- which is all "do no harm" needs.
             // Orienting here would repair the winding on every probe and hide
             // exactly the flip the guard exists to catch.
-            const double v0 = smooth_polyfan_volume(before, ncorner, rTable, Cell);
+            return {smooth_polyfan_volume(rAt, ncorner, rTable, Cell), 0.0, 0.0};
+        case SmoothMeasure::FaceFan:
+            return {smooth_facefan_volume(
+                        rAt, ncorner,
+                        *rTable.mFaceTables[static_cast<std::size_t>(rTable.mFaceTable[Cell])]),
+                    0.0, 0.0};
+        case SmoothMeasure::Shoelace2D:
+            return {smooth_shoelace_area(rAt, ncorner), 0.0, 0.0};
+        case SmoothMeasure::NormalFlip:
+            return smooth_newell_normal(rAt, ncorner);
+    }
+    return {0.0, 0.0, 0.0};
+}
+
+Vec3 smooth_cell_measure(std::size_t Cell, const SmoothCellTable& rTable,
+                         const std::vector<double>& rXyz) {
+    const std::int64_t* corners = rTable.mCornerNodes.data() + rTable.mCornerOffset[Cell];
+    return smooth_cell_measure(Cell, rTable, SmoothCornerReader{&rXyz, corners, -1, nullptr});
+}
+
+bool smooth_cell_flips(std::size_t Cell, const SmoothCellTable& rTable,
+                       const std::vector<double>& rXyz, std::int64_t Node, const Vec3& rCand,
+                       const Vec3& rBefore) {
+    const std::int64_t off = rTable.mCornerOffset[Cell];
+    const std::size_t ncorner = static_cast<std::size_t>(rTable.mCornerOffset[Cell + 1] - off);
+    const std::int64_t* corners = rTable.mCornerNodes.data() + off;
+    const SmoothCornerReader after{&rXyz, corners, Node, &rCand};
+    // Each case calls its measure directly, as smooth_cell_measure does, so
+    // the reader inlines into the hot after-move evaluation.
+    switch (rTable.mMeasure[Cell]) {
+        case SmoothMeasure::PolyFan: {
+            const double v0 = rBefore[0];
             if (v0 == 0.0)
                 return false;  // degenerate on arrival: no constraint
             const double v1 = smooth_polyfan_volume(after, ncorner, rTable, Cell);
             return (v0 > 0.0) ? (v1 <= 0.0) : (v1 >= 0.0);
         }
         case SmoothMeasure::FaceFan: {
+            if (rBefore[0] <= 0.0)
+                return false;  // already inverted/degenerate: no constraint
             const std::vector<detail::CellFaceDef>& faces =
                 *rTable.mFaceTables[static_cast<std::size_t>(rTable.mFaceTable[Cell])];
-            const double v0 = smooth_facefan_volume(before, ncorner, faces);
-            if (v0 <= 0.0)
-                return false;  // already inverted/degenerate: no constraint
             return smooth_facefan_volume(after, ncorner, faces) <= 0.0;
         }
-        case SmoothMeasure::Shoelace2D: {
-            const double a0 = smooth_shoelace_area(before, ncorner);
-            if (a0 <= 0.0)
+        case SmoothMeasure::Shoelace2D:
+            if (rBefore[0] <= 0.0)
                 return false;  // already inverted/degenerate: no constraint
             return smooth_shoelace_area(after, ncorner) <= 0.0;
-        }
         case SmoothMeasure::NormalFlip: {
-            const Vec3 n0 = smooth_newell_normal(before, ncorner);
-            const Vec3 n1 = smooth_newell_normal(after, ncorner);
-            if (detail::vec3_norm_sq(n0) == 0.0)
+            if (detail::vec3_norm_sq(rBefore) == 0.0)
                 return false;
-            return detail::vec3_dot(n0, n1) <= 0.0;
+            return detail::vec3_dot(rBefore, smooth_newell_normal(after, ncorner)) <= 0.0;
         }
     }
     return false;
@@ -1077,9 +1105,40 @@ std::int64_t smooth_run_passes(const SmoothParams& params, const detail::NodeAdj
     std::vector<double> cur(prev.size(), 0.0);
     std::vector<std::uint8_t> skipped(n, 0);
     std::int64_t num_skipped = 0;
+    // Per-cell values that depend on `prev` alone, so are the same for every
+    // free node of the cell within a pass (roadmap 5.5.1): the guard's
+    // before-move measure, and ODT's circumcenter and volume of each tet.
+    // Computed once per cell per pass with the same arithmetic the per-node
+    // loop used, so the result is bit-identical.
+    const std::size_t ncells = cells.mMeasure.size();
+    std::vector<Vec3> before(guard ? ncells : 0);
+    struct OdtTet {
+        Vec3 mCenter;
+        double mVolume;
+        bool mValid;
+    };
+    std::vector<OdtTet> odt(is_odt ? ncells : 0);
     for (int pass = 0; pass < params.mNumPasses; ++pass) {
         // Taubin alternates the shrinking (+lambda) and un-shrinking (mu) pass.
         const double factor = (!params.mTaubin || (pass % 2 == 0)) ? params.mLambda : params.mMu;
+
+        if (guard)
+            parallel_for(ncells,
+                         [&](std::size_t c) { before[c] = smooth_cell_measure(c, cells, prev); });
+        if (is_odt)
+            parallel_for(ncells, [&](std::size_t c) {
+                const std::int64_t cb = cells.mCornerOffset[c];
+                const SmoothCornerReader at{
+                    &prev, &cells.mCornerNodes[static_cast<std::size_t>(cb)], -1, nullptr};
+                const Vec3 p0 = at(0), p1 = at(1), p2 = at(2), p3 = at(3);
+                OdtTet& tet = odt[c];
+                tet.mValid = smooth_tet_circumcenter(p0, p1, p2, p3, kOdtEps, tet.mCenter);
+                if (!tet.mValid)
+                    return;  // degenerate tet: no circumsphere, no contribution
+                const Vec3 coords[4] = {p0, p1, p2, p3};
+                tet.mVolume = std::fabs(detail::cell_volume_from_corners(coords, CellType::Tetra));
+                tet.mValid = !(tet.mVolume < kOdtEps);  // the old `continue` test, NaN included
+            });
 
         std::fill(skipped.begin(), skipped.end(), 0);
         parallel_for(n, [&](std::size_t i) {
@@ -1109,20 +1168,12 @@ std::int64_t smooth_run_passes(const SmoothParams& params, const detail::NodeAdj
                 double sum_v = 0.0;
                 Vec3 sum_wc = {0.0, 0.0, 0.0};
                 for (std::int64_t k = ib; k < ie; ++k) {
-                    const std::size_t c =
-                        static_cast<std::size_t>(incidence.mAdj[static_cast<std::size_t>(k)]);
-                    const std::int64_t cb = cells.mCornerOffset[c];
-                    const SmoothCornerReader at{
-                        &prev, &cells.mCornerNodes[static_cast<std::size_t>(cb)], -1, nullptr};
-                    const Vec3 p0 = at(0), p1 = at(1), p2 = at(2), p3 = at(3);
-                    Vec3 cc;
-                    if (!smooth_tet_circumcenter(p0, p1, p2, p3, kOdtEps, cc))
-                        continue;  // degenerate tet: no circumsphere, no contribution
-                    const Vec3 coords[4] = {p0, p1, p2, p3};
-                    const double vol =
-                        std::fabs(detail::cell_volume_from_corners(coords, CellType::Tetra));
-                    if (vol < kOdtEps)
-                        continue;
+                    const OdtTet& tet =
+                        odt[static_cast<std::size_t>(incidence.mAdj[static_cast<std::size_t>(k)])];
+                    if (!tet.mValid)
+                        continue;  // degenerate tet or circumsphere: no contribution
+                    const double vol = tet.mVolume;
+                    const Vec3& cc = tet.mCenter;
                     sum_v += vol;
                     sum_wc[0] += vol * cc[0];
                     sum_wc[1] += vol * cc[1];
@@ -1178,7 +1229,8 @@ std::int64_t smooth_run_passes(const SmoothParams& params, const detail::NodeAdj
                 for (std::int64_t k = ib; k < ie; ++k) {
                     const std::size_t c =
                         static_cast<std::size_t>(incidence.mAdj[static_cast<std::size_t>(k)]);
-                    if (smooth_cell_flips(c, cells, prev, static_cast<std::int64_t>(i), cand)) {
+                    if (smooth_cell_flips(c, cells, prev, static_cast<std::int64_t>(i), cand,
+                                          before[c])) {
                         skipped[i] = 1;
                         cur[o] = prev[o];
                         cur[o + 1] = prev[o + 1];

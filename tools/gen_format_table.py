@@ -44,14 +44,17 @@ def format_subpackages() -> list[str]:
     return names
 
 
-def observe() -> tuple[dict[str, str], dict[str, list[str]]]:
-    """``(format or writer name -> subpackage, extension -> subpackages)``."""
+def observe() -> tuple[dict[str, str], dict[str, list[str]], set[str], set[str]]:
+    """``(format or writer name -> subpackage, extension -> subpackages,
+    reader names, writer names)``."""
     import meshioplusplus
     from meshioplusplus import _helpers
 
     package = meshioplusplus.__name__
     names: dict[str, str] = {}
     extensions: dict[str, list[str]] = {}
+    readers: set[str] = set()
+    writers: set[str] = set()
     original = _helpers.register_format
 
     def recording(format_name, exts, reader, writer_map):
@@ -62,6 +65,9 @@ def observe() -> tuple[dict[str, str], dict[str, list[str]]]:
                 raise SystemExit(
                     f"{name!r} is registered by both {names[name]!r} and {module!r}"
                 )
+        if reader is not None:
+            readers.add(format_name)
+        writers.update(writer_map)
         for ext in exts:
             owners = extensions.setdefault(ext, [])
             if module not in owners:
@@ -74,11 +80,11 @@ def observe() -> tuple[dict[str, str], dict[str, list[str]]]:
             importlib.import_module(f"{package}.{module}")
     finally:
         _helpers.register_format = original
-    return names, extensions
+    return names, extensions, readers, writers
 
 
 def render() -> str:
-    names, extensions = observe()
+    names, extensions, readers, writers = observe()
     modules = sorted(set(names.values()))
     out = [
         '"""Which format subpackage registers which format and extension.',
@@ -104,7 +110,16 @@ def render() -> str:
         out.append(f'    "{ext}": ({mods}{"," if len(extensions[ext]) == 1 else ""}),')
     out += ["}", "", "# Every format subpackage.", "ALL_MODULES = ("]
     out += [f'    "{m}",' for m in modules]
-    out += [")", ""]
+    out += [")"]
+    # The registries' key sets, so a CLI's ``choices`` need not import them all.
+    for title, label, keys in (
+        ("Every format name with a reader.", "READER_NAMES", readers),
+        ("Every writer name.", "WRITER_NAMES", writers),
+    ):
+        out += ["", f"# {title}", f"{label} = ("]
+        out += [f'    "{n}",' for n in sorted(keys)]
+        out += [")"]
+    out += [""]
     return "\n".join(out)
 
 

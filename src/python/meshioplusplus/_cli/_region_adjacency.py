@@ -1,4 +1,4 @@
-from .._helpers import _writer_map, read, reader_map, write
+from .._helpers import _reader_names, _writer_names, read, write
 from .._interfaces import region_adjacency
 from ._json import emit_json
 
@@ -6,12 +6,8 @@ from ._json import emit_json
 def add_args(parser):
     parser.add_argument("infile", type=str, help="mesh to analyze")
     parser.add_argument("outfile", type=str, help="shared-facet mesh to write")
-    parser.add_argument(
-        "--input-format", "-i", choices=sorted(reader_map), default=None
-    )
-    parser.add_argument(
-        "--output-format", "-o", choices=sorted(_writer_map), default=None
-    )
+    parser.add_argument("--input-format", "-i", choices=_reader_names(), default=None)
+    parser.add_argument("--output-format", "-o", choices=_writer_names(), default=None)
     parser.add_argument(
         "--regions",
         nargs="+",

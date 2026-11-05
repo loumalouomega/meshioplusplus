@@ -1,7 +1,7 @@
 """The ``hull`` and ``delaunay`` verbs: the convex hull of a mesh's points and
 their Delaunay triangulation in the ``x, y`` plane (``doc/hull.md``)."""
 
-from .._helpers import read, reader_map, write
+from .._helpers import _reader_names, read, write
 from .._hull import convex_hull, delaunay_2d
 from ._json import emit_json
 
@@ -13,7 +13,7 @@ def _io_args(parser):
         "--input-format",
         "-i",
         type=str,
-        choices=sorted(list(reader_map.keys())),
+        choices=_reader_names(),
         help="input file format",
         default=None,
     )

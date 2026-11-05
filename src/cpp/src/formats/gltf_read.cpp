@@ -30,7 +30,6 @@
 #include <map>
 #include <set>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -44,6 +43,7 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/read_options.hpp"
+#include "../detail/exact_weld.hpp"
 #include "../detail/json_value.hpp"
 
 namespace meshioplusplus {
@@ -884,31 +884,13 @@ Mesh read_gltf(const std::string& rPath, const GltfReadOptions& rOptions,
     // Welding.
     std::size_t n = state.mPoints.size() / 3;
     if (rOptions.mWeld && n > 0) {
-        struct Key {
-            std::array<double, 3> v;
-            bool operator==(const Key& o) const { return v == o.v; }
-        };
-        struct KeyHash {
-            std::size_t operator()(const Key& k) const {
-                std::size_t h = 1469598103934665603ull;
-                for (double d : k.v) {
-                    std::uint64_t b;
-                    std::memcpy(&b, &d, sizeof(b));
-                    h = (h ^ b) * 1099511628211ull;
-                }
-                return h;
-            }
-        };
-        std::unordered_map<Key, std::int64_t, KeyHash> seen;
-        std::vector<std::int64_t> remap(n);
-        std::vector<std::size_t> first;
-        for (std::size_t i = 0; i < n; ++i) {
-            const Key k{{state.mPoints[i * 3], state.mPoints[i * 3 + 1], state.mPoints[i * 3 + 2]}};
-            const auto it = seen.emplace(k, static_cast<std::int64_t>(first.size()));
-            if (it.second)
-                first.push_back(i);
-            remap[i] = it.first->second;
-        }
+        // Equal positions compare `==` (the Python reader's `points + 0.0`
+        // and `np.unique`): -0.0 and +0.0 are one vertex. The hash map this
+        // replaces hashed the bits, so the two zeros only met by chance.
+        const detail::ExactWeld weld =
+            detail::exact_weld(state.mPoints.data(), n, 3, detail::ExactWeldMode::Values);
+        const std::vector<std::int64_t>& remap = weld.mIdOfRow;
+        const std::vector<std::size_t>& first = weld.mFirstRow;
         std::vector<double> points;
         points.reserve(first.size() * 3);
         for (std::size_t i : first)
