@@ -474,8 +474,10 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         }
         for (int k = 1; k <= 4; ++k)
             for (std::size_t i = 0; i < path.size(); ++i)
-                arrived[i] = try_move(path[i], vec3_add(start[i], vec3_scale(vec3_sub(target[i], start[i]), 0.25 * k)),
-                                      kFeatsnapChainFloorDeg);
+                arrived[i] = try_move(
+                    path[i],
+                    vec3_add(start[i], vec3_scale(vec3_sub(target[i], start[i]), 0.25 * k)),
+                    kFeatsnapChainFloorDeg);
         bool all = true;
         std::int64_t refused = 0;
         for (std::size_t i = 0; i < path.size(); ++i) {

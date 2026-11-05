@@ -406,6 +406,24 @@ def test_chain_nodes_may_take_a_lower_dihedral_floor_to_reach_their_edge():
 
 
 @needs_core
+def test_a_chains_nodes_advance_together_so_neighbours_do_not_block_each_other():
+    # Chain nodes move in quarter steps all together, a refused step retried at
+    # the next, instead of one node at a time. Moved one by one, a node held
+    # still by its not-yet-moved neighbour left this rim unrecovered.
+    cyl = mio.convert_cells(
+        mio.extract_surface(mio.cylinder(0.5, 2.0, 24, 8)), mode="simplexify"
+    )
+    out, report = mio.octree_mesh(cyl, max_size=1.0, min_size=0.07, return_report=True)
+    assert report["num_feature_chains"] == 4
+    assert report["num_feature_chains_missed"] == 0
+    assert report["num_corners_snapped"] == report["num_corners"] == 4
+    assert report["num_inverted"] == 0
+    assert report["hausdorff_to_skin"] < 0.003
+    _, conformity = mio.check_conformity(out, return_report=True)
+    assert conformity["conforming"]
+
+
+@needs_core
 def test_cli_round_trip(tmp_path, capsys):
     skin = tmp_path / "skin.stl"
     mio.write(skin, _sphere())
