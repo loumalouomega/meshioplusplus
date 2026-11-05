@@ -83600,18 +83600,26 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         if (even)
             for (std::size_t i = 0; i < path.size(); ++i)
                 arc[i] = total * static_cast<double>(i + 1) / static_cast<double>(path.size() + 1);
+        // The nodes advance together in quarter steps, so neighbours do not hold each other back;
+        // a refused step is tried again at the next
+        std::vector<Vec3> start(path.size());
+        std::vector<Vec3> target(path.size());
+        std::vector<std::uint8_t> arrived(path.size(), 0);
+        for (std::size_t i = 0; i < path.size(); ++i) {
+            start[i] = rPoints[static_cast<std::size_t>(path[i])];
+            target[i] = featsnap_at_arc(rSkinPoints, chain, arc[i]);
+        }
+        for (int k = 1; k <= 4; ++k)
+            for (std::size_t i = 0; i < path.size(); ++i)
+                arrived[i] = try_move(path[i], vec3_add(start[i], vec3_scale(vec3_sub(target[i], start[i]), 0.25 * k)),
+                                      kFeatsnapChainFloorDeg);
         bool all = true;
         std::int64_t refused = 0;
         for (std::size_t i = 0; i < path.size(); ++i) {
-            const std::int64_t v = path[i];
-            const Vec3 target = featsnap_at_arc(rSkinPoints, chain, arc[i]);
-            const Vec3 at = rPoints[static_cast<std::size_t>(v)];
-            (void)at;
-            const bool moved = move_by_steps(v, target, kFeatsnapChainFloorDeg);
-            all = all && moved;
-            refused += !moved;
-            rPinned[static_cast<std::size_t>(v)] = 1;
-            rFeature[static_cast<std::size_t>(v)] = 2;
+            all = all && arrived[i];
+            refused += !arrived[i];
+            rPinned[static_cast<std::size_t>(path[i])] = 1;
+            rFeature[static_cast<std::size_t>(path[i])] = 2;
         }
         if (!all) {
             log::debug("feature_snap: a chain of {} points ({} nodes) kept {} off it", chain.size(),
