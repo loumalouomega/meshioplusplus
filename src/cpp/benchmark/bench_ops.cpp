@@ -67,8 +67,10 @@
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/write_options.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
+#include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
+#include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -694,6 +696,23 @@ int main(int argc, char** argv) {
                     pD->Arrays(piece.mCellMaps);
                 }
         });
+        // The dual graph (cells sharing a facet) through `adjacency`, on the
+        // tetrahedra and on the mixed tetrahedron/polyhedron mesh, whose
+        // polyhedral faces take the wide facet keys (roadmap 5.4.3); and the
+        // ragged mesh's surface, the same key paths in `extract_surface`.
+        const auto adjacency_row = [&](const char* pOp, const Mesh& rIn) {
+            row(pOp, [&](MeshDigest* pD) {
+                auto r = mio::adjacency(rIn, mio::AdjacencyKind::Cell);
+                if (pD) {
+                    pD->Array(r.mIndptr);
+                    pD->Array(r.mIndices);
+                }
+            });
+        };
+        adjacency_row("adjacency_cell", volume);
+        adjacency_row("adjacency_cell_ragged", ragged);
+        row("extract_surface_ragged",
+            [&](MeshDigest* pD) { of(pD, mio::extract_surface(ragged)); });
         row("feature_edges_ragged",
             [&](MeshDigest* pD) { of(pD, mio::feature_edges(ragged).mMesh); });
         // Reads through the registry: the file is written once, outside the
@@ -820,6 +839,54 @@ int main(int argc, char** argv) {
             return m;
         }();
         read_row("read_elmer", "elmer", ".elmer", elmer_mesh);
+        // The ASCII readers chunked number parsing reaches (roadmap 5.7.2):
+        // VTU and legacy VTK ASCII, Gmsh 4.1 and 2.2 ASCII, and Medit, each over
+        // the tetrahedral cube with its point field. The writers' ASCII rows
+        // (roadmap 5.7.1) time the write and digest the file read back.
+        const auto ascii_write = [&](const char* pFormat) {
+            return [&, pFormat](const std::string& rPath) {
+                mio::WriteOptions o;
+                o.mEncoding = mio::WriteEncoding::Ascii;
+                mio::registry_write_ex(rPath, with_field, pFormat, o);
+            };
+        };
+        const auto registry_reader = [](const char* pFormat) {
+            return [pFormat](const std::string& rPath) {
+                return mio::registry_read(rPath, pFormat, mio::ReadOptions{});
+            };
+        };
+        file_row("read_vtu_ascii", ".vtu", ascii_write("vtu"), registry_reader("vtu"));
+        file_row("read_vtk_ascii", ".vtk", ascii_write("vtk"), registry_reader("vtk"));
+        file_row("read_gmsh_ascii", ".msh", ascii_write("gmsh"), registry_reader("gmsh"));
+        file_row(
+            "read_gmsh22_ascii", ".msh",
+            [&](const std::string& rPath) { mio::write_gmsh22(rPath, with_field, /*binary=*/false); },
+            registry_reader("gmsh"));
+        read_row("read_medit", "medit", ".mesh", with_field);
+        const auto write_row = [&](const char* pOp, const char* pFormat, const char* pExt,
+                                   const Mesh& rSource, mio::WriteEncoding Encoding) {
+            if (!wanted(pOp))
+                return;
+            const std::filesystem::path dir = std::filesystem::temp_directory_path() /
+                                              (std::string("meshioplusplus_bench_") + pOp);
+            std::filesystem::create_directories(dir);
+            const std::string path = (dir / (std::string("mesh") + pExt)).string();
+            try {
+                row(pOp, [&](MeshDigest* pD) {
+                    mio::WriteOptions o;
+                    o.mEncoding = Encoding;
+                    mio::registry_write_ex(path, rSource, pFormat, o);
+                    if (pD)
+                        of(pD, mio::registry_read(path, pFormat, mio::ReadOptions{}));
+                });
+            } catch (const std::exception& rExc) {
+                std::fprintf(stderr, "skip %s: %s\n", pOp, rExc.what());
+            }
+            std::filesystem::remove_all(dir);
+        };
+        write_row("write_gmsh", "gmsh", ".msh", with_field, mio::WriteEncoding::Ascii);
+        write_row("write_off", "off", ".off", surface, mio::WriteEncoding::Default);
+        write_row("write_stl", "stl", ".stl", surface, mio::WriteEncoding::Ascii);
         row("optimize_volume", [&](MeshDigest* pD) {
             auto r = mio::optimize_volume(jittered);
             of(pD, r.mMesh);
