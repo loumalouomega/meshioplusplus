@@ -21,6 +21,7 @@
 // System includes
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <system_error>
 
@@ -28,8 +29,11 @@
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "mesh_fixtures.hpp"
+
+#include "../../src/cpp/src/detail/cow_source.hpp"
 
 using namespace meshioplusplus;
 using meshioplusplus::detail::FileSource;
@@ -185,4 +189,83 @@ TEST(MmapRead, DefaultOptionsStillRead) {
     mt::expect_same_geometry(read_gmsh(path), source);
 
     mmap_remove(path);
+}
+
+// --- CowSource: the copy-on-write bytes the VTK XML reader parses in place
+// (roadmap 5.7.4).
+
+TEST(CowSource, WritesNeverReachTheFile) {
+    const std::string text(5000, 'a');
+    const std::string path = mmap_write_text(".txt", text);
+    for (const std::size_t map_at : {std::size_t{1}, std::size_t{1} << 40}) {
+        detail::CowSource src(path, "cannot read", map_at);
+        EXPECT_EQ(src.IsMapped(), map_at == 1);
+        ASSERT_EQ(src.Size(), text.size());
+        EXPECT_EQ(src.View(), text);
+        src.Data()[0] = 'b';
+        src.Data()[4999] = 'c';
+        EXPECT_EQ(src.Data()[0], 'b');
+        detail::CowSource again(path, "cannot read", map_at);
+        EXPECT_EQ(again.View(), text);
+    }
+    std::ifstream in(path, std::ios::binary);
+    const std::string back((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(back, text);
+    mmap_remove(path);
+}
+
+TEST(CowSource, MoveKeepsTheBytesInPlace) {
+    const std::string path = mmap_write_text(".txt", "xyz");
+    detail::CowSource a(path, "cannot read", std::size_t{1} << 40);
+    const char* p = a.Data();
+    detail::CowSource b(std::move(a));
+    EXPECT_EQ(b.Data(), p);
+    EXPECT_EQ(b.View(), "xyz");
+    EXPECT_EQ(a.Size(), 0u);
+    mmap_remove(path);
+}
+
+TEST(CowSource, MissingFileThrowsTheGivenMessage) {
+    try {
+        detail::CowSource src(mt::temp_path(".missing"), "my message");
+        FAIL() << "no throw";
+    } catch (const ReadError& rExc) {
+        EXPECT_STREQ(rExc.what(), "my message");
+    }
+}
+
+// A VTU above the mapping threshold is parsed in place in its mapping: the
+// mesh equals the one read from a small (buffered) file, survives the file's
+// removal, and the file is unchanged by the parse.
+TEST(MmapRead, VtuParsedInPlaceInItsMapping) {
+    const std::size_t n = 700000;  // ~ 22 MB of inline base64 coordinates
+    Mesh big;
+    {
+        NDArray pts(DType::Float64, {n, std::size_t{3}});
+        double* p = pts.As<double>();
+        for (std::size_t i = 0; i < 3 * n; ++i)
+            p[i] = 0.001 * static_cast<double>(i % 9973) - 1.0 / static_cast<double>(1 + i % 7);
+        big.AssignPoints(std::move(pts));
+        NDArray conn(DType::Int64, {n / 4, std::size_t{4}});
+        for (std::size_t i = 0; i < n; ++i)
+            conn.As<std::int64_t>()[i] = static_cast<std::int64_t>(i);
+        big.AddCellBlock("tetra", std::move(conn));
+    }
+    const std::string path = mt::temp_path(".vtu");
+    write_vtu(path, big, /*binary=*/true, /*zlib=*/false);
+    ASSERT_GT(std::filesystem::file_size(path), mmap_auto_threshold_bytes);
+    std::string before;
+    {
+        std::ifstream in(path, std::ios::binary);
+        before.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    const Mesh mesh = read_vtu(path);
+    std::string after;
+    {
+        std::ifstream in(path, std::ios::binary);
+        after.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    EXPECT_TRUE(before == after);
+    mmap_remove(path);
+    mt::expect_same_geometry(mesh, big);
 }

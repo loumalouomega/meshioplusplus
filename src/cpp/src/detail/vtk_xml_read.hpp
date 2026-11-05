@@ -8,7 +8,7 @@
 #include <string>
 #include <string_view>
 #include "pugixml.hpp"
-#include "meshioplusplus/detail/file_source.hpp"
+#include "cow_source.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
@@ -26,9 +26,11 @@ struct VtuContext {
 
 // Owns both XML and raw file bytes. Contexts borrow it for the duration of a
 // read; every decoded NDArray owns its storage independently of this source.
+// The document is parsed in place in the file's bytes (roadmap 5.7.4), so the
+// bytes are declared first and outlive it.
 struct VtuSource {
+    std::optional<CowSource> mFile;
     pugi::xml_document mDoc;
-    std::optional<FileSource> mFile;
     std::string_view mBytes;
     std::size_t mRawStart = 0;
     std::size_t mRawStop = 0;
