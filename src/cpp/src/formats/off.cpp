@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/row_writer.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -179,15 +180,21 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
     os << "OFF\n" << detail::provenance_render_lines(detail::SlotTier::Block, "# ") << "\n";
     os << num_points << ' ' << num_faces << " 0\n\n";
 
-    char buf[96];
+    // "x y z" per point, formatted in parallel chunks, one number at a time
+    // (`CNumber`: `to_chars` for `%.17g`, roadmap 5.7.1).
     const detail::DoubleView point_values(points);
-    for (std::size_t r = 0; r < num_points; ++r) {
-        double x = (0 < dim) ? point_values[r * dim + 0] : 0.0;
-        double y = (1 < dim) ? point_values[r * dim + 1] : 0.0;
-        double z = (2 < dim) ? point_values[r * dim + 2] : 0.0;
-        detail::snprintf_c(buf, sizeof(buf), "%.17g %.17g %.17g\n", x, y, z);
-        os << buf;
-    }
+    const detail::CNumber number;
+    detail::write_row_chunks(
+        os, num_points, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+            for (std::size_t r = First; r < Last; ++r) {
+                for (std::size_t c = 0; c < 3; ++c) {
+                    if (c)
+                        rBuf.push_back(' ');
+                    number.Append(rBuf, "%.17g", c < dim ? point_values[r * dim + c] : 0.0);
+                }
+                rBuf.push_back('\n');
+            }
+        });
     for (const auto cb : rMesh.CellRange()) {
         const std::string& t = cb.Type();
         if (t != "triangle" && t != "quad" && t != "polygon")

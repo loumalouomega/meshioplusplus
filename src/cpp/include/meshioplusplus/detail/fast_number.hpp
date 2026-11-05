@@ -304,13 +304,65 @@ inline double stod_c(const std::string& rText) {
 }
 
 /**
- * @brief Locale-independent `std::vsnprintf`.
+ * @brief `std::vsnprintf` in the "C" numeric convention, whatever the process
+ * locale: every number it formats has `.` as its decimal separator, and every
+ * other character is the format's own.
+ *
+ * Formats under the C numeric `locale_t` (`uselocale` for the call on POSIX,
+ * `_vsnprintf_l` on MSVC), so a format of several numbers, a literal `,` and
+ * a multi-character separator all come out right. Where no `locale_t` exists
+ * (WebAssembly, whose libc is always in the C locale, and exotic platforms) it
+ * formats, then turns the first locale separator back into `.`, which is exact
+ * for a format of one number without a literal separator character.
+ *
+ * Same contract as `std::vsnprintf`. Callers that know the locale's decimal
+ * point is already `.` call `std::vsnprintf` instead, as `snprintf_c` does.
+ */
+inline int vsnprintf_classic(char* pBuf, std::size_t cap, const char* pFmt, va_list args) {
+#if defined(MESHIOPLUSPLUS_HAS_LOCALE_T) && defined(_MSC_VER)
+    if (const locale_t c = c_numeric_locale()) {
+        va_list measure;
+        va_copy(measure, args);
+        const int n = _vscprintf_l(pFmt, c, measure);
+        va_end(measure);
+        if (cap > 0)
+            _vsnprintf_s_l(pBuf, cap, _TRUNCATE, pFmt, c, args);
+        return n;
+    }
+#elif defined(MESHIOPLUSPLUS_HAS_LOCALE_T) && !defined(__EMSCRIPTEN__)
+    if (const locale_t c = c_numeric_locale()) {
+        const locale_t previous = uselocale(c);
+        const int n = std::vsnprintf(pBuf, cap, pFmt, args);
+        uselocale(previous);
+        return n;
+    }
+#endif
+    const int n = std::vsnprintf(pBuf, cap, pFmt, args);
+    const char* dp = localeconv()->decimal_point;
+    if (n <= 0 || cap == 0 || dp == nullptr || std::strlen(dp) != 1)
+        return n;
+    const std::size_t written =
+        static_cast<std::size_t>(n) < cap - 1 ? static_cast<std::size_t>(n) : cap - 1;
+    for (std::size_t i = 0; i < written; ++i) {
+        if (pBuf[i] == dp[0]) {
+            pBuf[i] = '.';
+            break;
+        }
+    }
+    return n;
+}
+
+/**
+ * @brief Locale-independent `std::snprintf`.
  *
  * Same contract as `std::snprintf`, with the decimal separator always `.`
  * regardless of the process locale. In the (overwhelmingly common) case
  * where the process locale's own decimal point is already `.`, this calls
  * `std::vsnprintf` and returns with no further work -- byte-identical to
- * calling `std::snprintf` directly.
+ * calling `std::snprintf` directly. Otherwise it formats through
+ * `vsnprintf_classic`, which is exact for any number of conversions (before
+ * v19.1 only the first separator of the text was repaired, which a format of
+ * several numbers, or with a literal `,`, got wrong under a comma locale).
  *
  * @param pBuf Destination buffer.
  * @param cap Size of `pBuf`.
@@ -323,35 +375,10 @@ MESHIOPLUSPLUS_PRINTF_LIKE(3, 4)
 inline int snprintf_c(char* pBuf, std::size_t cap, const char* pFmt, ...) {
     va_list args;
     va_start(args, pFmt);
-    const int n = std::vsnprintf(pBuf, cap, pFmt, args);
+    const int n = is_c_decimal_point(localeconv()->decimal_point)
+                      ? std::vsnprintf(pBuf, cap, pFmt, args)
+                      : vsnprintf_classic(pBuf, cap, pFmt, args);
     va_end(args);
-
-    const char* dp = localeconv()->decimal_point;
-    if (n <= 0 || is_c_decimal_point(dp))
-        return n;
-
-    // Repair the locale's decimal point within the bytes actually written
-    // (n may exceed cap on truncation -- only the written prefix exists to
-    // repair). A formatted number carries at most one decimal point, so a
-    // single-character locale separator (every real-world locale; a
-    // multi-character one is a POSIX theoretical case with no practical
-    // decimal_point that isn't length 1) is replaced in place with no
-    // length change. A multi-character separator is left as a documented
-    // best-effort gap rather than risking a buffer-length bug for a case
-    // that does not occur on any real target this project ships for.
-    const std::size_t dp_len = std::strlen(dp);
-    if (dp_len != 1)
-        return n;
-    const std::size_t written =
-        (cap == 0)
-            ? 0
-            : (static_cast<std::size_t>(n) < cap - 1 ? static_cast<std::size_t>(n) : cap - 1);
-    for (std::size_t i = 0; i < written; ++i) {
-        if (pBuf[i] == dp[0]) {
-            pBuf[i] = '.';
-            break;  // at most one decimal point per formatted number
-        }
-    }
     return n;
 }
 

@@ -212,7 +212,7 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
     const detail::DoubleView point_values(points);
     for (std::size_t i = 0; i < nver; ++i)
         for (int c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), fmt.c_str(), point_values[i * dim + c]);
+            detail::snprintf_c(buf, sizeof(buf), fmt.c_str(), point_values[i * dim + c]);
             f << buf << (c + 1 == dim ? '\n' : ' ');
         }
     // subdomain

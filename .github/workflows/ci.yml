@@ -101,6 +101,10 @@ jobs:
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev libbz2-dev libtbb-dev gfortran pkg-config
+          # A comma-decimal locale, so the tests that write and read numbers
+          # under one (test_fast_number, test_comma_locale_writers) run
+          # instead of skipping.
+          sudo locale-gen de_DE.UTF-8
       - name: Install build tools
         run: python -m pip install --upgrade pip pybind11 cmake ninja
       # Every leg also builds the C API + Fortran module, so the gtest C-API

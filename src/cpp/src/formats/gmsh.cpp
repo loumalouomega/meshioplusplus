@@ -57,6 +57,7 @@
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/row_writer.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -2311,15 +2312,20 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
         }
         os << '\n';
     } else {
-        // %zu (up to 20 digits) + 3x %.16e (up to 24 chars each) + separators/'\n'/'\0'
-        char buf[128];
-        for (std::size_t i = 0; i < num_points; ++i) {
-            double x = (0 < dim) ? point_values[i * dim + 0] : 0.0;
-            double y = (1 < dim) ? point_values[i * dim + 1] : 0.0;
-            double z = (2 < dim) ? point_values[i * dim + 2] : 0.0;
-            detail::snprintf_c(buf, sizeof(buf), "%zu %.16e %.16e %.16e\n", i + 1, x, y, z);
-            os << buf;
-        }
+        // "<id> x y z" per node, formatted in parallel chunks, one number at
+        // a time (`CNumber`: `to_chars` for `%.16e`, roadmap 5.7.1).
+        const detail::CNumber number;
+        detail::write_row_chunks(
+            os, num_points, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t i = First; i < Last; ++i) {
+                    detail::append_int(rBuf, static_cast<std::int64_t>(i + 1));
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        rBuf.push_back(' ');
+                        number.Append(rBuf, "%.16e", c < dim ? point_values[i * dim + c] : 0.0);
+                    }
+                    rBuf.push_back('\n');
+                }
+            });
     }
     os << "$EndNodes\n";
 
@@ -2503,16 +2509,25 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
 
     write_physical_names(os, rMeshIn, region_tags);
 
-    // The 3-padded coordinates of one point, formatted the one way both the
-    // single-block and per-entity paths use.
+    // The 3-padded coordinates of the points `rIndexOf(0 .. Count-1)`, one
+    // line each, formatted the one way both the single-block and per-entity
+    // paths use: in parallel chunks, one number at a time (`CNumber`:
+    // `to_chars` for `%.16e`, roadmap 5.7.1).
     const detail::DoubleView point_values(points);
-    auto put_coords_ascii = [&](std::size_t i) {
-        char buf[128];  // 3x %.16e (up to 24 chars each) + separators/'\n'/'\0'
-        double x = (0 < dim) ? point_values[i * dim + 0] : 0.0;
-        double y = (1 < dim) ? point_values[i * dim + 1] : 0.0;
-        double z = (2 < dim) ? point_values[i * dim + 2] : 0.0;
-        detail::snprintf_c(buf, sizeof(buf), "%.16e %.16e %.16e\n", x, y, z);
-        os << buf;
+    const detail::CNumber number;
+    auto put_coords_ascii = [&](std::size_t Count, auto&& rIndexOf) {
+        detail::write_row_chunks(
+            os, Count, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t r = First; r < Last; ++r) {
+                    const std::size_t i = rIndexOf(r);
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        if (c)
+                            rBuf.push_back(' ');
+                        number.Append(rBuf, "%.16e", c < dim ? point_values[i * dim + c] : 0.0);
+                    }
+                    rBuf.push_back('\n');
+                }
+            });
     };
 
     const std::vector<GmshWriteEntity41> entities = gmsh_entity_blocks_41(rMesh, cell_dim);
@@ -2626,8 +2641,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
             os << node_dim << " 0 0 " << num_points << "\n";
             for (std::size_t i = 0; i < num_points; ++i)
                 os << (i + 1) << "\n";
-            for (std::size_t i = 0; i < num_points; ++i)
-                put_coords_ascii(i);
+            put_coords_ascii(num_points, [](std::size_t r) { return r; });
         }
     } else {
         // One block per entity that owns nodes -- an entity may own none (see
@@ -2676,8 +2690,9 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
                 os << e.mDim << " " << e.mTag << " 0 " << nb << "\n";
                 for (std::size_t i = 0; i < nb; ++i)
                     os << (e.mNodes[i] + 1) << "\n";
-                for (std::size_t i = 0; i < nb; ++i)
-                    put_coords_ascii(static_cast<std::size_t>(e.mNodes[i]));
+                put_coords_ascii(nb, [&](std::size_t r) {
+                    return static_cast<std::size_t>(e.mNodes[r]);
+                });
             }
         }
         if (binary)
