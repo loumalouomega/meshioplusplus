@@ -3972,6 +3972,8 @@ SEXP R_mio_octree_mesh(SEXP mesh, SEXP output, SEXP conformity, SEXP skin_gradin
     R_OCTREE_MESH_NUM(num_flips);
     R_OCTREE_MESH_NUM(num_winding_rechecks);
     R_OCTREE_MESH_NUM(num_winding_skipped);
+    R_OCTREE_MESH_NUM(num_gaps_filled);
+    R_OCTREE_MESH_NUM(num_gaps_skipped);
     R_OCTREE_MESH_NUM(num_warnings);
     /* One string, newline-separated; the R wrapper splits it. */
     R_OCTREE_MESH_SET("warnings", warnings);

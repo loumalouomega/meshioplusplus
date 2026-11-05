@@ -4545,6 +4545,8 @@ PYBIND11_MODULE(_core, m) {
             out["guarantee_applies"] = r.mGuaranteeApplies;
             out["num_winding_rechecks"] = r.mNumWindingRechecks;
             out["num_winding_skipped"] = r.mNumWindingSkipped;
+            out["num_gaps_filled"] = r.mNumGapsFilled;
+            out["num_gaps_skipped"] = r.mNumGapsSkipped;
             py::dict quality;
             quality["num_cells"] = r.mQuality.mNumCells;
             quality["num_inverted"] = r.mQuality.mNumInverted;

@@ -773,6 +773,8 @@ static mxArray *O_mio_octree_mesh(const mxArray **a) {
     OD_NUM(num_flips);
     OD_NUM(num_winding_rechecks);
     OD_NUM(num_winding_skipped);
+    OD_NUM(num_gaps_filled);
+    OD_NUM(num_gaps_skipped);
     OD_NUM(num_warnings);
     /* One string, newline-separated; the .m wrapper splits it. */
     OD_SET("warnings", warnings);

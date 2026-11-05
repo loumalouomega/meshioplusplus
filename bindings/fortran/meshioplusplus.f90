@@ -1733,7 +1733,9 @@ module meshioplusplus
         integer(c_int64_t) :: num_winding_rechecks = 0
         integer(c_int64_t) :: num_warnings = 0
         integer(c_int64_t) :: num_winding_skipped = 0
-        integer(c_int64_t) :: reserved(7) = 0
+        integer(c_int64_t) :: num_gaps_filled = 0
+        integer(c_int64_t) :: num_gaps_skipped = 0
+        integer(c_int64_t) :: reserved(5) = 0
     end type
 
     !> Interop mirror of C `mio_compute_sdf_opts`. Same ABI rules as above. For

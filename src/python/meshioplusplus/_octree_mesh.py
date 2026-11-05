@@ -56,6 +56,8 @@ _REPORT_INTS = (
     "num_flips",
     "num_winding_rechecks",
     "num_winding_skipped",
+    "num_gaps_filled",
+    "num_gaps_skipped",
 )
 _REPORT_FLOATS = (
     "root_size",
@@ -209,7 +211,9 @@ def octree_mesh(
         ``num_non_manifold_boundary_edges``, ``quality`` with its histograms),
         the features (``num_corners``, ``num_corners_snapped``,
         ``num_feature_chains``, ``num_feature_chains_missed``,
-        ``num_feature_moves``), the optimisation (``num_optimized_moves``,
+        ``num_feature_moves``, ``num_gaps_filled`` and ``num_gaps_skipped``: the
+        notches between consecutive chain nodes closed with tetrahedra, and left
+        open), the optimisation (``num_optimized_moves``,
         ``num_flips``), ``guarantee_applies``, ``num_winding_rechecks``,
         ``num_winding_skipped`` (deep inside a closed skin), ``timings`` (seconds
         per stage) and ``warnings``.
