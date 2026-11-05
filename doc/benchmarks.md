@@ -833,6 +833,32 @@ Roadmap §3.4.5, which closes with it, and 3.4.5.1 above, which it supersedes: t
 
 The read dominates only the cheapest operation on a large surface. Caching a read mesh, or a prefix of the pipeline, between applies would hold a second copy of the mesh in a 32-bit heap that MEMFS already shares with the staged file, and would make undo depend on cache invalidation; the roadmap records it as not taken.
 
+### A bounding-volume hierarchy for the distance query and a grid for find_interface
+
+Roadmap 5.3 and 5.4.2, landed through [landing a performance change](#landing-a-performance-change): every row's digest equals the one before the change on SEQ and OpenMP at 1 and 4 threads, tiers S and M, except `distance_build`'s, which digests the accelerator's own layout and moved with it. The new rows `distance_to_surface_graded` (the cube with every coordinate cubed, a graded skin, against its own points) and `find_interface_proximity` (the halves matched by proximity) were added first, so their baseline digests came from the old algorithms; `closest_points` and `closest_points_graded` time the accelerator's build and `query_closest_points` alone.
+
+- **The nearest-triangle search is a tree.** It walked a bucket grid in Chebyshev shells outwards from the query's own bucket until the shell's `(r - 1) * cell` bound passed the best distance: `O((d / cell)^3)` probes for a point at distance `d`, which for a point deep inside a volume is of the order of the triangle count, and every bucket of the skin's faces parallel to the shell. Two replacements were measured, both returning the minimum under `(distance², triangle id)` and so the old answer bit for bit (a test compares each with a scan of every triangle). An **occupancy pyramid** over the grid (5.3.1), the grid's occupancy at block sizes doubling up to at most four blocks per axis, descended best first with Euclidean bounds, was 2 to 3 times faster than the shells, but a cell's bound is the cell's, so a point far from the surface still opened every bucket of a patch around its nearest one. A **bounding-volume hierarchy** (5.3.2) of the triangles' boxes, sorted by the Morton key of their centres, split at the median and searched depth first, nearer child first, was a further 2 to 4 times faster with its build included, on the uniform and the graded skin alike, and replaced the grid in `DistanceQuery` (ABI 40). The reason it had been decided against, that its visit order would make the equidistant-triangle tiebreak observable, the total order answers. `grid_cell_size`, which sized the grid's buckets, is accepted and ignored.
+- **`find_interface`'s matching.** The conforming mode grouped each side's facets into a `std::map` keyed on a heap vector per facet; both sides' records are now grouped by `group_facet_slots`, as `region_adjacency`'s are, and paired within each run. The proximity mode projected every master facet's centroid onto every target facet, and each of its corners onto every target again, `O(S × T)`; a `BucketTable` over the target facets' boxes grown by the tolerance (the `check_conformity` pattern) lists, for a point, every target that can be within the tolerance of it, in the order the scan met them, so the best target and its tiebreak are the scan's, and the master facets are matched in parallel.
+
+Tier L (750,000 tetrahedra, about 30,000 skin triangles), median of three runs, seconds; "pyramid" is the occupancy pyramid this change measured and did not take:
+
+| Row | SEQ old | SEQ pyramid | SEQ new | OpenMP ×4 old | OpenMP ×4 new |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `sample_distance` | 7.38 | 2.59 | 0.63 | 2.09 | 0.16 |
+| `distance_to_surface` | 7.25 | 2.55 | 0.59 | 1.87 | 0.16 |
+| `distance_to_surface_graded` | 2.25 | 1.11 | 0.46 | 0.54 | 0.13 |
+| `closest_points` | | 2.64 | 0.61 | | 0.16 |
+| `closest_points_graded` | | 1.26 | 0.45 | | 0.12 |
+| `compute_sdf` | 3.68 | 1.44 | 0.38 | 1.17 | 0.10 |
+| `remesh_volume` | 6.01 | 2.71 | 1.25 | 1.75 | 0.51 |
+| `hausdorff` | 4.59 | 2.51 | 0.69 | 1.11 | 0.19 |
+| `shrinkwrap` | 0.218 | 0.121 | 0.058 | 0.053 | 0.023 |
+| `distance_build` | 0.0060 | 0.0062 | 0.0059 | 0.0047 | 0.0043 |
+| `find_interface_proximity` | 66.8 | | 0.73 | 73.3 | 0.66 |
+| `find_interface` (conforming) | 0.79 | | 0.77 | 0.70 | 0.61 |
+
+`distance_build` and the conforming `find_interface` are within run-to-run noise of their old times (three alternating runs of five each: 5.9 to 9.0 ms and 0.79 to 0.83 s old, 5.8 to 5.9 ms and 0.73 to 0.80 s new); the conforming mode's matching was never its cost, which is the boundary facets both modes collect.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
