@@ -700,11 +700,18 @@ static_assert(sizeof(meshioplusplus::SmoothMethod) == 1,
 // `DistanceQuery`'s bucket grid is a `BucketTable` -- keys, offsets, ids and a
 // flat index in four vectors -- instead of a `SpatialGrid`'s node map
 // (232 -> 272 bytes); `BucketTable` and `BucketView` are new and pinned here.
+// ABI 40 (roadmap 5.3.1): `DistanceQuery` inserts
+// `mPyramid`, an `OccupancyPyramid` (one vector of `OccupancyLevel`s), after
+// `mGrid` (272 -> 296 bytes); both new types are pinned here.
 MIO_ABI_LAYOUT(meshioplusplus::detail::FaceLookup, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::FacetIndex, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::BucketTable, 160, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::BucketView, 16, 8);
-MIO_ABI_LAYOUT(meshioplusplus::detail::DistanceQuery, 272, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::OccupancyLevel, 104, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::OccupancyPyramid, 24, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::DistanceQuery, 296, 8);
+static_assert(offsetof(meshioplusplus::detail::DistanceQuery, mPyramid) == 168,
+              "DistanceQuery::mPyramid moved");
 MIO_ABI_LAYOUT(meshioplusplus::detail::TriangleSoup, 96, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceSlotlessWrite, 1, 1);
 

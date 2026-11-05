@@ -201,6 +201,9 @@ struct DistanceQuery {
     /// The bucket grid, holding triangle ids by quantized bounding box. Frozen
     /// (a `BucketTable`) since ABI 23: built once, only searched afterwards.
     BucketTable mGrid{1.0};
+    /// The grid's occupancy at coarser block sizes, which the nearest-triangle
+    /// search descends so that it skips empty space (since ABI 40).
+    OccupancyPyramid mPyramid;
     /// Per triangle, its unnormalized normal (`cross(ab, ac)`).
     std::vector<Vec3> mFaceNormal;
     /// Per welded vertex, the weighted sum of incident unit face normals.

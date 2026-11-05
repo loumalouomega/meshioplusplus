@@ -126,6 +126,10 @@
 #include "meshioplusplus/skin.hpp"
 #include "mesh_digest.hpp"
 
+// The triangle BVH is core-private; the distance rows compare it with the
+// bucket grid (roadmap 5.3.2), as boolean_spike.cpp reaches its prototype.
+#include "../src/detail/tri_bvh.hpp"
+
 using meshioplusplus::DType;
 using meshioplusplus::Mesh;
 using meshioplusplus::NDArray;
@@ -1565,6 +1569,69 @@ int main(int argc, char** argv) {
                     pD->U64(static_cast<std::uint64_t>(t));
             });
         });
+        // The nearest point from every point of a mesh to a skin, through the
+        // distance query's bucket grid and through the triangle BVH (roadmap
+        // 5.3.2): each accelerator built and searched per call, the soup and
+        // the query points made once outside the timed runs. Both rows of a
+        // pair digest (point, distance, source cell) per query the same way,
+        // so their digests must be equal: the two searches agree bit for bit.
+        struct ClosestInput {
+            mio::detail::TriangleSoup mSoup;
+            std::vector<mio::detail::Vec3> mPoints;
+        };
+        const auto closest_input = [](const Mesh& rSkin, const Mesh& rQueries) {
+            ClosestInput in{mio::detail::build_triangle_soup(rSkin, ""), {}};
+            const NDArray& pts = rQueries.Points();
+            const std::size_t dim = rQueries.PointDim();
+            in.mPoints.resize(rQueries.NumPoints());
+            for (std::size_t i = 0; i < in.mPoints.size(); ++i)
+                for (std::size_t d = 0; d < 3; ++d)
+                    in.mPoints[i][d] = d < dim ? mio::detail::read_double(pts, i * dim + d) : 0.0;
+            return in;
+        };
+        const auto closest_digest = [](MeshDigest* pD, const mio::detail::Vec3& rPoint,
+                                       double Distance, std::int64_t Source) {
+            pD->Bytes(rPoint.data(), sizeof(double) * 3);
+            pD->Bytes(&Distance, sizeof Distance);
+            pD->U64(static_cast<std::uint64_t>(Source));
+        };
+        std::optional<ClosestInput> closest_uniform, closest_graded;
+        const auto closest_grid_row = [&](const char* pOp, std::optional<ClosestInput>& rIn,
+                                          const std::function<ClosestInput()>& rMake) {
+            row(pOp, [&](MeshDigest* pD) {
+                if (!rIn)
+                    rIn = rMake();
+                const mio::detail::DistanceQuery q =
+                    mio::detail::build_distance_query(rIn->mSoup, mio::SurfaceDistanceOptions{});
+                const auto hits = mio::detail::query_closest_points(q, rIn->mPoints);
+                if (pD)
+                    for (const auto& rHit : hits)
+                        closest_digest(pD, rHit.mPoint, rHit.mDistance, rHit.mSourceCell);
+            });
+        };
+        const auto closest_bvh_row = [&](const char* pOp, std::optional<ClosestInput>& rIn,
+                                         const std::function<ClosestInput()>& rMake) {
+            row(pOp, [&](MeshDigest* pD) {
+                if (!rIn)
+                    rIn = rMake();
+                const mio::detail::TriBvh tree = mio::detail::build_tri_bvh(rIn->mSoup);
+                std::vector<mio::detail::TriNearestHit> hits(rIn->mPoints.size());
+                mio::parallel_for(hits.size(), [&](std::size_t i) {
+                    hits[i] = mio::detail::tri_bvh_nearest(tree, rIn->mPoints[i]);
+                });
+                if (pD)
+                    for (const auto& rHit : hits)
+                        closest_digest(
+                            pD, rHit.mHit.mPoint, std::sqrt(rHit.mHit.mDistanceSq),
+                            rIn->mSoup.mSourceCell[static_cast<std::size_t>(rHit.mTriangle)]);
+            });
+        };
+        const auto make_uniform = [&] { return closest_input(surface, jittered); };
+        const auto make_graded = [&] { return closest_input(graded_surface, graded); };
+        closest_grid_row("closest_points", closest_uniform, make_uniform);
+        closest_bvh_row("closest_points_bvh", closest_uniform, make_uniform);
+        closest_grid_row("closest_points_graded", closest_graded, make_graded);
+        closest_bvh_row("closest_points_bvh_graded", closest_graded, make_graded);
         row("isosurface", [&](MeshDigest* pD) {
             mio::IsosurfaceOptions o;
             o.mArrayName = "u";

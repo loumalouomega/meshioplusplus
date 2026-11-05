@@ -20,9 +20,13 @@
 
 // System includes
 #include <algorithm>
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+#include <atomic>
+#endif
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -35,6 +39,9 @@
 #include "meshioplusplus/detail/point_triangle.hpp"
 #include "meshioplusplus/detail/surface_normals.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+#include "meshioplusplus/log.hpp"
+#endif
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 
@@ -362,6 +369,7 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
         cell = 1.0;  // every triangle degenerate to a point: any bucket size will do
     q.mCellSize = cell;
     q.mGrid = sd_build_grid(cell, tri_lo, tri_hi);
+    q.mPyramid = build_occupancy_pyramid(q.mGrid);
 
     // Face normals, then the vertex and edge tables. Every sum runs in
     // ascending (triangle, corner) order: summing unit normals in a different
@@ -412,67 +420,180 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
 
 namespace {
 
-// The bucket-grid nearest-triangle search shared by query_distances and
-// query_closest_points, extracted verbatim from what used to be inline in
-// query_distances (a pure refactor -- query_distances' own test suite is the
-// regression guard that its output is unchanged). @p MaxShell caps expansion,
-// used by query_distances to stop early under a band; a plain search (as
-// query_closest_points needs) passes the int64 max.
+// The nearest-triangle search shared by query_distances,
+// query_closest_points and query_surface_projections, so the three cannot
+// disagree about which triangle is nearest.
+//
+// It answers the minimum, under the total order (distance squared, triangle
+// id), over every triangle whose distance is at most the best found -- the
+// global minimum -- so which candidates it visits, and in what order, is
+// unobservable. It used to visit every cell of each Chebyshev shell around the
+// query's own bucket, outwards, until the shell's (r - 1) * cell bound passed
+// the best distance: O((d / cell)^3) probes for a point at distance d, which
+// for a point deep inside a volume is of the order of the triangle count
+// (roadmap 5.3). It now descends the grid's occupancy pyramid best first: a
+// block is a candidate only if it is occupied, and it is opened only while its
+// Euclidean lower bound does not exceed the best distance, so empty space and
+// the far parts of the surface cost one probe per coarse block.
+//
+// A triangle is in the bucket of every cell of its quantized bounding box, so
+// it is in the bucket of the cell holding its nearest point to the query; that
+// cell's bound, and the bound of every block containing it, is at most the
+// triangle's distance. The bounds give up a slack for the rounding of
+// `floor(x / cell)` (sd_block_lb2), and the cut is strict, so no triangle that
+// could win or tie is ever pruned. @p Limit2 is a squared distance past which
+// a hit is of no use to the caller (a band), +inf for none.
 struct SdNearestTriangle {
     std::int64_t mTri = -1;
     PointTriangleHit mHit;
 };
 
-SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
-                                      const Vec3& rQueryPoint, std::int64_t MaxShell) {
-    const GridKey centre = rQuery.mGrid.KeyOf(rQueryPoint.data());
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+// Probe counts for the benchmarks page (roadmap 5.3.1), compiled in only on
+// request: blocks opened, buckets visited, triangles measured, queries.
+std::atomic<std::uint64_t> g_sd_blocks{0}, g_sd_buckets{0}, g_sd_triangles{0}, g_sd_queries{0};
+void sd_report_probes(const char* pWhat) {
+    log::info("surface distance: {}: {} queries opened {} blocks, visited {} buckets and "
+              "measured {} triangles",
+              pWhat, g_sd_queries.exchange(0), g_sd_blocks.exchange(0), g_sd_buckets.exchange(0),
+              g_sd_triangles.exchange(0));
+}
+#define MIO_SD_COUNT(counter, n) counter.fetch_add(n, std::memory_order_relaxed)
+#else
+#define MIO_SD_COUNT(counter, n) ((void)0)
+#endif
 
+// A block of the search: `2^mLevel` grid cells per axis at key `mKey`
+// (level 0 is one bucket, whose ids it carries), and the square of its lower
+// bound.
+struct SdBlock {
+    double mLb2 = 0.0;
+    std::int32_t mLevel = 0;
+    GridKey mKey{0, 0, 0};
+    const std::int64_t* mpIds = nullptr;
+    std::size_t mCount = 0;
+};
+
+// The heap's order: smallest bound first, then the finer block.
+struct SdBlockAfter {
+    bool operator()(const SdBlock& rA, const SdBlock& rB) const {
+        return rA.mLb2 > rB.mLb2 || (rA.mLb2 == rB.mLb2 && rA.mLevel > rB.mLevel);
+    }
+};
+
+// The squared distance from a query to block (@p Level, @p rKey), in cell
+// units @p pU (the query's coordinates divided by the cell size), scaled by
+// @p Cell2, less a slack: the block spans [key * 2^Level, (key + 1) * 2^Level)
+// on each axis, but `floor(x / cell)` may place a point a rounding of x / cell
+// across a cell boundary, so each axis's gap gives up 1e-7 of a cell plus
+// 2^-40 of its magnitude, far more than that rounding and than the rounding of
+// the distances it is compared with. A non-finite query coordinate bounds
+// nothing on its axis.
+double sd_block_lb2(const double* pU, std::int32_t Level, const GridKey& rKey, double Cell2) {
+    const double size = std::ldexp(1.0, Level);
+    const std::int64_t key[3] = {rKey.x, rKey.y, rKey.z};
+    double sum = 0.0;
+    for (int a = 0; a < 3; ++a) {
+        const double lo = static_cast<double>(key[a]) * size;
+        const double hi = lo + size;
+        const double u = pU[a];
+        double gap = lo - u > u - hi ? lo - u : u - hi;
+        if (!(gap > 0.0) || !std::isfinite(gap))
+            continue;
+        gap -= 1e-7 + (std::fabs(u) + gap) * 0x1p-40;
+        if (gap > 0.0)
+            sum += gap * gap;
+    }
+    return sum * Cell2;
+}
+
+SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
+                                      const Vec3& rQueryPoint, double Limit2) {
     double best_d2 = std::numeric_limits<double>::infinity();
     std::int64_t best_tri = -1;
     PointTriangleHit best_hit;
+    const BucketTable& grid = rQuery.mGrid;
+    if (grid.Empty())
+        return {best_tri, best_hit};
+    MIO_SD_COUNT(g_sd_queries, 1);
 
-    // The largest shell radius that can still reach an occupied bucket. Note
-    // ForEachInShell clamps to the occupied box, so an empty shell does NOT
-    // mean "no more candidates" for a query far outside it -- without this
-    // bound the loop would stop early on exactly those points.
-    std::int64_t reach = 0;
-    if (!rQuery.mGrid.Empty()) {
-        const GridKey lo = rQuery.mGrid.OccupiedLo();
-        const GridKey hi = rQuery.mGrid.OccupiedHi();
-        const std::int64_t dx = std::max(std::abs(centre.x - lo.x), std::abs(centre.x - hi.x));
-        const std::int64_t dy = std::max(std::abs(centre.y - lo.y), std::abs(centre.y - hi.y));
-        const std::int64_t dz = std::max(std::abs(centre.z - lo.z), std::abs(centre.z - hi.z));
-        reach = std::max(dx, std::max(dy, dz));
-    }
-    if (reach > MaxShell)
-        reach = MaxShell;
+    const double cell = rQuery.mCellSize;
+    const double cell2 = cell * cell;
+    const double u[3] = {rQueryPoint[0] / cell, rQueryPoint[1] / cell, rQueryPoint[2] / cell};
+    const OccupancyPyramid& pyramid = rQuery.mPyramid;
 
-    for (std::int64_t r = 0; r <= reach; ++r) {
-        // A hit in a bucket at Chebyshev radius r is at least (r - 1) * cell
-        // away, so once that bound exceeds the best found there is nothing
-        // left to find.
-        if (r >= 1 && best_tri >= 0) {
-            const double bound = static_cast<double>(r - 1) * rQuery.mCellSize;
-            if (bound > 0.0 && bound * bound > best_d2)
-                break;
+    // The open blocks, a min-heap on the bound; reused across a thread's queries.
+    thread_local std::vector<SdBlock> heap;
+    heap.clear();
+    const SdBlockAfter after;
+    const auto push = [&](std::int32_t Level, const GridKey& rKey, const BucketView* pIds) {
+        const double lb2 = sd_block_lb2(u, Level, rKey, cell2);
+        if (lb2 > best_d2 || lb2 > Limit2)
+            return;
+        SdBlock block;
+        block.mLb2 = lb2;
+        block.mLevel = Level;
+        block.mKey = rKey;
+        if (pIds) {
+            block.mpIds = pIds->begin();
+            block.mCount = pIds->size();
         }
-        rQuery.mGrid.ForEachInShell(centre, r, [&](const BucketView& rIds) {
-            for (std::int64_t t : rIds) {
+        heap.push_back(block);
+        std::push_heap(heap.begin(), heap.end(), after);
+    };
+    const auto push_cell = [&](const GridKey& rKey) {
+        BucketView ids(nullptr, 0);
+        if (grid.Find(rKey, ids))
+            push(0, rKey, &ids);
+    };
+
+    const std::size_t top = pyramid.NumLevels();
+    if (top == 0) {
+        for (const GridKey& rKey : grid.Keys())
+            push_cell(rKey);
+    } else {
+        for (const GridKey& rKey : pyramid.Level(top).mKeys)
+            push(static_cast<std::int32_t>(top), rKey, nullptr);
+    }
+
+    while (!heap.empty()) {
+        std::pop_heap(heap.begin(), heap.end(), after);
+        const SdBlock block = heap.back();
+        heap.pop_back();
+        // Every block left is bounded below by this one's bound.
+        if (block.mLb2 > best_d2)
+            break;
+        if (block.mLevel == 0) {
+            MIO_SD_COUNT(g_sd_buckets, 1);
+            MIO_SD_COUNT(g_sd_triangles, block.mCount);
+            for (std::size_t i = 0; i < block.mCount; ++i) {
+                const std::int64_t t = block.mpIds[i];
                 const std::size_t ti = static_cast<std::size_t>(t);
                 const PointTriangleHit hit = closest_point_on_triangle(
                     rQueryPoint, rSoup.mCorners[ti * 3 + 0], rSoup.mCorners[ti * 3 + 1],
                     rSoup.mCorners[ti * 3 + 2]);
                 // The total order that makes the accelerator unobservable:
                 // distance first, then the triangle id, so two equidistant
-                // triangles always resolve the same way regardless of which
-                // bucket happened to be visited first.
+                // triangles always resolve the same way whatever block was
+                // opened first.
                 if (hit.mDistanceSq < best_d2 || (hit.mDistanceSq == best_d2 && t < best_tri)) {
                     best_d2 = hit.mDistanceSq;
                     best_tri = t;
                     best_hit = hit;
                 }
             }
-        });
+            continue;
+        }
+        MIO_SD_COUNT(g_sd_blocks, 1);
+        const std::int32_t level = block.mLevel - 1;
+        for (int c = 0; c < 8; ++c) {
+            const GridKey child{2 * block.mKey.x + (c & 1), 2 * block.mKey.y + ((c >> 1) & 1),
+                                2 * block.mKey.z + ((c >> 2) & 1)};
+            if (level == 0)
+                push_cell(child);
+            else if (pyramid.Level(static_cast<std::size_t>(level)).Contains(child))
+                push(level, child, nullptr);
+        }
     }
     return {best_tri, best_hit};
 }
@@ -538,15 +659,14 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
     const double band = rOptions.mBand;
     const bool banded = band > 0.0;
     const double band2 = band * band;
-    // With a band there is no point expanding past it: a hit found beyond this
-    // radius would be clamped anyway.
-    const std::int64_t max_shell =
-        banded ? static_cast<std::int64_t>(std::ceil(band / rQuery.mCellSize)) + 1
-               : std::numeric_limits<std::int64_t>::max();
+    // With a band there is no point opening a block beyond it: a hit found
+    // there would be clamped anyway. A hit within the band is the global
+    // nearest either way.
+    const double limit2 = banded ? band2 : std::numeric_limits<double>::infinity();
 
     parallel_for(n, [&](std::size_t p) {
         const Vec3& query = rPoints[p];
-        const SdNearestTriangle found = sd_nearest_triangle(rQuery, soup, query, max_shell);
+        const SdNearestTriangle found = sd_nearest_triangle(rQuery, soup, query, limit2);
         const std::int64_t best_tri = found.mTri;
         const PointTriangleHit& best_hit = found.mHit;
         const double best_d2 = best_hit.mDistanceSq;
@@ -601,6 +721,9 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
         res.mSignedDistance = side < 0.0 ? -dist : dist;
     });
 
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+    sd_report_probes("query_distances");
+#endif
     return out;
 }
 
@@ -612,7 +735,7 @@ std::vector<ClosestPointHit> query_closest_points(const DistanceQuery& rQuery,
 
     parallel_for(n, [&](std::size_t p) {
         const SdNearestTriangle found =
-            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<std::int64_t>::max());
+            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<double>::infinity());
         ClosestPointHit& res = out[p];
         if (found.mTri < 0) {
             res.mFound = false;
@@ -624,6 +747,9 @@ std::vector<ClosestPointHit> query_closest_points(const DistanceQuery& rQuery,
         res.mSourceCell = soup.mSourceCell[static_cast<std::size_t>(found.mTri)];
     });
 
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+    sd_report_probes("query_closest_points");
+#endif
     return out;
 }
 
@@ -635,7 +761,7 @@ std::vector<SurfaceProjection> query_surface_projections(const DistanceQuery& rQ
 
     parallel_for(n, [&](std::size_t p) {
         const SdNearestTriangle found =
-            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<std::int64_t>::max());
+            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<double>::infinity());
         SurfaceProjection& res = out[p];
         if (found.mTri < 0) {
             res.mFound = false;
@@ -650,6 +776,9 @@ std::vector<SurfaceProjection> query_surface_projections(const DistanceQuery& rQ
         res.mNormal = sd_feature_normal(rQuery, soup, found.mTri, found.mHit.mFeature);
     });
 
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+    sd_report_probes("query_surface_projections");
+#endif
     return out;
 }
 

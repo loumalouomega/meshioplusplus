@@ -1059,8 +1059,7 @@ def roadmap_map():
             [
                 ("harness: gate, rows", "M"),
                 ("parallel backend, Linux wheels", "M"),
-                ("distance query: empty space", "M"),
-                ("flat grids and facet tables", "M"),
+                ("smaller facet records", "M"),
                 ("ragged rows across Python", "M"),
                 ("text I/O: snprintf_c, parallel", "M"),
                 ("HDF5: appends, lock scope", "L"),

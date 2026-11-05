@@ -125,5 +125,72 @@ BucketTable build_bucket_table(double Cell, const std::vector<GridKey>& rLo,
                        std::move(bucket_ids), lo, hi);
 }
 
+namespace {
+
+// One pyramid level from the keys of the level below: each key's parent block,
+// kept the first time it is met. `rKeys` holds distinct keys, so the level is
+// at most as large.
+OccupancyLevel bb_level_above(const std::vector<GridKey>& rKeys) {
+    OccupancyLevel level;
+    std::size_t cap = 8;
+    while (cap < 2 * rKeys.size())
+        cap <<= 1;
+    level.mMask = cap - 1;
+    constexpr std::uint64_t kEmpty = ~std::uint64_t{0};
+    level.mSlots.assign(cap, kEmpty);
+    for (const GridKey& rKey : rKeys) {
+        const GridKey up = grid_key_up(rKey, 1);
+        for (std::size_t s = grid_key_home(up, level.mMask);; s = (s + 1) & level.mMask) {
+            if (level.mSlots[s] == kEmpty) {
+                level.mSlots[s] = level.mKeys.size();
+                level.mKeys.push_back(up);
+                break;
+            }
+            if (level.mKeys[static_cast<std::size_t>(level.mSlots[s])] == up)
+                break;
+        }
+    }
+    level.mLo = level.mKeys.front();
+    level.mHi = level.mKeys.front();
+    for (const GridKey& rKey : level.mKeys) {
+        level.mLo = GridKey{std::min(level.mLo.x, rKey.x), std::min(level.mLo.y, rKey.y),
+                            std::min(level.mLo.z, rKey.z)};
+        level.mHi = GridKey{std::max(level.mHi.x, rKey.x), std::max(level.mHi.y, rKey.y),
+                            std::max(level.mHi.z, rKey.z)};
+    }
+    return level;
+}
+
+// Whether a level spanning the key box [rLo, rHi] is small enough to be the
+// top: at most four blocks per axis. In doubles, since a span of garbage keys
+// (a NaN coordinate quantizes to the int64 extremes) overflows int64.
+bool bb_small_enough(const GridKey& rLo, const GridKey& rHi) {
+    const auto span = [](std::int64_t Lo, std::int64_t Hi) {
+        return static_cast<double>(Hi) - static_cast<double>(Lo);
+    };
+    return span(rLo.x, rHi.x) <= 3.0 && span(rLo.y, rHi.y) <= 3.0 && span(rLo.z, rHi.z) <= 3.0;
+}
+
+}  // namespace
+
+// Each level from the one below, until the top spans at most four blocks per
+// axis. Serial: a level has at most as many keys as the table has buckets, and
+// building one is a probe per key, small beside the table's own build.
+OccupancyPyramid build_occupancy_pyramid(const BucketTable& rGrid) {
+    constexpr std::size_t kMaxLevels = 20;
+    OccupancyPyramid pyramid;
+    if (rGrid.Empty() || bb_small_enough(rGrid.OccupiedLo(), rGrid.OccupiedHi()))
+        return pyramid;
+    while (pyramid.mLevels.size() < kMaxLevels) {
+        const std::vector<GridKey>& below =
+            pyramid.mLevels.empty() ? rGrid.Keys() : pyramid.mLevels.back().mKeys;
+        pyramid.mLevels.push_back(bb_level_above(below));
+        const OccupancyLevel& top = pyramid.mLevels.back();
+        if (bb_small_enough(top.mLo, top.mHi))
+            break;
+    }
+    return pyramid;
+}
+
 }  // namespace detail
 }  // namespace meshioplusplus

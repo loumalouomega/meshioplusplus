@@ -38,6 +38,10 @@
  * touches the index, and a lookup returns the same bucket whatever the probe
  * order was, so the hash cannot affect any result.
  *
+ * `OccupancyPyramid` (since ABI 40) is the table's occupancy at coarser and
+ * coarser block sizes, which a nearest-item search descends to skip empty
+ * space (roadmap 5.3.1); it holds no ids, so it is unobservable the same way.
+ *
  * `detail/` header: exempt from the operations layer's anon-namespace prefix
  * rule.
  */
@@ -50,10 +54,23 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/export.hpp"
 #include "meshioplusplus/detail/spatial_hash.hpp"
 
 namespace meshioplusplus {
 namespace detail {
+
+/// The slot a key starts probing at in a power-of-two open-addressing index
+/// of mask @p Mask: the key's hash, mixed once more so the low bits that the
+/// mask keeps depend on every axis. Shared by `BucketTable` and
+/// `OccupancyLevel`, whose indices are built the same way.
+inline std::size_t grid_key_home(const GridKey& rKey, std::size_t Mask) {
+    std::uint64_t h = static_cast<std::uint64_t>(GridKeyHash{}(rKey));
+    h ^= h >> 29;
+    h *= 0xbf58476d1ce4e5b9ULL;
+    h ^= h >> 32;
+    return static_cast<std::size_t>(h) & Mask;
+}
 
 /// The ids of one bucket: a borrowed, ascending range inside a `BucketTable`.
 class BucketView {
@@ -109,6 +126,10 @@ public:
 
     /// The number of non-empty cells.
     std::size_t NumBuckets() const { return mKeys.size(); }
+
+    /// The key of every non-empty cell, in bucket order (since ABI 40: the
+    /// distance query's `OccupancyPyramid` is built from them).
+    const std::vector<GridKey>& Keys() const { return mKeys; }
 
     /// The occupied-key bounding box (valid only when not `Empty()`).
     const GridKey& OccupiedLo() const { return mLo; }
@@ -194,13 +215,7 @@ private:
 
     /// The slot a key starts probing at: the key's hash, mixed once more so
     /// the low bits that the mask keeps depend on every axis.
-    std::size_t Home(const GridKey& rKey) const {
-        std::uint64_t h = static_cast<std::uint64_t>(GridKeyHash{}(rKey));
-        h ^= h >> 29;
-        h *= 0xbf58476d1ce4e5b9ULL;
-        h ^= h >> 32;
-        return static_cast<std::size_t>(h) & mMask;
-    }
+    std::size_t Home(const GridKey& rKey) const { return grid_key_home(rKey, mMask); }
 
     std::size_t FindBucket(const GridKey& rKey) const {
         if (mSlots.empty())
@@ -241,6 +256,66 @@ private:
     GridKey mLo{0, 0, 0};
     GridKey mHi{0, 0, 0};
 };
+
+/// The block key of @p rKey @p Levels levels up: each axis floor-divided by
+/// `2^Levels` (an arithmetic shift, which C++20 defines for negative values).
+inline GridKey grid_key_up(const GridKey& rKey, int Levels) {
+    return GridKey{rKey.x >> Levels, rKey.y >> Levels, rKey.z >> Levels};
+}
+
+/**
+ * @brief One level of an `OccupancyPyramid`: the blocks of `2^level` grid
+ * cells per axis that hold at least one non-empty cell, as a set.
+ *
+ * The keys are in the order the build first met them, behind the same flat
+ * open-addressing index `BucketTable` uses (`grid_key_home`), at most half
+ * full, so a miss ends at the first free slot.
+ */
+struct OccupancyLevel {
+    std::vector<GridKey> mKeys;
+    std::vector<std::uint64_t> mSlots;
+    std::size_t mMask = 0;
+    GridKey mLo{0, 0, 0};  ///< the occupied block box (valid when `mKeys` is not empty)
+    GridKey mHi{0, 0, 0};
+
+    /// Whether block @p rKey is occupied.
+    bool Contains(const GridKey& rKey) const {
+        if (mSlots.empty())
+            return false;
+        constexpr std::uint64_t kEmpty = ~std::uint64_t{0};
+        for (std::size_t s = grid_key_home(rKey, mMask);; s = (s + 1) & mMask) {
+            const std::uint64_t b = mSlots[s];
+            if (b == kEmpty)
+                return false;
+            if (mKeys[static_cast<std::size_t>(b)] == rKey)
+                return true;
+        }
+    }
+};
+
+/**
+ * @brief The occupancy of a `BucketTable` at coarser and coarser block sizes:
+ * level `l` (1-based) holds the blocks `grid_key_up(key, l)` of the table's
+ * non-empty cells.
+ *
+ * A search for the nearest item descends it from the top, skipping a block
+ * that is empty or whose lower bound already exceeds the best candidate, so
+ * empty space costs one probe per coarse block instead of one per cell
+ * (roadmap 5.3.1). It holds no ids: a level-1 block's children are looked up
+ * in the table itself. The levels stop once the top one spans at most four
+ * blocks per axis (at most 64 blocks), or at 20 levels; a table already that
+ * small has none.
+ */
+struct OccupancyPyramid {
+    /// `mLevels[l - 1]` is level `l`.
+    std::vector<OccupancyLevel> mLevels;
+
+    std::size_t NumLevels() const { return mLevels.size(); }
+    const OccupancyLevel& Level(std::size_t l) const { return mLevels[l - 1]; }
+};
+
+/// The occupancy pyramid of @p rGrid's non-empty cells.
+MESHIOPLUSPLUS_API OccupancyPyramid build_occupancy_pyramid(const BucketTable& rGrid);
 
 }  // namespace detail
 }  // namespace meshioplusplus
