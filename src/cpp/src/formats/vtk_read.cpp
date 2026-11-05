@@ -128,6 +128,34 @@ struct VtkCursor : detail::TextCursor {
             ++mPos;
     }
 
+    // `count` ASCII values into `a` in parallel chunks, each by the prefix
+    // parser `ReadValues` uses, over its whole token; false, the cursor
+    // unmoved, where a token is not taken whole, so `ReadValues`' serial loop
+    // gives the same values and the same error.
+    bool ReadAsciiChunked(NDArray& rA, std::size_t count, bool flt) {
+        const std::size_t end =
+            detail::parse_tokens(mBuf, mPos, count, [&](std::string_view Token, std::size_t i) {
+                detail::TextCursor tc(Token);
+                if (flt) {
+                    double x = 0.0;
+                    if (!tc.DoublePrefix(x) || tc.Pos() != Token.size())
+                        return false;
+                    store(rA, i, x, 0);
+                } else {
+                    std::int64_t x = 0;
+                    if (!tc.IntPrefix(x) || tc.Pos() != Token.size())
+                        return false;
+                    store(rA, i, 0.0, x);
+                }
+                return true;
+            });
+        if (end == std::string_view::npos)
+            return false;
+        mPos = end;
+        ConsumeEol();
+        return true;
+    }
+
     // Read `count` values of dtype `dt`, ascii or big-endian binary.
     NDArray ReadValues(DType dt, std::size_t count, bool is_ascii) {
         const std::size_t isz = dtype_size(dt);
@@ -140,33 +168,9 @@ struct VtkCursor : detail::TextCursor {
         NDArray a = NDArray::Uninit(dt, {count});  // every element written below
         if (is_ascii) {
             const bool flt = detail::is_float_dtype(dt);
-            // A large array is parsed in parallel chunks, each value by the
-            // same prefix parser over its whole token (roadmap 5.7.2); a token
-            // that parser would not take whole sends it to the serial loop
-            // below, which gives the same values and the same error.
-            if (detail::chunked_parse_worthwhile(count)) {
-                const std::size_t end = detail::parse_tokens(
-                    mBuf, mPos, count, [&](std::string_view Token, std::size_t i) {
-                        detail::TextCursor tc(Token);
-                        if (flt) {
-                            double x = 0.0;
-                            if (!tc.DoublePrefix(x) || tc.Pos() != Token.size())
-                                return false;
-                            store(a, i, x, 0);
-                        } else {
-                            std::int64_t x = 0;
-                            if (!tc.IntPrefix(x) || tc.Pos() != Token.size())
-                                return false;
-                            store(a, i, 0.0, x);
-                        }
-                        return true;
-                    });
-                if (end != std::string_view::npos) {
-                    mPos = end;
-                    ConsumeEol();
-                    return a;
-                }
-            }
+            // A large array is parsed in parallel chunks first (roadmap 5.7.2).
+            if (detail::chunked_parse_worthwhile(count) && ReadAsciiChunked(a, count, flt))
+                return a;
             // Shared bounded prefix parsing retains the C-library semantics.
             for (std::size_t i = 0; i < count; ++i) {
                 if (flt) {
