@@ -83597,9 +83597,11 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                 even = true;
             last = arc[i];
         }
-        if (even)
-            for (std::size_t i = 0; i < path.size(); ++i)
+        if (even) {
+            for (std::size_t i = 0; i < path.size(); ++i) {
                 arc[i] = total * static_cast<double>(i + 1) / static_cast<double>(path.size() + 1);
+            }
+        }
         // The nodes advance together in quarter steps, so neighbours do not hold each other back;
         // a refused step is tried again at the next
         std::vector<Vec3> start(path.size());
@@ -83615,13 +83617,14 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                     path[i],
                     vec3_add(start[i], vec3_scale(vec3_sub(target[i], start[i]), 0.25 * k)),
                     kFeatsnapChainFloorDeg);
-        // A node held back by a free boundary neighbour lying between it and its target gives the place
-        // to that neighbour, and so on along the column
+        // A node held back by a free boundary neighbour lying between it and its target gives the
+        // place to that neighbour, and so on along the column
         const auto nearer_free = [&](std::int64_t U, const Vec3& rTarget) {
             std::vector<std::pair<double, std::int64_t>> nearer;
             const double d_now = vec3_norm(vec3_sub(rPoints[static_cast<std::size_t>(U)], rTarget));
             for (std::int64_t u : badj[static_cast<std::size_t>(U)]) {
-                const double d_u = vec3_norm(vec3_sub(rPoints[static_cast<std::size_t>(u)], rTarget));
+                const double d_u =
+                    vec3_norm(vec3_sub(rPoints[static_cast<std::size_t>(u)], rTarget));
                 if (!rPinned[static_cast<std::size_t>(u)] &&
                     std::find(path.begin(), path.end(), u) == path.end() && d_u < d_now)
                     nearer.emplace_back(d_u, u);

@@ -423,6 +423,52 @@ def test_a_chains_nodes_advance_together_so_neighbours_do_not_block_each_other()
     assert conformity["conforming"]
 
 
+def _turned(skin, a, b):
+    rz = np.array([[np.cos(a), -np.sin(a), 0], [np.sin(a), np.cos(a), 0], [0, 0, 1]])
+    rx = np.array([[1, 0, 0], [0, np.cos(b), -np.sin(b)], [0, np.sin(b), np.cos(b)]])
+    skin.points = skin.points @ (rz @ rx).T
+    return skin
+
+
+@needs_core
+@pytest.mark.parametrize(
+    "shape, num_chains, max_missed",
+    [("cylinder", 4, 2), ("box", 12, 1)],
+)
+def test_a_node_held_back_by_a_free_neighbour_gets_its_place(
+    shape, num_chains, max_missed
+):
+    # A chain node held back by a free boundary neighbour lying between it and
+    # its target gives the place to that neighbour, and so on along the column.
+    # Without it all four rims of this skew cylinder, and two of the box's
+    # twelve edges, stayed off their chains.
+    if shape == "cylinder":
+        skin = _turned(
+            mio.convert_cells(
+                mio.extract_surface(mio.cylinder(0.5, 0.5607, 24, 8)),
+                mode="simplexify",
+            ),
+            0.7127,
+            1.1053,
+        )
+    else:
+        skin = _turned(
+            mio.convert_cells(
+                mio.extract_surface(
+                    mio.box([8, 8, 8], [1.37, 1.0, 0.6463], [-0.6, -0.6, -0.7])
+                ),
+                mode="simplexify",
+            ),
+            0.6121,
+            0.7236,
+        )
+    _, report = mio.octree_mesh(skin, max_size=0.25, min_size=0.05, return_report=True)
+    assert report["num_feature_chains"] == num_chains
+    assert report["num_feature_chains_missed"] <= max_missed
+    assert report["num_corners_snapped"] == report["num_corners"]
+    assert report["num_inverted"] == 0
+
+
 @needs_core
 def test_cli_round_trip(tmp_path, capsys):
     skin = tmp_path / "skin.stl"
