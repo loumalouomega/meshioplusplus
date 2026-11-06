@@ -43665,7 +43665,8 @@ private:
 // ===== begin src/cpp/src/detail/chunked_parse.hpp =====
 /**
  * @file detail/chunked_parse.hpp
- * @brief Blank-separated numbers parsed in parallel (roadmap 5.7.2). A
+ * @brief Blank-separated numbers parsed in parallel (roadmap 5.7.2), and text
+ * cut into chunks of whole lines for readers that parse line by line. A
  * **core-private** header.
  *
  * The text is cut into chunks at blanks (`text_is_blank`, the classic-locale
@@ -43810,6 +43811,31 @@ std::size_t parse_tokens(std::string_view Text, std::size_t Begin, std::size_t C
         pos = cuts.back();
     }
     return std::string_view::npos;
+}
+
+/// Below this many bytes a reader that parses line by line stays serial.
+inline constexpr std::size_t chunked_lines_min_bytes = std::size_t{1} << 20;
+
+/**
+ * @brief Cuts `Text[Begin, End)` into chunks of whole lines, each but the last
+ * ending just after a `'\n'`, of about `kChunkBytes` each: the bounds, `Begin`
+ * first and `End` last. A line-by-line parse of each chunk in parallel meets
+ * the lines a serial one does, in the same order (`split_lines` of the chunks,
+ * concatenated, is `split_lines` of the whole).
+ */
+inline std::vector<std::size_t> chunk_lines(std::string_view Text, std::size_t Begin,
+                                            std::size_t End) {
+    std::vector<std::size_t> cuts{Begin};
+    while (cuts.back() < End) {
+        std::size_t at = cuts.back() + chunked_parse_impl::kChunkBytes;
+        if (at >= End) {
+            cuts.push_back(End);
+            break;
+        }
+        const std::size_t eol = Text.substr(0, End).find('\n', at);
+        cuts.push_back(eol == std::string_view::npos ? End : eol + 1);
+    }
+    return cuts;
 }
 
 /// How many tokens `Text` holds, counted in parallel chunks.
@@ -142349,6 +142375,7 @@ Mesh read_gltf(const std::string& rPath, const GltfReadOptions& rOptions,
 // ===== begin src/cpp/src/formats/gmsh.cpp =====
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -142476,10 +142503,12 @@ struct GmshCursor : detail::TextCursor {
         mPos = end;
         return true;
     }
-    // `next_int`'s integer of `x`, or false where it would throw.
-    static bool integer_of(double x, std::int64_t& rOut) {
+    // `next_int`'s integer of `x` (`checked_integer<T>`), or false where it
+    // would throw.
+    template <class T = std::int64_t>
+    static bool integer_of(double x, T& rOut) {
         try {
-            rOut = detail::checked_integer<std::int64_t>(x, "Gmsh");
+            rOut = detail::checked_integer<T>(x, "Gmsh");
             return true;
         } catch (...) {
             return false;
@@ -143012,12 +143041,173 @@ void append_element(std::vector<EBlock>& rBlocks, const std::string& rType, std:
     ++cur.mCount;
 }
 
+// A whole token of Gmsh 2.2's `$Elements` as the serial loop's `TextStream`
+// extraction reads it: a sign and up to 18 digits, nothing after them (a
+// longer run, or anything else, is left to the serial loop).
+bool gmsh22_int_token(std::string_view Token, std::int64_t& rOut) {
+    std::size_t i = 0;
+    bool neg = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        neg = Token[i] == '-';
+        ++i;
+    }
+    if (i == Token.size() || Token.size() - i > 18)
+        return false;
+    std::int64_t v = 0;
+    for (; i < Token.size(); ++i) {
+        if (Token[i] < '0' || Token[i] > '9')
+            return false;
+        v = v * 10 + (Token[i] - '0');
+    }
+    rOut = neg ? -v : v;
+    return true;
+}
+
+/**
+ * Gmsh 2.2's ASCII `$Elements` rows, parsed in parallel (roadmap 5.7.2): one
+ * line per element, `id type ntags tags... nodes...`. The lines are indexed
+ * (a serial `memchr` walk), then parsed in parallel and checked; a serial
+ * pass over their (type, tag count) gives the blocks `append_element` would
+ * open and each row's place in its block; a last parallel pass fills them.
+ * False, with the cursor and the blocks untouched, when the serial loop must
+ * run instead: fewer lines than elements, or any line it would read
+ * otherwise or reject -- a token that is not a whole integer, an unknown
+ * type, a bad tag count or a short row -- so its values and its errors stand.
+ */
+bool gmsh22_parallel_elements(GmshCursor& rCur, std::size_t Total, std::vector<EBlock>& rBlocks) {
+    if (!detail::chunked_parse_worthwhile(4 * Total))
+        return false;
+    const std::string_view text = rCur.Data();
+    std::vector<std::size_t> starts(Total + 1);
+    std::size_t pos = rCur.Pos();
+    for (std::size_t e = 0; e < Total; ++e) {
+        if (pos >= text.size())
+            return false;
+        starts[e] = pos;
+        const std::size_t eol = text.find('\n', pos);
+        pos = eol == std::string_view::npos ? text.size() : eol + 1;
+    }
+    starts[Total] = pos;
+    // Line e as `read_line` returns it: no newline, one trailing '\r' dropped.
+    const auto line = [&](std::size_t e) {
+        std::string_view l = text.substr(starts[e], starts[e + 1] - starts[e]);
+        if (!l.empty() && l.back() == '\n')
+            l.remove_suffix(1);
+        if (!l.empty() && l.back() == '\r')
+            l.remove_suffix(1);
+        return l;
+    };
+    // Calls rFn(index, value) for each token of `l`; false on a token that
+    // is not a whole integer.
+    const auto for_each_int = [](std::string_view l, auto&& rFn) {
+        std::size_t p = 0, k = 0;
+        for (;;) {
+            while (p < l.size() && detail::text_is_blank(l[p]))
+                ++p;
+            if (p == l.size())
+                return true;
+            const std::size_t b = p;
+            while (p < l.size() && !detail::text_is_blank(l[p]))
+                ++p;
+            std::int64_t v = 0;
+            if (!gmsh22_int_token(l.substr(b, p - b), v) || !rFn(k++, v))
+                return false;
+        }
+    };
+    struct Head {
+        const std::string* mType = nullptr;
+        std::uint32_t mN = 0;
+        std::uint32_t mNumTags = 0;
+    };
+    const auto& g2m = gmsh_to_meshio_type();
+    const auto& nnpc = num_nodes_per_cell();
+    std::vector<Head> heads(Total);
+    std::atomic<bool> refused{false};
+    parallel_for(
+        Total,
+        [&](std::size_t e) {
+            if (refused.load(std::memory_order_relaxed))
+                return;
+            std::int64_t v[3] = {0, 0, 0};
+            std::size_t count = 0;
+            if (!for_each_int(line(e), [&](std::size_t k, std::int64_t x) {
+                    if (k < 3)
+                        v[k] = x;
+                    count = k + 1;
+                    return true;
+                }) ||
+                count < 3) {
+                refused.store(true, std::memory_order_relaxed);
+                return;
+            }
+            const auto it = g2m.find(static_cast<int>(v[1]));
+            if (it == g2m.end() || v[2] < 0 || static_cast<std::uint64_t>(v[2]) > count) {
+                refused.store(true, std::memory_order_relaxed);
+                return;
+            }
+            const std::size_t n = static_cast<std::size_t>(nnpc.at(it->second));
+            if (count < 3 + static_cast<std::size_t>(v[2]) + n) {
+                refused.store(true, std::memory_order_relaxed);
+                return;
+            }
+            heads[e] = {&it->second, static_cast<std::uint32_t>(n),
+                        static_cast<std::uint32_t>(v[2])};
+        },
+        1024);
+    if (refused.load())
+        return false;
+    // The blocks `append_element` would open, in order, and each row's.
+    std::vector<std::uint32_t> block_of(Total);
+    std::vector<std::size_t> row_of(Total);
+    for (std::size_t e = 0; e < Total; ++e) {
+        const Head& h = heads[e];
+        if (rBlocks.empty() || rBlocks.back().mType != *h.mType ||
+            rBlocks.back().mNumTags != h.mNumTags) {
+            EBlock b;
+            b.mType = *h.mType;
+            b.mN = h.mN;
+            b.mNumTags = h.mNumTags;
+            rBlocks.push_back(std::move(b));
+        }
+        block_of[e] = static_cast<std::uint32_t>(rBlocks.size() - 1);
+        row_of[e] = rBlocks.back().mCount++;
+    }
+    for (EBlock& b : rBlocks) {
+        b.mTags.resize(b.mCount * b.mNumTags);
+        b.mConn.resize(b.mCount * b.mN);
+    }
+    parallel_for(
+        Total,
+        [&](std::size_t e) {
+            EBlock& b = rBlocks[block_of[e]];
+            std::int64_t* tags = b.mTags.data() + row_of[e] * b.mNumTags;
+            std::int64_t* conn = b.mConn.data() + row_of[e] * b.mN;
+            const std::size_t nt = b.mNumTags, n = b.mN;
+            for_each_int(line(e), [&](std::size_t k, std::int64_t x) {
+                if (k < 3)
+                    return true;
+                if (k < 3 + nt)
+                    tags[k - 3] = x;
+                else if (k < 3 + nt + n)
+                    conn[k - 3 - nt] = x - 1;
+                else
+                    return false;  // the rest is never read
+                return true;
+            });
+        },
+        1024);
+    rCur.Seek(starts[Total]);
+    return true;
+}
+
 void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks) {
     std::int64_t total = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     const auto& g2m = gmsh_to_meshio_type();
     const auto& nnpc = num_nodes_per_cell();
 
-    if (is_ascii) {
+    if (is_ascii && gmsh22_parallel_elements(rCur, static_cast<std::size_t>(total), rBlocks)) {
+        // parsed in parallel
+    } else if (is_ascii) {
         for (std::int64_t e = 0; e < total; ++e) {
             std::string line = rCur.read_line();
             detail::TextStream iss(line);
@@ -143477,6 +143667,26 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
                 }
             });
             rCur.mPos += nez * stride * 8;
+        } else if (is_ascii &&
+                   rCur.parallel_numbers(nez * (n + 1), [&](std::size_t k, double x) {
+                       // [tag, node0..node(n-1)] per element: the tag is read
+                       // as the serial loop reads it and dropped; a node tag
+                       // the serial loop would reject refuses the chunked parse.
+                       const std::size_t e = k / (n + 1), j = k % (n + 1);
+                       std::int64_t tag = 0;
+                       if (version40) {
+                           std::int32_t t32 = 0;
+                           if (!GmshCursor::integer_of(x, t32) || (j != 0 && t32 < 1))
+                               return false;
+                           tag = t32;
+                       } else if (!GmshCursor::integer_of(x, tag)) {
+                           return false;
+                       }
+                       if (j != 0)
+                           dst[e * n + j - 1] = tag - 1;
+                       return true;
+                   })) {
+            // parsed in parallel
         } else {
             if (version40 && !is_ascii)
                 rCur.need(nez * (n + 1) * 4);
@@ -160889,6 +161099,22 @@ struct Tokenizer {
         if (mPos < mBuf.size())
             ++mPos;
     }
+    // The next `N` tokens, parsed in parallel chunks when there are enough
+    // (roadmap 5.7.2): `rStore(token, i)` takes token i whole or refuses it
+    // (it must not throw). False, the tokenizer unmoved, when the caller's
+    // serial loop must run instead -- too few tokens, or one the serial loop
+    // would read otherwise: a comment's `#` lands in a token no number parse
+    // takes whole, so a comment anywhere in the run falls back too.
+    template <class Store>
+    bool parallel_tokens(std::size_t N, Store&& rStore) {
+        if (!detail::chunked_parse_worthwhile(N))
+            return false;
+        const std::size_t end = detail::parse_tokens(mBuf, mPos, N, std::forward<Store>(rStore));
+        if (end == std::string_view::npos)
+            return false;
+        mPos = end;
+        return true;
+    }
 };
 
 void store_coord(NDArray& rA, std::size_t idx, double v) {
@@ -161175,7 +161401,29 @@ Mesh read_medit_ascii(const std::string& rPath) {
                 throw ReadError("Medit: cannot tell the dimension from the Vertices rows");
             NDArray pts(coord_dtype, {static_cast<std::size_t>(n), static_cast<std::size_t>(dim)});
             point_ref.resize(n);
-            for (std::int64_t i = 0; i < n; ++i) {
+            // A row is `dim` coordinates and a reference. A token taken whole
+            // by `parse_double_token` is the value `next_double` gives it; a
+            // reference `checked_integer` would reject sends the read back to
+            // the serial loop, which raises.
+            const std::size_t row = static_cast<std::size_t>(dim) + 1;
+            const bool parsed = tok.parallel_tokens(
+                static_cast<std::size_t>(n) * row, [&](std::string_view Token, std::size_t q) {
+                    double x = 0.0;
+                    if (!detail::parse_double_token(Token, x))
+                        return false;
+                    const std::size_t i = q / row, c = q % row;
+                    if (c + 1 < row) {
+                        store_coord(pts, i * (row - 1) + c, x);
+                        return true;
+                    }
+                    try {
+                        point_ref[i] = detail::checked_integer<std::int64_t>(x, "Medit");
+                        return true;
+                    } catch (...) {
+                        return false;
+                    }
+                });
+            for (std::int64_t i = 0; !parsed && i < n; ++i) {
                 for (int c = 0; c < dim; ++c)
                     store_coord(pts, i * dim + c, tok.next_double());
                 point_ref[i] = detail::checked_integer<std::int64_t>(tok.next_double(), "Medit");
@@ -161191,7 +161439,23 @@ Mesh read_medit_ascii(const std::string& rPath) {
             NDArray ref(DType::Int64, {static_cast<std::size_t>(n)});
             std::int64_t* dp = data.As<std::int64_t>();
             std::int64_t* rp = ref.As<std::int64_t>();
-            for (std::int64_t i = 0; i < n; ++i) {
+            // A row is `k` node ids and a reference; `parse_int_token` takes a
+            // token whole with `next_int`'s value (saturated where it is).
+            const std::size_t row = static_cast<std::size_t>(k) + 1;
+            const bool parsed = tok.parallel_tokens(
+                static_cast<std::size_t>(n) * row, [&](std::string_view Token, std::size_t q) {
+                    std::int64_t v = 0;
+                    if (!detail::parse_int_token(Token, v) ||
+                        v == std::numeric_limits<std::int64_t>::min())
+                        return false;
+                    const std::size_t i = q / row, j = q % row;
+                    if (j + 1 < row)
+                        dp[i * (row - 1) + j] = v - 1;
+                    else
+                        rp[i] = v;
+                    return true;
+                });
+            for (std::int64_t i = 0; !parsed && i < n; ++i) {
                 for (int j = 0; j < k; ++j)
                     dp[i * k + j] = tok.next_int() - 1;
                 rp[i] = tok.next_int();
@@ -193013,6 +193277,7 @@ void detail::write_step_report(const std::string& rPath, const Mesh& rMesh,
 #include <fstream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -193097,18 +193362,12 @@ std::string_view stl_lstrip(std::string_view S) {
     return S.substr(b);
 }
 
-// `Text` is the ASCII body: the whole file, or the file after its header line.
-// The views end where the file ends, so the numbers are parsed with the
-// bounded prefix parse, never over a view that lacks a terminator.
-Mesh read_ascii(std::string_view Text) {
-    // Collect the last 3 numbers of every non-comment line; rows 0,4,8,... are
-    // facet normals, the rest are vertices.
-    const std::vector<std::string_view> lines = detail::split_lines(Text);
-    std::vector<double> data;
+// The last 3 numbers of every non-comment line of `lines`, appended to rOut.
+void stl_ascii_rows(const std::vector<std::string_view>& rLines, std::vector<double>& rOut) {
     // A line holds at most one row, so the line count bounds the rows.
-    data.reserve(lines.size() * 3);
+    rOut.reserve(rOut.size() + rLines.size() * 3);
     std::vector<std::string_view> tok;
-    for (const std::string_view line : lines) {
+    for (const std::string_view line : rLines) {
         const std::string_view s = stl_lstrip(line);
         if (s.empty() || stl_is_comment_line(s))
             continue;
@@ -193116,19 +193375,51 @@ Mesh read_ascii(std::string_view Text) {
         if (tok.size() < 3)
             continue;
         for (std::size_t j = tok.size() - 3; j < tok.size(); ++j)
-            data.push_back(detail::parse_double_prefix(tok[j]));
+            rOut.push_back(detail::parse_double_prefix(tok[j]));
+    }
+}
+
+// `Text` is the ASCII body: the whole file, or the file after its header line.
+// The views end where the file ends, so the numbers are parsed with the
+// bounded prefix parse, never over a view that lacks a terminator.
+Mesh read_ascii(std::string_view Text) {
+    // Collect the last 3 numbers of every non-comment line; rows 0,4,8,... are
+    // facet normals, the rest are vertices. A large file is read in chunks of
+    // whole lines in parallel (roadmap 5.7.2), each chunk by the serial rule
+    // into its own rows, joined in chunk order: the rows a serial read gives.
+    std::vector<double> data;
+    if (Text.size() >= detail::chunked_lines_min_bytes && detail::parallel_workers() > 1) {
+        const std::vector<std::size_t> cuts = detail::chunk_lines(Text, 0, Text.size());
+        std::vector<std::vector<double>> parts(cuts.size() - 1);
+        parallel_for(
+            parts.size(),
+            [&](std::size_t c) {
+                stl_ascii_rows(detail::split_lines(Text.substr(cuts[c], cuts[c + 1] - cuts[c])),
+                               parts[c]);
+            },
+            1);
+        std::size_t total = 0;
+        for (const auto& rPart : parts)
+            total += rPart.size();
+        data.reserve(total);
+        for (const auto& rPart : parts)
+            data.insert(data.end(), rPart.begin(), rPart.end());
+    } else {
+        stl_ascii_rows(detail::split_lines(Text), data);
     }
     std::size_t nrows = data.size() / 3;
     if (nrows % 4 != 0)
         throw ReadError("Malformed ascii STL");
 
-    std::vector<unsigned char> verts, normals;
-    for (std::size_t r = 0; r < nrows; ++r) {
-        const double* row = data.data() + r * 3;
-        std::vector<unsigned char>& dst = (r % 4 == 0) ? normals : verts;
-        dst.insert(dst.end(), reinterpret_cast<const unsigned char*>(row),
-                   reinterpret_cast<const unsigned char*>(row) + 3 * sizeof(double));
-    }
+    // Facet f is rows 4f (its normal) and 4f+1..4f+3 (its corners).
+    const std::size_t nfacets = nrows / 4;
+    constexpr std::size_t kRow = 3 * sizeof(double);
+    std::vector<unsigned char> verts(nfacets * 3 * kRow), normals(nfacets * kRow);
+    parallel_for(nfacets, [&](std::size_t f) {
+        const double* facet = data.data() + f * 12;
+        std::memcpy(normals.data() + f * kRow, facet, kRow);
+        std::memcpy(verts.data() + f * 3 * kRow, facet + 3, 3 * kRow);
+    });
     return build_mesh(verts, DType::Float64, &normals);
 }
 
