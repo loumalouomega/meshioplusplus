@@ -86030,6 +86030,12 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         ++report.mNumMoved;
         return true;
     };
+    // Puts V back at rWas after a refused move, unless a neighbour that gave
+    // room meanwhile would be inverted there; V then stays at its last accepted place
+    auto put_back = [&](std::int64_t V, const Vec3& rWas) {
+        if (star_positive(V, V, rWas))
+            rPoints[static_cast<std::size_t>(V)] = rWas;
+    };
     // A move in four steps, each making room around it as it goes; a refused
     // step keeps the steps before it.
     auto move_by_steps = [&](std::int64_t V, const Vec3& rTarget, double Floor) {
@@ -86060,7 +86066,7 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
         for (const auto& [d, v] : cand) {
             const Vec3 was = rPoints[static_cast<std::size_t>(v)];
             if (!move_by_steps(v, cp, kFeatsnapFloorDeg)) {
-                rPoints[static_cast<std::size_t>(v)] = was;
+                put_back(v, was);
                 continue;
             }
             rPinned[static_cast<std::size_t>(v)] = 1;
@@ -86198,7 +86204,7 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
             const Vec3 was = rPoints[static_cast<std::size_t>(U)];
             if (move_by_steps(U, rTarget, kFeatsnapChainFloorDeg))
                 return U;
-            rPoints[static_cast<std::size_t>(U)] = was;
+            put_back(U, was);
             if (Depth == 0)
                 return -1;
             for (const auto& cand : nearer_free(U, rTarget)) {
