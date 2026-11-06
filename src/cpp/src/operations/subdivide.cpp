@@ -39,7 +39,6 @@
 
 // Project includes (private, not installed)
 #include "../detail/data_plumbing.hpp"
-#include "../detail/staged_block.hpp"
 
 namespace meshioplusplus {
 
@@ -70,11 +69,28 @@ struct SubOutBlock {
 
 /// Stage an input block unchanged -- the pass-through case, a polygon block or
 /// a rectangular one (a polyhedron block is always eligible, so it never gets
-/// here).
+/// here). The same body as detail::stage_flat_or_polygon (staged_block.hpp),
+/// kept here on purpose: using the shared template changed how GCC inlined the
+/// rest of subdivide.cpp (tier S `subdivide_ragged` +2.2%); roadmap 3.4.11.
 SubOutBlock sub_stage_passthrough(const Mesh::CellView& rBlock) {
     SubOutBlock out;
     out.mType = std::string(rBlock.Type());
-    detail::stage_flat_or_polygon(rBlock, out);
+    if (rBlock.IsRagged()) {
+        out.mIsRagged = true;
+        out.mPolygonRows.resize(rBlock.NumCells());
+        for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
+            const std::int64_t* row = rBlock.Row(c);
+            out.mPolygonRows[c].assign(row, row + rBlock.RowSize(c));
+        }
+    } else {
+        const NDArray& conn = rBlock.Conn();
+        const std::size_t npc = rBlock.NodesPerCell();
+        out.mNodesPerCell = npc;
+        out.mConn.resize(rBlock.NumCells() * npc);
+        for (std::size_t c = 0; c < rBlock.NumCells(); ++c)
+            for (std::size_t k = 0; k < npc; ++k)
+                out.mConn[c * npc + k] = detail::read_int(conn, c * npc + k);
+    }
     return out;
 }
 
@@ -83,8 +99,16 @@ void sub_emit_block(Mesh& rOut, SubOutBlock& rBlock) {
     if (rBlock.mIsPolyhedron) {
         rOut.AddPolyhedronBlock(rBlock.mType, std::move(rBlock.mFlat),
                                 std::move(rBlock.mRowOffsets), std::move(rBlock.mFaceOffsets));
+    } else if (rBlock.mIsRagged) {
+        rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mPolygonRows));
     } else {
-        detail::emit_flat_or_polygon(rOut, rBlock);
+        const std::size_t npc = rBlock.mNodesPerCell;
+        const std::size_t ncells = npc == 0 ? 0 : rBlock.mConn.size() / npc;
+        NDArray conn = NDArray::Uninit(DType::Int64, {ncells, npc});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < rBlock.mConn.size(); ++i)
+            dst[i] = rBlock.mConn[i];
+        rOut.AddCellBlock(rBlock.mType, std::move(conn));
     }
 }
 

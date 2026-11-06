@@ -36,7 +36,6 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
-#include "../detail/region_field_data.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/vtk_xml_write.hpp"

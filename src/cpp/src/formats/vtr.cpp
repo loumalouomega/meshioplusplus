@@ -32,7 +32,6 @@
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
-#include "../detail/region_field_data.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/vtk_xml_write.hpp"
 

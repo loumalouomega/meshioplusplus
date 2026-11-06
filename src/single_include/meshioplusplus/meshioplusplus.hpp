@@ -50010,6 +50010,125 @@ void mmg_check_index_range(std::size_t Count, bool Int64, const char* pWhat, con
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/mmg_guard.hpp =====
+// ===== begin src/cpp/src/detail/nastran_write_common.hpp =====
+/**
+ * @file detail/nastran_write_common.hpp
+ * @brief The writer-side pieces the Nastran HDF5 and OP2 writers share: the
+ * `nastran:card` number to card mapping, which cell block holds which card, the
+ * cell type to card table, a series' signature, the GRID ids and the PCOMP plies.
+ *
+ * A **core-private** header: no installed header names it, and it adds nothing
+ * to the API or the ABI. It needs no HDF5.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <set>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The card a line or vertex takes from its `nastran:card` number, or nullptr when the
+/// writers hold no cell type for it.
+inline const char* nastran_line_card(std::int64_t Code) {
+    switch (Code) {
+        case 30:
+            return "CROD";
+        case 16:
+            return "CONROD";
+        case 37:
+            return "CTUBE";
+        case 6:
+            return "CELAS1";
+        case 2:
+            return "CDAMP1";
+        case 15:
+            return "CONM2";
+        case 10:
+            return "CMASS1";
+        case 11:
+            return "CMASS2";
+        case 14:
+            return "CONM1";
+        case 24:
+            return "CBAR";
+        case 54:
+            return "CBEAM";
+        case 26:
+            return "CBUSH";
+        case 3:
+            return "CDAMP2";
+        case 7:
+            return "CELAS2";
+        case 39:
+            return "CVISC";
+        case 52:
+            return "PLOTEL";
+        case 19:
+            return "CGAP";
+        default:
+            return nullptr;
+    }
+}
+
+/// Whether a cell block of @p rType may hold an element of card @p Card.
+inline bool nastran_block_holds(const std::string& rType, std::string_view Card) {
+    if (rType == "vertex")
+        return Card == "CONM2" || Card == "CELAS1" || Card == "CDAMP1" || Card == "CELAS2" ||
+               Card == "CDAMP2" || Card == "CMASS1" || Card == "CMASS2" || Card == "CONM1";
+    if (rType == "line")
+        return Card == "CROD" || Card == "CONROD" || Card == "CTUBE" || Card == "CELAS1" ||
+               Card == "CDAMP1" || Card == "CBAR" || Card == "CBEAM" || Card == "CBUSH" ||
+               Card == "CELAS2" || Card == "CDAMP2" || Card == "CVISC" || Card == "PLOTEL" ||
+               Card == "CGAP" || Card == "CMASS1" || Card == "CMASS2";
+    return false;
+}
+
+/// The card a `nastran:card` number names (its GEOM2 type), for the warnings.
+std::string nastran_card_name(std::int64_t Code);
+
+/// The card and default property id a cell block of a meshio type writes as.
+struct NastranTypeSpec {
+    const char* mType;
+    const char* mCard;  // null: a line takes CROD, CTUBE or CONROD by its property
+    std::size_t mNodes;
+    std::int64_t mPid;  // the property id of a block with no 'nastran:pid'
+};
+
+/// The entry for @p rType, or nullptr when no card holds it.
+const NastranTypeSpec* nastran_type_spec(const std::string& rType);
+
+/// What every step of a series shares: the points' count and the cell blocks'
+/// types and shapes.
+using NastranSignature = std::vector<std::tuple<std::string, std::size_t, std::size_t>>;
+
+NastranSignature nastran_signature(const Mesh& rMesh);
+
+/// The GRID id of each point: `point_data["nastran:nid"]`, else 1 to n. Throws a
+/// `WriteError` prefixed with @p pWho and ": ".
+std::vector<std::int64_t> nastran_node_ids(const Mesh& rMesh, std::size_t N, const char* pWho);
+
+/// The plies of each PCOMP id: `nastran:PCOMP_<id>:PLY`, `(n, 4)` rows of MID, T, THETA, SOUT.
+using NastranPlies = std::map<std::int64_t, std::vector<std::array<double, 4>>>;
+
+/// Throws a `WriteError` prefixed with @p pWho and ": ".
+NastranPlies nastran_plies(const Mesh& rMesh, const char* pWho);
+
+/// The names joined with ", ", in the set's order.
+std::string nastran_join(const std::set<std::string>& rNames);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/nastran_write_common.hpp =====
 // ===== begin src/cpp/src/detail/node_table.hpp =====
 /**
  * @file detail/node_table.hpp
@@ -51691,6 +51810,73 @@ SparseSolveReport csr_bicgstab(const SparseCsr& rA, const double* pB, double* pX
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/sparse_solve.hpp =====
+// ===== begin src/cpp/src/detail/staged_block.hpp =====
+/**
+ * @file detail/staged_block.hpp
+ * @brief Copying an unchanged rectangular or polygon cell block into an
+ * operation's staged output block, and adding such a block to the result
+ * mesh, shared by the operations that stage their output (agglomerate,
+ * subdivide).
+ *
+ * A **core-private** header: no installed header names it, and it adds
+ * nothing to the API or the ABI. Built on the uniform mesh API only.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Stage a non-polyhedron block unchanged into @p rOut: a ragged (polygon)
+/// block as one row per cell in `mPolygonRows`, a rectangular one as its flat
+/// connectivity in `mConn` with `mNodesPerCell`. The caller handles
+/// polyhedron blocks itself, since each staging struct holds them its own way.
+template <class TBlock>
+void stage_flat_or_polygon(const Mesh::CellView& rBlock, TBlock& rOut) {
+    if (rBlock.IsRagged()) {
+        rOut.mIsRagged = true;
+        rOut.mPolygonRows.resize(rBlock.NumCells());
+        for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
+            const std::int64_t* row = rBlock.Row(c);
+            rOut.mPolygonRows[c].assign(row, row + rBlock.RowSize(c));
+        }
+    } else {
+        const NDArray& conn = rBlock.Conn();
+        const std::size_t npc = rBlock.NodesPerCell();
+        rOut.mNodesPerCell = npc;
+        rOut.mConn.resize(rBlock.NumCells() * npc);
+        for (std::size_t c = 0; c < rBlock.NumCells(); ++c)
+            for (std::size_t k = 0; k < npc; ++k)
+                rOut.mConn[c * npc + k] = read_int(conn, c * npc + k);
+    }
+}
+
+/// Add a block staged by stage_flat_or_polygon (or built in the same shape)
+/// to @p rOut: `mPolygonRows` as a polygon block when `mIsRagged`, otherwise
+/// `mConn` as an (n, mNodesPerCell) Int64 block. Moves the rows out.
+template <class TBlock>
+void emit_flat_or_polygon(Mesh& rOut, TBlock& rBlock) {
+    if (rBlock.mIsRagged) {
+        rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mPolygonRows));
+    } else {
+        const std::size_t npc = rBlock.mNodesPerCell;
+        const std::size_t ncells = npc == 0 ? 0 : rBlock.mConn.size() / npc;
+        NDArray conn = NDArray::Uninit(DType::Int64, {ncells, npc});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < rBlock.mConn.size(); ++i)
+            dst[i] = rBlock.mConn[i];
+        rOut.AddCellBlock(rBlock.mType, std::move(conn));
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/staged_block.hpp =====
 // ===== begin src/cpp/src/detail/step_brep.hpp =====
 /**
  * @file detail/step_brep.hpp
@@ -54753,6 +54939,23 @@ inline std::string vtk_xml_lattice_extent(const LatticeSpec& rSpec) {
     auto ext = make_classic_ostringstream();
     ext << "0 " << rSpec.mDims[0] << " 0 " << rSpec.mDims[1] << " 0 " << rSpec.mDims[2];
     return ext.str();
+}
+
+/// The opening of a lattice writer whose grid element carries only the extent
+/// (`.vtr`, `.vts`): the prolog, the `<pGrid WholeExtent="...">` start tag,
+/// the field data section and the `<Piece>` start tag. @p pFormat names the
+/// format in the field data warnings. Returns the size-header width.
+inline std::size_t vtk_xml_lattice_preamble(std::ostream& rOs, const Mesh& rMesh,
+                                            const LatticeSpec& rSpec, const char* pGrid,
+                                            const char* pFormat, bool Binary, VtkCodec Codec) {
+    const std::size_t hsz = vtk_xml_size_header_bytes(rMesh, Binary, Codec);
+    const std::string ext = vtk_xml_lattice_extent(rSpec);
+
+    vtk_xml_prolog(rOs, pGrid, "0.1", Binary, Codec, hsz);
+    rOs << "<" << pGrid << " WholeExtent=\"" << ext << "\">\n";
+    write_field_data_section(rOs, rMesh, pFormat, Binary, Codec, hsz);
+    rOs << "<Piece Extent=\"" << ext << "\">\n";
+    return hsz;
 }
 
 /// A one-block lattice's `<PointData>` and `<CellData>` sections (each only
@@ -95824,6 +96027,125 @@ bool nastran_rotate_to_basic(const NastranCoordSystems& rSystems, std::int64_t C
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/nastran_model.cpp =====
+// ===== begin src/cpp/src/detail/nastran_write_common.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+std::string nastran_card_name(std::int64_t Code) {
+    static const std::pair<const char*, std::int64_t> kTypes[] = {
+        {"CBAR", 24},    {"CBEAM", 54},  {"CBUSH", 26},  {"CDAMP1", 2},  {"CDAMP2", 3},
+        {"CELAS1", 6},   {"CELAS2", 7},  {"CGAP", 19},   {"CHEXA", 73},  {"CMASS1", 10},
+        {"CMASS2", 11},  {"CONM1", 14},  {"CONM2", 15},  {"CONROD", 16}, {"CPENTA", 41},
+        {"CPYRAM", 172}, {"CQUAD", 91},  {"CQUAD4", 51}, {"CQUAD8", 47}, {"CQUADR", 80},
+        {"CROD", 30},    {"CSHEAR", 31}, {"CTETRA", 55}, {"CTRIA3", 59}, {"CTRIA6", 48},
+        {"CTRIAR", 92},  {"CTUBE", 37},  {"CVISC", 39},  {"PLOTEL", 52},
+    };
+    for (const auto& [name, number] : kTypes)
+        if (number == Code)
+            return name;
+    return "card " + std::to_string(Code);
+}
+
+namespace {
+
+constexpr NastranTypeSpec kNastranWriteTypes[] = {
+    {"vertex", "CONM2", 1, -1},    {"line", nullptr, 2, 3},        {"triangle", "CTRIA3", 3, 1},
+    {"triangle6", "CTRIA6", 6, 1}, {"quad", "CQUAD4", 4, 1},       {"quad8", "CQUAD8", 8, 1},
+    {"quad9", "CQUAD", 9, 1},      {"tetra", "CTETRA", 4, 2},      {"tetra10", "CTETRA", 10, 2},
+    {"pyramid", "CPYRAM", 5, 2},   {"pyramid13", "CPYRAM", 13, 2}, {"wedge", "CPENTA", 6, 2},
+    {"wedge15", "CPENTA", 15, 2},  {"hexahedron", "CHEXA", 8, 2},  {"hexahedron20", "CHEXA", 20, 2},
+};
+
+[[noreturn]] void nastran_write_fail(const char* pWho, const std::string& rMessage) {
+    throw WriteError(std::string(pWho) + ": " + rMessage);
+}
+
+}  // namespace
+
+const NastranTypeSpec* nastran_type_spec(const std::string& rType) {
+    for (const NastranTypeSpec& t : kNastranWriteTypes)
+        if (rType == t.mType)
+            return &t;
+    return nullptr;
+}
+
+NastranSignature nastran_signature(const Mesh& rMesh) {
+    NastranSignature sig;
+    sig.emplace_back("points", rMesh.NumPoints(), 0);
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        sig.emplace_back(cb.Type(), cb.NumCells(), cb.NodesPerCell());
+    }
+    return sig;
+}
+
+std::vector<std::int64_t> nastran_node_ids(const Mesh& rMesh, std::size_t N, const char* pWho) {
+    std::vector<std::int64_t> ids(N);
+    if (!rMesh.HasPointData("nastran:nid")) {
+        for (std::size_t i = 0; i < N; ++i)
+            ids[i] = static_cast<std::int64_t>(i + 1);
+        return ids;
+    }
+    const NDArray& a = rMesh.PointData("nastran:nid");
+    if (a.Size() != N || is_float_dtype(a.Dtype()))
+        nastran_write_fail(pWho, "'nastran:nid' must hold one integer per point");
+    const Int64View v(a);
+    ids.assign(v.Data(), v.Data() + N);
+    std::vector<std::int64_t> sorted = ids;
+    std::sort(sorted.begin(), sorted.end());
+    if (!sorted.empty() && sorted.front() < 1)
+        nastran_write_fail(pWho, "GRID ids must be positive");
+    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
+        nastran_write_fail(pWho, "GRID ids are not unique");
+    return ids;
+}
+
+NastranPlies nastran_plies(const Mesh& rMesh, const char* pWho) {
+    NastranPlies out;
+    const std::string prefix = "nastran:PCOMP_";
+    const std::string suffix = ":PLY";
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        if (name.size() <= prefix.size() + suffix.size() || name.rfind(prefix, 0) != 0 ||
+            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
+            continue;
+        const std::string digits =
+            name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+        if (digits.empty() || digits.size() > 15 ||
+            digits.find_first_not_of("0123456789") != std::string::npos)
+            continue;
+        const NDArray& a = rMesh.FieldData(name);
+        const std::vector<std::size_t>& shape = a.Shape();
+        if (shape.size() != 2 || shape[1] != 4 || shape[0] == 0)
+            nastran_write_fail(
+                pWho, "'" + name + "' must hold (plies, 4) rows of MID, T, THETA and SOUT");
+        const DoubleView view(a);
+        auto& plies = out[std::stoll(digits)];
+        for (std::size_t r = 0; r < shape[0]; ++r) {
+            const double* row = view.Data() + 4 * r;
+            plies.push_back({row[0], row[1], row[2], row[3]});
+        }
+    }
+    return out;
+}
+
+std::string nastran_join(const std::set<std::string>& rNames) {
+    std::string out;
+    for (const std::string& n : rNames)
+        out += (out.empty() ? "" : ", ") + n;
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/nastran_write_common.cpp =====
 // ===== begin src/cpp/src/detail/node_adjacency.cpp =====
 #include <algorithm>
 #include <cstdint>
@@ -173068,100 +173390,6 @@ std::size_t nh5w_card_index(std::string_view Name) {
     return kNh5wNumCards;
 }
 
-/// The card a line or vertex takes from its `nastran:card` number, or nullptr when the OP2
-/// writer holds no cell type for it. Cards the HDF5 writer has no table for come back too
-/// (CBUSH, CGAP, CMASS1, CMASS2, CONM1); `nh5w_card_index` tells them apart.
-const char* nh5w_line_card(std::int64_t Code) {
-    switch (Code) {
-        case 30:
-            return "CROD";
-        case 16:
-            return "CONROD";
-        case 37:
-            return "CTUBE";
-        case 6:
-            return "CELAS1";
-        case 2:
-            return "CDAMP1";
-        case 15:
-            return "CONM2";
-        case 24:
-            return "CBAR";
-        case 54:
-            return "CBEAM";
-        case 26:
-            return "CBUSH";
-        case 3:
-            return "CDAMP2";
-        case 7:
-            return "CELAS2";
-        case 39:
-            return "CVISC";
-        case 52:
-            return "PLOTEL";
-        case 19:
-            return "CGAP";
-        case 10:
-            return "CMASS1";
-        case 11:
-            return "CMASS2";
-        case 14:
-            return "CONM1";
-        default:
-            return nullptr;
-    }
-}
-
-/// Whether a cell block of @p rType may hold an element of card @p Card.
-bool nh5w_block_holds(const std::string& rType, std::string_view Card) {
-    if (rType == "vertex")
-        return Card == "CONM2" || Card == "CELAS1" || Card == "CDAMP1" || Card == "CELAS2" ||
-               Card == "CDAMP2" || Card == "CMASS1" || Card == "CMASS2" || Card == "CONM1";
-    if (rType == "line")
-        return Card == "CROD" || Card == "CONROD" || Card == "CTUBE" || Card == "CELAS1" ||
-               Card == "CDAMP1" || Card == "CBAR" || Card == "CBEAM" || Card == "CBUSH" ||
-               Card == "CELAS2" || Card == "CDAMP2" || Card == "CVISC" || Card == "PLOTEL" ||
-               Card == "CGAP" || Card == "CMASS1" || Card == "CMASS2";
-    return false;
-}
-
-/// The card a `nastran:card` number names (its GEOM2 type), for the warnings.
-std::string nh5w_card_name(std::int64_t Code) {
-    static const std::pair<const char*, std::int64_t> kTypes[] = {
-        {"CBAR", 24},    {"CBEAM", 54},  {"CBUSH", 26},  {"CDAMP1", 2},  {"CDAMP2", 3},
-        {"CELAS1", 6},   {"CELAS2", 7},  {"CGAP", 19},   {"CHEXA", 73},  {"CMASS1", 10},
-        {"CMASS2", 11},  {"CONM1", 14},  {"CONM2", 15},  {"CONROD", 16}, {"CPENTA", 41},
-        {"CPYRAM", 172}, {"CQUAD", 91},  {"CQUAD4", 51}, {"CQUAD8", 47}, {"CQUADR", 80},
-        {"CROD", 30},    {"CSHEAR", 31}, {"CTETRA", 55}, {"CTRIA3", 59}, {"CTRIA6", 48},
-        {"CTRIAR", 92},  {"CTUBE", 37},  {"CVISC", 39},  {"PLOTEL", 52},
-    };
-    for (const auto& [name, number] : kTypes)
-        if (number == Code)
-            return name;
-    return "card " + std::to_string(Code);
-}
-
-struct Nh5wTypeSpec {
-    const char* mType;
-    const char* mCard;  // null: a line takes CROD, CTUBE or CONROD by its property
-    std::size_t mNodes;
-    std::int64_t mPid;  // the property id of a block with no 'nastran:pid'
-};
-constexpr Nh5wTypeSpec kNh5wTypes[] = {
-    {"vertex", "CONM2", 1, -1},    {"line", nullptr, 2, 3},        {"triangle", "CTRIA3", 3, 1},
-    {"triangle6", "CTRIA6", 6, 1}, {"quad", "CQUAD4", 4, 1},       {"quad8", "CQUAD8", 8, 1},
-    {"quad9", "CQUAD", 9, 1},      {"tetra", "CTETRA", 4, 2},      {"tetra10", "CTETRA", 10, 2},
-    {"pyramid", "CPYRAM", 5, 2},   {"pyramid13", "CPYRAM", 13, 2}, {"wedge", "CPENTA", 6, 2},
-    {"wedge15", "CPENTA", 15, 2},  {"hexahedron", "CHEXA", 8, 2},  {"hexahedron20", "CHEXA", 20, 2},
-};
-
-const Nh5wTypeSpec* nh5w_type_spec(const std::string& rType) {
-    for (const Nh5wTypeSpec& t : kNh5wTypes)
-        if (rType == t.mType)
-            return &t;
-    return nullptr;
-}
-
 /// The columns of a row's card fields: a CBAR's X1..X3, G0, PA, PB and W1A..W3B (12), a CELAS2's
 /// K, GE and S, a CDAMP2's B (the card's first columns).
 constexpr std::size_t kNh5wBarWidth = 12;
@@ -173184,18 +173412,6 @@ struct Nh5wRow {
     std::size_t mRow;
 };
 
-using Nh5wSignature = std::vector<std::tuple<std::string, std::size_t, std::size_t>>;
-
-Nh5wSignature nh5w_signature(const Mesh& rMesh) {
-    Nh5wSignature sig;
-    sig.emplace_back("points", rMesh.NumPoints(), 0);
-    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-        const auto cb = rMesh.Cells(b);
-        sig.emplace_back(cb.Type(), cb.NumCells(), cb.NodesPerCell());
-    }
-    return sig;
-}
-
 std::int64_t nh5w_ptube_pid(const std::string& rName) {
     static const std::string prefix = "PTUBE_";
     if (rName.size() <= prefix.size() || rName.compare(0, prefix.size(), prefix) != 0)
@@ -173207,28 +173423,6 @@ std::int64_t nh5w_ptube_pid(const std::string& rName) {
         pid = pid * 10 + (rName[i] - '0');
     }
     return pid;
-}
-
-/// The GRID id of each point: `point_data["nastran:nid"]`, else 1 to n.
-std::vector<std::int64_t> nh5w_node_ids(const Mesh& rMesh, std::size_t N) {
-    std::vector<std::int64_t> ids(N);
-    if (!rMesh.HasPointData("nastran:nid")) {
-        for (std::size_t i = 0; i < N; ++i)
-            ids[i] = static_cast<std::int64_t>(i + 1);
-        return ids;
-    }
-    const NDArray& a = rMesh.PointData("nastran:nid");
-    if (a.Size() != N || detail::is_float_dtype(a.Dtype()))
-        nh5w_fail("'nastran:nid' must hold one integer per point");
-    const detail::Int64View v(a);
-    ids.assign(v.Data(), v.Data() + N);
-    std::vector<std::int64_t> sorted = ids;
-    std::sort(sorted.begin(), sorted.end());
-    if (!sorted.empty() && sorted.front() < 1)
-        nh5w_fail("GRID ids must be positive");
-    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
-        nh5w_fail("GRID ids are not unique");
-    return ids;
 }
 
 using Nh5wValues = std::map<std::pair<std::string, std::int64_t>, std::map<std::string, double>>;
@@ -173294,36 +173488,6 @@ Nh5wValues nh5w_pcomp_values(const Mesh& rMesh) {
     return out;
 }
 
-using Nh5wPlies = std::map<std::int64_t, std::vector<std::array<double, 4>>>;
-
-/// The plies of each PCOMP id: `nastran:PCOMP_<id>:PLY`, `(n, 4)` rows of MID, T, THETA, SOUT.
-Nh5wPlies nh5w_plies(const Mesh& rMesh) {
-    Nh5wPlies out;
-    const std::string prefix = "nastran:PCOMP_";
-    const std::string suffix = ":PLY";
-    for (const std::string& name : rMesh.FieldDataNames()) {
-        if (name.size() <= prefix.size() + suffix.size() || name.rfind(prefix, 0) != 0 ||
-            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
-            continue;
-        const std::string digits =
-            name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
-        if (digits.empty() || digits.size() > 15 ||
-            digits.find_first_not_of("0123456789") != std::string::npos)
-            continue;
-        const NDArray& a = rMesh.FieldData(name);
-        const std::vector<std::size_t>& shape = a.Shape();
-        if (shape.size() != 2 || shape[1] != 4 || shape[0] == 0)
-            nh5w_fail("'" + name + "' must hold (plies, 4) rows of MID, T, THETA and SOUT");
-        const detail::DoubleView view(a);
-        auto& plies = out[std::stoll(digits)];
-        for (std::size_t r = 0; r < shape[0]; ++r) {
-            const double* row = view.Data() + 4 * r;
-            plies.push_back({row[0], row[1], row[2], row[3]});
-        }
-    }
-    return out;
-}
-
 using Nh5wArrays = std::map<std::int64_t, std::map<std::string, std::vector<double>>>;
 
 /// `nastran:PBEAM_<id>:<MEMBER>` field data by id, each member flattened.
@@ -173362,11 +173526,11 @@ Nh5wArrays nh5w_beam_arrays(const Mesh& rMesh) {
 class Nh5wModel {
 public:
     explicit Nh5wModel(const Mesh& rMesh) {
-        mSignature = nh5w_signature(rMesh);
+        mSignature = detail::nastran_signature(rMesh);
         mValues = nh5w_property_values(rMesh);
         for (auto& [key, members] : nh5w_pcomp_values(rMesh))
             mValues[key].insert(members.begin(), members.end());
-        mPlies = nh5w_plies(rMesh);
+        mPlies = detail::nastran_plies(rMesh, "Nastran HDF5");
         mBeams = nh5w_beam_arrays(rMesh);
         // MAT5, MAT8 and MAT9 values have no table here: their ids are MAT1s.
         for (const std::string& name : rMesh.FieldDataNames())
@@ -173383,7 +173547,7 @@ public:
                     mOtherMaterials.emplace(std::make_pair(std::string(card), std::stoll(digits)));
             }
         mNpoints = rMesh.NumPoints();
-        mNodeIds = nh5w_node_ids(rMesh, mNpoints);
+        mNodeIds = detail::nastran_node_ids(rMesh, mNpoints, "Nastran HDF5");
         {
             const NDArray& pts = rMesh.Points();
             const std::size_t dim = rMesh.PointDim();
@@ -173405,7 +173569,7 @@ public:
         std::int64_t sequential = 1;
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
             const auto cb = rMesh.Cells(b);
-            const Nh5wTypeSpec* spec = nh5w_type_spec(cb.Type());
+            const detail::NastranTypeSpec* spec = detail::nastran_type_spec(cb.Type());
             if (spec == nullptr) {
                 if (cb.NumCells() > 0)
                     mSkipped.insert(cb.Type());
@@ -173459,11 +173623,13 @@ public:
             blk.mCards.assign(blk.mCount, kNh5wNumCards);
             for (std::size_t i = 0; i < blk.mCount; ++i) {
                 if (have_card && line_or_vertex) {
-                    const char* name = nh5w_line_card(codes[i]);
+                    // Cards with no table here come back too (CBUSH, CGAP, CMASS1, CMASS2,
+                    // CONM1); `nh5w_card_index` tells them apart.
+                    const char* name = detail::nastran_line_card(codes[i]);
                     if (name == nullptr) {
                         keep[i] = false;
-                        mUnwritten.insert(nh5w_card_name(codes[i]));
-                    } else if (!nh5w_block_holds(cb.Type(), name)) {
+                        mUnwritten.insert(detail::nastran_card_name(codes[i]));
+                    } else if (!detail::nastran_block_holds(cb.Type(), name)) {
                         nh5w_fail("a '" + cb.Type() + "' block cannot hold " + name + " cards");
                     } else if (nh5w_card_index(name) == kNh5wNumCards) {
                         keep[i] = false;  // a card with no table here
@@ -173627,12 +173793,12 @@ public:
         MaterialCards();  // refuses a material id given as two cards
     }
 
-    const Nh5wSignature& Signature() const { return mSignature; }
+    const detail::NastranSignature& Signature() const { return mSignature; }
     std::size_t NumPoints() const { return mNpoints; }
     const std::vector<double>& Points() const { return mPoints; }
     const std::vector<std::int64_t>& NodeIds() const { return mNodeIds; }
     const Nh5wValues& Values() const { return mValues; }
-    const Nh5wPlies& Plies() const { return mPlies; }
+    const detail::NastranPlies& Plies() const { return mPlies; }
     const Nh5wArrays& Beams() const { return mBeams; }
     const std::vector<Nh5wBlock>& Blocks() const { return mBlocks; }
     const std::vector<Nh5wRow>& Rows(std::size_t Card) const { return mRows[Card]; }
@@ -173658,12 +173824,12 @@ public:
     }
 
 private:
-    Nh5wSignature mSignature;
+    detail::NastranSignature mSignature;
     std::size_t mNpoints = 0;
     std::vector<double> mPoints;
     std::vector<std::int64_t> mNodeIds;
     Nh5wValues mValues;
-    Nh5wPlies mPlies;
+    detail::NastranPlies mPlies;
     Nh5wArrays mBeams;
     std::vector<Nh5wBlock> mBlocks;
     std::vector<std::vector<Nh5wRow>> mRows;
@@ -174326,21 +174492,15 @@ void nh5w_warn_dropped(const Mesh& rMesh, const Nh5wModel& rModel,
         if (n != kSequenceTimeKey && !nh5w_starts_with(n, "nastran:") && !rTaken.count(n))
             names.insert(n);
     if (!names.empty()) {
-        std::string joined;
-        for (const std::string& n : names)
-            joined += (joined.empty() ? "" : ", ") + n;
+        const std::string joined = detail::nastran_join(names);
         log::warn("Nastran HDF5: arrays without a place in the file are not written: {}", joined);
     }
     if (!rModel.Skipped().empty()) {
-        std::string joined;
-        for (const std::string& n : rModel.Skipped())
-            joined += (joined.empty() ? "" : ", ") + n;
+        const std::string joined = detail::nastran_join(rModel.Skipped());
         log::warn("Nastran HDF5: cell blocks with no element card are not written: {}", joined);
     }
     if (!rModel.Unwritten().empty()) {
-        std::string joined;
-        for (const std::string& n : rModel.Unwritten())
-            joined += (joined.empty() ? "" : ", ") + n;
+        const std::string joined = detail::nastran_join(rModel.Unwritten());
         log::warn("Nastran HDF5: element cards with no table here are left out: {}", joined);
     }
 }
@@ -175362,7 +175522,7 @@ void NastranH5SeriesWriter::Write(double Time, const Mesh& rMesh) {
     const std::size_t index = s.mSteps.size();
     if (!s.mModel) {
         s.mModel.emplace(rMesh);
-    } else if (s.mModel->Signature() != nh5w_signature(rMesh)) {
+    } else if (s.mModel->Signature() != detail::nastran_signature(rMesh)) {
         nh5w_fail("series: step " + std::to_string(index) +
                   "'s points or cells differ from the first step's; a results file holds one "
                   "model -- write one file per step with '{step}'");
@@ -178353,99 +178513,6 @@ std::size_t op2w_card_index(std::string_view Name) {
     return kOp2wNumCards;
 }
 
-/// The card a line or vertex takes from its `nastran:card` number, or nullptr when the
-/// writer does not write that card yet (CBEAM, CBUSH, ...).
-const char* op2w_line_card(std::int64_t Code) {
-    switch (Code) {
-        case 30:
-            return "CROD";
-        case 16:
-            return "CONROD";
-        case 37:
-            return "CTUBE";
-        case 6:
-            return "CELAS1";
-        case 2:
-            return "CDAMP1";
-        case 15:
-            return "CONM2";
-        case 10:
-            return "CMASS1";
-        case 11:
-            return "CMASS2";
-        case 14:
-            return "CONM1";
-        case 24:
-            return "CBAR";
-        case 54:
-            return "CBEAM";
-        case 26:
-            return "CBUSH";
-        case 3:
-            return "CDAMP2";
-        case 7:
-            return "CELAS2";
-        case 39:
-            return "CVISC";
-        case 52:
-            return "PLOTEL";
-        case 19:
-            return "CGAP";
-        default:
-            return nullptr;
-    }
-}
-
-/// Whether a cell block of @p rType may hold an element of card @p Card.
-bool op2w_block_holds(const std::string& rType, std::string_view Card) {
-    if (rType == "vertex")
-        return Card == "CONM2" || Card == "CELAS1" || Card == "CDAMP1" || Card == "CELAS2" ||
-               Card == "CDAMP2" || Card == "CMASS1" || Card == "CMASS2" || Card == "CONM1";
-    if (rType == "line")
-        return Card == "CROD" || Card == "CONROD" || Card == "CTUBE" || Card == "CELAS1" ||
-               Card == "CDAMP1" || Card == "CBAR" || Card == "CBEAM" || Card == "CBUSH" ||
-               Card == "CELAS2" || Card == "CDAMP2" || Card == "CVISC" || Card == "PLOTEL" ||
-               Card == "CGAP" || Card == "CMASS1" || Card == "CMASS2";
-    return false;
-}
-
-/// The card a `nastran:card` number names (its GEOM2 type), for the warnings.
-std::string op2w_card_name(std::int64_t Code) {
-    static const std::pair<const char*, std::int64_t> kTypes[] = {
-        {"CBAR", 24},    {"CBEAM", 54},  {"CBUSH", 26},  {"CDAMP1", 2},  {"CDAMP2", 3},
-        {"CELAS1", 6},   {"CELAS2", 7},  {"CGAP", 19},   {"CHEXA", 73},  {"CMASS1", 10},
-        {"CMASS2", 11},  {"CONM1", 14},  {"CONM2", 15},  {"CONROD", 16}, {"CPENTA", 41},
-        {"CPYRAM", 172}, {"CQUAD", 91},  {"CQUAD4", 51}, {"CQUAD8", 47}, {"CQUADR", 80},
-        {"CROD", 30},    {"CSHEAR", 31}, {"CTETRA", 55}, {"CTRIA3", 59}, {"CTRIA6", 48},
-        {"CTRIAR", 92},  {"CTUBE", 37},  {"CVISC", 39},  {"PLOTEL", 52},
-    };
-    for (const auto& [name, number] : kTypes)
-        if (number == Code)
-            return name;
-    return "card " + std::to_string(Code);
-}
-
-struct Op2wTypeSpec {
-    const char* mType;
-    const char* mCard;  // null: a line takes CROD, CTUBE or CONROD by its property
-    std::size_t mNodes;
-    std::int64_t mPid;  // the property id of a block with no 'nastran:pid'
-};
-constexpr Op2wTypeSpec kOp2wTypes[] = {
-    {"vertex", "CONM2", 1, -1},    {"line", nullptr, 2, 3},        {"triangle", "CTRIA3", 3, 1},
-    {"triangle6", "CTRIA6", 6, 1}, {"quad", "CQUAD4", 4, 1},       {"quad8", "CQUAD8", 8, 1},
-    {"quad9", "CQUAD", 9, 1},      {"tetra", "CTETRA", 4, 2},      {"tetra10", "CTETRA", 10, 2},
-    {"pyramid", "CPYRAM", 5, 2},   {"pyramid13", "CPYRAM", 13, 2}, {"wedge", "CPENTA", 6, 2},
-    {"wedge15", "CPENTA", 15, 2},  {"hexahedron", "CHEXA", 8, 2},  {"hexahedron20", "CHEXA", 20, 2},
-};
-
-const Op2wTypeSpec* op2w_type_spec(const std::string& rType) {
-    for (const Op2wTypeSpec& t : kOp2wTypes)
-        if (rType == t.mType)
-            return &t;
-    return nullptr;
-}
-
 /// The columns of a row's card fields: a CONM1's 21 mass terms are the widest.
 constexpr std::size_t kOp2wBarWidth = 21;
 
@@ -178469,20 +178536,6 @@ struct Op2wRow {
     std::size_t mRow;
 };
 
-/// What every step of a series shares: the points' count and the cell blocks'
-/// types and shapes.
-using Op2wSignature = std::vector<std::tuple<std::string, std::size_t, std::size_t>>;
-
-Op2wSignature op2w_signature(const Mesh& rMesh) {
-    Op2wSignature sig;
-    sig.emplace_back("points", rMesh.NumPoints(), 0);
-    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-        const auto cb = rMesh.Cells(b);
-        sig.emplace_back(cb.Type(), cb.NumCells(), cb.NodesPerCell());
-    }
-    return sig;
-}
-
 /// The digits of "<PTYPE>_<digits>" when the prefix is @p rPtype, else -1.
 std::int64_t op2w_ptype_pid(const std::string& rName, const std::string& rPtype) {
     if (rName.size() <= rPtype.size() + 1 || rName.compare(0, rPtype.size(), rPtype) != 0 ||
@@ -178497,62 +178550,10 @@ std::int64_t op2w_ptype_pid(const std::string& rName, const std::string& rPtype)
     return pid;
 }
 
-/// The GRID id of each point: `point_data["nastran:nid"]`, else 1 to n.
-std::vector<std::int64_t> op2w_node_ids(const Mesh& rMesh, std::size_t N) {
-    std::vector<std::int64_t> ids(N);
-    if (!rMesh.HasPointData("nastran:nid")) {
-        for (std::size_t i = 0; i < N; ++i)
-            ids[i] = static_cast<std::int64_t>(i + 1);
-        return ids;
-    }
-    const NDArray& a = rMesh.PointData("nastran:nid");
-    if (a.Size() != N || detail::is_float_dtype(a.Dtype()))
-        op2w_fail("'nastran:nid' must hold one integer per point");
-    const detail::Int64View v(a);
-    ids.assign(v.Data(), v.Data() + N);
-    std::vector<std::int64_t> sorted = ids;
-    std::sort(sorted.begin(), sorted.end());
-    if (!sorted.empty() && sorted.front() < 1)
-        op2w_fail("GRID ids must be positive");
-    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
-        op2w_fail("GRID ids are not unique");
-    return ids;
-}
-
 using Op2wValues = std::map<std::pair<std::string, std::int64_t>, std::map<std::string, double>>;
 
 /// `{(card, id): {member: value}}` from the `nastran:<CARD>_<id>:<MEMBER>` field data; keys
 /// that name no card or member here are left alone.
-/// The plies of each PCOMP id: `nastran:PCOMP_<id>:PLY`, rows of MID, T, THETA and SOUT.
-using Op2wPlies = std::map<std::int64_t, std::vector<std::array<double, 4>>>;
-
-Op2wPlies op2w_plies(const Mesh& rMesh) {
-    Op2wPlies out;
-    const std::string prefix = "nastran:PCOMP_";
-    const std::string suffix = ":PLY";
-    for (const std::string& name : rMesh.FieldDataNames()) {
-        if (name.size() <= prefix.size() + suffix.size() || name.rfind(prefix, 0) != 0 ||
-            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
-            continue;
-        const std::string digits =
-            name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
-        if (digits.empty() || digits.size() > 15 ||
-            digits.find_first_not_of("0123456789") != std::string::npos)
-            continue;
-        const NDArray& a = rMesh.FieldData(name);
-        const std::vector<std::size_t>& shape = a.Shape();
-        if (shape.size() != 2 || shape[1] != 4 || shape[0] == 0)
-            op2w_fail("'" + name + "' must hold (plies, 4) rows of MID, T, THETA and SOUT");
-        const detail::DoubleView view(a);
-        auto& plies = out[std::stoll(digits)];
-        for (std::size_t r = 0; r < shape[0]; ++r) {
-            const double* row = view.Data() + 4 * r;
-            plies.push_back({row[0], row[1], row[2], row[3]});
-        }
-    }
-    return out;
-}
-
 Op2wValues op2w_property_values(const Mesh& rMesh) {
     Op2wValues out;
     for (const std::string& name : rMesh.FieldDataNames()) {
@@ -179044,16 +179045,16 @@ std::string op2w_pcompg_row(std::int64_t Pid,
 class Op2wModel {
 public:
     explicit Op2wModel(const Mesh& rMesh) {
-        mSignature = op2w_signature(rMesh);
+        mSignature = detail::nastran_signature(rMesh);
         mValues = op2w_property_values(rMesh);
-        mPlies = op2w_plies(rMesh);
+        mPlies = detail::nastran_plies(rMesh, kOp2Who.c_str());
         mArrays = op2w_named_arrays(rMesh, "PBEAM");
         mBushes = op2w_named_arrays(rMesh, "PBUSH");
         mPbarl = op2w_named_arrays(rMesh, "PBARL");
         mPbeaml = op2w_named_arrays(rMesh, "PBEAML");
         mPcompg = op2w_named_arrays(rMesh, "PCOMPG");
         mNpoints = rMesh.NumPoints();
-        mNodeIds = op2w_node_ids(rMesh, mNpoints);
+        mNodeIds = detail::nastran_node_ids(rMesh, mNpoints, kOp2Who.c_str());
         {
             const NDArray& pts = rMesh.Points();
             const std::size_t dim = rMesh.PointDim();
@@ -179078,7 +179079,7 @@ public:
         std::int64_t sequential = 1;
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
             const auto cb = rMesh.Cells(b);
-            const Op2wTypeSpec* spec = op2w_type_spec(cb.Type());
+            const detail::NastranTypeSpec* spec = detail::nastran_type_spec(cb.Type());
             if (spec == nullptr) {
                 if (cb.NumCells() > 0)
                     mSkipped.insert(cb.Type());
@@ -179134,11 +179135,11 @@ public:
             std::vector<bool> keep(blk.mCount, true);
             for (std::size_t i = 0; i < blk.mCount; ++i) {
                 if (have_card && line_or_vertex) {
-                    const char* name = op2w_line_card(codes[i]);
+                    const char* name = detail::nastran_line_card(codes[i]);
                     if (name == nullptr) {
                         keep[i] = false;
-                        mUnwritten.insert(op2w_card_name(codes[i]));
-                    } else if (!op2w_block_holds(cb.Type(), name)) {
+                        mUnwritten.insert(detail::nastran_card_name(codes[i]));
+                    } else if (!detail::nastran_block_holds(cb.Type(), name)) {
                         op2w_fail("a '" + cb.Type() + "' block cannot hold " + name + " cards");
                     } else {
                         blk.mCards[i] = op2w_card_index(name);
@@ -179342,7 +179343,7 @@ public:
         MaterialCards();  // refuses a material id given as two cards
     }
 
-    const Op2wSignature& Signature() const { return mSignature; }
+    const detail::NastranSignature& Signature() const { return mSignature; }
 
     /// The `(points, 3)` basic vectors in @p rValues, rotated in place into each point's
     /// output system CD.
@@ -179756,7 +179757,7 @@ public:
     }
 
 private:
-    Op2wSignature mSignature;
+    detail::NastranSignature mSignature;
     std::size_t mNpoints = 0;
     std::vector<double> mPoints;
     std::vector<std::int64_t> mCp;       // each point's coordinate system (0: basic)
@@ -179771,7 +179772,7 @@ private:
     std::set<std::string> mSkipped;
     std::set<std::string> mUnwritten;  // element cards the file does not hold yet
     Op2wValues mValues;
-    Op2wPlies mPlies;
+    detail::NastranPlies mPlies;
     Op2wArrays mArrays;
     Op2wArrays mBushes;
     Op2wArrays mPbarl;  // the line-property field data, by id: texts as their characters
@@ -180609,21 +180610,15 @@ void op2w_warn_dropped(const Mesh& rMesh, const Op2wModel& rModel,
         if (n != kSequenceTimeKey && n.rfind("nastran:", 0) != 0)
             names.insert(n);
     if (!names.empty()) {
-        std::string list;
-        for (const std::string& n : names)
-            list += (list.empty() ? "" : ", ") + n;
+        const std::string list = detail::nastran_join(names);
         log::warn("Nastran OP2: arrays without a place in the file are not written: {}", list);
     }
     if (!rModel.Skipped().empty()) {
-        std::string list;
-        for (const std::string& n : rModel.Skipped())
-            list += (list.empty() ? "" : ", ") + n;
+        const std::string list = detail::nastran_join(rModel.Skipped());
         log::warn("Nastran OP2: cell blocks with no element card are not written: {}", list);
     }
     if (!rModel.Unwritten().empty()) {
-        std::string list;
-        for (const std::string& n : rModel.Unwritten())
-            list += (list.empty() ? "" : ", ") + n;
+        const std::string list = detail::nastran_join(rModel.Unwritten());
         log::warn("Nastran OP2: element cards not written yet, their elements are left out: {}",
                   list);
     }
@@ -180701,7 +180696,7 @@ void NastranOp2SeriesWriter::Write(double Time, const Mesh& rMesh) {
     const std::size_t index = s.mSteps.size();
     if (!s.mModel) {
         s.mModel.emplace(rMesh);
-    } else if (s.mModel->Signature() != op2w_signature(rMesh)) {
+    } else if (s.mModel->Signature() != detail::nastran_signature(rMesh)) {
         op2w_fail("series: step " + std::to_string(index) +
                   "'s points or cells differ from the first step's; an OP2 file holds one "
                   "model -- write one file per step with '{step}'");
@@ -207735,14 +207730,9 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t hsz = detail::vtk_xml_size_header_bytes(rMesh, binary, codec);
+    const std::size_t hsz =
+        detail::vtk_xml_lattice_preamble(os, rMesh, spec, "RectilinearGrid", "vtr", binary, codec);
     const detail::VtkXmlEmitter emit{os, binary, codec, hsz};
-    const std::string ext = detail::vtk_xml_lattice_extent(spec);
-
-    detail::vtk_xml_prolog(os, "RectilinearGrid", "0.1", binary, codec, hsz);
-    os << "<RectilinearGrid WholeExtent=\"" << ext << "\">\n";
-    detail::write_field_data_section(os, rMesh, "vtr", binary, codec, hsz);
-    os << "<Piece Extent=\"" << ext << "\">\n";
 
     os << "<Coordinates>\n";
     const char* axis_names[3] = {"x_coordinates", "y_coordinates", "z_coordinates"};
@@ -207816,14 +207806,9 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t hsz = detail::vtk_xml_size_header_bytes(rMesh, binary, codec);
+    const std::size_t hsz =
+        detail::vtk_xml_lattice_preamble(os, rMesh, spec, "StructuredGrid", "vts", binary, codec);
     const detail::VtkXmlEmitter emit{os, binary, codec, hsz};
-    const std::string ext = detail::vtk_xml_lattice_extent(spec);
-
-    detail::vtk_xml_prolog(os, "StructuredGrid", "0.1", binary, codec, hsz);
-    os << "<StructuredGrid WholeExtent=\"" << ext << "\">\n";
-    detail::write_field_data_section(os, rMesh, "vts", binary, codec, hsz);
-    os << "<Piece Extent=\"" << ext << "\">\n";
 
     const NDArray& pts = rMesh.Points();
     const std::size_t np = rMesh.NumPoints();
@@ -216586,6 +216571,8 @@ GraphSummary write_graph(const std::string& rPath, const Adjacency& rGraph, Grap
 
 // Project includes
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 
 namespace {
@@ -216594,8 +216581,7 @@ constexpr const char* kAggPrefix = "meshio++: agglomerate: ";
 
 /// A staged output block: either an unchanged copy of a pass-through input
 /// block (any of its three storage shapes), or the one merged polyhedron
-/// block. Mirrors subdivide.cpp's own staging shape; not shared with it,
-/// since that one is file-private there too.
+/// block.
 struct AggOutBlock {
     std::string mType;
     std::size_t mNodesPerCell = 0;  // rectangular pass-through only
@@ -216619,21 +216605,8 @@ AggOutBlock agg_stage_passthrough(const Mesh::CellView& rBlock) {
                 out.mPolyhedronCells[c].emplace_back(face.first, face.first + face.second);
             }
         }
-    } else if (rBlock.IsRagged()) {
-        out.mIsRagged = true;
-        out.mPolygonRows.resize(rBlock.NumCells());
-        for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
-            const std::int64_t* row = rBlock.Row(c);
-            out.mPolygonRows[c].assign(row, row + rBlock.RowSize(c));
-        }
     } else {
-        const NDArray& conn = rBlock.Conn();
-        const std::size_t npc = rBlock.NodesPerCell();
-        out.mNodesPerCell = npc;
-        out.mConn.resize(rBlock.NumCells() * npc);
-        for (std::size_t c = 0; c < rBlock.NumCells(); ++c)
-            for (std::size_t k = 0; k < npc; ++k)
-                out.mConn[c * npc + k] = detail::read_int(conn, c * npc + k);
+        detail::stage_flat_or_polygon(rBlock, out);
     }
     return out;
 }
@@ -216641,16 +216614,8 @@ AggOutBlock agg_stage_passthrough(const Mesh::CellView& rBlock) {
 void agg_emit_block(Mesh& rOut, AggOutBlock& rBlock) {
     if (rBlock.mIsPolyhedron) {
         rOut.AddPolyhedronBlock(rBlock.mType, std::move(rBlock.mPolyhedronCells));
-    } else if (rBlock.mIsRagged) {
-        rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mPolygonRows));
     } else {
-        const std::size_t npc = rBlock.mNodesPerCell;
-        const std::size_t ncells = npc == 0 ? 0 : rBlock.mConn.size() / npc;
-        NDArray conn = NDArray::Uninit(DType::Int64, {ncells, npc});
-        std::int64_t* dst = conn.As<std::int64_t>();
-        for (std::size_t i = 0; i < rBlock.mConn.size(); ++i)
-            dst[i] = rBlock.mConn[i];
-        rOut.AddCellBlock(rBlock.mType, std::move(conn));
+        detail::emit_flat_or_polygon(rOut, rBlock);
     }
 }
 
@@ -279335,8 +279300,9 @@ struct SubOutBlock {
 
 /// Stage an input block unchanged -- the pass-through case, a polygon block or
 /// a rectangular one (a polyhedron block is always eligible, so it never gets
-/// here). Mirrors convert_cells.cpp's own staging helper; not shared with it
-/// directly, since that one is file-private there too.
+/// here). The same body as detail::stage_flat_or_polygon (staged_block.hpp),
+/// kept here on purpose: using the shared template changed how GCC inlined the
+/// rest of subdivide.cpp (tier S `subdivide_ragged` +2.2%); roadmap 3.4.11.
 SubOutBlock sub_stage_passthrough(const Mesh::CellView& rBlock) {
     SubOutBlock out;
     out.mType = std::string(rBlock.Type());

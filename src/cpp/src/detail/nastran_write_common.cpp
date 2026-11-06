@@ -16,18 +16,14 @@
 //
 // System includes
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
-#include <set>
 #include <string>
 #include <utility>
-#include <vector>
 
 // Project includes
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
-#include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "nastran_write_common.hpp"
 #include "typed_view.hpp"
