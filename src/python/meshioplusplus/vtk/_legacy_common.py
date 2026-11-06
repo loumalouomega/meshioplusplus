@@ -3,14 +3,179 @@
 The two version modules differ in their dtype names (5.1 adds the
 ``vtktype*`` spellings), their cell sections and their writers; what they read
 alike lives here. A reader that maps a VTK type name takes the version's own
-table as ``dtype_names``.
+table as ``dtype_names``; the ``FIELD`` writer takes its inverse.
 """
 
 from functools import reduce
 
 import numpy as np
 
-from .._exceptions import ReadError
+from .._exceptions import ReadError, WriteError
+from .._mesh import Mesh
+from .._vtk_common import Info
+
+# supported vtk dataset types
+vtk_dataset_types = [
+    "UNSTRUCTURED_GRID",
+    "STRUCTURED_POINTS",
+    "STRUCTURED_GRID",
+    "RECTILINEAR_GRID",
+]
+# additional infos per dataset type
+vtk_dataset_infos = {
+    "UNSTRUCTURED_GRID": [],
+    "STRUCTURED_POINTS": [
+        "DIMENSIONS",
+        "ORIGIN",
+        "SPACING",
+        "ASPECT_RATIO",  # alternative for SPACING in version 1.0 and 2.0
+    ],
+    "STRUCTURED_GRID": ["DIMENSIONS"],
+    "RECTILINEAR_GRID": [
+        "DIMENSIONS",
+        "X_COORDINATES",
+        "Y_COORDINATES",
+        "Z_COORDINATES",
+    ],
+}
+
+# all main sections in vtk
+vtk_sections = [
+    "METADATA",
+    "DATASET",
+    "POINTS",
+    "CELLS",
+    "CELL_TYPES",
+    "POINT_DATA",
+    "CELL_DATA",
+    "LOOKUP_TABLE",
+    "COLOR_SCALARS",
+]
+
+
+def read_buffer(f, read_section, check_mesh, cells_from_info, dtype_names):
+    """One legacy file after its version line.
+
+    ``read_section(f, info)`` and ``check_mesh(info)`` are the version's own
+    (their messages differ); ``cells_from_info(info)`` turns the parsed cell
+    sections into ``(cells, cell_data)``."""
+    # initialize output data
+    info = Info()
+
+    # skip title comment
+    f.readline()
+
+    data_type = f.readline().decode().strip().upper()
+    if data_type not in ["ASCII", "BINARY"]:
+        raise ReadError(f"Unknown VTK data type '{data_type}'.")
+    info.is_ascii = data_type == "ASCII"
+
+    while True:
+        line = f.readline().decode()
+        if not line:
+            # EOF
+            break
+
+        line = line.strip()
+        if len(line) == 0:
+            continue
+
+        info.split = line.split()
+        info.section = info.split[0].upper()
+
+        if info.section in vtk_sections:
+            read_section(f, info)
+        else:
+            read_subsection(f, info, dtype_names)
+
+    check_mesh(info)
+
+    cells, cell_data = cells_from_info(info)
+
+    return Mesh(
+        info.points,
+        cells,
+        point_data=info.point_data,
+        cell_data=cell_data,
+        field_data=info.field_data,
+    )
+
+
+def read_subsection(f, info, dtype_names):
+    if info.active == "POINT_DATA":
+        d = info.point_data
+    elif info.active == "CELL_DATA":
+        d = info.cell_data_raw
+    elif info.active == "DATASET":
+        d = info.dataset
+    else:
+        d = info.field_data
+
+    if info.section in vtk_dataset_infos[info.dataset["type"]]:
+        if info.section[1:] == "_COORDINATES":
+            info.num_points = int(info.split[1])
+            data_type = info.split[2].lower()
+            d[info.section] = _read_coords(
+                f, data_type, info.is_ascii, info.num_points, dtype_names
+            )
+        else:
+            if info.section == "DIMENSIONS":
+                d[info.section] = list(map(int, info.split[1:]))
+            else:
+                d[info.section] = list(map(float, info.split[1:]))
+            if len(d[info.section]) != 3:
+                raise ReadError(
+                    f"Wrong number of info in section '{info.section}'. "
+                    f"Need 3, got {len(d[info.section])}."
+                )
+    elif info.section == "SCALARS":
+        d.update(
+            _read_scalar_field(
+                f, info.num_items, info.split, info.is_ascii, dtype_names
+            )
+        )
+    elif info.section == "VECTORS":
+        d.update(
+            _read_field(f, info.num_items, info.split, [3], info.is_ascii, dtype_names)
+        )
+    elif info.section == "TENSORS":
+        d.update(
+            _read_field(
+                f, info.num_items, info.split, [3, 3], info.is_ascii, dtype_names
+            )
+        )
+    elif info.section == "FIELD":
+        d.update(_read_fields(f, int(info.split[2]), info.is_ascii, dtype_names))
+    else:
+        raise ReadError(f"Unknown section '{info.section}'.")
+
+
+def write_field_data(f, data, binary, numpy_to_vtk_dtype):
+    """One ``FIELD FieldData`` section; ``numpy_to_vtk_dtype`` is the version's
+    numpy-name -> VTK type-name table."""
+    f.write((f"FIELD FieldData {len(data)}\n").encode())
+    for name, values in data.items():
+        if isinstance(values, list):
+            values = np.concatenate(values)
+        if len(values.shape) == 1:
+            num_tuples = values.shape[0]
+            num_components = 1
+        else:
+            num_tuples = values.shape[0]
+            num_components = values.shape[1]
+
+        if " " in name:
+            raise WriteError(f"VTK doesn't support spaces in field names ('{name}').")
+
+        vtk_dtype = numpy_to_vtk_dtype[values.dtype.name]
+        f.write(f"{name} {num_components} {num_tuples} {vtk_dtype}\n".encode())
+        if binary:
+            values.astype(values.dtype.newbyteorder(">")).tofile(f, sep="")
+        else:
+            # ascii
+            values.tofile(f, sep=" ")
+            # np.savetxt(f, points)
+        f.write(b"\n")
 
 
 def _generate_cells(dim):

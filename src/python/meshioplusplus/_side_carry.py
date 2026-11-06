@@ -30,6 +30,7 @@ import numpy as np
 
 from ._common import warn
 from ._facets import FacetIndex
+from ._mesh import Mesh
 from ._regions import Region, block_bases
 from ._skin import _CELL_FACES
 from ._surface import _CELL_EDGES
@@ -336,3 +337,46 @@ def carry_regions_to_facet_mesh(src, out, out_parent, out_facet, point_map, op_n
                 "cells, and the output holds only their facets"
             )
     out.regions = new
+
+
+def facet_mesh_from_blocks(
+    mesh, out_blocks, out_parents, out_slots, record_parent_ids, op_name
+):
+    """The facet mesh ``extract_skin``/``extract_surface`` return.
+
+    ``out_blocks`` holds ``(type, connectivity)`` in the input's point ids;
+    ``out_parents``/``out_slots`` give, per block, each facet's global parent
+    cell and its facet slot. Points are compacted to the referenced subset,
+    ``point_data`` rows follow, ``record_parent_ids`` adds
+    ``"surface:parent_cell"`` and regions are carried for ``op_name``.
+    """
+    # Compaction: keep only referenced points, in ascending original-id order
+    # (np.unique is sorted — the C++ extractor relies on the same order).
+    used = np.unique(np.concatenate([c.reshape(-1) for _, c in out_blocks]))
+    cells = [
+        (name, np.searchsorted(used, c).astype(np.int64)) for name, c in out_blocks
+    ]
+    points = mesh.points[used]
+    point_data = {
+        key: value[used]
+        for key, value in mesh.point_data.items()
+        if np.asarray(value).shape[:1] == (len(mesh.points),)
+    }
+    cell_data = {}
+    if record_parent_ids:
+        cell_data["surface:parent_cell"] = [
+            p.reshape(-1, 1).astype(np.int64) for p in out_parents
+        ]
+    out = Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    if getattr(mesh, "regions", None):
+        point_map = np.full(len(mesh.points), -1, dtype=np.int64)
+        point_map[used] = np.arange(len(used), dtype=np.int64)
+        carry_regions_to_facet_mesh(
+            mesh,
+            out,
+            np.concatenate(out_parents),
+            np.concatenate(out_slots),
+            point_map,
+            op_name,
+        )
+    return out

@@ -738,6 +738,104 @@ def _read_families(fas_data):
     return families, group_names
 
 
+def _write_mesh_step(med_mesh, mesh, profile, write_num=True):
+    """Write ``mesh``'s points and cells into ``med_mesh``'s single time step.
+
+    ``NOE`` holds ``COO`` and, when present, ``FAM`` (``point_tags``) and
+    ``NUM`` (``med:num``); ``MAI`` merges the blocks of each cell type.
+    ``write_num=False`` never writes ``NUM`` (``write_med_multi``)."""
+    # Time-step
+    step = "-0000000000000000001-0000000000000000001"  # NDT NOR
+    time_step = med_mesh.create_group(step)
+    time_step.attrs.create("CGT", 1)
+    time_step.attrs.create("NDT", -1)  # no time step (-1)
+    time_step.attrs.create("NOR", -1)  # no iteration step (-1)
+    time_step.attrs.create("PDT", -1.0)  # current time
+
+    # Points
+    nodes_group = time_step.create_group("NOE")
+    nodes_group.attrs.create("CGT", 1)
+    nodes_group.attrs.create("CGS", 1)
+    nodes_group.attrs.create("PFL", np.bytes_(profile))
+    coo = nodes_group.create_dataset("COO", data=mesh.points.flatten(order="F"))
+    coo.attrs.create("CGT", 1)
+    coo.attrs.create("NBR", len(mesh.points))
+
+    # Point tags
+    if "point_tags" in mesh.point_data:  # only works for med -> med
+        family = nodes_group.create_dataset("FAM", data=mesh.point_data["point_tags"])
+        family.attrs.create("CGT", 1)
+        family.attrs.create("NBR", len(mesh.points))
+
+    # Global point numbering (NUM) -- optional, written only when present.
+    if write_num and "med:num" in mesh.point_data:
+        num = nodes_group.create_dataset("NUM", data=mesh.point_data["med:num"])
+        num.attrs.create("CGT", 1)
+        num.attrs.create("NBR", len(mesh.points))
+
+    # Cells (mailles in French)
+    cells_by_type = {}
+    cell_tags_by_type = {}
+    cell_num_by_type = {}
+
+    for k, cell_block in enumerate(mesh.cells):
+        cell_type = cell_block.type
+        if cell_type not in cells_by_type:
+            cells_by_type[cell_type] = []
+            cell_tags_by_type[cell_type] = []
+            cell_num_by_type[cell_type] = []
+        cells_by_type[cell_type].append(cell_block.data)
+        if "cell_tags" in mesh.cell_data:
+            cell_tags_by_type[cell_type].append(mesh.cell_data["cell_tags"][k])
+        if write_num and "med:num" in mesh.cell_data:
+            cell_num_by_type[cell_type].append(mesh.cell_data["med:num"][k])
+    cells_group = time_step.create_group("MAI")
+    cells_group.attrs.create("CGT", 1)
+    for cell_type, cells_list in cells_by_type.items():
+        med_type = meshio_to_med_type[cell_type]
+        med_cells = cells_group.create_group(med_type)
+        med_cells.attrs.create("CGT", 1)
+        med_cells.attrs.create("CGS", 1)
+        med_cells.attrs.create("PFL", np.bytes_(profile))
+        if cell_type in ("polygon", "polygon2"):
+            all_polygons = sum(cells_list, [])
+            all_nodes = np.concatenate([c + 1 for c in all_polygons])
+            lengths = [len(c) for c in all_polygons]
+            inn = np.concatenate([[1], np.cumsum(lengths) + 1])
+            nod = med_cells.create_dataset("NOD", data=all_nodes)
+            nod.attrs.create("CGT", 1)
+            nod.attrs.create("NBR", len(all_polygons))
+            inn_ds = med_cells.create_dataset("INN", data=inn)
+            inn_ds.attrs.create("CGT", 1)
+            n_merged = len(all_polygons)
+        else:
+            # Merge cells of the same type
+            merged_cells = np.concatenate(cells_list, axis=0)
+            merged_cells = _med_cells_for_write(
+                cell_type, merged_cells
+            )  # meshio -> MED
+            nod = med_cells.create_dataset(
+                "NOD", data=merged_cells.flatten(order="F") + 1
+            )
+            nod.attrs.create("CGT", 1)
+            nod.attrs.create("NBR", len(merged_cells))
+            n_merged = len(merged_cells)
+
+        # Cell tags
+        if cell_tags_by_type.get(cell_type):
+            merged_tags = np.concatenate(cell_tags_by_type[cell_type])
+            family = med_cells.create_dataset("FAM", data=merged_tags)
+            family.attrs.create("CGT", 1)
+            family.attrs.create("NBR", n_merged)
+
+        # Global cell numbering (NUM) -- optional, written only when present.
+        if cell_num_by_type.get(cell_type):
+            merged_num = np.concatenate(cell_num_by_type[cell_type])
+            num = med_cells.create_dataset("NUM", data=merged_num)
+            num.attrs.create("CGT", 1)
+            num.attrs.create("NBR", n_merged)
+
+
 def write(filename, mesh, med_version="4.1.0", **kwargs):
     import h5py
 
@@ -789,97 +887,8 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
     med_mesh.attrs.create("DES", np.bytes_(desc.encode("latin-1")))
     med_mesh.attrs.create("TYP", 0)  # mesh type (MED_NON_STRUCTURE)
 
-    # Time-step
-    step = "-0000000000000000001-0000000000000000001"  # NDT NOR
-    time_step = med_mesh.create_group(step)
-    time_step.attrs.create("CGT", 1)
-    time_step.attrs.create("NDT", -1)  # no time step (-1)
-    time_step.attrs.create("NOR", -1)  # no iteration step (-1)
-    time_step.attrs.create("PDT", -1.0)  # current time
-
-    # Points
-    nodes_group = time_step.create_group("NOE")
-    nodes_group.attrs.create("CGT", 1)
-    nodes_group.attrs.create("CGS", 1)
     profile = "MED_NO_PROFILE_INTERNAL"
-    nodes_group.attrs.create("PFL", np.bytes_(profile))
-    coo = nodes_group.create_dataset("COO", data=mesh.points.flatten(order="F"))
-    coo.attrs.create("CGT", 1)
-    coo.attrs.create("NBR", len(mesh.points))
-
-    # Point tags
-    if "point_tags" in mesh.point_data:  # only works for med -> med
-        family = nodes_group.create_dataset("FAM", data=mesh.point_data["point_tags"])
-        family.attrs.create("CGT", 1)
-        family.attrs.create("NBR", len(mesh.points))
-
-    # Global point numbering (NUM) -- optional, written only when present.
-    if "med:num" in mesh.point_data:
-        num = nodes_group.create_dataset("NUM", data=mesh.point_data["med:num"])
-        num.attrs.create("CGT", 1)
-        num.attrs.create("NBR", len(mesh.points))
-
-    # Cells (mailles in French)
-    cells_by_type = {}
-    cell_tags_by_type = {}
-    cell_num_by_type = {}
-
-    for k, cell_block in enumerate(mesh.cells):
-        cell_type = cell_block.type
-        if cell_type not in cells_by_type:
-            cells_by_type[cell_type] = []
-            cell_tags_by_type[cell_type] = []
-            cell_num_by_type[cell_type] = []
-        cells_by_type[cell_type].append(cell_block.data)
-        if "cell_tags" in mesh.cell_data:
-            cell_tags_by_type[cell_type].append(mesh.cell_data["cell_tags"][k])
-        if "med:num" in mesh.cell_data:
-            cell_num_by_type[cell_type].append(mesh.cell_data["med:num"][k])
-    cells_group = time_step.create_group("MAI")
-    cells_group.attrs.create("CGT", 1)
-    for cell_type, cells_list in cells_by_type.items():
-        med_type = meshio_to_med_type[cell_type]
-        med_cells = cells_group.create_group(med_type)
-        med_cells.attrs.create("CGT", 1)
-        med_cells.attrs.create("CGS", 1)
-        med_cells.attrs.create("PFL", np.bytes_(profile))
-        if cell_type in ("polygon", "polygon2"):
-            all_polygons = sum(cells_list, [])
-            all_nodes = np.concatenate([c + 1 for c in all_polygons])
-            lengths = [len(c) for c in all_polygons]
-            inn = np.concatenate([[1], np.cumsum(lengths) + 1])
-            nod = med_cells.create_dataset("NOD", data=all_nodes)
-            nod.attrs.create("CGT", 1)
-            nod.attrs.create("NBR", len(all_polygons))
-            inn_ds = med_cells.create_dataset("INN", data=inn)
-            inn_ds.attrs.create("CGT", 1)
-            n_merged = len(all_polygons)
-        else:
-            # Merge cells of the same type
-            merged_cells = np.concatenate(cells_list, axis=0)
-            merged_cells = _med_cells_for_write(
-                cell_type, merged_cells
-            )  # meshio -> MED
-            nod = med_cells.create_dataset(
-                "NOD", data=merged_cells.flatten(order="F") + 1
-            )
-            nod.attrs.create("CGT", 1)
-            nod.attrs.create("NBR", len(merged_cells))
-            n_merged = len(merged_cells)
-
-        # Cell tags
-        if cell_tags_by_type.get(cell_type):
-            merged_tags = np.concatenate(cell_tags_by_type[cell_type])
-            family = med_cells.create_dataset("FAM", data=merged_tags)
-            family.attrs.create("CGT", 1)
-            family.attrs.create("NBR", n_merged)
-
-        # Global cell numbering (NUM) -- optional, written only when present.
-        if cell_num_by_type.get(cell_type):
-            merged_num = np.concatenate(cell_num_by_type[cell_type])
-            num = med_cells.create_dataset("NUM", data=merged_num)
-            num.attrs.create("CGT", 1)
-            num.attrs.create("NBR", n_merged)
+    _write_mesh_step(med_mesh, mesh, profile)
 
     # Families (FAS group)
     fas = f.create_group("FAS", track_order=True)

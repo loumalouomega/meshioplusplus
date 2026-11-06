@@ -85,29 +85,9 @@ def _read_piece(grid, piece, reader):
     num_points = points.shape[0]
     num_cells = 0 if conn is None else conn.shape[0]
 
-    point_data = {}
-    cell_data = {}
-    for section, sink, expected, what in (
-        ("PointData", point_data, num_points, "point"),
-        ("CellData", cell_data, num_cells, "cell"),
-    ):
-        node = piece.find(section)
-        if node is None:
-            continue
-        for da in node.findall("DataArray"):
-            name = da.get("Name")
-            arr = reader.read_data(da)
-            if arr.shape[0] != expected:
-                raise ReadError(
-                    f"VTI {what} array '{name}' has {arr.shape[0]} rows, but the "
-                    f"extent has {expected} {what}s"
-                )
-            if what == "cell":
-                if num_cells == 0:
-                    continue
-                sink[name] = [arr]
-            else:
-                sink[name] = arr
+    point_data, cell_data = read_extent_data(
+        piece, reader, num_points, num_cells, "VTI"
+    )
 
     return Mesh(
         points,
@@ -145,6 +125,81 @@ def _encode_binary(data, compression, header_type):
         base64.b64encode(header.tobytes()).decode()
         + base64.b64encode(b"".join(blocks)).decode()
     )
+
+
+def extent_dims(grid, piece, prefix):
+    """``(dims, num_points, num_cells)`` of a structured piece's extent.
+
+    ``prefix`` (``"VTR"``, ``"VTS"``) names the format in the error an inverted
+    extent raises."""
+    whole = piece_extent(grid, piece)
+    dims = np.array([whole[2 * k + 1] - whole[2 * k] for k in range(3)], dtype=np.int64)
+    if np.any(dims < 0) and not np.all(dims == -1):
+        raise ReadError(f"{prefix} WholeExtent is inverted")
+    num_points = int(np.prod(dims + 1))
+    num_cells = int(np.prod(dims)) if np.all(dims > 0) else 0
+    return dims, num_points, num_cells
+
+
+def read_extent_data(piece, reader, num_points, num_cells, prefix):
+    """A structured piece's ``(point_data, cell_data)``, each array checked
+    against the extent's point or cell count (``prefix`` names the format in
+    the error)."""
+    point_data = {}
+    cell_data = {}
+    for section, sink, expected, what in (
+        ("PointData", point_data, num_points, "point"),
+        ("CellData", cell_data, num_cells, "cell"),
+    ):
+        node = piece.find(section)
+        if node is None:
+            continue
+        for da in node.findall("DataArray"):
+            name = da.get("Name")
+            arr = reader.read_data(da)
+            if arr.shape[0] != expected:
+                raise ReadError(
+                    f"{prefix} {what} array '{name}' has {arr.shape[0]} rows, but "
+                    f"the extent has {expected} {what}s"
+                )
+            if what == "cell":
+                if num_cells == 0:
+                    continue
+                sink[name] = [arr]
+            else:
+                sink[name] = arr
+    return point_data, cell_data
+
+
+def emit_data_arrays(
+    lines, section, items, binary, compression, header_type, field=False
+):
+    """Append one ``<section>`` of ``<DataArray>`` elements to ``lines``;
+    nothing when ``items`` (``(name, array)`` pairs) is empty.
+
+    Shared by the ImageData, RectilinearGrid and StructuredGrid writers."""
+    if not items:
+        return
+    lines.append(f"<{section}>")
+    for name, data in items:
+        data = np.asarray(data)
+        data = data.astype(data.dtype.newbyteorder("="), copy=False)
+        vtu_type = numpy_to_vtu_type[data.dtype]
+        head = f'<DataArray type="{vtu_type}" Name="{name}"'
+        if field:
+            # <FieldData> arrays carry an explicit tuple count (VTK requires it).
+            head += f' NumberOfTuples="{data.shape[0] if data.ndim else 1}"'
+        if data.ndim == 2:
+            head += f' NumberOfComponents="{data.shape[1]}"'
+        if binary:
+            lines.append(head + ' format="binary">')
+            lines.append(_encode_binary(data, compression, header_type))
+        else:
+            lines.append(head + ' format="ascii">')
+            fmt = "{:.11e}" if vtu_type.startswith("Float") else "{:d}"
+            lines.extend(fmt.format(v) for v in data.reshape(-1))
+        lines.append("</DataArray>")
+    lines.append(f"</{section}>")
 
 
 def write(filename, mesh, binary=True, compression="zlib", header_type=None):
@@ -188,28 +243,9 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     )
 
     def emit(section, items, field=False):
-        if not items:
-            return
-        lines.append(f"<{section}>")
-        for name, data in items:
-            data = np.asarray(data)
-            data = data.astype(data.dtype.newbyteorder("="), copy=False)
-            vtu_type = numpy_to_vtu_type[data.dtype]
-            head = f'<DataArray type="{vtu_type}" Name="{name}"'
-            if field:
-                # <FieldData> arrays carry an explicit tuple count (VTK requires it).
-                head += f' NumberOfTuples="{data.shape[0] if data.ndim else 1}"'
-            if data.ndim == 2:
-                head += f' NumberOfComponents="{data.shape[1]}"'
-            if binary:
-                lines.append(head + ' format="binary">')
-                lines.append(_encode_binary(data, compression, header_type))
-            else:
-                lines.append(head + ' format="ascii">')
-                fmt = "{:.11e}" if vtu_type.startswith("Float") else "{:d}"
-                lines.extend(fmt.format(v) for v in data.reshape(-1))
-            lines.append("</DataArray>")
-        lines.append(f"</{section}>")
+        emit_data_arrays(
+            lines, section, items, binary, compression, header_type, field=field
+        )
 
     emit(
         "FieldData", field_arrays_for_write(mesh, "VTI", numpy_to_vtu_type), field=True

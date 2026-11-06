@@ -29,6 +29,7 @@ import numpy as np
 
 from ._fallback import core_op_declined
 from ._mesh import Mesh
+from ._set_remap import remap_sets
 from ._side_carry import carry_side_regions, first_child_children
 
 # --------------------------------------------------------------------------- #
@@ -365,52 +366,6 @@ def _convert_cells_py(mesh, mode, record_parent_ids):
 
 
 # --------------------------------------------------------------------------- #
-# set remapping                                                                #
-# --------------------------------------------------------------------------- #
-def _remap_sets(src, out, point_map, cell_maps):
-    """Remap the shim-only ``point_sets``/``cell_sets`` onto the converted mesh.
-
-    ``cell_maps[b][c]`` is the index of parent ``c``'s *first* child, and a
-    parent's children are contiguous, so a cell set entry expands to the whole
-    ``[first[c], first[c + 1])`` range.
-    """
-    point_sets = getattr(src, "point_sets", None)
-    if point_sets:
-        pm = np.asarray(point_map, dtype=np.int64)
-        new_ps = {}
-        for name, idx in point_sets.items():
-            mapped = pm[np.asarray(idx, dtype=np.int64)]
-            new_ps[name] = mapped[mapped >= 0]
-        out.point_sets = new_ps
-
-    cell_sets = getattr(src, "cell_sets", None)
-    if cell_sets and cell_maps is not None:
-        new_cs = {}
-        for name, blocks in cell_sets.items():
-            remapped = []
-            for b, idx in enumerate(blocks):
-                if idx is None or b >= len(cell_maps):
-                    remapped.append(None)
-                    continue
-                first = np.asarray(cell_maps[b], dtype=np.int64)
-                total = len(out.cells[b].data) if b < len(out.cells) else 0
-                # The end of parent c's child range is the next parent's start.
-                ends = np.append(first[1:], total) if len(first) else first
-                expanded = []
-                for c in np.asarray(idx, dtype=np.int64):
-                    if c < 0 or c >= len(first):
-                        continue
-                    expanded.append(np.arange(first[c], ends[c], dtype=np.int64))
-                remapped.append(
-                    np.concatenate(expanded)
-                    if expanded
-                    else np.empty(0, dtype=np.int64)
-                )
-            new_cs[name] = remapped
-        out.cell_sets = new_cs
-
-
-# --------------------------------------------------------------------------- #
 # public API                                                                   #
 # --------------------------------------------------------------------------- #
 def convert_cells(
@@ -471,7 +426,7 @@ def convert_cells(
     # `point_sets`/`cell_sets`, which are views over them), so remapping again
     # here would apply the maps twice. Only the numpy fallback needs it.
     if not used_cpp:
-        _remap_sets(mesh, out, point_map, cell_maps)
+        remap_sets(mesh, out, point_map, cell_maps, expand=True)
         carry_side_regions(
             mesh,
             out,

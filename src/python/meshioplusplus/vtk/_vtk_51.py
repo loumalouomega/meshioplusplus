@@ -4,21 +4,16 @@ import numpy as np
 
 from .. import _provenance
 from .._common import info, join_strings, replace_space, warn
-from .._exceptions import ReadError, WriteError
+from .._exceptions import ReadError
 from .._files import open_file
-from .._mesh import Mesh
-from .._vtk_common import (
-    Info,
-    meshio_to_vtk_order,
-    meshio_to_vtk_type,
-    vtk_cells_from_data,
-)
+from .._vtk_common import meshio_to_vtk_order, meshio_to_vtk_type, vtk_cells_from_data
 from . import _legacy_common as _legacy
 from ._legacy_common import (
     _generate_cells,
     _generate_points,
     _read_cell_types,
     _skip_meta,
+    vtk_dataset_types,
 )
 
 # VTK 5.1 data types
@@ -43,60 +38,10 @@ vtk_to_numpy_dtype_name = {
     "vtktypeuint64": "uint64",
 }
 
-_read_coords = functools.partial(
-    _legacy._read_coords, dtype_names=vtk_to_numpy_dtype_name
-)
 _read_points = functools.partial(
     _legacy._read_points, dtype_names=vtk_to_numpy_dtype_name
 )
-_read_scalar_field = functools.partial(
-    _legacy._read_scalar_field, dtype_names=vtk_to_numpy_dtype_name
-)
-_read_field = functools.partial(
-    _legacy._read_field, dtype_names=vtk_to_numpy_dtype_name
-)
-_read_fields = functools.partial(
-    _legacy._read_fields, dtype_names=vtk_to_numpy_dtype_name
-)
 numpy_to_vtk_dtype = {v: k for k, v in vtk_to_numpy_dtype_name.items()}
-
-# supported vtk dataset types
-vtk_dataset_types = [
-    "UNSTRUCTURED_GRID",
-    "STRUCTURED_POINTS",
-    "STRUCTURED_GRID",
-    "RECTILINEAR_GRID",
-]
-# additional infos per dataset type
-vtk_dataset_infos = {
-    "UNSTRUCTURED_GRID": [],
-    "STRUCTURED_POINTS": [
-        "DIMENSIONS",
-        "ORIGIN",
-        "SPACING",
-        "ASPECT_RATIO",  # alternative for SPACING in version 1.0 and 2.0
-    ],
-    "STRUCTURED_GRID": ["DIMENSIONS"],
-    "RECTILINEAR_GRID": [
-        "DIMENSIONS",
-        "X_COORDINATES",
-        "Y_COORDINATES",
-        "Z_COORDINATES",
-    ],
-}
-
-# all main sections in vtk
-vtk_sections = [
-    "METADATA",
-    "DATASET",
-    "POINTS",
-    "CELLS",
-    "CELL_TYPES",
-    "POINT_DATA",
-    "CELL_DATA",
-    "LOOKUP_TABLE",
-    "COLOR_SCALARS",
-]
 
 
 def read(filename):
@@ -106,47 +51,14 @@ def read(filename):
 
 
 def read_buffer(f):
-    # initialize output data
-    info = Info()
-
-    # skip title comment
-    f.readline()
-
-    data_type = f.readline().decode().strip().upper()
-    if data_type not in ["ASCII", "BINARY"]:
-        raise ReadError(f"Unknown VTK data type '{data_type}'.")
-    info.is_ascii = data_type == "ASCII"
-
-    while True:
-        line = f.readline().decode()
-        if not line:
-            # EOF
-            break
-
-        line = line.strip()
-        if len(line) == 0:
-            continue
-
-        info.split = line.split()
-        info.section = info.split[0].upper()
-
-        if info.section in vtk_sections:
-            _read_section(f, info)
-        else:
-            _read_subsection(f, info)
-
-    _check_mesh(info)
-
-    cells, cell_data = vtk_cells_from_data(
-        info.connectivity, info.offsets, info.types, info.cell_data_raw
+    return _legacy.read_buffer(
+        f, _read_section, _check_mesh, _cells_from_info, vtk_to_numpy_dtype_name
     )
 
-    return Mesh(
-        info.points,
-        cells,
-        point_data=info.point_data,
-        cell_data=cell_data,
-        field_data=info.field_data,
+
+def _cells_from_info(info):
+    return vtk_cells_from_data(
+        info.connectivity, info.offsets, info.types, info.cell_data_raw
     )
 
 
@@ -221,43 +133,6 @@ def _read_section(f, info):
         if info.is_ascii:
             dtype = float
         np.fromfile(f, count=num_items * nValues, dtype=dtype)
-
-
-def _read_subsection(f, info):
-    if info.active == "POINT_DATA":
-        d = info.point_data
-    elif info.active == "CELL_DATA":
-        d = info.cell_data_raw
-    elif info.active == "DATASET":
-        d = info.dataset
-    else:
-        d = info.field_data
-
-    if info.section in vtk_dataset_infos[info.dataset["type"]]:
-        if info.section[1:] == "_COORDINATES":
-            info.num_points = int(info.split[1])
-            data_type = info.split[2].lower()
-            d[info.section] = _read_coords(f, data_type, info.is_ascii, info.num_points)
-        else:
-            if info.section == "DIMENSIONS":
-                d[info.section] = list(map(int, info.split[1:]))
-            else:
-                d[info.section] = list(map(float, info.split[1:]))
-            if len(d[info.section]) != 3:
-                raise ReadError(
-                    f"Wrong number of info in section '{info.section}'. "
-                    f"Need 3, got {len(d[info.section])}."
-                )
-    elif info.section == "SCALARS":
-        d.update(_read_scalar_field(f, info.num_items, info.split, info.is_ascii))
-    elif info.section == "VECTORS":
-        d.update(_read_field(f, info.num_items, info.split, [3], info.is_ascii))
-    elif info.section == "TENSORS":
-        d.update(_read_field(f, info.num_items, info.split, [3, 3], info.is_ascii))
-    elif info.section == "FIELD":
-        d.update(_read_fields(f, int(info.split[2]), info.is_ascii))
-    else:
-        raise ReadError(f"Unknown section '{info.section}'.")
 
 
 def _check_mesh(info):
@@ -464,26 +339,4 @@ def _write_cells(f, cells, binary):
 
 
 def _write_field_data(f, data, binary):
-    f.write((f"FIELD FieldData {len(data)}\n").encode())
-    for name, values in data.items():
-        if isinstance(values, list):
-            values = np.concatenate(values)
-        if len(values.shape) == 1:
-            num_tuples = values.shape[0]
-            num_components = 1
-        else:
-            num_tuples = values.shape[0]
-            num_components = values.shape[1]
-
-        if " " in name:
-            raise WriteError(f"VTK doesn't support spaces in field names ('{name}').")
-
-        vtk_dtype = numpy_to_vtk_dtype[values.dtype.name]
-        f.write(f"{name} {num_components} {num_tuples} {vtk_dtype}\n".encode())
-        if binary:
-            values.astype(values.dtype.newbyteorder(">")).tofile(f, sep="")
-        else:
-            # ascii
-            values.tofile(f, sep=" ")
-            # np.savetxt(f, points)
-        f.write(b"\n")
+    _legacy.write_field_data(f, data, binary, numpy_to_vtk_dtype)

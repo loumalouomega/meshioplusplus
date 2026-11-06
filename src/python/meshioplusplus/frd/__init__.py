@@ -2,6 +2,7 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._series_writer import CoreSeriesWriter
 from ._frd import SeriesWriter as _PySeriesWriter
 from ._frd import read as _py_read
 from ._frd import read_dat
@@ -72,7 +73,7 @@ def write(filename, mesh, long_ids=True, binary=False):
     return _py_write(filename, mesh, long_ids=long_ids, binary=binary)
 
 
-class SeriesWriter:
+class SeriesWriter(CoreSeriesWriter):
     """Write a time series into one result file (v16.39.0): the mesh once, then a
     ``100C`` increment per step, which ``read`` gives back by ``time_step``. A step's
     value is its time; its number is its ``frd:step`` when positive and unused, else
@@ -99,28 +100,6 @@ class SeriesWriter:
                     raise
         if self._core is None:
             self._py = _PySeriesWriter(filename, long_ids, binary)
-
-    def write(self, time, mesh):
-        if self._core is not None:
-            self._core.write(float(time), mesh)
-        else:
-            self._py.write(time, mesh)
-
-    def close(self):
-        if self._core is not None:
-            if self._core.num_steps():
-                self._core.finalize()
-            self._core = None
-        if self._py is not None:
-            self._py.close()
-            self._py = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-        return False
 
 
 register_format("frd", [".frd"], read, {"frd": write})

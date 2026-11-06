@@ -2,6 +2,7 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._series_writer import CoreSeriesWriter
 from ._op2 import read as _py_read
 from ._op2 import time_values as _py_time_values
 from ._write import SeriesWriter as _PySeriesWriter
@@ -72,7 +73,7 @@ def write(filename, mesh):
     return _py_write(filename, mesh)
 
 
-class SeriesWriter:
+class SeriesWriter(CoreSeriesWriter):
     """Write a time series into one OP2 file: the model once, and every
     table's block per step, which ``read`` gives back by ``time_step``. The
     file is assembled when the writer closes. A step's time is the argument,
@@ -99,28 +100,6 @@ class SeriesWriter:
                     raise
         if self._core is None:
             self._py = _PySeriesWriter(filename)
-
-    def write(self, time, mesh):
-        if self._core is not None:
-            self._core.write(float(time), mesh)
-        else:
-            self._py.write(time, mesh)
-
-    def close(self):
-        if self._core is not None:
-            if self._core.num_steps():
-                self._core.finalize()
-            self._core = None
-        if self._py is not None:
-            self._py.close()
-            self._py = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-        return False
 
 
 register_format("nastran_op2", [".op2"], read, {"nastran_op2": write})

@@ -2,6 +2,7 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._series_writer import CoreSeriesWriter
 from ._abaqus_fil import read as _py_read
 from ._abaqus_fil import time_values as _py_time_values
 from ._write import SeriesWriter as _PySeriesWriter
@@ -73,7 +74,7 @@ def write(filename, mesh, binary=False, big_endian=False, marker_size=4):
     )
 
 
-class SeriesWriter:
+class SeriesWriter(CoreSeriesWriter):
     """Write a time series into one results file: the model with the first step
     and an increment per step, which ``read`` gives back by ``time_step``. A
     step's time is the argument, not its ``meshio:time``; its step, increment,
@@ -103,28 +104,6 @@ class SeriesWriter:
             self._py = _PySeriesWriter(
                 filename, binary=binary, big_endian=big_endian, marker_size=marker_size
             )
-
-    def write(self, time, mesh):
-        if self._core is not None:
-            self._core.write(float(time), mesh)
-        else:
-            self._py.write(time, mesh)
-
-    def close(self):
-        if self._core is not None:
-            if self._core.num_steps():
-                self._core.finalize()
-            self._core = None
-        if self._py is not None:
-            self._py.close()
-            self._py = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-        return False
 
 
 register_format("abaqus_fil", [".fil"], read, {"abaqus_fil": write})

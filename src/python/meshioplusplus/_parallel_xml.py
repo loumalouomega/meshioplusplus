@@ -9,26 +9,7 @@ declines (``_fallback.core_declined``).
 from . import _core
 from ._fallback import core_declined
 from ._files import is_buffer
-
-_CPP_CODECS = {
-    None: "none",
-    "zlib": "zlib",
-    "lz4": "lz4",
-    "zstd": "zstd",
-    "lzma": "lzma",
-}
-
-
-def _cpp_codec_ok(compression, header_type):
-    if header_type is not None or compression not in _CPP_CODECS:
-        return False
-    if compression == "lz4" and not getattr(_core, "__has_lz4__", False):
-        return False
-    if compression == "zstd" and not getattr(_core, "__has_zstd__", False):
-        return False
-    if compression == "lzma" and not getattr(_core, "__has_lzma__", False):
-        return False
-    return True
+from ._vtk_codecs import CPP_CODECS, cpp_codec_ok
 
 
 def make_parallel_format(fmt, dataset, piece_ext, py_read, py_write, py_write_pieces):
@@ -57,10 +38,10 @@ def make_parallel_format(fmt, dataset, piece_ext, py_read, py_write, py_write_pi
         header_type=None,
         part_key="partition:part",
     ):
-        if _cpp_codec_ok(compression, header_type) and not is_buffer(filename, "w"):
+        if cpp_codec_ok(compression, header_type) and not is_buffer(filename, "w"):
             try:
                 getattr(_core, f"{fmt}_write_codec")(
-                    str(filename), mesh, binary, _CPP_CODECS[compression], part_key
+                    str(filename), mesh, binary, CPP_CODECS[compression], part_key
                 )
                 return
             except Exception as exc:
@@ -79,10 +60,10 @@ def make_parallel_format(fmt, dataset, piece_ext, py_read, py_write, py_write_pi
         filename, pieces, binary=True, compression="zlib", header_type=None
     ):
         pieces = list(pieces)
-        if _cpp_codec_ok(compression, header_type) and not is_buffer(filename, "w"):
+        if cpp_codec_ok(compression, header_type) and not is_buffer(filename, "w"):
             try:
                 getattr(_core, f"{fmt}_write_pieces_codec")(
-                    str(filename), pieces, binary, _CPP_CODECS[compression]
+                    str(filename), pieces, binary, CPP_CODECS[compression]
                 )
                 return
             except Exception as exc:
