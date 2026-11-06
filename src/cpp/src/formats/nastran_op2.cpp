@@ -54,6 +54,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
+#include "../detail/nastran_write_common.hpp"
 #include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
@@ -2983,99 +2984,6 @@ std::size_t op2w_card_index(std::string_view Name) {
     return kOp2wNumCards;
 }
 
-/// The card a line or vertex takes from its `nastran:card` number, or nullptr when the
-/// writer does not write that card yet (CBEAM, CBUSH, ...).
-const char* op2w_line_card(std::int64_t Code) {
-    switch (Code) {
-        case 30:
-            return "CROD";
-        case 16:
-            return "CONROD";
-        case 37:
-            return "CTUBE";
-        case 6:
-            return "CELAS1";
-        case 2:
-            return "CDAMP1";
-        case 15:
-            return "CONM2";
-        case 10:
-            return "CMASS1";
-        case 11:
-            return "CMASS2";
-        case 14:
-            return "CONM1";
-        case 24:
-            return "CBAR";
-        case 54:
-            return "CBEAM";
-        case 26:
-            return "CBUSH";
-        case 3:
-            return "CDAMP2";
-        case 7:
-            return "CELAS2";
-        case 39:
-            return "CVISC";
-        case 52:
-            return "PLOTEL";
-        case 19:
-            return "CGAP";
-        default:
-            return nullptr;
-    }
-}
-
-/// Whether a cell block of @p rType may hold an element of card @p Card.
-bool op2w_block_holds(const std::string& rType, std::string_view Card) {
-    if (rType == "vertex")
-        return Card == "CONM2" || Card == "CELAS1" || Card == "CDAMP1" || Card == "CELAS2" ||
-               Card == "CDAMP2" || Card == "CMASS1" || Card == "CMASS2" || Card == "CONM1";
-    if (rType == "line")
-        return Card == "CROD" || Card == "CONROD" || Card == "CTUBE" || Card == "CELAS1" ||
-               Card == "CDAMP1" || Card == "CBAR" || Card == "CBEAM" || Card == "CBUSH" ||
-               Card == "CELAS2" || Card == "CDAMP2" || Card == "CVISC" || Card == "PLOTEL" ||
-               Card == "CGAP" || Card == "CMASS1" || Card == "CMASS2";
-    return false;
-}
-
-/// The card a `nastran:card` number names (its GEOM2 type), for the warnings.
-std::string op2w_card_name(std::int64_t Code) {
-    static const std::pair<const char*, std::int64_t> kTypes[] = {
-        {"CBAR", 24},    {"CBEAM", 54},  {"CBUSH", 26},  {"CDAMP1", 2},  {"CDAMP2", 3},
-        {"CELAS1", 6},   {"CELAS2", 7},  {"CGAP", 19},   {"CHEXA", 73},  {"CMASS1", 10},
-        {"CMASS2", 11},  {"CONM1", 14},  {"CONM2", 15},  {"CONROD", 16}, {"CPENTA", 41},
-        {"CPYRAM", 172}, {"CQUAD", 91},  {"CQUAD4", 51}, {"CQUAD8", 47}, {"CQUADR", 80},
-        {"CROD", 30},    {"CSHEAR", 31}, {"CTETRA", 55}, {"CTRIA3", 59}, {"CTRIA6", 48},
-        {"CTRIAR", 92},  {"CTUBE", 37},  {"CVISC", 39},  {"PLOTEL", 52},
-    };
-    for (const auto& [name, number] : kTypes)
-        if (number == Code)
-            return name;
-    return "card " + std::to_string(Code);
-}
-
-struct Op2wTypeSpec {
-    const char* mType;
-    const char* mCard;  // null: a line takes CROD, CTUBE or CONROD by its property
-    std::size_t mNodes;
-    std::int64_t mPid;  // the property id of a block with no 'nastran:pid'
-};
-constexpr Op2wTypeSpec kOp2wTypes[] = {
-    {"vertex", "CONM2", 1, -1},    {"line", nullptr, 2, 3},        {"triangle", "CTRIA3", 3, 1},
-    {"triangle6", "CTRIA6", 6, 1}, {"quad", "CQUAD4", 4, 1},       {"quad8", "CQUAD8", 8, 1},
-    {"quad9", "CQUAD", 9, 1},      {"tetra", "CTETRA", 4, 2},      {"tetra10", "CTETRA", 10, 2},
-    {"pyramid", "CPYRAM", 5, 2},   {"pyramid13", "CPYRAM", 13, 2}, {"wedge", "CPENTA", 6, 2},
-    {"wedge15", "CPENTA", 15, 2},  {"hexahedron", "CHEXA", 8, 2},  {"hexahedron20", "CHEXA", 20, 2},
-};
-
-const Op2wTypeSpec* op2w_type_spec(const std::string& rType) {
-    for (const Op2wTypeSpec& t : kOp2wTypes)
-        if (rType == t.mType)
-            return &t;
-    return nullptr;
-}
-
 /// The columns of a row's card fields: a CONM1's 21 mass terms are the widest.
 constexpr std::size_t kOp2wBarWidth = 21;
 
@@ -3099,20 +3007,6 @@ struct Op2wRow {
     std::size_t mRow;
 };
 
-/// What every step of a series shares: the points' count and the cell blocks'
-/// types and shapes.
-using Op2wSignature = std::vector<std::tuple<std::string, std::size_t, std::size_t>>;
-
-Op2wSignature op2w_signature(const Mesh& rMesh) {
-    Op2wSignature sig;
-    sig.emplace_back("points", rMesh.NumPoints(), 0);
-    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
-        const auto cb = rMesh.Cells(b);
-        sig.emplace_back(cb.Type(), cb.NumCells(), cb.NodesPerCell());
-    }
-    return sig;
-}
-
 /// The digits of "<PTYPE>_<digits>" when the prefix is @p rPtype, else -1.
 std::int64_t op2w_ptype_pid(const std::string& rName, const std::string& rPtype) {
     if (rName.size() <= rPtype.size() + 1 || rName.compare(0, rPtype.size(), rPtype) != 0 ||
@@ -3127,62 +3021,10 @@ std::int64_t op2w_ptype_pid(const std::string& rName, const std::string& rPtype)
     return pid;
 }
 
-/// The GRID id of each point: `point_data["nastran:nid"]`, else 1 to n.
-std::vector<std::int64_t> op2w_node_ids(const Mesh& rMesh, std::size_t N) {
-    std::vector<std::int64_t> ids(N);
-    if (!rMesh.HasPointData("nastran:nid")) {
-        for (std::size_t i = 0; i < N; ++i)
-            ids[i] = static_cast<std::int64_t>(i + 1);
-        return ids;
-    }
-    const NDArray& a = rMesh.PointData("nastran:nid");
-    if (a.Size() != N || detail::is_float_dtype(a.Dtype()))
-        op2w_fail("'nastran:nid' must hold one integer per point");
-    const detail::Int64View v(a);
-    ids.assign(v.Data(), v.Data() + N);
-    std::vector<std::int64_t> sorted = ids;
-    std::sort(sorted.begin(), sorted.end());
-    if (!sorted.empty() && sorted.front() < 1)
-        op2w_fail("GRID ids must be positive");
-    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
-        op2w_fail("GRID ids are not unique");
-    return ids;
-}
-
 using Op2wValues = std::map<std::pair<std::string, std::int64_t>, std::map<std::string, double>>;
 
 /// `{(card, id): {member: value}}` from the `nastran:<CARD>_<id>:<MEMBER>` field data; keys
 /// that name no card or member here are left alone.
-/// The plies of each PCOMP id: `nastran:PCOMP_<id>:PLY`, rows of MID, T, THETA and SOUT.
-using Op2wPlies = std::map<std::int64_t, std::vector<std::array<double, 4>>>;
-
-Op2wPlies op2w_plies(const Mesh& rMesh) {
-    Op2wPlies out;
-    const std::string prefix = "nastran:PCOMP_";
-    const std::string suffix = ":PLY";
-    for (const std::string& name : rMesh.FieldDataNames()) {
-        if (name.size() <= prefix.size() + suffix.size() || name.rfind(prefix, 0) != 0 ||
-            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
-            continue;
-        const std::string digits =
-            name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
-        if (digits.empty() || digits.size() > 15 ||
-            digits.find_first_not_of("0123456789") != std::string::npos)
-            continue;
-        const NDArray& a = rMesh.FieldData(name);
-        const std::vector<std::size_t>& shape = a.Shape();
-        if (shape.size() != 2 || shape[1] != 4 || shape[0] == 0)
-            op2w_fail("'" + name + "' must hold (plies, 4) rows of MID, T, THETA and SOUT");
-        const detail::DoubleView view(a);
-        auto& plies = out[std::stoll(digits)];
-        for (std::size_t r = 0; r < shape[0]; ++r) {
-            const double* row = view.Data() + 4 * r;
-            plies.push_back({row[0], row[1], row[2], row[3]});
-        }
-    }
-    return out;
-}
-
 Op2wValues op2w_property_values(const Mesh& rMesh) {
     Op2wValues out;
     for (const std::string& name : rMesh.FieldDataNames()) {
@@ -3674,16 +3516,16 @@ std::string op2w_pcompg_row(std::int64_t Pid,
 class Op2wModel {
 public:
     explicit Op2wModel(const Mesh& rMesh) {
-        mSignature = op2w_signature(rMesh);
+        mSignature = detail::nastran_signature(rMesh);
         mValues = op2w_property_values(rMesh);
-        mPlies = op2w_plies(rMesh);
+        mPlies = detail::nastran_plies(rMesh, kOp2Who.c_str());
         mArrays = op2w_named_arrays(rMesh, "PBEAM");
         mBushes = op2w_named_arrays(rMesh, "PBUSH");
         mPbarl = op2w_named_arrays(rMesh, "PBARL");
         mPbeaml = op2w_named_arrays(rMesh, "PBEAML");
         mPcompg = op2w_named_arrays(rMesh, "PCOMPG");
         mNpoints = rMesh.NumPoints();
-        mNodeIds = op2w_node_ids(rMesh, mNpoints);
+        mNodeIds = detail::nastran_node_ids(rMesh, mNpoints, kOp2Who.c_str());
         {
             const NDArray& pts = rMesh.Points();
             const std::size_t dim = rMesh.PointDim();
@@ -3708,7 +3550,7 @@ public:
         std::int64_t sequential = 1;
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
             const auto cb = rMesh.Cells(b);
-            const Op2wTypeSpec* spec = op2w_type_spec(cb.Type());
+            const detail::NastranTypeSpec* spec = detail::nastran_type_spec(cb.Type());
             if (spec == nullptr) {
                 if (cb.NumCells() > 0)
                     mSkipped.insert(cb.Type());
@@ -3764,11 +3606,11 @@ public:
             std::vector<bool> keep(blk.mCount, true);
             for (std::size_t i = 0; i < blk.mCount; ++i) {
                 if (have_card && line_or_vertex) {
-                    const char* name = op2w_line_card(codes[i]);
+                    const char* name = detail::nastran_line_card(codes[i]);
                     if (name == nullptr) {
                         keep[i] = false;
-                        mUnwritten.insert(op2w_card_name(codes[i]));
-                    } else if (!op2w_block_holds(cb.Type(), name)) {
+                        mUnwritten.insert(detail::nastran_card_name(codes[i]));
+                    } else if (!detail::nastran_block_holds(cb.Type(), name)) {
                         op2w_fail("a '" + cb.Type() + "' block cannot hold " + name + " cards");
                     } else {
                         blk.mCards[i] = op2w_card_index(name);
@@ -3972,7 +3814,7 @@ public:
         MaterialCards();  // refuses a material id given as two cards
     }
 
-    const Op2wSignature& Signature() const { return mSignature; }
+    const detail::NastranSignature& Signature() const { return mSignature; }
 
     /// The `(points, 3)` basic vectors in @p rValues, rotated in place into each point's
     /// output system CD.
@@ -4386,7 +4228,7 @@ public:
     }
 
 private:
-    Op2wSignature mSignature;
+    detail::NastranSignature mSignature;
     std::size_t mNpoints = 0;
     std::vector<double> mPoints;
     std::vector<std::int64_t> mCp;       // each point's coordinate system (0: basic)
@@ -4401,7 +4243,7 @@ private:
     std::set<std::string> mSkipped;
     std::set<std::string> mUnwritten;  // element cards the file does not hold yet
     Op2wValues mValues;
-    Op2wPlies mPlies;
+    detail::NastranPlies mPlies;
     Op2wArrays mArrays;
     Op2wArrays mBushes;
     Op2wArrays mPbarl;  // the line-property field data, by id: texts as their characters
@@ -5239,21 +5081,15 @@ void op2w_warn_dropped(const Mesh& rMesh, const Op2wModel& rModel,
         if (n != kSequenceTimeKey && n.rfind("nastran:", 0) != 0)
             names.insert(n);
     if (!names.empty()) {
-        std::string list;
-        for (const std::string& n : names)
-            list += (list.empty() ? "" : ", ") + n;
+        const std::string list = detail::nastran_join(names);
         log::warn("Nastran OP2: arrays without a place in the file are not written: {}", list);
     }
     if (!rModel.Skipped().empty()) {
-        std::string list;
-        for (const std::string& n : rModel.Skipped())
-            list += (list.empty() ? "" : ", ") + n;
+        const std::string list = detail::nastran_join(rModel.Skipped());
         log::warn("Nastran OP2: cell blocks with no element card are not written: {}", list);
     }
     if (!rModel.Unwritten().empty()) {
-        std::string list;
-        for (const std::string& n : rModel.Unwritten())
-            list += (list.empty() ? "" : ", ") + n;
+        const std::string list = detail::nastran_join(rModel.Unwritten());
         log::warn("Nastran OP2: element cards not written yet, their elements are left out: {}",
                   list);
     }
@@ -5331,7 +5167,7 @@ void NastranOp2SeriesWriter::Write(double Time, const Mesh& rMesh) {
     const std::size_t index = s.mSteps.size();
     if (!s.mModel) {
         s.mModel.emplace(rMesh);
-    } else if (s.mModel->Signature() != op2w_signature(rMesh)) {
+    } else if (s.mModel->Signature() != detail::nastran_signature(rMesh)) {
         op2w_fail("series: step " + std::to_string(index) +
                   "'s points or cells differ from the first step's; an OP2 file holds one "
                   "model -- write one file per step with '{step}'");
