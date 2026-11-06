@@ -57,6 +57,7 @@ from ._refine_templates import (
     template,
 )
 from ._regions import block_bases
+from ._set_remap import remap_sets
 from ._side_carry import carry_side_regions, first_child_children
 
 __all__ = ["refine", "SUPPORTED_TYPES"]
@@ -875,46 +876,6 @@ def _attach_hierarchy(input_mesh, out, cell_maps, record_hierarchy):
 
 
 # --------------------------------------------------------------------------- #
-# set remapping (never reaches the C++ core)                                   #
-# --------------------------------------------------------------------------- #
-def _remap_sets(src, out, point_map, cell_maps):
-    point_sets = getattr(src, "point_sets", None)
-    if point_sets:
-        pm = np.asarray(point_map, dtype=np.int64)
-        new_ps = {}
-        for name, idx in point_sets.items():
-            mapped = pm[np.asarray(idx, dtype=np.int64)]
-            new_ps[name] = mapped[mapped >= 0]
-        out.point_sets = new_ps
-
-    cell_sets = getattr(src, "cell_sets", None)
-    if cell_sets and cell_maps is not None:
-        new_cs = {}
-        for name, blocks in cell_sets.items():
-            remapped = []
-            for b, idx in enumerate(blocks):
-                if idx is None or b >= len(cell_maps):
-                    remapped.append(None)
-                    continue
-                first = np.asarray(cell_maps[b], dtype=np.int64)
-                total = len(out.cells[b].data) if b < len(out.cells) else 0
-                # The end of parent c's child range is the next parent's start.
-                ends = np.append(first[1:], total) if len(first) else first
-                expanded = []
-                for c in np.asarray(idx, dtype=np.int64):
-                    if c < 0 or c >= len(first):
-                        continue
-                    expanded.append(np.arange(first[c], ends[c], dtype=np.int64))
-                remapped.append(
-                    np.concatenate(expanded)
-                    if expanded
-                    else np.empty(0, dtype=np.int64)
-                )
-            new_cs[name] = remapped
-        out.cell_sets = new_cs
-
-
-# --------------------------------------------------------------------------- #
 # public API                                                                   #
 # --------------------------------------------------------------------------- #
 def refine(
@@ -1037,7 +998,7 @@ def refine(
     # `point_sets`/`cell_sets`, which are views over them), so remapping again
     # here would apply the maps twice. Only the numpy fallback needs it.
     if not used_cpp:
-        _remap_sets(mesh, out, point_map, cell_maps)
+        remap_sets(mesh, out, point_map, cell_maps, expand=True)
         carry_side_regions(
             mesh,
             out,

@@ -28,7 +28,9 @@
 #include <vector>
 
 // Project includes
+#include "fem_kernels.hpp"
 #include "isosurface_stuffing.hpp"
+#include "vertex_cell_csr.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
@@ -37,10 +39,6 @@ namespace detail {
 namespace {
 
 using IsostuffEdge = std::pair<std::int64_t, std::int64_t>;
-
-double isostuff_volume(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
-    return triple_product(vec3_sub(rB, rA), vec3_sub(rC, rA), vec3_sub(rD, rA)) / 6.0;
-}
 
 // The pieces of one tetrahedron on the side whose vertices have sign `Target`.
 struct IsostuffCutter {
@@ -177,20 +175,8 @@ StuffReport isosurface_stuff(StuffMesh& rMesh, std::vector<std::int8_t>& rSign,
     }
     std::sort(violates.begin(), violates.end());
     // Every tetrahedron around each vertex, for the inversion guard.
-    std::vector<std::int64_t> inc_start(np + 1, 0), inc;
-    for (const auto& t : rMesh.mTets)
-        for (std::int64_t v : t)
-            ++inc_start[static_cast<std::size_t>(v) + 1];
-    for (std::size_t p = 0; p < np; ++p)
-        inc_start[p + 1] += inc_start[p];
-    inc.resize(static_cast<std::size_t>(inc_start[np]));
-    {
-        std::vector<std::int64_t> fill(inc_start.begin(), inc_start.end() - 1);
-        for (std::size_t t = 0; t < nt; ++t)
-            for (std::int64_t v : rMesh.mTets[t])
-                inc[static_cast<std::size_t>(fill[static_cast<std::size_t>(v)]++)] =
-                    static_cast<std::int64_t>(t);
-    }
+    std::vector<std::int64_t> inc_start, inc;
+    vertex_cell_csr(rMesh.mTets, np, inc_start, inc);
     // Warp, vertex by vertex in ascending order, onto the nearest live cut point.
     for (std::size_t k = 0; k < violates.size();) {
         const std::int64_t v = violates[k].first;
@@ -221,7 +207,7 @@ StuffReport isosurface_stuff(StuffMesh& rMesh, std::vector<std::int8_t>& rSign,
             Vec3 p[4];
             for (std::size_t c = 0; c < 4; ++c)
                 p[c] = t[c] == v ? target : rMesh.mPoints[static_cast<std::size_t>(t[c])];
-            ok = isostuff_volume(p[0], p[1], p[2], p[3]) > rOptions.mMinVolume;
+            ok = tet_volume(p[0], p[1], p[2], p[3]) > rOptions.mMinVolume;
         }
         if (!ok) {
             ++report.mNumWarpRefused;
@@ -282,7 +268,7 @@ StuffReport isosurface_stuff(StuffMesh& rMesh, std::vector<std::int8_t>& rSign,
             Vec3 p[4];
             for (std::size_t c = 0; c < 4; ++c)
                 p[c] = out.mPoints[static_cast<std::size_t>(rT[c])];
-            const double vol = isostuff_volume(p[0], p[1], p[2], p[3]);
+            const double vol = tet_volume(p[0], p[1], p[2], p[3]);
             if (vol < 0.0)
                 std::swap(rT[2], rT[3]);
             if (std::abs(vol) <= rOptions.mMinVolume)

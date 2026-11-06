@@ -1,111 +1,743 @@
 import argparse
+import importlib
+import sys
 from sys import version_info
+from typing import NamedTuple
 
 from ..__about__ import __version__
-from . import (
-    _agglomerate,
-    _ascii,
-    _binary,
-    _boundary_layer,
-    _check,
-    _check_conformity,
-    _clean,
-    _completion,
-    _compress,
-    _conservative_interpolate,
-    _contact_pairs,
-    _convert,
-    _convert_cells,
-    _coordinates,
-    _crop,
-    _curvature,
-    _cut,
-    _data,
-    _dataset,
-    _decimate,
-    _decimate_volume,
-    _decompress,
-    _diff,
-    _eigenmodes,
-    _extract_surface,
-    _extrude,
-    _feature_edges,
-    _find_interface,
-    _find_intersections,
-    _fit_primitives,
-    _generate,
-    _geodesic,
-    _graph,
-    _grid_transfer,
-    _guard,
-    _hausdorff,
-    _hull,
-    _iga,
-    _info,
-    _interpolate,
-    _isosurface,
-    _merge,
-    _mesh_cad,
-    _metric,
-    _mirror,
-    _mmg,
-    _morph,
-    _normals,
-    _octree,
-    _octree_mesh,
-    _optimize_volume,
-    _parameterize,
-    _partition,
-    _periodic,
-    _pipeline,
-    _point_budget,
-    _point_normals,
-    _predict,
-    _project_to_cad,
-    _proximity,
-    _quality,
-    _reconstruct,
-    _refine,
-    _refine_patches,
-    _region_adjacency,
-    _regions,
-    _register,
-    _remesh,
-    _remesh_quads,
-    _remesh_volume,
-    _reorder,
-    _repair,
-    _resample,
-    _revolve,
-    _sdf,
-    _segment,
-    _select,
-    _shrinkwrap,
-    _slice,
-    _smooth,
-    _snapshot,
-    _sobolev,
-    _split,
-    _split_interface,
-    _stats,
-    _subdivide,
-    _tessellate,
-    _tet_poly,
-    _tetrahedralize,
-    _thickness,
-    _to_cad,
-    _transform,
-    _tui,
-    _undo_green,
-    _untangle,
-    _view,
-    _voxelize,
+
+
+class _Verb(NamedTuple):
+    """One subcommand: its name, the ``_cli`` module that implements it, the
+    module's handler and argument builder, and its ``--help`` line."""
+
+    name: str
+    module: str
+    handler: str
+    help: str
+    add_args: str = "add_args"
+    aliases: tuple = ()
+
+
+# Every verb but ``completion``, in ``--help`` order. The modules are imported
+# only for the verb a command line runs (roadmap 5.12.1): building all of them
+# loads about 270 modules, a ``--help`` or a single verb needs none of them or
+# one. ``test_cli.py`` checks each lazily built subparser against the full one.
+_VERBS = (
+    _Verb("convert", "_convert", "convert", "Convert mesh files", aliases=("c",)),
+    _Verb("info", "_info", "info", "Print mesh info", aliases=("i",)),
+    _Verb("compress", "_compress", "compress", "Compress mesh file"),
+    _Verb("decompress", "_decompress", "decompress", "Decompress mesh file"),
+    _Verb("ascii", "_ascii", "ascii", "Convert to ASCII", aliases=("a",)),
+    _Verb("binary", "_binary", "binary", "Convert to binary", aliases=("b",)),
+    _Verb(
+        "quality", "_quality", "quality", "Print mesh quality metrics", aliases=("q",)
+    ),
+    _Verb(
+        "curvature",
+        "_curvature",
+        "curvature_cmd",
+        "Per-vertex mean and Gaussian curvature of a surface",
+    ),
+    _Verb(
+        "normals",
+        "_normals",
+        "normals_cmd",
+        "Point and cell normals of a surface, optionally split at creases",
+    ),
+    _Verb(
+        "check",
+        "_check",
+        "check_cmd",
+        "Quality gate: exit 1 when cells break thresholds (2: could not check)",
+    ),
+    _Verb(
+        "check-conformity",
+        "_check_conformity",
+        "check_conformity_cmd",
+        (
+            "Hanging nodes, T-junctions and partial overlaps: exit 1 when the "
+            "mesh is not conforming (2: could not check)"
+        ),
+    ),
+    _Verb(
+        "find-intersections",
+        "_find_intersections",
+        "find_intersections_cmd",
+        (
+            "Self-intersections of a surface, or where two surfaces meet: exit 1 "
+            "when any are found (2: could not check)"
+        ),
+    ),
+    _Verb(
+        "thickness",
+        "_thickness",
+        "thickness_cmd",
+        "Wall thickness or clearance per facet, by a ray along its normal",
+    ),
+    _Verb(
+        "feature-edges",
+        "_feature_edges",
+        "feature_edges_cmd",
+        "Sharp, open and non-manifold edges of a surface as a line mesh",
+    ),
+    _Verb(
+        "segment",
+        "_segment",
+        "segment_cmd",
+        "Split a surface into smooth patches bounded by its feature edges",
+    ),
+    _Verb(
+        "select",
+        "_select",
+        "select_cmd",
+        (
+            "Write a named point, cell or side region chosen by geometry, data, "
+            "quality, component or a grown patch"
+        ),
+    ),
+    _Verb(
+        "fit-primitives",
+        "_fit_primitives",
+        "fit_primitives_cmd",
+        "Fit a plane, sphere, cylinder, cone or torus to each patch",
+    ),
+    _Verb(
+        "refine-patches",
+        "_refine_patches",
+        "refine_patches_cmd",
+        (
+            "Refine segment:patch until one surface explains each patch "
+            "(variational shape approximation)"
+        ),
+    ),
+    _Verb(
+        "iga-refine",
+        "_iga",
+        "refine_cmd",
+        "Refine a NURBS model exactly (knot insertion, degree elevation)",
+        add_args="add_refine_args",
+    ),
+    _Verb(
+        "iga-sample",
+        "_iga",
+        "sample_cmd",
+        "Sample a NURBS model into Lagrange cells",
+        add_args="add_sample_args",
+    ),
+    _Verb(
+        "iga-evaluate",
+        "_iga",
+        "evaluate_cmd",
+        "Evaluate a patch of a NURBS model at parametric coordinates (JSON)",
+        add_args="add_evaluate_args",
+    ),
+    _Verb(
+        "to-cad",
+        "_to_cad",
+        "to_cad_cmd",
+        (
+            "Fitted patches as a STEP solid with analytic, freeform, fillet and "
+            "thread faces (analytic only without OpenCASCADE)"
+        ),
+    ),
+    _Verb(
+        "region-adjacency",
+        "_region_adjacency",
+        "region_adjacency_cmd",
+        "Write facets shared by selected regions or cell blocks",
+    ),
+    _Verb(
+        "find-interface",
+        "_find_interface",
+        "find_interface_cmd",
+        "Find conforming or proximity-matched interface facets",
+    ),
+    _Verb(
+        "contact-pairs",
+        "_contact_pairs",
+        "contact_pairs_cmd",
+        "Project slave-region nodes onto master facets",
+    ),
+    _Verb(
+        "split-interface",
+        "_split_interface",
+        "split_interface_cmd",
+        "Split node fans along a Side region",
+    ),
+    _Verb(
+        "hausdorff",
+        "_hausdorff",
+        "hausdorff_cmd",
+        "Hausdorff distance between two surfaces (--max: nonzero exit above it)",
+    ),
+    _Verb(
+        "coordinates",
+        "_coordinates",
+        "coordinates_cmd",
+        "Positions, vector and tensor fields in cylindrical/spherical components",
+    ),
+    _Verb(
+        "metric",
+        "_metric",
+        "metric_cmd",
+        "Intersect, normalise, clamp and grade metric fields",
+    ),
+    _Verb(
+        "untangle",
+        "_untangle",
+        "untangle_cmd",
+        "Move nodes until no tetrahedron or hexahedron is inverted",
+    ),
+    _Verb(
+        "morph",
+        "_morph",
+        "morph_cmd",
+        "Move the boundary by a displacement, carried into the mesh",
+    ),
+    _Verb(
+        "eigenmodes",
+        "_eigenmodes",
+        "eigenmodes_cmd",
+        "Lowest eigenpairs of a surface's Laplace-Beltrami operator",
+    ),
+    _Verb(
+        "register",
+        "_register",
+        "register_cmd",
+        "Rigid registration of one mesh onto another (ICP)",
+    ),
+    _Verb(
+        "point-normals",
+        "_point_normals",
+        "point_normals_cmd",
+        "Normals of a point cloud by local plane fits",
+    ),
+    _Verb(
+        "reconstruct",
+        "_reconstruct",
+        "reconstruct_cmd",
+        "A triangle surface through an oriented point cloud",
+    ),
+    _Verb(
+        "hull",
+        "_hull",
+        "hull_cmd",
+        "Convex hull of the points (3-D surface or 2-D loop)",
+        add_args="add_hull_args",
+    ),
+    _Verb(
+        "delaunay",
+        "_hull",
+        "delaunay_cmd",
+        "Delaunay triangulation of the points in the x, y plane",
+        add_args="add_delaunay_args",
+    ),
+    _Verb(
+        "geodesic",
+        "_geodesic",
+        "geodesic_cmd",
+        "Surface distance from source points (heat method)",
+    ),
+    _Verb(
+        "parameterize",
+        "_parameterize",
+        "parameterize_cmd",
+        "A UV atlas of a triangle surface (texture coordinates)",
+    ),
+    _Verb(
+        "graph",
+        "_graph",
+        "graph_cmd",
+        "Write a mesh's node or cell graph as a METIS or Scotch graph file",
+    ),
+    _Verb(
+        "periodic",
+        "_periodic",
+        "periodic_cmd",
+        "Match the nodes of two regions a transform maps onto each other",
+    ),
+    _Verb(
+        "repair",
+        "_repair",
+        "repair_cmd",
+        "Fix a surface's orientation, holes and pinched vertices",
+    ),
+    _Verb(
+        "shrinkwrap",
+        "_shrinkwrap",
+        "shrinkwrap_cmd",
+        "Project a mesh's points onto a target surface",
+    ),
+    _Verb(
+        "sobolev-deform",
+        "_sobolev",
+        "sobolev_cmd",
+        "Filter a displacement field over the mesh's P1 operators and apply it",
+    ),
+    _Verb(
+        "extract-surface",
+        "_extract_surface",
+        "extract_surface_cmd",
+        "Extract the boundary surface/edges",
+        aliases=("surface",),
+    ),
+    _Verb(
+        "reorder",
+        "_reorder",
+        "reorder_cmd",
+        "Renumber nodes/elements (RCM / Morton / Hilbert)",
+    ),
+    _Verb(
+        "diff",
+        "_diff",
+        "diff_cmd",
+        "Compare two meshes (nonzero exit code if different)",
+    ),
+    _Verb(
+        "merge",
+        "_merge",
+        "merge_cmd",
+        "Merge two or more meshes into one (optional welding)",
+    ),
+    _Verb(
+        "transform",
+        "_transform",
+        "transform_cmd",
+        "Affine transform (translate / scale / rotate / matrix / units)",
+    ),
+    _Verb("clean", "_clean", "clean_cmd", "Weld / prune / de-dup a mesh in one pass"),
+    _Verb(
+        "crop",
+        "_crop",
+        "crop_cmd",
+        "Subset a mesh by a bounding box, half-space or cell_data predicate",
+    ),
+    _Verb(
+        "slice",
+        "_slice",
+        "slice_cmd",
+        "Planar cross-section of a mesh (volume -> surface, surface -> lines)",
+    ),
+    _Verb(
+        "isosurface",
+        "_isosurface",
+        "isosurface_cmd",
+        "Level set of a scalar point_data field (volume -> surface, surface -> lines)",
+    ),
+    _Verb(
+        "generate",
+        "_generate",
+        "generate_cmd",
+        (
+            "Build a mesh from parameters: rectangle, box, disk, spheres, "
+            "cylinder, reference cells"
+        ),
+    ),
+    _Verb(
+        "voxelize",
+        "_voxelize",
+        "voxelize_cmd",
+        "Regular hexahedron grid around a mesh (whole box / surface / interior)",
+    ),
+    _Verb(
+        "octree",
+        "_octree",
+        "octree_cmd",
+        "Octree / quadtree around a skin, fine only where the skin is",
+    ),
+    _Verb(
+        "octree-mesh",
+        "_octree_mesh",
+        "octree_mesh_cmd",
+        (
+            "Volume mesh of a skin's inside on a balanced octree (castellated "
+            "hexahedra, conforming tetrahedra or all-hexahedra)"
+        ),
+    ),
+    _Verb(
+        "mesh-cad-surface",
+        "_mesh_cad",
+        "mesh_cad_surface_cmd",
+        (
+            "Conforming triangle mesh of a CAD model's faces (CAD JSON, STEP, "
+            "IGES) at a target edge size"
+        ),
+    ),
+    _Verb(
+        "project-to-cad",
+        "_project_to_cad",
+        "project_to_cad_cmd",
+        "Move a mesh's points back onto the CAD faces and edges its cells name",
+    ),
+    _Verb(
+        "boundary-layer",
+        "_boundary_layer",
+        "boundary_layer_cmd",
+        "Prismatic boundary layers grown from a triangle and quad surface",
+    ),
+    _Verb(
+        "extrude",
+        "_extrude",
+        "extrude_cmd",
+        "Sweep a surface into a volume (or a curve into a surface) along a vector",
+    ),
+    _Verb(
+        "revolve",
+        "_revolve",
+        "revolve_cmd",
+        "Sweep a surface (or a curve) around an axis",
+    ),
+    _Verb(
+        "mirror",
+        "_mirror",
+        "mirror_cmd",
+        "Reflect a mesh across a plane, every cell right side out",
+    ),
+    _Verb(
+        "tetrahedralize",
+        "_tetrahedralize",
+        "tetrahedralize_cmd",
+        "Fill a closed triangle surface with tetrahedra, its triangles kept (Netgen)",
+    ),
+    _Verb(
+        "remesh-quads",
+        "_remesh_quads",
+        "remesh_quads_cmd",
+        "Field-aligned quads from a triangle surface (QuadriFlow, Instant Meshes)",
+    ),
+    _Verb(
+        "cut",
+        "_cut",
+        "cut_cmd",
+        "Cut a mesh by level sets: the pieces either side or the interface (CutCells)",
+    ),
+    _Verb(
+        "cut-quadrature",
+        "_cut",
+        "cut_quadrature_cmd",
+        "Quadrature rules on the part of a mesh that level sets select (CutCells)",
+        add_args="add_quadrature_args",
+    ),
+    _Verb(
+        "grid-sample",
+        "_grid_transfer",
+        "grid_sample_cmd",
+        "Sample a mesh's point data onto a regular grid (for a CNN)",
+        add_args="add_sample_args",
+    ),
+    _Verb(
+        "grid-scatter",
+        "_grid_transfer",
+        "grid_scatter_cmd",
+        "Write a grid's fields back onto a mesh (grid-sample's inverse)",
+        add_args="add_scatter_args",
+    ),
+    _Verb(
+        "grid-resample",
+        "_grid_transfer",
+        "grid_resample_cmd",
+        "Resample a grid onto a finer or coarser lattice over the same box",
+        add_args="add_resample_args",
+    ),
+    _Verb(
+        "grid-spectrum",
+        "_grid_transfer",
+        "grid_spectrum_cmd",
+        "Azimuthally averaged power spectrum of a field on a regular grid",
+        add_args="add_spectrum_args",
+    ),
+    _Verb(
+        "subsample",
+        "_point_budget",
+        "subsample_cmd",
+        "Reduce a mesh to a point cloud under a token budget (farthest-point)",
+    ),
+    _Verb(
+        "proximity-graph",
+        "_proximity",
+        "proximity_cmd",
+        "Build a radius or k-nearest-neighbour graph over a mesh's points",
+    ),
+    _Verb(
+        "predict",
+        "_predict",
+        "predict_cmd",
+        "Run a trained PhysicsNeMo checkpoint on one mesh file",
+    ),
+    _Verb(
+        "guard-fit",
+        "_guard",
+        "guard_fit_cmd",
+        "Fit a geometry guardrail over a dataset manifest's split",
+        add_args="add_fit_args",
+    ),
+    _Verb(
+        "guard-check",
+        "_guard",
+        "guard_check_cmd",
+        "Score a mesh against a fitted geometry guardrail",
+        add_args="add_check_args",
+    ),
+    _Verb(
+        "sdf",
+        "_sdf",
+        "sdf_cmd",
+        "Signed distance field: generate a grid over a surface and fill it",
+    ),
+    _Verb(
+        "split",
+        "_split",
+        "split_cmd",
+        "Partition a mesh into multiple files (type / region / regions / component)",
+    ),
+    _Verb(
+        "regions",
+        "_regions",
+        "regions_cmd",
+        "List a mesh's named regions, or edit them (union, rename, retag, ...)",
+    ),
+    _Verb(
+        "convert-cells",
+        "_convert_cells",
+        "convert_cells_cmd",
+        "Convert the element representation (linearize / simplexify / elevate)",
+    ),
+    _Verb(
+        "subdivide",
+        "_subdivide",
+        "subdivide_cmd",
+        (
+            "Polyhedrally refine: split every eligible 3D cell into one "
+            "polyhedral child per face, connected to a new interior point"
+        ),
+    ),
+    _Verb(
+        "tessellate",
+        "_tessellate",
+        "tessellate_cmd",
+        (
+            "Isoparametric subdivision of a mesh's curved cells (quad9, quad8, "
+            "triangle6, tetra10, hexahedron27) onto a refinement lattice, "
+            "recording tessellate:* provenance"
+        ),
+    ),
+    _Verb(
+        "agglomerate",
+        "_agglomerate",
+        "agglomerate_cmd",
+        (
+            "Polyhedrally coarsen: merge groups of cells into single larger "
+            "polyhedral cells via greedy seed-and-grow over the shared-face dual"
+        ),
+    ),
+    _Verb(
+        "tet-to-poly",
+        "_tet_poly",
+        "tet_to_poly_cmd",
+        (
+            "Convert a tetrahedral mesh into its polyhedral (median) dual: one "
+            "polyhedron per vertex"
+        ),
+        add_args="add_tet_to_poly_args",
+    ),
+    _Verb(
+        "poly-to-tet",
+        "_tet_poly",
+        "poly_to_tet_cmd",
+        (
+            "Decompose a polyhedral mesh into tetrahedra, keeping polyhedra that "
+            "already are tetrahedra as one tetra"
+        ),
+        add_args="add_poly_to_tet_args",
+    ),
+    _Verb(
+        "resample",
+        "_resample",
+        "resample_cmd",
+        (
+            "Resample a sequence onto new times (linear blend, nearest or "
+            "previous), holding at most two steps in memory"
+        ),
+    ),
+    _Verb(
+        "refine",
+        "_refine",
+        "refine_cmd",
+        (
+            "Refine (subdivide cells into same-type children), every cell or a "
+            "selected subset with a conforming closure"
+        ),
+    ),
+    _Verb(
+        "undo-green",
+        "_undo_green",
+        "undo_green_cmd",
+        (
+            "Restore a transitional (green) cell to its coarse parent, read "
+            "verbatim from the coarse mesh"
+        ),
+    ),
+    _Verb(
+        "decimate",
+        "_decimate",
+        "decimate_cmd",
+        "Reduce a surface mesh's face count by quadric edge collapse",
+    ),
+    _Verb(
+        "decimate-volume",
+        "_decimate_volume",
+        "decimate_volume_cmd",
+        "Reduce a tet mesh's cell count by quadric tet-edge collapse",
+    ),
+    _Verb(
+        "adapt",
+        "_mmg",
+        "adapt_cmd",
+        "Remesh to a size or a metric with MMG (a build with MESHIOPLUSPLUS_WITH_MMG)",
+        add_args="add_adapt_args",
+    ),
+    _Verb(
+        "discretize-levelset",
+        "_mmg",
+        "discretize_levelset_cmd",
+        "Embed a level set conformally and remesh both sides with MMG",
+        add_args="add_discretize_levelset_args",
+    ),
+    _Verb(
+        "mesh-2d",
+        "_mmg",
+        "mesh_2d_cmd",
+        "Triangulate the planar domain a line mesh bounds with MMG",
+        add_args="add_mesh_2d_args",
+    ),
+    _Verb(
+        "move",
+        "_mmg",
+        "move_cmd",
+        "Move a mesh by a boundary displacement and remesh with MMG (needs ELAS)",
+        add_args="add_move_args",
+    ),
+    _Verb(
+        "remesh",
+        "_remesh",
+        "remesh_cmd",
+        "Replace a surface's triangulation with a new, well-shaped one (ACVD)",
+    ),
+    _Verb(
+        "remesh-volume",
+        "_remesh_volume",
+        "remesh_volume_cmd",
+        "Retetrahedralize a volume (or closed surface) by isosurface stuffing",
+    ),
+    _Verb(
+        "optimize-volume",
+        "_optimize_volume",
+        "optimize_volume_cmd",
+        "ODT-remesh a tetrahedral mesh (relocate vertices + flip connectivity)",
+    ),
+    _Verb(
+        "partition",
+        "_partition",
+        "partition_cmd",
+        "Decompose into N balanced parts (SFC / KaHIP) for domain decomposition",
+    ),
+    _Verb(
+        "pipeline",
+        "_pipeline",
+        "pipeline_cmd",
+        "Run a settings.json operation chain (read -> ops -> write)",
+    ),
+    _Verb(
+        "smooth",
+        "_smooth",
+        "smooth_cmd",
+        "Relax node positions to improve element shape (Laplacian / Taubin)",
+    ),
+    _Verb(
+        "interpolate",
+        "_interpolate",
+        "interpolate_cmd",
+        (
+            "Sample data arrays from a source mesh onto a target mesh (nearest / "
+            "barycentric)"
+        ),
+    ),
+    _Verb(
+        "conservative-interpolate",
+        "_conservative_interpolate",
+        "conservative_interpolate_cmd",
+        (
+            "Mass-preserving cross-mesh field transfer (overlap-measure weighted,"
+            " not pointwise)"
+        ),
+    ),
+    _Verb(
+        "stats",
+        "_stats",
+        "stats_cmd",
+        "Print geometric statistics (bbox, area, volume, ...)",
+    ),
+    _Verb(
+        "view",
+        "_view",
+        "view_cmd",
+        "Open a mesh in an interactive viewer (desktop or browser)",
+    ),
+    _Verb(
+        "screenshot",
+        "_view",
+        "screenshot_cmd",
+        "Render a mesh to a PNG without opening a window",
+        add_args="add_screenshot_args",
+    ),
+    _Verb(
+        "snapshot",
+        "_snapshot",
+        "snapshot_cmd",
+        (
+            "Draw a mesh in this terminal (OUT = -) or to "
+            ".png/.txt/.ansi/.html/.cast, with no display or GPU"
+        ),
+    ),
+    _Verb(
+        "tui",
+        "_tui",
+        "tui_cmd",
+        "Orbit, zoom and pan a mesh inside this terminal, with no display or GPU",
+    ),
+    # Nested groups: `data <verb>` and `dataset <verb>` (the hand-editable
+    # DatasetManifest JSON, doc/datasets.md). Their inner parsers each call
+    # set_defaults(func=...), which overrides the outer default, so the
+    # `args.func(args)` dispatch reaches the right handler unchanged.
+    _Verb(
+        "data",
+        "_data",
+        "data_cmd",
+        "Inspect / rename / average / compute on mesh data arrays",
+    ),
+    _Verb(
+        "dataset",
+        "_dataset",
+        "dataset_cmd",
+        "Catalogue / split / tag / annotate a dataset manifest",
+    ),
 )
 
+_COMPLETION_HELP = "Print a bash, zsh or fish completion script for this CLI"
 
-def build_parser():
-    """The whole CLI's argparse parser; shell completions are generated from it
-    (the ``completion`` verb), so they follow the verbs as they change."""
+_BY_NAME = {alias: v for v in _VERBS for alias in (v.name, *v.aliases)}
+
+# ``_make_parser(only=_NO_VERB)`` registers every verb and fills in none.
+_NO_VERB = object()
+
+
+def _make_parser(only=None):
+    """The top-level parser with every verb registered, so ``--help`` and the
+    "invalid choice" error list them all; the arguments and handler are filled
+    in for the verb ``only`` (a :class:`_Verb`), for none when it is
+    ``_NO_VERB``, and for every verb, ``completion`` included, when it is
+    ``None``."""
     parent_parser = argparse.ArgumentParser(
         description="Mesh input/output tools.",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -122,794 +754,53 @@ def build_parser():
     subparsers = parent_parser.add_subparsers(title="subcommands", dest="command")
     subparsers.required = True
 
-    parser = subparsers.add_parser("convert", help="Convert mesh files", aliases=["c"])
-    _convert.add_args(parser)
-    parser.set_defaults(func=_convert.convert)
-
-    parser = subparsers.add_parser("info", help="Print mesh info", aliases=["i"])
-    _info.add_args(parser)
-    parser.set_defaults(func=_info.info)
-
-    parser = subparsers.add_parser("compress", help="Compress mesh file")
-    _compress.add_args(parser)
-    parser.set_defaults(func=_compress.compress)
-
-    parser = subparsers.add_parser("decompress", help="Decompress mesh file")
-    _decompress.add_args(parser)
-    parser.set_defaults(func=_decompress.decompress)
-
-    parser = subparsers.add_parser("ascii", help="Convert to ASCII", aliases=["a"])
-    _ascii.add_args(parser)
-    parser.set_defaults(func=_ascii.ascii)
-
-    parser = subparsers.add_parser("binary", help="Convert to binary", aliases=["b"])
-    _binary.add_args(parser)
-    parser.set_defaults(func=_binary.binary)
-
-    parser = subparsers.add_parser(
-        "quality", help="Print mesh quality metrics", aliases=["q"]
-    )
-    _quality.add_args(parser)
-    parser.set_defaults(func=_quality.quality)
-
-    parser = subparsers.add_parser(
-        "curvature",
-        help="Per-vertex mean and Gaussian curvature of a surface",
-    )
-    _curvature.add_args(parser)
-    parser.set_defaults(func=_curvature.curvature_cmd)
-
-    parser = subparsers.add_parser(
-        "normals",
-        help="Point and cell normals of a surface, optionally split at creases",
-    )
-    _normals.add_args(parser)
-    parser.set_defaults(func=_normals.normals_cmd)
-
-    parser = subparsers.add_parser(
-        "check",
-        help="Quality gate: exit 1 when cells break thresholds (2: could not check)",
-    )
-    _check.add_args(parser)
-    parser.set_defaults(func=_check.check_cmd)
-
-    parser = subparsers.add_parser(
-        "check-conformity",
-        help="Hanging nodes, T-junctions and partial overlaps: exit 1 when the "
-        "mesh is not conforming (2: could not check)",
-    )
-    _check_conformity.add_args(parser)
-    parser.set_defaults(func=_check_conformity.check_conformity_cmd)
-
-    parser = subparsers.add_parser(
-        "find-intersections",
-        help="Self-intersections of a surface, or where two surfaces meet: exit 1 "
-        "when any are found (2: could not check)",
-    )
-    _find_intersections.add_args(parser)
-    parser.set_defaults(func=_find_intersections.find_intersections_cmd)
-
-    parser = subparsers.add_parser(
-        "thickness",
-        help="Wall thickness or clearance per facet, by a ray along its normal",
-    )
-    _thickness.add_args(parser)
-    parser.set_defaults(func=_thickness.thickness_cmd)
-
-    parser = subparsers.add_parser(
-        "feature-edges",
-        help="Sharp, open and non-manifold edges of a surface as a line mesh",
-    )
-    _feature_edges.add_args(parser)
-    parser.set_defaults(func=_feature_edges.feature_edges_cmd)
-
-    parser = subparsers.add_parser(
-        "segment",
-        help="Split a surface into smooth patches bounded by its feature edges",
-    )
-    _segment.add_args(parser)
-    parser.set_defaults(func=_segment.segment_cmd)
-
-    parser = subparsers.add_parser(
-        "select",
-        help="Write a named point, cell or side region chosen by geometry, data, "
-        "quality, component or a grown patch",
-    )
-    _select.add_args(parser)
-    parser.set_defaults(func=_select.select_cmd)
-
-    parser = subparsers.add_parser(
-        "fit-primitives",
-        help="Fit a plane, sphere, cylinder, cone or torus to each patch",
-    )
-    _fit_primitives.add_args(parser)
-    parser.set_defaults(func=_fit_primitives.fit_primitives_cmd)
-
-    parser = subparsers.add_parser(
-        "refine-patches",
-        help="Refine segment:patch until one surface explains each patch "
-        "(variational shape approximation)",
-    )
-    _refine_patches.add_args(parser)
-    parser.set_defaults(func=_refine_patches.refine_patches_cmd)
-
-    parser = subparsers.add_parser(
-        "iga-refine",
-        help="Refine a NURBS model exactly (knot insertion, degree elevation)",
-    )
-    _iga.add_refine_args(parser)
-    parser.set_defaults(func=_iga.refine_cmd)
-
-    parser = subparsers.add_parser(
-        "iga-sample", help="Sample a NURBS model into Lagrange cells"
-    )
-    _iga.add_sample_args(parser)
-    parser.set_defaults(func=_iga.sample_cmd)
-
-    parser = subparsers.add_parser(
-        "iga-evaluate",
-        help="Evaluate a patch of a NURBS model at parametric coordinates (JSON)",
-    )
-    _iga.add_evaluate_args(parser)
-    parser.set_defaults(func=_iga.evaluate_cmd)
-
-    parser = subparsers.add_parser(
-        "to-cad",
-        help="Fitted patches as a STEP solid with analytic, freeform, fillet and thread "
-        "faces (analytic only without OpenCASCADE)",
-    )
-    _to_cad.add_args(parser)
-    parser.set_defaults(func=_to_cad.to_cad_cmd)
-
-    parser = subparsers.add_parser(
-        "region-adjacency",
-        help="Write facets shared by selected regions or cell blocks",
-    )
-    _region_adjacency.add_args(parser)
-    parser.set_defaults(func=_region_adjacency.region_adjacency_cmd)
-
-    parser = subparsers.add_parser(
-        "find-interface", help="Find conforming or proximity-matched interface facets"
-    )
-    _find_interface.add_args(parser)
-    parser.set_defaults(func=_find_interface.find_interface_cmd)
-
-    parser = subparsers.add_parser(
-        "contact-pairs", help="Project slave-region nodes onto master facets"
-    )
-    _contact_pairs.add_args(parser)
-    parser.set_defaults(func=_contact_pairs.contact_pairs_cmd)
-
-    parser = subparsers.add_parser(
-        "split-interface", help="Split node fans along a Side region"
-    )
-    _split_interface.add_args(parser)
-    parser.set_defaults(func=_split_interface.split_interface_cmd)
-
-    parser = subparsers.add_parser(
-        "hausdorff",
-        help="Hausdorff distance between two surfaces (--max: nonzero exit above it)",
-    )
-    _hausdorff.add_args(parser)
-    parser.set_defaults(func=_hausdorff.hausdorff_cmd)
-
-    parser = subparsers.add_parser(
-        "coordinates",
-        help="Positions, vector and tensor fields in cylindrical/spherical components",
-    )
-    _coordinates.add_args(parser)
-    parser.set_defaults(func=_coordinates.coordinates_cmd)
-
-    parser = subparsers.add_parser(
-        "metric", help="Intersect, normalise, clamp and grade metric fields"
-    )
-    _metric.add_args(parser)
-    parser.set_defaults(func=_metric.metric_cmd)
-
-    parser = subparsers.add_parser(
-        "untangle", help="Move nodes until no tetrahedron or hexahedron is inverted"
-    )
-    _untangle.add_args(parser)
-    parser.set_defaults(func=_untangle.untangle_cmd)
-
-    parser = subparsers.add_parser(
-        "morph", help="Move the boundary by a displacement, carried into the mesh"
-    )
-    _morph.add_args(parser)
-    parser.set_defaults(func=_morph.morph_cmd)
-
-    parser = subparsers.add_parser(
-        "eigenmodes",
-        help="Lowest eigenpairs of a surface's Laplace-Beltrami operator",
-    )
-    _eigenmodes.add_args(parser)
-    parser.set_defaults(func=_eigenmodes.eigenmodes_cmd)
-
-    parser = subparsers.add_parser(
-        "register", help="Rigid registration of one mesh onto another (ICP)"
-    )
-    _register.add_args(parser)
-    parser.set_defaults(func=_register.register_cmd)
-
-    parser = subparsers.add_parser(
-        "point-normals", help="Normals of a point cloud by local plane fits"
-    )
-    _point_normals.add_args(parser)
-    parser.set_defaults(func=_point_normals.point_normals_cmd)
-
-    parser = subparsers.add_parser(
-        "reconstruct", help="A triangle surface through an oriented point cloud"
-    )
-    _reconstruct.add_args(parser)
-    parser.set_defaults(func=_reconstruct.reconstruct_cmd)
-
-    parser = subparsers.add_parser(
-        "hull", help="Convex hull of the points (3-D surface or 2-D loop)"
-    )
-    _hull.add_hull_args(parser)
-    parser.set_defaults(func=_hull.hull_cmd)
-
-    parser = subparsers.add_parser(
-        "delaunay", help="Delaunay triangulation of the points in the x, y plane"
-    )
-    _hull.add_delaunay_args(parser)
-    parser.set_defaults(func=_hull.delaunay_cmd)
-
-    parser = subparsers.add_parser(
-        "geodesic",
-        help="Surface distance from source points (heat method)",
-    )
-    _geodesic.add_args(parser)
-    parser.set_defaults(func=_geodesic.geodesic_cmd)
-
-    parser = subparsers.add_parser(
-        "parameterize",
-        help="A UV atlas of a triangle surface (texture coordinates)",
-    )
-    _parameterize.add_args(parser)
-    parser.set_defaults(func=_parameterize.parameterize_cmd)
-
-    parser = subparsers.add_parser(
-        "graph",
-        help="Write a mesh's node or cell graph as a METIS or Scotch graph file",
-    )
-    _graph.add_args(parser)
-    parser.set_defaults(func=_graph.graph_cmd)
-
-    parser = subparsers.add_parser(
-        "periodic",
-        help="Match the nodes of two regions a transform maps onto each other",
-    )
-    _periodic.add_args(parser)
-    parser.set_defaults(func=_periodic.periodic_cmd)
-
-    parser = subparsers.add_parser(
-        "repair",
-        help="Fix a surface's orientation, holes and pinched vertices",
-    )
-    _repair.add_args(parser)
-    parser.set_defaults(func=_repair.repair_cmd)
-
-    parser = subparsers.add_parser(
-        "shrinkwrap",
-        help="Project a mesh's points onto a target surface",
-    )
-    _shrinkwrap.add_args(parser)
-    parser.set_defaults(func=_shrinkwrap.shrinkwrap_cmd)
-
-    parser = subparsers.add_parser(
-        "sobolev-deform",
-        help="Filter a displacement field over the mesh's P1 operators and apply it",
-    )
-    _sobolev.add_args(parser)
-    parser.set_defaults(func=_sobolev.sobolev_cmd)
-
-    parser = subparsers.add_parser(
-        "extract-surface",
-        help="Extract the boundary surface/edges",
-        aliases=["surface"],
-    )
-    _extract_surface.add_args(parser)
-    parser.set_defaults(func=_extract_surface.extract_surface_cmd)
-
-    parser = subparsers.add_parser(
-        "reorder",
-        help="Renumber nodes/elements (RCM / Morton / Hilbert)",
-    )
-    _reorder.add_args(parser)
-    parser.set_defaults(func=_reorder.reorder_cmd)
-
-    parser = subparsers.add_parser(
-        "diff",
-        help="Compare two meshes (nonzero exit code if different)",
-    )
-    _diff.add_args(parser)
-    parser.set_defaults(func=_diff.diff_cmd)
-
-    parser = subparsers.add_parser(
-        "merge",
-        help="Merge two or more meshes into one (optional welding)",
-    )
-    _merge.add_args(parser)
-    parser.set_defaults(func=_merge.merge_cmd)
-
-    parser = subparsers.add_parser(
-        "transform",
-        help="Affine transform (translate / scale / rotate / matrix / units)",
-    )
-    _transform.add_args(parser)
-    parser.set_defaults(func=_transform.transform_cmd)
-
-    parser = subparsers.add_parser(
-        "clean",
-        help="Weld / prune / de-dup a mesh in one pass",
-    )
-    _clean.add_args(parser)
-    parser.set_defaults(func=_clean.clean_cmd)
-
-    parser = subparsers.add_parser(
-        "crop",
-        help="Subset a mesh by a bounding box, half-space or cell_data predicate",
-    )
-    _crop.add_args(parser)
-    parser.set_defaults(func=_crop.crop_cmd)
-
-    parser = subparsers.add_parser(
-        "slice",
-        help="Planar cross-section of a mesh (volume -> surface, surface -> lines)",
-    )
-    _slice.add_args(parser)
-    parser.set_defaults(func=_slice.slice_cmd)
-
-    parser = subparsers.add_parser(
-        "isosurface",
-        help="Level set of a scalar point_data field (volume -> surface, surface -> lines)",
-    )
-    _isosurface.add_args(parser)
-    parser.set_defaults(func=_isosurface.isosurface_cmd)
-
-    parser = subparsers.add_parser(
-        "generate",
-        help="Build a mesh from parameters: rectangle, box, disk, spheres, cylinder, "
-        "reference cells",
-    )
-    _generate.add_args(parser)
-    parser.set_defaults(func=_generate.generate_cmd)
-
-    parser = subparsers.add_parser(
-        "voxelize",
-        help="Regular hexahedron grid around a mesh (whole box / surface / interior)",
-    )
-    _voxelize.add_args(parser)
-    parser.set_defaults(func=_voxelize.voxelize_cmd)
-
-    parser = subparsers.add_parser(
-        "octree",
-        help="Octree / quadtree around a skin, fine only where the skin is",
-    )
-    _octree.add_args(parser)
-    parser.set_defaults(func=_octree.octree_cmd)
-
-    parser = subparsers.add_parser(
-        "octree-mesh",
-        help="Volume mesh of a skin's inside on a balanced octree "
-        "(castellated hexahedra, conforming tetrahedra or all-hexahedra)",
-    )
-    _octree_mesh.add_args(parser)
-    parser.set_defaults(func=_octree_mesh.octree_mesh_cmd)
-
-    parser = subparsers.add_parser(
-        "mesh-cad-surface",
-        help="Conforming triangle mesh of a CAD model's faces "
-        "(CAD JSON, STEP, IGES) at a target edge size",
-    )
-    _mesh_cad.add_args(parser)
-    parser.set_defaults(func=_mesh_cad.mesh_cad_surface_cmd)
-
-    parser = subparsers.add_parser(
-        "project-to-cad",
-        help="Move a mesh's points back onto the CAD faces and edges its cells name",
-    )
-    _project_to_cad.add_args(parser)
-    parser.set_defaults(func=_project_to_cad.project_to_cad_cmd)
-
-    parser = subparsers.add_parser(
-        "boundary-layer",
-        help="Prismatic boundary layers grown from a triangle and quad surface",
-    )
-    _boundary_layer.add_args(parser)
-    parser.set_defaults(func=_boundary_layer.boundary_layer_cmd)
-
-    parser = subparsers.add_parser(
-        "extrude",
-        help="Sweep a surface into a volume (or a curve into a surface) along a vector",
-    )
-    _extrude.add_args(parser)
-    parser.set_defaults(func=_extrude.extrude_cmd)
-
-    parser = subparsers.add_parser(
-        "revolve",
-        help="Sweep a surface (or a curve) around an axis",
-    )
-    _revolve.add_args(parser)
-    parser.set_defaults(func=_revolve.revolve_cmd)
-
-    parser = subparsers.add_parser(
-        "mirror",
-        help="Reflect a mesh across a plane, every cell right side out",
-    )
-    _mirror.add_args(parser)
-    parser.set_defaults(func=_mirror.mirror_cmd)
-
-    parser = subparsers.add_parser(
-        "tetrahedralize",
-        help="Fill a closed triangle surface with tetrahedra, its triangles kept (Netgen)",
-    )
-    _tetrahedralize.add_args(parser)
-    parser.set_defaults(func=_tetrahedralize.tetrahedralize_cmd)
-
-    parser = subparsers.add_parser(
-        "remesh-quads",
-        help="Field-aligned quads from a triangle surface (QuadriFlow, Instant Meshes)",
-    )
-    _remesh_quads.add_args(parser)
-    parser.set_defaults(func=_remesh_quads.remesh_quads_cmd)
-
-    parser = subparsers.add_parser(
-        "cut",
-        help="Cut a mesh by level sets: the pieces either side or the interface (CutCells)",
-    )
-    _cut.add_args(parser)
-    parser.set_defaults(func=_cut.cut_cmd)
-
-    parser = subparsers.add_parser(
-        "cut-quadrature",
-        help="Quadrature rules on the part of a mesh that level sets select (CutCells)",
-    )
-    _cut.add_quadrature_args(parser)
-    parser.set_defaults(func=_cut.cut_quadrature_cmd)
-
-    parser = subparsers.add_parser(
-        "grid-sample",
-        help="Sample a mesh's point data onto a regular grid (for a CNN)",
-    )
-    _grid_transfer.add_sample_args(parser)
-    parser.set_defaults(func=_grid_transfer.grid_sample_cmd)
-
-    parser = subparsers.add_parser(
-        "grid-scatter",
-        help="Write a grid's fields back onto a mesh (grid-sample's inverse)",
-    )
-    _grid_transfer.add_scatter_args(parser)
-    parser.set_defaults(func=_grid_transfer.grid_scatter_cmd)
-
-    parser = subparsers.add_parser(
-        "grid-resample",
-        help="Resample a grid onto a finer or coarser lattice over the same box",
-    )
-    _grid_transfer.add_resample_args(parser)
-    parser.set_defaults(func=_grid_transfer.grid_resample_cmd)
-
-    parser = subparsers.add_parser(
-        "grid-spectrum",
-        help="Azimuthally averaged power spectrum of a field on a regular grid",
-    )
-    _grid_transfer.add_spectrum_args(parser)
-    parser.set_defaults(func=_grid_transfer.grid_spectrum_cmd)
-
-    parser = subparsers.add_parser(
-        "subsample",
-        help="Reduce a mesh to a point cloud under a token budget (farthest-point)",
-    )
-    _point_budget.add_args(parser)
-    parser.set_defaults(func=_point_budget.subsample_cmd)
-
-    parser = subparsers.add_parser(
-        "proximity-graph",
-        help="Build a radius or k-nearest-neighbour graph over a mesh's points",
-    )
-    _proximity.add_args(parser)
-    parser.set_defaults(func=_proximity.proximity_cmd)
-
-    parser = subparsers.add_parser(
-        "predict",
-        help="Run a trained PhysicsNeMo checkpoint on one mesh file",
-    )
-    _predict.add_args(parser)
-    parser.set_defaults(func=_predict.predict_cmd)
-
-    parser = subparsers.add_parser(
-        "guard-fit",
-        help="Fit a geometry guardrail over a dataset manifest's split",
-    )
-    _guard.add_fit_args(parser)
-    parser.set_defaults(func=_guard.guard_fit_cmd)
-
-    parser = subparsers.add_parser(
-        "guard-check",
-        help="Score a mesh against a fitted geometry guardrail",
-    )
-    _guard.add_check_args(parser)
-    parser.set_defaults(func=_guard.guard_check_cmd)
-
-    parser = subparsers.add_parser(
-        "sdf",
-        help="Signed distance field: generate a grid over a surface and fill it",
-    )
-    _sdf.add_args(parser)
-    parser.set_defaults(func=_sdf.sdf_cmd)
-
-    parser = subparsers.add_parser(
-        "split",
-        help="Partition a mesh into multiple files (type / region / regions / component)",
-    )
-    _split.add_args(parser)
-    parser.set_defaults(func=_split.split_cmd)
-
-    parser = subparsers.add_parser(
-        "regions",
-        help="List a mesh's named regions, or edit them (union, rename, retag, ...)",
-    )
-    _regions.add_args(parser)
-    parser.set_defaults(func=_regions.regions_cmd)
-
-    parser = subparsers.add_parser(
-        "convert-cells",
-        help="Convert the element representation (linearize / simplexify / elevate)",
-    )
-    _convert_cells.add_args(parser)
-    parser.set_defaults(func=_convert_cells.convert_cells_cmd)
-
-    parser = subparsers.add_parser(
-        "subdivide",
-        help=(
-            "Polyhedrally refine: split every eligible 3D cell into one "
-            "polyhedral child per face, connected to a new interior point"
-        ),
-    )
-    _subdivide.add_args(parser)
-    parser.set_defaults(func=_subdivide.subdivide_cmd)
-
-    parser = subparsers.add_parser(
-        "tessellate",
-        help=(
-            "Isoparametric subdivision of a mesh's curved cells (quad9, "
-            "quad8, triangle6, tetra10, hexahedron27) onto a refinement "
-            "lattice, recording tessellate:* provenance"
-        ),
-    )
-    _tessellate.add_args(parser)
-    parser.set_defaults(func=_tessellate.tessellate_cmd)
-
-    parser = subparsers.add_parser(
-        "agglomerate",
-        help=(
-            "Polyhedrally coarsen: merge groups of cells into single larger "
-            "polyhedral cells via greedy seed-and-grow over the shared-face dual"
-        ),
-    )
-    _agglomerate.add_args(parser)
-    parser.set_defaults(func=_agglomerate.agglomerate_cmd)
-
-    parser = subparsers.add_parser(
-        "tet-to-poly",
-        help=(
-            "Convert a tetrahedral mesh into its polyhedral (median) dual: one "
-            "polyhedron per vertex"
-        ),
-    )
-    _tet_poly.add_tet_to_poly_args(parser)
-    parser.set_defaults(func=_tet_poly.tet_to_poly_cmd)
-
-    parser = subparsers.add_parser(
-        "poly-to-tet",
-        help=(
-            "Decompose a polyhedral mesh into tetrahedra, keeping polyhedra "
-            "that already are tetrahedra as one tetra"
-        ),
-    )
-    _tet_poly.add_poly_to_tet_args(parser)
-    parser.set_defaults(func=_tet_poly.poly_to_tet_cmd)
-
-    parser = subparsers.add_parser(
-        "resample",
-        help=(
-            "Resample a sequence onto new times (linear blend, nearest or previous), "
-            "holding at most two steps in memory"
-        ),
-    )
-    _resample.add_args(parser)
-    parser.set_defaults(func=_resample.resample_cmd)
-
-    parser = subparsers.add_parser(
-        "refine",
-        help=(
-            "Refine (subdivide cells into same-type children), every cell or a "
-            "selected subset with a conforming closure"
-        ),
-    )
-    _refine.add_args(parser)
-    parser.set_defaults(func=_refine.refine_cmd)
-
-    parser = subparsers.add_parser(
-        "undo-green",
-        help=(
-            "Restore a transitional (green) cell to its coarse parent, read "
-            "verbatim from the coarse mesh"
-        ),
-    )
-    _undo_green.add_args(parser)
-    parser.set_defaults(func=_undo_green.undo_green_cmd)
-
-    parser = subparsers.add_parser(
-        "decimate",
-        help="Reduce a surface mesh's face count by quadric edge collapse",
-    )
-    _decimate.add_args(parser)
-    parser.set_defaults(func=_decimate.decimate_cmd)
-
-    parser = subparsers.add_parser(
-        "decimate-volume",
-        help="Reduce a tet mesh's cell count by quadric tet-edge collapse",
-    )
-    _decimate_volume.add_args(parser)
-    parser.set_defaults(func=_decimate_volume.decimate_volume_cmd)
-
-    parser = subparsers.add_parser(
-        "adapt",
-        help="Remesh to a size or a metric with MMG (a build with MESHIOPLUSPLUS_WITH_MMG)",
-    )
-    _mmg.add_adapt_args(parser)
-    parser.set_defaults(func=_mmg.adapt_cmd)
-
-    parser = subparsers.add_parser(
-        "discretize-levelset",
-        help="Embed a level set conformally and remesh both sides with MMG",
-    )
-    _mmg.add_discretize_levelset_args(parser)
-    parser.set_defaults(func=_mmg.discretize_levelset_cmd)
-
-    parser = subparsers.add_parser(
-        "mesh-2d",
-        help="Triangulate the planar domain a line mesh bounds with MMG",
-    )
-    _mmg.add_mesh_2d_args(parser)
-    parser.set_defaults(func=_mmg.mesh_2d_cmd)
-
-    parser = subparsers.add_parser(
-        "move",
-        help="Move a mesh by a boundary displacement and remesh with MMG (needs ELAS)",
-    )
-    _mmg.add_move_args(parser)
-    parser.set_defaults(func=_mmg.move_cmd)
-
-    parser = subparsers.add_parser(
-        "remesh",
-        help="Replace a surface's triangulation with a new, well-shaped one (ACVD)",
-    )
-    _remesh.add_args(parser)
-    parser.set_defaults(func=_remesh.remesh_cmd)
-
-    parser = subparsers.add_parser(
-        "remesh-volume",
-        help="Retetrahedralize a volume (or closed surface) by isosurface stuffing",
-    )
-    _remesh_volume.add_args(parser)
-    parser.set_defaults(func=_remesh_volume.remesh_volume_cmd)
-
-    parser = subparsers.add_parser(
-        "optimize-volume",
-        help="ODT-remesh a tetrahedral mesh (relocate vertices + flip connectivity)",
-    )
-    _optimize_volume.add_args(parser)
-    parser.set_defaults(func=_optimize_volume.optimize_volume_cmd)
-
-    parser = subparsers.add_parser(
-        "partition",
-        help="Decompose into N balanced parts (SFC / KaHIP) for domain decomposition",
-    )
-    _partition.add_args(parser)
-    parser.set_defaults(func=_partition.partition_cmd)
-
-    parser = subparsers.add_parser(
-        "pipeline",
-        help="Run a settings.json operation chain (read -> ops -> write)",
-    )
-    _pipeline.add_args(parser)
-    parser.set_defaults(func=_pipeline.pipeline_cmd)
-
-    parser = subparsers.add_parser(
-        "smooth",
-        help="Relax node positions to improve element shape (Laplacian / Taubin)",
-    )
-    _smooth.add_args(parser)
-    parser.set_defaults(func=_smooth.smooth_cmd)
-
-    parser = subparsers.add_parser(
-        "interpolate",
-        help="Sample data arrays from a source mesh onto a target mesh "
-        "(nearest / barycentric)",
-    )
-    _interpolate.add_args(parser)
-    parser.set_defaults(func=_interpolate.interpolate_cmd)
-
-    parser = subparsers.add_parser(
-        "conservative-interpolate",
-        help="Mass-preserving cross-mesh field transfer (overlap-measure "
-        "weighted, not pointwise)",
-    )
-    _conservative_interpolate.add_args(parser)
-    parser.set_defaults(func=_conservative_interpolate.conservative_interpolate_cmd)
-
-    parser = subparsers.add_parser(
-        "stats",
-        help="Print geometric statistics (bbox, area, volume, ...)",
-    )
-    _stats.add_args(parser)
-    parser.set_defaults(func=_stats.stats_cmd)
-
-    parser = subparsers.add_parser(
-        "view",
-        help="Open a mesh in an interactive viewer (desktop or browser)",
-    )
-    _view.add_args(parser)
-    parser.set_defaults(func=_view.view_cmd)
-
-    parser = subparsers.add_parser(
-        "screenshot",
-        help="Render a mesh to a PNG without opening a window",
-    )
-    _view.add_screenshot_args(parser)
-    parser.set_defaults(func=_view.screenshot_cmd)
-
-    parser = subparsers.add_parser(
-        "snapshot",
-        help="Draw a mesh in this terminal (OUT = -) or to .png/.txt/.ansi/.html/.cast, "
-        "with no display or GPU",
-    )
-    _snapshot.add_args(parser)
-    parser.set_defaults(func=_snapshot.snapshot_cmd)
-
-    parser = subparsers.add_parser(
-        "tui",
-        help="Orbit, zoom and pan a mesh inside this terminal, with no display or GPU",
-    )
-    _tui.add_args(parser)
-    parser.set_defaults(func=_tui.tui_cmd)
-
-    # Nested group: `meshioplusplus data <verb>`. The inner parsers each call
-    # set_defaults(func=...), which overrides the outer default, so the
-    # `args.func(args)` dispatch below reaches the right handler unchanged.
-    parser = subparsers.add_parser(
-        "data",
-        help="Inspect / rename / average / compute on mesh data arrays",
-    )
-    _data.add_args(parser)
-    parser.set_defaults(func=_data.data_cmd)
-
-    # Second nested group: `meshioplusplus dataset <verb>` — curate the
-    # hand-editable DatasetManifest JSON (doc/datasets.md). Same wiring.
-    parser = subparsers.add_parser(
-        "dataset",
-        help="Catalogue / split / tag / annotate a dataset manifest",
-    )
-    _dataset.add_args(parser)
-    parser.set_defaults(func=_dataset.dataset_cmd)
-
-    parser = subparsers.add_parser(
-        "completion",
-        help="Print a bash, zsh or fish completion script for this CLI",
-    )
-    _completion.add_args(parser)
-    parser.set_defaults(
-        func=lambda args: _completion.completion_cmd(args, parent_parser)
-    )
+    for verb in _VERBS:
+        parser = subparsers.add_parser(
+            verb.name, help=verb.help, aliases=list(verb.aliases)
+        )
+        if only is None or verb is only:
+            module = importlib.import_module(f".{verb.module}", __package__)
+            getattr(module, verb.add_args)(parser)
+            parser.set_defaults(func=getattr(module, verb.handler))
+
+    parser = subparsers.add_parser("completion", help=_COMPLETION_HELP)
+    if only is None:
+        from . import _completion
+
+        _completion.add_args(parser)
+        parser.set_defaults(
+            func=lambda args: _completion.completion_cmd(args, parent_parser)
+        )
 
     return parent_parser
 
 
+def build_parser():
+    """The whole CLI's argparse parser; shell completions are generated from it
+    (the ``completion`` verb), so they follow the verbs as they change."""
+    return _make_parser()
+
+
+def _verb_of(argv):
+    """The name of the verb a command line runs, or ``None``. The top-level
+    options take no value, so the verb is the first argument that is not an
+    option."""
+    for arg in argv:
+        if not arg.startswith("-"):
+            return arg
+    return None
+
+
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    name = _verb_of(sys.argv[1:] if argv is None else argv)
+    if name == "completion":
+        # The completion script walks every verb's options.
+        parser = build_parser()
+    else:
+        # No verb, ``--help``, ``--version`` or an unknown verb need only the
+        # verbs' names and help lines, which every parser registers.
+        parser = _make_parser(only=_BY_NAME.get(name, _NO_VERB))
+    args = parser.parse_args(argv)
     return args.func(args)
 
 

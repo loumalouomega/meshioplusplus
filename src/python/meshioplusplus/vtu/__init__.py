@@ -3,6 +3,7 @@ from .._exceptions import WriteError
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._vtk_codecs import CPP_CODECS, cpp_codec_ok
 from ._vtu import read as _py_read
 from ._vtu import write as _py_write
 
@@ -49,27 +50,13 @@ def write(
     # zstd/lz4 reach the C++ writer when this build has them; otherwise the
     # Python reference path handles it (needing the `codecs` extra), so a
     # request never silently degrades to a different codec.
-    _CPP_CODECS = {
-        None: "none",
-        "zlib": "zlib",
-        "lz4": "lz4",
-        "zstd": "zstd",
-        "lzma": "lzma",
-    }
-    cpp_compression_ok = compression in _CPP_CODECS
-    if compression == "lz4" and not getattr(_core, "__has_lz4__", False):
-        cpp_compression_ok = False
-    if compression == "zstd" and not getattr(_core, "__has_zstd__", False):
-        cpp_compression_ok = False
-    if compression == "lzma" and not getattr(_core, "__has_lzma__", False):
-        cpp_compression_ok = False
-    if header_type is None and cpp_compression_ok and not is_buffer(filename, "w"):
+    if cpp_codec_ok(compression, header_type) and not is_buffer(filename, "w"):
         try:
             if appended:
-                _core.vtu_write_appended(str(filename), mesh, _CPP_CODECS[compression])
+                _core.vtu_write_appended(str(filename), mesh, CPP_CODECS[compression])
             else:
                 _core.vtu_write_codec(
-                    str(filename), mesh, binary, _CPP_CODECS[compression]
+                    str(filename), mesh, binary, CPP_CODECS[compression]
                 )
             return
         except Exception as exc:

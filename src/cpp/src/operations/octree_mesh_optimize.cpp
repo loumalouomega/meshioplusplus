@@ -38,6 +38,7 @@
 
 // Project includes
 #include "../detail/bcc_octree_tets.hpp"
+#include "../detail/mesh_from_soup.hpp"
 #include "octree_mesh_internal.hpp"
 #include "smooth_odt.hpp"
 #include "meshioplusplus/ndarray.hpp"
@@ -273,17 +274,7 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
                 moved[p] = 1;
         // 4. Flips, for one material, kept when the worst angle holds.
         if (one_material) {
-            Mesh m;
-            NDArray xyzs = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
-            for (std::size_t p = 0; p < np; ++p)
-                for (std::size_t k = 0; k < 3; ++k)
-                    xyzs.As<double>()[p * 3 + k] = pts[p][k];
-            NDArray conn = NDArray::Uninit(DType::Int64, {tets.size(), std::size_t{4}});
-            for (std::size_t n = 0; n < tets.size(); ++n)
-                for (std::size_t c = 0; c < 4; ++c)
-                    conn.As<std::int64_t>()[n * 4 + c] = tets[n][c];
-            m.AssignPoints(std::move(xyzs));
-            m.AddCellBlock("tetra", std::move(conn));
+            const Mesh m = mesh_from_soup(pts, tets, "tetra");
             OptimizeVolumeOptions oo;
             oo.mMaxIterations = 1;
             oo.mRelocate = false;

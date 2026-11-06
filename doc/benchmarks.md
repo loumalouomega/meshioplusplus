@@ -728,7 +728,15 @@ Wall time, Python 3.12, interleaved old and new in fresh interpreters, 15 each, 
 | modules loaded after the import | 556 | 221 |
 | modules loaded after the PLY read | 556 | 232 |
 
-The first read of a format pays for loading its subpackage (12.4 ms median for PLY, against 1.1 ms before), so the saving shrinks for a process that touches many formats and is gone for one that lists them all. The MCP server imports the whole package for its tool table, so it gains nothing. The command-line tool used to as well, filling the `choices` of its format options from `reader_map`; since roadmap 5.12.1 they come from the table (`READER_NAMES` and `WRITER_NAMES`, with installed plugins added), and the verbs that write a fixed list of formats import them when they run, so building the parser loads no format subpackage: 488 modules instead of 731 after `build_parser()`. The parser still imports every verb's module, about 270 modules; building subparsers lazily is what is left (`test_format_table.py` keeps the formats off that path). `test_import_footprint.py` keeps the formats, operations and `_core` off the import path and checks that a write and read of one STL file loads `stl` alone.
+The first read of a format pays for loading its subpackage (12.4 ms median for PLY, against 1.1 ms before), so the saving shrinks for a process that touches many formats and is gone for one that lists them all. The MCP server imports the whole package for its tool table, so it gains nothing. The command-line tool used to as well, filling the `choices` of its format options from `reader_map`; since roadmap 5.12.1 they come from the table (`READER_NAMES` and `WRITER_NAMES`, with installed plugins added), and the verbs that write a fixed list of formats import them when they run, so building the parser loads no format subpackage: 488 modules instead of 731 after `build_parser()`. `test_format_table.py` keeps the formats off that path. The parser also imported every verb's module, about 270 modules; `main` now builds only the verb on its command line (roadmap 5.12.1): a table in `_cli/_main.py` registers every verb's name, aliases and help line, so `--help` and the "invalid choice" error still list them all, and the verb named is the only one whose module is imported and whose arguments are added. `build_parser()` and the `completion` verb build them all; `test_cli.py` checks that each verb's lazily built parser has the full parser's help text and handler, and that `--help` imports no verb module. Fresh interpreters, old and new interleaved, 15 each, median (best):
+
+| | Old | New |
+| --- | ---: | ---: |
+| `meshioplusplus --help` | 239 (213) ms, 480 modules | 145 (113) ms, 269 modules |
+| `meshioplusplus info --help` | 244 (209) ms, 480 modules | 149 (115) ms, 277 modules |
+| `build_parser()` | 229 (187) ms, 480 modules | 255 (203) ms, 481 modules |
+
+`build_parser()` does the same work either way (the extra module is `_ragged`, roadmap 5.6); its rows differ within the noise of a fresh interpreter: timed inside the process, 25 interleaved runs read 86 against 96 ms, and under `cProfile` the new build was the faster, 0.16 against 0.19 s. `test_import_footprint.py` keeps the formats, operations and `_core` off the import path and checks that a write and read of one STL file loads `stl` alone.
 
 ### Flat tables in the facet and weld paths
 
@@ -738,7 +746,7 @@ Roadmap 5.4.2, 5.4.4, 5.5.1, 5.6 and 5.7.3, landed through [landing a performanc
 - **Point welding on raw bits.** The STL, glTF and WKT readers used to weld through a hash map keyed on a heap string or vector per vertex; `detail/exact_weld.hpp` groups fixed-size keys with `group_slots` and numbers them with `number_first_seen`, the ids a serial sweep gives. STL compares bytes, glTF and WKT compare values (`-0.0` meets `+0.0`; a NaN meets nothing), which for glTF fixes a hash that only sometimes let the two zeros meet.
 - **`feature_edges` from the skin alone.** `detail/face_skin.hpp` builds the cell rings `build_global_faces` builds and keeps the faces with one selected side, without the face table's node copy, owner and neighbour arrays or signed cell faces. The ring build, shared, counts nodes in its first pass and so runs `cell_rings` twice instead of three times.
 - **`region_adjacency` and the boundary facets** (`find_interface`, `split_interface`) collect flat records grouped by `group_facet_slots` instead of a `std::map` keyed on a vector per facet, membership is CSR, and the pairs are sorted by (region a, region b, key), the map's order.
-- **Ragged rows into the core** (`np_conversions.hpp`): a row that is a C-contiguous int64 array is taken by reference, and rows back to back in memory, the views `mesh_to_py` and the readers hand out, are copied as one span: 97 to 51 ns a row in a pybind11 harness of the old and new loops over a million views of one buffer, 100 to 92 ns over separate arrays. The way out, one numpy view per row, is what is left of 5.6.
+- **Ragged rows into the core** (`np_conversions.hpp`): a row that is a C-contiguous int64 array is taken by reference, and rows back to back in memory, the views `mesh_to_py` and the readers hand out, are copied as one span: 97 to 51 ns a row in a pybind11 harness of the old and new loops over a million views of one buffer, 100 to 92 ns over separate arrays. The way out, one numpy view per row, was what was left of 5.6; see [ragged rows that carry their CSR](#ragged-rows-that-carry-their-csr).
 
 Tier L (750,000 tetrahedra, about 30,000 skin triangles), SEQ, median of three runs, the old and new `meshioplusplus_bench_ops` back to back:
 
@@ -754,6 +762,17 @@ Tier L (750,000 tetrahedra, about 30,000 skin triangles), SEQ, median of three r
 The skin-only `feature_edges` saved memory rather than time: two thirds of its instructions were `orient_rings`, the per-cell orientation every face table runs, which the next section takes on. The new rows `read_stl_binary`, `read_gltf_weld` and `read_wkt` take 5.1, 2.0 and 71.8 ms at tier L.
 
 **`select_points(method="farthest")`** (roadmap 5.10.2) runs its greedy loop in the core (`detail/farthest_points.hpp`, bound to Python only): one fused sweep per selection updates the distances and finds the farthest, with numpy's arithmetic, NaN propagation and first-maximum rule, so the selection is the numpy loop's. 1,000 of 1,000,000 points: 6.0 s in numpy, 2.5 s native on one thread.
+
+### Ragged rows that carry their CSR
+
+Roadmap 5.6. A ragged block the core hands to Python is now a `meshioplusplus._ragged.CsrRows`, a `list` of the same row views that also keeps the flat buffer and its offsets (`data.csr()`), and `ragged_cellblock_from_py` takes such a block back with one copy of each instead of visiting its rows; any change to the list's shape drops the arrays ([mesh data model](./mesh_data_model.md#cellblock)). `benchmark/bench_boundary.py` gained a second step, `clean` again on the block the first one returned, carried and as plain lists (the way in before). Quiet machine, min of 9, seconds:
+
+| Case | Step 1 | Step 2, carried | Step 2, as lists |
+| --- | ---: | ---: | ---: |
+| 200,000 polygons | 0.084 | 0.080 | 0.079 |
+| 50,000 polyhedra (300,000 faces) | 0.191 | 0.165 | 0.174 |
+
+The round trip barely moves, because the way in was already cheap: the span copy of the [flat tables](#flat-tables-in-the-facet-and-weld-paths) took back-to-back views at about 51 ns a row, 10 to 15 ms of these rows, and that is what the carried arrays save. What the round trip pays is the way out, one view per row: about 0.35 µs each from Python (`flat[a:b]`, 70 ms for the 200,000 rows), less from the binding, still most of the step. A `list` cannot defer them: C code, numpy's among it, reads a list's items directly, never through an override, so the views must exist. The arrays are what the Python layers can now vectorise over without walking the rows.
 
 ### Spatial grids, orientation and number formatting
 
@@ -936,7 +955,18 @@ Roadmap 5.7.2 and 5.7.1. `detail/chunked_parse.hpp` cuts a run of numbers at bla
 | `write_off` | 0.0142 | 0.0094 | 0.0091 | 0.0178 | 0.0072 |
 | `write_stl` (ASCII) | 0.077 | 0.030 | 0.0153 | 0.083 | 0.0158 |
 
-`read_vtk_ascii`'s SEQ row reads 10% slower inside `bench_ops`, where the chunked path is never taken; callgrind counts the same instructions for the read before and after, and the read of the same file alone, through the single header, times the same either way (0.085 to 0.090 s), so it is the benchmark process's heap, not the reader. Alone, the legacy VTK read of that 31 MB file goes from 0.080 s at one thread to 0.051 s at four. The Gmsh rows barely move: their nodes are parsed in parallel, but their element blocks, still serial, are most of the read ([roadmap](./roadmap.md#performance), 5.7.2).
+`read_vtk_ascii`'s SEQ row reads 10% slower inside `bench_ops`, where the chunked path is never taken; callgrind counts the same instructions for the read before and after, and the read of the same file alone, through the single header, times the same either way (0.085 to 0.090 s), so it is the benchmark process's heap, not the reader. Alone, the legacy VTK read of that 31 MB file goes from 0.080 s at one thread to 0.051 s at four. The Gmsh rows barely move: their nodes are parsed in parallel, but their element blocks, still serial, were most of the read; the next batch takes them on.
+
+**The rest of the ASCII readers** (roadmap 5.7.2, second batch). Gmsh 4.1 and 4.0 element blocks go through the same token parse as their nodes (the element tag read and dropped, a 4.0 node tag below 1 or outside `int32` refused). Gmsh 2.2's `$Elements` has a line of its own length per element, so its lines are indexed (a serial walk over the newlines), parsed and checked in parallel, the blocks `append_element` would open decided by a serial pass over each line's type and tag count, and the rows filled in parallel; a token that is not a whole integer, an unknown type, a bad tag count or a short row sends the section back to the serial loop, extra integers after a row are ignored as before. Medit's `Vertices` and element tables go through `parse_tokens`, a `#` anywhere in a table refusing it (no number parse takes a token holding one), so a commented table reads serially. ASCII STL is cut by `chunk_lines` into chunks of whole lines, each read by the serial rule into its own rows, joined in order. Every digest equals the commit before on SEQ, OpenMP and THREADS at 1 and 4 threads, tiers S and M. Tier L, median of three interleaved rounds of `--runs 3`, seconds (`benchmark/chunked_readers_L.csv`):
+
+| Row | SEQ before | SEQ after | THREADS ×4 before | THREADS ×4 after | OpenMP ×4 before | OpenMP ×4 after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `read_medit` | 0.130 | 0.148 | 0.153 | 0.032 | 0.152 | 0.034 |
+| `read_stl` (ASCII) | 0.029 | 0.026 | 0.025 | 0.018 | 0.023 | 0.018 |
+| `read_gmsh_ascii` (4.1) | 0.092 | 0.091 | 0.081 | 0.066 | 0.091 | 0.066 |
+| `read_gmsh22_ascii` | 0.244 | 0.240 | 0.246 | 0.121 | 0.248 | 0.117 |
+
+SEQ takes none of the parallel paths. `read_medit`'s SEQ row moved within the noise of the benchmark process, not the reader: Cachegrind counts the same instructions for the read before and after (2.307 and 2.308 G at tier M, three runs), and five more interleaved rounds at tier L timed the new binary faster (0.12 against 0.15 s). The Gmsh 4.1 read is now mostly its `$Entities` and the mesh assembly; STL's is the weld.
 
 ## Every format
 
@@ -1042,6 +1072,19 @@ BASELINE=before.csv CMAKE_BUILD_PARALLEL_LEVEL=4 tools/bench_ops.sh after.csv "S
 ```
 
 The `determinism` job in `ci.yml` runs the first form on the small tier at 1 and 4 threads on every pull request. The digest is also available to the C++ tests (`src/cpp/benchmark/mesh_digest.hpp`), where golden digests pin an operation's output across a rewrite.
+
+### Instruction-count gate
+
+Roadmap 5.1.1. Timings never fail a build ([benchmark trends](./benchmark_trends.md): a hosted runner is noisy), but an instruction count is stable where a wall time is not, so the `instructions` job in `ci.yml` gates every pull request on one. `meshioplusplus_bench_ops --instructions` runs a row's untimed warmup, which builds its inputs, then one run between Cachegrind's start and stop client requests (`<valgrind/cachegrind.h>`, valgrind 3.22 or later); `tools/bench_instructions.py` runs each tier S row in its own process under `valgrind --tool=cachegrind --instr-at-start=no` on a SEQ build at one thread, so each count is that one run of the operation and nothing else, and compares the counts with the committed `benchmark/instructions_S.csv`:
+
+```sh
+python3 tools/bench_instructions.py --check benchmark/instructions_S.csv   # builds build/bench-instructions
+python3 tools/bench_instructions.py --record benchmark/instructions_S.csv  # after a change that moves a count on purpose
+```
+
+A row more than 1% above its baseline fails, and so does a baseline row the run no longer has; a row more than 1% below, or a new row, is reported and passes, and the baseline should then be re-recorded so the gain is kept. The baseline was recorded twice from the same build: across its 130 rows the two runs differ by at most 6 parts per million (`read_obj`), and the whole sweep takes about four minutes on two jobs, `optimize_volume` (25.7 G instructions) and `boundary_layer` (19.4 G) the longest, so every row is gated. A count depends on the compiler, its flags and the C++ library, so the file names its toolchain (GCC 13.3 on Ubuntu 24.04, the `ubuntu-24.04` runner's): a run with another prints the comparison and fails nothing, and the baseline is re-recorded with the new toolchain in its own change. The job writes the rows outside the tolerance to the run's summary and uploads the run's counts.
+
+The gate sees instructions, not time: a change that trades instructions for memory traffic or parallelism (a parallel path is not taken on one thread) is judged by the timed rows above, and a count that falls is not proof the operation got faster.
 
 ## Landing a performance change
 

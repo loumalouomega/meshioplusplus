@@ -50,6 +50,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/data_plumbing.hpp"
 #include "../detail/simplexify.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -425,43 +426,14 @@ ConvertCellsResult ccells_linearize(const Mesh& rMesh, bool RecordParentIds) {
     Mesh out;
 
     // Points: byte-row subset preserving the source dtype.
-    {
-        const NDArray& points = rMesh.Points();
-        const std::size_t dim = detail::cols(points);
-        const std::size_t row_bytes = dim * dtype_size(points.Dtype());
-        NDArray new_points = NDArray::Uninit(points.Dtype(), {num_used, dim});
-        const std::byte* src = points.Data();
-        std::byte* dst = new_points.Data();
-        std::size_t w = 0;
-        for (std::size_t i = 0; i < num_points; ++i)
-            if (used[i])
-                std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
-        out.AssignPoints(std::move(new_points));
-    }
+    detail::compact_points_by_mask(rMesh, used, num_used, out);
 
     for (CcellsOutBlock& block : staged)
         ccells_emit_block(out, block, &remap);
 
     // point_data: the same row subset; arrays that do not match the point table
     // are copied verbatim (they are not per-point data).
-    for (const std::string& name : rMesh.PointDataNames()) {
-        const NDArray& a = rMesh.PointData(name);
-        if (detail::rows(a) != num_points) {
-            out.AddPointData(name, detail::data_owned_copy(a));
-            continue;
-        }
-        std::vector<std::size_t> shape = a.Shape();
-        shape[0] = num_used;
-        const std::size_t row_bytes = num_points == 0 ? 0 : a.Nbytes() / num_points;
-        NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
-        const std::byte* src = a.Data();
-        std::byte* dst = b.Data();
-        std::size_t w = 0;
-        for (std::size_t i = 0; i < num_points; ++i)
-            if (used[i])
-                std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
-        out.AddPointData(name, std::move(b));
-    }
+    detail::compact_point_data_by_mask(rMesh, used, num_used, true, out);
 
     ccells_copy_cell_data(rMesh, out);
     ccells_copy_field_data(rMesh, out);
@@ -823,32 +795,11 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds,
     // cell_data: replicate each parent's row to its children. An array whose
     // block count does not match the mesh is not per-cell data, so it is copied
     // verbatim rather than mangled.
-    for (const std::string& name : mesh.CellDataNames()) {
-        const std::size_t ndata = mesh.CellDataNumBlocks(name);
-        std::vector<NDArray> blocks;
-        blocks.reserve(ndata);
-        for (std::size_t b = 0; b < ndata; ++b) {
-            const NDArray& a = mesh.CellData(name, b);
-            const std::size_t in_rows = detail::rows(a);
-            if (ndata != nblocks || in_rows == 0 || parent_of_child[b].empty()) {
-                blocks.push_back(detail::data_owned_copy(a));
-                continue;
-            }
-            const std::vector<std::int64_t>& parents = parent_of_child[b];
-            std::vector<std::size_t> shape = a.Shape();
-            shape[0] = parents.size();
-            const std::size_t row_bytes = a.Nbytes() / in_rows;
-            NDArray replicated = NDArray::Uninit(a.Dtype(), std::move(shape));
-            const std::byte* src = a.Data();
-            std::byte* dst = replicated.Data();
-            parallel_for_bw(parents.size(), [&](std::size_t i) {
-                std::memcpy(dst + i * row_bytes,
-                            src + static_cast<std::size_t>(parents[i]) * row_bytes, row_bytes);
-            });
-            blocks.push_back(std::move(replicated));
-        }
-        out.AddCellData(name, std::move(blocks));
-    }
+    for (const std::string& name : mesh.CellDataNames())
+        out.AddCellData(name, detail::replicate_parent_rows(mesh, name, nblocks, parent_of_child,
+                                                            [&](std::size_t b, std::size_t) {
+                                                                return parent_of_child[b].empty();
+                                                            }));
 
     if (RecordParentIds) {
         std::vector<NDArray> blocks;

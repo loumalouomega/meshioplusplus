@@ -43,6 +43,7 @@
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/utf8.hpp"
 
 namespace meshioplusplus {
 
@@ -70,24 +71,6 @@ std::string meshio_to_comsol(const std::string& rT) {
 // Sources: the text and the binary serialisation hold the same sequence of
 // integers, doubles and strings.
 // ---------------------------------------------------------------------------
-
-void comsol_append_utf8(std::string& rOut, std::uint32_t Cp) {
-    if (Cp < 0x80) {
-        rOut += static_cast<char>(Cp);
-    } else if (Cp < 0x800) {
-        rOut += static_cast<char>(0xC0 | (Cp >> 6));
-        rOut += static_cast<char>(0x80 | (Cp & 0x3F));
-    } else if (Cp < 0x10000) {
-        rOut += static_cast<char>(0xE0 | (Cp >> 12));
-        rOut += static_cast<char>(0x80 | ((Cp >> 6) & 0x3F));
-        rOut += static_cast<char>(0x80 | (Cp & 0x3F));
-    } else {
-        rOut += static_cast<char>(0xF0 | (Cp >> 18));
-        rOut += static_cast<char>(0x80 | ((Cp >> 12) & 0x3F));
-        rOut += static_cast<char>(0x80 | ((Cp >> 6) & 0x3F));
-        rOut += static_cast<char>(0x80 | (Cp & 0x3F));
-    }
-}
 
 // The code points of a UTF-8 string (a stray byte counts as itself).
 std::vector<std::uint32_t> comsol_code_points(const std::string& rS) {
@@ -269,7 +252,7 @@ public:
             throw ReadError("mphbin: invalid string length " + std::to_string(n));
         std::string out;
         for (std::int64_t k = 0; k < n; ++k)
-            comsol_append_utf8(out, static_cast<std::uint32_t>(Int()));
+            detail::utf8_append(out, static_cast<std::uint32_t>(Int()));
         return out;
     }
     bool AtEnd() override { return mPos >= mBytes.size(); }

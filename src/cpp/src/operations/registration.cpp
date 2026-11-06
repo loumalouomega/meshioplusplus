@@ -28,11 +28,13 @@
 
 // Project includes
 #include "meshioplusplus/operations/registration.hpp"
+#include "../detail/jacobi_eigen.hpp"
 #include "../detail/point_knn.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/types.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 
@@ -57,60 +59,12 @@ RegMat reg_mul(const RegMat& rA, const RegMat& rB) {
     return c;
 }
 
-double reg_dot(const RegVec& rA, const RegVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-RegVec reg_cross(const RegVec& rA, const RegVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
 /// Eigen-decomposition of a symmetric N x N matrix (row-major) by cyclic
 /// Jacobi: eigenvalues in `rW`, eigenvectors as the columns of `rV`.
 template <std::size_t N>
 void reg_jacobi(std::array<double, N * N> A, std::array<double, N>& rW,
                 std::array<double, N * N>& rV) {
-    rV.fill(0.0);
-    for (std::size_t i = 0; i < N; ++i)
-        rV[i * N + i] = 1.0;
-    for (int sweep = 0; sweep < 100; ++sweep) {
-        double off = 0.0, diag = 0.0;
-        for (std::size_t i = 0; i < N; ++i) {
-            diag += A[i * N + i] * A[i * N + i];
-            for (std::size_t j = i + 1; j < N; ++j)
-                off += A[i * N + j] * A[i * N + j];
-        }
-        if (off <= 1e-30 * diag || off == 0.0)
-            break;
-        for (std::size_t p = 0; p < N; ++p)
-            for (std::size_t q = p + 1; q < N; ++q) {
-                const double apq = A[p * N + q];
-                if (apq == 0.0)
-                    continue;
-                const double theta = (A[q * N + q] - A[p * N + p]) / (2.0 * apq);
-                const double t = (theta >= 0.0 ? 1.0 : -1.0) /
-                                 (std::abs(theta) + std::sqrt(theta * theta + 1.0));
-                const double c = 1.0 / std::sqrt(t * t + 1.0), s = t * c;
-                for (std::size_t k = 0; k < N; ++k) {  // A <- A J
-                    const double akp = A[k * N + p], akq = A[k * N + q];
-                    A[k * N + p] = c * akp - s * akq;
-                    A[k * N + q] = s * akp + c * akq;
-                }
-                for (std::size_t k = 0; k < N; ++k) {  // A <- J^T A
-                    const double apk = A[p * N + k], aqk = A[q * N + k];
-                    A[p * N + k] = c * apk - s * aqk;
-                    A[q * N + k] = s * apk + c * aqk;
-                }
-                for (std::size_t k = 0; k < N; ++k) {
-                    const double vkp = rV[k * N + p], vkq = rV[k * N + q];
-                    rV[k * N + p] = c * vkp - s * vkq;
-                    rV[k * N + q] = s * vkp + c * vkq;
-                }
-            }
-    }
-    for (std::size_t i = 0; i < N; ++i)
-        rW[i] = A[i * N + i];
+    detail::jacobi_eigen_sym(A.data(), N, rW.data(), rV.data(), 1e-30);
 }
 
 /// The rotation of a unit quaternion (w, x, y, z).
@@ -124,7 +78,7 @@ RegMat reg_quaternion(double W, double X, double Y, double Z) {
 
 /// The rotation by the vector `rW` (axis times angle), exactly.
 RegMat reg_rodrigues(const RegVec& rW) {
-    const double angle = std::sqrt(reg_dot(rW, rW));
+    const double angle = std::sqrt(detail::vec3_dot(rW, rW));
     if (!(angle > 0.0))
         return {1, 0, 0, 0, 1, 0, 0, 0, 1};
     const double h = 0.5 * angle, s = std::sin(h) / angle;
@@ -187,7 +141,7 @@ public:
                         c[a] += mQuery.mFaceNormal[t][a];
                 }
                 for (RegVec& c : mCellNormal) {
-                    const double len = std::sqrt(reg_dot(c, c));
+                    const double len = std::sqrt(detail::vec3_dot(c, c));
                     if (len > 0.0)
                         c = {c[0] / len, c[1] / len, c[2] / len};
                     else
@@ -271,7 +225,7 @@ RegPairs reg_pairs(const RegTarget& rTarget, const std::vector<RegVec>& rSource,
     RegPairs out;
     for (std::size_t i = 0; i < moved.size(); ++i) {
         const RegVec d{q[i][0] - moved[i][0], q[i][1] - moved[i][1], q[i][2] - moved[i][2]};
-        const double d2 = reg_dot(d, d);
+        const double d2 = detail::vec3_dot(d, d);
         if (MaxDistance > 0.0 && d2 > MaxDistance * MaxDistance)
             continue;
         if (NeedNormals &&
@@ -341,7 +295,7 @@ void reg_point_to_plane(const RegPairs& rPairs, RegMat& rR, RegVec& rT) {
     double scale = 0.0;
     for (const RegVec& p : rPairs.mP) {
         const RegVec d{p[0] - c[0], p[1] - c[1], p[2] - c[2]};
-        scale += reg_dot(d, d);
+        scale += detail::vec3_dot(d, d);
     }
     scale = std::sqrt(scale / m);
     if (!(scale > 0.0))
@@ -354,9 +308,9 @@ void reg_point_to_plane(const RegPairs& rPairs, RegMat& rR, RegVec& rT) {
         const RegVec q{(rPairs.mQ[i][0] - c[0]) / scale, (rPairs.mQ[i][1] - c[1]) / scale,
                        (rPairs.mQ[i][2] - c[2]) / scale};
         const RegVec& nn = rPairs.mN[i];
-        const RegVec x = reg_cross(p, nn);
+        const RegVec x = detail::vec3_cross(p, nn);
         const std::array<double, 6> row{x[0], x[1], x[2], nn[0], nn[1], nn[2]};
-        const double b = reg_dot({q[0] - p[0], q[1] - p[1], q[2] - p[2]}, nn);
+        const double b = detail::vec3_dot({q[0] - p[0], q[1] - p[1], q[2] - p[2]}, nn);
         for (std::size_t r = 0; r < 6; ++r) {
             g[r] += row[r] * b;
             for (std::size_t s = 0; s < 6; ++s)
@@ -457,7 +411,7 @@ RegistrationResult register_rigid(const Mesh& rSource, const Mesh& rTarget,
             rot, tr, {0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])});
         const RegVec stepped = reg_apply(d_rot, d_tr, centre);
         const RegVec shift{stepped[0] - centre[0], stepped[1] - centre[1], stepped[2] - centre[2]};
-        const double moved = std::sqrt(reg_dot(shift, shift));
+        const double moved = std::sqrt(detail::vec3_dot(shift, shift));
         rot = reg_mul(d_rot, rot);
         tr = reg_apply(d_rot, d_tr, tr);
         result.mIterations = it;

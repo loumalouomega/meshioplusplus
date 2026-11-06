@@ -22,6 +22,7 @@ import numpy as np
 from ._fallback import core_op_declined
 from ._merge import _weld_map
 from ._mesh import Mesh
+from ._set_remap import remap_sets
 
 
 # --------------------------------------------------------------------------- #
@@ -177,35 +178,6 @@ def _clean_py(mesh, weld, atol, remove_orphans, drop_degenerate, drop_duplicate_
 
 
 # --------------------------------------------------------------------------- #
-# set remapping                                                                #
-# --------------------------------------------------------------------------- #
-def _remap_sets(src, out, point_map, cell_maps):
-    point_sets = getattr(src, "point_sets", None)
-    if point_sets:
-        pm = np.asarray(point_map, dtype=np.int64)
-        new_ps = {}
-        for name, idx in point_sets.items():
-            mapped = pm[np.asarray(idx, dtype=np.int64)]
-            new_ps[name] = mapped[mapped >= 0]
-        out.point_sets = new_ps
-    cell_sets = getattr(src, "cell_sets", None)
-    if cell_sets and cell_maps is not None:
-        new_cs = {}
-        for name, blocks in cell_sets.items():
-            remapped = []
-            for b, idx in enumerate(blocks):
-                if idx is None or b >= len(cell_maps):
-                    remapped.append(None)
-                    continue
-                mapped = np.asarray(cell_maps[b], dtype=np.int64)[
-                    np.asarray(idx, dtype=np.int64)
-                ]
-                remapped.append(mapped[mapped >= 0])
-            new_cs[name] = remapped
-        out.cell_sets = new_cs
-
-
-# --------------------------------------------------------------------------- #
 # public API                                                                   #
 # --------------------------------------------------------------------------- #
 def clean(
@@ -284,7 +256,7 @@ def clean(
     # `point_sets`/`cell_sets`, which are views over them), so remapping again
     # here would apply the maps twice. Only the numpy fallback needs it.
     if not used_cpp:
-        _remap_sets(mesh, out, point_map, cell_maps)
+        remap_sets(mesh, out, point_map, cell_maps)
 
     if return_report:
         return out, report

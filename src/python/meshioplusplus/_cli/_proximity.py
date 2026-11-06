@@ -2,29 +2,15 @@
 
 import numpy as np
 
-from .._helpers import _reader_names, _writer_names, read, write
+from .._helpers import read, write
 from .._mesh import Mesh
 from .._proximity import _graph_positions, proximity_graph
+from ._common import add_io_args
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="mesh or point cloud to read")
-    parser.add_argument("outfile", type=str, help="graph to write, as line cells")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
-    parser.add_argument(
-        "--output-format",
-        "-o",
-        type=str,
-        choices=_writer_names(),
-        help="output file format",
-        default=None,
+    add_io_args(
+        parser, "graph to write, as line cells", in_help="mesh or point cloud to read"
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(

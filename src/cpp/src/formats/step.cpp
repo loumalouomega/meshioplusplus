@@ -169,33 +169,13 @@ void detail::write_step_report(const std::string& rPath, const Mesh& rMesh,
             }
         }
     }
-    std::vector<std::size_t> piece_of(nf);
-    std::vector<std::size_t> roots;
-    for (std::size_t f = 0; f < nf; ++f) {
-        const std::size_t r = step_uf_find(parent, f);
-        if (r == f)
-            roots.push_back(f);
-        piece_of[f] = static_cast<std::size_t>(std::lower_bound(roots.begin(), roots.end(), r) -
-                                               roots.begin());
-    }
-    const std::size_t npieces = roots.size();
 
     // A piece wound inwards is written reversed.
-    std::vector<double> volume_of(npieces, 0.0);
-    for (std::size_t f = 0; f < nf; ++f) {
-        const std::int64_t b = start[f], s = start[f + 1] - b;
-        const double* p0 = &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b)]) * 3];
-        for (std::int64_t k = 1; k + 1 < s; ++k) {
-            const double* p1 =
-                &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b + k)]) * 3];
-            const double* p2 =
-                &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b + k + 1)]) * 3];
-            volume_of[piece_of[f]] +=
-                (p0[0] * (p1[1] * p2[2] - p1[2] * p2[1]) - p0[1] * (p1[0] * p2[2] - p1[2] * p2[0]) +
-                 p0[2] * (p1[0] * p2[1] - p1[1] * p2[0])) /
-                6.0;
-        }
-    }
+    std::vector<std::size_t> piece_of;
+    std::vector<double> volume_of;
+    const std::size_t npieces = detail::step_piece_volumes(
+        nf, [&](std::size_t F) { return step_uf_find(parent, F); }, start, nodes, xyz, piece_of,
+        volume_of);
     std::size_t flipped = 0;
     for (double v : volume_of)
         flipped += v < 0.0 ? 1 : 0;

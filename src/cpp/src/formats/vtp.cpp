@@ -27,8 +27,6 @@
 #include "../detail/region_field_data.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
-#include "meshioplusplus/detail/provenance.hpp"
-#include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
@@ -38,7 +36,7 @@
 // Project includes (private, not installed)
 #include "../detail/row_writer.hpp"
 #include "../detail/typed_view.hpp"
-#include "../detail/vtu_decode.hpp"
+#include "../detail/vtk_xml_write.hpp"
 
 namespace meshioplusplus {
 
@@ -135,47 +133,10 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     const std::size_t dim = rMesh.PointDim();
     const std::size_t pt_isz = dtype_size(points.Dtype());
 
-    const char* fmt = binary ? "binary" : "ascii";
-    // UInt64 size headers only where an uncompressed array could pass 4 GiB
-    // (compressed ones count 32 KiB blocks); everything else keeps its bytes.
-    const std::size_t hsz =
-        (binary && codec == detail::VtkCodec::None) ? detail::vtk_xml_header_bytes(rMesh) : 4;
+    const std::size_t hsz = detail::vtk_xml_size_header_bytes(rMesh, binary, codec);
+    const detail::VtkXmlEmitter emit{os, binary, codec, hsz};
 
-    auto da_header = [&](const char* type, const std::string& name, int ncomp) {
-        os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
-        if (ncomp > 0)
-            os << " NumberOfComponents=\"" << ncomp << "\"";
-        os << " format=\"" << fmt << "\">\n";
-    };
-    auto emit_bin = [&](const unsigned char* d, std::size_t n) {
-        detail::vtu_write_binary_bytes(os, d, n, binary ? codec : detail::VtkCodec::None, hsz);
-        os << "\n";
-    };
-    auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {
-        da_header("Int64", name, 0);
-        if (binary) {
-            emit_bin(reinterpret_cast<const unsigned char*>(v.data()),
-                     v.size() * sizeof(std::int64_t));
-        } else {
-            detail::write_row_chunks(os, v.size(),
-                                     [&](std::size_t First, std::size_t Last, std::string& rBuf) {
-                                         for (std::size_t i = First; i < Last; ++i) {
-                                             detail::append_int(rBuf, v[i]);
-                                             rBuf += '\n';
-                                         }
-                                     });
-        }
-        os << "</DataArray>\n";
-    };
-
-    os << "<?xml version=\"1.0\"?>\n";
-    os << "<VTKFile type=\"PolyData\" version=\"0.1\" byte_order=\"LittleEndian\"";
-    if (binary && codec != detail::VtkCodec::None)
-        os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
-    if (hsz == 8)
-        os << " header_type=\"UInt64\"";
-    os << ">\n";
-    os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
+    detail::vtk_xml_prolog(os, "PolyData", "0.1", binary, codec, hsz);
     os << "<PolyData>\n";
     // Field data belongs to the dataset, not to a piece: VTK writes it on the grid,
     // before the <Piece>. Guarded, so a mesh without any writes the bytes it always did.
@@ -217,7 +178,7 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
 
     // Points (3 components; pad 2D with zero z) — same layout as the VTU writer.
     os << "<Points>\n";
-    da_header(vtu_type_str(points.Dtype()), "Points", 3);
+    emit.Header(vtu_type_str(points.Dtype()), "Points", 3);
     if (binary) {
         std::vector<unsigned char> buf(num_points * 3 * pt_isz, 0);
         const auto* src = reinterpret_cast<const unsigned char*>(points.Data());
@@ -226,7 +187,7 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                 std::memcpy(buf.data() + (r * 3 + c) * pt_isz, src + (r * dim + c) * pt_isz,
                             pt_isz);
         });
-        emit_bin(buf.data(), buf.size());
+        emit.Bin(buf.data(), buf.size());
     } else {
         const detail::DoubleView pv(points);
         const detail::CNumber num;
@@ -245,8 +206,8 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
         if (rSec.mOffsets.empty())
             return;
         os << "<" << tag << ">\n";
-        emit_i64("connectivity", rSec.mConn);
-        emit_i64("offsets", rSec.mOffsets);
+        emit.Int64s("connectivity", rSec.mConn);
+        emit.Int64s("offsets", rSec.mOffsets);
         os << "</" << tag << ">\n";
     };
     emit_section("Verts", verts);
@@ -259,9 +220,9 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             NDArray scratch;
             const NDArray& d = detail::vtu_disk_array(name, rMesh.PointData(name), scratch);
             int ncomp = (d.Shape().size() == 2) ? static_cast<int>(cols(d)) : 0;
-            da_header(vtu_type_str(d.Dtype()), name, ncomp);
+            emit.Header(vtu_type_str(d.Dtype()), name, ncomp);
             if (binary)
-                emit_bin(reinterpret_cast<const unsigned char*>(d.Data()), d.Nbytes());
+                emit.Bin(reinterpret_cast<const unsigned char*>(d.Data()), d.Nbytes());
             else
                 vtu_ascii_ndarray(os, d);
             os << "</DataArray>\n";
@@ -279,7 +240,7 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
             NDArray scratch;
             const NDArray& first = rMesh.CellData(name, 0);
             int ncomp = (first.Shape().size() == 2) ? static_cast<int>(cols(first)) : 0;
-            da_header(vtu_type_str(detail::vtu_disk_dtype(name, first.Dtype())), name, ncomp);
+            emit.Header(vtu_type_str(detail::vtu_disk_dtype(name, first.Dtype())), name, ncomp);
             if (binary) {
                 std::vector<unsigned char> buf;
                 for (std::size_t bi : block_order) {
@@ -290,7 +251,7 @@ void write_vtp_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                     const unsigned char* p = reinterpret_cast<const unsigned char*>(blk.Data());
                     buf.insert(buf.end(), p, p + blk.Nbytes());
                 }
-                emit_bin(buf.data(), buf.size());
+                emit.Bin(buf.data(), buf.size());
             } else {
                 for (std::size_t bi : block_order) {
                     if (bi >= ndblocks)

@@ -404,7 +404,7 @@ public:
     std::int64_t Int(const char* pExpected) {
         const MfToken& t = Next(pExpected);
         std::int64_t value = 0;
-        if (!ParseInt(t.mText, value))
+        if (!detail::parse_int64_strict(t.mText, value))
             Fail(std::string("expected ") + pExpected + ", found '" + t.mText + "'", t.mLine);
         return value;
     }
@@ -426,24 +426,6 @@ public:
             mCursor.Next();
         }
         return out;
-    }
-
-    static bool ParseInt(const std::string& rText, std::int64_t& rValue) {
-        if (rText.empty())
-            return false;
-        std::size_t i = rText[0] == '-' || rText[0] == '+' ? 1 : 0;
-        if (i >= rText.size())
-            return false;
-        std::int64_t v = 0;
-        for (; i < rText.size(); ++i) {
-            if (rText[i] < '0' || rText[i] > '9')
-                return false;
-            if (v > (std::numeric_limits<std::int64_t>::max() - (rText[i] - '0')) / 10)
-                return false;  // more digits than an int64 holds
-            v = v * 10 + (rText[i] - '0');
-        }
-        rValue = rText[0] == '-' ? -v : v;
-        return true;
     }
 
     static bool ParseReal(const std::string& rText, double& rValue) {
@@ -496,7 +478,7 @@ MfSpace mf_classify(const std::string& rName) {
     auto order_after_P = [&]() {
         const std::size_t p = rName.rfind("_P");
         std::int64_t v = -1;
-        if (p != std::string::npos && MfLexer::ParseInt(rName.substr(p + 2), v))
+        if (p != std::string::npos && detail::parse_int64_strict(rName.substr(p + 2), v))
             return static_cast<int>(v);
         return -1;
     };
@@ -529,7 +511,7 @@ MfSpace mf_classify(const std::string& rName) {
     } else if (rName.rfind("NURBS", 0) == 0) {
         // NURBS<p>, or NURBS alone for the orders of the mesh's knot vectors
         std::int64_t v = -1;
-        if (rName.size() == 5 || MfLexer::ParseInt(rName.substr(5), v)) {
+        if (rName.size() == 5 || detail::parse_int64_strict(rName.substr(5), v)) {
             s.mKind = MfSpace::Nurbs;
             s.mOrder = static_cast<int>(v);
         }
@@ -586,14 +568,14 @@ MfSpace mf_read_space_body(MfLexer& rLex, std::size_t Line) {
             rLex.Next("VDim");
             std::int64_t v = 0;
             const MfToken& t = rLex.Next("a VDim");
-            if (!MfLexer::ParseInt(t.mText, v) || v < 1)
+            if (!detail::parse_int64_strict(t.mText, v) || v < 1)
                 rLex.Fail("bad VDim '" + t.mText + "'", t.mLine);
             s.mVDim = static_cast<int>(v);
         } else if (key == "Ordering:") {
             rLex.Next("Ordering");
             std::int64_t v = 0;
             const MfToken& t = rLex.Next("an Ordering");
-            if (!MfLexer::ParseInt(t.mText, v) || (v != 0 && v != 1))
+            if (!detail::parse_int64_strict(t.mText, v) || (v != 0 && v != 1))
                 rLex.Fail("bad Ordering '" + t.mText + "'", t.mLine);
             s.mOrdering = static_cast<int>(v);
         } else {
@@ -4145,7 +4127,7 @@ bool mf_generated_name(const std::string& rName, const char* pPrefix, std::int64
     const std::string prefix(pPrefix);
     if (rName.rfind(prefix, 0) != 0)
         return false;
-    return MfLexer::ParseInt(rName.substr(prefix.size()), rId) && rId > 0 &&
+    return detail::parse_int64_strict(rName.substr(prefix.size()), rId) && rId > 0 &&
            rName.substr(prefix.size()) == std::to_string(rId);
 }
 

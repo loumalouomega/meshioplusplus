@@ -87,6 +87,20 @@ struct CreaseEdge {
     bool IsCrease() const { return mSharp || mUses >= 3; }
 };
 
+/// One use of an undirected edge by one face ring.
+struct CreaseEdgeUse {
+    std::int64_t mLo;
+    std::int64_t mHi;
+    std::int64_t mFace;
+    bool mForward;  // the ring walks it lo -> hi
+};
+
+/// Every non-collapsed ring edge of the faces as one use, sorted by
+/// `(lo, hi, face, forward)`: each run of equal `(lo, hi)` is one edge. The
+/// rings are CSR as `crease_edges` takes them.
+std::vector<CreaseEdgeUse> crease_edge_uses(const std::vector<std::int64_t>& rStart,
+                                            const std::vector<std::int64_t>& rNodes);
+
 /**
  * @brief Classify the edges of a polygonal surface.
  *

@@ -27,6 +27,7 @@
 // Project includes
 #include "cut_graph.hpp"
 #include "param_disc.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -37,11 +38,6 @@ using CgEdge = std::pair<std::size_t, std::size_t>;
 
 CgEdge cg_edge(std::size_t A, std::size_t B) {
     return {std::min(A, B), std::max(A, B)};
-}
-
-double cg_dist(const PatchVec& rA, const PatchVec& rB) {
-    const double dx = rA[0] - rB[0], dy = rA[1] - rB[1], dz = rA[2] - rB[2];
-    return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
 // Per vertex its neighbours, ascending (indices up to the largest one used).
@@ -91,7 +87,7 @@ void cg_dijkstra(const std::vector<PatchVec>& rPts,
         for (std::size_t w : rNb[v]) {
             if (w < rBlocked.size() && rBlocked[w])
                 continue;
-            const double nd = d + cg_dist(rPts[v], rPts[w]);
+            const double nd = d + vec3_norm(vec3_sub(rPts[v], rPts[w]));
             if (nd < rDist[w]) {
                 rDist[w] = nd;
                 rPrev[w] = v;
@@ -146,7 +142,7 @@ std::vector<double> cg_arc(const std::vector<PatchVec>& rPts, const std::vector<
     rLength = 0.0;
     for (std::size_t i = 0; i < rLoop.size(); ++i) {
         s[i] = rLength;
-        rLength += cg_dist(rPts[rLoop[i]], rPts[rLoop[(i + 1) % rLoop.size()]]);
+        rLength += vec3_norm(vec3_sub(rPts[rLoop[i]], rPts[rLoop[(i + 1) % rLoop.size()]]));
     }
     return s;
 }

@@ -1,6 +1,7 @@
 from .._extrude import revolve
 from .._helpers import read, write
-from ._sweep_common import add_io_args, add_report_args, print_sweep, vec3
+from ._common import add_io_args
+from ._sweep_common import add_report_args, print_sweep, vec3
 
 
 def add_args(parser):

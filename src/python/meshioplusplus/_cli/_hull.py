@@ -1,21 +1,15 @@
 """The ``hull`` and ``delaunay`` verbs: the convex hull of a mesh's points and
 their Delaunay triangulation in the ``x, y`` plane (``doc/hull.md``)."""
 
-from .._helpers import _reader_names, read, write
+from .._helpers import read, write
 from .._hull import convex_hull, delaunay_2d
+from ._common import add_io_args
 from ._json import emit_json
 
 
 def _io_args(parser):
-    parser.add_argument("infile", type=str, help="mesh or point-cloud file")
-    parser.add_argument("outfile", type=str, help="output mesh")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
+    add_io_args(
+        parser, "output mesh", in_help="mesh or point-cloud file", output_format=False
     )
     parser.add_argument("--output-format", "-o", type=str, default=None)
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")

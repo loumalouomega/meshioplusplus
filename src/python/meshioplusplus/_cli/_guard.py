@@ -2,7 +2,8 @@
 
 from .._dataset import DatasetManifest
 from .._guard import GeometryGuard
-from .._helpers import _reader_names, read
+from .._helpers import read
+from ._common import add_io_args
 from ._json import emit_json
 
 
@@ -46,15 +47,7 @@ def guard_fit_cmd(args):
 
 def add_check_args(parser):
     parser.add_argument("guardfile", type=str, help="a fitted guard, or a model card")
-    parser.add_argument("infile", type=str, help="the mesh to score")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
+    add_io_args(parser, in_help="the mesh to score")
     parser.add_argument(
         "--top", type=int, default=3, help="how many descriptors to name"
     )

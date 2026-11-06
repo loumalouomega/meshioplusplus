@@ -25,6 +25,7 @@
 // Project includes
 #include "patch_flatten.hpp"
 #include "lsq_fit.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -33,33 +34,8 @@ namespace {
 
 constexpr double kPfPi = 3.14159265358979323846;
 
-double pf_dot(const PatchVec& rA, const PatchVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-PatchVec pf_cross(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
-double pf_norm(const PatchVec& rA) {
-    return std::sqrt(pf_dot(rA, rA));
-}
-
-PatchVec pf_sub(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-PatchVec pf_add(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[0] + rB[0], rA[1] + rB[1], rA[2] + rB[2]};
-}
-
-PatchVec pf_scale(const PatchVec& rA, double S) {
-    return {rA[0] * S, rA[1] * S, rA[2] * S};
-}
-
 void pf_normalize(PatchVec& rA) {
-    const double d = pf_norm(rA);
+    const double d = vec3_norm(rA);
     rA = {rA[0] / d, rA[1] / d, rA[2] / d};
 }
 
@@ -67,9 +43,9 @@ void pf_normalize(PatchVec& rA) {
 void pf_frame(const PatchVec& rA, PatchVec& rE1, PatchVec& rE2) {
     const PatchVec seed =
         std::fabs(rA[0]) < 0.9 ? PatchVec{1.0, 0.0, 0.0} : PatchVec{0.0, 1.0, 0.0};
-    rE1 = pf_sub(seed, pf_scale(rA, pf_dot(seed, rA)));
+    rE1 = vec3_sub(seed, vec3_scale(rA, vec3_dot(seed, rA)));
     pf_normalize(rE1);
-    rE2 = pf_cross(rA, rE1);
+    rE2 = vec3_cross(rA, rE1);
 }
 
 // Local points and triangles of a subset of a patch's triangles.
@@ -159,7 +135,7 @@ void pf_split(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rT
     std::vector<std::pair<double, std::size_t>> keyed;
     keyed.reserve(rSubset.size());
     for (std::size_t t : rSubset)
-        keyed.emplace_back(pf_dot(rNormals[t], e), t);
+        keyed.emplace_back(vec3_dot(rNormals[t], e), t);
     std::sort(keyed.begin(), keyed.end());
     // The area-weighted median; both halves keep at least one triangle.
     std::size_t k = 0;
@@ -183,12 +159,13 @@ void pf_split(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rT
 
 PatchVec PatchFlat::At(double S, double T, double H) const {
     if (!mCylinder)
-        return pf_add(pf_add(pf_add(mOrigin, pf_scale(mE1, S)), pf_scale(mE2, T)),
-                      pf_scale(mAxis, H));
+        return vec3_add(vec3_add(vec3_add(mOrigin, vec3_scale(mE1, S)), vec3_scale(mE2, T)),
+                        vec3_scale(mAxis, H));
     const double th = mTheta0 + S / mRadius;
-    return pf_add(
-        pf_add(mOrigin, pf_scale(mAxis, T)),
-        pf_scale(pf_add(pf_scale(mE1, std::cos(th)), pf_scale(mE2, std::sin(th))), mRadius + H));
+    return vec3_add(
+        vec3_add(mOrigin, vec3_scale(mAxis, T)),
+        vec3_scale(vec3_add(vec3_scale(mE1, std::cos(th)), vec3_scale(mE2, std::sin(th))),
+                   mRadius + H));
 }
 
 bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
@@ -200,13 +177,13 @@ bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
         return false;
     PatchVec c{0.0, 0.0, 0.0};
     for (const PatchVec& p : rPts)
-        c = pf_add(c, p);
+        c = vec3_add(c, p);
     c = {c[0] / static_cast<double>(n), c[1] / static_cast<double>(n),
          c[2] / static_cast<double>(n)};
     double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
     if (Kind == 0) {
         for (const PatchVec& p : rPts) {
-            const PatchVec d = pf_sub(p, c);
+            const PatchVec d = vec3_sub(p, c);
             for (int i = 0; i < 3; ++i)
                 for (int j = 0; j < 3; ++j)
                     m[i * 3 + j] += d[static_cast<std::size_t>(i)] * d[static_cast<std::size_t>(j)];
@@ -215,12 +192,12 @@ bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
         rOut.mOrigin = c;
         rOut.mAxis = {v[0], v[1], v[2]};  // the smallest spread: the normal
         rOut.mE1 = {v[6], v[7], v[8]};
-        rOut.mE2 = pf_cross(rOut.mAxis, rOut.mE1);
+        rOut.mE2 = vec3_cross(rOut.mAxis, rOut.mE1);
         for (const PatchVec& p : rPts) {
-            const PatchVec d = pf_sub(p, c);
-            rOut.mS.push_back(pf_dot(d, rOut.mE1));
-            rOut.mT.push_back(pf_dot(d, rOut.mE2));
-            rOut.mH.push_back(pf_dot(d, rOut.mAxis));
+            const PatchVec d = vec3_sub(p, c);
+            rOut.mS.push_back(vec3_dot(d, rOut.mE1));
+            rOut.mT.push_back(vec3_dot(d, rOut.mE2));
+            rOut.mH.push_back(vec3_dot(d, rOut.mAxis));
         }
         return true;
     }
@@ -231,7 +208,7 @@ bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
                                 rNormals[f][static_cast<std::size_t>(j)];
     lsq_sym3_eigen(m, w, v);
     PatchVec axis{v[0], v[1], v[2]};
-    if (pf_norm(axis) < 0.5)
+    if (vec3_norm(axis) < 0.5)
         return false;
     pf_normalize(axis);
     PatchVec e1, e2;
@@ -239,8 +216,8 @@ bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
     // The circle the points' projections fit (Kasa): x^2 + y^2 + D x + E y + F = 0.
     double a[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, b[3] = {0, 0, 0};
     for (const PatchVec& p : rPts) {
-        const PatchVec d = pf_sub(p, c);
-        const double x = pf_dot(d, e1), y = pf_dot(d, e2), r[3] = {x, y, 1.0};
+        const PatchVec d = vec3_sub(p, c);
+        const double x = vec3_dot(d, e1), y = vec3_dot(d, e2), r[3] = {x, y, 1.0};
         const double rhs = -(x * x + y * y);
         for (int i = 0; i < 3; ++i) {
             for (int j = 0; j < 3; ++j)
@@ -269,11 +246,11 @@ bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
     if (!(r2 > 0.0) || !std::isfinite(r2))
         return false;
     const double radius = std::sqrt(r2);
-    const PatchVec origin = pf_add(pf_add(c, pf_scale(e1, cx)), pf_scale(e2, cy));
+    const PatchVec origin = vec3_add(vec3_add(c, vec3_scale(e1, cx)), vec3_scale(e2, cy));
     std::vector<double> theta(n);
     for (std::size_t i = 0; i < n; ++i) {
-        const PatchVec d = pf_sub(rPts[i], origin);
-        theta[i] = std::atan2(pf_dot(d, e2), pf_dot(d, e1));
+        const PatchVec d = vec3_sub(rPts[i], origin);
+        theta[i] = std::atan2(vec3_dot(d, e2), vec3_dot(d, e1));
     }
     // Cut the circle in the widest gap between the points' angles.
     std::vector<double> sorted = theta;
@@ -296,11 +273,11 @@ bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
     for (std::size_t i = 0; i < n; ++i) {
         double th = theta[i] - rOut.mTheta0;
         th -= 2.0 * kPfPi * std::floor(th / (2.0 * kPfPi));
-        const PatchVec d = pf_sub(rPts[i], origin);
+        const PatchVec d = vec3_sub(rPts[i], origin);
         rOut.mS.push_back(radius * th);
-        rOut.mT.push_back(pf_dot(d, axis));
-        const PatchVec radial = pf_sub(d, pf_scale(axis, pf_dot(d, axis)));
-        rOut.mH.push_back(pf_norm(radial) - radius);
+        rOut.mT.push_back(vec3_dot(d, axis));
+        const PatchVec radial = vec3_sub(d, vec3_scale(axis, vec3_dot(d, axis)));
+        rOut.mH.push_back(vec3_norm(radial) - radius);
     }
     return true;
 }
@@ -330,11 +307,11 @@ void patch_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri
     rNormals.assign(nt, PatchVec{0.0, 0.0, 0.0});
     rAreas.assign(nt, 0.0);
     for (std::size_t t = 0; t < nt; ++t) {
-        const PatchVec e1 = pf_sub(rPts[rTris[t][1]], rPts[rTris[t][0]]);
-        const PatchVec e2 = pf_sub(rPts[rTris[t][2]], rPts[rTris[t][0]]);
-        PatchVec nrm = pf_cross(e1, e2);
-        rAreas[t] = 0.5 * pf_norm(nrm);
-        if (pf_norm(nrm) > 0.0)
+        const PatchVec e1 = vec3_sub(rPts[rTris[t][1]], rPts[rTris[t][0]]);
+        const PatchVec e2 = vec3_sub(rPts[rTris[t][2]], rPts[rTris[t][0]]);
+        PatchVec nrm = vec3_cross(e1, e2);
+        rAreas[t] = 0.5 * vec3_norm(nrm);
+        if (vec3_norm(nrm) > 0.0)
             pf_normalize(nrm);
         rNormals[t] = nrm;
     }
@@ -377,7 +354,7 @@ std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
     const PatchVec e{v[6], v[7], v[8]};
     std::vector<std::pair<double, std::size_t>> keyed;
     for (std::size_t t = 0; t < rTris.size(); ++t)
-        keyed.emplace_back(pf_dot(normals[t], e), t);
+        keyed.emplace_back(vec3_dot(normals[t], e), t);
     std::sort(keyed.begin(), keyed.end());
     std::size_t k = 0;
     double acc = 0.0;
@@ -455,7 +432,7 @@ std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
     // The direction the centroids spread along most.
     double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
     for (std::size_t t = 0; t < nt; ++t) {
-        const PatchVec d = pf_sub(centroids[t], mean);
+        const PatchVec d = vec3_sub(centroids[t], mean);
         for (int i = 0; i < 3; ++i)
             for (int j = 0; j < 3; ++j)
                 m[i * 3 + j] += areas[t] * d[static_cast<std::size_t>(i)] * d[static_cast<std::size_t>(j)];
@@ -465,7 +442,7 @@ std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
     std::vector<std::pair<double, std::size_t>> keyed;
     keyed.reserve(nt);
     for (std::size_t t = 0; t < nt; ++t)
-        keyed.emplace_back(pf_dot(pf_sub(centroids[t], mean), e), t);
+        keyed.emplace_back(vec3_dot(vec3_sub(centroids[t], mean), e), t);
     std::sort(keyed.begin(), keyed.end());
     std::size_t k = 0;
     double acc = 0.0;

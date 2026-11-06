@@ -42,7 +42,8 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
-#include "../detail/typed_view.hpp"
+#include "../detail/cell_centroids.hpp"
+#include "../detail/sfc_quantize.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_KAHIP
 // External includes
@@ -63,71 +64,6 @@ std::size_t partition_total_cells(const Mesh& rMesh) {
     for (const auto cb : rMesh.CellRange())
         total += cb.NumCells();
     return total;
-}
-
-// Per-cell centroids in global cell order, always 3 doubles per cell (unused
-// axes zero). The mean of the cell's nodes; polyhedra use the distinct nodes
-// across their faces (a node shared by several faces counts once).
-std::vector<double> partition_centroids(const Mesh& rMesh, std::size_t total) {
-    const NDArray& points = rMesh.Points();
-    const detail::DoubleView points_v(points);
-    const std::size_t pdim = rMesh.PointDim();
-    const std::size_t dim = std::min<std::size_t>(pdim, 3);
-
-    std::vector<double> cent(3 * total, 0.0);
-    std::size_t base = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t ncells = cb.NumCells();
-        if (cb.IsPolyhedron()) {
-            parallel_for(ncells, [&, base](std::size_t c) {
-                static thread_local std::vector<std::int64_t> nodes;
-                nodes.clear();
-                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
-                    const auto face = cb.Face(c, f);
-                    nodes.insert(nodes.end(), face.first, face.first + face.second);
-                }
-                std::sort(nodes.begin(), nodes.end());
-                nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
-                double* out = cent.data() + 3 * (base + c);
-                for (std::int64_t node : nodes)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += points_v[static_cast<std::size_t>(node) * pdim + d];
-                if (!nodes.empty())
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] /= static_cast<double>(nodes.size());
-            });
-        } else if (cb.IsRagged()) {
-            parallel_for(ncells, [&, base](std::size_t c) {
-                const std::int64_t* row = cb.Row(c);
-                const std::size_t nn = cb.RowSize(c);
-                double* out = cent.data() + 3 * (base + c);
-                for (std::size_t k = 0; k < nn; ++k)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += detail::read_double(points,
-                                                      static_cast<std::size_t>(row[k]) * pdim + d);
-                if (nn > 0)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] /= static_cast<double>(nn);
-            });
-        } else {
-            const NDArray& conn = cb.Conn();
-            const detail::Int64View conn_v(conn);
-            const std::size_t npc = cb.NodesPerCell();
-            parallel_for(ncells, [&, base](std::size_t c) {
-                double* out = cent.data() + 3 * (base + c);
-                for (std::size_t k = 0; k < npc; ++k) {
-                    const std::size_t node = static_cast<std::size_t>(conn_v[c * npc + k]);
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += points_v[node * pdim + d];
-                }
-                if (npc > 0)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] /= static_cast<double>(npc);
-            });
-        }
-        base += ncells;
-    }
-    return cent;
 }
 
 // The validated per-cell weights (global cell order) from a scalar numeric
@@ -189,7 +125,7 @@ std::vector<int> partition_sfc_parts(const Mesh& rMesh, const PartitionOptions& 
     if (total == 0 || nparts == 1)
         return parts;
 
-    const std::vector<double> cent = partition_centroids(rMesh, total);
+    const std::vector<double> cent = detail::cell_centroids(rMesh, total);
     const std::size_t dim = std::min<std::size_t>(rMesh.PointDim(), 3);
     const int bits = detail::sfc_bits;
 
@@ -208,11 +144,7 @@ std::vector<int> partition_sfc_parts(const Mesh& rMesh, const PartitionOptions& 
         }
     }
     double scale[3] = {0.0, 0.0, 0.0};
-    const double qmax = static_cast<double>((std::int64_t(1) << bits) - 1);
-    for (std::size_t d = 0; d < dim; ++d) {
-        const double span = hi[d] - lo[d];
-        scale[d] = span > 0.0 ? qmax / span : 0.0;
-    }
+    detail::sfc_axis_scales(lo, hi, dim, bits, scale);
 
     // Quantize + Hilbert key per centroid (disjoint slots, parallel-safe).
     std::vector<std::uint64_t> keys(total);
@@ -220,13 +152,7 @@ std::vector<int> partition_sfc_parts(const Mesh& rMesh, const PartitionOptions& 
         std::uint32_t q[3] = {0, 0, 0};
         for (std::size_t d = 0; d < dim; ++d) {
             const double t = (cent[3 * i + d] - lo[d]) * scale[d];
-            std::int64_t qi = static_cast<std::int64_t>(t + 0.5);
-            if (qi < 0)
-                qi = 0;
-            const std::int64_t maxq = (std::int64_t(1) << bits) - 1;
-            if (qi > maxq)
-                qi = maxq;
-            q[d] = static_cast<std::uint32_t>(qi);
+            q[d] = detail::sfc_quantize(t, bits);
         }
         keys[i] = detail::sfc_hilbert_key(q, bits);
     });

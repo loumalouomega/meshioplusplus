@@ -2,6 +2,7 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._series_writer import CoreSeriesWriter
 from ._th import SeriesWriter as _PySeriesWriter
 from ._th import read as _py_read
 from ._th import time_values as _py_time_values
@@ -68,7 +69,7 @@ def write(filename, mesh):
     return _py_write(filename, mesh)
 
 
-class SeriesWriter:
+class SeriesWriter(CoreSeriesWriter):
     """Write a time series into one time-history file: the descriptions with
     the first step, then one output per step, which ``read`` gives back by
     ``time_step``. Every step must have the first step's variables (the same
@@ -94,28 +95,6 @@ class SeriesWriter:
                     raise
         if self._core is None:
             self._py = _PySeriesWriter(filename)
-
-    def write(self, time, mesh):
-        if self._core is not None:
-            self._core.write(float(time), mesh)
-        else:
-            self._py.write(time, mesh)
-
-    def close(self):
-        if self._core is not None:
-            if self._core.num_steps():
-                self._core.finalize()
-            self._core = None
-        if self._py is not None:
-            self._py.close()
-            self._py = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-        return False
 
 
 # Found by its file name (a stem, then T and two digits) or its title record,

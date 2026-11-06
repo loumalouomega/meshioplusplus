@@ -20,6 +20,7 @@ import numpy as np
 
 from ._fallback import core_op_declined
 from ._mesh import Mesh
+from ._refine_templates import EDGES
 from ._skin import _CELL_FACES
 from ._surface import _CELL_EDGES
 
@@ -32,25 +33,7 @@ from ._surface import _CELL_EDGES
 # are pinned rather than guessed at; see the module docs of
 # src/cpp/include/meshioplusplus/detail/node_adjacency.hpp for why.
 _REFINE_EDGES = {
-    "line": [(0, 1)],
-    "triangle": [(0, 1), (1, 2), (2, 0)],
-    "quad": [(0, 1), (1, 2), (2, 3), (3, 0)],
-    "tetra": [(0, 1), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3)],
-    "hexahedron": [
-        (0, 1),
-        (1, 2),
-        (2, 3),
-        (3, 0),
-        (4, 5),
-        (5, 6),
-        (6, 7),
-        (7, 4),
-        (0, 4),
-        (1, 5),
-        (2, 6),
-        (3, 7),
-    ],
-    "wedge": [(0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5)],
+    **EDGES,
     "pyramid": [(0, 1), (1, 2), (2, 3), (3, 0), (0, 4), (1, 4), (2, 4), (3, 4)],
 }
 

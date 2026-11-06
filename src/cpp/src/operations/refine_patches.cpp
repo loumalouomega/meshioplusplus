@@ -37,11 +37,11 @@
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/parallel.hpp"
-#include "meshioplusplus/region.hpp"
 
 // Project includes (private, not installed)
 #include "../detail/crease_edges.hpp"
 #include "../detail/lsq_fit.hpp"
+#include "../detail/patch_output.hpp"
 #include "../detail/primitive_geom.hpp"
 #include "../detail/surface_rings.hpp"
 
@@ -1054,18 +1054,8 @@ RefinePatchesResult refine_patches(const Mesh& rMesh, const RefinePatchesOptions
     // The mesh: the input with the refined labels, adjacency and regions.
     Mesh out = detail::clone_mesh(
         rMesh, [](DataLocation, const std::string&, std::string&) { return true; });
-    std::vector<NDArray> blocks;
-    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
-        const std::size_t base = static_cast<std::size_t>(bases[bi]);
-        const std::size_t nc = rMesh.Cells(bi).NumCells();
-        NDArray a = NDArray::Uninit(DType::Int64, {nc});
-        std::copy(cell_patch.begin() + static_cast<std::ptrdiff_t>(base),
-                  cell_patch.begin() + static_cast<std::ptrdiff_t>(base + nc),
-                  a.As<std::int64_t>());
-        blocks.push_back(std::move(a));
-    }
-    out.AddCellData(kSegmentPatchName, std::move(blocks));
-    // A cell that is not a surface face is -1, as segment writes it.
+    // The shared-edge count of each final patch pair; a cell that is not a
+    // surface face is -1, as segment writes it.
     std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> adjacency;
     for (const auto& p : s.mPairs) {
         std::int64_t a = st.mOf[static_cast<std::size_t>(p.first)];
@@ -1078,40 +1068,7 @@ RefinePatchesResult refine_patches(const Mesh& rMesh, const RefinePatchesOptions
             std::swap(a, b);
         ++adjacency[{a, b}];
     }
-    NDArray table = NDArray::Uninit(DType::Int64, {adjacency.size(), std::size_t{3}});
-    {
-        std::int64_t* t = table.As<std::int64_t>();
-        std::size_t r = 0;
-        for (const auto& kv : adjacency) {
-            t[r * 3 + 0] = kv.first.first;
-            t[r * 3 + 1] = kv.first.second;
-            t[r * 3 + 2] = kv.second;
-            ++r;
-        }
-    }
-    out.AddFieldData(kSegmentAdjacencyName, std::move(table));
-    const std::string head = rOptions.mPrefix + ":";
-    for (std::size_t i = out.NumRegions(); i-- > 0;) {
-        const meshioplusplus::Region& r = out.Region(i);
-        if (r.mKind != RegionKind::Cell || r.mName.size() <= head.size() ||
-            r.mName.compare(0, head.size(), head) != 0)
-            continue;
-        const bool digits = std::all_of(r.mName.begin() + static_cast<std::ptrdiff_t>(head.size()),
-                                        r.mName.end(), [](char c) { return c >= '0' && c <= '9'; });
-        if (digits)
-            out.RemoveRegion(i);
-    }
-    std::vector<std::vector<std::int64_t>> members(m);
-    for (std::size_t c = 0; c < ncells; ++c)
-        if (cell_patch[c] >= 0)
-            members[static_cast<std::size_t>(cell_patch[c])].push_back(
-                static_cast<std::int64_t>(c));
-    for (std::size_t p = 0; p < m; ++p) {
-        NDArray entries = NDArray::Uninit(DType::Int64, {members[p].size()});
-        std::copy(members[p].begin(), members[p].end(), entries.As<std::int64_t>());
-        out.AddRegion(meshioplusplus::Region(head + std::to_string(p), RegionKind::Cell, 2, -1,
-                                             std::move(entries)));
-    }
+    detail::patch_output_write(rMesh, out, bases, cell_patch, m, adjacency, rOptions.mPrefix);
 
     // The fit table fit_cad reads, at the absolute tolerance.
     FitPrimitivesOptions fo;

@@ -56,6 +56,8 @@
  */
 
 // System includes
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -177,6 +179,51 @@ void write_step_report(const std::string& rPath, const Mesh& rMesh,
                        const std::vector<StepFreeformFace>* pFreeform = nullptr,
                        const std::vector<StepEdgeCurve>* pEdgeCurves = nullptr,
                        bool BuildBrep = false);
+
+/**
+ * @brief Label each facet with its edge-connected piece and sum each piece's
+ * signed volume (positive when wound outwards).
+ * @param nf Number of facets.
+ * @param FindRoot The union-find root of a facet, after the facets sharing
+ *        an edge have been united.
+ * @param rStart, rNodes The facets as CSR rows into @p rXyz (x, y, z each).
+ * @param rPieceOf Out: each facet's piece, numbered by its root's order.
+ * @param rVolume Out: each piece's signed volume, summed facet by facet.
+ * @return The number of pieces.
+ */
+template <class Find>
+std::size_t step_piece_volumes(std::size_t nf, Find&& FindRoot,
+                               const std::vector<std::int64_t>& rStart,
+                               const std::vector<std::int64_t>& rNodes,
+                               const std::vector<double>& rXyz, std::vector<std::size_t>& rPieceOf,
+                               std::vector<double>& rVolume) {
+    rPieceOf.assign(nf, 0);
+    std::vector<std::size_t> roots;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::size_t r = FindRoot(f);
+        if (r == f)
+            roots.push_back(f);
+        rPieceOf[f] = static_cast<std::size_t>(std::lower_bound(roots.begin(), roots.end(), r) -
+                                               roots.begin());
+    }
+    const std::size_t npieces = roots.size();
+    rVolume.assign(npieces, 0.0);
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::int64_t b = rStart[f], s = rStart[f + 1] - b;
+        const double* p0 = &rXyz[static_cast<std::size_t>(rNodes[static_cast<std::size_t>(b)]) * 3];
+        for (std::int64_t k = 1; k + 1 < s; ++k) {
+            const double* p1 =
+                &rXyz[static_cast<std::size_t>(rNodes[static_cast<std::size_t>(b + k)]) * 3];
+            const double* p2 =
+                &rXyz[static_cast<std::size_t>(rNodes[static_cast<std::size_t>(b + k + 1)]) * 3];
+            rVolume[rPieceOf[f]] +=
+                (p0[0] * (p1[1] * p2[2] - p1[2] * p2[1]) - p0[1] * (p1[0] * p2[2] - p1[2] * p2[0]) +
+                 p0[2] * (p1[0] * p2[1] - p1[1] * p2[0])) /
+                6.0;
+        }
+    }
+    return npieces;
+}
 
 }  // namespace detail
 }  // namespace meshioplusplus

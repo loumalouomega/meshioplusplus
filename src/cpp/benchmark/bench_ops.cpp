@@ -37,7 +37,16 @@
  * counts (roadmap §3, "The determinism check the section assumes"). The warmup
  * run is the one hashed, so hashing never enters a timing.
  *
- * Usage: `meshioplusplus_bench_ops [--tier S|M|L|XL]... [--ops a,b,...] [--runs N] [--hash]`.
+ * Usage: `meshioplusplus_bench_ops [--tier S|M|L|XL]... [--ops a,b,...] [--runs N] [--hash]
+ * [--instructions] [--list]`.
+ *
+ * `--instructions` replaces the timed runs by one run between Cachegrind's
+ * start and stop requests, after the untimed warmup that builds the row's
+ * inputs, so a process run under `valgrind --tool=cachegrind
+ * --instr-at-start=no` counts the instructions of that run alone
+ * (`tools/bench_instructions.py`, the pull-request gate of roadmap 5.1.1);
+ * `median_s` is then that run's wall time under valgrind. `--list` prints the
+ * names of the rows the chosen tiers would run, one per line, and runs none.
  * The default tiers are S, M and L (about 10k, 160k and 750k tetrahedra);
  * XL (about 10M) is opt-in, since it needs several GB.
  */
@@ -127,6 +136,16 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "mesh_digest.hpp"
+
+// `--instructions` brackets one run of a row with Cachegrind's client requests
+// (valgrind >= 3.22), so `valgrind --tool=cachegrind --instr-at-start=no`
+// counts that run alone (tools/bench_instructions.py, roadmap 5.1.1).
+#if defined(__has_include)
+#if __has_include(<valgrind/cachegrind.h>)
+#include <valgrind/cachegrind.h>
+#define MESHIOPLUSPLUS_BENCH_CACHEGRIND 1
+#endif
+#endif
 
 using meshioplusplus::DType;
 using meshioplusplus::Mesh;
@@ -358,6 +377,8 @@ int main(int argc, char** argv) {
     std::vector<std::string> ops;
     int runs = 3;
     bool hash = false;
+    bool instructions = false;
+    bool list = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if (a == "--tier" && i + 1 < argc) {
@@ -374,13 +395,24 @@ int main(int argc, char** argv) {
             runs = std::max(1, std::atoi(argv[++i]));
         } else if (a == "--hash") {
             hash = true;
+        } else if (a == "--instructions") {
+            instructions = true;
+        } else if (a == "--list") {
+            list = true;
         } else {
             std::fprintf(stderr,
-                         "usage: %s [--tier S|M|L|XL]... [--ops a,b,...] [--runs N] [--hash]\n",
+                         "usage: %s [--tier S|M|L|XL]... [--ops a,b,...] [--runs N] [--hash] "
+                         "[--instructions] [--list]\n",
                          argv[0]);
             return 2;
         }
     }
+#if !defined(MESHIOPLUSPLUS_BENCH_CACHEGRIND)
+    if (instructions) {
+        std::fprintf(stderr, "--instructions: built without <valgrind/cachegrind.h>\n");
+        return 2;
+    }
+#endif
     if (chosen.empty())
         chosen = {"S", "M", "L"};
     // OMP_NUM_THREADS is honoured by OpenMP itself and read by the THREADS
@@ -395,11 +427,17 @@ int main(int argc, char** argv) {
         cap.emplace(tbb::global_control::max_allowed_parallelism,
                     static_cast<std::size_t>(std::atoi(env_threads)));
 #endif
+    // Every row and row wrapper asks this first, once per row: under `--list`
+    // it names the row and declines it.
     const auto wanted = [&](const char* pOp) {
-        return ops.empty() || std::find(ops.begin(), ops.end(), pOp) != ops.end();
+        const bool chosen_op = ops.empty() || std::find(ops.begin(), ops.end(), pOp) != ops.end();
+        if (list && chosen_op)
+            std::printf("%s\n", pOp);
+        return chosen_op && !list;
     };
 
-    std::printf("backend,threads,op,cells,median_s,runs,digest\n");
+    if (!list)
+        std::printf("backend,threads,op,cells,median_s,runs,digest\n");
     for (const std::string& tier : chosen) {
         auto it = tiers.find(tier);
         if (it == tiers.end()) {
@@ -482,13 +520,24 @@ int main(int argc, char** argv) {
                 return;
             MeshDigest digest;
             rFn(hash ? &digest : nullptr);  // warmup, hashed with --hash
-            const double s = bench_ops_median([&] { rFn(nullptr); }, runs);
+            double s = 0.0;
+            if (instructions) {
+#if defined(MESHIOPLUSPLUS_BENCH_CACHEGRIND)
+                const auto t0 = std::chrono::steady_clock::now();
+                CACHEGRIND_START_INSTRUMENTATION;
+                rFn(nullptr);
+                CACHEGRIND_STOP_INSTRUMENTATION;
+                s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+#endif
+            } else {
+                s = bench_ops_median([&] { rFn(nullptr); }, runs);
+            }
             char dig[24] = "";
             if (hash)
                 std::snprintf(dig, sizeof dig, "%016llx",
                               static_cast<unsigned long long>(digest.Value()));
             std::printf("%s,%s,%s,%zu,%.6f,%d,%s\n", mio::parallel_backend_name(), threads.c_str(),
-                        pOp, ncells, s, runs, dig);
+                        pOp, ncells, s, instructions ? 1 : runs, dig);
             std::fflush(stdout);
         };
         // Wraps a call returning a mesh (or a result carrying one) so the

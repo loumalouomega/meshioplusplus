@@ -37,6 +37,7 @@
 #include "../detail/bcc_octree_tets.hpp"
 #include "../detail/feature_snap.hpp"
 #include "../detail/isosurface_stuffing.hpp"
+#include "../detail/mesh_from_soup.hpp"
 #include "octree_mesh_internal.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -980,28 +981,8 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
 
 double octree_mesh_hausdorff_to_skin(const OctreeMeshSetup& rS, const std::vector<Vec3>& rPoints,
                                      const std::vector<std::array<std::int64_t, 3>>& rFaces) {
-    Mesh out_skin;
-    NDArray sp = NDArray::Uninit(DType::Float64, {rPoints.size(), std::size_t{3}});
-    for (std::size_t q = 0; q < rPoints.size(); ++q)
-        for (std::size_t k = 0; k < 3; ++k)
-            sp.As<double>()[q * 3 + k] = rPoints[q][k];
-    NDArray sc = NDArray::Uninit(DType::Int64, {rFaces.size(), std::size_t{3}});
-    for (std::size_t q = 0; q < rFaces.size(); ++q)
-        for (std::size_t k = 0; k < 3; ++k)
-            sc.As<std::int64_t>()[q * 3 + k] = rFaces[q][k];
-    out_skin.AssignPoints(std::move(sp));
-    out_skin.AddCellBlock("triangle", std::move(sc));
-    Mesh in_skin;
-    NDArray ip = NDArray::Uninit(DType::Float64, {rS.mSkin.mPoints.size(), std::size_t{3}});
-    for (std::size_t q = 0; q < rS.mSkin.mPoints.size(); ++q)
-        for (std::size_t k = 0; k < 3; ++k)
-            ip.As<double>()[q * 3 + k] = rS.mSkin.mPoints[q][k];
-    NDArray ic = NDArray::Uninit(DType::Int64, {rS.mSkin.mTris.size(), std::size_t{3}});
-    for (std::size_t q = 0; q < rS.mSkin.mTris.size(); ++q)
-        for (std::size_t k = 0; k < 3; ++k)
-            ic.As<std::int64_t>()[q * 3 + k] = rS.mSkin.mTris[q][k];
-    in_skin.AssignPoints(std::move(ip));
-    in_skin.AddCellBlock("triangle", std::move(ic));
+    const Mesh out_skin = mesh_from_soup(rPoints, rFaces, "triangle");
+    const Mesh in_skin = mesh_from_soup(rS.mSkin.mPoints, rS.mSkin.mTris, "triangle");
     HausdorffOptions ho;
     ho.mFaceSamples = 2;
     return hausdorff_distance(out_skin, in_skin, ho).mDistance;

@@ -29,6 +29,7 @@
 
 // Project includes
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 #include "quad_recombine.hpp"
 #include "weighted_matching.hpp"
 
@@ -42,29 +43,16 @@ QrV3 qr_at(const double* pX, std::int64_t Id) {
     const auto i = static_cast<std::size_t>(Id);
     return {pX[3 * i], pX[3 * i + 1], pX[3 * i + 2]};
 }
-QrV3 qr_sub(const QrV3& rA, const QrV3& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-QrV3 qr_cross(const QrV3& rA, const QrV3& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-double qr_dot(const QrV3& rA, const QrV3& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-double qr_norm(const QrV3& rA) {
-    return std::sqrt(qr_dot(rA, rA));
-}
 
 /// The quad's unit normal (its vector area normalised); zero when none.
 QrV3 qr_normal(const std::array<QrV3, 4>& rP) {
     QrV3 n{0.0, 0.0, 0.0};
     for (std::size_t i = 0; i < 4; ++i) {
-        const QrV3 c = qr_cross(rP[i], rP[(i + 1) % 4]);
+        const QrV3 c = vec3_cross(rP[i], rP[(i + 1) % 4]);
         for (std::size_t k = 0; k < 3; ++k)
             n[k] += c[k];
     }
-    const double l = qr_norm(n);
+    const double l = vec3_norm(n);
     if (!(l > 0.0))
         return {0.0, 0.0, 0.0};
     return {n[0] / l, n[1] / l, n[2] / l};
@@ -81,12 +69,12 @@ double quad_scaled_jacobian(const double* pX, const std::array<std::int64_t, 4>&
     const QrV3 n = qr_normal(p);
     double sj = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < 4; ++i) {
-        const QrV3 e1 = qr_sub(p[(i + 1) % 4], p[i]);
-        const QrV3 e2 = qr_sub(p[(i + 3) % 4], p[i]);
-        const double l = qr_norm(e1) * qr_norm(e2);
+        const QrV3 e1 = vec3_sub(p[(i + 1) % 4], p[i]);
+        const QrV3 e2 = vec3_sub(p[(i + 3) % 4], p[i]);
+        const double l = vec3_norm(e1) * vec3_norm(e2);
         if (!(l > 0.0))
             return 0.0;
-        sj = std::min(sj, qr_dot(qr_cross(e1, e2), n) / l);
+        sj = std::min(sj, vec3_dot(vec3_cross(e1, e2), n) / l);
     }
     return sj;
 }
@@ -99,12 +87,12 @@ double qr_quality(const std::array<QrV3, 4>& rP) {
     const QrV3 n = qr_normal(p);
     double q = 1.0;
     for (std::size_t i = 0; i < 4; ++i) {
-        const QrV3 e1 = qr_sub(p[(i + 1) % 4], p[i]);
-        const QrV3 e2 = qr_sub(p[(i + 3) % 4], p[i]);
-        const double s = qr_dot(qr_cross(e1, e2), n);
+        const QrV3 e1 = vec3_sub(p[(i + 1) % 4], p[i]);
+        const QrV3 e2 = vec3_sub(p[(i + 3) % 4], p[i]);
+        const double s = vec3_dot(vec3_cross(e1, e2), n);
         if (!(s > 0.0))
             return 0.0;  // a reflex or flat corner
-        const double deg = std::atan2(s, qr_dot(e1, e2)) * (180.0 / 3.14159265358979323846);
+        const double deg = std::atan2(s, vec3_dot(e1, e2)) * (180.0 / 3.14159265358979323846);
         q = std::min(q, 1.0 - std::fabs(deg - 90.0) / 90.0);
     }
     return std::max(0.0, q);
@@ -267,7 +255,7 @@ QuadRecombineResult quad_recombine(
             of_edge.emplace(std::make_pair(rTris[t][k], rTris[t][(k + 1) % 3]), t);
     const auto normal_of = [&](std::size_t T) {
         const QrV3 a = qr_at(pX, rTris[T][0]);
-        return qr_cross(qr_sub(qr_at(pX, rTris[T][1]), a), qr_sub(qr_at(pX, rTris[T][2]), a));
+        return vec3_cross(vec3_sub(qr_at(pX, rTris[T][1]), a), vec3_sub(qr_at(pX, rTris[T][2]), a));
     };
     struct Candidate {
         double mQuality;
@@ -315,10 +303,10 @@ QuadRecombineResult quad_recombine(
         }
         const std::array<std::int64_t, 4> quad{a, d, b, c};
         const QrV3 n1 = normal_of(t1), n2 = normal_of(t2);
-        const double l = qr_norm(n1) * qr_norm(n2);
+        const double l = vec3_norm(n1) * vec3_norm(n2);
         if (!(l > 0.0))
             continue;
-        const double q = quad_recombine_quality(pX, quad) * std::max(0.0, qr_dot(n1, n2) / l);
+        const double q = quad_recombine_quality(pX, quad) * std::max(0.0, vec3_dot(n1, n2) / l);
         if (!(q >= MinQuality && q > 0.0))
             continue;
         if (pMidpoint && !qr_splits_well(pX, quad, *pMidpoint, MinQuality))

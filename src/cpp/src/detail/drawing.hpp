@@ -62,12 +62,16 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/detail/face_color.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/operations/surface.hpp"
+#include "meshioplusplus/skin.hpp"
 #include "text_cursor.hpp"
+#include "typed_view.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -471,6 +475,74 @@ inline double drawing_number_value(std::string_view Token, const char* pFormat) 
     if (!parse_double_token(Token, v) || !std::isfinite(v))
         throw ReadError(std::string(pFormat) + ": bad number '" + drawing_safe(Token) + "'");
     return v;
+}
+
+/// A drawing writer's colouring options gathered into one `ColorSpec`.
+inline ColorSpec drawing_color_spec(const std::string& rColorBy,
+                                    const std::optional<int>& rComponent, const std::string& rCmap,
+                                    const std::optional<double>& rVMin,
+                                    const std::optional<double>& rVMax, bool Colorbar) {
+    ColorSpec spec;
+    spec.mColorBy = rColorBy;
+    spec.mComponent = rComponent;
+    spec.mCmap = rCmap;
+    spec.mVMin = rVMin;
+    spec.mVMax = rVMax;
+    spec.mColorbar = Colorbar;
+    return spec;
+}
+
+/**
+ * @brief The projected-rendering path of a drawing writer: a genuinely
+ * non-flat 3D mesh (some |z| > 1e-14) is drawn through @p Write, called once
+ * with the mesh to project (its skin when it has volume cells, else itself).
+ * @return `true` when @p Write was called; `false` for a flat mesh, which
+ * keeps the writer's classic 2D path.
+ */
+template <class ProjWrite>
+bool drawing_write_projected(const Mesh& rMesh, const DoubleView& rPointValues,
+                             const ColorSpec& rSpec, ProjWrite&& Write) {
+    const std::size_t num_points = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    if (dim == 3) {
+        for (std::size_t i = 0; i < num_points; ++i) {
+            if (std::fabs(rPointValues[i * dim + 2]) > 1.0e-14) {
+                if (has_skinnable_cells(rMesh)) {
+                    // Colouring by cell data needs to know which input cell
+                    // each skin facet came from; that costs an extra Int64
+                    // array, so only ask for it when it will actually be read.
+                    const bool need_parents = rSpec.Active() && rMesh.HasCellData(rSpec.mColorBy);
+                    const Mesh skin =
+                        surface_extract(rMesh, /*forceFaceMode=*/true,
+                                        /*linearize=*/true, need_parents, "extract_skin");
+                    Write(skin);
+                } else {
+                    Write(rMesh);
+                }
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/// Whether a drawing writer skips @p rType (only line/triangle/quad are
+/// drawn); a skipped type is recorded once, in first-seen order.
+inline bool drawing_skip_type(const std::string& rType, std::vector<std::string>& rSkipped) {
+    if (rType != "line" && rType != "triangle" && rType != "quad") {
+        if (std::find(rSkipped.begin(), rSkipped.end(), rType) == rSkipped.end())
+            rSkipped.push_back(rType);
+        return true;
+    }
+    return false;
+}
+
+/// The skipped cell types joined with ", " for the writer's warning.
+inline std::string drawing_join_types(const std::vector<std::string>& rSkipped) {
+    std::string joined;
+    for (std::size_t i = 0; i < rSkipped.size(); ++i)
+        joined += (i ? ", " : "") + rSkipped[i];
+    return joined;
 }
 
 }  // namespace detail

@@ -36,6 +36,7 @@
 #include "meshioplusplus/detail/file_source.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_cells.hpp"
+#include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/vtk_common.hpp"
@@ -78,41 +79,6 @@ DType dtype_from_vtk_token(std::string t) {
     throw ReadError("VTK data type '" + t + "' not supported by the C++ reader");
 }
 
-void store(NDArray& rA, std::size_t i, double d, std::int64_t v) {
-    switch (rA.Dtype()) {
-        case DType::Float32:
-            rA.As<float>()[i] = static_cast<float>(d);
-            break;
-        case DType::Float64:
-            rA.As<double>()[i] = d;
-            break;
-        case DType::Int8:
-            rA.As<std::int8_t>()[i] = static_cast<std::int8_t>(v);
-            break;
-        case DType::Int16:
-            rA.As<std::int16_t>()[i] = static_cast<std::int16_t>(v);
-            break;
-        case DType::Int32:
-            rA.As<std::int32_t>()[i] = static_cast<std::int32_t>(v);
-            break;
-        case DType::Int64:
-            rA.As<std::int64_t>()[i] = v;
-            break;
-        case DType::UInt8:
-            rA.As<std::uint8_t>()[i] = static_cast<std::uint8_t>(v);
-            break;
-        case DType::UInt16:
-            rA.As<std::uint16_t>()[i] = static_cast<std::uint16_t>(v);
-            break;
-        case DType::UInt32:
-            rA.As<std::uint32_t>()[i] = static_cast<std::uint32_t>(v);
-            break;
-        case DType::UInt64:
-            rA.As<std::uint64_t>()[i] = static_cast<std::uint64_t>(v);
-            break;
-    }
-}
-
 struct VtkCursor : detail::TextCursor {
     explicit VtkCursor(std::string_view b) : detail::TextCursor(b) {}
 
@@ -140,12 +106,12 @@ struct VtkCursor : detail::TextCursor {
                     double x = 0.0;
                     if (!tc.DoublePrefix(x) || tc.Pos() != Token.size())
                         return false;
-                    store(rA, i, x, 0);
+                    detail::vtu_store(rA, i, x, 0);
                 } else {
                     std::int64_t x = 0;
                     if (!tc.IntPrefix(x) || tc.Pos() != Token.size())
                         return false;
-                    store(rA, i, 0.0, x);
+                    detail::vtu_store(rA, i, 0.0, x);
                 }
                 return true;
             });
@@ -177,12 +143,12 @@ struct VtkCursor : detail::TextCursor {
                     double x = 0.0;
                     if (!DoublePrefix(x))
                         throw ReadError("VTK ascii parse error");
-                    store(a, i, x, 0);
+                    detail::vtu_store(a, i, x, 0);
                 } else {
                     std::int64_t x = 0;
                     if (!IntPrefix(x))
                         throw ReadError("VTK ascii parse error");
-                    store(a, i, 0.0, x);
+                    detail::vtu_store(a, i, 0.0, x);
                 }
             }
         } else {
@@ -531,7 +497,7 @@ Mesh read_vtk(const std::string& rPath) try {
                     const auto integer = detail::is_float_dtype(pts.Dtype())
                                              ? 0
                                              : detail::checked_integer<std::int64_t>(value, "VTK");
-                    store(pts, row * 3 + axis, value, integer);
+                    detail::vtu_store(pts, row * 3 + axis, value, integer);
                 }
             };
             if (detail::is_float_dtype(pts.Dtype()))

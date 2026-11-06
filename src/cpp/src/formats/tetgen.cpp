@@ -35,6 +35,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/parse_guard.hpp"
+#include "../detail/node_table.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
@@ -364,22 +365,6 @@ Mesh read_tetgen(const std::string& rPath) {
     return mesh;
 }
 
-namespace {
-
-// Write a marker/ref value: integral values as integers, else %.16e.
-void write_value(std::ostream& rOs, double v) {
-    double r = std::nearbyint(v);
-    if (v == r && std::fabs(v) < 9.2e18) {
-        rOs << static_cast<std::int64_t>(r);
-    } else {
-        char buf[40];
-        detail::snprintf_c(buf, sizeof(buf), "%.16e", v);
-        rOs << buf;
-    }
-}
-
-}  // namespace
-
 void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
     if (tg_is_smesh(rPath)) {
         tg_write_smesh(rPath, rMesh);
@@ -392,7 +377,6 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
     const std::string& node_path = paths.first;
     const std::string& ele_path = paths.second;
 
-    const NDArray& points = rMesh.Points();
     const std::size_t ncols = rMesh.PointDim();
     if (ncols != 3)
         throw WriteError("TetGen: can only write 3D points");
@@ -407,23 +391,9 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
 
         // Split point_data into one ref key and the remaining attribute keys,
         // mirroring meshioplusplus.tetgen.write.
-        std::vector<std::string> attr_keys =
-            rMesh.PointDataNames();  // sorted: deterministic column order
+        std::vector<std::string> attr_keys;
         std::vector<std::string> ref_keys;
-        if (!attr_keys.empty()) {
-            for (const auto& k : attr_keys)
-                if (k.find(":ref") != std::string::npos) {
-                    ref_keys.push_back(k);
-                    break;
-                }
-            if (!ref_keys.empty()) {
-                attr_keys.erase(std::remove(attr_keys.begin(), attr_keys.end(), ref_keys[0]),
-                                attr_keys.end());
-            } else {
-                ref_keys.push_back(attr_keys.front());
-                attr_keys.erase(attr_keys.begin());
-            }
-        }
+        detail::node_table_split_keys(rMesh, attr_keys, ref_keys);
         const std::size_t nattr = attr_keys.size();
         const std::size_t nref = ref_keys.size();
 
@@ -443,30 +413,7 @@ void write_tetgen(const std::string& rPath, const Mesh& rMesh) {
         }
         fh << npoints << " 3 " << nattr << " " << nref << "\n";
 
-        char fbuf[40];
-        const detail::DoubleView point_values(points);
-        std::vector<std::optional<detail::DoubleView>> attrs(attr_keys.size());
-        for (std::size_t a = 0; a < attr_keys.size(); ++a)
-            attrs[a].emplace(rMesh.PointData(attr_keys[a]));
-        std::vector<std::optional<detail::DoubleView>> refs(ref_keys.size());
-        for (std::size_t a = 0; a < ref_keys.size(); ++a)
-            refs[a].emplace(rMesh.PointData(ref_keys[a]));
-        for (std::int64_t i = 0; i < npoints; ++i) {
-            fh << i;
-            for (int c = 0; c < 3; ++c) {
-                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e", point_values[i * 3 + c]);
-                fh << " " << fbuf;
-            }
-            for (const auto& attr : attrs) {
-                detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e", (*attr)[i]);
-                fh << " " << fbuf;
-            }
-            for (const auto& ref : refs) {
-                fh << " ";
-                write_value(fh, (*ref)[i]);
-            }
-            fh << "\n";
-        }
+        detail::node_table_write_rows<3>(fh, rMesh, attr_keys, ref_keys);
     }
 
     // ---- ele file ----

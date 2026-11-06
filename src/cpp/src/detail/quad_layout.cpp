@@ -28,6 +28,7 @@
 
 // Project includes
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 // Project includes (private, not installed)
 #include "cross_field.hpp"
@@ -45,29 +46,16 @@ constexpr std::size_t kQlNone = std::numeric_limits<std::size_t>::max();
 // About the triangles a cell of the layout needs for its patch to fit.
 constexpr std::size_t kQlStripTriangles = 48;
 
-PatchVec ql_sub(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-double ql_dot(const PatchVec& rA, const PatchVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-PatchVec ql_cross(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-double ql_norm(const PatchVec& rA) {
-    return std::sqrt(ql_dot(rA, rA));
-}
 PatchVec ql_unit(const PatchVec& rA) {
-    const double l = ql_norm(rA);
+    const double l = vec3_norm(rA);
     return l > 0.0 ? PatchVec{rA[0] / l, rA[1] / l, rA[2] / l} : PatchVec{0.0, 0.0, 0.0};
 }
 // The angle between two vectors, in degrees.
 double ql_angle_deg(const PatchVec& rA, const PatchVec& rB) {
-    const double la = ql_norm(rA), lb = ql_norm(rB);
+    const double la = vec3_norm(rA), lb = vec3_norm(rB);
     if (!(la > 0.0) || !(lb > 0.0))
         return 180.0;
-    const double c = std::max(-1.0, std::min(1.0, ql_dot(rA, rB) / (la * lb)));
+    const double c = std::max(-1.0, std::min(1.0, vec3_dot(rA, rB) / (la * lb)));
     return std::acos(c) * 180.0 / kQlPi;
 }
 
@@ -292,8 +280,8 @@ bool ql_fan(const QlState& rS, std::size_t V, std::vector<std::size_t>& rFan,
 double ql_tri_angle(const QlState& rS, std::size_t F, std::size_t V) {
     const PatchTri& t = rS.mTris[F];
     const std::size_t iv = t[0] == V ? 0 : (t[1] == V ? 1 : 2);
-    return ql_angle_deg(ql_sub(rS.mPts[t[(iv + 1) % 3]], rS.mPts[V]),
-                        ql_sub(rS.mPts[t[(iv + 2) % 3]], rS.mPts[V])) *
+    return ql_angle_deg(vec3_sub(rS.mPts[t[(iv + 1) % 3]], rS.mPts[V]),
+                        vec3_sub(rS.mPts[t[(iv + 2) % 3]], rS.mPts[V])) *
            kQlPi / 180.0;
 }
 
@@ -338,9 +326,9 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
     for (std::size_t i = 0; i < m; ++i) {
         phi[i] = total;
         total += ql_tri_angle(rS, fan[i], Sing);
-        const PatchVec d = ql_sub(rS.mPts[nbrs[i]], rS.mPts[Sing]);
+        const PatchVec d = vec3_sub(rS.mPts[nbrs[i]], rS.mPts[Sing]);
         const std::size_t f = fan[i];
-        const double a = std::atan2(ql_dot(d, rS.mField.mE2[f]), ql_dot(d, rS.mField.mE1[f])) -
+        const double a = std::atan2(vec3_dot(d, rS.mField.mE2[f]), vec3_dot(d, rS.mField.mE1[f])) -
                          rS.mField.mTheta[f];
         const double q = 0.5 * kQlPi;
         double w = std::fmod(a, q);
@@ -395,7 +383,7 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
     bool ok = true;
     for (std::size_t i : pick) {
         std::vector<std::size_t> path{Sing, nbrs[i]};
-        PatchVec dir = ql_unit(ql_sub(rS.mPts[nbrs[i]], rS.mPts[Sing]));
+        PatchVec dir = ql_unit(vec3_sub(rS.mPts[nbrs[i]], rS.mPts[Sing]));
         std::size_t v = nbrs[i];
         while (!rS.mMesh.mOnBoundary[v] && ok) {
             // On the piece's boundary?
@@ -418,7 +406,7 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
                 const PatchVec c{(rS.mPts[t[0]][0] + rS.mPts[t[1]][0] + rS.mPts[t[2]][0]) / 3.0,
                                  (rS.mPts[t[0]][1] + rS.mPts[t[1]][1] + rS.mPts[t[2]][1]) / 3.0,
                                  (rS.mPts[t[0]][2] + rS.mPts[t[1]][2] + rS.mPts[t[2]][2]) / 3.0};
-                const double s = ql_dot(ql_unit(ql_sub(c, rS.mPts[v])), dir);
+                const double s = vec3_dot(ql_unit(vec3_sub(c, rS.mPts[v])), dir);
                 if (s > fbest) {
                     fbest = s;
                     ft = f;
@@ -428,7 +416,7 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
             double bbest = -2.0;
             for (int k = 0; k < 4; ++k) {
                 const PatchVec b = cross_branch(rS.mField, ft, k);
-                const double s = ql_dot(b, dir);
+                const double s = vec3_dot(b, dir);
                 if (s > bbest) {
                     bbest = s;
                     branch = b;
@@ -441,7 +429,7 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
                 for (std::size_t u : rS.mTris[f]) {
                     if (u == v || used[u])
                         continue;
-                    const double s = ql_dot(ql_unit(ql_sub(rS.mPts[u], rS.mPts[v])), branch);
+                    const double s = vec3_dot(ql_unit(vec3_sub(rS.mPts[u], rS.mPts[v])), branch);
                     if (s > nbest + 1e-12 || (std::abs(s - nbest) <= 1e-12 && u < next)) {
                         nbest = s;
                         next = u;
@@ -451,7 +439,7 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
                 ok = false;
                 break;
             }
-            dir = ql_unit(ql_sub(rS.mPts[next], rS.mPts[v]));
+            dir = ql_unit(vec3_sub(rS.mPts[next], rS.mPts[v]));
             used[next] = 1;
             path.push_back(next);
             v = next;
@@ -525,20 +513,20 @@ std::vector<double> ql_turns(const QlState& rS, const std::vector<std::size_t>& 
             if (!rIn[f])
                 continue;
             const PatchTri& t = rS.mTris[f];
-            const PatchVec c = ql_cross(ql_sub(rS.mPts[t[1]], rS.mPts[t[0]]),
-                                        ql_sub(rS.mPts[t[2]], rS.mPts[t[0]]));
+            const PatchVec c = vec3_cross(vec3_sub(rS.mPts[t[1]], rS.mPts[t[0]]),
+                                          vec3_sub(rS.mPts[t[2]], rS.mPts[t[0]]));
             for (std::size_t j = 0; j < 3; ++j)
                 n[j] += c[j];
         }
         // In the tangent plane: the chords without their normal parts.
         n = ql_unit(n);
         const auto flat = [&](const PatchVec& rD) {
-            const double h = ql_dot(rD, n);
+            const double h = vec3_dot(rD, n);
             return PatchVec{rD[0] - h * n[0], rD[1] - h * n[1], rD[2] - h * n[2]};
         };
-        const PatchVec da = flat(ql_sub(a, p)), db = flat(ql_sub(b, p));
+        const PatchVec da = flat(vec3_sub(a, p)), db = flat(vec3_sub(b, p));
         double ang = ql_angle_deg(da, db);
-        if (ql_dot(ql_cross(PatchVec{-da[0], -da[1], -da[2]}, db), n) < 0.0)
+        if (vec3_dot(vec3_cross(PatchVec{-da[0], -da[1], -da[2]}, db), n) < 0.0)
             ang = 360.0 - ang;
         beta[i] = ang;
     }
@@ -552,7 +540,7 @@ bool ql_split_ngon(QlState& rS, const QlPiece& rPiece, const std::vector<std::si
     const std::size_t nb = rB.size();
     std::vector<double> s(nb + 1, 0.0);
     for (std::size_t i = 0; i < nb; ++i)
-        s[i + 1] = s[i] + ql_norm(ql_sub(rS.mPts[rB[(i + 1) % nb]], rS.mPts[rB[i]]));
+        s[i + 1] = s[i] + vec3_norm(vec3_sub(rS.mPts[rB[(i + 1) % nb]], rS.mPts[rB[i]]));
     const double perim = s[nb];
     const auto gap = [&](std::size_t A, std::size_t B) {
         return B >= A ? s[B] - s[A] : perim - s[A] + s[B];
@@ -766,7 +754,7 @@ std::vector<std::size_t> ql_corners(QlState& rS, const QlPiece& rPiece,
         pos[rB[i]] = i;
     std::vector<double> s(nb + 1, 0.0);
     for (std::size_t i = 0; i < nb; ++i)
-        s[i + 1] = s[i] + ql_norm(ql_sub(rS.mPts[rB[(i + 1) % nb]], rS.mPts[rB[i]]));
+        s[i + 1] = s[i] + vec3_norm(vec3_sub(rS.mPts[rB[(i + 1) % nb]], rS.mPts[rB[i]]));
     const double perim = s[nb];
     const auto gap = [&](std::size_t A, std::size_t B) {  // arc length from A forward to B
         return B >= A ? s[B] - s[A] : perim - s[A] + s[B];
@@ -991,7 +979,7 @@ bool ql_split_strips(QlState& rS, const QlQuad& rQ, std::size_t D, std::size_t N
     const auto cumulative = [&](const std::vector<std::size_t>& rSt) {
         std::vector<double> c(rSt.size(), 0.0);
         for (std::size_t t = 1; t < rSt.size(); ++t)
-            c[t] = c[t - 1] + ql_norm(ql_sub(rS.mPts[b[rSt[t]]], rS.mPts[b[rSt[t - 1]]]));
+            c[t] = c[t - 1] + vec3_norm(vec3_sub(rS.mPts[b[rSt[t]]], rS.mPts[b[rSt[t - 1]]]));
         return c;
     };
     const std::size_t c0 = rQ.mCorners[D], c1 = rQ.mCorners[(D + 1) % 4];
@@ -1100,7 +1088,7 @@ std::vector<QlQuad> ql_refine(QlState& rS, std::vector<QlQuad> Quads, double Tar
             for (std::size_t t = a; t < e; ++t) {
                 const std::size_t u = q.mBoundary[t], v = q.mBoundary[(t + 1) % nb];
                 half[{u, v}] = {i, j};
-                len[i][j] += ql_norm(ql_sub(rS.mPts[v], rS.mPts[u]));
+                len[i][j] += vec3_norm(vec3_sub(rS.mPts[v], rS.mPts[u]));
             }
         }
     }
@@ -1168,8 +1156,8 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
     // 1. Features: creases and label changes are cuts.
     std::vector<PatchVec> normal(nt);
     for (std::size_t f = 0; f < nt; ++f)
-        normal[f] = ql_unit(ql_cross(ql_sub(rPts[rTris[f][1]], rPts[rTris[f][0]]),
-                                     ql_sub(rPts[rTris[f][2]], rPts[rTris[f][0]])));
+        normal[f] = ql_unit(vec3_cross(vec3_sub(rPts[rTris[f][1]], rPts[rTris[f][0]]),
+                                       vec3_sub(rPts[rTris[f][2]], rPts[rTris[f][0]])));
     const bool labelled = rOptions.mLabels.size() == nt;
     std::vector<std::array<std::uint8_t, 3>> feature(nt, {0, 0, 0});
     CrossFieldOptions co;

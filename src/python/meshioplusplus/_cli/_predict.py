@@ -2,28 +2,13 @@
 
 import sys
 
-from .._helpers import _reader_names, _writer_names
+from ._common import add_io_args
 
 
 def add_args(parser):
     parser.add_argument("checkpoint", type=str, help="a trained .mdlus checkpoint")
-    parser.add_argument("infile", type=str, help="mesh file to predict on")
-    parser.add_argument("outfile", type=str, help="where to write the prediction")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
-    parser.add_argument(
-        "--output-format",
-        "-o",
-        type=str,
-        choices=_writer_names(),
-        help="output file format",
-        default=None,
+    add_io_args(
+        parser, "where to write the prediction", in_help="mesh file to predict on"
     )
     parser.add_argument(
         "--time-step",

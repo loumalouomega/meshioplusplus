@@ -25,6 +25,7 @@
 #include <vector>
 
 // Project includes
+#include "fem_kernels.hpp"
 #include "layer_sweep.hpp"
 
 namespace meshioplusplus::detail {
@@ -69,12 +70,10 @@ double layer_cell_scaled_jacobian(const double* pX, const LayerSweepCell& rCell,
             sj = std::min(sj, ls_corner(c[b + 4], c[p + 4], c[n + 4], c[b]));
         }
     } else if (Kind == 6) {
-        static constexpr int kT[6][3] = {{1, 2, 3}, {2, 0, 4}, {0, 1, 5},
-                                         {5, 4, 0}, {3, 5, 1}, {4, 3, 2}};
         for (std::size_t i = 0; i < 6; ++i)
-            sj = std::min(sj, ls_corner(c[i], c[static_cast<std::size_t>(kT[i][0])],
-                                        c[static_cast<std::size_t>(kT[i][1])],
-                                        c[static_cast<std::size_t>(kT[i][2])]));
+            sj = std::min(sj, ls_corner(c[i], c[static_cast<std::size_t>(kWedgeCornerEdges[i][0])],
+                                        c[static_cast<std::size_t>(kWedgeCornerEdges[i][1])],
+                                        c[static_cast<std::size_t>(kWedgeCornerEdges[i][2])]));
     } else if (Kind == 5) {
         for (std::size_t i = 0; i < 4; ++i)
             sj = std::min(sj, ls_corner(c[i], c[(i + 1) % 4], c[(i + 3) % 4], c[4]));

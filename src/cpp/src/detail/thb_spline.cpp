@@ -22,7 +22,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <utility>
 #include <vector>
 
@@ -244,27 +243,11 @@ BsplineFitResult thb_fit_patch(const std::vector<PatchVec>& rPts,
 
     // The samples on the unit square, as `bspline_fit_patch` takes them:
     // the vertices, then the facet centres.
-    double lo[2] = {std::numeric_limits<double>::infinity(),
-                    std::numeric_limits<double>::infinity()};
-    double hi[2] = {-lo[0], -lo[1]};
-    std::vector<std::uint8_t> used(rPts.size(), 0);
-    for (const PatchTri& t : rTris)
-        for (std::size_t i : t)
-            used[i] = 1;
-    for (std::size_t i = 0; i < rPts.size(); ++i)
-        if (used[i]) {
-            lo[0] = std::min(lo[0], rU[i]);
-            hi[0] = std::max(hi[0], rU[i]);
-            lo[1] = std::min(lo[1], rV[i]);
-            hi[1] = std::max(hi[1], rV[i]);
-        }
-    double ext[2] = {hi[0] - lo[0], hi[1] - lo[1]};
-    if (!(ext[0] > 0.0) || !(ext[1] > 0.0))
+    double lo[2];
+    double ext[2];
+    std::vector<std::uint8_t> used;
+    if (!bspline_fit_param_box(rPts, rTris, rU, rV, rOptions.mMargin, lo, ext, used))
         return out;
-    for (int d = 0; d < 2; ++d) {
-        lo[d] -= rOptions.mMargin * ext[d];
-        ext[d] *= 1.0 + 2.0 * rOptions.mMargin;
-    }
     std::vector<double> xyz, su, sv, sw;
     std::vector<std::size_t> vert_of;
     for (std::size_t i = 0; i < rPts.size(); ++i)

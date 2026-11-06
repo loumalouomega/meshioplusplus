@@ -24,6 +24,7 @@
 
 // Project includes (private, not installed)
 #include "bspline_lsq.hpp"
+#include "bspline_ndu.hpp"
 #include "nurbs_eval.hpp"
 
 namespace meshioplusplus {
@@ -77,19 +78,7 @@ void bspline_basis_ders(std::size_t Span, double U, int P, int NDer,
     std::array<double, (kBsplineMaxDegree + 1) * (kBsplineMaxDegree + 1)> ndu{};
     std::array<double, kBsplineMaxDegree + 1> left{}, right{};
     const auto at = [p](std::size_t R, std::size_t C) { return R * (p + 1) + C; };
-    ndu[at(0, 0)] = 1.0;
-    for (std::size_t j = 1; j <= p; ++j) {
-        left[j] = U - rKnots[Span + 1 - j];
-        right[j] = rKnots[Span + j] - U;
-        double saved = 0.0;
-        for (std::size_t r = 0; r < j; ++r) {
-            ndu[at(j, r)] = right[r + 1] + left[j - r];
-            const double temp = ndu[at(r, j - 1)] / ndu[at(j, r)];
-            ndu[at(r, j)] = saved + right[r + 1] * temp;
-            saved = left[j - r] * temp;
-        }
-        ndu[at(j, j)] = saved;
-    }
+    bspline_ndu(Span, U, p, rKnots, ndu, left, right);
     for (std::size_t k = 0; k <= nd; ++k)
         for (std::size_t j = 0; j <= p; ++j)
             pDers[k * (p + 1) + j] = 0.0;

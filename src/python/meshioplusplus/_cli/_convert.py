@@ -3,7 +3,8 @@ import pathlib
 import numpy as np
 
 from .._colormap import NAMES as CMAP_NAMES
-from .._helpers import _filetypes_from_path, _reader_names, _writer_names, read, write
+from .._helpers import _filetypes_from_path, read, write
+from ._common import add_io_args
 from ._json import emit_json
 
 # Colouring reaches the writer as keyword arguments, and only the SVG and TikZ
@@ -16,23 +17,7 @@ _SUFFIX_FORMAT = {"glb": "gltf"}
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="mesh file to be read from")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
-    parser.add_argument(
-        "--output-format",
-        "-o",
-        type=str,
-        choices=_writer_names(),
-        help="output file format",
-        default=None,
-    )
+    add_io_args(parser, output_format=True)
     parser.add_argument(
         "--ascii",
         "-a",

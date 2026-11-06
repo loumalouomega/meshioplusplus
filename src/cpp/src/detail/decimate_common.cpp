@@ -25,6 +25,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "decimate_shared.hpp"
 #include "slot_runs.hpp"
 
 namespace meshioplusplus {
@@ -241,17 +242,7 @@ void decim_face_normal(const std::vector<double>& rXyz, const std::int64_t* pCor
 std::vector<std::int64_t> decim_vertex_ring(const std::vector<std::int64_t>& rVFaces,
                                             const std::vector<std::int64_t>& rCorners,
                                             std::int64_t v) {
-    std::vector<std::int64_t> ring;
-    ring.reserve(rVFaces.size() * 2);
-    for (std::int64_t f : rVFaces) {
-        const std::int64_t* c = rCorners.data() + static_cast<std::size_t>(f) * 3;
-        for (int k = 0; k < 3; ++k)
-            if (c[k] != v)
-                ring.push_back(c[k]);
-    }
-    std::sort(ring.begin(), ring.end());
-    ring.erase(std::unique(ring.begin(), ring.end()), ring.end());
-    return ring;
+    return decim_corner_ring<3>(rVFaces, rCorners, v);
 }
 
 std::size_t decim_count_common(const std::vector<std::int64_t>& rA,

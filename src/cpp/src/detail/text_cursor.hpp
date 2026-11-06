@@ -320,6 +320,30 @@ inline bool parse_int_token(std::string_view Token, std::int64_t& rOut) {
 }
 
 /**
+ * @brief A strict base-10 `int64` over the whole of @p Text: an optional sign
+ * then digits only (no blanks), false when the magnitude exceeds
+ * `INT64_MAX` (so `INT64_MIN` itself is rejected). @p rValue is untouched on
+ * failure.
+ */
+inline bool parse_int64_strict(std::string_view rText, std::int64_t& rValue) {
+    if (rText.empty())
+        return false;
+    std::size_t i = rText[0] == '-' || rText[0] == '+' ? 1 : 0;
+    if (i >= rText.size())
+        return false;
+    std::int64_t v = 0;
+    for (; i < rText.size(); ++i) {
+        if (rText[i] < '0' || rText[i] > '9')
+            return false;
+        if (v > (std::numeric_limits<std::int64_t>::max() - (rText[i] - '0')) / 10)
+            return false;  // more digits than an int64 holds
+        v = v * 10 + (rText[i] - '0');
+    }
+    rValue = rText[0] == '-' ? -v : v;
+    return true;
+}
+
+/**
  * @brief `strtoll(token, nullptr, 10)` on @p Token: the longest base-10 prefix
  * (after blanks and a sign), 0 when there is none, saturated when out of
  * range -- the lenient parse, which ignores what follows the number.
