@@ -281,6 +281,10 @@ struct OctreeMeshResult {
     std::int64_t mNumGapsFilled = 0;                ///< Chain gaps filled with tetrahedra.
     std::int64_t mNumGapsSkipped = 0;               ///< Chain gaps left open.
     std::int64_t mNumCollapsed = 0;                 ///< Degenerate tetrahedra removed by collapsing their nodes.
+    std::int64_t mNumCapsRemoved = 0;               ///< Flat caps dropped because their opposite face is on the skin or an interface.
+    std::int64_t mNumSplit = 0;                     ///< Tetrahedra split at the apex of a flat cap over an interior face.
+    std::int64_t mNumSlivers = 0;                   ///< Flat slivers removed by inserting a node where their opposite edges cross.
+    std::int64_t mNumUntangled = 0;                 ///< Inverted tetrahedra repaired by moving a free node.
     std::int64_t mNumReordered = 0;                 ///< Inverted tetrahedra made positive by swapping two nodes.
     std::int64_t mNumOverlaps = 0;                  ///< Pairs of tetrahedra sharing a face whose opposite nodes lie on the same side of it.
     /// The Labelle-Shewchuk dihedral bound applies to every tetrahedron:
