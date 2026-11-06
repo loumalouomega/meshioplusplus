@@ -1057,10 +1057,9 @@ def roadmap_map():
         (
             "§5 performance",
             [
-                ("harness: gate, rows", "M"),
+                ("harness: missing rows", "M"),
                 ("wheel runtimes: CI probe", "S"),
-                ("ragged rows across Python", "M"),
-                ("text I/O: chunked parse, rest", "S"),
+                ("text I/O: VTU number errors", "S"),
                 ("HDF5: appends, lock scope", "L"),
                 ("WASM copies · worst-cell smoothing", "M"),
                 ("Python layers · sequences", "M"),
