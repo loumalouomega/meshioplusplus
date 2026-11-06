@@ -299,6 +299,7 @@ export default defineConfig({
           { text: "Benchmarks", link: "/benchmarks" },
           { text: "Benchmark trends", link: "/benchmark_trends" },
           { text: "Fuzzing and sanitizers", link: "/fuzzing" },
+          { text: "Static analysis", link: "/static_analysis" },
           { text: "Roadmap", link: "/roadmap" },
           { text: "Long-run spikes: findings", link: "/spikes" },
           { text: "3-D octree mesher: plan", link: "/octree_mesh_3d_plan" },

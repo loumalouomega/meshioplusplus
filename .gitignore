@@ -87,6 +87,10 @@ build-library-fuzz/
 *.egg-info/
 .pytest_cache/
 .coverage
+# SonarCloud scan inputs and scratch (doc/static_analysis.md)
+/compile_commands.json
+/cpp-coverage-sonar.xml
+.scannerwork/
 .tox/
 foo.vtk
 .vscode/*
