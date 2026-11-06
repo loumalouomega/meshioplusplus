@@ -35,14 +35,18 @@ std::pair<double, double> tet_volume_and_tolerance(const std::vector<Vec3>& rPoi
     const auto point = [&](const std::int64_t I) -> const Vec3& {
         return rPoints[static_cast<std::size_t>(I)];
     };
-    double longest = 0.0;
+    // The longest edge from the largest squared one: a square root is monotonic and exact, so
+    // this is the maximum of the six norms bit for bit, with one square root instead of six.
+    double longest_sq = 0.0;
     double largest_coordinate = 0.0;
     for (int i = 0; i < 4; ++i) {
         for (const double c : point(rTet[i]))
             largest_coordinate = std::max(largest_coordinate, std::abs(c));
         for (int j = i + 1; j < 4; ++j)
-            longest = std::max(longest, vec3_norm(vec3_sub(point(rTet[j]), point(rTet[i]))));
+            longest_sq =
+                std::max(longest_sq, vec3_norm_sq(vec3_sub(point(rTet[j]), point(rTet[i]))));
     }
+    const double longest = std::sqrt(longest_sq);
     // The arithmetic of the octree volume fix this was lifted from (the operations'
     // outputs are pinned bit for bit): (b - a) x (c - a) . (d - a).
     const double volume = vec3_dot(vec3_cross(vec3_sub(point(rTet[1]), point(rTet[0])),

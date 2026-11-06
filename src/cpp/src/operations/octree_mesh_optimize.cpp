@@ -241,16 +241,28 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
         if (rO.mDihedralFloorGuard) {
             // Clearly positive before the round, inverted or within the zero
             // tolerance now (the dihedral angles do not see the sign).
-            const auto spoiled_by_move = [&](const std::array<std::int64_t, 4>& rT) {
-                const auto [volume_now, tolerance_now] =
-                    octree_mesh_volume_and_tolerance(pts, rT, rO.mZeroVolumeFactor);
+            // Per tetrahedron, whether it is fine now (1), zero or inverted (0), or not looked at
+            // since a node of it last changed (-1): each of its nodes asks within a sweep.
+            std::vector<std::int8_t> fine_now(tets.size(), -1);
+            const auto spoiled_by_move = [&](const std::size_t T) {
+                const std::array<std::int64_t, 4>& rT = tets[T];
+                if (fine_now[T] < 0) {
+                    const auto [volume_now, tolerance_now] =
+                        octree_mesh_volume_and_tolerance(pts, rT, rO.mZeroVolumeFactor);
+                    fine_now[T] = volume_now > tolerance_now ? 1 : 0;
+                }
+                // Most tetrahedra are fine now: the state before the round is only looked at
+                // for the few that are not.
+                if (fine_now[T] == 1)
+                    return false;
                 const auto [volume_before, tolerance_before] =
                     octree_mesh_volume_and_tolerance(before, rT, rO.mZeroVolumeFactor);
-                return volume_now <= tolerance_now && volume_before > tolerance_before;
+                return volume_before > tolerance_before;
             };
             for (int sweep = 0; sweep < 64; ++sweep) {
                 octmo_angles(pts, tets, angle);
                 octmo_max_angles(pts, tets, big);
+                std::fill(fine_now.begin(), fine_now.end(), std::int8_t{-1});
                 bool any = false;
                 for (std::size_t p = 0; p < np; ++p) {
                     if (pts[p] == before[p])
@@ -258,8 +270,10 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
                     for (std::int64_t t : inc[p])
                         if (angle[static_cast<std::size_t>(t)] < floor ||
                             big[static_cast<std::size_t>(t)] > ceiling ||
-                            spoiled_by_move(tets[static_cast<std::size_t>(t)])) {
+                            spoiled_by_move(static_cast<std::size_t>(t))) {
                             pts[p] = before[p];
+                            for (std::int64_t u : inc[p])
+                                fine_now[static_cast<std::size_t>(u)] = -1;
                             any = true;
                             break;
                         }
