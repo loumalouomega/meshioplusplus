@@ -250250,9 +250250,33 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
             for (const Index v : rTets.mTets[t])
                 star[fill[static_cast<std::size_t>(v)]++] = t;
     };
+    // Whether some examined tetrahedron has a volume that @p rIsBad (given the volume and its
+    // tolerance) accepts. A mesh with none skips the repair that follows, and the incidence
+    // tables and face maps it would have built for nothing.
+    const auto any_tet = [&](const auto& rIsBad) {
+        for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+            if (!considered(t))
+                continue;
+            const auto [volume, tolerance] = volume_and_tolerance(rTets.mTets[t]);
+            if (rIsBad(volume, tolerance))
+                return true;
+        }
+        return false;
+    };
+    // The conditions the passes below select a tetrahedron by.
+    const auto is_zero = [](const double Volume, const double Tolerance) {
+        return !(std::abs(Volume) > Tolerance);
+    };
+    const auto is_flat = [](const double Volume, const double Tolerance) {
+        return !(Volume > Tolerance);
+    };
+    const auto is_inverted = [](const double Volume, const double) { return !(Volume >= 0.0); };
+
     std::vector<Index> merge(rTets.mPoints.size());
     std::vector<std::uint8_t> touched(rTets.mPoints.size());
     for (int pass = 0; pass < kMaxCollapsePasses; ++pass) {
+        if (!any_tet(is_zero))
+            break;
         std::fill(touched.begin(), touched.end(), std::uint8_t{0});
         bool any = false;
         for (std::size_t i = 0; i < merge.size(); ++i)
@@ -250383,6 +250407,8 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
     };
     constexpr int kMaxCapPasses = 3;
     for (int pass = 0; pass < kMaxCapPasses; ++pass) {
+        if (!any_tet(is_flat))
+            break;
         // The tetrahedra of every face, by sorted node triplet.
         std::map<std::array<Index, 3>, std::vector<std::size_t>> faces_of;
         for (std::size_t t = 0; t < rTets.mTets.size(); ++t)
@@ -250479,6 +250505,8 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
     // The crossing has to lie inside both edges, and the edges have to be this close, relative
     // to the shorter one, to count as crossing.
     for (int pass = 0; pass < kMaxSliverPasses; ++pass) {
+        if (!any_tet(is_flat))
+            break;
         build_star();
         std::fill(touched.begin(), touched.end(), std::uint8_t{0});
         touched.resize(rTets.mPoints.size(), 0);
@@ -250591,7 +250619,8 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
 
     // An inverted tetrahedron is untangled by moving a free node (neither on the skin nor on a
     // feature) to the centroid of the nodes around it, when this leaves its whole star positive.
-    build_star();
+    if (any_tet(is_inverted))
+        build_star();
     for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
         if (!considered(t) || volume_and_tolerance(rTets.mTets[t]).first >= 0.0)
             continue;
