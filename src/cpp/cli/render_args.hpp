@@ -9,6 +9,7 @@
 // `cli_parse`), in the native CLI and in the Python binding alike. Extracted
 // from main.cpp so the loop and the binding share it (roadmap 7.2.5, 7.2.11).
 
+#include <initializer_list>
 #include <map>
 #include <optional>
 #include <set>
@@ -73,6 +74,24 @@ bool has_opt(const cli_parsed& rP, const std::string& rName);
 /// `--vmax`), shared by `convert` and `snapshot` so both read them alike.
 void cli_color_values(const cli_parsed& rP, std::optional<int>& rComponent,
                       std::optional<double>& rVMin, std::optional<double>& rVMax);
+
+/// Concatenate spec tables in order: a verb's table built from the shared
+/// subsets below and its own entries, e.g.
+/// `cli_specs({io_flag_specs(), {{"tolerance", {}, true}}, report_flag_specs()})`.
+std::vector<cli_opt_spec> cli_specs(std::initializer_list<std::vector<cli_opt_spec>> Parts);
+
+/// `--input-format/-i`: the input side of a verb that reads one mesh.
+std::vector<cli_opt_spec> input_flag_specs();
+
+/// `--input-format/-i` then `--output-format/-o`: a verb that reads and writes.
+std::vector<cli_opt_spec> io_flag_specs();
+
+/// `--json` then `--quiet/-q`: how a verb reports.
+std::vector<cli_opt_spec> report_flag_specs();
+
+/// The `--color-by` family (`--color-by` .. `--colorbar`), shared by `convert`
+/// and the render flags.
+std::vector<cli_opt_spec> color_flag_specs();
 
 /// The flags every software-rendering verb shares: one vocabulary.
 std::vector<cli_opt_spec> render_flag_specs();
