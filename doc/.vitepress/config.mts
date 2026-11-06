@@ -73,6 +73,7 @@ export default defineConfig({
           { text: "Node ordering", link: "/node_ordering" },
           { text: "Named regions", link: "/regions" },
           { text: "Polyhedra and ragged cells", link: "/polyhedra" },
+          { text: "Shared geometry and FEM kernels", link: "/geometry_kernels" },
           { text: "C++ mesh backends", link: "/cpp_backends" },
         ],
       },

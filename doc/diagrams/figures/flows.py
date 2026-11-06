@@ -1035,6 +1035,8 @@ def roadmap_map():
                 ("OSS-Fuzz submission", "S"),
                 ("CalculiX validators in CI", "S"),
                 ("meshing corpora: sources", "S"),
+                ("code cleaning by SonarCloud", "L"),
+                ("Clang-Tidy beyond includes", "M"),
             ],
             [],
         ),

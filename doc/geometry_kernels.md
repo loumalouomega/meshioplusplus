@@ -1,0 +1,73 @@
+# Shared geometry and FEM kernels
+
+Many operations evaluate the same small formulas per cell: a tetrahedron's signed volume, the scaled Jacobian at a corner, a centroid, a cross product. Before November 2026 most of them carried private copies. This page records where the shared versions live, the rules for using and extending them, and the design question of how far to take them: a layer of plain kernels, or a geometry class hierarchy in the style of [Kratos Multiphysics](https://github.com/KratosMultiphysics/Kratos). The cleaning work still open is [roadmap item 3.4](./roadmap.md#quality-of-implementation), ordered by SonarCloud's duplication report ([static analysis](./static_analysis.md)).
+
+## Where the shared code lives
+
+| Header | Contents |
+| --- | --- |
+| `include/meshioplusplus/detail/geometry.hpp` (installed) | `Vec3`, `vec3_sub`, `vec3_add`, `vec3_scale`, `vec3_dot`, `vec3_cross`, `vec3_norm_sq`, `vec3_norm`, `vec3_normalize`, `triple_product`, `det3`; `read_point`, `read_corner_coords`, `cell_corner_count`. |
+| `src/cpp/src/detail/fem_kernels.hpp` (private) | `tet_volume6` and `tet_volume`; `det_unit3`, the per-corner factor of the scaled Jacobian that `quality` reports; `corner_jacobian_ratio`, the same factor as one division; `kHexCornerEdges` and `kWedgeCornerEdges`, the corner frames of a hexahedron and a wedge. |
+| `src/cpp/src/detail/cell_centroids.hpp` (private) | `cell_centroids`, per-cell centroids of a whole mesh in global cell order (`partition`, `interpolate`). |
+| `include/meshioplusplus/detail/polyhedron.hpp` | Polygon and polyhedron measures: `poly_measure`, `polygon_area_vector`, `polygon_centroid`, `cell_volume_from_corners`. |
+| `include/meshioplusplus/detail/cell_faces.hpp`, `cell_edges.hpp`, `cell_subdivision.hpp` | Topology tables per cell type: outward faces, edges, refinement edges and quad faces. |
+| `src/cpp/src/detail/predicates.hpp` | Exact `orient2d`, `orient3d`, `incircle`, `insphere`. |
+
+The private headers carry no ABI cost, so a kernel starts there. It moves to an installed header only when an installed inline function needs it, and that move follows the [ABI policy](./abi.md).
+
+## Rules
+
+- **Do not add a file-local copy.** Use the kernels above, and add the missing formula to them instead of to the operation.
+- **Keep the arithmetic.** A shared kernel replaces a copy only when it computes the same operations in the same order. `a·(b×c)` and a cofactor expansion of the same determinant are equal in exact arithmetic but round differently, and the operations' outputs are pinned bit for bit by the [determinism check](./benchmarks.md#determinism-check). A copy whose arithmetic differs stays until its own output is shown unchanged, or until a change in its results is intended and recorded.
+- **Keep deliberate copies.** A few copies say why they exist. `smooth_facefan_volume` is a flat-buffer variant of `quality`'s face-fan volume, kept out of a hot loop's allocation. `grad_ring_area_vector` is a recentred Newell sum, better conditioned than the plain one. Those comments stay with the code.
+- **Prove it.** Run `tools/bench_ops.sh` with `--hash` before and after the change, with `BASELINE` pointing at the first run. Run the [instruction-count gate](./benchmarks.md#instruction-count-gate) too: an inline kernel must cost what the copy cost.
+
+## What the first pass shared
+
+These kernels replaced copies with identical arithmetic:
+
+- the tetrahedron's six-times signed volume (`quality`, `optimize_volume`, `tetrahedralize`, `isosurface_stuffing`, `feature_snap`, `conservative_interpolate`);
+- the unit-edge corner determinant (`quality`, `optimize_volume`);
+- the hexahedron and wedge corner tables (`quality`, `hex_fit`, `layer_sweep`);
+- the centroid gather (`partition`, `interpolate`);
+- 70 file-local sub, dot, cross, norm, add, scale and distance helpers across 27 sources, now `geometry.hpp`'s.
+
+What remains is listed under roadmap 3.4.
+
+## Kernels or a geometry hierarchy?
+
+Kratos models each element shape as a class: `Geometry<TPointType>` is the base, and `Triangle2D3`, `Tetrahedra3D4`, `Hexahedra3D8` and the rest derive from it. Each instance holds its points and answers `ShapeFunctionsValues`, `ShapeFunctionsLocalGradients`, `Jacobian`, `DeterminantOfJacobian`, `IntegrationPoints` and `ShapeFunctionsIntegrationPointsGradients`, with the shape-function values at the integration points computed once per geometry type and shared. Two designs are possible for meshio++.
+
+### Option A: a static kernel layer (recommended)
+
+Free inline functions over gathered corners, plus `constexpr` per-type tables, dispatched by the `switch (CellType)` the operations already use:
+
+- **Measures and frames**: what `fem_kernels.hpp` holds today, plus barycentric coordinates, dihedral angles and the P1 gradient of a simplex.
+- **Reference elements**: per cell type, its corner coordinates, its corner frames and its faces and edges (reusing `cell_faces` and `cell_edges` rather than adding a second table), as `constexpr` data.
+- **Interpolation**: shape functions `N` and their local derivatives `dN/dξ` per cell type and order, then `jacobian(corners, dN)`, its determinant and inverse, and the physical gradients.
+- **Quadrature**: Gauss–Legendre points and weights on the line, and the standard rules on the triangle, tetrahedron, quadrilateral, hexahedron, wedge and pyramid.
+
+This layer fits how operations already work. They gather corners through the uniform mesh API (`CellView`, `read_corner_coords`) and loop over cells in `parallel_for`. Kernels on the stack cost nothing over the copies they replace, need no allocation per cell, and work unchanged on the MESHIO, NATIVE and KRATOS mesh backends. Private kernels are no ABI surface.
+
+### Option B: a Kratos-style geometry hierarchy
+
+A `Geometry` base class with virtual shape functions, Jacobians and integration rules, one derived class per cell type, constructed per cell. In its favour:
+
+- FEM users already know its vocabulary.
+- One object can cache shape-function data per integration point across many evaluations.
+- An operation can be written against the base class with no per-type switch.
+
+Against it, for this library:
+
+- **Cost in the hot loops.** A virtual call or an object per cell inside the per-cell loops would move the instruction counts the gate pins. Meshes store connectivity, not geometry objects, so each cell would have to be wrapped first.
+- **A second hierarchy.** The KRATOS mesh backend already wraps Kratos' own geometries, and a second hierarchy would shadow them.
+- **ABI and API surface.** An installed class hierarchy is layout and ABI surface (every virtual function counts), and every binding would want it exposed.
+- **Little need today.** Few operations integrate: `data_integrate` uses a one-point measure, `cut` uses the external `cutcells` rules, and `surface_fem` assembles P1 triangles in closed form. None needs cached integration-point data.
+
+### A middle path
+
+A non-virtual `GeometryView` can give Kratos-like call sites without virtual dispatch: a `CellView` plus the points, whose methods (`Volume()`, `Jacobian(xi)`, `ShapeFunctions(xi)`) forward to the Option A kernels through a `switch` on the cell type or a template on it. It can be added on top of Option A whenever an operation reads better with it, and costs nothing until then.
+
+### Decision rule
+
+Build Option A first. Take Option B only when an operation needs integration-point data cached across many evaluations of the same cells, for example an assembly-heavy operation or a solver-facing interpolation. Even then, it belongs in a private header first, built on Option A's kernels, so the arithmetic stays in one place.
