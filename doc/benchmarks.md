@@ -1086,6 +1086,8 @@ A row more than 1% above its baseline fails, and so does a baseline row the run 
 
 The gate sees instructions, not time: a change that trades instructions for memory traffic or parallelism (a parallel path is not taken on one thread) is judged by the timed rows above, and a count that falls is not proof the operation got faster.
 
+**Re-recorded rows.** `octree_mesh_tet` (6,530,414,807 → 6,660,462,454, +2.0%) and `tetrahedralize_octree` (4,655,032,021 → 4,768,363,405, +2.4%) moved on purpose: the volume fix of `octree_mesh` ([octree_mesh](octree_mesh.md#the-tetrahedral-output)) is new work (collapse, cap, sliver and untangle passes, and a count of overlapping pairs) that every tetrahedral output now pays. The first version cost +6.5% and +7.8%; skipping the passes a mesh does not need, evaluating the optimiser's volume guard once per tetrahedron and sweep, and taking the longest edge from squared lengths brought it down without changing the output (the octree goldens pass unchanged). The rest is the passes' own scans and the sort behind the overlap count.
+
 ## Landing a performance change
 
 A performance change starts from a measured or code-verified slowdown in a path a user hits, with the shape of the fix named, and shows its before and after on the harness: `benchmark/bench.py` for I/O, `tools/bench_ops.sh` for operations, `benchmark/viewer_surface.mjs` for the browser viewer's render path. The [Clang-Tidy performance audit](#clang-tidy-performance-audit) finds candidates; its findings are advisory and must pass the same gates. The roadmap's performance section closed in October 2026; what was measured and not taken is recorded with its [non-goals](./roadmap.md#non-goals-and-decisions-taken).
