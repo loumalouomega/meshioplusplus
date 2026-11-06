@@ -35,9 +35,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <functional>
-#include <iterator>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -50,14 +48,13 @@
 #include "meshioplusplus/detail/decimate_common.hpp"
 #include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/cell_type.hpp"
-#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
-#include "../detail/crease_edges.hpp"
+#include "../detail/decimate_shared.hpp"
 #include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
@@ -70,12 +67,9 @@ namespace {
 // rather than a duplication.
 using detail::decim_accumulate_quadrics;
 using detail::decim_count_common;
-using detail::decim_face_normal;
 using detail::decim_face_planes;
 using detail::decim_place;
 using detail::decim_quadric_error;
-using detail::decim_sorted_erase;
-using detail::decim_sorted_insert;
 using detail::decim_vertex_faces_csr;
 using detail::decim_vertex_ring;
 using detail::DecimCsr;
@@ -251,21 +245,11 @@ std::vector<DecimEdgeKey> decim_build_edges(const DecimFaces& rFaces,
 // --- placement, error, normal-flip and link-condition primitives -----------
 // Hoisted into detail/decimate_common.{hpp,cpp}; brought into scope above.
 
-// A vector of Int64 as a 1-D NDArray.
-NDArray decim_int64_vector(const std::vector<std::int64_t>& rValues) {
-    NDArray a = NDArray::Uninit(DType::Int64, {rValues.size()});
-    if (!rValues.empty())
-        std::memcpy(a.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
-    return a;
-}
-
 // A Float64 working copy of a float-kind point_data array, blended in place at
-// each collapse commit.
-struct DecimFloatData {
-    std::string mName;
-    std::size_t mNumComponents = 0;
-    std::vector<double> mValues;  // n * mNumComponents
-};
+// each collapse commit, and the rest of the commit/emission plumbing shared
+// with volume decimation: detail/decimate_shared.hpp.
+using detail::decim_int64_vector;
+using detail::DecimFloatData;
 
 }  // namespace
 
@@ -322,21 +306,9 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     decim_face_planes(faces, xyz, quad_k, fnormals);
 
     // --- phase 2: the pin mask (caller | boundary | feature) -----------------
-    std::vector<std::uint8_t> pinned(n, 0);
-    if (!rOptions.mFrozen.empty())
-        for (std::size_t i = 0; i < n; ++i)
-            pinned[i] = rOptions.mFrozen[i] ? 1 : 0;
-    if (rOptions.mPreserveBoundary)
-        for (std::size_t i = 0; i < n; ++i)
-            if (boundary[i])
-                pinned[i] = 1;
-    if (rOptions.mPreserveFeatures) {
-        // The shared per-edge crease test (v16.23.0): only the two faces that
-        // share an edge are compared, and non-manifold edges pin too.
-        detail::pin_crease_endpoints(
-            detail::crease_edges_triangles(faces.mCorners, fnormals, rOptions.mFeatureAngleDeg),
-            pinned);
-    }
+    const std::vector<std::uint8_t> pinned = detail::decim_pin_mask(
+        rOptions.mFrozen, boundary, rOptions.mPreserveBoundary, rOptions.mPreserveFeatures,
+        rOptions.mFeatureAngleDeg, faces.mCorners, fnormals, n);
 
     // --- phase 3: per-vertex quadrics (fixed ascending-face FP order) --------
     std::vector<double> quads = decim_accumulate_quadrics(csr, n, quad_k);
@@ -360,19 +332,7 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     }
 
     // Float64 working copies of the float-kind point_data, blended per commit.
-    std::vector<DecimFloatData> float_data;
-    for (const std::string& name : simp.PointDataNames()) {
-        const NDArray& a = simp.PointData(name);
-        if (!detail::is_float_dtype(a.Dtype()) || detail::rows(a) != n || n == 0)
-            continue;
-        DecimFloatData fd;
-        fd.mName = name;
-        fd.mNumComponents = a.Size() / n;
-        fd.mValues.resize(a.Size());
-        parallel_for_bw(a.Size(),
-                        [&](std::size_t i) { fd.mValues[i] = detail::read_double(a, i); });
-        float_data.push_back(std::move(fd));
-    }
+    std::vector<DecimFloatData> float_data = detail::decim_float_working_copies(simp, n);
 
     DecimPlaceCtx ctx;
     ctx.mpXyz = &xyz;
@@ -496,31 +456,9 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
         // no harm" rule -- and a survivor collapsing to zero area yields
         // n_after = 0, hence dot = 0, and is rejected by the same test.
         const DecimPlaced placed = decim_place(ctx, a, b);
-        bool flips = false;
-        {
-            const std::vector<std::int64_t>& fa = vfaces[static_cast<std::size_t>(a)];
-            const std::vector<std::int64_t>& fb = vfaces[static_cast<std::size_t>(b)];
-            merged.clear();
-            std::merge(fa.begin(), fa.end(), fb.begin(), fb.end(), std::back_inserter(merged));
-            std::size_t si = 0;
-            for (const std::int64_t f : merged) {
-                while (si < shared.size() && shared[si] < f)
-                    ++si;
-                if (si < shared.size() && shared[si] == f)
-                    continue;  // dies in the collapse: no constraint
-                const std::int64_t* c = faces.mCorners.data() + static_cast<std::size_t>(f) * 3;
-                double n0[3];
-                double n1[3];
-                decim_face_normal(xyz, c, a, b, nullptr, n0);
-                if (n0[0] == 0.0 && n0[1] == 0.0 && n0[2] == 0.0)
-                    continue;
-                decim_face_normal(xyz, c, a, b, placed.mX, n1);
-                if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] <= 0.0) {
-                    flips = true;
-                    break;
-                }
-            }
-        }
+        const bool flips = detail::decim_any_normal_flip(
+            xyz, faces.mCorners, vfaces[static_cast<std::size_t>(a)],
+            vfaces[static_cast<std::size_t>(b)], shared, a, b, placed.mX, merged);
         if (flips) {
             ++result.mCollapsesRejected;
             continue;
@@ -530,71 +468,14 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
         const std::int64_t s = pinned[static_cast<std::size_t>(b)] ? b : a;
         const std::int64_t r = s == a ? b : a;
 
-        // Blend parameter: project the placed point onto the edge, clamped to
-        // [0, 1]. Exact for Midpoint/Endpoint, an approximation for Optimal
-        // (the optimal point need not lie on the edge). A pinned survivor has
-        // placed == its own position, so t == 0 and the data provably keeps the
-        // survivor's values.
-        {
-            const double* xs = xyz.data() + static_cast<std::size_t>(s) * 3;
-            const double* xr = xyz.data() + static_cast<std::size_t>(r) * 3;
-            const double dx = xr[0] - xs[0];
-            const double dy = xr[1] - xs[1];
-            const double dz = xr[2] - xs[2];
-            const double den = dx * dx + dy * dy + dz * dz;
-            double t;
-            if (den == 0.0) {
-                t = 0.5;
-            } else {
-                t = ((placed.mX[0] - xs[0]) * dx + (placed.mX[1] - xs[1]) * dy +
-                     (placed.mX[2] - xs[2]) * dz) /
-                    den;
-                if (t < 0.0)
-                    t = 0.0;
-                if (t > 1.0)
-                    t = 1.0;
-            }
-            for (DecimFloatData& fd : float_data) {
-                double* vals = fd.mValues.data();
-                const std::size_t so = static_cast<std::size_t>(s) * fd.mNumComponents;
-                const std::size_t ro = static_cast<std::size_t>(r) * fd.mNumComponents;
-                for (std::size_t k = 0; k < fd.mNumComponents; ++k)
-                    vals[so + k] = vals[so + k] + t * (vals[ro + k] - vals[so + k]);
-            }
-        }
-
-        xyz[static_cast<std::size_t>(s) * 3] = placed.mX[0];
-        xyz[static_cast<std::size_t>(s) * 3 + 1] = placed.mX[1];
-        xyz[static_cast<std::size_t>(s) * 3 + 2] = placed.mX[2];
-        {
-            double* qs = quads.data() + static_cast<std::size_t>(s) * 10;
-            const double* qr = quads.data() + static_cast<std::size_t>(r) * 10;
-            for (int i = 0; i < 10; ++i)
-                qs[i] += qr[i];
-        }
+        // Blend the data, move the survivor, merge the quadrics.
+        detail::decim_commit_blend(xyz, quads, float_data, placed.mX, s, r);
 
         // Kill the shared faces (removing them from every corner's list), then
         // migrate the removed vertex's remaining faces onto the survivor.
-        for (const std::int64_t f : shared) {
-            face_alive[static_cast<std::size_t>(f)] = 0;
-            --alive_faces;
-            ++result.mFacesRemoved;
-            const std::int64_t* c = faces.mCorners.data() + static_cast<std::size_t>(f) * 3;
-            for (int k = 0; k < 3; ++k)
-                if (c[k] != s && c[k] != r)
-                    decim_sorted_erase(vfaces[static_cast<std::size_t>(c[k])], f);
-            decim_sorted_erase(vfaces[static_cast<std::size_t>(s)], f);
-        }
-        for (const std::int64_t f : vfaces[static_cast<std::size_t>(r)]) {
-            if (!face_alive[static_cast<std::size_t>(f)])
-                continue;  // was in shared
-            std::int64_t* c = faces.mCorners.data() + static_cast<std::size_t>(f) * 3;
-            for (int k = 0; k < 3; ++k)
-                if (c[k] == r)
-                    c[k] = s;
-            decim_sorted_insert(vfaces[static_cast<std::size_t>(s)], f);
-        }
-        vfaces[static_cast<std::size_t>(r)].clear();
+        alive_faces -= static_cast<std::int64_t>(shared.size());
+        result.mFacesRemoved += static_cast<std::int64_t>(shared.size());
+        detail::decim_kill_and_migrate<3>(faces.mCorners, vfaces, face_alive, shared, s, r);
         successor[static_cast<std::size_t>(r)] = s;
         ++version[static_cast<std::size_t>(s)];
         ++version[static_cast<std::size_t>(r)];
@@ -621,37 +502,16 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     // --- phase 7: emission ----------------------------------------------------
     // Alive faces in original (block, face) order; points compacted ascending
     // (surface.cpp's used/remap pattern).
-    std::vector<char> used(n, 0);
-    for (std::size_t f = 0; f < num_faces; ++f)
-        if (face_alive[f])
-            for (int k = 0; k < 3; ++k)
-                used[static_cast<std::size_t>(faces.mCorners[f * 3 + k])] = 1;
-    std::vector<std::int64_t> remap(n, -1);
-    std::size_t num_used = 0;
-    for (std::size_t i = 0; i < n; ++i)
-        if (used[i])
-            remap[i] = static_cast<std::int64_t>(num_used++);
+    std::vector<char> used;
+    std::vector<std::int64_t> remap;
+    const std::size_t num_used =
+        detail::decim_compact_points<3>(face_alive, faces.mCorners, n, used, remap);
 
     Mesh& out = result.mMesh;
 
     // Points: the working coordinates of the used vertices, cast back once to
     // the input dtype.
-    {
-        const NDArray& points = simp.Points();
-        NDArray new_points = NDArray::Uninit(points.Dtype(), {num_used, dim});
-        detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
-            T* dst = new_points.As<T>();
-            std::size_t w = 0;
-            for (std::size_t i = 0; i < n; ++i) {
-                if (!used[i])
-                    continue;
-                for (std::size_t d = 0; d < dim && d < 3; ++d)
-                    dst[w * dim + d] = static_cast<T>(xyz[i * 3 + d]);
-                ++w;
-            }
-        });
-        out.AssignPoints(std::move(new_points));
-    }
+    out.AssignPoints(detail::decim_emit_points(simp.Points(), xyz, used, n, num_used, dim));
 
     // One triangle block per input block (1:1, possibly empty), plus the
     // per-input-block cell maps composed through the simplexify child map.
@@ -696,103 +556,14 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
 
     // cell_data: the surviving faces' own rows (simplexify already replicated a
     // parent's row to its triangles); convert:parent_cell is consumed above,
-    // never forwarded.
-    for (const std::string& name : simp.CellDataNames()) {
-        if (name == "convert:parent_cell")
-            continue;
-        const std::size_t ndata = simp.CellDataNumBlocks(name);
-        std::vector<NDArray> blocks;
-        blocks.reserve(ndata);
-        std::size_t bi = 0;
-        for (const auto cb : simp.CellRange()) {
-            if (bi >= ndata)
-                break;
-            const NDArray& a = simp.CellData(name, bi);
-            const std::size_t nc = cb.NumCells();
-            if (ndata != nblocks || detail::rows(a) != nc || nc == 0) {
-                blocks.push_back(detail::data_owned_copy(a));
-                ++bi;
-                continue;
-            }
-            const std::size_t base = static_cast<std::size_t>(faces.mBlockBase[bi]);
-            std::size_t alive_in_block = 0;
-            for (std::size_t c = 0; c < nc; ++c)
-                if (face_alive[base + c])
-                    ++alive_in_block;
-            std::vector<std::size_t> shape = a.Shape();
-            shape[0] = alive_in_block;
-            const std::size_t row_bytes = a.Nbytes() / nc;
-            NDArray sub = NDArray::Uninit(a.Dtype(), std::move(shape));
-            const std::byte* src = a.Data();
-            std::byte* dst = sub.Data();
-            std::size_t w = 0;
-            for (std::size_t c = 0; c < nc; ++c)
-                if (face_alive[base + c])
-                    std::memcpy(dst + (w++) * row_bytes, src + c * row_bytes, row_bytes);
-            blocks.push_back(std::move(sub));
-            ++bi;
-        }
-        out.AddCellData(name, std::move(blocks));
-    }
-
-    // point_data: float-kind arrays from the blended working copies (cast back
-    // to the source dtype), everything else as the survivor's own byte rows.
-    for (const std::string& name : simp.PointDataNames()) {
-        const NDArray& a = simp.PointData(name);
-        if (detail::rows(a) != n) {
-            out.AddPointData(name, detail::data_owned_copy(a));
-            continue;
-        }
-        std::vector<std::size_t> shape = a.Shape();
-        shape[0] = num_used;
-        if (detail::is_float_dtype(a.Dtype())) {
-            const DecimFloatData* p_fd = nullptr;
-            for (const DecimFloatData& fd : float_data)
-                if (fd.mName == name) {
-                    p_fd = &fd;
-                    break;
-                }
-            const std::size_t ncomp = p_fd != nullptr ? p_fd->mNumComponents : 0;
-            NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
-            detail::dispatch_dtype(a.Dtype(), [&]<class T>() {
-                T* dst = b.As<T>();
-                std::size_t w = 0;
-                for (std::size_t i = 0; i < n; ++i) {
-                    if (!used[i])
-                        continue;
-                    for (std::size_t k = 0; k < ncomp; ++k)
-                        dst[w * ncomp + k] = static_cast<T>(p_fd->mValues[i * ncomp + k]);
-                    ++w;
-                }
-            });
-            out.AddPointData(name, std::move(b));
-        } else {
-            const std::size_t row_bytes = n == 0 ? 0 : a.Nbytes() / n;
-            NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
-            const std::byte* src = a.Data();
-            std::byte* dst = b.Data();
-            std::size_t w = 0;
-            for (std::size_t i = 0; i < n; ++i)
-                if (used[i])
-                    std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
-            out.AddPointData(name, std::move(b));
-        }
-    }
-    for (const std::string& name : simp.FieldDataNames())
-        out.AddFieldData(name, detail::data_owned_copy(simp.FieldData(name)));
+    // never forwarded. point_data: float-kind arrays from the blended working
+    // copies (cast back to the source dtype), everything else as the
+    // survivor's own byte rows.
+    detail::decim_emit_data(simp, face_alive, faces.mBlockBase, "convert:parent_cell", float_data,
+                            used, n, num_used, out);
 
     // mPointMap: every input point lands on its survivor's output index.
-    {
-        NDArray pm = NDArray::Uninit(DType::Int64, {n});
-        std::int64_t* dst = pm.As<std::int64_t>();
-        for (std::size_t i = 0; i < n; ++i) {
-            std::int64_t v = static_cast<std::int64_t>(i);
-            while (successor[static_cast<std::size_t>(v)] >= 0)
-                v = successor[static_cast<std::size_t>(v)];
-            dst[i] = remap[static_cast<std::size_t>(v)];
-        }
-        result.mPointMap = std::move(pm);
-    }
+    result.mPointMap = detail::decim_point_map(successor, remap, n);
     result.mPointsRemoved = static_cast<std::int64_t>(n - num_used);
 
     // Named regions. The cell map is FirstChild — an input quad/polygon becomes

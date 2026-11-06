@@ -196,31 +196,9 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             }
         }
     }
-    std::vector<std::size_t> piece(nf);
-    std::vector<std::size_t> roots;
-    for (std::size_t f = 0; f < nf; ++f) {
-        const std::size_t r = find(f);
-        if (r == f)
-            roots.push_back(f);
-        piece[f] = static_cast<std::size_t>(std::lower_bound(roots.begin(), roots.end(), r) -
-                                            roots.begin());
-    }
-    const std::size_t npieces = roots.size();
-    std::vector<double> volume(npieces, 0.0);
-    for (std::size_t f = 0; f < nf; ++f) {
-        const std::int64_t b = start[f], s = start[f + 1] - b;
-        const double* p0 = &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b)]) * 3];
-        for (std::int64_t k = 1; k + 1 < s; ++k) {
-            const double* p1 =
-                &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b + k)]) * 3];
-            const double* p2 =
-                &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(b + k + 1)]) * 3];
-            volume[piece[f]] +=
-                (p0[0] * (p1[1] * p2[2] - p1[2] * p2[1]) - p0[1] * (p1[0] * p2[2] - p1[2] * p2[0]) +
-                 p0[2] * (p1[0] * p2[1] - p1[1] * p2[0])) /
-                6.0;
-        }
-    }
+    std::vector<std::size_t> piece;
+    std::vector<double> volume;
+    const std::size_t npieces = step_piece_volumes(nf, find, start, nodes, xyz, piece, volume);
     for (std::size_t f = 0; f < nf; ++f)
         if (volume[piece[f]] < 0.0) {
             std::reverse(nodes.begin() + start[f], nodes.begin() + start[f + 1]);

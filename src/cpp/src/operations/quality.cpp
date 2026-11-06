@@ -34,9 +34,9 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/polyhedron.hpp"
-#include "meshioplusplus/detail/ragged_csr.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
@@ -535,48 +535,6 @@ void quality_eval_cell(QualityFamily family, CellType ct, const std::vector<Vec3
 
 using CellMetrics = std::array<double, NUM_METRICS>;
 
-// A deep copy of an NDArray that always owns its buffer (safe even if the
-// source is a view over foreign memory).
-NDArray quality_owned_copy(const NDArray& rArr) {
-    NDArray c = rArr;
-    c.MakeOwned();
-    return c;
-}
-
-// Backend-agnostic mesh clone through the uniform API (the KRATOS backend's
-// Mesh is not copy-constructible, so we cannot rely on `Mesh out = in;`).
-Mesh quality_clone_mesh(const Mesh& rMesh) {
-    Mesh out;
-    out.AssignPoints(quality_owned_copy(rMesh.Points()));
-    for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsRagged()) {
-            detail::append_ragged_copy(cb, out);
-        } else {
-            out.AddCellBlock(std::string(cb.Type()), quality_owned_copy(cb.Conn()));
-        }
-    }
-    for (const std::string& name : rMesh.PointDataNames())
-        out.AddPointData(name, quality_owned_copy(rMesh.PointData(name)));
-    for (const std::string& name : rMesh.CellDataNames()) {
-        std::vector<NDArray> blocks;
-        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
-            blocks.push_back(quality_owned_copy(rMesh.CellData(name, b)));
-        out.AddCellData(name, std::move(blocks));
-    }
-    for (const std::string& name : rMesh.FieldDataNames())
-        out.AddFieldData(name, quality_owned_copy(rMesh.FieldData(name)));
-    // Named regions pass through verbatim: attaching quality metrics adds
-    // cell_data and renumbers nothing.
-    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
-        out.AddRegion(rMesh.Region(i));
-    // Property sets ride along too: these operations preserve the mesh's shape,
-    // so dropping a deck's material data here would be new lossiness. They are
-    // keyed by id, not by entity index, so there is nothing to remap.
-    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
-        out.AddPropertySet(rMesh.GetPropertySet(i));
-    return out;
-}
-
 }  // namespace
 
 QualityReport compute_quality(const Mesh& rMesh) {
@@ -760,7 +718,7 @@ QualityReport compute_quality(const Mesh& rMesh) {
 
 Mesh attach_quality(const Mesh& rMesh) {
     QualityReport rep = compute_quality(rMesh);
-    Mesh out = quality_clone_mesh(rMesh);
+    Mesh out = detail::clone_mesh(rMesh);
     if (rMesh.NumCellBlocks() == 0)
         return out;
     for (std::pair<std::string, std::vector<NDArray>>& metric : rep.mCellArrays)

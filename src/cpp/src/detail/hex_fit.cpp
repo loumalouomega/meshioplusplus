@@ -27,6 +27,7 @@
 // Project includes
 #include "fem_kernels.hpp"
 #include "hex_fit.hpp"
+#include "vertex_cell_csr.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/parallel.hpp"
 
@@ -169,20 +170,8 @@ std::int64_t hexfit_star_repair(const HexMesh& rMesh, std::vector<std::uint8_t>&
                 across[static_cast<std::size_t>(b / 6)][static_cast<std::size_t>(b % 6)] = a / 6;
             }
     }
-    std::vector<std::int64_t> start(np + 1, 0), at;
-    for (const auto& h : rMesh.mHexes)
-        for (std::int64_t v : h)
-            ++start[static_cast<std::size_t>(v) + 1];
-    for (std::size_t v = 0; v < np; ++v)
-        start[v + 1] += start[v];
-    at.resize(static_cast<std::size_t>(start[np]));
-    {
-        std::vector<std::int64_t> fill(start.begin(), start.end() - 1);
-        for (std::size_t h = 0; h < nh; ++h)
-            for (std::int64_t v : rMesh.mHexes[h])
-                at[static_cast<std::size_t>(fill[static_cast<std::size_t>(v)]++)] =
-                    static_cast<std::int64_t>(h);
-    }
+    std::vector<std::int64_t> start, at;
+    vertex_cell_csr(rMesh.mHexes, np, start, at);
     std::int64_t added = 0;
     std::vector<std::vector<std::size_t>> link;
     std::vector<std::uint8_t> seen;

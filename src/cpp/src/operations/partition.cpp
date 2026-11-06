@@ -43,6 +43,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/cell_centroids.hpp"
+#include "../detail/sfc_quantize.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_KAHIP
 // External includes
@@ -143,11 +144,7 @@ std::vector<int> partition_sfc_parts(const Mesh& rMesh, const PartitionOptions& 
         }
     }
     double scale[3] = {0.0, 0.0, 0.0};
-    const double qmax = static_cast<double>((std::int64_t(1) << bits) - 1);
-    for (std::size_t d = 0; d < dim; ++d) {
-        const double span = hi[d] - lo[d];
-        scale[d] = span > 0.0 ? qmax / span : 0.0;
-    }
+    detail::sfc_axis_scales(lo, hi, dim, bits, scale);
 
     // Quantize + Hilbert key per centroid (disjoint slots, parallel-safe).
     std::vector<std::uint64_t> keys(total);
@@ -155,13 +152,7 @@ std::vector<int> partition_sfc_parts(const Mesh& rMesh, const PartitionOptions& 
         std::uint32_t q[3] = {0, 0, 0};
         for (std::size_t d = 0; d < dim; ++d) {
             const double t = (cent[3 * i + d] - lo[d]) * scale[d];
-            std::int64_t qi = static_cast<std::int64_t>(t + 0.5);
-            if (qi < 0)
-                qi = 0;
-            const std::int64_t maxq = (std::int64_t(1) << bits) - 1;
-            if (qi > maxq)
-                qi = maxq;
-            q[d] = static_cast<std::uint32_t>(qi);
+            q[d] = detail::sfc_quantize(t, bits);
         }
         keys[i] = detail::sfc_hilbert_key(q, bits);
     });

@@ -56,6 +56,7 @@
 
 // System includes
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 // Project includes (private, not installed)
@@ -115,6 +116,17 @@ struct BsplineFitResult {
     /// The vertices' foot-point parameters on the final surface.
     std::vector<double> mU, mV;
 };
+
+/**
+ * @brief The parameter box of the vertices `rTris` uses, widened by `Margin`
+ * of its extent on each side: `pLo[2]` its corner and `pExt[2]` its size,
+ * which map the parameters onto the unit square. `rUsed` flags the used
+ * vertices. False (the outputs then unspecified) when the box is flat.
+ */
+bool bspline_fit_param_box(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                           const std::vector<double>& rU, const std::vector<double>& rV,
+                           double Margin, double* pLo, double* pExt,
+                           std::vector<std::uint8_t>& rUsed);
 
 /**
  * @brief Fit a B-spline surface to a patch (see the file comment).

@@ -38,6 +38,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
+#include "../detail/node_table.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -326,74 +327,9 @@ Mesh triangle_read_poly(const std::string& rPath, const std::string& rStem) {
     return mesh;
 }
 
-// Write a marker/ref value: integral values as integers, else %.16e.
-void triangle_write_value(std::ostream& rOs, double v) {
-    const double r = std::nearbyint(v);
-    if (v == r && std::fabs(v) < 9.2e18) {
-        rOs << static_cast<std::int64_t>(r);
-    } else {
-        char buf[40];
-        detail::snprintf_c(buf, sizeof(buf), "%.16e", v);
-        rOs << buf;
-    }
-}
-
-// Split point_data keys into attribute columns and at most one marker
-// column (the first ":ref" key, or else the first key), mirroring tetgen.
-void triangle_split_point_keys(const Mesh& rMesh, std::vector<std::string>& rAttrKeys,
-                               std::vector<std::string>& rRefKeys) {
-    rAttrKeys = rMesh.PointDataNames();  // sorted: deterministic column order
-    if (rAttrKeys.empty())
-        return;
-    for (const auto& k : rAttrKeys)
-        if (k.find(":ref") != std::string::npos) {
-            rRefKeys.push_back(k);
-            break;
-        }
-    if (!rRefKeys.empty()) {
-        rAttrKeys.erase(std::remove(rAttrKeys.begin(), rAttrKeys.end(), rRefKeys[0]),
-                        rAttrKeys.end());
-    } else {
-        rRefKeys.push_back(rAttrKeys.front());
-        rAttrKeys.erase(rAttrKeys.begin());
-    }
-}
-
-void triangle_write_node_rows(std::ostream& rOs, const Mesh& rMesh,
-                              const std::vector<std::string>& rAttrKeys,
-                              const std::vector<std::string>& rRefKeys) {
-    const NDArray& points = rMesh.Points();
-    const std::int64_t np = static_cast<std::int64_t>(rMesh.NumPoints());
-    char fbuf[40];
-    const detail::DoubleView point_values(points);
-    // One view per attribute / reference array, made before the row loop.
-    std::vector<std::optional<detail::DoubleView>> attrs(rAttrKeys.size());
-    for (std::size_t a = 0; a < rAttrKeys.size(); ++a)
-        attrs[a].emplace(rMesh.PointData(rAttrKeys[a]));
-    std::vector<std::optional<detail::DoubleView>> refs(rRefKeys.size());
-    for (std::size_t a = 0; a < rRefKeys.size(); ++a)
-        refs[a].emplace(rMesh.PointData(rRefKeys[a]));
-    for (std::int64_t i = 0; i < np; ++i) {
-        rOs << i;
-        for (int c = 0; c < 2; ++c) {
-            detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e", point_values[i * 2 + c]);
-            rOs << " " << fbuf;
-        }
-        for (const auto& attr : attrs) {
-            detail::snprintf_c(fbuf, sizeof(fbuf), "%.16e", (*attr)[i]);
-            rOs << " " << fbuf;
-        }
-        for (const auto& ref : refs) {
-            rOs << " ";
-            triangle_write_value(rOs, (*ref)[i]);
-        }
-        rOs << "\n";
-    }
-}
-
 void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
     std::vector<std::string> attr_keys, ref_keys;
-    triangle_split_point_keys(rMesh, attr_keys, ref_keys);
+    detail::node_table_split_keys(rMesh, attr_keys, ref_keys);
 
     {
         auto fh = detail::make_classic_ofstream(rStem + ".node", std::ios::binary);
@@ -401,7 +337,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
             throw WriteError("Could not open file for writing: " + rStem + ".node");
         fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
         fh << rMesh.NumPoints() << " 2 " << attr_keys.size() << " " << ref_keys.size() << "\n";
-        triangle_write_node_rows(fh, rMesh, attr_keys, ref_keys);
+        detail::node_table_write_rows<2>(fh, rMesh, attr_keys, ref_keys);
     }
 
     // Collect the triangle blocks (must all share one type).
@@ -456,7 +392,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
             for (const auto& attr : attrs) {
                 fh << " ";
                 if (attr)
-                    triangle_write_value(fh, (*attr)[i]);
+                    detail::node_table_write_marker(fh, (*attr)[i]);
                 else
                     fh << "0";
             }
@@ -467,7 +403,7 @@ void triangle_write_node_ele(const std::string& rStem, const Mesh& rMesh) {
 
 void triangle_write_poly(const std::string& rPath, const Mesh& rMesh) {
     std::vector<std::string> attr_keys, ref_keys;
-    triangle_split_point_keys(rMesh, attr_keys, ref_keys);
+    detail::node_table_split_keys(rMesh, attr_keys, ref_keys);
 
     // Segment markers: the first ":ref" cell_data key, when present.
     std::string seg_ref;
@@ -482,7 +418,7 @@ void triangle_write_poly(const std::string& rPath, const Mesh& rMesh) {
         throw WriteError("Could not open file for writing: " + rPath);
     fh << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     fh << rMesh.NumPoints() << " 2 " << attr_keys.size() << " " << ref_keys.size() << "\n";
-    triangle_write_node_rows(fh, rMesh, attr_keys, ref_keys);
+    detail::node_table_write_rows<2>(fh, rMesh, attr_keys, ref_keys);
 
     std::size_t ns = 0;
     for (const auto cb : rMesh.CellRange())
@@ -504,7 +440,7 @@ void triangle_write_poly(const std::string& rPath, const Mesh& rMesh) {
             if (!seg_ref.empty()) {
                 fh << " ";
                 if (seg_values)
-                    triangle_write_value(fh, (*seg_values)[i]);
+                    detail::node_table_write_marker(fh, (*seg_values)[i]);
                 else
                     fh << "0";
             }

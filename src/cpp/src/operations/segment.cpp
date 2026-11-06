@@ -39,7 +39,9 @@
 #include "meshioplusplus/region.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/cell_region_mask.hpp"
 #include "../detail/crease_edges.hpp"
+#include "../detail/patch_output.hpp"
 #include "../detail/primitive_geom.hpp"
 #include "../detail/surface_rings.hpp"
 
@@ -51,47 +53,6 @@ constexpr const char* kSegPrefix = "meshio++: segment: ";
 // tolerance.
 constexpr double kSegExactShare = 0.02;
 constexpr double kSegPi = 3.14159265358979323846;
-
-// Per global cell, whether the region selects it (all cells when unnamed).
-std::vector<std::uint8_t> seg_selection(const Mesh& rMesh, const std::string& rRegion,
-                                        std::size_t NumCells) {
-    if (rRegion.empty())
-        return std::vector<std::uint8_t>(NumCells, 1);
-    const std::size_t r = rMesh.FindRegion(rRegion, RegionKind::Cell);
-    if (r == Mesh::npos) {
-        std::string names;
-        for (const std::string& n : rMesh.RegionNames())
-            names += (names.empty() ? "" : ", ") + n;
-        throw std::invalid_argument(std::string(kSegPrefix) + "no cell region named '" + rRegion +
-                                    "' (available: " + (names.empty() ? "none" : names) + ")");
-    }
-    std::vector<std::uint8_t> selected(NumCells, 0);
-    const NDArray& entries = rMesh.Region(r).mEntries;
-    for (std::size_t e = 0; e < entries.Size(); ++e) {
-        const std::int64_t c = detail::read_int(entries, e);
-        if (c >= 0 && static_cast<std::size_t>(c) < NumCells)
-            selected[static_cast<std::size_t>(c)] = 1;
-    }
-    return selected;
-}
-
-// One use of an undirected edge by one face ring.
-struct SegEdgeUse {
-    std::int64_t mLo;
-    std::int64_t mHi;
-    std::int64_t mFace;
-    bool mForward;
-};
-
-bool seg_use_less(const SegEdgeUse& rA, const SegEdgeUse& rB) {
-    if (rA.mLo != rB.mLo)
-        return rA.mLo < rB.mLo;
-    if (rA.mHi != rB.mHi)
-        return rA.mHi < rB.mHi;
-    if (rA.mFace != rB.mFace)
-        return rA.mFace < rB.mFace;
-    return rA.mForward < rB.mForward;
-}
 
 // An edge shared by exactly two distinct faces.
 struct SegPair {
@@ -479,7 +440,8 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
 
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const std::size_t ncells = static_cast<std::size_t>(detail::total_cells(bases));
-    const std::vector<std::uint8_t> selected = seg_selection(rMesh, rOptions.mRegion, ncells);
+    const std::vector<std::uint8_t> selected =
+        detail::cell_region_mask(rMesh, rOptions.mRegion, ncells, kSegPrefix);
 
     const detail::SurfaceRings rings = detail::surface_rings(rMesh, selected, kSegPrefix);
     const std::vector<std::int64_t>& start = rings.mStart;
@@ -504,36 +466,7 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
     });
 
     // Every non-collapsed ring edge is one use; sorted, each run is one edge.
-    std::vector<std::uint64_t> count(nf, 0);
-    parallel_for(nf, [&](std::size_t f) {
-        const std::int64_t b = start[f];
-        const std::int64_t s = start[f + 1] - b;
-        std::uint64_t c = 0;
-        for (std::int64_t k = 0; k < s; ++k)
-            c += nodes[static_cast<std::size_t>(b + k)] !=
-                         nodes[static_cast<std::size_t>(b + (k + 1) % s)]
-                     ? 1
-                     : 0;
-        count[f] = c;
-    });
-    std::vector<std::uint64_t> at(nf);
-    const std::uint64_t nuses =
-        parallel_exclusive_scan(count.data(), nf, at.data(), std::uint64_t{0});
-    std::vector<SegEdgeUse> uses(nuses);
-    parallel_for(nf, [&](std::size_t f) {
-        const std::int64_t b = start[f];
-        const std::int64_t s = start[f + 1] - b;
-        std::uint64_t w = at[f];
-        for (std::int64_t k = 0; k < s; ++k) {
-            const std::int64_t u = nodes[static_cast<std::size_t>(b + k)];
-            const std::int64_t v = nodes[static_cast<std::size_t>(b + (k + 1) % s)];
-            if (u == v)
-                continue;
-            const std::int64_t face = static_cast<std::int64_t>(f);
-            uses[w++] = u < v ? SegEdgeUse{u, v, face, true} : SegEdgeUse{v, u, face, false};
-        }
-    });
-    parallel_sort(uses.begin(), uses.end(), seg_use_less);
+    const std::vector<detail::CreaseEdgeUse> uses = detail::crease_edge_uses(start, nodes);
 
     SegmentResult result;
     const double cos_feature = std::cos(rOptions.mFeatureAngleDeg * kSegPi / 180.0);
@@ -796,55 +729,8 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
     out = detail::clone_mesh(rMesh,
                              [](DataLocation, const std::string&, std::string&) { return true; });
 
-    std::vector<NDArray> blocks;
-    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
-        const std::size_t base = static_cast<std::size_t>(bases[bi]);
-        const std::size_t nc = rMesh.Cells(bi).NumCells();
-        NDArray a = NDArray::Uninit(DType::Int64, {nc});
-        std::copy(cell_patch.begin() + static_cast<std::ptrdiff_t>(base),
-                  cell_patch.begin() + static_cast<std::ptrdiff_t>(base + nc),
-                  a.As<std::int64_t>());
-        blocks.push_back(std::move(a));
-    }
-    out.AddCellData(kSegmentPatchName, std::move(blocks));
-
-    NDArray table = NDArray::Uninit(DType::Int64, {adjacency.size(), std::size_t{3}});
-    {
-        std::int64_t* t = table.As<std::int64_t>();
-        std::size_t r = 0;
-        for (const auto& kv : adjacency) {
-            t[r * 3 + 0] = kv.first.first;
-            t[r * 3 + 1] = kv.first.second;
-            t[r * 3 + 2] = kv.second;
-            ++r;
-        }
-    }
-    out.AddFieldData(kSegmentAdjacencyName, std::move(table));
-
-    // Replace an earlier run's `<prefix>:<integer>` cell regions.
-    const std::string head = rOptions.mPrefix + ":";
-    for (std::size_t i = out.NumRegions(); i-- > 0;) {
-        const meshioplusplus::Region& r = out.Region(i);
-        if (r.mKind != RegionKind::Cell || r.mName.size() <= head.size() ||
-            r.mName.compare(0, head.size(), head) != 0)
-            continue;
-        const bool digits = std::all_of(r.mName.begin() + static_cast<std::ptrdiff_t>(head.size()),
-                                        r.mName.end(), [](char c) { return c >= '0' && c <= '9'; });
-        if (digits)
-            out.RemoveRegion(i);
-    }
-    std::vector<std::vector<std::int64_t>> members(static_cast<std::size_t>(nfinal));
-    for (std::size_t c = 0; c < ncells; ++c)
-        if (cell_patch[c] >= 0)
-            members[static_cast<std::size_t>(cell_patch[c])].push_back(
-                static_cast<std::int64_t>(c));
-    for (std::int64_t p = 0; p < nfinal; ++p) {
-        const std::vector<std::int64_t>& m = members[static_cast<std::size_t>(p)];
-        NDArray entries = NDArray::Uninit(DType::Int64, {m.size()});
-        std::copy(m.begin(), m.end(), entries.As<std::int64_t>());
-        out.AddRegion(meshioplusplus::Region(head + std::to_string(p), RegionKind::Cell, 2, -1,
-                                             std::move(entries)));
-    }
+    detail::patch_output_write(rMesh, out, bases, cell_patch, static_cast<std::size_t>(nfinal),
+                               adjacency, rOptions.mPrefix);
     return result;
 }
 

@@ -43,6 +43,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/typed_view.hpp"
+#include "../detail/sfc_quantize.hpp"
 
 namespace meshioplusplus {
 
@@ -241,25 +242,15 @@ std::vector<std::uint64_t> reorder_sfc_keys(const Mesh& rMesh, std::size_t n, bo
             hi[d] = std::max(hi[d], b[3 + d]);
         }
     double scale[3] = {0.0, 0.0, 0.0};
-    const double qmax = static_cast<double>((std::int64_t(1) << bits) - 1);
-    for (std::size_t d = 0; d < dim; ++d) {
-        const double span = hi[d] - lo[d];
-        scale[d] = span > 0.0 ? qmax / span : 0.0;
-    }
+    detail::sfc_axis_scales(lo, hi, dim, bits, scale);
 
     std::vector<std::uint64_t> keys(n);
     parallel_for(n, [&](std::size_t i) {
         std::uint32_t q[3] = {0, 0, 0};
         for (std::size_t d = 0; d < dim; ++d) {
             const double c = points_v[i * pdim + d];
-            double t = (c - lo[d]) * scale[d];
-            std::int64_t qi = static_cast<std::int64_t>(t + 0.5);
-            if (qi < 0)
-                qi = 0;
-            const std::int64_t maxq = (std::int64_t(1) << bits) - 1;
-            if (qi > maxq)
-                qi = maxq;
-            q[d] = static_cast<std::uint32_t>(qi);
+            const double t = (c - lo[d]) * scale[d];
+            q[d] = detail::sfc_quantize(t, bits);
         }
         keys[i] = hilbert ? detail::sfc_hilbert_key(q, bits) : detail::sfc_morton_key(q);
     });

@@ -32,6 +32,7 @@
 
 // Project includes (private, not installed)
 #include "json_value.hpp"
+#include "utf8.hpp"
 
 namespace meshioplusplus::detail {
 
@@ -241,24 +242,6 @@ private:
         return code;
     }
 
-    static void AppendUtf8(std::string& rOut, unsigned Code) {
-        if (Code < 0x80) {
-            rOut += static_cast<char>(Code);
-        } else if (Code < 0x800) {
-            rOut += static_cast<char>(0xC0 | (Code >> 6));
-            rOut += static_cast<char>(0x80 | (Code & 0x3F));
-        } else if (Code < 0x10000) {
-            rOut += static_cast<char>(0xE0 | (Code >> 12));
-            rOut += static_cast<char>(0x80 | ((Code >> 6) & 0x3F));
-            rOut += static_cast<char>(0x80 | (Code & 0x3F));
-        } else {
-            rOut += static_cast<char>(0xF0 | (Code >> 18));
-            rOut += static_cast<char>(0x80 | ((Code >> 12) & 0x3F));
-            rOut += static_cast<char>(0x80 | ((Code >> 6) & 0x3F));
-            rOut += static_cast<char>(0x80 | (Code & 0x3F));
-        }
-    }
-
     std::string ParseString() {
         ++mPos;  // the opening quote
         std::string out;
@@ -311,7 +294,7 @@ private:
                     } else if (code >= 0xDC00 && code <= 0xDFFF) {
                         Fail("unpaired surrogate");
                     }
-                    AppendUtf8(out, code);
+                    utf8_append(out, code);
                     break;
                 }
                 default:

@@ -24,7 +24,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <string>
 #include <vector>
@@ -36,10 +35,12 @@
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/polyhedron.hpp"
+#include "meshioplusplus/detail/subset.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/data_plumbing.hpp"
 #include "../detail/slot_runs.hpp"
 #include "../detail/weld.hpp"
 
@@ -48,29 +49,6 @@ namespace meshioplusplus {
 namespace {
 
 using detail::Vec3;
-
-// Row-preserving gather: out[j] = src[idx[j]] (whole trailing dims), dtype kept.
-NDArray clean_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>& rIdx) {
-    const std::vector<std::size_t>& shp = rSrc.Shape();
-    std::size_t cols = 1;
-    for (std::size_t d = 1; d < shp.size(); ++d)
-        cols *= shp[d];
-    std::vector<std::size_t> out_shape = shp;
-    if (out_shape.empty())
-        out_shape = {rIdx.size()};
-    else
-        out_shape[0] = rIdx.size();
-    NDArray out = NDArray::Uninit(rSrc.Dtype(), out_shape);
-    const std::size_t rb = cols * dtype_size(rSrc.Dtype());
-    if (rb == 0)
-        return out;
-    const std::byte* s = rSrc.Data();
-    std::byte* d = out.Data();
-    parallel_for_bw(rIdx.size(), [&](std::size_t j) {
-        std::memcpy(d + j * rb, s + static_cast<std::size_t>(rIdx[j]) * rb, rb);
-    });
-    return out;
-}
 
 // Keep-first weld (deterministic; detail/weld.hpp). Fills rWeldRep[g] in
 // [0, W) and rRepSource[r] = the first global point that created
@@ -457,29 +435,7 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
 
     // --- emit points + point_data ------------------------------------------
     Mesh& out = res.mMesh;
-    {
-        NDArray newpts = NDArray::Uninit(points.Dtype(), {static_cast<std::size_t>(P), dim});
-        if (P > 0 && dim > 0) {
-            const std::size_t rb = dim * dtype_size(points.Dtype());
-            const std::byte* s = points.Data();
-            std::byte* d = newpts.Data();
-            parallel_for_bw(point_src.size(), [&](std::size_t j) {
-                std::memcpy(d + j * rb, s + static_cast<std::size_t>(point_src[j]) * rb, rb);
-            });
-        }
-        out.AssignPoints(std::move(newpts));
-    }
-    for (const std::string& name : rMesh.PointDataNames()) {
-        const NDArray& a = rMesh.PointData(name);
-        const std::size_t rows = a.Shape().empty() ? 0 : a.Shape()[0];
-        if (rows == n)
-            out.AddPointData(name, clean_gather_rows(a, point_src));
-        else {
-            NDArray c = a;
-            c.MakeOwned();
-            out.AddPointData(name, std::move(c));
-        }
-    }
+    detail::gather_point_table(rMesh, point_src, out);
 
     // --- emit cells (remap rep-space -> final point index) ------------------
     res.mCellMaps.clear();
@@ -528,7 +484,7 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
             const NDArray& src = rMesh.CellData(name, b);
             const std::size_t rows = src.Shape().empty() ? 0 : src.Shape()[0];
             if (rows == cb.NumCells())
-                outblocks.push_back(clean_gather_rows(src, blocks[b].kept_cells));
+                outblocks.push_back(detail::subset_gather_rows(src, blocks[b].kept_cells));
             else {
                 NDArray c = src;
                 c.MakeOwned();

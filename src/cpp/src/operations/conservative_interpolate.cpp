@@ -49,6 +49,7 @@
 
 #include "../detail/bucket_build.hpp"
 #include "../detail/fem_kernels.hpp"
+#include "../detail/transfer_names.hpp"
 
 namespace meshioplusplus {
 
@@ -578,62 +579,12 @@ std::vector<NDArray> cons_accumulate_array(const Mesh& rTarget, const ConsOverla
     return out_blocks;
 }
 
-// The standard unknown-key diagnostic, covering both source locations.
-std::string cons_unknown_array_message(const Mesh& rSource, const std::string& rName) {
-    auto join = [](const std::vector<std::string>& rNames) -> std::string {
-        if (rNames.empty())
-            return "none";
-        std::string s;
-        for (std::size_t i = 0; i < rNames.size(); ++i) {
-            if (i > 0)
-                s += ", ";
-            s += rNames[i];
-        }
-        return s;
-    };
-    return "meshio++: conservative_interpolate: no source point_data or cell_data array named '" +
-           rName + "' (available point_data: " + join(data_names(rSource, DataLocation::Point)) +
-           "; cell_data: " + join(data_names(rSource, DataLocation::Cell)) + ")";
-}
-
-std::string cons_resolve_name(const Mesh& rTarget, bool isPointData, const std::string& rName,
-                              ConservativeInterpolateConflict Conflict) {
-    const bool exists = isPointData ? rTarget.HasPointData(rName) : rTarget.HasCellData(rName);
-    if (!exists)
-        return rName;
-    switch (Conflict) {
-        case ConservativeInterpolateConflict::Overwrite:
-            return rName;
-        case ConservativeInterpolateConflict::Suffix: {
-            const std::string suffixed = rName + "_interp";
-            const bool taken =
-                isPointData ? rTarget.HasPointData(suffixed) : rTarget.HasCellData(suffixed);
-            if (taken)
-                throw std::invalid_argument("meshio++: conservative_interpolate: array '" + rName +
-                                            "' already exists on the target and so does '" +
-                                            suffixed + "' (on_conflict='suffix')");
-            return suffixed;
-        }
-        case ConservativeInterpolateConflict::Error:
-        default:
-            throw std::invalid_argument("meshio++: conservative_interpolate: array '" + rName +
-                                        "' already exists on the target (on_conflict='error'; pass "
-                                        "'overwrite' or 'suffix')");
-    }
-}
-
 }  // namespace
 
 ConservativeInterpolateConflict conservative_interpolate_conflict_from_name(
     const std::string& rName) {
-    if (rName == "error")
-        return ConservativeInterpolateConflict::Error;
-    if (rName == "overwrite")
-        return ConservativeInterpolateConflict::Overwrite;
-    if (rName == "suffix")
-        return ConservativeInterpolateConflict::Suffix;
-    throw std::invalid_argument("meshio++: conservative_interpolate: unknown on_conflict '" +
-                                rName + "' (expected 'error', 'overwrite' or 'suffix')");
+    return detail::transfer_conflict_from_name<ConservativeInterpolateConflict>(
+        "conservative_interpolate", rName);
 }
 
 Mesh conservative_interpolate(const Mesh& rSource, const Mesh& rTarget,
@@ -669,7 +620,8 @@ Mesh conservative_interpolate(const Mesh& rSource, const Mesh& rTarget,
                 any = true;
             }
             if (!any)
-                throw std::invalid_argument(cons_unknown_array_message(rSource, name));
+                throw std::invalid_argument(detail::transfer_unknown_array_message(
+                    "conservative_interpolate", rSource, name));
         }
     }
     for (const std::string& name : cell_names) {
@@ -680,10 +632,12 @@ Mesh conservative_interpolate(const Mesh& rSource, const Mesh& rTarget,
 
     std::vector<std::string> point_out(point_names.size());
     for (std::size_t i = 0; i < point_names.size(); ++i)
-        point_out[i] = cons_resolve_name(rTarget, true, point_names[i], rOptions.mOnConflict);
+        point_out[i] = detail::transfer_resolve_name("conservative_interpolate", rTarget, true,
+                                                     point_names[i], rOptions.mOnConflict);
     std::vector<std::string> cell_out(cell_names.size());
     for (std::size_t i = 0; i < cell_names.size(); ++i)
-        cell_out[i] = cons_resolve_name(rTarget, false, cell_names[i], rOptions.mOnConflict);
+        cell_out[i] = detail::transfer_resolve_name("conservative_interpolate", rTarget, false,
+                                                    cell_names[i], rOptions.mOnConflict);
 
     if (point_names.empty() && cell_names.empty())
         return detail::clone_mesh(rTarget);

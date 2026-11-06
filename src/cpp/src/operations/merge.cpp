@@ -41,6 +41,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/slot_runs.hpp"
+#include "../detail/transfer_names.hpp"
 #include "../detail/weld.hpp"
 
 namespace meshioplusplus {
@@ -53,42 +54,6 @@ NDArray merge_owned_copy(const NDArray& rArr) {
     NDArray c = rArr;
     c.MakeOwned();
     return c;
-}
-
-// Store `v` at flat element index `flat` of `rOut`, casting to `rOut`'s dtype.
-void merge_store_double(NDArray& rOut, std::size_t flat, double v) {
-    switch (rOut.Dtype()) {
-        case DType::Float32:
-            rOut.As<float>()[flat] = static_cast<float>(v);
-            return;
-        case DType::Float64:
-            rOut.As<double>()[flat] = v;
-            return;
-        case DType::Int8:
-            rOut.As<std::int8_t>()[flat] = static_cast<std::int8_t>(v);
-            return;
-        case DType::Int16:
-            rOut.As<std::int16_t>()[flat] = static_cast<std::int16_t>(v);
-            return;
-        case DType::Int32:
-            rOut.As<std::int32_t>()[flat] = static_cast<std::int32_t>(v);
-            return;
-        case DType::Int64:
-            rOut.As<std::int64_t>()[flat] = static_cast<std::int64_t>(v);
-            return;
-        case DType::UInt8:
-            rOut.As<std::uint8_t>()[flat] = static_cast<std::uint8_t>(v);
-            return;
-        case DType::UInt16:
-            rOut.As<std::uint16_t>()[flat] = static_cast<std::uint16_t>(v);
-            return;
-        case DType::UInt32:
-            rOut.As<std::uint32_t>()[flat] = static_cast<std::uint32_t>(v);
-            return;
-        case DType::UInt64:
-            rOut.As<std::uint64_t>()[flat] = static_cast<std::uint64_t>(v);
-            return;
-    }
 }
 
 // Copy `nrows` rows (`ncols` wide) from `rSrc` (starting at `srcRow0`) into
@@ -104,8 +69,9 @@ void merge_copy_rows(NDArray& rOut, std::size_t outRow0, const NDArray& rSrc, st
     } else {
         parallel_for(nrows, [&](std::size_t r) {
             for (std::size_t k = 0; k < ncols; ++k)
-                merge_store_double(rOut, (outRow0 + r) * ncols + k,
-                                   detail::read_double(rSrc, (srcRow0 + r) * ncols + k));
+                detail::store_double_truncating(
+                    rOut, (outRow0 + r) * ncols + k,
+                    detail::read_double(rSrc, (srcRow0 + r) * ncols + k));
         });
     }
 }
@@ -115,7 +81,7 @@ void merge_fill_nan(NDArray& rOut, std::size_t outRow0, std::size_t nrows, std::
     const double nan = std::numeric_limits<double>::quiet_NaN();
     parallel_for(nrows, [&](std::size_t r) {
         for (std::size_t k = 0; k < ncols; ++k)
-            merge_store_double(rOut, (outRow0 + r) * ncols + k, nan);
+            detail::store_double_truncating(rOut, (outRow0 + r) * ncols + k, nan);
     });
 }
 

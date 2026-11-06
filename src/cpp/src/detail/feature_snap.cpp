@@ -47,29 +47,6 @@ constexpr double kFeatsnapFloorDeg = 2.0;
 // sliver beside a free interior node, which the optimization repairs.
 constexpr double kFeatsnapChainFloorDeg = 0.1;
 
-// The nearest point of a polyline (skin point ids) to `rP`, and its distance.
-std::pair<Vec3, double> featsnap_on_polyline(const std::vector<Vec3>& rSkin,
-                                             const std::vector<std::int64_t>& rChain,
-                                             const Vec3& rP) {
-    Vec3 best = rSkin[static_cast<std::size_t>(rChain[0])];
-    double best_d = std::numeric_limits<double>::infinity();
-    for (std::size_t i = 0; i + 1 < rChain.size(); ++i) {
-        const Vec3& a = rSkin[static_cast<std::size_t>(rChain[i])];
-        const Vec3& b = rSkin[static_cast<std::size_t>(rChain[i + 1])];
-        const Vec3 ab = vec3_sub(b, a);
-        const double len2 = vec3_norm_sq(ab);
-        const double t =
-            len2 > 0.0 ? std::clamp(vec3_dot(vec3_sub(rP, a), ab) / len2, 0.0, 1.0) : 0.0;
-        const Vec3 q = vec3_add(a, vec3_scale(ab, t));
-        const double d = vec3_norm(vec3_sub(rP, q));
-        if (d < best_d) {
-            best_d = d;
-            best = q;
-        }
-    }
-    return {best, best_d};
-}
-
 // The arc length along a polyline of its nearest point to `rP`.
 double featsnap_arc(const std::vector<Vec3>& rSkin, const std::vector<std::int64_t>& rChain,
                     const Vec3& rP) {
@@ -109,6 +86,28 @@ Vec3 featsnap_at_arc(const std::vector<Vec3>& rSkin, const std::vector<std::int6
 }
 
 }  // namespace
+
+std::pair<Vec3, double> feature_snap_on_polyline(const std::vector<Vec3>& rSkin,
+                                                 const std::vector<std::int64_t>& rChain,
+                                                 const Vec3& rP) {
+    Vec3 best = rSkin[static_cast<std::size_t>(rChain[0])];
+    double best_d = std::numeric_limits<double>::infinity();
+    for (std::size_t i = 0; i + 1 < rChain.size(); ++i) {
+        const Vec3& a = rSkin[static_cast<std::size_t>(rChain[i])];
+        const Vec3& b = rSkin[static_cast<std::size_t>(rChain[i + 1])];
+        const Vec3 ab = vec3_sub(b, a);
+        const double len2 = vec3_norm_sq(ab);
+        const double t =
+            len2 > 0.0 ? std::clamp(vec3_dot(vec3_sub(rP, a), ab) / len2, 0.0, 1.0) : 0.0;
+        const Vec3 q = vec3_add(a, vec3_scale(ab, t));
+        const double d = vec3_norm(vec3_sub(rP, q));
+        if (d < best_d) {
+            best_d = d;
+            best = q;
+        }
+    }
+    return {best, best_d};
+}
 
 FeatureGraph feature_graph(const std::vector<Vec3>& rPoints,
                            const std::vector<std::array<std::int64_t, 2>>& rEdges,
@@ -390,13 +389,13 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
             if (d > dist[static_cast<std::size_t>(v)] || v == to)
                 continue;
             const Vec3& pv = rPoints[static_cast<std::size_t>(v)];
-            const double dv = featsnap_on_polyline(rSkinPoints, chain, pv).second;
+            const double dv = feature_snap_on_polyline(rSkinPoints, chain, pv).second;
             for (std::int64_t u : badj[static_cast<std::size_t>(v)]) {
                 if (u != to && rPinned[static_cast<std::size_t>(u)])
                     continue;
                 const Vec3& pu = rPoints[static_cast<std::size_t>(u)];
                 const double h = rLocalSize(pu);
-                const double du = featsnap_on_polyline(rSkinPoints, chain, pu).second;
+                const double du = feature_snap_on_polyline(rSkinPoints, chain, pu).second;
                 if (u != to && du > 1.25 * h)
                     continue;
                 const double w = vec3_norm(vec3_sub(pu, pv)) * (1.0 + 16.0 * (du + dv) / h);

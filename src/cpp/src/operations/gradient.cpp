@@ -47,6 +47,7 @@
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/point_field_check.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -525,24 +526,7 @@ GradientMethod gradient_method_from_name(const std::string& rName) {
 
 GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
     // --- validation, all before any work ------------------------------------
-    if (rOptions.mArrayName.empty())
-        throw std::invalid_argument(std::string(kGradPrefix) + "an array name is required");
-    if (rOptions.mLocation == DataLocation::Field)
-        throw std::invalid_argument(std::string(kGradPrefix) +
-                                    "field_data has no location on the mesh; the result must be "
-                                    "'point' or 'cell'");
-    if (!rMesh.HasPointData(rOptions.mArrayName)) {
-        // A cell_data field is piecewise constant and has no derivative. Name
-        // the fix, exactly as isosurface does for the same reason.
-        if (rMesh.HasCellData(rOptions.mArrayName))
-            throw std::invalid_argument(
-                std::string(kGradPrefix) + "'" + rOptions.mArrayName +
-                "' is cell_data, which is piecewise constant and has no derivative; convert it "
-                "first with cell_data_to_point_data (CLI: meshioplusplus data to-point)");
-        throw std::invalid_argument(
-            std::string(kGradPrefix) +
-            data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArrayName));
-    }
+    detail::require_point_field(rMesh, rOptions.mArrayName, rOptions.mLocation, kGradPrefix);
 
     const NDArray& field = rMesh.PointData(rOptions.mArrayName);
     const std::size_t field_comp = data_num_components(field);

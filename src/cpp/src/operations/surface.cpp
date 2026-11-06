@@ -47,6 +47,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/data_plumbing.hpp"
 #include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
@@ -409,19 +410,7 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
     Mesh surface;
 
     // Points: byte-row subset preserving the source dtype.
-    {
-        const NDArray& points = rMesh.Points();
-        const std::size_t dim = detail::cols(points);
-        const std::size_t row_bytes = dim * dtype_size(points.Dtype());
-        NDArray new_points = NDArray::Uninit(points.Dtype(), {num_used, dim});
-        const std::byte* src = points.Data();
-        std::byte* dst = new_points.Data();
-        std::size_t w = 0;
-        for (std::size_t i = 0; i < num_points; ++i)
-            if (used[i])
-                std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
-        surface.AssignPoints(std::move(new_points));
-    }
+    detail::compact_points_by_mask(rMesh, used, num_used, surface);
 
     // Cell blocks in canonical order, remapped connectivity; optional parent ids.
     std::vector<NDArray> parent_blocks;
@@ -457,23 +446,9 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
     if (recordParentIds && !parent_blocks.empty())
         surface.AddCellData("surface:parent_cell", std::move(parent_blocks));
 
-    // point_data: subset rows through the same remap; other data maps dropped.
-    for (const std::string& name : rMesh.PointDataNames()) {
-        const NDArray& a = rMesh.PointData(name);
-        if (detail::rows(a) != num_points)
-            continue;  // shape does not match the point table; drop
-        std::vector<std::size_t> new_shape = a.Shape();
-        new_shape[0] = num_used;
-        const std::size_t row_bytes = num_points == 0 ? 0 : a.Nbytes() / num_points;
-        NDArray b = NDArray::Uninit(a.Dtype(), std::move(new_shape));
-        const std::byte* src = a.Data();
-        std::byte* dst = b.Data();
-        std::size_t w = 0;
-        for (std::size_t i = 0; i < num_points; ++i)
-            if (used[i])
-                std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
-        surface.AddPointData(name, std::move(b));
-    }
+    // point_data: subset rows through the same remap; arrays whose shape does
+    // not match the point table are dropped, as are the other data maps.
+    detail::compact_point_data_by_mask(rMesh, used, num_used, false, surface);
 
     // Regions: a Side region names exactly the facets extracted here, so it
     // becomes a Cell region of the surface; Point regions follow the

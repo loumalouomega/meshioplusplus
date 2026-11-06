@@ -37,15 +37,7 @@ namespace detail {
 
 namespace {
 
-// One use of an undirected edge by one face ring.
-struct CeEdgeUse {
-    std::int64_t mLo;
-    std::int64_t mHi;
-    std::int64_t mFace;
-    bool mForward;  // the ring walks it lo -> hi
-};
-
-bool ce_use_less(const CeEdgeUse& rA, const CeEdgeUse& rB) {
+bool ce_use_less(const CreaseEdgeUse& rA, const CreaseEdgeUse& rB) {
     if (rA.mLo != rB.mLo)
         return rA.mLo < rB.mLo;
     if (rA.mHi != rB.mHi)
@@ -71,10 +63,8 @@ void ring_unit_normal(const double* pXyz, const std::int64_t* pRing, std::size_t
     pOut[2] = unit[2];
 }
 
-std::vector<CreaseEdge> crease_edges(const std::vector<std::int64_t>& rStart,
-                                     const std::vector<std::int64_t>& rNodes,
-                                     const std::vector<double>& rUnitNormal,
-                                     double FeatureAngleDeg) {
+std::vector<CreaseEdgeUse> crease_edge_uses(const std::vector<std::int64_t>& rStart,
+                                            const std::vector<std::int64_t>& rNodes) {
     const std::size_t nf = rStart.empty() ? 0 : rStart.size() - 1;
 
     // Per face, how many non-collapsed ring edges it contributes; then each
@@ -94,7 +84,7 @@ std::vector<CreaseEdge> crease_edges(const std::vector<std::int64_t>& rStart,
     std::vector<std::uint64_t> at(nf);
     const std::uint64_t nuses =
         parallel_exclusive_scan(count.data(), nf, at.data(), std::uint64_t{0});
-    std::vector<CeEdgeUse> uses(nuses);
+    std::vector<CreaseEdgeUse> uses(nuses);
     parallel_for(nf, [&](std::size_t f) {
         if (count[f] == 0)
             return;
@@ -107,10 +97,18 @@ std::vector<CreaseEdge> crease_edges(const std::vector<std::int64_t>& rStart,
             if (u == v)
                 continue;
             const std::int64_t face = static_cast<std::int64_t>(f);
-            uses[w++] = u < v ? CeEdgeUse{u, v, face, true} : CeEdgeUse{v, u, face, false};
+            uses[w++] = u < v ? CreaseEdgeUse{u, v, face, true} : CreaseEdgeUse{v, u, face, false};
         }
     });
     parallel_sort(uses.begin(), uses.end(), ce_use_less);
+    return uses;
+}
+
+std::vector<CreaseEdge> crease_edges(const std::vector<std::int64_t>& rStart,
+                                     const std::vector<std::int64_t>& rNodes,
+                                     const std::vector<double>& rUnitNormal,
+                                     double FeatureAngleDeg) {
+    const std::vector<CreaseEdgeUse> uses = crease_edge_uses(rStart, rNodes);
 
     const double cos_thr = std::cos(FeatureAngleDeg * 3.14159265358979323846 / 180.0);
     const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -126,8 +124,8 @@ std::vector<CreaseEdge> crease_edges(const std::vector<std::int64_t>& rStart,
         edge.mAngleDeg = nan;
         bool report = edge.mUses != 2;
         if (edge.mUses == 2) {
-            const CeEdgeUse& ux = uses[b];
-            const CeEdgeUse& uy = uses[b + 1];
+            const CreaseEdgeUse& ux = uses[b];
+            const CreaseEdgeUse& uy = uses[b + 1];
             if (ux.mFace == uy.mFace) {
                 b = e;
                 continue;  // a ring revisiting its own edge: not a surface edge

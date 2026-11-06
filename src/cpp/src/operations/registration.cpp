@@ -28,6 +28,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/registration.hpp"
+#include "../detail/jacobi_eigen.hpp"
 #include "../detail/point_knn.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -63,46 +64,7 @@ RegMat reg_mul(const RegMat& rA, const RegMat& rB) {
 template <std::size_t N>
 void reg_jacobi(std::array<double, N * N> A, std::array<double, N>& rW,
                 std::array<double, N * N>& rV) {
-    rV.fill(0.0);
-    for (std::size_t i = 0; i < N; ++i)
-        rV[i * N + i] = 1.0;
-    for (int sweep = 0; sweep < 100; ++sweep) {
-        double off = 0.0, diag = 0.0;
-        for (std::size_t i = 0; i < N; ++i) {
-            diag += A[i * N + i] * A[i * N + i];
-            for (std::size_t j = i + 1; j < N; ++j)
-                off += A[i * N + j] * A[i * N + j];
-        }
-        if (off <= 1e-30 * diag || off == 0.0)
-            break;
-        for (std::size_t p = 0; p < N; ++p)
-            for (std::size_t q = p + 1; q < N; ++q) {
-                const double apq = A[p * N + q];
-                if (apq == 0.0)
-                    continue;
-                const double theta = (A[q * N + q] - A[p * N + p]) / (2.0 * apq);
-                const double t = (theta >= 0.0 ? 1.0 : -1.0) /
-                                 (std::abs(theta) + std::sqrt(theta * theta + 1.0));
-                const double c = 1.0 / std::sqrt(t * t + 1.0), s = t * c;
-                for (std::size_t k = 0; k < N; ++k) {  // A <- A J
-                    const double akp = A[k * N + p], akq = A[k * N + q];
-                    A[k * N + p] = c * akp - s * akq;
-                    A[k * N + q] = s * akp + c * akq;
-                }
-                for (std::size_t k = 0; k < N; ++k) {  // A <- J^T A
-                    const double apk = A[p * N + k], aqk = A[q * N + k];
-                    A[p * N + k] = c * apk - s * aqk;
-                    A[q * N + k] = s * apk + c * aqk;
-                }
-                for (std::size_t k = 0; k < N; ++k) {
-                    const double vkp = rV[k * N + p], vkq = rV[k * N + q];
-                    rV[k * N + p] = c * vkp - s * vkq;
-                    rV[k * N + q] = s * vkp + c * vkq;
-                }
-            }
-    }
-    for (std::size_t i = 0; i < N; ++i)
-        rW[i] = A[i * N + i];
+    detail::jacobi_eigen_sym(A.data(), N, rW.data(), rV.data(), 1e-30);
 }
 
 /// The rotation of a unit quaternion (w, x, y, z).

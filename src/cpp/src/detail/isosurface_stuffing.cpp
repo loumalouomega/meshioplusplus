@@ -30,6 +30,7 @@
 // Project includes
 #include "fem_kernels.hpp"
 #include "isosurface_stuffing.hpp"
+#include "vertex_cell_csr.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
@@ -174,20 +175,8 @@ StuffReport isosurface_stuff(StuffMesh& rMesh, std::vector<std::int8_t>& rSign,
     }
     std::sort(violates.begin(), violates.end());
     // Every tetrahedron around each vertex, for the inversion guard.
-    std::vector<std::int64_t> inc_start(np + 1, 0), inc;
-    for (const auto& t : rMesh.mTets)
-        for (std::int64_t v : t)
-            ++inc_start[static_cast<std::size_t>(v) + 1];
-    for (std::size_t p = 0; p < np; ++p)
-        inc_start[p + 1] += inc_start[p];
-    inc.resize(static_cast<std::size_t>(inc_start[np]));
-    {
-        std::vector<std::int64_t> fill(inc_start.begin(), inc_start.end() - 1);
-        for (std::size_t t = 0; t < nt; ++t)
-            for (std::int64_t v : rMesh.mTets[t])
-                inc[static_cast<std::size_t>(fill[static_cast<std::size_t>(v)]++)] =
-                    static_cast<std::int64_t>(t);
-    }
+    std::vector<std::int64_t> inc_start, inc;
+    vertex_cell_csr(rMesh.mTets, np, inc_start, inc);
     // Warp, vertex by vertex in ascending order, onto the nearest live cut point.
     for (std::size_t k = 0; k < violates.size();) {
         const std::int64_t v = violates[k].first;

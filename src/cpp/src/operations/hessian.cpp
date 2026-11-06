@@ -35,6 +35,9 @@
 #include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 
+// Project includes (private, not installed)
+#include "../detail/point_field_check.hpp"
+
 namespace meshioplusplus {
 
 namespace {
@@ -50,23 +53,7 @@ constexpr const char* kHessRawName = "__hessian_raw__";
 
 HessianResult hessian(const Mesh& rMesh, const HessianOptions& rOptions) {
     // --- validation, all before any work -------------------------------------
-    if (rOptions.mArrayName.empty())
-        throw std::invalid_argument(std::string(kHessPrefix) + "an array name is required");
-    if (rOptions.mLocation == DataLocation::Field)
-        throw std::invalid_argument(std::string(kHessPrefix) +
-                                    "field_data has no location on the mesh; the result must be "
-                                    "'point' or 'cell'");
-    if (!rMesh.HasPointData(rOptions.mArrayName)) {
-        // Same restriction gradient states, for the same reason.
-        if (rMesh.HasCellData(rOptions.mArrayName))
-            throw std::invalid_argument(
-                std::string(kHessPrefix) + "'" + rOptions.mArrayName +
-                "' is cell_data, which is piecewise constant and has no derivative; convert it "
-                "first with cell_data_to_point_data (CLI: meshioplusplus data to-point)");
-        throw std::invalid_argument(
-            std::string(kHessPrefix) +
-            data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArrayName));
-    }
+    detail::require_point_field(rMesh, rOptions.mArrayName, rOptions.mLocation, kHessPrefix);
     const NDArray& field = rMesh.PointData(rOptions.mArrayName);
     const std::size_t field_comp = data_num_components(field);
     if (field_comp != 1)

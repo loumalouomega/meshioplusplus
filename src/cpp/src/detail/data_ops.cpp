@@ -25,9 +25,11 @@
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/polyhedron.hpp"
-#include "meshioplusplus/detail/ragged_csr.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
+#include "data_plumbing.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -40,26 +42,7 @@ NDArray data_owned_copy(const NDArray& rArray) {
 
 Mesh clone_geometry(const Mesh& rMesh) {
     Mesh out;
-    out.AssignPoints(data_owned_copy(rMesh.Points()));
-    for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsRagged()) {
-            detail::append_ragged_copy(cb, out);
-        } else {
-            out.AddCellBlock(std::string(cb.Type()), data_owned_copy(cb.Conn()));
-        }
-    }
-    // Named regions ride through verbatim. Every caller of this function leaves
-    // the point and cell numbering untouched (the data operations, `transform`,
-    // `smooth`, `interpolate`'s target clone, `attach_quality`), so there is
-    // nothing to remap — see doc/regions.md's table of which operations remap
-    // and which pass through.
-    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
-        out.AddRegion(rMesh.Region(i));
-    // Property sets ride along too: these operations preserve the mesh's shape,
-    // so dropping a deck's material data here would be new lossiness. They are
-    // keyed by id, not by entity index, so there is nothing to remap.
-    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
-        out.AddPropertySet(rMesh.GetPropertySet(i));
+    clone_geometry_into(rMesh, data_owned_copy(rMesh.Points()), out);
     return out;
 }
 
