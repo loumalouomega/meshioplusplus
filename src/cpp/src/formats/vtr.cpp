@@ -28,17 +28,13 @@
 // Project includes
 #include "meshioplusplus/formats/vtr.hpp"
 #include "meshioplusplus/detail/grid_lattice.hpp"
-#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
-#include "meshioplusplus/detail/vtk_cells.hpp"
-#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/region_field_data.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/vtk_xml_write.hpp"
-#include "../detail/vtu_decode.hpp"
 
 namespace meshioplusplus {
 

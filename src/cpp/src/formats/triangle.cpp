@@ -35,7 +35,6 @@
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
-#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
 #include "../detail/node_table.hpp"

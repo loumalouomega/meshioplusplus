@@ -33,10 +33,7 @@
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
-#include "meshioplusplus/detail/value_io.hpp"
-#include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/parallel.hpp"
-#include "meshioplusplus/region.hpp"
 
 // Project includes (private, not installed)
 #include "../detail/cell_region_mask.hpp"

@@ -32,8 +32,6 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/tikz.hpp"
 #include "meshioplusplus/log.hpp"
-#include "meshioplusplus/operations/surface.hpp"
-#include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/typed_view.hpp"

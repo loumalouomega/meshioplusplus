@@ -37,7 +37,6 @@
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 #include "meshioplusplus/parallel.hpp"
-#include "meshioplusplus/region.hpp"
 
 // Project includes (private, not installed)
 #include "../detail/crease_edges.hpp"
