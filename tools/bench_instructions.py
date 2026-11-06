@@ -13,7 +13,7 @@ count is the operation's alone.
     tools/bench_instructions.py --record benchmark/instructions_S.csv
     tools/bench_instructions.py --check benchmark/instructions_S.csv
 
-``--check`` fails when a row counts more than ``--tolerance`` (default 2%)
+``--check`` fails when a row counts more than ``--tolerance`` (default 1%)
 above the committed baseline, or when a baseline row is missing; a row that
 counts less than the tolerance below its baseline, or a new row, is reported
 but passes, and the baseline should then be re-recorded. A count depends on
@@ -38,11 +38,6 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-
-# Rows left out of the gate, each with its reason. A row costs about thirty
-# times its native time under Cachegrind; these would hold the job for minutes
-# each and are covered by the weekly timings instead.
-SKIP = {}
 
 _IREFS = re.compile(r"==\d+==\s+I\s+refs:\s+([\d,]+)")
 
@@ -147,7 +142,7 @@ def count(binary, tier, op):
 
 
 def measure(binary, tier, ops, jobs):
-    rows = [r for r in list_rows(binary, tier, ops) if r not in SKIP]
+    rows = list_rows(binary, tier, ops)
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = {pool.submit(count, binary, tier, op): op for op in rows}
@@ -254,7 +249,7 @@ def main(argv=None):
     parser.add_argument("--tier", default="S")
     parser.add_argument("--ops", help="comma-separated rows (default: every row)")
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 1)
-    parser.add_argument("--tolerance", type=float, default=0.02)
+    parser.add_argument("--tolerance", type=float, default=0.01)
     parser.add_argument("--out", help="with --check: also write this run's counts")
     parser.add_argument("--summary", help="with --check: append a Markdown report")
     args = parser.parse_args(argv)

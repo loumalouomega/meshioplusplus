@@ -318,7 +318,7 @@ jobs:
   # Instruction counts of the operation rows against a committed baseline
   # (roadmap 5.1.1). Timings never gate, a runner is too noisy; Cachegrind's
   # count of one run of each tier S row, SEQ on one thread, is stable, so a
-  # row more than 2% above benchmark/instructions_S.csv fails. A change that
+  # row more than 1% above benchmark/instructions_S.csv fails. A change that
   # moves a count on purpose re-records the baseline and says why; a run on a
   # toolchain other than the baseline's reports and passes
   # (doc/benchmarks.md, "Instruction-count gate").
