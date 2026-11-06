@@ -732,9 +732,11 @@ The first read of a format pays for loading its subpackage (12.4 ms median for P
 
 | | Old | New |
 | --- | ---: | ---: |
-| `meshioplusplus --help` | 295 (241) ms, 480 modules | 198 (140) ms, 269 modules |
-| `meshioplusplus info --help` | 288 (224) ms, 480 modules | 208 (149) ms, 277 modules |
-| `build_parser()` | 290 (225) ms, 480 modules | 298 (231) ms, 481 modules | `test_import_footprint.py` keeps the formats, operations and `_core` off the import path and checks that a write and read of one STL file loads `stl` alone.
+| `meshioplusplus --help` | 239 (213) ms, 480 modules | 145 (113) ms, 269 modules |
+| `meshioplusplus info --help` | 244 (209) ms, 480 modules | 149 (115) ms, 277 modules |
+| `build_parser()` | 229 (187) ms, 480 modules | 255 (203) ms, 481 modules |
+
+`build_parser()` does the same work either way (the extra module is `_ragged`, roadmap 5.6); its rows differ within the noise of a fresh interpreter: timed inside the process, 25 interleaved runs read 86 against 96 ms, and under `cProfile` the new build was the faster, 0.16 against 0.19 s. `test_import_footprint.py` keeps the formats, operations and `_core` off the import path and checks that a write and read of one STL file loads `stl` alone.
 
 ### Flat tables in the facet and weld paths
 
