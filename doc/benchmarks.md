@@ -942,7 +942,18 @@ Roadmap 5.7.2 and 5.7.1. `detail/chunked_parse.hpp` cuts a run of numbers at bla
 | `write_off` | 0.0142 | 0.0094 | 0.0091 | 0.0178 | 0.0072 |
 | `write_stl` (ASCII) | 0.077 | 0.030 | 0.0153 | 0.083 | 0.0158 |
 
-`read_vtk_ascii`'s SEQ row reads 10% slower inside `bench_ops`, where the chunked path is never taken; callgrind counts the same instructions for the read before and after, and the read of the same file alone, through the single header, times the same either way (0.085 to 0.090 s), so it is the benchmark process's heap, not the reader. Alone, the legacy VTK read of that 31 MB file goes from 0.080 s at one thread to 0.051 s at four. The Gmsh rows barely move: their nodes are parsed in parallel, but their element blocks, still serial, are most of the read ([roadmap](./roadmap.md#performance), 5.7.2).
+`read_vtk_ascii`'s SEQ row reads 10% slower inside `bench_ops`, where the chunked path is never taken; callgrind counts the same instructions for the read before and after, and the read of the same file alone, through the single header, times the same either way (0.085 to 0.090 s), so it is the benchmark process's heap, not the reader. Alone, the legacy VTK read of that 31 MB file goes from 0.080 s at one thread to 0.051 s at four. The Gmsh rows barely move: their nodes are parsed in parallel, but their element blocks, still serial, were most of the read; the next batch takes them on.
+
+**The rest of the ASCII readers** (roadmap 5.7.2, second batch). Gmsh 4.1 and 4.0 element blocks go through the same token parse as their nodes (the element tag read and dropped, a 4.0 node tag below 1 or outside `int32` refused). Gmsh 2.2's `$Elements` has a line of its own length per element, so its lines are indexed (a serial walk over the newlines), parsed and checked in parallel, the blocks `append_element` would open decided by a serial pass over each line's type and tag count, and the rows filled in parallel; a token that is not a whole integer, an unknown type, a bad tag count or a short row sends the section back to the serial loop, extra integers after a row are ignored as before. Medit's `Vertices` and element tables go through `parse_tokens`, a `#` anywhere in a table refusing it (no number parse takes a token holding one), so a commented table reads serially. ASCII STL is cut by `chunk_lines` into chunks of whole lines, each read by the serial rule into its own rows, joined in order. Every digest equals the commit before on SEQ, OpenMP and THREADS at 1 and 4 threads, tiers S and M. Tier L, median of three interleaved rounds of `--runs 3`, seconds (`benchmark/chunked_readers_L.csv`):
+
+| Row | SEQ before | SEQ after | THREADS ×4 before | THREADS ×4 after | OpenMP ×4 before | OpenMP ×4 after |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `read_medit` | 0.130 | 0.148 | 0.153 | 0.032 | 0.152 | 0.034 |
+| `read_stl` (ASCII) | 0.029 | 0.026 | 0.025 | 0.018 | 0.023 | 0.018 |
+| `read_gmsh_ascii` (4.1) | 0.092 | 0.091 | 0.081 | 0.066 | 0.091 | 0.066 |
+| `read_gmsh22_ascii` | 0.244 | 0.240 | 0.246 | 0.121 | 0.248 | 0.117 |
+
+SEQ takes none of the parallel paths. `read_medit`'s SEQ row moved within the noise of the benchmark process, not the reader: Cachegrind counts the same instructions for the read before and after (2.307 and 2.308 G at tier M, three runs), and five more interleaved rounds at tier L timed the new binary faster (0.12 against 0.15 s). The Gmsh 4.1 read is now mostly its `$Entities` and the mesh assembly; STL's is the weld.
 
 ## Every format
 
