@@ -1043,6 +1043,19 @@ BASELINE=before.csv CMAKE_BUILD_PARALLEL_LEVEL=4 tools/bench_ops.sh after.csv "S
 
 The `determinism` job in `ci.yml` runs the first form on the small tier at 1 and 4 threads on every pull request. The digest is also available to the C++ tests (`src/cpp/benchmark/mesh_digest.hpp`), where golden digests pin an operation's output across a rewrite.
 
+### Instruction-count gate
+
+Roadmap 5.1.1. Timings never fail a build ([benchmark trends](./benchmark_trends.md): a hosted runner is noisy), but an instruction count is stable where a wall time is not, so the `instructions` job in `ci.yml` gates every pull request on one. `meshioplusplus_bench_ops --instructions` runs a row's untimed warmup, which builds its inputs, then one run between Cachegrind's start and stop client requests (`<valgrind/cachegrind.h>`, valgrind 3.22 or later); `tools/bench_instructions.py` runs each tier S row in its own process under `valgrind --tool=cachegrind --instr-at-start=no` on a SEQ build at one thread, so each count is that one run of the operation and nothing else, and compares the counts with the committed `benchmark/instructions_S.csv`:
+
+```sh
+python3 tools/bench_instructions.py --check benchmark/instructions_S.csv   # builds build/bench-instructions
+python3 tools/bench_instructions.py --record benchmark/instructions_S.csv  # after a change that moves a count on purpose
+```
+
+A row more than 1% above its baseline fails, and so does a baseline row the run no longer has; a row more than 1% below, or a new row, is reported and passes, and the baseline should then be re-recorded so the gain is kept. The baseline was recorded twice from the same build: across its 130 rows the two runs differ by at most 6 parts per million (`read_obj`), and the whole sweep takes about four minutes on two jobs, `optimize_volume` (25.7 G instructions) and `boundary_layer` (19.4 G) the longest, so every row is gated. A count depends on the compiler, its flags and the C++ library, so the file names its toolchain (GCC 13.3 on Ubuntu 24.04, the `ubuntu-24.04` runner's): a run with another prints the comparison and fails nothing, and the baseline is re-recorded with the new toolchain in its own change. The job writes the rows outside the tolerance to the run's summary and uploads the run's counts.
+
+The gate sees instructions, not time: a change that trades instructions for memory traffic or parallelism (a parallel path is not taken on one thread) is judged by the timed rows above, and a count that falls is not proof the operation got faster.
+
 ## Landing a performance change
 
 A performance change starts from a measured or code-verified slowdown in a path a user hits, with the shape of the fix named, and shows its before and after on the harness: `benchmark/bench.py` for I/O, `tools/bench_ops.sh` for operations, `benchmark/viewer_surface.mjs` for the browser viewer's render path. The [Clang-Tidy performance audit](#clang-tidy-performance-audit) finds candidates; its findings are advisory and must pass the same gates. The roadmap's performance section closed in October 2026; what was measured and not taken is recorded with its [non-goals](./roadmap.md#non-goals-and-decisions-taken).

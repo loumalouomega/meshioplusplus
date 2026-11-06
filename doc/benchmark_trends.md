@@ -4,7 +4,7 @@
 import BenchmarkTrends from './.vitepress/components/BenchmarkTrends.vue'
 </script>
 
-The weekly benchmark workflow preserves its CSVs and run metadata on the repository's `benchmark-data` branch. This page plots the published history without downloading Actions artifacts. Timings are informational, never a performance gate; hosted runners are noisy. Operation determinism checks still fail on differing output digests.
+The weekly benchmark workflow preserves its CSVs and run metadata on the repository's `benchmark-data` branch. This page plots the published history without downloading Actions artifacts. Timings are informational, never a performance gate; hosted runners are noisy. Operation determinism checks still fail on differing output digests, and pull requests are gated on the [instruction counts](./benchmarks.md#instruction-count-gate) of the operation rows, which are stable where timings are not.
 
 Choose a suite, an environment and a case. Cases separate mesh sizes, operations/formats, parallel backends and thread counts; environments separate CPU models, compiler versions and dependency configurations. Even the same CPU model can have different contention, so inspect repeated runs rather than attributing one spike to a commit. Missing measurements are gaps, not zeroes. Raw CSV, metadata and workflow links accompany every run.
 
