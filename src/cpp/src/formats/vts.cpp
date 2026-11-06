@@ -71,14 +71,9 @@ void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t hsz = detail::vtk_xml_size_header_bytes(rMesh, binary, codec);
+    const std::size_t hsz =
+        detail::vtk_xml_lattice_preamble(os, rMesh, spec, "StructuredGrid", "vts", binary, codec);
     const detail::VtkXmlEmitter emit{os, binary, codec, hsz};
-    const std::string ext = detail::vtk_xml_lattice_extent(spec);
-
-    detail::vtk_xml_prolog(os, "StructuredGrid", "0.1", binary, codec, hsz);
-    os << "<StructuredGrid WholeExtent=\"" << ext << "\">\n";
-    detail::write_field_data_section(os, rMesh, "vts", binary, codec, hsz);
-    os << "<Piece Extent=\"" << ext << "\">\n";
 
     const NDArray& pts = rMesh.Points();
     const std::size_t np = rMesh.NumPoints();

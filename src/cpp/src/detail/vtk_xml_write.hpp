@@ -43,6 +43,7 @@
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "region_field_data.hpp"
 #include "row_writer.hpp"
 #include "vtu_decode.hpp"
 
@@ -127,6 +128,23 @@ inline std::string vtk_xml_lattice_extent(const LatticeSpec& rSpec) {
     auto ext = make_classic_ostringstream();
     ext << "0 " << rSpec.mDims[0] << " 0 " << rSpec.mDims[1] << " 0 " << rSpec.mDims[2];
     return ext.str();
+}
+
+/// The opening of a lattice writer whose grid element carries only the extent
+/// (`.vtr`, `.vts`): the prolog, the `<pGrid WholeExtent="...">` start tag,
+/// the field data section and the `<Piece>` start tag. @p pFormat names the
+/// format in the field data warnings. Returns the size-header width.
+inline std::size_t vtk_xml_lattice_preamble(std::ostream& rOs, const Mesh& rMesh,
+                                            const LatticeSpec& rSpec, const char* pGrid,
+                                            const char* pFormat, bool Binary, VtkCodec Codec) {
+    const std::size_t hsz = vtk_xml_size_header_bytes(rMesh, Binary, Codec);
+    const std::string ext = vtk_xml_lattice_extent(rSpec);
+
+    vtk_xml_prolog(rOs, pGrid, "0.1", Binary, Codec, hsz);
+    rOs << "<" << pGrid << " WholeExtent=\"" << ext << "\">\n";
+    write_field_data_section(rOs, rMesh, pFormat, Binary, Codec, hsz);
+    rOs << "<Piece Extent=\"" << ext << "\">\n";
+    return hsz;
 }
 
 /// A one-block lattice's `<PointData>` and `<CellData>` sections (each only

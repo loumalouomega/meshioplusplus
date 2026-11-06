@@ -66,14 +66,9 @@ void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
     if (!os)
         throw WriteError("Could not open file for writing: " + rPath);
 
-    const std::size_t hsz = detail::vtk_xml_size_header_bytes(rMesh, binary, codec);
+    const std::size_t hsz =
+        detail::vtk_xml_lattice_preamble(os, rMesh, spec, "RectilinearGrid", "vtr", binary, codec);
     const detail::VtkXmlEmitter emit{os, binary, codec, hsz};
-    const std::string ext = detail::vtk_xml_lattice_extent(spec);
-
-    detail::vtk_xml_prolog(os, "RectilinearGrid", "0.1", binary, codec, hsz);
-    os << "<RectilinearGrid WholeExtent=\"" << ext << "\">\n";
-    detail::write_field_data_section(os, rMesh, "vtr", binary, codec, hsz);
-    os << "<Piece Extent=\"" << ext << "\">\n";
 
     os << "<Coordinates>\n";
     const char* axis_names[3] = {"x_coordinates", "y_coordinates", "z_coordinates"};
