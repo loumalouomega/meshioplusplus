@@ -1,18 +1,11 @@
-from .._helpers import _reader_names, read, write
+from .._helpers import read, write
 from .._quality import attach_quality, compute_quality
+from ._common import add_io_args
 from ._json import emit_json
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="mesh file to be read from")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
+    add_io_args(parser)
     parser.add_argument(
         "--output",
         "-o",

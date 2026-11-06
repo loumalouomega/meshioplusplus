@@ -2,22 +2,19 @@ import numpy as np
 
 from .._fit_cad import DEFAULT_RANSAC_SEED, fit_cad
 from .._fit_primitives import TYPES, fit_primitives
-from .._helpers import _reader_names, read, write
+from .._helpers import read, write
 from .._segment import segment
+from ._common import add_io_args
 from ._json import emit_json
 from ._refine_patches import parse_seed
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="closed surface mesh to be read from")
-    parser.add_argument("outfile", type=str, help="STEP file the solid is written to")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
+    add_io_args(
+        parser,
+        "STEP file the solid is written to",
+        in_help="closed surface mesh to be read from",
+        output_format=False,
     )
     parser.add_argument(
         "--segment-method",

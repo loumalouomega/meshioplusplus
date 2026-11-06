@@ -7,10 +7,11 @@ so the two verbs take the same command lines.
 import shutil
 import sys
 
-from .._helpers import _reader_names, read
+from .._helpers import read
 from .._render import _core_module, _environment_color_depth
 from .._render import parse_color as _rgba
 from .._render import parse_cutaway, render_text, snapshot
+from ._common import add_io_args
 
 
 def _numbers(text, flag):
@@ -317,19 +318,10 @@ def _write_text(text):
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="mesh file to be read from")
-    parser.add_argument(
-        "outfile",
-        type=str,
-        help="output: .png, .txt, .ansi, .html or .cast; - draws in this terminal",
-    )
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
+    add_io_args(
+        parser,
+        "output: .png, .txt, .ansi, .html or .cast; - draws in this terminal",
+        output_format=False,
     )
     parser.add_argument(
         "--width", type=int, default=800, help="PNG width (default: 800)"

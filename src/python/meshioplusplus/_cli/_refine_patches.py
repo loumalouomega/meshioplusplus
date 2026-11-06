@@ -1,8 +1,9 @@
 from .._fit_cad import DEFAULT_RANSAC_SEED
 from .._fit_primitives import TYPES
-from .._helpers import _reader_names, read, write
+from .._helpers import read, write
 from .._refine_patches import refine_patches
 from .._segment import segment
+from ._common import add_io_args
 from ._json import emit_json
 
 
@@ -12,17 +13,11 @@ def parse_seed(text):
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="surface mesh to be read from")
-    parser.add_argument(
-        "outfile", type=str, help="mesh with the refined patches to be written to"
-    )
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
+    add_io_args(
+        parser,
+        "mesh with the refined patches to be written to",
+        in_help="surface mesh to be read from",
+        output_format=False,
     )
     parser.add_argument(
         "--tolerance",

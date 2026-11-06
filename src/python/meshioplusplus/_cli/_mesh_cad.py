@@ -1,32 +1,16 @@
 import argparse
 
-from .._helpers import _reader_names, _writer_names, read, write
+from .._helpers import read, write
 from .._mesh_cad import mesh_cad_surface
+from ._common import add_io_args
 from ._json import emit_json
 
 
 def add_args(parser):
-    parser.add_argument(
-        "infile",
-        type=str,
-        help="CAD model to be read from (Kratos CAD JSON, STEP, IGES)",
-    )
-    parser.add_argument("outfile", type=str, help="surface mesh to be written to")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
-    parser.add_argument(
-        "--output-format",
-        "-o",
-        type=str,
-        choices=_writer_names(),
-        help="output file format",
-        default=None,
+    add_io_args(
+        parser,
+        "surface mesh to be written to",
+        in_help="CAD model to be read from (Kratos CAD JSON, STEP, IGES)",
     )
     parser.add_argument(
         "--heal",

@@ -1,20 +1,13 @@
 import numpy as np
 
-from .._helpers import _reader_names, read
+from .._helpers import read
 from .._periodic import match_periodic_nodes
+from ._common import add_io_args
 from ._json import emit_json
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="mesh file carrying both regions")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
+    add_io_args(parser, in_help="mesh file carrying both regions")
     parser.add_argument("--slave", required=True, help="region whose nodes are mapped")
     parser.add_argument("--master", required=True, help="region they map onto")
     parser.add_argument(

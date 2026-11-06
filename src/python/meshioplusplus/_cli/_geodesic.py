@@ -2,20 +2,17 @@
 method (``doc/geodesic.md``)."""
 
 from .._geodesic import geodesic_distance
-from .._helpers import _reader_names, read, write
+from .._helpers import read, write
+from ._common import add_io_args
 from ._json import emit_json
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="triangle surface mesh")
-    parser.add_argument("outfile", type=str, help="output mesh with geodesic:distance")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
+    add_io_args(
+        parser,
+        "output mesh with geodesic:distance",
+        in_help="triangle surface mesh",
+        output_format=False,
     )
     parser.add_argument("--output-format", "-o", type=str, default=None)
     parser.add_argument(

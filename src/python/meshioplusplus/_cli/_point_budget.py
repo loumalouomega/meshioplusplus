@@ -1,28 +1,12 @@
 """``subsample``: reduce a mesh to a point cloud under a token budget."""
 
-from .._helpers import _reader_names, _writer_names, read, write
+from .._helpers import read, write
 from .._point_budget import _METHODS, subsample_points
+from ._common import add_io_args
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="mesh file to be read from")
-    parser.add_argument("outfile", type=str, help="point cloud to be written to")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
-    parser.add_argument(
-        "--output-format",
-        "-o",
-        type=str,
-        choices=_writer_names(),
-        help="output file format",
-        default=None,
-    )
+    add_io_args(parser, "point cloud to be written to")
     parser.add_argument(
         "--count", "-n", type=int, required=True, help="how many points to keep"
     )

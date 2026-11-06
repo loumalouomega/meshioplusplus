@@ -1,20 +1,13 @@
 import numpy as np
 
 from .._common import warn
-from .._helpers import _reader_names, read, read_metadata
+from .._helpers import read, read_metadata
+from ._common import add_io_args
 from ._json import emit_json
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="mesh file to be read from")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
+    add_io_args(parser)
     parser.add_argument(
         "--fast",
         action="store_true",

@@ -1,28 +1,12 @@
 import json
 
 from .._boundary_layer import boundary_layer
-from .._helpers import _reader_names, _writer_names, read, write
+from .._helpers import read, write
+from ._common import add_io_args
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="triangle and quad surface")
-    parser.add_argument("outfile", type=str, help="layers to be written to")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
-    parser.add_argument(
-        "--output-format",
-        "-o",
-        type=str,
-        choices=_writer_names(),
-        help="output file format",
-        default=None,
-    )
+    add_io_args(parser, "layers to be written to", in_help="triangle and quad surface")
     parser.add_argument(
         "--first-height", type=float, required=True, help="the first layer's thickness"
     )

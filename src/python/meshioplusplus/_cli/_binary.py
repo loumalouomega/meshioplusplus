@@ -1,20 +1,12 @@
 import os
 import pathlib
 
-from .._helpers import _filetypes_from_path, _reader_names, read
+from .._helpers import _filetypes_from_path, read
+from ._common import add_io_args
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="mesh file to convert")
-
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
+    add_io_args(parser, in_help="mesh file to convert")
 
 
 def binary(args):
