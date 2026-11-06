@@ -24,7 +24,6 @@
 
 // Project includes
 #include "cell_centroids.hpp"
-#include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "typed_view.hpp"

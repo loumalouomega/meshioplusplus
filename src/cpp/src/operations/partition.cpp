@@ -43,7 +43,6 @@
 
 // Project includes (private, not installed)
 #include "../detail/cell_centroids.hpp"
-#include "../detail/typed_view.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_KAHIP
 // External includes
