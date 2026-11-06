@@ -52,14 +52,14 @@ tools/dup_report.py --json report.json   # the full result, for a before/after c
 
 The density is a guide, not a target. Some repetition is structure: a table of node orders, a list of `py::arg` defaults that is the Python signature, or the typed signature of each MCP tool, which the SDK reads to build its schema. The largest regions shared by two files are the useful part of the report, because each names two line ranges that could call one helper.
 
-The November 2026 measurements (round 2 of [roadmap 3.4](./roadmap.md#quality-of-implementation)):
+The November 2026 measurements, by pass of [roadmap 3.4](./roadmap.md#quality-of-implementation):
 
-| Language | Before | After |
-| --- | ---: | ---: |
-| C++ | 10.6% (26,097 of 245,231 lines) | 9.3% (22,739 of 243,556) |
-| Python | 11.0% (15,038 of 137,250 lines) | 9.9% (13,481 of 136,357) |
+| Language | Before the second pass | After the second | After the third |
+| --- | ---: | ---: | ---: |
+| C++ | 10.6% (26,097 of 245,231 lines) | 9.3% (22,739 of 243,556) | 9.1% (22,041 of 243,222) |
+| Python | 11.0% (15,038 of 137,250 lines) | 9.9% (13,481 of 136,357) | 9.2% (12,467 of 135,765) |
 
-What remains at the top is mostly structure the report cannot tell apart from copying: the explicit `py::arg` signatures of `bindings/python/_core.cpp`, the `extern "C"` entry points of `bindings/c/c_api.cpp`, the argument tables of the native CLI and the typed MCP tool signatures. The rest is listed in roadmap 3.4.8 to 3.4.10.
+What remains at the top is mostly structure the report cannot tell apart from copying: the explicit `py::arg` signatures of `bindings/python/_core.cpp`, the `extern "C"` entry points of `bindings/c/c_api.cpp`, the argument tables of the native CLI and the typed MCP tool signatures. The rest is listed in roadmap 3.4.8 to 3.4.12.
 
 ## Clang-Tidy
 
