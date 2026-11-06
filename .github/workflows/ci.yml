@@ -314,6 +314,42 @@ jobs:
           name: determinism
           path: determinism.csv
 
+  # --------------------------------------------------------------------------
+  # Instruction counts of the operation rows against a committed baseline
+  # (roadmap 5.1.1). Timings never gate, a runner is too noisy; Cachegrind's
+  # count of one run of each tier S row, SEQ on one thread, is stable, so a
+  # row more than 1% above benchmark/instructions_S.csv fails. A change that
+  # moves a count on purpose re-records the baseline and says why; a run on a
+  # toolchain other than the baseline's reports and passes
+  # (doc/benchmarks.md, "Instruction-count gate").
+  # --------------------------------------------------------------------------
+  instructions:
+    name: Instruction counts against the baseline
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - name: Install valgrind and ninja
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y valgrind ninja-build
+      - name: Counts within the tolerance
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: "4"
+        run: |
+          python3 tools/bench_instructions.py --check benchmark/instructions_S.csv \
+            --jobs 4 --out instructions.csv --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: instructions
+          path: instructions.csv
+
   cpp-install:
     name: C++ API install (${{ matrix.name }})
     needs: [lint]
@@ -1491,6 +1527,12 @@ jobs:
   # This works because pyproject.toml pins a persistent
   # `build-dir = "build/{wheel_tag}"`: the .gcno/.gcda files survive the pip
   # build instead of being discarded with a temporary directory.
+  #
+  # On `master` pushes (not tags) the same job also feeds SonarCloud: the two
+  # instrumented builds export their compilation databases, which are merged
+  # for the C/C++ analysis, and the filtered lcov tracefile is rewritten in
+  # Sonar's generic format, so Sonar and Codecov share one denominator
+  # (sonar-project.properties, doc/static_analysis.md).
   # --------------------------------------------------------------------------
   coverage:
     name: Coverage (Python + C++)
@@ -1503,10 +1545,14 @@ jobs:
     # env var, which step `if:`s may test via the `env` context.
     env:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
+      # Full history: SonarCloud reads `git blame` to attribute issues and to
+      # tell new code from old; a shallow clone makes it warn and guess.
       - uses: actions/checkout@v4
         with:
           lfs: false
+          fetch-depth: 0
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
       # has failed whole runs by answering "unable to handle this request due to load".
       - name: Initialise submodules
@@ -1590,6 +1636,7 @@ jobs:
             -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
             -DMESHIOPLUSPLUS_WITH_OCCT=ON \
             -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DPython_EXECUTABLE=$(which python)
@@ -1614,6 +1661,7 @@ jobs:
             -DMESHIOPLUSPLUS_WITH_NETCDF=ON
             -DMESHIOPLUSPLUS_WITH_ZLIB=ON
             -DMESHIOPLUSPLUS_WITH_OCCT=ON
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
             -DCMAKE_C_COMPILER_LAUNCHER=ccache
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           SKBUILD_CMAKE_BUILD_TYPE: Debug
@@ -1686,6 +1734,38 @@ jobs:
           files: ./cpp-coverage.info
           flags: cpp
           fail_ci_if_error: false
+
+      # SonarCloud (master pushes only; doc/static_analysis.md). Like Codecov,
+      # the scan is skipped with a warning until SONAR_TOKEN is configured, and
+      # a failed scan does not fail the job (`continue-on-error`): a SonarCloud
+      # outage is not a defect in the commit under analysis. The quality gate
+      # is reported on sonarcloud.io, not enforced here.
+      - name: Warn if SONAR_TOKEN is unset
+        if: ${{ env.SONAR_TOKEN == '' && github.ref == 'refs/heads/master' }}
+        run: |
+          echo "::warning title=SonarCloud not run::SONAR_TOKEN is not set, so the SonarCloud analysis was skipped. Import the repository on sonarcloud.io, turn Automatic Analysis off, and add the SONAR_TOKEN secret (doc/static_analysis.md)."
+
+      # One compilation database for the analyzer: the GoogleTest/C API tree and
+      # the editable extension's tree (build/<wheel_tag>), which is the only one
+      # that compiles bindings/python/_core.cpp. A source both trees compile is
+      # analysed once. The ccache launcher both builds use is stripped from each
+      # command, so the analyzer sees the compiler itself.
+      - name: Prepare SonarCloud inputs
+        if: ${{ env.SONAR_TOKEN != '' && github.ref == 'refs/heads/master' && steps.lfs.outputs.available != 'false' }}
+        run: |
+          jq -s 'add | unique_by(.file) | map(
+                   if .command then .command |= sub("^[^ ]*ccache +"; "") else . end
+                   | if (.arguments // [] | .[0] // "" | test("ccache$")) then .arguments |= .[1:] else . end)' \
+            build-cpp-cov/compile_commands.json build/*/compile_commands.json > compile_commands.json
+          jq length compile_commands.json
+          python tools/lcov_to_sonar.py cpp-coverage.info cpp-coverage-sonar.xml --root .
+
+      - name: SonarCloud scan
+        if: ${{ env.SONAR_TOKEN != '' && github.ref == 'refs/heads/master' && steps.lfs.outputs.available != 'false' }}
+        continue-on-error: true
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   # --------------------------------------------------------------------------
   # The desktop viewer backend (polyscope). Kept out of the per-backend C++

@@ -46,6 +46,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/fem_kernels.hpp"
 #include "../detail/typed_view.hpp"
 
 // Project includes (private, not installed)
@@ -104,25 +105,11 @@ inline Vec3 optvol_point(const std::vector<double>& rXyz, std::int64_t v) {
     return {rXyz[o], rXyz[o + 1], rXyz[o + 2]};
 }
 
-// Six times the signed volume of tetra (p0,p1,p2,p3): triple product of the
-// three edges out of p0. Sign is the orientation, magnitude 6*|volume|; used
-// for both the convexity/validity tests and the tiling checks (no division,
-// no in-sphere test anywhere).
-inline double optvol_svol6(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3) {
-    return detail::triple_product(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
-                                  detail::vec3_sub(p3, p0));
-}
-
-// det of the three UNIT outgoing edges at a corner -- the per-corner factor of
-// the scaled Jacobian (quality.cpp's quality_det_unit3, re-derived here rather
-// than reached into its anonymous namespace). NaN on a zero-length edge.
-inline double optvol_det_unit3(const Vec3& u, const Vec3& v, const Vec3& w, double eps) {
-    const double lu = detail::vec3_norm(u), lv = detail::vec3_norm(v), lw = detail::vec3_norm(w);
-    if (lu < eps || lv < eps || lw < eps)
-        return std::numeric_limits<double>::quiet_NaN();
-    return detail::triple_product(detail::vec3_scale(u, 1.0 / lu), detail::vec3_scale(v, 1.0 / lv),
-                                  detail::vec3_scale(w, 1.0 / lw));
-}
+// Six times the signed volume of a tetra (`detail::tet_volume6`) is the sign
+// of its orientation and 6*|volume|; it serves both the convexity/validity
+// tests and the tiling checks (no division, no in-sphere test anywhere). The
+// per-corner factor of the scaled Jacobian is `detail::det_unit3`, the kernel
+// `quality` reports with.
 
 // Orientation-normalised scaled Jacobian in [0, 1]: the tet is measured on its
 // positively-oriented reordering, so a negatively-stored but well-shaped tet
@@ -133,16 +120,16 @@ inline double optvol_det_unit3(const Vec3& u, const Vec3& v, const Vec3& w, doub
 double optvol_quality(const Vec3& q0, const Vec3& q1, const Vec3& q2, const Vec3& q3,
                       double eps_len) {
     Vec3 p0 = q0, p1 = q1, p2 = q2, p3 = q3;
-    if (optvol_svol6(p0, p1, p2, p3) < 0.0)
+    if (detail::tet_volume6(p0, p1, p2, p3) < 0.0)
         std::swap(p2, p3);  // reorder to positive orientation
-    const double j0 = optvol_det_unit3(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
-                                       detail::vec3_sub(p3, p0), eps_len);
-    const double j1 = optvol_det_unit3(detail::vec3_sub(p2, p1), detail::vec3_sub(p0, p1),
-                                       detail::vec3_sub(p3, p1), eps_len);
-    const double j2 = optvol_det_unit3(detail::vec3_sub(p0, p2), detail::vec3_sub(p1, p2),
-                                       detail::vec3_sub(p3, p2), eps_len);
-    const double j3 = optvol_det_unit3(detail::vec3_sub(p0, p3), detail::vec3_sub(p2, p3),
-                                       detail::vec3_sub(p1, p3), eps_len);
+    const double j0 = detail::det_unit3(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
+                                        detail::vec3_sub(p3, p0), eps_len);
+    const double j1 = detail::det_unit3(detail::vec3_sub(p2, p1), detail::vec3_sub(p0, p1),
+                                        detail::vec3_sub(p3, p1), eps_len);
+    const double j2 = detail::det_unit3(detail::vec3_sub(p0, p2), detail::vec3_sub(p1, p2),
+                                        detail::vec3_sub(p3, p2), eps_len);
+    const double j3 = detail::det_unit3(detail::vec3_sub(p0, p3), detail::vec3_sub(p2, p3),
+                                        detail::vec3_sub(p1, p3), eps_len);
     if (!(std::isfinite(j0) && std::isfinite(j1) && std::isfinite(j2) && std::isfinite(j3)))
         return 0.0;
     const double sj = std::sqrt(2.0) * std::min({j0, j1, j2, j3});
@@ -158,8 +145,8 @@ double optvol_quality_tet(const std::vector<double>& rXyz, const Tet& t, double 
 
 // Store a tet in positive orientation (swap the last two corners if needed).
 inline Tet optvol_orient_positive(const std::vector<double>& rXyz, Tet t) {
-    if (optvol_svol6(optvol_point(rXyz, t[0]), optvol_point(rXyz, t[1]), optvol_point(rXyz, t[2]),
-                     optvol_point(rXyz, t[3])) < 0.0)
+    if (detail::tet_volume6(optvol_point(rXyz, t[0]), optvol_point(rXyz, t[1]),
+                            optvol_point(rXyz, t[2]), optvol_point(rXyz, t[3])) < 0.0)
         std::swap(t[2], t[3]);
     return t;
 }
@@ -264,17 +251,17 @@ std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets, 
             const Vec3 pf0 = optvol_point(rXyz, f0), pf1 = optvol_point(rXyz, f1),
                        pf2 = optvol_point(rXyz, f2), pd = optvol_point(rXyz, d),
                        pe = optvol_point(rXyz, e);
-            if (optvol_svol6(pf0, pf1, pf2, pd) < 0.0) {
+            if (detail::tet_volume6(pf0, pf1, pf2, pd) < 0.0) {
                 std::swap(f1, f2);
             }
             const Vec3 g0 = optvol_point(rXyz, f0), g1 = optvol_point(rXyz, f1),
                        g2 = optvol_point(rXyz, f2);
-            if (optvol_svol6(g0, g1, g2, pe) >= -eps_vol6)
+            if (detail::tet_volume6(g0, g1, g2, pe) >= -eps_vol6)
                 continue;  // apex e not strictly on the opposite side
             const Tet A{f0, f1, e, d}, B{f1, f2, e, d}, C{f2, f0, e, d};
-            const double vA = optvol_svol6(g0, g1, pe, pd);
-            const double vB = optvol_svol6(g1, g2, pe, pd);
-            const double vC = optvol_svol6(g2, g0, pe, pd);
+            const double vA = detail::tet_volume6(g0, g1, pe, pd);
+            const double vB = detail::tet_volume6(g1, g2, pe, pd);
+            const double vC = detail::tet_volume6(g2, g0, pe, pd);
             if (vA <= eps_vol6 || vB <= eps_vol6 || vC <= eps_vol6)
                 continue;  // non-convex union -> invalid flip
             const double q_old = std::min(rQuality(rTets[t]), rQuality(rTets[u]));
@@ -389,24 +376,25 @@ std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets, 
         std::int64_t a = others[0], b = others[1], c = others[2];
         const Vec3 pu = optvol_point(rXyz, uu), pv = optvol_point(rXyz, vv);
         Vec3 pa = optvol_point(rXyz, a), pb = optvol_point(rXyz, b), pc = optvol_point(rXyz, c);
-        if (optvol_svol6(pa, pb, pc, pu) < 0.0) {
+        if (detail::tet_volume6(pa, pb, pc, pu) < 0.0) {
             std::swap(b, c);
             std::swap(pb, pc);
         }
         // u on the positive side of (a,b,c); a valid removal needs v strictly on
         // the far side, and the two caps must tile the three old tets.
-        if (optvol_svol6(pa, pb, pc, pv) >= -eps_vol6)
+        if (detail::tet_volume6(pa, pb, pc, pv) >= -eps_vol6)
             continue;
-        const double vcap1 = optvol_svol6(pa, pb, pc, pu);  // > 0
-        const double vcap2 = optvol_svol6(pa, pc, pb, pv);  // stored orientation, should be > 0
+        const double vcap1 = detail::tet_volume6(pa, pb, pc, pu);  // > 0
+        const double vcap2 =
+            detail::tet_volume6(pa, pc, pb, pv);  // stored orientation, should be > 0
         if (vcap1 <= eps_vol6 || vcap2 <= eps_vol6)
             continue;
         double old_sum = 0.0;
         for (int r = 0; r < 3; ++r)
-            old_sum += std::fabs(optvol_svol6(optvol_point(rXyz, rTets[ring_tets[r]][0]),
-                                              optvol_point(rXyz, rTets[ring_tets[r]][1]),
-                                              optvol_point(rXyz, rTets[ring_tets[r]][2]),
-                                              optvol_point(rXyz, rTets[ring_tets[r]][3])));
+            old_sum += std::fabs(detail::tet_volume6(optvol_point(rXyz, rTets[ring_tets[r]][0]),
+                                                     optvol_point(rXyz, rTets[ring_tets[r]][1]),
+                                                     optvol_point(rXyz, rTets[ring_tets[r]][2]),
+                                                     optvol_point(rXyz, rTets[ring_tets[r]][3])));
         const double new_sum = vcap1 + vcap2;
         if (std::fabs(new_sum - old_sum) > 1e-9 * old_sum + eps_vol6)
             continue;  // not a clean tiling -> non-convex / invalid
@@ -491,7 +479,7 @@ double optvol_min_dihedral_tet(const std::vector<double>& rXyz, const Tet& t) {
 double optvol_worst_q(const std::vector<double>& rXyz, const Tet& t, double eps_vol6) {
     const Vec3 a = optvol_point(rXyz, t[0]), b = optvol_point(rXyz, t[1]),
                c = optvol_point(rXyz, t[2]), d = optvol_point(rXyz, t[3]);
-    if (optvol_svol6(a, b, c, d) <= eps_vol6)
+    if (detail::tet_volume6(a, b, c, d) <= eps_vol6)
         return -1.0;
     return optvol_min_dihedral(a, b, c, d);
 }
@@ -667,13 +655,15 @@ std::int64_t optvol_pass_edge_removal(std::vector<double>& rXyz, std::vector<Tet
             continue;  // a boundary edge (open fan) or a non-manifold one
         // Orient the ring so that (r_i, r_j, r_l, u) is positive for i < j < l.
         const Vec3 pu = optvol_point(rXyz, uu), pv = optvol_point(rXyz, vv);
-        if (optvol_svol6(pu, pv, optvol_point(rXyz, ring[0]), optvol_point(rXyz, ring[1])) > 0.0)
+        if (detail::tet_volume6(pu, pv, optvol_point(rXyz, ring[0]), optvol_point(rXyz, ring[1])) >
+            0.0)
             std::reverse(ring.begin() + 1, ring.end());
 
         double old_sum = 0.0;
         for (const std::size_t t : ring_tets) {
             const Tet& o = rTets[t];
-            old_sum += std::fabs(optvol_svol6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
+            old_sum +=
+                std::fabs(detail::tet_volume6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
                                               optvol_point(rXyz, o[2]), optvol_point(rXyz, o[3])));
         }
         // best[i][l]: the best least angle over triangulations of r_i .. r_l.
@@ -728,8 +718,8 @@ std::int64_t optvol_pass_edge_removal(std::vector<double>& rXyz, std::vector<Tet
         }
         double new_sum = 0.0;
         for (const Tet& o : made)
-            new_sum += optvol_svol6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
-                                    optvol_point(rXyz, o[2]), optvol_point(rXyz, o[3]));
+            new_sum += detail::tet_volume6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
+                                           optvol_point(rXyz, o[2]), optvol_point(rXyz, o[3]));
         if (std::fabs(new_sum - old_sum) > 1e-9 * old_sum + eps_vol6)
             continue;  // not a clean tiling of the ring
         for (const std::size_t t : ring_tets)
@@ -894,17 +884,17 @@ std::int64_t optvol_pass_multi_face(std::vector<double>& rXyz, std::vector<Tet>&
         if (ring.size() != k)
             continue;
         const Vec3 pa = optvol_point(rXyz, a), pb = optvol_point(rXyz, b);
-        const double sign =
-            optvol_svol6(pa, pb, optvol_point(rXyz, ring[0]), optvol_point(rXyz, ring[1])) > 0.0
-                ? 1.0
-                : -1.0;
+        const double sign = detail::tet_volume6(pa, pb, optvol_point(rXyz, ring[0]),
+                                                optvol_point(rXyz, ring[1])) > 0.0
+                                ? 1.0
+                                : -1.0;
         std::vector<Tet> made;
         double new_sum = 0.0;
         bool valid = true;
         for (std::size_t i = 0; i < k && valid; ++i) {
             Tet t{a, b, ring[i], ring[(i + 1) % k]};
             const double s6 =
-                optvol_svol6(pa, pb, optvol_point(rXyz, t[2]), optvol_point(rXyz, t[3]));
+                detail::tet_volume6(pa, pb, optvol_point(rXyz, t[2]), optvol_point(rXyz, t[3]));
             if (s6 * sign <= eps_vol6)
                 valid = false;
             if (sign < 0.0)
@@ -919,9 +909,9 @@ std::int64_t optvol_pass_multi_face(std::vector<double>& rXyz, std::vector<Tet>&
             for (const std::size_t t : {f.mTa, f.mTb}) {
                 q_old = std::min(q_old, optvol_worst_q(rXyz, rTets[t], eps_vol6));
                 const Tet& o = rTets[t];
-                old_sum +=
-                    std::fabs(optvol_svol6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
-                                           optvol_point(rXyz, o[2]), optvol_point(rXyz, o[3])));
+                old_sum += std::fabs(
+                    detail::tet_volume6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
+                                        optvol_point(rXyz, o[2]), optvol_point(rXyz, o[3])));
             }
         if (std::fabs(new_sum - old_sum) > 1e-9 * old_sum + eps_vol6)
             continue;
@@ -1018,7 +1008,7 @@ std::int64_t optvol_smooth_worst(std::vector<double>& rXyz, const std::vector<Te
                     p[c] = t[static_cast<std::size_t>(c)] == v64
                                ? x
                                : optvol_point(rXyz, t[static_cast<std::size_t>(c)]);
-                if (optvol_svol6(p[0], p[1], p[2], p[3]) <= eps_vol6)
+                if (detail::tet_volume6(p[0], p[1], p[2], p[3]) <= eps_vol6)
                     return -1.0;
                 m = std::min(m, optvol_min_dihedral(p[0], p[1], p[2], p[3]));
             }

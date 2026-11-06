@@ -165,36 +165,12 @@ def _extract_surface_py(mesh, record_parent_ids: bool = False) -> Mesh:
         out_parents.append(parents[sel])
         out_slots.append(slots[sel])
 
-    used = np.unique(np.concatenate([c.reshape(-1) for _, c in out_blocks]))
-    cells = [
-        (name, np.searchsorted(used, c).astype(np.int64)) for name, c in out_blocks
-    ]
-    points = mesh.points[used]
-    point_data = {
-        key: value[used]
-        for key, value in mesh.point_data.items()
-        if np.asarray(value).shape[:1] == (len(mesh.points),)
-    }
-    cell_data = {}
-    if record_parent_ids:
-        cell_data["surface:parent_cell"] = [
-            p.reshape(-1, 1).astype(np.int64) for p in out_parents
-        ]
-    out = Mesh(points, cells, point_data=point_data, cell_data=cell_data)
-    if getattr(mesh, "regions", None):
-        from ._side_carry import carry_regions_to_facet_mesh
+    # Imported here: _side_carry imports this module.
+    from ._side_carry import facet_mesh_from_blocks
 
-        point_map = np.full(len(mesh.points), -1, dtype=np.int64)
-        point_map[used] = np.arange(len(used), dtype=np.int64)
-        carry_regions_to_facet_mesh(
-            mesh,
-            out,
-            np.concatenate(out_parents),
-            np.concatenate(out_slots),
-            point_map,
-            "extract_surface",
-        )
-    return out
+    return facet_mesh_from_blocks(
+        mesh, out_blocks, out_parents, out_slots, record_parent_ids, "extract_surface"
+    )
 
 
 def extract_surface(mesh, record_parent_ids: bool = False) -> Mesh:

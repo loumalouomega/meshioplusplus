@@ -27,17 +27,13 @@
 // Project includes
 #include "curved_quad.hpp"
 #include "curved_untangle.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus::detail {
 
 namespace {
 
 constexpr double kCuPi = 3.14159265358979323846;
-
-double cu_dist(const CurvedVec3& rA, const CurvedVec3& rB) {
-    return std::sqrt((rA[0] - rB[0]) * (rA[0] - rB[0]) + (rA[1] - rB[1]) * (rA[1] - rB[1]) +
-                     (rA[2] - rB[2]) * (rA[2] - rB[2]));
-}
 
 }  // namespace
 
@@ -110,8 +106,8 @@ CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangle
         for (const std::size_t e : around[F]) {
             const std::size_t corners = rElems[e].mQuad ? 4 : 3;
             for (std::size_t k = 0; k < corners; ++k)
-                h = std::min(h, cu_dist(node(rElems[e].mNodes[k]),
-                                        node(rElems[e].mNodes[(k + 1) % corners])));
+                h = std::min(h, vec3_norm(vec3_sub(node(rElems[e].mNodes[k]),
+                                                   node(rElems[e].mNodes[(k + 1) % corners]))));
         }
         const auto& uv = rUv[F];
         for (std::size_t d = 0; d < 2; ++d) {
@@ -119,7 +115,7 @@ CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangle
             std::array<double, 2> a = uv, b = uv;
             a[d] -= du;
             b[d] += du;
-            const double speed = cu_dist(rLift(F, a), rLift(F, b)) / (2.0 * du);
+            const double speed = vec3_norm(vec3_sub(rLift(F, a), rLift(F, b))) / (2.0 * du);
             step[F][d] = speed > 0.0 && std::isfinite(h) ? 0.25 * h / speed : 0.0;
         }
     };

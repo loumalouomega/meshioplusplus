@@ -25,7 +25,9 @@
 #include <vector>
 
 // Project includes
+#include "fem_kernels.hpp"
 #include "hex_fit.hpp"
+#include "vertex_cell_csr.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/parallel.hpp"
 
@@ -37,10 +39,6 @@ namespace {
 // The faces of a hexahedron in the `cell_faces` order (outward normals).
 constexpr int kHexfitFace[6][4] = {{0, 4, 7, 3}, {1, 2, 6, 5}, {0, 1, 5, 4},
                                    {3, 7, 6, 2}, {0, 3, 2, 1}, {4, 5, 6, 7}};
-
-// Each corner's three edge neighbours, right-handed.
-constexpr int kHexfitCorner[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {0, 2, 7},
-                                     {7, 5, 0}, {4, 6, 1}, {5, 7, 2}, {6, 4, 3}};
 
 // The face-connected components of the cells of a 2x2x2 block in @p Mask.
 int hexfit_components(unsigned Mask) {
@@ -82,13 +80,10 @@ std::array<std::uint8_t, 256> hexfit_valid_table() {
 
 double hexfit_corner(const std::vector<Vec3>& rP, const std::array<std::int64_t, 8>& rH, int C) {
     const Vec3& o = rP[static_cast<std::size_t>(rH[static_cast<std::size_t>(C)])];
-    const Vec3 a = vec3_sub(rP[static_cast<std::size_t>(rH[kHexfitCorner[C][0]])], o);
-    const Vec3 b = vec3_sub(rP[static_cast<std::size_t>(rH[kHexfitCorner[C][1]])], o);
-    const Vec3 c = vec3_sub(rP[static_cast<std::size_t>(rH[kHexfitCorner[C][2]])], o);
-    const double l = vec3_norm(a) * vec3_norm(b) * vec3_norm(c);
-    if (!(l > 0.0))
-        return -1.0;
-    return triple_product(a, b, c) / l;
+    const Vec3 a = vec3_sub(rP[static_cast<std::size_t>(rH[kHexCornerEdges[C][0]])], o);
+    const Vec3 b = vec3_sub(rP[static_cast<std::size_t>(rH[kHexCornerEdges[C][1]])], o);
+    const Vec3 c = vec3_sub(rP[static_cast<std::size_t>(rH[kHexCornerEdges[C][2]])], o);
+    return corner_jacobian_ratio(a, b, c, -1.0);
 }
 
 }  // namespace
@@ -175,20 +170,8 @@ std::int64_t hexfit_star_repair(const HexMesh& rMesh, std::vector<std::uint8_t>&
                 across[static_cast<std::size_t>(b / 6)][static_cast<std::size_t>(b % 6)] = a / 6;
             }
     }
-    std::vector<std::int64_t> start(np + 1, 0), at;
-    for (const auto& h : rMesh.mHexes)
-        for (std::int64_t v : h)
-            ++start[static_cast<std::size_t>(v) + 1];
-    for (std::size_t v = 0; v < np; ++v)
-        start[v + 1] += start[v];
-    at.resize(static_cast<std::size_t>(start[np]));
-    {
-        std::vector<std::int64_t> fill(start.begin(), start.end() - 1);
-        for (std::size_t h = 0; h < nh; ++h)
-            for (std::int64_t v : rMesh.mHexes[h])
-                at[static_cast<std::size_t>(fill[static_cast<std::size_t>(v)]++)] =
-                    static_cast<std::int64_t>(h);
-    }
+    std::vector<std::int64_t> start, at;
+    vertex_cell_csr(rMesh.mHexes, np, start, at);
     std::int64_t added = 0;
     std::vector<std::vector<std::size_t>> link;
     std::vector<std::uint8_t> seen;
@@ -503,7 +486,7 @@ HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
             const auto v = static_cast<std::size_t>(rHexes[h][static_cast<std::size_t>(c)]);
             inc[v].push_back(static_cast<std::int64_t>(h));
             for (int e = 0; e < 3; ++e)
-                nbr[v].push_back(rHexes[h][static_cast<std::size_t>(kHexfitCorner[c][e])]);
+                nbr[v].push_back(rHexes[h][static_cast<std::size_t>(kHexCornerEdges[c][e])]);
         }
     for (auto& n : nbr) {
         std::sort(n.begin(), n.end());

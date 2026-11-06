@@ -37,6 +37,9 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+// Project includes (private, not installed)
+#include "../detail/data_plumbing.hpp"
+
 namespace meshioplusplus {
 
 namespace {
@@ -66,8 +69,9 @@ struct SubOutBlock {
 
 /// Stage an input block unchanged -- the pass-through case, a polygon block or
 /// a rectangular one (a polyhedron block is always eligible, so it never gets
-/// here). Mirrors convert_cells.cpp's own staging helper; not shared with it
-/// directly, since that one is file-private there too.
+/// here). The same body as detail::stage_flat_or_polygon (staged_block.hpp),
+/// kept here on purpose: using the shared template changed how GCC inlined the
+/// rest of subdivide.cpp (tier S `subdivide_ragged` +2.2%); roadmap 3.4.11.
 SubOutBlock sub_stage_passthrough(const Mesh::CellView& rBlock) {
     SubOutBlock out;
     out.mType = std::string(rBlock.Type());
@@ -301,32 +305,11 @@ SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
     // for the identical "each child inherits its parent's row" shape. An
     // array whose block count does not match the mesh is not per-cell data,
     // so it is copied verbatim rather than mangled.
-    for (const std::string& name : rMesh.CellDataNames()) {
-        const std::size_t ndata = rMesh.CellDataNumBlocks(name);
-        std::vector<NDArray> blocks;
-        blocks.reserve(ndata);
-        for (std::size_t b = 0; b < ndata; ++b) {
-            const NDArray& src = rMesh.CellData(name, b);
-            const std::size_t in_rows = detail::rows(src);
-            if (ndata != nblocks || in_rows == 0 || parent_of_child[b].empty()) {
-                blocks.push_back(detail::data_owned_copy(src));
-                continue;
-            }
-            const std::vector<std::int64_t>& parents = parent_of_child[b];
-            std::vector<std::size_t> shape = src.Shape();
-            shape[0] = parents.size();
-            const std::size_t row_bytes = src.Nbytes() / in_rows;
-            NDArray dst = NDArray::Uninit(src.Dtype(), std::move(shape));
-            const std::byte* p_src = src.Data();
-            std::byte* p_dst = dst.Data();
-            parallel_for_bw(parents.size(), [&](std::size_t i) {
-                std::memcpy(p_dst + i * row_bytes,
-                            p_src + static_cast<std::size_t>(parents[i]) * row_bytes, row_bytes);
-            });
-            blocks.push_back(std::move(dst));
-        }
-        out.AddCellData(name, std::move(blocks));
-    }
+    for (const std::string& name : rMesh.CellDataNames())
+        out.AddCellData(name, detail::replicate_parent_rows(rMesh, name, nblocks, parent_of_child,
+                                                            [&](std::size_t b, std::size_t) {
+                                                                return parent_of_child[b].empty();
+                                                            }));
     for (const std::string& name : rMesh.FieldDataNames())
         out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
 

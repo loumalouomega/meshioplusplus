@@ -18,7 +18,8 @@
 
 /**
  * @file detail/chunked_parse.hpp
- * @brief Blank-separated numbers parsed in parallel (roadmap 5.7.2). A
+ * @brief Blank-separated numbers parsed in parallel (roadmap 5.7.2), and text
+ * cut into chunks of whole lines for readers that parse line by line. A
  * **core-private** header.
  *
  * The text is cut into chunks at blanks (`text_is_blank`, the classic-locale
@@ -166,6 +167,31 @@ std::size_t parse_tokens(std::string_view Text, std::size_t Begin, std::size_t C
         pos = cuts.back();
     }
     return std::string_view::npos;
+}
+
+/// Below this many bytes a reader that parses line by line stays serial.
+inline constexpr std::size_t chunked_lines_min_bytes = std::size_t{1} << 20;
+
+/**
+ * @brief Cuts `Text[Begin, End)` into chunks of whole lines, each but the last
+ * ending just after a `'\n'`, of about `kChunkBytes` each: the bounds, `Begin`
+ * first and `End` last. A line-by-line parse of each chunk in parallel meets
+ * the lines a serial one does, in the same order (`split_lines` of the chunks,
+ * concatenated, is `split_lines` of the whole).
+ */
+inline std::vector<std::size_t> chunk_lines(std::string_view Text, std::size_t Begin,
+                                            std::size_t End) {
+    std::vector<std::size_t> cuts{Begin};
+    while (cuts.back() < End) {
+        std::size_t at = cuts.back() + chunked_parse_impl::kChunkBytes;
+        if (at >= End) {
+            cuts.push_back(End);
+            break;
+        }
+        const std::size_t eol = Text.substr(0, End).find('\n', at);
+        cuts.push_back(eol == std::string_view::npos ? End : eol + 1);
+    }
+    return cuts;
 }
 
 /// How many tokens `Text` holds, counted in parallel chunks.

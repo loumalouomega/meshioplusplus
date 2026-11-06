@@ -42,6 +42,7 @@
 // Project includes (private, not installed)
 #include "../detail/png_write.hpp"
 #include "../detail/raster.hpp"
+#include "../detail/utf8.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -74,24 +75,6 @@ std::array<int, 2> tx_grid(TextEncoding Encoding) {
             return {2, 4};
         default:
             return {1, 1};
-    }
-}
-
-void tx_utf8(std::string& rOut, std::uint32_t Cp) {
-    if (Cp < 0x80) {
-        rOut.push_back(static_cast<char>(Cp));
-    } else if (Cp < 0x800) {
-        rOut.push_back(static_cast<char>(0xC0 | (Cp >> 6)));
-        rOut.push_back(static_cast<char>(0x80 | (Cp & 0x3F)));
-    } else if (Cp < 0x10000) {
-        rOut.push_back(static_cast<char>(0xE0 | (Cp >> 12)));
-        rOut.push_back(static_cast<char>(0x80 | ((Cp >> 6) & 0x3F)));
-        rOut.push_back(static_cast<char>(0x80 | (Cp & 0x3F)));
-    } else {
-        rOut.push_back(static_cast<char>(0xF0 | (Cp >> 18)));
-        rOut.push_back(static_cast<char>(0x80 | ((Cp >> 12) & 0x3F)));
-        rOut.push_back(static_cast<char>(0x80 | ((Cp >> 6) & 0x3F)));
-        rOut.push_back(static_cast<char>(0x80 | (Cp & 0x3F)));
     }
 }
 
@@ -478,7 +461,7 @@ std::string tx_encode_cells(const Frame& rFrame, const TextOptions& rOpt) {
                         out += "<span style=\"" + style + "\">";
                 }
             }
-            tx_utf8(out, cell.mGlyph);
+            detail::utf8_append(out, cell.mGlyph);
         }
         if (sgr && (cur_fg != "39" || cur_bg != "49"))
             out += "\x1b[0m";
@@ -858,7 +841,7 @@ std::string encode_cells_update(const TextGrid& rOld, const TextGrid& rNew, Colo
                 cur_fg = fg;
                 cur_bg = bg;
             }
-            tx_utf8(out, cell.mGlyph);
+            detail::utf8_append(out, cell.mGlyph);
             last = col;
             any = true;
         }

@@ -167,24 +167,6 @@ std::vector<std::string_view> fn_fields(std::string_view Line) {
     return out;
 }
 
-bool fn_parse_int(std::string_view rText, std::int64_t& rValue) {
-    if (rText.empty())
-        return false;
-    std::size_t i = rText[0] == '-' || rText[0] == '+' ? 1 : 0;
-    if (i >= rText.size())
-        return false;
-    std::int64_t v = 0;
-    for (; i < rText.size(); ++i) {
-        if (rText[i] < '0' || rText[i] > '9')
-            return false;
-        if (v > (std::numeric_limits<std::int64_t>::max() - (rText[i] - '0')) / 10)
-            return false;  // more digits than an int64 holds: not an id
-        v = v * 10 + (rText[i] - '0');
-    }
-    rValue = rText[0] == '-' ? -v : v;
-    return true;
-}
-
 bool fn_parse_real(std::string_view rText, double& rValue) {
     return detail::parse_double_token(rText, rValue);
 }
@@ -221,7 +203,7 @@ public:
     std::int64_t Int(const std::vector<std::string_view>& rF, std::size_t K,
                      const char* pWhat) const {
         std::int64_t v = 0;
-        if (K >= rF.size() || !fn_parse_int(rF[K], v))
+        if (K >= rF.size() || !detail::parse_int64_strict(rF[K], v))
             Fail(std::string("bad ") + pWhat +
                  (K < rF.size() ? " '" + std::string(rF[K]) + "'" : std::string()));
         return v;
@@ -304,7 +286,7 @@ std::vector<FnBlock> fn_blocks(std::string_view rText, std::vector<std::string_v
         if (i + 1 >= n)
             break;
         std::int64_t id = 0;
-        if (!fn_parse_int(fn_trim(rLines[i + 1]), id))
+        if (!detail::parse_int64_strict(fn_trim(rLines[i + 1]), id))
             throw ReadError("Femap neutral: expected a block id after '-1', found '" +
                             std::string(fn_trim(rLines[i + 1])) + "' (line " +
                             std::to_string(i + 2) + ")");
@@ -360,7 +342,7 @@ void fn_read_elements(const FnBlock& rBlock, FnFile& rFile, std::set<std::int64_
             const auto f = c.Fields("an element's nodes");
             for (std::size_t k = 0; k < 10; ++k) {
                 std::int64_t v = 0;
-                if (k < f.size() && !fn_parse_int(f[k], v))
+                if (k < f.size() && !detail::parse_int64_strict(f[k], v))
                     c.Fail("bad node id '" + std::string(f[k]) + "'");
                 el.mSlots[static_cast<std::size_t>(part) * 10 + k] = v;
             }
@@ -371,7 +353,8 @@ void fn_read_elements(const FnBlock& rBlock, FnFile& rFile, std::set<std::int64_
         // From 4.5, each non-zero list flag (fields 12-15) is followed by a node list.
         for (std::size_t k = 12; k < 16 && k < last.size(); ++k) {
             std::int64_t flag = 0;
-            if (fn_parse_int(last[k], flag) && flag != 0 && rFile.mVersion >= 4.5 - 1e-9)
+            if (detail::parse_int64_strict(last[k], flag) && flag != 0 &&
+                rFile.mVersion >= 4.5 - 1e-9)
                 fn_skip_list(c);
         }
         el.mTopology = fn_topology(topology);
@@ -414,8 +397,9 @@ void fn_read_properties(const FnBlock& rBlock, FnFile& rFile) {
             std::int64_t count = 0, v = 0;
             bool ints = next.size() > 1;
             for (const std::string_view t : next)
-                ints = ints && fn_parse_int(t, v);
-            if (f.size() == 1 && fn_parse_int(f[0], count) && count == values && ints) {
+                ints = ints && detail::parse_int64_strict(t, v);
+            if (f.size() == 1 && detail::parse_int64_strict(f[0], count) && count == values &&
+                ints) {
                 c.Next("a function count");
                 for (std::int64_t k = 0; k < (values + 4) / 5; ++k)
                     c.Next("a function reference");
@@ -425,7 +409,7 @@ void fn_read_properties(const FnBlock& rBlock, FnFile& rFile) {
         while (!c.AtEnd()) {
             const auto f = fn_fields(c.Peek());
             std::int64_t count = 0;
-            if (f.size() != 1 || !fn_parse_int(f[0], count) || count < 0)
+            if (f.size() != 1 || !detail::parse_int64_strict(f[0], count) || count < 0)
                 break;
             c.Next("an outline count");
             for (std::int64_t k = 0; k < count; ++k)
@@ -490,7 +474,7 @@ bool fn_is_int_line(std::string_view Line, std::size_t Min, std::size_t Max, boo
         return false;
     for (const std::string_view s : f) {
         std::int64_t v = 0;
-        if (!fn_parse_int(s, v))
+        if (!detail::parse_int64_strict(s, v))
             return false;
         if (Positive && v <= 0)
             return false;
@@ -560,7 +544,7 @@ void fn_read_vectors(const FnBlock& rBlock, FnFile& rFile, bool Ranges) {
             // A 1051 record is a range when its second field is an integer (the
             // range end); Femap 11 also writes plain `id,value` records there.
             std::int64_t unused = 0;
-            if (!Ranges || d.size() < 2 || !fn_parse_int(d[1], unused)) {
+            if (!Ranges || d.size() < 2 || !detail::parse_int64_strict(d[1], unused)) {
                 v.mValues.emplace_back(c.Int(d, 0, "entity id"), c.Real(d, 1, "value"));
                 continue;
             }

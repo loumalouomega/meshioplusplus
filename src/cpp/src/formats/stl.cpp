@@ -24,6 +24,7 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -37,6 +38,7 @@
 #include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/chunked_parse.hpp"
 #include "../detail/exact_weld.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/row_writer.hpp"
@@ -123,18 +125,12 @@ std::string_view stl_lstrip(std::string_view S) {
     return S.substr(b);
 }
 
-// `Text` is the ASCII body: the whole file, or the file after its header line.
-// The views end where the file ends, so the numbers are parsed with the
-// bounded prefix parse, never over a view that lacks a terminator.
-Mesh read_ascii(std::string_view Text) {
-    // Collect the last 3 numbers of every non-comment line; rows 0,4,8,... are
-    // facet normals, the rest are vertices.
-    const std::vector<std::string_view> lines = detail::split_lines(Text);
-    std::vector<double> data;
+// The last 3 numbers of every non-comment line of `lines`, appended to rOut.
+void stl_ascii_rows(const std::vector<std::string_view>& rLines, std::vector<double>& rOut) {
     // A line holds at most one row, so the line count bounds the rows.
-    data.reserve(lines.size() * 3);
+    rOut.reserve(rOut.size() + rLines.size() * 3);
     std::vector<std::string_view> tok;
-    for (const std::string_view line : lines) {
+    for (const std::string_view line : rLines) {
         const std::string_view s = stl_lstrip(line);
         if (s.empty() || stl_is_comment_line(s))
             continue;
@@ -142,19 +138,51 @@ Mesh read_ascii(std::string_view Text) {
         if (tok.size() < 3)
             continue;
         for (std::size_t j = tok.size() - 3; j < tok.size(); ++j)
-            data.push_back(detail::parse_double_prefix(tok[j]));
+            rOut.push_back(detail::parse_double_prefix(tok[j]));
+    }
+}
+
+// `Text` is the ASCII body: the whole file, or the file after its header line.
+// The views end where the file ends, so the numbers are parsed with the
+// bounded prefix parse, never over a view that lacks a terminator.
+Mesh read_ascii(std::string_view Text) {
+    // Collect the last 3 numbers of every non-comment line; rows 0,4,8,... are
+    // facet normals, the rest are vertices. A large file is read in chunks of
+    // whole lines in parallel (roadmap 5.7.2), each chunk by the serial rule
+    // into its own rows, joined in chunk order: the rows a serial read gives.
+    std::vector<double> data;
+    if (Text.size() >= detail::chunked_lines_min_bytes && detail::parallel_workers() > 1) {
+        const std::vector<std::size_t> cuts = detail::chunk_lines(Text, 0, Text.size());
+        std::vector<std::vector<double>> parts(cuts.size() - 1);
+        parallel_for(
+            parts.size(),
+            [&](std::size_t c) {
+                stl_ascii_rows(detail::split_lines(Text.substr(cuts[c], cuts[c + 1] - cuts[c])),
+                               parts[c]);
+            },
+            1);
+        std::size_t total = 0;
+        for (const auto& rPart : parts)
+            total += rPart.size();
+        data.reserve(total);
+        for (const auto& rPart : parts)
+            data.insert(data.end(), rPart.begin(), rPart.end());
+    } else {
+        stl_ascii_rows(detail::split_lines(Text), data);
     }
     std::size_t nrows = data.size() / 3;
     if (nrows % 4 != 0)
         throw ReadError("Malformed ascii STL");
 
-    std::vector<unsigned char> verts, normals;
-    for (std::size_t r = 0; r < nrows; ++r) {
-        const double* row = data.data() + r * 3;
-        std::vector<unsigned char>& dst = (r % 4 == 0) ? normals : verts;
-        dst.insert(dst.end(), reinterpret_cast<const unsigned char*>(row),
-                   reinterpret_cast<const unsigned char*>(row) + 3 * sizeof(double));
-    }
+    // Facet f is rows 4f (its normal) and 4f+1..4f+3 (its corners).
+    const std::size_t nfacets = nrows / 4;
+    constexpr std::size_t kRow = 3 * sizeof(double);
+    std::vector<unsigned char> verts(nfacets * 3 * kRow), normals(nfacets * kRow);
+    parallel_for(nfacets, [&](std::size_t f) {
+        const double* facet = data.data() + f * 12;
+        std::memcpy(normals.data() + f * kRow, facet, kRow);
+        std::memcpy(verts.data() + f * 3 * kRow, facet + 3, 3 * kRow);
+    });
     return build_mesh(verts, DType::Float64, &normals);
 }
 

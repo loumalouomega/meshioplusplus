@@ -32,6 +32,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/jacobi_eigen.hpp"
 #include "../detail/sparse_solve.hpp"
 #include "../detail/surface_fem.hpp"
 
@@ -73,47 +74,9 @@ double lap_mdot(const LapColumn& rA, const LapColumn& rB, const std::vector<doub
 /// Jacobi: eigenvalues in `rW`, eigenvectors as the columns of `rV`.
 void lap_jacobi(std::vector<double> A, std::size_t P, std::vector<double>& rW,
                 std::vector<double>& rV) {
-    rV.assign(P * P, 0.0);
-    for (std::size_t i = 0; i < P; ++i)
-        rV[i * P + i] = 1.0;
-    for (int sweep = 0; sweep < 100; ++sweep) {
-        double off = 0.0, diag = 0.0;
-        for (std::size_t i = 0; i < P; ++i) {
-            diag += A[i * P + i] * A[i * P + i];
-            for (std::size_t j = i + 1; j < P; ++j)
-                off += A[i * P + j] * A[i * P + j];
-        }
-        if (off == 0.0 || off <= 1e-32 * diag)
-            break;
-        for (std::size_t p = 0; p < P; ++p)
-            for (std::size_t q = p + 1; q < P; ++q) {
-                const double apq = A[p * P + q];
-                if (apq == 0.0)
-                    continue;
-                const double theta = (A[q * P + q] - A[p * P + p]) / (2.0 * apq);
-                const double t = (theta >= 0.0 ? 1.0 : -1.0) /
-                                 (std::abs(theta) + std::sqrt(theta * theta + 1.0));
-                const double c = 1.0 / std::sqrt(t * t + 1.0), s = t * c;
-                for (std::size_t k = 0; k < P; ++k) {
-                    const double akp = A[k * P + p], akq = A[k * P + q];
-                    A[k * P + p] = c * akp - s * akq;
-                    A[k * P + q] = s * akp + c * akq;
-                }
-                for (std::size_t k = 0; k < P; ++k) {
-                    const double apk = A[p * P + k], aqk = A[q * P + k];
-                    A[p * P + k] = c * apk - s * aqk;
-                    A[q * P + k] = s * apk + c * aqk;
-                }
-                for (std::size_t k = 0; k < P; ++k) {
-                    const double vkp = rV[k * P + p], vkq = rV[k * P + q];
-                    rV[k * P + p] = c * vkp - s * vkq;
-                    rV[k * P + q] = s * vkp + c * vkq;
-                }
-            }
-    }
+    rV.resize(P * P);
     rW.resize(P);
-    for (std::size_t i = 0; i < P; ++i)
-        rW[i] = A[i * P + i];
+    detail::jacobi_eigen_sym(A.data(), P, rW.data(), rV.data(), 1e-32);
 }
 
 /// M-orthonormalise the block in place (modified Gram-Schmidt, twice); a

@@ -214,12 +214,17 @@ using meshioplusplus::cli::cli_parse_numbers;
 using meshioplusplus::cli::cli_parse_rgba;
 using meshioplusplus::cli::cli_parsed;
 using meshioplusplus::cli::cli_render_options;
+using meshioplusplus::cli::cli_specs;
 using meshioplusplus::cli::cli_text_encoding;
+using meshioplusplus::cli::color_flag_specs;
 using meshioplusplus::cli::has_flag;
 using meshioplusplus::cli::has_opt;
+using meshioplusplus::cli::input_flag_specs;
+using meshioplusplus::cli::io_flag_specs;
 using meshioplusplus::cli::opt_value;
 using meshioplusplus::cli::opt_values;
 using meshioplusplus::cli::render_flag_specs;
+using meshioplusplus::cli::report_flag_specs;
 
 // --------------------------------------------------------------------------
 // Format dispatch (mirrors bindings/c / bindings/wasm)
@@ -891,39 +896,30 @@ meshioplusplus::CadReadOptions cli_cad_read_options(const cli_parsed& rP) {
 }
 
 int cmd_convert(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"float-format", {"-f"}, true},
-                                  {"ascii", {"-a"}, false},
-                                  {"appended", {}, false},
-                                  {"sets-to-int-data", {"-s"}, false},
-                                  {"int-data-to-sets", {"-d"}, false},
-                                  {"points-only", {}, false},
-                                  {"arrays", {}, true},
-                                  {"time-step", {}, true},
-                                  {"mesh-name", {}, true},
-                                  {"piece", {}, true},
-                                  {"lenient", {}, false},
-                                  {"drop-ghosts", {}, false},
-                                  {"color-by", {}, true},
-                                  {"component", {}, true},
-                                  {"cmap", {}, true},
-                                  {"vmin", {}, true},
-                                  {"vmax", {}, true},
-                                  {"nan-color", {}, true},
-                                  {"colorbar", {}, false},
-                                  {"split-angle", {}, true},
-                                  {"up-axis", {}, true},
-                                  {"input", {}, true},
-                                  {"times", {}, true},
-                                  {"time-from", {}, true},
-                                  {"sequence", {}, false},
-                                  {"no-sequence", {}, false},
-                                  {"heal", {}, false},
-                                  {"sew-tolerance", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"float-format", {"-f"}, true},
+                                          {"ascii", {"-a"}, false},
+                                          {"appended", {}, false},
+                                          {"sets-to-int-data", {"-s"}, false},
+                                          {"int-data-to-sets", {"-d"}, false},
+                                          {"points-only", {}, false},
+                                          {"arrays", {}, true},
+                                          {"time-step", {}, true},
+                                          {"mesh-name", {}, true},
+                                          {"piece", {}, true},
+                                          {"lenient", {}, false},
+                                          {"drop-ghosts", {}, false}},
+                                         color_flag_specs(),
+                                         {{"split-angle", {}, true},
+                                          {"up-axis", {}, true},
+                                          {"input", {}, true},
+                                          {"times", {}, true},
+                                          {"time-from", {}, true},
+                                          {"sequence", {}, false},
+                                          {"no-sequence", {}, false},
+                                          {"heal", {}, false},
+                                          {"sew-tolerance", {}, true},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("convert requires exactly INFILE and OUTFILE");
 
@@ -1220,7 +1216,7 @@ void print_metadata_summary(const meshioplusplus::MeshMetadata& rMeta) {
 
 int cmd_info(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs,
-                       {{"input-format", {"-i"}, true}, {"fast", {}, false}, {"json", {}, false}});
+                       cli_specs({input_flag_specs(), {{"fast", {}, false}, {"json", {}, false}}}));
     if (has_flag(p, "fast")) {
         if (p.positionals.size() != 1)
             throw std::runtime_error("info requires exactly one INFILE");
@@ -1415,10 +1411,8 @@ void cli_print_regions_json(meshioplusplus::cli::JsonOut& rJson, const Mesh& rMe
 int cmd_regions(const std::vector<std::string>& rArgs) {
     static const char* const kEdits[] = {"union",  "intersection", "difference",
                                          "rename", "retag",        "delete"};
-    std::vector<cli_opt_spec> specs = {{"input-format", {"-i"}, true},
-                                       {"output-format", {"-o"}, true},
-                                       {"json", {}, false},
-                                       {"drop-inputs", {}, false}};
+    std::vector<cli_opt_spec> specs =
+        cli_specs({io_flag_specs(), {{"json", {}, false}, {"drop-inputs", {}, false}}});
     for (const char* e : kEdits)
         specs.push_back({e, {}, true});
     auto p = cli_parse(rArgs, specs);
@@ -1507,7 +1501,7 @@ int cmd_regions(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_ascii_binary(const std::vector<std::string>& rArgs, bool binary) {
-    auto p = cli_parse(rArgs, {{"input-format", {"-i"}, true}});
+    auto p = cli_parse(rArgs, input_flag_specs());
     if (p.positionals.size() != 1)
         throw std::runtime_error(std::string(binary ? "binary" : "ascii") +
                                  " requires exactly INFILE");
@@ -1540,7 +1534,7 @@ meshioplusplus::detail::VtkCodec codec_from_name(const std::string& rName) {
 
 int cmd_compress(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(
-        rArgs, {{"input-format", {"-i"}, true}, {"max", {"-max"}, false}, {"codec", {}, true}});
+        rArgs, cli_specs({input_flag_specs(), {{"max", {"-max"}, false}, {"codec", {}, true}}}));
     if (p.positionals.size() != 1)
         throw std::runtime_error("compress requires exactly INFILE");
     const std::string& infile = p.positionals[0];
@@ -1591,7 +1585,7 @@ int cmd_compress(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_decompress(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {{"input-format", {"-i"}, true}});
+    auto p = cli_parse(rArgs, input_flag_specs());
     if (p.positionals.size() != 1)
         throw std::runtime_error("decompress requires exactly INFILE");
     const std::string& infile = p.positionals[0];
@@ -1639,7 +1633,7 @@ std::string left(const std::string& rS, int w) {
 
 int cmd_quality(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(
-        rArgs, {{"input-format", {"-i"}, true}, {"output", {"-o"}, true}, {"json", {}, false}});
+        rArgs, cli_specs({input_flag_specs(), {{"output", {"-o"}, true}, {"json", {}, false}}}));
     if (p.positionals.size() != 1)
         throw std::runtime_error("quality requires exactly INFILE");
     const std::string& infile = p.positionals[0];
@@ -1696,18 +1690,15 @@ int cmd_quality(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_curvature(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"no-mean", {}, false},
-                                  {"no-gaussian", {}, false},
-                                  {"dual-area", {}, true},
-                                  {"include-boundary", {}, false},
-                                  {"record-area", {}, false},
-                                  {"record-principal", {}, false},
-                                  {"region", {}, true},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"no-mean", {}, false},
+                                          {"no-gaussian", {}, false},
+                                          {"dual-area", {}, true},
+                                          {"include-boundary", {}, false},
+                                          {"record-area", {}, false},
+                                          {"record-principal", {}, false},
+                                          {"region", {}, true},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("curvature requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -1753,17 +1744,14 @@ int cmd_curvature(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_normals(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"cell", {}, false},
-                                  {"no-point", {}, false},
-                                  {"weight", {}, true},
-                                  {"split-angle", {}, true},
-                                  {"record-parent-ids", {}, false},
-                                  {"region", {}, true},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"cell", {}, false},
+                                          {"no-point", {}, false},
+                                          {"weight", {}, true},
+                                          {"split-angle", {}, true},
+                                          {"record-parent-ids", {}, false},
+                                          {"region", {}, true},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("normals requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -1836,14 +1824,12 @@ int cmd_check(const std::vector<std::string>& rArgs) {
     meshioplusplus::QualityGateResult r;
     bool json = false;
     try {
-        auto p = cli_parse(rArgs, {
-                                      {"input-format", {"-i"}, true},
-                                      {"require", {"-r"}, true},
-                                      {"gate", {}, true},
-                                      {"max-inverted", {}, true},
-                                      {"max-degenerate", {}, true},
-                                      {"json", {}, false},
-                                  });
+        auto p = cli_parse(rArgs, cli_specs({input_flag_specs(),
+                                             {{"require", {"-r"}, true},
+                                              {"gate", {}, true},
+                                              {"max-inverted", {}, true},
+                                              {"max-degenerate", {}, true},
+                                              {"json", {}, false}}}));
         if (p.positionals.size() != 1)
             throw std::runtime_error("check requires exactly INFILE");
         json = has_flag(p, "json");
@@ -1884,12 +1870,8 @@ int cmd_check_conformity(const std::vector<std::string>& rArgs) {
     meshioplusplus::ConformityResult r;
     bool json = false;
     try {
-        auto p = cli_parse(rArgs, {
-                                      {"input-format", {"-i"}, true},
-                                      {"output-format", {"-o"}, true},
-                                      {"tolerance", {}, true},
-                                      {"json", {}, false},
-                                  });
+        auto p = cli_parse(
+            rArgs, cli_specs({io_flag_specs(), {{"tolerance", {}, true}, {"json", {}, false}}}));
         if (p.positionals.empty() || p.positionals.size() > 2)
             throw std::runtime_error("check-conformity requires INFILE and an optional OUTFILE");
         json = has_flag(p, "json");
@@ -1944,17 +1926,14 @@ int cmd_find_intersections(const std::vector<std::string>& rArgs) {
     meshioplusplus::FindIntersectionsResult r;
     bool json = false, two = false;
     try {
-        auto p = cli_parse(rArgs, {
-                                      {"input-format", {"-i"}, true},
-                                      {"output-format", {"-o"}, true},
-                                      {"other", {}, true},
-                                      {"other-format", {}, true},
-                                      {"segments", {}, true},
-                                      {"region", {}, true},
-                                      {"region-other", {}, true},
-                                      {"max-pairs", {}, true},
-                                      {"json", {}, false},
-                                  });
+        auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                             {{"other", {}, true},
+                                              {"other-format", {}, true},
+                                              {"segments", {}, true},
+                                              {"region", {}, true},
+                                              {"region-other", {}, true},
+                                              {"max-pairs", {}, true},
+                                              {"json", {}, false}}}));
         if (p.positionals.empty() || p.positionals.size() > 2)
             throw std::runtime_error("find-intersections requires INFILE and an optional OUTFILE");
         json = has_flag(p, "json");
@@ -2021,18 +2000,15 @@ int cmd_find_intersections(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_thickness(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"other", {}, true},
-                                  {"other-format", {}, true},
-                                  {"direction", {}, true},
-                                  {"max-distance", {}, true},
-                                  {"min", {}, true},
-                                  {"region", {}, true},
-                                  {"region-other", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"other", {}, true},
+                                          {"other-format", {}, true},
+                                          {"direction", {}, true},
+                                          {"max-distance", {}, true},
+                                          {"min", {}, true},
+                                          {"region", {}, true},
+                                          {"region-other", {}, true},
+                                          {"json", {}, false}}}));
     if (p.positionals.empty() || p.positionals.size() > 2)
         throw std::runtime_error("thickness requires INFILE and an optional OUTFILE");
     meshioplusplus::ThicknessOptions o;
@@ -2116,18 +2092,14 @@ int cmd_thickness(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_feature_edges(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"angle", {}, true},
-                                  {"no-feature", {}, false},
-                                  {"no-boundary", {}, false},
-                                  {"no-non-manifold", {}, false},
-                                  {"no-inconsistent", {}, false},
-                                  {"region", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"angle", {}, true},
+                                          {"no-feature", {}, false},
+                                          {"no-boundary", {}, false},
+                                          {"no-non-manifold", {}, false},
+                                          {"no-inconsistent", {}, false},
+                                          {"region", {}, true}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("feature-edges requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -2173,20 +2145,16 @@ meshioplusplus::SegmentMethod cli_segment_method(const std::string& rName, const
 }
 
 int cmd_segment(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"angle", {}, true},
-                                  {"normal-tolerance", {}, true},
-                                  {"curvature-tolerance", {}, true},
-                                  {"min-patch-cells", {}, true},
-                                  {"region", {}, true},
-                                  {"prefix", {}, true},
-                                  {"method", {}, true},
-                                  {"tolerance", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"angle", {}, true},
+                                          {"normal-tolerance", {}, true},
+                                          {"curvature-tolerance", {}, true},
+                                          {"min-patch-cells", {}, true},
+                                          {"region", {}, true},
+                                          {"prefix", {}, true},
+                                          {"method", {}, true},
+                                          {"tolerance", {}, true}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("segment requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -2258,18 +2226,14 @@ std::uint32_t cli_fit_types(const std::string& rList, const char* pCommand) {
 }
 
 int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"patch-data", {}, true},
-                                  {"tolerance", {}, true},
-                                  {"absolute", {}, false},
-                                  {"min-inlier-fraction", {}, true},
-                                  {"types", {}, true},
-                                  {"max-iterations", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"patch-data", {}, true},
+                                          {"tolerance", {}, true},
+                                          {"absolute", {}, false},
+                                          {"min-inlier-fraction", {}, true},
+                                          {"types", {}, true},
+                                          {"max-iterations", {}, true}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("fit-primitives requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -2415,18 +2379,14 @@ void cli_iga_summary(const cli_parsed& rP, const char* pName, const char* pModel
 }
 
 int cmd_iga_refine(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"subdivisions", {"-s"}, true},
-                                  {"elevate", {"-e"}, true},
-                                  {"sample-subdivisions", {}, true},
-                                  {"trim-samples", {}, true},
-                                  {"no-edges", {}, false},
-                                  {"no-trim", {}, false},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"subdivisions", {"-s"}, true},
+                                          {"elevate", {"-e"}, true},
+                                          {"sample-subdivisions", {}, true},
+                                          {"trim-samples", {}, true},
+                                          {"no-edges", {}, false},
+                                          {"no-trim", {}, false}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("iga-refine requires exactly INFILE and OUTFILE");
     CliIgaModel model = cli_iga_read(p.positionals[0], opt_value(p, "input-format"));
@@ -2456,16 +2416,12 @@ int cmd_iga_refine(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_iga_sample(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"subdivisions", {"-s"}, true},
-                                  {"trim-samples", {}, true},
-                                  {"no-edges", {}, false},
-                                  {"no-trim", {}, false},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"subdivisions", {"-s"}, true},
+                                          {"trim-samples", {}, true},
+                                          {"no-edges", {}, false},
+                                          {"no-trim", {}, false}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("iga-sample requires exactly INFILE and OUTFILE");
     CliIgaModel model = cli_iga_read(p.positionals[0], opt_value(p, "input-format"));
@@ -2489,50 +2445,46 @@ int cmd_iga_sample(const std::vector<std::string>& rArgs) {
 // --- mesh generation from CAD: mesh-cad-surface ----------------------------------------
 
 int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"size", {"-s"}, true},
-                                  {"deflection", {}, true},
-                                  {"min-points-per-edge", {}, true},
-                                  {"tolerance", {}, true},
-                                  {"no-face-ids", {}, false},
-                                  {"no-edges", {}, false},
-                                  {"no-match", {}, false},
-                                  {"strict", {}, false},
-                                  {"max-points", {}, true},
-                                  {"min-angle", {}, true},
-                                  {"smooth", {}, true},
-                                  {"smooth-method", {}, true},
-                                  {"order", {}, true},
-                                  {"curvature-deviation", {}, true},
-                                  {"cells-across-gaps", {}, true},
-                                  {"grading", {}, true},
-                                  {"pole-rings", {}, true},
-                                  {"face-sizes", {}, true},
-                                  {"edge-sizes", {}, true},
-                                  {"background", {}, true},
-                                  {"background-array", {}, true},
-                                  {"metric-background", {}, true},
-                                  {"metric-array", {}, true},
-                                  {"metric-error", {}, true},
-                                  {"metric", {}, true},
-                                  {"virtual-edges", {}, false},
-                                  {"reparam-condition-number", {}, true},
-                                  {"no-model-tolerances", {}, false},
-                                  {"no-virtual-faces", {}, false},
-                                  // On by default since v19.0.0: still accepted.
-                                  {"model-tolerances", {}, false},
-                                  {"virtual-faces", {}, false},
-                                  {"lop-corners", {}, false},
-                                  {"untangle", {}, false},
-                                  {"quads", {}, true},
-                                  {"quad-pairs", {}, true},
-                                  {"heal", {}, false},
-                                  {"sew-tolerance", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"size", {"-s"}, true},
+                                          {"deflection", {}, true},
+                                          {"min-points-per-edge", {}, true},
+                                          {"tolerance", {}, true},
+                                          {"no-face-ids", {}, false},
+                                          {"no-edges", {}, false},
+                                          {"no-match", {}, false},
+                                          {"strict", {}, false},
+                                          {"max-points", {}, true},
+                                          {"min-angle", {}, true},
+                                          {"smooth", {}, true},
+                                          {"smooth-method", {}, true},
+                                          {"order", {}, true},
+                                          {"curvature-deviation", {}, true},
+                                          {"cells-across-gaps", {}, true},
+                                          {"grading", {}, true},
+                                          {"pole-rings", {}, true},
+                                          {"face-sizes", {}, true},
+                                          {"edge-sizes", {}, true},
+                                          {"background", {}, true},
+                                          {"background-array", {}, true},
+                                          {"metric-background", {}, true},
+                                          {"metric-array", {}, true},
+                                          {"metric-error", {}, true},
+                                          {"metric", {}, true},
+                                          {"virtual-edges", {}, false},
+                                          {"reparam-condition-number", {}, true},
+                                          {"no-model-tolerances", {}, false},
+                                          {"no-virtual-faces", {}, false},
+                                          // On by default since v19.0.0: still accepted.
+                                          {"model-tolerances", {}, false},
+                                          {"virtual-faces", {}, false},
+                                          {"lop-corners", {}, false},
+                                          {"untangle", {}, false},
+                                          {"quads", {}, true},
+                                          {"quad-pairs", {}, true},
+                                          {"heal", {}, false},
+                                          {"sew-tolerance", {}, true}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("mesh-cad-surface requires exactly INFILE and OUTFILE");
     if (!has_opt(p, "size"))
@@ -2893,14 +2845,12 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_iga_evaluate(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"param", {"-p"}, true},
-                                  {"patch", {}, true},
-                                  {"derivatives", {}, true},
-                                  {"trim-samples", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({input_flag_specs(),
+                                         {{"param", {"-p"}, true},
+                                          {"patch", {}, true},
+                                          {"derivatives", {}, true},
+                                          {"trim-samples", {}, true},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 1)
         throw std::runtime_error("iga-evaluate requires exactly INFILE");
     if (!has_opt(p, "param"))
@@ -3004,23 +2954,20 @@ const char* cli_refine_stop_name(meshioplusplus::RefineStop Stop) {
 }
 
 int cmd_refine_patches(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"tolerance", {}, true},
-                                  {"absolute", {}, false},
-                                  {"normal-weight", {}, true},
-                                  {"epsilon", {}, true},
-                                  {"feature-angle", {}, true},
-                                  {"max-iterations", {}, true},
-                                  {"min-patch-cells", {}, true},
-                                  {"ransac-seed", {}, true},
-                                  {"types", {}, true},
-                                  {"no-split", {}, false},
-                                  {"no-merge", {}, false},
-                                  {"prefix", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({input_flag_specs(),
+                                         {{"tolerance", {}, true},
+                                          {"absolute", {}, false},
+                                          {"normal-weight", {}, true},
+                                          {"epsilon", {}, true},
+                                          {"feature-angle", {}, true},
+                                          {"max-iterations", {}, true},
+                                          {"min-patch-cells", {}, true},
+                                          {"ransac-seed", {}, true},
+                                          {"types", {}, true},
+                                          {"no-split", {}, false},
+                                          {"no-merge", {}, false},
+                                          {"prefix", {}, true}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("refine-patches requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -3090,61 +3037,58 @@ int cmd_refine_patches(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_to_cad(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"segment-method", {}, true},
-                                  {"segment-tolerance", {}, true},
-                                  {"curvature-tolerance", {}, true},
-                                  {"min-patch-cells", {}, true},
-                                  {"fit-tolerance", {}, true},
-                                  {"tolerance", {}, true},
-                                  {"no-exact-edges", {}, false},
-                                  {"types", {}, true},
-                                  {"mesh-deflection", {}, true},
-                                  {"max-demotion-rounds", {}, true},
-                                  {"no-freeform", {}, false},
-                                  {"freeform-degree", {}, true},
-                                  {"freeform-max-control", {}, true},
-                                  {"no-freeform-split", {}, false},
-                                  {"no-fillets", {}, false},
-                                  {"no-threads", {}, false},
-                                  {"no-merge-faces", {}, false},
-                                  {"backend", {}, true},
-                                  {"refine", {}, false},
-                                  {"max-refine-iterations", {}, true},
-                                  {"refine-epsilon", {}, true},
-                                  {"normal-weight", {}, true},
-                                  {"no-refine-merge", {}, false},
-                                  {"no-refine-split", {}, false},
-                                  {"ransac-seed", {}, true},
-                                  {"refine-tolerance", {}, true},
-                                  {"freeform-general", {}, false},
-                                  {"freeform-tolerance", {}, true},
-                                  {"freeform-smoothing", {}, true},
-                                  {"max-freeform-poles", {}, true},
-                                  {"max-freeform-iterations", {}, true},
-                                  {"max-freeform-splits", {}, true},
-                                  {"sew-tolerance", {}, true},
-                                  {"extend-surfaces", {}, false},
-                                  {"snap-junctions", {}, false},
-                                  {"face-deviation", {}, false},
-                                  {"freeform-mode", {}, true},
-                                  {"freeform-parameterization", {}, true},
-                                  {"g1-tolerance", {}, true},
-                                  {"extraordinary-vertex", {}, true},
-                                  {"local-refine", {}, true},
-                                  {"freeform-max-control-points", {}, true},
-                                  {"layout-target-patch-size", {}, true},
-                                  {"layout-max-valence-deviation", {}, true},
-                                  {"resegment-rounds", {}, true},
-                                  {"no-layout-snap-to-features", {}, false},
-                                  {"no-validate-by-surface-sampling", {}, false},
-                                  {"constrain-primitives", {}, false},
-                                  {"mesh-out", {}, true},
-                                  {"cad-json", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({input_flag_specs(),
+                                         {{"segment-method", {}, true},
+                                          {"segment-tolerance", {}, true},
+                                          {"curvature-tolerance", {}, true},
+                                          {"min-patch-cells", {}, true},
+                                          {"fit-tolerance", {}, true},
+                                          {"tolerance", {}, true},
+                                          {"no-exact-edges", {}, false},
+                                          {"types", {}, true},
+                                          {"mesh-deflection", {}, true},
+                                          {"max-demotion-rounds", {}, true},
+                                          {"no-freeform", {}, false},
+                                          {"freeform-degree", {}, true},
+                                          {"freeform-max-control", {}, true},
+                                          {"no-freeform-split", {}, false},
+                                          {"no-fillets", {}, false},
+                                          {"no-threads", {}, false},
+                                          {"no-merge-faces", {}, false},
+                                          {"backend", {}, true},
+                                          {"refine", {}, false},
+                                          {"max-refine-iterations", {}, true},
+                                          {"refine-epsilon", {}, true},
+                                          {"normal-weight", {}, true},
+                                          {"no-refine-merge", {}, false},
+                                          {"no-refine-split", {}, false},
+                                          {"ransac-seed", {}, true},
+                                          {"refine-tolerance", {}, true},
+                                          {"freeform-general", {}, false},
+                                          {"freeform-tolerance", {}, true},
+                                          {"freeform-smoothing", {}, true},
+                                          {"max-freeform-poles", {}, true},
+                                          {"max-freeform-iterations", {}, true},
+                                          {"max-freeform-splits", {}, true},
+                                          {"sew-tolerance", {}, true},
+                                          {"extend-surfaces", {}, false},
+                                          {"snap-junctions", {}, false},
+                                          {"face-deviation", {}, false},
+                                          {"freeform-mode", {}, true},
+                                          {"freeform-parameterization", {}, true},
+                                          {"g1-tolerance", {}, true},
+                                          {"extraordinary-vertex", {}, true},
+                                          {"local-refine", {}, true},
+                                          {"freeform-max-control-points", {}, true},
+                                          {"layout-target-patch-size", {}, true},
+                                          {"layout-max-valence-deviation", {}, true},
+                                          {"resegment-rounds", {}, true},
+                                          {"no-layout-snap-to-features", {}, false},
+                                          {"no-validate-by-surface-sampling", {}, false},
+                                          {"constrain-primitives", {}, false},
+                                          {"mesh-out", {}, true},
+                                          {"cad-json", {}, true}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("to-cad requires exactly INFILE and OUTFILE.step");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -3478,13 +3422,8 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_region_adjacency(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"regions", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs,
+                       cli_specs({io_flag_specs(), {{"regions", {}, true}}, report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("region-adjacency requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -3543,20 +3482,18 @@ void cli_json_side_entries(meshioplusplus::cli::JsonOut& rJson, const NDArray& r
 }
 
 int cmd_find_interface(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"format-b", {}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"region-a", {}, true},
-                                  {"region-b", {}, true},
-                                  {"mesh-b", {}, true},
-                                  {"mode", {}, true},
-                                  {"master", {}, true},
-                                  {"gap-tolerance", {}, true},
-                                  {"angle-tolerance", {}, true},
-                                  {"overlap-tolerance", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({input_flag_specs(),
+                                         {{"format-b", {}, true},
+                                          {"output-format", {"-o"}, true},
+                                          {"region-a", {}, true},
+                                          {"region-b", {}, true},
+                                          {"mesh-b", {}, true},
+                                          {"mode", {}, true},
+                                          {"master", {}, true},
+                                          {"gap-tolerance", {}, true},
+                                          {"angle-tolerance", {}, true},
+                                          {"overlap-tolerance", {}, true},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("find-interface requires exactly INFILE and OUTFILE");
     if (!has_opt(p, "region-a") || !has_opt(p, "region-b"))
@@ -3742,14 +3679,11 @@ int cmd_contact_pairs(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_split_interface(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"side-region", {}, true},
-                                  {"side-entries", {}, true},
-                                  {"add-cohesive", {}, false},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"side-region", {}, true},
+                                          {"side-entries", {}, true},
+                                          {"add-cohesive", {}, false},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("split-interface requires exactly INFILE and OUTFILE");
     if (has_opt(p, "side-region") == has_opt(p, "side-entries"))
@@ -3926,19 +3860,16 @@ std::vector<double> cli_numbers(const std::string& rText, std::size_t Count, con
 // metric: intersect, normalise, clamp and grade metric fields. See
 // operations/metric.hpp.
 int cmd_metric(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"arrays", {}, true},
-                                  {"output", {}, true},
-                                  {"target-vertices", {}, true},
-                                  {"norm", {}, true},
-                                  {"hmin", {}, true},
-                                  {"hmax", {}, true},
-                                  {"gradation", {}, true},
-                                  {"max-sweeps", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"arrays", {}, true},
+                                          {"output", {}, true},
+                                          {"target-vertices", {}, true},
+                                          {"norm", {}, true},
+                                          {"hmin", {}, true},
+                                          {"hmax", {}, true},
+                                          {"gradation", {}, true},
+                                          {"max-sweeps", {}, true},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("metric requires INFILE OUTFILE");
     meshioplusplus::PrepareMetricOptions o;
@@ -3986,15 +3917,12 @@ int cmd_metric(const std::vector<std::string>& rArgs) {
 // untangle: move nodes until no tetrahedron or hexahedron corner is inverted.
 // See operations/untangle.hpp.
 int cmd_untangle(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"no-fix-boundary", {}, false},
-                                  {"rings", {}, true},
-                                  {"smooth", {}, false},
-                                  {"max-sweeps", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"no-fix-boundary", {}, false},
+                                          {"rings", {}, true},
+                                          {"smooth", {}, false},
+                                          {"max-sweeps", {}, true},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("untangle requires INFILE OUTFILE");
     meshioplusplus::UntangleOptions o;
@@ -4031,19 +3959,16 @@ int cmd_untangle(const std::vector<std::string>& rArgs) {
 // morph: move the boundary (or chosen points) by a displacement, harmonically
 // extended into the mesh. See operations/morph.hpp.
 int cmd_morph(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"array", {}, true},
-                                  {"no-fix-boundary", {}, false},
-                                  {"constrained-array", {}, true},
-                                  {"stiffening", {}, true},
-                                  {"steps", {}, true},
-                                  {"allow-inverted", {}, false},
-                                  {"tolerance", {}, true},
-                                  {"max-iterations", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"array", {}, true},
+                                          {"no-fix-boundary", {}, false},
+                                          {"constrained-array", {}, true},
+                                          {"stiffening", {}, true},
+                                          {"steps", {}, true},
+                                          {"allow-inverted", {}, false},
+                                          {"tolerance", {}, true},
+                                          {"max-iterations", {}, true},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("morph requires INFILE OUTFILE");
     meshioplusplus::MorphOptions o;
@@ -4088,14 +4013,11 @@ int cmd_morph(const std::vector<std::string>& rArgs) {
 // eigenmodes: the lowest eigenpairs of a surface's Laplace-Beltrami operator.
 // See operations/eigenmodes.hpp.
 int cmd_eigenmodes(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"num-modes", {"-k"}, true},
-                                  {"tolerance", {}, true},
-                                  {"max-iterations", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"num-modes", {"-k"}, true},
+                                          {"tolerance", {}, true},
+                                          {"max-iterations", {}, true},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("eigenmodes requires INFILE OUTFILE");
     meshioplusplus::EigenmodeOptions o;
@@ -4212,15 +4134,12 @@ int cmd_register(const std::vector<std::string>& rArgs) {
 // point-normals: normals of a point cloud by local plane fits. See
 // operations/point_normals.hpp.
 int cmd_point_normals(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"k", {}, true},
-                                  {"orientation", {}, true},
-                                  {"viewpoint", {}, true},
-                                  {"variation", {}, false},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"k", {}, true},
+                                          {"orientation", {}, true},
+                                          {"viewpoint", {}, true},
+                                          {"variation", {}, false},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("point-normals requires INFILE OUTFILE");
     meshioplusplus::PointNormalsOptions o;
@@ -4263,19 +4182,16 @@ int cmd_point_normals(const std::vector<std::string>& rArgs) {
 // reconstruct: a triangle surface through an oriented point cloud. See
 // operations/reconstruct_surface.hpp.
 int cmd_reconstruct(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"normals", {}, true},
-                                  {"k", {}, true},
-                                  {"cell-size", {}, true},
-                                  {"resolution", {}, true},
-                                  {"max-distance", {}, true},
-                                  {"no-estimate", {}, false},
-                                  {"normals-k", {}, true},
-                                  {"max-cells", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"normals", {}, true},
+                                          {"k", {}, true},
+                                          {"cell-size", {}, true},
+                                          {"resolution", {}, true},
+                                          {"max-distance", {}, true},
+                                          {"no-estimate", {}, false},
+                                          {"normals-k", {}, true},
+                                          {"max-cells", {}, true},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("reconstruct requires INFILE OUTFILE");
     meshioplusplus::ReconstructSurfaceOptions o;
@@ -4321,12 +4237,8 @@ int cmd_reconstruct(const std::vector<std::string>& rArgs) {
 
 // hull: the convex hull of a mesh's points. See operations/hull.hpp.
 int cmd_hull(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"dimension", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(
+        rArgs, cli_specs({io_flag_specs(), {{"dimension", {}, true}, {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("hull requires INFILE OUTFILE");
     meshioplusplus::ConvexHullOptions o;
@@ -4360,11 +4272,7 @@ int cmd_hull(const std::vector<std::string>& rArgs) {
 // delaunay: the Delaunay triangulation of a mesh's points in the x, y plane.
 // See operations/hull.hpp.
 int cmd_delaunay(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(), {{"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("delaunay requires INFILE OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -4390,18 +4298,15 @@ int cmd_delaunay(const std::vector<std::string>& rArgs) {
 // coordinates: positions, vector and tensor fields in cylindrical or spherical
 // components about an axis. See operations/coordinates.hpp.
 int cmd_coordinates(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"system", {}, true},
-                                  {"axis", {}, true},
-                                  {"origin", {}, true},
-                                  {"reference", {}, true},
-                                  {"arrays", {}, true},
-                                  {"inverse", {}, false},
-                                  {"no-record", {}, false},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"system", {}, true},
+                                          {"axis", {}, true},
+                                          {"origin", {}, true},
+                                          {"reference", {}, true},
+                                          {"arrays", {}, true},
+                                          {"inverse", {}, false},
+                                          {"no-record", {}, false},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("coordinates requires INFILE OUTFILE");
     meshioplusplus::CoordinateOptions o;
@@ -4453,16 +4358,13 @@ int cmd_coordinates(const std::vector<std::string>& rArgs) {
 // geodesic: the surface distance from source points by the heat method. See
 // operations/geodesic.hpp and doc/geodesic.md.
 int cmd_geodesic(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"source", {}, true},
-                                  {"source-region", {}, true},
-                                  {"time-factor", {}, true},
-                                  {"tolerance", {}, true},
-                                  {"max-iterations", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"source", {}, true},
+                                          {"source-region", {}, true},
+                                          {"time-factor", {}, true},
+                                          {"tolerance", {}, true},
+                                          {"max-iterations", {}, true},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("geodesic requires INFILE OUTFILE");
     meshioplusplus::GeodesicOptions o;
@@ -4517,14 +4419,11 @@ int cmd_geodesic(const std::vector<std::string>& rArgs) {
 // parameterize: a UV atlas of a triangle surface. See operations/parameterize.hpp
 // and doc/parameterize.md.
 int cmd_parameterize(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"padding", {}, true},
-                                  {"max-depth", {}, true},
-                                  {"max-stretch", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"padding", {}, true},
+                                          {"max-depth", {}, true},
+                                          {"max-stretch", {}, true},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("parameterize requires INFILE OUTFILE");
     meshioplusplus::ParameterizeOptions o;
@@ -4561,12 +4460,9 @@ int cmd_parameterize(const std::vector<std::string>& rArgs) {
 // graph: the node / clique / cell graph as a METIS or Scotch graph file. See
 // operations/adjacency.hpp and doc/adjacency.md.
 int cmd_graph(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"kind", {}, true},
-                                  {"format", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(
+        rArgs, cli_specs({input_flag_specs(),
+                          {{"kind", {}, true}, {"format", {}, true}, {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("graph requires INFILE OUTFILE");
     const std::string kind = has_opt(p, "kind") ? opt_value(p, "kind") : "node";
@@ -4597,19 +4493,17 @@ int cmd_graph(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_periodic(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"slave", {}, true},
-                                  {"master", {}, true},
-                                  {"translate", {}, true},
-                                  {"rotate", {}, true},
-                                  {"origin", {}, true},
-                                  {"matrix", {}, true},
-                                  {"atol", {}, true},
-                                  {"allow-incomplete", {}, false},
-                                  {"output", {"-o"}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({input_flag_specs(),
+                                         {{"slave", {}, true},
+                                          {"master", {}, true},
+                                          {"translate", {}, true},
+                                          {"rotate", {}, true},
+                                          {"origin", {}, true},
+                                          {"matrix", {}, true},
+                                          {"atol", {}, true},
+                                          {"allow-incomplete", {}, false},
+                                          {"output", {"-o"}, true},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 1)
         throw std::runtime_error("periodic requires exactly INFILE");
     if (!has_opt(p, "slave") || !has_opt(p, "master"))
@@ -4716,18 +4610,15 @@ int cmd_periodic(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_repair(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"no-fix-orientation", {}, false},
-                                  {"no-orient-outward", {}, false},
-                                  {"no-fill-holes", {}, false},
-                                  {"no-split-non-manifold", {}, false},
-                                  {"max-hole-edges", {}, true},
-                                  {"weld-tolerance", {}, true},
-                                  {"record-provenance", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"no-fix-orientation", {}, false},
+                                          {"no-orient-outward", {}, false},
+                                          {"no-fill-holes", {}, false},
+                                          {"no-split-non-manifold", {}, false},
+                                          {"max-hole-edges", {}, true},
+                                          {"weld-tolerance", {}, true},
+                                          {"record-provenance", {}, false},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("repair requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -4775,19 +4666,16 @@ int cmd_repair(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_shrinkwrap(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"target-format", {}, true},
-                                  {"offset", {}, true},
-                                  {"max-distance", {}, true},
-                                  {"weights", {}, true},
-                                  {"target-region", {}, true},
-                                  {"normal-weight", {}, true},
-                                  {"record-distance", {}, false},
-                                  {"record-closest-cell", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"target-format", {}, true},
+                                          {"offset", {}, true},
+                                          {"max-distance", {}, true},
+                                          {"weights", {}, true},
+                                          {"target-region", {}, true},
+                                          {"normal-weight", {}, true},
+                                          {"record-distance", {}, false},
+                                          {"record-closest-cell", {}, false},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 3)
         throw std::runtime_error("shrinkwrap requires exactly INFILE TARGET and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -4827,18 +4715,15 @@ int cmd_shrinkwrap(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_sobolev_deform(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"array", {}, true},
-                                  {"length-scale", {}, true},
-                                  {"fixed-points-array", {}, true},
-                                  {"fix-boundary", {}, false},
-                                  {"record-filtered", {}, false},
-                                  {"max-iterations", {}, true},
-                                  {"tolerance", {}, true},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"array", {}, true},
+                                          {"length-scale", {}, true},
+                                          {"fixed-points-array", {}, true},
+                                          {"fix-boundary", {}, false},
+                                          {"record-filtered", {}, false},
+                                          {"max-iterations", {}, true},
+                                          {"tolerance", {}, true},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("sobolev-deform requires exactly INFILE and OUTFILE");
     if (!has_opt(p, "array"))
@@ -4875,11 +4760,7 @@ int cmd_sobolev_deform(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_extract_surface(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"parent-ids", {"-p"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(), {{"parent-ids", {"-p"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("extract-surface requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -4906,16 +4787,13 @@ std::vector<double> parse_doubles(const std::string& rText) {
 }
 
 int cmd_transform(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"translate", {}, true},
-                                  {"scale", {}, true},
-                                  {"rotate", {}, true},
-                                  {"matrix", {}, true},
-                                  {"scale-units", {}, true},
-                                  {"rotate-data", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"translate", {}, true},
+                                          {"scale", {}, true},
+                                          {"rotate", {}, true},
+                                          {"matrix", {}, true},
+                                          {"scale-units", {}, true},
+                                          {"rotate-data", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("transform requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -4989,16 +4867,13 @@ int cmd_transform(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_clean(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"atol", {}, true},
-                                  {"weld", {}, false},
-                                  {"remove-orphans", {}, false},
-                                  {"drop-degenerate", {}, false},
-                                  {"drop-duplicates", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"atol", {}, true},
+                                          {"weld", {}, false},
+                                          {"remove-orphans", {}, false},
+                                          {"drop-degenerate", {}, false},
+                                          {"drop-duplicates", {}, false},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("clean requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -5074,15 +4949,12 @@ cli_where cli_parse_where(const std::string& rText, const char* pVerb) {
 }
 
 int cmd_crop(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"bbox", {}, true},
-                                  {"plane", {}, true},
-                                  {"where", {}, true},
-                                  {"mode", {}, true},
-                                  {"record-ids", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"bbox", {}, true},
+                                          {"plane", {}, true},
+                                          {"where", {}, true},
+                                          {"mode", {}, true},
+                                          {"record-ids", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("crop requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -5127,26 +4999,22 @@ int cmd_crop(const std::vector<std::string>& rArgs) {
 // `select`: one named region from geometry, data, quality, component or a
 // grown patch; see operations/select.hpp.
 int cmd_select(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"name", {"-n"}, true},
-                                  {"kind", {}, true},
-                                  {"tag", {}, true},
-                                  {"box", {}, true},
-                                  {"plane", {}, true},
-                                  {"sphere", {}, true},
-                                  {"where", {}, true},
-                                  {"quality", {}, true},
-                                  {"component", {}, true},
-                                  {"seed", {}, true},
-                                  {"feature-angle", {}, true},
-                                  {"normal-tolerance", {}, true},
-                                  {"mode", {}, true},
-                                  {"all-facets", {}, false},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"name", {"-n"}, true},
+                                          {"kind", {}, true},
+                                          {"tag", {}, true},
+                                          {"box", {}, true},
+                                          {"plane", {}, true},
+                                          {"sphere", {}, true},
+                                          {"where", {}, true},
+                                          {"quality", {}, true},
+                                          {"component", {}, true},
+                                          {"seed", {}, true},
+                                          {"feature-angle", {}, true},
+                                          {"normal-tolerance", {}, true},
+                                          {"mode", {}, true},
+                                          {"all-facets", {}, false}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("select requires exactly INFILE and OUTFILE");
     if (!has_opt(p, "name"))
@@ -5233,13 +5101,11 @@ int cmd_select(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_slice(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"origin", {}, true},
-                                  {"normal", {}, true},
-                                  {"record-parent-ids", {}, false},
-                              });
+    auto p = cli_parse(
+        rArgs,
+        cli_specs(
+            {io_flag_specs(),
+             {{"origin", {}, true}, {"normal", {}, true}, {"record-parent-ids", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("slice requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -5264,21 +5130,18 @@ int cmd_slice(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_voxelize(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"resolution", {}, true},
-                                  {"cell-size", {}, true},
-                                  {"bounds", {}, true},
-                                  {"padding", {}, true},
-                                  {"padding-relative", {}, true},
-                                  {"fill", {}, true},
-                                  {"sign", {}, true},
-                                  {"plane", {}, true},
-                                  {"attach-occupancy", {}, false},
-                                  {"max-cells", {}, true},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"resolution", {}, true},
+                                          {"cell-size", {}, true},
+                                          {"bounds", {}, true},
+                                          {"padding", {}, true},
+                                          {"padding-relative", {}, true},
+                                          {"fill", {}, true},
+                                          {"sign", {}, true},
+                                          {"plane", {}, true},
+                                          {"attach-occupancy", {}, false},
+                                          {"max-cells", {}, true},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("voxelize requires exactly INFILE and OUTFILE");
 
@@ -5668,32 +5531,19 @@ int cmd_generate(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_octree(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"root-cells", {}, true},
-                                  {"min-level", {}, true},
-                                  {"max-level", {}, true},
-                                  {"bounds", {}, true},
-                                  {"padding", {}, true},
-                                  {"padding-relative", {}, true},
-                                  {"dimension", {}, true},
-                                  {"sample-distance", {}, true},
-                                  {"balance", {}, true},
-                                  {"fill", {}, true},
-                                  {"sign", {}, true},
-                                  {"attach-distance", {}, false},
-                                  {"even-odd", {}, false},
-                                  {"max-cells", {}, true},
-                                  {"transition", {}, true},
-                                  {"snap", {}, false},
-                                  {"surface-level", {}, true},
-                                  {"curvature-threshold", {}, true},
-                                  {"feature-angle", {}, true},
-                                  {"size-array", {}, true},
-                                  {"plane", {}, true},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(
+        rArgs,
+        cli_specs({io_flag_specs(), {{"root-cells", {}, true},    {"min-level", {}, true},
+                                     {"max-level", {}, true},     {"bounds", {}, true},
+                                     {"padding", {}, true},       {"padding-relative", {}, true},
+                                     {"dimension", {}, true},     {"sample-distance", {}, true},
+                                     {"balance", {}, true},       {"fill", {}, true},
+                                     {"sign", {}, true},          {"attach-distance", {}, false},
+                                     {"even-odd", {}, false},     {"max-cells", {}, true},
+                                     {"transition", {}, true},    {"snap", {}, false},
+                                     {"surface-level", {}, true}, {"curvature-threshold", {}, true},
+                                     {"feature-angle", {}, true}, {"size-array", {}, true},
+                                     {"plane", {}, true},         {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("octree requires exactly INFILE and OUTFILE");
 
@@ -5772,47 +5622,43 @@ int cmd_octree(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"output", {}, true},
-                                  {"min-size", {}, true},
-                                  {"max-size", {}, true},
-                                  {"max-level", {}, true},
-                                  {"bounds", {}, true},
-                                  {"padding", {}, true},
-                                  {"padding-relative", {}, true},
-                                  {"curvature-angle", {}, true},
-                                  {"feature-angle", {}, true},
-                                  {"corner-angle", {}, true},
-                                  {"feature-size", {}, true},
-                                  {"gap-cells", {}, true},
-                                  {"gap-outside", {}, false},
-                                  {"size-array", {}, true},
-                                  {"surface-region", {}, true},
-                                  {"grading-layers", {}, true},
-                                  {"skin-grading", {}, true},
-                                  {"surface-size", {}, true},
-                                  {"winding-threshold", {}, true},
-                                  {"winding-beta", {}, true},
-                                  {"conformity", {}, true},
-                                  {"alpha-long", {}, true},
-                                  {"alpha-short", {}, true},
-                                  {"no-preserve-features", {}, false},
-                                  {"fit-iterations", {}, true},
-                                  {"no-dihedral-floor-guard", {}, false},
-                                  {"fill", {}, true},
-                                  {"keep-outside", {}, false},
-                                  {"no-distance", {}, false},
-                                  {"attach-quality", {}, false},
-                                  {"no-pillow", {}, false},
-                                  {"hex-grading", {}, true},
-                                  {"untangle-iterations", {}, true},
-                                  {"max-cells", {}, true},
-                                  {"max-tets", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"output", {}, true},
+                                          {"min-size", {}, true},
+                                          {"max-size", {}, true},
+                                          {"max-level", {}, true},
+                                          {"bounds", {}, true},
+                                          {"padding", {}, true},
+                                          {"padding-relative", {}, true},
+                                          {"curvature-angle", {}, true},
+                                          {"feature-angle", {}, true},
+                                          {"corner-angle", {}, true},
+                                          {"feature-size", {}, true},
+                                          {"gap-cells", {}, true},
+                                          {"gap-outside", {}, false},
+                                          {"size-array", {}, true},
+                                          {"surface-region", {}, true},
+                                          {"grading-layers", {}, true},
+                                          {"skin-grading", {}, true},
+                                          {"surface-size", {}, true},
+                                          {"winding-threshold", {}, true},
+                                          {"winding-beta", {}, true},
+                                          {"conformity", {}, true},
+                                          {"alpha-long", {}, true},
+                                          {"alpha-short", {}, true},
+                                          {"no-preserve-features", {}, false},
+                                          {"fit-iterations", {}, true},
+                                          {"no-dihedral-floor-guard", {}, false},
+                                          {"fill", {}, true},
+                                          {"keep-outside", {}, false},
+                                          {"no-distance", {}, false},
+                                          {"attach-quality", {}, false},
+                                          {"no-pillow", {}, false},
+                                          {"hex-grading", {}, true},
+                                          {"untangle-iterations", {}, true},
+                                          {"max-cells", {}, true},
+                                          {"max-tets", {}, true}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("octree-mesh requires exactly INFILE and OUTFILE");
     namespace mio = meshioplusplus;
@@ -5978,25 +5824,22 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_sdf(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"structure", {}, true},
-                                  {"resolution", {}, true},
-                                  {"cell-size", {}, true},
-                                  {"bounds", {}, true},
-                                  {"padding", {}, true},
-                                  {"padding-relative", {}, true},
-                                  {"root-resolution", {}, true},
-                                  {"max-depth", {}, true},
-                                  {"band-cells", {}, true},
-                                  {"sign", {}, true},
-                                  {"location", {}, true},
-                                  {"band", {}, true},
-                                  {"watertight-check", {}, true},
-                                  {"max-cells", {}, true},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"structure", {}, true},
+                                          {"resolution", {}, true},
+                                          {"cell-size", {}, true},
+                                          {"bounds", {}, true},
+                                          {"padding", {}, true},
+                                          {"padding-relative", {}, true},
+                                          {"root-resolution", {}, true},
+                                          {"max-depth", {}, true},
+                                          {"band-cells", {}, true},
+                                          {"sign", {}, true},
+                                          {"location", {}, true},
+                                          {"band", {}, true},
+                                          {"watertight-check", {}, true},
+                                          {"max-cells", {}, true},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("sdf requires exactly INFILE and OUTFILE");
 
@@ -6072,14 +5915,11 @@ int cmd_sdf(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_isosurface(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"array", {}, true},
-                                  {"values", {}, true},
-                                  {"component", {}, true},
-                                  {"record-parent-ids", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"array", {}, true},
+                                          {"values", {}, true},
+                                          {"component", {}, true},
+                                          {"record-parent-ids", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("isosurface requires exactly INFILE and OUTFILE");
     const std::string array = opt_value(p, "array");
@@ -6125,13 +5965,9 @@ std::string replace_key(const std::string& rPattern, const std::string& rKey) {
 }
 
 int cmd_split(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"by", {}, true},
-                                  {"tag", {}, true},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(
+        rArgs, cli_specs({io_flag_specs(),
+                          {{"by", {}, true}, {"tag", {}, true}, {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("split requires exactly INFILE and OUTPATTERN (with {key})");
     if (p.positionals[1].find("{key}") == std::string::npos)
@@ -6159,12 +5995,8 @@ int cmd_split(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_convert_cells(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"mode", {}, true},
-                                  {"record-parent-ids", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"mode", {}, true}, {"record-parent-ids", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("convert-cells requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -6179,16 +6011,12 @@ int cmd_convert_cells(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_tessellate(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"levels", {}, true},
-                                  {"no-curved", {}, false},
-                                  {"no-fields", {}, false},
-                                  {"record-stencil", {}, false},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"levels", {}, true},
+                                          {"no-curved", {}, false},
+                                          {"no-fields", {}, false},
+                                          {"record-stencil", {}, false}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("tessellate requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -6238,11 +6066,7 @@ int cmd_tessellate(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_subdivide(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"record-parent-ids", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(), {{"record-parent-ids", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("subdivide requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -6263,15 +6087,12 @@ std::int64_t total_cells(const Mesh& rMesh) {
 }
 
 int cmd_agglomerate(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"target-group-size", {}, true},
-                                  {"merge-coplanar-faces", {}, false},
-                                  {"coplanar-angle", {}, true},
-                                  {"min-sphericity", {}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"target-group-size", {}, true},
+                                          {"merge-coplanar-faces", {}, false},
+                                          {"coplanar-angle", {}, true},
+                                          {"min-sphericity", {}, true},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("agglomerate requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -6300,14 +6121,11 @@ int cmd_agglomerate(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_tet_to_poly(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"feature-angle", {}, true},
-                                  {"point-data-to-cell-data", {}, false},
-                                  {"record-vertex-ids", {}, false},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"feature-angle", {}, true},
+                                          {"point-data-to-cell-data", {}, false},
+                                          {"record-vertex-ids", {}, false},
+                                          {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("tet-to-poly requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -6334,12 +6152,8 @@ int cmd_tet_to_poly(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_poly_to_tet(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"record-parent-ids", {}, false},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"record-parent-ids", {}, false}, {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("poly-to-tet requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -6467,18 +6281,15 @@ std::string refine_trim(const std::string& rText) {
 }
 
 int cmd_refine(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"levels", {}, true},
-                                  {"record-parent-ids", {}, false},
-                                  {"cells", {}, true},
-                                  {"region", {}, true},
-                                  {"where", {}, true},
-                                  {"closure", {}, true},
-                                  {"record-levels", {}, false},
-                                  {"record-hierarchy", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"levels", {}, true},
+                                          {"record-parent-ids", {}, false},
+                                          {"cells", {}, true},
+                                          {"region", {}, true},
+                                          {"where", {}, true},
+                                          {"closure", {}, true},
+                                          {"record-levels", {}, false},
+                                          {"record-hierarchy", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("refine requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -6518,22 +6329,18 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_boundary_layer(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"first-height", {}, true},
-                                  {"num-layers", {}, true},
-                                  {"growth", {}, true},
-                                  {"reverse", {}, false},
-                                  {"collision-fraction", {}, true},
-                                  {"smooth", {}, true},
-                                  {"max-shrink", {}, true},
-                                  {"collapse", {}, true},
-                                  {"normal-smooth", {}, true},
-                                  {"no-front-check", {}, false},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"first-height", {}, true},
+                                          {"num-layers", {}, true},
+                                          {"growth", {}, true},
+                                          {"reverse", {}, false},
+                                          {"collision-fraction", {}, true},
+                                          {"smooth", {}, true},
+                                          {"max-shrink", {}, true},
+                                          {"collapse", {}, true},
+                                          {"normal-smooth", {}, true},
+                                          {"no-front-check", {}, false}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("boundary-layer requires exactly INFILE and OUTFILE");
     if (!has_opt(p, "first-height"))
@@ -6660,18 +6467,14 @@ void cli_sweep_report(const meshioplusplus::SweepResult& rR, const cli_parsed& r
 }
 
 int cmd_extrude(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"direction", {}, true},
-                                  {"num-layers", {}, true},
-                                  {"ratio", {}, true},
-                                  {"offsets", {}, true},
-                                  {"record-layers", {}, false},
-                                  {"max-cells", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"direction", {}, true},
+                                          {"num-layers", {}, true},
+                                          {"ratio", {}, true},
+                                          {"offsets", {}, true},
+                                          {"record-layers", {}, false},
+                                          {"max-cells", {}, true}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("extrude requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -6693,19 +6496,15 @@ int cmd_extrude(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_revolve(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"axis", {}, true},
-                                  {"axis-point", {}, true},
-                                  {"angle", {}, true},
-                                  {"num-layers", {}, true},
-                                  {"tolerance", {}, true},
-                                  {"record-layers", {}, false},
-                                  {"max-cells", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"axis", {}, true},
+                                          {"axis-point", {}, true},
+                                          {"angle", {}, true},
+                                          {"num-layers", {}, true},
+                                          {"tolerance", {}, true},
+                                          {"record-layers", {}, false},
+                                          {"max-cells", {}, true}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("revolve requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -6728,18 +6527,14 @@ int cmd_revolve(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_mirror(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"origin", {}, true},
-                                  {"normal", {}, true},
-                                  {"keep-original", {}, false},
-                                  {"no-weld", {}, false},
-                                  {"tolerance", {}, true},
-                                  {"reflect-data", {}, false},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"origin", {}, true},
+                                          {"normal", {}, true},
+                                          {"keep-original", {}, false},
+                                          {"no-weld", {}, false},
+                                          {"tolerance", {}, true},
+                                          {"reflect-data", {}, false}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("mirror requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -6778,19 +6573,15 @@ int cmd_mirror(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"backend", {}, true},
-                                  {"max-size", {}, true},
-                                  {"max-volume", {}, true},
-                                  {"grading", {}, true},
-                                  {"optimize-steps", {}, true},
-                                  {"max-cells", {}, true},
-                                  {"face-array", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"backend", {}, true},
+                                          {"max-size", {}, true},
+                                          {"max-volume", {}, true},
+                                          {"grading", {}, true},
+                                          {"optimize-steps", {}, true},
+                                          {"max-cells", {}, true},
+                                          {"face-array", {}, true}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("tetrahedralize requires exactly INFILE and OUTFILE");
     meshioplusplus::TetrahedralizeOptions o;
@@ -6863,20 +6654,16 @@ int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_remesh_quads(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"faces", {"-f"}, true},
-                                  {"backend", {}, true},
-                                  {"sharp", {}, false},
-                                  {"no-boundary", {}, false},
-                                  {"adaptive", {}, false},
-                                  {"dominant", {}, false},
-                                  {"seed", {}, true},
-                                  {"max-cells", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"faces", {"-f"}, true},
+                                          {"backend", {}, true},
+                                          {"sharp", {}, false},
+                                          {"no-boundary", {}, false},
+                                          {"adaptive", {}, false},
+                                          {"dominant", {}, false},
+                                          {"seed", {}, true},
+                                          {"max-cells", {}, true}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("remesh-quads requires exactly INFILE and OUTFILE");
     meshioplusplus::RemeshQuadsOptions o;
@@ -6928,21 +6715,17 @@ int cmd_remesh_quads(const std::vector<std::string>& rArgs) {
 
 int cmd_cut(const std::vector<std::string>& rArgs, bool Quadrature) {
     const char* p_name = Quadrature ? "cut-quadrature" : "cut";
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"level-set", {"-l"}, true},
-                                  {"plane", {}, true},
-                                  {"selection", {"-s"}, true},
-                                  {"cut-only", {}, false},
-                                  {"backend", {}, true},
-                                  {"degree", {}, true},
-                                  {"order", {}, true},
-                                  {"triangulate", {}, false},
-                                  {"no-parent-ids", {}, false},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"level-set", {"-l"}, true},
+                                          {"plane", {}, true},
+                                          {"selection", {"-s"}, true},
+                                          {"cut-only", {}, false},
+                                          {"backend", {}, true},
+                                          {"degree", {}, true},
+                                          {"order", {}, true},
+                                          {"triangulate", {}, false},
+                                          {"no-parent-ids", {}, false}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error(std::string(p_name) + " requires exactly INFILE and OUTFILE");
     meshioplusplus::CutOptions o;
@@ -7034,16 +6817,12 @@ int cmd_cut(const std::vector<std::string>& rArgs, bool Quadrature) {
 }
 
 int cmd_project_to_cad(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"face-array", {}, true},
-                                  {"edge-array", {}, true},
-                                  {"max-distance", {}, true},
-                                  {"trim-samples", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"face-array", {}, true},
+                                          {"edge-array", {}, true},
+                                          {"max-distance", {}, true},
+                                          {"trim-samples", {}, true}},
+                                         report_flag_specs()}));
     if (p.positionals.size() != 3)
         throw std::runtime_error("project-to-cad requires exactly INFILE MODEL and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -7099,11 +6878,7 @@ int cmd_project_to_cad(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_undo_green(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(), {{"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 3)
         throw std::runtime_error("undo-green requires exactly COARSE FINE and OUTFILE");
     Mesh coarse = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -7118,18 +6893,15 @@ int cmd_undo_green(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_decimate(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"ratio", {}, true},
-                                  {"target-faces", {}, true},
-                                  {"max-error", {}, true},
-                                  {"placement", {}, true},
-                                  {"feature-angle", {}, true},
-                                  {"no-preserve-boundary", {}, false},
-                                  {"no-preserve-features", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"ratio", {}, true},
+                                          {"target-faces", {}, true},
+                                          {"max-error", {}, true},
+                                          {"placement", {}, true},
+                                          {"feature-angle", {}, true},
+                                          {"no-preserve-boundary", {}, false},
+                                          {"no-preserve-features", {}, false},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("decimate requires exactly INFILE and OUTFILE");
     const int num_set = (has_opt(p, "ratio") ? 1 : 0) + (has_opt(p, "target-faces") ? 1 : 0) +
@@ -7166,18 +6938,15 @@ int cmd_decimate(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_decimate_volume(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"ratio", {}, true},
-                                  {"target-cells", {}, true},
-                                  {"max-error", {}, true},
-                                  {"placement", {}, true},
-                                  {"feature-angle", {}, true},
-                                  {"preserve-boundary", {}, false},
-                                  {"no-preserve-features", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"ratio", {}, true},
+                                          {"target-cells", {}, true},
+                                          {"max-error", {}, true},
+                                          {"placement", {}, true},
+                                          {"feature-angle", {}, true},
+                                          {"preserve-boundary", {}, false},
+                                          {"no-preserve-features", {}, false},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("decimate-volume requires exactly INFILE and OUTFILE");
     const int num_set = (has_opt(p, "ratio") ? 1 : 0) + (has_opt(p, "target-cells") ? 1 : 0) +
@@ -7215,29 +6984,27 @@ int cmd_decimate_volume(const std::vector<std::string>& rArgs) {
 
 // The options every MMG subcommand takes (roadmap 3.2).
 std::vector<cli_opt_spec> cli_mmg_options(std::vector<cli_opt_spec> Extra) {
-    std::vector<cli_opt_spec> options = {
-        {"input-format", {"-i"}, true},
-        {"output-format", {"-o"}, true},
-        {"hmin", {}, true},
-        {"hmax", {}, true},
-        {"hausd", {}, true},
-        {"hgrad", {}, true},
-        {"hgradreq", {}, true},
-        {"angle-detection", {}, true},
-        {"optim", {}, false},
-        {"noinsert", {}, false},
-        {"noswap", {}, false},
-        {"nomove", {}, false},
-        {"nosurf", {}, false},
-        {"nreg", {}, false},
-        {"opnbdy", {}, false},
-        {"frozen", {}, true},
-        {"required", {}, true},
-        {"verbose-mmg", {}, true},
-        {"quiet", {"-q"}, false},
-    };
-    options.insert(options.end(), Extra.begin(), Extra.end());
-    return options;
+    return cli_specs({io_flag_specs(),
+                      {
+                          {"hmin", {}, true},
+                          {"hmax", {}, true},
+                          {"hausd", {}, true},
+                          {"hgrad", {}, true},
+                          {"hgradreq", {}, true},
+                          {"angle-detection", {}, true},
+                          {"optim", {}, false},
+                          {"noinsert", {}, false},
+                          {"noswap", {}, false},
+                          {"nomove", {}, false},
+                          {"nosurf", {}, false},
+                          {"nreg", {}, false},
+                          {"opnbdy", {}, false},
+                          {"frozen", {}, true},
+                          {"required", {}, true},
+                          {"verbose-mmg", {}, true},
+                          {"quiet", {"-q"}, false},
+                      },
+                      std::move(Extra)});
 }
 
 meshioplusplus::MmgParameters cli_mmg_parameters(const cli_parsed& rP, const Mesh& rMesh) {
@@ -7395,21 +7162,18 @@ int cmd_move(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_remesh(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"num-clusters", {}, true},
-                                  {"subdivide", {}, true},
-                                  {"subsample-ratio", {}, true},
-                                  {"max-subdivide", {}, true},
-                                  {"iterations", {}, true},
-                                  {"repair-passes", {}, true},
-                                  {"metric", {}, true},
-                                  {"gradation", {}, true},
-                                  {"no-preserve-boundary", {}, false},
-                                  {"max-anisotropy", {}, true},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"num-clusters", {}, true},
+                                          {"subdivide", {}, true},
+                                          {"subsample-ratio", {}, true},
+                                          {"max-subdivide", {}, true},
+                                          {"iterations", {}, true},
+                                          {"repair-passes", {}, true},
+                                          {"metric", {}, true},
+                                          {"gradation", {}, true},
+                                          {"no-preserve-boundary", {}, false},
+                                          {"max-anisotropy", {}, true},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("remesh requires exactly INFILE and OUTFILE");
     if (!has_opt(p, "num-clusters"))
@@ -7442,21 +7206,18 @@ int cmd_remesh(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_remesh_volume(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"resolution", {}, true},
-                                  {"cell-size", {}, true},
-                                  {"bounds", {}, true},
-                                  {"padding", {}, true},
-                                  {"padding-relative", {}, true},
-                                  {"max-cells", {}, true},
-                                  {"max-tets", {}, true},
-                                  {"warp-fraction", {}, true},
-                                  {"sign", {}, true},
-                                  {"watertight-check", {}, true},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"resolution", {}, true},
+                                          {"cell-size", {}, true},
+                                          {"bounds", {}, true},
+                                          {"padding", {}, true},
+                                          {"padding-relative", {}, true},
+                                          {"max-cells", {}, true},
+                                          {"max-tets", {}, true},
+                                          {"warp-fraction", {}, true},
+                                          {"sign", {}, true},
+                                          {"watertight-check", {}, true},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("remesh-volume requires exactly INFILE and OUTFILE");
 
@@ -7514,18 +7275,15 @@ int cmd_remesh_volume(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_optimize_volume(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"max-iterations", {}, true},
-                                  {"no-relocate", {}, false},
-                                  {"no-flip", {}, false},
-                                  {"no-preserve-boundary", {}, false},
-                                  {"min-improvement", {}, true},
-                                  {"objective", {}, true},
-                                  {"max-ring-size", {}, true},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"max-iterations", {}, true},
+                                          {"no-relocate", {}, false},
+                                          {"no-flip", {}, false},
+                                          {"no-preserve-boundary", {}, false},
+                                          {"min-improvement", {}, true},
+                                          {"objective", {}, true},
+                                          {"max-ring-size", {}, true},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("optimize-volume requires exactly INFILE and OUTFILE");
 
@@ -7568,19 +7326,16 @@ int cmd_optimize_volume(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_smooth(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"method", {}, true},
-                                  {"iterations", {}, true},
-                                  {"lambda", {}, true},
-                                  {"mu", {}, true},
-                                  {"feature-angle", {}, true},
-                                  {"no-fix-boundary", {}, false},
-                                  {"no-preserve-features", {}, false},
-                                  {"no-guard-inversion", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"method", {}, true},
+                                          {"iterations", {}, true},
+                                          {"lambda", {}, true},
+                                          {"mu", {}, true},
+                                          {"feature-angle", {}, true},
+                                          {"no-fix-boundary", {}, false},
+                                          {"no-preserve-features", {}, false},
+                                          {"no-guard-inversion", {}, false},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("smooth requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -7609,16 +7364,13 @@ int cmd_smooth(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_interpolate(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"method", {}, true},
-                                  {"arrays", {}, true},
-                                  {"extrapolate", {}, false},
-                                  {"default-value", {}, true},
-                                  {"on-conflict", {}, true},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"method", {}, true},
+                                          {"arrays", {}, true},
+                                          {"extrapolate", {}, false},
+                                          {"default-value", {}, true},
+                                          {"on-conflict", {}, true},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 3)
         throw std::runtime_error("interpolate requires exactly SOURCE TARGET and OUTFILE");
     Mesh source = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -7648,14 +7400,11 @@ int cmd_interpolate(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_conservative_interpolate(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"arrays", {}, true},
-                                  {"default-value", {}, true},
-                                  {"on-conflict", {}, true},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"arrays", {}, true},
+                                          {"default-value", {}, true},
+                                          {"on-conflict", {}, true},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 3)
         throw std::runtime_error(
             "conservative-interpolate requires exactly SOURCE TARGET and OUTFILE");
@@ -7712,20 +7461,17 @@ std::string partition_index_kind(const std::string& rPath, const std::string& rF
 }
 
 int cmd_partition(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"nparts", {"-n"}, true},
-                                  {"method", {}, true},
-                                  {"imbalance", {}, true},
-                                  {"mode", {}, true},
-                                  {"seed", {}, true},
-                                  {"weights", {}, true},
-                                  {"ghost-layers", {}, true},
-                                  {"record-ids", {}, false},
-                                  {"labels-only", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"nparts", {"-n"}, true},
+                                          {"method", {}, true},
+                                          {"imbalance", {}, true},
+                                          {"mode", {}, true},
+                                          {"seed", {}, true},
+                                          {"weights", {}, true},
+                                          {"ghost-layers", {}, true},
+                                          {"record-ids", {}, false},
+                                          {"labels-only", {}, false},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error(
             "partition requires exactly INFILE and OUTPATTERN (with {part}, a .pvtu/.pvtp "
@@ -7800,12 +7546,12 @@ std::string stats_g6(double v) {
 
 /// Shared options for `view` and `screenshot`, which differ only in output.
 std::vector<cli_opt_spec> view_common_specs() {
-    return {
-        {"input-format", {"-i"}, true},
-        {"kind", {}, true},
-        {"color-by", {}, true},
-        {"name", {}, true},
-    };
+    return cli_specs({input_flag_specs(),
+                      {
+                          {"kind", {}, true},
+                          {"color-by", {}, true},
+                          {"name", {}, true},
+                      }});
 }
 
 int cmd_tui(const std::vector<std::string>& rArgs);
@@ -7902,24 +7648,23 @@ int cmd_screenshot(const std::vector<std::string>& rArgs) {
 // --------------------------------------------------------------------------
 
 int cmd_snapshot(const std::vector<std::string>& rArgs) {
-    std::vector<cli_opt_spec> specs = render_flag_specs();
-    for (cli_opt_spec spec : std::vector<cli_opt_spec>{
-             {"input-format", {"-i"}, true},
-             {"width", {}, true},
-             {"height", {}, true},
-             {"cols", {}, true},
-             {"rows", {}, true},
-             {"encoding", {}, true},
-             {"color-depth", {}, true},
-             {"cell-aspect", {}, true},
-             {"tmux", {}, false},
-             {"no-notes", {}, false},
-             {"png-compress", {}, true},
-             {"cast-frames", {}, true},
-             {"cast-fps", {}, true},
-             {"cast-degrees", {}, true},
-         })
-        specs.push_back(spec);
+    const std::vector<cli_opt_spec> specs = cli_specs({render_flag_specs(),
+                                                       input_flag_specs(),
+                                                       {
+                                                           {"width", {}, true},
+                                                           {"height", {}, true},
+                                                           {"cols", {}, true},
+                                                           {"rows", {}, true},
+                                                           {"encoding", {}, true},
+                                                           {"color-depth", {}, true},
+                                                           {"cell-aspect", {}, true},
+                                                           {"tmux", {}, false},
+                                                           {"no-notes", {}, false},
+                                                           {"png-compress", {}, true},
+                                                           {"cast-frames", {}, true},
+                                                           {"cast-fps", {}, true},
+                                                           {"cast-degrees", {}, true},
+                                                       }});
     auto p = cli_parse(rArgs, specs);
     if (p.positionals.size() != 2)
         throw std::runtime_error(
@@ -8015,35 +7760,23 @@ int parse_music_key(const std::string& rText) {
 }
 
 int cmd_tui(const std::vector<std::string>& rArgs) {
-    std::vector<cli_opt_spec> specs = render_flag_specs();
-    for (cli_opt_spec spec : std::vector<cli_opt_spec>{
-             {"input-format", {"-i"}, true},
-             {"encoding", {}, true},
-             {"color-depth", {}, true},
-             {"cell-aspect", {}, true},
-             {"tmux", {}, false},
-             {"replay", {}, true},
-             {"cols", {}, true},
-             {"rows", {}, true},
-             {"compare", {}, true},
-             {"diff", {}, false},
-             {"separate-ranges", {}, false},
-             {"follow", {}, false},
-             {"follow-interval", {}, true},
-             {"settle", {}, true},
-             {"fps", {}, true},
-             {"session", {}, true},
-             {"music", {}, false},
-             {"music-out", {}, true},
-             {"volume", {}, true},
-             {"tempo", {}, true},
-             {"music-seed", {}, true},
-             {"music-key", {}, true},
-             {"music-over-ssh", {}, false},
-             {"pulse", {}, false},
-             {"reduced-motion", {}, false},
-         })
-        specs.push_back(spec);
+    const std::vector<cli_opt_spec> specs =
+        cli_specs({render_flag_specs(),
+                   input_flag_specs(),
+                   {
+                       {"encoding", {}, true},    {"color-depth", {}, true},
+                       {"cell-aspect", {}, true}, {"tmux", {}, false},
+                       {"replay", {}, true},      {"cols", {}, true},
+                       {"rows", {}, true},        {"compare", {}, true},
+                       {"diff", {}, false},       {"separate-ranges", {}, false},
+                       {"follow", {}, false},     {"follow-interval", {}, true},
+                       {"settle", {}, true},      {"fps", {}, true},
+                       {"session", {}, true},     {"music", {}, false},
+                       {"music-out", {}, true},   {"volume", {}, true},
+                       {"tempo", {}, true},       {"music-seed", {}, true},
+                       {"music-key", {}, true},   {"music-over-ssh", {}, false},
+                       {"pulse", {}, false},      {"reduced-motion", {}, false},
+                   }});
     auto p = cli_parse(rArgs, specs);
     if (p.positionals.empty())
         throw std::runtime_error(
@@ -8193,10 +7926,7 @@ int cmd_tui(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_stats(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"json", {}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({input_flag_specs(), {{"json", {}, false}}}));
     if (p.positionals.size() != 1)
         throw std::runtime_error("stats requires exactly INFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -8302,10 +8032,7 @@ std::pair<std::string, std::string> data_split_assignment(const std::string& rVa
 
 /// The IO options every data verb shares.
 std::vector<cli_opt_spec> data_io_specs(bool with_output) {
-    std::vector<cli_opt_spec> specs = {{"input-format", {"-i"}, true}};
-    if (with_output)
-        specs.push_back({"output-format", {"-o"}, true});
-    return specs;
+    return with_output ? io_flag_specs() : input_flag_specs();
 }
 
 std::string data_g6(double v) {
@@ -8980,12 +8707,8 @@ void pipeline_print_counter(std::ostream& rOut, double value) {
 }
 
 int cmd_pipeline(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input", {}, true},
-                                  {"output", {}, true},
-                                  {"json", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(
+        rArgs, cli_specs({{{"input", {}, true}, {"output", {}, true}}, report_flag_specs()}));
     if (p.positionals.size() != 1)
         throw std::runtime_error("pipeline requires exactly SETTINGS.json");
     // Needs a build with the JSON parser (-DMESHIOPLUSPLUS_WITH_JSON=ON, the
@@ -9134,12 +8857,8 @@ int cmd_data(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_reorder(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"method", {"-m"}, true},
-                                  {"report", {"-r"}, false},
-                              });
+    auto p = cli_parse(
+        rArgs, cli_specs({io_flag_specs(), {{"method", {"-m"}, true}, {"report", {"-r"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("reorder requires exactly INFILE and OUTFILE");
     std::string method_name = opt_value(p, "method", "rcm");
@@ -9350,16 +9069,13 @@ int cmd_diff(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_merge(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, {
-                                  {"input-format", {"-i"}, true},
-                                  {"output-format", {"-o"}, true},
-                                  {"atol", {}, true},
-                                  {"data-policy", {}, true},
-                                  {"weld", {}, false},
-                                  {"drop-duplicate-cells", {}, false},
-                                  {"no-source-tag", {}, false},
-                                  {"quiet", {"-q"}, false},
-                              });
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"atol", {}, true},
+                                          {"data-policy", {}, true},
+                                          {"weld", {}, false},
+                                          {"drop-duplicate-cells", {}, false},
+                                          {"no-source-tag", {}, false},
+                                          {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() < 2)
         throw std::runtime_error(
             "merge: need at least one input mesh and an output file "

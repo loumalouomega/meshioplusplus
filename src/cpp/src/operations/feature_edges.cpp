@@ -40,6 +40,7 @@
 #include "meshioplusplus/region.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/cell_region_mask.hpp"
 #include "../detail/crease_edges.hpp"
 #include "../detail/face_skin.hpp"
 
@@ -47,29 +48,6 @@ namespace meshioplusplus {
 namespace {
 
 constexpr const char* kFePrefix = "meshio++: feature_edges: ";
-
-// Per global cell, whether the region selects it (all cells when unnamed).
-std::vector<std::uint8_t> fe_selection(const Mesh& rMesh, const std::string& rRegion,
-                                       std::size_t NumCells) {
-    if (rRegion.empty())
-        return std::vector<std::uint8_t>(NumCells, 1);
-    const std::size_t r = rMesh.FindRegion(rRegion, RegionKind::Cell);
-    if (r == Mesh::npos) {
-        std::string names;
-        for (const std::string& n : rMesh.RegionNames())
-            names += (names.empty() ? "" : ", ") + n;
-        throw std::invalid_argument(std::string(kFePrefix) + "no cell region named '" + rRegion +
-                                    "' (available: " + (names.empty() ? "none" : names) + ")");
-    }
-    std::vector<std::uint8_t> selected(NumCells, 0);
-    const NDArray& entries = rMesh.Region(r).mEntries;
-    for (std::size_t e = 0; e < entries.Size(); ++e) {
-        const std::int64_t c = detail::read_int(entries, e);
-        if (c >= 0 && static_cast<std::size_t>(c) < NumCells)
-            selected[static_cast<std::size_t>(c)] = 1;
-    }
-    return selected;
-}
 
 // The face rings of the surface examined: the skin of the selected volume
 // cells when there are any volume cells, else the selected 2-D cells.
@@ -155,7 +133,8 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
                                     "the feature angle must lie in [0, 180] degrees");
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const std::size_t ncells = static_cast<std::size_t>(detail::total_cells(bases));
-    const std::vector<std::uint8_t> selected = fe_selection(rMesh, rOptions.mRegion, ncells);
+    const std::vector<std::uint8_t> selected =
+        detail::cell_region_mask(rMesh, rOptions.mRegion, ncells, kFePrefix);
 
     std::vector<std::int64_t> start;
     std::vector<std::int64_t> nodes;

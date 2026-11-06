@@ -1,29 +1,13 @@
-from .._helpers import _reader_names, _writer_names, read, write
+from .._helpers import read, write
 from .._remesh_volume import remesh_volume
+from ._common import add_io_args
 
 
 def add_args(parser):
-    parser.add_argument(
-        "infile", type=str, help="volume mesh or closed surface file to be read from"
-    )
-    parser.add_argument(
-        "outfile", type=str, help="retetrahedralized mesh to be written to"
-    )
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
-    parser.add_argument(
-        "--output-format",
-        "-o",
-        type=str,
-        choices=_writer_names(),
-        help="output file format",
-        default=None,
+    add_io_args(
+        parser,
+        "retetrahedralized mesh to be written to",
+        in_help="volume mesh or closed surface file to be read from",
     )
     parser.add_argument(
         "--resolution",

@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/node_adjacency.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 
@@ -41,17 +42,8 @@ namespace {
 
 using CoordVec = std::array<double, 3>;
 
-double coord_dot(const CoordVec& rA, const CoordVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-CoordVec coord_cross(const CoordVec& rA, const CoordVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
 CoordVec coord_unit(const CoordVec& rA) {
-    const double n = std::sqrt(coord_dot(rA, rA));
+    const double n = std::sqrt(detail::vec3_dot(rA, rA));
     return {rA[0] / n, rA[1] / n, rA[2] / n};
 }
 
@@ -66,14 +58,15 @@ struct CoordFrame {
 bool coord_local(const CoordFrame& rF, CoordinateSystem System, const CoordVec& rP,
                  CoordVec& rCoords, std::array<CoordVec, 3>& rBasis) {
     const CoordVec d{rP[0] - rF.mOrigin[0], rP[1] - rF.mOrigin[1], rP[2] - rF.mOrigin[2]};
-    const double z = coord_dot(d, rF.mAxis);
+    const double z = detail::vec3_dot(d, rF.mAxis);
     const CoordVec rho{d[0] - z * rF.mAxis[0], d[1] - z * rF.mAxis[1], d[2] - z * rF.mAxis[2]};
-    const double r_cyl = std::sqrt(coord_dot(rho, rho));
-    const double scale = std::sqrt(coord_dot(d, d));
+    const double r_cyl = std::sqrt(detail::vec3_dot(rho, rho));
+    const double scale = std::sqrt(detail::vec3_dot(d, d));
     const bool on_axis = !(r_cyl > 1e-14 * std::max(scale, 1.0));
     const CoordVec e_rho = on_axis ? rF.mE1 : coord_unit(rho);
-    const double angle = on_axis ? 0.0 : std::atan2(coord_dot(rho, rF.mE2), coord_dot(rho, rF.mE1));
-    const CoordVec e_phi = coord_cross(rF.mAxis, e_rho);
+    const double angle =
+        on_axis ? 0.0 : std::atan2(detail::vec3_dot(rho, rF.mE2), detail::vec3_dot(rho, rF.mE1));
+    const CoordVec e_phi = detail::vec3_cross(rF.mAxis, e_rho);
     if (System == CoordinateSystem::Cylindrical) {
         rCoords = {r_cyl, angle, z};
         rBasis = {e_rho, e_phi, rF.mAxis};
@@ -169,7 +162,7 @@ CoordinateSystem coordinate_system_from_name(const std::string& rName) {
 
 CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions& rOptions) {
     CoordFrame frame;
-    const double axis_len = std::sqrt(coord_dot(rOptions.mAxis, rOptions.mAxis));
+    const double axis_len = std::sqrt(detail::vec3_dot(rOptions.mAxis, rOptions.mAxis));
     if (!(axis_len > 0.0) || !std::isfinite(axis_len))
         throw std::invalid_argument("convert_coordinates: the axis must be a nonzero vector");
     frame.mAxis = coord_unit(rOptions.mAxis);
@@ -177,18 +170,18 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
     // e1: the reference projected off the axis, or x / y when it lies along it.
     for (const CoordVec& candidate :
          {rOptions.mReference, CoordVec{1.0, 0.0, 0.0}, CoordVec{0.0, 1.0, 0.0}}) {
-        const double along = coord_dot(candidate, frame.mAxis);
+        const double along = detail::vec3_dot(candidate, frame.mAxis);
         const CoordVec off{candidate[0] - along * frame.mAxis[0],
                            candidate[1] - along * frame.mAxis[1],
                            candidate[2] - along * frame.mAxis[2]};
-        const double len = std::sqrt(coord_dot(off, off));
-        const double clen = std::sqrt(coord_dot(candidate, candidate));
+        const double len = std::sqrt(detail::vec3_dot(off, off));
+        const double clen = std::sqrt(detail::vec3_dot(candidate, candidate));
         if (len > 1e-9 * clen) {
             frame.mE1 = coord_unit(off);
             break;
         }
     }
-    frame.mE2 = coord_cross(frame.mAxis, frame.mE1);
+    frame.mE2 = detail::vec3_cross(frame.mAxis, frame.mE1);
 
     // Positions: the points, and the cell centroids (distinct nodes).
     const std::size_t n = rMesh.NumPoints();

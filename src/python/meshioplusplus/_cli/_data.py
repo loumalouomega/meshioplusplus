@@ -49,6 +49,7 @@ from .._gradient import gradient
 from .._helpers import _reader_names, _writer_names, read, write
 from .._hessian import hessian
 from .._tensor_invariants import tensor_invariants
+from ._common import add_io_args
 from ._json import emit_json
 
 _LOCATION_FLAGS = ("point", "cell", "field")
@@ -477,16 +478,7 @@ def normalize_cmd(args):
 
 
 def add_export_args(parser):
-    parser.add_argument("infile", type=str, help="mesh file to be read from")
-    parser.add_argument("outfile", type=str, help="Parquet file to be written to")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
+    add_io_args(parser, "Parquet file to be written to", output_format=False)
     parser.add_argument(
         "--location",
         type=str,

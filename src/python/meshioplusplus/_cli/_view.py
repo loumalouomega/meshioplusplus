@@ -1,20 +1,13 @@
 import sys
 import warnings
 
-from .._helpers import _reader_names, read
+from .._helpers import read
 from .._viewer import has_viewer, screenshot, view
+from ._common import add_io_args
 
 
 def _common_args(parser):
-    parser.add_argument("infile", type=str, help="mesh file to be read from")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
+    add_io_args(parser)
     parser.add_argument(
         "--kind",
         type=str,

@@ -2,24 +2,17 @@
 graph file (``doc/adjacency.md``)."""
 
 from .._adjacency import write_graph
-from .._helpers import _reader_names, read
+from .._helpers import read
+from ._common import add_io_args
 from ._json import emit_json
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="mesh file")
-    parser.add_argument(
-        "outfile",
-        type=str,
-        help="graph file: .graph or .metis for METIS, .grf for Scotch",
-    )
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
+    add_io_args(
+        parser,
+        "graph file: .graph or .metis for METIS, .grf for Scotch",
+        in_help="mesh file",
+        output_format=False,
     )
     parser.add_argument(
         "--kind",

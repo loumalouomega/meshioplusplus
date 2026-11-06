@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 // Project includes (private, not installed)
 #include "../detail/sparse_solve.hpp"
@@ -43,14 +44,6 @@ namespace meshioplusplus {
 namespace {
 
 using MphVec = std::array<double, 3>;
-
-MphVec mph_sub(const MphVec& rA, const MphVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-double mph_dot(const MphVec& rA, const MphVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
 
 /// The cell types `morph` moves: linear volume and surface cells, and the
 /// lower-dimensional ones it carries along.
@@ -175,16 +168,16 @@ double mph_simplex_measure(const std::vector<MphVec>& rXyz, const std::int64_t* 
     const MphVec& p0 = rXyz[static_cast<std::size_t>(pNodes[0])];
     MphVec e[3];
     for (int k = 0; k < D; ++k)
-        e[k] = mph_sub(rXyz[static_cast<std::size_t>(pNodes[k + 1])], p0);
+        e[k] = detail::vec3_sub(rXyz[static_cast<std::size_t>(pNodes[k + 1])], p0);
     if (D == 2) {
-        const double g00 = mph_dot(e[0], e[0]), g01 = mph_dot(e[0], e[1]),
-                     g11 = mph_dot(e[1], e[1]);
+        const double g00 = detail::vec3_dot(e[0], e[0]), g01 = detail::vec3_dot(e[0], e[1]),
+                     g11 = detail::vec3_dot(e[1], e[1]);
         const double det = g00 * g11 - g01 * g01;
         return det > 0.0 ? 0.5 * std::sqrt(det) : 0.0;
     }
     const MphVec x{e[1][1] * e[2][2] - e[1][2] * e[2][1], e[1][2] * e[2][0] - e[1][0] * e[2][2],
                    e[1][0] * e[2][1] - e[1][1] * e[2][0]};
-    return std::abs(mph_dot(e[0], x)) / 6.0;
+    return std::abs(detail::vec3_dot(e[0], x)) / 6.0;
 }
 
 void mph_simplex_stiffness(const std::vector<MphVec>& rXyz, const std::int64_t* pNodes, int D,
@@ -193,12 +186,12 @@ void mph_simplex_stiffness(const std::vector<MphVec>& rXyz, const std::int64_t* 
     const MphVec& p0 = rXyz[static_cast<std::size_t>(pNodes[0])];
     MphVec e[3];
     for (int k = 0; k < D; ++k)
-        e[k] = mph_sub(rXyz[static_cast<std::size_t>(pNodes[k + 1])], p0);
+        e[k] = detail::vec3_sub(rXyz[static_cast<std::size_t>(pNodes[k + 1])], p0);
     // G = E^T E, the gradients' Gram matrix is its inverse: K = |c| B G^-1 B^T.
     double g[3][3], inv[3][3];
     for (int a = 0; a < D; ++a)
         for (int b = 0; b < D; ++b)
-            g[a][b] = mph_dot(e[a], e[b]);
+            g[a][b] = detail::vec3_dot(e[a], e[b]);
     if (D == 2) {
         const double det = g[0][0] * g[1][1] - g[0][1] * g[1][0];
         inv[0][0] = g[1][1] / det;
@@ -420,7 +413,7 @@ MorphResult morph(const Mesh& rMesh, const MorphOptions& rOptions) {
             ++result.mNumInverted;
         const MphVec& n0 = before.mNormal[c];
         const MphVec& n1 = after.mNormal[c];
-        if (mph_dot(n0, n0) > 0.0 && !(mph_dot(n0, n1) > 0.0))
+        if (detail::vec3_dot(n0, n0) > 0.0 && !(detail::vec3_dot(n0, n1) > 0.0))
             ++result.mNumInverted;
     }
     if (result.mNumInverted > 0 && !rOptions.mAllowInverted)

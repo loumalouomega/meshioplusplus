@@ -25,9 +25,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <functional>
-#include <iterator>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -40,7 +38,6 @@
 #include "meshioplusplus/operations/decimate_volume.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
-#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/decimate_common.hpp"
 #include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/polyhedron.hpp"
@@ -50,7 +47,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
-#include "../detail/crease_edges.hpp"
+#include "../detail/decimate_shared.hpp"
 
 namespace meshioplusplus {
 
@@ -58,12 +55,9 @@ namespace {
 
 using detail::decim_accumulate_quadrics;
 using detail::decim_count_common;
-using detail::decim_face_normal;
 using detail::decim_face_planes;
 using detail::decim_place;
 using detail::decim_quadric_error;
-using detail::decim_sorted_erase;
-using detail::decim_sorted_insert;
 using detail::decim_vertex_faces_csr;
 using detail::decim_vertex_ring;
 using detail::DecimCsr;
@@ -145,13 +139,6 @@ void dv_check_blocks(const Mesh& rMesh) {
 
 // --- small utilities ----------------------------------------------------------
 
-NDArray dv_int64_vector(const std::vector<std::int64_t>& rValues) {
-    NDArray a = NDArray::Uninit(DType::Int64, {rValues.size()});
-    if (!rValues.empty())
-        std::memcpy(a.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
-    return a;
-}
-
 // Sorted intersection of two sorted vectors (values present in both).
 std::vector<std::int64_t> dv_sorted_intersection(const std::vector<std::int64_t>& rA,
                                                  const std::vector<std::int64_t>& rB) {
@@ -170,24 +157,6 @@ std::vector<std::int64_t> dv_sorted_intersection(const std::vector<std::int64_t>
         }
     }
     return out;
-}
-
-// Sorted vertex adjacency of `v` (all nodes co-occurring with `v` in one of
-// `rVTets`' rows), minus `v` itself.
-std::vector<std::int64_t> dv_vertex_link(const std::vector<std::int64_t>& rVTets,
-                                         const std::vector<std::int64_t>& rTetConn,
-                                         std::int64_t v) {
-    std::vector<std::int64_t> link;
-    link.reserve(rVTets.size() * 3);
-    for (std::int64_t t : rVTets) {
-        const std::int64_t* c = rTetConn.data() + static_cast<std::size_t>(t) * 4;
-        for (int k = 0; k < 4; ++k)
-            if (c[k] != v)
-                link.push_back(c[k]);
-    }
-    std::sort(link.begin(), link.end());
-    link.erase(std::unique(link.begin(), link.end()), link.end());
-    return link;
 }
 
 // The "opposite triple" of tet `t` after removing corner `v` (the tet's other
@@ -234,13 +203,8 @@ double dv_tet_volume(const std::vector<double>& rXyz, const std::vector<std::int
 }
 
 // A Float64 working copy of a float-kind point_data array, blended in place
-// at each collapse commit (decimate.cpp's own DecimFloatData, duplicated
-// here since it is trivial plumbing rather than FP-sensitive arithmetic).
-struct DvFloatData {
-    std::string mName;
-    std::size_t mNumComponents = 0;
-    std::vector<double> mValues;
-};
+// at each collapse commit (shared with decimate.cpp, detail/decimate_shared.hpp).
+using detail::DecimFloatData;
 
 }  // namespace
 
@@ -257,7 +221,6 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
     const std::size_t dim = rMesh.PointDim();
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
-    const std::size_t nblocks = rMesh.NumCellBlocks();
     const std::size_t num_tets = static_cast<std::size_t>(detail::total_cells(bases));
 
     // --- phase 1: flat buffers (parallel fills) -------------------------------
@@ -317,21 +280,9 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
     decim_face_planes(boundary, xyz, bquad_k, bnormals);
 
     // --- phase 3: the pin mask (caller | boundary | feature) -----------------
-    std::vector<std::uint8_t> pinned(n, 0);
-    if (!rOptions.mFrozen.empty())
-        for (std::size_t i = 0; i < n; ++i)
-            pinned[i] = rOptions.mFrozen[i] ? 1 : 0;
-    if (rOptions.mPreserveBoundary)
-        for (std::size_t i = 0; i < n; ++i)
-            if (touches_boundary[i])
-                pinned[i] = 1;
-    if (rOptions.mPreserveFeatures) {
-        // The shared per-edge crease test (v16.23.0): only the two faces that
-        // share an edge are compared, and non-manifold edges pin too.
-        detail::pin_crease_endpoints(
-            detail::crease_edges_triangles(boundary.mCorners, bnormals, rOptions.mFeatureAngleDeg),
-            pinned);
-    }
+    const std::vector<std::uint8_t> pinned = detail::decim_pin_mask(
+        rOptions.mFrozen, touches_boundary, rOptions.mPreserveBoundary, rOptions.mPreserveFeatures,
+        rOptions.mFeatureAngleDeg, boundary.mCorners, bnormals, n);
 
     // --- phase 4: per-vertex quadrics (boundary-only, fixed FP order) --------
     std::vector<double> quads = decim_accumulate_quadrics(bcsr, n, bquad_k);
@@ -375,19 +326,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
             row.push_back(bcsr.mAdj[static_cast<std::size_t>(k)]);
     }
 
-    std::vector<DvFloatData> float_data;
-    for (const std::string& name : rMesh.PointDataNames()) {
-        const NDArray& a = rMesh.PointData(name);
-        if (!detail::is_float_dtype(a.Dtype()) || detail::rows(a) != n || n == 0)
-            continue;
-        DvFloatData fd;
-        fd.mName = name;
-        fd.mNumComponents = a.Size() / n;
-        fd.mValues.resize(a.Size());
-        parallel_for_bw(a.Size(),
-                        [&](std::size_t i) { fd.mValues[i] = detail::read_double(a, i); });
-        float_data.push_back(std::move(fd));
-    }
+    std::vector<DecimFloatData> float_data = detail::decim_float_working_copies(rMesh, n);
 
     DecimPlaceCtx ctx;
     ctx.mpXyz = &xyz;
@@ -510,9 +449,9 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
         // Guard 2: the vertex-link condition, exact set equality.
         {
             const std::vector<std::int64_t> link_a =
-                dv_vertex_link(vtets[static_cast<std::size_t>(a)], tet_conn, a);
+                detail::decim_corner_ring<4>(vtets[static_cast<std::size_t>(a)], tet_conn, a);
             const std::vector<std::int64_t> link_b =
-                dv_vertex_link(vtets[static_cast<std::size_t>(b)], tet_conn, b);
+                detail::decim_corner_ring<4>(vtets[static_cast<std::size_t>(b)], tet_conn, b);
             std::vector<std::int64_t> link_ab;
             link_ab.reserve(shared.size() * 2);
             for (std::int64_t t : shared) {
@@ -588,25 +527,9 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
         if (!vboundary[static_cast<std::size_t>(a)].empty() ||
             !vboundary[static_cast<std::size_t>(b)].empty()) {
             std::vector<std::int64_t> bmerged;
-            std::merge(vboundary[static_cast<std::size_t>(a)].begin(),
-                       vboundary[static_cast<std::size_t>(a)].end(),
-                       vboundary[static_cast<std::size_t>(b)].begin(),
-                       vboundary[static_cast<std::size_t>(b)].end(), std::back_inserter(bmerged));
-            for (std::int64_t f : bmerged) {
-                if (std::binary_search(bshared.begin(), bshared.end(), f))
-                    continue;  // dies in the collapse: no constraint
-                const std::int64_t* c = boundary.mCorners.data() + static_cast<std::size_t>(f) * 3;
-                double n0[3];
-                double n1[3];
-                decim_face_normal(xyz, c, a, b, nullptr, n0);
-                if (n0[0] == 0.0 && n0[1] == 0.0 && n0[2] == 0.0)
-                    continue;
-                decim_face_normal(xyz, c, a, b, placed.mX, n1);
-                if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] <= 0.0) {
-                    bflips = true;
-                    break;
-                }
-            }
+            bflips = detail::decim_any_normal_flip(
+                xyz, boundary.mCorners, vboundary[static_cast<std::size_t>(a)],
+                vboundary[static_cast<std::size_t>(b)], bshared, a, b, placed.mX, bmerged);
         }
         if (bflips) {
             ++result.mCollapsesRejected;
@@ -646,86 +569,17 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
         const std::int64_t s = pinned[static_cast<std::size_t>(b)] ? b : a;
         const std::int64_t r = s == a ? b : a;
 
-        {
-            const double* xs = xyz.data() + static_cast<std::size_t>(s) * 3;
-            const double* xr = xyz.data() + static_cast<std::size_t>(r) * 3;
-            const double dx = xr[0] - xs[0];
-            const double dy = xr[1] - xs[1];
-            const double dz = xr[2] - xs[2];
-            const double den = dx * dx + dy * dy + dz * dz;
-            double t;
-            if (den == 0.0) {
-                t = 0.5;
-            } else {
-                t = ((placed.mX[0] - xs[0]) * dx + (placed.mX[1] - xs[1]) * dy +
-                     (placed.mX[2] - xs[2]) * dz) /
-                    den;
-                if (t < 0.0)
-                    t = 0.0;
-                if (t > 1.0)
-                    t = 1.0;
-            }
-            for (DvFloatData& fd : float_data) {
-                double* vals = fd.mValues.data();
-                const std::size_t so = static_cast<std::size_t>(s) * fd.mNumComponents;
-                const std::size_t ro = static_cast<std::size_t>(r) * fd.mNumComponents;
-                for (std::size_t k = 0; k < fd.mNumComponents; ++k)
-                    vals[so + k] = vals[so + k] + t * (vals[ro + k] - vals[so + k]);
-            }
-        }
+        detail::decim_commit_blend(xyz, quads, float_data, placed.mX, s, r);
 
-        xyz[static_cast<std::size_t>(s) * 3] = placed.mX[0];
-        xyz[static_cast<std::size_t>(s) * 3 + 1] = placed.mX[1];
-        xyz[static_cast<std::size_t>(s) * 3 + 2] = placed.mX[2];
-        {
-            double* qs = quads.data() + static_cast<std::size_t>(s) * 10;
-            const double* qr = quads.data() + static_cast<std::size_t>(r) * 10;
-            for (int i = 0; i < 10; ++i)
-                qs[i] += qr[i];
-        }
-
-        for (std::int64_t t : shared) {
-            tet_alive[static_cast<std::size_t>(t)] = 0;
-            --alive_tets;
-            ++result.mTetsRemoved;
-            const std::int64_t* c = tet_conn.data() + static_cast<std::size_t>(t) * 4;
-            for (int k = 0; k < 4; ++k)
-                if (c[k] != s && c[k] != r)
-                    decim_sorted_erase(vtets[static_cast<std::size_t>(c[k])], t);
-            decim_sorted_erase(vtets[static_cast<std::size_t>(s)], t);
-        }
-        for (std::int64_t t : vtets[static_cast<std::size_t>(r)]) {
-            if (!tet_alive[static_cast<std::size_t>(t)])
-                continue;  // was in shared
-            std::int64_t* c = tet_conn.data() + static_cast<std::size_t>(t) * 4;
-            for (int k = 0; k < 4; ++k)
-                if (c[k] == r)
-                    c[k] = s;
-            decim_sorted_insert(vtets[static_cast<std::size_t>(s)], t);
-        }
-        vtets[static_cast<std::size_t>(r)].clear();
+        alive_tets -= static_cast<std::int64_t>(shared.size());
+        result.mTetsRemoved += static_cast<std::int64_t>(shared.size());
+        detail::decim_kill_and_migrate<4>(tet_conn, vtets, tet_alive, shared, s, r);
 
         // Kill the shared boundary faces, then migrate r's remaining alive
         // boundary faces onto s (decimate.cpp's own vfaces/face_alive commit
         // pattern, applied to the mesh's own skin).
-        for (std::int64_t f : bshared) {
-            boundary_alive[static_cast<std::size_t>(f)] = 0;
-            const std::int64_t* c = boundary.mCorners.data() + static_cast<std::size_t>(f) * 3;
-            for (int k = 0; k < 3; ++k)
-                if (c[k] != s && c[k] != r)
-                    decim_sorted_erase(vboundary[static_cast<std::size_t>(c[k])], f);
-            decim_sorted_erase(vboundary[static_cast<std::size_t>(s)], f);
-        }
-        for (std::int64_t f : vboundary[static_cast<std::size_t>(r)]) {
-            if (!boundary_alive[static_cast<std::size_t>(f)])
-                continue;  // was in bshared
-            std::int64_t* c = boundary.mCorners.data() + static_cast<std::size_t>(f) * 3;
-            for (int k = 0; k < 3; ++k)
-                if (c[k] == r)
-                    c[k] = s;
-            decim_sorted_insert(vboundary[static_cast<std::size_t>(s)], f);
-        }
-        vboundary[static_cast<std::size_t>(r)].clear();
+        detail::decim_kill_and_migrate<3>(boundary.mCorners, vboundary, boundary_alive, bshared, s,
+                                          r);
 
         successor[static_cast<std::size_t>(r)] = s;
         ++version[static_cast<std::size_t>(s)];
@@ -737,7 +591,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
         // Re-score the survivor's remaining edges via its updated link.
         const std::vector<std::int64_t> link_s =
-            dv_vertex_link(vtets[static_cast<std::size_t>(s)], tet_conn, s);
+            detail::decim_corner_ring<4>(vtets[static_cast<std::size_t>(s)], tet_conn, s);
         for (std::int64_t w : link_s) {
             if (pinned[static_cast<std::size_t>(s)] && pinned[static_cast<std::size_t>(w)])
                 continue;
@@ -752,35 +606,14 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
     }
 
     // --- phase 9: emission ------------------------------------------------------
-    std::vector<char> used(n, 0);
-    for (std::size_t t = 0; t < num_tets; ++t)
-        if (tet_alive[t])
-            for (int k = 0; k < 4; ++k)
-                used[static_cast<std::size_t>(tet_conn[t * 4 + k])] = 1;
-    std::vector<std::int64_t> remap(n, -1);
-    std::size_t num_used = 0;
-    for (std::size_t i = 0; i < n; ++i)
-        if (used[i])
-            remap[i] = static_cast<std::int64_t>(num_used++);
+    std::vector<char> used;
+    std::vector<std::int64_t> remap;
+    const std::size_t num_used =
+        detail::decim_compact_points<4>(tet_alive, tet_conn, n, used, remap);
 
     Mesh& out = result.mMesh;
 
-    {
-        const NDArray& points = rMesh.Points();
-        NDArray new_points = NDArray::Uninit(points.Dtype(), {num_used, dim});
-        detail::dispatch_dtype(points.Dtype(), [&]<class T>() {
-            T* dst = new_points.As<T>();
-            std::size_t w = 0;
-            for (std::size_t i = 0; i < n; ++i) {
-                if (!used[i])
-                    continue;
-                for (std::size_t d = 0; d < dim && d < 3; ++d)
-                    dst[w * dim + d] = static_cast<T>(xyz[i * 3 + d]);
-                ++w;
-            }
-        });
-        out.AssignPoints(std::move(new_points));
-    }
+    out.AssignPoints(detail::decim_emit_points(rMesh.Points(), xyz, used, n, num_used, dim));
 
     {
         std::size_t bi = 0;
@@ -804,102 +637,14 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
                 ++w;
             }
             out.AddCellBlock(cell_type_name(CellType::Tetra), std::move(block));
-            result.mCellMaps.push_back(dv_int64_vector(cell_map));
+            result.mCellMaps.push_back(detail::decim_int64_vector(cell_map));
             ++bi;
         }
     }
 
-    for (const std::string& name : rMesh.CellDataNames()) {
-        const std::size_t ndata = rMesh.CellDataNumBlocks(name);
-        std::vector<NDArray> blocks;
-        blocks.reserve(ndata);
-        std::size_t bi = 0;
-        for (const auto cb : rMesh.CellRange()) {
-            if (bi >= ndata)
-                break;
-            const NDArray& a = rMesh.CellData(name, bi);
-            const std::size_t nc = cb.NumCells();
-            if (ndata != nblocks || detail::rows(a) != nc || nc == 0) {
-                blocks.push_back(detail::data_owned_copy(a));
-                ++bi;
-                continue;
-            }
-            const std::size_t base = static_cast<std::size_t>(bases[bi]);
-            std::size_t alive_in_block = 0;
-            for (std::size_t c = 0; c < nc; ++c)
-                if (tet_alive[base + c])
-                    ++alive_in_block;
-            std::vector<std::size_t> shape = a.Shape();
-            shape[0] = alive_in_block;
-            const std::size_t row_bytes = a.Nbytes() / nc;
-            NDArray sub = NDArray::Uninit(a.Dtype(), std::move(shape));
-            const std::byte* src = a.Data();
-            std::byte* dst = sub.Data();
-            std::size_t w = 0;
-            for (std::size_t c = 0; c < nc; ++c)
-                if (tet_alive[base + c])
-                    std::memcpy(dst + (w++) * row_bytes, src + c * row_bytes, row_bytes);
-            blocks.push_back(std::move(sub));
-            ++bi;
-        }
-        out.AddCellData(name, std::move(blocks));
-    }
+    detail::decim_emit_data(rMesh, tet_alive, bases, nullptr, float_data, used, n, num_used, out);
 
-    for (const std::string& name : rMesh.PointDataNames()) {
-        const NDArray& a = rMesh.PointData(name);
-        if (detail::rows(a) != n) {
-            out.AddPointData(name, detail::data_owned_copy(a));
-            continue;
-        }
-        std::vector<std::size_t> shape = a.Shape();
-        shape[0] = num_used;
-        if (detail::is_float_dtype(a.Dtype())) {
-            const DvFloatData* p_fd = nullptr;
-            for (const DvFloatData& fd : float_data)
-                if (fd.mName == name) {
-                    p_fd = &fd;
-                    break;
-                }
-            const std::size_t ncomp = p_fd != nullptr ? p_fd->mNumComponents : 0;
-            NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
-            detail::dispatch_dtype(a.Dtype(), [&]<class T>() {
-                T* dst = b.As<T>();
-                std::size_t w = 0;
-                for (std::size_t i = 0; i < n; ++i) {
-                    if (!used[i])
-                        continue;
-                    for (std::size_t k = 0; k < ncomp; ++k)
-                        dst[w * ncomp + k] = static_cast<T>(p_fd->mValues[i * ncomp + k]);
-                    ++w;
-                }
-            });
-            out.AddPointData(name, std::move(b));
-        } else {
-            const std::size_t row_bytes = n == 0 ? 0 : a.Nbytes() / n;
-            NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
-            const std::byte* src = a.Data();
-            std::byte* dst = b.Data();
-            std::size_t w = 0;
-            for (std::size_t i = 0; i < n; ++i)
-                if (used[i])
-                    std::memcpy(dst + (w++) * row_bytes, src + i * row_bytes, row_bytes);
-            out.AddPointData(name, std::move(b));
-        }
-    }
-    for (const std::string& name : rMesh.FieldDataNames())
-        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
-
-    {
-        NDArray pm = NDArray::Uninit(DType::Int64, {n});
-        std::int64_t* dst = pm.As<std::int64_t>();
-        for (std::size_t i = 0; i < n; ++i) {
-            std::int64_t v = static_cast<std::int64_t>(i);
-            while (successor[static_cast<std::size_t>(v)] >= 0)
-                v = successor[static_cast<std::size_t>(v)];
-            dst[i] = remap[static_cast<std::size_t>(v)];
-        }
-        result.mPointMap = std::move(pm);
-    }
+    result.mPointMap = detail::decim_point_map(successor, remap, n);
     result.mPointsRemoved = static_cast<std::int64_t>(n - num_used);
 
     {

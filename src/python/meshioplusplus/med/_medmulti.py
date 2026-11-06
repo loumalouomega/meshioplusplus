@@ -29,13 +29,13 @@ from .._mesh import Mesh
 from .._units import med_length_unit, med_unit_coords, set_length_unit
 from ._med import (
     MED_FLOAT64,
-    _med_cells_for_write,
     _parse_med_field_name,
     _read_data,
     _read_families,
     _reorder_med_cells,
     _write_families,
     _write_field_step,
+    _write_mesh_step,
     med_to_geo_type,
     med_to_meshio_type,
     med_type_to_entity,
@@ -300,74 +300,7 @@ def _write_med_multi(filename, meshes, mesh_names=None, med_version="4.1.0", **k
         )
         med_mesh.attrs.create("TYP", 0)
 
-        step = "-0000000000000000001-0000000000000000001"  # NDT NOR
-        time_step = med_mesh.create_group(step)
-        time_step.attrs.create("CGT", 1)
-        time_step.attrs.create("NDT", -1)
-        time_step.attrs.create("NOR", -1)
-        time_step.attrs.create("PDT", -1.0)
-
-        # Points
-        nodes_group = time_step.create_group("NOE")
-        nodes_group.attrs.create("CGT", 1)
-        nodes_group.attrs.create("CGS", 1)
-        profile = "MED_NO_PROFILE_INTERNAL"
-        nodes_group.attrs.create("PFL", np.bytes_(profile))
-        coo = nodes_group.create_dataset("COO", data=mesh.points.flatten(order="F"))
-        coo.attrs.create("CGT", 1)
-        coo.attrs.create("NBR", len(mesh.points))
-
-        if "point_tags" in mesh.point_data:
-            fam = nodes_group.create_dataset("FAM", data=mesh.point_data["point_tags"])
-            fam.attrs.create("CGT", 1)
-            fam.attrs.create("NBR", len(mesh.points))
-
-        # Cells (merge several blocks of the same type)
-        cells_by_type = {}
-        cell_tags_by_type = {}
-        for k, cell_block in enumerate(mesh.cells):
-            ct = cell_block.type
-            cells_by_type.setdefault(ct, []).append(cell_block.data)
-            if "cell_tags" in mesh.cell_data:
-                cell_tags_by_type.setdefault(ct, []).append(
-                    mesh.cell_data["cell_tags"][k]
-                )
-
-        cells_group = time_step.create_group("MAI")
-        cells_group.attrs.create("CGT", 1)
-        for cell_type, cells_list in cells_by_type.items():
-            med_type = meshio_to_med_type[cell_type]
-            med_cells = cells_group.create_group(med_type)
-            med_cells.attrs.create("CGT", 1)
-            med_cells.attrs.create("CGS", 1)
-            med_cells.attrs.create("PFL", np.bytes_(profile))
-
-            if cell_type in ("polygon", "polygon2"):
-                all_polygons = sum(cells_list, [])
-                all_nodes = np.concatenate([c + 1 for c in all_polygons])
-                lengths = [len(c) for c in all_polygons]
-                inn = np.concatenate([[1], np.cumsum(lengths) + 1])
-                nod = med_cells.create_dataset("NOD", data=all_nodes)
-                nod.attrs.create("CGT", 1)
-                nod.attrs.create("NBR", len(all_polygons))
-                inn_ds = med_cells.create_dataset("INN", data=inn)
-                inn_ds.attrs.create("CGT", 1)
-                n_merged = len(all_polygons)
-            else:
-                merged_cells = np.concatenate(cells_list, axis=0)
-                merged_cells = _med_cells_for_write(cell_type, merged_cells)
-                nod = med_cells.create_dataset(
-                    "NOD", data=merged_cells.flatten(order="F") + 1
-                )
-                nod.attrs.create("CGT", 1)
-                nod.attrs.create("NBR", len(merged_cells))
-                n_merged = len(merged_cells)
-
-            if cell_tags_by_type.get(cell_type):
-                merged_tags = np.concatenate(cell_tags_by_type[cell_type])
-                fam = med_cells.create_dataset("FAM", data=merged_tags)
-                fam.attrs.create("CGT", 1)
-                fam.attrs.create("NBR", n_merged)
+        _write_mesh_step(med_mesh, mesh, "MED_NO_PROFILE_INTERNAL", write_num=False)
 
     # Families (FAS)
     fas = f.create_group("FAS")

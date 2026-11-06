@@ -33,6 +33,7 @@
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 // Project includes (private, not installed)
 #include "streamlines.hpp"
@@ -41,19 +42,8 @@ namespace meshioplusplus {
 namespace detail {
 namespace {
 
-using Vec3 = std::array<double, 3>;
-
 Vec3 sl_sub(const double* pA, const double* pB) {
     return {pA[0] - pB[0], pA[1] - pB[1], pA[2] - pB[2]};
-}
-
-Vec3 sl_cross(const Vec3& rA, const Vec3& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
-double sl_dot(const Vec3& rA, const Vec3& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
 }
 
 // How a cell of a given type name is cut into simplices, as corner indices into
@@ -260,7 +250,7 @@ public:
                 best_point[c] = pPoint[c] - (mDim == 2 ? distance * normal[c] : 0.0);
             }
             if (mDim == 2) {
-                const double along = sl_dot({best_vec[0], best_vec[1], best_vec[2]}, normal);
+                const double along = vec3_dot({best_vec[0], best_vec[1], best_vec[2]}, normal);
                 for (std::size_t c = 0; c < 3; ++c)
                     best_vec[c] -= along * normal[c];
             }
@@ -286,12 +276,12 @@ public:
             const Vec3 a = sl_sub(point(s.mNode[0]), point(s.mNode[3]));
             const Vec3 b = sl_sub(point(s.mNode[1]), point(s.mNode[3]));
             const Vec3 c = sl_sub(point(s.mNode[2]), point(s.mNode[3]));
-            return std::fabs(sl_dot(a, sl_cross(b, c))) / 6.0;
+            return std::fabs(vec3_dot(a, vec3_cross(b, c))) / 6.0;
         }
         const Vec3 a = sl_sub(point(s.mNode[1]), point(s.mNode[0]));
         const Vec3 b = sl_sub(point(s.mNode[2]), point(s.mNode[0]));
-        const Vec3 n = sl_cross(a, b);
-        return 0.5 * std::sqrt(sl_dot(n, n));
+        const Vec3 n = vec3_cross(a, b);
+        return 0.5 * std::sqrt(vec3_dot(n, n));
     }
 
     Vec3 Centroid(std::size_t Simplex) const {
@@ -327,12 +317,12 @@ private:
             const Vec3 b = sl_sub(point(s.mNode[1]), d);
             const Vec3 c = sl_sub(point(s.mNode[2]), d);
             const Vec3 p = sl_sub(pPoint, d);
-            const double det = sl_dot(a, sl_cross(b, c));
+            const double det = vec3_dot(a, vec3_cross(b, c));
             if (!(std::fabs(det) > 0.0))
                 return false;
-            pLambda[0] = sl_dot(p, sl_cross(b, c)) / det;
-            pLambda[1] = sl_dot(a, sl_cross(p, c)) / det;
-            pLambda[2] = sl_dot(a, sl_cross(b, p)) / det;
+            pLambda[0] = vec3_dot(p, vec3_cross(b, c)) / det;
+            pLambda[1] = vec3_dot(a, vec3_cross(p, c)) / det;
+            pLambda[2] = vec3_dot(a, vec3_cross(b, p)) / det;
             pLambda[3] = 1.0 - pLambda[0] - pLambda[1] - pLambda[2];
             for (int k = 0; k < 4; ++k)
                 if (!(pLambda[k] >= -kEps))
@@ -343,17 +333,17 @@ private:
         const Vec3 u = sl_sub(point(s.mNode[1]), origin);
         const Vec3 v = sl_sub(point(s.mNode[2]), origin);
         const Vec3 w = sl_sub(pPoint, origin);
-        const Vec3 n = sl_cross(u, v);
-        const double area2 = sl_dot(n, n);
+        const Vec3 n = vec3_cross(u, v);
+        const double area2 = vec3_dot(n, n);
         if (!(area2 > 0.0))
             return false;
         const double len = std::sqrt(area2);
         rNormal = {n[0] / len, n[1] / len, n[2] / len};
-        rDistance = sl_dot(w, rNormal);
+        rDistance = vec3_dot(w, rNormal);
         if (!(std::fabs(rDistance) <= mTol))
             return false;
-        pLambda[1] = sl_dot(sl_cross(w, v), n) / area2;
-        pLambda[2] = sl_dot(sl_cross(u, w), n) / area2;
+        pLambda[1] = vec3_dot(vec3_cross(w, v), n) / area2;
+        pLambda[2] = vec3_dot(vec3_cross(u, w), n) / area2;
         pLambda[0] = 1.0 - pLambda[1] - pLambda[2];
         for (int k = 0; k < 3; ++k)
             if (!(pLambda[k] >= -kEps))

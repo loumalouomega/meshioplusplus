@@ -32,8 +32,6 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/tikz.hpp"
 #include "meshioplusplus/log.hpp"
-#include "meshioplusplus/operations/surface.hpp"
-#include "meshioplusplus/skin.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/typed_view.hpp"
@@ -547,39 +545,18 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
     const std::size_t num_points = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
 
-    detail::ColorSpec spec;
-    spec.mColorBy = rColorBy;
-    spec.mComponent = rComponent;
-    spec.mCmap = rCmap;
-    spec.mVMin = rVMin;
-    spec.mVMax = rVMax;
-    spec.mColorbar = Colorbar;
+    const detail::ColorSpec spec =
+        detail::drawing_color_spec(rColorBy, rComponent, rCmap, rVMin, rVMax, Colorbar);
 
     // A genuinely non-flat 3D mesh takes the projected-rendering path (skin
     // extraction for volume cells + orthographic camera); a flat one (every
     // z ~ 0) keeps the classic 2D path below, byte-identical to before.
     const detail::DoubleView point_values(points);
-    if (dim == 3) {
-        for (std::size_t i = 0; i < num_points; ++i) {
-            if (std::fabs(point_values[i * dim + 2]) > 1.0e-14) {
-                if (has_skinnable_cells(rMesh)) {
-                    // Colouring by cell data needs to know which input cell
-                    // each skin facet came from; that costs an extra Int64
-                    // array, so only ask for it when it will actually be read.
-                    const bool need_parents = spec.Active() && rMesh.HasCellData(rColorBy);
-                    const Mesh skin =
-                        detail::surface_extract(rMesh, /*forceFaceMode=*/true,
-                                                /*linearize=*/true, need_parents, "extract_skin");
-                    tikz_proj_write(rPath, rMesh, skin, rFloatFmt, Standalone, rLineWidth, rFill,
-                                    rDraw, rScale, azimuth, elevation, roll, spec, rNanColor);
-                } else {
-                    tikz_proj_write(rPath, rMesh, rMesh, rFloatFmt, Standalone, rLineWidth, rFill,
-                                    rDraw, rScale, azimuth, elevation, roll, spec, rNanColor);
-                }
-                return;
-            }
-        }
-    }
+    if (detail::drawing_write_projected(rMesh, point_values, spec, [&](const Mesh& rProjected) {
+            tikz_proj_write(rPath, rMesh, rProjected, rFloatFmt, Standalone, rLineWidth, rFill,
+                            rDraw, rScale, azimuth, elevation, roll, spec, rNanColor);
+        }))
+        return;
 
     // TikZ/PGF uses the math convention (y-up), so — unlike SVG — no y-flip.
     auto coord = [&](std::int64_t p) {
@@ -605,11 +582,8 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
     std::vector<std::string> skipped_types;
     for (const auto cb : rMesh.CellRange()) {
         const std::string& type = cb.Type();
-        if (type != "line" && type != "triangle" && type != "quad") {
-            if (std::find(skipped_types.begin(), skipped_types.end(), type) == skipped_types.end())
-                skipped_types.push_back(type);
+        if (detail::drawing_skip_type(type, skipped_types))
             continue;
-        }
 
         const NDArray& conn_array = cb.Conn();
         const std::size_t ncols = detail::cols(conn_array);
@@ -637,9 +611,7 @@ void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& 
     }
 
     if (!skipped_types.empty()) {
-        std::string joined;
-        for (std::size_t i = 0; i < skipped_types.size(); ++i)
-            joined += (i ? ", " : "") + skipped_types[i];
+        const std::string joined = detail::drawing_join_types(skipped_types);
         log::warn(
             "TikZ: cell type(s) '{}' are not representable (only line/triangle/quad); "
             "skipping.",

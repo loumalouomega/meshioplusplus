@@ -40,6 +40,7 @@
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 
@@ -51,10 +52,6 @@ constexpr const char* kRcsPrefix = "meshio++: reconstruct_surface: ";
 
 [[noreturn]] void rcs_fail(const std::string& rWhat) {
     throw std::invalid_argument(kRcsPrefix + rWhat);
-}
-
-double rcs_dot(const RcsVec& rA, const RcsVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
 }
 
 /// Sorts and deduplicates @p rIds.
@@ -164,7 +161,7 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
             }
             if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2]))
                 rcs_fail("point " + std::to_string(i) + " has a non-finite coordinate");
-            const double len = std::sqrt(rcs_dot(v, v));
+            const double len = std::sqrt(detail::vec3_dot(v, v));
             if (!std::isfinite(len) || !(len > 0.0))
                 continue;
             pts.push_back(p);
@@ -303,18 +300,18 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
         const RcsVec& p0 = pts[static_cast<std::size_t>(near[0].second)];
         const RcsVec& n0 = nrm[static_cast<std::size_t>(near[0].second)];
         const RcsVec d0{x[0] - p0[0], x[1] - p0[1], x[2] - p0[2]};
-        const double f0 = rcs_dot(d0, n0);
+        const double f0 = detail::vec3_dot(d0, n0);
         // Hoppe's test: the projection onto the nearest plane, x - f0 n0,
         // lies within max_dist of p0 (its offset from p0 is d0 - f0 n0).
         const RcsVec t{d0[0] - f0 * n0[0], d0[1] - f0 * n0[1], d0[2] - f0 * n0[2]};
-        if (rcs_dot(t, t) > max_d2)
+        if (detail::vec3_dot(t, t) > max_d2)
             return;
         double num = 0.0, den = 0.0;
         for (std::size_t j = 0; j < got; ++j) {
             const auto id = static_cast<std::size_t>(near[j].second);
             const RcsVec d{x[0] - pts[id][0], x[1] - pts[id][1], x[2] - pts[id][2]};
             const double w = std::exp(-near[j].first * inv_s2);
-            num += w * rcs_dot(d, nrm[id]);
+            num += w * detail::vec3_dot(d, nrm[id]);
             den += w;
         }
         // Keep the level set off the node itself: a value near zero would

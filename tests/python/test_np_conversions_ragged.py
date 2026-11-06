@@ -160,3 +160,149 @@ def test_rows_sharing_one_buffer_are_read_as_spans():
     out = _roundtrip(_polygon_mesh(rows))
     got = [np.asarray(r).tolist() for r in out.cells[0].data]
     assert got == [np.asarray(r).tolist() for r in rows]
+
+
+# --- rows that carry their CSR arrays (roadmap 5.6) ------------------------
+
+from meshioplusplus._ragged import CsrFaces, CsrRows  # noqa: E402
+
+
+def _ragged_rows():
+    return [
+        np.array([0, 1, 2], np.int64),
+        np.array([1, 2, 3, 4], np.int64),
+        np.array([4, 5, 6], np.int64),
+        np.array([2, 3, 5, 6, 7], np.int64),
+    ]
+
+
+def _as_lists(data):
+    if data and isinstance(data[0], list):
+        return [[f.tolist() for f in cell] for cell in data]
+    return [r.tolist() for r in data]
+
+
+@needs_core
+def test_core_rows_carry_their_csr():
+    out = _roundtrip(_polygon_mesh(_ragged_rows()))
+    data = out.cells[0].data
+    assert isinstance(data, CsrRows) and isinstance(data, list)
+    flat, offsets, face_offsets = data.csr()
+    assert face_offsets is None
+    np.testing.assert_array_equal(offsets, [0, 3, 7, 10, 15])
+    np.testing.assert_array_equal(flat, np.concatenate(_ragged_rows()))
+    for r, row in enumerate(data):
+        assert row.base is flat or np.shares_memory(row, flat)
+        np.testing.assert_array_equal(row, flat[offsets[r] : offsets[r + 1]])
+
+
+@needs_core
+def test_carried_csr_comes_back_with_writes_into_rows():
+    out = _roundtrip(_polygon_mesh(_ragged_rows()))
+    out.cells[0].data[1][0] = 7  # a write into a row is a write into `flat`
+    again = _roundtrip(out)
+    assert isinstance(again.cells[0].data, CsrRows)
+    want = [r.tolist() for r in _ragged_rows()]
+    want[1][0] = 7
+    assert _as_lists(again.cells[0].data) == want
+
+
+_MUTATIONS = {
+    "setitem": lambda d: d.__setitem__(0, np.array([7, 6, 5], np.int64)),
+    "setslice": lambda d: d.__setitem__(slice(0, 1), [np.array([7, 6], np.int64)]),
+    "delitem": lambda d: d.__delitem__(1),
+    "iadd": lambda d: d.__iadd__([np.array([0, 7, 1], np.int64)]),
+    "imul": lambda d: d.__imul__(2),
+    "append": lambda d: d.append(np.array([0, 7, 1], np.int64)),
+    "extend": lambda d: d.extend([np.array([0, 7, 1], np.int64)]),
+    "insert": lambda d: d.insert(0, np.array([0, 7, 1], np.int64)),
+    "pop": lambda d: d.pop(),
+    "remove": lambda d: d.remove(d[0]),  # found by identity first
+    "clear": lambda d: d.clear(),
+    "sort": lambda d: d.sort(key=len),
+    "reverse": lambda d: d.reverse(),
+}
+
+
+@needs_core
+@pytest.mark.parametrize("name", sorted(_MUTATIONS))
+def test_a_reshaped_block_drops_its_csr_and_round_trips(name):
+    out = _roundtrip(_polygon_mesh(_ragged_rows()))
+    data = out.cells[0].data
+    _MUTATIONS[name](data)
+    assert data.csr() is None
+    want = _as_lists(data)
+    if not want:
+        return  # an empty polygon block is not a mesh the core keeps
+    again = _roundtrip(Mesh(out.points, [("polygon", data)]))
+    assert _as_lists(again.cells[0].data) == want
+
+
+@needs_core
+def test_polyhedron_face_lists_share_the_csr():
+    out = _roundtrip(Mesh(_polyhedron_mesh().points, [_polyhedron_block(2)]))
+    data = out.cells[0].data
+    assert isinstance(data, CsrRows) and all(isinstance(c, CsrFaces) for c in data)
+    flat, offsets, face_offsets = data.csr()
+    np.testing.assert_array_equal(face_offsets, [0, 6, 12])
+    assert len(offsets) == 13 and offsets[-1] == len(flat) == 48
+    want = _as_lists(data)
+    assert _as_lists(_roundtrip(out).cells[0].data) == want
+    # Changing one cell's face list drops the whole block's arrays.
+    data[1].pop()
+    assert data.csr() is None
+    want[1].pop()
+    again = _roundtrip(Mesh(out.points, [("polyhedron", data)]))
+    assert _as_lists(again.cells[0].data) == want
+
+
+def _polyhedron_block(copies):
+    faces = _polyhedron_mesh().cells[0].data[0]
+    return ("polyhedron", [[f.copy() for f in faces] for _ in range(copies)])
+
+
+@needs_core
+def test_copies_and_pickles_keep_rows_on_their_own_buffer():
+    import copy
+    import pickle
+
+    out = _roundtrip(_polygon_mesh(_ragged_rows()))
+    data = out.cells[0].data
+    for dup in (copy.deepcopy(data), pickle.loads(pickle.dumps(data))):
+        assert isinstance(dup, CsrRows)
+        flat = dup.csr()[0]
+        assert not np.shares_memory(flat, data.csr()[0])
+        dup[0][0] = 6
+        assert flat[0] == 6 and data[0][0] == 0
+    shallow = copy.copy(data)
+    assert isinstance(shallow, CsrRows) and shallow.csr()[0] is data.csr()[0]
+    data.append(np.array([1, 2, 3], np.int64))
+    dropped = pickle.loads(pickle.dumps(data))
+    assert isinstance(dropped, CsrRows) and dropped.csr() is None
+    assert _as_lists(dropped) == _as_lists(data)
+
+
+def test_uniform_rows_become_the_flat_buffer_reshaped():
+    flat = np.arange(12, dtype=np.int64)
+    rows = CsrRows.from_csr(flat, [0, 4, 8, 12])
+    block = Mesh(np.zeros((12, 3)), [("polygon", rows)]).cells[0]
+    assert isinstance(block.data, np.ndarray)
+    np.testing.assert_array_equal(block.data, np.asarray(list(rows)))
+    assert block.data.dtype == np.int64 and block.data.shape == (3, 4)
+
+
+@needs_core
+def test_inconsistent_carried_arrays_are_ignored():
+    out = _roundtrip(_polygon_mesh(_ragged_rows()))
+    data = out.cells[0].data
+    flat, offsets, _ = data.csr()
+    want = _as_lists(data)
+    # Arrays that do not describe the list are not trusted: the rows are read.
+    for forged in (
+        (flat, offsets[:-1], None),
+        (flat[:-1], offsets, None),
+        (flat.astype(np.int32), offsets, None),
+        (flat, offsets, offsets),
+    ):
+        data._state[0] = forged
+        assert _as_lists(_roundtrip(out).cells[0].data) == want

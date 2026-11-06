@@ -30,8 +30,6 @@
 #include "../detail/region_field_data.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
-#include "meshioplusplus/detail/provenance.hpp"
-#include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
@@ -40,6 +38,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/row_writer.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/vtk_xml_write.hpp"
 #include "../detail/vtu_decode.hpp"
 
 namespace meshioplusplus {
@@ -121,8 +120,7 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
     std::vector<unsigned char> appended;  // the raw <AppendedData> payload
     // UInt64 size headers only where an uncompressed array could pass 4 GiB
     // (compressed ones count 32 KiB blocks); everything else keeps its bytes.
-    const std::size_t hsz =
-        (binary && codec == detail::VtkCodec::None) ? detail::vtk_xml_header_bytes(rMesh) : 4;
+    const std::size_t hsz = detail::vtk_xml_size_header_bytes(rMesh, binary, codec);
 
     auto da_header = [&](const char* type, const std::string& name, int ncomp) {
         os << "<DataArray type=\"" << type << "\" Name=\"" << name << "\"";
@@ -159,15 +157,7 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
     for (const auto cb : rMesh.CellRange())
         hex_order = hex_order || cb.Type() == "VTK_LAGRANGE_HEXAHEDRON" ||
                     cb.Type() == "VTK_BEZIER_HEXAHEDRON";
-    os << "<?xml version=\"1.0\"?>\n";
-    os << "<VTKFile type=\"UnstructuredGrid\" version=\"" << (hex_order ? "2.2" : "0.1")
-       << "\" byte_order=\"LittleEndian\"";
-    if (binary && codec != detail::VtkCodec::None)
-        os << " compressor=\"" << detail::vtk_codec_compressor(codec) << "\"";
-    if (hsz == 8)
-        os << " header_type=\"UInt64\"";
-    os << ">\n";
-    os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
+    detail::vtk_xml_prolog(os, "UnstructuredGrid", hex_order ? "2.2" : "0.1", binary, codec, hsz);
     os << "<UnstructuredGrid>\n";
     // Field data belongs to the dataset, not to a piece: VTK writes it on the grid,
     // before the <Piece>. Guarded, so a mesh without any writes the bytes it always did.
@@ -416,20 +406,7 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
             }
 
             auto emit_i64 = [&](const char* name, const std::vector<std::int64_t>& v) {
-                da_header("Int64", name, 0);
-                if (binary) {
-                    emit_bin(reinterpret_cast<const unsigned char*>(v.data()),
-                             v.size() * sizeof(std::int64_t));
-                } else {
-                    detail::write_row_chunks(
-                        os, v.size(), [&](std::size_t First, std::size_t Last, std::string& rBuf) {
-                            for (std::size_t i = First; i < Last; ++i) {
-                                detail::append_int(rBuf, v[i]);
-                                rBuf += '\n';
-                            }
-                        });
-                }
-                os << "</DataArray>\n";
+                detail::vtk_xml_emit_i64(os, binary, da_header, emit_bin, name, v);
             };
 
             os << "<Cells>\n";

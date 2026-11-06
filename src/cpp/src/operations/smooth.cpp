@@ -40,12 +40,12 @@
 #include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/node_adjacency.hpp"
-#include "meshioplusplus/detail/ragged_csr.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/data_plumbing.hpp"
 #include "../detail/typed_view.hpp"
 
 // Project includes (private, not installed)
@@ -60,14 +60,6 @@ namespace {
 using detail::Vec3;
 
 // --- small helpers ----------------------------------------------------------
-
-// A deep copy of an NDArray that always owns its buffer (the source may be a
-// view over foreign memory, e.g. numpy memory on the write path).
-NDArray smooth_owned_copy(const NDArray& rArr) {
-    NDArray c = rArr;
-    c.MakeOwned();
-    return c;
-}
 
 // --- resolved iteration parameters ------------------------------------------
 
@@ -1348,37 +1340,20 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
     }
 
     // --- phase 6: write-back (only the coordinates change) ---
+    // Named regions and property sets pass through verbatim: smoothing is a
+    // pure coordinate move, so no point, cell or facet is renumbered.
     Mesh& out = result.mMesh;
-    out.AssignPoints(smooth_write_coords(rMesh.Points(), prev, n, dim));
-
-    for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsRagged()) {
-            detail::append_ragged_copy(cb, out);
-        } else {
-            out.AddCellBlock(std::string(cb.Type()), smooth_owned_copy(cb.Conn()));
-        }
-    }
-
+    detail::clone_geometry_into(rMesh, smooth_write_coords(rMesh.Points(), prev, n, dim), out);
     for (const std::string& name : rMesh.PointDataNames())
-        out.AddPointData(name, smooth_owned_copy(rMesh.PointData(name)));
+        out.AddPointData(name, detail::data_owned_copy(rMesh.PointData(name)));
     for (const std::string& name : rMesh.CellDataNames()) {
         std::vector<NDArray> blocks;
         for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
-            blocks.push_back(smooth_owned_copy(rMesh.CellData(name, b)));
+            blocks.push_back(detail::data_owned_copy(rMesh.CellData(name, b)));
         out.AddCellData(name, std::move(blocks));
     }
     for (const std::string& name : rMesh.FieldDataNames())
-        out.AddFieldData(name, smooth_owned_copy(rMesh.FieldData(name)));
-
-    // Named regions pass through verbatim: smoothing is a pure coordinate move,
-    // so no point, cell or facet is renumbered.
-    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
-        out.AddRegion(rMesh.Region(i));
-    // Property sets ride along too: these operations preserve the mesh's shape,
-    // so dropping a deck's material data here would be new lossiness. They are
-    // keyed by id, not by entity index, so there is nothing to remap.
-    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
-        out.AddPropertySet(rMesh.GetPropertySet(i));
+        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
 
     return result;
 }

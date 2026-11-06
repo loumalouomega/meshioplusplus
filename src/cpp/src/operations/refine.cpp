@@ -71,6 +71,7 @@
 #include "meshioplusplus/region.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/data_plumbing.hpp"
 #include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
@@ -830,30 +831,10 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         if (name == kRefineLevelName || name == kRefineCellIdName || name == kRefineParentIdName)
             continue;  // this operation's own bookkeeping, rebuilt separately -- gathering
                        // them here would replicate a split cell's id/parent to every child
-        const std::size_t ndata = rMesh.CellDataNumBlocks(name);
-        std::vector<NDArray> blocks;
-        blocks.reserve(ndata);
-        for (std::size_t b = 0; b < ndata; ++b) {
-            const NDArray& a = rMesh.CellData(name, b);
-            const std::size_t in_rows = detail::rows(a);
-            if (ndata != nblocks || in_rows == 0 || in_rows != descs[b].mNumCells) {
-                blocks.push_back(detail::data_owned_copy(a));
-                continue;
-            }
-            const std::vector<std::int64_t>& parents = parent_of_child[b];
-            std::vector<std::size_t> shape = a.Shape();
-            shape[0] = parents.size();
-            const std::size_t row_bytes = a.Nbytes() / in_rows;
-            NDArray gathered = NDArray::Uninit(a.Dtype(), std::move(shape));
-            const std::byte* src = a.Data();
-            std::byte* dst = gathered.Data();
-            parallel_for_bw(parents.size(), [&](std::size_t i) {
-                std::memcpy(dst + i * row_bytes,
-                            src + static_cast<std::size_t>(parents[i]) * row_bytes, row_bytes);
-            });
-            blocks.push_back(std::move(gathered));
-        }
-        out.AddCellData(name, std::move(blocks));
+        out.AddCellData(name, detail::replicate_parent_rows(rMesh, name, nblocks, parent_of_child,
+                                                            [&](std::size_t b, std::size_t InRows) {
+                                                                return InRows != descs[b].mNumCells;
+                                                            }));
     }
 
     // refine:level. Red children increment; green and untouched cells inherit,

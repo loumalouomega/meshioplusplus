@@ -2,6 +2,7 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._series_writer import CoreSeriesWriter
 from ._nastran_h5 import read as _py_read
 from ._nastran_h5 import time_values
 from ._write import SeriesWriter as _PySeriesWriter
@@ -58,7 +59,7 @@ def write(filename, mesh):
     return _py_write(filename, mesh)
 
 
-class SeriesWriter:
+class SeriesWriter(CoreSeriesWriter):
     """Write a time series into one results file: the model once and a domain
     per step; ``write_sequence(path, steps, file_format="nastran_h5")`` uses
     it. The C++ core writes the file; the Python twin, which writes the same
@@ -79,28 +80,6 @@ class SeriesWriter:
                     raise
         if self._core is None:
             self._py = _PySeriesWriter(filename)
-
-    def write(self, time, mesh):
-        if self._core is not None:
-            self._core.write(float(time), mesh)
-        else:
-            self._py.write(time, mesh)
-
-    def close(self):
-        if self._core is not None:
-            if self._core.num_steps():
-                self._core.finalize()
-            self._core = None
-        if self._py is not None:
-            self._py.close()
-            self._py = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-        return False
 
 
 register_format("nastran_h5", [".h5"], read, {"nastran_h5": write})

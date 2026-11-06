@@ -34,11 +34,14 @@
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/polyhedron.hpp"
-#include "meshioplusplus/detail/ragged_csr.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
+#include "../detail/fem_kernels.hpp"
 
 namespace meshioplusplus {
 
@@ -116,17 +119,6 @@ double quality_angle_deg(const Vec3& u, const Vec3& v, double eps) {
     double c = detail::vec3_dot(u, v) / (nu * nv);
     c = std::clamp(c, -1.0, 1.0);
     return std::acos(c) * QUALITY_RAD2DEG;
-}
-
-// det of the three unit edge vectors; NaN if any is degenerate.
-double quality_det_unit3(const Vec3& a, const Vec3& b, const Vec3& c, double eps) {
-    const double na = detail::vec3_norm(a);
-    const double nb = detail::vec3_norm(b);
-    const double nc = detail::vec3_norm(c);
-    if (na < eps || nb < eps || nc < eps)
-        return QUALITY_NAN;
-    return detail::det3(detail::vec3_scale(a, 1.0 / na), detail::vec3_scale(b, 1.0 / nb),
-                        detail::vec3_scale(c, 1.0 / nc));
 }
 
 // Signed volume via a cell-centroid / face-centroid fan over outward-wound
@@ -298,9 +290,7 @@ void quality_tetra(const std::vector<Vec3>& c, double eps, double* m) {
     const Vec3& p1 = c[1];
     const Vec3& p2 = c[2];
     const Vec3& p3 = c[3];
-    const double vol = detail::triple_product(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
-                                              detail::vec3_sub(p3, p0)) /
-                       6.0;
+    const double vol = detail::tet_volume(p0, p1, p2, p3);
     m[QM_VOLUME] = vol;
     const double edges[6] = {quality_edge_len(p0, p1), quality_edge_len(p0, p2),
                              quality_edge_len(p0, p3), quality_edge_len(p1, p2),
@@ -310,13 +300,13 @@ void quality_tetra(const std::vector<Vec3>& c, double eps, double* m) {
         emin = std::min(emin, e);
 
     // Scaled Jacobian: sqrt(2) * min corner det of unit outgoing edges.
-    const double j0 = quality_det_unit3(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
+    const double j0 = detail::det_unit3(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
                                         detail::vec3_sub(p3, p0), eps);
-    const double j1 = quality_det_unit3(detail::vec3_sub(p2, p1), detail::vec3_sub(p0, p1),
+    const double j1 = detail::det_unit3(detail::vec3_sub(p2, p1), detail::vec3_sub(p0, p1),
                                         detail::vec3_sub(p3, p1), eps);
-    const double j2 = quality_det_unit3(detail::vec3_sub(p0, p2), detail::vec3_sub(p1, p2),
+    const double j2 = detail::det_unit3(detail::vec3_sub(p0, p2), detail::vec3_sub(p1, p2),
                                         detail::vec3_sub(p3, p2), eps);
-    const double j3 = quality_det_unit3(detail::vec3_sub(p0, p3), detail::vec3_sub(p2, p3),
+    const double j3 = detail::det_unit3(detail::vec3_sub(p0, p3), detail::vec3_sub(p2, p3),
                                         detail::vec3_sub(p1, p3), eps);
     double sj = QUALITY_NAN;
     if (std::isfinite(j0) && std::isfinite(j1) && std::isfinite(j2) && std::isfinite(j3))
@@ -405,14 +395,13 @@ void quality_hex(const std::vector<Vec3>& c, const std::vector<detail::CellFaceD
         emin = std::min(emin, quality_edge_len(c[e[0]], c[e[1]]));
 
     // Scaled Jacobian: min corner det of unit outgoing element edges.
-    const int tj[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {0, 2, 7},
-                          {7, 5, 0}, {4, 6, 1}, {5, 7, 2}, {6, 4, 3}};
     double sj = std::numeric_limits<double>::max();
     bool sj_ok = true;
     for (int n = 0; n < 8; ++n) {
-        const double d = quality_det_unit3(detail::vec3_sub(c[tj[n][0]], c[n]),
-                                           detail::vec3_sub(c[tj[n][1]], c[n]),
-                                           detail::vec3_sub(c[tj[n][2]], c[n]), eps);
+        const double d =
+            detail::det_unit3(detail::vec3_sub(c[detail::kHexCornerEdges[n][0]], c[n]),
+                              detail::vec3_sub(c[detail::kHexCornerEdges[n][1]], c[n]),
+                              detail::vec3_sub(c[detail::kHexCornerEdges[n][2]], c[n]), eps);
         if (!std::isfinite(d)) {
             sj_ok = false;
             break;
@@ -458,13 +447,13 @@ void quality_wedge(const std::vector<Vec3>& c, const std::vector<detail::CellFac
         emin = std::min(emin, quality_edge_len(c[e[0]], c[e[1]]));
 
     // Scaled Jacobian at the 6 corners; (2/sqrt3) factor => 1 for a right prism.
-    const int tj[6][3] = {{1, 2, 3}, {2, 0, 4}, {0, 1, 5}, {5, 4, 0}, {3, 5, 1}, {4, 3, 2}};
     double sj = std::numeric_limits<double>::max();
     bool sj_ok = true;
     for (int n = 0; n < 6; ++n) {
-        const double d = quality_det_unit3(detail::vec3_sub(c[tj[n][0]], c[n]),
-                                           detail::vec3_sub(c[tj[n][1]], c[n]),
-                                           detail::vec3_sub(c[tj[n][2]], c[n]), eps);
+        const double d =
+            detail::det_unit3(detail::vec3_sub(c[detail::kWedgeCornerEdges[n][0]], c[n]),
+                              detail::vec3_sub(c[detail::kWedgeCornerEdges[n][1]], c[n]),
+                              detail::vec3_sub(c[detail::kWedgeCornerEdges[n][2]], c[n]), eps);
         if (!std::isfinite(d)) {
             sj_ok = false;
             break;
@@ -499,7 +488,7 @@ void quality_pyramid(const std::vector<Vec3>& c, const std::vector<detail::CellF
         const int nxt = (i + 1) % 4;
         const int prv = (i + 3) % 4;
         const double d =
-            quality_det_unit3(detail::vec3_sub(c[nxt], c[i]), detail::vec3_sub(c[prv], c[i]),
+            detail::det_unit3(detail::vec3_sub(c[nxt], c[i]), detail::vec3_sub(c[prv], c[i]),
                               detail::vec3_sub(c[4], c[i]), eps);
         if (!std::isfinite(d)) {
             sj_ok = false;
@@ -545,48 +534,6 @@ void quality_eval_cell(QualityFamily family, CellType ct, const std::vector<Vec3
 }
 
 using CellMetrics = std::array<double, NUM_METRICS>;
-
-// A deep copy of an NDArray that always owns its buffer (safe even if the
-// source is a view over foreign memory).
-NDArray quality_owned_copy(const NDArray& rArr) {
-    NDArray c = rArr;
-    c.MakeOwned();
-    return c;
-}
-
-// Backend-agnostic mesh clone through the uniform API (the KRATOS backend's
-// Mesh is not copy-constructible, so we cannot rely on `Mesh out = in;`).
-Mesh quality_clone_mesh(const Mesh& rMesh) {
-    Mesh out;
-    out.AssignPoints(quality_owned_copy(rMesh.Points()));
-    for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsRagged()) {
-            detail::append_ragged_copy(cb, out);
-        } else {
-            out.AddCellBlock(std::string(cb.Type()), quality_owned_copy(cb.Conn()));
-        }
-    }
-    for (const std::string& name : rMesh.PointDataNames())
-        out.AddPointData(name, quality_owned_copy(rMesh.PointData(name)));
-    for (const std::string& name : rMesh.CellDataNames()) {
-        std::vector<NDArray> blocks;
-        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
-            blocks.push_back(quality_owned_copy(rMesh.CellData(name, b)));
-        out.AddCellData(name, std::move(blocks));
-    }
-    for (const std::string& name : rMesh.FieldDataNames())
-        out.AddFieldData(name, quality_owned_copy(rMesh.FieldData(name)));
-    // Named regions pass through verbatim: attaching quality metrics adds
-    // cell_data and renumbers nothing.
-    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i)
-        out.AddRegion(rMesh.Region(i));
-    // Property sets ride along too: these operations preserve the mesh's shape,
-    // so dropping a deck's material data here would be new lossiness. They are
-    // keyed by id, not by entity index, so there is nothing to remap.
-    for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
-        out.AddPropertySet(rMesh.GetPropertySet(i));
-    return out;
-}
 
 }  // namespace
 
@@ -771,7 +718,7 @@ QualityReport compute_quality(const Mesh& rMesh) {
 
 Mesh attach_quality(const Mesh& rMesh) {
     QualityReport rep = compute_quality(rMesh);
-    Mesh out = quality_clone_mesh(rMesh);
+    Mesh out = detail::clone_mesh(rMesh);
     if (rMesh.NumCellBlocks() == 0)
         return out;
     for (std::pair<std::string, std::vector<NDArray>>& metric : rep.mCellArrays)

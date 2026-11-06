@@ -40,6 +40,7 @@
 #include "meshioplusplus/operations/boundary_layer.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 
@@ -59,21 +60,8 @@ constexpr double kBlMinJacobian = 1e-6;
     throw std::invalid_argument(std::string(kBoundaryLayerPrefix) + rWhy);
 }
 
-BlV3 bl_sub(const BlV3& rA, const BlV3& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-double bl_dot(const BlV3& rA, const BlV3& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-BlV3 bl_cross(const BlV3& rA, const BlV3& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-double bl_norm(const BlV3& rA) {
-    return std::sqrt(bl_dot(rA, rA));
-}
 BlV3 bl_unit(const BlV3& rA) {
-    const double l = bl_norm(rA);
+    const double l = detail::vec3_norm(rA);
     return l > 0.0 ? BlV3{rA[0] / l, rA[1] / l, rA[2] / l} : BlV3{0.0, 0.0, 0.0};
 }
 
@@ -362,9 +350,9 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
             const std::int64_t p = faces[f][static_cast<std::size_t>(i)];
             const std::int64_t q = faces[f][static_cast<std::size_t>((i + 1) % k)];
             const std::int64_t r = faces[f][static_cast<std::size_t>((i + k - 1) % k)];
-            const BlV3 u = bl_unit(bl_sub(point(q), point(p)));
-            const BlV3 v = bl_unit(bl_sub(point(r), point(p)));
-            const double angle = std::acos(std::clamp(bl_dot(u, v), -1.0, 1.0));
+            const BlV3 u = bl_unit(detail::vec3_sub(point(q), point(p)));
+            const BlV3 v = bl_unit(detail::vec3_sub(point(r), point(p)));
+            const double angle = std::acos(std::clamp(detail::vec3_dot(u, v), -1.0, 1.0));
             around[static_cast<std::size_t>(p)].push_back({f, angle});
             nbrs[static_cast<std::size_t>(p)].push_back(q);
             nbrs[static_cast<std::size_t>(p)].push_back(r);
@@ -394,7 +382,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
                 double lo = std::numeric_limits<double>::infinity();
                 for (const auto& [f, w] : r_a) {
                     (void)w;
-                    const double d = bl_dot(rN, fn[f]);
+                    const double d = detail::vec3_dot(rN, fn[f]);
                     if (d < lo) {
                         lo = d;
                         rWho = f;
@@ -433,7 +421,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
         double lo = std::numeric_limits<double>::infinity();
         for (const auto& [f, w] : around[P]) {
             (void)w;
-            lo = std::min(lo, bl_dot(rN, fn[f]));
+            lo = std::min(lo, detail::vec3_dot(rN, fn[f]));
         }
         return lo;
     };
@@ -500,8 +488,8 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
                 return;
             double shortest = std::numeric_limits<double>::infinity();
             for (const std::int64_t q : nbrs[P])
-                shortest = std::min(shortest,
-                                    bl_norm(bl_sub(point(q), point(static_cast<std::int64_t>(P)))));
+                shortest = std::min(shortest, detail::vec3_norm(detail::vec3_sub(
+                                                  point(q), point(static_cast<std::int64_t>(P)))));
             const double want = total * stretch[P];
             const detail::TriRayHit hit =
                 detail::tri_bvh_ray(tree, point(static_cast<std::int64_t>(P)), dir[P],

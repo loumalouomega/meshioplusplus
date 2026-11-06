@@ -2,6 +2,7 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._series_writer import CoreSeriesWriter
 from ._marc import read as _py_read
 from ._marc import read_t19 as _py_read_t19
 from ._marc import time_values as _py_time_values
@@ -114,7 +115,7 @@ def write_t19(filename, mesh):
     return _py_write_t19(filename, mesh)
 
 
-class SeriesWriter:
+class SeriesWriter(CoreSeriesWriter):
     """Write a time series into one post file, an increment per mesh;
     ``write_sequence(path, steps, file_format="marc_t19")`` uses it. Every mesh
     must have the first one's points, cells and arrays.
@@ -134,28 +135,6 @@ class SeriesWriter:
                     raise
         if self._core is None:
             self._py = _PySeriesWriter(filename)
-
-    def write(self, time, mesh):
-        if self._core is not None:
-            self._core.write(float(time), mesh)
-        else:
-            self._py.write(time, mesh)
-
-    def close(self):
-        if self._core is not None:
-            if self._core.num_steps():
-                self._core.finalize()
-            self._core = None
-        if self._py is not None:
-            self._py.close()
-            self._py = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-        return False
 
 
 register_format("marc", [".dat"], read, {"marc": write})

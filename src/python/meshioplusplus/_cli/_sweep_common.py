@@ -2,29 +2,6 @@
 
 import json
 
-from .._helpers import _reader_names, _writer_names
-
-
-def add_io_args(parser, out_help):
-    parser.add_argument("infile", type=str, help="mesh file to be read from")
-    parser.add_argument("outfile", type=str, help=out_help)
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
-    parser.add_argument(
-        "--output-format",
-        "-o",
-        type=str,
-        choices=_writer_names(),
-        help="output file format",
-        default=None,
-    )
-
 
 def add_report_args(parser):
     parser.add_argument("--json", action="store_true", help="print the report as JSON")

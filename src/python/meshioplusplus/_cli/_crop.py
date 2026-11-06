@@ -1,26 +1,10 @@
 from .._crop import crop
-from .._helpers import _reader_names, _writer_names, read, write
+from .._helpers import read, write
+from ._common import add_io_args
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="mesh file to be read from")
-    parser.add_argument("outfile", type=str, help="cropped mesh to be written to")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
-    parser.add_argument(
-        "--output-format",
-        "-o",
-        type=str,
-        choices=_writer_names(),
-        help="output file format",
-        default=None,
-    )
+    add_io_args(parser, "cropped mesh to be written to")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
         "--bbox", type=str, help="bounding box 'xmin,ymin,zmin,xmax,ymax,zmax'"

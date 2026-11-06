@@ -1,17 +1,19 @@
-from functools import reduce
+import functools
 
 import numpy as np
 
 from .. import _provenance
 from .._common import info, join_strings, replace_space, warn
-from .._exceptions import ReadError, WriteError
+from .._exceptions import ReadError
 from .._files import open_file
-from .._mesh import Mesh
-from .._vtk_common import (
-    Info,
-    meshio_to_vtk_order,
-    meshio_to_vtk_type,
-    vtk_cells_from_data,
+from .._vtk_common import meshio_to_vtk_order, meshio_to_vtk_type, vtk_cells_from_data
+from . import _legacy_common as _legacy
+from ._legacy_common import (
+    _generate_cells,
+    _generate_points,
+    _read_cell_types,
+    _skip_meta,
+    vtk_dataset_types,
 )
 
 # VTK 5.1 data types
@@ -35,45 +37,11 @@ vtk_to_numpy_dtype_name = {
     "vtktypeuint32": "uint32",
     "vtktypeuint64": "uint64",
 }
+
+_read_points = functools.partial(
+    _legacy._read_points, dtype_names=vtk_to_numpy_dtype_name
+)
 numpy_to_vtk_dtype = {v: k for k, v in vtk_to_numpy_dtype_name.items()}
-
-# supported vtk dataset types
-vtk_dataset_types = [
-    "UNSTRUCTURED_GRID",
-    "STRUCTURED_POINTS",
-    "STRUCTURED_GRID",
-    "RECTILINEAR_GRID",
-]
-# additional infos per dataset type
-vtk_dataset_infos = {
-    "UNSTRUCTURED_GRID": [],
-    "STRUCTURED_POINTS": [
-        "DIMENSIONS",
-        "ORIGIN",
-        "SPACING",
-        "ASPECT_RATIO",  # alternative for SPACING in version 1.0 and 2.0
-    ],
-    "STRUCTURED_GRID": ["DIMENSIONS"],
-    "RECTILINEAR_GRID": [
-        "DIMENSIONS",
-        "X_COORDINATES",
-        "Y_COORDINATES",
-        "Z_COORDINATES",
-    ],
-}
-
-# all main sections in vtk
-vtk_sections = [
-    "METADATA",
-    "DATASET",
-    "POINTS",
-    "CELLS",
-    "CELL_TYPES",
-    "POINT_DATA",
-    "CELL_DATA",
-    "LOOKUP_TABLE",
-    "COLOR_SCALARS",
-]
 
 
 def read(filename):
@@ -83,47 +51,14 @@ def read(filename):
 
 
 def read_buffer(f):
-    # initialize output data
-    info = Info()
-
-    # skip title comment
-    f.readline()
-
-    data_type = f.readline().decode().strip().upper()
-    if data_type not in ["ASCII", "BINARY"]:
-        raise ReadError(f"Unknown VTK data type '{data_type}'.")
-    info.is_ascii = data_type == "ASCII"
-
-    while True:
-        line = f.readline().decode()
-        if not line:
-            # EOF
-            break
-
-        line = line.strip()
-        if len(line) == 0:
-            continue
-
-        info.split = line.split()
-        info.section = info.split[0].upper()
-
-        if info.section in vtk_sections:
-            _read_section(f, info)
-        else:
-            _read_subsection(f, info)
-
-    _check_mesh(info)
-
-    cells, cell_data = vtk_cells_from_data(
-        info.connectivity, info.offsets, info.types, info.cell_data_raw
+    return _legacy.read_buffer(
+        f, _read_section, _check_mesh, _cells_from_info, vtk_to_numpy_dtype_name
     )
 
-    return Mesh(
-        info.points,
-        cells,
-        point_data=info.point_data,
-        cell_data=cell_data,
-        field_data=info.field_data,
+
+def _cells_from_info(info):
+    return vtk_cells_from_data(
+        info.connectivity, info.offsets, info.types, info.cell_data_raw
     )
 
 
@@ -200,43 +135,6 @@ def _read_section(f, info):
         np.fromfile(f, count=num_items * nValues, dtype=dtype)
 
 
-def _read_subsection(f, info):
-    if info.active == "POINT_DATA":
-        d = info.point_data
-    elif info.active == "CELL_DATA":
-        d = info.cell_data_raw
-    elif info.active == "DATASET":
-        d = info.dataset
-    else:
-        d = info.field_data
-
-    if info.section in vtk_dataset_infos[info.dataset["type"]]:
-        if info.section[1:] == "_COORDINATES":
-            info.num_points = int(info.split[1])
-            data_type = info.split[2].lower()
-            d[info.section] = _read_coords(f, data_type, info.is_ascii, info.num_points)
-        else:
-            if info.section == "DIMENSIONS":
-                d[info.section] = list(map(int, info.split[1:]))
-            else:
-                d[info.section] = list(map(float, info.split[1:]))
-            if len(d[info.section]) != 3:
-                raise ReadError(
-                    f"Wrong number of info in section '{info.section}'. "
-                    f"Need 3, got {len(d[info.section])}."
-                )
-    elif info.section == "SCALARS":
-        d.update(_read_scalar_field(f, info.num_items, info.split, info.is_ascii))
-    elif info.section == "VECTORS":
-        d.update(_read_field(f, info.num_items, info.split, [3], info.is_ascii))
-    elif info.section == "TENSORS":
-        d.update(_read_field(f, info.num_items, info.split, [3, 3], info.is_ascii))
-    elif info.section == "FIELD":
-        d.update(_read_fields(f, int(info.split[2]), info.is_ascii))
-    else:
-        raise ReadError(f"Unknown section '{info.section}'.")
-
-
 def _check_mesh(info):
     if info.dataset["type"] == "UNSTRUCTURED_GRID":
         if info.connectivity is None:
@@ -275,97 +173,6 @@ def _check_mesh(info):
         info.offsets = np.arange(1, len(info.types) + 1, dtype=np.int64) * width
 
 
-def _generate_cells(dim):
-    ele_dim = [d - 1 for d in dim if d > 1]
-    # TODO use math.prod when requiring Python 3.8+? this would save the int conversion
-    # <https://github.com/microsoft/pyright/issues/1226>
-    ele_no = int(np.prod(ele_dim))
-    spatial_dim = len(ele_dim)
-
-    if spatial_dim == 0:
-        return np.array([1, 0], dtype=np.int64), np.array([1], dtype=np.int64)
-    if spatial_dim == 1:
-        # cells are lines in 1D
-        cells = np.empty((ele_no, 3), dtype=int)
-        cells[:, 0] = 2
-        cells[:, 1] = np.arange(ele_no, dtype=int)
-        cells[:, 2] = cells[:, 1] + 1
-        cell_types = np.full(ele_no, 3, dtype=int)
-    elif spatial_dim == 2:
-        # cells are quad in 2D
-        cells = np.empty((ele_no, 5), dtype=int)
-        cells[:, 0] = 4
-        cells[:, 1] = np.arange(0, ele_no, dtype=int)
-        cells[:, 1] += np.arange(0, ele_no, dtype=int) // ele_dim[0]
-        cells[:, 2] = cells[:, 1] + 1
-        cells[:, 3] = cells[:, 1] + 2 + ele_dim[0]
-        cells[:, 4] = cells[:, 3] - 1
-        cell_types = np.full(ele_no, 9, dtype=int)
-    else:
-        # cells are hex in 3D
-        cells = np.empty((ele_no, 9), dtype=int)
-        cells[:, 0] = 8
-        cells[:, 1] = np.arange(ele_no)
-        cells[:, 1] += (ele_dim[0] + ele_dim[1] + 1) * (
-            np.arange(ele_no) // (ele_dim[0] * ele_dim[1])
-        )
-        cells[:, 1] += (np.arange(ele_no) % (ele_dim[0] * ele_dim[1])) // ele_dim[0]
-        cells[:, 2] = cells[:, 1] + 1
-        cells[:, 3] = cells[:, 1] + 2 + ele_dim[0]
-        cells[:, 4] = cells[:, 3] - 1
-        cells[:, 5] = cells[:, 1] + (1 + ele_dim[0]) * (1 + ele_dim[1])
-        cells[:, 6] = cells[:, 5] + 1
-        cells[:, 7] = cells[:, 5] + 2 + ele_dim[0]
-        cells[:, 8] = cells[:, 7] - 1
-        cell_types = np.full(ele_no, 12, dtype=int)
-
-    return cells.reshape(-1), cell_types
-
-
-def _generate_points(axis):
-    x_dim = len(axis[0])
-    y_dim = len(axis[1])
-    z_dim = len(axis[2])
-    pnt_no = x_dim * y_dim * z_dim
-    x_id, y_id, z_id = np.mgrid[0:x_dim, 0:y_dim, 0:z_dim]
-    points = np.empty((pnt_no, 3), dtype=axis[0].dtype)
-    # VTK sorts points and cells in Fortran order
-    points[:, 0] = axis[0][x_id.reshape(-1, order="F")]
-    points[:, 1] = axis[1][y_id.reshape(-1, order="F")]
-    points[:, 2] = axis[2][z_id.reshape(-1, order="F")]
-    return points
-
-
-def _read_coords(f, data_type, is_ascii, num_points):
-    dtype = np.dtype(vtk_to_numpy_dtype_name[data_type])
-    if is_ascii:
-        coords = np.fromfile(f, count=num_points, sep=" ", dtype=dtype)
-    else:
-        # Binary data is big endian, see
-        # <https://vtk.org/Wiki/VTK/Writing_VTK_files_using_python#.22legacy.22>.
-        dtype = dtype.newbyteorder(">")
-        coords = np.fromfile(f, count=num_points, dtype=dtype)
-        line = f.readline().decode()
-        if line != "\n":
-            raise ReadError()
-    return coords
-
-
-def _read_points(f, data_type, is_ascii, num_points):
-    dtype = np.dtype(vtk_to_numpy_dtype_name[data_type])
-    if is_ascii:
-        points = np.fromfile(f, count=num_points * 3, sep=" ", dtype=dtype)
-    else:
-        # Binary data is big endian, see
-        # <https://vtk.org/Wiki/VTK/Writing_VTK_files_using_python#.22legacy.22>.
-        dtype = dtype.newbyteorder(">")
-        points = np.fromfile(f, count=num_points * 3, dtype=dtype)
-        line = f.readline().decode()
-        if line != "\n":
-            raise ReadError()
-    return points.reshape((num_points, 3))
-
-
 def _read_int_data(f, is_ascii, num_items, dtype):
     if is_ascii:
         c = np.fromfile(f, count=num_items, sep=" ", dtype=dtype)
@@ -376,119 +183,6 @@ def _read_int_data(f, is_ascii, num_items, dtype):
         if line != "\n":
             raise ReadError("Expected newline")
     return c
-
-
-def _read_cell_types(f, is_ascii, num_items):
-    if is_ascii:
-        ct = np.fromfile(f, count=int(num_items), sep=" ", dtype=int)
-    else:
-        # binary
-        ct = np.fromfile(f, count=int(num_items), dtype=">i4")
-        line = f.readline().decode()
-        # Sometimes, there's no newline at the end
-        if line.strip() != "":
-            raise ReadError()
-    return ct
-
-
-def _read_scalar_field(f, num_data, split, is_ascii):
-    data_name = split[1]
-    data_type = split[2].lower()
-    try:
-        num_comp = int(split[3])
-    except IndexError:
-        num_comp = 1
-
-    # The standard says:
-    # > The parameter numComp must range between (1,4) inclusive; [...]
-    if not (0 < num_comp < 5):
-        raise ReadError("The parameter numComp must range between (1,4) inclusive")
-
-    dtype = np.dtype(vtk_to_numpy_dtype_name[data_type])
-    lt, _ = f.readline().decode().split()
-    if lt.upper() != "LOOKUP_TABLE":
-        raise ReadError()
-
-    if is_ascii:
-        data = np.fromfile(f, count=num_data * num_comp, sep=" ", dtype=dtype)
-    else:
-        # Binary data is big endian, see
-        # <https://vtk.org/Wiki/VTK/Writing_VTK_files_using_python#.22legacy.22>.
-        dtype = dtype.newbyteorder(">")
-        data = np.fromfile(f, count=num_data * num_comp, dtype=dtype)
-        line = f.readline().decode()
-        if line != "\n":
-            raise ReadError()
-
-    data = data.reshape(-1, num_comp)
-    return {data_name: data}
-
-
-def _read_field(f, num_data, split, shape, is_ascii):
-    data_name = split[1]
-    data_type = split[2].lower()
-
-    dtype = np.dtype(vtk_to_numpy_dtype_name[data_type])
-    # prod()
-    # <https://stackoverflow.com/q/2104782/353337>
-    k = reduce((lambda x, y: x * y), shape)
-
-    if is_ascii:
-        data = np.fromfile(f, count=k * num_data, sep=" ", dtype=dtype)
-    else:
-        # Binary data is big endian, see
-        # <https://vtk.org/Wiki/VTK/Writing_VTK_files_using_python#.22legacy.22>.
-        dtype = dtype.newbyteorder(">")
-        data = np.fromfile(f, count=k * num_data, dtype=dtype)
-        line = f.readline().decode()
-        if line != "\n":
-            raise ReadError()
-
-    data = data.reshape(-1, *shape)
-    return {data_name: data}
-
-
-def _read_fields(f, num_fields, is_ascii):
-    data = {}
-    for _ in range(num_fields):
-        line = f.readline().decode().split()
-        if line[0] == "METADATA":
-            _skip_meta(f)
-            name, shape0, shape1, data_type = f.readline().decode().split()
-        else:
-            name, shape0, shape1, data_type = line
-
-        shape0 = int(shape0)
-        shape1 = int(shape1)
-        dtype = np.dtype(vtk_to_numpy_dtype_name[data_type.lower()])
-
-        if is_ascii:
-            dat = np.fromfile(f, count=shape0 * shape1, sep=" ", dtype=dtype)
-        else:
-            # Binary data is big endian, see
-            # <https://vtk.org/Wiki/VTK/Writing_VTK_files_using_python#.22legacy.22>.
-            dtype = dtype.newbyteorder(">")
-            dat = np.fromfile(f, count=shape0 * shape1, dtype=dtype)
-            line = f.readline().decode()
-            if line != "\n":
-                raise ReadError()
-
-        if shape0 != 1:
-            dat = dat.reshape((shape1, shape0))
-
-        data[name] = dat
-
-    return data
-
-
-def _skip_meta(f):
-    # skip possible metadata
-    # https://vtk.org/doc/nightly/html/IOLegacyInformationFormat.html
-    while True:
-        line = f.readline().decode().strip()
-        if not line:
-            # end of metadata is a blank line
-            break
 
 
 def _pad(array):
@@ -645,26 +339,4 @@ def _write_cells(f, cells, binary):
 
 
 def _write_field_data(f, data, binary):
-    f.write((f"FIELD FieldData {len(data)}\n").encode())
-    for name, values in data.items():
-        if isinstance(values, list):
-            values = np.concatenate(values)
-        if len(values.shape) == 1:
-            num_tuples = values.shape[0]
-            num_components = 1
-        else:
-            num_tuples = values.shape[0]
-            num_components = values.shape[1]
-
-        if " " in name:
-            raise WriteError(f"VTK doesn't support spaces in field names ('{name}').")
-
-        vtk_dtype = numpy_to_vtk_dtype[values.dtype.name]
-        f.write(f"{name} {num_components} {num_tuples} {vtk_dtype}\n".encode())
-        if binary:
-            values.astype(values.dtype.newbyteorder(">")).tofile(f, sep="")
-        else:
-            # ascii
-            values.tofile(f, sep=" ")
-            # np.savetxt(f, points)
-        f.write(b"\n")
+    _legacy.write_field_data(f, data, binary, numpy_to_vtk_dtype)

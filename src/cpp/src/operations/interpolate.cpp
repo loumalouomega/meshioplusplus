@@ -46,48 +46,13 @@
 
 // Project includes (private, not installed)
 #include "../detail/bucket_build.hpp"
+#include "../detail/cell_centroids.hpp"
+#include "../detail/transfer_names.hpp"
 #include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
 namespace {
-
-// Store `v` at flat element index `flat` of `rOut`, casting to `rOut`'s dtype
-// (merge_store_double's twin; anon-namespace helpers cannot be shared).
-void interp_store_double(NDArray& rOut, std::size_t flat, double v) {
-    switch (rOut.Dtype()) {
-        case DType::Float32:
-            rOut.As<float>()[flat] = static_cast<float>(v);
-            return;
-        case DType::Float64:
-            rOut.As<double>()[flat] = v;
-            return;
-        case DType::Int8:
-            rOut.As<std::int8_t>()[flat] = static_cast<std::int8_t>(v);
-            return;
-        case DType::Int16:
-            rOut.As<std::int16_t>()[flat] = static_cast<std::int16_t>(v);
-            return;
-        case DType::Int32:
-            rOut.As<std::int32_t>()[flat] = static_cast<std::int32_t>(v);
-            return;
-        case DType::Int64:
-            rOut.As<std::int64_t>()[flat] = static_cast<std::int64_t>(v);
-            return;
-        case DType::UInt8:
-            rOut.As<std::uint8_t>()[flat] = static_cast<std::uint8_t>(v);
-            return;
-        case DType::UInt16:
-            rOut.As<std::uint16_t>()[flat] = static_cast<std::uint16_t>(v);
-            return;
-        case DType::UInt32:
-            rOut.As<std::uint32_t>()[flat] = static_cast<std::uint32_t>(v);
-            return;
-        case DType::UInt64:
-            rOut.As<std::uint64_t>()[flat] = static_cast<std::uint64_t>(v);
-            return;
-    }
-}
 
 // Total cell count across all blocks (the global cell numbering size).
 std::size_t interp_total_cells(const Mesh& rMesh) {
@@ -95,71 +60,6 @@ std::size_t interp_total_cells(const Mesh& rMesh) {
     for (const auto cb : rMesh.CellRange())
         total += cb.NumCells();
     return total;
-}
-
-// Per-cell centroids in global cell order, always 3 doubles per cell (unused
-// axes zero) — the exact accumulation order of partition.cpp's
-// partition_centroids (anon-namespace, so duplicated here; keep the two and
-// _partition.py's _centroids in step, the numpy parity test pins this).
-std::vector<double> interp_centroids(const Mesh& rMesh, std::size_t total) {
-    const NDArray& points = rMesh.Points();
-    const detail::DoubleView points_v(points);
-    const std::size_t pdim = rMesh.PointDim();
-    const std::size_t dim = std::min<std::size_t>(pdim, 3);
-
-    std::vector<double> cent(3 * total, 0.0);
-    std::size_t base = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t ncells = cb.NumCells();
-        if (cb.IsPolyhedron()) {
-            parallel_for(ncells, [&, base](std::size_t c) {
-                static thread_local std::vector<std::int64_t> nodes;
-                nodes.clear();
-                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
-                    const auto face = cb.Face(c, f);
-                    nodes.insert(nodes.end(), face.first, face.first + face.second);
-                }
-                std::sort(nodes.begin(), nodes.end());
-                nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
-                double* out = cent.data() + 3 * (base + c);
-                for (std::int64_t node : nodes)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += points_v[static_cast<std::size_t>(node) * pdim + d];
-                if (!nodes.empty())
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] /= static_cast<double>(nodes.size());
-            });
-        } else if (cb.IsRagged()) {
-            parallel_for(ncells, [&, base](std::size_t c) {
-                const std::int64_t* row = cb.Row(c);
-                const std::size_t nn = cb.RowSize(c);
-                double* out = cent.data() + 3 * (base + c);
-                for (std::size_t k = 0; k < nn; ++k)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += points_v[static_cast<std::size_t>(row[k]) * pdim + d];
-                if (nn > 0)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] /= static_cast<double>(nn);
-            });
-        } else {
-            const NDArray& conn = cb.Conn();
-            const detail::Int64View conn_v(conn);
-            const std::size_t npc = cb.NodesPerCell();
-            parallel_for(ncells, [&, base](std::size_t c) {
-                double* out = cent.data() + 3 * (base + c);
-                for (std::size_t k = 0; k < npc; ++k) {
-                    const std::size_t node = static_cast<std::size_t>(conn_v[c * npc + k]);
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += points_v[node * pdim + d];
-                }
-                if (npc > 0)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] /= static_cast<double>(npc);
-            });
-        }
-        base += ncells;
-    }
-    return cent;
 }
 
 // The grid cell size for `n` items spread over the bbox `[pLo, pHi]`: the
@@ -369,52 +269,6 @@ NDArray interp_gather_rows(const NDArray& rSrc, const std::vector<std::int64_t>&
     return dst;
 }
 
-// The standard unknown-key diagnostic, covering both source locations.
-std::string interp_unknown_array_message(const Mesh& rSource, const std::string& rName) {
-    auto join = [](const std::vector<std::string>& rNames) -> std::string {
-        if (rNames.empty())
-            return "none";
-        std::string s;
-        for (std::size_t i = 0; i < rNames.size(); ++i) {
-            if (i > 0)
-                s += ", ";
-            s += rNames[i];
-        }
-        return s;
-    };
-    return "meshio++: interpolate: no source point_data or cell_data array named '" + rName +
-           "' (available point_data: " + join(data_names(rSource, DataLocation::Point)) +
-           "; cell_data: " + join(data_names(rSource, DataLocation::Cell)) + ")";
-}
-
-// The output name for a transferred array under the conflict policy, resolved
-// against the *original* target before any sampling happens.
-std::string interp_resolve_name(const Mesh& rTarget, bool isPointData, const std::string& rName,
-                                InterpolateConflict Conflict) {
-    const bool exists = isPointData ? rTarget.HasPointData(rName) : rTarget.HasCellData(rName);
-    if (!exists)
-        return rName;
-    switch (Conflict) {
-        case InterpolateConflict::Overwrite:
-            return rName;
-        case InterpolateConflict::Suffix: {
-            const std::string suffixed = rName + "_interp";
-            const bool taken =
-                isPointData ? rTarget.HasPointData(suffixed) : rTarget.HasCellData(suffixed);
-            if (taken)
-                throw std::invalid_argument("meshio++: interpolate: array '" + rName +
-                                            "' already exists on the target and so does '" +
-                                            suffixed + "' (on_conflict='suffix')");
-            return suffixed;
-        }
-        case InterpolateConflict::Error:
-        default:
-            throw std::invalid_argument("meshio++: interpolate: array '" + rName +
-                                        "' already exists on the target (on_conflict='error'; "
-                                        "pass 'overwrite' or 'suffix')");
-    }
-}
-
 }  // namespace
 
 InterpolateMethod interpolate_method_from_name(const std::string& rName) {
@@ -427,14 +281,7 @@ InterpolateMethod interpolate_method_from_name(const std::string& rName) {
 }
 
 InterpolateConflict interpolate_conflict_from_name(const std::string& rName) {
-    if (rName == "error")
-        return InterpolateConflict::Error;
-    if (rName == "overwrite")
-        return InterpolateConflict::Overwrite;
-    if (rName == "suffix")
-        return InterpolateConflict::Suffix;
-    throw std::invalid_argument("meshio++: interpolate: unknown on_conflict '" + rName +
-                                "' (expected 'error', 'overwrite' or 'suffix')");
+    return detail::transfer_conflict_from_name<InterpolateConflict>("interpolate", rName);
 }
 
 Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOptions& rOptions) {
@@ -458,7 +305,8 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
                 any = true;
             }
             if (!any)
-                throw std::invalid_argument(interp_unknown_array_message(rSource, name));
+                throw std::invalid_argument(
+                    detail::transfer_unknown_array_message("interpolate", rSource, name));
         }
     }
 
@@ -476,10 +324,12 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
 
     std::vector<std::string> point_out(point_names.size());
     for (std::size_t i = 0; i < point_names.size(); ++i)
-        point_out[i] = interp_resolve_name(rTarget, true, point_names[i], rOptions.mOnConflict);
+        point_out[i] = detail::transfer_resolve_name("interpolate", rTarget, true, point_names[i],
+                                                     rOptions.mOnConflict);
     std::vector<std::string> cell_out(cell_names.size());
     for (std::size_t i = 0; i < cell_names.size(); ++i)
-        cell_out[i] = interp_resolve_name(rTarget, false, cell_names[i], rOptions.mOnConflict);
+        cell_out[i] = detail::transfer_resolve_name("interpolate", rTarget, false, cell_names[i],
+                                                    rOptions.mOnConflict);
 
     // KRATOS's Mesh is not copy-constructible — clone through the uniform API.
     Mesh out = detail::clone_mesh(rTarget);
@@ -677,8 +527,8 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
                 cell_names.size());
         } else {
             const std::size_t tgt_total = interp_total_cells(rTarget);
-            const std::vector<double> scent = interp_centroids(rSource, src_total);
-            const std::vector<double> tcent = interp_centroids(rTarget, tgt_total);
+            const std::vector<double> scent = detail::cell_centroids(rSource, src_total);
+            const std::vector<double> tcent = detail::cell_centroids(rTarget, tgt_total);
             auto ccoord = [&](std::int64_t i) {
                 const std::size_t j = static_cast<std::size_t>(i);
                 return detail::Vec3{scent[3 * j], scent[3 * j + 1], scent[3 * j + 2]};
@@ -732,8 +582,8 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
                             std::memcpy(arr.Data() + c * rb, src.Data() + sl * rb, rb);
                         } else {
                             for (std::size_t k = 0; k < comps; ++k)
-                                interp_store_double(arr, c * comps + k,
-                                                    detail::read_double(src, sl * comps + k));
+                                detail::store_double_truncating(
+                                    arr, c * comps + k, detail::read_double(src, sl * comps + k));
                         }
                     });
                     blocks_out.push_back(std::move(arr));

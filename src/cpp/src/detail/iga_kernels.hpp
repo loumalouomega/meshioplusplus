@@ -46,6 +46,7 @@
 #include <vector>
 
 // Project includes (private, not installed)
+#include "bspline_ndu.hpp"
 #include "nurbs_eval.hpp"
 
 namespace meshioplusplus::detail {
@@ -408,19 +409,7 @@ inline void iga_basis_ders(std::size_t Span, double U, int P, int NDer,
     const auto p = static_cast<std::size_t>(P);
     IgaScratch<64> ndu((p + 1) * (p + 1)), left(p + 1), right(p + 1);
     const auto at = [p](std::size_t R, std::size_t Cc) { return R * (p + 1) + Cc; };
-    ndu[at(0, 0)] = 1.0;
-    for (std::size_t j = 1; j <= p; ++j) {
-        left[j] = U - rKnots[Span + 1 - j];
-        right[j] = rKnots[Span + j] - U;
-        double saved = 0.0;
-        for (std::size_t r = 0; r < j; ++r) {
-            ndu[at(j, r)] = right[r + 1] + left[j - r];
-            const double temp = ndu[at(r, j - 1)] / ndu[at(j, r)];
-            ndu[at(r, j)] = saved + right[r + 1] * temp;
-            saved = left[j - r] * temp;
-        }
-        ndu[at(j, j)] = saved;
-    }
+    bspline_ndu(Span, U, p, rKnots, ndu, left, right);
     for (std::size_t j = 0; j <= p; ++j)
         pDers[j] = ndu[at(j, p)];
     if (NDer < 1)
@@ -528,19 +517,7 @@ inline void iga_basis_ders2(std::size_t Span, double U, int P, const std::vector
     const std::size_t w = p + 1;
     IgaScratch<64> ndu(w * w), left(w), right(w), a(2 * w);
     const auto at = [w](std::size_t R, std::size_t Cc) { return R * w + Cc; };
-    ndu[at(0, 0)] = 1.0;
-    for (std::size_t j = 1; j <= p; ++j) {
-        left[j] = U - rKnots[Span + 1 - j];
-        right[j] = rKnots[Span + j] - U;
-        double saved = 0.0;
-        for (std::size_t r = 0; r < j; ++r) {
-            ndu[at(j, r)] = right[r + 1] + left[j - r];
-            const double temp = ndu[at(r, j - 1)] / ndu[at(j, r)];
-            ndu[at(r, j)] = saved + right[r + 1] * temp;
-            saved = left[j - r] * temp;
-        }
-        ndu[at(j, j)] = saved;
-    }
+    bspline_ndu(Span, U, p, rKnots, ndu, left, right);
     for (std::size_t j = 0; j <= p; ++j) {
         pDers[j] = ndu[at(j, p)];
         pDers[w + j] = 0.0;

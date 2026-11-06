@@ -48,6 +48,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -63,6 +64,12 @@ struct FeatureGraph {
     /// Chains of skin point ids, each from a corner to a corner.
     std::vector<std::vector<std::int64_t>> mChains;
 };
+
+/// The nearest point of a polyline (skin point ids `rChain` into `rSkin`)
+/// to `rP`, and its distance; the first of equally near segments wins.
+std::pair<Vec3, double> feature_snap_on_polyline(const std::vector<Vec3>& rSkin,
+                                                 const std::vector<std::int64_t>& rChain,
+                                                 const Vec3& rP);
 
 /// The feature graph of the edges @p rEdges (pairs of skin point ids) over
 /// the skin points @p rPoints.

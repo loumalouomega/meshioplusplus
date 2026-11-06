@@ -113,32 +113,88 @@ void cli_color_values(const cli_parsed& rP, std::optional<int>& rComponent,
         rVMax = meshioplusplus::detail::stod_c(opt_value(rP, "vmax"));
 }
 
+std::vector<cli_opt_spec> cli_specs(std::initializer_list<std::vector<cli_opt_spec>> Parts) {
+    std::size_t total = 0;
+    for (const auto& part : Parts)
+        total += part.size();
+    std::vector<cli_opt_spec> out;
+    out.reserve(total);
+    for (const auto& part : Parts)
+        out.insert(out.end(), part.begin(), part.end());
+    return out;
+}
+
+std::vector<cli_opt_spec> input_flag_specs() {
+    return {{"input-format", {"-i"}, true}};
+}
+
+std::vector<cli_opt_spec> io_flag_specs() {
+    return {{"input-format", {"-i"}, true}, {"output-format", {"-o"}, true}};
+}
+
+std::vector<cli_opt_spec> report_flag_specs() {
+    return {{"json", {}, false}, {"quiet", {"-q"}, false}};
+}
+
+std::vector<cli_opt_spec> color_flag_specs() {
+    return {
+        {"color-by", {}, true},  {"component", {}, true}, {"cmap", {}, true},
+        {"vmin", {}, true},      {"vmax", {}, true},      {"nan-color", {}, true},
+        {"colorbar", {}, false},
+    };
+}
+
 /// The flags every software-rendering verb shares (snapshot now, the TUI's
 /// `:` commands later): one vocabulary, parsed by one function.
 std::vector<cli_opt_spec> render_flag_specs() {
-    return {
-        {"view", {}, true},           {"azimuth", {}, true},        {"elevation", {}, true},
-        {"roll", {}, true},           {"perspective", {}, false},   {"fov", {}, true},
-        {"zoom", {}, true},           {"pan-x", {}, true},          {"pan-y", {}, true},
-        {"shading", {}, true},        {"one-sided", {}, false},     {"ambient", {}, true},
-        {"split-angle", {}, true},    {"edges", {}, true},          {"feature-angle", {}, true},
-        {"edge-color", {}, true},     {"fill", {}, true},           {"line-color", {}, true},
-        {"background", {}, true},     {"point-radius", {}, true},   {"supersample", {}, true},
-        {"axes", {}, false},          {"scale-bar", {}, false},     {"color-by", {}, true},
-        {"component", {}, true},      {"cmap", {}, true},           {"vmin", {}, true},
-        {"vmax", {}, true},           {"nan-color", {}, true},      {"colorbar", {}, false},
-        {"reduce", {}, true},         {"expr", {}, true},           {"clip", {}, true},
-        {"symmetric", {}, false},     {"scale", {}, true},          {"scale-threshold", {}, true},
-        {"categorical", {}, false},   {"color-regions", {}, false}, {"category-edges", {}, false},
-        {"isolines", {}, true},       {"iso-levels", {}, true},     {"iso-color", {}, true},
-        {"vectors", {}, true},        {"vector-count", {}, true},   {"vector-length", {}, true},
-        {"vector-color", {}, true},   {"warp", {}, true},           {"warp-scale", {}, true},
-        {"warp-outline", {}, false},  {"outline-color", {}, true},  {"diagnostic", {}, true},
-        {"quality-metric", {}, true}, {"cutaway", {}, true},    {"cutaway-tint", {}, true},
-        {"streamlines", {}, true},    {"stream-seeds", {}, true},   {"stream-length", {}, true},
-        {"stream-color", {}, true},   {"theme", {}, true},          {"scanlines", {}, false},
-        {"bloom", {}, false},         {"fringe", {}, false},        {"grid-floor", {}, false},
-    };
+    return cli_specs({
+        {
+            {"view", {}, true},        {"azimuth", {}, true},      {"elevation", {}, true},
+            {"roll", {}, true},        {"perspective", {}, false}, {"fov", {}, true},
+            {"zoom", {}, true},        {"pan-x", {}, true},        {"pan-y", {}, true},
+            {"shading", {}, true},     {"one-sided", {}, false},   {"ambient", {}, true},
+            {"split-angle", {}, true}, {"edges", {}, true},        {"feature-angle", {}, true},
+            {"edge-color", {}, true},  {"fill", {}, true},         {"line-color", {}, true},
+            {"background", {}, true},  {"point-radius", {}, true}, {"supersample", {}, true},
+            {"axes", {}, false},       {"scale-bar", {}, false},
+        },
+        color_flag_specs(),
+        {
+            {"reduce", {}, true},
+            {"expr", {}, true},
+            {"clip", {}, true},
+            {"symmetric", {}, false},
+            {"scale", {}, true},
+            {"scale-threshold", {}, true},
+            {"categorical", {}, false},
+            {"color-regions", {}, false},
+            {"category-edges", {}, false},
+            {"isolines", {}, true},
+            {"iso-levels", {}, true},
+            {"iso-color", {}, true},
+            {"vectors", {}, true},
+            {"vector-count", {}, true},
+            {"vector-length", {}, true},
+            {"vector-color", {}, true},
+            {"warp", {}, true},
+            {"warp-scale", {}, true},
+            {"warp-outline", {}, false},
+            {"outline-color", {}, true},
+            {"diagnostic", {}, true},
+            {"quality-metric", {}, true},
+            {"cutaway", {}, true},
+            {"cutaway-tint", {}, true},
+            {"streamlines", {}, true},
+            {"stream-seeds", {}, true},
+            {"stream-length", {}, true},
+            {"stream-color", {}, true},
+            {"theme", {}, true},
+            {"scanlines", {}, false},
+            {"bloom", {}, false},
+            {"fringe", {}, false},
+            {"grid-floor", {}, false},
+        },
+    });
 }
 
 /// A comma-separated list of numbers; an empty entry is `nullopt` (so

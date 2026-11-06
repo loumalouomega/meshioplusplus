@@ -1,29 +1,13 @@
 """The MMG backend's subcommands (roadmap 3.2): ``adapt``,
 ``discretize-levelset``, ``mesh-2d`` and ``move``."""
 
-from .._helpers import _reader_names, _writer_names, read, write
+from .._helpers import read, write
 from .._mmg import adapt, discretize_levelset, mesh_domain, move
+from ._common import add_io_args
 
 
 def _add_io_args(parser, what):
-    parser.add_argument("infile", type=str, help="mesh file to be read from")
-    parser.add_argument("outfile", type=str, help=f"{what} mesh to be written to")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
-    parser.add_argument(
-        "--output-format",
-        "-o",
-        type=str,
-        choices=_writer_names(),
-        help="output file format",
-        default=None,
-    )
+    add_io_args(parser, f"{what} mesh to be written to")
 
 
 def add_mmg_args(parser):

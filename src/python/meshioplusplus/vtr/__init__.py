@@ -2,6 +2,7 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._vtk_codecs import CPP_CODECS, cpp_codec_ok
 from ._vtr import read as _py_read
 from ._vtr import write as _py_write
 
@@ -24,23 +25,9 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     Unlike the reader, the mesh must be a UNIFORM dense lattice today: a
     genuinely graded mesh cannot be written as ``.vtr`` yet.
     """
-    _CPP_CODECS = {
-        None: "none",
-        "zlib": "zlib",
-        "lz4": "lz4",
-        "zstd": "zstd",
-        "lzma": "lzma",
-    }
-    cpp_compression_ok = compression in _CPP_CODECS
-    if compression == "lz4" and not getattr(_core, "__has_lz4__", False):
-        cpp_compression_ok = False
-    if compression == "zstd" and not getattr(_core, "__has_zstd__", False):
-        cpp_compression_ok = False
-    if compression == "lzma" and not getattr(_core, "__has_lzma__", False):
-        cpp_compression_ok = False
-    if header_type is None and cpp_compression_ok and not is_buffer(filename, "w"):
+    if cpp_codec_ok(compression, header_type) and not is_buffer(filename, "w"):
         try:
-            _core.vtr_write_codec(str(filename), mesh, binary, _CPP_CODECS[compression])
+            _core.vtr_write_codec(str(filename), mesh, binary, CPP_CODECS[compression])
             return
         except Exception as exc:
             if not core_declined(exc, "vtr", "write", filename):

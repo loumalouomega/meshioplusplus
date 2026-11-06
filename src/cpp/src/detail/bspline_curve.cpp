@@ -24,16 +24,12 @@
 #include "bspline_lsq.hpp"
 #include "lsq_fit.hpp"
 #include "nurbs_eval.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 namespace detail {
 
 namespace {
-
-double bc_dist(const PatchVec& rA, const PatchVec& rB) {
-    const double x = rA[0] - rB[0], y = rA[1] - rB[1], z = rA[2] - rB[2];
-    return std::sqrt(x * x + y * y + z * z);
-}
 
 // The basis values (and first derivatives) of span `Span` at `T`.
 void bc_basis(const BsplineCurve& rC, std::size_t Span, double T, double* pN, double* pD) {
@@ -264,7 +260,7 @@ CurveFitResult bspline_curve_fit(const std::vector<PatchVec>& rPts,
     // Chord-length parameters.
     std::vector<double> t(m, 0.0);
     for (std::size_t k = 1; k < m; ++k)
-        t[k] = t[k - 1] + bc_dist(rPts[k], rPts[k - 1]);
+        t[k] = t[k - 1] + vec3_norm(vec3_sub(rPts[k], rPts[k - 1]));
     const double len = t.back();
     if (!(len > 0.0))
         return out;

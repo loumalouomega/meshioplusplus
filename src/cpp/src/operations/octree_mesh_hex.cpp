@@ -57,27 +57,6 @@ NDArray octmh_ids(const std::vector<std::int64_t>& rIds, std::size_t Stride) {
     return a;
 }
 
-// The nearest point to @p rP on the polyline through the skin points @p rChain.
-Vec3 octmh_on_chain(const std::vector<Vec3>& rSkin, const std::vector<std::int64_t>& rChain,
-                    const Vec3& rP, double& rDistance) {
-    Vec3 best = rSkin[static_cast<std::size_t>(rChain.front())];
-    rDistance = std::numeric_limits<double>::infinity();
-    for (std::size_t s = 0; s + 1 < rChain.size(); ++s) {
-        const Vec3& a = rSkin[static_cast<std::size_t>(rChain[s])];
-        const Vec3& b = rSkin[static_cast<std::size_t>(rChain[s + 1])];
-        const Vec3 ab = vec3_sub(b, a);
-        const double l2 = vec3_norm_sq(ab);
-        const double t = l2 > 0.0 ? std::clamp(vec3_dot(vec3_sub(rP, a), ab) / l2, 0.0, 1.0) : 0.0;
-        const Vec3 q = vec3_add(a, vec3_scale(ab, t));
-        const double d = vec3_norm(vec3_sub(rP, q));
-        if (d < rDistance) {
-            rDistance = d;
-            best = q;
-        }
-    }
-    return best;
-}
-
 // What the feature snap of a hexahedral boundary recovered.
 struct OctmhFeatures {
     std::int64_t mCorners = 0, mCornersSnapped = 0, mChains = 0, mChainsMissed = 0, mMoved = 0;
@@ -178,7 +157,8 @@ OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
         auto off = [&](std::int64_t V) {
             double& d = tube[static_cast<std::size_t>(V)];
             if (d < 0.0)
-                octmh_on_chain(rSkin, chain, rPoints[static_cast<std::size_t>(V)], d);
+                d = feature_snap_on_polyline(rSkin, chain, rPoints[static_cast<std::size_t>(V)])
+                        .second;
             return d;
         };
         using Item = std::pair<double, std::int64_t>;
@@ -244,9 +224,8 @@ OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
         }
         for (std::int64_t v = prev[static_cast<std::size_t>(t)]; v != s;
              v = prev[static_cast<std::size_t>(v)]) {
-            double d = 0.0;
             rPoints[static_cast<std::size_t>(v)] =
-                octmh_on_chain(rSkin, chain, rPoints[static_cast<std::size_t>(v)], d);
+                feature_snap_on_polyline(rSkin, chain, rPoints[static_cast<std::size_t>(v)]).first;
             rFeature[static_cast<std::size_t>(v)] = 2;
             rep.mNodeChain[static_cast<std::size_t>(v)] = static_cast<std::int64_t>(ci);
             ++rep.mMoved;
@@ -724,8 +703,7 @@ constexpr double kOctmhTether = 0.08;
 // straight back towards its nearest chain point.
 Vec3 octmh_tether(const std::vector<Vec3>& rSkin, const std::vector<std::int64_t>& rChain,
                   const Vec3& rP, double Reach) {
-    double d = 0.0;
-    const Vec3 on = octmh_on_chain(rSkin, rChain, rP, d);
+    const auto [on, d] = feature_snap_on_polyline(rSkin, rChain, rP);
     if (d <= Reach)
         return rP;
     return vec3_add(on, vec3_scale(vec3_sub(rP, on), Reach / d));

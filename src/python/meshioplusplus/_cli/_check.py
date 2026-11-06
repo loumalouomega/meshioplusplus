@@ -1,20 +1,13 @@
 import sys
 
-from .._helpers import _reader_names, read
+from .._helpers import read
 from .._quality_gate import check_quality, format_quality_gate
+from ._common import add_io_args
 from ._json import emit_json
 
 
 def add_args(parser):
-    parser.add_argument("infile", type=str, help="mesh file to be checked")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
+    add_io_args(parser, in_help="mesh file to be checked")
     parser.add_argument(
         "--require",
         "-r",

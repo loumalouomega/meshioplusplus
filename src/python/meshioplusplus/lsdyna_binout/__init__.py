@@ -2,6 +2,7 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._series_writer import CoreSeriesWriter
 from ._binout import read as _py_read
 from ._binout import time_values as _py_time_values
 from ._write import SeriesWriter as _PySeriesWriter
@@ -75,7 +76,7 @@ def write(filename, mesh, split_size=0, word_size=8, big_endian=False):
     return _py_write(filename, mesh, split_size, word_size, big_endian)
 
 
-class SeriesWriter:
+class SeriesWriter(CoreSeriesWriter):
     """Write a time series into one binout: ``nodout``'s ids once and an output
     per step, and any other database's output whenever its own
     ``binout:<database>:time`` changes, so a database written less often than
@@ -105,28 +106,6 @@ class SeriesWriter:
                     raise
         if self._core is None:
             self._py = _PySeriesWriter(filename, split_size, word_size, big_endian)
-
-    def write(self, time, mesh):
-        if self._core is not None:
-            self._core.write(float(time), mesh)
-        else:
-            self._py.write(time, mesh)
-
-    def close(self):
-        if self._core is not None:
-            if self._core.num_steps():
-                self._core.finalize()
-            self._core = None
-        if self._py is not None:
-            self._py.close()
-            self._py = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-        return False
 
 
 # Found by its file name (``binout``...) or its LSDA header, never an extension.

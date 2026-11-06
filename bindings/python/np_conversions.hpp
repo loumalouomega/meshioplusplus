@@ -47,7 +47,9 @@
  *   is *not* zero-copy in either direction: they are always materialized as
  *   Python lists of numpy arrays (`ragged_data_to_py`) or parsed from them
  *   (`ragged_cellblock_from_py`), because there is no rectangular buffer to
- *   view into.
+ *   view into. The lists the core hands out are `CsrRows`, which keep the
+ *   flat buffer and offsets behind their rows, and come back as one copy of
+ *   each while the list keeps its shape.
  * - **Named regions** (`region.hpp` — the model behind the Python `Mesh`'s
  *   `.regions`, and behind its `point_sets`/`cell_sets` compat views) cross in
  *   both directions. The read path adopts each region's entry buffer through
@@ -190,6 +192,29 @@ inline const py::object& cached_package_class(const char* pName) {
 }
 
 /**
+ * @brief `meshioplusplus._ragged.CsrRows`, or `CsrFaces` when @p Faces, looked
+ * up once, as `cached_package_class` does (roadmap 5.6).
+ */
+inline const py::object& cached_ragged_class(bool Faces) {
+    static std::atomic<py::object*> sRows{nullptr};
+    static std::atomic<py::object*> sFaces{nullptr};
+    std::atomic<py::object*>& slot = Faces ? sFaces : sRows;
+    py::object* cached = slot.load(std::memory_order_acquire);
+    if (!cached) {
+        auto* made = new py::object(
+            py::module_::import("meshioplusplus._ragged").attr(Faces ? "CsrFaces" : "CsrRows"));
+        py::object* expected = nullptr;
+        if (slot.compare_exchange_strong(expected, made, std::memory_order_acq_rel))
+            cached = made;
+        else {
+            delete made;  // the GIL is held: this thread lost the race
+            cached = expected;
+        }
+    }
+    return *cached;
+}
+
+/**
  * @brief Build a non-owning `meshioplusplus::NDArray` view over a numpy array's buffer.
  *
  * Reads the numpy array's dtype and shape and wraps its raw data pointer in
@@ -283,9 +308,50 @@ inline py::array ensure_contiguous(py::handle obj, PyMeshRefs& rRefs) {
  * @return A `CellBlock` with `mType` set and its CSR storage populated (owned
  *         copies).
  */
+/**
+ * @brief The CSR arrays a `CsrRows` block still carries, copied into @p rCb;
+ * false (nothing copied) when @p data_obj is another list, its arrays were
+ * dropped, or they do not describe a block of its shape and type.
+ */
+inline bool ragged_csr_from_py(meshioplusplus::CellBlock& rCb, py::handle data_obj) {
+    if (!py::isinstance(data_obj, cached_ragged_class(false)))
+        return false;
+    const py::object csr = data_obj.attr("_state").cast<py::list>()[0];
+    if (csr.is_none())
+        return false;
+    const auto parts = csr.cast<py::tuple>();
+    using I64 = py::array_t<std::int64_t, py::array::c_style>;
+    const bool polyhedron = rCb.mType.rfind("polyhedron", 0) == 0;
+    if (parts.size() != 3 || !py::isinstance<I64>(parts[0]) || !py::isinstance<I64>(parts[1]) ||
+        polyhedron == parts[2].is_none() || (polyhedron && !py::isinstance<I64>(parts[2])))
+        return false;
+    const auto flat = parts[0].cast<I64>();
+    const auto offsets = parts[1].cast<I64>();
+    const std::size_t cells = py::len(data_obj);
+    const std::size_t rows = polyhedron ? 0 : cells;
+    if (flat.ndim() != 1 || offsets.ndim() != 1 || offsets.size() < 1 ||
+        (!polyhedron && static_cast<std::size_t>(offsets.size()) != rows + 1) ||
+        offsets.data()[0] != 0 || offsets.data()[offsets.size() - 1] != flat.size())
+        return false;
+    if (polyhedron) {
+        const auto faces = parts[2].cast<I64>();
+        if (faces.ndim() != 1 || static_cast<std::size_t>(faces.size()) != cells + 1 ||
+            faces.data()[0] != 0 || faces.data()[cells] != offsets.size() - 1)
+            return false;
+        rCb.mFaceOffsets.assign(faces.data(), faces.data() + faces.size());
+    }
+    rCb.mFlat.assign(flat.data(), flat.data() + flat.size());
+    rCb.mRowOffsets.assign(offsets.data(), offsets.data() + offsets.size());
+    return true;
+}
+
 inline meshioplusplus::CellBlock ragged_cellblock_from_py(std::string type, py::handle data_obj) {
     meshioplusplus::CellBlock cb;
     cb.mType = std::move(type);
+    // A block read from the core and not reshaped since carries its CSR
+    // arrays: one copy of each, no row visited (roadmap 5.6).
+    if (ragged_csr_from_py(cb, data_obj))
+        return cb;
     // Straight into the CSR storage (backends/meshio_mesh.hpp), one row at a
     // time: no per-cell vector.
     //
@@ -435,11 +501,12 @@ inline void py_regions_to_mesh(py::handle pymesh, meshioplusplus::Mesh& rMesh) {
  *             rectangular `NDArray` blocks, and by default rejecting ragged
  *             input here means such a writer safely raises and the
  *             caller's Python fallback takes over, rather than silently
- *             mishandling or truncating the mesh. Only the ragged-aware
- *             bindings (currently MED write) pass `allow_ragged=true` to
- *             opt into parsing ragged blocks via `ragged_cellblock_from_py`
- *             (which always copies, since ragged data has no rectangular
- *             buffer to view into).
+ *             mishandling or truncating the mesh. The ragged-aware
+ *             bindings (the operations and the writers that take polygons
+ *             or polyhedra) pass `allow_ragged=true` to opt into parsing
+ *             ragged blocks via `ragged_cellblock_from_py` (which always
+ *             copies, since ragged data has no rectangular buffer to view
+ *             into).
  * @return A `meshioplusplus::Mesh` whose rectangular array members alias
  *         Python-owned memory (valid only while `rRefs` is alive) and whose
  *         ragged cell blocks (if any, and if `allow_ragged`) own independent
@@ -608,6 +675,10 @@ inline py::list regions_to_py(const meshioplusplus::Mesh& rMesh) {
  *  - For a polyhedron block (`cb.IsPolyhedron()`): a Python list of cells,
  *    each itself a list of 1-D int64 numpy arrays, one per face.
  *
+ * The lists are `meshioplusplus._ragged.CsrRows` / `CsrFaces`, `list`
+ * subclasses that also keep the flat buffer and its offsets until the list
+ * changes shape (roadmap 5.6).
+ *
  * This matches exactly what `meshioplusplus.Mesh`/`CellBlock` expect to
  * store for these cell types on the Python side (kept as a Python list,
  * never coerced into a rectangular ndarray).
@@ -620,9 +691,13 @@ inline py::object ragged_data_to_py(const meshioplusplus::CellBlock& rCb) {
     // (the rows are disjoint, so writing to one never touches another, and each
     // view keeps the buffer alive). This replaces one array allocation plus one
     // memcpy per polygon or face.
-    py::array_t<std::int64_t> flat(static_cast<py::ssize_t>(rCb.mFlat.size()));
-    if (!rCb.mFlat.empty())
-        std::memcpy(flat.mutable_data(), rCb.mFlat.data(), rCb.mFlat.size() * sizeof(std::int64_t));
+    const auto copy_of = [](const std::vector<std::int64_t>& rV) {
+        py::array_t<std::int64_t> a(static_cast<py::ssize_t>(rV.size()));
+        if (!rV.empty())
+            std::memcpy(a.mutable_data(), rV.data(), rV.size() * sizeof(std::int64_t));
+        return a;
+    };
+    py::array_t<std::int64_t> flat = copy_of(rCb.mFlat);
     std::int64_t* base = flat.mutable_data();
     const py::object owner = flat;
     // Row r of the CSR storage as a 1-D int64 view into `flat`.
@@ -632,17 +707,33 @@ inline py::object ragged_data_to_py(const meshioplusplus::CellBlock& rCb) {
         return py::array_t<std::int64_t>({n}, {static_cast<py::ssize_t>(sizeof(std::int64_t))},
                                          base + b, owner);
     };
-    py::list out;
-    if (rCb.IsPolyhedron()) {
+    // The rows go into a `CsrRows` (a `list`) that also keeps `flat` and the
+    // offsets, so `ragged_cellblock_from_py` can take the block back without
+    // visiting a row (roadmap 5.6). `PyList_Append` fills it below the
+    // subclass's own `append`, which would drop them.
+    const bool polyhedron = rCb.IsPolyhedron();
+    py::object offsets = copy_of(rCb.mRowOffsets);
+    py::object face_offsets = polyhedron ? py::object(copy_of(rCb.mFaceOffsets)) : py::none();
+    py::list state;
+    state.append(py::make_tuple(flat, offsets, face_offsets));
+    const auto append = [](py::handle rList, py::object Item) {
+        if (PyList_Append(rList.ptr(), Item.ptr()) != 0)
+            throw py::error_already_set();
+    };
+    py::object out = cached_ragged_class(false)();
+    out.attr("_state") = state;
+    if (polyhedron) {
+        const py::object& FacesCls = cached_ragged_class(true);
         for (std::size_t c = 0; c + 1 < rCb.mFaceOffsets.size(); ++c) {
-            py::list faces;
+            py::object faces = FacesCls();
+            faces.attr("_state") = state;
             for (auto f = rCb.mFaceOffsets[c]; f < rCb.mFaceOffsets[c + 1]; ++f)
-                faces.append(row_to_arr(static_cast<std::size_t>(f)));
-            out.append(faces);
+                append(faces, row_to_arr(static_cast<std::size_t>(f)));
+            append(out, std::move(faces));
         }
     } else {
         for (std::size_t r = 0; r + 1 < rCb.mRowOffsets.size(); ++r)
-            out.append(row_to_arr(r));
+            append(out, row_to_arr(r));
     }
     return out;
 }

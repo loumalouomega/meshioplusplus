@@ -33,6 +33,7 @@
 #include "meshioplusplus/formats/ply.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -155,42 +156,6 @@ std::int64_t rd_int_val(std::string_view rBuf, std::size_t& rPos, DType dt, bool
     NDArray t(dt, {1});
     rd_into(t, 0, rBuf, rPos, big);
     return detail::read_int(t, 0);
-}
-
-void store_scalar(NDArray& rA, std::size_t idx, double dval, std::int64_t ival, bool isflt) {
-    switch (rA.Dtype()) {
-        case DType::Float32:
-            rA.As<float>()[idx] = static_cast<float>(dval);
-            break;
-        case DType::Float64:
-            rA.As<double>()[idx] = dval;
-            break;
-        case DType::Int8:
-            rA.As<std::int8_t>()[idx] = static_cast<std::int8_t>(ival);
-            break;
-        case DType::Int16:
-            rA.As<std::int16_t>()[idx] = static_cast<std::int16_t>(ival);
-            break;
-        case DType::Int32:
-            rA.As<std::int32_t>()[idx] = static_cast<std::int32_t>(ival);
-            break;
-        case DType::Int64:
-            rA.As<std::int64_t>()[idx] = ival;
-            break;
-        case DType::UInt8:
-            rA.As<std::uint8_t>()[idx] = static_cast<std::uint8_t>(ival);
-            break;
-        case DType::UInt16:
-            rA.As<std::uint16_t>()[idx] = static_cast<std::uint16_t>(ival);
-            break;
-        case DType::UInt32:
-            rA.As<std::uint32_t>()[idx] = static_cast<std::uint32_t>(ival);
-            break;
-        case DType::UInt64:
-            rA.As<std::uint64_t>()[idx] = static_cast<std::uint64_t>(ival);
-            break;
-    }
-    (void)isflt;
 }
 
 }  // namespace
@@ -342,9 +307,9 @@ Mesh read_ply(const std::string& rPath) {
                 std::string t;
                 rs >> t;
                 if (detail::is_float_dtype(vcols[c].Dtype()))
-                    store_scalar(vcols[c], i, detail::parse_double(t), 0, true);
+                    detail::vtu_store(vcols[c], i, detail::parse_double(t), 0);
                 else
-                    store_scalar(vcols[c], i, 0.0, std::strtoll(t.c_str(), nullptr, 10), false);
+                    detail::vtu_store(vcols[c], i, 0.0, std::strtoll(t.c_str(), nullptr, 10));
             }
         }
     }
@@ -370,8 +335,8 @@ Mesh read_ply(const std::string& rPath) {
     NDArray pts(pdt, {num_verts, ndim});
     for (std::size_t i = 0; i < num_verts; ++i)
         for (std::size_t k = 0; k < ndim; ++k)
-            store_scalar(pts, i * ndim + k, detail::read_double(vcols[coord_cols[k]], i),
-                         detail::read_int(vcols[coord_cols[k]], i), detail::is_float_dtype(pdt));
+            detail::vtu_store(pts, i * ndim + k, detail::read_double(vcols[coord_cols[k]], i),
+                              detail::read_int(vcols[coord_cols[k]], i));
     mesh.AssignPoints(std::move(pts));
     for (std::size_t c = 0; c < vprops.size(); ++c) {
         const std::string& nm = vprops[c].mName;
@@ -453,9 +418,9 @@ Mesh read_ply(const std::string& rPath) {
                             throw ReadError("PLY: a face row is missing the property '" +
                                             fp.mName + "'");
                         if (detail::is_float_dtype(fp.mDtype))
-                            store_scalar(v, 0, detail::parse_double(t), 0, true);
+                            detail::vtu_store(v, 0, detail::parse_double(t), 0);
                         else
-                            store_scalar(v, 0, 0.0, std::strtoll(t.c_str(), nullptr, 10), false);
+                            detail::vtu_store(v, 0, 0.0, std::strtoll(t.c_str(), nullptr, 10));
                     }
                     vals.push_back(std::move(v));
                 }

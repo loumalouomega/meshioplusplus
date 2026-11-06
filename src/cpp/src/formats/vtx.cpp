@@ -400,26 +400,9 @@ std::vector<std::size_t> vtx_block_rows(adios2::IO& rIo, adios2::Engine& rEngine
 }
 
 std::int64_t vtx_int_at(const NDArray& rA, std::size_t i) {
-    switch (rA.Dtype()) {
-        case DType::Int8:
-            return rA.As<std::int8_t>()[i];
-        case DType::Int16:
-            return rA.As<std::int16_t>()[i];
-        case DType::Int32:
-            return rA.As<std::int32_t>()[i];
-        case DType::Int64:
-            return rA.As<std::int64_t>()[i];
-        case DType::UInt8:
-            return rA.As<std::uint8_t>()[i];
-        case DType::UInt16:
-            return rA.As<std::uint16_t>()[i];
-        case DType::UInt32:
-            return rA.As<std::uint32_t>()[i];
-        case DType::UInt64:
-            return static_cast<std::int64_t>(rA.As<std::uint64_t>()[i]);
-        default:
-            vtx_fail("an integer variable holds floating-point values");
-    }
+    if (detail::is_float_dtype(rA.Dtype()))
+        vtx_fail("an integer variable holds floating-point values");
+    return detail::read_int(rA, i);
 }
 
 // A VTK_LAGRANGE_* cell whose node order is a linear or quadratic VTK cell's

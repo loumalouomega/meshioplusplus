@@ -1,31 +1,11 @@
-from .._helpers import _reader_names, _writer_names, read, write
+from .._helpers import read, write
 from .._tet_poly import poly_to_tet, tet_to_poly
+from ._common import add_io_args
 from ._json import emit_json
 
 
-def _add_io_args(parser, out_help):
-    parser.add_argument("infile", type=str, help="mesh file to be read from")
-    parser.add_argument("outfile", type=str, help=out_help)
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
-    parser.add_argument(
-        "--output-format",
-        "-o",
-        type=str,
-        choices=_writer_names(),
-        help="output file format",
-        default=None,
-    )
-
-
 def add_tet_to_poly_args(parser):
-    _add_io_args(parser, "polyhedral dual mesh to be written to")
+    add_io_args(parser, "polyhedral dual mesh to be written to")
     parser.add_argument(
         "--feature-angle",
         type=float,
@@ -48,7 +28,7 @@ def add_tet_to_poly_args(parser):
 
 
 def add_poly_to_tet_args(parser):
-    _add_io_args(parser, "tetrahedral mesh to be written to")
+    add_io_args(parser, "tetrahedral mesh to be written to")
     parser.add_argument(
         "--record-parent-ids",
         action="store_true",

@@ -24,6 +24,7 @@
 
 // Project includes
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 // Project includes (private, not installed)
 #include "nurbs_eval.hpp"
@@ -38,20 +39,6 @@ namespace detail {
 namespace {
 
 constexpr double kPnPi = 3.14159265358979323846;
-
-PatchVec pn_sub(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-double pn_dot(const PatchVec& rA, const PatchVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-PatchVec pn_cross(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-double pn_norm(const PatchVec& rA) {
-    return std::sqrt(pn_dot(rA, rA));
-}
 
 // A piece of a patch side: chain parameters `[mTb, mTe]` (in the side's
 // direction) on side parameters `[mS0, mS1]`.
@@ -188,8 +175,8 @@ PatchVec pn_normal(const BsplineSurface& rS, double U, double V) {
     BsplineEval e;
     bspline_eval(rS, U, V, 1, e);
     const PatchVec su{e.mSu[0], e.mSu[1], e.mSu[2]}, sv{e.mSv[0], e.mSv[1], e.mSv[2]};
-    PatchVec n = pn_cross(su, sv);
-    const double l = pn_norm(n);
+    PatchVec n = vec3_cross(su, sv);
+    const double l = vec3_norm(n);
     return l > 0.0 ? PatchVec{n[0] / l, n[1] / l, n[2] / l} : PatchVec{0.0, 0.0, 0.0};
 }
 
@@ -387,11 +374,11 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
         for (const PatchTri& t : rTris)
             if (t[0] == v || t[1] == v || t[2] == v) {
                 const PatchVec a =
-                    pn_cross(pn_sub(rPts[t[1]], rPts[t[0]]), pn_sub(rPts[t[2]], rPts[t[0]]));
+                    vec3_cross(vec3_sub(rPts[t[1]], rPts[t[0]]), vec3_sub(rPts[t[2]], rPts[t[0]]));
                 for (std::size_t j = 0; j < 3; ++j)
                     n[j] += a[j];
             }
-        const double l = pn_norm(n);
+        const double l = vec3_norm(n);
         if (l > 0.0)
             ev_normal[v] = {n[0] / l, n[1] / l, n[2] / l};
     }
@@ -408,7 +395,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                     continue;
                 const PatchVec& o = end == 0 ? curve.mPoles.front() : curve.mPoles.back();
                 PatchVec& q = end == 0 ? curve.mPoles[1] : curve.mPoles[curve.mPoles.size() - 2];
-                const double h = pn_dot(pn_sub(q, o), it->second);
+                const double h = vec3_dot(vec3_sub(q, o), it->second);
                 for (std::size_t j = 0; j < 3; ++j)
                     q[j] -= h * it->second[j];
             }
@@ -453,7 +440,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                 const std::size_t lo = std::min(sg.mBegin, sg.mEnd),
                                   hi = std::max(sg.mBegin, sg.mEnd);
                 for (std::size_t t = lo; t < hi; ++t)
-                    len += pn_norm(pn_sub(rPts[cv[t + 1]], rPts[cv[t]]));
+                    len += vec3_norm(vec3_sub(rPts[cv[t + 1]], rPts[cv[t]]));
                 lengths.push_back(len);
                 side.mSegments.push_back(seg);
                 chain_uses[sg.mChain].push_back({i, j, side.mSegments.size() - 1});
@@ -518,7 +505,8 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
     // Area-weighted vertex normals, for the fold test.
     std::vector<PatchVec> vertex_normal(rPts.size(), PatchVec{0.0, 0.0, 0.0});
     for (const PatchTri& t : rTris) {
-        const PatchVec a = pn_cross(pn_sub(rPts[t[1]], rPts[t[0]]), pn_sub(rPts[t[2]], rPts[t[0]]));
+        const PatchVec a =
+            vec3_cross(vec3_sub(rPts[t[1]], rPts[t[0]]), vec3_sub(rPts[t[2]], rPts[t[0]]));
         for (std::size_t v : t)
             for (std::size_t j = 0; j < 3; ++j)
                 vertex_normal[v][j] += a[j];
@@ -587,7 +575,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
             // The angle between the tangent planes: two patches whose
             // parameters turn opposite ways have opposite normals on one
             // smooth surface (the face's sense is set apart).
-            const double c = std::min(1.0, std::fabs(pn_dot(n, g.mNormal)));
+            const double c = std::min(1.0, std::fabs(vec3_dot(n, g.mNormal)));
             worst = std::max(worst, std::acos(c) * 180.0 / kPnPi);
         }
         return worst;
@@ -892,7 +880,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                         near_v = v;
                     }
                 }
-                if (pn_dot(pn_normal(p.mSurface, u, w), vertex_normal[near_v]) < 0.0) {
+                if (vec3_dot(pn_normal(p.mSurface, u, w), vertex_normal[near_v]) < 0.0) {
                     log::debug("pn: patch {} folds near ({}, {})", I, u, w);
                     return false;
                 }
@@ -923,7 +911,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
             BsplineEval e;
             bspline_eval(s, p.mU[v], p.mV[v], 0, e);
             const PatchVec q{e.mS[0], e.mS[1], e.mS[2]};
-            const double d = pn_norm(pn_sub(q, rPts[v]));
+            const double d = vec3_norm(vec3_sub(q, rPts[v]));
             if (d > worst) {
                 worst = d;
                 wu = p.mU[v];

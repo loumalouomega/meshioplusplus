@@ -4,11 +4,13 @@ import io
 import json
 import os
 import subprocess
+import sys
 
 import numpy as np
 import pytest
 
 import meshioplusplus
+from meshioplusplus._cli import _info as _cli_info
 from meshioplusplus._regions import Region
 
 from . import helpers
@@ -266,6 +268,58 @@ def test_no_command():
     assert exc.value.code == 2
 
 
+def _subparsers(parser):
+    import argparse
+
+    (action,) = [
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    ]
+    return action.choices
+
+
+def test_lazy_subparsers_equal_the_full_parser():
+    # Roadmap 5.12.1: `main` fills in only the verb it runs. Each verb's
+    # parser built alone must be the one the full parser holds, and every
+    # parser registers the same verbs and aliases, so `--help` and the
+    # "invalid choice" error list them all.
+    from meshioplusplus._cli import _main
+
+    full = _subparsers(_main.build_parser())
+    stubs = _subparsers(_main._make_parser(only=_main._NO_VERB))
+    assert list(stubs) == list(full)
+    assert set(_main._BY_NAME) | {"completion"} == set(full)
+    for verb in _main._VERBS:
+        alone = _subparsers(_main._make_parser(only=verb))
+        for name in (verb.name, *verb.aliases):
+            assert alone[name].format_help() == full[name].format_help(), name
+            assert alone[name].get_default("func") is full[name].get_default(
+                "func"
+            ), name
+
+
+def test_one_verb_imports_its_module_alone():
+    # Roadmap 5.12.1: `--help` imports no verb module, and a verb imports its
+    # own (and what it imports itself), not the other verbs'.
+    code = (
+        "import json, sys\n"
+        "from meshioplusplus._cli import _main\n"
+        "verbs = {f'meshioplusplus._cli.{v.module}' for v in _main._VERBS}\n"
+        "loaded = {}\n"
+        "for argv in (['--help'], ['info', '--help']):\n"
+        "    try:\n"
+        "        _main.main(argv)\n"
+        "    except SystemExit:\n"
+        "        pass\n"
+        "    loaded[argv[0]] = sorted(verbs & set(sys.modules))\n"
+        "print(json.dumps(loaded))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], check=True, capture_output=True, text=True
+    )
+    loaded = json.loads(out.stdout.strip().splitlines()[-1])
+    assert loaded == {"--help": [], "info": ["meshioplusplus._cli._info"]}
+
+
 def test_convert_format_inference(tmp_path):
     # No --input-format/--output-format: the formats are inferred from the
     # extensions, and the `c` alias is used.
@@ -374,7 +428,7 @@ def test_info_inconsistent_points_warns(monkeypatch, capsys):
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
         [("triangle", np.array([[0, 1, 9]]))],
     )
-    monkeypatch.setattr(meshioplusplus._cli._info, "read", lambda *a, **k: bad)
+    monkeypatch.setattr(_cli_info, "read", lambda *a, **k: bad)
     meshioplusplus._cli.main(["info", "ignored"])
     assert "Inconsistent" in capsys.readouterr().err
 
@@ -386,7 +440,7 @@ def test_info_unused_points_warns(monkeypatch, capsys):
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [5.0, 5.0, 5.0]],
         [("triangle", np.array([[0, 1, 2]]))],
     )
-    monkeypatch.setattr(meshioplusplus._cli._info, "read", lambda *a, **k: mesh)
+    monkeypatch.setattr(_cli_info, "read", lambda *a, **k: mesh)
     meshioplusplus._cli.main(["info", "ignored"])
     assert "not part of any cell" in capsys.readouterr().err
 
