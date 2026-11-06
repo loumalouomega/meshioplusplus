@@ -8,7 +8,11 @@ both directions of ``np_conversions.hpp`` are timed and no file I/O is involved:
 * ``tiny``: a two-tetrahedron mesh through ``clean`` 20 000 times -- the fixed
   cost of ``py_to_mesh`` + ``mesh_to_py`` (class lookup, byte-order checks);
 * ``polygons``: a ``polygon`` block of N triangles-as-ragged rows (N = 200 000);
-* ``polyhedra``: a ``polyhedron`` block of N hexahedra (N = 50 000).
+* ``polyhedra``: a ``polyhedron`` block of N hexahedra (N = 50 000);
+* ``... step 2``: the same through ``clean`` once more, the block now the one
+  the core handed out (roadmap 5.6: rows that carry their CSR arrays, taken
+  back with one copy of each), and ``... step 2, as lists``: those rows in a
+  plain ``list``, which is read row by row -- the way in before 5.6.
 
 Usage::
 
@@ -108,10 +112,25 @@ def main():
     polyh = polyhedron_mesh(args.polyhedra)
     cases.append((f"polyhedra n={args.polyhedra}", lambda: pp.clean(polyh)))
 
-    print(f"{'case':<26}{'min [s]':>10}{'median [s]':>12}")
+    def as_lists(mesh):
+        block = mesh.cells[0]
+        data = (
+            [list(c) for c in block.data]
+            if block.type.startswith("polyhedron")
+            else list(block.data)
+        )
+        return Mesh(mesh.points, [(block.type, data)])
+
+    for name, mesh in (("polygons", poly), ("polyhedra", polyh)):
+        step = pp.clean(mesh)
+        plain = as_lists(step)
+        cases.append((f"{name} step 2", lambda step=step: pp.clean(step)))
+        cases.append((f"{name} step 2, as lists", lambda plain=plain: pp.clean(plain)))
+
+    print(f"{'case':<30}{'min [s]':>10}{'median [s]':>12}")
     for name, fn in cases:
         lo, med = _timeit(fn, args.repeats)
-        print(f"{name:<26}{lo:>10.4f}{med:>12.4f}")
+        print(f"{name:<30}{lo:>10.4f}{med:>12.4f}")
 
 
 if __name__ == "__main__":
