@@ -44,6 +44,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/chunked_parse.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 
@@ -275,6 +276,22 @@ struct Tokenizer {
             ++mPos;
         if (mPos < mBuf.size())
             ++mPos;
+    }
+    // The next `N` tokens, parsed in parallel chunks when there are enough
+    // (roadmap 5.7.2): `rStore(token, i)` takes token i whole or refuses it
+    // (it must not throw). False, the tokenizer unmoved, when the caller's
+    // serial loop must run instead -- too few tokens, or one the serial loop
+    // would read otherwise: a comment's `#` lands in a token no number parse
+    // takes whole, so a comment anywhere in the run falls back too.
+    template <class Store>
+    bool parallel_tokens(std::size_t N, Store&& rStore) {
+        if (!detail::chunked_parse_worthwhile(N))
+            return false;
+        const std::size_t end = detail::parse_tokens(mBuf, mPos, N, std::forward<Store>(rStore));
+        if (end == std::string_view::npos)
+            return false;
+        mPos = end;
+        return true;
     }
 };
 
@@ -562,7 +579,29 @@ Mesh read_medit_ascii(const std::string& rPath) {
                 throw ReadError("Medit: cannot tell the dimension from the Vertices rows");
             NDArray pts(coord_dtype, {static_cast<std::size_t>(n), static_cast<std::size_t>(dim)});
             point_ref.resize(n);
-            for (std::int64_t i = 0; i < n; ++i) {
+            // A row is `dim` coordinates and a reference. A token taken whole
+            // by `parse_double_token` is the value `next_double` gives it; a
+            // reference `checked_integer` would reject sends the read back to
+            // the serial loop, which raises.
+            const std::size_t row = static_cast<std::size_t>(dim) + 1;
+            const bool parsed = tok.parallel_tokens(
+                static_cast<std::size_t>(n) * row, [&](std::string_view Token, std::size_t q) {
+                    double x = 0.0;
+                    if (!detail::parse_double_token(Token, x))
+                        return false;
+                    const std::size_t i = q / row, c = q % row;
+                    if (c + 1 < row) {
+                        store_coord(pts, i * (row - 1) + c, x);
+                        return true;
+                    }
+                    try {
+                        point_ref[i] = detail::checked_integer<std::int64_t>(x, "Medit");
+                        return true;
+                    } catch (...) {
+                        return false;
+                    }
+                });
+            for (std::int64_t i = 0; !parsed && i < n; ++i) {
                 for (int c = 0; c < dim; ++c)
                     store_coord(pts, i * dim + c, tok.next_double());
                 point_ref[i] = detail::checked_integer<std::int64_t>(tok.next_double(), "Medit");
@@ -578,7 +617,23 @@ Mesh read_medit_ascii(const std::string& rPath) {
             NDArray ref(DType::Int64, {static_cast<std::size_t>(n)});
             std::int64_t* dp = data.As<std::int64_t>();
             std::int64_t* rp = ref.As<std::int64_t>();
-            for (std::int64_t i = 0; i < n; ++i) {
+            // A row is `k` node ids and a reference; `parse_int_token` takes a
+            // token whole with `next_int`'s value (saturated where it is).
+            const std::size_t row = static_cast<std::size_t>(k) + 1;
+            const bool parsed = tok.parallel_tokens(
+                static_cast<std::size_t>(n) * row, [&](std::string_view Token, std::size_t q) {
+                    std::int64_t v = 0;
+                    if (!detail::parse_int_token(Token, v) ||
+                        v == std::numeric_limits<std::int64_t>::min())
+                        return false;
+                    const std::size_t i = q / row, j = q % row;
+                    if (j + 1 < row)
+                        dp[i * (row - 1) + j] = v - 1;
+                    else
+                        rp[i] = v;
+                    return true;
+                });
+            for (std::int64_t i = 0; !parsed && i < n; ++i) {
                 for (int j = 0; j < k; ++j)
                     dp[i * k + j] = tok.next_int() - 1;
                 rp[i] = tok.next_int();

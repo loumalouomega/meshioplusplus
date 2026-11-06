@@ -18,6 +18,7 @@
 // System includes
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -166,10 +167,12 @@ struct GmshCursor : detail::TextCursor {
         mPos = end;
         return true;
     }
-    // `next_int`'s integer of `x`, or false where it would throw.
-    static bool integer_of(double x, std::int64_t& rOut) {
+    // `next_int`'s integer of `x` (`checked_integer<T>`), or false where it
+    // would throw.
+    template <class T = std::int64_t>
+    static bool integer_of(double x, T& rOut) {
         try {
-            rOut = detail::checked_integer<std::int64_t>(x, "Gmsh");
+            rOut = detail::checked_integer<T>(x, "Gmsh");
             return true;
         } catch (...) {
             return false;
@@ -702,12 +705,173 @@ void append_element(std::vector<EBlock>& rBlocks, const std::string& rType, std:
     ++cur.mCount;
 }
 
+// A whole token of Gmsh 2.2's `$Elements` as the serial loop's `TextStream`
+// extraction reads it: a sign and up to 18 digits, nothing after them (a
+// longer run, or anything else, is left to the serial loop).
+bool gmsh22_int_token(std::string_view Token, std::int64_t& rOut) {
+    std::size_t i = 0;
+    bool neg = false;
+    if (i < Token.size() && (Token[i] == '+' || Token[i] == '-')) {
+        neg = Token[i] == '-';
+        ++i;
+    }
+    if (i == Token.size() || Token.size() - i > 18)
+        return false;
+    std::int64_t v = 0;
+    for (; i < Token.size(); ++i) {
+        if (Token[i] < '0' || Token[i] > '9')
+            return false;
+        v = v * 10 + (Token[i] - '0');
+    }
+    rOut = neg ? -v : v;
+    return true;
+}
+
+/**
+ * Gmsh 2.2's ASCII `$Elements` rows, parsed in parallel (roadmap 5.7.2): one
+ * line per element, `id type ntags tags... nodes...`. The lines are indexed
+ * (a serial `memchr` walk), then parsed in parallel and checked; a serial
+ * pass over their (type, tag count) gives the blocks `append_element` would
+ * open and each row's place in its block; a last parallel pass fills them.
+ * False, with the cursor and the blocks untouched, when the serial loop must
+ * run instead: fewer lines than elements, or any line it would read
+ * otherwise or reject -- a token that is not a whole integer, an unknown
+ * type, a bad tag count or a short row -- so its values and its errors stand.
+ */
+bool gmsh22_parallel_elements(GmshCursor& rCur, std::size_t Total, std::vector<EBlock>& rBlocks) {
+    if (!detail::chunked_parse_worthwhile(4 * Total))
+        return false;
+    const std::string_view text = rCur.Data();
+    std::vector<std::size_t> starts(Total + 1);
+    std::size_t pos = rCur.Pos();
+    for (std::size_t e = 0; e < Total; ++e) {
+        if (pos >= text.size())
+            return false;
+        starts[e] = pos;
+        const std::size_t eol = text.find('\n', pos);
+        pos = eol == std::string_view::npos ? text.size() : eol + 1;
+    }
+    starts[Total] = pos;
+    // Line e as `read_line` returns it: no newline, one trailing '\r' dropped.
+    const auto line = [&](std::size_t e) {
+        std::string_view l = text.substr(starts[e], starts[e + 1] - starts[e]);
+        if (!l.empty() && l.back() == '\n')
+            l.remove_suffix(1);
+        if (!l.empty() && l.back() == '\r')
+            l.remove_suffix(1);
+        return l;
+    };
+    // Calls rFn(index, value) for each token of `l`; false on a token that
+    // is not a whole integer.
+    const auto for_each_int = [](std::string_view l, auto&& rFn) {
+        std::size_t p = 0, k = 0;
+        for (;;) {
+            while (p < l.size() && detail::text_is_blank(l[p]))
+                ++p;
+            if (p == l.size())
+                return true;
+            const std::size_t b = p;
+            while (p < l.size() && !detail::text_is_blank(l[p]))
+                ++p;
+            std::int64_t v = 0;
+            if (!gmsh22_int_token(l.substr(b, p - b), v) || !rFn(k++, v))
+                return false;
+        }
+    };
+    struct Head {
+        const std::string* mType = nullptr;
+        std::uint32_t mN = 0;
+        std::uint32_t mNumTags = 0;
+    };
+    const auto& g2m = gmsh_to_meshio_type();
+    const auto& nnpc = num_nodes_per_cell();
+    std::vector<Head> heads(Total);
+    std::atomic<bool> refused{false};
+    parallel_for(
+        Total,
+        [&](std::size_t e) {
+            if (refused.load(std::memory_order_relaxed))
+                return;
+            std::int64_t v[3] = {0, 0, 0};
+            std::size_t count = 0;
+            if (!for_each_int(line(e), [&](std::size_t k, std::int64_t x) {
+                    if (k < 3)
+                        v[k] = x;
+                    count = k + 1;
+                    return true;
+                }) ||
+                count < 3) {
+                refused.store(true, std::memory_order_relaxed);
+                return;
+            }
+            const auto it = g2m.find(static_cast<int>(v[1]));
+            if (it == g2m.end() || v[2] < 0 || static_cast<std::uint64_t>(v[2]) > count) {
+                refused.store(true, std::memory_order_relaxed);
+                return;
+            }
+            const std::size_t n = static_cast<std::size_t>(nnpc.at(it->second));
+            if (count < 3 + static_cast<std::size_t>(v[2]) + n) {
+                refused.store(true, std::memory_order_relaxed);
+                return;
+            }
+            heads[e] = {&it->second, static_cast<std::uint32_t>(n),
+                        static_cast<std::uint32_t>(v[2])};
+        },
+        1024);
+    if (refused.load())
+        return false;
+    // The blocks `append_element` would open, in order, and each row's.
+    std::vector<std::uint32_t> block_of(Total);
+    std::vector<std::size_t> row_of(Total);
+    for (std::size_t e = 0; e < Total; ++e) {
+        const Head& h = heads[e];
+        if (rBlocks.empty() || rBlocks.back().mType != *h.mType ||
+            rBlocks.back().mNumTags != h.mNumTags) {
+            EBlock b;
+            b.mType = *h.mType;
+            b.mN = h.mN;
+            b.mNumTags = h.mNumTags;
+            rBlocks.push_back(std::move(b));
+        }
+        block_of[e] = static_cast<std::uint32_t>(rBlocks.size() - 1);
+        row_of[e] = rBlocks.back().mCount++;
+    }
+    for (EBlock& b : rBlocks) {
+        b.mTags.resize(b.mCount * b.mNumTags);
+        b.mConn.resize(b.mCount * b.mN);
+    }
+    parallel_for(
+        Total,
+        [&](std::size_t e) {
+            EBlock& b = rBlocks[block_of[e]];
+            std::int64_t* tags = b.mTags.data() + row_of[e] * b.mNumTags;
+            std::int64_t* conn = b.mConn.data() + row_of[e] * b.mN;
+            const std::size_t nt = b.mNumTags, n = b.mN;
+            for_each_int(line(e), [&](std::size_t k, std::int64_t x) {
+                if (k < 3)
+                    return true;
+                if (k < 3 + nt)
+                    tags[k - 3] = x;
+                else if (k < 3 + nt + n)
+                    conn[k - 3 - nt] = x - 1;
+                else
+                    return false;  // the rest is never read
+                return true;
+            });
+        },
+        1024);
+    rCur.Seek(starts[Total]);
+    return true;
+}
+
 void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks) {
     std::int64_t total = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
     const auto& g2m = gmsh_to_meshio_type();
     const auto& nnpc = num_nodes_per_cell();
 
-    if (is_ascii) {
+    if (is_ascii && gmsh22_parallel_elements(rCur, static_cast<std::size_t>(total), rBlocks)) {
+        // parsed in parallel
+    } else if (is_ascii) {
         for (std::int64_t e = 0; e < total; ++e) {
             std::string line = rCur.read_line();
             detail::TextStream iss(line);
@@ -1167,6 +1331,26 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
                 }
             });
             rCur.mPos += nez * stride * 8;
+        } else if (is_ascii &&
+                   rCur.parallel_numbers(nez * (n + 1), [&](std::size_t k, double x) {
+                       // [tag, node0..node(n-1)] per element: the tag is read
+                       // as the serial loop reads it and dropped; a node tag
+                       // the serial loop would reject refuses the chunked parse.
+                       const std::size_t e = k / (n + 1), j = k % (n + 1);
+                       std::int64_t tag = 0;
+                       if (version40) {
+                           std::int32_t t32 = 0;
+                           if (!GmshCursor::integer_of(x, t32) || (j != 0 && t32 < 1))
+                               return false;
+                           tag = t32;
+                       } else if (!GmshCursor::integer_of(x, tag)) {
+                           return false;
+                       }
+                       if (j != 0)
+                           dst[e * n + j - 1] = tag - 1;
+                       return true;
+                   })) {
+            // parsed in parallel
         } else {
             if (version40 && !is_ascii)
                 rCur.need(nez * (n + 1) * 4);
