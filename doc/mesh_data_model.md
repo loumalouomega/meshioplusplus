@@ -50,7 +50,9 @@ class CellBlock:
     dim: int                # topological dimension (0–3)
 ```
 
-For `polyhedron*` types, `data` is a list of lists (variable number of faces per cell); it is not converted to a numpy array.
+For `polyhedron*` types, `data` is a list of lists (variable number of faces per cell); it is not converted to a numpy array. A `polygon*` block whose polygons do not all have the same node count is a list of 1-D arrays, one per polygon; with a common count it is a 2-D array.
+
+A ragged block read through the C++ core is a `meshioplusplus._ragged.CsrRows`, a `list` subclass whose rows are views of one flat int64 buffer: `data.csr()` returns that buffer and its offsets (`(flat, offsets)` for polygons, `(flat, offsets, face_offsets)` for polyhedra, row `r` being `flat[offsets[r]:offsets[r + 1]]`), and the core takes the block back with one copy of each instead of visiting every row. Writing into a row writes into the buffer; any change to the list itself (assigning, appending, deleting, sorting, or changing one polyhedron's face list) drops the arrays, `csr()` returns `None`, and the block is read row by row like any other list.
 
 ## points
 

@@ -7,6 +7,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from ._common import num_nodes_per_cell, warn
+from ._ragged import csr_of
 from ._regions import CellSetsView, PointSetsView
 
 topological_dimension = {
@@ -114,12 +115,22 @@ class CellBlock:
             # (e.g. MED Voronoi meshes mixing 4-7-gons), which cannot fit a
             # rectangular array. This keeps the common uniform case compatible
             # with writers that expect ndarray data (vtu/vtk/gmsh/...).
-            try:
-                arr = np.asarray(self.data)
-            except ValueError:
-                arr = None
-            if arr is not None and arr.ndim == 2:
-                self.data = arr
+            csr = csr_of(self.data)
+            if csr is not None:
+                # Rows read from the core carry their CSR arrays (roadmap 5.6):
+                # uniform rows are the flat buffer reshaped, which is what
+                # ``np.asarray`` of them gives, without visiting each row.
+                flat, offsets, _ = csr
+                widths = np.diff(offsets)
+                if len(widths) and (widths == widths[0]).all():
+                    self.data = flat.reshape(len(widths), int(widths[0]))
+            else:
+                try:
+                    arr = np.asarray(self.data)
+                except ValueError:
+                    arr = None
+                if arr is not None and arr.ndim == 2:
+                    self.data = arr
         else:
             self.data = np.asarray(self.data)
             self.dim = topological_dimension[cell_type]
