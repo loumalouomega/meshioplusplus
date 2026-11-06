@@ -314,6 +314,42 @@ jobs:
           name: determinism
           path: determinism.csv
 
+  # --------------------------------------------------------------------------
+  # Instruction counts of the operation rows against a committed baseline
+  # (roadmap 5.1.1). Timings never gate, a runner is too noisy; Cachegrind's
+  # count of one run of each tier S row, SEQ on one thread, is stable, so a
+  # row more than 2% above benchmark/instructions_S.csv fails. A change that
+  # moves a count on purpose re-records the baseline and says why; a run on a
+  # toolchain other than the baseline's reports and passes
+  # (doc/benchmarks.md, "Instruction-count gate").
+  # --------------------------------------------------------------------------
+  instructions:
+    name: Instruction counts against the baseline
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - name: Install valgrind and ninja
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y valgrind ninja-build
+      - name: Counts within the tolerance
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: "4"
+        run: |
+          python3 tools/bench_instructions.py --check benchmark/instructions_S.csv \
+            --jobs 4 --out instructions.csv --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: instructions
+          path: instructions.csv
+
   cpp-install:
     name: C++ API install (${{ matrix.name }})
     needs: [lint]
