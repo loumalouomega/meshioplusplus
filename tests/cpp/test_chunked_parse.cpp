@@ -202,8 +202,7 @@ TEST(ChunkedParse, AsciiReadersEqualTheirSerialSelves) {
         const char* mFormat;
         const char* mExt;
     };
-    for (const Case c : {Case{"vtk", ".vtk"}, Case{"vtu", ".vtu"}, Case{"gmsh", ".msh"},
-                         Case{"medit", ".mesh"}}) {
+    for (const Case c : {Case{"vtk", ".vtk"}, Case{"vtu", ".vtu"}, Case{"gmsh", ".msh"}}) {
         const std::string path = mt::temp_path(c.mExt);
         mio::WriteOptions o;
         o.mEncoding = mio::WriteEncoding::Ascii;
@@ -282,11 +281,15 @@ TEST(ChunkedParse, ChunkLinesCutsAfterNewlines) {
     EXPECT_EQ(det::chunk_lines(text, 7, 7), std::vector<std::size_t>{7});
 }
 
-// Medit's comments are not blanks to the chunked parse: a `#` anywhere in a
-// table sends that table to the serial loop, which skips the comment.
+// Medit's tables, parsed in chunks, give the serial read; and its comments are
+// not blanks to the chunked parse: a `#` anywhere in a table sends that table
+// to the serial loop, which skips the comment and reads the same mesh.
 TEST(ChunkedParse, MeditCommentsInsideTablesFallBack) {
     const std::string path = mt::temp_path(".mesh");
     mio::write_medit_ascii(path, cp_big_mesh(40000));
+    const mio::Mesh plain = cp_same_at_one_and_four(path, [](const std::string& rP) {
+        return mio::read_medit_ascii(rP);
+    });
     std::string text = cp_slurp(path), out;
     std::size_t line = 0;
     for (std::size_t p = 0; p < text.size();) {
@@ -306,6 +309,7 @@ TEST(ChunkedParse, MeditCommentsInsideTablesFallBack) {
         return mio::read_medit_ascii(rP);
     });
     EXPECT_EQ(m.NumPoints(), 40000u);
+    EXPECT_EQ(cp_digest(m), cp_digest(plain));
     std::filesystem::remove(path);
 }
 
