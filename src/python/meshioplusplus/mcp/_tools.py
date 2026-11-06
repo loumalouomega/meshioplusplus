@@ -2557,6 +2557,11 @@ def tool_octree_mesh(
     untangle_iterations=50,
     max_cells=20000000,
     max_tets=100000000,
+    volume_fix=True,
+    zero_volume_factor=1.0e-6,
+    cap_flatness=0.01,
+    crossing_margin=0.01,
+    crossing_gap=0.05,
 ):
     """Mesh the inside of a skin on a balanced octree (castellated, tet or hex)."""
     mesh = _load(input_path, input_format)
@@ -2597,6 +2602,11 @@ def tool_octree_mesh(
         untangle_iterations=untangle_iterations,
         max_cells=max_cells,
         max_tets=max_tets,
+        volume_fix=volume_fix,
+        zero_volume_factor=zero_volume_factor,
+        cap_flatness=cap_flatness,
+        crossing_margin=crossing_margin,
+        crossing_gap=crossing_gap,
         return_report=True,
     )
     return _result(_store(out, output_path, output_format), out, **report)

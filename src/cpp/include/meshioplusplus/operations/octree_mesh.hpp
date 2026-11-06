@@ -235,6 +235,21 @@ struct OctreeMeshOptions {
     std::int64_t mMaxCells = 20000000;
     /// Refuse an output with more cells than this.
     std::int64_t mMaxTets = 100000000;
+    /// Tetrahedral output: run the volume fix after the optimisation, which collapses
+    /// degenerate tetrahedra, repairs flat caps and slivers, untangles and reorders inverted
+    /// ones and counts the overlaps.
+    bool mVolumeFix = true;
+    /// A tetrahedron is degenerate when its volume is under this fraction of its longest
+    /// edge cubed (plus the effect of six significant digits of written coordinates).
+    double mZeroVolumeFactor = 1.0e-6;
+    /// A flat tetrahedron is a cap when its apex's height over the opposite face is under
+    /// this fraction of the face's size.
+    double mCapFlatness = 0.01;
+    /// A sliver's opposite edges cross when the crossing lies this far (a fraction of each
+    /// edge) inside both.
+    double mCrossingMargin = 0.01;
+    /// ... and the edges come this close, relative to the shorter one.
+    double mCrossingGap = 0.05;
 };
 
 /// The result of `octree_mesh`.

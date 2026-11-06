@@ -5502,7 +5502,41 @@ TEST(CApi, OctreeMeshTetrahedraAndCastellatedCells) {
     const std::int64_t need = mio_octree_mesh_warnings(nullptr, 0);
     EXPECT_GE(need, 0);
     EXPECT_EQ(need == 0, report.num_warnings == 0);
+    // The stages, their seconds and the leaves per level of the same call.
+    const std::int64_t names_len = mio_octree_mesh_stage_names(nullptr, 0);
+    const std::int64_t stages = mio_octree_mesh_stage_seconds(nullptr, 0);
+    EXPECT_GT(names_len, 0);
+    EXPECT_GT(stages, 0);
+    std::vector<char> names(static_cast<std::size_t>(names_len) + 1);
+    EXPECT_EQ(mio_octree_mesh_stage_names(names.data(), names_len + 1), names_len);
+    std::vector<double> seconds(static_cast<std::size_t>(stages));
+    EXPECT_EQ(mio_octree_mesh_stage_seconds(seconds.data(), stages), stages);
+    for (const double s : seconds)
+        EXPECT_GE(s, 0.0);
+    const std::int64_t levels = mio_octree_mesh_leaves_per_level(nullptr, 0);
+    EXPECT_GT(levels, 0);
+    std::vector<std::int64_t> leaves(static_cast<std::size_t>(levels));
+    EXPECT_EQ(mio_octree_mesh_leaves_per_level(leaves.data(), levels), levels);
+    std::int64_t leaf_total = 0;
+    for (const std::int64_t n : leaves)
+        leaf_total += n;
+    EXPECT_EQ(leaf_total, report.num_leaves);
+    EXPECT_EQ(mio_octree_mesh_stage_seconds(nullptr, -1), -1);
     mio_mesh_free(tets);
+
+    // The volume fix switches off through the options.
+    opts.volume_fix = 0;
+    mio_mesh* unfixed = mio_octree_mesh(cube, &opts, &report);
+    ASSERT_NE(unfixed, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_collapsed + report.num_reordered + report.num_overlaps +
+                  report.num_caps_removed + report.num_split + report.num_slivers +
+                  report.num_untangled,
+              0);
+    mio_mesh_free(unfixed);
+    opts.volume_fix = 1;
+    opts.crossing_margin = 0.7;
+    EXPECT_EQ(mio_octree_mesh(cube, &opts, &report), nullptr);
+    opts.crossing_margin = 0.01;
 
     opts.output = MIO_OCTREE_MESH_CASTELLATED;
     mio_mesh* cells = mio_octree_mesh(cube, &opts, &report);

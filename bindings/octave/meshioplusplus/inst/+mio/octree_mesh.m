@@ -57,10 +57,21 @@ function r = octree_mesh(mesh, varargin)
 %     'untangle_iterations'  hex output: untangling iterations (50)
 %     'max_cells'            refuse an octree with more leaves (20000000)
 %     'max_tets'             refuse an output with more cells (100000000)
+%     'volume_fix'           tet output: run the volume fix after the
+%                            optimisation (true)
+%     'zero_volume_factor'   degenerate under this fraction of the longest
+%                            edge cubed (1e-6)
+%     'cap_flatness'         a flat tetrahedron is a cap under this height
+%                            over its face, as a fraction of its size (0.01)
+%     'crossing_margin'      a sliver's edges cross this far inside both, a
+%                            fraction in [0, 0.5) (0.01)
+%     'crossing_gap'         ... and come this close, relative to the
+%                            shorter edge (0.05)
 %   R is a struct: mesh, the report fields of mio_octree_mesh_report (output
 %   as its name, guarantee_applies as a logical, origin and root_cells as
-%   1 x 3 rows, every count as a double) and warnings, an n x 1 cellstr
-%   with one entry per warning.
+%   1 x 3 rows, every count as a double), leaves_per_level (an n x 1 column
+%   from level 0), timings (an n x 2 cell of stage name and seconds) and
+%   warnings, an n x 1 cellstr with one entry per warning.
 
     names = {'output', 'min_size', 'max_size', 'max_level', 'bounds', 'padding', ...
         'padding_relative', 'curvature_angle', 'feature_angle', 'corner_angle', ...
@@ -69,7 +80,8 @@ function r = octree_mesh(mesh, varargin)
         'winding_beta', 'conformity', 'alpha_long', 'alpha_short', 'preserve_features', ...
         'fit_iterations', 'dihedral_floor_guard', 'fill', 'keep_outside', ...
         'attach_distance', 'attach_quality', 'pillow', 'hex_grading', ...
-        'untangle_iterations', 'max_cells', 'max_tets'};
+        'untangle_iterations', 'max_cells', 'max_tets', 'volume_fix', ...
+        'zero_volume_factor', 'cap_flatness', 'crossing_margin', 'crossing_gap'};
     spec = cell(1, 2 * numel(names));
     spec(1:2:end) = names;
     spec(2:2:end) = {[]};
@@ -90,7 +102,9 @@ function r = octree_mesh(mesh, varargin)
         num(o.max_tets), flag(o.gap_outside), flag(o.preserve_features), ...
         flag(o.dihedral_floor_guard), flag(o.keep_outside), flag(o.attach_distance), ...
         flag(o.attach_quality), flag(o.pillow), ...
-        code(o.hex_grading, {'uniform', 'graded'}, 'hex grading'));
+        code(o.hex_grading, {'uniform', 'graded'}, 'hex grading'), ...
+        flag(o.volume_fix), num(o.zero_volume_factor), num(o.cap_flatness), ...
+        num(o.crossing_margin), num(o.crossing_gap));
     % One newline-separated string from the C side, one cellstr entry per
     % warning here.
     if isempty(r.warnings)
@@ -102,6 +116,13 @@ function r = octree_mesh(mesh, varargin)
         end
         r.warnings = w;
     end
+    if isempty(r.stage_names)
+        stages = cell(0, 1);
+    else
+        stages = strsplit(r.stage_names, sprintf('\n')).';
+    end
+    r.timings = [stages, num2cell(r.stage_seconds)];
+    r = rmfield(r, {'stage_names', 'stage_seconds'});
 end
 
 function c = code(value, table, what)

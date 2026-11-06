@@ -3815,6 +3815,11 @@ SEXP R_mio_octree(SEXP mesh, SEXP root_cells, SEXP min_level, SEXP max_level, SE
 }
 
 /* mio_r_getstring adapter: the warnings of this thread's last octree_mesh call. */
+static int64_t r_octree_mesh_stage_names(void *ctx, char *buf, int64_t buflen) {
+    (void)ctx;
+    return mio_octree_mesh_stage_names(buf, buflen);
+}
+
 static int64_t r_octree_mesh_warnings(void *ctx, char *buf, int64_t buflen) {
     (void)ctx;
     return mio_octree_mesh_warnings(buf, buflen);
@@ -3832,7 +3837,9 @@ SEXP R_mio_octree_mesh(SEXP mesh, SEXP output, SEXP conformity, SEXP skin_gradin
                        SEXP fit_iterations, SEXP untangle_iterations, SEXP max_cells,
                        SEXP max_tets, SEXP gap_outside, SEXP preserve_features,
                        SEXP dihedral_floor_guard, SEXP keep_outside, SEXP attach_distance,
-                       SEXP attach_quality, SEXP pillow, SEXP hex_grading) {
+                       SEXP attach_quality, SEXP pillow, SEXP hex_grading, SEXP volume_fix,
+                       SEXP zero_volume_factor, SEXP cap_flatness, SEXP crossing_margin,
+                       SEXP crossing_gap) {
     mio_octree_mesh_opts opts;
     mio_octree_mesh_opts_init(&opts);
 
@@ -3876,6 +3883,11 @@ SEXP R_mio_octree_mesh(SEXP mesh, SEXP output, SEXP conformity, SEXP skin_gradin
     R_OCTREE_MESH_BOOL(attach_distance);
     R_OCTREE_MESH_BOOL(attach_quality);
     R_OCTREE_MESH_BOOL(pillow);
+    R_OCTREE_MESH_BOOL(volume_fix);
+    R_OCTREE_MESH_DOUBLE(zero_volume_factor);
+    R_OCTREE_MESH_DOUBLE(cap_flatness);
+    R_OCTREE_MESH_DOUBLE(crossing_margin);
+    R_OCTREE_MESH_DOUBLE(crossing_gap);
 #undef R_OCTREE_MESH_ENUM
 #undef R_OCTREE_MESH_DOUBLE
 #undef R_OCTREE_MESH_INT64
@@ -3906,11 +3918,12 @@ SEXP R_mio_octree_mesh(SEXP mesh, SEXP output, SEXP conformity, SEXP skin_gradin
     /* Wrap the mesh first: once it has a finalizer nothing below can leak it. */
     SEXP mo = PROTECT(mio_r_wrap_mesh(out));
     SEXP warnings = PROTECT(mio_r_getstring(r_octree_mesh_warnings, NULL, "octree_mesh"));
+    SEXP stages = PROTECT(mio_r_getstring(r_octree_mesh_stage_names, NULL, "octree_mesh"));
     static const char *outputs[] = {"castellated", "tet", "hex"};
     const char *output_name =
         (report.output >= 0 && report.output <= 2) ? outputs[report.output] : "unknown";
 
-    enum { R_OCTREE_MESH_N = 50 };
+    enum { R_OCTREE_MESH_N = 53 };
     SEXP res = PROTECT(Rf_allocVector(VECSXP, R_OCTREE_MESH_N));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_OCTREE_MESH_N));
     int k = 0;
@@ -3984,12 +3997,38 @@ SEXP R_mio_octree_mesh(SEXP mesh, SEXP output, SEXP conformity, SEXP skin_gradin
     R_OCTREE_MESH_NUM(num_warnings);
     /* One string, newline-separated; the R wrapper splits it. */
     R_OCTREE_MESH_SET("warnings", warnings);
+    /* The stage names, newline-separated (the R wrapper splits them), their
+     * seconds, and the leaves at each level. */
+    R_OCTREE_MESH_SET("stage_names", stages);
+    {
+        const int64_t count = mio_octree_mesh_stage_seconds(NULL, 0);
+        if (count < 0) mio_r_fail("octree_mesh");
+        SEXP ss = Rf_allocVector(REALSXP, (R_xlen_t)count);
+        SET_VECTOR_ELT(res, k, ss);
+        SET_STRING_ELT(nm, k, Rf_mkChar("stage_seconds"));
+        ++k;
+        if (count > 0 && mio_octree_mesh_stage_seconds(REAL(ss), count) < 0)
+            mio_r_fail("octree_mesh");
+    }
+    {
+        const int64_t count = mio_octree_mesh_leaves_per_level(NULL, 0);
+        if (count < 0) mio_r_fail("octree_mesh");
+        SEXP lv = Rf_allocVector(REALSXP, (R_xlen_t)count);
+        SET_VECTOR_ELT(res, k, lv);
+        SET_STRING_ELT(nm, k, Rf_mkChar("leaves_per_level"));
+        ++k;
+        if (count > 0) {
+            int64_t *tmp = (int64_t *)R_alloc((size_t)count, sizeof(int64_t));
+            if (mio_octree_mesh_leaves_per_level(tmp, count) < 0) mio_r_fail("octree_mesh");
+            for (int64_t i = 0; i < count; ++i) REAL(lv)[i] = (double)tmp[i];
+        }
+    }
 #undef R_OCTREE_MESH_NUM
 #undef R_OCTREE_MESH_SET
     if (k != R_OCTREE_MESH_N) Rf_error("octree_mesh: report has %d fields, expected %d", k,
                                        (int)R_OCTREE_MESH_N);
     Rf_setAttrib(res, R_NamesSymbol, nm);
-    UNPROTECT(4);
+    UNPROTECT(5);
     return res;
 }
 

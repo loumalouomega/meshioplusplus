@@ -662,6 +662,11 @@ _OP_TABLE = {
         "UntangleIterations",
         "MaxCells",
         "MaxTets",
+        "VolumeFix",
+        "ZeroVolumeFactor",
+        "CapFlatness",
+        "CrossingMargin",
+        "CrossingGap",
     ),
     "Octree": (
         "RootCells",
@@ -3122,6 +3127,11 @@ def _apply_step(mesh, step, steps, warnings):
             untangle_iterations=int(_number(step, "UntangleIterations", 50.0)),
             max_cells=int(_number(step, "MaxCells", 20000000.0)),
             max_tets=int(_number(step, "MaxTets", 100000000.0)),
+            volume_fix=_flag(step, "VolumeFix", True),
+            zero_volume_factor=_number(step, "ZeroVolumeFactor", 1.0e-6),
+            cap_flatness=_number(step, "CapFlatness", 0.01),
+            crossing_margin=_number(step, "CrossingMargin", 0.01),
+            crossing_gap=_number(step, "CrossingGap", 0.05),
             return_report=True,
         )
         entry["NumLeaves"] = float(rep["num_leaves"])

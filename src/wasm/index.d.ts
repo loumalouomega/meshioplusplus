@@ -5171,6 +5171,16 @@ export interface OctreeMeshOptions {
   maxCells?: number;
   /** Refuse an output with more cells than this (default 100000000). */
   maxTets?: number;
+  /** Tetrahedral output: run the volume fix after the optimisation (default true). */
+  volumeFix?: boolean;
+  /** Degenerate below this fraction of a tetrahedron's longest edge cubed (default 1e-6). */
+  zeroVolumeFactor?: number;
+  /** A flat tetrahedron is a cap when its apex's height over the opposite face is under this fraction of the face's size (default 0.01). */
+  capFlatness?: number;
+  /** A sliver's opposite edges cross when the crossing lies this far inside both, as a fraction in [0, 0.5) (default 0.01). */
+  crossingMargin?: number;
+  /** ... and the edges come this close, relative to the shorter one (default 0.05). */
+  crossingGap?: number;
 }
 
 /** What {@link MeshioPlusPlusModule.octreeMesh} built. See doc/octree_mesh.md#report. */

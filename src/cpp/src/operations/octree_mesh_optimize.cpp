@@ -242,9 +242,10 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
             // Clearly positive before the round, inverted or within the zero
             // tolerance now (the dihedral angles do not see the sign).
             const auto spoiled_by_move = [&](const std::array<std::int64_t, 4>& rT) {
-                const auto [volume_now, tolerance_now] = octree_mesh_volume_and_tolerance(pts, rT);
+                const auto [volume_now, tolerance_now] =
+                    octree_mesh_volume_and_tolerance(pts, rT, rO.mZeroVolumeFactor);
                 const auto [volume_before, tolerance_before] =
-                    octree_mesh_volume_and_tolerance(before, rT);
+                    octree_mesh_volume_and_tolerance(before, rT, rO.mZeroVolumeFactor);
                 return volume_now <= tolerance_now && volume_before > tolerance_before;
             };
             for (int sweep = 0; sweep < 64; ++sweep) {

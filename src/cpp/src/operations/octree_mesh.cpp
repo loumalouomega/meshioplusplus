@@ -91,6 +91,13 @@ void octm_check_options(const OctreeMeshOptions& rO) {
         octm_fail("untangle_iterations must not be negative");
     if (rO.mMaxCells < 1 || rO.mMaxTets < 1)
         octm_fail("max_cells and max_tets must be positive");
+    if (!finite_nonneg(rO.mZeroVolumeFactor) || !finite_nonneg(rO.mCapFlatness) ||
+        !finite_nonneg(rO.mCrossingGap))
+        octm_fail(
+            "zero_volume_factor, cap_flatness and crossing_gap must be finite and not "
+            "negative");
+    if (!(rO.mCrossingMargin >= 0.0 && rO.mCrossingMargin < 0.5))
+        octm_fail("crossing_margin must be in [0, 0.5)");
     if (rO.mBounds) {
         const auto& b = *rO.mBounds;
         for (std::size_t k = 0; k < 3; ++k)
@@ -652,7 +659,8 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
             detail::octree_mesh_optimize(*setup, rOptions, result, tets);
             clock.Lap(result, "optimize");
             detail::octree_mesh_fill_chain_gaps(*setup, rOptions, result, tets);
-            detail::octree_mesh_fix_volumes(*setup, rOptions, result, tets);
+            if (rOptions.mVolumeFix)
+                detail::octree_mesh_fix_volumes(*setup, rOptions, result, tets);
             detail::octree_mesh_emit_tets(*setup, rOptions, result, tets);
             result.mGuaranteeApplies = rOptions.mSkinGrading == OctreeMeshSkinGrading::Uniform &&
                                        result.mNumWarpRefused == 0 &&

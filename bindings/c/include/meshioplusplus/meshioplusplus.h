@@ -3237,6 +3237,14 @@ typedef struct mio_octree_mesh_opts {
     int32_t attach_quality;       /**< nonzero: attach the quality:* cell data */
     int32_t pillow;               /**< nonzero (default): hexahedral output's boundary layer */
     int32_t hex_grading;          /**< a mio_octree_mesh_hex_grading (hexahedral; UNIFORM) */
+    /** The volume fix of the tetrahedral output (the struct grew from 264 to 304 bytes with it). */
+    double
+        zero_volume_factor; /**< degenerate under this fraction of the longest edge cubed (1e-6) */
+    double cap_flatness; /**< a flat tetrahedron is a cap under this height over its face (0.01) */
+    double crossing_margin; /**< a sliver's edges cross this far inside both, in [0, 0.5) (0.01) */
+    double crossing_gap;    /**< ... and come this close, relative to the shorter one (0.05) */
+    int32_t volume_fix;     /**< nonzero (default): run the volume fix */
+    int32_t reserved32;     /**< must be zero */
     int64_t reserved[4];          /**< must be zero; room for additive growth */
 } mio_octree_mesh_opts;
 
@@ -3325,6 +3333,29 @@ MIO_API mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_op
  * may be NULL/zero to query the length.
  */
 MIO_API int64_t mio_octree_mesh_warnings(char* buf, int64_t buflen);
+
+/**
+ * The stages of this thread's last mio_octree_mesh call that the report's
+ * timings cover, one name per line, in order. String rule 5: required byte
+ * length excluding NUL, -1 on error; the buffer may be NULL/zero to query the
+ * length.
+ */
+MIO_API int64_t mio_octree_mesh_stage_names(char* buf, int64_t buflen);
+
+/**
+ * The seconds each of those stages took, in the same order. Returns the number
+ * of stages (-1 on error); at most @p n values are written to @p out, which may
+ * be NULL with n = 0 to query the count.
+ */
+MIO_API int64_t mio_octree_mesh_stage_seconds(double* out, int64_t n);
+
+/**
+ * The octree's leaves at each level, from level 0, of this thread's last
+ * mio_octree_mesh call. Returns the number of levels (-1 on error); at most
+ * @p n values are written to @p out, which may be NULL with n = 0 to query the
+ * count.
+ */
+MIO_API int64_t mio_octree_mesh_leaves_per_level(int64_t* out, int64_t n);
 
 /**
  * Report what is wrong with a surface, without computing any distances.

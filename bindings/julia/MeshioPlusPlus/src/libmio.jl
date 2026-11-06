@@ -444,6 +444,12 @@ struct _COctreeMeshOpts
     attach_quality::Int32
     pillow::Int32
     hex_grading::Int32
+    zero_volume_factor::Cdouble
+    cap_flatness::Cdouble
+    crossing_margin::Cdouble
+    crossing_gap::Cdouble
+    volume_fix::Int32
+    reserved32::Int32
     reserved::NTuple{4,Int64}
 end
 
@@ -2091,7 +2097,7 @@ function _check_abi_layout()
         error("meshio++: mio_octree_opts layout mismatch ($(sizeof(_COctreeOpts)) bytes)")
     sizeof(_COctreeReport) == 96 ||
         error("meshio++: mio_octree_report layout mismatch ($(sizeof(_COctreeReport)) bytes)")
-    sizeof(_COctreeMeshOpts) == 264 ||
+    sizeof(_COctreeMeshOpts) == 304 ||
         error("meshio++: mio_octree_mesh_opts layout mismatch " *
               "($(sizeof(_COctreeMeshOpts)) bytes)")
     sizeof(_COctreeMeshReport) == 440 ||

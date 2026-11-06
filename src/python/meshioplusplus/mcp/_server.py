@@ -1744,6 +1744,11 @@ def _register_operations(server: FastMCP) -> None:
         untangle_iterations: int = 50,
         max_cells: int = 20000000,
         max_tets: int = 100000000,
+        volume_fix: bool = True,
+        zero_volume_factor: float = 1.0e-6,
+        cap_flatness: float = 0.01,
+        crossing_margin: float = 0.01,
+        crossing_gap: float = 0.05,
     ) -> dict:
         """Mesh the inside of a skin (any closed or slightly dirty surface:
         STL/OBJ/PLY/...) on a 2:1-balanced octree. output='castellated' gives
@@ -1762,8 +1767,15 @@ def _register_operations(server: FastMCP) -> None:
         guarantee). fill='all'/'inside'/'cover' chooses the castellated leaves.
         hex_grading='graded' grades the hexahedra with the octree (dual
         transition schemes) instead of one grid at the skin's size.
+        The tetrahedral output ends with a volume fix (volume_fix, default on):
+        degenerate tetrahedra (volume under zero_volume_factor of the longest
+        edge cubed) are collapsed, flat caps (cap_flatness) dropped or split,
+        slivers (crossing_margin, crossing_gap) split at the crossing of their
+        edges, inverted ones untangled or reordered, and overlaps counted.
         Reports the frame, leaf and cell counts, the quality (dihedral angles,
-        scaled Jacobian, histograms), feature recovery, timings and warnings."""
+        scaled Jacobian, histograms), feature recovery, the volume-fix counts
+        (num_collapsed, num_caps_removed, num_split, num_slivers,
+        num_untangled, num_reordered, num_overlaps), timings and warnings."""
         return _guard(
             _tools.tool_octree_mesh,
             input_path=input_path,
@@ -1805,6 +1817,11 @@ def _register_operations(server: FastMCP) -> None:
             untangle_iterations=untangle_iterations,
             max_cells=max_cells,
             max_tets=max_tets,
+            volume_fix=volume_fix,
+            zero_volume_factor=zero_volume_factor,
+            cap_flatness=cap_flatness,
+            crossing_margin=crossing_margin,
+            crossing_gap=crossing_gap,
         )
 
     @server.tool()

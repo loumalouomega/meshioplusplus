@@ -5778,9 +5778,11 @@ static_assert(offsetof(mio_gen_opts, num_twists) == 128 &&
               "mio_gen_opts layout changed");
 static_assert(sizeof(mio_octree_opts) == 176, "mio_octree_opts grew outside its reserved tail");
 static_assert(sizeof(mio_octree_report) == 96, "mio_octree_report layout changed");
-static_assert(sizeof(mio_octree_mesh_opts) == 264,
+static_assert(sizeof(mio_octree_mesh_opts) == 304,
               "mio_octree_mesh_opts grew outside its reserved tail");
-static_assert(offsetof(mio_octree_mesh_opts, hex_grading) == 228,
+static_assert(offsetof(mio_octree_mesh_opts, hex_grading) == 228 &&
+                  offsetof(mio_octree_mesh_opts, zero_volume_factor) == 232 &&
+                  offsetof(mio_octree_mesh_opts, volume_fix) == 264,
               "mio_octree_mesh_opts layout changed");
 static_assert(static_cast<int>(meshioplusplus::OctreeMeshHexGrading::Graded) ==
                   MIO_OCTREE_MESH_HEX_GRADED,
@@ -6004,6 +6006,11 @@ meshioplusplus::OctreeMeshOptions capi_octree_mesh_options(const mio_octree_mesh
     options.mAttachDistance = rOpts.attach_distance != 0;
     options.mAttachQuality = rOpts.attach_quality != 0;
     options.mPillow = rOpts.pillow != 0;
+    options.mVolumeFix = rOpts.volume_fix != 0;
+    options.mZeroVolumeFactor = rOpts.zero_volume_factor;
+    options.mCapFlatness = rOpts.cap_flatness;
+    options.mCrossingMargin = rOpts.crossing_margin;
+    options.mCrossingGap = rOpts.crossing_gap;
     return options;
 }
 
@@ -6011,6 +6018,18 @@ meshioplusplus::OctreeMeshOptions capi_octree_mesh_options(const mio_octree_mesh
 std::string& capi_octree_mesh_warnings() {
     thread_local std::string warnings;
     return warnings;
+}
+
+/// The variable-length parts of the report of this thread's last mio_octree_mesh call.
+struct CapiOctreeMeshExtras {
+    std::string mStageNames;  ///< The stage names, one per line.
+    std::vector<double> mStageSeconds;
+    std::vector<std::int64_t> mLeavesPerLevel;
+};
+
+CapiOctreeMeshExtras& capi_octree_mesh_extras() {
+    thread_local CapiOctreeMeshExtras extras;
+    return extras;
 }
 
 /// Translate the flat option struct into the core's SdfOptions.
@@ -6158,6 +6177,11 @@ void mio_octree_mesh_opts_init(mio_octree_mesh_opts* opts) {
     opts->attach_quality = d.mAttachQuality ? 1 : 0;
     opts->pillow = d.mPillow ? 1 : 0;
     opts->hex_grading = static_cast<std::int32_t>(d.mHexGrading);
+    opts->volume_fix = d.mVolumeFix ? 1 : 0;
+    opts->zero_volume_factor = d.mZeroVolumeFactor;
+    opts->cap_flatness = d.mCapFlatness;
+    opts->crossing_margin = d.mCrossingMargin;
+    opts->crossing_gap = d.mCrossingGap;
 }
 
 void mio_compute_sdf_opts_init(mio_compute_sdf_opts* opts) {
@@ -6746,6 +6770,7 @@ mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_opts* opts
                           mio_octree_mesh_report* report) {
     return capi_guarded_mesh([&]() -> mio_mesh* {
         capi_octree_mesh_warnings().clear();
+        capi_octree_mesh_extras() = CapiOctreeMeshExtras{};
         capi_require(mesh, "meshio++: mesh is NULL");
         mio_octree_mesh_opts defaults;
         if (!opts) {
@@ -6760,6 +6785,14 @@ mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_opts* opts
                 warnings += '\n';
             warnings += w;
         }
+        CapiOctreeMeshExtras& extras = capi_octree_mesh_extras();
+        for (const auto& [stage, seconds] : r.mTimings) {
+            if (!extras.mStageNames.empty())
+                extras.mStageNames += '\n';
+            extras.mStageNames += stage;
+            extras.mStageSeconds.push_back(seconds);
+        }
+        extras.mLeavesPerLevel = r.mLeavesPerLevel;
         if (report) {
             *report = mio_octree_mesh_report{};
             report->output = static_cast<std::int32_t>(r.mOutput);
@@ -6822,6 +6855,38 @@ int64_t mio_octree_mesh_warnings(char* buf, int64_t buflen) {
         if (buflen < 0)
             throw std::invalid_argument("meshio++: negative warnings buffer length");
         return copy_string(capi_octree_mesh_warnings(), buf, buflen);
+    });
+}
+
+int64_t mio_octree_mesh_stage_names(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative stage names buffer length");
+        return copy_string(capi_octree_mesh_extras().mStageNames, buf, buflen);
+    });
+}
+
+int64_t mio_octree_mesh_stage_seconds(double* out, int64_t n) {
+    return capi_guarded_count([&]() {
+        if (n < 0)
+            throw std::invalid_argument("meshio++: negative stage seconds length");
+        const std::vector<double>& seconds = capi_octree_mesh_extras().mStageSeconds;
+        if (out)
+            std::copy_n(seconds.begin(),
+                        std::min<std::size_t>(seconds.size(), static_cast<std::size_t>(n)), out);
+        return static_cast<std::int64_t>(seconds.size());
+    });
+}
+
+int64_t mio_octree_mesh_leaves_per_level(int64_t* out, int64_t n) {
+    return capi_guarded_count([&]() {
+        if (n < 0)
+            throw std::invalid_argument("meshio++: negative leaves per level length");
+        const std::vector<std::int64_t>& leaves = capi_octree_mesh_extras().mLeavesPerLevel;
+        if (out)
+            std::copy_n(leaves.begin(),
+                        std::min<std::size_t>(leaves.size(), static_cast<std::size_t>(n)), out);
+        return static_cast<std::int64_t>(leaves.size());
     });
 }
 

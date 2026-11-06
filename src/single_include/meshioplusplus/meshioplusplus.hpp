@@ -33220,6 +33220,21 @@ struct OctreeMeshOptions {
     std::int64_t mMaxCells = 20000000;
     /// Refuse an output with more cells than this.
     std::int64_t mMaxTets = 100000000;
+    /// Tetrahedral output: run the volume fix after the optimisation, which collapses
+    /// degenerate tetrahedra, repairs flat caps and slivers, untangles and reorders inverted
+    /// ones and counts the overlaps.
+    bool mVolumeFix = true;
+    /// A tetrahedron is degenerate when its volume is under this fraction of its longest
+    /// edge cubed (plus the effect of six significant digits of written coordinates).
+    double mZeroVolumeFactor = 1.0e-6;
+    /// A flat tetrahedron is a cap when its apex's height over the opposite face is under
+    /// this fraction of the face's size.
+    double mCapFlatness = 0.01;
+    /// A sliver's opposite edges cross when the crossing lies this far (a fraction of each
+    /// edge) inside both.
+    double mCrossingMargin = 0.01;
+    /// ... and the edges come this close, relative to the shorter one.
+    double mCrossingGap = 0.05;
 };
 
 /// The result of `octree_mesh`.
@@ -57354,10 +57369,11 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rSetup, const OctreeMeshOption
                                  OctreeMeshResult& rResult, OctreeMeshTets& rTets);
 
 /// The signed volume of the tetrahedron @p rTet over @p rPoints, and the
-/// tolerance under which it counts as zero: relative to the cube of its longest
-/// edge, plus the effect of the six significant digits of written coordinates.
+/// tolerance under which it counts as zero: @p ZeroVolumeFactor times the cube of its
+/// longest edge, plus the effect of the six significant digits of written coordinates.
 std::pair<double, double> octree_mesh_volume_and_tolerance(const std::vector<Vec3>& rPoints,
-                                                           const std::array<std::int64_t, 4>& rTet);
+                                                           const std::array<std::int64_t, 4>& rTet,
+                                                           double ZeroVolumeFactor = 1.0e-6);
 
 /// Remove the degenerate and the inverted tetrahedra: one whose volume is zero
 /// relative to its longest edge is collapsed (its nodes merge onto one,
@@ -246827,6 +246843,13 @@ void octm_check_options(const OctreeMeshOptions& rO) {
         octm_fail("untangle_iterations must not be negative");
     if (rO.mMaxCells < 1 || rO.mMaxTets < 1)
         octm_fail("max_cells and max_tets must be positive");
+    if (!finite_nonneg(rO.mZeroVolumeFactor) || !finite_nonneg(rO.mCapFlatness) ||
+        !finite_nonneg(rO.mCrossingGap))
+        octm_fail(
+            "zero_volume_factor, cap_flatness and crossing_gap must be finite and not "
+            "negative");
+    if (!(rO.mCrossingMargin >= 0.0 && rO.mCrossingMargin < 0.5))
+        octm_fail("crossing_margin must be in [0, 0.5)");
     if (rO.mBounds) {
         const auto& b = *rO.mBounds;
         for (std::size_t k = 0; k < 3; ++k)
@@ -247388,7 +247411,8 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
             detail::octree_mesh_optimize(*setup, rOptions, result, tets);
             clock.Lap(result, "optimize");
             detail::octree_mesh_fill_chain_gaps(*setup, rOptions, result, tets);
-            detail::octree_mesh_fix_volumes(*setup, rOptions, result, tets);
+            if (rOptions.mVolumeFix)
+                detail::octree_mesh_fix_volumes(*setup, rOptions, result, tets);
             detail::octree_mesh_emit_tets(*setup, rOptions, result, tets);
             result.mGuaranteeApplies = rOptions.mSkinGrading == OctreeMeshSkinGrading::Uniform &&
                                        result.mNumWarpRefused == 0 &&
@@ -249356,9 +249380,10 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
             // Clearly positive before the round, inverted or within the zero
             // tolerance now (the dihedral angles do not see the sign).
             const auto spoiled_by_move = [&](const std::array<std::int64_t, 4>& rT) {
-                const auto [volume_now, tolerance_now] = octree_mesh_volume_and_tolerance(pts, rT);
+                const auto [volume_now, tolerance_now] =
+                    octree_mesh_volume_and_tolerance(pts, rT, rO.mZeroVolumeFactor);
                 const auto [volume_before, tolerance_before] =
-                    octree_mesh_volume_and_tolerance(before, rT);
+                    octree_mesh_volume_and_tolerance(before, rT, rO.mZeroVolumeFactor);
                 return volume_now <= tolerance_now && volume_before > tolerance_before;
             };
             for (int sweep = 0; sweep < 64; ++sweep) {
@@ -249917,9 +249942,8 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& r
 }
 
 std::pair<double, double> octree_mesh_volume_and_tolerance(const std::vector<Vec3>& rPoints,
-                                                           const std::array<std::int64_t, 4>& rTet) {
-    // Volume tolerance relative to the cube of the tetrahedron's longest edge.
-    constexpr double kZeroVolumeFactor = 1.0e-6;
+                                                           const std::array<std::int64_t, 4>& rTet,
+                                                           const double ZeroVolumeFactor) {
     // Relative precision of the written coordinates (six significant digits): a volume below its
     // effect on the longest edge squared is noise.
     constexpr double kCoordinatePrecision = 1.0e-6;
@@ -249938,7 +249962,7 @@ std::pair<double, double> octree_mesh_volume_and_tolerance(const std::vector<Vec
                                               vec3_sub(point(rTet[2]), point(rTet[0]))),
                                    vec3_sub(point(rTet[3]), point(rTet[0]))) /
                           6.0;
-    return {volume, kZeroVolumeFactor * longest * longest * longest +
+    return {volume, ZeroVolumeFactor * longest * longest * longest +
                         kCoordinatePrecision * largest_coordinate * longest * longest};
 }
 
@@ -249952,7 +249976,7 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
         return rTets.mPoints[static_cast<std::size_t>(I)];
     };
     const auto volume_and_tolerance = [&](const std::array<Index, 4>& rT) {
-        return octree_mesh_volume_and_tolerance(rTets.mPoints, rT);
+        return octree_mesh_volume_and_tolerance(rTets.mPoints, rT, rO.mZeroVolumeFactor);
     };
     // Higher is preferred as the node a collapse keeps.
     const auto rank = [&](const Index I) {
@@ -250146,10 +250170,9 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
                     continue;
                 // Only flat tetrahedra: the height of the apex over the face is small against
                 // the face size, otherwise it is a fold, not a cap.
-                constexpr double kCapFlatness = 0.01;
                 const Vec3 to_apex = vec3_sub(point(apex), b);
                 const double height = vec3_dot(normal, to_apex);
-                if (height * height > kCapFlatness * 0.5 * area_2 * std::sqrt(area_2))
+                if (height * height > rO.mCapFlatness * 0.5 * area_2 * std::sqrt(area_2))
                     continue;
                 // Barycentric coordinates of the projection of the apex on the face.
                 const double lambda_c = vec3_dot(vec3_cross(to_apex, edge_d), normal) / area_2;
@@ -250211,8 +250234,6 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
     constexpr int kMaxSliverPasses = 3;
     // The crossing has to lie inside both edges, and the edges have to be this close, relative
     // to the shorter one, to count as crossing.
-    constexpr double kCrossingMargin = 1.0e-2;
-    constexpr double kCrossingGap = 0.05;
     for (int pass = 0; pass < kMaxSliverPasses; ++pass) {
         build_star();
         std::fill(touched.begin(), touched.end(), std::uint8_t{0});
@@ -250255,12 +250276,13 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
                     continue;
                 const double s = (uv * vec3_dot(v, w) - vv * vec3_dot(u, w)) / denominator;
                 const double r = (uu * vec3_dot(v, w) - uv * vec3_dot(u, w)) / denominator;
-                if (s <= kCrossingMargin || s >= 1.0 - kCrossingMargin || r <= kCrossingMargin ||
-                    r >= 1.0 - kCrossingMargin)
+                if (s <= rO.mCrossingMargin || s >= 1.0 - rO.mCrossingMargin ||
+                    r <= rO.mCrossingMargin || r >= 1.0 - rO.mCrossingMargin)
                     continue;
                 const Vec3 on_ab = vec3_add(point(tet[i]), vec3_scale(u, s));
                 const Vec3 on_cd = vec3_add(point(tet[k]), vec3_scale(v, r));
-                if (vec3_norm(vec3_sub(on_ab, on_cd)) > kCrossingGap * std::sqrt(std::min(uu, vv)))
+                if (vec3_norm(vec3_sub(on_ab, on_cd)) >
+                    rO.mCrossingGap * std::sqrt(std::min(uu, vv)))
                     continue;
                 // Split each other tetrahedron of the two shells: replacing one end of the edge
                 // by P keeps the orientation.
@@ -253656,7 +253678,12 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "HexGrading",
           "UntangleIterations",
           "MaxCells",
-          "MaxTets"}},
+          "MaxTets",
+          "VolumeFix",
+          "ZeroVolumeFactor",
+          "CapFlatness",
+          "CrossingMargin",
+          "CrossingGap"}},
         {"ComputeSdf",
          {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
           "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
@@ -256194,6 +256221,11 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             static_cast<std::int64_t>(pipe_number(rStep, "UntangleIterations", 50.0));
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         opts.mMaxTets = static_cast<std::int64_t>(pipe_number(rStep, "MaxTets", 100000000.0));
+        opts.mVolumeFix = pipe_flag(rStep, "VolumeFix", true);
+        opts.mZeroVolumeFactor = pipe_number(rStep, "ZeroVolumeFactor", 1.0e-6);
+        opts.mCapFlatness = pipe_number(rStep, "CapFlatness", 0.01);
+        opts.mCrossingMargin = pipe_number(rStep, "CrossingMargin", 0.01);
+        opts.mCrossingGap = pipe_number(rStep, "CrossingGap", 0.05);
         OctreeMeshResult r = octree_mesh(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumLeaves", static_cast<double>(r.mNumLeaves)},

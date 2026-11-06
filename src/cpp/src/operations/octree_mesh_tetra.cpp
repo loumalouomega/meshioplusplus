@@ -474,9 +474,8 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& r
 }
 
 std::pair<double, double> octree_mesh_volume_and_tolerance(const std::vector<Vec3>& rPoints,
-                                                           const std::array<std::int64_t, 4>& rTet) {
-    // Volume tolerance relative to the cube of the tetrahedron's longest edge.
-    constexpr double kZeroVolumeFactor = 1.0e-6;
+                                                           const std::array<std::int64_t, 4>& rTet,
+                                                           const double ZeroVolumeFactor) {
     // Relative precision of the written coordinates (six significant digits): a volume below its
     // effect on the longest edge squared is noise.
     constexpr double kCoordinatePrecision = 1.0e-6;
@@ -495,7 +494,7 @@ std::pair<double, double> octree_mesh_volume_and_tolerance(const std::vector<Vec
                                               vec3_sub(point(rTet[2]), point(rTet[0]))),
                                    vec3_sub(point(rTet[3]), point(rTet[0]))) /
                           6.0;
-    return {volume, kZeroVolumeFactor * longest * longest * longest +
+    return {volume, ZeroVolumeFactor * longest * longest * longest +
                         kCoordinatePrecision * largest_coordinate * longest * longest};
 }
 
@@ -509,7 +508,7 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
         return rTets.mPoints[static_cast<std::size_t>(I)];
     };
     const auto volume_and_tolerance = [&](const std::array<Index, 4>& rT) {
-        return octree_mesh_volume_and_tolerance(rTets.mPoints, rT);
+        return octree_mesh_volume_and_tolerance(rTets.mPoints, rT, rO.mZeroVolumeFactor);
     };
     // Higher is preferred as the node a collapse keeps.
     const auto rank = [&](const Index I) {
@@ -703,10 +702,9 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
                     continue;
                 // Only flat tetrahedra: the height of the apex over the face is small against
                 // the face size, otherwise it is a fold, not a cap.
-                constexpr double kCapFlatness = 0.01;
                 const Vec3 to_apex = vec3_sub(point(apex), b);
                 const double height = vec3_dot(normal, to_apex);
-                if (height * height > kCapFlatness * 0.5 * area_2 * std::sqrt(area_2))
+                if (height * height > rO.mCapFlatness * 0.5 * area_2 * std::sqrt(area_2))
                     continue;
                 // Barycentric coordinates of the projection of the apex on the face.
                 const double lambda_c = vec3_dot(vec3_cross(to_apex, edge_d), normal) / area_2;
@@ -768,8 +766,6 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
     constexpr int kMaxSliverPasses = 3;
     // The crossing has to lie inside both edges, and the edges have to be this close, relative
     // to the shorter one, to count as crossing.
-    constexpr double kCrossingMargin = 1.0e-2;
-    constexpr double kCrossingGap = 0.05;
     for (int pass = 0; pass < kMaxSliverPasses; ++pass) {
         build_star();
         std::fill(touched.begin(), touched.end(), std::uint8_t{0});
@@ -812,12 +808,13 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
                     continue;
                 const double s = (uv * vec3_dot(v, w) - vv * vec3_dot(u, w)) / denominator;
                 const double r = (uu * vec3_dot(v, w) - uv * vec3_dot(u, w)) / denominator;
-                if (s <= kCrossingMargin || s >= 1.0 - kCrossingMargin || r <= kCrossingMargin ||
-                    r >= 1.0 - kCrossingMargin)
+                if (s <= rO.mCrossingMargin || s >= 1.0 - rO.mCrossingMargin ||
+                    r <= rO.mCrossingMargin || r >= 1.0 - rO.mCrossingMargin)
                     continue;
                 const Vec3 on_ab = vec3_add(point(tet[i]), vec3_scale(u, s));
                 const Vec3 on_cd = vec3_add(point(tet[k]), vec3_scale(v, r));
-                if (vec3_norm(vec3_sub(on_ab, on_cd)) > kCrossingGap * std::sqrt(std::min(uu, vv)))
+                if (vec3_norm(vec3_sub(on_ab, on_cd)) >
+                    rO.mCrossingGap * std::sqrt(std::min(uu, vv)))
                     continue;
                 // Split each other tetrahedron of the two shells: replacing one end of the edge
                 // by P keeps the orientation.

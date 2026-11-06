@@ -395,7 +395,7 @@ static_assert(offsetof(meshioplusplus::ThicknessOptions, mRegion) == 24,
               "ThicknessOptions::mRegion moved");
 MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 304, 8);
 // ABI 36: `mHexGrading` (roadmap 3.1.4.3) in the padding after `mPillow`.
-MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 336, 8);
+MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 376, 8);
 static_assert(offsetof(meshioplusplus::OctreeMeshOptions, mHexGrading) == 308,
               "OctreeMeshOptions::mHexGrading moved");
 // ABI 34 (v17.15.0): the quality options of roadmap 6.2 and the fields 6.3,

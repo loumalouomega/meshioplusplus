@@ -551,7 +551,12 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "HexGrading",
           "UntangleIterations",
           "MaxCells",
-          "MaxTets"}},
+          "MaxTets",
+          "VolumeFix",
+          "ZeroVolumeFactor",
+          "CapFlatness",
+          "CrossingMargin",
+          "CrossingGap"}},
         {"ComputeSdf",
          {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
           "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
@@ -3089,6 +3094,11 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             static_cast<std::int64_t>(pipe_number(rStep, "UntangleIterations", 50.0));
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         opts.mMaxTets = static_cast<std::int64_t>(pipe_number(rStep, "MaxTets", 100000000.0));
+        opts.mVolumeFix = pipe_flag(rStep, "VolumeFix", true);
+        opts.mZeroVolumeFactor = pipe_number(rStep, "ZeroVolumeFactor", 1.0e-6);
+        opts.mCapFlatness = pipe_number(rStep, "CapFlatness", 0.01);
+        opts.mCrossingMargin = pipe_number(rStep, "CrossingMargin", 0.01);
+        opts.mCrossingGap = pipe_number(rStep, "CrossingGap", 0.05);
         OctreeMeshResult r = octree_mesh(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumLeaves", static_cast<double>(r.mNumLeaves)},

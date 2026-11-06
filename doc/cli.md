@@ -2711,6 +2711,7 @@ meshioplusplus octree-mesh part.stl hexes.vtu --output hex --surface-size 0.05
 | `--fill all\|inside\|cover` | castellated output: every leaf, the inside ones, or inside and cut |
 | `--keep-outside`, `--no-distance`, `--attach-quality` | also mesh the outside; skip `sdf:*`; attach `quality:*` |
 | `--no-pillow`, `--hex-grading uniform\|graded`, `--untangle-iterations N` | hexahedral output |
+| `--no-volume-fix`, `--zero-volume-factor X`, `--cap-flatness X`, `--crossing-margin X`, `--crossing-gap X` | tetrahedral output: skip the [volume fix](octree_mesh.md#the-tetrahedral-output), or set what counts as degenerate, a flat cap, and crossing sliver edges |
 | `--max-cells N` / `--max-tets N` | refuse above this many leaves / output cells |
 | `--json` | the report as JSON (without the timings, which vary from run to run) |
 

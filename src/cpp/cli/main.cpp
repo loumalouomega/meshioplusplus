@@ -5657,7 +5657,12 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
                                           {"hex-grading", {}, true},
                                           {"untangle-iterations", {}, true},
                                           {"max-cells", {}, true},
-                                          {"max-tets", {}, true}},
+                                          {"max-tets", {}, true},
+                                          {"no-volume-fix", {}, false},
+                                          {"zero-volume-factor", {}, true},
+                                          {"cap-flatness", {}, true},
+                                          {"crossing-margin", {}, true},
+                                          {"crossing-gap", {}, true}},
                                          report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("octree-mesh requires exactly INFILE and OUTFILE");
@@ -5711,6 +5716,11 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
     o.mUntangleIterations = integer("untangle-iterations", o.mUntangleIterations);
     o.mMaxCells = integer("max-cells", o.mMaxCells);
     o.mMaxTets = integer("max-tets", o.mMaxTets);
+    o.mVolumeFix = !has_flag(p, "no-volume-fix");
+    o.mZeroVolumeFactor = num("zero-volume-factor", o.mZeroVolumeFactor);
+    o.mCapFlatness = num("cap-flatness", o.mCapFlatness);
+    o.mCrossingMargin = num("crossing-margin", o.mCrossingMargin);
+    o.mCrossingGap = num("crossing-gap", o.mCrossingGap);
 
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     mio::OctreeMeshResult r = mio::octree_mesh(mesh, o);

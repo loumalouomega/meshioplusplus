@@ -3199,7 +3199,9 @@ const _OCTREE_MESH_HEX_GRADINGS = Dict("uniform" => Int32(0), "graded" => Int32(
                 fit_iterations=5, dihedral_floor_guard=true, fill=:inside,
                 keep_outside=false, attach_distance=true, attach_quality=false,
                 pillow=true, hex_grading=:uniform, untangle_iterations=50,
-                max_cells=20_000_000, max_tets=100_000_000) -> NamedTuple
+                max_cells=20_000_000, max_tets=100_000_000, volume_fix=true,
+                zero_volume_factor=1e-6, cap_flatness=0.01, crossing_margin=0.01,
+                crossing_gap=0.05) -> NamedTuple
 
 Mesh the inside of the skin `m` on a balanced octree: conforming graded
 tetrahedra by default (`output=:tet`), or the castellated leaves
@@ -3221,7 +3223,7 @@ hausdorff_to_skin, num_inverted, num_boundary_edges_open,
 num_non_manifold_boundary_edges, num_corners, num_corners_snapped,
 num_feature_chains, num_feature_chains_missed, num_feature_moves,
 num_optimized_moves, num_flips, num_winding_rechecks, num_winding_skipped, num_gaps_filled, num_gaps_skipped, num_collapsed, num_reordered, num_overlaps, num_caps_removed, num_split,
-num_slivers, num_untangled, num_warnings, warnings)`,
+num_slivers, num_untangled, num_warnings, leaves_per_level, timings, warnings)`,
 with `output` the name of the output produced and `warnings` a
 `Vector{String}`, one entry per warning.
 """
@@ -3237,7 +3239,8 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
                      dihedral_floor_guard=nothing, fill=nothing, keep_outside=nothing,
                      attach_distance=nothing, attach_quality=nothing, pillow=nothing,
                      hex_grading=nothing, untangle_iterations=nothing, max_cells=nothing,
-                     max_tets=nothing)
+                     max_tets=nothing, volume_fix=nothing, zero_volume_factor=nothing,
+                     cap_flatness=nothing, crossing_margin=nothing, crossing_gap=nothing)
     bnd = bounds === nothing ? Cdouble[] : Cdouble[Cdouble(v) for v in bounds]
     (bounds === nothing || length(bnd) == 6) ||
         throw(ArgumentError("bounds must have six entries"))
@@ -3260,12 +3263,13 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
     scalars = (; min_size, max_size, padding, padding_relative, curvature_angle,
                feature_angle, corner_angle, feature_size, gap_cells, surface_size,
                winding_threshold, winding_beta, alpha_long, alpha_short, max_level,
-               grading_layers, fit_iterations, untangle_iterations, max_cells, max_tets)
+               grading_layers, fit_iterations, untangle_iterations, max_cells, max_tets,
+               zero_volume_factor, cap_flatness, crossing_margin, crossing_gap)
     for (k, v) in pairs(scalars)
         v === nothing || _setopt!(opts, k, v)
     end
     flags = (; gap_outside, preserve_features, dihedral_floor_guard, keep_outside,
-             attach_distance, attach_quality, pillow)
+             attach_distance, attach_quality, pillow, volume_fix)
     for (k, v) in pairs(flags)
         v === nothing || _setopt!(opts, k, Bool(v) ? Int32(1) : Int32(0))
     end
@@ -3284,6 +3288,21 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
     mesh = Mesh(_check_ptr(ptr))
     text = _getstring((buf, n) -> ccall(_sym(:mio_octree_mesh_warnings), Int64,
                                         (Ptr{UInt8}, Int64), buf, n))
+    stage_text = _getstring((buf, n) -> ccall(_sym(:mio_octree_mesh_stage_names), Int64,
+                                              (Ptr{UInt8}, Int64), buf, n))
+    stage_count = ccall(_sym(:mio_octree_mesh_stage_seconds), Int64,
+                        (Ptr{Cdouble}, Int64), C_NULL, 0)
+    stage_seconds = Vector{Cdouble}(undef, max(stage_count, 0))
+    isempty(stage_seconds) ||
+        ccall(_sym(:mio_octree_mesh_stage_seconds), Int64, (Ptr{Cdouble}, Int64),
+              stage_seconds, length(stage_seconds))
+    level_count = ccall(_sym(:mio_octree_mesh_leaves_per_level), Int64,
+                        (Ptr{Int64}, Int64), C_NULL, 0)
+    leaves_per_level = Vector{Int64}(undef, max(level_count, 0))
+    isempty(leaves_per_level) ||
+        ccall(_sym(:mio_octree_mesh_leaves_per_level), Int64, (Ptr{Int64}, Int64),
+              leaves_per_level, length(leaves_per_level))
+    stages = isempty(stage_text) ? String[] : String.(Base.split(stage_text, '\n'))
     r = report[]
     (mesh=mesh,
      output=0 <= r.output < length(_OCTREE_MESH_OUTPUT_NAMES) ?
@@ -3317,6 +3336,8 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
      num_split=Int(r.num_split), num_slivers=Int(r.num_slivers),
      num_untangled=Int(r.num_untangled),
      num_warnings=Int(r.num_warnings),
+     leaves_per_level=Int.(leaves_per_level),
+     timings=[(stages[i], Float64(stage_seconds[i])) for i in 1:min(length(stages), length(stage_seconds))],
      warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
 end
 

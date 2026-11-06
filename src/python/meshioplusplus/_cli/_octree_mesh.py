@@ -210,6 +210,35 @@ def add_args(parser):
         default=100000000,
         help="refuse above this many output cells",
     )
+    parser.add_argument(
+        "--no-volume-fix",
+        action="store_true",
+        help="skip the volume fix of the tetrahedral output",
+    )
+    parser.add_argument(
+        "--zero-volume-factor",
+        type=float,
+        default=1.0e-6,
+        help="degenerate below this fraction of the longest edge cubed",
+    )
+    parser.add_argument(
+        "--cap-flatness",
+        type=float,
+        default=0.01,
+        help="a flat tetrahedron is a cap under this height over its face",
+    )
+    parser.add_argument(
+        "--crossing-margin",
+        type=float,
+        default=0.01,
+        help="a sliver's edges cross this far inside both, as a fraction",
+    )
+    parser.add_argument(
+        "--crossing-gap",
+        type=float,
+        default=0.05,
+        help="... and come this close, relative to the shorter edge",
+    )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="suppress the summary"
@@ -261,6 +290,11 @@ def octree_mesh_cmd(args):
         untangle_iterations=args.untangle_iterations,
         max_cells=args.max_cells,
         max_tets=args.max_tets,
+        volume_fix=not args.no_volume_fix,
+        zero_volume_factor=args.zero_volume_factor,
+        cap_flatness=args.cap_flatness,
+        crossing_margin=args.crossing_margin,
+        crossing_gap=args.crossing_gap,
         return_report=True,
     )
     write(args.outfile, out, file_format=args.output_format)

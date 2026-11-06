@@ -4639,10 +4639,22 @@ mio_octree <- function(mesh, root_cells = NULL, min_level = 0, max_level = 4,
 #'   `50`).
 #' @param max_cells Refuse an octree with more leaves (default `20000000`).
 #' @param max_tets Refuse an output with more cells (default `100000000`).
+#' @param volume_fix Tetrahedral output: run the volume fix after the
+#'   optimisation (default `TRUE`).
+#' @param zero_volume_factor A tetrahedron is degenerate under this fraction of
+#'   its longest edge cubed (default `1e-6`).
+#' @param cap_flatness A flat tetrahedron is a cap when its apex's height over
+#'   the opposite face is under this fraction of the face's size (default
+#'   `0.01`).
+#' @param crossing_margin,crossing_gap A sliver's opposite edges cross when the
+#'   crossing lies this far inside both (a fraction in `[0, 0.5)`, default
+#'   `0.01`) and the edges come this close, relative to the shorter one
+#'   (default `0.05`).
 #' @return A named list: `mesh`, the report fields of `mio_octree_mesh_report`
 #'   (`output` as its name, `guarantee_applies` as a logical, `origin` and
-#'   `root_cells` as length-3 vectors, every count as a double) and `warnings`,
-#'   a character vector with one entry per warning.
+#'   `root_cells` as length-3 vectors, every count as a double), `leaves_per_level`
+#'   (a double vector from level 0), `timings` (seconds per stage, named by
+#'   stage) and `warnings`, a character vector with one entry per warning.
 #' @export
 mio_octree_mesh <- function(mesh, output = NULL, min_size = NULL, max_size = NULL,
                             max_level = NULL, bounds = NULL, padding = NULL,
@@ -4658,7 +4670,9 @@ mio_octree_mesh <- function(mesh, output = NULL, min_size = NULL, max_size = NUL
                             fill = NULL, keep_outside = NULL, attach_distance = NULL,
                             attach_quality = NULL, pillow = NULL,
                             hex_grading = NULL, untangle_iterations = NULL,
-                            max_cells = NULL, max_tets = NULL) {
+                            max_cells = NULL, max_tets = NULL, volume_fix = NULL,
+                            zero_volume_factor = NULL, cap_flatness = NULL,
+                            crossing_margin = NULL, crossing_gap = NULL) {
   code <- function(value, table, what) {
     if (is.null(value)) {
       return(NULL)
@@ -4686,13 +4700,24 @@ mio_octree_mesh <- function(mesh, output = NULL, min_size = NULL, max_size = NUL
     num(fit_iterations), num(untangle_iterations), num(max_cells), num(max_tets),
     flag(gap_outside), flag(preserve_features), flag(dihedral_floor_guard),
     flag(keep_outside), flag(attach_distance), flag(attach_quality), flag(pillow),
-    code(hex_grading, c(uniform = 0L, graded = 1L), "hex grading")
+    code(hex_grading, c(uniform = 0L, graded = 1L), "hex grading"),
+    flag(volume_fix), num(zero_volume_factor), num(cap_flatness), num(crossing_margin),
+    num(crossing_gap)
   )
   res$warnings <- if (nzchar(res$warnings)) {
     strsplit(res$warnings, "\n", fixed = TRUE)[[1]]
   } else {
     character(0)
   }
+  stages <- if (nzchar(res$stage_names)) {
+    strsplit(res$stage_names, "\n", fixed = TRUE)[[1]]
+  } else {
+    character(0)
+  }
+  res$timings <- res$stage_seconds
+  names(res$timings) <- stages
+  res$stage_names <- NULL
+  res$stage_seconds <- NULL
   res
 }
 

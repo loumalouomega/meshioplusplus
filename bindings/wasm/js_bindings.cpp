@@ -4525,7 +4525,8 @@ val octree_js(const val& rMeshObj, const val& rRootCells, double minLevel, doubl
  *   skinGrading, surfaceSize, windingThreshold, windingBeta, conformity,
  *   alphaLong, alphaShort, preserveFeatures, fitIterations,
  *   dihedralFloorGuard, fill, keepOutside, attachDistance, attachQuality,
- *   pillow, hexGrading, untangleIterations, maxCells, maxTets}`, every key optional
+ *   pillow, hexGrading, untangleIterations, maxCells, maxTets, volumeFix, zeroVolumeFactor,
+ *   capFlatness, crossingMargin, crossingGap}`, every key optional
  *   (an unknown key is an error) and defaulting to `OctreeMeshOptions`;
  *   `output` is `'tet'`, `'castellated'` or `'hex'`, `skinGrading`
  *   `'graded'` or `'uniform'`, `conformity` `'stuffing'` or `'cleaving'`,
@@ -4574,7 +4575,12 @@ val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
                                  "hexGrading",
                                  "untangleIterations",
                                  "maxCells",
-                                 "maxTets"});
+                                 "maxTets",
+                                 "volumeFix",
+                                 "zeroVolumeFactor",
+                                 "capFlatness",
+                                 "crossingMargin",
+                                 "crossingGap"});
             const auto has = [&](const char* pKey) {
                 return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
                        !rOptions[pKey].isNull();
@@ -4667,6 +4673,16 @@ val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
                 options.mMaxCells = integer("maxCells");
             if (has("maxTets"))
                 options.mMaxTets = integer("maxTets");
+            if (has("volumeFix"))
+                options.mVolumeFix = flag("volumeFix");
+            if (has("zeroVolumeFactor"))
+                options.mZeroVolumeFactor = number("zeroVolumeFactor");
+            if (has("capFlatness"))
+                options.mCapFlatness = number("capFlatness");
+            if (has("crossingMargin"))
+                options.mCrossingMargin = number("crossingMargin");
+            if (has("crossingGap"))
+                options.mCrossingGap = number("crossingGap");
         }
 
         meshioplusplus::OctreeMeshResult r =

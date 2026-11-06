@@ -4365,7 +4365,9 @@ PYBIND11_MODULE(_core, m) {
            double alpha_short, bool preserve_features, std::int64_t fit_iterations,
            bool dihedral_floor_guard, const std::string& fill, bool keep_outside,
            bool attach_distance, bool attach_quality, bool pillow, const std::string& hex_grading,
-           std::int64_t untangle_iterations, std::int64_t max_cells, std::int64_t max_tets) {
+           std::int64_t untangle_iterations, std::int64_t max_cells, std::int64_t max_tets,
+           bool volume_fix, double zero_volume_factor, double cap_flatness, double crossing_margin,
+           double crossing_gap) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
@@ -4406,6 +4408,11 @@ PYBIND11_MODULE(_core, m) {
             o.mUntangleIterations = untangle_iterations;
             o.mMaxCells = max_cells;
             o.mMaxTets = max_tets;
+            o.mVolumeFix = volume_fix;
+            o.mZeroVolumeFactor = zero_volume_factor;
+            o.mCapFlatness = cap_flatness;
+            o.mCrossingMargin = crossing_margin;
+            o.mCrossingGap = crossing_gap;
             meshioplusplus::OctreeMeshResult r =
                 core_nogil([&] { return meshioplusplus::octree_mesh(cpp, o); });
             py::dict out;
@@ -4500,7 +4507,10 @@ PYBIND11_MODULE(_core, m) {
         py::arg("keep_outside") = false, py::arg("attach_distance") = true,
         py::arg("attach_quality") = false, py::arg("pillow") = true,
         py::arg("hex_grading") = "uniform", py::arg("untangle_iterations") = 50,
-        py::arg("max_cells") = 20000000, py::arg("max_tets") = 100000000);
+        py::arg("max_cells") = 20000000, py::arg("max_tets") = 100000000,
+        py::arg("volume_fix") = true, py::arg("zero_volume_factor") = 1.0e-6,
+        py::arg("cap_flatness") = 0.01, py::arg("crossing_margin") = 0.01,
+        py::arg("crossing_gap") = 0.05);
 
     // Distance to a surface. `sample_distance` takes bare query points;
     // `distance_to_surface` attaches the result to a mesh as ordinary data.

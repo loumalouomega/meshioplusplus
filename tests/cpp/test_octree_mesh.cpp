@@ -489,6 +489,12 @@ TEST(OctreeMesh, RefusesBadOptionsByName) {
     bad = o;
     bad.mSizeArray = "nope";
     expect_throw(bad, "size_array");
+    bad = o;
+    bad.mCrossingMargin = 0.5;
+    expect_throw(bad, "crossing_margin");
+    bad = o;
+    bad.mZeroVolumeFactor = -1.0;
+    expect_throw(bad, "zero_volume_factor");
     EXPECT_THROW(mio::octree_mesh(mt::line_mesh(), o), std::invalid_argument);
     EXPECT_THROW(mio::octree_mesh_output_from_name("quad"), std::invalid_argument);
     EXPECT_EQ(mio::octree_mesh_output_from_name("tet"), mio::OctreeMeshOutput::Tetra);
@@ -763,6 +769,23 @@ TEST(OctreeMeshTet, OptimisedMeshesHaveNoInvertedOrOverlappingTetrahedra) {
         EXPECT_EQ(r.mNumInverted, 0);
         EXPECT_EQ(r.mNumOverlaps, 0);
     }
+}
+
+TEST(OctreeMeshTet, TheVolumeFixCanBeSwitchedOffAndTuned) {
+    const mio::Mesh skin = analytic::torus(1.0, 0.4, 64, 32);
+    auto options = om_tet(0.5, 0.05, true);
+    options.mVolumeFix = false;
+    const auto off = mio::octree_mesh(skin, options);
+    EXPECT_EQ(off.mNumCollapsed + off.mNumCapsRemoved + off.mNumSplit + off.mNumSlivers +
+                  off.mNumUntangled + off.mNumReordered + off.mNumOverlaps,
+              0);
+    // A zero-volume factor of 0 collapses nothing (no tetrahedron has a volume under 0 times
+    // an edge cubed beyond the coordinate noise), and the result is still valid.
+    options.mVolumeFix = true;
+    options.mZeroVolumeFactor = 0.0;
+    const auto tuned = mio::octree_mesh(skin, options);
+    om_check_tets(tuned.mMesh);
+    EXPECT_EQ(tuned.mNumInverted, 0);
 }
 
 TEST(OctreeMeshTet, ReportsTheBoundarysDistanceAndManifoldness) {

@@ -174,10 +174,11 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rSetup, const OctreeMeshOption
                                  OctreeMeshResult& rResult, OctreeMeshTets& rTets);
 
 /// The signed volume of the tetrahedron @p rTet over @p rPoints, and the
-/// tolerance under which it counts as zero: relative to the cube of its longest
-/// edge, plus the effect of the six significant digits of written coordinates.
+/// tolerance under which it counts as zero: @p ZeroVolumeFactor times the cube of its
+/// longest edge, plus the effect of the six significant digits of written coordinates.
 std::pair<double, double> octree_mesh_volume_and_tolerance(const std::vector<Vec3>& rPoints,
-                                                           const std::array<std::int64_t, 4>& rTet);
+                                                           const std::array<std::int64_t, 4>& rTet,
+                                                           double ZeroVolumeFactor = 1.0e-6);
 
 /// Remove the degenerate and the inverted tetrahedra: one whose volume is zero
 /// relative to its longest edge is collapsed (its nodes merge onto one,
