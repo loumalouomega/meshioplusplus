@@ -344,7 +344,9 @@ decltype(auto) core_nogil(TFn&& fn) {
  * keep its views alive.
  *
  * `mRefs` is declared first, so it is filled before `mMesh` is built and
- * destroyed after it. Bind it as `auto [refs, cpp] = core_mesh_in(pymesh);`.
+ * destroyed after it. Keep the result in a named object and take references to
+ * its members (`auto in = core_mesh_in(pymesh); auto& cpp = in.mMesh;`), not a
+ * structured binding: see the note on `core_mesh_in`.
  */
 struct CoreMeshIn {
     meshioplusplus_py::PyMeshRefs mRefs;
@@ -355,6 +357,10 @@ struct CoreMeshIn {
 };
 
 /// `py_to_mesh(pymesh, refs, lenient_field_data, allow_ragged)` with its refs held alongside.
+/// Bind the result to a named object and take references to its members, never
+/// to a structured binding: a lambda nested in a binding's scope may capture it,
+/// and MSVC hits an internal compiler error on a structured binding captured by a
+/// nested lambda (it did at `medit_sol_read_into`).
 CoreMeshIn core_mesh_in(py::handle pymesh, bool allow_ragged = false,
                         bool lenient_field_data = false) {
     return CoreMeshIn(pymesh, allow_ragged, lenient_field_data);
@@ -927,7 +933,9 @@ void core_def_write_codec(py::module_& rM, const char* pName, bool allow_ragged,
         pName,
         [write_fn, allow_ragged](const std::string& path, py::object pymesh, bool binary,
                                  const std::string& codec) {
-            auto [refs, cpp] = core_mesh_in(pymesh, allow_ragged);
+            auto cpp_in = core_mesh_in(pymesh, allow_ragged);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             core_nogil([&] { return write_fn(path, cpp, binary, core_codec_from_name(codec)); });
         },
         py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib");
@@ -940,7 +948,9 @@ template <class TWrite>
 void core_def_write_flags(py::module_& rM, const char* pName, bool allow_ragged, TWrite write_fn) {
     rM.def(pName, [write_fn, allow_ragged](const std::string& path, py::object pymesh, bool binary,
                                            bool flag) {
-        auto [refs, cpp] = core_mesh_in(pymesh, allow_ragged);
+        auto cpp_in = core_mesh_in(pymesh, allow_ragged);
+        [[maybe_unused]] auto& refs = cpp_in.mRefs;
+        auto& cpp = cpp_in.mMesh;
         core_nogil([&] { return write_fn(path, cpp, binary, flag); });
     });
 }
@@ -1801,7 +1811,9 @@ PYBIND11_MODULE(_core, m) {
         "adapt",
         [](py::object pymesh, double hsiz, const std::string& size, const std::string& metric,
            const py::dict& params) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::AdaptOptions o;
             o.mParameters = py_mmg_parameters(params, cpp.NumPoints(), "adapt");
             o.mHsiz = hsiz;
@@ -1820,7 +1832,9 @@ PYBIND11_MODULE(_core, m) {
         "discretize_levelset",
         [](py::object pymesh, const std::string& level_set, double isovalue,
            double remove_small_components, const py::list& materials, const py::dict& params) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::DiscretizeLevelsetOptions o;
             o.mParameters = py_mmg_parameters(params, cpp.NumPoints(), "discretize_levelset");
             o.mLevelSet = level_set;
@@ -1850,7 +1864,9 @@ PYBIND11_MODULE(_core, m) {
         "mesh_domain",
         [](py::object pymesh, double hsiz, const std::string& size,
            const std::vector<double>& holes, const py::dict& params) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::MeshDomainOptions o;
             o.mParameters = py_mmg_parameters(params, cpp.NumPoints(), "mesh_domain");
             o.mHsiz = hsiz;
@@ -1873,7 +1889,9 @@ PYBIND11_MODULE(_core, m) {
         "move",
         [](py::object pymesh, const std::string& displacement,
            const std::vector<std::string>& moving, int lagrangian, const py::dict& params) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::MoveOptions o;
             o.mParameters = py_mmg_parameters(params, cpp.NumPoints(), "move");
             o.mDisplacement = displacement;
@@ -1891,7 +1909,9 @@ PYBIND11_MODULE(_core, m) {
         "metric_from_hessian",
         [](py::object pymesh, const std::string& hessian, double error, double hmin, double hmax,
            const std::string& output) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::MetricFromHessianOptions o;
             o.mHessian = hessian;
             o.mError = error;
@@ -1981,7 +2001,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "vtu_write_appended",
         [](const std::string& path, py::object pymesh, const std::string& codec) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             core_nogil([&] {
                 return meshioplusplus::write_vtu_appended(path, cpp, core_codec_from_name(codec));
             });
@@ -2021,7 +2043,9 @@ PYBIND11_MODULE(_core, m) {
         "pvtu_write_codec",
         [](const std::string& path, py::object pymesh, bool binary, const std::string& codec,
            const std::string& part_key) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             core_nogil([&] {
                 return meshioplusplus::write_pvtu_codec(path, cpp, binary,
                                                         core_codec_from_name(codec), part_key);
@@ -2068,7 +2092,9 @@ PYBIND11_MODULE(_core, m) {
         "pvtp_write_codec",
         [](const std::string& path, py::object pymesh, bool binary, const std::string& codec,
            const std::string& part_key) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             core_nogil([&] {
                 return meshioplusplus::write_pvtp_codec(path, cpp, binary,
                                                         core_codec_from_name(codec), part_key);
@@ -2147,7 +2173,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "extract_skin",
         [](py::object pymesh, bool linearize) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             return meshioplusplus_py::mesh_to_py(
                 core_nogil([&] { return meshioplusplus::extract_skin(cpp, linearize); }));
         },
@@ -2157,7 +2185,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "extract_surface",
         [](py::object pymesh, bool record_parent_ids) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             return meshioplusplus_py::mesh_to_py(core_nogil(
                 [&] { return meshioplusplus::extract_surface(cpp, record_parent_ids); }));
         },
@@ -2167,7 +2197,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "attach_quality",
         [](py::object pymesh) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             return meshioplusplus_py::mesh_to_py(
                 core_nogil([&] { return meshioplusplus::attach_quality(cpp); }));
         },
@@ -2177,7 +2209,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "compute_quality",
         [](py::object pymesh) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::QualityReport rep =
                 core_nogil([&] { return meshioplusplus::compute_quality(cpp); });
             py::dict out;
@@ -2313,7 +2347,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "reorder",
         [](py::object pymesh, const std::string& method) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::ReorderResult res = core_nogil([&] {
                 return meshioplusplus::reorder(cpp,
                                                meshioplusplus::reorder_method_from_name(method));
@@ -2334,7 +2370,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "compute_bandwidth",
         [](py::object pymesh) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             return core_nogil([&] { return meshioplusplus::compute_bandwidth(cpp); });
         },
         py::arg("mesh"));
@@ -2395,7 +2433,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, const std::vector<double>& matrix, bool rotate_vector_data) {
             if (matrix.size() != 16)
                 throw std::invalid_argument("transform: matrix must have 16 elements (4x4)");
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::AffineTransform xf =
                 meshioplusplus::transform_from_matrix(matrix.data());
             meshioplusplus::Mesh out =
@@ -2410,7 +2450,9 @@ PYBIND11_MODULE(_core, m) {
         "clean",
         [](py::object pymesh, bool weld, double atol, bool remove_orphans, bool drop_degenerate,
            bool drop_duplicate_cells) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::CleanOptions opts;
             opts.weld = weld;
             opts.atol = atol;
@@ -2442,7 +2484,9 @@ PYBIND11_MODULE(_core, m) {
                               bool record_ids) {
             if (lo.size() != 3 || hi.size() != 3)
                 throw std::invalid_argument("crop_bbox: lo/hi must have 3 elements");
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::CropMode m =
                 (mode == "any") ? meshioplusplus::CropMode::Any : meshioplusplus::CropMode::All;
             return crop_result_to_dict(core_nogil([&] {
@@ -2458,7 +2502,9 @@ PYBIND11_MODULE(_core, m) {
                               bool record_ids) {
             if (point.size() != 3 || normal.size() != 3)
                 throw std::invalid_argument("crop_plane: point/normal must have 3 elements");
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::CropMode m =
                 (mode == "any") ? meshioplusplus::CropMode::Any : meshioplusplus::CropMode::All;
             return crop_result_to_dict(core_nogil([&] {
@@ -2476,7 +2522,9 @@ PYBIND11_MODULE(_core, m) {
         "crop_predicate",
         [crop_result_to_dict](py::object pymesh, const std::string& array,
                               const std::string& compare, double value, bool record_ids) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             return crop_result_to_dict(core_nogil([&] {
                 return meshioplusplus::crop_predicate(
                     cpp, array, meshioplusplus::refine_compare_from_name(compare), value,
@@ -2491,7 +2539,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "split",
         [](py::object pymesh, const std::string& by, const std::string& tag_name) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::SplitResult r = core_nogil([&] {
                 return meshioplusplus::split(cpp, meshioplusplus::split_by_from_name(by), tag_name);
             });
@@ -2516,7 +2566,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "convert_cells",
         [](py::object pymesh, const std::string& mode, bool record_parent_ids) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::ConvertCellsOptions options;
             options.mMode = meshioplusplus::convert_cells_mode_from_name(mode);
             options.mRecordParentIds = record_parent_ids;
@@ -2535,7 +2587,9 @@ PYBIND11_MODULE(_core, m) {
         "agglomerate",
         [](py::object pymesh, std::size_t target_group_size, bool merge_coplanar_faces,
            double coplanar_angle, double min_sphericity) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::AgglomerateOptions options;
             options.mTargetGroupSize = target_group_size;
             options.mMergeCoplanarFaces = merge_coplanar_faces;
@@ -2560,7 +2614,9 @@ PYBIND11_MODULE(_core, m) {
         "tet_to_poly",
         [](py::object pymesh, double feature_angle, bool point_data_to_cell_data,
            bool record_vertex_ids) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::TetToPolyOptions options;
             options.mFeatureAngleDeg = feature_angle;
             options.mPointDataToCellData = point_data_to_cell_data;
@@ -2584,7 +2640,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "poly_to_tet",
         [](py::object pymesh, bool record_parent_ids) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::PolyToTetOptions options;
             options.mRecordParentIds = record_parent_ids;
             meshioplusplus::PolyToTetResult r =
@@ -2601,8 +2659,12 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "blend_steps",
         [](py::object pya, py::object pyb, double w, bool blend_points) {
-            auto [ra, a] = core_mesh_in(pya, /*allow_ragged=*/true, /*lenient_field_data=*/true);
-            auto [rb, b] = core_mesh_in(pyb, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            auto a_in = core_mesh_in(pya, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            [[maybe_unused]] auto& ra = a_in.mRefs;
+            auto& a = a_in.mMesh;
+            auto b_in = core_mesh_in(pyb, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            [[maybe_unused]] auto& rb = b_in.mRefs;
+            auto& b = b_in.mMesh;
             meshioplusplus::BlendOptions options;
             options.mBlendPoints = blend_points;
             return meshioplusplus_py::mesh_to_py(
@@ -2637,7 +2699,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "subdivide",
         [](py::object pymesh, bool record_parent_ids) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::SubdivideOptions options;
             options.mRecordParentIds = record_parent_ids;
             meshioplusplus::SubdivideResult r =
@@ -2659,8 +2723,12 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "undo_green",
         [](py::object pycoarse, py::object pyfine) {
-            auto [refs_coarse, coarse] = core_mesh_in(pycoarse, /*allow_ragged=*/true);
-            auto [refs_fine, fine] = core_mesh_in(pyfine, /*allow_ragged=*/true);
+            auto coarse_in = core_mesh_in(pycoarse, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs_coarse = coarse_in.mRefs;
+            auto& coarse = coarse_in.mMesh;
+            auto fine_in = core_mesh_in(pyfine, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs_fine = fine_in.mRefs;
+            auto& fine = fine_in.mMesh;
             meshioplusplus::UndoGreenResult r =
                 core_nogil([&] { return meshioplusplus::undo_green(coarse, fine); });
             py::dict out;
@@ -2684,7 +2752,9 @@ PYBIND11_MODULE(_core, m) {
            const std::string& region, const std::string& predicate_array,
            const std::string& predicate_op, double predicate_value, const std::string& closure,
            bool record_levels, bool record_hierarchy) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::RefineOptions options;
             options.mLevels = levels;
             options.mRecordParentIds = record_parent_ids;
@@ -2766,7 +2836,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, double target_ratio, std::int64_t target_faces, double max_error,
            const std::string& placement, bool preserve_boundary, bool preserve_features,
            double feature_angle, py::object frozen) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::DecimateOptions options;
             options.mTargetRatio = target_ratio;
             options.mTargetFaces = target_faces;
@@ -2800,7 +2872,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, double target_ratio, std::int64_t target_cells, double max_error,
            const std::string& placement, bool preserve_boundary, bool preserve_features,
            double feature_angle, py::object frozen) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::DecimateVolumeOptions options;
             options.mTargetRatio = target_ratio;
             options.mTargetCells = target_cells;
@@ -2831,7 +2905,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, const std::string& method, int iterations, double lambda, double mu,
            bool fix_boundary, bool preserve_features, double feature_angle, bool guard_inversion,
            py::object frozen) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::SmoothOptions options;
             options.mMethod = meshioplusplus::smooth_method_from_name(method);
             options.mIterations = iterations;
@@ -2863,8 +2939,12 @@ PYBIND11_MODULE(_core, m) {
         "interpolate",
         [](py::object pysource, py::object pytarget, const std::string& method, py::object arrays,
            bool extrapolate, double default_value, const std::string& on_conflict) {
-            auto [refs_src, src] = core_mesh_in(pysource, /*allow_ragged=*/true);
-            auto [refs_tgt, tgt] = core_mesh_in(pytarget, /*allow_ragged=*/true);
+            auto src_in = core_mesh_in(pysource, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs_src = src_in.mRefs;
+            auto& src = src_in.mMesh;
+            auto tgt_in = core_mesh_in(pytarget, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs_tgt = tgt_in.mRefs;
+            auto& tgt = tgt_in.mMesh;
             meshioplusplus::InterpolateOptions options;
             options.mMethod = meshioplusplus::interpolate_method_from_name(method);
             if (!arrays.is_none())
@@ -2889,7 +2969,9 @@ PYBIND11_MODULE(_core, m) {
            bool record_parent_ids) {
             if (origin.size() != 3 || normal.size() != 3)
                 throw std::invalid_argument("slice: origin and normal must each have 3 elements");
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::SliceOptions options;
             options.mOrigin = {origin[0], origin[1], origin[2]};
             options.mNormal = {normal[0], normal[1], normal[2]};
@@ -2909,8 +2991,12 @@ PYBIND11_MODULE(_core, m) {
         "conservative_interpolate",
         [](py::object pysource, py::object pytarget, py::object arrays, double default_value,
            const std::string& on_conflict) {
-            auto [refs_src, src] = core_mesh_in(pysource, /*allow_ragged=*/true);
-            auto [refs_tgt, tgt] = core_mesh_in(pytarget, /*allow_ragged=*/true);
+            auto src_in = core_mesh_in(pysource, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs_src = src_in.mRefs;
+            auto& src = src_in.mMesh;
+            auto tgt_in = core_mesh_in(pytarget, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs_tgt = tgt_in.mRefs;
+            auto& tgt = tgt_in.mMesh;
             meshioplusplus::ConservativeInterpolateOptions options;
             if (!arrays.is_none())
                 options.mArrays = py::cast<std::vector<std::string>>(arrays);
@@ -2931,7 +3017,9 @@ PYBIND11_MODULE(_core, m) {
         "isosurface",
         [](py::object pymesh, const std::string& array, const std::vector<double>& isovalues,
            int component, bool record_parent_ids) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::IsosurfaceOptions options;
             options.mArrayName = array;
             options.mIsovalues = isovalues;
@@ -3385,7 +3473,9 @@ PYBIND11_MODULE(_core, m) {
            double padding, double padding_relative, const std::string& fill, bool attach_occupancy,
            std::int64_t max_cells, const std::string& sign, const std::string& watertight_check,
            const std::string& plane) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::VoxelOptions options;
             options.mPlane = meshioplusplus::detail::planar_plane_from_name(plane);
             core_grid_extent(options, resolution, cell_size, bounds, padding, padding_relative);
@@ -3422,7 +3512,9 @@ PYBIND11_MODULE(_core, m) {
            const std::string& transition, bool snap, std::int64_t surface_level,
            double curvature_threshold, double feature_angle, const std::string& size_array,
            const std::string& plane) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::OctreeOptions options;
             options.mTransition = meshioplusplus::octree_transition_from_name(transition);
             options.mSnap = snap;
@@ -3481,7 +3573,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, double first_height, double growth, int num_layers, bool reverse,
            double collision_fraction, int smooth_iterations, int max_shrink,
            const std::string& collapse, int normal_smooth_iterations, bool front_check) {
-            auto [refs, mesh] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = mesh_in.mRefs;
+            auto& mesh = mesh_in.mMesh;
             meshioplusplus::BoundaryLayerOptions o;
             o.mFirstHeight = first_height;
             o.mGrowth = growth;
@@ -3551,7 +3645,9 @@ PYBIND11_MODULE(_core, m) {
         [sweep_report](py::object pymesh, const std::array<double, 3>& direction, int num_layers,
                        double ratio, const std::vector<double>& offsets, bool record_layers,
                        std::int64_t max_cells) {
-            auto [refs, mesh] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = mesh_in.mRefs;
+            auto& mesh = mesh_in.mMesh;
             meshioplusplus::ExtrudeOptions o;
             o.mDirection = direction;
             o.mNumLayers = num_layers;
@@ -3572,7 +3668,9 @@ PYBIND11_MODULE(_core, m) {
         [sweep_report](py::object pymesh, const std::array<double, 3>& axis,
                        const std::array<double, 3>& axis_point, double angle, int num_layers,
                        double tolerance, bool record_layers, std::int64_t max_cells) {
-            auto [refs, mesh] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = mesh_in.mRefs;
+            auto& mesh = mesh_in.mMesh;
             meshioplusplus::RevolveOptions o;
             o.mAxis = axis;
             o.mAxisPoint = axis_point;
@@ -3598,7 +3696,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, const std::array<double, 3>& origin,
            const std::array<double, 3>& normal, bool keep_original, bool weld, double tolerance,
            bool reflect_vector_data) {
-            auto [refs, mesh] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = mesh_in.mRefs;
+            auto& mesh = mesh_in.mMesh;
             meshioplusplus::MirrorOptions o;
             o.mOrigin = origin;
             o.mNormal = normal;
@@ -3748,7 +3848,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, const std::string& backend, double max_size, double max_volume,
            double grading, int optimize_steps, std::int64_t max_cells,
            const std::string& face_array) {
-            auto [refs, mesh] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = mesh_in.mRefs;
+            auto& mesh = mesh_in.mMesh;
             meshioplusplus::TetrahedralizeOptions o;
             if (backend == "auto")
                 o.mBackend = meshioplusplus::TetrahedralizeBackend::Auto;
@@ -3804,7 +3906,9 @@ PYBIND11_MODULE(_core, m) {
         "remesh_quads",
         [](py::object pymesh, std::int64_t target_faces, const std::string& backend, bool sharp,
            bool boundary, bool adaptive, bool dominant, std::int32_t seed, std::int64_t max_cells) {
-            auto [refs, mesh] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = mesh_in.mRefs;
+            auto& mesh = mesh_in.mMesh;
             meshioplusplus::RemeshQuadsOptions o;
             o.mTargetFaces = target_faces;
             o.mBackend = backend;
@@ -3869,7 +3973,9 @@ PYBIND11_MODULE(_core, m) {
                 const std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>& planes,
                 const std::string& selection, bool include_uncut, const std::string& backend,
                 std::int32_t degree, bool triangulate, bool record_parent_ids) {
-                auto [refs, mesh] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+                auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+                [[maybe_unused]] auto& refs = mesh_in.mRefs;
+                auto& mesh = mesh_in.mMesh;
                 const meshioplusplus::CutOptions o =
                     cut_options(level_sets, planes, selection, include_uncut, backend, degree,
                                 triangulate, 2, record_parent_ids);
@@ -3901,7 +4007,9 @@ PYBIND11_MODULE(_core, m) {
                 const std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>& planes,
                 const std::string& selection, bool include_uncut, const std::string& backend,
                 std::int32_t order, bool triangulate, bool record_parent_ids) {
-                auto [refs, mesh] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+                auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+                [[maybe_unused]] auto& refs = mesh_in.mRefs;
+                auto& mesh = mesh_in.mMesh;
                 const meshioplusplus::CutOptions o =
                     cut_options(level_sets, planes, selection, include_uncut, backend, 2,
                                 triangulate, order, record_parent_ids);
@@ -3933,7 +4041,9 @@ PYBIND11_MODULE(_core, m) {
         "project_to_cad",
         [](py::object pymesh, py::object brep, const std::string& face_array,
            const std::string& edge_array, double max_distance, int trim_samples) {
-            auto [refs, mesh] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = mesh_in.mRefs;
+            auto& mesh = mesh_in.mMesh;
             const meshioplusplus::BrepInfo info = core_brep_from_py(brep);
             meshioplusplus::ProjectToCadOptions o;
             o.mFaceArray = face_array;
@@ -4256,7 +4366,9 @@ PYBIND11_MODULE(_core, m) {
            bool dihedral_floor_guard, const std::string& fill, bool keep_outside,
            bool attach_distance, bool attach_quality, bool pillow, const std::string& hex_grading,
            std::int64_t untangle_iterations, std::int64_t max_cells, std::int64_t max_tets) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::OctreeMeshOptions o;
             o.mOutput = meshioplusplus::octree_mesh_output_from_name(output);
             o.mMinSize = min_size;
@@ -4443,7 +4555,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pysurface, py::array points, const std::string& sign,
            const std::string& weight, double band, const std::string& watertight_check,
            const std::string& surface_region, double grid_cell_size, double max_winding_work) {
-            auto [refs, surface] = core_mesh_in(pysurface, /*allow_ragged=*/true);
+            auto surface_in = core_mesh_in(pysurface, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = surface_in.mRefs;
+            auto& surface = surface_in.mMesh;
             meshioplusplus::SurfaceDistanceOptions options;
             options.mSign = meshioplusplus::sdf_sign_from_name(sign);
             options.mWeight = meshioplusplus::sdf_weight_from_name(weight);
@@ -4470,8 +4584,12 @@ PYBIND11_MODULE(_core, m) {
            const std::string& weight, const std::string& location, double band,
            bool record_closest_cell, bool record_inside, const std::string& watertight_check,
            const std::string& surface_region, double grid_cell_size, double max_winding_work) {
-            auto [qrefs, query] = core_mesh_in(pyquery, /*allow_ragged=*/true);
-            auto [srefs, surface] = core_mesh_in(pysurface, /*allow_ragged=*/true);
+            auto query_in = core_mesh_in(pyquery, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& qrefs = query_in.mRefs;
+            auto& query = query_in.mMesh;
+            auto surface_in = core_mesh_in(pysurface, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& srefs = surface_in.mRefs;
+            auto& surface = surface_in.mMesh;
             meshioplusplus::SurfaceDistanceOptions options;
             options.mSign = meshioplusplus::sdf_sign_from_name(sign);
             options.mWeight = meshioplusplus::sdf_weight_from_name(weight);
@@ -4501,7 +4619,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "surface_watertight_check",
         [](py::object pysurface) {
-            auto [refs, surface] = core_mesh_in(pysurface, /*allow_ragged=*/true);
+            auto surface_in = core_mesh_in(pysurface, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = surface_in.mRefs;
+            auto& surface = surface_in.mMesh;
             const meshioplusplus::SurfaceQuality q =
                 core_nogil([&] { return meshioplusplus::surface_watertight_check(surface); });
             py::dict out;
@@ -4527,7 +4647,9 @@ PYBIND11_MODULE(_core, m) {
            const std::string& weight, const std::string& location, double band,
            bool record_closest_cell, bool record_inside, const std::string& watertight_check,
            const std::string& surface_region, double grid_cell_size, double max_winding_work) {
-            auto [refs, surface] = core_mesh_in(pysurface, /*allow_ragged=*/true);
+            auto surface_in = core_mesh_in(pysurface, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = surface_in.mRefs;
+            auto& surface = surface_in.mMesh;
             meshioplusplus::SdfOptions options;
             options.mStructure = meshioplusplus::sdf_structure_from_name(structure);
             core_grid_extent(options, resolution, cell_size, bounds, padding, padding_relative);
@@ -4582,7 +4704,9 @@ PYBIND11_MODULE(_core, m) {
            double warp_fraction, const std::string& sign, const std::string& weight,
            const std::string& watertight_check, const std::string& surface_region,
            double grid_cell_size, double max_winding_work) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::RemeshVolumeOptions options;
             core_grid_extent(options, resolution, cell_size, bounds, padding, padding_relative);
             options.mMaxCells = max_cells;
@@ -4624,7 +4748,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, int max_iterations, bool relocate, bool flip, bool preserve_boundary,
            double min_improvement, py::object frozen, const std::string& objective,
            int max_ring_size) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::OptimizeVolumeOptions options;
             options.mObjective = meshioplusplus::optimize_volume_objective_from_name(objective);
             options.mMaxRingSize = max_ring_size;
@@ -4668,7 +4794,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, const std::string& array, const std::string& op,
            const std::string& method, const std::string& location, const std::string& output,
            int component, bool overwrite) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::GradientOptions options;
             options.mArrayName = array;
             options.mOperator = meshioplusplus::gradient_operator_from_name(op);
@@ -4704,7 +4832,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, bool mean, bool gaussian, const std::string& dual_area,
            bool include_boundary, bool record_area, bool record_principal,
            const std::string& region) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::CurvatureOptions options;
             options.mMean = mean;
             options.mGaussian = gaussian;
@@ -4735,7 +4865,9 @@ PYBIND11_MODULE(_core, m) {
         "compute_normals",
         [](py::object pymesh, bool point_normals, bool cell_normals, const std::string& weight,
            bool split, double split_angle, bool record_parent_ids, const std::string& region) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::NormalsOptions options;
             options.mPointNormals = point_normals;
             options.mCellNormals = cell_normals;
@@ -4765,8 +4897,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "render",
         [](py::object pymesh, py::dict options) {
-            auto [refs, cpp] =
-                core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             const meshioplusplus::RenderOptions o = render_py_options(options);
             meshioplusplus::Frame f = core_nogil([&] { return meshioplusplus::render(cpp, o); });
             return render_py_result(std::move(f));
@@ -4775,8 +4908,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "render_text",
         [](py::object pymesh, py::dict options, py::dict text) {
-            auto [refs, cpp] =
-                core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             const meshioplusplus::RenderOptions o = render_py_options(options);
             const meshioplusplus::TextOptions t = render_py_text(text);
             return core_nogil([&] { return meshioplusplus::render_text(cpp, o, t); });
@@ -4838,8 +4972,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "encode_cast",
         [](py::object pymesh, py::dict options, py::dict text, py::dict snapshot) {
-            auto [refs, cpp] =
-                core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             const meshioplusplus::RenderOptions o = render_py_options(options);
             const meshioplusplus::TextOptions t = render_py_text(text);
             const meshioplusplus::SnapshotOptions s = render_py_snapshot(snapshot);
@@ -4851,8 +4986,9 @@ PYBIND11_MODULE(_core, m) {
         "write_snapshot",
         [](const std::string& path, py::object pymesh, py::dict options, py::dict text,
            py::dict snapshot) {
-            auto [refs, cpp] =
-                core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             const meshioplusplus::RenderOptions o = render_py_options(options);
             const meshioplusplus::TextOptions t = render_py_text(text);
             const meshioplusplus::SnapshotOptions s = render_py_snapshot(snapshot);
@@ -4990,7 +5126,9 @@ PYBIND11_MODULE(_core, m) {
         "feature_edges",
         [](py::object pymesh, double feature_angle, bool feature, bool boundary, bool non_manifold,
            bool inconsistent, const std::string& region) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::FeatureEdgeOptions options;
             options.mFeatureAngleDeg = feature_angle;
             options.mFeature = feature;
@@ -5017,7 +5155,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "check_conformity",
         [](py::object pymesh, double tolerance, bool attach_flags) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::ConformityOptions options;
             options.mTolerance = tolerance;
             options.mAttachFlags = attach_flags;
@@ -5043,7 +5183,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "tessellate",
         [](py::object pymesh, std::int64_t levels, bool curved, bool fields, bool record_stencil) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::TessellateOptions options;
             options.mLevels = levels;
             options.mCurved = curved;
@@ -5085,7 +5227,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, double feature_angle, double normal_tolerance,
            double curvature_tolerance, std::int64_t min_patch_cells, const std::string& region,
            const std::string& prefix, const std::string& method, double tolerance) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::SegmentOptions options;
             options.mFeatureAngleDeg = feature_angle;
             options.mNormalToleranceDeg = normal_tolerance;
@@ -5127,7 +5271,9 @@ PYBIND11_MODULE(_core, m) {
            const std::string& mode, bool boundary_only, py::object box, py::object plane,
            py::object sphere, py::object where, py::object quality, std::int64_t component,
            py::object seed, double feature_angle, double normal_tolerance) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             const auto vec3 = [](py::handle h, const char* what) {
                 const auto v = h.cast<std::vector<double>>();
                 if (v.size() != 3)
@@ -5200,7 +5346,9 @@ PYBIND11_MODULE(_core, m) {
         "fit_primitives",
         [](py::object pymesh, const std::string& patch_data, double tolerance, bool relative,
            double min_inlier_fraction, std::uint32_t types, std::int64_t max_iterations) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::FitPrimitivesOptions options;
             options.mPatchData = patch_data;
             options.mTolerance = tolerance;
@@ -5233,7 +5381,9 @@ PYBIND11_MODULE(_core, m) {
            double feature_angle, std::int64_t max_iterations, std::int64_t min_patch_cells,
            std::uint64_t ransac_seed, std::uint32_t types, bool allow_split, bool allow_merge,
            const std::string& prefix) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::RefinePatchesOptions options;
             options.mTolerance = tolerance;
             options.mRelative = relative;
@@ -5321,7 +5471,9 @@ PYBIND11_MODULE(_core, m) {
                 throw py::value_error(std::string("meshio++: fit_cad: unknown ") + pName + " '" +
                                       rValue + "'");
             };
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::FitCadOptions options;
             options.mTolerance = tolerance;
             options.mExactEdges = exact_edges;
@@ -5536,7 +5688,9 @@ PYBIND11_MODULE(_core, m) {
                     selectors.push_back(std::move(selector));
                 }
             }
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             return meshioplusplus_py::mesh_to_py(
                 core_nogil([&] { return meshioplusplus::region_adjacency(cpp, selectors); }));
         },
@@ -5649,7 +5803,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "split_interface",
         [](py::object pymesh, py::object py_side, bool add_cohesive) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::SplitInterfaceOptions options;
             options.mAddCohesive = add_cohesive;
             auto result = core_nogil([&, side_selector = core_region_selector(
@@ -5685,8 +5841,9 @@ PYBIND11_MODULE(_core, m) {
             }
             options.mMaxInverted = max_inverted;
             options.mMaxDegenerate = max_degenerate;
-            auto [refs, cpp] =
-                core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             const meshioplusplus::QualityGateResult r =
                 core_nogil([&] { return meshioplusplus::check_quality(cpp, options); });
             py::list checks;
@@ -5739,10 +5896,12 @@ PYBIND11_MODULE(_core, m) {
         "hausdorff_distance",
         [](py::object pya, py::object pyb, std::int64_t face_samples, const std::string& region_a,
            const std::string& region_b, double grid_cell_size) {
-            auto [refs_a, a] =
-                core_mesh_in(pya, /*allow_ragged=*/true, /*lenient_field_data=*/true);
-            auto [refs_b, b] =
-                core_mesh_in(pyb, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            auto a_in = core_mesh_in(pya, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            [[maybe_unused]] auto& refs_a = a_in.mRefs;
+            auto& a = a_in.mMesh;
+            auto b_in = core_mesh_in(pyb, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            [[maybe_unused]] auto& refs_b = b_in.mRefs;
+            auto& b = b_in.mMesh;
             meshioplusplus::HausdorffOptions options;
             options.mFaceSamples = face_samples;
             options.mRegionA = region_a;
@@ -5812,7 +5971,9 @@ PYBIND11_MODULE(_core, m) {
                     e.mKeepInputs = d["keep_inputs"].cast<bool>();
                 list.push_back(std::move(e));
             }
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             return meshioplusplus_py::mesh_to_py(
                 core_nogil([&] { return meshioplusplus::edit_regions(cpp, list); }));
         },
@@ -5840,8 +6001,9 @@ PYBIND11_MODULE(_core, m) {
                 throw std::invalid_argument(
                     "meshio++: match_periodic_nodes: the transform must be 16 numbers (a "
                     "row-major 4x4 matrix)");
-            auto [refs, cpp] =
-                core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::PeriodicOptions options;
             options.mTransform = meshioplusplus::transform_from_matrix(matrix.data());
             options.mAtol = atol;
@@ -5869,8 +6031,9 @@ PYBIND11_MODULE(_core, m) {
         "adjacency",
         [](py::object pymesh, const std::string& kind) {
             const meshioplusplus::AdjacencyKind k = meshioplusplus::adjacency_kind_from_name(kind);
-            auto [refs, cpp] =
-                core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::Adjacency g =
                 core_nogil([&] { return meshioplusplus::adjacency(cpp, k); });
             return py::make_tuple(meshioplusplus_py::numpy_from_ndarray(std::move(g.mIndptr)),
@@ -5910,7 +6073,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, bool fix_orientation, bool orient_outward, bool fill_holes,
            bool split_non_manifold, std::int64_t max_hole_edges, double weld_tolerance,
            bool record_provenance) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::RepairOptions options;
             options.mFixOrientation = fix_orientation;
             options.mOrientOutward = orient_outward;
@@ -5961,9 +6126,13 @@ PYBIND11_MODULE(_core, m) {
            const std::string& weights, const std::string& target_region,
            const std::string& normal_weight, bool record_distance, bool record_closest_cell,
            double grid_cell_size) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
-            auto [trefs, target] =
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            auto target_in =
                 core_mesh_in(pytarget, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+            [[maybe_unused]] auto& trefs = target_in.mRefs;
+            auto& target = target_in.mMesh;
             meshioplusplus::ShrinkwrapOptions options;
             options.mOffset = offset;
             options.mMaxDistance = max_distance;
@@ -5998,7 +6167,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, const std::string& array, double length_scale,
            py::object fixed_points, const std::string& fixed_points_array, bool fix_boundary,
            bool record_filtered, int max_iterations, double tolerance) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::SobolevOptions options;
             options.mArrayName = array;
             options.mLengthScale = length_scale;
@@ -6044,7 +6215,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, const std::string& system, std::array<double, 3> axis,
            std::array<double, 3> origin, std::array<double, 3> reference,
            std::vector<std::string> arrays, bool inverse, bool record_coordinates) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::CoordinateOptions options;
             options.mSystem = meshioplusplus::coordinate_system_from_name(system);
             options.mAxis = axis;
@@ -6075,7 +6248,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, std::vector<std::string> arrays, const std::string& output,
            double target_vertices, double norm, double hmin, double hmax, double gradation,
            std::int64_t max_sweeps) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::PrepareMetricOptions options;
             options.mArrays = std::move(arrays);
             options.mOutput = output;
@@ -6105,7 +6280,9 @@ PYBIND11_MODULE(_core, m) {
         "untangle",
         [](py::object pymesh, bool fix_boundary, std::vector<std::uint8_t> frozen,
            std::int64_t rings, bool smooth, std::int64_t max_sweeps) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::UntangleOptions options;
             options.mFixBoundary = fix_boundary;
             options.mFrozen = std::move(frozen);
@@ -6136,7 +6313,9 @@ PYBIND11_MODULE(_core, m) {
            std::vector<std::uint8_t> constrained, const std::string& constrained_array,
            double stiffening, std::int64_t steps, bool allow_inverted, double tolerance,
            std::int64_t max_iterations) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::MorphOptions options;
             options.mArray = array;
             options.mFixBoundary = fix_boundary;
@@ -6170,7 +6349,9 @@ PYBIND11_MODULE(_core, m) {
         "laplacian_eigenmodes",
         [](py::object pymesh, std::int64_t num_modes, double tolerance,
            std::int64_t max_iterations) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::EigenmodeOptions options;
             options.mNumModes = num_modes;
             options.mTolerance = tolerance;
@@ -6196,8 +6377,12 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pysource, py::object pytarget, const std::string& method,
            std::int64_t max_iterations, double tolerance, double max_distance,
            std::array<double, 16> initial) {
-            auto [refs_s, source] = core_mesh_in(pysource, /*allow_ragged=*/true);
-            auto [refs_t, target] = core_mesh_in(pytarget, /*allow_ragged=*/true);
+            auto source_in = core_mesh_in(pysource, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs_s = source_in.mRefs;
+            auto& source = source_in.mMesh;
+            auto target_in = core_mesh_in(pytarget, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs_t = target_in.mRefs;
+            auto& target = target_in.mMesh;
             meshioplusplus::RegistrationOptions options;
             options.mMethod = meshioplusplus::registration_method_from_name(method);
             options.mMaxIterations = max_iterations;
@@ -6226,7 +6411,9 @@ PYBIND11_MODULE(_core, m) {
         "estimate_normals",
         [](py::object pymesh, std::int64_t k, const std::string& orientation,
            std::array<double, 3> viewpoint, bool record_variation) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::PointNormalsOptions options;
             options.mK = k;
             options.mOrientation = meshioplusplus::normal_orientation_from_name(orientation);
@@ -6251,7 +6438,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, const std::string& normals, std::int64_t k, double cell_size,
            std::int64_t resolution, double max_distance, bool estimate_normals,
            std::int64_t normals_k, std::int64_t max_cells) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::ReconstructSurfaceOptions options;
             options.mNormalsName = normals;
             options.mK = k;
@@ -6286,7 +6475,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "convex_hull",
         [](py::object pymesh, std::int32_t dimension) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::ConvexHullOptions options;
             options.mDimension = dimension;
             meshioplusplus::ConvexHullResult r =
@@ -6305,7 +6496,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "delaunay_2d",
         [](py::object pymesh) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::Delaunay2dResult r =
                 core_nogil([&] { return meshioplusplus::delaunay_2d(cpp); });
             py::dict out;
@@ -6323,7 +6516,9 @@ PYBIND11_MODULE(_core, m) {
         "geodesic_distance",
         [](py::object pymesh, std::vector<std::int64_t> sources, const std::string& source_region,
            double time_factor, double tolerance, std::int64_t max_iterations) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::GeodesicOptions options;
             options.mSources = std::move(sources);
             options.mSourceRegion = source_region;
@@ -6353,7 +6548,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "parameterize",
         [](py::object pymesh, double padding, std::int64_t max_depth, double max_stretch) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::ParameterizeOptions options;
             options.mPadding = padding;
             options.mMaxDepth = max_depth;
@@ -6376,7 +6573,9 @@ PYBIND11_MODULE(_core, m) {
         "hessian",
         [](py::object pymesh, const std::string& array, const std::string& method,
            const std::string& location, const std::string& output, bool overwrite) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::HessianOptions options;
             options.mArrayName = array;
             options.mMethod = meshioplusplus::gradient_method_from_name(method);
@@ -6400,7 +6599,9 @@ PYBIND11_MODULE(_core, m) {
         "error_size",
         [](py::object pymesh, const std::string& error_array, double target_error, double order,
            double min_size, double max_size, const std::string& output, bool overwrite) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::ErrorSizeOptions options;
             options.mErrorArray = error_array;
             options.mTargetError = target_error;
@@ -6432,7 +6633,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, const std::string& array, const std::string& method,
            const std::string& marking, double marking_value, const std::string& output,
            const std::string& marked_name, bool overwrite) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::ErrorOptions options;
             options.mArrayName = array;
             options.mMethod = meshioplusplus::error_method_from_name(method);
@@ -6464,7 +6667,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, std::int64_t num_clusters, int subdivide, double subsample_ratio,
            int max_subdivide, int max_iterations, int max_repair_passes, const std::string& metric,
            double gradation, bool preserve_boundary, double max_anisotropy) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::RemeshOptions options;
             options.mNumClusters = num_clusters;
             options.mSubdivide = subdivide;
@@ -6620,7 +6825,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, int nparts, const std::string& method, double imbalance,
            const std::string& mode, int seed, bool record_ids, int ghost_layers,
            const std::string& weights_key) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::PartitionOptions options;
             options.mNParts = nparts;
             options.mMethod = meshioplusplus::partition_method_from_name(method);
@@ -6656,7 +6863,9 @@ PYBIND11_MODULE(_core, m) {
         "partition_labels",
         [](py::object pymesh, int nparts, const std::string& method, double imbalance,
            const std::string& mode, int seed, const std::string& weights_key) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::PartitionOptions options;
             options.mNParts = nparts;
             options.mMethod = meshioplusplus::partition_method_from_name(method);
@@ -6679,7 +6888,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "compute_stats",
         [](py::object pymesh) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::StatsReport r =
                 core_nogil([&] { return meshioplusplus::compute_stats(cpp); });
             py::dict out;
@@ -6714,7 +6925,9 @@ PYBIND11_MODULE(_core, m) {
            const std::vector<std::pair<std::string, std::string>>& drop,
            const std::vector<std::tuple<std::string, std::string, std::string>>& rename,
            bool ignore_missing) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::DataManageOptions opts;
             opts.ignore_missing = ignore_missing;
             for (const auto& kv : keep)
@@ -6749,7 +6962,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, const std::vector<std::string>& names, const std::string& prefix,
            const std::string& suffix, bool overwrite, const std::string& nan_policy,
            double nan_replacement) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::DataAverageOptions opts;
             opts.names = names;
             opts.prefix = prefix;
@@ -6770,7 +6985,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, const std::vector<std::string>& names, const std::string& weight,
            const std::string& prefix, const std::string& suffix, bool overwrite,
            const std::string& nan_policy, double nan_replacement) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::DataAverageOptions opts;
             opts.names = names;
             opts.weight = meshioplusplus::cell_point_weight_from_name(weight);
@@ -6792,7 +7009,9 @@ PYBIND11_MODULE(_core, m) {
         "data_calc",
         [](py::object pymesh, const std::string& expression, const std::string& location,
            const std::string& output, bool overwrite) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::DataCalcOptions opts;
             opts.location = meshioplusplus::data_location_from_name(location);
             opts.output = output;
@@ -6811,7 +7030,9 @@ PYBIND11_MODULE(_core, m) {
            const std::string& mode, const std::string& scope, double lo, double hi,
            const std::string& nan_policy, double nan_replacement, const std::string& suffix,
            bool preserve_dtype) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::DataConditionOptions opts;
             opts.location = meshioplusplus::data_location_from_name(location);
             opts.names = names;
@@ -6839,7 +7060,9 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, const std::string& location, const std::vector<std::string>& names,
            const std::string& outputs, const std::string& prefix, const std::string& suffix,
            bool overwrite) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::TensorInvariantsOptions opts;
             opts.location = meshioplusplus::data_location_from_name(location);
             opts.names = names;
@@ -6860,7 +7083,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "data_info",
         [](py::object pymesh) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::DataInfoReport r =
                 core_nogil([&] { return meshioplusplus::data_info(cpp); });
             py::list arrays;
@@ -6896,7 +7121,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "data_integrate",
         [](py::object pymesh, py::object arrays) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::DataIntegrateOptions opts;
             if (!arrays.is_none())
                 opts.mArrayNames = py::cast<std::vector<std::string>>(arrays);
@@ -6937,8 +7164,12 @@ PYBIND11_MODULE(_core, m) {
         "diff",
         [](py::object pymesh_a, py::object pymesh_b, double atol, double rtol, bool unordered,
            std::int64_t max_reported) {
-            auto [refs_a, a] = core_mesh_in(pymesh_a);
-            auto [refs_b, b] = core_mesh_in(pymesh_b);
+            auto a_in = core_mesh_in(pymesh_a);
+            [[maybe_unused]] auto& refs_a = a_in.mRefs;
+            auto& a = a_in.mMesh;
+            auto b_in = core_mesh_in(pymesh_b);
+            [[maybe_unused]] auto& refs_b = b_in.mRefs;
+            auto& b = b_in.mMesh;
             meshioplusplus::DiffOptions opts;
             opts.atol = atol;
             opts.rtol = rtol;
@@ -7025,8 +7256,12 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "meshes_equal",
         [](py::object pymesh_a, py::object pymesh_b, double atol, double rtol) {
-            auto [refs_a, a] = core_mesh_in(pymesh_a);
-            auto [refs_b, b] = core_mesh_in(pymesh_b);
+            auto a_in = core_mesh_in(pymesh_a);
+            [[maybe_unused]] auto& refs_a = a_in.mRefs;
+            auto& a = a_in.mMesh;
+            auto b_in = core_mesh_in(pymesh_b);
+            [[maybe_unused]] auto& refs_b = b_in.mRefs;
+            auto& b = b_in.mMesh;
             return core_nogil([&] { return meshioplusplus::meshes_equal(a, b, atol, rtol); });
         },
         py::arg("mesh_a"), py::arg("mesh_b"), py::arg("atol") = 1e-12, py::arg("rtol") = 1e-9);
@@ -7035,7 +7270,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "stl_write",
         [](const std::string& path, py::object pymesh, bool binary, bool skin) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             core_nogil([&] { return meshioplusplus::write_stl(path, cpp, binary, skin); });
         },
         py::arg("path"), py::arg("mesh"), py::arg("binary") = false, py::arg("skin") = true);
@@ -7168,7 +7405,9 @@ PYBIND11_MODULE(_core, m) {
     // Gmsh writers / reader.
     m.def("gmsh22_write",
           [gmsh_info_from_py](const std::string& path, py::object pymesh, bool binary) {
-              auto [refs, cpp] = core_mesh_in(pymesh);
+              auto cpp_in = core_mesh_in(pymesh);
+              [[maybe_unused]] auto& refs = cpp_in.mRefs;
+              auto& cpp = cpp_in.mMesh;
               core_nogil([&, gmsh_info = gmsh_info_from_py(pymesh)] {
                   return meshioplusplus::write_gmsh22(path, cpp, binary, gmsh_info);
               });
@@ -7177,7 +7416,9 @@ PYBIND11_MODULE(_core, m) {
         "gmsh41_write",
         [gmsh_info_from_py](const std::string& path, py::object pymesh, bool binary,
                             py::object bounding_entities) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             // The $Entities bounding entities cannot live on the C++ Mesh (they
             // are signed entity tags, not indices), so the shim hands them over
             // separately -- the read path's GmshInfo channel, in reverse.
@@ -7245,7 +7486,9 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "ply_write",
         [](const std::string& path, py::object pymesh, bool binary, bool skin) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             core_nogil([&] { return meshioplusplus::write_ply(path, cpp, binary, skin); });
         },
         py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("skin") = true);
@@ -7262,8 +7505,9 @@ PYBIND11_MODULE(_core, m) {
     core_def_read(m, "medit_sol_read", "medit_sol", &meshioplusplus::read_medit_sol);
     // The mesh with the solution's fields attached (a copy: the caller's mesh is untouched).
     m.def("medit_sol_read_into", [](const std::string& path, py::object pymesh) {
-        auto [refs, mesh] =
-            core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+        auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+        [[maybe_unused]] auto& refs = mesh_in.mRefs;
+        auto& mesh = mesh_in.mMesh;
         guard_read("medit_sol", [&](const std::string& rFile) {
             core_nogil([&] { meshioplusplus::read_medit_sol_into(rFile, mesh); });
             return 0;
@@ -8353,7 +8597,9 @@ PYBIND11_MODULE(_core, m) {
            std::map<std::string, std::vector<std::int64_t>> point_sets,
            std::map<std::string, std::vector<std::vector<std::int64_t>>> cell_sets, bool code_aster,
            int node_dataset) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::UnvInfo info;
             info.mPointSets = std::move(point_sets);
             info.mCellSets = std::move(cell_sets);
@@ -8415,7 +8661,9 @@ PYBIND11_MODULE(_core, m) {
         "xdmf_write",
         [](const std::string& path, py::object pymesh, const std::string& data_format,
            int gzip_level) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             core_nogil(
                 [&] { return meshioplusplus::write_xdmf(path, cpp, data_format, gzip_level); });
         },
@@ -8539,14 +8787,18 @@ finalizes.
         .def(
             "write_points_cells",
             [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, py::object pymesh) {
-                auto [refs, cpp] = core_mesh_in(pymesh);
+                auto cpp_in = core_mesh_in(pymesh);
+                [[maybe_unused]] auto& refs = cpp_in.mRefs;
+                auto& cpp = cpp_in.mMesh;
                 core_nogil([&] { return rSelf.WritePointsCells(cpp); });
             },
             py::arg("mesh"), "Write the static grid (points + cells). Once, before write_data.")
         .def(
             "write_data",
             [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, double time, py::object pymesh) {
-                auto [refs, cpp] = core_mesh_in(pymesh);
+                auto cpp_in = core_mesh_in(pymesh);
+                [[maybe_unused]] auto& refs = cpp_in.mRefs;
+                auto& cpp = cpp_in.mMesh;
                 core_nogil([&] { return rSelf.WriteData(time, cpp); });
             },
             py::arg("time"), py::arg("mesh"),
@@ -8629,7 +8881,9 @@ finalizes.
     // sections in v9.21.0, so they must reach the C++ writer rather than being
     // bounced back to the (deliberately NGON-less) Python twin.
     m.def("cgns_write", [](const std::string& path, py::object pymesh, int gzip_level) {
-        auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+        auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+        [[maybe_unused]] auto& refs = cpp_in.mRefs;
+        auto& cpp = cpp_in.mMesh;
         core_nogil([&] { return meshioplusplus::write_cgns(path, cpp, gzip_level); });
     });
     m.def("cgns_read",
@@ -8644,7 +8898,9 @@ finalizes.
 
     // HMF writer / reader (.hmf).
     m.def("hmf_write", [](const std::string& path, py::object pymesh, int gzip_level) {
-        auto [refs, cpp] = core_mesh_in(pymesh);
+        auto cpp_in = core_mesh_in(pymesh);
+        [[maybe_unused]] auto& refs = cpp_in.mRefs;
+        auto& cpp = cpp_in.mMesh;
         core_nogil([&] { return meshioplusplus::write_hmf(path, cpp, gzip_level); });
     });
     core_def_read(m, "hmf_read", "hmf", &meshioplusplus::read_hmf);
@@ -8652,7 +8908,9 @@ finalizes.
     // MOAB h5m writer / reader (.h5m).
     m.def("h5m_write",
           [](const std::string& path, py::object pymesh, bool add_global_ids, int gzip_level) {
-              auto [refs, cpp] = core_mesh_in(pymesh);
+              auto cpp_in = core_mesh_in(pymesh);
+              [[maybe_unused]] auto& refs = cpp_in.mRefs;
+              auto& cpp = cpp_in.mMesh;
               core_nogil(
                   [&] { return meshioplusplus::write_h5m(path, cpp, add_global_ids, gzip_level); });
           });
@@ -8665,7 +8923,9 @@ finalizes.
         "vtkhdf_write",
         [](const std::string& path, py::object pymesh, int gzip_level,
            const std::string& dataset_type, py::object version) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::VtkhdfType type;
             if (dataset_type == "UnstructuredGrid")
                 type = meshioplusplus::VtkhdfType::UnstructuredGrid;
@@ -8748,14 +9008,18 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         .def(
             "write_points_cells",
             [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, py::object pymesh) {
-                auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+                auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+                [[maybe_unused]] auto& refs = cpp_in.mRefs;
+                auto& cpp = cpp_in.mMesh;
                 core_nogil([&] { return rSelf.WritePointsCells(cpp); });
             },
             py::arg("mesh"), "Write the static grid (points + cells). Once, before write_data.")
         .def(
             "write_data",
             [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, double time, py::object pymesh) {
-                auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+                auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+                [[maybe_unused]] auto& refs = cpp_in.mRefs;
+                auto& cpp = cpp_in.mMesh;
                 core_nogil([&] { return rSelf.WriteData(time, cpp); });
             },
             py::arg("time"), py::arg("mesh"),
@@ -8838,7 +9102,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
                           std::map<std::int64_t, std::string> point_tag_groups,
                           std::map<std::int64_t, std::string> cell_tag_groups,
                           std::string med_version) {
-        auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+        auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true, /*lenient_field_data=*/true);
+        [[maybe_unused]] auto& refs = cpp_in.mRefs;
+        auto& cpp = cpp_in.mMesh;
         meshioplusplus::MedInfo info;
         info.mPointTags = std::move(point_tags);
         info.mCellTags = std::move(cell_tags);
@@ -9017,7 +9283,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         [](const std::string& path, py::object pymesh,
            std::map<std::string, std::vector<std::int64_t>> point_sets,
            std::map<std::string, std::vector<std::vector<std::int64_t>>> cell_sets) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::AnsysInfo info;
             info.mPointSets = std::move(point_sets);
             info.mCellSets = std::move(cell_sets);
@@ -9087,7 +9355,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         [openfoam_info](const std::string& path, py::object pymesh, py::dict cell_tags,
                         py::dict patch_types, bool binary, int label_bits, int scalar_bits,
                         const std::string& region, bool decomposed) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             const meshioplusplus::OpenFoamInfo info = openfoam_info(cell_tags, patch_types);
             meshioplusplus::OpenFoamWriteOptions wopts;
             wopts.mBinary = binary;
@@ -9209,7 +9479,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
            const std::string& color_by, const std::optional<int>& component,
            const std::string& cmap, const std::optional<double>& vmin,
            const std::optional<double>& vmax, const std::string& nan_color) {
-            auto [refs, cpp] = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             meshioplusplus::GltfWriteOptions options;
             options.mContainer = meshioplusplus::gltf_container_from_name(container);
             options.mUpAxis = meshioplusplus::gltf_up_axis_from_name(up_axis);
@@ -9248,7 +9520,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
            double roll, const std::string& color_by, const std::optional<int>& component,
            const std::string& cmap, const std::optional<double>& vmin,
            const std::optional<double>& vmax, const std::string& nan_color, bool colorbar) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             core_nogil([&] {
                 return meshioplusplus::write_svg(path, cpp, float_fmt, stroke_width, image_width,
                                                  fill, stroke, azimuth, elevation, roll, color_by,
@@ -9274,7 +9548,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
            const std::optional<int>& component, const std::string& cmap,
            const std::optional<double>& vmin, const std::optional<double>& vmax,
            const std::string& nan_color, bool colorbar) {
-            auto [refs, cpp] = core_mesh_in(pymesh);
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
             core_nogil([&] {
                 return meshioplusplus::write_tikz(
                     path, cpp, float_fmt, standalone, line_width, fill, draw, scale, azimuth,
@@ -9338,7 +9614,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // FLAC3D writer / reader (.f3grid, ascii + binary, common path).
     m.def("flac3d_write", [](const std::string& path, py::object pymesh,
                              const std::string& float_fmt, bool binary) {
-        auto [refs, cpp] = core_mesh_in(pymesh);
+        auto cpp_in = core_mesh_in(pymesh);
+        [[maybe_unused]] auto& refs = cpp_in.mRefs;
+        auto& cpp = cpp_in.mMesh;
         core_nogil([&] { return meshioplusplus::write_flac3d(path, cpp, float_fmt, binary); });
     });
     core_def_read(m, "flac3d_read", "flac3d", &meshioplusplus::read_flac3d);
@@ -9437,7 +9715,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // MFM (Modulef Formatted Mesh) writer / reader (.mfm).
     m.def("mfm_write",
           [](const std::string& path, py::object pymesh, const std::string& float_fmt) {
-              auto [refs, cpp] = core_mesh_in(pymesh);
+              auto cpp_in = core_mesh_in(pymesh);
+              [[maybe_unused]] auto& refs = cpp_in.mRefs;
+              auto& cpp = cpp_in.mMesh;
               core_nogil([&] { return meshioplusplus::write_mfm(path, cpp, float_fmt); });
           });
     core_def_read(m, "mfm_read", "mfm", &meshioplusplus::read_mfm);
@@ -9471,7 +9751,9 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // Python API keeps its historical mesh.info representation at this boundary.
     m.def("netgen_write",
           [](const std::string& path, py::object pymesh, const std::string& float_fmt) {
-              auto [refs, cpp] = core_mesh_in(pymesh);
+              auto cpp_in = core_mesh_in(pymesh);
+              [[maybe_unused]] auto& refs = cpp_in.mRefs;
+              auto& cpp = cpp_in.mMesh;
               const py::object info_obj = pymesh.attr("info");
               if (py::isinstance<py::dict>(info_obj)) {
                   const py::dict info = info_obj.cast<py::dict>();
