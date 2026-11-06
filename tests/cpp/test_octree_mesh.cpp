@@ -754,6 +754,17 @@ TEST(OctreeMeshTet, OptimisationNeverWorsensTheExtremeAngles) {
         }
 }
 
+TEST(OctreeMeshTet, OptimisedMeshesHaveNoInvertedOrOverlappingTetrahedra) {
+    const mio::Mesh skins[] = {mio::icosa_sphere(1.0, 4), analytic::torus(1.0, 0.4, 64, 32)};
+    for (const mio::Mesh& skin : skins) {
+        // om_check_tets requires every volume to be positive.
+        const auto r = mio::octree_mesh(skin, om_tet(0.5, 0.05, true));
+        om_check_tets(r.mMesh);
+        EXPECT_EQ(r.mNumInverted, 0);
+        EXPECT_EQ(r.mNumOverlaps, 0);
+    }
+}
+
 TEST(OctreeMeshTet, ReportsTheBoundarysDistanceAndManifoldness) {
     const mio::Mesh skin = mio::icosa_sphere(1.0, 4);
     const auto r = mio::octree_mesh(skin, om_tet(0.5, 0.05, false));

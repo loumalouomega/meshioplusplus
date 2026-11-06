@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -171,6 +172,23 @@ void octree_mesh_optimize(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOpt
 /// Nothing is added when the output keeps the outside tetrahedra.
 void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
                                  OctreeMeshResult& rResult, OctreeMeshTets& rTets);
+
+/// The signed volume of the tetrahedron @p rTet over @p rPoints, and the
+/// tolerance under which it counts as zero: relative to the cube of its longest
+/// edge, plus the effect of the six significant digits of written coordinates.
+std::pair<double, double> octree_mesh_volume_and_tolerance(const std::vector<Vec3>& rPoints,
+                                                           const std::array<std::int64_t, 4>& rTet);
+
+/// Remove the degenerate and the inverted tetrahedra: one whose volume is zero
+/// relative to its longest edge is collapsed (its nodes merge onto one,
+/// preferably a feature node, then a skin node, and the tetrahedra which become
+/// degenerate are dropped); one whose volume is negative beyond that tolerance
+/// has two nodes swapped to be positive. A collapse moves one node of a
+/// tetrahedron's edge onto the other, shortest edge first, never a feature node,
+/// and only when no tetrahedron around the moved node is inverted or made
+/// degenerate by it. The pairs of tetrahedra left overlapping are counted.
+void octree_mesh_fix_volumes(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
+                             OctreeMeshResult& rResult, OctreeMeshTets& rTets);
 
 /// The two-sided distance between the triangles @p rFaces over @p rPoints
 /// (an output's boundary) and the skin.

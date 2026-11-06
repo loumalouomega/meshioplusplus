@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <iterator>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -468,6 +469,215 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& r
     if (rR.mNumGapsSkipped > 0)
         octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumGapsSkipped) +
                                  " gaps along feature chains not filled");
+}
+
+std::pair<double, double> octree_mesh_volume_and_tolerance(const std::vector<Vec3>& rPoints,
+                                                           const std::array<std::int64_t, 4>& rTet) {
+    // Volume tolerance relative to the cube of the tetrahedron's longest edge.
+    constexpr double kZeroVolumeFactor = 1.0e-6;
+    // Relative precision of the written coordinates (six significant digits): a volume below its
+    // effect on the longest edge squared is noise.
+    constexpr double kCoordinatePrecision = 1.0e-6;
+    const auto point = [&](const std::int64_t I) -> const Vec3& {
+        return rPoints[static_cast<std::size_t>(I)];
+    };
+    double longest = 0.0;
+    double largest_coordinate = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        for (const double c : point(rTet[i]))
+            largest_coordinate = std::max(largest_coordinate, std::abs(c));
+        for (int j = i + 1; j < 4; ++j)
+            longest = std::max(longest, vec3_norm(vec3_sub(point(rTet[j]), point(rTet[i]))));
+    }
+    const double volume = vec3_dot(vec3_cross(vec3_sub(point(rTet[1]), point(rTet[0])),
+                                              vec3_sub(point(rTet[2]), point(rTet[0]))),
+                                   vec3_sub(point(rTet[3]), point(rTet[0]))) /
+                          6.0;
+    return {volume, kZeroVolumeFactor * longest * longest * longest +
+                        kCoordinatePrecision * largest_coordinate * longest * longest};
+}
+
+void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& rO,
+                             OctreeMeshResult& rR, OctreeMeshTets& rTets) {
+    using Index = std::int64_t;
+    constexpr int kMaxCollapsePasses = 10;
+    // Rank from which a node is a feature corner or chain node, which a collapse never moves.
+    constexpr int kFeatureRank = 4;
+    const auto point = [&](const Index I) -> const Vec3& {
+        return rTets.mPoints[static_cast<std::size_t>(I)];
+    };
+    const auto volume_and_tolerance = [&](const std::array<Index, 4>& rT) {
+        return octree_mesh_volume_and_tolerance(rTets.mPoints, rT);
+    };
+    // Higher is preferred as the node a collapse keeps.
+    const auto rank = [&](const Index I) {
+        const std::size_t i = static_cast<std::size_t>(I);
+        const int feature = i < rTets.mFeature.size() ? rTets.mFeature[i] : 0;
+        const int on_skin = i < rTets.mOnSkin.size() ? rTets.mOnSkin[i] : 0;
+        return (feature == 1 ? 3 : (feature == 2 ? 2 : 0)) * 2 + on_skin;
+    };
+    const auto considered = [&](const std::size_t T) {
+        return rTets.mMaterial[T] > 0 || rO.mKeepOutside;
+    };
+
+    std::vector<Index> merge(rTets.mPoints.size());
+    std::vector<std::uint8_t> touched(rTets.mPoints.size());
+    // Node-to-tetrahedron incidence in compressed form, rebuilt each pass: the tetrahedra of
+    // node i are star[start[i]..start[i + 1]).
+    std::vector<std::size_t> start;
+    std::vector<std::size_t> star;
+    for (int pass = 0; pass < kMaxCollapsePasses; ++pass) {
+        std::fill(touched.begin(), touched.end(), std::uint8_t{0});
+        bool any = false;
+        for (std::size_t i = 0; i < merge.size(); ++i)
+            merge[i] = static_cast<Index>(i);
+        start.assign(rTets.mPoints.size() + 1, 0);
+        for (const auto& tet : rTets.mTets)
+            for (const Index v : tet)
+                ++start[static_cast<std::size_t>(v) + 1];
+        for (std::size_t i = 0; i < rTets.mPoints.size(); ++i)
+            start[i + 1] += start[i];
+        star.resize(start.back());
+        std::vector<std::size_t> fill(start.begin(), start.end() - 1);
+        for (std::size_t t = 0; t < rTets.mTets.size(); ++t)
+            for (const Index v : rTets.mTets[t])
+                star[fill[static_cast<std::size_t>(v)]++] = t;
+        // The collapse of node A onto node B is valid when no tetrahedron around A, other than
+        // those that contain B, ends up inverted or degenerate.
+        const auto valid = [&](const Index A, const Index B) {
+            for (std::size_t k = start[static_cast<std::size_t>(A)];
+                 k < start[static_cast<std::size_t>(A) + 1]; ++k) {
+                const auto& tet = rTets.mTets[star[k]];
+                if (!considered(star[k]) || tet[0] == B || tet[1] == B || tet[2] == B ||
+                    tet[3] == B)
+                    continue;
+                auto moved = tet;
+                for (Index& v : moved)
+                    v = v == A ? B : v;
+                const auto [volume_before, tolerance_before] = volume_and_tolerance(tet);
+                const auto [volume_after, tolerance_after] = volume_and_tolerance(moved);
+                // A tetrahedron that was already bad only has to not get worse.
+                if (volume_after <= tolerance_after && volume_after < volume_before)
+                    return false;
+            }
+            return true;
+        };
+        for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+            const auto& tet = rTets.mTets[t];
+            if (!considered(t) || touched[static_cast<std::size_t>(tet[0])] ||
+                touched[static_cast<std::size_t>(tet[1])] ||
+                touched[static_cast<std::size_t>(tet[2])] ||
+                touched[static_cast<std::size_t>(tet[3])])
+                continue;
+            const auto [volume, tolerance] = volume_and_tolerance(tet);
+            if (std::abs(volume) > tolerance)
+                continue;
+            // The edges as (length, A, B), with A the node that moves onto B: A never outranks
+            // B and is never a feature corner or chain node.
+            std::vector<std::tuple<double, Index, Index>> edges;
+            for (int i = 0; i < 4; ++i)
+                for (int j = i + 1; j < 4; ++j) {
+                    const double length = vec3_norm(vec3_sub(point(tet[j]), point(tet[i])));
+                    if (rank(tet[i]) < kFeatureRank && rank(tet[i]) <= rank(tet[j]))
+                        edges.emplace_back(length, tet[i], tet[j]);
+                    if (rank(tet[j]) < kFeatureRank && rank(tet[j]) <= rank(tet[i]))
+                        edges.emplace_back(length, tet[j], tet[i]);
+                }
+            std::sort(edges.begin(), edges.end());
+            for (const auto& [length, a, b] : edges) {
+                if (!valid(a, b))
+                    continue;
+                // The nodes of every tetrahedron around A and B are frozen for this pass, as
+                // their volumes were checked as they are.
+                for (const Index n : {a, b})
+                    for (std::size_t k = start[static_cast<std::size_t>(n)];
+                         k < start[static_cast<std::size_t>(n) + 1]; ++k)
+                        for (const Index v : rTets.mTets[star[k]])
+                            touched[static_cast<std::size_t>(v)] = 1;
+                merge[static_cast<std::size_t>(a)] = b;
+                any = true;
+                break;
+            }
+        }
+        if (!any)
+            break;
+        // Remap every tetrahedron and drop those with a repeated node.
+        std::size_t out = 0;
+        for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+            std::array<Index, 4> tet;
+            for (int k = 0; k < 4; ++k)
+                tet[k] = merge[static_cast<std::size_t>(rTets.mTets[t][k])];
+            if (tet[0] == tet[1] || tet[0] == tet[2] || tet[0] == tet[3] || tet[1] == tet[2] ||
+                tet[1] == tet[3] || tet[2] == tet[3]) {
+                ++rR.mNumCollapsed;
+                continue;
+            }
+            rTets.mTets[out] = tet;
+            rTets.mMaterial[out] = rTets.mMaterial[t];
+            rTets.mCut[out] = rTets.mCut[t];
+            rTets.mLevel[out] = rTets.mLevel[t];
+            rTets.mShape[out] = rTets.mShape[t];
+            ++out;
+        }
+        rTets.mTets.resize(out);
+        rTets.mMaterial.resize(out);
+        rTets.mCut.resize(out);
+        rTets.mLevel.resize(out);
+        rTets.mShape.resize(out);
+    }
+
+    // The remaining negative tetrahedra (including those the collapse left within the
+    // tolerance) get two nodes swapped.
+    for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+        if (!considered(t))
+            continue;
+        if (volume_and_tolerance(rTets.mTets[t]).first < 0.0) {
+            std::swap(rTets.mTets[t][1], rTets.mTets[t][2]);
+            rTets.mCut[t] = 1;
+            ++rR.mNumReordered;
+        }
+    }
+
+    // Two tetrahedra that share a face overlap when their opposite nodes lie on the same side
+    // of it.
+    std::vector<std::pair<std::array<Index, 3>, std::pair<std::size_t, Index>>> faces;
+    for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+        if (!considered(t))
+            continue;
+        for (const auto& facet : kOctmtFacet) {
+            std::array<Index, 3> key{rTets.mTets[t][facet[0]], rTets.mTets[t][facet[1]],
+                                     rTets.mTets[t][facet[2]]};
+            std::sort(key.begin(), key.end());
+            // The node of the tetrahedron which is not on the face.
+            Index opposite = -1;
+            for (const Index v : rTets.mTets[t])
+                if (v != key[0] && v != key[1] && v != key[2])
+                    opposite = v;
+            faces.push_back({key, {t, opposite}});
+        }
+    }
+    std::sort(faces.begin(), faces.end());
+    for (std::size_t i = 0; i + 1 < faces.size(); ++i) {
+        if (faces[i].first != faces[i + 1].first ||
+            (i + 2 < faces.size() && faces[i + 2].first == faces[i].first))
+            continue;
+        const Vec3& a = point(faces[i].first[0]);
+        const Vec3 normal = vec3_cross(vec3_sub(point(faces[i].first[1]), a),
+                                       vec3_sub(point(faces[i].first[2]), a));
+        const double side_0 = vec3_dot(normal, vec3_sub(point(faces[i].second.second), a));
+        const double side_1 = vec3_dot(normal, vec3_sub(point(faces[i + 1].second.second), a));
+        rR.mNumOverlaps += side_0 * side_1 > 0.0;
+    }
+
+    if (rR.mNumCollapsed > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumCollapsed) +
+                                 " degenerate tetrahedra collapsed");
+    if (rR.mNumReordered > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumReordered) +
+                                 " inverted tetrahedra reordered");
+    if (rR.mNumOverlaps > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumOverlaps) +
+                                 " overlapping tetrahedra pairs");
 }
 
 double octree_mesh_hausdorff_to_skin(const OctreeMeshSetup& rS, const std::vector<Vec3>& rPoints,

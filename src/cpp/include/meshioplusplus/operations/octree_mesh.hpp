@@ -280,6 +280,9 @@ struct OctreeMeshResult {
     std::int64_t mNumFlips = 0;                     ///< Flips the optimisation kept.
     std::int64_t mNumGapsFilled = 0;                ///< Chain gaps filled with tetrahedra.
     std::int64_t mNumGapsSkipped = 0;               ///< Chain gaps left open.
+    std::int64_t mNumCollapsed = 0;                 ///< Degenerate tetrahedra removed by collapsing their nodes.
+    std::int64_t mNumReordered = 0;                 ///< Inverted tetrahedra made positive by swapping two nodes.
+    std::int64_t mNumOverlaps = 0;                  ///< Pairs of tetrahedra sharing a face whose opposite nodes lie on the same side of it.
     /// The Labelle-Shewchuk dihedral bound applies to every tetrahedron:
     /// `Uniform` grading, nothing snapped to features, nothing refused.
     bool mGuaranteeApplies = false;

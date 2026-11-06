@@ -235,8 +235,17 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
             }
         }
         // 3. The dihedral floor: put back every node whose worst angle fell
-        // below the mesh's worst before the round, until none does.
+        // below the mesh's worst before the round, or that inverted or flattened
+        // a tetrahedron, until none does.
         if (rO.mDihedralFloorGuard) {
+            // Clearly positive before the round, inverted or within the zero
+            // tolerance now (the dihedral angles do not see the sign).
+            const auto spoiled_by_move = [&](const std::array<std::int64_t, 4>& rT) {
+                const auto [volume_now, tolerance_now] = octree_mesh_volume_and_tolerance(pts, rT);
+                const auto [volume_before, tolerance_before] =
+                    octree_mesh_volume_and_tolerance(before, rT);
+                return volume_now <= tolerance_now && volume_before > tolerance_before;
+            };
             for (int sweep = 0; sweep < 64; ++sweep) {
                 octmo_angles(pts, tets, angle);
                 octmo_max_angles(pts, tets, big);
@@ -246,7 +255,8 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
                         continue;
                     for (std::int64_t t : inc[p])
                         if (angle[static_cast<std::size_t>(t)] < floor ||
-                            big[static_cast<std::size_t>(t)] > ceiling) {
+                            big[static_cast<std::size_t>(t)] > ceiling ||
+                            spoiled_by_move(tets[static_cast<std::size_t>(t)])) {
                             pts[p] = before[p];
                             any = true;
                             break;
