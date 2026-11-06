@@ -56,7 +56,7 @@ The November 2026 measurements (round 2 of [roadmap 3.4](./roadmap.md#quality-of
 
 | Language | Before | After |
 | --- | ---: | ---: |
-| C++ | 10.6% (26,097 of 245,231 lines) | 9.3% (22,665 of 243,522) |
+| C++ | 10.6% (26,097 of 245,231 lines) | 9.3% (22,739 of 243,556) |
 | Python | 11.0% (15,038 of 137,250 lines) | 9.9% (13,481 of 136,357) |
 
 What remains at the top is mostly structure the report cannot tell apart from copying: the explicit `py::arg` signatures of `bindings/python/_core.cpp`, the `extern "C"` entry points of `bindings/c/c_api.cpp`, the argument tables of the native CLI and the typed MCP tool signatures. The rest is listed in roadmap 3.4.8 to 3.4.10.
