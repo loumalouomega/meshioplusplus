@@ -37,15 +37,20 @@ namespace detail {
 
 namespace {
 
-bool ce_use_less(const CreaseEdgeUse& rA, const CreaseEdgeUse& rB) {
-    if (rA.mLo != rB.mLo)
-        return rA.mLo < rB.mLo;
-    if (rA.mHi != rB.mHi)
-        return rA.mHi < rB.mHi;
-    if (rA.mFace != rB.mFace)
-        return rA.mFace < rB.mFace;
-    return rA.mForward < rB.mForward;
-}
+// A function object rather than a function: the sort then inlines the
+// comparison whichever caller instantiates it (as a function pointer it was
+// called per comparison, about +11% of tier S `segment`).
+struct CeUseLess {
+    bool operator()(const CreaseEdgeUse& rA, const CreaseEdgeUse& rB) const {
+        if (rA.mLo != rB.mLo)
+            return rA.mLo < rB.mLo;
+        if (rA.mHi != rB.mHi)
+            return rA.mHi < rB.mHi;
+        if (rA.mFace != rB.mFace)
+            return rA.mFace < rB.mFace;
+        return rA.mForward < rB.mForward;
+    }
+};
 
 }  // namespace
 
@@ -100,7 +105,7 @@ std::vector<CreaseEdgeUse> crease_edge_uses(const std::vector<std::int64_t>& rSt
             uses[w++] = u < v ? CreaseEdgeUse{u, v, face, true} : CreaseEdgeUse{v, u, face, false};
         }
     });
-    parallel_sort(uses.begin(), uses.end(), ce_use_less);
+    parallel_sort(uses.begin(), uses.end(), CeUseLess{});
     return uses;
 }
 

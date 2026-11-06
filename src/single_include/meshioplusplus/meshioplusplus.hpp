@@ -44711,43 +44711,6 @@ namespace meshioplusplus {
 namespace detail {
 
 /**
- * @brief Emits the points and `point_data` of @p rOut as the rows
- * @p rPointSrc of @p rMesh (`out[j] = src[rPointSrc[j]]`, dtype kept).
- *
- * A `point_data` array whose row count is not the point count is copied
- * verbatim (owned).
- */
-inline void gather_point_table(const Mesh& rMesh, const std::vector<std::int64_t>& rPointSrc,
-                               Mesh& rOut) {
-    const NDArray& points = rMesh.Points();
-    const std::size_t n = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
-    {
-        NDArray newpts = NDArray::Uninit(points.Dtype(), {rPointSrc.size(), dim});
-        if (!rPointSrc.empty() && dim > 0) {
-            const std::size_t rb = dim * dtype_size(points.Dtype());
-            const std::byte* s = points.Data();
-            std::byte* d = newpts.Data();
-            parallel_for_bw(rPointSrc.size(), [&](std::size_t j) {
-                std::memcpy(d + j * rb, s + static_cast<std::size_t>(rPointSrc[j]) * rb, rb);
-            });
-        }
-        rOut.AssignPoints(std::move(newpts));
-    }
-    for (const std::string& name : rMesh.PointDataNames()) {
-        const NDArray& a = rMesh.PointData(name);
-        const std::size_t rows = a.Shape().empty() ? 0 : a.Shape()[0];
-        if (rows == n)
-            rOut.AddPointData(name, subset_gather_rows(a, rPointSrc));
-        else {
-            NDArray c = a;
-            c.MakeOwned();
-            rOut.AddPointData(name, std::move(c));
-        }
-    }
-}
-
-/**
  * @brief Assigns @p rOut the points of @p rMesh whose @p rUsed flag is set, in
  * ascending order (`NumUsed` of them), as a byte-row subset keeping the dtype.
  */
@@ -50623,53 +50586,6 @@ std::string png_encode_rgba(const unsigned char* pRgba, std::size_t Width, std::
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/png_write.hpp =====
-// ===== begin src/cpp/src/detail/point_field_check.hpp =====
-/**
- * @file detail/point_field_check.hpp
- * @brief The argument check `gradient` and `hessian` share: a named
- * point_data field, and a result location on the mesh.
- *
- * A **core-private** header: nothing installed names it.
- */
-
-// System includes
-#include <stdexcept>
-#include <string>
-
-// Project includes
-
-namespace meshioplusplus {
-namespace detail {
-
-/// Throw `std::invalid_argument` (prefixed with `pPrefix`) unless
-/// `rArrayName` names point_data of `rMesh` and `Location` is not Field. A
-/// cell_data field of that name is called out: it is piecewise constant and
-/// has no derivative.
-inline void require_point_field(const Mesh& rMesh, const std::string& rArrayName,
-                                DataLocation Location, const char* pPrefix) {
-    if (rArrayName.empty())
-        throw std::invalid_argument(std::string(pPrefix) + "an array name is required");
-    if (Location == DataLocation::Field)
-        throw std::invalid_argument(std::string(pPrefix) +
-                                    "field_data has no location on the mesh; the result must be "
-                                    "'point' or 'cell'");
-    if (!rMesh.HasPointData(rArrayName)) {
-        // A cell_data field is piecewise constant and has no derivative. Name
-        // the fix, exactly as isosurface does for the same reason.
-        if (rMesh.HasCellData(rArrayName))
-            throw std::invalid_argument(
-                std::string(pPrefix) + "'" + rArrayName +
-                "' is cell_data, which is piecewise constant and has no derivative; convert it "
-                "first with cell_data_to_point_data (CLI: meshioplusplus data to-point)");
-        throw std::invalid_argument(
-            std::string(pPrefix) +
-            data_unknown_key_message(rMesh, DataLocation::Point, rArrayName));
-    }
-}
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/src/detail/point_field_check.hpp =====
 // ===== begin src/cpp/src/detail/point_knn.hpp =====
 /**
  * @file detail/point_knn.hpp
@@ -78721,15 +78637,20 @@ namespace detail {
 
 namespace {
 
-bool ce_use_less(const CreaseEdgeUse& rA, const CreaseEdgeUse& rB) {
-    if (rA.mLo != rB.mLo)
-        return rA.mLo < rB.mLo;
-    if (rA.mHi != rB.mHi)
-        return rA.mHi < rB.mHi;
-    if (rA.mFace != rB.mFace)
-        return rA.mFace < rB.mFace;
-    return rA.mForward < rB.mForward;
-}
+// A function object rather than a function: the sort then inlines the
+// comparison whichever caller instantiates it (as a function pointer it was
+// called per comparison, about +11% of tier S `segment`).
+struct CeUseLess {
+    bool operator()(const CreaseEdgeUse& rA, const CreaseEdgeUse& rB) const {
+        if (rA.mLo != rB.mLo)
+            return rA.mLo < rB.mLo;
+        if (rA.mHi != rB.mHi)
+            return rA.mHi < rB.mHi;
+        if (rA.mFace != rB.mFace)
+            return rA.mFace < rB.mFace;
+        return rA.mForward < rB.mForward;
+    }
+};
 
 }  // namespace
 
@@ -78784,7 +78705,7 @@ std::vector<CreaseEdgeUse> crease_edge_uses(const std::vector<std::int64_t>& rSt
             uses[w++] = u < v ? CreaseEdgeUse{u, v, face, true} : CreaseEdgeUse{v, u, face, false};
         }
     });
-    parallel_sort(uses.begin(), uses.end(), ce_use_less);
+    parallel_sort(uses.begin(), uses.end(), CeUseLess{});
     return uses;
 }
 
@@ -108467,8 +108388,6 @@ std::string make_temp_dir(const std::string& rTag) {
 
 // Project includes
 
-// Project includes (private, not installed)
-
 namespace meshioplusplus {
 namespace detail {
 
@@ -108500,6 +108419,8 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
                                bool drop_empty_blocks, const std::string& rOpName) {
     SubsetResult res;
     const std::size_t n = rMesh.NumPoints();
+    const std::size_t dim = rMesh.PointDim();
+    const NDArray& points = rMesh.Points();
 
     // 1) mark used points across all kept cells. Serial: parallel iterations
     // would store the same value 1 to shared slots — benign in practice but a
@@ -108541,8 +108462,32 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
 
     Mesh& out = res.mMesh;
 
-    // 3) points; 4) point_data (gathered by point_src when full-length).
-    gather_point_table(rMesh, point_src, out);
+    // 3) points.
+    {
+        NDArray newpts = NDArray::Uninit(points.Dtype(), {point_src.size(), dim});
+        if (!point_src.empty() && dim > 0) {
+            const std::size_t rb = dim * dtype_size(points.Dtype());
+            const std::byte* s = points.Data();
+            std::byte* d = newpts.Data();
+            parallel_for_bw(point_src.size(), [&](std::size_t j) {
+                std::memcpy(d + j * rb, s + static_cast<std::size_t>(point_src[j]) * rb, rb);
+            });
+        }
+        out.AssignPoints(std::move(newpts));
+    }
+
+    // 4) point_data (gather by point_src when full-length).
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        const std::size_t rows = a.Shape().empty() ? 0 : a.Shape()[0];
+        if (rows == n)
+            out.AddPointData(name, subset_gather_rows(a, point_src));
+        else {
+            NDArray c = a;
+            c.MakeOwned();
+            out.AddPointData(name, std::move(c));
+        }
+    }
     if (!rPointIdName.empty()) {
         NDArray ids = NDArray::Uninit(DType::Int64, {point_src.size()});
         std::memcpy(ids.As<std::int64_t>(), point_src.data(),
@@ -218799,6 +218744,7 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <vector>
@@ -219198,7 +219144,29 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
 
     // --- emit points + point_data ------------------------------------------
     Mesh& out = res.mMesh;
-    detail::gather_point_table(rMesh, point_src, out);
+    {
+        NDArray newpts = NDArray::Uninit(points.Dtype(), {static_cast<std::size_t>(P), dim});
+        if (P > 0 && dim > 0) {
+            const std::size_t rb = dim * dtype_size(points.Dtype());
+            const std::byte* s = points.Data();
+            std::byte* d = newpts.Data();
+            parallel_for_bw(point_src.size(), [&](std::size_t j) {
+                std::memcpy(d + j * rb, s + static_cast<std::size_t>(point_src[j]) * rb, rb);
+            });
+        }
+        out.AssignPoints(std::move(newpts));
+    }
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        const std::size_t rows = a.Shape().empty() ? 0 : a.Shape()[0];
+        if (rows == n)
+            out.AddPointData(name, detail::subset_gather_rows(a, point_src));
+        else {
+            NDArray c = a;
+            c.MakeOwned();
+            out.AddPointData(name, std::move(c));
+        }
+    }
 
     // --- emit cells (remap rep-space -> final point index) ------------------
     res.mCellMaps.clear();
@@ -231586,7 +231554,24 @@ GradientMethod gradient_method_from_name(const std::string& rName) {
 
 GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
     // --- validation, all before any work ------------------------------------
-    detail::require_point_field(rMesh, rOptions.mArrayName, rOptions.mLocation, kGradPrefix);
+    if (rOptions.mArrayName.empty())
+        throw std::invalid_argument(std::string(kGradPrefix) + "an array name is required");
+    if (rOptions.mLocation == DataLocation::Field)
+        throw std::invalid_argument(std::string(kGradPrefix) +
+                                    "field_data has no location on the mesh; the result must be "
+                                    "'point' or 'cell'");
+    if (!rMesh.HasPointData(rOptions.mArrayName)) {
+        // A cell_data field is piecewise constant and has no derivative. Name
+        // the fix, exactly as isosurface does for the same reason.
+        if (rMesh.HasCellData(rOptions.mArrayName))
+            throw std::invalid_argument(
+                std::string(kGradPrefix) + "'" + rOptions.mArrayName +
+                "' is cell_data, which is piecewise constant and has no derivative; convert it "
+                "first with cell_data_to_point_data (CLI: meshioplusplus data to-point)");
+        throw std::invalid_argument(
+            std::string(kGradPrefix) +
+            data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArrayName));
+    }
 
     const NDArray& field = rMesh.PointData(rOptions.mArrayName);
     const std::size_t field_comp = data_num_components(field);
@@ -232050,8 +232035,6 @@ HausdorffResult hausdorff_distance(const Mesh& rA, const Mesh& rB,
 
 // Project includes
 
-// Project includes (private, not installed)
-
 namespace meshioplusplus {
 
 namespace {
@@ -232067,7 +232050,23 @@ constexpr const char* kHessRawName = "__hessian_raw__";
 
 HessianResult hessian(const Mesh& rMesh, const HessianOptions& rOptions) {
     // --- validation, all before any work -------------------------------------
-    detail::require_point_field(rMesh, rOptions.mArrayName, rOptions.mLocation, kHessPrefix);
+    if (rOptions.mArrayName.empty())
+        throw std::invalid_argument(std::string(kHessPrefix) + "an array name is required");
+    if (rOptions.mLocation == DataLocation::Field)
+        throw std::invalid_argument(std::string(kHessPrefix) +
+                                    "field_data has no location on the mesh; the result must be "
+                                    "'point' or 'cell'");
+    if (!rMesh.HasPointData(rOptions.mArrayName)) {
+        // Same restriction gradient states, for the same reason.
+        if (rMesh.HasCellData(rOptions.mArrayName))
+            throw std::invalid_argument(
+                std::string(kHessPrefix) + "'" + rOptions.mArrayName +
+                "' is cell_data, which is piecewise constant and has no derivative; convert it "
+                "first with cell_data_to_point_data (CLI: meshioplusplus data to-point)");
+        throw std::invalid_argument(
+            std::string(kHessPrefix) +
+            data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArrayName));
+    }
     const NDArray& field = rMesh.PointData(rOptions.mArrayName);
     const std::size_t field_comp = data_num_components(field);
     if (field_comp != 1)

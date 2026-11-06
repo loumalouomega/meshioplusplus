@@ -50,43 +50,6 @@ namespace meshioplusplus {
 namespace detail {
 
 /**
- * @brief Emits the points and `point_data` of @p rOut as the rows
- * @p rPointSrc of @p rMesh (`out[j] = src[rPointSrc[j]]`, dtype kept).
- *
- * A `point_data` array whose row count is not the point count is copied
- * verbatim (owned).
- */
-inline void gather_point_table(const Mesh& rMesh, const std::vector<std::int64_t>& rPointSrc,
-                               Mesh& rOut) {
-    const NDArray& points = rMesh.Points();
-    const std::size_t n = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
-    {
-        NDArray newpts = NDArray::Uninit(points.Dtype(), {rPointSrc.size(), dim});
-        if (!rPointSrc.empty() && dim > 0) {
-            const std::size_t rb = dim * dtype_size(points.Dtype());
-            const std::byte* s = points.Data();
-            std::byte* d = newpts.Data();
-            parallel_for_bw(rPointSrc.size(), [&](std::size_t j) {
-                std::memcpy(d + j * rb, s + static_cast<std::size_t>(rPointSrc[j]) * rb, rb);
-            });
-        }
-        rOut.AssignPoints(std::move(newpts));
-    }
-    for (const std::string& name : rMesh.PointDataNames()) {
-        const NDArray& a = rMesh.PointData(name);
-        const std::size_t rows = a.Shape().empty() ? 0 : a.Shape()[0];
-        if (rows == n)
-            rOut.AddPointData(name, subset_gather_rows(a, rPointSrc));
-        else {
-            NDArray c = a;
-            c.MakeOwned();
-            rOut.AddPointData(name, std::move(c));
-        }
-    }
-}
-
-/**
  * @brief Assigns @p rOut the points of @p rMesh whose @p rUsed flag is set, in
  * ascending order (`NumUsed` of them), as a byte-row subset keeping the dtype.
  */
