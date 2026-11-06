@@ -1984,6 +1984,42 @@ program test_fortran_api
         call check(st /= 0, 'check_conformity rejects a negative tolerance')
     end block
 
+    ! ---- check_tetrahedra ----------------------------------------------------
+    block
+        type(mio_mesh) :: tm
+        type(mio_check_tetrahedra_report) :: trep
+        character(:), allocatable :: twarn
+        real(real64) :: tpoints(3, 5)
+        integer(int64) :: tcells(4, 2)
+        integer :: st
+
+        ! Two tetrahedra over the face (1, 2, 3): their apexes on the same side overlap.
+        tpoints = reshape([0.0_real64, 0.0_real64, 0.0_real64, &
+                           1.0_real64, 0.0_real64, 0.0_real64, &
+                           0.0_real64, 1.0_real64, 0.0_real64, &
+                           0.0_real64, 0.0_real64, 1.0_real64, &
+                           0.2_real64, 0.2_real64, 0.5_real64], [3, 5])
+        tcells = reshape([1_int64, 2_int64, 3_int64, 4_int64, &
+                          1_int64, 2_int64, 3_int64, 5_int64], [4, 2])
+        call tm%set_points(tpoints)
+        call tm%add_cell_block('tetra', tcells)
+        trep = tm%check_tetrahedra(warnings=twarn, stat=st)
+        call check(st == 0, 'check_tetrahedra succeeded')
+        if (st == 0) then
+            call check(trep%num_tetrahedra == 2_int64, 'check_tetrahedra counts the tetrahedra')
+            call check(trep%num_inverted == 0_int64 .and. trep%num_degenerate == 0_int64, &
+                       'check_tetrahedra finds no inverted or degenerate tetrahedron')
+            call check(trep%num_overlaps == 1_int64 .and. trep%valid == 0, &
+                       'check_tetrahedra finds the overlap')
+            call check(trep%min_volume > 0.0_real64 .and. trep%max_volume >= trep%min_volume, &
+                       'check_tetrahedra reports the volume range')
+            call check(len(twarn) == 0, 'check_tetrahedra has no warnings')
+        end if
+        trep = tm%check_tetrahedra(zero_volume_factor=-1.0_real64, stat=st)
+        call check(st /= 0, 'check_tetrahedra rejects a negative factor')
+        call tm%free()
+    end block
+
     ! --- named regions (doc/regions.md) ---------------------------------------
     ! The first named groups this API can carry at all; before meshio++ 8.1 they
     ! never left the Python layer.

@@ -8593,3 +8593,39 @@ TEST(CApi, CutLevelSetAndQuadrature) {
     EXPECT_EQ(mio_cut_level_set(hex, &o, nullptr), nullptr);
     mio_mesh_free(hex);
 }
+
+TEST(CApi, CheckTetrahedraReportsInvertedDegenerateAndOverlapping) {
+    // Two tetrahedra over the face (0, 1, 2) with their apexes on the same side: an overlap.
+    const double points[] = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0.2, 0.2, 0.5};
+    const std::int64_t cells[] = {0, 1, 2, 3, 0, 1, 2, 4};
+    mio_mesh* mesh = mio_mesh_create();
+    ASSERT_NE(mesh, nullptr);
+    ASSERT_EQ(mio_mesh_set_points(mesh, MIO_FLOAT64, 5, 3, points), MIO_OK) << mio_last_error();
+    ASSERT_EQ(mio_mesh_add_cell_block(mesh, "tetra", 2, 4, MIO_INT64, cells), MIO_OK)
+        << mio_last_error();
+
+    mio_check_tetrahedra_opts opts;
+    mio_check_tetrahedra_opts_init(&opts);
+    EXPECT_DOUBLE_EQ(opts.zero_volume_factor, 1e-6);
+    mio_check_tetrahedra_report report;
+    ASSERT_EQ(mio_check_tetrahedra(mesh, &opts, &report), MIO_OK) << mio_last_error();
+    EXPECT_EQ(report.num_tetrahedra, 2);
+    EXPECT_EQ(report.num_inverted, 0);
+    EXPECT_EQ(report.num_degenerate, 0);
+    EXPECT_EQ(report.num_overlaps, 1);
+    EXPECT_EQ(report.valid, 0);
+    EXPECT_GT(report.min_volume, 0.0);
+    EXPECT_GE(report.max_volume, report.min_volume);
+    EXPECT_EQ(report.num_warnings, 0);
+    EXPECT_EQ(mio_check_tetrahedra_warnings(nullptr, 0), 0);
+    // NULL options take the defaults.
+    ASSERT_EQ(mio_check_tetrahedra(mesh, nullptr, &report), MIO_OK);
+    EXPECT_EQ(report.num_overlaps, 1);
+
+    // Errors: no report, a negative factor.
+    EXPECT_NE(mio_check_tetrahedra(mesh, &opts, nullptr), MIO_OK);
+    opts.zero_volume_factor = -1.0;
+    EXPECT_NE(mio_check_tetrahedra(mesh, &opts, &report), MIO_OK);
+    EXPECT_NE(mio_check_tetrahedra(nullptr, nullptr, &report), MIO_OK);
+    mio_mesh_free(mesh);
+}

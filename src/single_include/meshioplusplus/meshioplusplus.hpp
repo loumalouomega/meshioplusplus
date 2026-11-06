@@ -26021,6 +26021,61 @@ MESHIOPLUSPLUS_API ConformityResult check_conformity(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/check_conformity.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/check_tetrahedra.hpp =====
+/**
+ * @file operations/check_tetrahedra.hpp
+ * @brief `check_tetrahedra`: are the tetrahedra of a mesh usable?
+ *
+ * Counts, over the `tetra` and `tetra10` cells (a quadratic tetrahedron by its
+ * four corners), the tetrahedra that are inverted (a negative volume beyond
+ * the tolerance), degenerate (a volume within it) and the pairs that overlap
+ * across a shared face. The tolerance of a tetrahedron is `zero_volume_factor`
+ * times the cube of its longest edge plus the effect of six significant
+ * digits of written coordinates, so a sliver of a fine mesh is not flagged
+ * because of a large coordinate offset. Two tetrahedra overlap when they
+ * share a face (and only they use it) and their opposite nodes lie on the same
+ * side of it; a conforming mesh of a valid solid has none, whatever its
+ * materials. Faces used by three or more tetrahedra are not examined.
+ *
+ * The mesh is not changed. The same tolerance and overlap count drive the
+ * volume fix of `octree_mesh`.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Options for `check_tetrahedra`.
+struct TetrahedraCheckOptions {
+    /// A volume under this fraction of the longest edge cubed (plus the effect of the written
+    /// coordinates' precision) counts as zero; must be finite and non-negative.
+    double mZeroVolumeFactor = 1.0e-6;
+};
+
+/// The verdict and the counts behind it.
+struct TetrahedraCheckResult {
+    std::int64_t mNumTetrahedra = 0;  ///< `tetra` and `tetra10` cells examined
+    std::int64_t mNumInverted = 0;    ///< volume below minus the tolerance
+    std::int64_t mNumDegenerate = 0;  ///< volume within the tolerance
+    std::int64_t mNumOverlaps = 0;    ///< pairs overlapping across a shared face
+    double mMinVolume = 0.0;          ///< smallest signed volume (0 without tetrahedra)
+    double mMaxVolume = 0.0;          ///< largest signed volume (0 without tetrahedra)
+    /// No inverted or degenerate tetrahedron and no overlap.
+    bool mValid = true;
+    /// What the check could not examine, one entry per line.
+    std::vector<std::string> mWarnings;
+};
+
+MESHIOPLUSPLUS_API TetrahedraCheckResult
+check_tetrahedra(const Mesh& rMesh, const TetrahedraCheckOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/check_tetrahedra.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/clean.hpp =====
 /**
  * @file operations/clean.hpp
@@ -52621,6 +52676,44 @@ std::string synth_wav(const std::vector<std::int16_t>& rSamples, int SampleRate)
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/synth.hpp =====
+// ===== begin src/cpp/src/detail/tet_checks.hpp =====
+/**
+ * @file detail/tet_checks.hpp
+ * @brief The volume tolerance and the face-overlap count shared by
+ * `check_tetrahedra` and the volume fix of `octree_mesh`.
+ *
+ * Private (not installed): a change here is not an ABI event.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// A tetrahedron as four point indices.
+using TetNodes = std::array<std::int64_t, 4>;
+
+/// The signed volume of the tetrahedron @p rTet over @p rPoints, and the
+/// tolerance under which it counts as zero: @p ZeroVolumeFactor times the cube
+/// of its longest edge, plus the effect of the six significant digits of
+/// written coordinates.
+std::pair<double, double> tet_volume_and_tolerance(const std::vector<Vec3>& rPoints,
+                                                   const TetNodes& rTet, double ZeroVolumeFactor);
+
+/// The pairs of tetrahedra that share a face (and only two use it) whose
+/// opposite nodes lie on the same side of it. A tetrahedron with a non-zero
+/// entry in @p pSkip (one per tetrahedron, or NULL) is left out.
+std::int64_t count_tet_overlaps(const std::vector<Vec3>& rPoints,
+                                const std::vector<TetNodes>& rTets,
+                                const std::vector<std::uint8_t>* pSkip = nullptr);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/tet_checks.hpp =====
 // ===== begin src/cpp/src/detail/thb_spline.hpp =====
 /**
  * @file detail/thb_spline.hpp
@@ -110890,6 +110983,89 @@ std::string synth_wav(const std::vector<std::int16_t>& rSamples, int SampleRate)
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/synth.cpp =====
+// ===== begin src/cpp/src/detail/tet_checks.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+std::pair<double, double> tet_volume_and_tolerance(const std::vector<Vec3>& rPoints,
+                                                   const TetNodes& rTet,
+                                                   const double ZeroVolumeFactor) {
+    // Relative precision of the written coordinates (six significant digits): a volume below its
+    // effect on the longest edge squared is noise.
+    constexpr double kCoordinatePrecision = 1.0e-6;
+    const auto point = [&](const std::int64_t I) -> const Vec3& {
+        return rPoints[static_cast<std::size_t>(I)];
+    };
+    double longest = 0.0;
+    double largest_coordinate = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        for (const double c : point(rTet[i]))
+            largest_coordinate = std::max(largest_coordinate, std::abs(c));
+        for (int j = i + 1; j < 4; ++j)
+            longest = std::max(longest, vec3_norm(vec3_sub(point(rTet[j]), point(rTet[i]))));
+    }
+    // The arithmetic of the octree volume fix this was lifted from (the operations'
+    // outputs are pinned bit for bit): (b - a) x (c - a) . (d - a).
+    const double volume = vec3_dot(vec3_cross(vec3_sub(point(rTet[1]), point(rTet[0])),
+                                              vec3_sub(point(rTet[2]), point(rTet[0]))),
+                                   vec3_sub(point(rTet[3]), point(rTet[0]))) /
+                          6.0;
+    return {volume, ZeroVolumeFactor * longest * longest * longest +
+                        kCoordinatePrecision * largest_coordinate * longest * longest};
+}
+
+std::int64_t count_tet_overlaps(const std::vector<Vec3>& rPoints,
+                                const std::vector<TetNodes>& rTets,
+                                const std::vector<std::uint8_t>* pSkip) {
+    // The four faces of a tetrahedron, each opposite the node of the same index.
+    static constexpr int kFaces[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
+    using Index = std::int64_t;
+    const auto point = [&](const Index I) -> const Vec3& {
+        return rPoints[static_cast<std::size_t>(I)];
+    };
+    std::vector<std::pair<std::array<Index, 3>, std::pair<std::size_t, Index>>> faces;
+    faces.reserve(rTets.size() * 4);
+    for (std::size_t t = 0; t < rTets.size(); ++t) {
+        if (pSkip && (*pSkip)[t])
+            continue;
+        for (const auto& facet : kFaces) {
+            std::array<Index, 3> key{rTets[t][facet[0]], rTets[t][facet[1]], rTets[t][facet[2]]};
+            std::sort(key.begin(), key.end());
+            // The node of the tetrahedron which is not on the face.
+            Index opposite = -1;
+            for (const Index v : rTets[t])
+                if (v != key[0] && v != key[1] && v != key[2])
+                    opposite = v;
+            faces.push_back({key, {t, opposite}});
+        }
+    }
+    std::sort(faces.begin(), faces.end());
+    std::int64_t overlaps = 0;
+    // Only a face used by exactly two tetrahedra is a pair: a run of equal keys of any other
+    // length (a face three tetrahedra share) is skipped whole.
+    for (std::size_t i = 0, run_end = 0; i + 1 < faces.size(); i = run_end) {
+        run_end = i + 1;
+        while (run_end < faces.size() && faces[run_end].first == faces[i].first)
+            ++run_end;
+        if (run_end - i != 2)
+            continue;
+        const Vec3& a = point(faces[i].first[0]);
+        const Vec3 normal = vec3_cross(vec3_sub(point(faces[i].first[1]), a),
+                                       vec3_sub(point(faces[i].first[2]), a));
+        const double side_0 = vec3_dot(normal, vec3_sub(point(faces[i].second.second), a));
+        const double side_1 = vec3_dot(normal, vec3_sub(point(faces[i + 1].second.second), a));
+        overlaps += side_0 * side_1 > 0.0;
+    }
+    return overlaps;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/tet_checks.cpp =====
 // ===== begin src/cpp/src/detail/thb_spline.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -218743,6 +218919,87 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/check_conformity.cpp =====
+// ===== begin src/cpp/src/operations/check_tetrahedra.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+TetrahedraCheckResult check_tetrahedra(const Mesh& rMesh, const TetrahedraCheckOptions& rOptions) {
+    if (!(rOptions.mZeroVolumeFactor >= 0.0) || !std::isfinite(rOptions.mZeroVolumeFactor))
+        throw std::invalid_argument(
+            "meshio++: check_tetrahedra: zero_volume_factor must be finite and non-negative");
+    TetrahedraCheckResult result;
+
+    const NDArray& points = rMesh.Points();
+    const std::size_t dim = rMesh.PointDim();
+    std::vector<detail::Vec3> xyz(rMesh.NumPoints());
+    for (std::size_t i = 0; i < xyz.size(); ++i)
+        xyz[i] = detail::read_point(points, dim, static_cast<std::int64_t>(i));
+
+    std::vector<detail::TetNodes> tets;
+    std::size_t block = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t index = block++;
+        const std::string type(cb.Type());
+        if (cb.NumCells() == 0 || (type != "tetra" && type != "tetra10"))
+            continue;
+        if (cb.IsRagged()) {
+            result.mWarnings.push_back("block " + std::to_string(index) + " ('" + type +
+                                       "') is ragged and was not examined");
+            continue;
+        }
+        const detail::Int64View conn(cb.Conn());
+        const std::size_t width = cb.NodesPerCell();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            detail::TetNodes tet;
+            for (std::size_t k = 0; k < 4; ++k) {
+                const std::int64_t node = conn[c * width + k];
+                if (node < 0 || static_cast<std::size_t>(node) >= xyz.size())
+                    throw std::invalid_argument(
+                        "meshio++: check_tetrahedra: a cell refers to a point out of range");
+                tet[k] = node;
+            }
+            tets.push_back(tet);
+        }
+    }
+
+    result.mNumTetrahedra = static_cast<std::int64_t>(tets.size());
+    if (tets.empty()) {
+        result.mWarnings.push_back("the mesh has no tetrahedra; nothing was examined");
+        return result;
+    }
+    result.mMinVolume = std::numeric_limits<double>::infinity();
+    result.mMaxVolume = -std::numeric_limits<double>::infinity();
+    for (const detail::TetNodes& tet : tets) {
+        const auto [volume, tolerance] =
+            detail::tet_volume_and_tolerance(xyz, tet, rOptions.mZeroVolumeFactor);
+        result.mMinVolume = std::min(result.mMinVolume, volume);
+        result.mMaxVolume = std::max(result.mMaxVolume, volume);
+        if (volume < -tolerance)
+            ++result.mNumInverted;
+        else if (volume <= tolerance)
+            ++result.mNumDegenerate;
+    }
+    result.mNumOverlaps = detail::count_tet_overlaps(xyz, tets);
+    result.mValid =
+        result.mNumInverted == 0 && result.mNumDegenerate == 0 && result.mNumOverlaps == 0;
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/check_tetrahedra.cpp =====
 // ===== begin src/cpp/src/operations/clean.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -249944,26 +250201,7 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& r
 std::pair<double, double> octree_mesh_volume_and_tolerance(const std::vector<Vec3>& rPoints,
                                                            const std::array<std::int64_t, 4>& rTet,
                                                            const double ZeroVolumeFactor) {
-    // Relative precision of the written coordinates (six significant digits): a volume below its
-    // effect on the longest edge squared is noise.
-    constexpr double kCoordinatePrecision = 1.0e-6;
-    const auto point = [&](const std::int64_t I) -> const Vec3& {
-        return rPoints[static_cast<std::size_t>(I)];
-    };
-    double longest = 0.0;
-    double largest_coordinate = 0.0;
-    for (int i = 0; i < 4; ++i) {
-        for (const double c : point(rTet[i]))
-            largest_coordinate = std::max(largest_coordinate, std::abs(c));
-        for (int j = i + 1; j < 4; ++j)
-            longest = std::max(longest, vec3_norm(vec3_sub(point(rTet[j]), point(rTet[i]))));
-    }
-    const double volume = vec3_dot(vec3_cross(vec3_sub(point(rTet[1]), point(rTet[0])),
-                                              vec3_sub(point(rTet[2]), point(rTet[0]))),
-                                   vec3_sub(point(rTet[3]), point(rTet[0]))) /
-                          6.0;
-    return {volume, ZeroVolumeFactor * longest * longest * longest +
-                        kCoordinatePrecision * largest_coordinate * longest * longest};
+    return tet_volume_and_tolerance(rPoints, rTet, ZeroVolumeFactor);
 }
 
 void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& rO,
@@ -250393,34 +250631,10 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
 
     // Two tetrahedra that share a face overlap when their opposite nodes lie on the same side
     // of it.
-    std::vector<std::pair<std::array<Index, 3>, std::pair<std::size_t, Index>>> faces;
-    for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
-        if (!considered(t))
-            continue;
-        for (const auto& facet : kOctmtFacet) {
-            std::array<Index, 3> key{rTets.mTets[t][facet[0]], rTets.mTets[t][facet[1]],
-                                     rTets.mTets[t][facet[2]]};
-            std::sort(key.begin(), key.end());
-            // The node of the tetrahedron which is not on the face.
-            Index opposite = -1;
-            for (const Index v : rTets.mTets[t])
-                if (v != key[0] && v != key[1] && v != key[2])
-                    opposite = v;
-            faces.push_back({key, {t, opposite}});
-        }
-    }
-    std::sort(faces.begin(), faces.end());
-    for (std::size_t i = 0; i + 1 < faces.size(); ++i) {
-        if (faces[i].first != faces[i + 1].first ||
-            (i + 2 < faces.size() && faces[i + 2].first == faces[i].first))
-            continue;
-        const Vec3& a = point(faces[i].first[0]);
-        const Vec3 normal = vec3_cross(vec3_sub(point(faces[i].first[1]), a),
-                                       vec3_sub(point(faces[i].first[2]), a));
-        const double side_0 = vec3_dot(normal, vec3_sub(point(faces[i].second.second), a));
-        const double side_1 = vec3_dot(normal, vec3_sub(point(faces[i + 1].second.second), a));
-        rR.mNumOverlaps += side_0 * side_1 > 0.0;
-    }
+    std::vector<std::uint8_t> skipped(rTets.mTets.size());
+    for (std::size_t t = 0; t < skipped.size(); ++t)
+        skipped[t] = considered(t) ? 0 : 1;
+    rR.mNumOverlaps += count_tet_overlaps(rTets.mPoints, rTets.mTets, &skipped);
 
     if (rR.mNumCollapsed > 0)
         octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumCollapsed) +
@@ -253555,6 +253769,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
         {"CheckConformity", {"Tolerance", "Require", "AttachFlags"}},
+        {"CheckTetrahedra", {"ZeroVolumeFactor", "Require"}},
         {"FindIntersections", {"Other", "Region", "RegionOther", "Require", "AttachFlags"}},
         {"Thickness",
          {"Other", "Direction", "MaxDistance", "Min", "Region", "RegionOther", "Require"}},
@@ -255270,6 +255485,24 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumUnweldedFacets", static_cast<double>(cr.mNumUnweldedFacets)}});
         if (opts.mAttachFlags)
             return std::move(cr.mMesh);
+        return mesh;
+    }
+    if (op == "CheckTetrahedra") {
+        // A gate by default: a mesh with an inverted or degenerate tetrahedron or an overlap
+        // stops the pipeline; with Require false it only reports. The mesh flows on unchanged.
+        TetrahedraCheckOptions opts;
+        opts.mZeroVolumeFactor = pipe_number(rStep, "ZeroVolumeFactor", 1e-6);
+        const TetrahedraCheckResult tr = check_tetrahedra(mesh, opts);
+        if (pipe_flag(rStep, "Require", true) && !tr.mValid)
+            throw std::runtime_error(
+                "meshio++: pipeline: CheckTetrahedra failed: " + std::to_string(tr.mNumInverted) +
+                " inverted, " + std::to_string(tr.mNumDegenerate) + " degenerate and " +
+                std::to_string(tr.mNumOverlaps) + " overlapping pair(s)");
+        pipe_push_step(rReport, rStep,
+                       {{"NumTetrahedra", static_cast<double>(tr.mNumTetrahedra)},
+                        {"NumInverted", static_cast<double>(tr.mNumInverted)},
+                        {"NumDegenerate", static_cast<double>(tr.mNumDegenerate)},
+                        {"NumOverlaps", static_cast<double>(tr.mNumOverlaps)}});
         return mesh;
     }
     if (op == "FindIntersections") {

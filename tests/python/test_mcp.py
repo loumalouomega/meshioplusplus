@@ -3091,6 +3091,27 @@ def test_check_conformity_tool(tmp_path):
         _tools.tool_check_conformity(str(src), tolerance=-1.0)
 
 
+def test_check_tetrahedra_tool(tmp_path):
+    pts = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0.2, 0.2, 0.5]], dtype=float
+    )
+    src = tmp_path / "t.vtu"
+    meshioplusplus.write(
+        src, meshioplusplus.Mesh(pts, [("tetra", np.array([[0, 1, 2, 3]]))])
+    )
+    report = _tools.tool_check_tetrahedra(str(src))
+    assert report["valid"] is True and report["num_tetrahedra"] == 1
+    overlap = tmp_path / "o.vtu"
+    meshioplusplus.write(
+        overlap,
+        meshioplusplus.Mesh(pts, [("tetra", np.array([[0, 1, 2, 3], [0, 1, 2, 4]]))]),
+    )
+    report = _tools.tool_check_tetrahedra(str(overlap))
+    assert report["num_overlaps"] == 1 and report["valid"] is False
+    with pytest.raises(ValueError, match="zero_volume_factor"):
+        _tools.tool_check_tetrahedra(str(src), zero_volume_factor=-1.0)
+
+
 def test_voxelize_tool_plane(tmp_path):
     # A square polyline in the xz plane: "auto" and "xz" agree, "xy" sees a
     # degenerate box and an unknown plane is refused by name.

@@ -182,6 +182,7 @@
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/error_size.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/check_tetrahedra.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
@@ -5116,6 +5117,34 @@ val check_conformity_js(const val& rMeshObj, const val& rOptions) {
     });
 }
 
+// check_tetrahedra: inverted, degenerate and overlapping tetrahedra; options
+// {zeroVolumeFactor}. The mesh is not changed.
+val check_tetrahedra_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::TetrahedraCheckOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the checkTetrahedra options", {"zeroVolumeFactor"});
+            if (rOptions.hasOwnProperty("zeroVolumeFactor"))
+                o.mZeroVolumeFactor = rOptions["zeroVolumeFactor"].as<double>();
+        }
+        const meshioplusplus::TetrahedraCheckResult r =
+            meshioplusplus::check_tetrahedra(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("numTetrahedra", static_cast<double>(r.mNumTetrahedra));
+        out.set("numInverted", static_cast<double>(r.mNumInverted));
+        out.set("numDegenerate", static_cast<double>(r.mNumDegenerate));
+        out.set("numOverlaps", static_cast<double>(r.mNumOverlaps));
+        out.set("minVolume", r.mMinVolume);
+        out.set("maxVolume", r.mMaxVolume);
+        out.set("valid", r.mValid);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
 /**
  * Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
  * clustering: replace its triangulation with a new, near-uniformly-sized,
@@ -9899,6 +9928,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("estimateError", &estimate_error_js);
     emscripten::function("errorSize", &error_size_js);
     emscripten::function("checkConformity", &check_conformity_js);
+    emscripten::function("checkTetrahedra", &check_tetrahedra_js);
     emscripten::function("remesh", &remesh_js);
     emscripten::function("remeshVolume", &remesh_volume_js);
     emscripten::function("optimizeVolume", &optimize_volume_js);

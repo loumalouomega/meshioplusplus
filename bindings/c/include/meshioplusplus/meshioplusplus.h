@@ -7126,6 +7126,53 @@ MIO_API mio_mesh* mio_check_conformity(const mio_mesh* mesh, const mio_conformit
  */
 MIO_API int64_t mio_check_conformity_warnings(char* buf, int64_t buflen);
 
+/* ---- check_tetrahedra ---------------------------------------------------- */
+
+/**
+ * Options of mio_check_tetrahedra. Initialise with mio_check_tetrahedra_opts_init.
+ * 40 bytes, with a reserved tail.
+ */
+typedef struct mio_check_tetrahedra_opts {
+    /** A volume under this fraction of the longest edge cubed (plus the effect of
+     *  the written coordinates' precision) counts as zero (init: 1e-6). */
+    double zero_volume_factor;
+    int64_t reserved[4]; /**< must be zero */
+} mio_check_tetrahedra_opts;
+
+/** What mio_check_tetrahedra found. 96 bytes, with a reserved tail. */
+typedef struct mio_check_tetrahedra_report {
+    int64_t num_tetrahedra; /**< tetra and tetra10 cells examined */
+    int64_t num_inverted;   /**< volume below minus the tolerance */
+    int64_t num_degenerate; /**< volume within the tolerance */
+    int64_t num_overlaps;   /**< pairs overlapping across a shared face */
+    double min_volume;      /**< smallest signed volume (0 without tetrahedra) */
+    double max_volume;      /**< largest signed volume (0 without tetrahedra) */
+    int32_t valid;          /**< nonzero: no inverted or degenerate tetrahedron, no overlap */
+    int32_t reserved32;     /**< zeroed */
+    int64_t num_warnings;   /**< see mio_check_tetrahedra_warnings() */
+    int64_t reserved[4];    /**< zeroed */
+} mio_check_tetrahedra_report;
+
+MIO_API void mio_check_tetrahedra_opts_init(mio_check_tetrahedra_opts* opts);
+
+/**
+ * Report the inverted, degenerate and overlapping tetrahedra of a mesh's tetra
+ * and tetra10 cells (doc/check_tetrahedra.md). The mesh is not changed.
+ *
+ * @param opts   options, or NULL for the mio_check_tetrahedra_opts_init() defaults.
+ * @param report receives the summary (must be non-NULL).
+ * @return MIO_OK, or an error status (see mio_last_error()).
+ */
+MIO_API mio_status mio_check_tetrahedra(const mio_mesh* mesh, const mio_check_tetrahedra_opts* opts,
+                                        mio_check_tetrahedra_report* report);
+
+/**
+ * The warnings of this thread's last mio_check_tetrahedra call, one per line.
+ * String rule 5: required byte length excluding NUL, -1 on error; the buffer
+ * may be NULL/zero to query the length.
+ */
+MIO_API int64_t mio_check_tetrahedra_warnings(char* buf, int64_t buflen);
+
 /* ---- boundary_layer (roadmap 6.9) --------------------------------------- */
 
 /** Options of mio_boundary_layer; initialise with mio_boundary_layer_opts_init. 64 bytes. */

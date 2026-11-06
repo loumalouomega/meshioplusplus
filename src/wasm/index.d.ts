@@ -920,6 +920,33 @@ export interface TetrahedralizeResult {
   warnings: string[];
 }
 
+/** Options of `checkTetrahedra` (doc/check_tetrahedra.md). */
+export interface TetrahedraCheckOptions {
+  /** A volume under this fraction of the longest edge cubed (plus the effect of the
+   *  written coordinates' precision) counts as zero (default 1e-6). */
+  zeroVolumeFactor?: number;
+}
+
+/** What `checkTetrahedra` returns. */
+export interface TetrahedraCheckResult {
+  /** `tetra` and `tetra10` cells examined. */
+  numTetrahedra: number;
+  /** Volume below minus the tolerance. */
+  numInverted: number;
+  /** Volume within the tolerance. */
+  numDegenerate: number;
+  /** Pairs of tetrahedra sharing a face whose opposite nodes lie on the same side of it. */
+  numOverlaps: number;
+  /** Smallest signed volume (0 without tetrahedra). */
+  minVolume: number;
+  /** Largest signed volume (0 without tetrahedra). */
+  maxVolume: number;
+  /** No inverted or degenerate tetrahedron and no overlap. */
+  valid: boolean;
+  /** What the check could not examine. */
+  warnings: string[];
+}
+
 /** Options of `checkConformity` (doc/check_conformity.md). */
 export interface ConformityOptions {
   /** Distances at or below this fraction of the examined facets' bounding-box
@@ -3342,6 +3369,13 @@ export interface MeshioPlusPlusModule {
    * @throws {Error} on a negative or non-finite tolerance, or an unknown option.
    */
   checkConformity(mesh: Mesh, options?: ConformityOptions): ConformityResult;
+
+  /**
+   * Inverted, degenerate and overlapping tetrahedra of a mesh's `tetra` and `tetra10`
+   * cells. The mesh is not changed. See doc/check_tetrahedra.md.
+   * @throws {Error} on a negative or non-finite `zeroVolumeFactor`, or an unknown option.
+   */
+  checkTetrahedra(mesh: Mesh, options?: TetrahedraCheckOptions): TetrahedraCheckResult;
 
   /**
    * Remesh a surface by approximated centroidal Voronoi diagram (ACVD)

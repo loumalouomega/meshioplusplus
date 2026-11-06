@@ -124,6 +124,7 @@
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/error_size.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/check_tetrahedra.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
@@ -9110,6 +9111,74 @@ int64_t mio_check_conformity_warnings(char* buf, int64_t buflen) {
         if (buflen < 0)
             throw std::invalid_argument("meshio++: negative warnings buffer length");
         return copy_string(capi_conformity_warnings(), buf, buflen);
+    });
+}
+
+static_assert(sizeof(mio_check_tetrahedra_opts) == 40, "mio_check_tetrahedra_opts layout");
+static_assert(sizeof(mio_check_tetrahedra_report) == 96, "mio_check_tetrahedra_report layout");
+static_assert(offsetof(mio_check_tetrahedra_report, min_volume) == 32 &&
+                  offsetof(mio_check_tetrahedra_report, valid) == 48 &&
+                  offsetof(mio_check_tetrahedra_report, num_warnings) == 56,
+              "mio_check_tetrahedra_report layout");
+
+}  // extern "C"
+
+namespace {
+
+/// The warnings of this thread's last mio_check_tetrahedra call.
+std::string& capi_tetrahedra_warnings() {
+    thread_local std::string warnings;
+    return warnings;
+}
+
+}  // namespace
+
+extern "C" {
+
+void mio_check_tetrahedra_opts_init(mio_check_tetrahedra_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_check_tetrahedra_opts{};
+    opts->zero_volume_factor = meshioplusplus::TetrahedraCheckOptions{}.mZeroVolumeFactor;
+}
+
+mio_status mio_check_tetrahedra(const mio_mesh* mesh, const mio_check_tetrahedra_opts* opts,
+                                mio_check_tetrahedra_report* report) {
+    return guarded([&]() -> mio_status {
+        capi_tetrahedra_warnings().clear();
+        if (!mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: check_tetrahedra: mesh is NULL");
+        if (!report)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: check_tetrahedra: report is NULL");
+        meshioplusplus::TetrahedraCheckOptions o;
+        if (opts)
+            o.mZeroVolumeFactor = opts->zero_volume_factor;
+        const meshioplusplus::TetrahedraCheckResult r =
+            meshioplusplus::check_tetrahedra(mesh->mMesh, o);
+        std::string& warnings = capi_tetrahedra_warnings();
+        for (const std::string& w : r.mWarnings) {
+            if (!warnings.empty())
+                warnings += '\n';
+            warnings += w;
+        }
+        *report = mio_check_tetrahedra_report{};
+        report->num_tetrahedra = r.mNumTetrahedra;
+        report->num_inverted = r.mNumInverted;
+        report->num_degenerate = r.mNumDegenerate;
+        report->num_overlaps = r.mNumOverlaps;
+        report->min_volume = r.mMinVolume;
+        report->max_volume = r.mMaxVolume;
+        report->valid = r.mValid ? 1 : 0;
+        report->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+        return MIO_OK;
+    });
+}
+
+int64_t mio_check_tetrahedra_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_tetrahedra_warnings(), buf, buflen);
     });
 }
 

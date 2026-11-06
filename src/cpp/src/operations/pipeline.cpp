@@ -73,6 +73,7 @@
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/check_tetrahedra.hpp"
 #include "meshioplusplus/operations/find_intersections.hpp"
 #include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
@@ -428,6 +429,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
         {"CheckConformity", {"Tolerance", "Require", "AttachFlags"}},
+        {"CheckTetrahedra", {"ZeroVolumeFactor", "Require"}},
         {"FindIntersections", {"Other", "Region", "RegionOther", "Require", "AttachFlags"}},
         {"Thickness",
          {"Other", "Direction", "MaxDistance", "Min", "Region", "RegionOther", "Require"}},
@@ -2143,6 +2145,24 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumUnweldedFacets", static_cast<double>(cr.mNumUnweldedFacets)}});
         if (opts.mAttachFlags)
             return std::move(cr.mMesh);
+        return mesh;
+    }
+    if (op == "CheckTetrahedra") {
+        // A gate by default: a mesh with an inverted or degenerate tetrahedron or an overlap
+        // stops the pipeline; with Require false it only reports. The mesh flows on unchanged.
+        TetrahedraCheckOptions opts;
+        opts.mZeroVolumeFactor = pipe_number(rStep, "ZeroVolumeFactor", 1e-6);
+        const TetrahedraCheckResult tr = check_tetrahedra(mesh, opts);
+        if (pipe_flag(rStep, "Require", true) && !tr.mValid)
+            throw std::runtime_error(
+                "meshio++: pipeline: CheckTetrahedra failed: " + std::to_string(tr.mNumInverted) +
+                " inverted, " + std::to_string(tr.mNumDegenerate) + " degenerate and " +
+                std::to_string(tr.mNumOverlaps) + " overlapping pair(s)");
+        pipe_push_step(rReport, rStep,
+                       {{"NumTetrahedra", static_cast<double>(tr.mNumTetrahedra)},
+                        {"NumInverted", static_cast<double>(tr.mNumInverted)},
+                        {"NumDegenerate", static_cast<double>(tr.mNumDegenerate)},
+                        {"NumOverlaps", static_cast<double>(tr.mNumOverlaps)}});
         return mesh;
     }
     if (op == "FindIntersections") {

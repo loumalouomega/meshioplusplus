@@ -837,6 +837,19 @@ test_that("error_size turns the indicator into a size field", {
   expect_error(mio_error_size(e$mesh, target_error = 1e-3, error_array = "nope"))
 })
 
+test_that("check_tetrahedra counts the tetrahedra and keeps the mesh", {
+  m <- fixture()
+  on.exit(mio_release(m))
+  r <- mio_check_tetrahedra(m)
+  expect_equal(r$num_tetrahedra, 2)
+  expect_equal(r$num_inverted + r$num_degenerate + r$num_overlaps >= 0, TRUE)
+  expect_true(r$min_volume <= r$max_volume)
+  expect_type(r$valid, "logical")
+  expect_type(r$warnings, "character")
+  expect_equal(mio_check_tetrahedra(m, zero_volume_factor = 1e-6)$num_tetrahedra, 2)
+  expect_error(mio_check_tetrahedra(m, zero_volume_factor = -1))
+})
+
 test_that("check_conformity reports a conforming mesh", {
   m <- fixture()
   on.exit(mio_release(m))

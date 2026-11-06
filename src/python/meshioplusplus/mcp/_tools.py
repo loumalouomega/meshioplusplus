@@ -60,6 +60,7 @@ from .. import (
     cell_data_to_point_data,
     check_conformity,
     check_quality,
+    check_tetrahedra,
     circle,
     clean,
     compute_bandwidth,
@@ -749,6 +750,14 @@ def tool_check_conformity(
     if output_path is not None:
         report["output_path"] = _store(out, output_path, output_format)
     return _json_safe(report)
+
+
+def tool_check_tetrahedra(input_path, file_format=None, zero_volume_factor=1e-6):
+    """Tetrahedron check: the tetra and tetra10 cells that are inverted
+    (negative volume), degenerate (volume within a tolerance of the longest edge
+    cubed) and the pairs that overlap across a shared face, with the verdict."""
+    mesh = _load(input_path, file_format)
+    return _json_safe(check_tetrahedra(mesh, zero_volume_factor=zero_volume_factor))
 
 
 def tool_find_intersections(
@@ -7377,6 +7386,14 @@ TOOL_REGISTRY = OrderedDict(
             {
                 "fn": tool_check_conformity,
                 "wraps": ("check_conformity",),
+                "gated": None,
+            },
+        ),
+        (
+            "check_tetrahedra",
+            {
+                "fn": tool_check_tetrahedra,
+                "wraps": ("check_tetrahedra",),
                 "gated": None,
             },
         ),

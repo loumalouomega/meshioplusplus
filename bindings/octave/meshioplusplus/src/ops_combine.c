@@ -167,6 +167,36 @@ static mxArray *O_mio_check_conformity(const mxArray **a) {
     return mio_o_struct(11, names, v);
 }
 
+/* mio_o_getstring adapter: the warnings of this thread's last check_tetrahedra call. */
+static int64_t oc_check_tetrahedra_warnings(void *ctx, char *buf, int64_t buflen) {
+    (void)ctx;
+    return mio_check_tetrahedra_warnings(buf, buflen);
+}
+
+/* check_tetrahedra: inverted, degenerate and overlapping tetrahedra. The mesh is
+ * not changed. Returns struct(num_tetrahedra, ..., valid, warnings); `zero_volume_factor`
+ * [] keeps the C default and the .m wrapper splits the warnings. */
+static mxArray *O_mio_check_tetrahedra(const mxArray **a) {
+    mio_check_tetrahedra_opts opts;
+    mio_check_tetrahedra_opts_init(&opts);
+    if (!mio_o_is_null(a[1])) opts.zero_volume_factor = mio_o_double(a[1], "zero_volume_factor");
+    mio_check_tetrahedra_report report;
+    memset(&report, 0, sizeof(report));
+    mio_o_check(mio_check_tetrahedra(mio_o_mesh(a[0]), &opts, &report), "check_tetrahedra");
+    mxArray *w = mio_o_getstring(oc_check_tetrahedra_warnings, NULL, "check_tetrahedra");
+    const char *names[] = {"num_tetrahedra", "num_inverted", "num_degenerate", "num_overlaps",
+                           "min_volume",     "max_volume",   "valid",          "warnings"};
+    mxArray *v[] = {mio_o_scalar((double)report.num_tetrahedra),
+                    mio_o_scalar((double)report.num_inverted),
+                    mio_o_scalar((double)report.num_degenerate),
+                    mio_o_scalar((double)report.num_overlaps),
+                    mio_o_scalar(report.min_volume),
+                    mio_o_scalar(report.max_volume),
+                    mio_o_logical(report.valid != 0),
+                    w};
+    return mio_o_struct(8, names, v);
+}
+
 /* boundary_layer (roadmap 6.9): prisms grown from a surface. Returns
  * struct(mesh, num_cells, ..., num_front_crossings). */
 static mxArray *O_mio_boundary_layer(const mxArray **a) {
@@ -1446,6 +1476,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_conservative_interpolate, 5),
     MIO_O_ENTRY(mio_error_size, 8),
     MIO_O_ENTRY(mio_check_conformity, 3),
+    MIO_O_ENTRY(mio_check_tetrahedra, 2),
     MIO_O_ENTRY(mio_boundary_layer, 11),
     MIO_O_ENTRY(mio_extrude, 7),
     MIO_O_ENTRY(mio_revolve, 8),

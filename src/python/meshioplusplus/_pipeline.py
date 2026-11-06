@@ -32,6 +32,7 @@ import numpy as np
 from . import _primitives
 from ._agglomerate import agglomerate
 from ._check_conformity import check_conformity
+from ._check_tetrahedra import check_tetrahedra
 from ._clean import clean
 from ._convert_cells import convert_cells
 from ._crop import crop
@@ -305,6 +306,7 @@ _OP_TABLE = {
     "SplitInterface": ("Region", "AddCohesive"),
     "QualityGate": ("Require", "MaxInverted", "MaxDegenerate"),
     "CheckConformity": ("Tolerance", "Require", "AttachFlags"),
+    "CheckTetrahedra": ("ZeroVolumeFactor", "Require"),
     "FindIntersections": ("Other", "Region", "RegionOther", "Require", "AttachFlags"),
     "Thickness": (
         "Other",
@@ -2415,6 +2417,22 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumUnweldedFacets"] = float(rep["num_unwelded_facets"])
         if attach:
             mesh = flagged
+    elif op == "CheckTetrahedra":
+        # A gate by default: an inverted or degenerate tetrahedron or an overlap stops
+        # the pipeline; with Require false it only reports. The mesh flows on unchanged.
+        rep = check_tetrahedra(
+            mesh, zero_volume_factor=_number(step, "ZeroVolumeFactor", 1e-6)
+        )
+        if _flag(step, "Require", True) and not rep["valid"]:
+            raise RuntimeError(
+                "meshio++: pipeline: CheckTetrahedra failed: "
+                f"{rep['num_inverted']} inverted, {rep['num_degenerate']} degenerate "
+                f"and {rep['num_overlaps']} overlapping pair(s)"
+            )
+        entry["NumTetrahedra"] = float(rep["num_tetrahedra"])
+        entry["NumInverted"] = float(rep["num_inverted"])
+        entry["NumDegenerate"] = float(rep["num_degenerate"])
+        entry["NumOverlaps"] = float(rep["num_overlaps"])
     elif op == "FindIntersections":
         # A gate by default, like CheckConformity: a surface that intersects
         # itself (or meets Other) stops the pipeline; with Require false it

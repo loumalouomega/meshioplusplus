@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `reconstruct`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `reconstruct`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -123,6 +123,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `quality` | `compute_quality`'s dict without the per-cell arrays |
 | `check` | `check_quality`'s dict: `passed`, the counts and `checks` |
 | `check-conformity` | `check_conformity`'s report: `dimension`, the six counts, `conforming`, `interface_mode` and `warnings` |
+| `check-tetrahedra` | `check_tetrahedra`'s report: `num_tetrahedra`, `num_inverted`, `num_degenerate`, `num_overlaps`, `min_volume`, `max_volume`, `valid` and `warnings` |
 | `find-intersections` | `find_intersections`'s counts, `truncated`, `clean`, `pairs` (a list of `[cell_a, cell_b]`) and `warnings` |
 | `thickness` | `thickness`'s report (`direction`, the counts, `min`, `max`, `mean`, `min_cell`, `min_point`, `max_distance`, `warnings`), plus `threshold` and `passed` with `--min` |
 | `diff` | `diff`'s report plus `equal` (the exit-code decision); the Python CLI adds its `sets` section |
@@ -253,6 +254,20 @@ meshioplusplus check-conformity [options] INFILE [OUTFILE]
 | `--json` | | Print the report as JSON |
 | `--input-format FORMAT` | `-i` | Force input format |
 | `--output-format FORMAT` | `-o` | Force output format of `OUTFILE`, which carries the `conformity:hanging` point data |
+
+## meshioplusplus check-tetrahedra
+
+The [tetrahedron check](./check_tetrahedra.md): the inverted, degenerate and overlapping tetrahedra of a mesh. Exits **0** when the tetrahedra are valid, **1** when any is not, **2** when the check could not run.
+
+```
+meshioplusplus check-tetrahedra [options] INFILE
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--zero-volume-factor X` | | A volume under this fraction of the longest edge cubed counts as zero (default `1e-6`) |
+| `--json` | | Print the report as JSON |
+| `--input-format FORMAT` | `-i` | Force input format |
 
 ## meshioplusplus find-intersections
 

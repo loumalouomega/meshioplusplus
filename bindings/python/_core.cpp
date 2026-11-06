@@ -131,6 +131,7 @@
 #include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/check_tetrahedra.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -4650,6 +4651,30 @@ PYBIND11_MODULE(_core, m) {
             return out;
         },
         py::arg("surface"));
+
+    // Inverted, degenerate and overlapping tetrahedra (operations/check_tetrahedra.hpp).
+    m.def(
+        "check_tetrahedra",
+        [](py::object pymesh, double zero_volume_factor) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            meshioplusplus::TetrahedraCheckOptions o;
+            o.mZeroVolumeFactor = zero_volume_factor;
+            const meshioplusplus::TetrahedraCheckResult r =
+                core_nogil([&] { return meshioplusplus::check_tetrahedra(cpp, o); });
+            py::dict out;
+            out["num_tetrahedra"] = r.mNumTetrahedra;
+            out["num_inverted"] = r.mNumInverted;
+            out["num_degenerate"] = r.mNumDegenerate;
+            out["num_overlaps"] = r.mNumOverlaps;
+            out["min_volume"] = r.mMinVolume;
+            out["max_volume"] = r.mMaxVolume;
+            out["valid"] = r.mValid;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("zero_volume_factor") = 1.0e-6);
 
     // The umbrella: generate a grid over the surface and fill it with signed
     // distances. `structure` picks a dense lattice or an adaptive octree; the

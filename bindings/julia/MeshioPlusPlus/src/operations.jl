@@ -563,6 +563,35 @@ function check_conformity(m::Mesh; tolerance::Real=1e-9, attach_flags::Bool=true
 end
 
 """
+    check_tetrahedra(mesh; zero_volume_factor=1e-6)
+        -> (; num_tetrahedra, num_inverted, num_degenerate, num_overlaps, min_volume,
+              max_volume, valid, warnings)
+
+Whether the tetrahedra of `mesh` are usable: its `tetra` and `tetra10` cells (a quadratic
+one by its four corners) are counted as inverted (a signed volume below minus the tolerance),
+degenerate (a volume within it) and, as `num_overlaps`, the pairs of tetrahedra that share a
+face, used by no other, with their opposite nodes on the same side of it. The tolerance is
+`zero_volume_factor` times the longest edge cubed plus the effect of six significant digits of
+written coordinates. `valid` is true when there is none of the three. The mesh is not
+changed. See `doc/check_tetrahedra.md`.
+"""
+function check_tetrahedra(m::Mesh; zero_volume_factor::Real=1e-6)
+    report = Ref{_CCheckTetrahedraReport}()
+    opts = _CCheckTetrahedraOpts(Cdouble(zero_volume_factor), (0, 0, 0, 0))
+    _check(ccall(_sym(:mio_check_tetrahedra), Cint,
+                 (Ptr{Cvoid}, Ref{_CCheckTetrahedraOpts}, Ptr{_CCheckTetrahedraReport}),
+                 _handle(m), Ref(opts), report))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_check_tetrahedra_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    r = report[]
+    (num_tetrahedra=Int(r.num_tetrahedra), num_inverted=Int(r.num_inverted),
+     num_degenerate=Int(r.num_degenerate), num_overlaps=Int(r.num_overlaps),
+     min_volume=Float64(r.min_volume), max_volume=Float64(r.max_volume),
+     valid=r.valid != 0,
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
     remesh(mesh, num_clusters; subdivide=-1, subsample_ratio=10.0,
            max_subdivide=4, max_iterations=100, max_repair_passes=10,
            metric=:isotropic, gradation=0.0, preserve_boundary=true,

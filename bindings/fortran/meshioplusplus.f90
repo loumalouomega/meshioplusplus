@@ -85,7 +85,7 @@ module meshioplusplus
     public :: mio_adapt, mio_mmg_report, mio_metric_from_hessian
     public :: mio_discretize_levelset, mio_mesh_domain, mio_move
     public :: mio_error_size_report
-    public :: mio_conformity_report
+    public :: mio_conformity_report, mio_check_tetrahedra_report
     public :: MIO_CONFORMITY_CONFORMING, MIO_CONFORMITY_WELD, MIO_CONFORMITY_PROXIMITY
     public :: MIO_MESH_CAD_OK, MIO_MESH_CAD_EMPTY, MIO_MESH_CAD_OPEN_LOOP
     public :: MIO_MESH_CAD_SELF_INTERSECTING, MIO_MESH_CAD_DEGENERATE
@@ -684,6 +684,29 @@ module meshioplusplus
         integer(c_int64_t) :: num_non_manifold_facets = 0
         integer(c_int32_t) :: conforming = 0
         integer(c_int32_t) :: interface_mode = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_check_tetrahedra_opts` (40 bytes, checked by
+    !> `check_tetrahedra`).
+    type, bind(c) :: mio_check_tetrahedra_opts_t
+        real(c_double) :: zero_volume_factor = 1.0e-6_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_check_tetrahedra_report` (96 bytes): what `check_tetrahedra` found.
+    !> `valid` is nonzero when there is no inverted or degenerate tetrahedron and
+    !> no overlap. Counts are counts, not indices.
+    type, bind(c) :: mio_check_tetrahedra_report
+        integer(c_int64_t) :: num_tetrahedra = 0
+        integer(c_int64_t) :: num_inverted = 0
+        integer(c_int64_t) :: num_degenerate = 0
+        integer(c_int64_t) :: num_overlaps = 0
+        real(c_double) :: min_volume = 0.0_c_double
+        real(c_double) :: max_volume = 0.0_c_double
+        integer(c_int32_t) :: valid = 0
+        integer(c_int32_t) :: reserved32 = 0
         integer(c_int64_t) :: num_warnings = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
@@ -2307,6 +2330,7 @@ module meshioplusplus
         procedure :: estimate_error => mesh_estimate_error
         procedure :: error_size => mesh_error_size
         procedure :: check_conformity => mesh_check_conformity
+        procedure :: check_tetrahedra => mesh_check_tetrahedra
         procedure :: remesh => mesh_remesh
         procedure :: curvature => mesh_curvature
         procedure :: normals => mesh_normals
@@ -5999,6 +6023,23 @@ module meshioplusplus
             integer(c_int64_t) :: n
         end function
 
+        function c_mio_check_tetrahedra(mesh, opts, report) &
+                bind(c, name="mio_check_tetrahedra") result(r)
+            import :: c_ptr, c_int, mio_check_tetrahedra_opts_t, mio_check_tetrahedra_report
+            type(c_ptr), value :: mesh
+            type(mio_check_tetrahedra_opts_t), intent(in) :: opts
+            type(mio_check_tetrahedra_report), intent(out) :: report
+            integer(c_int) :: r
+        end function
+
+        function c_mio_check_tetrahedra_warnings(buf, buflen) &
+                bind(c, name="mio_check_tetrahedra_warnings") result(n)
+            import :: c_char, c_int64_t
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
         function c_mio_error_size(mesh, opts, report) &
                 bind(c, name="mio_error_size") result(h)
             import :: c_ptr, mio_error_size_opts_t, mio_error_size_report
@@ -8526,6 +8567,55 @@ contains
                 deallocate (wbuf)
                 allocate (wbuf(int(n) + 1))
                 n = c_mio_check_conformity_warnings(wbuf, n + 1)
+                if (n > 0) warnings = from_c_buf(wbuf, int(n))
+            end if
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Whether the tetrahedra of the mesh are usable: its `tetra` and `tetra10`
+    !> cells (a quadratic one by its four corners) are counted as inverted (a
+    !> signed volume below minus the tolerance), degenerate (a volume within it)
+    !> and, as `num_overlaps`, the pairs of tetrahedra that share a face, used by
+    !> no other, with their opposite nodes on the same side of it. The tolerance
+    !> is `zero_volume_factor` (default 1e-6, from the C side) times the longest
+    !> edge cubed plus the effect of six significant digits of written
+    !> coordinates. The result is a `mio_check_tetrahedra_report` (`valid` nonzero
+    !> when there is none of the three); `warnings` receives what was not
+    !> examined, one per line. The mesh is not changed. See
+    !> doc/check_tetrahedra.md.
+    function mesh_check_tetrahedra(self, zero_volume_factor, warnings, stat, errmsg) &
+            result(report)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in), optional :: zero_volume_factor
+        character(:), allocatable, intent(out), optional :: warnings
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_check_tetrahedra_report) :: report
+        type(mio_check_tetrahedra_opts_t) :: opts
+        character(c_char), allocatable :: wbuf(:)
+        integer(c_int64_t) :: n
+        integer(c_int) :: s
+        if (c_sizeof(opts) /= 40_c_size_t .or. c_sizeof(report) /= 96_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: check_tetrahedra layout mismatch'
+            error stop 1
+        end if
+        if (present(zero_volume_factor)) &
+            opts%zero_volume_factor = real(zero_volume_factor, c_double)
+        s = c_mio_check_tetrahedra(self%handle, opts, report)
+        if (s /= 0_c_int) then
+            call handle_failure('check_tetrahedra', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(warnings)) then
+            warnings = ''
+            ! String rule 5: query the length with an empty buffer, then copy.
+            allocate (wbuf(1))
+            n = c_mio_check_tetrahedra_warnings(wbuf, 0_c_int64_t)
+            if (n > 0 .and. n < int(huge(0) - 1, c_int64_t)) then
+                deallocate (wbuf)
+                allocate (wbuf(int(n) + 1))
+                n = c_mio_check_tetrahedra_warnings(wbuf, n + 1)
                 if (n > 0) warnings = from_c_buf(wbuf, int(n))
             end if
         end if

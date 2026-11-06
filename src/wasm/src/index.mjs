@@ -337,6 +337,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   hessian: (mesh: Mesh, array: string, method?: string, location?: string, output?: string, overwrite?: boolean) => {mesh: Mesh, numSkipped: number, numFallback: number},
  *   estimateError: (mesh: Mesh, array: string, method?: string, marking?: string, markingValue?: number, output?: string, marked?: string, overwrite?: boolean) => {mesh: Mesh, globalError: number, numSkipped: number, numMarked: number},
  *   checkConformity: (mesh: Mesh, options?: {tolerance?: number, attachFlags?: boolean}) => {mesh: Mesh, dimension: number, numHangingNodes: number, numTJunctions: number, numPartialOverlaps: number, numUnweldedFacets: number, numBoundaryFacets: number, numNonManifoldFacets: number, conforming: boolean, interfaceMode: string, warnings: string[]},
+ *   checkTetrahedra: (mesh: Mesh, options?: {zeroVolumeFactor?: number}) => {numTetrahedra: number, numInverted: number, numDegenerate: number, numOverlaps: number, minVolume: number, maxVolume: number, valid: boolean, warnings: string[]},
  *   errorSize: (mesh: Mesh, options: {targetError: number, errorArray?: string, order?: number, minSize?: number, maxSize?: number, output?: string, overwrite?: boolean}) => {mesh: Mesh, numCells: number, numSkipped: number, numClamped: number, minSize: number, maxSize: number},
  *   remesh: (mesh: Mesh, numClusters: number, subdivide?: number, subsampleRatio?: number, maxSubdivide?: number, maxIterations?: number, maxRepairPasses?: number, metric?: string, gradation?: number, preserveBoundary?: boolean, maxAnisotropy?: number) => {mesh: Mesh, numClusters: number, numIterations: number, subdivideApplied: number, numIsolatedClusters: number, numNonManifoldVertices: number},
  *   remeshVolume: (mesh: Mesh, resolution?: number[], cellSize?: number, bounds?: number[], padding?: number, paddingRelative?: number, maxCells?: number, maxTets?: number, warpFraction?: number, sign?: string, watertightCheck?: string) => {mesh: Mesh, numTets: number, numVerticesWarped: number, numTetsRejected: number, numNonManifoldEdges: number},
@@ -1108,6 +1109,7 @@ export async function loadMeshioPlusPlus(
             ),
         errorSize: (mesh, options) => Module.errorSize(mesh, options),
         checkConformity: (mesh, options = {}) => Module.checkConformity(mesh, options),
+        checkTetrahedra: (mesh, options = {}) => Module.checkTetrahedra(mesh, options),
         remesh: (
             mesh,
             numClusters,

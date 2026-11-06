@@ -908,6 +908,26 @@ struct _CConformityOpts
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_check_tetrahedra_opts`."""
+struct _CCheckTetrahedraOpts
+    zero_volume_factor::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_check_tetrahedra_report`."""
+struct _CCheckTetrahedraReport
+    num_tetrahedra::Int64
+    num_inverted::Int64
+    num_degenerate::Int64
+    num_overlaps::Int64
+    min_volume::Cdouble
+    max_volume::Cdouble
+    valid::Int32
+    reserved32::Int32
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_conformity_report`."""
 struct _CConformityReport
     dimension::Int64
@@ -2180,6 +2200,14 @@ function _check_abi_layout()
      fieldoffset(_CConformityReport, 10) == 64) ||
         error("meshio++: mio_conformity_report layout mismatch " *
               "($(sizeof(_CConformityReport)) bytes)")
+    (sizeof(_CCheckTetrahedraOpts) == 40 && fieldoffset(_CCheckTetrahedraOpts, 2) == 8) ||
+        error("meshio++: mio_check_tetrahedra_opts layout mismatch " *
+              "($(sizeof(_CCheckTetrahedraOpts)) bytes)")
+    (sizeof(_CCheckTetrahedraReport) == 96 && fieldoffset(_CCheckTetrahedraReport, 5) == 32 &&
+     fieldoffset(_CCheckTetrahedraReport, 7) == 48 &&
+     fieldoffset(_CCheckTetrahedraReport, 9) == 56) ||
+        error("meshio++: mio_check_tetrahedra_report layout mismatch " *
+              "($(sizeof(_CCheckTetrahedraReport)) bytes)")
     (sizeof(_CBoundaryLayerOpts) == 64 && fieldoffset(_CBoundaryLayerOpts, 4) == 24 &&
      fieldoffset(_CBoundaryLayerOpts, 8) == 40 && fieldoffset(_CBoundaryLayerOpts, 12) == 56) ||
         error("meshio++: mio_boundary_layer_opts layout mismatch " *

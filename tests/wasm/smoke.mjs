@@ -2210,6 +2210,23 @@ step('estimateError: zero on a linear field, nonzero and markable on a quadratic
     assert.ok(c.mesh.point_data['conformity:hanging'].every((v) => Number(v) === 0));
     assert.throws(() => m.checkConformity(e1.mesh, { tolerance: -1 }), /tolerance/);
     assert.throws(() => m.checkConformity(e1.mesh, { bogus: 1 }), /bogus/);
+
+    // Two tetrahedra over one face: opposite apexes are valid, the same side overlaps.
+    const tets = (apex) => ({
+        points: new Float64Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, ...apex]),
+        dim: 3,
+        cells: [{ type: 'tetra', data: new Int32Array([0, 1, 2, 3, 0, 2, 1, 4]), nodesPerCell: 4 }],
+    });
+    const ok = m.checkTetrahedra(tets([0, 0, -1]));
+    assert.equal(ok.numTetrahedra, 2);
+    assert.equal(ok.numOverlaps, 0);
+    assert.equal(ok.valid, true);
+    const flat = m.checkTetrahedra(tets([0, 0, 0.5]), { zeroVolumeFactor: 1e-3 });
+    assert.equal(typeof flat.valid, 'boolean');
+    assert.ok(flat.minVolume <= flat.maxVolume);
+    assert.ok(Array.isArray(flat.warnings));
+    assert.throws(() => m.checkTetrahedra(tets([0, 0, -1]), { zeroVolumeFactor: -1 }), /zero_volume_factor/);
+    assert.throws(() => m.checkTetrahedra(tets([0, 0, -1]), { bogus: 1 }), /bogus/);
 });
 
 step('convertSurfaceOps: gradient is a chainable pipeline step', () => {

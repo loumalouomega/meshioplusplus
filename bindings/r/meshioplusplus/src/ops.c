@@ -1725,6 +1725,39 @@ SEXP R_mio_check_conformity(SEXP mesh, SEXP tolerance, SEXP attach_flags) {
     return res;
 }
 
+/* mio_r_getstring adapter: the warnings of this thread's last check_tetrahedra call. */
+static int64_t r_check_tetrahedra_warnings(void *ctx, char *buf, int64_t buflen) {
+    (void)ctx;
+    return mio_check_tetrahedra_warnings(buf, buflen);
+}
+
+/* check_tetrahedra: inverted, degenerate and overlapping tetrahedra. The mesh is
+ * not changed. Returns list(num_tetrahedra, ..., valid, warnings); `zero_volume_factor`
+ * NULL keeps the C default. */
+SEXP R_mio_check_tetrahedra(SEXP mesh, SEXP zero_volume_factor) {
+    mio_check_tetrahedra_opts opts;
+    mio_check_tetrahedra_opts_init(&opts);
+    if (!Rf_isNull(zero_volume_factor))
+        opts.zero_volume_factor = mio_r_double(zero_volume_factor, "zero_volume_factor");
+    mio_check_tetrahedra_report report;
+    memset(&report, 0, sizeof(report));
+    mio_r_check(mio_check_tetrahedra(mio_r_mesh(mesh), &opts, &report), "check_tetrahedra");
+    SEXP v[8];
+    v[0] = PROTECT(Rf_ScalarReal((double)report.num_tetrahedra));
+    v[1] = PROTECT(Rf_ScalarReal((double)report.num_inverted));
+    v[2] = PROTECT(Rf_ScalarReal((double)report.num_degenerate));
+    v[3] = PROTECT(Rf_ScalarReal((double)report.num_overlaps));
+    v[4] = PROTECT(Rf_ScalarReal(report.min_volume));
+    v[5] = PROTECT(Rf_ScalarReal(report.max_volume));
+    v[6] = PROTECT(Rf_ScalarLogical(report.valid != 0));
+    v[7] = PROTECT(mio_r_getstring(r_check_tetrahedra_warnings, NULL, "check_tetrahedra"));
+    const char *names[] = {"num_tetrahedra", "num_inverted", "num_degenerate", "num_overlaps",
+                           "min_volume",     "max_volume",   "valid",          "warnings"};
+    SEXP res = PROTECT(mio_r_named_list(8, names, v));
+    UNPROTECT(9);
+    return res;
+}
+
 /* boundary_layer (roadmap 6.9): prisms grown from a surface. Returns
  * list(mesh, num_cells, ..., cap_closed). */
 SEXP R_mio_boundary_layer(SEXP mesh, SEXP first_height, SEXP num_layers, SEXP growth,

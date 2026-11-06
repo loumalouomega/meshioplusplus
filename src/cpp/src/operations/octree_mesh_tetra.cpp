@@ -38,6 +38,7 @@
 #include "../detail/feature_snap.hpp"
 #include "../detail/isosurface_stuffing.hpp"
 #include "../detail/mesh_from_soup.hpp"
+#include "../detail/tet_checks.hpp"
 #include "octree_mesh_internal.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -476,26 +477,7 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& r
 std::pair<double, double> octree_mesh_volume_and_tolerance(const std::vector<Vec3>& rPoints,
                                                            const std::array<std::int64_t, 4>& rTet,
                                                            const double ZeroVolumeFactor) {
-    // Relative precision of the written coordinates (six significant digits): a volume below its
-    // effect on the longest edge squared is noise.
-    constexpr double kCoordinatePrecision = 1.0e-6;
-    const auto point = [&](const std::int64_t I) -> const Vec3& {
-        return rPoints[static_cast<std::size_t>(I)];
-    };
-    double longest = 0.0;
-    double largest_coordinate = 0.0;
-    for (int i = 0; i < 4; ++i) {
-        for (const double c : point(rTet[i]))
-            largest_coordinate = std::max(largest_coordinate, std::abs(c));
-        for (int j = i + 1; j < 4; ++j)
-            longest = std::max(longest, vec3_norm(vec3_sub(point(rTet[j]), point(rTet[i]))));
-    }
-    const double volume = vec3_dot(vec3_cross(vec3_sub(point(rTet[1]), point(rTet[0])),
-                                              vec3_sub(point(rTet[2]), point(rTet[0]))),
-                                   vec3_sub(point(rTet[3]), point(rTet[0]))) /
-                          6.0;
-    return {volume, ZeroVolumeFactor * longest * longest * longest +
-                        kCoordinatePrecision * largest_coordinate * longest * longest};
+    return tet_volume_and_tolerance(rPoints, rTet, ZeroVolumeFactor);
 }
 
 void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& rO,
@@ -925,34 +907,10 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
 
     // Two tetrahedra that share a face overlap when their opposite nodes lie on the same side
     // of it.
-    std::vector<std::pair<std::array<Index, 3>, std::pair<std::size_t, Index>>> faces;
-    for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
-        if (!considered(t))
-            continue;
-        for (const auto& facet : kOctmtFacet) {
-            std::array<Index, 3> key{rTets.mTets[t][facet[0]], rTets.mTets[t][facet[1]],
-                                     rTets.mTets[t][facet[2]]};
-            std::sort(key.begin(), key.end());
-            // The node of the tetrahedron which is not on the face.
-            Index opposite = -1;
-            for (const Index v : rTets.mTets[t])
-                if (v != key[0] && v != key[1] && v != key[2])
-                    opposite = v;
-            faces.push_back({key, {t, opposite}});
-        }
-    }
-    std::sort(faces.begin(), faces.end());
-    for (std::size_t i = 0; i + 1 < faces.size(); ++i) {
-        if (faces[i].first != faces[i + 1].first ||
-            (i + 2 < faces.size() && faces[i + 2].first == faces[i].first))
-            continue;
-        const Vec3& a = point(faces[i].first[0]);
-        const Vec3 normal = vec3_cross(vec3_sub(point(faces[i].first[1]), a),
-                                       vec3_sub(point(faces[i].first[2]), a));
-        const double side_0 = vec3_dot(normal, vec3_sub(point(faces[i].second.second), a));
-        const double side_1 = vec3_dot(normal, vec3_sub(point(faces[i + 1].second.second), a));
-        rR.mNumOverlaps += side_0 * side_1 > 0.0;
-    }
+    std::vector<std::uint8_t> skipped(rTets.mTets.size());
+    for (std::size_t t = 0; t < skipped.size(); ++t)
+        skipped[t] = considered(t) ? 0 : 1;
+    rR.mNumOverlaps += count_tet_overlaps(rTets.mPoints, rTets.mTets, &skipped);
 
     if (rR.mNumCollapsed > 0)
         octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumCollapsed) +

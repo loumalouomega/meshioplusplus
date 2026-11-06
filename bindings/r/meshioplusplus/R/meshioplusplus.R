@@ -1450,6 +1450,37 @@ mio_check_conformity <- function(mesh, tolerance = 1e-9, attach_flags = TRUE) {
   res
 }
 
+#' Whether the tetrahedra of a mesh are usable
+#'
+#' Examines the `tetra` and `tetra10` cells (a quadratic tetrahedron by its four
+#' corners) and counts the tetrahedra that are inverted (a signed volume below
+#' minus the tolerance) or degenerate (a volume within it), and the pairs that
+#' overlap across a shared face (no other tetrahedron uses it, and their
+#' opposite nodes lie on the same side of it). The tolerance is
+#' `zero_volume_factor` times the cube of the longest edge plus the effect of six
+#' significant digits of written coordinates. The mesh is not changed.
+#'
+#' @param mesh A mesh.
+#' @param zero_volume_factor The volume tolerance as a fraction of the longest
+#'   edge cubed (default `1e-6`); finite and not negative.
+#' @return A list: `num_tetrahedra`, `num_inverted`, `num_degenerate`,
+#'   `num_overlaps`, `min_volume`, `max_volume`, `valid` (no inverted or
+#'   degenerate tetrahedron and no overlap) and `warnings`, a character vector
+#'   with one entry per warning.
+#' @export
+mio_check_tetrahedra <- function(mesh, zero_volume_factor = NULL) {
+  res <- .Call(
+    R_mio_check_tetrahedra, mesh,
+    if (is.null(zero_volume_factor)) NULL else as.numeric(zero_volume_factor)
+  )
+  res$warnings <- if (nzchar(res$warnings)) {
+    strsplit(res$warnings, "\n", fixed = TRUE)[[1]]
+  } else {
+    character(0)
+  }
+  res
+}
+
 #' Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
 #' clustering
 #'

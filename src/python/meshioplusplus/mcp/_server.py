@@ -2665,6 +2665,27 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    def check_tetrahedra(
+        input_path: str,
+        file_format: Optional[str] = None,
+        zero_volume_factor: float = 1e-6,
+    ) -> dict:
+        """Whether the tetrahedra of a mesh are usable. Examines the tetra and
+        tetra10 cells (a quadratic one by its four corners) and reports
+        num_tetrahedra, num_inverted (signed volume below minus the tolerance),
+        num_degenerate (volume within it), num_overlaps (pairs of tetrahedra
+        sharing a face, used by no other, whose opposite nodes lie on the same
+        side of it), min_volume, max_volume, valid and warnings. The tolerance is
+        zero_volume_factor times the longest edge cubed plus the effect of six
+        significant digits of written coordinates. The mesh is not changed."""
+        return _guard(
+            _tools.tool_check_tetrahedra,
+            input_path=input_path,
+            file_format=file_format,
+            zero_volume_factor=zero_volume_factor,
+        )
+
+    @server.tool()
     def find_intersections(
         input_path: str,
         output_path: Optional[str] = None,
