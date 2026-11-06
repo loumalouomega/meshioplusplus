@@ -30,6 +30,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "comma_locale.hpp"
 
 using meshioplusplus::detail::is_c_decimal_point;
 using meshioplusplus::detail::parse_double;
@@ -38,39 +39,8 @@ using meshioplusplus::detail::stod_c;
 
 namespace {
 
-// RAII guard: saves/restores LC_NUMERIC around a test, mandatory since every
-// gtest in this binary shares one process -- a leaked comma locale would
-// corrupt every later test's floating-point parsing/formatting.
-class LcNumericGuard {
-public:
-    LcNumericGuard() {
-        const char* cur = std::setlocale(LC_NUMERIC, nullptr);
-        mSaved = cur ? cur : "C";
-    }
-    ~LcNumericGuard() { std::setlocale(LC_NUMERIC, mSaved.c_str()); }
-    LcNumericGuard(const LcNumericGuard&) = delete;
-    LcNumericGuard& operator=(const LcNumericGuard&) = delete;
-
-private:
-    std::string mSaved;
-};
-
-// The first candidate whose decimal_point is a comma, or empty if none of
-// these locales are installed on this machine.
-std::string find_comma_locale() {
-    static const char* kCandidates[] = {
-        "de_DE.UTF-8", "de_DE.utf8",  "fr_FR.UTF-8", "fr_FR.utf8",          "es_ES.UTF-8",
-        "es_ES.utf8",  "nl_NL.UTF-8", "nl_NL.utf8",  "German_Germany.1252", "French_France.1252",
-    };
-    for (const char* cand : kCandidates) {
-        if (std::setlocale(LC_NUMERIC, cand) != nullptr) {
-            if (is_c_decimal_point(std::localeconv()->decimal_point))
-                continue;  // some libc builds accept the name but keep "C"
-            return cand;
-        }
-    }
-    return {};
-}
+using mio_test::find_comma_locale;
+using mio_test::LcNumericGuard;
 
 }  // namespace
 
@@ -258,4 +228,23 @@ TEST(FastNumber, UnderACommaLocaleSnprintfCEmitsADot) {
     EXPECT_GT(n, 0);
     EXPECT_STREQ(buf, "1.5");
     EXPECT_EQ(std::strchr(buf, ','), nullptr);
+}
+
+// Several numbers in one format, a literal comma beside a number, and a
+// truncated buffer: before v19.1 only the first separator of the text was
+// repaired, so the second number kept its comma and a literal ',' became '.'.
+TEST(FastNumber, UnderACommaLocaleSnprintfCFormatsEveryNumber) {
+    LcNumericGuard guard;
+    if (find_comma_locale().empty())
+        GTEST_SKIP() << "no comma-decimal locale available on this machine";
+    char buf[96];
+    int n = snprintf_c(buf, sizeof(buf), "%.1f %.1f %.17g\n", 1.5, -2.25, 0.1);
+    EXPECT_EQ(n, static_cast<int>(std::strlen(buf)));
+    EXPECT_STREQ(buf, "1.5 -2.2 0.10000000000000001\n");
+    n = snprintf_c(buf, sizeof(buf), ",%.3e,%d,%.2f", 1.5, 7, 3.0);
+    EXPECT_STREQ(buf, ",1.500e+00,7,3.00");
+    char small[6];
+    n = snprintf_c(small, sizeof(small), "%.4f", 2.5);
+    EXPECT_EQ(n, 6);
+    EXPECT_STREQ(small, "2.500");
 }

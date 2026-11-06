@@ -32,6 +32,8 @@ Forty-five whole-file readers go through `FileSource` (v16.20.0 moved nineteen m
 
 `openfoam` gained the most: it previously slurped via `ostringstream` + `.str()`, paying for **two** extra full-file copies on top of the read, both of which are now gone.
 
+The VTK XML readers (**vtu**, **vtp**, **vts**, **vtr**, **vti** and the pieces of their parallel files) do not read through `FileSource` since v19.1: pugixml's `load_buffer` copied the whole file before parsing it, so a mapped VTU was held twice. They parse with `load_buffer_inplace` over a private copy-on-write source instead (`detail/cow_source.hpp`): a `MAP_PRIVATE` mapping with write access (`FILE_MAP_COPY` on Windows) above the same threshold, an owned buffer below it. pugixml writes only its terminators and the text it unescapes, so only those pages are copied, by the kernel, and the file is never written. A file with a raw `<AppendedData>` section parses a copy of the XML around its payload, as before. Roadmap 5.7.4; measurements in [benchmarks](./benchmarks.md#vtk-xml-parsed-in-place).
+
 Streaming readers are unaffected by design — `ugrid`'s binary branch reads each section straight into its destination array with no whole-file intermediate, so there is nothing to map, and the HDF5/netCDF-backed formats manage their own I/O.
 
 ## Safety

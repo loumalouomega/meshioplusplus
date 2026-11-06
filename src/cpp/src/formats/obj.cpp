@@ -339,9 +339,8 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
 
     os << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     // One `CNumber::Append` per value (row_writer.hpp: `to_chars` for the
-    // plain precisions, roadmap 5.7.1) into a line, written whole. Each value
-    // gets its own decimal-point repair, where one `snprintf_c` over the line
-    // repaired the first number alone under a comma locale.
+    // plain precisions, roadmap 5.7.1) into a line, written whole; every value
+    // is formatted in the C convention, whatever the process locale.
     const detail::CNumber number;
     std::string line;
     const detail::DoubleView point_values(points);

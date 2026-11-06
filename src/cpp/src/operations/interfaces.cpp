@@ -31,6 +31,10 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
 
+#include "meshioplusplus/detail/bucket_table.hpp"
+#include "meshioplusplus/parallel.hpp"
+
+#include "../detail/bucket_build.hpp"
 #include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
@@ -508,6 +512,93 @@ double if_mean_edge(const Mesh& rMesh, const std::vector<RaFacet>& rFacets) {
     return count == 0 ? 0.0 : sum / static_cast<double>(count);
 }
 
+// The proximity search's candidates: a bucket grid over the target facets'
+// boxes, each grown by the tolerance and a slack for rounding (the
+// check_conformity pattern), so the bucket of a point lists, in ascending
+// order, every target within the tolerance of it. A target with a non-finite
+// coordinate, or a non-finite tolerance, makes every target a candidate of
+// every point instead -- the full scan -- since such a facet can still project
+// to a finite distance through its other corners.
+class IfTargetGrid {
+public:
+    IfTargetGrid(const Mesh& rMesh, const std::vector<RaFacet>& rFacets, double Tolerance)
+        : mAll(rFacets.size()) {
+        for (std::size_t t = 0; t < mAll.size(); ++t)
+            mAll[t] = static_cast<std::int64_t>(t);
+        const std::size_t n = rFacets.size();
+        if (n == 0 || !std::isfinite(Tolerance))
+            return;
+        std::vector<std::array<double, 6>> box(n);
+        double scale = 0.0;
+        for (std::size_t t = 0; t < n; ++t) {
+            std::array<double, 6>& rBox = box[t];
+            rBox = {
+                {std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
+                 std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
+                 -std::numeric_limits<double>::infinity(),
+                 -std::numeric_limits<double>::infinity()}};
+            for (std::int64_t node : rFacets[t].mNodes) {
+                const auto p = ra_point(rMesh.Points(), rMesh.PointDim(), node);
+                for (int d = 0; d < 3; ++d) {
+                    if (!std::isfinite(p[d]))
+                        return;
+                    rBox[d] = std::min(rBox[d], p[d]);
+                    rBox[3 + d] = std::max(rBox[3 + d], p[d]);
+                    scale = std::max(scale, std::fabs(p[d]));
+                }
+            }
+        }
+        // Far more than the rounding of a distance the tolerance is compared
+        // with, and of the box corners themselves.
+        const double grow = Tolerance + (Tolerance + scale) * 1e-9;
+        double extent_sum = 0.0;
+        std::array<double, 6> all = box[0];
+        for (std::array<double, 6>& rBox : box) {
+            double extent = 0.0;
+            for (int d = 0; d < 3; ++d) {
+                rBox[d] -= grow;
+                rBox[3 + d] += grow;
+                extent = std::max(extent, rBox[3 + d] - rBox[d]);
+                all[d] = std::min(all[d], rBox[d]);
+                all[3 + d] = std::max(all[3 + d], rBox[3 + d]);
+            }
+            extent_sum += extent;
+        }
+        double diag = 0.0;
+        for (int d = 0; d < 3; ++d)
+            diag += (all[3 + d] - all[d]) * (all[3 + d] - all[d]);
+        diag = std::sqrt(diag);
+        // Sized by the grown boxes' mean extent, never finer than 1/256 of
+        // the diagonal, so a large facet among small ones spans a bounded
+        // number of buckets.
+        double cell = std::max(extent_sum / static_cast<double>(n), diag / 256.0);
+        if (!(cell > 0.0) || !std::isfinite(cell))
+            return;
+        std::vector<detail::GridKey> lo(n), hi(n);
+        for (std::size_t t = 0; t < n; ++t) {
+            lo[t] = detail::bucket_key(box[t].data(), cell);
+            hi[t] = detail::bucket_key(box[t].data() + 3, cell);
+        }
+        mGrid = detail::build_bucket_table(cell, lo, hi);
+        mUseGrid = true;
+    }
+
+    /// The targets that may be within the tolerance of @p rPoint, ascending.
+    detail::BucketView Candidates(const detail::Vec3& rPoint) const {
+        if (!mUseGrid)
+            return detail::BucketView(mAll.data(), mAll.size());
+        detail::BucketView ids(nullptr, 0);
+        if (std::isfinite(rPoint[0]) && std::isfinite(rPoint[1]) && std::isfinite(rPoint[2]))
+            mGrid.Find(mGrid.KeyOf(rPoint.data()), ids);
+        return ids;
+    }
+
+private:
+    std::vector<std::int64_t> mAll;
+    detail::BucketTable mGrid{1.0};
+    bool mUseGrid = false;
+};
+
 struct IfMatch {
     RaFacet mA;
     RaFacet mB;
@@ -976,32 +1067,39 @@ FindInterfaceResult find_interface(const Mesh& rMeshA, const RegionSelector& rRe
             "meshio++: find_interface: both selected parts must have boundary facets");
 
     std::vector<IfMatch> matches;
-    std::set<std::pair<std::int64_t, std::int64_t>> matched_a, matched_b;
+    // Per facet of each side, whether a pair uses it: the unmatched counts.
+    std::vector<char> matched_a(facets_a.size(), 0), matched_b(facets_b.size(), 0);
     if (rOptions.mMode == InterfaceMode::Conforming) {
-        std::map<std::vector<std::int64_t>, std::vector<RaFacet>> map_a, map_b;
-        for (const RaFacet& facet : facets_a) {
-            auto key = facet.mNodes;
-            std::sort(key.begin(), key.end());
-            map_a[std::move(key)].push_back(facet);
-        }
-        for (const RaFacet& facet : facets_b) {
-            auto key = facet.mNodes;
-            std::sort(key.begin(), key.end());
-            map_b[std::move(key)].push_back(facet);
-        }
-        for (const auto& [key, owners_a] : map_a) {
-            const auto it = map_b.find(key);
-            if (it == map_b.end())
-                continue;
-            for (const RaFacet& a : owners_a)
-                for (const RaFacet& b : it->second) {
+        // A's facets then B's, grouped by node set (roadmap 5.4.2: this was a
+        // std::map keyed on a heap vector per facet, one per side). Each run
+        // pairs every A facet in it with every B facet, as the map lookup did;
+        // the sort below fixes the output order.
+        const std::size_t na = facets_a.size();
+        std::vector<detail::FacetKey> keys;
+        keys.reserve(na + facets_b.size());
+        for (const RaFacet& facet : facets_a)
+            keys.emplace_back(facet.mNodes.data(), facet.mNodes.size());
+        for (const RaFacet& facet : facets_b)
+            keys.emplace_back(facet.mNodes.data(), facet.mNodes.size());
+        const detail::SlotRuns runs = detail::group_facet_slots(
+            keys, [](const detail::FacetKey& rK) -> const detail::FacetKey& { return rK; },
+            std::max(rMeshA.NumPoints(), rMeshB.NumPoints()));
+        for (std::size_t r = 0; r < runs.NumRuns(); ++r) {
+            // Slots ascend within a run, so A's come first.
+            const std::uint64_t* first_b = runs.Begin(r);
+            while (first_b != runs.End(r) && *first_b < na)
+                ++first_b;
+            for (const std::uint64_t* sa = runs.Begin(r); sa != first_b; ++sa)
+                for (const std::uint64_t* sb = first_b; sb != runs.End(r); ++sb) {
+                    const RaFacet& a = facets_a[*sa];
+                    const RaFacet& b = facets_b[*sb - na];
                     if (&rMeshA == &rMeshB && a.mCell == b.mCell)
                         continue;
                     if (!ra_same_facet_geometry(rMeshA, a, rMeshB, b))
                         continue;
                     matches.push_back({a, b, 0.0, 0.0});
-                    matched_a.insert({a.mCell, a.mFacet});
-                    matched_b.insert({b.mCell, b.mFacet});
+                    matched_a[*sa] = 1;
+                    matched_b[*sb - na] = 1;
                 }
         }
     } else {
@@ -1022,14 +1120,32 @@ FindInterfaceResult find_interface(const Mesh& rMeshA, const RegionSelector& rRe
         const Mesh& rTargetMesh = swapped ? rMeshA : rMeshB;
         const std::vector<RaFacet>& search_facets = swapped ? facets_b : facets_a;
         const std::vector<RaFacet>& target_facets = swapped ? facets_a : facets_b;
-        for (const RaFacet& s : search_facets) {
+        const IfTargetGrid targets(rTargetMesh, target_facets, tolerance);
+        // Each search facet on its own (roadmap 5.4.2: every target was
+        // projected for the centroid and again for each corner, O(S x T)).
+        // A target is a candidate for a point only if the point is in its box
+        // grown by the tolerance, which every target that can pass
+        // `mDistanceSq <= max_distance_sq` is; the candidates come in target
+        // order, so the best and its tiebreak are the full scan's.
+        struct Found {
+            IfProjection mBest;
+            std::size_t mTarget = 0;
+            double mGapS = 0.0;
+            double mGapT = 0.0;
+            bool mMatched = false;
+        };
+        std::vector<Found> found(search_facets.size());
+        parallel_for(search_facets.size(), [&](std::size_t si) {
+            const RaFacet& s = search_facets[si];
             const detail::Vec3 centre = if_facet_centroid(rSearchMesh, s);
             const detail::Vec3 normal_s = ra_facet_normal(rSearchMesh, s.mNodes);
             if (!(detail::vec3_norm_sq(normal_s) > 0.0))
-                continue;
+                return;
             IfProjection best;
-            for (const RaFacet& t : target_facets) {
-                const IfProjection projection = if_project_facet(rTargetMesh, centre, t);
+            std::size_t best_target = 0;
+            for (const std::int64_t ti : targets.Candidates(centre)) {
+                const RaFacet& t = target_facets[static_cast<std::size_t>(ti)];
+                IfProjection projection = if_project_facet(rTargetMesh, centre, t);
                 if (!projection.mFound || projection.mDistanceSq > max_distance_sq ||
                     !(detail::vec3_norm_sq(projection.mNormal) > 0.0))
                     continue;
@@ -1038,38 +1154,49 @@ FindInterfaceResult find_interface(const Mesh& rMeshA, const RegionSelector& rRe
                 if (!best.mFound || projection.mDistanceSq < best.mDistanceSq ||
                     (projection.mDistanceSq == best.mDistanceSq &&
                      std::tie(projection.mCell, projection.mFacet) <
-                         std::tie(best.mCell, best.mFacet)))
-                    best = projection;
+                         std::tie(best.mCell, best.mFacet))) {
+                    best = std::move(projection);
+                    best_target = static_cast<std::size_t>(ti);
+                }
             }
             if (!best.mFound)
-                continue;
-            bool all_corners_near = true;
+                return;
+            // Every corner must be within the tolerance of some target facet
+            // (any facet, no normal test): of some candidate, then.
             for (std::int64_t node : s.mNodes) {
                 const detail::Vec3 point =
                     ra_point(rSearchMesh.Points(), rSearchMesh.PointDim(), node);
-                double nearest = std::numeric_limits<double>::infinity();
-                for (const RaFacet& t : target_facets)
-                    nearest =
-                        std::min(nearest, if_project_facet(rTargetMesh, point, t).mDistanceSq);
-                if (nearest > max_distance_sq) {
-                    all_corners_near = false;
-                    break;
-                }
+                bool near = false;
+                for (const std::int64_t ti : targets.Candidates(point))
+                    if (if_project_facet(rTargetMesh, point,
+                                         target_facets[static_cast<std::size_t>(ti)])
+                            .mDistanceSq <= max_distance_sq) {
+                        near = true;
+                        break;
+                    }
+                if (!near)
+                    return;
             }
-            if (!all_corners_near)
-                continue;
             const detail::Vec3 delta = detail::vec3_sub(centre, best.mPoint);
-            const double gap_s = detail::vec3_dot(delta, normal_s);
-            const double gap_t = detail::vec3_dot(delta, best.mNormal);
+            Found& rOut = found[si];
+            rOut.mGapS = detail::vec3_dot(delta, normal_s);
+            rOut.mGapT = detail::vec3_dot(delta, best.mNormal);
+            rOut.mBest = std::move(best);
+            rOut.mTarget = best_target;
+            rOut.mMatched = true;
+        });
+        for (std::size_t si = 0; si < search_facets.size(); ++si) {
+            if (!found[si].mMatched)
+                continue;
+            const RaFacet& s = search_facets[si];
+            const IfProjection& best = found[si].mBest;
             RaFacet t{best.mNodes, best.mCell, best.mFacet};
             if (swapped)
-                matches.push_back({std::move(t), s, gap_t, gap_s});
+                matches.push_back({std::move(t), s, found[si].mGapT, found[si].mGapS});
             else
-                matches.push_back({s, std::move(t), gap_s, gap_t});
-            matched_a.insert(swapped ? std::make_pair(best.mCell, best.mFacet)
-                                     : std::make_pair(s.mCell, s.mFacet));
-            matched_b.insert(swapped ? std::make_pair(s.mCell, s.mFacet)
-                                     : std::make_pair(best.mCell, best.mFacet));
+                matches.push_back({s, std::move(t), found[si].mGapS, found[si].mGapT});
+            (swapped ? matched_b : matched_a)[si] = 1;
+            (swapped ? matched_a : matched_b)[found[si].mTarget] = 1;
         }
     }
 
@@ -1082,8 +1209,10 @@ FindInterfaceResult find_interface(const Mesh& rMeshA, const RegionSelector& rRe
     std::vector<std::pair<std::int64_t, std::int64_t>> side_a, side_b;
     InterfaceReport report;
     report.mNumPairs = static_cast<std::int64_t>(matches.size());
-    report.mUnmatchedA = static_cast<std::int64_t>(facets_a.size() - matched_a.size());
-    report.mUnmatchedB = static_cast<std::int64_t>(facets_b.size() - matched_b.size());
+    report.mUnmatchedA =
+        static_cast<std::int64_t>(std::count(matched_a.begin(), matched_a.end(), char{0}));
+    report.mUnmatchedB =
+        static_cast<std::int64_t>(std::count(matched_b.begin(), matched_b.end(), char{0}));
     for (const IfMatch& match : matches) {
         side_a.push_back({match.mA.mCell, match.mA.mFacet});
         side_b.push_back({match.mB.mCell, match.mB.mFacet});

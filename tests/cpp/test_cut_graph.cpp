@@ -25,9 +25,7 @@
 
 #include <gtest/gtest.h>
 
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-#include <omp.h>
-#endif
+#include "thread_sweep.hpp"
 
 #include "analytic_surfaces.hpp"
 
@@ -274,8 +272,8 @@ TEST(ParamLadder, DeterministicAcrossThreadCounts) {
         to_patch(analytic::cc_cage(5, 3), [](const PatchVec& rC) { return rC[2] > 0.1; });
     std::vector<double> ref_u, ref_v;
     for (int threads : {1, 2, 8}) {
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-        omp_set_num_threads(threads);
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+        mio_test::set_threads(threads);
 #endif
         for (detail::ParamLadder which :
              {detail::ParamLadder::Lscm, detail::ParamLadder::Harmonic}) {
@@ -292,7 +290,7 @@ TEST(ParamLadder, DeterministicAcrossThreadCounts) {
             }
         }
     }
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    omp_set_num_threads(omp_get_num_procs());
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    mio_test::set_threads(mio_test::num_procs());
 #endif
 }

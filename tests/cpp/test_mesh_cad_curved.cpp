@@ -31,9 +31,7 @@
 // External includes
 #include <gtest/gtest.h>
 
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-#include <omp.h>
-#endif
+#include "thread_sweep.hpp"
 
 // Project includes
 #include "brep_solids.hpp"
@@ -309,18 +307,18 @@ TEST(MeshCadCurved, UntanglingKeepsFoldedElementsCurved) {
         for (std::size_t i = 0; i < r.mMesh.NumPoints(); ++i)
             EXPECT_TRUE(on_solid(p + 3 * i)) << i;
             // Deterministic across threads.
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
         const std::uint64_t ref = digest(r.mMesh);
-        const int saved = omp_get_max_threads();
+        const int saved = mio_test::max_threads();
         for (int threads : {1, 2, 4}) {
-            omp_set_num_threads(threads);
+            mio_test::set_threads(threads);
             EXPECT_EQ(digest(mio::mesh_cad_surface(disc, curved(0.6, order),
                                                    mio::MeshCadSizeSources{}, ex)
                                  .mMesh),
                       ref)
                 << threads;
         }
-        omp_set_num_threads(saved);
+        mio_test::set_threads(saved);
 #endif
     }
     // A fold at a corner where an element's two sides run along one edge
@@ -364,14 +362,14 @@ TEST(MeshCadCurved, TheMeshDoesNotDependOnTheFaceOrderOrThreads) {
                 << seed;
         }
         mio::detail::mesh_cad_set_face_order_seed(0);
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-        const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+        const int saved = mio_test::max_threads();
         for (int threads : {1, 2, 4}) {
-            omp_set_num_threads(threads);
+            mio_test::set_threads(threads);
             EXPECT_EQ(digest(mio::mesh_cad_surface(cyl, curved(0.2, order, 30.0)).mMesh), ref)
                 << threads;
         }
-        omp_set_num_threads(saved);
+        mio_test::set_threads(saved);
 #endif
     }
 }

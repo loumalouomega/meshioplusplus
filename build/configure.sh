@@ -50,7 +50,7 @@ FUZZERS="OFF"
 usage() {
     cat <<EOF
 Usage: $0 [options]
-  --backend <SEQ|STL|OPENMP|TBB|KOKKOS>  parallel backend (default: STL)
+  --backend <SEQ|STL|OPENMP|TBB|KOKKOS|THREADS>  parallel backend (default: STL)
   --mesh-backend <MESHIO|NATIVE|KRATOS>
                                   in-memory mesh backend (default: MESHIO).
                                   NATIVE/KRATOS imply -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF

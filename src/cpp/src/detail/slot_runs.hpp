@@ -50,16 +50,19 @@
 // System includes
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <thread>
 #include <utility>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+// Project includes (private, not installed)
+#include "parallel_workers.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -86,19 +89,7 @@ namespace slot_runs_impl {
 /// the chunk count of `group_slots`' counting sort, whose output does not
 /// depend on it (a stable counting sort gives one order for any chunking).
 inline std::size_t workers() {
-#if defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
-    return static_cast<std::size_t>(std::max(1, omp_get_max_threads()));
-#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
-    return std::max<std::size_t>(
-        1, tbb::global_control::active_value(tbb::global_control::max_allowed_parallelism));
-#elif defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
-    detail::kokkos_ensure_initialized();
-    return static_cast<std::size_t>(std::max(1, Kokkos::DefaultHostExecutionSpace().concurrency()));
-#elif defined(MESHIOPLUSPLUS_PARALLEL_STL)
-    return std::max<std::size_t>(1, std::thread::hardware_concurrency());
-#else
-    return 1;
-#endif
+    return parallel_workers();
 }
 
 /**
@@ -341,45 +332,134 @@ inline std::size_t facet_bucket(const std::int64_t* pSortedIds, std::size_t N,
     return static_cast<std::size_t>(pSortedIds[0]);
 }
 
+inline SlotRuns group_int_rows(const std::vector<std::int64_t>& rValues,
+                               const std::vector<std::uint64_t>& rOffsets, std::size_t NumIds);
+
+namespace slot_runs_impl {
+
+/// The padding of a narrow facet key: above every node id it can hold.
+inline constexpr std::uint32_t kFacetPad = 0xFFFFFFFFu;
+
+/// `group_facets`' narrow path for keys of at most `W` ids: each key its
+/// sorted ids as `std::uint32_t`, padded with `kFacetPad`, so two keys are
+/// equal exactly when their facets are. False, grouping nothing, when an id
+/// lies outside `[0, NumPoints)`.
+template <std::size_t W, class SizeOf, class Fill>
+bool group_facets_narrow(std::size_t NumSlots, std::size_t NumPoints, SizeOf& rSizeOf, Fill& rFill,
+                         SlotRuns& rOut) {
+    using Key = std::array<std::uint32_t, W>;
+    std::vector<Key> keys(NumSlots);
+    std::atomic<bool> out_of_range{false};
+    parallel_for(NumSlots, [&](std::size_t i) {
+        std::int64_t ids[W];
+        const std::size_t k = rSizeOf(i);
+        rFill(i, ids);
+        std::sort(ids, ids + k);
+        Key& rKey = keys[i];
+        for (std::size_t j = 0; j < k; ++j) {
+            if (ids[j] < 0 || static_cast<std::uint64_t>(ids[j]) >= NumPoints)
+                out_of_range.store(true, std::memory_order_relaxed);
+            rKey[j] = static_cast<std::uint32_t>(ids[j]);
+        }
+        for (std::size_t j = k; j < W; ++j)
+            rKey[j] = kFacetPad;
+    });
+    if (out_of_range.load())
+        return false;
+    rOut = group_slots(keys, NumPoints + 1, [&](const Key& rK) -> std::size_t {
+        return rK[0] == kFacetPad ? NumPoints : rK[0];
+    });
+    return true;
+}
+
+}  // namespace slot_runs_impl
+
+/// Which key layout `group_facets` uses: the narrowest that fits (`Auto`), or
+/// one forced, for tests.
+enum class FacetKeyPath { Auto, Wide, Rows };
+
 /**
- * @brief `group_slots` for facet keys, bucketed by their smallest node id:
- * flattened to fixed-width arrays when no key has more than
- * `FacetKey::kInline` ids (every non-polyhedral facet), compared through
- * `FacetKeyLess` otherwise. The runs are the same either way.
- * @tparam Rec A record type; `rKeyOf(rec)` returns its `const FacetKey&`.
+ * @brief Group facet slots `0 .. NumSlots-1` into runs of equal keys, a key
+ * being the set of node ids a facet names (any order): `rSizeOf(slot)` gives
+ * its id count and `rFill(slot, pOut)` writes its ids. Bucketed by the
+ * smallest id, as `group_slots` with `facet_bucket` (`NumPoints` for a key
+ * that is empty or names no node of the mesh).
+ *
+ * The keys are flattened to the width they need (roadmap 5.4.3), with no
+ * record per facet: at most four ids below `NumPoints < 2^32 - 1` are four
+ * (or three, or two) `std::uint32_t`; at most `FacetKey::kInline` ids
+ * otherwise a `FlatFacetKey`; longer keys (polyhedron faces) sorted rows in
+ * CSR (`group_int_rows`). Equal keys share a run on every path. The order of
+ * the runs within a bucket depends on the path; slots ascend within a run.
  */
-template <class Rec, class KeyOf>
-SlotRuns group_facet_slots(const std::vector<Rec>& rRecs, KeyOf&& rKeyOf, std::size_t NumPoints) {
-    const std::size_t n = rRecs.size();
+template <class SizeOf, class Fill>
+SlotRuns group_facets(std::size_t NumSlots, std::size_t NumPoints, SizeOf&& rSizeOf, Fill&& rFill,
+                      FacetKeyPath Path = FacetKeyPath::Auto) {
     const std::size_t widest = parallel_reduce(
-        n, 4096, std::size_t{0},
+        NumSlots, 4096, std::size_t{0},
         [&](std::size_t b, std::size_t e) {
             std::size_t w = 0;
             for (std::size_t i = b; i < e; ++i)
-                w = std::max(w, rKeyOf(rRecs[i]).Size());
+                w = std::max<std::size_t>(w, rSizeOf(i));
             return w;
         },
         [](std::size_t a, std::size_t p) { return std::max(a, p); });
-    if (widest <= FacetKey::kInline) {
-        std::vector<FlatFacetKey> flat(n);
-        parallel_for_bw(n, [&](std::size_t i) {
-            const FacetKey& k = rKeyOf(rRecs[i]);
+    SlotRuns out;
+    if (widest <= FacetKey::kInline && Path != FacetKeyPath::Rows) {
+        static_assert(FacetKey::kInline == 4, "the narrow paths cover four ids");
+        if (Path == FacetKeyPath::Auto && NumPoints < slot_runs_impl::kFacetPad) {
+            bool done;
+            if (widest <= 2)
+                done = slot_runs_impl::group_facets_narrow<2>(NumSlots, NumPoints, rSizeOf, rFill,
+                                                              out);
+            else if (widest == 3)
+                done = slot_runs_impl::group_facets_narrow<3>(NumSlots, NumPoints, rSizeOf, rFill,
+                                                              out);
+            else
+                done = slot_runs_impl::group_facets_narrow<4>(NumSlots, NumPoints, rSizeOf, rFill,
+                                                              out);
+            if (done)
+                return out;
+        }
+        std::vector<FlatFacetKey> flat(NumSlots);
+        parallel_for(NumSlots, [&](std::size_t i) {
             FlatFacetKey& f = flat[i];
             f.fill(0);
-            f[0] = static_cast<std::int64_t>(k.Size());
-            for (std::size_t j = 0; j < k.Size(); ++j)
-                f[j + 1] = k.Data()[j];
+            const std::size_t k = rSizeOf(i);
+            f[0] = static_cast<std::int64_t>(k);
+            rFill(i, f.data() + 1);
+            std::sort(f.begin() + 1, f.begin() + 1 + static_cast<std::ptrdiff_t>(k));
         });
         return group_slots(flat, NumPoints + 1, [&](const FlatFacetKey& rK) {
             return facet_bucket(rK.data() + 1, static_cast<std::size_t>(rK[0]), NumPoints);
         });
     }
-    std::vector<FacetKey> keys(n);
-    parallel_for_bw(n, [&](std::size_t i) { keys[i] = rKeyOf(rRecs[i]); });
-    return group_slots(
-        keys, NumPoints + 1,
-        [&](const FacetKey& rK) { return facet_bucket(rK.Data(), rK.Size(), NumPoints); },
-        FacetKeyLess{});
+    std::vector<std::uint64_t> offsets(NumSlots + 1);
+    parallel_for_bw(NumSlots,
+                    [&](std::size_t i) { offsets[i] = static_cast<std::uint64_t>(rSizeOf(i)); });
+    offsets[NumSlots] =
+        parallel_exclusive_scan(offsets.data(), NumSlots, offsets.data(), std::uint64_t{0});
+    std::vector<std::int64_t> values(static_cast<std::size_t>(offsets[NumSlots]));
+    parallel_for(NumSlots, [&](std::size_t i) {
+        std::int64_t* row = values.data() + offsets[i];
+        rFill(i, row);
+        std::sort(row, values.data() + offsets[i + 1]);
+    });
+    return group_int_rows(values, offsets, NumPoints);
+}
+
+/**
+ * @brief `group_facets` over records: `rKeyOf(rec)` returns its `const
+ * FacetKey&`.
+ */
+template <class Rec, class KeyOf>
+SlotRuns group_facet_slots(const std::vector<Rec>& rRecs, KeyOf&& rKeyOf, std::size_t NumPoints) {
+    return group_facets(
+        rRecs.size(), NumPoints, [&](std::size_t i) { return rKeyOf(rRecs[i]).Size(); },
+        [&](std::size_t i, std::int64_t* pOut) {
+            const FacetKey& k = rKeyOf(rRecs[i]);
+            std::copy(k.Data(), k.Data() + k.Size(), pOut);
+        });
 }
 
 /**

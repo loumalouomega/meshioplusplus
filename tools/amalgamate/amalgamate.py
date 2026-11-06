@@ -253,7 +253,8 @@ BANNER = """\
 //      // in every other translation unit -- declarations only:
 //      #include "meshioplusplus/meshioplusplus.hpp"
 //
-//  Mesh backend defaults to MESHIO, parallel backend to sequential. Optional
+//  Mesh backend defaults to MESHIO, parallel backend to sequential (define
+//  MESHIOPLUSPLUS_PARALLEL_THREADS, OPENMP, TBB or STL to change it). Optional
 //  formats stay off unless you define the matching macro AND link the library:
 //      MESHIOPLUSPLUS_HAS_HDF5  (CGNS/HMF/H5M/MED/XDMF-HDF)  -> link hdf5
 //      MESHIOPLUSPLUS_HAS_NETCDF (Exodus)                    -> link netcdf
@@ -271,7 +272,8 @@ BANNER = """\
 
 DEFAULTS = """\
 #if !defined(MESHIOPLUSPLUS_PARALLEL_SEQ) && !defined(MESHIOPLUSPLUS_PARALLEL_STL) && \\
-    !defined(MESHIOPLUSPLUS_PARALLEL_OPENMP) && !defined(MESHIOPLUSPLUS_PARALLEL_TBB)
+    !defined(MESHIOPLUSPLUS_PARALLEL_OPENMP) && !defined(MESHIOPLUSPLUS_PARALLEL_TBB) && \\
+    !defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS) && !defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
 #define MESHIOPLUSPLUS_PARALLEL_SEQ
 #endif
 // Mesh backend: MESHIO is the no-macro default (see mesh.hpp's #else); define

@@ -74,14 +74,6 @@ std::vector<DualGraphFacetDef> dualgraph_facets_for(CellType type, int dualDim) 
     return defs;
 }
 
-// One facet occurrence recorded in phase 1 (keys built in parallel). FacetKey
-// holds sorted corner ids of any arity, so a hexahedron and a polyhedron that
-// meet on a face become neighbours.
-struct DualGraphFacetRecord {
-    FacetKey mKey;
-    std::int64_t mParent;  // global cell index owning the facet
-};
-
 bool dualgraph_is_polygon(const Mesh::CellView& rBlock) {
     return !rBlock.IsPolyhedron() && (rBlock.IsRagged() || rBlock.Type().rfind("polygon", 0) == 0);
 }
@@ -99,7 +91,7 @@ DualGraphCsr build_facet_dual_graph(const Mesh& rMesh, std::size_t total, bool P
         dual_dim = std::max(dual_dim, d);
     }
 
-    // Per-block facet tables + the flat record-buffer layout. A polyhedron or
+    // Per-block facet tables + the flat facet-slot layout. A polyhedron or
     // polygon-ring block has a variable facet count per cell (mFaceStart).
     struct BlockDesc {
         const NDArray* mpConn = nullptr;
@@ -168,79 +160,97 @@ DualGraphCsr build_facet_dual_graph(const Mesh& rMesh, std::size_t total, bool P
         descs.push_back(std::move(d));
     }
 
-    // Phase 1: build facet keys into disjoint slots (parallel-safe).
-    std::vector<DualGraphFacetRecord> recs(total_facets);
-    for (const BlockDesc& d : descs) {
-        if (d.mPolyhedron) {
-            const auto cb = rMesh.Cells(d.mBlock);
+    // Phase 1: each facet slot's owning cell, in parallel (disjoint slots).
+    std::vector<std::int64_t> parent(total_facets);
+    std::vector<std::size_t> first_facets(descs.size());
+    using DualGraphCellView = decltype(rMesh.Cells(0));
+    std::vector<std::optional<DualGraphCellView>> views(descs.size());
+    std::vector<std::optional<Int64View>> conn_views(descs.size());
+    for (std::size_t di = 0; di < descs.size(); ++di) {
+        const BlockDesc& d = descs[di];
+        first_facets[di] = d.mFirstFacet;
+        if (d.mPolyhedron || d.mRing)
+            views[di].emplace(rMesh.Cells(d.mBlock));
+        if (d.mpConn)
+            conn_views[di].emplace(*d.mpConn);
+        if (d.mPolyhedron || d.mRing) {
             parallel_for(d.mNumCells, [&](std::size_t cell) {
-                const std::size_t nf = cb.NumFaces(cell);
-                for (std::size_t f = 0; f < nf; ++f) {
-                    const auto face = cb.Face(cell, f);
-                    DualGraphFacetRecord& r = recs[d.mFirstFacet + d.mFaceStart[cell] + f];
-                    r.mKey = FacetKey(face.first, face.second);
-                    r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
-                }
+                for (std::size_t f = d.mFaceStart[cell]; f < d.mFaceStart[cell + 1]; ++f)
+                    parent[d.mFirstFacet + f] = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
             });
             continue;
         }
-        if (d.mRing) {
-            const auto cb = rMesh.Cells(d.mBlock);
-            const bool ragged = d.mpConn == nullptr;
-            std::optional<Int64View> conn_v;
-            if (!ragged)
-                conn_v.emplace(*d.mpConn);
-            parallel_for(d.mNumCells, [&](std::size_t cell) {
-                const std::size_t n = d.mFaceStart[cell + 1] - d.mFaceStart[cell];
-                const std::int64_t* row = ragged ? cb.Row(cell) : nullptr;
-                const auto node = [&](std::size_t k) {
-                    return ragged ? row[k] : (*conn_v)[cell * d.mNpc + k];
-                };
-                for (std::size_t k = 0; k < n; ++k) {
-                    const std::array<std::int64_t, 2> ids{node(k), node((k + 1) % n)};
-                    DualGraphFacetRecord& r = recs[d.mFirstFacet + d.mFaceStart[cell] + k];
-                    r.mKey = FacetKey(ids.data(), 2);
-                    r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
-                }
-            });
-            continue;
-        }
-        const NDArray& conn = *d.mpConn;
-        const Int64View conn_v(conn);
-        const std::size_t npc = d.mNpc;
         const std::size_t fpc = d.mFacets.size();
         parallel_for(d.mNumCells * fpc, [&](std::size_t j) {
-            const std::size_t cell = j / fpc;
-            const DualGraphFacetDef& facet = d.mFacets[j % fpc];
-            DualGraphFacetRecord& r = recs[d.mFirstFacet + j];
-            std::array<std::int64_t, 4> ids{};
-            for (std::uint8_t k = 0; k < facet.mNumCorners; ++k)
-                ids[k] = conn_v[cell * npc + facet.mNodes[k]];
-            r.mKey = FacetKey(ids.data(), facet.mNumCorners);
-            r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
+            parent[d.mFirstFacet + j] = d.mGlobalCellBase + static_cast<std::int64_t>(j / fpc);
         });
     }
 
-    // Phase 2: group the records by facet key (sorted runs, slot_runs.hpp).
-    // A run's head is its first record in stored order, the owner a first-seen
-    // map would keep; every later record whose parent differs from the owner
-    // adds an owner<->parent edge, so the occurrences of a non-manifold facet
-    // beyond the second all connect to the first owner.
-    const SlotRuns runs = group_facet_slots(
-        recs, [](const DualGraphFacetRecord& rR) -> const FacetKey& { return rR.mKey; },
-        rMesh.NumPoints());
+    // Phase 2: group the facet slots by key (detail::group_facets, roadmap
+    // 5.4.3: the keys flattened to the width they need, no record per facet).
+    // A key is the facet's corner ids, of any arity, so a hexahedron and a
+    // polyhedron that meet on a face become neighbours. A run's head is its
+    // first slot in stored order, the owner a first-seen map would keep; every
+    // later slot whose parent differs from the owner adds an owner<->parent
+    // edge, so the occurrences of a non-manifold facet beyond the second all
+    // connect to the first owner.
+    const auto desc_of = [&](std::size_t ri) -> std::size_t {
+        if (first_facets.size() == 1)
+            return 0;
+        return static_cast<std::size_t>(
+                   std::upper_bound(first_facets.begin(), first_facets.end(), ri) -
+                   first_facets.begin()) -
+               1;
+    };
+    const auto size_of = [&](std::size_t ri) -> std::size_t {
+        const std::size_t di = desc_of(ri);
+        const BlockDesc& d = descs[di];
+        if (d.mRing)
+            return 2;
+        if (d.mPolyhedron) {
+            const auto cell = static_cast<std::size_t>(parent[ri] - d.mGlobalCellBase);
+            return views[di]->Face(cell, ri - d.mFirstFacet - d.mFaceStart[cell]).second;
+        }
+        return d.mFacets[(ri - d.mFirstFacet) % d.mFacets.size()].mNumCorners;
+    };
+    const auto fill = [&](std::size_t ri, std::int64_t* pOut) {
+        const std::size_t di = desc_of(ri);
+        const BlockDesc& d = descs[di];
+        const auto cell = static_cast<std::size_t>(parent[ri] - d.mGlobalCellBase);
+        if (d.mPolyhedron) {
+            const auto face = views[di]->Face(cell, ri - d.mFirstFacet - d.mFaceStart[cell]);
+            std::copy(face.first, face.first + face.second, pOut);
+            return;
+        }
+        if (d.mRing) {
+            const std::size_t n = d.mFaceStart[cell + 1] - d.mFaceStart[cell];
+            const std::size_t k = ri - d.mFirstFacet - d.mFaceStart[cell];
+            const auto node = [&](std::size_t at) {
+                return conn_views[di] ? (*conn_views[di])[cell * d.mNpc + at]
+                                      : views[di]->Row(cell)[at];
+            };
+            pOut[0] = node(k);
+            pOut[1] = node((k + 1) % n);
+            return;
+        }
+        const DualGraphFacetDef& facet = d.mFacets[(ri - d.mFirstFacet) % d.mFacets.size()];
+        const Int64View& conn_v = *conn_views[di];
+        for (std::uint8_t k = 0; k < facet.mNumCorners; ++k)
+            pOut[k] = conn_v[cell * d.mNpc + facet.mNodes[k]];
+    };
+    const SlotRuns runs = group_facets(total_facets, rMesh.NumPoints(), size_of, fill);
     const std::size_t num_runs = runs.NumRuns();
 
     // Flat adjacency with duplicates: degree count, prefix sum, fill (both serial
     // over the runs, plain integer work, so the lists do not depend on a backend).
     std::vector<std::int64_t> dup_start(total + 1, 0);
     for (std::size_t r = 0; r < num_runs; ++r) {
-        const std::int64_t owner = recs[runs.Head(r)].mParent;
+        const std::int64_t owner = parent[runs.Head(r)];
         for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p) {
-            const std::int64_t parent = recs[*p].mParent;
-            if (parent != owner) {
+            const std::int64_t other = parent[*p];
+            if (other != owner) {
                 ++dup_start[static_cast<std::size_t>(owner) + 1];
-                ++dup_start[static_cast<std::size_t>(parent) + 1];
+                ++dup_start[static_cast<std::size_t>(other) + 1];
             }
         }
     }
@@ -249,12 +259,12 @@ DualGraphCsr build_facet_dual_graph(const Mesh& rMesh, std::size_t total, bool P
     std::vector<std::int64_t> dup(static_cast<std::size_t>(dup_start[total]));
     std::vector<std::int64_t> cursor(dup_start.begin(), dup_start.end() - 1);
     for (std::size_t r = 0; r < num_runs; ++r) {
-        const std::int64_t owner = recs[runs.Head(r)].mParent;
+        const std::int64_t owner = parent[runs.Head(r)];
         for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p) {
-            const std::int64_t parent = recs[*p].mParent;
-            if (parent != owner) {
-                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(owner)]++)] = parent;
-                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(parent)]++)] = owner;
+            const std::int64_t other = parent[*p];
+            if (other != owner) {
+                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(owner)]++)] = other;
+                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(other)]++)] = owner;
             }
         }
     }

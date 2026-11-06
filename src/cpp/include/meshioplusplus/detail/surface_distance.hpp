@@ -19,36 +19,28 @@
 /**
  * @file detail/surface_distance.hpp
  * @brief The signed-distance kernel: a triangle soup, its pseudonormal tables,
- * a bucket-grid accelerator, and the nearest-point query over them.
+ * a bounding-volume-hierarchy accelerator, and the nearest-point query over them.
  *
  * `operations/sdf.cpp` is the driver; everything geometric lives here so that it
  * can be tested against closed-form distance fields with no grid, no mesh
  * generation and no binding in the way.
  *
- * ### The accelerator is deliberately not a BVH
+ * ### The accelerator is a BVH, and it is unobservable
  *
- * `detail/spatial_hash.hpp` already provides `InsertBox` (which exists precisely
- * to register a simplex's quantized bounding box) and `ForEachInShell` with a
- * documented stopping rule, and `interpolate.cpp` already runs an expanding-shell
- * nearest search over it. The workload here -- many queries against a
- * roughly uniform triangle soup -- is the uniform grid's best case and the BVH's
- * worst.
- *
- * Here the grid is built once and then only searched, so it is held as a
- * `BucketTable` (`detail/bucket_table.hpp`, since ABI 23): the same buckets and
- * the same shell traversal as `SpatialGrid`, in flat arrays with an
- * open-addressing index, with no node or vector per cell. Lookups touch
- * contiguous memory, which is where the saving is; building the table was
- * never the cost.
- *
- * The decisive reason, though, is not speed: **a BVH would make the accelerator
- * observable in the output.** Its build order and split heuristic determine the
- * order candidates are visited in, which determines which of two equidistant
- * triangles wins. The grid can be made provably unobservable instead, by giving
- * every comparison a total order -- `(distance squared, triangle id)` -- so that
- * the answer cannot depend on visit order at all. `SurfaceDistanceOptions`
- * exposes `mGridCellSize` mainly so a test can *prove* that: the same query at
- * several bucket sizes must return byte-identical distances and nearest cells.
+ * Every comparison the nearest-triangle search makes is totally ordered --
+ * `(distance squared, triangle id)` -- so its answer is the minimum over every
+ * triangle, whatever the accelerator visits and in what order. Until ABI 40
+ * the accelerator was a uniform bucket grid searched in Chebyshev shells, kept
+ * over a BVH because a BVH's visit order was thought to make the
+ * equidistant-triangle tie-break observable; the total order answers that, and
+ * measured on the same queries a bounding-volume hierarchy of axis-aligned
+ * boxes was 2 to 4 times faster than even the grid with an occupancy pyramid
+ * over it, its build included (roadmap 5.3, `doc/benchmarks.md`). The grid's
+ * bound is a cell's, so a point far from the surface still visits every
+ * bucket of a patch around its nearest one; a box is as tight as its
+ * triangles. `SurfaceDistanceOptions::mGridCellSize` sized the grid's buckets
+ * and is accepted and ignored since. `test_surface_distance.cpp` compares the
+ * search with a scan of every triangle, bit for bit, ties included.
  *
  * ### The sign
  *
@@ -84,8 +76,6 @@
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/point_triangle.hpp"
-#include "meshioplusplus/detail/bucket_table.hpp"
-#include "meshioplusplus/detail/spatial_hash.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 
 namespace meshioplusplus {
@@ -191,6 +181,32 @@ MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup,
                                                const SurfaceEdgeMap& rEdges);
 
 /**
+ * @brief One node of a `SurfaceBvh`, in preorder: the left child is the next
+ * node and the right child `mRight` (-1 for a leaf, whose triangles are
+ * `mOrder[mBegin, mBegin + mCount)`); the box bounds every corner below it.
+ */
+struct SurfaceBvhNode {
+    Vec3 mLo{0.0, 0.0, 0.0};
+    Vec3 mHi{0.0, 0.0, 0.0};
+    std::int64_t mBegin = 0;
+    std::int64_t mCount = 0;
+    std::int64_t mRight = -1;
+};
+
+/**
+ * @brief The nearest-triangle accelerator (since ABI 40): a binary tree of
+ * axis-aligned boxes over the triangles, sorted by the Morton key of their
+ * bounding-box centres (ties by triangle id) and split at the median count, so
+ * its shape depends on the triangles alone, never on the thread count.
+ */
+struct SurfaceBvh {
+    /// Soup triangle ids in leaf order.
+    std::vector<std::int64_t> mOrder;
+    /// The nodes in preorder; node 0 is the root (empty for an empty soup).
+    std::vector<SurfaceBvhNode> mNodes;
+};
+
+/**
  * @brief A soup prepared for querying: the accelerator plus the normal tables.
  *
  * Held by value and moved; building one is O(triangles) and is paid once per
@@ -198,9 +214,9 @@ MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup,
  */
 struct DistanceQuery {
     const TriangleSoup* mpSoup = nullptr;
-    /// The bucket grid, holding triangle ids by quantized bounding box. Frozen
-    /// (a `BucketTable`) since ABI 23: built once, only searched afterwards.
-    BucketTable mGrid{1.0};
+    /// The bounding-volume hierarchy over the triangles. A frozen bucket grid
+    /// (`BucketTable`, ABI 23) until ABI 40; see the file comment.
+    SurfaceBvh mBvh;
     /// Per triangle, its unnormalized normal (`cross(ab, ac)`).
     std::vector<Vec3> mFaceNormal;
     /// Per welded vertex, the weighted sum of incident unit face normals.
@@ -213,8 +229,6 @@ struct DistanceQuery {
     /// Per edge used by a non-degenerate triangle, the sum of its incident unit
     /// face normals, added in ascending (triangle, corner) order.
     std::vector<Vec3> mEdgeNormals;
-    /// The bucket size actually used, after the auto rule or the caller's override.
-    double mCellSize = 1.0;
 };
 
 /// Build the accelerator and normal tables for @p rSoup.
@@ -259,7 +273,7 @@ struct ClosestPointHit {
  * (to move a lattice vertex onto the surface, not merely learn how far it
  * is), hence this sibling function rather than growing `DistanceHit`, whose
  * layout is an ABI boundary (`doc/abi.md`) this header already participates
- * in. Both functions share the identical bucket-grid nearest-triangle search
+ * in. Both functions share the identical nearest-triangle search
  * (`sd_nearest_triangle`, private to `surface_distance.cpp`) so they cannot
  * disagree about which triangle is nearest.
  *

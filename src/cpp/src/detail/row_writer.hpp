@@ -53,6 +53,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 // Floating-point `std::to_chars` with a precision: where the standard library
@@ -71,51 +72,30 @@ namespace detail {
 /// the parallel loop): the same bytes, with no `localeconv()` per value.
 class CNumber {
 public:
-    CNumber() {
-        const char* dp = std::localeconv()->decimal_point;
-        // snprintf_c repairs a single-character separator other than '.' and
-        // leaves every other case alone; so does this.
-        mRepair = dp != nullptr && dp[0] != '\0' && dp[1] == '\0' && dp[0] != '.';
-        mDp = mRepair ? dp[0] : '.';
-        // printf's text then has a '.' after the repair, as `to_chars`' has.
-        mSingleCharPoint = dp != nullptr && dp[0] != '\0' && dp[1] == '\0';
-    }
+    CNumber() : mClassic(!is_c_decimal_point(std::localeconv()->decimal_point)) {}
 
     /// `snprintf_c(pBuf, Cap, pFmt, ...)`: the same bytes and return value.
     int Print(char* pBuf, std::size_t Cap, const char* pFmt, ...) const {
         va_list args;
         va_start(args, pFmt);
-        const int n = std::vsnprintf(pBuf, Cap, pFmt, args);
+        const int n = mClassic ? vsnprintf_classic(pBuf, Cap, pFmt, args)
+                               : std::vsnprintf(pBuf, Cap, pFmt, args);
         va_end(args);
-        if (n <= 0 || !mRepair || Cap == 0)
-            return n;
-        const std::size_t written = std::min<std::size_t>(static_cast<std::size_t>(n), Cap - 1);
-        for (std::size_t i = 0; i < written; ++i)
-            if (pBuf[i] == mDp) {
-                pBuf[i] = '.';
-                break;
-            }
         return n;
     }
 
-    /// Appends `v` formatted by the printf format `pFmt` (one double).
+    /// Appends `v` formatted by the printf format `pFmt` (one double, any
+    /// literal text around it).
     void Append(std::string& rOut, const char* pFmt, double v) const {
 #if MESHIOPLUSPLUS_ROW_WRITER_TO_CHARS
-        if (mSingleCharPoint && std::isfinite(v) && AppendToChars(rOut, pFmt, v))
+        if (std::isfinite(v) && AppendToChars(rOut, pFmt, v))
             return;
 #endif
         char buf[64];
-        const int n = std::snprintf(buf, sizeof buf, pFmt, v);
+        const int n = Print(buf, sizeof buf, pFmt, v);
         if (n <= 0)
             return;
-        const std::size_t len = std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1);
-        if (mRepair)
-            for (std::size_t i = 0; i < len; ++i)
-                if (buf[i] == mDp) {
-                    buf[i] = '.';
-                    break;
-                }
-        rOut.append(buf, len);
+        rOut.append(buf, std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1));
     }
 
 private:
@@ -123,10 +103,9 @@ private:
     /// The fast path for the plain precisions (roadmap 5.7.1): a format that
     /// is a literal prefix, `%.<P>e` or `%.<P>g`, and a literal suffix -- no
     /// flag, width or case -- is `std::to_chars` with that precision, which
-    /// the standard specifies to produce what printf does in the "C" locale.
-    /// That is also what `snprintf` gives here after the decimal-point repair,
-    /// since the constructor accepts only a single-character separator. Any
-    /// other format, a non-finite value (printf spells NaN signs its own way)
+    /// the standard specifies to produce what printf does in the "C" locale,
+    /// whatever the process locale -- which is what `Print` gives. Any other
+    /// format, a non-finite value (printf spells NaN signs its own way)
     /// or text the 64-byte buffer would have truncated takes `snprintf`.
     /// `test_row_writer_to_chars` compares the two over random bit patterns.
     static bool AppendToChars(std::string& rOut, const char* pFmt, double v) {
@@ -167,9 +146,7 @@ private:
     }
 #endif
 
-    bool mRepair = false;
-    bool mSingleCharPoint = true;
-    char mDp = '.';
+    bool mClassic = false;  ///< the locale's decimal point is not '.'
 };
 
 /// Appends the decimal text of `v`, as `ostream << v` prints it in the

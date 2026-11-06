@@ -16,7 +16,8 @@
 //      // in every other translation unit -- declarations only:
 //      #include "meshioplusplus/meshioplusplus.hpp"
 //
-//  Mesh backend defaults to MESHIO, parallel backend to sequential. Optional
+//  Mesh backend defaults to MESHIO, parallel backend to sequential (define
+//  MESHIOPLUSPLUS_PARALLEL_THREADS, OPENMP, TBB or STL to change it). Optional
 //  formats stay off unless you define the matching macro AND link the library:
 //      MESHIOPLUSPLUS_HAS_HDF5  (CGNS/HMF/H5M/MED/XDMF-HDF)  -> link hdf5
 //      MESHIOPLUSPLUS_HAS_NETCDF (Exodus)                    -> link netcdf
@@ -33,7 +34,8 @@
 #pragma once
 
 #if !defined(MESHIOPLUSPLUS_PARALLEL_SEQ) && !defined(MESHIOPLUSPLUS_PARALLEL_STL) && \
-    !defined(MESHIOPLUSPLUS_PARALLEL_OPENMP) && !defined(MESHIOPLUSPLUS_PARALLEL_TBB)
+    !defined(MESHIOPLUSPLUS_PARALLEL_OPENMP) && !defined(MESHIOPLUSPLUS_PARALLEL_TBB) && \
+    !defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS) && !defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
 #define MESHIOPLUSPLUS_PARALLEL_SEQ
 #endif
 // Mesh backend: MESHIO is the no-macro default (see mesh.hpp's #else); define
@@ -125,7 +127,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 39
+#define MESHIOPLUSPLUS_ABI_VERSION 40
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -10119,13 +10121,65 @@ inline double stod_c(const std::string& rText) {
 }
 
 /**
- * @brief Locale-independent `std::vsnprintf`.
+ * @brief `std::vsnprintf` in the "C" numeric convention, whatever the process
+ * locale: every number it formats has `.` as its decimal separator, and every
+ * other character is the format's own.
+ *
+ * Formats under the C numeric `locale_t` (`uselocale` for the call on POSIX,
+ * `_vsnprintf_l` on MSVC), so a format of several numbers, a literal `,` and
+ * a multi-character separator all come out right. Where no `locale_t` exists
+ * (WebAssembly, whose libc is always in the C locale, and exotic platforms) it
+ * formats, then turns the first locale separator back into `.`, which is exact
+ * for a format of one number without a literal separator character.
+ *
+ * Same contract as `std::vsnprintf`. Callers that know the locale's decimal
+ * point is already `.` call `std::vsnprintf` instead, as `snprintf_c` does.
+ */
+inline int vsnprintf_classic(char* pBuf, std::size_t cap, const char* pFmt, va_list args) {
+#if defined(MESHIOPLUSPLUS_HAS_LOCALE_T) && defined(_MSC_VER)
+    if (const locale_t c = c_numeric_locale()) {
+        va_list measure;
+        va_copy(measure, args);
+        const int n = _vscprintf_l(pFmt, c, measure);
+        va_end(measure);
+        if (cap > 0)
+            _vsnprintf_s_l(pBuf, cap, _TRUNCATE, pFmt, c, args);
+        return n;
+    }
+#elif defined(MESHIOPLUSPLUS_HAS_LOCALE_T) && !defined(__EMSCRIPTEN__)
+    if (const locale_t c = c_numeric_locale()) {
+        const locale_t previous = uselocale(c);
+        const int n = std::vsnprintf(pBuf, cap, pFmt, args);
+        uselocale(previous);
+        return n;
+    }
+#endif
+    const int n = std::vsnprintf(pBuf, cap, pFmt, args);
+    const char* dp = localeconv()->decimal_point;
+    if (n <= 0 || cap == 0 || dp == nullptr || std::strlen(dp) != 1)
+        return n;
+    const std::size_t written =
+        static_cast<std::size_t>(n) < cap - 1 ? static_cast<std::size_t>(n) : cap - 1;
+    for (std::size_t i = 0; i < written; ++i) {
+        if (pBuf[i] == dp[0]) {
+            pBuf[i] = '.';
+            break;
+        }
+    }
+    return n;
+}
+
+/**
+ * @brief Locale-independent `std::snprintf`.
  *
  * Same contract as `std::snprintf`, with the decimal separator always `.`
  * regardless of the process locale. In the (overwhelmingly common) case
  * where the process locale's own decimal point is already `.`, this calls
  * `std::vsnprintf` and returns with no further work -- byte-identical to
- * calling `std::snprintf` directly.
+ * calling `std::snprintf` directly. Otherwise it formats through
+ * `vsnprintf_classic`, which is exact for any number of conversions (before
+ * v19.1 only the first separator of the text was repaired, which a format of
+ * several numbers, or with a literal `,`, got wrong under a comma locale).
  *
  * @param pBuf Destination buffer.
  * @param cap Size of `pBuf`.
@@ -10138,35 +10192,10 @@ MESHIOPLUSPLUS_PRINTF_LIKE(3, 4)
 inline int snprintf_c(char* pBuf, std::size_t cap, const char* pFmt, ...) {
     va_list args;
     va_start(args, pFmt);
-    const int n = std::vsnprintf(pBuf, cap, pFmt, args);
+    const int n = is_c_decimal_point(localeconv()->decimal_point)
+                      ? std::vsnprintf(pBuf, cap, pFmt, args)
+                      : vsnprintf_classic(pBuf, cap, pFmt, args);
     va_end(args);
-
-    const char* dp = localeconv()->decimal_point;
-    if (n <= 0 || is_c_decimal_point(dp))
-        return n;
-
-    // Repair the locale's decimal point within the bytes actually written
-    // (n may exceed cap on truncation -- only the written prefix exists to
-    // repair). A formatted number carries at most one decimal point, so a
-    // single-character locale separator (every real-world locale; a
-    // multi-character one is a POSIX theoretical case with no practical
-    // decimal_point that isn't length 1) is replaced in place with no
-    // length change. A multi-character separator is left as a documented
-    // best-effort gap rather than risking a buffer-length bug for a case
-    // that does not occur on any real target this project ships for.
-    const std::size_t dp_len = std::strlen(dp);
-    if (dp_len != 1)
-        return n;
-    const std::size_t written =
-        (cap == 0)
-            ? 0
-            : (static_cast<std::size_t>(n) < cap - 1 ? static_cast<std::size_t>(n) : cap - 1);
-    for (std::size_t i = 0; i < written; ++i) {
-        if (pBuf[i] == dp[0]) {
-            pBuf[i] = '.';
-            break;  // at most one decimal point per formatted number
-        }
-    }
     return n;
 }
 
@@ -13772,12 +13801,9 @@ struct SurfaceDistanceOptions {
     SdfWatertightCheck mWatertightCheck = SdfWatertightCheck::Warn;
     /// Restrict the surface to a named `Cell` region; empty means all of it.
     std::string mSurfaceRegion;
-    /// Bucket size of the search grid; 0 derives one from the triangle sizes.
-    ///
-    /// This is a tuning knob, but it is public mainly so that the accelerator
-    /// can be *proved* not to affect the answer: the same query at several cell
-    /// sizes must give byte-identical distances and nearest-cell ids. See
-    /// `doc/sdf.md`.
+    /// Ignored since ABI 40: it sized the buckets of the search grid that a
+    /// bounding-volume hierarchy replaced (roadmap 5.3, `doc/sdf.md`). Kept so
+    /// that callers which set it need no change; no value changes the answer.
     double mGridCellSize = 0.0;
     /// Refuse a `WindingNumber` query whose `n_query * n_tri` exceeds this,
     /// naming the option, rather than silently running for an hour.
@@ -13920,36 +13946,28 @@ MESHIOPLUSPLUS_API SdfResult compute_sdf(const Mesh& rSurface, const SdfOptions&
 /**
  * @file detail/surface_distance.hpp
  * @brief The signed-distance kernel: a triangle soup, its pseudonormal tables,
- * a bucket-grid accelerator, and the nearest-point query over them.
+ * a bounding-volume-hierarchy accelerator, and the nearest-point query over them.
  *
  * `operations/sdf.cpp` is the driver; everything geometric lives here so that it
  * can be tested against closed-form distance fields with no grid, no mesh
  * generation and no binding in the way.
  *
- * ### The accelerator is deliberately not a BVH
+ * ### The accelerator is a BVH, and it is unobservable
  *
- * `detail/spatial_hash.hpp` already provides `InsertBox` (which exists precisely
- * to register a simplex's quantized bounding box) and `ForEachInShell` with a
- * documented stopping rule, and `interpolate.cpp` already runs an expanding-shell
- * nearest search over it. The workload here -- many queries against a
- * roughly uniform triangle soup -- is the uniform grid's best case and the BVH's
- * worst.
- *
- * Here the grid is built once and then only searched, so it is held as a
- * `BucketTable` (`detail/bucket_table.hpp`, since ABI 23): the same buckets and
- * the same shell traversal as `SpatialGrid`, in flat arrays with an
- * open-addressing index, with no node or vector per cell. Lookups touch
- * contiguous memory, which is where the saving is; building the table was
- * never the cost.
- *
- * The decisive reason, though, is not speed: **a BVH would make the accelerator
- * observable in the output.** Its build order and split heuristic determine the
- * order candidates are visited in, which determines which of two equidistant
- * triangles wins. The grid can be made provably unobservable instead, by giving
- * every comparison a total order -- `(distance squared, triangle id)` -- so that
- * the answer cannot depend on visit order at all. `SurfaceDistanceOptions`
- * exposes `mGridCellSize` mainly so a test can *prove* that: the same query at
- * several bucket sizes must return byte-identical distances and nearest cells.
+ * Every comparison the nearest-triangle search makes is totally ordered --
+ * `(distance squared, triangle id)` -- so its answer is the minimum over every
+ * triangle, whatever the accelerator visits and in what order. Until ABI 40
+ * the accelerator was a uniform bucket grid searched in Chebyshev shells, kept
+ * over a BVH because a BVH's visit order was thought to make the
+ * equidistant-triangle tie-break observable; the total order answers that, and
+ * measured on the same queries a bounding-volume hierarchy of axis-aligned
+ * boxes was 2 to 4 times faster than even the grid with an occupancy pyramid
+ * over it, its build included (roadmap 5.3, `doc/benchmarks.md`). The grid's
+ * bound is a cell's, so a point far from the surface still visits every
+ * bucket of a patch around its nearest one; a box is as tight as its
+ * triangles. `SurfaceDistanceOptions::mGridCellSize` sized the grid's buckets
+ * and is accepted and ignored since. `test_surface_distance.cpp` compares the
+ * search with a scan of every triangle, bit for bit, ties included.
  *
  * ### The sign
  *
@@ -14085,6 +14103,32 @@ MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup,
                                                const SurfaceEdgeMap& rEdges);
 
 /**
+ * @brief One node of a `SurfaceBvh`, in preorder: the left child is the next
+ * node and the right child `mRight` (-1 for a leaf, whose triangles are
+ * `mOrder[mBegin, mBegin + mCount)`); the box bounds every corner below it.
+ */
+struct SurfaceBvhNode {
+    Vec3 mLo{0.0, 0.0, 0.0};
+    Vec3 mHi{0.0, 0.0, 0.0};
+    std::int64_t mBegin = 0;
+    std::int64_t mCount = 0;
+    std::int64_t mRight = -1;
+};
+
+/**
+ * @brief The nearest-triangle accelerator (since ABI 40): a binary tree of
+ * axis-aligned boxes over the triangles, sorted by the Morton key of their
+ * bounding-box centres (ties by triangle id) and split at the median count, so
+ * its shape depends on the triangles alone, never on the thread count.
+ */
+struct SurfaceBvh {
+    /// Soup triangle ids in leaf order.
+    std::vector<std::int64_t> mOrder;
+    /// The nodes in preorder; node 0 is the root (empty for an empty soup).
+    std::vector<SurfaceBvhNode> mNodes;
+};
+
+/**
  * @brief A soup prepared for querying: the accelerator plus the normal tables.
  *
  * Held by value and moved; building one is O(triangles) and is paid once per
@@ -14092,9 +14136,9 @@ MESHIOPLUSPLUS_API SurfaceQuality soup_quality(const TriangleSoup& rSoup,
  */
 struct DistanceQuery {
     const TriangleSoup* mpSoup = nullptr;
-    /// The bucket grid, holding triangle ids by quantized bounding box. Frozen
-    /// (a `BucketTable`) since ABI 23: built once, only searched afterwards.
-    BucketTable mGrid{1.0};
+    /// The bounding-volume hierarchy over the triangles. A frozen bucket grid
+    /// (`BucketTable`, ABI 23) until ABI 40; see the file comment.
+    SurfaceBvh mBvh;
     /// Per triangle, its unnormalized normal (`cross(ab, ac)`).
     std::vector<Vec3> mFaceNormal;
     /// Per welded vertex, the weighted sum of incident unit face normals.
@@ -14107,8 +14151,6 @@ struct DistanceQuery {
     /// Per edge used by a non-degenerate triangle, the sum of its incident unit
     /// face normals, added in ascending (triangle, corner) order.
     std::vector<Vec3> mEdgeNormals;
-    /// The bucket size actually used, after the auto rule or the caller's override.
-    double mCellSize = 1.0;
 };
 
 /// Build the accelerator and normal tables for @p rSoup.
@@ -14153,7 +14195,7 @@ struct ClosestPointHit {
  * (to move a lattice vertex onto the surface, not merely learn how far it
  * is), hence this sibling function rather than growing `DistanceHit`, whose
  * layout is an ABI boundary (`doc/abi.md`) this header already participates
- * in. Both functions share the identical bucket-grid nearest-triangle search
+ * in. Both functions share the identical nearest-triangle search
  * (`sd_nearest_triangle`, private to `surface_distance.cpp`) so they cannot
  * disagree about which triangle is nearest.
  *
@@ -30229,7 +30271,8 @@ struct HausdorffOptions {
     std::string mRegionA;
     /// The same, for mesh B.
     std::string mRegionB;
-    /// The bucket size of the nearest-triangle search, 0 for the automatic one.
+    /// Ignored since ABI 40: the bucket size of the grid the nearest-triangle
+    /// search used before a bounding-volume hierarchy replaced it.
     double mGridCellSize = 0.0;
 };
 
@@ -37798,8 +37841,8 @@ MESHIOPLUSPLUS_API PipelineReport run_sequence_file(const std::string& rPath);
  * a pure coordinate move. The points array keeps its input dtype.
  *
  * **Determinism.** The nearest-triangle search is totally ordered on
- * `(distance^2, triangle id)`, so the bucket size cannot change the answer
- * (`mGridCellSize` is public precisely so a test can prove it); the update is
+ * `(distance^2, triangle id)`, so the accelerator cannot change the answer
+ * (`doc/sdf.md`); the update is
  * per-point and elementwise. Byte-identical across backends and thread counts,
  * and -- the pseudonormal's own `acos` aside -- across the C++/numpy boundary.
  */
@@ -37840,8 +37883,8 @@ struct ShrinkwrapOptions {
     bool mRecordDistance = false;
     /// Attach `shrinkwrap:closest_cell`.
     bool mRecordClosestCell = false;
-    /// Bucket size of the nearest-triangle accelerator; 0 derives one from the
-    /// target. Public so a test can prove the accelerator is unobservable.
+    /// Ignored since ABI 40: the bucket size of the grid the nearest-triangle
+    /// search used before a bounding-volume hierarchy replaced it.
     double mGridCellSize = 0.0;
 };
 
@@ -39598,9 +39641,11 @@ MESHIOPLUSPLUS_API UntangleResult untangle(const Mesh& rMesh, const UntangleOpti
  *
  * The active backend is chosen at compile time by the `MESHIOPLUSPLUS_PARALLEL_*`
  * preprocessor definitions (set from CMake's `MESHIOPLUSPLUS_PARALLEL_BACKEND` =
- * `AUTO|SEQ|STL|OPENMP|TBB|KOKKOS`; `AUTO` prefers OpenMP — portable across
- * manylinux/MSVC/macOS without needing TBB — then falls back to STL(+TBB) if
- * detected, else SEQ; KOKKOS is bring-your-own and never picked by AUTO).
+ * `AUTO|SEQ|STL|OPENMP|TBB|KOKKOS|THREADS`; `AUTO` prefers OpenMP — portable
+ * across manylinux/MSVC/macOS without needing TBB — then falls back to STL(+TBB)
+ * if detected, else SEQ; KOKKOS is bring-your-own and never picked by AUTO;
+ * THREADS, a pool of `std::thread` workers in the core library that needs no
+ * runtime beyond the C++ standard library, is what the Linux wheels build).
  * `parallel_backend_name()`/`_core.__parallel_backend__`
  * report which one is active. Iterations passed to `parallel_for` must be
  * independent (no cross-iteration state) since they may run concurrently in
@@ -39667,6 +39712,9 @@ MESHIOPLUSPLUS_API UntangleResult untangle(const Mesh& rMesh, const UntangleOpti
 #include <thread>
 #endif
 
+#if defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
+#endif
+
 // External includes
 #if defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
 #include <omp.h>
@@ -39715,11 +39763,13 @@ inline constexpr unsigned parallel_bandwidth_threads = 4;
  * them defined means the sequential fallback. Exposed to Python as
  * `_core.__parallel_backend__` so tests/diagnostics can assert which backend
  * actually built.
- * @return One of `"stl"`, `"openmp"`, `"tbb"`, `"kokkos"`, `"seq"`.
+ * @return One of `"stl"`, `"openmp"`, `"tbb"`, `"kokkos"`, `"threads"`, `"seq"`.
  */
 constexpr const char* parallel_backend_name() {
 #if defined(MESHIOPLUSPLUS_PARALLEL_STL)
     return "stl";
+#elif defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
+    return "threads";
 #elif defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
     return "openmp";
 #elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
@@ -39732,6 +39782,31 @@ constexpr const char* parallel_backend_name() {
 }
 
 namespace detail {
+
+#if defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
+/// A chunk of a `threads_run` job: runs iterations `[Begin, End)`; must not throw.
+using ThreadsChunkFn = void (*)(void* pCtx, std::size_t Begin, std::size_t End);
+
+/**
+ * @brief The THREADS backend's dispatch (`src/cpp/src/parallel_threads.cpp`):
+ * runs `[0, N)` in chunks of `Chunk` iterations on the calling thread and up to
+ * `min(threads_concurrency(), MaxThreads) - 1` workers of the process-wide pool
+ * (`MaxThreads == 0`: no cap). A call made from inside a job, or while another
+ * thread's job holds the pool, runs the whole range on the calling thread.
+ */
+MESHIOPLUSPLUS_API void threads_run(std::size_t N, std::size_t Chunk, unsigned MaxThreads,
+                                    ThreadsChunkFn Fn, void* pCtx);
+
+/**
+ * @brief How many threads (the caller included) a THREADS job may use:
+ * `threads_set_concurrency`'s count if one is set, else
+ * `MESHIOPLUSPLUS_NUM_THREADS`, else `OMP_NUM_THREADS`, else the hardware's.
+ */
+MESHIOPLUSPLUS_API unsigned threads_concurrency();
+
+/// Sets the THREADS backend's thread count for later jobs; 0 restores the default.
+MESHIOPLUSPLUS_API void threads_set_concurrency(unsigned N);
+#endif
 
 #if defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
 /**
@@ -39832,6 +39907,10 @@ private:
  *    semantics. Plain `[&]` lambdas are fine (no `KOKKOS_LAMBDA` needed) —
  *    host-space functors run on ordinary host threads, which is also why
  *    `FirstException` works unchanged.
+ *  - **THREADS**: `threads_run` over the core's `std::thread` pool, in chunks
+ *    of `max(grain/4, 1)` iterations claimed dynamically (OpenMP's chunk, for
+ *    the same reasons), the caller running chunks beside the workers; a
+ *    non-zero `max_threads` caps the participants.
  *  - **(none, SEQ)**: a plain sequential loop; `grain`/`max_threads` are
  *    unused (cast to `void` to silence warnings).
  *
@@ -39936,6 +40015,23 @@ void parallel_for_impl(std::size_t n, F& rF, std::size_t grain, unsigned max_thr
     }
     Kokkos::fence();
     exc.RethrowIfAny();
+#elif defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
+    FirstException exc;
+    struct Ctx {
+        F* mpF;
+        FirstException* mpExc;
+    } ctx{&rF, &exc};
+    threads_run(
+        n, std::max<std::size_t>(grain / 4, 1), max_threads,
+        [](void* pCtx, std::size_t Begin, std::size_t End) {
+            Ctx& c = *static_cast<Ctx*>(pCtx);
+            c.mpExc->Run([&] {
+                for (std::size_t i = Begin; i < End; ++i)
+                    (*c.mpF)(i);
+            });
+        },
+        &ctx);
+    exc.RethrowIfAny();
 #else  // MESHIOPLUSPLUS_PARALLEL_SEQ (and the safe default)
     (void)grain;
     (void)max_threads;
@@ -40015,7 +40111,7 @@ inline constexpr std::size_t parallel_sort_serial_below = std::size_t{1} << 14;
 
 /**
  * @brief Chunk-sort-and-merge over `parallel_for`, for the backends with no
- * parallel sort of their own (OpenMP, Kokkos).
+ * parallel sort of their own (OpenMP, Kokkos, THREADS).
  *
  * The range is cut into a power-of-two number of runs, each sorted by one
  * task, then merged pairwise, one pass per level, every merge of a level in
@@ -40077,7 +40173,7 @@ void parallel_merge_sort(It first, It last, Comp comp, std::size_t max_runs) {
 /**
  * @brief Sorts `[first, last)` by `comp`, in parallel where the backend has
  * the means (TBB's `parallel_sort`, the STL's `std::execution::par`, a
- * chunk-sort-and-merge over `parallel_for` for OpenMP and Kokkos), serially
+ * chunk-sort-and-merge over `parallel_for` for OpenMP, Kokkos and THREADS), serially
  * otherwise and below `detail::parallel_sort_serial_below` elements.
  *
  * **`comp` must be a total order on the elements**: no two elements that
@@ -40109,6 +40205,9 @@ void parallel_sort(It first, It last, Comp comp) {
         first, last, comp,
         static_cast<std::size_t>(std::max(1, Kokkos::DefaultHostExecutionSpace().concurrency())) *
             2);
+#elif defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
+    detail::parallel_merge_sort(first, last, comp,
+                                static_cast<std::size_t>(detail::threads_concurrency()) * 2);
 #else
     std::sort(first, last, comp);
 #endif
@@ -42951,586 +43050,47 @@ const std::vector<int>* cell_flip_facet_map(CellType Type);
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/cell_flip.hpp =====
-// ===== begin src/cpp/src/detail/closed_facets.hpp =====
+// ===== begin src/cpp/src/detail/parallel_workers.hpp =====
 /**
- * @file detail/closed_facets.hpp
- * @brief The surface cells of a mesh as planar facets of a closed,
- * consistently wound shell -- what the faceted `step` writer and `fit_cad`
- * both build a solid from.
- *
- * A **core-private** header (the `surface_rings.hpp` precedent): no installed
- * header names it, and it adds nothing to the API or the ABI.
- *
- * The rings come from `surface_rings`. A polygon whose corners lie within
- * `1e-9` of its extent of their Newell plane is kept whole; any other is
- * fanned into triangles from its first corner. Every facet must have a
- * direction (non-zero area), and the facets must close: no open, non-manifold
- * or inconsistently wound edge (`crease_edges`).
+ * @file detail/parallel_workers.hpp
+ * @brief How many threads the build's parallel backend runs `parallel_for` on
+ * right now. A **core-private** header: for the chunk counts of algorithms
+ * whose result does not depend on them (`slot_runs.hpp`'s counting sort, the
+ * chunked number parse), and for deciding that a parallel path cannot pay.
  */
 
 // System includes
+#include <algorithm>
 #include <cstddef>
-#include <cstdint>
-#include <string>
-#include <vector>
+#include <thread>
 
 // Project includes
 
 namespace meshioplusplus {
 namespace detail {
 
-/// Planar facets in CSR form, with their source cells, points and normals.
-struct ClosedFacets {
-    std::vector<std::int64_t> mStart{0};  ///< offsets into `mNodes`, one more than facets
-    std::vector<std::int64_t> mNodes;     ///< the facets' point ids, concatenated
-    /// The global (block-major) cell id of each facet; a fanned cell repeats it.
-    std::vector<std::int64_t> mCell;
-    std::vector<double> mXyz;      ///< the mesh's points, three per point
-    std::vector<double> mNormals;  ///< the unit normal of each facet, three per facet
-    /// Cells that are not surface facets (lines, vertices), skipped.
-    std::size_t mNumSkipped = 0;
-
-    std::size_t NumFacets() const { return mCell.size(); }
-};
-
-/**
- * @brief Collect the surface cells of @p rSurface as the facets of a closed shell.
- * @param rPrefix prepended to every error message.
- * @return the facets; empty (with `mNumSkipped` set) when there is no surface
- *         cell, which the caller reports.
- * @throws std::invalid_argument on a volume block, a non-finite coordinate, a
- *         degenerate facet, or a surface that is not closed and consistently
- *         wound.
- */
-ClosedFacets closed_facets(const Mesh& rSurface, const std::string& rPrefix);
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/src/detail/closed_facets.hpp =====
-// ===== begin src/cpp/src/detail/crease_edges.hpp =====
-/**
- * @file detail/crease_edges.hpp
- * @brief The one crease test: which edges of a polygonal surface are sharp,
- * open, non-manifold or wound inconsistently.
- *
- * A **core-private** header (the `slot_runs.hpp` precedent): no installed
- * header names it, and it adds nothing to the API or the ABI.
- *
- * `feature_edges` reports these edges; `decimate`, `decimate_volume` and
- * `smooth` pin their endpoints. Before v16.23.0 each of the three carried its
- * own per-*vertex* test -- any two incident faces further apart than the
- * feature angle, adjacent or not -- which pinned every vertex of a coarsely
- * tessellated sphere. The test here is per *edge*: only the two faces that
- * share an edge are compared, so a smooth-but-coarse patch stays free.
- *
- * ### The rule
- *
- * The faces are polygons (a triangle is a 3-gon) given as rings of point ids;
- * each ring edge `(v_k, v_{k+1})` is one *use* of the undirected edge. Per
- * edge, with `u` uses:
- *
- *  - `u == 1`: **boundary**.
- *  - `u >= 3`: **non-manifold**.
- *  - `u == 2`, both uses from one face: not an edge of the surface (a ring
- *    that revisits an edge); skipped.
- *  - `u == 2` otherwise: the two faces' unit normals are compared. When the
- *    faces walk the edge the same way they disagree about "out" -- the pair is
- *    **inconsistent** -- and the second normal is negated first, so the angle
- *    is the dihedral the faces would have after a reorientation. The edge is
- *    **sharp** when `dot < cos(FeatureAngleDeg)`. A face with a zero normal
- *    (degenerate) gives no angle: the edge is never sharp.
- *
- * Collapsed ring edges (`v_k == v_{k+1}`) are not uses.
- *
- * ### Determinism
- *
- * Uses are sorted by a total order (`parallel_sort`), and every edge is
- * classified from its own run alone, so the result -- one record per reported
- * edge, ascending in `(lo, hi)` -- is the same on every backend and thread
- * count.
- */
-
-// System includes
-#include <cstddef>
-#include <cstdint>
-#include <vector>
-
-namespace meshioplusplus {
-namespace detail {
-
-/// One reported edge of a surface.
-struct CreaseEdge {
-    std::int64_t mLo = 0;  ///< the smaller endpoint id
-    std::int64_t mHi = 0;  ///< the larger endpoint id
-    /// How many face-ring edges reference it: 1 boundary, 2 a pair, 3+ non-manifold.
-    std::int32_t mUses = 0;
-    /// A pair whose two faces walk the edge the same way.
-    bool mInconsistent = false;
-    /// A pair whose (orientation-corrected) dihedral exceeds the feature angle.
-    bool mSharp = false;
-    /// That dihedral in degrees, in `[0, 180]`; NaN unless the edge is a pair of
-    /// two non-degenerate faces.
-    double mAngleDeg = 0.0;
-
-    bool IsBoundary() const { return mUses == 1; }
-    bool IsNonManifold() const { return mUses >= 3; }
-    /// What a pinning operation freezes: a sharp or non-manifold edge. Open
-    /// edges are the caller's separate "preserve boundary" decision.
-    bool IsCrease() const { return mSharp || mUses >= 3; }
-};
-
-/**
- * @brief Classify the edges of a polygonal surface.
- *
- * @param rStart CSR offsets into @p rNodes, one more than the number of faces.
- * @param rNodes the face rings, concatenated.
- * @param rUnitNormal three entries per face: its unit normal, or `{0, 0, 0}`
- *        for a face with no direction.
- * @param FeatureAngleDeg the largest dihedral still treated as smooth.
- * @return every edge that is boundary, non-manifold, inconsistent or sharp,
- *         ascending in `(lo, hi)`. Smooth consistent pairs are omitted.
- */
-std::vector<CreaseEdge> crease_edges(const std::vector<std::int64_t>& rStart,
-                                     const std::vector<std::int64_t>& rNodes,
-                                     const std::vector<double>& rUnitNormal,
-                                     double FeatureAngleDeg);
-
-/// `crease_edges` over a triangle list (three corners per face).
-std::vector<CreaseEdge> crease_edges_triangles(const std::vector<std::int64_t>& rCorners,
-                                               const std::vector<double>& rUnitNormal,
-                                               double FeatureAngleDeg);
-
-/// Set `rPinned[v] = 1` for both endpoints of every `IsCrease()` edge.
-void pin_crease_endpoints(const std::vector<CreaseEdge>& rEdges,
-                          std::vector<std::uint8_t>& rPinned);
-
-/**
- * @brief Newell's unit normal of a ring of points, `{0, 0, 0}` when it has no
- * direction. For a triangle this is the direction of `cross(b - a, c - a)`.
- * @param pXyz three coordinates per point id.
- */
-void ring_unit_normal(const double* pXyz, const std::int64_t* pRing, std::size_t Size,
-                      double* pOut);
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/src/detail/crease_edges.hpp =====
-// ===== begin src/cpp/src/detail/cross_field.hpp =====
-/**
- * @file detail/cross_field.hpp
- * @brief The smoothest cross field (4-RoSy direction field) on a triangle
- * patch, aligned with its boundary and feature edges, and its singularities
- * -- the guide `quad_layout` traces a patch network along (`fit_cad`'s
- * network mode, v17.12.0).
- *
- * Each triangle carries a frame (its first edge, its normal) and a cross,
- * stored as the complex number `z = exp(4 i theta)` so the four branches
- * `theta + k pi / 2` are one value. The field minimises the discrete
- * connection Dirichlet energy `sum_e |z_f - c_e z_g|^2` over interior edges,
- * `c_e = exp(4 i (alpha_f - alpha_g))` carrying the cross across the shared
- * edge (`alpha` the edge's angle in each frame): the smoothest field of
- * Knöppel, Crane, Pinkall and Schröder ("Globally optimal direction fields",
- * SIGGRAPH 2013), with the boundary and feature edges as hard constraints
- * (a constrained triangle's cross holds that edge's direction), plus, where
- * asked, a soft pull towards the principal curvature directions weighted by
- * their anisotropy. The Hermitian system is solved as its real symmetric
- * positive definite twin by the deterministic conjugate gradients of
- * `sparse_solve.hpp`; with nothing to constrain it (a closed patch with no
- * curvature term) the field is the smallest eigenvector, by inverse iteration
- * from a fixed start.
- *
- * A vertex's index is the cross's turning around it, `(sum of the wrapped
- * mismatches + the angle defect) / 2 pi`, a multiple of `1/4`: `+1/4` a
- * valence-3 singularity, `-1/4` a valence-5 one. Interior vertices only; on
- * the boundary the layout reads corners from the boundary's turning instead.
- *
- * A **core-private** header: nothing installed names it. Deterministic:
- * fixed loop orders, a fixed start and iteration count, thread-count
- * independent solves.
- */
-
-// System includes
-#include <cstddef>
-#include <cstdint>
-#include <utility>
-#include <vector>
-
-// Project includes (private, not installed)
-
-namespace meshioplusplus {
-namespace detail {
-
-/// What `cross_field` aligns with.
-struct CrossFieldOptions {
-    /// Interior edges (vertex pairs) the field must follow, besides the
-    /// boundary: the patch's feature edges.
-    std::vector<std::pair<std::size_t, std::size_t>> mFeatureEdges;
-    /// Whether the boundary edges constrain the field.
-    bool mConstrainBoundary = true;
-    /// The weight of the pull towards the principal curvature directions,
-    /// times each triangle's anisotropy `(|k1| - |k2|) / (|k1| + |k2|)`; 0 for none.
-    double mCurvatureWeight = 0.0;
-    /// Inverse iterations for an unconstrained field.
-    int mPowerIterations = 30;
-};
-
-/// A cross field on a patch.
-struct CrossField {
-    bool mOk = false;
-    /// Per triangle: its frame (unit first edge, unit in-plane normal to it,
-    /// unit normal) and the angle of the cross's first branch in it.
-    std::vector<PatchVec> mE1, mE2, mNormal;
-    std::vector<double> mTheta;
-    /// Per vertex: its index in quarters (`round(4 index)`), 0 on the
-    /// boundary and at regular vertices.
-    std::vector<int> mIndex;
-    /// The vertices with a nonzero index, ascending.
-    std::vector<std::size_t> mSingular;
-    /// Whether every triangle was constrained, solved or both (false for a
-    /// patch the solve could not reach).
-    std::size_t mNumConstrained = 0;
-};
-
-/// The smoothest cross field of a patch (see the file comment).
-CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
-                       const CrossFieldOptions& rOptions);
-
-/// Branch `K` (taken mod 4) of the cross in triangle `F`, a unit 3-D vector.
-PatchVec cross_branch(const CrossField& rField, std::size_t F, int K);
-
-/// A singular vertex's valence in a quad layout: `4 - index`.
-inline int cross_valence(const CrossField& rField, std::size_t V) {
-    return 4 - rField.mIndex[V];
+/// The workers `parallel_for` runs on: 1 on SEQ.
+inline std::size_t parallel_workers() {
+#if defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
+    return static_cast<std::size_t>(std::max(1, omp_get_max_threads()));
+#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
+    return std::max<std::size_t>(
+        1, tbb::global_control::active_value(tbb::global_control::max_allowed_parallelism));
+#elif defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
+    kokkos_ensure_initialized();
+    return static_cast<std::size_t>(std::max(1, Kokkos::DefaultHostExecutionSpace().concurrency()));
+#elif defined(MESHIOPLUSPLUS_PARALLEL_STL)
+    return std::max<std::size_t>(1, std::thread::hardware_concurrency());
+#elif defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
+    return std::max<std::size_t>(1, threads_concurrency());
+#else
+    return 1;
+#endif
 }
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end src/cpp/src/detail/cross_field.hpp =====
-// ===== begin src/cpp/src/detail/curved_triangle.hpp =====
-/**
- * @file detail/curved_triangle.hpp
- * @brief Lagrange triangles of order 2 and 3 in 3-D, and whether one is valid
- * everywhere inside, not only at its nodes (roadmap 6.6.1).
- *
- *  - **The element.** Nodes in the layout of `triangle6` and `triangle10`
- *    (Gmsh's and meshio's): the corners 0, 1, 2 at reference (0, 0), (1, 0),
- *    (0, 1); then each edge's nodes from its first corner, edges (0, 1),
- *    (1, 2), (2, 0); for order 3 then the centre. The map is
- *    `x(xi, eta) = sum_i N_i(xi, eta) X_i` with the Lagrange shape functions.
- *  - **The Jacobian.** A surface element has no square Jacobian matrix; its
- *    signed area element against a reference direction `N` (the surface
- *    normal of the face it lies on) is `J = (x_xi x x_eta) . N`, a
- *    polynomial of degree `2 (p - 1)` in the reference coordinates.
- *  - **Validity** (Johnen, Remacle and Geuzaine 2013). `J` positive at the
- *    nodes is necessary, not sufficient: a curved element can fold between
- *    them. `J` is expanded in the Bernstein basis of its degree on the
- *    triangle; its values lie in the convex hull of the coefficients, so all
- *    coefficients positive proves `J > 0` everywhere, and any value not
- *    positive proves the element invalid. Otherwise the triangle is split
- *    into four and each part judged, to `MaxDepth`; undecided at that depth
- *    counts as invalid. Exact up to the depth and floating-point rounding.
- */
-
-// System includes
-#include <array>
-
-namespace meshioplusplus::detail {
-
-using CurvedVec3 = std::array<double, 3>;
-
-/// Nodes of a Lagrange triangle of order 1, 2 or 3 (3, 6 or 10).
-int curved_triangle_num_nodes(int Order);
-
-/// The element's point at reference `(Xi, Eta)`.
-CurvedVec3 curved_triangle_point(int Order, const CurvedVec3* pNodes, double Xi, double Eta);
-
-/// `J = (x_xi x x_eta) . N` at reference `(Xi, Eta)`; `pNodes` holds
-/// `curved_triangle_num_nodes(Order)` points.
-double curved_triangle_jacobian(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal,
-                                double Xi, double Eta);
-
-/// The verdict on one element.
-struct CurvedTriangleCheck {
-    bool mValid = false;   ///< J > 0 everywhere, proved
-    bool mDecided = true;  ///< false: undecided at the depth (counted invalid)
-    double mMinNodal = 0;  ///< the smallest J at the element's own nodes
-};
-
-/// Whether the element is valid everywhere inside (see the file comment).
-CurvedTriangleCheck curved_triangle_check(int Order, const CurvedVec3* pNodes,
-                                          const CurvedVec3& rNormal, int MaxDepth = 8);
-
-/**
- * @brief A lower bound of the element's scaled Jacobian, `min J / max |J|`
- * over the element (roadmap 6.6.3): the least of `J`'s Bernstein
- * coefficients over the largest in magnitude (Johnen, Remacle and Geuzaine
- * 2013 bound `min J` from below and `max J` from above by them), in
- * [-1, 1]. Positive proves the element valid; 1 for a straight-sided one
- * whose Jacobian is constant and positive. Cheap (no subdivision): the
- * measure untangling raises.
- */
-double curved_triangle_scaled_bound(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal);
-
-/// The Bernstein coefficients of the polynomial of degree `Degree` (2 or 4)
-/// on the reference triangle whose values at the degree's lattice points are
-/// `pValues`, in the order `(i, j)` with `i` (the `xi` index) outer, `j`
-/// ascending, `i + j <= Degree`. Exposed for tests.
-void curved_triangle_bernstein(int Degree, const double* pValues, double* pCoefficients);
-
-}  // namespace meshioplusplus::detail
-// ===== end src/cpp/src/detail/curved_triangle.hpp =====
-// ===== begin src/cpp/src/detail/curved_quad.hpp =====
-/**
- * @file detail/curved_quad.hpp
- * @brief Biquadratic and bicubic quadrilaterals (`quad9`, `quad16`) in 3-D,
- * and whether one is valid everywhere inside (roadmap 6.8.3).
- *
- *  - **The element.** Nodes in the layout of `quad9` (Gmsh's and VTK's):
- *    corners 0..3 at reference (0, 0), (1, 0), (1, 1), (0, 1); the edges'
- *    midpoints 4..7 on edges (0, 1), (1, 2), (2, 3), (3, 0); the centre 8.
- *    `quad16` in Gmsh's layout: the corners, each edge's two nodes from its
- *    first corner (4..11), then the inside (12..15) at (1/3, 1/3),
- *    (2/3, 1/3), (2/3, 2/3), (1/3, 2/3). The map is the tensor product of
- *    the Lagrange basis of degree `Order` at equispaced points.
- *  - **The Jacobian.** As for the curved triangles (`curved_triangle.hpp`),
- *    `J = (x_xi x x_eta) . N` against the face's normal `N`. `x_xi` is of
- *    degree (p - 1, p) and `x_eta` of degree (p, p - 1), so `J` is a
- *    tensor-product polynomial of degree (2p - 1, 2p - 1): (3, 3) for
- *    `quad9`, (5, 5) for `quad16`.
- *  - **Validity** (Johnen, Remacle and Geuzaine 2013, whose bounds hold for
- *    the tensor-product Bézier basis as for the simplex one). `J`'s 16 (36)
- *    Bernstein coefficients bound it: all positive proves `J > 0`
- *    everywhere, a value not positive proves the element invalid, and
- *    otherwise the square is split into four and each part judged, to
- *    `MaxDepth`; undecided at that depth counts as invalid.
- *
- * A **core-private** header: nothing installed names it.
- */
-
-// System includes
-#include <array>
-#include <cstddef>
-
-// Project includes (private, not installed)
-
-namespace meshioplusplus::detail {
-
-/// Nodes of a quad of order `Order` (2: 9, 3: 16).
-std::size_t curved_quad_num_nodes(int Order);
-
-/// Node `Node`'s reference position.
-std::array<double, 2> curved_quad_node_position(int Order, std::size_t Node);
-
-/// The element's point at reference `(Xi, Eta)`; `pNodes` holds
-/// `curved_quad_num_nodes(Order)` points.
-CurvedVec3 curved_quad_point(int Order, const CurvedVec3* pNodes, double Xi, double Eta);
-
-double curved_quad_jacobian(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal,
-                            double Xi, double Eta);
-
-CurvedTriangleCheck curved_quad_check(int Order, const CurvedVec3* pNodes,
-                                      const CurvedVec3& rNormal, int MaxDepth = 8);
-
-/// A lower bound of the scaled Jacobian, as `curved_triangle_scaled_bound`:
-/// the least Bernstein coefficient of `J` over the largest in magnitude.
-double curved_quad_scaled_bound(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal);
-
-/// `quad9` (order 2), as before.
-CurvedVec3 curved_quad_point(const CurvedVec3* pNodes, double Xi, double Eta);
-
-double curved_quad_jacobian(const CurvedVec3* pNodes, const CurvedVec3& rNormal, double Xi,
-                            double Eta);
-
-CurvedTriangleCheck curved_quad_check(const CurvedVec3* pNodes, const CurvedVec3& rNormal,
-                                      int MaxDepth = 8);
-
-}  // namespace meshioplusplus::detail
-// ===== end src/cpp/src/detail/curved_quad.hpp =====
-// ===== begin src/cpp/src/detail/curved_untangle.hpp =====
-/**
- * @file detail/curved_untangle.hpp
- * @brief Untangling curved surface triangles and quadrilaterals by moving
- * their nodes on the surface (roadmap 6.6.3).
- *
- * A curved element whose Jacobian is not positive everywhere (the Bézier
- * check of `curved_triangle.hpp`) loses the order its nodes bought if it is
- * made straight-sided. Toulorge, Geuzaine, Remacle and Lambrechts ("Robust
- * untangling of curvilinear meshes", J. Comput. Phys. 254, 2013) instead move
- * the high-order nodes that are not on the boundary to raise the worst
- * scaled Jacobian of the elements around them, the boundary nodes staying on
- * the CAD. Here the free nodes are a face's own (interior edges' nodes,
- * cubic centres and, for split quads, the corners inside the face) and
- * each moves in the face's parameters, lifted by the surface, so every node
- * stays on the geometry by construction; the measure raised is
- * `curved_triangle_scaled_bound` (`curved_quad_scaled_bound` for a quad), a
- * lower bound of `min J / max |J|`. Any node of an element may be free,
- * corners included. The optimiser is a deterministic Gauss-Seidel pattern
- * search (the precedent of `hex_untangle`), not the paper's barrier method:
- * each free node of an invalid element, in ascending id order, takes the
- * best of eight steps around it that raises the least bound of its elements,
- * and halves its step when none does; sweeps repeat until every element is
- * proved valid, no step is left, or the sweep cap. Only elements around a
- * moved node can change, so the result does not depend on threads.
- *
- * A **core-private** header: nothing installed names it.
- */
-
-// System includes
-#include <array>
-#include <cstddef>
-#include <cstdint>
-#include <functional>
-#include <vector>
-
-// Project includes (private, not installed)
-
-namespace meshioplusplus::detail {
-
-/// One element: its node ids in the `triangle6` / `triangle10` layout, or
-/// with `mQuad` in the `quad9` / `quad16` one (`curved_quad.hpp`), and the
-/// face's normal the sign of its Jacobian is taken against.
-struct CurvedUntangleElement {
-    std::array<std::int64_t, 16> mNodes{};
-    CurvedVec3 mNormal{0.0, 0.0, 0.0};
-    bool mQuad = false;
-};
-
-/// A curved triangle as an element to untangle.
-inline CurvedUntangleElement curved_untangle_triangle(const std::array<std::int64_t, 10>& rNodes,
-                                                      const CurvedVec3& rNormal) {
-    CurvedUntangleElement e;
-    for (std::size_t i = 0; i < rNodes.size(); ++i)
-        e.mNodes[i] = rNodes[i];
-    e.mNormal = rNormal;
-    return e;
-}
-
-struct CurvedUntangleReport {
-    std::int64_t mInvalidBefore = 0;  ///< elements not proved valid on entry
-    std::int64_t mInvalidAfter = 0;   ///< and on return
-    std::int64_t mMoves = 0;          ///< node moves kept
-    std::int64_t mSweeps = 0;
-};
-
-/// A free node's lift: the point at parameters `rUv` of free node `Free`.
-using CurvedUntangleLift =
-    std::function<CurvedVec3(std::size_t Free, const std::array<double, 2>& rUv)>;
-
-/**
- * @brief Move the free nodes `rFree` (ids into `pX`, three coordinates each)
- * whose parameters are `rUv` (updated in place) to untangle `rElems`;
- * `rLift` gives the surface point at parameters. Every other node of the
- * elements is fixed. Elements with no free node are judged, not changed.
- */
-CurvedUntangleReport curved_untangle(
-    int Order, const std::vector<CurvedUntangleElement>& rElems, double* pX,
-    const std::vector<std::int64_t>& rFree, std::vector<std::array<double, 2>>& rUv,
-    const std::function<CurvedVec3(const std::array<double, 2>&)>& rLift, int MaxSweeps = 60);
-
-/**
- * @brief The same with a lift of its own per free node and, when `pBounds`
- * is given, a box `{lo0, hi0, lo1, hi1}` per free node its parameters stay
- * in. A node whose lift ignores its second parameter (a node on a curve,
- * `{t, 0}`) has no speed along it, so it moves along the curve only.
- */
-CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangleElement>& rElems,
-                                     double* pX, const std::vector<std::int64_t>& rFree,
-                                     std::vector<std::array<double, 2>>& rUv,
-                                     const CurvedUntangleLift& rLift,
-                                     const std::vector<std::array<double, 4>>* pBounds,
-                                     int MaxSweeps = 60);
-
-}  // namespace meshioplusplus::detail
-// ===== end src/cpp/src/detail/curved_untangle.hpp =====
-// ===== begin src/cpp/src/detail/cut_graph.hpp =====
-/**
- * @file detail/cut_graph.hpp
- * @brief The topology of a triangle patch (Euler characteristic, boundary
- * loops, genus) and the cuts that turn a genus-0 patch that is not a disc
- * into discs, for `fit_cad`'s freeform modes (v17.12.0).
- *
- * A freeform face needs a parametrisation, and a parametrisation needs a
- * disc. `fit_cad`'s legacy stages halve such a patch geometrically until the
- * pieces happen to be discs; here the cut follows the topology instead:
- *
- *  - an annulus (two boundary loops) is cut by two shortest paths between its
- *    loops, the second starting half way round the first loop from the
- *    first, into two discs;
- *  - a sphere with `b >= 3` holes is cut by a cycle of shortest paths
- *    `L0 -> L1 -> ... -> L(b-1) -> L0` through every loop, which separates
- *    it into two discs (each path leaves a loop half way round from where
- *    the previous one arrived);
- *  - a closed genus-0 patch (no boundary) is cut along the level set of the
- *    geodesic distance difference to its two most distant vertices (the
- *    area-weighted median), into two caps.
- *
- * A patch of genus 1 or more is not cut here: `fit_cad` leaves it to the quad
- * layout of `network` mode, or to the legacy halving. Shortest paths are
- * Dijkstra's on edge lengths with ties broken by vertex index; pieces are
- * numbered in the order of their lowest triangle. Serial and deterministic.
- *
- * A **core-private** header (the `patch_flatten.hpp` precedent): nothing
- * installed names it.
- */
-
-// System includes
-#include <cstddef>
-#include <cstdint>
-#include <utility>
-#include <vector>
-
-// Project includes (private, not installed)
-
-namespace meshioplusplus {
-namespace detail {
-
-/// What `patch_topology` measured.
-struct PatchTopology {
-    std::size_t mNumVertices = 0;  ///< vertices the triangles use
-    std::size_t mNumEdges = 0;
-    std::size_t mNumTriangles = 0;
-    std::size_t mNumBoundaryLoops = 0;
-    /// `V - E + F`.
-    std::int64_t mEuler = 0;
-    /// `(2 - chi - b) / 2`; meaningful only for a manifold patch.
-    std::int64_t mGenus = 0;
-    /// Every edge borders one or two triangles, and every boundary vertex
-    /// starts one boundary edge.
-    bool mManifold = true;
-    bool IsDisc() const { return mManifold && mNumBoundaryLoops == 1 && mEuler == 1; }
-};
-
-/// The topology of a triangle patch (`rTris` index any points).
-PatchTopology patch_topology(const std::vector<PatchTri>& rTris);
-
-/**
- * @brief The shortest edge path, by Euclidean edge length, from any vertex in
- * `rSources` to any vertex in `rTargets`, through no vertex in `rForbidden`
- * (sources and targets themselves excepted).
- * @return the vertices from source to target; empty when none connects them.
- */
-std::vector<std::size_t> patch_shortest_path(const std::vector<PatchVec>& rPts,
-                                             const std::vector<PatchTri>& rTris,
-                                             const std::vector<std::size_t>& rSources,
-                                             const std::vector<std::size_t>& rTargets,
-                                             const std::vector<std::uint8_t>& rForbidden);
-
-/**
- * @brief Split a genus-0 patch that is not a disc into discs (see the file
- * comment).
- * @param MinTriangles a piece with fewer triangles fails the split.
- * @param rNumPieces the pieces, numbered from 0; 0 when the patch is a disc
- *        already, has genus above 0, is not manifold, or no cut gives discs
- *        of at least `MinTriangles` triangles.
- * @return per triangle its piece; empty when `rNumPieces` is 0.
- */
-std::vector<std::int64_t> patch_split_to_discs(const std::vector<PatchVec>& rPts,
-                                               const std::vector<PatchTri>& rTris,
-                                               std::size_t MinTriangles, std::size_t& rNumPieces);
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/src/detail/cut_graph.hpp =====
+// ===== end src/cpp/src/detail/parallel_workers.hpp =====
 // ===== begin src/cpp/src/detail/text_cursor.hpp =====
 /**
  * @file detail/text_cursor.hpp
@@ -44102,6 +43662,826 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/text_cursor.hpp =====
+// ===== begin src/cpp/src/detail/chunked_parse.hpp =====
+/**
+ * @file detail/chunked_parse.hpp
+ * @brief Blank-separated numbers parsed in parallel (roadmap 5.7.2). A
+ * **core-private** header.
+ *
+ * The text is cut into chunks at blanks (`text_is_blank`, the classic-locale
+ * set), so no token straddles two; the tokens of each chunk are counted in
+ * parallel, the counts prefix-summed, and each chunk then parses its tokens
+ * into their fixed slots in parallel. The text goes a wave of chunks at a
+ * time, so a run of numbers followed by more of the file reads no further
+ * than one wave past its end.
+ *
+ * A reader keeps its own serial parse and calls this first: `rParse(token,
+ * index)` must take the whole token or refuse it (and never throw), and on
+ * any refusal -- or too few tokens -- `parse_tokens` returns `npos` and the
+ * reader runs its serial loop from the same position, which gives the same
+ * values and the same error, at the same place, as before. Parsing a token
+ * whole with the same number parser the serial loop uses yields the same
+ * value bit for bit, so the parallel path changes no output.
+ */
+
+// System includes
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <string_view>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Below this many values a reader parses serially: the dispatch would not pay.
+inline constexpr std::size_t chunked_parse_min_tokens = std::size_t{1} << 15;
+
+/// Whether `Count` values are worth parsing in parallel on this build and now.
+inline bool chunked_parse_worthwhile(std::size_t Count) {
+    return Count >= chunked_parse_min_tokens && parallel_workers() > 1;
+}
+
+namespace chunked_parse_impl {
+
+/// The bytes of one chunk: large enough that counting a chunk dwarfs the
+/// dispatch, small enough that a wave overshoots a run of numbers little.
+inline constexpr std::size_t kChunkBytes = std::size_t{1} << 18;
+
+/// The first blank at or after `Pos` (or the end): a chunk boundary.
+inline std::size_t next_blank(std::string_view Text, std::size_t Pos) {
+    while (Pos < Text.size() && !text_is_blank(Text[Pos]))
+        ++Pos;
+    return Pos;
+}
+
+/// Calls `rFn(first, last)` for each token of `Text[Begin, End)`, in order,
+/// until it returns false.
+template <class Fn>
+void for_each_token(std::string_view Text, std::size_t Begin, std::size_t End, Fn&& rFn) {
+    std::size_t p = Begin;
+    for (;;) {
+        while (p < End && text_is_blank(Text[p]))
+            ++p;
+        if (p >= End)
+            return;
+        const std::size_t first = p;
+        while (p < End && !text_is_blank(Text[p]))
+            ++p;
+        if (!rFn(first, p))
+            return;
+    }
+}
+
+}  // namespace chunked_parse_impl
+
+/**
+ * @brief Parses the `Count` tokens of `Text` that follow `Begin`, in parallel:
+ * `rParse(std::string_view token, std::size_t index)` stores token `index`
+ * and returns whether it took the whole token.
+ * @return The position just past the last token; `npos` when a token was
+ * refused or fewer than `Count` follow `Begin` (then nothing is promised about
+ * what `rParse` stored, and the caller parses serially).
+ */
+template <class Parse>
+std::size_t parse_tokens(std::string_view Text, std::size_t Begin, std::size_t Count,
+                         Parse&& rParse) {
+    using chunked_parse_impl::for_each_token;
+    using chunked_parse_impl::kChunkBytes;
+    using chunked_parse_impl::next_blank;
+    if (Count == 0)
+        return Begin;
+    const std::size_t wave = 4 * std::max<std::size_t>(1, parallel_workers());
+    std::size_t pos = Begin;
+    std::size_t done = 0;  // tokens before `pos`
+    std::vector<std::size_t> cuts;
+    std::vector<std::size_t> first;
+    while (pos < Text.size()) {
+        cuts.assign(1, pos);
+        while (cuts.size() <= wave && cuts.back() < Text.size())
+            cuts.push_back(next_blank(Text, std::min(Text.size(), cuts.back() + kChunkBytes)));
+        const std::size_t nch = cuts.size() - 1;
+        first.assign(nch + 1, 0);
+        parallel_for(
+            nch,
+            [&](std::size_t c) {
+                std::size_t n = 0;
+                for_each_token(Text, cuts[c], cuts[c + 1], [&](std::size_t, std::size_t) {
+                    ++n;
+                    return true;
+                });
+                first[c + 1] = n;
+            },
+            1);
+        first[0] = done;
+        for (std::size_t c = 0; c < nch; ++c)
+            first[c + 1] += first[c];
+        std::atomic<bool> refused{false};
+        std::size_t end = std::string_view::npos;
+        parallel_for(
+            nch,
+            [&](std::size_t c) {
+                if (first[c] >= Count)
+                    return;
+                std::size_t index = first[c];
+                for_each_token(Text, cuts[c], cuts[c + 1], [&](std::size_t b, std::size_t e) {
+                    if (refused.load(std::memory_order_relaxed) ||
+                        !rParse(Text.substr(b, e - b), index)) {
+                        refused.store(true, std::memory_order_relaxed);
+                        return false;
+                    }
+                    if (++index == Count) {
+                        end = e;  // one chunk holds the last token
+                        return false;
+                    }
+                    return true;
+                });
+            },
+            1);
+        if (refused.load())
+            return std::string_view::npos;
+        if (first[nch] >= Count)
+            return end;
+        done = first[nch];
+        pos = cuts.back();
+    }
+    return std::string_view::npos;
+}
+
+/// How many tokens `Text` holds, counted in parallel chunks.
+inline std::size_t count_tokens(std::string_view Text) {
+    using chunked_parse_impl::for_each_token;
+    using chunked_parse_impl::kChunkBytes;
+    using chunked_parse_impl::next_blank;
+    std::vector<std::size_t> cuts{0};
+    while (cuts.back() < Text.size())
+        cuts.push_back(next_blank(Text, std::min(Text.size(), cuts.back() + kChunkBytes)));
+    const std::size_t nch = cuts.size() - 1;
+    return parallel_reduce(
+        nch, 1, std::size_t{0},
+        [&](std::size_t b, std::size_t e) {
+            std::size_t n = 0;
+            for (std::size_t c = b; c < e; ++c)
+                for_each_token(Text, cuts[c], cuts[c + 1], [&](std::size_t, std::size_t) {
+                    ++n;
+                    return true;
+                });
+            return n;
+        },
+        [](std::size_t a, std::size_t p) { return a + p; });
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/chunked_parse.hpp =====
+// ===== begin src/cpp/src/detail/closed_facets.hpp =====
+/**
+ * @file detail/closed_facets.hpp
+ * @brief The surface cells of a mesh as planar facets of a closed,
+ * consistently wound shell -- what the faceted `step` writer and `fit_cad`
+ * both build a solid from.
+ *
+ * A **core-private** header (the `surface_rings.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * The rings come from `surface_rings`. A polygon whose corners lie within
+ * `1e-9` of its extent of their Newell plane is kept whole; any other is
+ * fanned into triangles from its first corner. Every facet must have a
+ * direction (non-zero area), and the facets must close: no open, non-manifold
+ * or inconsistently wound edge (`crease_edges`).
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Planar facets in CSR form, with their source cells, points and normals.
+struct ClosedFacets {
+    std::vector<std::int64_t> mStart{0};  ///< offsets into `mNodes`, one more than facets
+    std::vector<std::int64_t> mNodes;     ///< the facets' point ids, concatenated
+    /// The global (block-major) cell id of each facet; a fanned cell repeats it.
+    std::vector<std::int64_t> mCell;
+    std::vector<double> mXyz;      ///< the mesh's points, three per point
+    std::vector<double> mNormals;  ///< the unit normal of each facet, three per facet
+    /// Cells that are not surface facets (lines, vertices), skipped.
+    std::size_t mNumSkipped = 0;
+
+    std::size_t NumFacets() const { return mCell.size(); }
+};
+
+/**
+ * @brief Collect the surface cells of @p rSurface as the facets of a closed shell.
+ * @param rPrefix prepended to every error message.
+ * @return the facets; empty (with `mNumSkipped` set) when there is no surface
+ *         cell, which the caller reports.
+ * @throws std::invalid_argument on a volume block, a non-finite coordinate, a
+ *         degenerate facet, or a surface that is not closed and consistently
+ *         wound.
+ */
+ClosedFacets closed_facets(const Mesh& rSurface, const std::string& rPrefix);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/closed_facets.hpp =====
+// ===== begin src/cpp/src/detail/cow_source.hpp =====
+/**
+ * @file detail/cow_source.hpp
+ * @brief A whole file as **writable** bytes whose writes never reach the
+ * file: a copy-on-write mapping when worthwhile, an owned buffer otherwise.
+ *
+ * A **core-private** header (the `open_source.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI. It exists for
+ * parsers that write into their input -- pugixml's `load_buffer_inplace`
+ * terminates and unescapes text where it lies -- so that a mapped file is not
+ * copied whole first (roadmap 5.7.4): only the pages the parser writes are
+ * copied, by the kernel. `FileSource` stays read-only.
+ *
+ * Maps on POSIX (`MAP_PRIVATE` with `PROT_WRITE`) and Windows
+ * (`FILE_MAP_COPY`) at or above `mmap_auto_threshold_bytes` (or
+ * `MESHIOPLUSPLUS_MMAP_THRESHOLD`), as `FileSource`'s `Auto` mode does; reads
+ * smaller files, and every file under Emscripten, into an owned buffer.
+ */
+
+// System includes
+#include <cstddef>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+class CowSource {
+public:
+    /// Opens @p rPath; `ReadError(rMessage)` when it cannot be read. Maps it
+    /// at or above @p MapAtOrAbove bytes (0: the `Auto` threshold).
+    CowSource(const std::string& rPath, const std::string& rMessage, std::size_t MapAtOrAbove = 0);
+    ~CowSource();
+
+    CowSource(const CowSource&) = delete;
+    CowSource& operator=(const CowSource&) = delete;
+    CowSource(CowSource&& rOther) noexcept;
+    CowSource& operator=(CowSource&& rOther) noexcept;
+
+    /// The file's bytes, writable; never null (may be empty).
+    char* Data() { return mpData ? mpData : mBuffer.data(); }
+    const char* Data() const { return mpData ? mpData : mBuffer.data(); }
+    std::size_t Size() const { return mSize; }
+    std::string_view View() const { return {Data(), mSize}; }
+    /// Whether the bytes are a mapping (not an owned copy).
+    bool IsMapped() const { return mpData != nullptr; }
+
+private:
+    bool TryMap(const std::string& rPath, std::size_t MapAtOrAbove);
+    void Release() noexcept;
+    void MoveFrom(CowSource&& rOther) noexcept;
+
+    /// The bytes read, plus a NUL, when not mapped. A vector, so a move keeps
+    /// the bytes where a parse in place left pointers into them.
+    std::vector<char> mBuffer = std::vector<char>(1, '\0');
+    char* mpData = nullptr;  ///< the mapping, or null for the buffer
+    std::size_t mSize = 0;
+    void* mpWinMapping = nullptr;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/cow_source.hpp =====
+// ===== begin src/cpp/src/detail/crease_edges.hpp =====
+/**
+ * @file detail/crease_edges.hpp
+ * @brief The one crease test: which edges of a polygonal surface are sharp,
+ * open, non-manifold or wound inconsistently.
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * `feature_edges` reports these edges; `decimate`, `decimate_volume` and
+ * `smooth` pin their endpoints. Before v16.23.0 each of the three carried its
+ * own per-*vertex* test -- any two incident faces further apart than the
+ * feature angle, adjacent or not -- which pinned every vertex of a coarsely
+ * tessellated sphere. The test here is per *edge*: only the two faces that
+ * share an edge are compared, so a smooth-but-coarse patch stays free.
+ *
+ * ### The rule
+ *
+ * The faces are polygons (a triangle is a 3-gon) given as rings of point ids;
+ * each ring edge `(v_k, v_{k+1})` is one *use* of the undirected edge. Per
+ * edge, with `u` uses:
+ *
+ *  - `u == 1`: **boundary**.
+ *  - `u >= 3`: **non-manifold**.
+ *  - `u == 2`, both uses from one face: not an edge of the surface (a ring
+ *    that revisits an edge); skipped.
+ *  - `u == 2` otherwise: the two faces' unit normals are compared. When the
+ *    faces walk the edge the same way they disagree about "out" -- the pair is
+ *    **inconsistent** -- and the second normal is negated first, so the angle
+ *    is the dihedral the faces would have after a reorientation. The edge is
+ *    **sharp** when `dot < cos(FeatureAngleDeg)`. A face with a zero normal
+ *    (degenerate) gives no angle: the edge is never sharp.
+ *
+ * Collapsed ring edges (`v_k == v_{k+1}`) are not uses.
+ *
+ * ### Determinism
+ *
+ * Uses are sorted by a total order (`parallel_sort`), and every edge is
+ * classified from its own run alone, so the result -- one record per reported
+ * edge, ascending in `(lo, hi)` -- is the same on every backend and thread
+ * count.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+/// One reported edge of a surface.
+struct CreaseEdge {
+    std::int64_t mLo = 0;  ///< the smaller endpoint id
+    std::int64_t mHi = 0;  ///< the larger endpoint id
+    /// How many face-ring edges reference it: 1 boundary, 2 a pair, 3+ non-manifold.
+    std::int32_t mUses = 0;
+    /// A pair whose two faces walk the edge the same way.
+    bool mInconsistent = false;
+    /// A pair whose (orientation-corrected) dihedral exceeds the feature angle.
+    bool mSharp = false;
+    /// That dihedral in degrees, in `[0, 180]`; NaN unless the edge is a pair of
+    /// two non-degenerate faces.
+    double mAngleDeg = 0.0;
+
+    bool IsBoundary() const { return mUses == 1; }
+    bool IsNonManifold() const { return mUses >= 3; }
+    /// What a pinning operation freezes: a sharp or non-manifold edge. Open
+    /// edges are the caller's separate "preserve boundary" decision.
+    bool IsCrease() const { return mSharp || mUses >= 3; }
+};
+
+/**
+ * @brief Classify the edges of a polygonal surface.
+ *
+ * @param rStart CSR offsets into @p rNodes, one more than the number of faces.
+ * @param rNodes the face rings, concatenated.
+ * @param rUnitNormal three entries per face: its unit normal, or `{0, 0, 0}`
+ *        for a face with no direction.
+ * @param FeatureAngleDeg the largest dihedral still treated as smooth.
+ * @return every edge that is boundary, non-manifold, inconsistent or sharp,
+ *         ascending in `(lo, hi)`. Smooth consistent pairs are omitted.
+ */
+std::vector<CreaseEdge> crease_edges(const std::vector<std::int64_t>& rStart,
+                                     const std::vector<std::int64_t>& rNodes,
+                                     const std::vector<double>& rUnitNormal,
+                                     double FeatureAngleDeg);
+
+/// `crease_edges` over a triangle list (three corners per face).
+std::vector<CreaseEdge> crease_edges_triangles(const std::vector<std::int64_t>& rCorners,
+                                               const std::vector<double>& rUnitNormal,
+                                               double FeatureAngleDeg);
+
+/// Set `rPinned[v] = 1` for both endpoints of every `IsCrease()` edge.
+void pin_crease_endpoints(const std::vector<CreaseEdge>& rEdges,
+                          std::vector<std::uint8_t>& rPinned);
+
+/**
+ * @brief Newell's unit normal of a ring of points, `{0, 0, 0}` when it has no
+ * direction. For a triangle this is the direction of `cross(b - a, c - a)`.
+ * @param pXyz three coordinates per point id.
+ */
+void ring_unit_normal(const double* pXyz, const std::int64_t* pRing, std::size_t Size,
+                      double* pOut);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/crease_edges.hpp =====
+// ===== begin src/cpp/src/detail/cross_field.hpp =====
+/**
+ * @file detail/cross_field.hpp
+ * @brief The smoothest cross field (4-RoSy direction field) on a triangle
+ * patch, aligned with its boundary and feature edges, and its singularities
+ * -- the guide `quad_layout` traces a patch network along (`fit_cad`'s
+ * network mode, v17.12.0).
+ *
+ * Each triangle carries a frame (its first edge, its normal) and a cross,
+ * stored as the complex number `z = exp(4 i theta)` so the four branches
+ * `theta + k pi / 2` are one value. The field minimises the discrete
+ * connection Dirichlet energy `sum_e |z_f - c_e z_g|^2` over interior edges,
+ * `c_e = exp(4 i (alpha_f - alpha_g))` carrying the cross across the shared
+ * edge (`alpha` the edge's angle in each frame): the smoothest field of
+ * Knöppel, Crane, Pinkall and Schröder ("Globally optimal direction fields",
+ * SIGGRAPH 2013), with the boundary and feature edges as hard constraints
+ * (a constrained triangle's cross holds that edge's direction), plus, where
+ * asked, a soft pull towards the principal curvature directions weighted by
+ * their anisotropy. The Hermitian system is solved as its real symmetric
+ * positive definite twin by the deterministic conjugate gradients of
+ * `sparse_solve.hpp`; with nothing to constrain it (a closed patch with no
+ * curvature term) the field is the smallest eigenvector, by inverse iteration
+ * from a fixed start.
+ *
+ * A vertex's index is the cross's turning around it, `(sum of the wrapped
+ * mismatches + the angle defect) / 2 pi`, a multiple of `1/4`: `+1/4` a
+ * valence-3 singularity, `-1/4` a valence-5 one. Interior vertices only; on
+ * the boundary the layout reads corners from the boundary's turning instead.
+ *
+ * A **core-private** header: nothing installed names it. Deterministic:
+ * fixed loop orders, a fixed start and iteration count, thread-count
+ * independent solves.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+/// What `cross_field` aligns with.
+struct CrossFieldOptions {
+    /// Interior edges (vertex pairs) the field must follow, besides the
+    /// boundary: the patch's feature edges.
+    std::vector<std::pair<std::size_t, std::size_t>> mFeatureEdges;
+    /// Whether the boundary edges constrain the field.
+    bool mConstrainBoundary = true;
+    /// The weight of the pull towards the principal curvature directions,
+    /// times each triangle's anisotropy `(|k1| - |k2|) / (|k1| + |k2|)`; 0 for none.
+    double mCurvatureWeight = 0.0;
+    /// Inverse iterations for an unconstrained field.
+    int mPowerIterations = 30;
+};
+
+/// A cross field on a patch.
+struct CrossField {
+    bool mOk = false;
+    /// Per triangle: its frame (unit first edge, unit in-plane normal to it,
+    /// unit normal) and the angle of the cross's first branch in it.
+    std::vector<PatchVec> mE1, mE2, mNormal;
+    std::vector<double> mTheta;
+    /// Per vertex: its index in quarters (`round(4 index)`), 0 on the
+    /// boundary and at regular vertices.
+    std::vector<int> mIndex;
+    /// The vertices with a nonzero index, ascending.
+    std::vector<std::size_t> mSingular;
+    /// Whether every triangle was constrained, solved or both (false for a
+    /// patch the solve could not reach).
+    std::size_t mNumConstrained = 0;
+};
+
+/// The smoothest cross field of a patch (see the file comment).
+CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                       const CrossFieldOptions& rOptions);
+
+/// Branch `K` (taken mod 4) of the cross in triangle `F`, a unit 3-D vector.
+PatchVec cross_branch(const CrossField& rField, std::size_t F, int K);
+
+/// A singular vertex's valence in a quad layout: `4 - index`.
+inline int cross_valence(const CrossField& rField, std::size_t V) {
+    return 4 - rField.mIndex[V];
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/cross_field.hpp =====
+// ===== begin src/cpp/src/detail/curved_triangle.hpp =====
+/**
+ * @file detail/curved_triangle.hpp
+ * @brief Lagrange triangles of order 2 and 3 in 3-D, and whether one is valid
+ * everywhere inside, not only at its nodes (roadmap 6.6.1).
+ *
+ *  - **The element.** Nodes in the layout of `triangle6` and `triangle10`
+ *    (Gmsh's and meshio's): the corners 0, 1, 2 at reference (0, 0), (1, 0),
+ *    (0, 1); then each edge's nodes from its first corner, edges (0, 1),
+ *    (1, 2), (2, 0); for order 3 then the centre. The map is
+ *    `x(xi, eta) = sum_i N_i(xi, eta) X_i` with the Lagrange shape functions.
+ *  - **The Jacobian.** A surface element has no square Jacobian matrix; its
+ *    signed area element against a reference direction `N` (the surface
+ *    normal of the face it lies on) is `J = (x_xi x x_eta) . N`, a
+ *    polynomial of degree `2 (p - 1)` in the reference coordinates.
+ *  - **Validity** (Johnen, Remacle and Geuzaine 2013). `J` positive at the
+ *    nodes is necessary, not sufficient: a curved element can fold between
+ *    them. `J` is expanded in the Bernstein basis of its degree on the
+ *    triangle; its values lie in the convex hull of the coefficients, so all
+ *    coefficients positive proves `J > 0` everywhere, and any value not
+ *    positive proves the element invalid. Otherwise the triangle is split
+ *    into four and each part judged, to `MaxDepth`; undecided at that depth
+ *    counts as invalid. Exact up to the depth and floating-point rounding.
+ */
+
+// System includes
+#include <array>
+
+namespace meshioplusplus::detail {
+
+using CurvedVec3 = std::array<double, 3>;
+
+/// Nodes of a Lagrange triangle of order 1, 2 or 3 (3, 6 or 10).
+int curved_triangle_num_nodes(int Order);
+
+/// The element's point at reference `(Xi, Eta)`.
+CurvedVec3 curved_triangle_point(int Order, const CurvedVec3* pNodes, double Xi, double Eta);
+
+/// `J = (x_xi x x_eta) . N` at reference `(Xi, Eta)`; `pNodes` holds
+/// `curved_triangle_num_nodes(Order)` points.
+double curved_triangle_jacobian(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal,
+                                double Xi, double Eta);
+
+/// The verdict on one element.
+struct CurvedTriangleCheck {
+    bool mValid = false;   ///< J > 0 everywhere, proved
+    bool mDecided = true;  ///< false: undecided at the depth (counted invalid)
+    double mMinNodal = 0;  ///< the smallest J at the element's own nodes
+};
+
+/// Whether the element is valid everywhere inside (see the file comment).
+CurvedTriangleCheck curved_triangle_check(int Order, const CurvedVec3* pNodes,
+                                          const CurvedVec3& rNormal, int MaxDepth = 8);
+
+/**
+ * @brief A lower bound of the element's scaled Jacobian, `min J / max |J|`
+ * over the element (roadmap 6.6.3): the least of `J`'s Bernstein
+ * coefficients over the largest in magnitude (Johnen, Remacle and Geuzaine
+ * 2013 bound `min J` from below and `max J` from above by them), in
+ * [-1, 1]. Positive proves the element valid; 1 for a straight-sided one
+ * whose Jacobian is constant and positive. Cheap (no subdivision): the
+ * measure untangling raises.
+ */
+double curved_triangle_scaled_bound(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal);
+
+/// The Bernstein coefficients of the polynomial of degree `Degree` (2 or 4)
+/// on the reference triangle whose values at the degree's lattice points are
+/// `pValues`, in the order `(i, j)` with `i` (the `xi` index) outer, `j`
+/// ascending, `i + j <= Degree`. Exposed for tests.
+void curved_triangle_bernstein(int Degree, const double* pValues, double* pCoefficients);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/curved_triangle.hpp =====
+// ===== begin src/cpp/src/detail/curved_quad.hpp =====
+/**
+ * @file detail/curved_quad.hpp
+ * @brief Biquadratic and bicubic quadrilaterals (`quad9`, `quad16`) in 3-D,
+ * and whether one is valid everywhere inside (roadmap 6.8.3).
+ *
+ *  - **The element.** Nodes in the layout of `quad9` (Gmsh's and VTK's):
+ *    corners 0..3 at reference (0, 0), (1, 0), (1, 1), (0, 1); the edges'
+ *    midpoints 4..7 on edges (0, 1), (1, 2), (2, 3), (3, 0); the centre 8.
+ *    `quad16` in Gmsh's layout: the corners, each edge's two nodes from its
+ *    first corner (4..11), then the inside (12..15) at (1/3, 1/3),
+ *    (2/3, 1/3), (2/3, 2/3), (1/3, 2/3). The map is the tensor product of
+ *    the Lagrange basis of degree `Order` at equispaced points.
+ *  - **The Jacobian.** As for the curved triangles (`curved_triangle.hpp`),
+ *    `J = (x_xi x x_eta) . N` against the face's normal `N`. `x_xi` is of
+ *    degree (p - 1, p) and `x_eta` of degree (p, p - 1), so `J` is a
+ *    tensor-product polynomial of degree (2p - 1, 2p - 1): (3, 3) for
+ *    `quad9`, (5, 5) for `quad16`.
+ *  - **Validity** (Johnen, Remacle and Geuzaine 2013, whose bounds hold for
+ *    the tensor-product Bézier basis as for the simplex one). `J`'s 16 (36)
+ *    Bernstein coefficients bound it: all positive proves `J > 0`
+ *    everywhere, a value not positive proves the element invalid, and
+ *    otherwise the square is split into four and each part judged, to
+ *    `MaxDepth`; undecided at that depth counts as invalid.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus::detail {
+
+/// Nodes of a quad of order `Order` (2: 9, 3: 16).
+std::size_t curved_quad_num_nodes(int Order);
+
+/// Node `Node`'s reference position.
+std::array<double, 2> curved_quad_node_position(int Order, std::size_t Node);
+
+/// The element's point at reference `(Xi, Eta)`; `pNodes` holds
+/// `curved_quad_num_nodes(Order)` points.
+CurvedVec3 curved_quad_point(int Order, const CurvedVec3* pNodes, double Xi, double Eta);
+
+double curved_quad_jacobian(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal,
+                            double Xi, double Eta);
+
+CurvedTriangleCheck curved_quad_check(int Order, const CurvedVec3* pNodes,
+                                      const CurvedVec3& rNormal, int MaxDepth = 8);
+
+/// A lower bound of the scaled Jacobian, as `curved_triangle_scaled_bound`:
+/// the least Bernstein coefficient of `J` over the largest in magnitude.
+double curved_quad_scaled_bound(int Order, const CurvedVec3* pNodes, const CurvedVec3& rNormal);
+
+/// `quad9` (order 2), as before.
+CurvedVec3 curved_quad_point(const CurvedVec3* pNodes, double Xi, double Eta);
+
+double curved_quad_jacobian(const CurvedVec3* pNodes, const CurvedVec3& rNormal, double Xi,
+                            double Eta);
+
+CurvedTriangleCheck curved_quad_check(const CurvedVec3* pNodes, const CurvedVec3& rNormal,
+                                      int MaxDepth = 8);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/curved_quad.hpp =====
+// ===== begin src/cpp/src/detail/curved_untangle.hpp =====
+/**
+ * @file detail/curved_untangle.hpp
+ * @brief Untangling curved surface triangles and quadrilaterals by moving
+ * their nodes on the surface (roadmap 6.6.3).
+ *
+ * A curved element whose Jacobian is not positive everywhere (the Bézier
+ * check of `curved_triangle.hpp`) loses the order its nodes bought if it is
+ * made straight-sided. Toulorge, Geuzaine, Remacle and Lambrechts ("Robust
+ * untangling of curvilinear meshes", J. Comput. Phys. 254, 2013) instead move
+ * the high-order nodes that are not on the boundary to raise the worst
+ * scaled Jacobian of the elements around them, the boundary nodes staying on
+ * the CAD. Here the free nodes are a face's own (interior edges' nodes,
+ * cubic centres and, for split quads, the corners inside the face) and
+ * each moves in the face's parameters, lifted by the surface, so every node
+ * stays on the geometry by construction; the measure raised is
+ * `curved_triangle_scaled_bound` (`curved_quad_scaled_bound` for a quad), a
+ * lower bound of `min J / max |J|`. Any node of an element may be free,
+ * corners included. The optimiser is a deterministic Gauss-Seidel pattern
+ * search (the precedent of `hex_untangle`), not the paper's barrier method:
+ * each free node of an invalid element, in ascending id order, takes the
+ * best of eight steps around it that raises the least bound of its elements,
+ * and halves its step when none does; sweeps repeat until every element is
+ * proved valid, no step is left, or the sweep cap. Only elements around a
+ * moved node can change, so the result does not depend on threads.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus::detail {
+
+/// One element: its node ids in the `triangle6` / `triangle10` layout, or
+/// with `mQuad` in the `quad9` / `quad16` one (`curved_quad.hpp`), and the
+/// face's normal the sign of its Jacobian is taken against.
+struct CurvedUntangleElement {
+    std::array<std::int64_t, 16> mNodes{};
+    CurvedVec3 mNormal{0.0, 0.0, 0.0};
+    bool mQuad = false;
+};
+
+/// A curved triangle as an element to untangle.
+inline CurvedUntangleElement curved_untangle_triangle(const std::array<std::int64_t, 10>& rNodes,
+                                                      const CurvedVec3& rNormal) {
+    CurvedUntangleElement e;
+    for (std::size_t i = 0; i < rNodes.size(); ++i)
+        e.mNodes[i] = rNodes[i];
+    e.mNormal = rNormal;
+    return e;
+}
+
+struct CurvedUntangleReport {
+    std::int64_t mInvalidBefore = 0;  ///< elements not proved valid on entry
+    std::int64_t mInvalidAfter = 0;   ///< and on return
+    std::int64_t mMoves = 0;          ///< node moves kept
+    std::int64_t mSweeps = 0;
+};
+
+/// A free node's lift: the point at parameters `rUv` of free node `Free`.
+using CurvedUntangleLift =
+    std::function<CurvedVec3(std::size_t Free, const std::array<double, 2>& rUv)>;
+
+/**
+ * @brief Move the free nodes `rFree` (ids into `pX`, three coordinates each)
+ * whose parameters are `rUv` (updated in place) to untangle `rElems`;
+ * `rLift` gives the surface point at parameters. Every other node of the
+ * elements is fixed. Elements with no free node are judged, not changed.
+ */
+CurvedUntangleReport curved_untangle(
+    int Order, const std::vector<CurvedUntangleElement>& rElems, double* pX,
+    const std::vector<std::int64_t>& rFree, std::vector<std::array<double, 2>>& rUv,
+    const std::function<CurvedVec3(const std::array<double, 2>&)>& rLift, int MaxSweeps = 60);
+
+/**
+ * @brief The same with a lift of its own per free node and, when `pBounds`
+ * is given, a box `{lo0, hi0, lo1, hi1}` per free node its parameters stay
+ * in. A node whose lift ignores its second parameter (a node on a curve,
+ * `{t, 0}`) has no speed along it, so it moves along the curve only.
+ */
+CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangleElement>& rElems,
+                                     double* pX, const std::vector<std::int64_t>& rFree,
+                                     std::vector<std::array<double, 2>>& rUv,
+                                     const CurvedUntangleLift& rLift,
+                                     const std::vector<std::array<double, 4>>* pBounds,
+                                     int MaxSweeps = 60);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/curved_untangle.hpp =====
+// ===== begin src/cpp/src/detail/cut_graph.hpp =====
+/**
+ * @file detail/cut_graph.hpp
+ * @brief The topology of a triangle patch (Euler characteristic, boundary
+ * loops, genus) and the cuts that turn a genus-0 patch that is not a disc
+ * into discs, for `fit_cad`'s freeform modes (v17.12.0).
+ *
+ * A freeform face needs a parametrisation, and a parametrisation needs a
+ * disc. `fit_cad`'s legacy stages halve such a patch geometrically until the
+ * pieces happen to be discs; here the cut follows the topology instead:
+ *
+ *  - an annulus (two boundary loops) is cut by two shortest paths between its
+ *    loops, the second starting half way round the first loop from the
+ *    first, into two discs;
+ *  - a sphere with `b >= 3` holes is cut by a cycle of shortest paths
+ *    `L0 -> L1 -> ... -> L(b-1) -> L0` through every loop, which separates
+ *    it into two discs (each path leaves a loop half way round from where
+ *    the previous one arrived);
+ *  - a closed genus-0 patch (no boundary) is cut along the level set of the
+ *    geodesic distance difference to its two most distant vertices (the
+ *    area-weighted median), into two caps.
+ *
+ * A patch of genus 1 or more is not cut here: `fit_cad` leaves it to the quad
+ * layout of `network` mode, or to the legacy halving. Shortest paths are
+ * Dijkstra's on edge lengths with ties broken by vertex index; pieces are
+ * numbered in the order of their lowest triangle. Serial and deterministic.
+ *
+ * A **core-private** header (the `patch_flatten.hpp` precedent): nothing
+ * installed names it.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+#include <vector>
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+/// What `patch_topology` measured.
+struct PatchTopology {
+    std::size_t mNumVertices = 0;  ///< vertices the triangles use
+    std::size_t mNumEdges = 0;
+    std::size_t mNumTriangles = 0;
+    std::size_t mNumBoundaryLoops = 0;
+    /// `V - E + F`.
+    std::int64_t mEuler = 0;
+    /// `(2 - chi - b) / 2`; meaningful only for a manifold patch.
+    std::int64_t mGenus = 0;
+    /// Every edge borders one or two triangles, and every boundary vertex
+    /// starts one boundary edge.
+    bool mManifold = true;
+    bool IsDisc() const { return mManifold && mNumBoundaryLoops == 1 && mEuler == 1; }
+};
+
+/// The topology of a triangle patch (`rTris` index any points).
+PatchTopology patch_topology(const std::vector<PatchTri>& rTris);
+
+/**
+ * @brief The shortest edge path, by Euclidean edge length, from any vertex in
+ * `rSources` to any vertex in `rTargets`, through no vertex in `rForbidden`
+ * (sources and targets themselves excepted).
+ * @return the vertices from source to target; empty when none connects them.
+ */
+std::vector<std::size_t> patch_shortest_path(const std::vector<PatchVec>& rPts,
+                                             const std::vector<PatchTri>& rTris,
+                                             const std::vector<std::size_t>& rSources,
+                                             const std::vector<std::size_t>& rTargets,
+                                             const std::vector<std::uint8_t>& rForbidden);
+
+/**
+ * @brief Split a genus-0 patch that is not a disc into discs (see the file
+ * comment).
+ * @param MinTriangles a piece with fewer triangles fails the split.
+ * @param rNumPieces the pieces, numbered from 0; 0 when the patch is a disc
+ *        already, has genus above 0, is not manifold, or no cut gives discs
+ *        of at least `MinTriangles` triangles.
+ * @return per triangle its piece; empty when `rNumPieces` is 0.
+ */
+std::vector<std::int64_t> patch_split_to_discs(const std::vector<PatchVec>& rPts,
+                                               const std::vector<PatchTri>& rTris,
+                                               std::size_t MinTriangles, std::size_t& rNumPieces);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/cut_graph.hpp =====
 // ===== begin src/cpp/src/detail/drawing.hpp =====
 /**
  * @file detail/drawing.hpp
@@ -45539,14 +45919,16 @@ EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
 // System includes
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <thread>
 #include <utility>
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 namespace meshioplusplus {
 namespace detail {
@@ -45573,19 +45955,7 @@ namespace slot_runs_impl {
 /// the chunk count of `group_slots`' counting sort, whose output does not
 /// depend on it (a stable counting sort gives one order for any chunking).
 inline std::size_t workers() {
-#if defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
-    return static_cast<std::size_t>(std::max(1, omp_get_max_threads()));
-#elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
-    return std::max<std::size_t>(
-        1, tbb::global_control::active_value(tbb::global_control::max_allowed_parallelism));
-#elif defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
-    detail::kokkos_ensure_initialized();
-    return static_cast<std::size_t>(std::max(1, Kokkos::DefaultHostExecutionSpace().concurrency()));
-#elif defined(MESHIOPLUSPLUS_PARALLEL_STL)
-    return std::max<std::size_t>(1, std::thread::hardware_concurrency());
-#else
-    return 1;
-#endif
+    return parallel_workers();
 }
 
 /**
@@ -45828,45 +46198,134 @@ inline std::size_t facet_bucket(const std::int64_t* pSortedIds, std::size_t N,
     return static_cast<std::size_t>(pSortedIds[0]);
 }
 
+inline SlotRuns group_int_rows(const std::vector<std::int64_t>& rValues,
+                               const std::vector<std::uint64_t>& rOffsets, std::size_t NumIds);
+
+namespace slot_runs_impl {
+
+/// The padding of a narrow facet key: above every node id it can hold.
+inline constexpr std::uint32_t kFacetPad = 0xFFFFFFFFu;
+
+/// `group_facets`' narrow path for keys of at most `W` ids: each key its
+/// sorted ids as `std::uint32_t`, padded with `kFacetPad`, so two keys are
+/// equal exactly when their facets are. False, grouping nothing, when an id
+/// lies outside `[0, NumPoints)`.
+template <std::size_t W, class SizeOf, class Fill>
+bool group_facets_narrow(std::size_t NumSlots, std::size_t NumPoints, SizeOf& rSizeOf, Fill& rFill,
+                         SlotRuns& rOut) {
+    using Key = std::array<std::uint32_t, W>;
+    std::vector<Key> keys(NumSlots);
+    std::atomic<bool> out_of_range{false};
+    parallel_for(NumSlots, [&](std::size_t i) {
+        std::int64_t ids[W];
+        const std::size_t k = rSizeOf(i);
+        rFill(i, ids);
+        std::sort(ids, ids + k);
+        Key& rKey = keys[i];
+        for (std::size_t j = 0; j < k; ++j) {
+            if (ids[j] < 0 || static_cast<std::uint64_t>(ids[j]) >= NumPoints)
+                out_of_range.store(true, std::memory_order_relaxed);
+            rKey[j] = static_cast<std::uint32_t>(ids[j]);
+        }
+        for (std::size_t j = k; j < W; ++j)
+            rKey[j] = kFacetPad;
+    });
+    if (out_of_range.load())
+        return false;
+    rOut = group_slots(keys, NumPoints + 1, [&](const Key& rK) -> std::size_t {
+        return rK[0] == kFacetPad ? NumPoints : rK[0];
+    });
+    return true;
+}
+
+}  // namespace slot_runs_impl
+
+/// Which key layout `group_facets` uses: the narrowest that fits (`Auto`), or
+/// one forced, for tests.
+enum class FacetKeyPath { Auto, Wide, Rows };
+
 /**
- * @brief `group_slots` for facet keys, bucketed by their smallest node id:
- * flattened to fixed-width arrays when no key has more than
- * `FacetKey::kInline` ids (every non-polyhedral facet), compared through
- * `FacetKeyLess` otherwise. The runs are the same either way.
- * @tparam Rec A record type; `rKeyOf(rec)` returns its `const FacetKey&`.
+ * @brief Group facet slots `0 .. NumSlots-1` into runs of equal keys, a key
+ * being the set of node ids a facet names (any order): `rSizeOf(slot)` gives
+ * its id count and `rFill(slot, pOut)` writes its ids. Bucketed by the
+ * smallest id, as `group_slots` with `facet_bucket` (`NumPoints` for a key
+ * that is empty or names no node of the mesh).
+ *
+ * The keys are flattened to the width they need (roadmap 5.4.3), with no
+ * record per facet: at most four ids below `NumPoints < 2^32 - 1` are four
+ * (or three, or two) `std::uint32_t`; at most `FacetKey::kInline` ids
+ * otherwise a `FlatFacetKey`; longer keys (polyhedron faces) sorted rows in
+ * CSR (`group_int_rows`). Equal keys share a run on every path. The order of
+ * the runs within a bucket depends on the path; slots ascend within a run.
  */
-template <class Rec, class KeyOf>
-SlotRuns group_facet_slots(const std::vector<Rec>& rRecs, KeyOf&& rKeyOf, std::size_t NumPoints) {
-    const std::size_t n = rRecs.size();
+template <class SizeOf, class Fill>
+SlotRuns group_facets(std::size_t NumSlots, std::size_t NumPoints, SizeOf&& rSizeOf, Fill&& rFill,
+                      FacetKeyPath Path = FacetKeyPath::Auto) {
     const std::size_t widest = parallel_reduce(
-        n, 4096, std::size_t{0},
+        NumSlots, 4096, std::size_t{0},
         [&](std::size_t b, std::size_t e) {
             std::size_t w = 0;
             for (std::size_t i = b; i < e; ++i)
-                w = std::max(w, rKeyOf(rRecs[i]).Size());
+                w = std::max<std::size_t>(w, rSizeOf(i));
             return w;
         },
         [](std::size_t a, std::size_t p) { return std::max(a, p); });
-    if (widest <= FacetKey::kInline) {
-        std::vector<FlatFacetKey> flat(n);
-        parallel_for_bw(n, [&](std::size_t i) {
-            const FacetKey& k = rKeyOf(rRecs[i]);
+    SlotRuns out;
+    if (widest <= FacetKey::kInline && Path != FacetKeyPath::Rows) {
+        static_assert(FacetKey::kInline == 4, "the narrow paths cover four ids");
+        if (Path == FacetKeyPath::Auto && NumPoints < slot_runs_impl::kFacetPad) {
+            bool done;
+            if (widest <= 2)
+                done = slot_runs_impl::group_facets_narrow<2>(NumSlots, NumPoints, rSizeOf, rFill,
+                                                              out);
+            else if (widest == 3)
+                done = slot_runs_impl::group_facets_narrow<3>(NumSlots, NumPoints, rSizeOf, rFill,
+                                                              out);
+            else
+                done = slot_runs_impl::group_facets_narrow<4>(NumSlots, NumPoints, rSizeOf, rFill,
+                                                              out);
+            if (done)
+                return out;
+        }
+        std::vector<FlatFacetKey> flat(NumSlots);
+        parallel_for(NumSlots, [&](std::size_t i) {
             FlatFacetKey& f = flat[i];
             f.fill(0);
-            f[0] = static_cast<std::int64_t>(k.Size());
-            for (std::size_t j = 0; j < k.Size(); ++j)
-                f[j + 1] = k.Data()[j];
+            const std::size_t k = rSizeOf(i);
+            f[0] = static_cast<std::int64_t>(k);
+            rFill(i, f.data() + 1);
+            std::sort(f.begin() + 1, f.begin() + 1 + static_cast<std::ptrdiff_t>(k));
         });
         return group_slots(flat, NumPoints + 1, [&](const FlatFacetKey& rK) {
             return facet_bucket(rK.data() + 1, static_cast<std::size_t>(rK[0]), NumPoints);
         });
     }
-    std::vector<FacetKey> keys(n);
-    parallel_for_bw(n, [&](std::size_t i) { keys[i] = rKeyOf(rRecs[i]); });
-    return group_slots(
-        keys, NumPoints + 1,
-        [&](const FacetKey& rK) { return facet_bucket(rK.Data(), rK.Size(), NumPoints); },
-        FacetKeyLess{});
+    std::vector<std::uint64_t> offsets(NumSlots + 1);
+    parallel_for_bw(NumSlots,
+                    [&](std::size_t i) { offsets[i] = static_cast<std::uint64_t>(rSizeOf(i)); });
+    offsets[NumSlots] =
+        parallel_exclusive_scan(offsets.data(), NumSlots, offsets.data(), std::uint64_t{0});
+    std::vector<std::int64_t> values(static_cast<std::size_t>(offsets[NumSlots]));
+    parallel_for(NumSlots, [&](std::size_t i) {
+        std::int64_t* row = values.data() + offsets[i];
+        rFill(i, row);
+        std::sort(row, values.data() + offsets[i + 1]);
+    });
+    return group_int_rows(values, offsets, NumPoints);
+}
+
+/**
+ * @brief `group_facets` over records: `rKeyOf(rec)` returns its `const
+ * FacetKey&`.
+ */
+template <class Rec, class KeyOf>
+SlotRuns group_facet_slots(const std::vector<Rec>& rRecs, KeyOf&& rKeyOf, std::size_t NumPoints) {
+    return group_facets(
+        rRecs.size(), NumPoints, [&](std::size_t i) { return rKeyOf(rRecs[i]).Size(); },
+        [&](std::size_t i, std::int64_t* pOut) {
+            const FacetKey& k = rKeyOf(rRecs[i]);
+            std::copy(k.Data(), k.Data() + k.Size(), pOut);
+        });
 }
 
 /**
@@ -49786,51 +50245,30 @@ namespace detail {
 /// the parallel loop): the same bytes, with no `localeconv()` per value.
 class CNumber {
 public:
-    CNumber() {
-        const char* dp = std::localeconv()->decimal_point;
-        // snprintf_c repairs a single-character separator other than '.' and
-        // leaves every other case alone; so does this.
-        mRepair = dp != nullptr && dp[0] != '\0' && dp[1] == '\0' && dp[0] != '.';
-        mDp = mRepair ? dp[0] : '.';
-        // printf's text then has a '.' after the repair, as `to_chars`' has.
-        mSingleCharPoint = dp != nullptr && dp[0] != '\0' && dp[1] == '\0';
-    }
+    CNumber() : mClassic(!is_c_decimal_point(std::localeconv()->decimal_point)) {}
 
     /// `snprintf_c(pBuf, Cap, pFmt, ...)`: the same bytes and return value.
     int Print(char* pBuf, std::size_t Cap, const char* pFmt, ...) const {
         va_list args;
         va_start(args, pFmt);
-        const int n = std::vsnprintf(pBuf, Cap, pFmt, args);
+        const int n = mClassic ? vsnprintf_classic(pBuf, Cap, pFmt, args)
+                               : std::vsnprintf(pBuf, Cap, pFmt, args);
         va_end(args);
-        if (n <= 0 || !mRepair || Cap == 0)
-            return n;
-        const std::size_t written = std::min<std::size_t>(static_cast<std::size_t>(n), Cap - 1);
-        for (std::size_t i = 0; i < written; ++i)
-            if (pBuf[i] == mDp) {
-                pBuf[i] = '.';
-                break;
-            }
         return n;
     }
 
-    /// Appends `v` formatted by the printf format `pFmt` (one double).
+    /// Appends `v` formatted by the printf format `pFmt` (one double, any
+    /// literal text around it).
     void Append(std::string& rOut, const char* pFmt, double v) const {
 #if MESHIOPLUSPLUS_ROW_WRITER_TO_CHARS
-        if (mSingleCharPoint && std::isfinite(v) && AppendToChars(rOut, pFmt, v))
+        if (std::isfinite(v) && AppendToChars(rOut, pFmt, v))
             return;
 #endif
         char buf[64];
-        const int n = std::snprintf(buf, sizeof buf, pFmt, v);
+        const int n = Print(buf, sizeof buf, pFmt, v);
         if (n <= 0)
             return;
-        const std::size_t len = std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1);
-        if (mRepair)
-            for (std::size_t i = 0; i < len; ++i)
-                if (buf[i] == mDp) {
-                    buf[i] = '.';
-                    break;
-                }
-        rOut.append(buf, len);
+        rOut.append(buf, std::min<std::size_t>(static_cast<std::size_t>(n), sizeof buf - 1));
     }
 
 private:
@@ -49838,10 +50276,9 @@ private:
     /// The fast path for the plain precisions (roadmap 5.7.1): a format that
     /// is a literal prefix, `%.<P>e` or `%.<P>g`, and a literal suffix -- no
     /// flag, width or case -- is `std::to_chars` with that precision, which
-    /// the standard specifies to produce what printf does in the "C" locale.
-    /// That is also what `snprintf` gives here after the decimal-point repair,
-    /// since the constructor accepts only a single-character separator. Any
-    /// other format, a non-finite value (printf spells NaN signs its own way)
+    /// the standard specifies to produce what printf does in the "C" locale,
+    /// whatever the process locale -- which is what `Print` gives. Any other
+    /// format, a non-finite value (printf spells NaN signs its own way)
     /// or text the 64-byte buffer would have truncated takes `snprintf`.
     /// `test_row_writer_to_chars` compares the two over random bit patterns.
     static bool AppendToChars(std::string& rOut, const char* pFmt, double v) {
@@ -49882,9 +50319,7 @@ private:
     }
 #endif
 
-    bool mRepair = false;
-    bool mSingleCharPoint = true;
-    char mDp = '.';
+    bool mClassic = false;  ///< the locale's decimal point is not '.'
 };
 
 /// Appends the decimal text of `v`, as `ostream << v` prints it in the
@@ -52798,9 +53233,11 @@ struct VtuContext {
 
 // Owns both XML and raw file bytes. Contexts borrow it for the duration of a
 // read; every decoded NDArray owns its storage independently of this source.
+// The document is parsed in place in the file's bytes (roadmap 5.7.4), so the
+// bytes are declared first and outlive it.
 struct VtuSource {
+    std::optional<CowSource> mFile;
     pugi::xml_document mDoc;
-    std::optional<FileSource> mFile;
     std::string_view mBytes;
     std::size_t mRawStart = 0;
     std::size_t mRawStop = 0;
@@ -76523,6 +76960,178 @@ DecompressedFile::~DecompressedFile() {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/compressed_input.cpp =====
+// ===== begin src/cpp/src/detail/cow_source.cpp =====
+#include <cstdlib>
+#include <filesystem>
+#include <system_error>
+#include <utility>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+#if defined(__EMSCRIPTEN__)
+// No mapping under Emscripten: the virtual FS has nothing to map.
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+/// The size at which a file is mapped: `FileSource`'s `Auto` rule.
+std::size_t cow_threshold() {
+    static const std::size_t threshold = [] {
+        if (const char* env = std::getenv("MESHIOPLUSPLUS_MMAP_THRESHOLD")) {
+            char* end = nullptr;
+            const unsigned long long v = std::strtoull(env, &end, 10);
+            if (end && end != env)
+                return static_cast<std::size_t>(v);
+        }
+        return mmap_auto_threshold_bytes;
+    }();
+    return threshold;
+}
+
+}  // namespace
+
+CowSource::CowSource(const std::string& rPath, const std::string& rMessage,
+                     std::size_t MapAtOrAbove) {
+    if (TryMap(rPath, MapAtOrAbove ? MapAtOrAbove : cow_threshold()))
+        return;
+    std::error_code ec;
+    const auto status = std::filesystem::status(rPath, ec);
+    if (ec || !std::filesystem::is_regular_file(status))
+        throw ReadError(rMessage);
+    const std::uintmax_t size = std::filesystem::file_size(rPath, ec);
+    if (ec)
+        throw ReadError(rMessage);
+    auto in = make_classic_ifstream(rPath, std::ios::binary);
+    if (!in)
+        throw ReadError(rMessage);
+    mBuffer.assign(static_cast<std::size_t>(size) + 1, '\0');
+    if (size > 0 && !in.read(mBuffer.data(), static_cast<std::streamsize>(size)))
+        throw ReadError(rMessage);
+    mSize = static_cast<std::size_t>(size);
+}
+
+CowSource::~CowSource() {
+    Release();
+}
+
+CowSource::CowSource(CowSource&& rOther) noexcept {
+    MoveFrom(std::move(rOther));
+}
+
+CowSource& CowSource::operator=(CowSource&& rOther) noexcept {
+    if (this != &rOther) {
+        Release();
+        MoveFrom(std::move(rOther));
+    }
+    return *this;
+}
+
+bool CowSource::TryMap(const std::string& rPath, std::size_t MapAtOrAbove) {
+#if defined(__EMSCRIPTEN__)
+    (void)rPath;
+    (void)MapAtOrAbove;
+    return false;
+#elif defined(_WIN32)
+    HANDLE file = CreateFileA(rPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+    LARGE_INTEGER size;
+    if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 ||
+        static_cast<unsigned long long>(size.QuadPart) < MapAtOrAbove) {
+        CloseHandle(file);
+        return false;
+    }
+    // A copy-on-write view: writes go to private pages, never to the file.
+    HANDLE mapping = CreateFileMappingA(file, nullptr, PAGE_WRITECOPY, 0, 0, nullptr);
+    CloseHandle(file);  // the mapping keeps its own reference
+    if (!mapping)
+        return false;
+    void* view = MapViewOfFile(mapping, FILE_MAP_COPY, 0, 0, 0);
+    if (!view) {
+        CloseHandle(mapping);
+        return false;
+    }
+    mpData = static_cast<char*>(view);
+    mSize = static_cast<std::size_t>(size.QuadPart);
+    mpWinMapping = mapping;
+    return true;
+#else
+    const int fd = ::open(rPath.c_str(), O_RDONLY);
+    if (fd < 0)
+        return false;
+    struct stat st{};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
+        static_cast<unsigned long long>(st.st_size) < MapAtOrAbove) {
+        ::close(fd);
+        return false;
+    }
+    // MAP_PRIVATE with PROT_WRITE: a page is copied the first time it is
+    // written, and the file never sees the write (a read-only descriptor
+    // suffices for a private mapping).
+    void* addr = ::mmap(nullptr, static_cast<std::size_t>(st.st_size), PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE, fd, 0);
+    ::close(fd);
+    if (addr == MAP_FAILED)
+        return false;
+#if defined(POSIX_MADV_SEQUENTIAL)
+    ::posix_madvise(addr, static_cast<std::size_t>(st.st_size), POSIX_MADV_SEQUENTIAL);
+#endif
+    mpData = static_cast<char*>(addr);
+    mSize = static_cast<std::size_t>(st.st_size);
+    return true;
+#endif
+}
+
+void CowSource::Release() noexcept {
+#if defined(__EMSCRIPTEN__)
+#elif defined(_WIN32)
+    if (mpData)
+        UnmapViewOfFile(mpData);
+    if (mpWinMapping)
+        CloseHandle(static_cast<HANDLE>(mpWinMapping));
+#else
+    if (mpData && mSize)
+        ::munmap(mpData, mSize);
+#endif
+    mpData = nullptr;
+    mpWinMapping = nullptr;
+    mSize = 0;
+    mBuffer.assign(1, '\0');
+}
+
+void CowSource::MoveFrom(CowSource&& rOther) noexcept {
+    mBuffer = std::move(rOther.mBuffer);
+    rOther.mBuffer.assign(1, '\0');
+    mpData = rOther.mpData;
+    mSize = rOther.mSize;
+    mpWinMapping = rOther.mpWinMapping;
+    rOther.mpData = nullptr;
+    rOther.mpWinMapping = nullptr;
+    rOther.mSize = 0;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/cow_source.cpp =====
 // ===== begin src/cpp/src/detail/crease_edges.cpp =====
 #include <cmath>
 #include <cstddef>
@@ -78770,14 +79379,6 @@ std::vector<DualGraphFacetDef> dualgraph_facets_for(CellType type, int dualDim) 
     return defs;
 }
 
-// One facet occurrence recorded in phase 1 (keys built in parallel). FacetKey
-// holds sorted corner ids of any arity, so a hexahedron and a polyhedron that
-// meet on a face become neighbours.
-struct DualGraphFacetRecord {
-    FacetKey mKey;
-    std::int64_t mParent;  // global cell index owning the facet
-};
-
 bool dualgraph_is_polygon(const Mesh::CellView& rBlock) {
     return !rBlock.IsPolyhedron() && (rBlock.IsRagged() || rBlock.Type().rfind("polygon", 0) == 0);
 }
@@ -78795,7 +79396,7 @@ DualGraphCsr build_facet_dual_graph(const Mesh& rMesh, std::size_t total, bool P
         dual_dim = std::max(dual_dim, d);
     }
 
-    // Per-block facet tables + the flat record-buffer layout. A polyhedron or
+    // Per-block facet tables + the flat facet-slot layout. A polyhedron or
     // polygon-ring block has a variable facet count per cell (mFaceStart).
     struct BlockDesc {
         const NDArray* mpConn = nullptr;
@@ -78864,79 +79465,97 @@ DualGraphCsr build_facet_dual_graph(const Mesh& rMesh, std::size_t total, bool P
         descs.push_back(std::move(d));
     }
 
-    // Phase 1: build facet keys into disjoint slots (parallel-safe).
-    std::vector<DualGraphFacetRecord> recs(total_facets);
-    for (const BlockDesc& d : descs) {
-        if (d.mPolyhedron) {
-            const auto cb = rMesh.Cells(d.mBlock);
+    // Phase 1: each facet slot's owning cell, in parallel (disjoint slots).
+    std::vector<std::int64_t> parent(total_facets);
+    std::vector<std::size_t> first_facets(descs.size());
+    using DualGraphCellView = decltype(rMesh.Cells(0));
+    std::vector<std::optional<DualGraphCellView>> views(descs.size());
+    std::vector<std::optional<Int64View>> conn_views(descs.size());
+    for (std::size_t di = 0; di < descs.size(); ++di) {
+        const BlockDesc& d = descs[di];
+        first_facets[di] = d.mFirstFacet;
+        if (d.mPolyhedron || d.mRing)
+            views[di].emplace(rMesh.Cells(d.mBlock));
+        if (d.mpConn)
+            conn_views[di].emplace(*d.mpConn);
+        if (d.mPolyhedron || d.mRing) {
             parallel_for(d.mNumCells, [&](std::size_t cell) {
-                const std::size_t nf = cb.NumFaces(cell);
-                for (std::size_t f = 0; f < nf; ++f) {
-                    const auto face = cb.Face(cell, f);
-                    DualGraphFacetRecord& r = recs[d.mFirstFacet + d.mFaceStart[cell] + f];
-                    r.mKey = FacetKey(face.first, face.second);
-                    r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
-                }
+                for (std::size_t f = d.mFaceStart[cell]; f < d.mFaceStart[cell + 1]; ++f)
+                    parent[d.mFirstFacet + f] = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
             });
             continue;
         }
-        if (d.mRing) {
-            const auto cb = rMesh.Cells(d.mBlock);
-            const bool ragged = d.mpConn == nullptr;
-            std::optional<Int64View> conn_v;
-            if (!ragged)
-                conn_v.emplace(*d.mpConn);
-            parallel_for(d.mNumCells, [&](std::size_t cell) {
-                const std::size_t n = d.mFaceStart[cell + 1] - d.mFaceStart[cell];
-                const std::int64_t* row = ragged ? cb.Row(cell) : nullptr;
-                const auto node = [&](std::size_t k) {
-                    return ragged ? row[k] : (*conn_v)[cell * d.mNpc + k];
-                };
-                for (std::size_t k = 0; k < n; ++k) {
-                    const std::array<std::int64_t, 2> ids{node(k), node((k + 1) % n)};
-                    DualGraphFacetRecord& r = recs[d.mFirstFacet + d.mFaceStart[cell] + k];
-                    r.mKey = FacetKey(ids.data(), 2);
-                    r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
-                }
-            });
-            continue;
-        }
-        const NDArray& conn = *d.mpConn;
-        const Int64View conn_v(conn);
-        const std::size_t npc = d.mNpc;
         const std::size_t fpc = d.mFacets.size();
         parallel_for(d.mNumCells * fpc, [&](std::size_t j) {
-            const std::size_t cell = j / fpc;
-            const DualGraphFacetDef& facet = d.mFacets[j % fpc];
-            DualGraphFacetRecord& r = recs[d.mFirstFacet + j];
-            std::array<std::int64_t, 4> ids{};
-            for (std::uint8_t k = 0; k < facet.mNumCorners; ++k)
-                ids[k] = conn_v[cell * npc + facet.mNodes[k]];
-            r.mKey = FacetKey(ids.data(), facet.mNumCorners);
-            r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
+            parent[d.mFirstFacet + j] = d.mGlobalCellBase + static_cast<std::int64_t>(j / fpc);
         });
     }
 
-    // Phase 2: group the records by facet key (sorted runs, slot_runs.hpp).
-    // A run's head is its first record in stored order, the owner a first-seen
-    // map would keep; every later record whose parent differs from the owner
-    // adds an owner<->parent edge, so the occurrences of a non-manifold facet
-    // beyond the second all connect to the first owner.
-    const SlotRuns runs = group_facet_slots(
-        recs, [](const DualGraphFacetRecord& rR) -> const FacetKey& { return rR.mKey; },
-        rMesh.NumPoints());
+    // Phase 2: group the facet slots by key (detail::group_facets, roadmap
+    // 5.4.3: the keys flattened to the width they need, no record per facet).
+    // A key is the facet's corner ids, of any arity, so a hexahedron and a
+    // polyhedron that meet on a face become neighbours. A run's head is its
+    // first slot in stored order, the owner a first-seen map would keep; every
+    // later slot whose parent differs from the owner adds an owner<->parent
+    // edge, so the occurrences of a non-manifold facet beyond the second all
+    // connect to the first owner.
+    const auto desc_of = [&](std::size_t ri) -> std::size_t {
+        if (first_facets.size() == 1)
+            return 0;
+        return static_cast<std::size_t>(
+                   std::upper_bound(first_facets.begin(), first_facets.end(), ri) -
+                   first_facets.begin()) -
+               1;
+    };
+    const auto size_of = [&](std::size_t ri) -> std::size_t {
+        const std::size_t di = desc_of(ri);
+        const BlockDesc& d = descs[di];
+        if (d.mRing)
+            return 2;
+        if (d.mPolyhedron) {
+            const auto cell = static_cast<std::size_t>(parent[ri] - d.mGlobalCellBase);
+            return views[di]->Face(cell, ri - d.mFirstFacet - d.mFaceStart[cell]).second;
+        }
+        return d.mFacets[(ri - d.mFirstFacet) % d.mFacets.size()].mNumCorners;
+    };
+    const auto fill = [&](std::size_t ri, std::int64_t* pOut) {
+        const std::size_t di = desc_of(ri);
+        const BlockDesc& d = descs[di];
+        const auto cell = static_cast<std::size_t>(parent[ri] - d.mGlobalCellBase);
+        if (d.mPolyhedron) {
+            const auto face = views[di]->Face(cell, ri - d.mFirstFacet - d.mFaceStart[cell]);
+            std::copy(face.first, face.first + face.second, pOut);
+            return;
+        }
+        if (d.mRing) {
+            const std::size_t n = d.mFaceStart[cell + 1] - d.mFaceStart[cell];
+            const std::size_t k = ri - d.mFirstFacet - d.mFaceStart[cell];
+            const auto node = [&](std::size_t at) {
+                return conn_views[di] ? (*conn_views[di])[cell * d.mNpc + at]
+                                      : views[di]->Row(cell)[at];
+            };
+            pOut[0] = node(k);
+            pOut[1] = node((k + 1) % n);
+            return;
+        }
+        const DualGraphFacetDef& facet = d.mFacets[(ri - d.mFirstFacet) % d.mFacets.size()];
+        const Int64View& conn_v = *conn_views[di];
+        for (std::uint8_t k = 0; k < facet.mNumCorners; ++k)
+            pOut[k] = conn_v[cell * d.mNpc + facet.mNodes[k]];
+    };
+    const SlotRuns runs = group_facets(total_facets, rMesh.NumPoints(), size_of, fill);
     const std::size_t num_runs = runs.NumRuns();
 
     // Flat adjacency with duplicates: degree count, prefix sum, fill (both serial
     // over the runs, plain integer work, so the lists do not depend on a backend).
     std::vector<std::int64_t> dup_start(total + 1, 0);
     for (std::size_t r = 0; r < num_runs; ++r) {
-        const std::int64_t owner = recs[runs.Head(r)].mParent;
+        const std::int64_t owner = parent[runs.Head(r)];
         for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p) {
-            const std::int64_t parent = recs[*p].mParent;
-            if (parent != owner) {
+            const std::int64_t other = parent[*p];
+            if (other != owner) {
                 ++dup_start[static_cast<std::size_t>(owner) + 1];
-                ++dup_start[static_cast<std::size_t>(parent) + 1];
+                ++dup_start[static_cast<std::size_t>(other) + 1];
             }
         }
     }
@@ -78945,12 +79564,12 @@ DualGraphCsr build_facet_dual_graph(const Mesh& rMesh, std::size_t total, bool P
     std::vector<std::int64_t> dup(static_cast<std::size_t>(dup_start[total]));
     std::vector<std::int64_t> cursor(dup_start.begin(), dup_start.end() - 1);
     for (std::size_t r = 0; r < num_runs; ++r) {
-        const std::int64_t owner = recs[runs.Head(r)].mParent;
+        const std::int64_t owner = parent[runs.Head(r)];
         for (const std::uint64_t* p = runs.Begin(r); p != runs.End(r); ++p) {
-            const std::int64_t parent = recs[*p].mParent;
-            if (parent != owner) {
-                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(owner)]++)] = parent;
-                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(parent)]++)] = owner;
+            const std::int64_t other = parent[*p];
+            if (other != owner) {
+                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(owner)]++)] = other;
+                dup[static_cast<std::size_t>(cursor[static_cast<std::size_t>(other)]++)] = owner;
             }
         }
     }
@@ -80856,13 +81475,15 @@ SlotRuns fm_group_slots(const Mesh& rMesh, const FmSlots& rSlots,
         for (auto s = rSlots.mCellFaceStart[c]; s < rSlots.mCellFaceStart[c + 1]; ++s)
             rCellOfSlot[static_cast<std::size_t>(s)] = static_cast<std::int64_t>(c);
     });
-    std::vector<FacetKey> keys(n_slots);
-    parallel_for(n_slots, [&](std::size_t s) {
-        keys[s] = FacetKey(rSlots.mSlotNodes.data() + rSlots.mSlotStart[s],
-                           static_cast<std::size_t>(rSlots.mSlotSize[s]));
-    });
-    return group_facet_slots(
-        keys, [](const FacetKey& rK) -> const FacetKey& { return rK; }, rMesh.NumPoints());
+    // The keys straight from the slot buffer, flattened by group_facets: no
+    // FacetKey per slot (roadmap 5.4.3).
+    return group_facets(
+        n_slots, rMesh.NumPoints(),
+        [&](std::size_t s) { return static_cast<std::size_t>(rSlots.mSlotSize[s]); },
+        [&](std::size_t s, std::int64_t* pOut) {
+            const std::int64_t* p = rSlots.mSlotNodes.data() + rSlots.mSlotStart[s];
+            std::copy(p, p + rSlots.mSlotSize[s], pOut);
+        });
 }
 
 }  // namespace
@@ -106494,15 +107115,21 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
 // ===== end src/cpp/src/detail/subset.cpp =====
 // ===== begin src/cpp/src/detail/surface_distance.cpp =====
 #include <algorithm>
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+#include <atomic>
+#endif
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
 // Project includes
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+#endif
 
 // Project includes (private, not installed)
 
@@ -106727,22 +107354,83 @@ SurfaceQuality soup_quality(const TriangleSoup& rSoup, const SurfaceEdgeMap& rEd
 
 namespace {
 
-// Grid insertion: the triangles' quantized boxes, grouped by
-// `build_bucket_table` (detail/bucket_build.hpp), which lists every bucket's
-// triangles ascending, exactly as serial `InsertBox` calls appended them, and
-// covers the same occupied box.
-BucketTable sd_build_grid(double Cell, const std::vector<Vec3>& rLo,
-                          const std::vector<Vec3>& rHi) {
-    const std::size_t ntri = rLo.size();
-    std::vector<GridKey> key_lo(ntri);
-    std::vector<GridKey> key_hi(ntri);
-    parallel_for(ntri, [&](std::size_t t) {
-        key_lo[t] = GridKey{grid_quantize(rLo[t][0], Cell), grid_quantize(rLo[t][1], Cell),
-                            grid_quantize(rLo[t][2], Cell)};
-        key_hi[t] = GridKey{grid_quantize(rHi[t][0], Cell), grid_quantize(rHi[t][1], Cell),
-                            grid_quantize(rHi[t][2], Cell)};
+// The median split of `rBvh.mOrder[Begin, End)` in preorder, leaves of at
+// most @p LeafSize triangles; returns the node's index. The depth is
+// log2(n / LeafSize), so the recursion is shallow.
+std::int64_t sd_bvh_split(SurfaceBvh& rBvh, std::int64_t Begin, std::int64_t End,
+                          std::int64_t LeafSize) {
+    const auto at = static_cast<std::int64_t>(rBvh.mNodes.size());
+    rBvh.mNodes.emplace_back();
+    rBvh.mNodes.back().mBegin = Begin;
+    rBvh.mNodes.back().mCount = End - Begin;
+    if (End - Begin <= LeafSize)
+        return at;
+    const std::int64_t mid = Begin + (End - Begin) / 2;
+    sd_bvh_split(rBvh, Begin, mid, LeafSize);
+    const std::int64_t right = sd_bvh_split(rBvh, mid, End, LeafSize);
+    rBvh.mNodes[static_cast<std::size_t>(at)].mRight = right;
+    return at;
+}
+
+// The accelerator: the triangles ordered by the Morton key of their box
+// centres (a stable radix argsort, so ties stay in triangle order), split at
+// the median count, then every box from its triangles' (leaves) or its
+// children's (inner nodes, which come before them in preorder). A function of
+// the triangles alone, so the tree is the same on every thread count.
+SurfaceBvh sd_build_bvh(const std::vector<Vec3>& rLo, const std::vector<Vec3>& rHi) {
+    constexpr std::int64_t kLeafSize = 4;
+    SurfaceBvh bvh;
+    const std::size_t n = rLo.size();
+    if (n == 0)
+        return bvh;
+    Vec3 lo = rLo[0];
+    Vec3 hi = rHi[0];
+    for (std::size_t t = 0; t < n; ++t)
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] = std::min(lo[k], rLo[t][k]);
+            hi[k] = std::max(hi[k], rHi[t][k]);
+        }
+    const double scale = static_cast<double>((std::uint32_t{1} << sfc_bits) - 1);
+    std::vector<std::uint64_t> key(n);
+    parallel_for(n, [&](std::size_t t) {
+        std::uint32_t q[3];
+        for (std::size_t k = 0; k < 3; ++k) {
+            const double ext = hi[k] - lo[k];
+            const double c = 0.5 * (rLo[t][k] + rHi[t][k]);
+            double f = ext > 0.0 ? (c - lo[k]) / ext : 0.0;
+            if (!(f >= 0.0))
+                f = 0.0;  // also a NaN, which a non-finite corner gives
+            q[k] = static_cast<std::uint32_t>(std::min(f, 1.0) * scale);
+        }
+        key[t] = sfc_morton_key(q);
     });
-    return build_bucket_table(Cell, key_lo, key_hi);
+    bvh.mOrder = sfc_stable_argsort(key);
+    sd_bvh_split(bvh, 0, static_cast<std::int64_t>(n), kLeafSize);
+    for (std::size_t i = bvh.mNodes.size(); i-- > 0;) {
+        SurfaceBvhNode& rNode = bvh.mNodes[i];
+        if (rNode.mRight < 0) {
+            const auto first =
+                static_cast<std::size_t>(bvh.mOrder[static_cast<std::size_t>(rNode.mBegin)]);
+            rNode.mLo = rLo[first];
+            rNode.mHi = rHi[first];
+            for (std::int64_t k = 1; k < rNode.mCount; ++k) {
+                const auto t = static_cast<std::size_t>(
+                    bvh.mOrder[static_cast<std::size_t>(rNode.mBegin + k)]);
+                for (std::size_t d = 0; d < 3; ++d) {
+                    rNode.mLo[d] = std::min(rNode.mLo[d], rLo[t][d]);
+                    rNode.mHi[d] = std::max(rNode.mHi[d], rHi[t][d]);
+                }
+            }
+            continue;
+        }
+        const SurfaceBvhNode& rLeft = bvh.mNodes[i + 1];
+        const SurfaceBvhNode& rRight = bvh.mNodes[static_cast<std::size_t>(rNode.mRight)];
+        for (std::size_t d = 0; d < 3; ++d) {
+            rNode.mLo[d] = std::min(rLeft.mLo[d], rRight.mLo[d]);
+            rNode.mHi[d] = std::max(rLeft.mHi[d], rRight.mHi[d]);
+        }
+    }
+    return bvh;
 }
 
 }  // namespace
@@ -106766,24 +107454,7 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
     DistanceQuery q;
     q.mpSoup = &rSoup;
 
-    // Bucket size. It affects only how many candidates each query examines --
-    // never the answer, because every comparison below is totally ordered -- so
-    // the rule here is a pure performance heuristic. That is not a throwaway
-    // remark: it is what let this rule be retuned after measurement without
-    // re-validating a single distance, and `TheBucketSizeDoesNotChangeTheAnswer`
-    // is the proof.
-    //
-    // Sizing buckets by the mean triangle alone is the obvious rule and the wrong
-    // one. On a finely tessellated model the triangles are tiny, so the buckets
-    // are tiny, and a query far from the surface has to expand through hundreds
-    // of empty shells before it finds anything -- a 64^3 inside-fill of the
-    // 112k-triangle Stanford bunny took 19 seconds that way. The domain's own
-    // size has to enter the rule, so the base is the extent divided by the cube
-    // root of the triangle count (roughly "one bucket per triangle's worth of
-    // volume"), floored at the mean triangle so buckets never split a single
-    // triangle needlessly and capped a few multiples above it.
-    // Every triangle's bounding box, in parallel: both the bucket size and the
-    // grid insertion below read them.
+    // Every triangle's bounding box, in parallel: the tree is built over them.
     std::vector<Vec3> tri_lo(ntri);
     std::vector<Vec3> tri_hi(ntri);
     parallel_for(ntri, [&](std::size_t t) {
@@ -106798,33 +107469,9 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
         tri_lo[t] = tlo;
         tri_hi[t] = thi;
     });
-    double cell = rOptions.mGridCellSize;
-    if (!(cell > 0.0)) {
-        // A serial fold in triangle order: the mean is a floating-point sum,
-        // and `mCellSize` is observable.
-        Vec3 lo = rSoup.mCorners[0];
-        Vec3 hi = lo;
-        double sum = 0.0;
-        for (std::size_t t = 0; t < ntri; ++t) {
-            const Vec3& tlo = tri_lo[t];
-            const Vec3& thi = tri_hi[t];
-            for (std::size_t k = 0; k < 3; ++k) {
-                lo[k] = lo[k] < tlo[k] ? lo[k] : tlo[k];
-                hi[k] = hi[k] > thi[k] ? hi[k] : thi[k];
-            }
-            sum += vec3_norm(vec3_sub(thi, tlo));
-        }
-        const double mean_tri = sum / static_cast<double>(ntri);
-        double extent = 0.0;
-        for (std::size_t k = 0; k < 3; ++k)
-            extent = extent > (hi[k] - lo[k]) ? extent : (hi[k] - lo[k]);
-        const double base = extent / std::cbrt(static_cast<double>(ntri));
-        cell = base < mean_tri ? mean_tri : (base > 8.0 * mean_tri ? 8.0 * mean_tri : base);
-    }
-    if (!(cell > 0.0))
-        cell = 1.0;  // every triangle degenerate to a point: any bucket size will do
-    q.mCellSize = cell;
-    q.mGrid = sd_build_grid(cell, tri_lo, tri_hi);
+    // `rOptions.mGridCellSize` sized the bucket grid this tree replaced
+    // (ABI 40) and is ignored.
+    q.mBvh = sd_build_bvh(tri_lo, tri_hi);
 
     // Face normals, then the vertex and edge tables. Every sum runs in
     // ascending (triangle, corner) order: summing unit normals in a different
@@ -106875,67 +107522,119 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
 
 namespace {
 
-// The bucket-grid nearest-triangle search shared by query_distances and
-// query_closest_points, extracted verbatim from what used to be inline in
-// query_distances (a pure refactor -- query_distances' own test suite is the
-// regression guard that its output is unchanged). @p MaxShell caps expansion,
-// used by query_distances to stop early under a band; a plain search (as
-// query_closest_points needs) passes the int64 max.
+// The nearest-triangle search shared by query_distances,
+// query_closest_points and query_surface_projections, so the three cannot
+// disagree about which triangle is nearest.
+//
+// It answers the minimum, under the total order (distance squared, triangle
+// id), over every triangle whose distance is at most the best found -- the
+// global minimum -- so which candidates it visits, and in what order, is
+// unobservable. Depth first through the tree, the nearer child first; a node
+// is opened only while its box's lower bound does not exceed the best
+// distance. The bound gives up a slack for rounding and the cut is strict, so
+// no triangle that could win or tie is ever pruned. Until ABI 40 this walked
+// a bucket grid's Chebyshev shells outwards from the query's own bucket,
+// O((d / cell)^3) probes for a point at distance d, which for a point deep
+// inside a volume is of the order of the triangle count (roadmap 5.3). @p
+// Limit2 is a squared distance past which a hit is of no use to the caller (a
+// band), +inf for none.
 struct SdNearestTriangle {
     std::int64_t mTri = -1;
     PointTriangleHit mHit;
 };
 
-SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
-                                      const Vec3& rQueryPoint, std::int64_t MaxShell) {
-    const GridKey centre = rQuery.mGrid.KeyOf(rQueryPoint.data());
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+// Probe counts for the benchmarks page (roadmap 5.3), compiled in only on
+// request: queries, nodes opened, leaves opened, triangles measured.
+std::atomic<std::uint64_t> g_sd_queries{0}, g_sd_nodes{0}, g_sd_leaves{0}, g_sd_triangles{0};
+void sd_report_probes(const char* pWhat) {
+    log::info(
+        "surface distance: {}: {} queries opened {} nodes and {} leaves and measured {} "
+        "triangles",
+        pWhat, g_sd_queries.exchange(0), g_sd_nodes.exchange(0), g_sd_leaves.exchange(0),
+        g_sd_triangles.exchange(0));
+}
+#define MIO_SD_COUNT(counter, n) counter.fetch_add(n, std::memory_order_relaxed)
+#else
+#define MIO_SD_COUNT(counter, n) ((void)0)
+#endif
 
+// The squared distance from @p rQ to box [rLo, rHi], less a slack on each
+// axis's gap of 2^-40 of the magnitudes involved: far more than the rounding
+// of the gap and of the triangle distances it is compared with. A non-finite
+// gap bounds nothing.
+double sd_box_lb2(const Vec3& rLo, const Vec3& rHi, const Vec3& rQ) {
+    double sum = 0.0;
+    for (std::size_t a = 0; a < 3; ++a) {
+        double gap = rLo[a] - rQ[a] > rQ[a] - rHi[a] ? rLo[a] - rQ[a] : rQ[a] - rHi[a];
+        if (!(gap > 0.0) || !std::isfinite(gap))
+            continue;
+        gap -= (std::fabs(rQ[a]) + std::fabs(rLo[a]) + std::fabs(rHi[a])) * 0x1p-40;
+        if (gap > 0.0)
+            sum += gap * gap;
+    }
+    return sum;
+}
+
+SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
+                                      const Vec3& rQueryPoint, double Limit2) {
     double best_d2 = std::numeric_limits<double>::infinity();
     std::int64_t best_tri = -1;
     PointTriangleHit best_hit;
-
-    // The largest shell radius that can still reach an occupied bucket. Note
-    // ForEachInShell clamps to the occupied box, so an empty shell does NOT
-    // mean "no more candidates" for a query far outside it -- without this
-    // bound the loop would stop early on exactly those points.
-    std::int64_t reach = 0;
-    if (!rQuery.mGrid.Empty()) {
-        const GridKey lo = rQuery.mGrid.OccupiedLo();
-        const GridKey hi = rQuery.mGrid.OccupiedHi();
-        const std::int64_t dx = std::max(std::abs(centre.x - lo.x), std::abs(centre.x - hi.x));
-        const std::int64_t dy = std::max(std::abs(centre.y - lo.y), std::abs(centre.y - hi.y));
-        const std::int64_t dz = std::max(std::abs(centre.z - lo.z), std::abs(centre.z - hi.z));
-        reach = std::max(dx, std::max(dy, dz));
-    }
-    if (reach > MaxShell)
-        reach = MaxShell;
-
-    for (std::int64_t r = 0; r <= reach; ++r) {
-        // A hit in a bucket at Chebyshev radius r is at least (r - 1) * cell
-        // away, so once that bound exceeds the best found there is nothing
-        // left to find.
-        if (r >= 1 && best_tri >= 0) {
-            const double bound = static_cast<double>(r - 1) * rQuery.mCellSize;
-            if (bound > 0.0 && bound * bound > best_d2)
-                break;
-        }
-        rQuery.mGrid.ForEachInShell(centre, r, [&](const BucketView& rIds) {
-            for (std::int64_t t : rIds) {
+    const std::vector<SurfaceBvhNode>& nodes = rQuery.mBvh.mNodes;
+    const std::vector<std::int64_t>& order = rQuery.mBvh.mOrder;
+    if (nodes.empty())
+        return {best_tri, best_hit};
+    MIO_SD_COUNT(g_sd_queries, 1);
+    // (node, its bound); the tree's depth is log2 of the leaf count, far
+    // below the stack's size.
+    std::pair<std::size_t, double> stack[128];
+    int top = 0;
+    const double root = sd_box_lb2(nodes[0].mLo, nodes[0].mHi, rQueryPoint);
+    if (!(root > Limit2))
+        stack[top++] = {0, root};
+    while (top > 0) {
+        const auto [index, lb2] = stack[--top];
+        if (lb2 > best_d2)
+            continue;
+        const SurfaceBvhNode& rNode = nodes[index];
+        if (rNode.mRight < 0) {
+            MIO_SD_COUNT(g_sd_leaves, 1);
+            MIO_SD_COUNT(g_sd_triangles, static_cast<std::uint64_t>(rNode.mCount));
+            for (std::int64_t k = 0; k < rNode.mCount; ++k) {
+                const std::int64_t t = order[static_cast<std::size_t>(rNode.mBegin + k)];
                 const std::size_t ti = static_cast<std::size_t>(t);
                 const PointTriangleHit hit = closest_point_on_triangle(
                     rQueryPoint, rSoup.mCorners[ti * 3 + 0], rSoup.mCorners[ti * 3 + 1],
                     rSoup.mCorners[ti * 3 + 2]);
                 // The total order that makes the accelerator unobservable:
                 // distance first, then the triangle id, so two equidistant
-                // triangles always resolve the same way regardless of which
-                // bucket happened to be visited first.
+                // triangles always resolve the same way whatever node was
+                // opened first.
                 if (hit.mDistanceSq < best_d2 || (hit.mDistanceSq == best_d2 && t < best_tri)) {
                     best_d2 = hit.mDistanceSq;
                     best_tri = t;
                     best_hit = hit;
                 }
             }
-        });
+            continue;
+        }
+        MIO_SD_COUNT(g_sd_nodes, 1);
+        const std::size_t left = index + 1;
+        const auto right = static_cast<std::size_t>(rNode.mRight);
+        const double lb_left = sd_box_lb2(nodes[left].mLo, nodes[left].mHi, rQueryPoint);
+        const double lb_right = sd_box_lb2(nodes[right].mLo, nodes[right].mHi, rQueryPoint);
+        const double cut = best_d2 < Limit2 ? best_d2 : Limit2;
+        // The nearer child is pushed last, so it is opened first.
+        const bool left_first = lb_left <= lb_right;
+        const std::size_t far = left_first ? right : left;
+        const std::size_t near = left_first ? left : right;
+        const double lb_far = left_first ? lb_right : lb_left;
+        const double lb_near = left_first ? lb_left : lb_right;
+        if (!(lb_far > cut))
+            stack[top++] = {far, lb_far};
+        if (!(lb_near > cut))
+            stack[top++] = {near, lb_near};
     }
     return {best_tri, best_hit};
 }
@@ -107001,15 +107700,14 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
     const double band = rOptions.mBand;
     const bool banded = band > 0.0;
     const double band2 = band * band;
-    // With a band there is no point expanding past it: a hit found beyond this
-    // radius would be clamped anyway.
-    const std::int64_t max_shell =
-        banded ? static_cast<std::int64_t>(std::ceil(band / rQuery.mCellSize)) + 1
-               : std::numeric_limits<std::int64_t>::max();
+    // With a band there is no point opening a block beyond it: a hit found
+    // there would be clamped anyway. A hit within the band is the global
+    // nearest either way.
+    const double limit2 = banded ? band2 : std::numeric_limits<double>::infinity();
 
     parallel_for(n, [&](std::size_t p) {
         const Vec3& query = rPoints[p];
-        const SdNearestTriangle found = sd_nearest_triangle(rQuery, soup, query, max_shell);
+        const SdNearestTriangle found = sd_nearest_triangle(rQuery, soup, query, limit2);
         const std::int64_t best_tri = found.mTri;
         const PointTriangleHit& best_hit = found.mHit;
         const double best_d2 = best_hit.mDistanceSq;
@@ -107064,6 +107762,9 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
         res.mSignedDistance = side < 0.0 ? -dist : dist;
     });
 
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+    sd_report_probes("query_distances");
+#endif
     return out;
 }
 
@@ -107075,7 +107776,7 @@ std::vector<ClosestPointHit> query_closest_points(const DistanceQuery& rQuery,
 
     parallel_for(n, [&](std::size_t p) {
         const SdNearestTriangle found =
-            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<std::int64_t>::max());
+            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<double>::infinity());
         ClosestPointHit& res = out[p];
         if (found.mTri < 0) {
             res.mFound = false;
@@ -107087,6 +107788,9 @@ std::vector<ClosestPointHit> query_closest_points(const DistanceQuery& rQuery,
         res.mSourceCell = soup.mSourceCell[static_cast<std::size_t>(found.mTri)];
     });
 
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+    sd_report_probes("query_closest_points");
+#endif
     return out;
 }
 
@@ -107098,7 +107802,7 @@ std::vector<SurfaceProjection> query_surface_projections(const DistanceQuery& rQ
 
     parallel_for(n, [&](std::size_t p) {
         const SdNearestTriangle found =
-            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<std::int64_t>::max());
+            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<double>::infinity());
         SurfaceProjection& res = out[p];
         if (found.mTri < 0) {
             res.mFound = false;
@@ -107113,6 +107817,9 @@ std::vector<SurfaceProjection> query_surface_projections(const DistanceQuery& rQ
         res.mNormal = sd_feature_normal(rQuery, soup, found.mTri, found.mHit.mFeature);
     });
 
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+    sd_report_probes("query_surface_projections");
+#endif
     return out;
 }
 
@@ -110203,6 +110910,7 @@ std::size_t vtk_xml_header_bytes(const Mesh& rMesh) {
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <string_view>
 #include <system_error>
 #include <type_traits>
 
@@ -110377,6 +111085,45 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
     std::vector<std::int64_t> iv;
     const char* p = pText ? pText : "";
     const char* const last = p + std::strlen(p);
+    // A large array is parsed in parallel chunks straight into the array
+    // (roadmap 5.7.2), each token by the parser the loop below uses; a token
+    // that parser would not take whole sends the array to that loop, so the
+    // values -- and where a bad token cuts the array short -- are unchanged.
+    if (static_cast<std::size_t>(last - p) >= (std::size_t{1} << 20) && parallel_workers() > 1) {
+        const std::string_view text(p, static_cast<std::size_t>(last - p));
+        const std::size_t total = count_tokens(text);
+        if (chunked_parse_worthwhile(total)) {
+            NDArray a = NDArray::Uninit(dt, {total});
+            bool parsed = false;
+            dispatch_dtype(dt, [&]<class T>() {
+                T* out = a.As<T>();
+                parsed = parse_tokens(text, 0, total, [&](std::string_view Token, std::size_t i) {
+                             const char* b = Token.data();
+                             const char* e = b + Token.size();
+                             if (isflt) {
+                                 const char* fend = nullptr;
+                                 const double x = detail::parse_double(b, fend);
+                                 if (fend != e)
+                                     return false;
+                                 out[i] = static_cast<T>(x);
+                             } else if (dt == DType::UInt64) {
+                                 std::uint64_t x = 0;
+                                 if (vtkxml_parse_decimal(b, e, x) != e)
+                                     return false;
+                                 out[i] = static_cast<T>(static_cast<std::int64_t>(x));
+                             } else {
+                                 std::int64_t x = 0;
+                                 if (vtkxml_parse_decimal(b, e, x) != e)
+                                     return false;
+                                 out[i] = static_cast<T>(x);
+                             }
+                             return true;
+                         }) != std::string_view::npos;
+            });
+            if (parsed)
+                return a;
+        }
+    }
     {
         // Tokens counted first: the values are then parsed into buffers
         // reserved once, not grown push_back by push_back (roadmap §3).
@@ -134431,7 +135178,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         f << "G\t" << std::setw(8) << (i + 1) << std::setw(0) << "\t";
         for (int c = 0; c < 3; ++c) {
             double v = c < static_cast<int>(pdim) ? point_values[i * pdim + c] : 0.0;
-            std::snprintf(buf, sizeof(buf), ("%" + rFloatFmt).c_str(), v);
+            detail::snprintf_c(buf, sizeof(buf), ("%" + rFloatFmt).c_str(), v);
             f << buf << (c == 2 ? '\n' : '\t');
         }
     }
@@ -141708,6 +142455,36 @@ struct GmshCursor : detail::TextCursor {
         return v;
     }
     std::int64_t next_int() { return detail::checked_integer<std::int64_t>(next_double(), "Gmsh"); }
+    // The next `N` numbers, parsed in parallel chunks when there are enough
+    // (roadmap 5.7.2): `rStore(i, x)` takes number i, or refuses it by
+    // returning false (it must not throw). False, the cursor unmoved, when
+    // the caller's serial loop must run instead -- too few numbers, or a
+    // token `next_double` would not take whole -- which then gives the same
+    // values and the same error.
+    template <class Store>
+    bool parallel_numbers(std::size_t N, Store&& rStore) {
+        if (!detail::chunked_parse_worthwhile(N))
+            return false;
+        const std::size_t end =
+            detail::parse_tokens(mBuf, mPos, N, [&](std::string_view Token, std::size_t i) {
+                detail::TextCursor tc(Token);
+                double x = 0.0;
+                return tc.DoublePrefix(x) && tc.Pos() == Token.size() && rStore(i, x);
+            });
+        if (end == std::string_view::npos)
+            return false;
+        mPos = end;
+        return true;
+    }
+    // `next_int`'s integer of `x`, or false where it would throw.
+    static bool integer_of(double x, std::int64_t& rOut) {
+        try {
+            rOut = detail::checked_integer<std::int64_t>(x, "Gmsh");
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
 
     // Every binary read and skip stays inside the buffer.
     void need(std::size_t N) const {
@@ -142190,7 +142967,17 @@ void read_nodes(GmshCursor& rCur, bool is_ascii, NDArray& rPoints,
     rPoints = NDArray(DType::Float64, {static_cast<std::size_t>(num), 3});
     rPointTags.resize(num);
     double* pp = rPoints.As<double>();
-    if (is_ascii) {
+    if (is_ascii &&
+        rCur.parallel_numbers(static_cast<std::size_t>(num) * 4, [&](std::size_t k, double x) {
+            const std::size_t i = k / 4;
+            if (k % 4 != 0) {
+                pp[i * 3 + k % 4 - 1] = x;
+                return true;
+            }
+            return GmshCursor::integer_of(x, rPointTags[i]);
+        })) {
+        // parsed in parallel
+    } else if (is_ascii) {
         for (std::int64_t i = 0; i < num; ++i) {
             rPointTags[i] = rCur.next_int();
             pp[i * 3 + 0] = rCur.next_double();
@@ -142566,12 +143353,25 @@ void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoi
             std::memcpy(pp + idx * 3, rCur.mBuf.data() + rCur.mPos, nbz * 3 * 8);
             rCur.mPos += nbz * 3 * 8;
         } else {
-            for (std::int64_t i = 0; i < nb; ++i)
-                rTags[idx + i] = rd_size() - 1;
-            for (std::int64_t i = 0; i < nb; ++i) {
-                pp[(idx + i) * 3 + 0] = rd_dbl();
-                pp[(idx + i) * 3 + 1] = rd_dbl();
-                pp[(idx + i) * 3 + 2] = rd_dbl();
+            if (!is_ascii || !rCur.parallel_numbers(nbz, [&](std::size_t i, double x) {
+                    std::int64_t tag = 0;
+                    if (!GmshCursor::integer_of(x, tag))
+                        return false;
+                    rTags[idx + i] = tag - 1;
+                    return true;
+                })) {
+                for (std::int64_t i = 0; i < nb; ++i)
+                    rTags[idx + i] = rd_size() - 1;
+            }
+            if (!is_ascii || !rCur.parallel_numbers(nbz * 3, [&](std::size_t i, double x) {
+                    pp[idx * 3 + i] = x;
+                    return true;
+                })) {
+                for (std::int64_t i = 0; i < nb; ++i) {
+                    pp[(idx + i) * 3 + 0] = rd_dbl();
+                    pp[(idx + i) * 3 + 1] = rd_dbl();
+                    pp[(idx + i) * 3 + 2] = rd_dbl();
+                }
             }
         }
         if (!version40)
@@ -143876,15 +144676,20 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
         }
         os << '\n';
     } else {
-        // %zu (up to 20 digits) + 3x %.16e (up to 24 chars each) + separators/'\n'/'\0'
-        char buf[128];
-        for (std::size_t i = 0; i < num_points; ++i) {
-            double x = (0 < dim) ? point_values[i * dim + 0] : 0.0;
-            double y = (1 < dim) ? point_values[i * dim + 1] : 0.0;
-            double z = (2 < dim) ? point_values[i * dim + 2] : 0.0;
-            detail::snprintf_c(buf, sizeof(buf), "%zu %.16e %.16e %.16e\n", i + 1, x, y, z);
-            os << buf;
-        }
+        // "<id> x y z" per node, formatted in parallel chunks, one number at
+        // a time (`CNumber`: `to_chars` for `%.16e`, roadmap 5.7.1).
+        const detail::CNumber number;
+        detail::write_row_chunks(
+            os, num_points, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t i = First; i < Last; ++i) {
+                    detail::append_int(rBuf, static_cast<std::int64_t>(i + 1));
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        rBuf.push_back(' ');
+                        number.Append(rBuf, "%.16e", c < dim ? point_values[i * dim + c] : 0.0);
+                    }
+                    rBuf.push_back('\n');
+                }
+            });
     }
     os << "$EndNodes\n";
 
@@ -144068,16 +144873,25 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
 
     write_physical_names(os, rMeshIn, region_tags);
 
-    // The 3-padded coordinates of one point, formatted the one way both the
-    // single-block and per-entity paths use.
+    // The 3-padded coordinates of the points `rIndexOf(0 .. Count-1)`, one
+    // line each, formatted the one way both the single-block and per-entity
+    // paths use: in parallel chunks, one number at a time (`CNumber`:
+    // `to_chars` for `%.16e`, roadmap 5.7.1).
     const detail::DoubleView point_values(points);
-    auto put_coords_ascii = [&](std::size_t i) {
-        char buf[128];  // 3x %.16e (up to 24 chars each) + separators/'\n'/'\0'
-        double x = (0 < dim) ? point_values[i * dim + 0] : 0.0;
-        double y = (1 < dim) ? point_values[i * dim + 1] : 0.0;
-        double z = (2 < dim) ? point_values[i * dim + 2] : 0.0;
-        detail::snprintf_c(buf, sizeof(buf), "%.16e %.16e %.16e\n", x, y, z);
-        os << buf;
+    const detail::CNumber number;
+    auto put_coords_ascii = [&](std::size_t Count, auto&& rIndexOf) {
+        detail::write_row_chunks(
+            os, Count, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                for (std::size_t r = First; r < Last; ++r) {
+                    const std::size_t i = rIndexOf(r);
+                    for (std::size_t c = 0; c < 3; ++c) {
+                        if (c)
+                            rBuf.push_back(' ');
+                        number.Append(rBuf, "%.16e", c < dim ? point_values[i * dim + c] : 0.0);
+                    }
+                    rBuf.push_back('\n');
+                }
+            });
     };
 
     const std::vector<GmshWriteEntity41> entities = gmsh_entity_blocks_41(rMesh, cell_dim);
@@ -144191,8 +145005,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
             os << node_dim << " 0 0 " << num_points << "\n";
             for (std::size_t i = 0; i < num_points; ++i)
                 os << (i + 1) << "\n";
-            for (std::size_t i = 0; i < num_points; ++i)
-                put_coords_ascii(i);
+            put_coords_ascii(num_points, [](std::size_t r) { return r; });
         }
     } else {
         // One block per entity that owns nodes -- an entity may own none (see
@@ -144241,8 +145054,8 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
                 os << e.mDim << " " << e.mTag << " 0 " << nb << "\n";
                 for (std::size_t i = 0; i < nb; ++i)
                     os << (e.mNodes[i] + 1) << "\n";
-                for (std::size_t i = 0; i < nb; ++i)
-                    put_coords_ascii(static_cast<std::size_t>(e.mNodes[i]));
+                put_coords_ascii(
+                    nb, [&](std::size_t r) { return static_cast<std::size_t>(e.mNodes[r]); });
             }
         }
         if (binary)
@@ -166916,7 +167729,7 @@ void write_mfm(const std::string& rPath, const Mesh& rMesh, const std::string& r
     const detail::DoubleView point_values(points);
     for (std::size_t i = 0; i < nver; ++i)
         for (int c = 0; c < dim; ++c) {
-            std::snprintf(buf, sizeof(buf), fmt.c_str(), point_values[i * dim + c]);
+            detail::snprintf_c(buf, sizeof(buf), fmt.c_str(), point_values[i * dim + c]);
             f << buf << (c + 1 == dim ? '\n' : ' ');
         }
     // subdomain
@@ -179281,9 +180094,8 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
 
     os << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
     // One `CNumber::Append` per value (row_writer.hpp: `to_chars` for the
-    // plain precisions, roadmap 5.7.1) into a line, written whole. Each value
-    // gets its own decimal-point repair, where one `snprintf_c` over the line
-    // repaired the first number alone under a comma locale.
+    // plain precisions, roadmap 5.7.1) into a line, written whole; every value
+    // is formatted in the C convention, whatever the process locale.
     const detail::CNumber number;
     std::string line;
     const detail::DoubleView point_values(points);
@@ -179513,15 +180325,21 @@ void write_off(const std::string& rPath, const Mesh& rMesh) {
     os << "OFF\n" << detail::provenance_render_lines(detail::SlotTier::Block, "# ") << "\n";
     os << num_points << ' ' << num_faces << " 0\n\n";
 
-    char buf[96];
+    // "x y z" per point, formatted in parallel chunks, one number at a time
+    // (`CNumber`: `to_chars` for `%.17g`, roadmap 5.7.1).
     const detail::DoubleView point_values(points);
-    for (std::size_t r = 0; r < num_points; ++r) {
-        double x = (0 < dim) ? point_values[r * dim + 0] : 0.0;
-        double y = (1 < dim) ? point_values[r * dim + 1] : 0.0;
-        double z = (2 < dim) ? point_values[r * dim + 2] : 0.0;
-        detail::snprintf_c(buf, sizeof(buf), "%.17g %.17g %.17g\n", x, y, z);
-        os << buf;
-    }
+    const detail::CNumber number;
+    detail::write_row_chunks(
+        os, num_points, [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+            for (std::size_t r = First; r < Last; ++r) {
+                for (std::size_t c = 0; c < 3; ++c) {
+                    if (c)
+                        rBuf.push_back(' ');
+                    number.Append(rBuf, "%.17g", c < dim ? point_values[r * dim + c] : 0.0);
+                }
+                rBuf.push_back('\n');
+            }
+        });
     for (const auto cb : rMesh.CellRange()) {
         const std::string& t = cb.Type();
         if (t != "triangle" && t != "quad" && t != "polygon")
@@ -192494,21 +193312,29 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
             os.write(reinterpret_cast<const char*>(&attr), 2);
         }
     } else {
-        auto wr3 = [&](const char* prefix, const double* p) {
-            char line[160];
-            detail::snprintf_c(line, sizeof(line), "%s %.17g %.17g %.17g\n", prefix, p[0], p[1],
-                               p[2]);
-            os << line;
+        // One facet's seven lines, formatted in parallel chunks, one number at
+        // a time (`CNumber`: `to_chars` for `%.17g`, roadmap 5.7.1).
+        const detail::CNumber number;
+        const auto wr3 = [&](std::string& rBuf, const char* pPrefix, const double* p) {
+            rBuf += pPrefix;
+            for (int c = 0; c < 3; ++c) {
+                rBuf.push_back(' ');
+                number.Append(rBuf, "%.17g", p[c]);
+            }
+            rBuf.push_back('\n');
         };
         os << "solid\n";
-        for (std::size_t i = 0; i < tris.size(); ++i) {
-            wr3("facet normal", normals[i].data());
-            os << " outer loop\n";
-            wr3("  vertex", &tris[i][0]);
-            wr3("  vertex", &tris[i][3]);
-            wr3("  vertex", &tris[i][6]);
-            os << " endloop\nendfacet\n";
-        }
+        detail::write_row_chunks(os, tris.size(),
+                                 [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                                     for (std::size_t i = First; i < Last; ++i) {
+                                         wr3(rBuf, "facet normal", normals[i].data());
+                                         rBuf += " outer loop\n";
+                                         wr3(rBuf, "  vertex", &tris[i][0]);
+                                         wr3(rBuf, "  vertex", &tris[i][3]);
+                                         wr3(rBuf, "  vertex", &tris[i][6]);
+                                         rBuf += " endloop\nendfacet\n";
+                                     }
+                                 });
         os << "endsolid\n";
     }
 }
@@ -193191,7 +194017,7 @@ namespace {
 // e.g. ".3f"), mirroring the Python reference's `format(x, float_fmt)`.
 std::string svg_fmt_num(double value, const std::string& rSpec) {
     char buf[64];
-    std::snprintf(buf, sizeof(buf), ("%" + rSpec).c_str(), value);
+    detail::snprintf_c(buf, sizeof(buf), ("%" + rSpec).c_str(), value);
     return buf;
 }
 
@@ -197639,7 +198465,7 @@ namespace {
 // e.g. ".6f").
 std::string tikz_fmt_num(double value, const std::string& rSpec) {
     char buf[64];
-    std::snprintf(buf, sizeof(buf), ("%" + rSpec).c_str(), value);
+    detail::snprintf_c(buf, sizeof(buf), ("%" + rSpec).c_str(), value);
     return buf;
 }
 
@@ -202334,6 +203160,34 @@ struct VtkCursor : detail::TextCursor {
             ++mPos;
     }
 
+    // `count` ASCII values into `a` in parallel chunks, each by the prefix
+    // parser `ReadValues` uses, over its whole token; false, the cursor
+    // unmoved, where a token is not taken whole, so `ReadValues`' serial loop
+    // gives the same values and the same error.
+    bool ReadAsciiChunked(NDArray& rA, std::size_t count, bool flt) {
+        const std::size_t end =
+            detail::parse_tokens(mBuf, mPos, count, [&](std::string_view Token, std::size_t i) {
+                detail::TextCursor tc(Token);
+                if (flt) {
+                    double x = 0.0;
+                    if (!tc.DoublePrefix(x) || tc.Pos() != Token.size())
+                        return false;
+                    store(rA, i, x, 0);
+                } else {
+                    std::int64_t x = 0;
+                    if (!tc.IntPrefix(x) || tc.Pos() != Token.size())
+                        return false;
+                    store(rA, i, 0.0, x);
+                }
+                return true;
+            });
+        if (end == std::string_view::npos)
+            return false;
+        mPos = end;
+        ConsumeEol();
+        return true;
+    }
+
     // Read `count` values of dtype `dt`, ascii or big-endian binary.
     NDArray ReadValues(DType dt, std::size_t count, bool is_ascii) {
         const std::size_t isz = dtype_size(dt);
@@ -202346,6 +203200,9 @@ struct VtkCursor : detail::TextCursor {
         NDArray a = NDArray::Uninit(dt, {count});  // every element written below
         if (is_ascii) {
             const bool flt = detail::is_float_dtype(dt);
+            // A large array is parsed in parallel chunks first (roadmap 5.7.2).
+            if (detail::chunked_parse_worthwhile(count) && ReadAsciiChunked(a, count, flt))
+                return a;
             // Shared bounded prefix parsing retains the C-library semantics.
             for (std::size_t i = 0; i < count; ++i) {
                 if (flt) {
@@ -206602,7 +207459,7 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
  *
  * A raw `<AppendedData>` payload is not XML text (it may hold any byte, `<`
  * included): the file is read as bytes, the payload cut out, and only the text
- * around it parsed. Every other file parses as before.
+ * around it parsed, from a copy. Every other file is parsed in place.
  */
 void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rSource,
               const char* pType, const char* pFormat) {
@@ -206612,7 +207469,7 @@ void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rS
     // The file is read once: a raw <AppendedData> payload is not XML, so only
     // the text around it is parsed, and the payload is a view into the same
     // bytes (it read the file twice and parsed it twice before v16.21.0).
-    rSource.mFile.emplace(detail::open_source(rPath, "Could not open file: " + rPath));
+    rSource.mFile.emplace(rPath, "Could not open file: " + rPath);
     rSource.mBytes = rSource.mFile->View();
     const std::string_view b = rSource.mBytes;
     const std::size_t tag = b.find("<AppendedData");
@@ -206622,7 +207479,12 @@ void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rS
         detail::vtk_preflight_attribute(b.substr(tag, tag_end - tag), "encoding") == "raw";
     pugi::xml_parse_result res;
     if (!raw) {
-        res = rSource.mDoc.load_buffer(b.data(), b.size(), ParseOptions);
+        // Parsed where it lies (roadmap 5.7.4): pugixml terminates and
+        // unescapes text in the buffer, which a copy-on-write mapping turns
+        // into copies of the pages it writes, where `load_buffer` copied the
+        // whole file first. `mBytes` is not read again on this path.
+        res = rSource.mDoc.load_buffer_inplace(rSource.mFile->Data(), rSource.mFile->Size(),
+                                               ParseOptions);
         if (!res)
             throw ReadError(format + " XML parse failed: " + res.description());
         return;
@@ -232137,6 +232999,7 @@ Mesh iga_sample(const NurbsInfo& rInfo, const IgaSampleOptions& rOptions, NurbsI
 // Project includes
 
 
+
 namespace meshioplusplus {
 namespace {
 
@@ -232612,6 +233475,93 @@ double if_mean_edge(const Mesh& rMesh, const std::vector<RaFacet>& rFacets) {
     return count == 0 ? 0.0 : sum / static_cast<double>(count);
 }
 
+// The proximity search's candidates: a bucket grid over the target facets'
+// boxes, each grown by the tolerance and a slack for rounding (the
+// check_conformity pattern), so the bucket of a point lists, in ascending
+// order, every target within the tolerance of it. A target with a non-finite
+// coordinate, or a non-finite tolerance, makes every target a candidate of
+// every point instead -- the full scan -- since such a facet can still project
+// to a finite distance through its other corners.
+class IfTargetGrid {
+public:
+    IfTargetGrid(const Mesh& rMesh, const std::vector<RaFacet>& rFacets, double Tolerance)
+        : mAll(rFacets.size()) {
+        for (std::size_t t = 0; t < mAll.size(); ++t)
+            mAll[t] = static_cast<std::int64_t>(t);
+        const std::size_t n = rFacets.size();
+        if (n == 0 || !std::isfinite(Tolerance))
+            return;
+        std::vector<std::array<double, 6>> box(n);
+        double scale = 0.0;
+        for (std::size_t t = 0; t < n; ++t) {
+            std::array<double, 6>& rBox = box[t];
+            rBox = {
+                {std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
+                 std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(),
+                 -std::numeric_limits<double>::infinity(),
+                 -std::numeric_limits<double>::infinity()}};
+            for (std::int64_t node : rFacets[t].mNodes) {
+                const auto p = ra_point(rMesh.Points(), rMesh.PointDim(), node);
+                for (int d = 0; d < 3; ++d) {
+                    if (!std::isfinite(p[d]))
+                        return;
+                    rBox[d] = std::min(rBox[d], p[d]);
+                    rBox[3 + d] = std::max(rBox[3 + d], p[d]);
+                    scale = std::max(scale, std::fabs(p[d]));
+                }
+            }
+        }
+        // Far more than the rounding of a distance the tolerance is compared
+        // with, and of the box corners themselves.
+        const double grow = Tolerance + (Tolerance + scale) * 1e-9;
+        double extent_sum = 0.0;
+        std::array<double, 6> all = box[0];
+        for (std::array<double, 6>& rBox : box) {
+            double extent = 0.0;
+            for (int d = 0; d < 3; ++d) {
+                rBox[d] -= grow;
+                rBox[3 + d] += grow;
+                extent = std::max(extent, rBox[3 + d] - rBox[d]);
+                all[d] = std::min(all[d], rBox[d]);
+                all[3 + d] = std::max(all[3 + d], rBox[3 + d]);
+            }
+            extent_sum += extent;
+        }
+        double diag = 0.0;
+        for (int d = 0; d < 3; ++d)
+            diag += (all[3 + d] - all[d]) * (all[3 + d] - all[d]);
+        diag = std::sqrt(diag);
+        // Sized by the grown boxes' mean extent, never finer than 1/256 of
+        // the diagonal, so a large facet among small ones spans a bounded
+        // number of buckets.
+        double cell = std::max(extent_sum / static_cast<double>(n), diag / 256.0);
+        if (!(cell > 0.0) || !std::isfinite(cell))
+            return;
+        std::vector<detail::GridKey> lo(n), hi(n);
+        for (std::size_t t = 0; t < n; ++t) {
+            lo[t] = detail::bucket_key(box[t].data(), cell);
+            hi[t] = detail::bucket_key(box[t].data() + 3, cell);
+        }
+        mGrid = detail::build_bucket_table(cell, lo, hi);
+        mUseGrid = true;
+    }
+
+    /// The targets that may be within the tolerance of @p rPoint, ascending.
+    detail::BucketView Candidates(const detail::Vec3& rPoint) const {
+        if (!mUseGrid)
+            return detail::BucketView(mAll.data(), mAll.size());
+        detail::BucketView ids(nullptr, 0);
+        if (std::isfinite(rPoint[0]) && std::isfinite(rPoint[1]) && std::isfinite(rPoint[2]))
+            mGrid.Find(mGrid.KeyOf(rPoint.data()), ids);
+        return ids;
+    }
+
+private:
+    std::vector<std::int64_t> mAll;
+    detail::BucketTable mGrid{1.0};
+    bool mUseGrid = false;
+};
+
 struct IfMatch {
     RaFacet mA;
     RaFacet mB;
@@ -233080,32 +234030,39 @@ FindInterfaceResult find_interface(const Mesh& rMeshA, const RegionSelector& rRe
             "meshio++: find_interface: both selected parts must have boundary facets");
 
     std::vector<IfMatch> matches;
-    std::set<std::pair<std::int64_t, std::int64_t>> matched_a, matched_b;
+    // Per facet of each side, whether a pair uses it: the unmatched counts.
+    std::vector<char> matched_a(facets_a.size(), 0), matched_b(facets_b.size(), 0);
     if (rOptions.mMode == InterfaceMode::Conforming) {
-        std::map<std::vector<std::int64_t>, std::vector<RaFacet>> map_a, map_b;
-        for (const RaFacet& facet : facets_a) {
-            auto key = facet.mNodes;
-            std::sort(key.begin(), key.end());
-            map_a[std::move(key)].push_back(facet);
-        }
-        for (const RaFacet& facet : facets_b) {
-            auto key = facet.mNodes;
-            std::sort(key.begin(), key.end());
-            map_b[std::move(key)].push_back(facet);
-        }
-        for (const auto& [key, owners_a] : map_a) {
-            const auto it = map_b.find(key);
-            if (it == map_b.end())
-                continue;
-            for (const RaFacet& a : owners_a)
-                for (const RaFacet& b : it->second) {
+        // A's facets then B's, grouped by node set (roadmap 5.4.2: this was a
+        // std::map keyed on a heap vector per facet, one per side). Each run
+        // pairs every A facet in it with every B facet, as the map lookup did;
+        // the sort below fixes the output order.
+        const std::size_t na = facets_a.size();
+        std::vector<detail::FacetKey> keys;
+        keys.reserve(na + facets_b.size());
+        for (const RaFacet& facet : facets_a)
+            keys.emplace_back(facet.mNodes.data(), facet.mNodes.size());
+        for (const RaFacet& facet : facets_b)
+            keys.emplace_back(facet.mNodes.data(), facet.mNodes.size());
+        const detail::SlotRuns runs = detail::group_facet_slots(
+            keys, [](const detail::FacetKey& rK) -> const detail::FacetKey& { return rK; },
+            std::max(rMeshA.NumPoints(), rMeshB.NumPoints()));
+        for (std::size_t r = 0; r < runs.NumRuns(); ++r) {
+            // Slots ascend within a run, so A's come first.
+            const std::uint64_t* first_b = runs.Begin(r);
+            while (first_b != runs.End(r) && *first_b < na)
+                ++first_b;
+            for (const std::uint64_t* sa = runs.Begin(r); sa != first_b; ++sa)
+                for (const std::uint64_t* sb = first_b; sb != runs.End(r); ++sb) {
+                    const RaFacet& a = facets_a[*sa];
+                    const RaFacet& b = facets_b[*sb - na];
                     if (&rMeshA == &rMeshB && a.mCell == b.mCell)
                         continue;
                     if (!ra_same_facet_geometry(rMeshA, a, rMeshB, b))
                         continue;
                     matches.push_back({a, b, 0.0, 0.0});
-                    matched_a.insert({a.mCell, a.mFacet});
-                    matched_b.insert({b.mCell, b.mFacet});
+                    matched_a[*sa] = 1;
+                    matched_b[*sb - na] = 1;
                 }
         }
     } else {
@@ -233126,14 +234083,32 @@ FindInterfaceResult find_interface(const Mesh& rMeshA, const RegionSelector& rRe
         const Mesh& rTargetMesh = swapped ? rMeshA : rMeshB;
         const std::vector<RaFacet>& search_facets = swapped ? facets_b : facets_a;
         const std::vector<RaFacet>& target_facets = swapped ? facets_a : facets_b;
-        for (const RaFacet& s : search_facets) {
+        const IfTargetGrid targets(rTargetMesh, target_facets, tolerance);
+        // Each search facet on its own (roadmap 5.4.2: every target was
+        // projected for the centroid and again for each corner, O(S x T)).
+        // A target is a candidate for a point only if the point is in its box
+        // grown by the tolerance, which every target that can pass
+        // `mDistanceSq <= max_distance_sq` is; the candidates come in target
+        // order, so the best and its tiebreak are the full scan's.
+        struct Found {
+            IfProjection mBest;
+            std::size_t mTarget = 0;
+            double mGapS = 0.0;
+            double mGapT = 0.0;
+            bool mMatched = false;
+        };
+        std::vector<Found> found(search_facets.size());
+        parallel_for(search_facets.size(), [&](std::size_t si) {
+            const RaFacet& s = search_facets[si];
             const detail::Vec3 centre = if_facet_centroid(rSearchMesh, s);
             const detail::Vec3 normal_s = ra_facet_normal(rSearchMesh, s.mNodes);
             if (!(detail::vec3_norm_sq(normal_s) > 0.0))
-                continue;
+                return;
             IfProjection best;
-            for (const RaFacet& t : target_facets) {
-                const IfProjection projection = if_project_facet(rTargetMesh, centre, t);
+            std::size_t best_target = 0;
+            for (const std::int64_t ti : targets.Candidates(centre)) {
+                const RaFacet& t = target_facets[static_cast<std::size_t>(ti)];
+                IfProjection projection = if_project_facet(rTargetMesh, centre, t);
                 if (!projection.mFound || projection.mDistanceSq > max_distance_sq ||
                     !(detail::vec3_norm_sq(projection.mNormal) > 0.0))
                     continue;
@@ -233142,38 +234117,49 @@ FindInterfaceResult find_interface(const Mesh& rMeshA, const RegionSelector& rRe
                 if (!best.mFound || projection.mDistanceSq < best.mDistanceSq ||
                     (projection.mDistanceSq == best.mDistanceSq &&
                      std::tie(projection.mCell, projection.mFacet) <
-                         std::tie(best.mCell, best.mFacet)))
-                    best = projection;
+                         std::tie(best.mCell, best.mFacet))) {
+                    best = std::move(projection);
+                    best_target = static_cast<std::size_t>(ti);
+                }
             }
             if (!best.mFound)
-                continue;
-            bool all_corners_near = true;
+                return;
+            // Every corner must be within the tolerance of some target facet
+            // (any facet, no normal test): of some candidate, then.
             for (std::int64_t node : s.mNodes) {
                 const detail::Vec3 point =
                     ra_point(rSearchMesh.Points(), rSearchMesh.PointDim(), node);
-                double nearest = std::numeric_limits<double>::infinity();
-                for (const RaFacet& t : target_facets)
-                    nearest =
-                        std::min(nearest, if_project_facet(rTargetMesh, point, t).mDistanceSq);
-                if (nearest > max_distance_sq) {
-                    all_corners_near = false;
-                    break;
-                }
+                bool near = false;
+                for (const std::int64_t ti : targets.Candidates(point))
+                    if (if_project_facet(rTargetMesh, point,
+                                         target_facets[static_cast<std::size_t>(ti)])
+                            .mDistanceSq <= max_distance_sq) {
+                        near = true;
+                        break;
+                    }
+                if (!near)
+                    return;
             }
-            if (!all_corners_near)
-                continue;
             const detail::Vec3 delta = detail::vec3_sub(centre, best.mPoint);
-            const double gap_s = detail::vec3_dot(delta, normal_s);
-            const double gap_t = detail::vec3_dot(delta, best.mNormal);
+            Found& rOut = found[si];
+            rOut.mGapS = detail::vec3_dot(delta, normal_s);
+            rOut.mGapT = detail::vec3_dot(delta, best.mNormal);
+            rOut.mBest = std::move(best);
+            rOut.mTarget = best_target;
+            rOut.mMatched = true;
+        });
+        for (std::size_t si = 0; si < search_facets.size(); ++si) {
+            if (!found[si].mMatched)
+                continue;
+            const RaFacet& s = search_facets[si];
+            const IfProjection& best = found[si].mBest;
             RaFacet t{best.mNodes, best.mCell, best.mFacet};
             if (swapped)
-                matches.push_back({std::move(t), s, gap_t, gap_s});
+                matches.push_back({std::move(t), s, found[si].mGapT, found[si].mGapS});
             else
-                matches.push_back({s, std::move(t), gap_s, gap_t});
-            matched_a.insert(swapped ? std::make_pair(best.mCell, best.mFacet)
-                                     : std::make_pair(s.mCell, s.mFacet));
-            matched_b.insert(swapped ? std::make_pair(s.mCell, s.mFacet)
-                                     : std::make_pair(best.mCell, best.mFacet));
+                matches.push_back({s, std::move(t), found[si].mGapS, found[si].mGapT});
+            (swapped ? matched_b : matched_a)[si] = 1;
+            (swapped ? matched_a : matched_b)[found[si].mTarget] = 1;
         }
     }
 
@@ -233186,8 +234172,10 @@ FindInterfaceResult find_interface(const Mesh& rMeshA, const RegionSelector& rRe
     std::vector<std::pair<std::int64_t, std::int64_t>> side_a, side_b;
     InterfaceReport report;
     report.mNumPairs = static_cast<std::int64_t>(matches.size());
-    report.mUnmatchedA = static_cast<std::int64_t>(facets_a.size() - matched_a.size());
-    report.mUnmatchedB = static_cast<std::int64_t>(facets_b.size() - matched_b.size());
+    report.mUnmatchedA =
+        static_cast<std::int64_t>(std::count(matched_a.begin(), matched_a.end(), char{0}));
+    report.mUnmatchedB =
+        static_cast<std::int64_t>(std::count(matched_b.begin(), matched_b.end(), char{0}));
     for (const IfMatch& match : matches) {
         side_a.push_back({match.mA.mCell, match.mA.mFacet});
         side_b.push_back({match.mB.mCell, match.mB.mFacet});
@@ -249323,7 +250311,16 @@ double optvol_min_dihedral(const Vec3& rA, const Vec3& rB, const Vec3& rC, const
     // angle between the normals of faces (i, j, k) and (i, j, l).
     constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
                                  {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
+    // The acos of a cosine more than kOptvolAcosSkip below the largest one
+    // evaluated is larger than that one's by more than acos's own error (it
+    // is decreasing, with a slope of magnitude at least 1, and accurate to an
+    // ulp or so), so it cannot be the least: it is skipped, and the least is
+    // the one evaluating all six gives, bit for bit (roadmap 5.5.2: acos was
+    // 31% of optimize_volume's instructions). A NaN cosine is skipped, as
+    // std::min skipped its NaN angle.
+    constexpr double kOptvolAcosSkip = 1e-12;
     double least = 180.0;
+    double c_most = -2.0;  // the largest cosine whose acos was evaluated
     for (const auto& e : kEdge) {
         const Vec3& a = p[e[0]];
         const Vec3 ab = detail::vec3_sub(p[e[1]], a);
@@ -249333,7 +250330,10 @@ double optvol_min_dihedral(const Vec3& rA, const Vec3& rB, const Vec3& rC, const
         if (!(den > 0.0))
             return 0.0;
         const double c = std::clamp(detail::vec3_dot(n1, n2) / den, -1.0, 1.0);
+        if (!(c > c_most - kOptvolAcosSkip))
+            continue;
         least = std::min(least, std::acos(c) * kOptvolRadToDeg);
+        c_most = std::max(c_most, c);
     }
     return least;
 }
@@ -275522,6 +276522,7 @@ Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions) {
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -276039,13 +277040,6 @@ SmoothCsr smooth_build_incidence(const SmoothCellTable& rTable, std::size_t n) {
 
 // --- boundary + feature detection -------------------------------------------
 
-// Sorted corner ids of one facet, of any arity. detail::FacetKey rather than
-// the fixed array<int64_t,4> this used before v9.16.1, for the reason
-// surface.cpp switched: a polyhedron's face can have any number of corners, and
-// ONE shared key type is what lets a hexahedron and a polyhedron meeting on a
-// face cancel each other out instead of both reporting it as boundary.
-using SmoothFacetKey = detail::FacetKey;
-
 // One facet of a cell, corners only: unifies CellFaceDef (3D) and CellEdgeDef
 // (2D) so the two-phase extractor is dimension-agnostic.
 struct SmoothFacetDef {
@@ -276059,17 +277053,11 @@ struct SmoothFacetBlock {
     std::size_t mNumCells = 0;
     std::vector<SmoothFacetDef> mFacets;
     std::size_t mFirstFacet = 0;
-    // Polyhedron blocks: faces per cell vary, so record offsets are tabulated.
+    // Polyhedron blocks: faces per cell vary, so slot offsets are tabulated.
     bool mPolyhedron = false;
     std::size_t mBlock = 0;
-    std::vector<std::size_t> mFaceStart;  // mNumCells + 1
-};
-
-struct SmoothFacetRecord {
-    SmoothFacetKey mKey;
-    std::uint32_t mBlock = 0;
-    std::uint32_t mCell = 0;
-    std::uint32_t mSlot = 0;
+    std::vector<std::size_t> mFaceStart;     // mNumCells + 1
+    std::vector<std::uint32_t> mCellOfFace;  // per face slot of the block: its cell
 };
 
 // Face rings, CSR: what the shared crease test (detail/crease_edges.hpp) reads.
@@ -276169,105 +277157,133 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
     if (total_facets == 0)
         return;
 
-    // --- phase 1: build facet keys into disjoint slots (parallel-safe) ---
-    std::vector<SmoothFacetRecord> recs(total_facets);
-    for (std::uint32_t bi = 0; bi < blocks.size(); ++bi) {
-        const SmoothFacetBlock& b = blocks[bi];
-        if (b.mPolyhedron) {
-            const auto cb = rMesh.Cells(b.mBlock);
-            parallel_for(b.mNumCells, [&, bi](std::size_t cell) {
-                const std::size_t nf = cb.NumFaces(cell);
-                for (std::size_t f = 0; f < nf; ++f) {
-                    const auto face = cb.Face(cell, f);
-                    SmoothFacetRecord& r = recs[b.mFirstFacet + b.mFaceStart[cell] + f];
-                    r.mKey = SmoothFacetKey(face.first, face.second);
-                    r.mBlock = bi;
-                    r.mCell = static_cast<std::uint32_t>(cell);
-                    r.mSlot = static_cast<std::uint32_t>(f);
-                }
-            });
+    // --- phase 1: count each facet key's occurrences ---
+    // Slot ri is facet (cell, slot) of the block whose range holds it; the
+    // keys are the facets' corner ids (at most four of a table facet, every
+    // corner of a polyhedron face), all in ONE key space, which is what lets a
+    // hexahedron and a polyhedron meeting on a face cancel each other out
+    // instead of both reporting it as boundary. Counted as run sizes of
+    // detail::group_facets, with no record per facet (roadmap 5.4.3).
+    using SmoothCellView = decltype(rMesh.Cells(0));
+    std::vector<std::optional<SmoothCellView>> poly_blocks(blocks.size());
+    std::vector<std::optional<detail::Int64View>> conn_views(blocks.size());
+    std::vector<std::size_t> first_facets(blocks.size());
+    for (std::size_t bi = 0; bi < blocks.size(); ++bi) {
+        SmoothFacetBlock& b = blocks[bi];
+        first_facets[bi] = b.mFirstFacet;
+        if (!b.mPolyhedron) {
+            conn_views[bi].emplace(*b.mpConn);
             continue;
         }
-        const NDArray& conn = *b.mpConn;
-        const detail::Int64View conn_v(conn);
-        const std::size_t npc = b.mNpc;
-        const std::size_t fpc = b.mFacets.size();
-        parallel_for(b.mNumCells * fpc, [&, bi](std::size_t j) {
-            const std::size_t cell = j / fpc;
-            const std::size_t slot = j % fpc;
-            const SmoothFacetDef& fd = b.mFacets[slot];
-            SmoothFacetRecord& r = recs[b.mFirstFacet + j];
-            std::array<std::int64_t, 4> ids{};
-            const std::uint8_t nk = fd.mNumCorners < 4 ? fd.mNumCorners : 4;
-            for (std::uint8_t k = 0; k < nk; ++k)
-                ids[k] = conn_v[cell * npc + fd.mNodes[k]];
-            r.mKey = SmoothFacetKey(ids.data(), nk);
-            r.mBlock = bi;
-            r.mCell = static_cast<std::uint32_t>(cell);
-            r.mSlot = static_cast<std::uint32_t>(slot);
+        poly_blocks[bi].emplace(rMesh.Cells(b.mBlock));
+        b.mCellOfFace.resize(b.mFaceStart.back());
+        parallel_for(b.mNumCells, [&](std::size_t c) {
+            for (std::size_t f = b.mFaceStart[c]; f < b.mFaceStart[c + 1]; ++f)
+                b.mCellOfFace[f] = static_cast<std::uint32_t>(c);
         });
     }
-
-    // --- phase 2, pass A: count key occurrences ---
-    // Run sizes of the sorted (key, slot) pairs (detail/slot_runs.hpp).
-    const std::vector<std::uint32_t> counts = detail::slot_multiplicity(
-        detail::group_facet_slots(
-            recs, [](const SmoothFacetRecord& rR) -> const SmoothFacetKey& { return rR.mKey; }, n),
-        recs.size());
-
-    // --- phase 2, pass B: mark once-used facets (serial, stored order) ---
-    for (std::size_t ri = 0; ri < recs.size(); ++ri) {
-        const SmoothFacetRecord& r = recs[ri];
-        if (counts[ri] != 1)
-            continue;
-        const SmoothFacetBlock& b = blocks[r.mBlock];
+    const auto block_of = [&](std::size_t ri) -> std::size_t {
+        if (first_facets.size() == 1)
+            return 0;
+        return static_cast<std::size_t>(
+                   std::upper_bound(first_facets.begin(), first_facets.end(), ri) -
+                   first_facets.begin()) -
+               1;
+    };
+    const auto size_of = [&](std::size_t ri) -> std::size_t {
+        const std::size_t bi = block_of(ri);
+        const SmoothFacetBlock& b = blocks[bi];
+        const std::size_t j = ri - b.mFirstFacet;
         if (b.mPolyhedron) {
-            const auto cb = rMesh.Cells(b.mBlock);
-            const auto face =
-                cb.Face(static_cast<std::size_t>(r.mCell), static_cast<std::size_t>(r.mSlot));
-            bool ok = true;
-            for (std::size_t k = 0; k < face.second; ++k) {
-                const std::int64_t id = face.first[k];
-                if (id < 0 || static_cast<std::size_t>(id) >= n) {
-                    ok = false;
-                    break;
-                }
-                rBoundary[static_cast<std::size_t>(id)] = 1;
-            }
-            if (ok && pRings != nullptr && face.second >= 3)
-                pRings->Push(face.first, face.second);  // the whole ring, every corner
-            continue;
+            const std::size_t c = b.mCellOfFace[j];
+            return poly_blocks[bi]->Face(c, j - b.mFaceStart[c]).second;
         }
-        const SmoothFacetDef& fd = b.mFacets[r.mSlot];
-        const std::size_t row = static_cast<std::size_t>(r.mCell) * b.mNpc;
+        const std::uint8_t corners = b.mFacets[j % b.mFacets.size()].mNumCorners;
+        return corners < 4 ? corners : 4;
+    };
+    const auto fill = [&](std::size_t ri, std::int64_t* pOut) {
+        const std::size_t bi = block_of(ri);
+        const SmoothFacetBlock& b = blocks[bi];
+        const std::size_t j = ri - b.mFirstFacet;
+        if (b.mPolyhedron) {
+            const std::size_t c = b.mCellOfFace[j];
+            const auto face = poly_blocks[bi]->Face(c, j - b.mFaceStart[c]);
+            std::copy(face.first, face.first + face.second, pOut);
+            return;
+        }
+        const std::size_t fpc = b.mFacets.size();
+        const SmoothFacetDef& fd = b.mFacets[j % fpc];
+        const std::size_t row = (j / fpc) * b.mNpc;
+        const detail::Int64View& conn_v = *conn_views[bi];
+        const std::uint8_t nk = fd.mNumCorners < 4 ? fd.mNumCorners : 4;
+        for (std::uint8_t k = 0; k < nk; ++k)
+            pOut[k] = conn_v[row + fd.mNodes[k]];
+    };
+    const std::vector<std::uint32_t> counts = detail::slot_multiplicity(
+        detail::group_facets(total_facets, n, size_of, fill), total_facets);
 
-        SmoothBoundaryFacet bf;
-        bf.mNumCorners = fd.mNumCorners;
-        bool ok = true;
-        for (std::uint8_t k = 0; k < fd.mNumCorners && k < 4; ++k) {
-            const std::int64_t id = detail::read_int(*b.mpConn, row + fd.mNodes[k]);
-            if (id < 0 || static_cast<std::size_t>(id) >= n) {
-                ok = false;
-                break;
+    // --- phase 2: mark once-used facets (serial, slot order) ---
+    for (std::size_t bi = 0; bi < blocks.size(); ++bi) {
+        const SmoothFacetBlock& b = blocks[bi];
+        if (b.mPolyhedron) {
+            const auto& cb = *poly_blocks[bi];
+            for (std::size_t c = 0; c < b.mNumCells; ++c) {
+                for (std::size_t f = 0; f < b.mFaceStart[c + 1] - b.mFaceStart[c]; ++f) {
+                    if (counts[b.mFirstFacet + b.mFaceStart[c] + f] != 1)
+                        continue;
+                    const auto face = cb.Face(c, f);
+                    bool ok = true;
+                    for (std::size_t k = 0; k < face.second; ++k) {
+                        const std::int64_t id = face.first[k];
+                        if (id < 0 || static_cast<std::size_t>(id) >= n) {
+                            ok = false;
+                            break;
+                        }
+                        rBoundary[static_cast<std::size_t>(id)] = 1;
+                    }
+                    if (ok && pRings != nullptr && face.second >= 3)
+                        pRings->Push(face.first, face.second);  // the whole ring, every corner
+                }
             }
-            bf.mNodes[k] = id;
-            rBoundary[static_cast<std::size_t>(id)] = 1;
-        }
-        if (!ok)
-            continue;
-        if (fd.mNumCorners >= 3) {
-            if (pRings != nullptr)
-                pRings->Push(bf.mNodes.data(), std::min<std::size_t>(fd.mNumCorners, 4));
             continue;
         }
-        if (pFacets == nullptr)
-            continue;
-        // A 2D boundary edge: its 3-D direction, so the corners of the
-        // boundary polyline read as features (in the XY plane this is the
-        // pre-v16.23.0 in-plane perpendicular test, dot for dot).
-        const SmoothCornerReader at{&rXyz, bf.mNodes.data(), -1, nullptr};
-        bf.mNormal = detail::vec3_normalize(detail::vec3_sub(at(1), at(0)));
-        pFacets->push_back(bf);
+        const std::size_t fpc = b.mFacets.size();
+        for (std::size_t cell = 0; cell < b.mNumCells; ++cell) {
+            for (std::size_t slot = 0; slot < fpc; ++slot) {
+                if (counts[b.mFirstFacet + cell * fpc + slot] != 1)
+                    continue;
+                const SmoothFacetDef& fd = b.mFacets[slot];
+                const std::size_t row = cell * b.mNpc;
+
+                SmoothBoundaryFacet bf;
+                bf.mNumCorners = fd.mNumCorners;
+                bool ok = true;
+                for (std::uint8_t k = 0; k < fd.mNumCorners && k < 4; ++k) {
+                    const std::int64_t id = detail::read_int(*b.mpConn, row + fd.mNodes[k]);
+                    if (id < 0 || static_cast<std::size_t>(id) >= n) {
+                        ok = false;
+                        break;
+                    }
+                    bf.mNodes[k] = id;
+                    rBoundary[static_cast<std::size_t>(id)] = 1;
+                }
+                if (!ok)
+                    continue;
+                if (fd.mNumCorners >= 3) {
+                    if (pRings != nullptr)
+                        pRings->Push(bf.mNodes.data(), std::min<std::size_t>(fd.mNumCorners, 4));
+                    continue;
+                }
+                if (pFacets == nullptr)
+                    continue;
+                // A 2D boundary edge: its 3-D direction, so the corners of the
+                // boundary polyline read as features (in the XY plane this is
+                // the pre-v16.23.0 in-plane perpendicular test, dot for dot).
+                const SmoothCornerReader at{&rXyz, bf.mNodes.data(), -1, nullptr};
+                bf.mNormal = detail::vec3_normalize(detail::vec3_sub(at(1), at(0)));
+                pFacets->push_back(bf);
+            }
+        }
     }
 }
 
@@ -278847,6 +279863,7 @@ SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -278910,22 +279927,12 @@ bool surface_skin_block_supported(CellType type, bool is_ragged) {
 
 // --- facet key ----------------------------------------------------------------
 //
-// detail::FacetKey rather than the fixed array<int64_t,4> this used before
-// v9.16.0: a polyhedron's face can have any number of corners. It keeps a
-// 4-entry inline fast path, so a triangle or quad still costs no allocation and
-// the rectangular path is unchanged. Sharing ONE key type across both is what
-// lets a hexahedron and a polyhedron that meet on a face cancel each other out
-// -- with two key types they would each report that face as boundary.
-
-using SurfaceFacetKey = detail::FacetKey;
-
-SurfaceFacetKey surface_facet_key(const NDArray& rConn, std::size_t rowOffset,
-                                  const SurfaceFacetDef& rFacet) {
-    std::array<std::int64_t, 4> ids{};
-    for (std::uint8_t k = 0; k < rFacet.mNumCorners; ++k)
-        ids[k] = detail::read_int(rConn, rowOffset + rFacet.mNodes[k]);
-    return SurfaceFacetKey(ids.data(), rFacet.mNumCorners);
-}
+// A facet's key is the set of its corner ids, grouped by
+// detail::group_facets: four or fewer ids are packed narrow, a polyhedron's
+// n-gon faces go through sorted rows. Every facet of the mesh goes into ONE
+// key space, which is what lets a hexahedron and a polyhedron that meet on a
+// face cancel each other out -- with two key spaces they would each report that
+// face as boundary.
 
 // --- canonical output buckets -----------------------------------------------
 
@@ -278973,22 +279980,14 @@ struct SurfaceBlockDesc {
     std::size_t mNumCells = 0;
     std::vector<SurfaceFacetDef> mFacets;  // rectangular blocks only
     std::size_t mFacetsPerCell = 0;        // rectangular blocks only
-    std::size_t mFirstFacet = 0;           // offset into the flat record buffer
+    std::size_t mFirstFacet = 0;           // the block's first facet slot
     std::int64_t mGlobalCellBase = 0;      // input-cell index of this block's cell 0
-    // Polyhedron blocks: faces per cell vary, so the flat record offsets are
+    // Polyhedron blocks: faces per cell vary, so the slot offsets are
     // tabulated instead of computed as cell * mFacetsPerCell.
     bool mPolyhedron = false;
-    std::size_t mBlock = 0;               // index into the mesh's cell blocks
-    std::vector<std::size_t> mFaceStart;  // mNumCells + 1 record offsets
-};
-
-// One facet occurrence recorded in phase 1 (keys built in parallel).
-struct SurfaceFacetRecord {
-    SurfaceFacetKey mKey;
-    std::uint32_t mDesc;
-    std::uint32_t mCell;
-    std::uint32_t mSlot;
-    std::int64_t mParent;
+    std::size_t mBlock = 0;                  // index into the mesh's cell blocks
+    std::vector<std::size_t> mFaceStart;     // mNumCells + 1 slot offsets
+    std::vector<std::uint32_t> mCellOfFace;  // per face slot of the block: its cell
 };
 
 }  // namespace
@@ -279092,50 +280091,61 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
         descs.push_back(std::move(d));
     }
 
-    // --- phase 1: build facet keys into disjoint slots (parallel-safe) ---
-    std::vector<SurfaceFacetRecord> recs(total_facets);
-    for (std::uint32_t di = 0; di < descs.size(); ++di) {
-        const SurfaceBlockDesc& d = descs[di];
-        if (d.mPolyhedron) {
-            const auto cb = rMesh.Cells(d.mBlock);
-            parallel_for(d.mNumCells, [&, di](std::size_t c) {
-                const std::size_t nf = cb.NumFaces(c);
-                for (std::size_t f = 0; f < nf; ++f) {
-                    const auto face = cb.Face(c, f);
-                    SurfaceFacetRecord& r = recs[d.mFirstFacet + d.mFaceStart[c] + f];
-                    r.mKey = SurfaceFacetKey(face.first, face.second);
-                    r.mDesc = di;
-                    r.mCell = static_cast<std::uint32_t>(c);
-                    r.mSlot = static_cast<std::uint32_t>(f);
-                    r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(c);
-                }
-            });
+    // --- phase 1: count each facet key's occurrences ---
+    // Slot ri is facet (cell, slot) of the block whose range holds it; the
+    // keys are flattened by detail::group_facets, with no record per facet
+    // (roadmap 5.4.3). A key's count is the size of its run: parallel, and the
+    // same on every thread count.
+    std::vector<std::size_t> first_facets(descs.size());
+    for (std::size_t di = 0; di < descs.size(); ++di)
+        first_facets[di] = descs[di].mFirstFacet;
+    using SurfaceCellView = decltype(rMesh.Cells(0));
+    std::vector<std::optional<SurfaceCellView>> poly_blocks(descs.size());
+    for (std::size_t di = 0; di < descs.size(); ++di) {
+        SurfaceBlockDesc& d = descs[di];
+        if (!d.mPolyhedron)
             continue;
-        }
-        const NDArray& conn = *d.mpConn;
-        const std::size_t npc = d.mNpc;
-        const std::size_t fpc = d.mFacetsPerCell;
-        const std::size_t n = d.mNumCells * fpc;
-        parallel_for(n, [&, di](std::size_t j) {
-            const std::size_t cell = j / fpc;
-            const std::size_t slot = j % fpc;
-            SurfaceFacetRecord& r = recs[d.mFirstFacet + j];
-            r.mKey = surface_facet_key(conn, cell * npc, d.mFacets[slot]);
-            r.mDesc = di;
-            r.mCell = static_cast<std::uint32_t>(cell);
-            r.mSlot = static_cast<std::uint32_t>(slot);
-            r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
+        poly_blocks[di].emplace(rMesh.Cells(d.mBlock));
+        d.mCellOfFace.resize(d.mFaceStart.back());
+        parallel_for(d.mNumCells, [&](std::size_t c) {
+            for (std::size_t f = d.mFaceStart[c]; f < d.mFaceStart[c + 1]; ++f)
+                d.mCellOfFace[f] = static_cast<std::uint32_t>(c);
         });
     }
-
-    // --- phase 2, pass A: count key occurrences ---
-    // A key's count is the size of its run once (key, slot) pairs are sorted
-    // (detail/slot_runs.hpp): parallel, and the same on every thread count.
+    const auto desc_of = [&](std::size_t ri) -> std::size_t {
+        if (first_facets.size() == 1)
+            return 0;
+        return static_cast<std::size_t>(
+                   std::upper_bound(first_facets.begin(), first_facets.end(), ri) -
+                   first_facets.begin()) -
+               1;
+    };
+    const auto size_of = [&](std::size_t ri) -> std::size_t {
+        const SurfaceBlockDesc& d = descs[desc_of(ri)];
+        const std::size_t j = ri - d.mFirstFacet;
+        if (d.mPolyhedron) {
+            const std::size_t c = d.mCellOfFace[j];
+            return poly_blocks[desc_of(ri)]->Face(c, j - d.mFaceStart[c]).second;
+        }
+        return d.mFacets[j % d.mFacetsPerCell].mNumCorners;
+    };
+    const auto fill = [&](std::size_t ri, std::int64_t* pOut) {
+        const std::size_t di = desc_of(ri);
+        const SurfaceBlockDesc& d = descs[di];
+        const std::size_t j = ri - d.mFirstFacet;
+        if (d.mPolyhedron) {
+            const std::size_t c = d.mCellOfFace[j];
+            const auto face = poly_blocks[di]->Face(c, j - d.mFaceStart[c]);
+            std::copy(face.first, face.first + face.second, pOut);
+            return;
+        }
+        const std::size_t row_offset = (j / d.mFacetsPerCell) * d.mNpc;
+        const SurfaceFacetDef& facet = d.mFacets[j % d.mFacetsPerCell];
+        for (std::uint8_t k = 0; k < facet.mNumCorners; ++k)
+            pOut[k] = detail::read_int(*d.mpConn, row_offset + facet.mNodes[k]);
+    };
     const std::vector<std::uint32_t> face_count = detail::slot_multiplicity(
-        detail::group_facet_slots(
-            recs, [](const SurfaceFacetRecord& rR) -> const SurfaceFacetKey& { return rR.mKey; },
-            rMesh.NumPoints()),
-        recs.size());
+        detail::group_facets(total_facets, rMesh.NumPoints(), size_of, fill), total_facets);
 
     // --- phase 2, pass B: emit boundary facets (count == 1) in stored order ---
     const std::size_t num_out = surface_num_out_types(mode);
@@ -279150,46 +280160,58 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
     // order, a polyhedron's face index).
     std::vector<std::vector<std::array<std::int64_t, 2>>> out_source(num_out);
     std::vector<std::array<std::int64_t, 2>> poly_source;
-    for (std::size_t ri = 0; ri < recs.size(); ++ri) {
-        const SurfaceFacetRecord& r = recs[ri];
-        if (face_count[ri] != 1)
-            continue;
-        const SurfaceBlockDesc& d = descs[r.mDesc];
+    // In slot order: block by block, cell by cell, facet by facet.
+    for (std::size_t di = 0; di < descs.size(); ++di) {
+        const SurfaceBlockDesc& d = descs[di];
         if (d.mPolyhedron) {
-            const auto cb = rMesh.Cells(d.mBlock);
-            const auto face =
-                cb.Face(static_cast<std::size_t>(r.mCell), static_cast<std::size_t>(r.mSlot));
-            if (face.second == 3 || face.second == 4) {
-                const std::size_t bucket = surface_out_type_index(
-                    mode, face.second == 3 ? CellType::Triangle : CellType::Quad);
-                std::vector<std::int64_t>& dst = out_conn[bucket];
-                for (std::size_t k = 0; k < face.second; ++k)
-                    dst.push_back(face.first[k]);
-                if (recordParentIds)
-                    out_parent[bucket].push_back(r.mParent);
-                out_source[bucket].push_back({r.mParent, static_cast<std::int64_t>(r.mSlot)});
-            } else {
-                poly_rows.emplace_back(face.first, face.first + face.second);
-                if (recordParentIds)
-                    poly_parent.push_back(r.mParent);
-                poly_source.push_back({r.mParent, static_cast<std::int64_t>(r.mSlot)});
+            const auto& cb = *poly_blocks[di];
+            for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                const std::int64_t parent = d.mGlobalCellBase + static_cast<std::int64_t>(c);
+                for (std::size_t f = 0; f < d.mFaceStart[c + 1] - d.mFaceStart[c]; ++f) {
+                    if (face_count[d.mFirstFacet + d.mFaceStart[c] + f] != 1)
+                        continue;
+                    const auto face = cb.Face(c, f);
+                    if (face.second == 3 || face.second == 4) {
+                        const std::size_t bucket = surface_out_type_index(
+                            mode, face.second == 3 ? CellType::Triangle : CellType::Quad);
+                        std::vector<std::int64_t>& dst = out_conn[bucket];
+                        for (std::size_t k = 0; k < face.second; ++k)
+                            dst.push_back(face.first[k]);
+                        if (recordParentIds)
+                            out_parent[bucket].push_back(parent);
+                        out_source[bucket].push_back({parent, static_cast<std::int64_t>(f)});
+                    } else {
+                        poly_rows.emplace_back(face.first, face.first + face.second);
+                        if (recordParentIds)
+                            poly_parent.push_back(parent);
+                        poly_source.push_back({parent, static_cast<std::int64_t>(f)});
+                    }
+                }
             }
             continue;
         }
         const NDArray& conn = *d.mpConn;
-        const std::size_t row_offset = static_cast<std::size_t>(r.mCell) * d.mNpc;
-        const SurfaceFacetDef& facet = d.mFacets[r.mSlot];
-        const std::uint8_t n_out = linearize ? facet.mNumCorners : facet.mNumNodes;
-        const CellType out_type =
-            linearize ? (facet.mNumCorners == 3 ? CellType::Triangle : CellType::Quad)
-                      : facet.mType;
-        const std::size_t bucket = surface_out_type_index(mode, out_type);
-        std::vector<std::int64_t>& dst = out_conn[bucket];
-        for (std::uint8_t k = 0; k < n_out; ++k)
-            dst.push_back(detail::read_int(conn, row_offset + facet.mNodes[k]));
-        if (recordParentIds)
-            out_parent[bucket].push_back(r.mParent);
-        out_source[bucket].push_back({r.mParent, static_cast<std::int64_t>(r.mSlot)});
+        const std::size_t fpc = d.mFacetsPerCell;
+        for (std::size_t c = 0; c < d.mNumCells; ++c) {
+            const std::int64_t parent = d.mGlobalCellBase + static_cast<std::int64_t>(c);
+            const std::size_t row_offset = c * d.mNpc;
+            for (std::size_t slot = 0; slot < fpc; ++slot) {
+                if (face_count[d.mFirstFacet + c * fpc + slot] != 1)
+                    continue;
+                const SurfaceFacetDef& facet = d.mFacets[slot];
+                const std::uint8_t n_out = linearize ? facet.mNumCorners : facet.mNumNodes;
+                const CellType out_type =
+                    linearize ? (facet.mNumCorners == 3 ? CellType::Triangle : CellType::Quad)
+                              : facet.mType;
+                const std::size_t bucket = surface_out_type_index(mode, out_type);
+                std::vector<std::int64_t>& dst = out_conn[bucket];
+                for (std::uint8_t k = 0; k < n_out; ++k)
+                    dst.push_back(detail::read_int(conn, row_offset + facet.mNodes[k]));
+                if (recordParentIds)
+                    out_parent[bucket].push_back(parent);
+                out_source[bucket].push_back({parent, static_cast<std::int64_t>(slot)});
+            }
+        }
     }
 
     // --- compaction: keep only referenced points, ascending original index ---
@@ -284240,6 +285262,268 @@ VoxelResult voxelize(const Mesh& rMesh, const VoxelOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/voxelize.cpp =====
+// ===== begin src/cpp/src/parallel_threads.cpp =====
+/**
+ * @file parallel_threads.cpp
+ * @brief The `THREADS` parallel backend: a process-wide pool of `std::thread`
+ * workers behind `detail::threads_run` (roadmap 5.2).
+ *
+ * The backend needs no runtime library beyond the C++ standard one, which is
+ * why the Linux wheels can link it statically where libgomp cannot be.
+ *
+ * - **One pool per process**, created on first use and never destroyed: its
+ *   workers are never joined from a static destructor (which deadlocks under
+ *   the Windows loader lock) and simply end with the process.
+ * - **The caller participates**: a job of `P` participants wakes `P - 1`
+ *   workers; every participant claims chunks of the range through one atomic
+ *   counter. The iterations are independent, so which thread runs which
+ *   chunk changes nothing in the result.
+ * - **Nested calls run inline**: a `threads_run` from inside a job (a
+ *   `parallel_for` within a `parallel_for` body) runs its range on the calling
+ *   participant, so the pool can never wait on itself.
+ * - **Concurrent callers run inline**: a second thread that finds the pool
+ *   busy (two Python threads with the GIL released) runs its range itself
+ *   instead of queueing, so it never waits on a job it is not part of.
+ * - **Fork**: the child of a `fork()` inherits the pool's memory but none of
+ *   its threads, so an `atfork` handler drops the pool there (leaked, as its
+ *   threads do not exist) and the child's first call builds a new one.
+ * - **Size**: `MESHIOPLUSPLUS_NUM_THREADS`, else `OMP_NUM_THREADS` (so the
+ *   OpenMP sweeps of `tools/bench_ops.sh` cap it too), else
+ *   `std::thread::hardware_concurrency()`; `threads_set_concurrency` overrides
+ *   it at run time. The pool only grows: lowering the count leaves workers
+ *   idle rather than stopping them.
+ */
+
+#if defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
+
+// System includes
+#include <algorithm>
+#include <atomic>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <mutex>
+#include <thread>
+#include <vector>
+
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
+
+// Project includes
+
+namespace meshioplusplus::detail {
+namespace {
+
+/// The most threads a count from the environment may ask for.
+constexpr unsigned kPthrMaxThreads = 1024;
+
+/// Nonzero while this thread runs a chunk of a job (a worker always; a caller
+/// while it participates): a `threads_run` made there runs inline.
+thread_local unsigned tPthrDepth = 0;
+
+/// A positive integer from the start of `pText` (OpenMP's `OMP_NUM_THREADS`
+/// may be a comma-separated list, of which the first entry is the outer
+/// level's), or 0.
+unsigned pthr_parse_count(const char* pText) {
+    if (!pText)
+        return 0;
+    unsigned long v = 0;
+    const char* p = pText;
+    while (*p == ' ' || *p == '\t')
+        ++p;
+    if (*p < '0' || *p > '9')
+        return 0;
+    for (; *p >= '0' && *p <= '9'; ++p) {
+        v = v * 10 + static_cast<unsigned long>(*p - '0');
+        if (v > kPthrMaxThreads)
+            return kPthrMaxThreads;
+    }
+    return static_cast<unsigned>(v);
+}
+
+/// The count the environment asks for, else the hardware's; at least 1.
+unsigned pthr_default_concurrency() {
+    if (const unsigned n = pthr_parse_count(std::getenv("MESHIOPLUSPLUS_NUM_THREADS")))
+        return n;
+    if (const unsigned n = pthr_parse_count(std::getenv("OMP_NUM_THREADS")))
+        return n;
+    return std::max(1u, std::min(kPthrMaxThreads, std::thread::hardware_concurrency()));
+}
+
+/// 0 = the default; set by `threads_set_concurrency`.
+std::atomic<unsigned> gPthrOverride{0};
+
+/// One `threads_run` call: the range, its chunk size and the body.
+struct PthrJob {
+    ThreadsChunkFn mFn;
+    void* mpCtx;
+    std::size_t mN;
+    std::size_t mChunk;
+    std::atomic<std::size_t> mNext{0};
+
+    /// Claims and runs chunks until none are left.
+    void Work() {
+        for (;;) {
+            const std::size_t b = mNext.fetch_add(mChunk, std::memory_order_relaxed);
+            if (b >= mN)
+                return;
+            mFn(mpCtx, b, std::min(mN, b + mChunk));
+        }
+    }
+};
+
+class PthrPool {
+public:
+    /// Runs `rJob` on the caller and up to `Helpers` workers; false, running
+    /// nothing, when another thread's job holds the pool.
+    bool TryRun(PthrJob& rJob, unsigned Helpers) {
+        std::unique_lock<std::mutex> submit(mSubmit, std::try_to_lock);
+        if (!submit.owns_lock())
+            return false;
+        Helpers = Grow(Helpers);
+        {
+            std::lock_guard<std::mutex> lock(mMutex);
+            mpJob = &rJob;
+            mWanted = Helpers;
+            mJoined = 0;
+            ++mGeneration;
+        }
+        if (Helpers)
+            mWake.notify_all();
+        ++tPthrDepth;
+        rJob.Work();
+        --tPthrDepth;
+        std::unique_lock<std::mutex> lock(mMutex);
+        // Every chunk is claimed; wait for the workers still inside one, and
+        // close the job to the ones that have not joined yet.
+        mDone.wait(lock, [&] { return mRunning == 0; });
+        mpJob = nullptr;
+        mWanted = 0;
+        return true;
+    }
+
+private:
+    /// Starts workers until there are `Count`; called under `mSubmit`. A
+    /// thread the system refuses leaves the job with the workers there are.
+    unsigned Grow(unsigned Count) {
+        try {
+            while (mThreads.size() < Count)
+                mThreads.emplace_back([this] { Loop(); });
+        } catch (...) {
+            return static_cast<unsigned>(mThreads.size());
+        }
+        return Count;
+    }
+
+    void Loop() {
+        tPthrDepth = 1;
+        std::uint64_t seen = 0;
+        std::unique_lock<std::mutex> lock(mMutex);
+        for (;;) {
+            mWake.wait(lock, [&] { return mGeneration != seen; });
+            seen = mGeneration;
+            if (!mpJob || mJoined >= mWanted)
+                continue;
+            ++mJoined;
+            ++mRunning;
+            PthrJob* p_job = mpJob;
+            lock.unlock();
+            p_job->Work();
+            lock.lock();
+            if (--mRunning == 0)
+                mDone.notify_one();
+        }
+    }
+
+    std::mutex mSubmit;  ///< held by the one caller whose job runs
+    std::mutex mMutex;   ///< guards everything below
+    std::condition_variable mWake;
+    std::condition_variable mDone;
+    PthrJob* mpJob = nullptr;
+    std::uint64_t mGeneration = 0;
+    unsigned mWanted = 0;   ///< workers the current job may take
+    unsigned mJoined = 0;   ///< workers that took it
+    unsigned mRunning = 0;  ///< workers inside it now
+    std::vector<std::thread> mThreads;
+};
+
+std::mutex gPthrCreate;
+std::atomic<PthrPool*> gPthrPool{nullptr};
+
+#if !defined(_WIN32)
+void pthr_atfork_prepare() {
+    gPthrCreate.lock();
+}
+void pthr_atfork_parent() {
+    gPthrCreate.unlock();
+}
+void pthr_atfork_child() {
+    // The forking thread is the child's only thread and holds gPthrCreate;
+    // the pool's workers did not survive, so it is abandoned (not freed: its
+    // mutexes may be held by threads that no longer exist).
+    gPthrPool.store(nullptr, std::memory_order_relaxed);
+    tPthrDepth = 0;
+    gPthrCreate.unlock();
+}
+#endif
+
+PthrPool& pthr_pool() {
+    PthrPool* p = gPthrPool.load(std::memory_order_acquire);
+    if (p)
+        return *p;
+    static std::once_flag registered;
+    std::call_once(registered, [] {
+#if !defined(_WIN32)
+        pthread_atfork(pthr_atfork_prepare, pthr_atfork_parent, pthr_atfork_child);
+#endif
+    });
+    std::lock_guard<std::mutex> lock(gPthrCreate);
+    p = gPthrPool.load(std::memory_order_acquire);
+    if (!p) {
+        p = new PthrPool();  // never deleted: see the file comment
+        gPthrPool.store(p, std::memory_order_release);
+    }
+    return *p;
+}
+
+}  // namespace
+
+unsigned threads_concurrency() {
+    const unsigned set = gPthrOverride.load(std::memory_order_relaxed);
+    if (set)
+        return set;
+    static const unsigned from_env = pthr_default_concurrency();
+    return from_env;
+}
+
+void threads_set_concurrency(unsigned N) {
+    gPthrOverride.store(std::min(N, kPthrMaxThreads), std::memory_order_relaxed);
+}
+
+void threads_run(std::size_t N, std::size_t Chunk, unsigned MaxThreads, ThreadsChunkFn Fn,
+                 void* pCtx) {
+    if (N == 0)
+        return;
+    Chunk = std::max<std::size_t>(Chunk, 1);
+    const std::size_t nchunks = (N + Chunk - 1) / Chunk;
+    unsigned participants = threads_concurrency();
+    if (MaxThreads)
+        participants = std::min(participants, MaxThreads);
+    participants = static_cast<unsigned>(std::min<std::size_t>(participants, nchunks));
+    if (participants > 1 && tPthrDepth == 0) {
+        PthrJob job{Fn, pCtx, N, Chunk};
+        if (pthr_pool().TryRun(job, participants - 1))
+            return;
+    }
+    Fn(pCtx, 0, N);
+}
+
+}  // namespace meshioplusplus::detail
+
+#endif  // MESHIOPLUSPLUS_PARALLEL_THREADS
+// ===== end src/cpp/src/parallel_threads.cpp =====
 // ===== begin src/cpp/src/providers.cpp =====
 #include <algorithm>
 #include <atomic>

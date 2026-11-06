@@ -15,14 +15,18 @@
 //
 //
 // The signed-distance kernel. See detail/surface_distance.hpp for the contract,
-// in particular why the accelerator is a bucket grid rather than a BVH and why
-// the normal tables are accumulated serially.
+// in particular why the accelerator's visit order is unobservable and why the
+// normal tables are accumulated serially.
 
 // System includes
 #include <algorithm>
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+#include <atomic>
+#endif
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -33,13 +37,16 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/point_triangle.hpp"
+#include "meshioplusplus/detail/space_filling.hpp"
 #include "meshioplusplus/detail/surface_normals.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+#include "meshioplusplus/log.hpp"
+#endif
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 
 // Project includes (private, not installed)
-#include "bucket_build.hpp"
 #include "slot_runs.hpp"
 #include "surface_edge_runs.hpp"
 
@@ -264,22 +271,83 @@ SurfaceQuality soup_quality(const TriangleSoup& rSoup, const SurfaceEdgeMap& rEd
 
 namespace {
 
-// Grid insertion: the triangles' quantized boxes, grouped by
-// `build_bucket_table` (detail/bucket_build.hpp), which lists every bucket's
-// triangles ascending, exactly as serial `InsertBox` calls appended them, and
-// covers the same occupied box.
-BucketTable sd_build_grid(double Cell, const std::vector<Vec3>& rLo,
-                          const std::vector<Vec3>& rHi) {
-    const std::size_t ntri = rLo.size();
-    std::vector<GridKey> key_lo(ntri);
-    std::vector<GridKey> key_hi(ntri);
-    parallel_for(ntri, [&](std::size_t t) {
-        key_lo[t] = GridKey{grid_quantize(rLo[t][0], Cell), grid_quantize(rLo[t][1], Cell),
-                            grid_quantize(rLo[t][2], Cell)};
-        key_hi[t] = GridKey{grid_quantize(rHi[t][0], Cell), grid_quantize(rHi[t][1], Cell),
-                            grid_quantize(rHi[t][2], Cell)};
+// The median split of `rBvh.mOrder[Begin, End)` in preorder, leaves of at
+// most @p LeafSize triangles; returns the node's index. The depth is
+// log2(n / LeafSize), so the recursion is shallow.
+std::int64_t sd_bvh_split(SurfaceBvh& rBvh, std::int64_t Begin, std::int64_t End,
+                          std::int64_t LeafSize) {
+    const auto at = static_cast<std::int64_t>(rBvh.mNodes.size());
+    rBvh.mNodes.emplace_back();
+    rBvh.mNodes.back().mBegin = Begin;
+    rBvh.mNodes.back().mCount = End - Begin;
+    if (End - Begin <= LeafSize)
+        return at;
+    const std::int64_t mid = Begin + (End - Begin) / 2;
+    sd_bvh_split(rBvh, Begin, mid, LeafSize);
+    const std::int64_t right = sd_bvh_split(rBvh, mid, End, LeafSize);
+    rBvh.mNodes[static_cast<std::size_t>(at)].mRight = right;
+    return at;
+}
+
+// The accelerator: the triangles ordered by the Morton key of their box
+// centres (a stable radix argsort, so ties stay in triangle order), split at
+// the median count, then every box from its triangles' (leaves) or its
+// children's (inner nodes, which come before them in preorder). A function of
+// the triangles alone, so the tree is the same on every thread count.
+SurfaceBvh sd_build_bvh(const std::vector<Vec3>& rLo, const std::vector<Vec3>& rHi) {
+    constexpr std::int64_t kLeafSize = 4;
+    SurfaceBvh bvh;
+    const std::size_t n = rLo.size();
+    if (n == 0)
+        return bvh;
+    Vec3 lo = rLo[0];
+    Vec3 hi = rHi[0];
+    for (std::size_t t = 0; t < n; ++t)
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] = std::min(lo[k], rLo[t][k]);
+            hi[k] = std::max(hi[k], rHi[t][k]);
+        }
+    const double scale = static_cast<double>((std::uint32_t{1} << sfc_bits) - 1);
+    std::vector<std::uint64_t> key(n);
+    parallel_for(n, [&](std::size_t t) {
+        std::uint32_t q[3];
+        for (std::size_t k = 0; k < 3; ++k) {
+            const double ext = hi[k] - lo[k];
+            const double c = 0.5 * (rLo[t][k] + rHi[t][k]);
+            double f = ext > 0.0 ? (c - lo[k]) / ext : 0.0;
+            if (!(f >= 0.0))
+                f = 0.0;  // also a NaN, which a non-finite corner gives
+            q[k] = static_cast<std::uint32_t>(std::min(f, 1.0) * scale);
+        }
+        key[t] = sfc_morton_key(q);
     });
-    return build_bucket_table(Cell, key_lo, key_hi);
+    bvh.mOrder = sfc_stable_argsort(key);
+    sd_bvh_split(bvh, 0, static_cast<std::int64_t>(n), kLeafSize);
+    for (std::size_t i = bvh.mNodes.size(); i-- > 0;) {
+        SurfaceBvhNode& rNode = bvh.mNodes[i];
+        if (rNode.mRight < 0) {
+            const auto first =
+                static_cast<std::size_t>(bvh.mOrder[static_cast<std::size_t>(rNode.mBegin)]);
+            rNode.mLo = rLo[first];
+            rNode.mHi = rHi[first];
+            for (std::int64_t k = 1; k < rNode.mCount; ++k) {
+                const auto t = static_cast<std::size_t>(
+                    bvh.mOrder[static_cast<std::size_t>(rNode.mBegin + k)]);
+                for (std::size_t d = 0; d < 3; ++d) {
+                    rNode.mLo[d] = std::min(rNode.mLo[d], rLo[t][d]);
+                    rNode.mHi[d] = std::max(rNode.mHi[d], rHi[t][d]);
+                }
+            }
+            continue;
+        }
+        const SurfaceBvhNode& rLeft = bvh.mNodes[i + 1];
+        const SurfaceBvhNode& rRight = bvh.mNodes[static_cast<std::size_t>(rNode.mRight)];
+        for (std::size_t d = 0; d < 3; ++d) {
+            rNode.mLo[d] = std::min(rLeft.mLo[d], rRight.mLo[d]);
+            rNode.mHi[d] = std::max(rLeft.mHi[d], rRight.mHi[d]);
+        }
+    }
+    return bvh;
 }
 
 }  // namespace
@@ -303,24 +371,7 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
     DistanceQuery q;
     q.mpSoup = &rSoup;
 
-    // Bucket size. It affects only how many candidates each query examines --
-    // never the answer, because every comparison below is totally ordered -- so
-    // the rule here is a pure performance heuristic. That is not a throwaway
-    // remark: it is what let this rule be retuned after measurement without
-    // re-validating a single distance, and `TheBucketSizeDoesNotChangeTheAnswer`
-    // is the proof.
-    //
-    // Sizing buckets by the mean triangle alone is the obvious rule and the wrong
-    // one. On a finely tessellated model the triangles are tiny, so the buckets
-    // are tiny, and a query far from the surface has to expand through hundreds
-    // of empty shells before it finds anything -- a 64^3 inside-fill of the
-    // 112k-triangle Stanford bunny took 19 seconds that way. The domain's own
-    // size has to enter the rule, so the base is the extent divided by the cube
-    // root of the triangle count (roughly "one bucket per triangle's worth of
-    // volume"), floored at the mean triangle so buckets never split a single
-    // triangle needlessly and capped a few multiples above it.
-    // Every triangle's bounding box, in parallel: both the bucket size and the
-    // grid insertion below read them.
+    // Every triangle's bounding box, in parallel: the tree is built over them.
     std::vector<Vec3> tri_lo(ntri);
     std::vector<Vec3> tri_hi(ntri);
     parallel_for(ntri, [&](std::size_t t) {
@@ -335,33 +386,9 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
         tri_lo[t] = tlo;
         tri_hi[t] = thi;
     });
-    double cell = rOptions.mGridCellSize;
-    if (!(cell > 0.0)) {
-        // A serial fold in triangle order: the mean is a floating-point sum,
-        // and `mCellSize` is observable.
-        Vec3 lo = rSoup.mCorners[0];
-        Vec3 hi = lo;
-        double sum = 0.0;
-        for (std::size_t t = 0; t < ntri; ++t) {
-            const Vec3& tlo = tri_lo[t];
-            const Vec3& thi = tri_hi[t];
-            for (std::size_t k = 0; k < 3; ++k) {
-                lo[k] = lo[k] < tlo[k] ? lo[k] : tlo[k];
-                hi[k] = hi[k] > thi[k] ? hi[k] : thi[k];
-            }
-            sum += vec3_norm(vec3_sub(thi, tlo));
-        }
-        const double mean_tri = sum / static_cast<double>(ntri);
-        double extent = 0.0;
-        for (std::size_t k = 0; k < 3; ++k)
-            extent = extent > (hi[k] - lo[k]) ? extent : (hi[k] - lo[k]);
-        const double base = extent / std::cbrt(static_cast<double>(ntri));
-        cell = base < mean_tri ? mean_tri : (base > 8.0 * mean_tri ? 8.0 * mean_tri : base);
-    }
-    if (!(cell > 0.0))
-        cell = 1.0;  // every triangle degenerate to a point: any bucket size will do
-    q.mCellSize = cell;
-    q.mGrid = sd_build_grid(cell, tri_lo, tri_hi);
+    // `rOptions.mGridCellSize` sized the bucket grid this tree replaced
+    // (ABI 40) and is ignored.
+    q.mBvh = sd_build_bvh(tri_lo, tri_hi);
 
     // Face normals, then the vertex and edge tables. Every sum runs in
     // ascending (triangle, corner) order: summing unit normals in a different
@@ -412,67 +439,119 @@ DistanceQuery build_distance_query_from_runs(const TriangleSoup& rSoup,
 
 namespace {
 
-// The bucket-grid nearest-triangle search shared by query_distances and
-// query_closest_points, extracted verbatim from what used to be inline in
-// query_distances (a pure refactor -- query_distances' own test suite is the
-// regression guard that its output is unchanged). @p MaxShell caps expansion,
-// used by query_distances to stop early under a band; a plain search (as
-// query_closest_points needs) passes the int64 max.
+// The nearest-triangle search shared by query_distances,
+// query_closest_points and query_surface_projections, so the three cannot
+// disagree about which triangle is nearest.
+//
+// It answers the minimum, under the total order (distance squared, triangle
+// id), over every triangle whose distance is at most the best found -- the
+// global minimum -- so which candidates it visits, and in what order, is
+// unobservable. Depth first through the tree, the nearer child first; a node
+// is opened only while its box's lower bound does not exceed the best
+// distance. The bound gives up a slack for rounding and the cut is strict, so
+// no triangle that could win or tie is ever pruned. Until ABI 40 this walked
+// a bucket grid's Chebyshev shells outwards from the query's own bucket,
+// O((d / cell)^3) probes for a point at distance d, which for a point deep
+// inside a volume is of the order of the triangle count (roadmap 5.3). @p
+// Limit2 is a squared distance past which a hit is of no use to the caller (a
+// band), +inf for none.
 struct SdNearestTriangle {
     std::int64_t mTri = -1;
     PointTriangleHit mHit;
 };
 
-SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
-                                      const Vec3& rQueryPoint, std::int64_t MaxShell) {
-    const GridKey centre = rQuery.mGrid.KeyOf(rQueryPoint.data());
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+// Probe counts for the benchmarks page (roadmap 5.3), compiled in only on
+// request: queries, nodes opened, leaves opened, triangles measured.
+std::atomic<std::uint64_t> g_sd_queries{0}, g_sd_nodes{0}, g_sd_leaves{0}, g_sd_triangles{0};
+void sd_report_probes(const char* pWhat) {
+    log::info(
+        "surface distance: {}: {} queries opened {} nodes and {} leaves and measured {} "
+        "triangles",
+        pWhat, g_sd_queries.exchange(0), g_sd_nodes.exchange(0), g_sd_leaves.exchange(0),
+        g_sd_triangles.exchange(0));
+}
+#define MIO_SD_COUNT(counter, n) counter.fetch_add(n, std::memory_order_relaxed)
+#else
+#define MIO_SD_COUNT(counter, n) ((void)0)
+#endif
 
+// The squared distance from @p rQ to box [rLo, rHi], less a slack on each
+// axis's gap of 2^-40 of the magnitudes involved: far more than the rounding
+// of the gap and of the triangle distances it is compared with. A non-finite
+// gap bounds nothing.
+double sd_box_lb2(const Vec3& rLo, const Vec3& rHi, const Vec3& rQ) {
+    double sum = 0.0;
+    for (std::size_t a = 0; a < 3; ++a) {
+        double gap = rLo[a] - rQ[a] > rQ[a] - rHi[a] ? rLo[a] - rQ[a] : rQ[a] - rHi[a];
+        if (!(gap > 0.0) || !std::isfinite(gap))
+            continue;
+        gap -= (std::fabs(rQ[a]) + std::fabs(rLo[a]) + std::fabs(rHi[a])) * 0x1p-40;
+        if (gap > 0.0)
+            sum += gap * gap;
+    }
+    return sum;
+}
+
+SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
+                                      const Vec3& rQueryPoint, double Limit2) {
     double best_d2 = std::numeric_limits<double>::infinity();
     std::int64_t best_tri = -1;
     PointTriangleHit best_hit;
-
-    // The largest shell radius that can still reach an occupied bucket. Note
-    // ForEachInShell clamps to the occupied box, so an empty shell does NOT
-    // mean "no more candidates" for a query far outside it -- without this
-    // bound the loop would stop early on exactly those points.
-    std::int64_t reach = 0;
-    if (!rQuery.mGrid.Empty()) {
-        const GridKey lo = rQuery.mGrid.OccupiedLo();
-        const GridKey hi = rQuery.mGrid.OccupiedHi();
-        const std::int64_t dx = std::max(std::abs(centre.x - lo.x), std::abs(centre.x - hi.x));
-        const std::int64_t dy = std::max(std::abs(centre.y - lo.y), std::abs(centre.y - hi.y));
-        const std::int64_t dz = std::max(std::abs(centre.z - lo.z), std::abs(centre.z - hi.z));
-        reach = std::max(dx, std::max(dy, dz));
-    }
-    if (reach > MaxShell)
-        reach = MaxShell;
-
-    for (std::int64_t r = 0; r <= reach; ++r) {
-        // A hit in a bucket at Chebyshev radius r is at least (r - 1) * cell
-        // away, so once that bound exceeds the best found there is nothing
-        // left to find.
-        if (r >= 1 && best_tri >= 0) {
-            const double bound = static_cast<double>(r - 1) * rQuery.mCellSize;
-            if (bound > 0.0 && bound * bound > best_d2)
-                break;
-        }
-        rQuery.mGrid.ForEachInShell(centre, r, [&](const BucketView& rIds) {
-            for (std::int64_t t : rIds) {
+    const std::vector<SurfaceBvhNode>& nodes = rQuery.mBvh.mNodes;
+    const std::vector<std::int64_t>& order = rQuery.mBvh.mOrder;
+    if (nodes.empty())
+        return {best_tri, best_hit};
+    MIO_SD_COUNT(g_sd_queries, 1);
+    // (node, its bound); the tree's depth is log2 of the leaf count, far
+    // below the stack's size.
+    std::pair<std::size_t, double> stack[128];
+    int top = 0;
+    const double root = sd_box_lb2(nodes[0].mLo, nodes[0].mHi, rQueryPoint);
+    if (!(root > Limit2))
+        stack[top++] = {0, root};
+    while (top > 0) {
+        const auto [index, lb2] = stack[--top];
+        if (lb2 > best_d2)
+            continue;
+        const SurfaceBvhNode& rNode = nodes[index];
+        if (rNode.mRight < 0) {
+            MIO_SD_COUNT(g_sd_leaves, 1);
+            MIO_SD_COUNT(g_sd_triangles, static_cast<std::uint64_t>(rNode.mCount));
+            for (std::int64_t k = 0; k < rNode.mCount; ++k) {
+                const std::int64_t t = order[static_cast<std::size_t>(rNode.mBegin + k)];
                 const std::size_t ti = static_cast<std::size_t>(t);
                 const PointTriangleHit hit = closest_point_on_triangle(
                     rQueryPoint, rSoup.mCorners[ti * 3 + 0], rSoup.mCorners[ti * 3 + 1],
                     rSoup.mCorners[ti * 3 + 2]);
                 // The total order that makes the accelerator unobservable:
                 // distance first, then the triangle id, so two equidistant
-                // triangles always resolve the same way regardless of which
-                // bucket happened to be visited first.
+                // triangles always resolve the same way whatever node was
+                // opened first.
                 if (hit.mDistanceSq < best_d2 || (hit.mDistanceSq == best_d2 && t < best_tri)) {
                     best_d2 = hit.mDistanceSq;
                     best_tri = t;
                     best_hit = hit;
                 }
             }
-        });
+            continue;
+        }
+        MIO_SD_COUNT(g_sd_nodes, 1);
+        const std::size_t left = index + 1;
+        const auto right = static_cast<std::size_t>(rNode.mRight);
+        const double lb_left = sd_box_lb2(nodes[left].mLo, nodes[left].mHi, rQueryPoint);
+        const double lb_right = sd_box_lb2(nodes[right].mLo, nodes[right].mHi, rQueryPoint);
+        const double cut = best_d2 < Limit2 ? best_d2 : Limit2;
+        // The nearer child is pushed last, so it is opened first.
+        const bool left_first = lb_left <= lb_right;
+        const std::size_t far = left_first ? right : left;
+        const std::size_t near = left_first ? left : right;
+        const double lb_far = left_first ? lb_right : lb_left;
+        const double lb_near = left_first ? lb_left : lb_right;
+        if (!(lb_far > cut))
+            stack[top++] = {far, lb_far};
+        if (!(lb_near > cut))
+            stack[top++] = {near, lb_near};
     }
     return {best_tri, best_hit};
 }
@@ -538,15 +617,14 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
     const double band = rOptions.mBand;
     const bool banded = band > 0.0;
     const double band2 = band * band;
-    // With a band there is no point expanding past it: a hit found beyond this
-    // radius would be clamped anyway.
-    const std::int64_t max_shell =
-        banded ? static_cast<std::int64_t>(std::ceil(band / rQuery.mCellSize)) + 1
-               : std::numeric_limits<std::int64_t>::max();
+    // With a band there is no point opening a block beyond it: a hit found
+    // there would be clamped anyway. A hit within the band is the global
+    // nearest either way.
+    const double limit2 = banded ? band2 : std::numeric_limits<double>::infinity();
 
     parallel_for(n, [&](std::size_t p) {
         const Vec3& query = rPoints[p];
-        const SdNearestTriangle found = sd_nearest_triangle(rQuery, soup, query, max_shell);
+        const SdNearestTriangle found = sd_nearest_triangle(rQuery, soup, query, limit2);
         const std::int64_t best_tri = found.mTri;
         const PointTriangleHit& best_hit = found.mHit;
         const double best_d2 = best_hit.mDistanceSq;
@@ -601,6 +679,9 @@ std::vector<DistanceHit> query_distances(const DistanceQuery& rQuery,
         res.mSignedDistance = side < 0.0 ? -dist : dist;
     });
 
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+    sd_report_probes("query_distances");
+#endif
     return out;
 }
 
@@ -612,7 +693,7 @@ std::vector<ClosestPointHit> query_closest_points(const DistanceQuery& rQuery,
 
     parallel_for(n, [&](std::size_t p) {
         const SdNearestTriangle found =
-            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<std::int64_t>::max());
+            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<double>::infinity());
         ClosestPointHit& res = out[p];
         if (found.mTri < 0) {
             res.mFound = false;
@@ -624,6 +705,9 @@ std::vector<ClosestPointHit> query_closest_points(const DistanceQuery& rQuery,
         res.mSourceCell = soup.mSourceCell[static_cast<std::size_t>(found.mTri)];
     });
 
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+    sd_report_probes("query_closest_points");
+#endif
     return out;
 }
 
@@ -635,7 +719,7 @@ std::vector<SurfaceProjection> query_surface_projections(const DistanceQuery& rQ
 
     parallel_for(n, [&](std::size_t p) {
         const SdNearestTriangle found =
-            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<std::int64_t>::max());
+            sd_nearest_triangle(rQuery, soup, rPoints[p], std::numeric_limits<double>::infinity());
         SurfaceProjection& res = out[p];
         if (found.mTri < 0) {
             res.mFound = false;
@@ -650,6 +734,9 @@ std::vector<SurfaceProjection> query_surface_projections(const DistanceQuery& rQ
         res.mNormal = sd_feature_normal(rQuery, soup, found.mTri, found.mHit.mFeature);
     });
 
+#ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
+    sd_report_probes("query_surface_projections");
+#endif
     return out;
 }
 

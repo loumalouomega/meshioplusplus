@@ -10,7 +10,7 @@ meshio++ moves the parsing/serialising hot loops into C++, so the win is largest
 
 - **VTU binary + zlib** — the zlib block compression parallelises across cores (the C++ core defaults to an **OpenMP** backend with dynamic scheduling, which also load-balances hybrid P+E-core CPUs), so this is the biggest win: **~16× write**, ~2.3× read.
 - **VTU ASCII** — the C++ number formatter and parser are several times faster than the Python/numpy text path (~7× write, ~5× read).
-- **XDMF (HDF5)** — reads are much faster on mixed-topology meshes (~10× on the bracket). On a single-block mesh both libraries spend most of their time in gzip, which HDF5 runs on one thread; since v16.15.0 meshio++ writes gzip datasets in ~1 MiB row chunks compressed in parallel, and inflates any row-chunked gzip dataset in parallel on read, so that time now divides across cores (a SEQ build, as in the Linux wheels, still runs it on one).
+- **XDMF (HDF5)** — reads are much faster on mixed-topology meshes (~10× on the bracket). On a single-block mesh both libraries spend most of their time in gzip, which HDF5 runs on one thread; since v16.15.0 meshio++ writes gzip datasets in ~1 MiB row chunks compressed in parallel, and inflates any row-chunked gzip dataset in parallel on read, so that time now divides across cores (a SEQ build still runs it on one; the Linux wheels build the THREADS backend since v19.1).
 - **MED (HDF5)** — with the Eigen-backed Fortran↔C transpose fused with the node reorder, MED writes faster (~1.1× in `benchmark/results.csv`). Reads measured 0.81–0.93× there; v16.15.0 removed the two zero-fills of every dataset the reader immediately overwrites and made the family-to-region pass one sweep over the entities instead of one per family, which brings the single-block read level with pure Python.
 - **Gmsh binary** — the reader decodes straight from the slurped buffer into an owning array that is *moved* into the cell block (no copy), so reads are **~1.7×** faster; the writer buffers each block into one `write`. `benchmark/results.csv` (July 2026) shows the write at 0.68×, but re-measuring on v16.14.0 against meshio 5.3.5 put it at about 1.9×: the recorded figure does not reproduce, and the notebook's next run replaces it.
 - **VTK binary** — writes at parity (fused gather+byte-swap, one `write`). Reads now **beat** pure-Python both on single-cell-type meshes (~1.45×, the connectivity `NDArray` is moved straight into the cell block) and on mixed-topology meshes (**~1.1×** on the bracket, up from ~0.4× originally): reader output buffers skip the zero-fill they immediately overwrite, and the per-type block copy is chunked across threads so its first-touch page faults are serviced concurrently. Endianness conversion uses single-instruction `bswap` intrinsics throughout.
@@ -833,6 +833,111 @@ Roadmap §3.4.5, which closes with it, and 3.4.5.1 above, which it supersedes: t
 
 The read dominates only the cheapest operation on a large surface. Caching a read mesh, or a prefix of the pipeline, between applies would hold a second copy of the mesh in a 32-bit heap that MEMFS already shares with the staged file, and would make undo depend on cache invalidation; the roadmap records it as not taken.
 
+### A bounding-volume hierarchy for the distance query and a grid for find_interface
+
+Roadmap 5.3 and 5.4.2, landed through [landing a performance change](#landing-a-performance-change): every row's digest equals the one before the change on SEQ and OpenMP at 1 and 4 threads, tiers S and M, except `distance_build`'s, which digests the accelerator's own layout and moved with it. The new rows `distance_to_surface_graded` (the cube with every coordinate cubed, a graded skin, against its own points) and `find_interface_proximity` (the halves matched by proximity) were added first, so their baseline digests came from the old algorithms; `closest_points` and `closest_points_graded` time the accelerator's build and `query_closest_points` alone.
+
+- **The nearest-triangle search is a tree.** It walked a bucket grid in Chebyshev shells outwards from the query's own bucket until the shell's `(r - 1) * cell` bound passed the best distance: `O((d / cell)^3)` probes for a point at distance `d`, which for a point deep inside a volume is of the order of the triangle count, and every bucket of the skin's faces parallel to the shell. Two replacements were measured, both returning the minimum under `(distance², triangle id)` and so the old answer bit for bit (a test compares each with a scan of every triangle). An **occupancy pyramid** over the grid (5.3.1), the grid's occupancy at block sizes doubling up to at most four blocks per axis, descended best first with Euclidean bounds, was 2 to 3 times faster than the shells, but a cell's bound is the cell's, so a point far from the surface still opened every bucket of a patch around its nearest one. A **bounding-volume hierarchy** (5.3.2) of the triangles' boxes, sorted by the Morton key of their centres, split at the median and searched depth first, nearer child first, was a further 2 to 4 times faster with its build included, on the uniform and the graded skin alike, and replaced the grid in `DistanceQuery` (ABI 40). The reason it had been decided against, that its visit order would make the equidistant-triangle tiebreak observable, the total order answers. `grid_cell_size`, which sized the grid's buckets, is accepted and ignored.
+- **`find_interface`'s matching.** The conforming mode grouped each side's facets into a `std::map` keyed on a heap vector per facet; both sides' records are now grouped by `group_facet_slots`, as `region_adjacency`'s are, and paired within each run. The proximity mode projected every master facet's centroid onto every target facet, and each of its corners onto every target again, `O(S × T)`; a `BucketTable` over the target facets' boxes grown by the tolerance (the `check_conformity` pattern) lists, for a point, every target that can be within the tolerance of it, in the order the scan met them, so the best target and its tiebreak are the scan's, and the master facets are matched in parallel.
+
+Tier L (750,000 tetrahedra, about 30,000 skin triangles), median of three runs, seconds; "pyramid" is the occupancy pyramid this change measured and did not take:
+
+| Row | SEQ old | SEQ pyramid | SEQ new | OpenMP ×4 old | OpenMP ×4 new |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `sample_distance` | 7.38 | 2.59 | 0.63 | 2.09 | 0.16 |
+| `distance_to_surface` | 7.25 | 2.55 | 0.59 | 1.87 | 0.16 |
+| `distance_to_surface_graded` | 2.25 | 1.11 | 0.46 | 0.54 | 0.13 |
+| `closest_points` | | 2.64 | 0.61 | | 0.16 |
+| `closest_points_graded` | | 1.26 | 0.45 | | 0.12 |
+| `compute_sdf` | 3.68 | 1.44 | 0.38 | 1.17 | 0.10 |
+| `remesh_volume` | 6.01 | 2.71 | 1.25 | 1.75 | 0.51 |
+| `hausdorff` | 4.59 | 2.51 | 0.69 | 1.11 | 0.19 |
+| `shrinkwrap` | 0.218 | 0.121 | 0.058 | 0.053 | 0.023 |
+| `distance_build` | 0.0060 | 0.0062 | 0.0059 | 0.0047 | 0.0043 |
+| `find_interface_proximity` | 66.8 | | 0.73 | 73.3 | 0.66 |
+| `find_interface` (conforming) | 0.79 | | 0.77 | 0.70 | 0.61 |
+
+`distance_build` and the conforming `find_interface` are within run-to-run noise of their old times (three alternating runs of five each: 5.9 to 9.0 ms and 0.79 to 0.83 s old, 5.8 to 5.9 ms and 0.73 to 0.80 s new); the conforming mode's matching was never its cost, which is the boundary facets both modes collect.
+
+At tier XL (the 10,368,000-tetrahedron cube, about 173,000 skin triangles; `SEQ`, one thread, a warmup and one timed run, each row in its own process on a 15 GiB machine) the three rows that timed out in the [XL spike](./spikes.md) finish: `sample_distance` in 9.56 s, `distance_to_surface` in 9.51 s and `remesh_volume` in 18.87 s, with peak resident sets of 6.3, 6.3 and 10.0 GB, the setup's and `remesh_volume`'s own lattice. `compute_sdf` takes 0.62 s, `hausdorff` 5.18 s, `shrinkwrap` 0.42 s, `find_interface` 13.94 s and `find_interface_proximity` 13.84 s, its matching no longer the cost; the rows are in [`benchmark/xl_ops_seq.csv`](https://github.com/loumalouomega/meshioplusplus/blob/main/benchmark/xl_ops_seq.csv). That machine's harness setup took 14 s where the spike's took 62 s, so only the timeouts compare across the two.
+
+### Facet keys without records
+
+Roadmap 5.4.3, landed through [landing a performance change](#landing-a-performance-change): every row's digest equals the one before the change on SEQ, THREADS at 1 and 4 threads and OpenMP at 1 and 4 threads, tiers S and M.
+
+Every facet table grouped a record per facet: `extract_surface`'s held a 64-byte `FacetKey` (a size, four inline ids and a `std::vector` for longer faces), three indices and a parent, 88 bytes, and `group_facet_slots` copied each key into a 40-byte flat key again before sorting; `smooth`'s boundary marking (80 bytes), the dual graph behind `adjacency(kind="cell")` and KaHIP's `partition` (72 bytes) and the global face table (a `FacetKey` per slot) repeated the layout. `detail::group_facets` now takes a facet's id count and its ids straight from the mesh: at most four ids below `2^32 - 1` points are two to four `uint32` padded with `0xFFFFFFFF` (12 bytes for a tetrahedron's face), other short keys the flat key, and polyhedron faces sorted CSR rows. The record is gone: a slot's cell and local facet follow from its block's slot range, and the passes that emit the boundary walk blocks, cells and facets in slot order, which is the order they walked the records in. `FacetKey` itself, part of the exported `FaceLookup`, is unchanged.
+
+Tier L, SEQ, one thread, the old and new `meshioplusplus_bench_ops` alternated, the median of two medians of three runs, seconds; peak resident set of the whole process (the setup included, which extracts the surface once itself):
+
+| Row | Old | New |
+| --- | ---: | ---: |
+| `extract_surface` | 0.556 | 0.218 |
+| `extract_skin` | 0.601 | 0.209 |
+| `extract_surface_ragged` (polyhedra) | 0.539 | 0.206 |
+| `adjacency_cell` | 0.537 | 0.269 |
+| `adjacency_cell_ragged` | 0.528 | 0.281 |
+| `smooth_volume` | 6.97 | 6.43 |
+| `region_adjacency` | 0.668 | 0.600 |
+| `find_interface` | 0.572 | 0.538 |
+| `tet_to_poly` | 2.62 | 2.35 |
+| `read_openfoam` (three alternating runs of five) | 1.05 to 1.09 | 1.01 to 1.03 |
+| peak, `extract_surface`, tier L | 474 MB | 353 MB |
+| peak, `extract_surface`, tier XL (10,368,000 tetrahedra) | 6.46 GB | 4.69 GB |
+| peak, `adjacency_cell`, tier XL | 6.54 GB | 4.69 GB |
+
+### Profiling `optimize_volume`
+
+Roadmap 5.5.2. `valgrind --tool=callgrind --toggle-collect='meshioplusplus::optimize_volume*'` over the `optimize_volume` row at tier S (SEQ, RelWithDebInfo), inclusive instructions:
+
+| Function | Share |
+| --- | ---: |
+| `optimize_volume` (63.2 G instructions) | 100% |
+| `optvol_smooth_worst` (worst-cell smoothing) | 73.1% |
+| `optvol_min_dihedral` (within it, mostly) | 70.2% |
+| `acos` | 30.9% |
+| `optvol_pass_edge_removal` | 10.7% |
+| `optvol_pass_multi_face` | 7.3% |
+| `optvol_guarded_odt` | 6.0% |
+| `optvol_pass_23` | 2.6% |
+| the five comparison sorts of the face and edge tables, together | 7.4% |
+
+The comparison sorts of each sweep's face and edge tables, which the roadmap named as the likely cost, come to 7.4% between them: replacing them with `group_slots` would save at most that, and was not taken. `optvol_min_dihedral` took `acos` of all six edges of every tet a probe evaluates; `acos` is decreasing, with a slope of magnitude at least 1 and an error of about an ulp, so a cosine more than `1e-12` below the largest one already evaluated cannot give the least angle, and its `acos` is now skipped. The result is the same bit for bit (the row's digest at tiers S and M on every backend). Tier S, SEQ: 4.56 s to 3.34 s. What is left is the smoothing's algorithm, every tet of a star at every probe ([roadmap](./roadmap.md#performance)).
+
+### VTK XML parsed in place
+
+Roadmap 5.7.4. The VTK XML readers gave pugixml's `load_buffer` the file's bytes, which it copies, so a read held the file twice; they now parse with `load_buffer_inplace` in a private copy-on-write mapping ([memory-mapped reading](./mmap.md#coverage)). A 960 MB inline-binary VTU of 20,000,000 points, read in a fresh process through the single header of the commit before and after (`ru_maxrss`, one thread): peak 2,715 MB to 1,799 MB, the file's size less the pages pugixml writes, and 4.1 s to 3.3 s.
+
+### A THREADS backend for the Linux wheels
+
+Roadmap 5.2. The manylinux wheels were built SEQ because gcc-toolset's libgomp cannot be linked statically, so none of the parallel paths on this page reached a pip user on Linux. The THREADS backend ([installation](./installation.md)) is a pool of `std::thread` workers inside the core: one pool per process, the caller taking chunks beside the workers, OpenMP's chunk of `max(grain / 4, 1)` claimed dynamically. Its digests equal SEQ's and OpenMP's on every row at tiers S and M, at one and four threads. Tier L, median of two medians of five runs, seconds (`benchmark/threads_text_io_L.csv`):
+
+| Row | SEQ | THREADS ×1 | THREADS ×4 | OpenMP ×4 |
+| --- | ---: | ---: | ---: | ---: |
+| `sample_distance` | 0.595 | 0.594 | 0.164 | 0.161 |
+| `clean_weld` | 0.848 | 0.867 | 0.342 | 0.327 |
+| `extract_surface` | 0.210 | 0.200 | 0.109 | 0.098 |
+| `smooth_volume` | 6.27 | 6.76 | 1.95 | 1.85 |
+| `merge` | 0.187 | 0.187 | 0.098 | 0.090 |
+| `refine` | 0.623 | 0.632 | 0.378 | 0.365 |
+
+THREADS runs within 11% of OpenMP at four threads. At one thread it adds an indirect call per `parallel_for` and the exception guard, which `smooth_volume`, many short loops per pass, shows at 8%. Whether the wheels themselves gain this is the probe the roadmap keeps (5.2): only CI builds a manylinux wheel.
+
+### Chunked number parsing, and writers one number at a time
+
+Roadmap 5.7.2 and 5.7.1. `detail/chunked_parse.hpp` cuts a run of numbers at blanks into chunks, counts each chunk's tokens in parallel, prefix-sums the counts and parses each chunk into its slots in parallel; a token the reader's own parser would not take whole sends the reader back to its serial loop, so the values and errors are the serial ones (`test_chunked_parse`). The writers format their rows in parallel chunks through `CNumber` (`to_chars` for `%.16e` and `%.17g`). Tier L, same runs as above, seconds; "before" is the commit before the batch:
+
+| Row | SEQ before | SEQ after | THREADS ×4 | OpenMP ×4 before | OpenMP ×4 after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `read_vtu_ascii` | 0.258 | 0.244 | 0.111 | 0.230 | 0.113 |
+| `read_vtk_ascii` | 0.062 | 0.070 | 0.055 | 0.066 | 0.056 |
+| `read_gmsh_ascii` (4.1) | 0.096 | 0.098 | 0.101 | 0.102 | 0.095 |
+| `read_gmsh22_ascii` | 0.266 | 0.254 | 0.241 | 0.248 | 0.236 |
+| `write_gmsh` (ASCII) | 0.356 | 0.305 | 0.323 | 0.343 | 0.307 |
+| `write_off` | 0.0142 | 0.0094 | 0.0091 | 0.0178 | 0.0072 |
+| `write_stl` (ASCII) | 0.077 | 0.030 | 0.0153 | 0.083 | 0.0158 |
+
+`read_vtk_ascii`'s SEQ row reads 10% slower inside `bench_ops`, where the chunked path is never taken; callgrind counts the same instructions for the read before and after, and the read of the same file alone, through the single header, times the same either way (0.085 to 0.090 s), so it is the benchmark process's heap, not the reader. Alone, the legacy VTK read of that 31 MB file goes from 0.080 s at one thread to 0.051 s at four. The Gmsh rows barely move: their nodes are parsed in parallel, but their element blocks, still serial, are most of the read ([roadmap](./roadmap.md#performance), 5.7.2).
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
@@ -942,7 +1047,7 @@ The `determinism` job in `ci.yml` runs the first form on the small tier at 1 and
 
 A performance change starts from a measured or code-verified slowdown in a path a user hits, with the shape of the fix named, and shows its before and after on the harness: `benchmark/bench.py` for I/O, `tools/bench_ops.sh` for operations, `benchmark/viewer_surface.mjs` for the browser viewer's render path. The [Clang-Tidy performance audit](#clang-tidy-performance-audit) finds candidates; its findings are advisory and must pass the same gates. The roadmap's performance section closed in October 2026; what was measured and not taken is recorded with its [non-goals](./roadmap.md#non-goals-and-decisions-taken).
 
-Two findings frame every change. First, **the serial phases in the operations are deliberate**: each is documented in the code as a determinism pin, not an oversight — output is byte-identical across parallel backends and thread counts, which repeated-run tests and the C++-versus-numpy byte comparisons enforce — so every fix must keep that guarantee and prove it with a SEQ-versus-OpenMP diff, not assert it. Second, **every parallel item is conditional on the backend**: a SEQ build (and the `stl` fallback without TBB) runs `parallel_for` sequentially, so each change must also show that SEQ does not get slower — a parallel sort is O(n log n) where the hash map it replaces is O(n). SEQ is not a corner case: the Linux wheels and the native CLI release binaries are built SEQ, and WASM ships a SEQ build beside the threaded one, so an algorithmic win reaches every user while a parallel one reaches source, conda and threaded-WASM builds.
+Two findings frame every change. First, **the serial phases in the operations are deliberate**: each is documented in the code as a determinism pin, not an oversight — output is byte-identical across parallel backends and thread counts, which repeated-run tests and the C++-versus-numpy byte comparisons enforce — so every fix must keep that guarantee and prove it with a SEQ-versus-OpenMP diff, not assert it. Second, **every parallel item is conditional on the backend**: a SEQ build (and the `stl` fallback without TBB) runs `parallel_for` sequentially, so each change must also show that SEQ does not get slower — a parallel sort is O(n log n) where the hash map it replaces is O(n). SEQ is not a corner case: the native CLI release binaries are built SEQ, and WASM ships a SEQ build beside the threaded one, so an algorithmic win reaches every user while a parallel one reaches source, conda, Linux-wheel (THREADS, since v19.1) and threaded-WASM builds.
 
 Every change:
 

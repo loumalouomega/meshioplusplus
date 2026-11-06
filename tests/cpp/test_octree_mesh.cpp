@@ -38,9 +38,7 @@
 // External includes
 #include <gtest/gtest.h>
 
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-#include <omp.h>
-#endif
+#include "thread_sweep.hpp"
 
 // Project includes
 #include "analytic_surfaces.hpp"
@@ -333,10 +331,10 @@ TEST(OctreeMesh, DirtySkinsStillMesh) {
 TEST(OctreeMesh, IsTheSameOnEveryThreadCount) {
     const mio::Mesh skin = analytic::torus(1.0, 0.4, 32, 16);
     std::uint64_t ref = 0;
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (int threads : {1, 2, 4}) {
-        omp_set_num_threads(threads);
+        mio_test::set_threads(threads);
 #else
     for (int threads : {1}) {
         (void)threads;
@@ -348,8 +346,8 @@ TEST(OctreeMesh, IsTheSameOnEveryThreadCount) {
             ref = d.Value();
         EXPECT_EQ(d.Value(), ref);
     }
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    omp_set_num_threads(saved);
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    mio_test::set_threads(saved);
 #endif
 }
 
@@ -705,10 +703,10 @@ TEST(OctreeMeshTet, DirtyAndGradedSkinsStillGiveValidMeshes) {
 TEST(OctreeMeshTet, IsTheSameOnEveryThreadCount) {
     const mio::Mesh skin = analytic::torus(1.0, 0.4, 32, 16);
     std::uint64_t ref = 0;
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (int threads : {1, 2, 4}) {
-        omp_set_num_threads(threads);
+        mio_test::set_threads(threads);
 #else
     for (int threads : {1}) {
         (void)threads;
@@ -720,8 +718,8 @@ TEST(OctreeMeshTet, IsTheSameOnEveryThreadCount) {
             ref = d.Value();
         EXPECT_EQ(d.Value(), ref);
     }
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    omp_set_num_threads(saved);
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    mio_test::set_threads(saved);
 #endif
 }
 
@@ -883,10 +881,10 @@ TEST(OctreeMeshHex, CubeCornersAndEdgesArePreserved) {
 TEST(OctreeMeshHex, IsTheSameOnEveryThreadCount) {
     const mio::Mesh skin = analytic::torus(1.0, 0.4, 32, 16);
     std::uint64_t ref = 0;
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (int threads : {1, 2, 4}) {
-        omp_set_num_threads(threads);
+        mio_test::set_threads(threads);
 #else
     for (int threads : {1}) {
         (void)threads;
@@ -898,8 +896,8 @@ TEST(OctreeMeshHex, IsTheSameOnEveryThreadCount) {
             ref = d.Value();
         EXPECT_EQ(d.Value(), ref);
     }
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    omp_set_num_threads(saved);
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    mio_test::set_threads(saved);
 #endif
 }
 
@@ -965,10 +963,10 @@ TEST(OctreeMeshHex, GradedHexahedraAreTheSameOnEveryThreadCount) {
     o.mHexGrading = mio::OctreeMeshHexGrading::Graded;
     const mio::Mesh skin = analytic::capped_cylinder(0.5, 2.0, 6, 48);
     std::uint64_t ref = 0;
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (int threads : {1, 2, 4}) {
-        omp_set_num_threads(threads);
+        mio_test::set_threads(threads);
 #else
     for (int threads : {1}) {
         (void)threads;
@@ -978,8 +976,8 @@ TEST(OctreeMeshHex, GradedHexahedraAreTheSameOnEveryThreadCount) {
             ref = d;
         EXPECT_EQ(d, ref);
     }
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    omp_set_num_threads(saved);
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    mio_test::set_threads(saved);
 #endif
 }
 
@@ -1246,10 +1244,10 @@ TEST(OctreeMeshHex, CleavingIsTheSameOnEveryThreadCount) {
     o.mConformity = mio::OctreeMeshConformity::Cleaving;
     const mio::Mesh skin = om_nested_spheres({1.0, 0.5});
     std::uint64_t ref = 0;
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (int threads : {1, 2, 4}) {
-        omp_set_num_threads(threads);
+        mio_test::set_threads(threads);
 #else
     for (int threads : {1}) {
         (void)threads;
@@ -1259,8 +1257,8 @@ TEST(OctreeMeshHex, CleavingIsTheSameOnEveryThreadCount) {
             ref = d;
         EXPECT_EQ(d, ref);
     }
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    omp_set_num_threads(saved);
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    mio_test::set_threads(saved);
 #endif
 }
 

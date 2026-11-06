@@ -67,8 +67,10 @@
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/write_options.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
+#include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
+#include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/convert_cells.hpp"
@@ -381,8 +383,9 @@ int main(int argc, char** argv) {
     }
     if (chosen.empty())
         chosen = {"S", "M", "L"};
-    // OMP_NUM_THREADS is honoured by OpenMP itself; TBB has no such variable,
-    // so the same one caps it here, keeping tools/bench_ops.sh's sweep uniform.
+    // OMP_NUM_THREADS is honoured by OpenMP itself and read by the THREADS
+    // pool (after MESHIOPLUSPLUS_NUM_THREADS); TBB has no such variable, so the
+    // same one caps it here, keeping tools/bench_ops.sh's sweep uniform.
     const char* env_threads = std::getenv("OMP_NUM_THREADS");
     const std::string threads =
         env_threads ? env_threads : std::to_string(std::thread::hardware_concurrency());
@@ -420,6 +423,17 @@ int main(int argc, char** argv) {
                 }
             });
         });
+        // The cube with every coordinate cubed: a graded lattice, its cells
+        // from about h^3 near the origin corner to about 3h at the far one
+        // (the map is monotone, so no cell inverts). The distance rows' graded
+        // target (roadmap 5.3.2), where a uniform bucket grid is at its worst.
+        const BenchLazyMesh graded([&] {
+            return bench_ops_moved(volume, [](std::size_t, double* pP) {
+                for (int d = 0; d < 3; ++d)
+                    pP[d] = pP[d] * pP[d] * pP[d];
+            });
+        });
+        const BenchLazyMesh graded_surface([&] { return mio::extract_surface(graded); });
         const BenchLazyMesh inflated([&] {
             return bench_ops_moved(surface, [](std::size_t, double* pP) {
                 for (int d = 0; d < 3; ++d)
@@ -683,6 +697,23 @@ int main(int argc, char** argv) {
                     pD->Arrays(piece.mCellMaps);
                 }
         });
+        // The dual graph (cells sharing a facet) through `adjacency`, on the
+        // tetrahedra and on the mixed tetrahedron/polyhedron mesh, whose
+        // polyhedral faces take the wide facet keys (roadmap 5.4.3); and the
+        // ragged mesh's surface, the same key paths in `extract_surface`.
+        const auto adjacency_row = [&](const char* pOp, const Mesh& rIn) {
+            row(pOp, [&](MeshDigest* pD) {
+                auto r = mio::adjacency(rIn, mio::AdjacencyKind::Cell);
+                if (pD) {
+                    pD->Array(r.mIndptr);
+                    pD->Array(r.mIndices);
+                }
+            });
+        };
+        adjacency_row("adjacency_cell", volume);
+        adjacency_row("adjacency_cell_ragged", ragged);
+        row("extract_surface_ragged",
+            [&](MeshDigest* pD) { of(pD, mio::extract_surface(ragged)); });
         row("feature_edges_ragged",
             [&](MeshDigest* pD) { of(pD, mio::feature_edges(ragged).mMesh); });
         // Reads through the registry: the file is written once, outside the
@@ -809,6 +840,56 @@ int main(int argc, char** argv) {
             return m;
         }();
         read_row("read_elmer", "elmer", ".elmer", elmer_mesh);
+        // The ASCII readers chunked number parsing reaches (roadmap 5.7.2):
+        // VTU and legacy VTK ASCII, Gmsh 4.1 and 2.2 ASCII, and Medit, each over
+        // the tetrahedral cube with its point field. The writers' ASCII rows
+        // (roadmap 5.7.1) time the write and digest the file read back.
+        const auto ascii_write = [&](const char* pFormat) {
+            return [&, pFormat](const std::string& rPath) {
+                mio::WriteOptions o;
+                o.mEncoding = mio::WriteEncoding::Ascii;
+                mio::registry_write_ex(rPath, with_field, pFormat, o);
+            };
+        };
+        const auto registry_reader = [](const char* pFormat) {
+            return [pFormat](const std::string& rPath) {
+                return mio::registry_read(rPath, pFormat, mio::ReadOptions{});
+            };
+        };
+        file_row("read_vtu_ascii", ".vtu", ascii_write("vtu"), registry_reader("vtu"));
+        file_row("read_vtk_ascii", ".vtk", ascii_write("vtk"), registry_reader("vtk"));
+        file_row("read_gmsh_ascii", ".msh", ascii_write("gmsh"), registry_reader("gmsh"));
+        file_row(
+            "read_gmsh22_ascii", ".msh",
+            [&](const std::string& rPath) {
+                mio::write_gmsh22(rPath, with_field, /*binary=*/false);
+            },
+            registry_reader("gmsh"));
+        read_row("read_medit", "medit", ".mesh", with_field);
+        const auto write_row = [&](const char* pOp, const char* pFormat, const char* pExt,
+                                   const Mesh& rSource, mio::WriteEncoding Encoding) {
+            if (!wanted(pOp))
+                return;
+            const std::filesystem::path dir = std::filesystem::temp_directory_path() /
+                                              (std::string("meshioplusplus_bench_") + pOp);
+            std::filesystem::create_directories(dir);
+            const std::string path = (dir / (std::string("mesh") + pExt)).string();
+            try {
+                row(pOp, [&](MeshDigest* pD) {
+                    mio::WriteOptions o;
+                    o.mEncoding = Encoding;
+                    mio::registry_write_ex(path, rSource, pFormat, o);
+                    if (pD)
+                        of(pD, mio::registry_read(path, pFormat, mio::ReadOptions{}));
+                });
+            } catch (const std::exception& rExc) {
+                std::fprintf(stderr, "skip %s: %s\n", pOp, rExc.what());
+            }
+            std::filesystem::remove_all(dir);
+        };
+        write_row("write_gmsh", "gmsh", ".msh", with_field, mio::WriteEncoding::Ascii);
+        write_row("write_off", "off", ".off", surface, mio::WriteEncoding::Default);
+        write_row("write_stl", "stl", ".stl", surface, mio::WriteEncoding::Ascii);
         row("optimize_volume", [&](MeshDigest* pD) {
             auto r = mio::optimize_volume(jittered);
             of(pD, r.mMesh);
@@ -851,6 +932,24 @@ int main(int argc, char** argv) {
             if (pD) {
                 pD->U64(static_cast<std::uint64_t>(r.mReport.mNumPairs));
                 pD->Bytes(&r.mReport.mArea, sizeof r.mReport.mArea);
+            }
+        });
+        // The same halves matched by proximity (roadmap 5.4.2): every lower
+        // boundary facet projected onto the upper side's.
+        row("find_interface_proximity", [&](MeshDigest* pD) {
+            mio::FindInterfaceOptions o;
+            o.mMode = mio::InterfaceMode::Proximity;
+            auto r = mio::find_interface(with_halves, mio::RegionSelector{"lower"},
+                                         mio::RegionSelector{"upper"}, o);
+            of(pD, r.mMesh);
+            if (pD) {
+                pD->U64(static_cast<std::uint64_t>(r.mReport.mNumPairs));
+                pD->U64(static_cast<std::uint64_t>(r.mReport.mUnmatchedA));
+                pD->U64(static_cast<std::uint64_t>(r.mReport.mUnmatchedB));
+                pD->Bytes(&r.mReport.mArea, sizeof r.mReport.mArea);
+                pD->Bytes(&r.mReport.mMaxGap, sizeof r.mReport.mMaxGap);
+                pD->Array(r.mSideA.mEntries);
+                pD->Array(r.mSideB.mEntries);
             }
         });
         row("split", [&](MeshDigest* pD) {
@@ -1503,12 +1602,17 @@ int main(int argc, char** argv) {
         });
         row("distance_to_surface",
             [&](MeshDigest* pD) { of(pD, mio::distance_to_surface(jittered, surface).mMesh); });
-        // The accelerator alone (roadmap §3.3.1.2): the bucket grid and the
-        // normal tables of a surface's triangle soup, per call. The soup is
-        // made once, by the hashed warm-up call, so it is outside the timed
-        // runs. In hash mode the digest also walks the grid -- every bucket of
-        // the occupied key box, in the traversal order queries use -- so a
-        // change of its layout cannot hide behind the tables.
+        // Every point of the graded cube against its own graded skin.
+        row("distance_to_surface_graded", [&](MeshDigest* pD) {
+            of(pD, mio::distance_to_surface(graded, graded_surface).mMesh);
+        });
+        // The accelerator alone (roadmap §3.3.1.2): the tree and the normal
+        // tables of a surface's triangle soup, per call. The soup is made
+        // once, by the hashed warm-up call, so it is outside the timed runs.
+        // In hash mode the digest also walks the tree -- every node's box and
+        // range, and the leaf order -- so a change of its layout cannot hide
+        // behind the tables. (A bucket grid until ABI 40, roadmap 5.3: the
+        // digest changed with it.)
         std::optional<mio::detail::TriangleSoup> distance_soup;
         row("distance_build", [&](MeshDigest* pD) {
             if (!distance_soup)
@@ -1517,21 +1621,59 @@ int main(int argc, char** argv) {
                 mio::detail::build_distance_query(*distance_soup, mio::SurfaceDistanceOptions{});
             if (!pD)
                 return;
-            pD->Bytes(&q.mCellSize, sizeof q.mCellSize);
             pD->Bytes(q.mFaceNormal.data(), q.mFaceNormal.size() * sizeof(mio::detail::Vec3));
             pD->Bytes(q.mVertexNormal.data(), q.mVertexNormal.size() * sizeof(mio::detail::Vec3));
             pD->Bytes(q.mEdgeOfCorner.data(), q.mEdgeOfCorner.size() * sizeof(std::int64_t));
             pD->Bytes(q.mEdgeNormals.data(), q.mEdgeNormals.size() * sizeof(mio::detail::Vec3));
-            const mio::detail::GridKey lo = q.mGrid.OccupiedLo();
-            const mio::detail::GridKey hi = q.mGrid.OccupiedHi();
-            pD->Bytes(&lo, sizeof lo);
-            pD->Bytes(&hi, sizeof hi);
-            q.mGrid.ForEachInBox(lo, hi, [&](const auto& rIds) {
-                pD->U64(rIds.size());
-                for (const std::int64_t t : rIds)
-                    pD->U64(static_cast<std::uint64_t>(t));
-            });
+            pD->Bytes(q.mBvh.mOrder.data(), q.mBvh.mOrder.size() * sizeof(std::int64_t));
+            for (const mio::detail::SurfaceBvhNode& rNode : q.mBvh.mNodes) {
+                pD->Bytes(rNode.mLo.data(), sizeof(double) * 3);
+                pD->Bytes(rNode.mHi.data(), sizeof(double) * 3);
+                pD->U64(static_cast<std::uint64_t>(rNode.mBegin));
+                pD->U64(static_cast<std::uint64_t>(rNode.mCount));
+                pD->U64(static_cast<std::uint64_t>(rNode.mRight));
+            }
         });
+        // The nearest point from every point of a mesh to a skin through the
+        // distance query alone (roadmap 5.3): the accelerator built and
+        // searched per call, the soup and the query points made once outside
+        // the timed runs, the hits digested as (point, distance, source cell).
+        // On the graded cube too, where a uniform grid was at its worst.
+        struct ClosestInput {
+            mio::detail::TriangleSoup mSoup;
+            std::vector<mio::detail::Vec3> mPoints;
+        };
+        const auto closest_input = [](const Mesh& rSkin, const Mesh& rQueries) {
+            ClosestInput in{mio::detail::build_triangle_soup(rSkin, ""), {}};
+            const NDArray& pts = rQueries.Points();
+            const std::size_t dim = rQueries.PointDim();
+            in.mPoints.resize(rQueries.NumPoints());
+            for (std::size_t i = 0; i < in.mPoints.size(); ++i)
+                for (std::size_t d = 0; d < 3; ++d)
+                    in.mPoints[i][d] = d < dim ? mio::detail::read_double(pts, i * dim + d) : 0.0;
+            return in;
+        };
+        std::optional<ClosestInput> closest_uniform, closest_graded;
+        const auto closest_row = [&](const char* pOp, std::optional<ClosestInput>& rIn,
+                                     const std::function<ClosestInput()>& rMake) {
+            row(pOp, [&](MeshDigest* pD) {
+                if (!rIn)
+                    rIn = rMake();
+                const mio::detail::DistanceQuery q =
+                    mio::detail::build_distance_query(rIn->mSoup, mio::SurfaceDistanceOptions{});
+                const auto hits = mio::detail::query_closest_points(q, rIn->mPoints);
+                if (pD)
+                    for (const auto& rHit : hits) {
+                        pD->Bytes(rHit.mPoint.data(), sizeof(double) * 3);
+                        pD->Bytes(&rHit.mDistance, sizeof rHit.mDistance);
+                        pD->U64(static_cast<std::uint64_t>(rHit.mSourceCell));
+                    }
+            });
+        };
+        closest_row("closest_points", closest_uniform,
+                    [&] { return closest_input(surface, jittered); });
+        closest_row("closest_points_graded", closest_graded,
+                    [&] { return closest_input(graded_surface, graded); });
         row("isosurface", [&](MeshDigest* pD) {
             mio::IsosurfaceOptions o;
             o.mArrayName = "u";

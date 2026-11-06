@@ -37,6 +37,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -427,7 +429,9 @@ TEST(SurfaceDistance, UnsignedIsAlwaysNonNegative) {
 
 TEST(SurfaceDistance, TheBucketSizeDoesNotChangeTheAnswer) {
     // The reason every comparison is totally ordered on (distance, triangle id).
-    // A cube axis-aligned with the query lattice is chosen deliberately: its
+    // `mGridCellSize` sized the bucket grid the tree replaced (ABI 40) and is
+    // ignored since; it must stay so. A cube axis-aligned with the query
+    // lattice is chosen deliberately: its
     // coplanar triangle pairs are exactly equidistant from the points above them,
     // so ties are constant rather than rare. A fixture that avoids ties would
     // test nothing here.
@@ -468,6 +472,207 @@ TEST(SurfaceDistance, TheNearestCellIsAlsoInvariantToTheBucketSize) {
     const std::vector<std::int64_t> reference = ids(0.0);
     for (double cell : {0.13, 0.5, 3.0})
         EXPECT_EQ(ids(cell), reference) << "cell size " << cell << " changed the nearest cell";
+}
+
+namespace {
+
+// The nearest triangle by scanning every triangle under the search's total
+// order (distance squared, triangle id): what the accelerated search must
+// return, bit for bit, whatever it skips.
+struct BruteNearest {
+    std::int64_t mTri = -1;
+    d::PointTriangleHit mHit;
+};
+
+BruteNearest brute_nearest(const d::TriangleSoup& rSoup, const d::Vec3& rQ) {
+    BruteNearest best;
+    double best_d2 = std::numeric_limits<double>::infinity();
+    for (std::size_t t = 0; t < rSoup.NumTriangles(); ++t) {
+        const d::PointTriangleHit hit = d::closest_point_on_triangle(
+            rQ, rSoup.mCorners[3 * t], rSoup.mCorners[3 * t + 1], rSoup.mCorners[3 * t + 2]);
+        const auto ti = static_cast<std::int64_t>(t);
+        if (hit.mDistanceSq < best_d2 || (hit.mDistanceSq == best_d2 && ti < best.mTri)) {
+            best_d2 = hit.mDistanceSq;
+            best.mTri = ti;
+            best.mHit = hit;
+        }
+    }
+    return best;
+}
+
+// Random triangles, small and large, some degenerate, around @p rCentre.
+Mesh random_soup(std::size_t N, double Spread, const d::Vec3& rCentre, std::uint32_t Seed) {
+    std::mt19937 rng(Seed);
+    const auto uni = [&](double Lo, double Hi) {
+        return Lo + (Hi - Lo) * (static_cast<double>(rng()) / 4294967295.0);
+    };
+    std::vector<std::vector<double>> pts;
+    std::vector<std::vector<std::int64_t>> tris;
+    for (std::size_t t = 0; t < N; ++t) {
+        const double size = t % 7 == 0 ? 0.5 * Spread : 0.02 * Spread;
+        const d::Vec3 c{rCentre[0] + uni(-Spread, Spread), rCentre[1] + uni(-Spread, Spread),
+                        rCentre[2] + uni(-Spread, Spread)};
+        for (int k = 0; k < 3; ++k)
+            pts.push_back({c[0] + (t % 11 == 0 ? 0.0 : uni(-size, size)),
+                           c[1] + (t % 11 == 0 ? 0.0 : uni(-size, size)), c[2] + uni(-size, size)});
+        const auto b = static_cast<std::int64_t>(3 * t);
+        tris.push_back({b, b + 1, b + 2});
+    }
+    return mt::make_mesh(std::move(pts), "triangle", std::move(tris));
+}
+
+// A sphere's points cubed componentwise (shifted to [0, 2] first): tiny
+// triangles at one corner, large ones at the other.
+Mesh graded_sphere() {
+    const Mesh sphere = uv_sphere(1.0, 24, 48);
+    std::vector<std::vector<double>> pts;
+    const double* p = sphere.Points().As<double>();
+    for (std::size_t i = 0; i < sphere.NumPoints(); ++i) {
+        std::vector<double> q(3);
+        for (int k = 0; k < 3; ++k) {
+            const double x = p[3 * i + k] + 1.0;  // [0, 2]
+            q[static_cast<std::size_t>(k)] = x * x * x - 3.0;
+        }
+        pts.push_back(std::move(q));
+    }
+    std::vector<std::vector<std::int64_t>> tris;
+    const auto block = sphere.Cells(0);
+    const std::int64_t* c = block.Conn().As<std::int64_t>();
+    for (std::size_t t = 0; t < block.NumCells(); ++t)
+        tris.push_back({c[3 * t], c[3 * t + 1], c[3 * t + 2]});
+    return mt::make_mesh(std::move(pts), "triangle", std::move(tris));
+}
+
+void expect_brute_force_agreement(const Mesh& rSurface, const std::vector<d::Vec3>& rQueries,
+                                  double Cell) {
+    const d::TriangleSoup soup = d::build_triangle_soup(rSurface, "");
+    SurfaceDistanceOptions o;
+    o.mGridCellSize = Cell;
+    const d::DistanceQuery query = d::build_distance_query(soup, o);
+    const std::vector<d::SurfaceProjection> got = d::query_surface_projections(query, rQueries);
+    const std::vector<d::ClosestPointHit> closest = d::query_closest_points(query, rQueries);
+    ASSERT_EQ(got.size(), rQueries.size());
+    for (std::size_t i = 0; i < rQueries.size(); ++i) {
+        const BruteNearest want = brute_nearest(soup, rQueries[i]);
+        ASSERT_EQ(got[i].mTriangle, want.mTri) << "cell " << Cell << ", query " << i;
+        for (int k = 0; k < 3; ++k) {
+            ASSERT_EQ(got[i].mPoint[k], want.mHit.mPoint[k]) << "cell " << Cell << ", query " << i;
+            ASSERT_EQ(closest[i].mPoint[k], want.mHit.mPoint[k]);
+        }
+        ASSERT_EQ(got[i].mDistance, std::sqrt(want.mHit.mDistanceSq));
+        ASSERT_EQ(closest[i].mDistance, std::sqrt(want.mHit.mDistanceSq));
+        ASSERT_EQ(got[i].mFeature, want.mHit.mFeature);
+    }
+}
+
+}  // namespace
+
+TEST(SurfaceDistance, TheSearchFindsWhatAScanOfEveryTriangleFinds) {
+    // The tree prunes every node whose box is farther than the best hit
+    // (roadmap 5.3); the answer must still be the minimum over every triangle
+    // under the total order, ties included: near, deep inside, far outside,
+    // around negative coordinates and far from the origin. The cell sizes are
+    // the ignored `mGridCellSize` of the grid the tree replaced.
+    std::mt19937 rng(7);
+    const auto queries = [&](double Lo, double Hi, std::size_t N) {
+        std::vector<d::Vec3> q(N);
+        for (auto& p : q)
+            for (double& c : p)
+                c = Lo + (Hi - Lo) * (static_cast<double>(rng()) / 4294967295.0);
+        return q;
+    };
+    struct Case {
+        Mesh mSurface;
+        std::vector<d::Vec3> mQueries;
+    };
+    std::vector<Case> cases;
+    cases.push_back({box_mesh(1.0), sample_lattice(-3.0, 3.0, 9)});
+    cases.push_back({uv_sphere(1.0, 16, 32), queries(-1.5, 1.5, 300)});
+    cases.push_back({random_soup(400, 2.0, {-5.0, -7.0, -3.0}, 3), queries(-12.0, 4.0, 300)});
+    cases.push_back({random_soup(200, 1.0, {1e4, -2e4, 3e4}, 5), queries(-1.0, 1.0, 50)});
+    for (auto& rQ : cases.back().mQueries)
+        rQ = {rQ[0] * 3.0 + 1e4, rQ[1] * 3.0 - 2e4, rQ[2] * 3.0 + 3e4};
+    cases.push_back({graded_sphere(), queries(-4.0, 6.0, 300)});
+    for (const Case& rCase : cases)
+        for (double cell : {0.0, 0.013, 0.37, 5.0})
+            expect_brute_force_agreement(rCase.mSurface, rCase.mQueries, cell);
+}
+
+TEST(SurfaceDistance, ABandStillReturnsTheNearestWithinIt) {
+    // The band only stops nodes beyond it being opened: a query whose nearest
+    // triangle is within the band gets exactly the unbanded answer, the rest
+    // are clamped.
+    const Mesh surface = random_soup(300, 2.0, {0.0, 0.0, 0.0}, 11);
+    std::mt19937 rng(13);
+    std::vector<d::Vec3> pts(400);
+    for (auto& p : pts)
+        for (double& c : p)
+            c = -4.0 + 8.0 * (static_cast<double>(rng()) / 4294967295.0);
+    SurfaceDistanceOptions unbanded;
+    unbanded.mSign = SdfSign::Unsigned;
+    SurfaceDistanceOptions banded = unbanded;
+    banded.mBand = 0.4;
+    const d::TriangleSoup soup = d::build_triangle_soup(surface, "");
+    const d::DistanceQuery query = d::build_distance_query(soup, unbanded);
+    const auto all = d::query_distances(query, pts, unbanded);
+    const auto band = d::query_distances(query, pts, banded);
+    std::size_t inside = 0;
+    for (std::size_t i = 0; i < pts.size(); ++i) {
+        if (all[i].mSignedDistance <= 0.4) {
+            ++inside;
+            EXPECT_EQ(band[i].mSignedDistance, all[i].mSignedDistance);
+            EXPECT_EQ(band[i].mSourceCell, all[i].mSourceCell);
+            EXPECT_TRUE(band[i].mInBand);
+        } else {
+            EXPECT_EQ(band[i].mSignedDistance, 0.4);
+            EXPECT_EQ(band[i].mSourceCell, -1);
+            EXPECT_FALSE(band[i].mInBand);
+        }
+    }
+    EXPECT_GT(inside, 20u);
+    EXPECT_LT(inside, pts.size());
+}
+
+TEST(SurfaceDistance, TheTreeHoldsEveryTriangleOnceInsideItsBoxes) {
+    // The accelerator's own invariants: every triangle in exactly one leaf,
+    // leaves of at most four, every box bounding its triangles' corners and
+    // its children's boxes, and the same tree from the same soup.
+    const d::TriangleSoup soup =
+        d::build_triangle_soup(random_soup(997, 3.0, {1.0, -2.0, 0.5}, 17), "");
+    const d::DistanceQuery query = d::build_distance_query(soup, SurfaceDistanceOptions{});
+    const d::SurfaceBvh& bvh = query.mBvh;
+    ASSERT_EQ(bvh.mOrder.size(), soup.NumTriangles());
+    std::vector<int> seen(soup.NumTriangles(), 0);
+    for (std::size_t i = 0; i < bvh.mNodes.size(); ++i) {
+        const d::SurfaceBvhNode& node = bvh.mNodes[i];
+        const auto inside = [&](const d::Vec3& rP) {
+            for (int k = 0; k < 3; ++k)
+                if (rP[k] < node.mLo[k] || rP[k] > node.mHi[k])
+                    return false;
+            return true;
+        };
+        for (std::int64_t j = 0; j < node.mCount; ++j) {
+            const auto t =
+                static_cast<std::size_t>(bvh.mOrder[static_cast<std::size_t>(node.mBegin + j)]);
+            for (int c = 0; c < 3; ++c)
+                ASSERT_TRUE(inside(soup.mCorners[3 * t + static_cast<std::size_t>(c)]));
+            if (node.mRight < 0)
+                ++seen[t];
+        }
+        if (node.mRight < 0) {
+            EXPECT_LE(node.mCount, 4);
+            continue;
+        }
+        const d::SurfaceBvhNode& left = bvh.mNodes[i + 1];
+        const d::SurfaceBvhNode& right = bvh.mNodes[static_cast<std::size_t>(node.mRight)];
+        EXPECT_EQ(left.mBegin, node.mBegin);
+        EXPECT_EQ(left.mCount + right.mCount, node.mCount);
+        EXPECT_EQ(right.mBegin, node.mBegin + left.mCount);
+    }
+    for (std::size_t t = 0; t < seen.size(); ++t)
+        ASSERT_EQ(seen[t], 1) << "triangle " << t;
+    const d::DistanceQuery again = d::build_distance_query(soup, SurfaceDistanceOptions{});
+    EXPECT_EQ(again.mBvh.mOrder, bvh.mOrder);
 }
 
 // --- what is wrong with the surface -----------------------------------------

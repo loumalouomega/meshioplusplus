@@ -216,13 +216,15 @@ SlotRuns fm_group_slots(const Mesh& rMesh, const FmSlots& rSlots,
         for (auto s = rSlots.mCellFaceStart[c]; s < rSlots.mCellFaceStart[c + 1]; ++s)
             rCellOfSlot[static_cast<std::size_t>(s)] = static_cast<std::int64_t>(c);
     });
-    std::vector<FacetKey> keys(n_slots);
-    parallel_for(n_slots, [&](std::size_t s) {
-        keys[s] = FacetKey(rSlots.mSlotNodes.data() + rSlots.mSlotStart[s],
-                           static_cast<std::size_t>(rSlots.mSlotSize[s]));
-    });
-    return group_facet_slots(
-        keys, [](const FacetKey& rK) -> const FacetKey& { return rK; }, rMesh.NumPoints());
+    // The keys straight from the slot buffer, flattened by group_facets: no
+    // FacetKey per slot (roadmap 5.4.3).
+    return group_facets(
+        n_slots, rMesh.NumPoints(),
+        [&](std::size_t s) { return static_cast<std::size_t>(rSlots.mSlotSize[s]); },
+        [&](std::size_t s, std::int64_t* pOut) {
+            const std::int64_t* p = rSlots.mSlotNodes.data() + rSlots.mSlotStart[s];
+            std::copy(p, p + rSlots.mSlotSize[s], pOut);
+        });
 }
 
 }  // namespace

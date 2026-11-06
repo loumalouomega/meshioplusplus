@@ -50,7 +50,7 @@ On Linux and macOS (v18.0.0) the libraries above are static archives with hidden
 
 `[addons]` installs all three at once. They are not part of `[all]`, which stays h5py, netCDF4 and polyscope: the add-ons are pinned to the exact release, so `pip install -e ".[all]"` from a source checkout could not resolve them until they are on PyPI at that version, and `[all]` would otherwise add LGPL code to an everything-install. Without an add-on, each operation raises `NotImplementedError` naming it (or, for `fit_cad` and `tetrahedralize`, uses its native backend). Upgrading `meshioplusplus` alone leaves an older add-on behind; the version check refuses it by name, and `pip install -U "meshioplusplus[addons]"` upgrades them together. v18.0.0 breaks pip installs that used these backends without installing the extras.
 
-Linux wheels are built with the SEQ parallel backend. macOS and Windows wheels use OpenMP; the macOS build uses Homebrew's libomp, which delocate is expected to bundle into the wheel (to be confirmed in a wheel listing).
+Linux wheels are built with the THREADS parallel backend, a pool of `std::thread` workers inside the core that needs no runtime library (gcc-toolset's libgomp cannot be linked statically, which kept them SEQ before). macOS and Windows wheels use OpenMP; the macOS build uses Homebrew's libomp, which delocate is expected to bundle into the wheel (to be confirmed in a wheel listing). `MESHIOPLUSPLUS_NUM_THREADS` (else `OMP_NUM_THREADS`) sets the THREADS pool's size.
 
 The base wheel is licensed `MIT AND MPL-2.0` (Eigen); the add-on wheels are as the table says, as [`LICENSE-BINARIES.md`](https://github.com/loumalouomega/meshioplusplus/blob/master/LICENSE-BINARIES.md) states. Each wheel ships `LICENSE`, `LICENSE-BINARIES.md` and `THIRD_PARTY_NOTICES.md` in its `.dist-info/licenses` directory, and the add-on adds the OpenCASCADE licence texts. Because each add-on keeps its LGPL library as shared objects, a recipient can replace the library without rebuilding anything.
 
@@ -141,16 +141,18 @@ The C++ core parallelizes its hot loops through a compile-time-selected backend 
 -DMESHIOPLUSPLUS_PARALLEL_BACKEND=OPENMP
 -DMESHIOPLUSPLUS_PARALLEL_BACKEND=TBB
 -DMESHIOPLUSPLUS_PARALLEL_BACKEND=KOKKOS   # Kokkos host execution space (bring-your-own)
+-DMESHIOPLUSPLUS_PARALLEL_BACKEND=THREADS  # a std::thread pool in the core (what the Linux wheels build)
 -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ      # sequential
 ```
 
 Notes:
 
-- `AUTO` (the default) prefers OpenMP because it is the portable choice — libgomp on manylinux (the Linux wheels are built SEQ instead), built into MSVC, libomp on macOS — and needs no TBB. It falls back to the STL backend, then to sequential.
+- `AUTO` (the default) prefers OpenMP because it is the portable choice — libgomp on manylinux (the Linux wheels are built THREADS instead), built into MSVC, libomp on macOS — and needs no TBB. It falls back to the STL backend, then to sequential.
 - With GCC/libstdc++ the STL backend requires TBB (`apt install libtbb-dev`); when TBB is unusable, CMake warns and falls back to the sequential backend. This is why `AUTO` does not pick STL first: without TBB it runs sequentially.
 - `_core.__parallel_backend__` reports the backend actually compiled in.
 - MSVC's STL backend needs nothing extra; Apple's libc++ has no parallel STL (use OpenMP via `brew install libomp`, or SEQ).
 - `KOKKOS` is bring-your-own, like KaHIP: it is never picked by `AUTO`, and CMake locates an installed [Kokkos](https://kokkos.org) via `find_package(Kokkos CONFIG)` — point `Kokkos_DIR` (or `CMAKE_PREFIX_PATH`) at the install prefix. It runs on Kokkos's **host** execution space deliberately: meshio++'s loop bodies work on host memory, so device (CUDA/HIP/SYCL) dispatch is not meaningful here — GPU data movement is what the [DLPack/CuPy handoff](gpu.md) is for. meshio++ initializes Kokkos lazily only if the embedding application hasn't already done so (apps wanting full lifecycle control should call `Kokkos::initialize()` before their first meshio++ call). Not available under Emscripten.
+- `THREADS` is a pool of `std::thread` workers inside the core library (`src/cpp/src/parallel_threads.cpp`): it needs nothing beyond the C++ standard library, so it links statically where libgomp cannot, which is why the Linux wheels build it. It is never picked by `AUTO`. The pool is created on first use and sized from `MESHIOPLUSPLUS_NUM_THREADS`, else `OMP_NUM_THREADS`, else the hardware; a loop run inside a parallel loop, or from a second thread while the pool is busy, runs on its calling thread; the child of a `fork()` builds its own pool. Results are the same at every thread count, as on every backend. Not available under Emscripten.
 - The design is open to new backends (HPX, …): one CMake branch plus one `#elif` block in `src/cpp/include/meshioplusplus/parallel.hpp`.
 
 ### Logging

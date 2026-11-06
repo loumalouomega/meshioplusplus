@@ -1,7 +1,9 @@
 // Interfaces and contact operations (roadmap §5.2).
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -308,4 +310,54 @@ TEST(SplitInterface, BothSideEntriesStillCreateOneCohesiveCell) {
     options.mAddCohesive = true;
     const auto result = split_interface(mesh, cut, options);
     EXPECT_EQ(result.mNumCohesiveCells, 1);
+}
+
+TEST(FindInterface, ProximityTakesAPartnerExactlyAtTheTolerance) {
+    // The candidate grid grows each target's box by the tolerance and a
+    // rounding slack (roadmap 5.4.2): a partner exactly at the tolerance, which
+    // the full scan accepted (`<=`), must still be a candidate.
+    Mesh a = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, "tetra", {{0, 1, 2, 3}});
+    Mesh b = mt::make_mesh({{0, 0, -0.25}, {0, 1, -0.25}, {1, 0, -0.25}, {0, 0, -1}}, "tetra",
+                           {{0, 1, 2, 3}});
+    a.AddRegion(cell_region("part", {0}));
+    b.AddRegion(cell_region("part", {0}));
+    RegionSelector part;
+    part.mName = "part";
+    FindInterfaceOptions options;
+    options.mMode = InterfaceMode::Proximity;
+    options.mAngleTolerance = 5.0;
+    options.mGapTolerance = 0.25;
+    EXPECT_EQ(find_interface(a, part, b, part, options).mReport.mNumPairs, 1);
+    options.mGapTolerance = 0.125;
+    options.mOverlapTolerance = 0.125;
+    EXPECT_EQ(find_interface(a, part, b, part, options).mReport.mNumPairs, 1);
+    options.mOverlapTolerance = 0.0;
+    options.mGapTolerance = 0.2499;
+    EXPECT_EQ(find_interface(a, part, b, part, options).mReport.mNumPairs, 0);
+}
+
+TEST(FindInterface, ProximityWithANonFiniteTargetPointScansEveryTarget) {
+    // A target facet with a NaN corner can still project to a finite distance
+    // through its other corners, so the grid is not used and every target is
+    // a candidate; the finite partner is found as before.
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    Mesh a = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, "tetra", {{0, 1, 2, 3}});
+    Mesh b = mt::make_mesh({{0, 0, 0}, {0, 1, 0}, {1, 0, 0}, {0, 0, -1}, {5, 5, nan}}, "tetra",
+                           {{0, 1, 2, 3}, {0, 1, 3, 4}});
+    a.AddRegion(cell_region("part", {0}));
+    b.AddRegion(cell_region("part", {0}));
+    b.AddRegion(cell_region("both", {0, 1}));
+    RegionSelector part;
+    part.mName = "part";
+    RegionSelector both;
+    both.mName = "both";
+    FindInterfaceOptions options;
+    options.mMode = InterfaceMode::Proximity;
+    options.mGapTolerance = 1e-10;
+    options.mAngleTolerance = 5.0;
+    const auto clean = find_interface(a, part, b, part, options);
+    const auto with_nan = find_interface(a, part, b, both, options);
+    EXPECT_EQ(clean.mReport.mNumPairs, 1);
+    EXPECT_EQ(with_nan.mReport.mNumPairs, 1);
+    EXPECT_EQ(with_nan.mReport.mArea, clean.mReport.mArea);
 }

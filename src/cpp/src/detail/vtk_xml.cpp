@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <string_view>
 #include <system_error>
 #include <type_traits>
 
@@ -31,6 +32,8 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "chunked_parse.hpp"
+#include "parallel_workers.hpp"
 #include "row_writer.hpp"
 #include "vtu_decode.hpp"
 #include "typed_view.hpp"
@@ -204,6 +207,45 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
     std::vector<std::int64_t> iv;
     const char* p = pText ? pText : "";
     const char* const last = p + std::strlen(p);
+    // A large array is parsed in parallel chunks straight into the array
+    // (roadmap 5.7.2), each token by the parser the loop below uses; a token
+    // that parser would not take whole sends the array to that loop, so the
+    // values -- and where a bad token cuts the array short -- are unchanged.
+    if (static_cast<std::size_t>(last - p) >= (std::size_t{1} << 20) && parallel_workers() > 1) {
+        const std::string_view text(p, static_cast<std::size_t>(last - p));
+        const std::size_t total = count_tokens(text);
+        if (chunked_parse_worthwhile(total)) {
+            NDArray a = NDArray::Uninit(dt, {total});
+            bool parsed = false;
+            dispatch_dtype(dt, [&]<class T>() {
+                T* out = a.As<T>();
+                parsed = parse_tokens(text, 0, total, [&](std::string_view Token, std::size_t i) {
+                             const char* b = Token.data();
+                             const char* e = b + Token.size();
+                             if (isflt) {
+                                 const char* fend = nullptr;
+                                 const double x = detail::parse_double(b, fend);
+                                 if (fend != e)
+                                     return false;
+                                 out[i] = static_cast<T>(x);
+                             } else if (dt == DType::UInt64) {
+                                 std::uint64_t x = 0;
+                                 if (vtkxml_parse_decimal(b, e, x) != e)
+                                     return false;
+                                 out[i] = static_cast<T>(static_cast<std::int64_t>(x));
+                             } else {
+                                 std::int64_t x = 0;
+                                 if (vtkxml_parse_decimal(b, e, x) != e)
+                                     return false;
+                                 out[i] = static_cast<T>(x);
+                             }
+                             return true;
+                         }) != std::string_view::npos;
+            });
+            if (parsed)
+                return a;
+        }
+    }
     {
         // Tokens counted first: the values are then parsed into buffers
         // reserved once, not grown push_back by push_back (roadmap §3).

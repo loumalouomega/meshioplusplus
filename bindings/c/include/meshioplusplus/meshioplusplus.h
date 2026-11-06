@@ -2758,10 +2758,9 @@ typedef struct mio_sdf_opts {
     /** Clamp distances beyond this and mark them in sdf:band; <= 0 is the full field. */
     double band;
     /**
-     * Bucket size of the search grid; 0 derives one from the triangle sizes.
-     * A tuning knob only: every candidate comparison is totally ordered on
-     * (squared distance, triangle id), so the bucket size provably cannot change
-     * the answer -- which is also what makes this a usable test knob.
+     * Ignored since ABI 40: the bucket size of the search grid that a
+     * bounding-volume hierarchy replaced. Kept for layout and source
+     * compatibility; no value changes the answer.
      */
     double grid_cell_size;
     /** Refuse a winding-number query whose n_queries * n_triangles exceeds this. */
@@ -3842,7 +3841,7 @@ typedef struct mio_shrinkwrap_opts {
     const char* target_region;
     double offset;         /**< signed offset along the hit feature's unit pseudonormal */
     double max_distance;   /**< farther points are left alone; <= 0 means unlimited */
-    double grid_cell_size; /**< accelerator bucket size; 0 derives one (never changes the answer) */
+    double grid_cell_size; /**< ignored since ABI 40 (the replaced search grid's bucket size) */
     int32_t normal_weight; /**< a mio_sdf_weight; MIO_SDF_WEIGHT_ANGLE by default */
     int32_t record_distance;     /**< nonzero attaches shrinkwrap:distance */
     int32_t record_closest_cell; /**< nonzero attaches shrinkwrap:closest_cell */
@@ -7386,7 +7385,7 @@ typedef struct mio_hausdorff_opts {
     /** 0 samples vertices only; s > 0 also the centroids of s*s sub-triangles
      *  of every triangle. */
     int64_t face_samples;
-    double grid_cell_size; /**< nearest-triangle bucket size; 0 = automatic */
+    double grid_cell_size; /**< ignored since ABI 40 (the replaced search grid's bucket size) */
     int64_t reserved[6];   /**< must be zero; room for additive growth */
 } mio_hausdorff_opts;
 

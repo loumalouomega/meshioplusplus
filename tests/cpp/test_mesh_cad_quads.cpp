@@ -34,9 +34,7 @@
 // External includes
 #include <gtest/gtest.h>
 
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-#include <omp.h>
-#endif
+#include "thread_sweep.hpp"
 
 // Project includes
 #include "brep_solids.hpp"
@@ -212,16 +210,16 @@ TEST(MeshCadQuads, TheBoxAndTheCylinderAreAllQuad) {
             ++per[static_cast<std::size_t>(mio::detail::read_int(face, c))];
         for (const std::int64_t n : per)
             EXPECT_GT(n, 0) << r_s.mName;
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
         const std::uint64_t ref = digest(m);
-        const int saved = omp_get_max_threads();
+        const int saved = mio_test::max_threads();
         for (int threads : {1, 2, 4}) {
-            omp_set_num_threads(threads);
+            mio_test::set_threads(threads);
             EXPECT_EQ(digest(run(r_s.mB, sized(0.2, 25.0), mio::MeshCadQuads::All).mResult.mMesh),
                       ref)
                 << threads;
         }
-        omp_set_num_threads(saved);
+        mio_test::set_threads(saved);
 #endif
     }
 }
@@ -298,19 +296,19 @@ TEST(MeshCadQuads, AMatchingLeavesFewerTriangles) {
         EXPECT_GT(matched.mMinQuadScaledJacobian, 0.3);
         EXPECT_TRUE(watertight(rm.mMesh));
         EXPECT_TRUE(watertight(rg.mMesh));
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
         ex.mQuadPairs = mio::MeshCadQuadPairs::Matching;
         const std::uint64_t ref = digest(rm.mMesh);
-        const int saved = omp_get_max_threads();
+        const int saved = mio_test::max_threads();
         for (int threads : {1, 4}) {
-            omp_set_num_threads(threads);
+            mio_test::set_threads(threads);
             EXPECT_EQ(
                 digest(mio::mesh_cad_surface(sphere, sized(h, 25.0), mio::MeshCadSizeSources{}, ex)
                            .mMesh),
                 ref)
                 << threads;
         }
-        omp_set_num_threads(saved);
+        mio_test::set_threads(saved);
 #endif
     }
 }

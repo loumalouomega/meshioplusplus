@@ -34,7 +34,7 @@
 TEST(Parallel, BackendName) {
     std::string name = meshioplusplus::parallel_backend_name();
     EXPECT_TRUE(name == "seq" || name == "stl" || name == "openmp" || name == "tbb" ||
-                name == "kokkos")
+                name == "kokkos" || name == "threads")
         << name;
 }
 

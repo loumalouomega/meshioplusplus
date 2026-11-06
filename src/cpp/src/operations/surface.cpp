@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -103,22 +104,12 @@ bool surface_skin_block_supported(CellType type, bool is_ragged) {
 
 // --- facet key ----------------------------------------------------------------
 //
-// detail::FacetKey rather than the fixed array<int64_t,4> this used before
-// v9.16.0: a polyhedron's face can have any number of corners. It keeps a
-// 4-entry inline fast path, so a triangle or quad still costs no allocation and
-// the rectangular path is unchanged. Sharing ONE key type across both is what
-// lets a hexahedron and a polyhedron that meet on a face cancel each other out
-// -- with two key types they would each report that face as boundary.
-
-using SurfaceFacetKey = detail::FacetKey;
-
-SurfaceFacetKey surface_facet_key(const NDArray& rConn, std::size_t rowOffset,
-                                  const SurfaceFacetDef& rFacet) {
-    std::array<std::int64_t, 4> ids{};
-    for (std::uint8_t k = 0; k < rFacet.mNumCorners; ++k)
-        ids[k] = detail::read_int(rConn, rowOffset + rFacet.mNodes[k]);
-    return SurfaceFacetKey(ids.data(), rFacet.mNumCorners);
-}
+// A facet's key is the set of its corner ids, grouped by
+// detail::group_facets: four or fewer ids are packed narrow, a polyhedron's
+// n-gon faces go through sorted rows. Every facet of the mesh goes into ONE
+// key space, which is what lets a hexahedron and a polyhedron that meet on a
+// face cancel each other out -- with two key spaces they would each report that
+// face as boundary.
 
 // --- canonical output buckets -----------------------------------------------
 
@@ -166,22 +157,14 @@ struct SurfaceBlockDesc {
     std::size_t mNumCells = 0;
     std::vector<SurfaceFacetDef> mFacets;  // rectangular blocks only
     std::size_t mFacetsPerCell = 0;        // rectangular blocks only
-    std::size_t mFirstFacet = 0;           // offset into the flat record buffer
+    std::size_t mFirstFacet = 0;           // the block's first facet slot
     std::int64_t mGlobalCellBase = 0;      // input-cell index of this block's cell 0
-    // Polyhedron blocks: faces per cell vary, so the flat record offsets are
+    // Polyhedron blocks: faces per cell vary, so the slot offsets are
     // tabulated instead of computed as cell * mFacetsPerCell.
     bool mPolyhedron = false;
-    std::size_t mBlock = 0;               // index into the mesh's cell blocks
-    std::vector<std::size_t> mFaceStart;  // mNumCells + 1 record offsets
-};
-
-// One facet occurrence recorded in phase 1 (keys built in parallel).
-struct SurfaceFacetRecord {
-    SurfaceFacetKey mKey;
-    std::uint32_t mDesc;
-    std::uint32_t mCell;
-    std::uint32_t mSlot;
-    std::int64_t mParent;
+    std::size_t mBlock = 0;                  // index into the mesh's cell blocks
+    std::vector<std::size_t> mFaceStart;     // mNumCells + 1 slot offsets
+    std::vector<std::uint32_t> mCellOfFace;  // per face slot of the block: its cell
 };
 
 }  // namespace
@@ -285,50 +268,61 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
         descs.push_back(std::move(d));
     }
 
-    // --- phase 1: build facet keys into disjoint slots (parallel-safe) ---
-    std::vector<SurfaceFacetRecord> recs(total_facets);
-    for (std::uint32_t di = 0; di < descs.size(); ++di) {
-        const SurfaceBlockDesc& d = descs[di];
-        if (d.mPolyhedron) {
-            const auto cb = rMesh.Cells(d.mBlock);
-            parallel_for(d.mNumCells, [&, di](std::size_t c) {
-                const std::size_t nf = cb.NumFaces(c);
-                for (std::size_t f = 0; f < nf; ++f) {
-                    const auto face = cb.Face(c, f);
-                    SurfaceFacetRecord& r = recs[d.mFirstFacet + d.mFaceStart[c] + f];
-                    r.mKey = SurfaceFacetKey(face.first, face.second);
-                    r.mDesc = di;
-                    r.mCell = static_cast<std::uint32_t>(c);
-                    r.mSlot = static_cast<std::uint32_t>(f);
-                    r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(c);
-                }
-            });
+    // --- phase 1: count each facet key's occurrences ---
+    // Slot ri is facet (cell, slot) of the block whose range holds it; the
+    // keys are flattened by detail::group_facets, with no record per facet
+    // (roadmap 5.4.3). A key's count is the size of its run: parallel, and the
+    // same on every thread count.
+    std::vector<std::size_t> first_facets(descs.size());
+    for (std::size_t di = 0; di < descs.size(); ++di)
+        first_facets[di] = descs[di].mFirstFacet;
+    using SurfaceCellView = decltype(rMesh.Cells(0));
+    std::vector<std::optional<SurfaceCellView>> poly_blocks(descs.size());
+    for (std::size_t di = 0; di < descs.size(); ++di) {
+        SurfaceBlockDesc& d = descs[di];
+        if (!d.mPolyhedron)
             continue;
-        }
-        const NDArray& conn = *d.mpConn;
-        const std::size_t npc = d.mNpc;
-        const std::size_t fpc = d.mFacetsPerCell;
-        const std::size_t n = d.mNumCells * fpc;
-        parallel_for(n, [&, di](std::size_t j) {
-            const std::size_t cell = j / fpc;
-            const std::size_t slot = j % fpc;
-            SurfaceFacetRecord& r = recs[d.mFirstFacet + j];
-            r.mKey = surface_facet_key(conn, cell * npc, d.mFacets[slot]);
-            r.mDesc = di;
-            r.mCell = static_cast<std::uint32_t>(cell);
-            r.mSlot = static_cast<std::uint32_t>(slot);
-            r.mParent = d.mGlobalCellBase + static_cast<std::int64_t>(cell);
+        poly_blocks[di].emplace(rMesh.Cells(d.mBlock));
+        d.mCellOfFace.resize(d.mFaceStart.back());
+        parallel_for(d.mNumCells, [&](std::size_t c) {
+            for (std::size_t f = d.mFaceStart[c]; f < d.mFaceStart[c + 1]; ++f)
+                d.mCellOfFace[f] = static_cast<std::uint32_t>(c);
         });
     }
-
-    // --- phase 2, pass A: count key occurrences ---
-    // A key's count is the size of its run once (key, slot) pairs are sorted
-    // (detail/slot_runs.hpp): parallel, and the same on every thread count.
+    const auto desc_of = [&](std::size_t ri) -> std::size_t {
+        if (first_facets.size() == 1)
+            return 0;
+        return static_cast<std::size_t>(
+                   std::upper_bound(first_facets.begin(), first_facets.end(), ri) -
+                   first_facets.begin()) -
+               1;
+    };
+    const auto size_of = [&](std::size_t ri) -> std::size_t {
+        const SurfaceBlockDesc& d = descs[desc_of(ri)];
+        const std::size_t j = ri - d.mFirstFacet;
+        if (d.mPolyhedron) {
+            const std::size_t c = d.mCellOfFace[j];
+            return poly_blocks[desc_of(ri)]->Face(c, j - d.mFaceStart[c]).second;
+        }
+        return d.mFacets[j % d.mFacetsPerCell].mNumCorners;
+    };
+    const auto fill = [&](std::size_t ri, std::int64_t* pOut) {
+        const std::size_t di = desc_of(ri);
+        const SurfaceBlockDesc& d = descs[di];
+        const std::size_t j = ri - d.mFirstFacet;
+        if (d.mPolyhedron) {
+            const std::size_t c = d.mCellOfFace[j];
+            const auto face = poly_blocks[di]->Face(c, j - d.mFaceStart[c]);
+            std::copy(face.first, face.first + face.second, pOut);
+            return;
+        }
+        const std::size_t row_offset = (j / d.mFacetsPerCell) * d.mNpc;
+        const SurfaceFacetDef& facet = d.mFacets[j % d.mFacetsPerCell];
+        for (std::uint8_t k = 0; k < facet.mNumCorners; ++k)
+            pOut[k] = detail::read_int(*d.mpConn, row_offset + facet.mNodes[k]);
+    };
     const std::vector<std::uint32_t> face_count = detail::slot_multiplicity(
-        detail::group_facet_slots(
-            recs, [](const SurfaceFacetRecord& rR) -> const SurfaceFacetKey& { return rR.mKey; },
-            rMesh.NumPoints()),
-        recs.size());
+        detail::group_facets(total_facets, rMesh.NumPoints(), size_of, fill), total_facets);
 
     // --- phase 2, pass B: emit boundary facets (count == 1) in stored order ---
     const std::size_t num_out = surface_num_out_types(mode);
@@ -343,46 +337,58 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
     // order, a polyhedron's face index).
     std::vector<std::vector<std::array<std::int64_t, 2>>> out_source(num_out);
     std::vector<std::array<std::int64_t, 2>> poly_source;
-    for (std::size_t ri = 0; ri < recs.size(); ++ri) {
-        const SurfaceFacetRecord& r = recs[ri];
-        if (face_count[ri] != 1)
-            continue;
-        const SurfaceBlockDesc& d = descs[r.mDesc];
+    // In slot order: block by block, cell by cell, facet by facet.
+    for (std::size_t di = 0; di < descs.size(); ++di) {
+        const SurfaceBlockDesc& d = descs[di];
         if (d.mPolyhedron) {
-            const auto cb = rMesh.Cells(d.mBlock);
-            const auto face =
-                cb.Face(static_cast<std::size_t>(r.mCell), static_cast<std::size_t>(r.mSlot));
-            if (face.second == 3 || face.second == 4) {
-                const std::size_t bucket = surface_out_type_index(
-                    mode, face.second == 3 ? CellType::Triangle : CellType::Quad);
-                std::vector<std::int64_t>& dst = out_conn[bucket];
-                for (std::size_t k = 0; k < face.second; ++k)
-                    dst.push_back(face.first[k]);
-                if (recordParentIds)
-                    out_parent[bucket].push_back(r.mParent);
-                out_source[bucket].push_back({r.mParent, static_cast<std::int64_t>(r.mSlot)});
-            } else {
-                poly_rows.emplace_back(face.first, face.first + face.second);
-                if (recordParentIds)
-                    poly_parent.push_back(r.mParent);
-                poly_source.push_back({r.mParent, static_cast<std::int64_t>(r.mSlot)});
+            const auto& cb = *poly_blocks[di];
+            for (std::size_t c = 0; c < d.mNumCells; ++c) {
+                const std::int64_t parent = d.mGlobalCellBase + static_cast<std::int64_t>(c);
+                for (std::size_t f = 0; f < d.mFaceStart[c + 1] - d.mFaceStart[c]; ++f) {
+                    if (face_count[d.mFirstFacet + d.mFaceStart[c] + f] != 1)
+                        continue;
+                    const auto face = cb.Face(c, f);
+                    if (face.second == 3 || face.second == 4) {
+                        const std::size_t bucket = surface_out_type_index(
+                            mode, face.second == 3 ? CellType::Triangle : CellType::Quad);
+                        std::vector<std::int64_t>& dst = out_conn[bucket];
+                        for (std::size_t k = 0; k < face.second; ++k)
+                            dst.push_back(face.first[k]);
+                        if (recordParentIds)
+                            out_parent[bucket].push_back(parent);
+                        out_source[bucket].push_back({parent, static_cast<std::int64_t>(f)});
+                    } else {
+                        poly_rows.emplace_back(face.first, face.first + face.second);
+                        if (recordParentIds)
+                            poly_parent.push_back(parent);
+                        poly_source.push_back({parent, static_cast<std::int64_t>(f)});
+                    }
+                }
             }
             continue;
         }
         const NDArray& conn = *d.mpConn;
-        const std::size_t row_offset = static_cast<std::size_t>(r.mCell) * d.mNpc;
-        const SurfaceFacetDef& facet = d.mFacets[r.mSlot];
-        const std::uint8_t n_out = linearize ? facet.mNumCorners : facet.mNumNodes;
-        const CellType out_type =
-            linearize ? (facet.mNumCorners == 3 ? CellType::Triangle : CellType::Quad)
-                      : facet.mType;
-        const std::size_t bucket = surface_out_type_index(mode, out_type);
-        std::vector<std::int64_t>& dst = out_conn[bucket];
-        for (std::uint8_t k = 0; k < n_out; ++k)
-            dst.push_back(detail::read_int(conn, row_offset + facet.mNodes[k]));
-        if (recordParentIds)
-            out_parent[bucket].push_back(r.mParent);
-        out_source[bucket].push_back({r.mParent, static_cast<std::int64_t>(r.mSlot)});
+        const std::size_t fpc = d.mFacetsPerCell;
+        for (std::size_t c = 0; c < d.mNumCells; ++c) {
+            const std::int64_t parent = d.mGlobalCellBase + static_cast<std::int64_t>(c);
+            const std::size_t row_offset = c * d.mNpc;
+            for (std::size_t slot = 0; slot < fpc; ++slot) {
+                if (face_count[d.mFirstFacet + c * fpc + slot] != 1)
+                    continue;
+                const SurfaceFacetDef& facet = d.mFacets[slot];
+                const std::uint8_t n_out = linearize ? facet.mNumCorners : facet.mNumNodes;
+                const CellType out_type =
+                    linearize ? (facet.mNumCorners == 3 ? CellType::Triangle : CellType::Quad)
+                              : facet.mType;
+                const std::size_t bucket = surface_out_type_index(mode, out_type);
+                std::vector<std::int64_t>& dst = out_conn[bucket];
+                for (std::uint8_t k = 0; k < n_out; ++k)
+                    dst.push_back(detail::read_int(conn, row_offset + facet.mNodes[k]));
+                if (recordParentIds)
+                    out_parent[bucket].push_back(parent);
+                out_source[bucket].push_back({parent, static_cast<std::int64_t>(slot)});
+            }
+        }
     }
 
     // --- compaction: keep only referenced points, ascending original index ---

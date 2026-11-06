@@ -119,6 +119,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/facet_index.hpp"
 #include "meshioplusplus/detail/grid_lattice.hpp"
+#include "meshioplusplus/detail/bucket_table.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
@@ -700,11 +701,19 @@ static_assert(sizeof(meshioplusplus::SmoothMethod) == 1,
 // `DistanceQuery`'s bucket grid is a `BucketTable` -- keys, offsets, ids and a
 // flat index in four vectors -- instead of a `SpatialGrid`'s node map
 // (232 -> 272 bytes); `BucketTable` and `BucketView` are new and pinned here.
+// ABI 40 (roadmap 5.3): `DistanceQuery`'s accelerator is a `SurfaceBvh`
+// (two vectors) in place of the `BucketTable` and its `mCellSize`
+// (272 -> 152 bytes); `SurfaceBvh` and `SurfaceBvhNode` are new and pinned
+// here. `BucketTable` stays, for the interpolation family's grids.
 MIO_ABI_LAYOUT(meshioplusplus::detail::FaceLookup, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::FacetIndex, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::BucketTable, 160, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::BucketView, 16, 8);
-MIO_ABI_LAYOUT(meshioplusplus::detail::DistanceQuery, 272, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::SurfaceBvhNode, 72, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::SurfaceBvh, 48, 8);
+MIO_ABI_LAYOUT(meshioplusplus::detail::DistanceQuery, 152, 8);
+static_assert(offsetof(meshioplusplus::detail::DistanceQuery, mFaceNormal) == 56,
+              "DistanceQuery::mFaceNormal moved");
 MIO_ABI_LAYOUT(meshioplusplus::detail::TriangleSoup, 96, 8);
 MIO_ABI_LAYOUT(meshioplusplus::detail::ProvenanceSlotlessWrite, 1, 1);
 

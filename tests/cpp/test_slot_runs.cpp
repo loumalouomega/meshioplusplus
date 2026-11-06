@@ -116,3 +116,97 @@ TEST(SlotRuns, GroupIntRowsKeepsTheFirstOfEachRow) {
         ASSERT_EQ(dup[r] == 0, first) << r;
     }
 }
+
+namespace {
+
+// Facet keys of 0..MaxWidth ids (any order, repeats across slots), some naming
+// ids outside [0, NumPoints) when `Bad`.
+struct SrFacets {
+    std::vector<std::vector<std::int64_t>> mKeys;
+};
+
+SrFacets sr_facets(std::size_t n, std::size_t MaxWidth, std::int64_t NumPoints, bool Bad) {
+    SrFacets out;
+    std::uint64_t s = 0x2545F4914F6CDD1Dull;
+    const auto next = [&] {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        return s;
+    };
+    for (std::size_t i = 0; i < n; ++i) {
+        // Every fourth key repeats an earlier one in another order, so runs
+        // have several slots; the rest are fresh.
+        if (i > 8 && next() % 4 == 0) {
+            std::vector<std::int64_t> k = out.mKeys[next() % i];
+            std::reverse(k.begin(), k.end());
+            out.mKeys.push_back(std::move(k));
+            continue;
+        }
+        const std::size_t w = next() % (MaxWidth + 1);
+        std::vector<std::int64_t> k;
+        for (std::size_t j = 0; j < w; ++j) {
+            std::int64_t id =
+                static_cast<std::int64_t>(next() % static_cast<std::uint64_t>(NumPoints));
+            if (Bad && next() % 50 == 0)
+                id = next() % 2 ? -1 - id : NumPoints + id;
+            k.push_back(id);
+        }
+        out.mKeys.push_back(std::move(k));
+    }
+    // A triangle and the quad it prefixes, a lone empty key and a repeat.
+    out.mKeys.push_back({1, 2, 3});
+    out.mKeys.push_back({3, 2, 1, 4});
+    out.mKeys.push_back({2, 1, 3});
+    out.mKeys.push_back({});
+    return out;
+}
+
+// The runs as sets of slots, compared with the grouping a std::map of the
+// sorted id lists gives: equal keys together, distinct keys apart, and each
+// run's slots ascending with its head the first.
+void sr_check_facets(const SrFacets& rF, std::size_t NumPoints, det::FacetKeyPath Path,
+                     const char* pWhat) {
+    const std::size_t n = rF.mKeys.size();
+    const det::SlotRuns runs = det::group_facets(
+        n, NumPoints, [&](std::size_t i) { return rF.mKeys[i].size(); },
+        [&](std::size_t i, std::int64_t* pOut) {
+            std::copy(rF.mKeys[i].begin(), rF.mKeys[i].end(), pOut);
+        },
+        Path);
+    std::map<std::vector<std::int64_t>, std::vector<std::uint64_t>> want;
+    for (std::size_t i = 0; i < n; ++i) {
+        std::vector<std::int64_t> k = rF.mKeys[i];
+        std::sort(k.begin(), k.end());
+        want[k].push_back(i);
+    }
+    ASSERT_EQ(runs.NumRuns(), want.size()) << pWhat;
+    std::map<std::uint64_t, std::vector<std::uint64_t>> got;
+    for (std::size_t r = 0; r < runs.NumRuns(); ++r) {
+        const std::vector<std::uint64_t> slots(runs.Begin(r), runs.End(r));
+        ASSERT_TRUE(std::is_sorted(slots.begin(), slots.end())) << pWhat;
+        ASSERT_EQ(runs.Head(r), slots.front()) << pWhat;
+        got[slots.front()] = slots;
+    }
+    for (const auto& [key, slots] : want)
+        ASSERT_EQ(got.at(slots.front()), slots) << pWhat;
+}
+
+}  // namespace
+
+TEST(SlotRuns, GroupFacetsMatchesAMapOfSortedKeys) {
+    // Narrow (at most four ids, all valid), wide (forced, or invalid ids) and
+    // rows (wider keys), each against the map.
+    for (const std::size_t width : {std::size_t{2}, std::size_t{3}, std::size_t{4}}) {
+        const SrFacets f = sr_facets(100000, width, 3000, false);
+        sr_check_facets(f, 3000, det::FacetKeyPath::Auto, "narrow");
+        sr_check_facets(f, 3000, det::FacetKeyPath::Wide, "wide");
+        sr_check_facets(f, 3000, det::FacetKeyPath::Rows, "rows");
+    }
+    sr_check_facets(sr_facets(100000, 4, 3000, true), 3000, det::FacetKeyPath::Auto,
+                    "narrow with invalid ids");
+    sr_check_facets(sr_facets(100000, 7, 3000, false), 3000, det::FacetKeyPath::Auto, "rows");
+    sr_check_facets(sr_facets(100000, 7, 3000, true), 3000, det::FacetKeyPath::Auto,
+                    "rows with invalid ids");
+    sr_check_facets(SrFacets{}, 10, det::FacetKeyPath::Auto, "empty");
+}

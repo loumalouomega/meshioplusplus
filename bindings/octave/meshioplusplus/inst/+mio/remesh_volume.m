@@ -29,7 +29,7 @@ function r = remesh_volume(mesh, varargin)
 %     'sign'              'pseudonormal' or 'winding-number' ('pseudonormal')
 %     'watertight_check'  'off', 'warn' or 'error' ('warn')
 %     'surface_region'    restrict the surface to a named Cell region ('' all)
-%     'grid_cell_size'    search grid bucket size; 0 derives one (0)
+%     'grid_cell_size'    ignored (sized the search grid a BVH replaced) (0)
 %     'max_winding_work'  refuse a 'winding-number' query above this cost (2e9)
 %   R is a struct: mesh, num_tets, num_vertices_warped, num_tets_rejected,
 %   num_non_manifold_edges and input_quality (the verdict for the INPUT

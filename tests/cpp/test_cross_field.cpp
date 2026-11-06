@@ -25,9 +25,7 @@
 
 #include <gtest/gtest.h>
 
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-#include <omp.h>
-#endif
+#include "thread_sweep.hpp"
 
 #include "analytic_surfaces.hpp"
 
@@ -185,10 +183,10 @@ TEST(CrossField, ConstrainedDiscHasNoInteriorSingularity) {
 TEST(CrossField, DeterministicAcrossThreads) {
     const CfPatch p = cf_patch(double_torus(24));
     std::vector<double> ref;
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    const int saved = omp_get_max_threads();
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
     for (int threads : {1, 2, 8}) {
-        omp_set_num_threads(threads);
+        mio_test::set_threads(threads);
 #else
     for (int threads : {1}) {
         (void)threads;
@@ -199,7 +197,7 @@ TEST(CrossField, DeterministicAcrossThreads) {
         else
             EXPECT_EQ(f.mTheta, ref);
     }
-#ifdef MESHIOPLUSPLUS_PARALLEL_OPENMP
-    omp_set_num_threads(saved);
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    mio_test::set_threads(saved);
 #endif
 }

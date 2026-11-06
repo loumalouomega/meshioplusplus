@@ -23,9 +23,11 @@
  *
  * The active backend is chosen at compile time by the `MESHIOPLUSPLUS_PARALLEL_*`
  * preprocessor definitions (set from CMake's `MESHIOPLUSPLUS_PARALLEL_BACKEND` =
- * `AUTO|SEQ|STL|OPENMP|TBB|KOKKOS`; `AUTO` prefers OpenMP — portable across
- * manylinux/MSVC/macOS without needing TBB — then falls back to STL(+TBB) if
- * detected, else SEQ; KOKKOS is bring-your-own and never picked by AUTO).
+ * `AUTO|SEQ|STL|OPENMP|TBB|KOKKOS|THREADS`; `AUTO` prefers OpenMP — portable
+ * across manylinux/MSVC/macOS without needing TBB — then falls back to STL(+TBB)
+ * if detected, else SEQ; KOKKOS is bring-your-own and never picked by AUTO;
+ * THREADS, a pool of `std::thread` workers in the core library that needs no
+ * runtime beyond the C++ standard library, is what the Linux wheels build).
  * `parallel_backend_name()`/`_core.__parallel_backend__`
  * report which one is active. Iterations passed to `parallel_for` must be
  * independent (no cross-iteration state) since they may run concurrently in
@@ -92,6 +94,10 @@
 #include <thread>
 #endif
 
+#if defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
+#include "meshioplusplus/export.hpp"
+#endif
+
 // External includes
 #if defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
 #include <omp.h>
@@ -140,11 +146,13 @@ inline constexpr unsigned parallel_bandwidth_threads = 4;
  * them defined means the sequential fallback. Exposed to Python as
  * `_core.__parallel_backend__` so tests/diagnostics can assert which backend
  * actually built.
- * @return One of `"stl"`, `"openmp"`, `"tbb"`, `"kokkos"`, `"seq"`.
+ * @return One of `"stl"`, `"openmp"`, `"tbb"`, `"kokkos"`, `"threads"`, `"seq"`.
  */
 constexpr const char* parallel_backend_name() {
 #if defined(MESHIOPLUSPLUS_PARALLEL_STL)
     return "stl";
+#elif defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
+    return "threads";
 #elif defined(MESHIOPLUSPLUS_PARALLEL_OPENMP)
     return "openmp";
 #elif defined(MESHIOPLUSPLUS_PARALLEL_TBB)
@@ -157,6 +165,31 @@ constexpr const char* parallel_backend_name() {
 }
 
 namespace detail {
+
+#if defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
+/// A chunk of a `threads_run` job: runs iterations `[Begin, End)`; must not throw.
+using ThreadsChunkFn = void (*)(void* pCtx, std::size_t Begin, std::size_t End);
+
+/**
+ * @brief The THREADS backend's dispatch (`src/cpp/src/parallel_threads.cpp`):
+ * runs `[0, N)` in chunks of `Chunk` iterations on the calling thread and up to
+ * `min(threads_concurrency(), MaxThreads) - 1` workers of the process-wide pool
+ * (`MaxThreads == 0`: no cap). A call made from inside a job, or while another
+ * thread's job holds the pool, runs the whole range on the calling thread.
+ */
+MESHIOPLUSPLUS_API void threads_run(std::size_t N, std::size_t Chunk, unsigned MaxThreads,
+                                    ThreadsChunkFn Fn, void* pCtx);
+
+/**
+ * @brief How many threads (the caller included) a THREADS job may use:
+ * `threads_set_concurrency`'s count if one is set, else
+ * `MESHIOPLUSPLUS_NUM_THREADS`, else `OMP_NUM_THREADS`, else the hardware's.
+ */
+MESHIOPLUSPLUS_API unsigned threads_concurrency();
+
+/// Sets the THREADS backend's thread count for later jobs; 0 restores the default.
+MESHIOPLUSPLUS_API void threads_set_concurrency(unsigned N);
+#endif
 
 #if defined(MESHIOPLUSPLUS_PARALLEL_KOKKOS)
 /**
@@ -257,6 +290,10 @@ private:
  *    semantics. Plain `[&]` lambdas are fine (no `KOKKOS_LAMBDA` needed) —
  *    host-space functors run on ordinary host threads, which is also why
  *    `FirstException` works unchanged.
+ *  - **THREADS**: `threads_run` over the core's `std::thread` pool, in chunks
+ *    of `max(grain/4, 1)` iterations claimed dynamically (OpenMP's chunk, for
+ *    the same reasons), the caller running chunks beside the workers; a
+ *    non-zero `max_threads` caps the participants.
  *  - **(none, SEQ)**: a plain sequential loop; `grain`/`max_threads` are
  *    unused (cast to `void` to silence warnings).
  *
@@ -361,6 +398,23 @@ void parallel_for_impl(std::size_t n, F& rF, std::size_t grain, unsigned max_thr
     }
     Kokkos::fence();
     exc.RethrowIfAny();
+#elif defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
+    FirstException exc;
+    struct Ctx {
+        F* mpF;
+        FirstException* mpExc;
+    } ctx{&rF, &exc};
+    threads_run(
+        n, std::max<std::size_t>(grain / 4, 1), max_threads,
+        [](void* pCtx, std::size_t Begin, std::size_t End) {
+            Ctx& c = *static_cast<Ctx*>(pCtx);
+            c.mpExc->Run([&] {
+                for (std::size_t i = Begin; i < End; ++i)
+                    (*c.mpF)(i);
+            });
+        },
+        &ctx);
+    exc.RethrowIfAny();
 #else  // MESHIOPLUSPLUS_PARALLEL_SEQ (and the safe default)
     (void)grain;
     (void)max_threads;
@@ -440,7 +494,7 @@ inline constexpr std::size_t parallel_sort_serial_below = std::size_t{1} << 14;
 
 /**
  * @brief Chunk-sort-and-merge over `parallel_for`, for the backends with no
- * parallel sort of their own (OpenMP, Kokkos).
+ * parallel sort of their own (OpenMP, Kokkos, THREADS).
  *
  * The range is cut into a power-of-two number of runs, each sorted by one
  * task, then merged pairwise, one pass per level, every merge of a level in
@@ -502,7 +556,7 @@ void parallel_merge_sort(It first, It last, Comp comp, std::size_t max_runs) {
 /**
  * @brief Sorts `[first, last)` by `comp`, in parallel where the backend has
  * the means (TBB's `parallel_sort`, the STL's `std::execution::par`, a
- * chunk-sort-and-merge over `parallel_for` for OpenMP and Kokkos), serially
+ * chunk-sort-and-merge over `parallel_for` for OpenMP, Kokkos and THREADS), serially
  * otherwise and below `detail::parallel_sort_serial_below` elements.
  *
  * **`comp` must be a total order on the elements**: no two elements that
@@ -534,6 +588,9 @@ void parallel_sort(It first, It last, Comp comp) {
         first, last, comp,
         static_cast<std::size_t>(std::max(1, Kokkos::DefaultHostExecutionSpace().concurrency())) *
             2);
+#elif defined(MESHIOPLUSPLUS_PARALLEL_THREADS)
+    detail::parallel_merge_sort(first, last, comp,
+                                static_cast<std::size_t>(detail::threads_concurrency()) * 2);
 #else
     std::sort(first, last, comp);
 #endif

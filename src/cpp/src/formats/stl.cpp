@@ -39,6 +39,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/exact_weld.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/row_writer.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -337,21 +338,29 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
             os.write(reinterpret_cast<const char*>(&attr), 2);
         }
     } else {
-        auto wr3 = [&](const char* prefix, const double* p) {
-            char line[160];
-            detail::snprintf_c(line, sizeof(line), "%s %.17g %.17g %.17g\n", prefix, p[0], p[1],
-                               p[2]);
-            os << line;
+        // One facet's seven lines, formatted in parallel chunks, one number at
+        // a time (`CNumber`: `to_chars` for `%.17g`, roadmap 5.7.1).
+        const detail::CNumber number;
+        const auto wr3 = [&](std::string& rBuf, const char* pPrefix, const double* p) {
+            rBuf += pPrefix;
+            for (int c = 0; c < 3; ++c) {
+                rBuf.push_back(' ');
+                number.Append(rBuf, "%.17g", p[c]);
+            }
+            rBuf.push_back('\n');
         };
         os << "solid\n";
-        for (std::size_t i = 0; i < tris.size(); ++i) {
-            wr3("facet normal", normals[i].data());
-            os << " outer loop\n";
-            wr3("  vertex", &tris[i][0]);
-            wr3("  vertex", &tris[i][3]);
-            wr3("  vertex", &tris[i][6]);
-            os << " endloop\nendfacet\n";
-        }
+        detail::write_row_chunks(os, tris.size(),
+                                 [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                                     for (std::size_t i = First; i < Last; ++i) {
+                                         wr3(rBuf, "facet normal", normals[i].data());
+                                         rBuf += " outer loop\n";
+                                         wr3(rBuf, "  vertex", &tris[i][0]);
+                                         wr3(rBuf, "  vertex", &tris[i][3]);
+                                         wr3(rBuf, "  vertex", &tris[i][6]);
+                                         rBuf += " endloop\nendfacet\n";
+                                     }
+                                 });
         os << "endsolid\n";
     }
 }

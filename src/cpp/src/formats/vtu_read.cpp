@@ -44,7 +44,6 @@
 #include "../detail/region_field_data.hpp"
 #include "vtk_preflight.hpp"
 #include "../detail/vtu_decode.hpp"
-#include "../detail/open_source.hpp"
 #include "../detail/vtk_xml_read.hpp"
 #include "../detail/vtk_hex_order.hpp"
 
@@ -295,7 +294,7 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
  *
  * A raw `<AppendedData>` payload is not XML text (it may hold any byte, `<`
  * included): the file is read as bytes, the payload cut out, and only the text
- * around it parsed. Every other file parses as before.
+ * around it parsed, from a copy. Every other file is parsed in place.
  */
 void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rSource,
               const char* pType, const char* pFormat) {
@@ -305,7 +304,7 @@ void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rS
     // The file is read once: a raw <AppendedData> payload is not XML, so only
     // the text around it is parsed, and the payload is a view into the same
     // bytes (it read the file twice and parsed it twice before v16.21.0).
-    rSource.mFile.emplace(detail::open_source(rPath, "Could not open file: " + rPath));
+    rSource.mFile.emplace(rPath, "Could not open file: " + rPath);
     rSource.mBytes = rSource.mFile->View();
     const std::string_view b = rSource.mBytes;
     const std::size_t tag = b.find("<AppendedData");
@@ -315,7 +314,12 @@ void vtu_load(const std::string& rPath, unsigned int ParseOptions, VtuSource& rS
         detail::vtk_preflight_attribute(b.substr(tag, tag_end - tag), "encoding") == "raw";
     pugi::xml_parse_result res;
     if (!raw) {
-        res = rSource.mDoc.load_buffer(b.data(), b.size(), ParseOptions);
+        // Parsed where it lies (roadmap 5.7.4): pugixml terminates and
+        // unescapes text in the buffer, which a copy-on-write mapping turns
+        // into copies of the pages it writes, where `load_buffer` copied the
+        // whole file first. `mBytes` is not read again on this path.
+        res = rSource.mDoc.load_buffer_inplace(rSource.mFile->Data(), rSource.mFile->Size(),
+                                               ParseOptions);
         if (!res)
             throw ReadError(format + " XML parse failed: " + res.description());
         return;

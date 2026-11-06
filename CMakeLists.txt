@@ -1220,12 +1220,16 @@ endif()
 #            or CMAKE_PREFIX_PATH at an installed Kokkos. Host-space only:
 #            loop bodies capture host pointers, so device execution is served
 #            by the DLPack/CuPy handoff (doc/gpu.md), not by this backend.
+#   THREADS - a pool of std::thread workers inside the core library
+#            (src/cpp/src/parallel_threads.cpp): no runtime beyond the C++
+#            standard library, so it links statically where libgomp cannot
+#            (the Linux wheels). Never picked by AUTO; not under Emscripten.
 # Adding a new backend (HPX, ...) = a branch here + one #elif block in
 # src/cpp/include/meshioplusplus/parallel.hpp.
 # --------------------------------------------------------------------------
 set(MESHIOPLUSPLUS_PARALLEL_BACKEND "AUTO" CACHE STRING
-    "Parallel backend for meshioplusplus::parallel_for: AUTO, SEQ, STL, OPENMP, TBB or KOKKOS")
-set_property(CACHE MESHIOPLUSPLUS_PARALLEL_BACKEND PROPERTY STRINGS AUTO SEQ STL OPENMP TBB KOKKOS)
+    "Parallel backend for meshioplusplus::parallel_for: AUTO, SEQ, STL, OPENMP, TBB, KOKKOS or THREADS")
+set_property(CACHE MESHIOPLUSPLUS_PARALLEL_BACKEND PROPERTY STRINGS AUTO SEQ STL OPENMP TBB KOKKOS THREADS)
 string(TOUPPER "${MESHIOPLUSPLUS_PARALLEL_BACKEND}" _meshioplusplus_parallel)
 
 # AUTO: prefer OpenMP (portable: libgomp on manylinux, MSVC built-in, libomp on
@@ -1311,12 +1315,22 @@ elseif(_meshioplusplus_parallel STREQUAL "KOKKOS")
   find_package(Kokkos REQUIRED CONFIG)
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_PARALLEL_KOKKOS)
   list(APPEND _mio_core_libs Kokkos::kokkos)
+elseif(_meshioplusplus_parallel STREQUAL "THREADS")
+  if(EMSCRIPTEN)
+    message(FATAL_ERROR
+      "meshio++: the THREADS parallel backend is not supported under Emscripten "
+      "(use SEQ, or OPENMP with -DMESHIOPLUSPLUS_WASM_THREADS=ON)")
+  endif()
+  set(THREADS_PREFER_PTHREAD_FLAG ON)
+  find_package(Threads REQUIRED)
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_PARALLEL_THREADS)
+  list(APPEND _mio_core_libs Threads::Threads)
 elseif(_meshioplusplus_parallel STREQUAL "SEQ")
   list(APPEND _mio_core_defs MESHIOPLUSPLUS_PARALLEL_SEQ)
 else()
   message(FATAL_ERROR
     "meshio++: unknown MESHIOPLUSPLUS_PARALLEL_BACKEND '${MESHIOPLUSPLUS_PARALLEL_BACKEND}' "
-    "(use SEQ, STL, OPENMP, TBB or KOKKOS)")
+    "(use SEQ, STL, OPENMP, TBB, KOKKOS or THREADS)")
 endif()
 message(STATUS "meshio++: parallel backend: ${_meshioplusplus_parallel}")
 

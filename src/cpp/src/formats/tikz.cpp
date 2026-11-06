@@ -49,7 +49,7 @@ namespace {
 // e.g. ".6f").
 std::string tikz_fmt_num(double value, const std::string& rSpec) {
     char buf[64];
-    std::snprintf(buf, sizeof(buf), ("%" + rSpec).c_str(), value);
+    detail::snprintf_c(buf, sizeof(buf), ("%" + rSpec).c_str(), value);
     return buf;
 }
 

@@ -52,7 +52,7 @@ namespace {
 // e.g. ".3f"), mirroring the Python reference's `format(x, float_fmt)`.
 std::string svg_fmt_num(double value, const std::string& rSpec) {
     char buf[64];
-    std::snprintf(buf, sizeof(buf), ("%" + rSpec).c_str(), value);
+    detail::snprintf_c(buf, sizeof(buf), ("%" + rSpec).c_str(), value);
     return buf;
 }
 

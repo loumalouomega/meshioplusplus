@@ -720,7 +720,7 @@ void write_flac3d(const std::string& rPath, const Mesh& rMesh, const std::string
         f << "G\t" << std::setw(8) << (i + 1) << std::setw(0) << "\t";
         for (int c = 0; c < 3; ++c) {
             double v = c < static_cast<int>(pdim) ? point_values[i * pdim + c] : 0.0;
-            std::snprintf(buf, sizeof(buf), ("%" + rFloatFmt).c_str(), v);
+            detail::snprintf_c(buf, sizeof(buf), ("%" + rFloatFmt).c_str(), v);
             f << buf << (c == 2 ? '\n' : '\t');
         }
     }
