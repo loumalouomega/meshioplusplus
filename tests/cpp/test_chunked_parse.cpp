@@ -34,6 +34,7 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/medit.hpp"
 #include "meshioplusplus/formats/stl.hpp"
