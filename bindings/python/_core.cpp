@@ -1640,14 +1640,23 @@ py::dict py_mmg_report(const meshioplusplus::MmgReport& rR) {
 /// An MMG operation's result: its report dict with the mesh, moved out of `rR`, under "mesh".
 template <class TResult>
 py::dict core_mmg_result_dict(TResult& rR) {
-    return core_mmg_result_dict(rR);
+    py::dict out = py_mmg_report(rR.mReport);
+    out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(rR.mMesh));
+    return out;
 }
 
 /// The "mesh", "point_map" and "cell_maps" of a result, moved out of `rR`, as
 /// the first keys of a dict the caller may extend.
 template <class TResult>
 py::dict core_mesh_maps_dict(TResult& rR) {
-    return core_mesh_maps_dict(rR);
+    py::dict out;
+    out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(rR.mMesh));
+    out["point_map"] = meshioplusplus_py::numpy_from_ndarray(std::move(rR.mPointMap));
+    py::list cell_maps;
+    for (meshioplusplus::NDArray& a : rR.mCellMaps)
+        cell_maps.append(meshioplusplus_py::numpy_from_ndarray(std::move(a)));
+    out["cell_maps"] = cell_maps;
+    return out;
 }
 
 /// A surface-quality summary (boundary / non-manifold edges, inconsistent
