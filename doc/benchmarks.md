@@ -744,7 +744,7 @@ Roadmap 5.4.2, 5.4.4, 5.5.1, 5.6 and 5.7.3, landed through [landing a performanc
 - **Point welding on raw bits.** The STL, glTF and WKT readers used to weld through a hash map keyed on a heap string or vector per vertex; `detail/exact_weld.hpp` groups fixed-size keys with `group_slots` and numbers them with `number_first_seen`, the ids a serial sweep gives. STL compares bytes, glTF and WKT compare values (`-0.0` meets `+0.0`; a NaN meets nothing), which for glTF fixes a hash that only sometimes let the two zeros meet.
 - **`feature_edges` from the skin alone.** `detail/face_skin.hpp` builds the cell rings `build_global_faces` builds and keeps the faces with one selected side, without the face table's node copy, owner and neighbour arrays or signed cell faces. The ring build, shared, counts nodes in its first pass and so runs `cell_rings` twice instead of three times.
 - **`region_adjacency` and the boundary facets** (`find_interface`, `split_interface`) collect flat records grouped by `group_facet_slots` instead of a `std::map` keyed on a vector per facet, membership is CSR, and the pairs are sorted by (region a, region b, key), the map's order.
-- **Ragged rows into the core** (`np_conversions.hpp`): a row that is a C-contiguous int64 array is taken by reference, and rows back to back in memory, the views `mesh_to_py` and the readers hand out, are copied as one span: 97 to 51 ns a row in a pybind11 harness of the old and new loops over a million views of one buffer, 100 to 92 ns over separate arrays. The way out, one numpy view per row, is what is left of 5.6.
+- **Ragged rows into the core** (`np_conversions.hpp`): a row that is a C-contiguous int64 array is taken by reference, and rows back to back in memory, the views `mesh_to_py` and the readers hand out, are copied as one span: 97 to 51 ns a row in a pybind11 harness of the old and new loops over a million views of one buffer, 100 to 92 ns over separate arrays. The way out, one numpy view per row, was what was left of 5.6; see [ragged rows that carry their CSR](#ragged-rows-that-carry-their-csr).
 
 Tier L (750,000 tetrahedra, about 30,000 skin triangles), SEQ, median of three runs, the old and new `meshioplusplus_bench_ops` back to back:
 
@@ -760,6 +760,17 @@ Tier L (750,000 tetrahedra, about 30,000 skin triangles), SEQ, median of three r
 The skin-only `feature_edges` saved memory rather than time: two thirds of its instructions were `orient_rings`, the per-cell orientation every face table runs, which the next section takes on. The new rows `read_stl_binary`, `read_gltf_weld` and `read_wkt` take 5.1, 2.0 and 71.8 ms at tier L.
 
 **`select_points(method="farthest")`** (roadmap 5.10.2) runs its greedy loop in the core (`detail/farthest_points.hpp`, bound to Python only): one fused sweep per selection updates the distances and finds the farthest, with numpy's arithmetic, NaN propagation and first-maximum rule, so the selection is the numpy loop's. 1,000 of 1,000,000 points: 6.0 s in numpy, 2.5 s native on one thread.
+
+### Ragged rows that carry their CSR
+
+Roadmap 5.6. A ragged block the core hands to Python is now a `meshioplusplus._ragged.CsrRows`, a `list` of the same row views that also keeps the flat buffer and its offsets (`data.csr()`), and `ragged_cellblock_from_py` takes such a block back with one copy of each instead of visiting its rows; any change to the list's shape drops the arrays ([mesh data model](./mesh_data_model.md#cellblock)). `benchmark/bench_boundary.py` gained a second step, `clean` again on the block the first one returned, carried and as plain lists (the way in before). Quiet machine, min of 9, seconds:
+
+| Case | Step 1 | Step 2, carried | Step 2, as lists |
+| --- | ---: | ---: | ---: |
+| 200,000 polygons | 0.084 | 0.080 | 0.079 |
+| 50,000 polyhedra (300,000 faces) | 0.191 | 0.165 | 0.174 |
+
+The round trip barely moves, because the way in was already cheap: the span copy of the [flat tables](#flat-tables-in-the-facet-and-weld-paths) took back-to-back views at about 51 ns a row, 10 to 15 ms of these rows, and that is what the carried arrays save. What the round trip pays is the way out, one view per row: about 0.35 µs each from Python (`flat[a:b]`, 70 ms for the 200,000 rows), less from the binding, still most of the step. A `list` cannot defer them: C code, numpy's among it, reads a list's items directly, never through an override, so the views must exist. The arrays are what the Python layers can now vectorise over without walking the rows.
 
 ### Spatial grids, orientation and number formatting
 
