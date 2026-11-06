@@ -40,6 +40,25 @@ Coverage reaches SonarCloud from the same files Codecov receives, so both servic
 python tools/lcov_to_sonar.py cpp-coverage.info cpp-coverage-sonar.xml --root .
 ```
 
+## Local duplication report
+
+SonarCloud reports on `master` only, so `tools/dup_report.py` gives the same kind of number on any checkout, before a change lands. It works like Sonar's copy-paste detector: every C++ and Python source is tokenised, identifiers, numbers and strings are normalised so a renamed copy still matches, and every window of 100 consecutive tokens is hashed; a window found in two places marks its lines as duplicated. It excludes what `sonar-project.properties` excludes, so the two measures agree on what counts.
+
+```sh
+tools/dup_report.py                      # density, top files and largest shared regions, C++ and Python
+tools/dup_report.py --lang cpp --top 60  # one language, longer lists
+tools/dup_report.py --json report.json   # the full result, for a before/after comparison
+```
+
+The density is a guide, not a target. Some repetition is structure: a table of node orders, a list of `py::arg` defaults that is the Python signature, or the typed signature of each MCP tool, which the SDK reads to build its schema. The largest regions shared by two files are the useful part of the report, because each names two line ranges that could call one helper.
+
+The November 2026 measurements (round 2 of [roadmap 3.4](./roadmap.md#quality-of-implementation)):
+
+| Language | Before | After |
+| --- | ---: | ---: |
+| C++ (709 files, 245k lines) | 10.6% | — |
+| Python (461 files, 137k lines) | 11.0% | — |
+
 ## Clang-Tidy
 
 Two Clang-Tidy runs exist today:

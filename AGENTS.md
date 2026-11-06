@@ -13,6 +13,7 @@ Keep this file focused on working rules, commands, and architectural constraints
 - When implementing a gap in [doc/roadmap.md](doc/roadmap.md), remove the completed item or narrow it to the remaining work.
 - Demonstrate new user-facing capabilities in `example/python/*.ipynb` with graphical output: PyVista off-screen rendering embedded through matplotlib, with a matplotlib fallback when GL is unavailable. Follow `03_mesh_operations.ipynb`; re-execute and commit outputs. Mirror notable additions in the C++ notebooks where practical.
 - Keep prose in `doc/**/*.md` on one line per paragraph or list item; do not hard-wrap it. Code fences are exempt. Add new pages to the appropriate sidebar group in `doc/.vitepress/config.mts`.
+- Before writing a helper, search for an existing one: `detail/geometry.hpp`, `src/cpp/src/detail/fem_kernels.hpp`, `subset.hpp`, `data_ops.hpp`, `value_io.hpp`, `typed_view.hpp`, the topology tables, `decimate_common.hpp` and the `src/cpp/src/detail/` headers on the C++ side; `_helpers.py`, `_fallback.py`, `_common.py` modules and `_cli/_common.py` on the Python side. Reuse or extend it instead of copying a body into another file's anonymous namespace. Run `tools/dup_report.py` on a change that adds code to see whether it duplicates something; see [static analysis](doc/static_analysis.md#local-duplication-report).
 - Run relevant tests and lint checks before opening or updating a PR. Do not wait for CI to catch formatting errors.
 
 ## Commands
