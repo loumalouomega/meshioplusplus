@@ -33,6 +33,7 @@
 // Project includes
 #include "bcc_octree_tets.hpp"
 #include "feature_snap.hpp"
+#include "fem_kernels.hpp"
 #include "meshioplusplus/log.hpp"
 
 namespace meshioplusplus {
@@ -45,10 +46,6 @@ constexpr double kFeatsnapFloorDeg = 2.0;
 // Lower floor for the nodes of a chain: its last step onto the edge can leave a
 // sliver beside a free interior node, which the optimization repairs.
 constexpr double kFeatsnapChainFloorDeg = 0.1;
-
-double featsnap_volume(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
-    return triple_product(vec3_sub(rB, rA), vec3_sub(rC, rA), vec3_sub(rD, rA)) / 6.0;
-}
 
 // The nearest point of a polyline (skin point ids) to `rP`, and its distance.
 std::pair<Vec3, double> featsnap_on_polyline(const std::vector<Vec3>& rSkin,
@@ -262,7 +259,7 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                 const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
                 p[c] = q == V ? rAt : rPoints[static_cast<std::size_t>(q)];
             }
-            if (featsnap_volume(p[0], p[1], p[2], p[3]) <= MinVolume) {
+            if (tet_volume(p[0], p[1], p[2], p[3]) <= MinVolume) {
                 rPositive = false;
                 return 0.0;
             }
@@ -280,7 +277,7 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                 const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
                 p[c] = q == V ? rAt : rPoints[static_cast<std::size_t>(q)];
             }
-            if (featsnap_volume(p[0], p[1], p[2], p[3]) <= MinVolume)
+            if (tet_volume(p[0], p[1], p[2], p[3]) <= MinVolume)
                 return false;
         }
         return true;

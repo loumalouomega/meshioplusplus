@@ -48,6 +48,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 #include "../detail/bucket_build.hpp"
+#include "../detail/fem_kernels.hpp"
 
 namespace meshioplusplus {
 
@@ -130,18 +131,12 @@ ConsSimplices cons_extract_simplices(const Mesh& rOriginal, const Mesh& rSimplex
 // clip kernel never needs anything the mesh's own dtype provides.
 // -------------------------------------------------------------------------
 
-double cons_signed_tet_volume(const detail::Vec3 v[4]) {
-    return detail::triple_product(detail::vec3_sub(v[1], v[0]), detail::vec3_sub(v[2], v[0]),
-                                  detail::vec3_sub(v[3], v[0])) /
-           6.0;
-}
-
 // Positively-oriented copy of a tetra's 4 corners (swap the first two if the
 // signed volume came out negative). The clip kernel's face table assumes
 // this orientation, so this removes any dependence on convert_cells'
 // simplexification always producing positive volumes.
 std::array<detail::Vec3, 4> cons_oriented_tet(const detail::Vec3 v[4]) {
-    if (cons_signed_tet_volume(v) < 0.0)
+    if (detail::tet_volume(v[0], v[1], v[2], v[3]) < 0.0)
         return {v[1], v[0], v[2], v[3]};
     return {v[0], v[1], v[2], v[3]};
 }
