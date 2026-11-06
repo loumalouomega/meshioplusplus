@@ -495,7 +495,11 @@ struct _COctreeMeshReport
     num_collapsed::Int64
     num_reordered::Int64
     num_overlaps::Int64
-    reserved::NTuple{2,Int64}
+    num_caps_removed::Int64
+    num_split::Int64
+    num_slivers::Int64
+    num_untangled::Int64
+    reserved::NTuple{4,Int64}
 end
 
 """
@@ -2090,7 +2094,7 @@ function _check_abi_layout()
     sizeof(_COctreeMeshOpts) == 264 ||
         error("meshio++: mio_octree_mesh_opts layout mismatch " *
               "($(sizeof(_COctreeMeshOpts)) bytes)")
-    sizeof(_COctreeMeshReport) == 392 ||
+    sizeof(_COctreeMeshReport) == 440 ||
         error("meshio++: mio_octree_mesh_report layout mismatch " *
               "($(sizeof(_COctreeMeshReport)) bytes)")
     sizeof(_CComputeSdfOpts) == 232 ||

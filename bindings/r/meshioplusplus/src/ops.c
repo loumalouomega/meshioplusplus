@@ -3910,7 +3910,7 @@ SEXP R_mio_octree_mesh(SEXP mesh, SEXP output, SEXP conformity, SEXP skin_gradin
     const char *output_name =
         (report.output >= 0 && report.output <= 2) ? outputs[report.output] : "unknown";
 
-    enum { R_OCTREE_MESH_N = 46 };
+    enum { R_OCTREE_MESH_N = 50 };
     SEXP res = PROTECT(Rf_allocVector(VECSXP, R_OCTREE_MESH_N));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, R_OCTREE_MESH_N));
     int k = 0;
@@ -3977,6 +3977,10 @@ SEXP R_mio_octree_mesh(SEXP mesh, SEXP output, SEXP conformity, SEXP skin_gradin
     R_OCTREE_MESH_NUM(num_collapsed);
     R_OCTREE_MESH_NUM(num_reordered);
     R_OCTREE_MESH_NUM(num_overlaps);
+    R_OCTREE_MESH_NUM(num_caps_removed);
+    R_OCTREE_MESH_NUM(num_split);
+    R_OCTREE_MESH_NUM(num_slivers);
+    R_OCTREE_MESH_NUM(num_untangled);
     R_OCTREE_MESH_NUM(num_warnings);
     /* One string, newline-separated; the R wrapper splits it. */
     R_OCTREE_MESH_SET("warnings", warnings);

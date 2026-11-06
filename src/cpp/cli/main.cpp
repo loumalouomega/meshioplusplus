@@ -5917,6 +5917,10 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
         json.Field("num_collapsed", r.mNumCollapsed);
         json.Field("num_reordered", r.mNumReordered);
         json.Field("num_overlaps", r.mNumOverlaps);
+        json.Field("num_caps_removed", r.mNumCapsRemoved);
+        json.Field("num_split", r.mNumSplit);
+        json.Field("num_slivers", r.mNumSlivers);
+        json.Field("num_untangled", r.mNumUntangled);
         json.Field("root_size", r.mRootSize);
         json.Field("min_size", r.mMinSize);
         json.Field("max_size", r.mMaxSize);

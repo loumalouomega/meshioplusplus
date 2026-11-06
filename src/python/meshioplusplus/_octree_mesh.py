@@ -61,6 +61,10 @@ _REPORT_INTS = (
     "num_collapsed",
     "num_reordered",
     "num_overlaps",
+    "num_caps_removed",
+    "num_split",
+    "num_slivers",
+    "num_untangled",
 )
 _REPORT_FLOATS = (
     "root_size",
@@ -219,7 +223,10 @@ def octree_mesh(
         open), the optimisation (``num_optimized_moves``,
         ``num_flips``), the volume fix (``num_collapsed`` degenerate
         tetrahedra removed, ``num_reordered`` inverted ones made positive,
-        ``num_overlaps`` pairs of tetrahedra left overlapping), ``guarantee_applies``, ``num_winding_rechecks``,
+        ``num_overlaps`` pairs of tetrahedra left overlapping,
+        ``num_caps_removed`` and ``num_split`` flat caps dropped and repaired by
+        a split, ``num_slivers`` flat slivers removed, ``num_untangled``
+        inverted tetrahedra untangled), ``guarantee_applies``, ``num_winding_rechecks``,
         ``num_winding_skipped`` (deep inside a closed skin), ``timings`` (seconds
         per stage) and ``warnings``.
     :raises ValueError: on an option out of range.

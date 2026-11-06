@@ -4550,6 +4550,10 @@ PYBIND11_MODULE(_core, m) {
             out["num_collapsed"] = r.mNumCollapsed;
             out["num_reordered"] = r.mNumReordered;
             out["num_overlaps"] = r.mNumOverlaps;
+            out["num_caps_removed"] = r.mNumCapsRemoved;
+            out["num_split"] = r.mNumSplit;
+            out["num_slivers"] = r.mNumSlivers;
+            out["num_untangled"] = r.mNumUntangled;
             py::dict quality;
             quality["num_cells"] = r.mQuality.mNumCells;
             quality["num_inverted"] = r.mQuality.mNumInverted;

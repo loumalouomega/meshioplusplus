@@ -3287,13 +3287,20 @@ typedef struct mio_octree_mesh_report {
      *  and left open (from the reserved tail; the struct is still 392 bytes). */
     int64_t num_gaps_filled;
     int64_t num_gaps_skipped;
-    /** Degenerate tetrahedra removed by collapsing their nodes, inverted ones
-     *  made positive by swapping two nodes, and pairs of tetrahedra left
-     *  overlapping (from the reserved tail; the struct is still 392 bytes). */
+    /** The volume fix of the tetrahedral output (440 bytes in all, 392 before
+     *  it): degenerate tetrahedra removed by collapsing their nodes, inverted
+     *  ones made positive by swapping two nodes, pairs of tetrahedra left
+     *  overlapping, flat caps dropped, tetrahedra split to repair flat caps,
+     *  flat slivers removed, and inverted tetrahedra untangled by moving a
+     *  free node. */
     int64_t num_collapsed;
     int64_t num_reordered;
     int64_t num_overlaps;
-    int64_t reserved[2]; /**< zeroed */
+    int64_t num_caps_removed;
+    int64_t num_split;
+    int64_t num_slivers;
+    int64_t num_untangled;
+    int64_t reserved[4]; /**< zeroed */
 } mio_octree_mesh_report;
 
 /** Initialize octree_mesh options to their defaults. */

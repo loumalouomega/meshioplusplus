@@ -5493,6 +5493,7 @@ TEST(CApi, OctreeMeshTetrahedraAndCastellatedCells) {
     EXPECT_GE(report.num_collapsed, 0);
     EXPECT_GE(report.num_reordered, 0);
     EXPECT_EQ(report.num_overlaps, 0);
+    EXPECT_GE(report.num_caps_removed + report.num_split + report.num_slivers + report.num_untangled, 0);
     std::int64_t nc = 0, npc = 0;
     ASSERT_EQ(mio_mesh_cell_block_info(tets, 0, &nc, &npc, nullptr), MIO_OK);
     EXPECT_EQ(nc, report.num_tetrahedra);
@@ -5509,7 +5510,10 @@ TEST(CApi, OctreeMeshTetrahedraAndCastellatedCells) {
     EXPECT_GT(report.num_hexahedra, 0);
     EXPECT_GT(report.num_surrogate_faces, 0);
     EXPECT_EQ(report.num_gaps_filled + report.num_gaps_skipped, 0);
-    EXPECT_EQ(report.num_collapsed + report.num_reordered + report.num_overlaps, 0);
+    EXPECT_EQ(report.num_collapsed + report.num_reordered + report.num_overlaps +
+                  report.num_caps_removed + report.num_split + report.num_slivers +
+                  report.num_untangled,
+              0);
     mio_mesh_free(cells);
 
     opts.output = MIO_OCTREE_MESH_HEX;

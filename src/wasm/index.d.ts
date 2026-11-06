@@ -5270,6 +5270,14 @@ export interface OctreeMeshResult {
   numReordered: number;
   /** Pairs of tetrahedra sharing a face whose opposite nodes lie on the same side of it. */
   numOverlaps: number;
+  /** Flat caps dropped because their opposite face is on the skin or an interface. */
+  numCapsRemoved: number;
+  /** Tetrahedra split at the apex of a flat cap over an interior face. */
+  numSplit: number;
+  /** Flat slivers removed by inserting a node where their opposite edges cross. */
+  numSlivers: number;
+  /** Inverted tetrahedra repaired by moving a free node. */
+  numUntangled: number;
   /** Seconds spent in each stage, in order, as `[stage, seconds]` pairs. */
   timings: Array<[string, number]>;
   /** Everything that did not meet its target, in order. */

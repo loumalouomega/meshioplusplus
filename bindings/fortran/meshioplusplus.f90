@@ -1688,7 +1688,7 @@ module meshioplusplus
     end type
 
     !> What `m%octree_mesh` reports: an interop mirror of C
-    !> `mio_octree_mesh_report` (392 bytes; field order and types are ABI, see
+    !> `mio_octree_mesh_report` (440 bytes; field order and types are ABI, see
     !> doc/octree_mesh.md for every field). `output` is 0 (castellated), 1 (tet)
     !> or 2 (hex); `guarantee_applies` is nonzero when the 10.7-164.8 degree
     !> bound covers every tetrahedron. Counts are counts, not indices: nothing
@@ -1738,7 +1738,11 @@ module meshioplusplus
         integer(c_int64_t) :: num_collapsed = 0
         integer(c_int64_t) :: num_reordered = 0
         integer(c_int64_t) :: num_overlaps = 0
-        integer(c_int64_t) :: reserved(2) = 0
+        integer(c_int64_t) :: num_caps_removed = 0
+        integer(c_int64_t) :: num_split = 0
+        integer(c_int64_t) :: num_slivers = 0
+        integer(c_int64_t) :: num_untangled = 0
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_compute_sdf_opts`. Same ABI rules as above. For
@@ -12584,7 +12588,7 @@ contains
         type(mio_octree_mesh_report) :: report
         if (checked) return
         checked = .true.
-        if (c_sizeof(opts) /= 264_c_size_t .or. c_sizeof(report) /= 392_c_size_t) then
+        if (c_sizeof(opts) /= 264_c_size_t .or. c_sizeof(report) /= 440_c_size_t) then
             write (error_unit, '(a,2(i0,1x),a)') &
                 'meshio++: octree_mesh layout mismatch (', c_sizeof(opts), c_sizeof(report), &
                 'bytes)'

@@ -4732,6 +4732,10 @@ val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
             {"numCollapsed", r.mNumCollapsed},
             {"numReordered", r.mNumReordered},
             {"numOverlaps", r.mNumOverlaps},
+            {"numCapsRemoved", r.mNumCapsRemoved},
+            {"numSplit", r.mNumSplit},
+            {"numSlivers", r.mNumSlivers},
+            {"numUntangled", r.mNumUntangled},
         };
         for (const auto& [name, value] : counters)
             out.set(name, static_cast<double>(value));
