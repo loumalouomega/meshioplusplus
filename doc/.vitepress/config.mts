@@ -116,6 +116,7 @@ export default defineConfig({
               { text: "Hausdorff distance", link: "/hausdorff" },
               { text: "Feature edges", link: "/feature_edges" },
               { text: "Conformity check", link: "/check_conformity" },
+              { text: "Tetrahedron check", link: "/check_tetrahedra" },
               { text: "Intersections", link: "/find_intersections" },
               { text: "Wall thickness and clearance", link: "/thickness" },
               { text: "Select (named regions)", link: "/select" },

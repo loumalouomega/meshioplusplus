@@ -134,7 +134,7 @@ extern SEXP R_mio_octree(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, S
 extern SEXP R_mio_octree_mesh(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                               SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                               SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
-                              SEXP, SEXP, SEXP);
+                              SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_compute_sdf(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                               SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_surface_watertight_check(SEXP);
@@ -164,6 +164,7 @@ extern SEXP R_mio_move(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEX
 extern SEXP R_mio_metric_from_hessian(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_error_size(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_check_conformity(SEXP, SEXP, SEXP);
+extern SEXP R_mio_check_tetrahedra(SEXP, SEXP);
 extern SEXP R_mio_extrude(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_revolve(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_mirror(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -377,7 +378,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_reference_cells, 2),
                                               CALLDEF(R_mio_voxelize, 12),
                                               CALLDEF(R_mio_octree, 23),
-                                              CALLDEF(R_mio_octree_mesh, 36),
+                                              CALLDEF(R_mio_octree_mesh, 41),
                                               CALLDEF(R_mio_compute_sdf, 16),
                                               CALLDEF(R_mio_surface_watertight_check, 1),
                                               CALLDEF(R_mio_sample_distance, 5),
@@ -404,6 +405,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_metric_from_hessian, 6),
                                               CALLDEF(R_mio_error_size, 8),
                                               CALLDEF(R_mio_check_conformity, 3),
+                                              CALLDEF(R_mio_check_tetrahedra, 2),
                                               CALLDEF(R_mio_extrude, 7),
                                               CALLDEF(R_mio_revolve, 8),
                                               CALLDEF(R_mio_mirror, 7),

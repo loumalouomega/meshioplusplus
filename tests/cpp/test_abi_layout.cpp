@@ -94,6 +94,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/check_tetrahedra.hpp"
 #include "meshioplusplus/operations/extrude.hpp"
 #include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/find_intersections.hpp"
@@ -375,6 +376,8 @@ static_assert(offsetof(meshioplusplus::VoxelOptions, mPlane) == 216, "VoxelOptio
 // ABI 36: check_conformity's options (roadmap 3.2.1), pinned from the release
 // that introduces them.
 MIO_ABI_LAYOUT(meshioplusplus::ConformityOptions, 16, 8);
+MIO_ABI_LAYOUT(meshioplusplus::TetrahedraCheckOptions, 8, 8);
+MIO_ABI_LAYOUT(meshioplusplus::TetrahedraCheckResult, 80, 8);
 // ABI 36: the sweeps' and mirror's options (roadmap 3.1.2, 3.1.3, 3.2.5),
 // pinned from the release that introduces them. ExtrudeOptions holds a
 // std::vector, whose size is the standard library's, so only the members
@@ -395,7 +398,7 @@ static_assert(offsetof(meshioplusplus::ThicknessOptions, mRegion) == 24,
               "ThicknessOptions::mRegion moved");
 MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 304, 8);
 // ABI 36: `mHexGrading` (roadmap 3.1.4.3) in the padding after `mPillow`.
-MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 336, 8);
+MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 376, 8);
 static_assert(offsetof(meshioplusplus::OctreeMeshOptions, mHexGrading) == 308,
               "OctreeMeshOptions::mHexGrading moved");
 // ABI 34 (v17.15.0): the quality options of roadmap 6.2 and the fields 6.3,

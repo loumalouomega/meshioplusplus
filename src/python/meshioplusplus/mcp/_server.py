@@ -1744,6 +1744,11 @@ def _register_operations(server: FastMCP) -> None:
         untangle_iterations: int = 50,
         max_cells: int = 20000000,
         max_tets: int = 100000000,
+        volume_fix: bool = True,
+        zero_volume_factor: float = 1.0e-6,
+        cap_flatness: float = 0.01,
+        crossing_margin: float = 0.01,
+        crossing_gap: float = 0.05,
     ) -> dict:
         """Mesh the inside of a skin (any closed or slightly dirty surface:
         STL/OBJ/PLY/...) on a 2:1-balanced octree. output='castellated' gives
@@ -1762,8 +1767,15 @@ def _register_operations(server: FastMCP) -> None:
         guarantee). fill='all'/'inside'/'cover' chooses the castellated leaves.
         hex_grading='graded' grades the hexahedra with the octree (dual
         transition schemes) instead of one grid at the skin's size.
+        The tetrahedral output ends with a volume fix (volume_fix, default on):
+        degenerate tetrahedra (volume under zero_volume_factor of the longest
+        edge cubed) are collapsed, flat caps (cap_flatness) dropped or split,
+        slivers (crossing_margin, crossing_gap) split at the crossing of their
+        edges, inverted ones untangled or reordered, and overlaps counted.
         Reports the frame, leaf and cell counts, the quality (dihedral angles,
-        scaled Jacobian, histograms), feature recovery, timings and warnings."""
+        scaled Jacobian, histograms), feature recovery, the volume-fix counts
+        (num_collapsed, num_caps_removed, num_split, num_slivers,
+        num_untangled, num_reordered, num_overlaps), timings and warnings."""
         return _guard(
             _tools.tool_octree_mesh,
             input_path=input_path,
@@ -1805,6 +1817,11 @@ def _register_operations(server: FastMCP) -> None:
             untangle_iterations=untangle_iterations,
             max_cells=max_cells,
             max_tets=max_tets,
+            volume_fix=volume_fix,
+            zero_volume_factor=zero_volume_factor,
+            cap_flatness=cap_flatness,
+            crossing_margin=crossing_margin,
+            crossing_gap=crossing_gap,
         )
 
     @server.tool()
@@ -2645,6 +2662,27 @@ def _register_operations(server: FastMCP) -> None:
             file_format=file_format,
             output_format=output_format,
             tolerance=tolerance,
+        )
+
+    @server.tool()
+    def check_tetrahedra(
+        input_path: str,
+        file_format: Optional[str] = None,
+        zero_volume_factor: float = 1e-6,
+    ) -> dict:
+        """Whether the tetrahedra of a mesh are usable. Examines the tetra and
+        tetra10 cells (a quadratic one by its four corners) and reports
+        num_tetrahedra, num_inverted (signed volume below minus the tolerance),
+        num_degenerate (volume within it), num_overlaps (pairs of tetrahedra
+        sharing a face, used by no other, whose opposite nodes lie on the same
+        side of it), min_volume, max_volume, valid and warnings. The tolerance is
+        zero_volume_factor times the longest edge cubed plus the effect of six
+        significant digits of written coordinates. The mesh is not changed."""
+        return _guard(
+            _tools.tool_check_tetrahedra,
+            input_path=input_path,
+            file_format=file_format,
+            zero_volume_factor=zero_volume_factor,
         )
 
     @server.tool()

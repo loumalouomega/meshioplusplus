@@ -115,6 +115,7 @@
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/check_tetrahedra.hpp"
 #include "meshioplusplus/operations/find_intersections.hpp"
 #include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
@@ -441,6 +442,8 @@ void print_usage(std::ostream& os) {
           "                            --max-inverted/--max-degenerate; exit 2: not checked)\n"
           "  check-conformity        Hanging nodes, T-junctions, partial overlaps: exit 1 when\n"
           "                            not conforming (INFILE [OUTFILE] --tolerance --json)\n"
+          "  check-tetrahedra        Inverted, degenerate and overlapping tetrahedra: exit 1 when\n"
+          "                            any (INFILE --zero-volume-factor --json)\n"
           "  find-intersections      Self-intersections of a surface, or where two meet\n"
           "                            (--other FILE): exit 1 when any (INFILE [OUTFILE]\n"
           "                            [--segments FILE] [--max-pairs N] --json)\n"
@@ -1919,6 +1922,60 @@ int cmd_check_conformity(const std::vector<std::string>& rArgs) {
             std::cout << "  warning: " << w << "\n";
     }
     return r.mConforming ? 0 : 1;
+}
+
+int cmd_check_tetrahedra(const std::vector<std::string>& rArgs) {
+    // 0 valid, 1 not, 2 could not check -- the `check` verb's convention.
+    meshioplusplus::TetrahedraCheckResult r;
+    bool json = false;
+    try {
+        auto p =
+            cli_parse(rArgs, cli_specs({input_flag_specs(),
+                                        {{"zero-volume-factor", {}, true}, {"json", {}, false}}}));
+        if (p.positionals.size() != 1)
+            throw std::runtime_error("check-tetrahedra requires INFILE");
+        json = has_flag(p, "json");
+        meshioplusplus::TetrahedraCheckOptions options;
+        if (has_opt(p, "zero-volume-factor"))
+            options.mZeroVolumeFactor =
+                meshioplusplus::detail::stod_c(opt_value(p, "zero-volume-factor"));
+        Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+        r = meshioplusplus::check_tetrahedra(mesh, options);
+    } catch (const std::exception& e) {
+        std::cerr << "error: " << e.what() << "\n";
+        return 2;
+    }
+    if (json) {
+        meshioplusplus::cli::JsonOut out(std::cout);
+        out.BeginObject();
+        out.Field("num_tetrahedra", r.mNumTetrahedra);
+        out.Field("num_inverted", r.mNumInverted);
+        out.Field("num_degenerate", r.mNumDegenerate);
+        out.Field("num_overlaps", r.mNumOverlaps);
+        out.Field("min_volume", r.mMinVolume);
+        out.Field("max_volume", r.mMaxVolume);
+        out.Field("valid", r.mValid);
+        out.Key("warnings");
+        out.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            out.String(w);
+        out.EndArray();
+        out.EndObject();
+    } else {
+        std::cout << (r.mValid ? "valid" : "NOT valid") << " (" << r.mNumTetrahedra
+                  << " tetrahedra examined)\n";
+        std::cout << "  inverted:    " << r.mNumInverted << "\n";
+        std::cout << "  degenerate:  " << r.mNumDegenerate << "\n";
+        std::cout << "  overlaps:    " << r.mNumOverlaps << "\n";
+        char volume[64];
+        meshioplusplus::detail::snprintf_c(volume, sizeof(volume), "%.6g", r.mMinVolume);
+        std::cout << "  min volume:  " << volume << "\n";
+        meshioplusplus::detail::snprintf_c(volume, sizeof(volume), "%.6g", r.mMaxVolume);
+        std::cout << "  max volume:  " << volume << "\n";
+        for (const std::string& w : r.mWarnings)
+            std::cout << "  warning: " << w << "\n";
+    }
+    return r.mValid ? 0 : 1;
 }
 
 int cmd_find_intersections(const std::vector<std::string>& rArgs) {
@@ -5657,7 +5714,12 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
                                           {"hex-grading", {}, true},
                                           {"untangle-iterations", {}, true},
                                           {"max-cells", {}, true},
-                                          {"max-tets", {}, true}},
+                                          {"max-tets", {}, true},
+                                          {"no-volume-fix", {}, false},
+                                          {"zero-volume-factor", {}, true},
+                                          {"cap-flatness", {}, true},
+                                          {"crossing-margin", {}, true},
+                                          {"crossing-gap", {}, true}},
                                          report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("octree-mesh requires exactly INFILE and OUTFILE");
@@ -5711,6 +5773,11 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
     o.mUntangleIterations = integer("untangle-iterations", o.mUntangleIterations);
     o.mMaxCells = integer("max-cells", o.mMaxCells);
     o.mMaxTets = integer("max-tets", o.mMaxTets);
+    o.mVolumeFix = !has_flag(p, "no-volume-fix");
+    o.mZeroVolumeFactor = num("zero-volume-factor", o.mZeroVolumeFactor);
+    o.mCapFlatness = num("cap-flatness", o.mCapFlatness);
+    o.mCrossingMargin = num("crossing-margin", o.mCrossingMargin);
+    o.mCrossingGap = num("crossing-gap", o.mCrossingGap);
 
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     mio::OctreeMeshResult r = mio::octree_mesh(mesh, o);
@@ -5760,6 +5827,13 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
         json.Field("num_winding_skipped", r.mNumWindingSkipped);
         json.Field("num_gaps_filled", r.mNumGapsFilled);
         json.Field("num_gaps_skipped", r.mNumGapsSkipped);
+        json.Field("num_collapsed", r.mNumCollapsed);
+        json.Field("num_reordered", r.mNumReordered);
+        json.Field("num_overlaps", r.mNumOverlaps);
+        json.Field("num_caps_removed", r.mNumCapsRemoved);
+        json.Field("num_split", r.mNumSplit);
+        json.Field("num_slivers", r.mNumSlivers);
+        json.Field("num_untangled", r.mNumUntangled);
         json.Field("root_size", r.mRootSize);
         json.Field("min_size", r.mMinSize);
         json.Field("max_size", r.mMaxSize);
@@ -9165,6 +9239,8 @@ int cli_run_verb(const std::string& cmd, const std::vector<std::string>& rest) {
         return cmd_normals(rest);
     if (cmd == "check-conformity")
         return cmd_check_conformity(rest);
+    if (cmd == "check-tetrahedra")
+        return cmd_check_tetrahedra(rest);
     if (cmd == "find-intersections")
         return cmd_find_intersections(rest);
     if (cmd == "thickness")

@@ -920,6 +920,33 @@ export interface TetrahedralizeResult {
   warnings: string[];
 }
 
+/** Options of `checkTetrahedra` (doc/check_tetrahedra.md). */
+export interface TetrahedraCheckOptions {
+  /** A volume under this fraction of the longest edge cubed (plus the effect of the
+   *  written coordinates' precision) counts as zero (default 1e-6). */
+  zeroVolumeFactor?: number;
+}
+
+/** What `checkTetrahedra` returns. */
+export interface TetrahedraCheckResult {
+  /** `tetra` and `tetra10` cells examined. */
+  numTetrahedra: number;
+  /** Volume below minus the tolerance. */
+  numInverted: number;
+  /** Volume within the tolerance. */
+  numDegenerate: number;
+  /** Pairs of tetrahedra sharing a face whose opposite nodes lie on the same side of it. */
+  numOverlaps: number;
+  /** Smallest signed volume (0 without tetrahedra). */
+  minVolume: number;
+  /** Largest signed volume (0 without tetrahedra). */
+  maxVolume: number;
+  /** No inverted or degenerate tetrahedron and no overlap. */
+  valid: boolean;
+  /** What the check could not examine. */
+  warnings: string[];
+}
+
 /** Options of `checkConformity` (doc/check_conformity.md). */
 export interface ConformityOptions {
   /** Distances at or below this fraction of the examined facets' bounding-box
@@ -3344,6 +3371,13 @@ export interface MeshioPlusPlusModule {
   checkConformity(mesh: Mesh, options?: ConformityOptions): ConformityResult;
 
   /**
+   * Inverted, degenerate and overlapping tetrahedra of a mesh's `tetra` and `tetra10`
+   * cells. The mesh is not changed. See doc/check_tetrahedra.md.
+   * @throws {Error} on a negative or non-finite `zeroVolumeFactor`, or an unknown option.
+   */
+  checkTetrahedra(mesh: Mesh, options?: TetrahedraCheckOptions): TetrahedraCheckResult;
+
+  /**
    * Remesh a surface by approximated centroidal Voronoi diagram (ACVD)
    * clustering: replace its triangulation with a new, near-uniformly-sized,
    * well-shaped one at `numClusters` vertices. Unlike every other
@@ -5171,6 +5205,16 @@ export interface OctreeMeshOptions {
   maxCells?: number;
   /** Refuse an output with more cells than this (default 100000000). */
   maxTets?: number;
+  /** Tetrahedral output: run the volume fix after the optimisation (default true). */
+  volumeFix?: boolean;
+  /** Degenerate below this fraction of a tetrahedron's longest edge cubed (default 1e-6). */
+  zeroVolumeFactor?: number;
+  /** A flat tetrahedron is a cap when its apex's height over the opposite face is under this fraction of the face's size (default 0.01). */
+  capFlatness?: number;
+  /** A sliver's opposite edges cross when the crossing lies this far inside both, as a fraction in [0, 0.5) (default 0.01). */
+  crossingMargin?: number;
+  /** ... and the edges come this close, relative to the shorter one (default 0.05). */
+  crossingGap?: number;
 }
 
 /** What {@link MeshioPlusPlusModule.octreeMesh} built. See doc/octree_mesh.md#report. */
@@ -5264,6 +5308,20 @@ export interface OctreeMeshResult {
   numGapsFilled: number;
   /** Notches left open. */
   numGapsSkipped: number;
+  /** Degenerate tetrahedra removed by collapsing their nodes. */
+  numCollapsed: number;
+  /** Inverted tetrahedra made positive by swapping two nodes. */
+  numReordered: number;
+  /** Pairs of tetrahedra sharing a face whose opposite nodes lie on the same side of it. */
+  numOverlaps: number;
+  /** Flat caps dropped because their opposite face is on the skin or an interface. */
+  numCapsRemoved: number;
+  /** Tetrahedra split at the apex of a flat cap over an interior face. */
+  numSplit: number;
+  /** Flat slivers removed by inserting a node where their opposite edges cross. */
+  numSlivers: number;
+  /** Inverted tetrahedra repaired by moving a free node. */
+  numUntangled: number;
   /** Seconds spent in each stage, in order, as `[stage, seconds]` pairs. */
   timings: Array<[string, number]>;
   /** Everything that did not meet its target, in order. */

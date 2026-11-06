@@ -369,6 +369,8 @@ annotated = meshioplusplus.attach_quality(mesh)   # metrics as cell_data
 
 `meshioplusplus.check_conformity(mesh)` reports the hanging nodes, T-junctions and partly overlapping or unwelded facets of a mesh, flags the hanging points in `conformity:hanging`, and says which `find_interface` mode suits it; the `check-conformity` CLI verb exits 1 when the mesh is not conforming. See `doc/check_conformity.md`.
 
+`meshioplusplus.check_tetrahedra(mesh)` counts the inverted, degenerate and overlapping tetrahedra of a mesh (the check behind the volume fix of `octree_mesh`), without changing it; the `check-tetrahedra` CLI verb exits 1 when any is found and 2 when it could not run, and the `CheckTetrahedra` pipeline step gates on it ([tetrahedron check](doc/check_tetrahedra.md)).
+
 `meshioplusplus.find_intersections(mesh)` finds where a surface intersects itself, or with a second surface where two parts interpenetrate, by exact triangle–triangle tests: the cell pairs, the crossing segments as a line mesh and `intersections:count` per cell; the `find-intersections` CLI verb exits 1 when anything intersects. `meshioplusplus.thickness(mesh)` measures the wall thickness (or, outward, the clearance to the same or a second part) at every facet by a ray along its normal, into `thickness:distance`. See `doc/find_intersections.md` and `doc/thickness.md`.
 
 #### Reordering / renumbering

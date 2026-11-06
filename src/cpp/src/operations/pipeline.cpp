@@ -73,6 +73,7 @@
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/check_tetrahedra.hpp"
 #include "meshioplusplus/operations/find_intersections.hpp"
 #include "meshioplusplus/operations/thickness.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
@@ -428,6 +429,7 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
         {"SplitInterface", {"Region", "AddCohesive"}},
         {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
         {"CheckConformity", {"Tolerance", "Require", "AttachFlags"}},
+        {"CheckTetrahedra", {"ZeroVolumeFactor", "Require"}},
         {"FindIntersections", {"Other", "Region", "RegionOther", "Require", "AttachFlags"}},
         {"Thickness",
          {"Other", "Direction", "MaxDistance", "Min", "Region", "RegionOther", "Require"}},
@@ -551,7 +553,12 @@ const std::vector<PipeOpSpec>& pipe_op_table() {
           "HexGrading",
           "UntangleIterations",
           "MaxCells",
-          "MaxTets"}},
+          "MaxTets",
+          "VolumeFix",
+          "ZeroVolumeFactor",
+          "CapFlatness",
+          "CrossingMargin",
+          "CrossingGap"}},
         {"ComputeSdf",
          {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
           "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
@@ -2140,6 +2147,24 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             return std::move(cr.mMesh);
         return mesh;
     }
+    if (op == "CheckTetrahedra") {
+        // A gate by default: a mesh with an inverted or degenerate tetrahedron or an overlap
+        // stops the pipeline; with Require false it only reports. The mesh flows on unchanged.
+        TetrahedraCheckOptions opts;
+        opts.mZeroVolumeFactor = pipe_number(rStep, "ZeroVolumeFactor", 1e-6);
+        const TetrahedraCheckResult tr = check_tetrahedra(mesh, opts);
+        if (pipe_flag(rStep, "Require", true) && !tr.mValid)
+            throw std::runtime_error(
+                "meshio++: pipeline: CheckTetrahedra failed: " + std::to_string(tr.mNumInverted) +
+                " inverted, " + std::to_string(tr.mNumDegenerate) + " degenerate and " +
+                std::to_string(tr.mNumOverlaps) + " overlapping pair(s)");
+        pipe_push_step(rReport, rStep,
+                       {{"NumTetrahedra", static_cast<double>(tr.mNumTetrahedra)},
+                        {"NumInverted", static_cast<double>(tr.mNumInverted)},
+                        {"NumDegenerate", static_cast<double>(tr.mNumDegenerate)},
+                        {"NumOverlaps", static_cast<double>(tr.mNumOverlaps)}});
+        return mesh;
+    }
     if (op == "FindIntersections") {
         // A gate by default, like CheckConformity: a surface that intersects
         // itself (or meets `Other`) stops the pipeline; with Require false it
@@ -3089,6 +3114,11 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             static_cast<std::int64_t>(pipe_number(rStep, "UntangleIterations", 50.0));
         opts.mMaxCells = static_cast<std::int64_t>(pipe_number(rStep, "MaxCells", 20000000.0));
         opts.mMaxTets = static_cast<std::int64_t>(pipe_number(rStep, "MaxTets", 100000000.0));
+        opts.mVolumeFix = pipe_flag(rStep, "VolumeFix", true);
+        opts.mZeroVolumeFactor = pipe_number(rStep, "ZeroVolumeFactor", 1.0e-6);
+        opts.mCapFlatness = pipe_number(rStep, "CapFlatness", 0.01);
+        opts.mCrossingMargin = pipe_number(rStep, "CrossingMargin", 0.01);
+        opts.mCrossingGap = pipe_number(rStep, "CrossingGap", 0.05);
         OctreeMeshResult r = octree_mesh(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumLeaves", static_cast<double>(r.mNumLeaves)},

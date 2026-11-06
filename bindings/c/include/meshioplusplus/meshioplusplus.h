@@ -3237,6 +3237,14 @@ typedef struct mio_octree_mesh_opts {
     int32_t attach_quality;       /**< nonzero: attach the quality:* cell data */
     int32_t pillow;               /**< nonzero (default): hexahedral output's boundary layer */
     int32_t hex_grading;          /**< a mio_octree_mesh_hex_grading (hexahedral; UNIFORM) */
+    /** The volume fix of the tetrahedral output (the struct grew from 264 to 304 bytes with it). */
+    double
+        zero_volume_factor; /**< degenerate under this fraction of the longest edge cubed (1e-6) */
+    double cap_flatness; /**< a flat tetrahedron is a cap under this height over its face (0.01) */
+    double crossing_margin; /**< a sliver's edges cross this far inside both, in [0, 0.5) (0.01) */
+    double crossing_gap;    /**< ... and come this close, relative to the shorter one (0.05) */
+    int32_t volume_fix;     /**< nonzero (default): run the volume fix */
+    int32_t reserved32;     /**< must be zero */
     int64_t reserved[4];          /**< must be zero; room for additive growth */
 } mio_octree_mesh_opts;
 
@@ -3287,7 +3295,20 @@ typedef struct mio_octree_mesh_report {
      *  and left open (from the reserved tail; the struct is still 392 bytes). */
     int64_t num_gaps_filled;
     int64_t num_gaps_skipped;
-    int64_t reserved[5]; /**< zeroed */
+    /** The volume fix of the tetrahedral output (440 bytes in all, 392 before
+     *  it): degenerate tetrahedra removed by collapsing their nodes, inverted
+     *  ones made positive by swapping two nodes, pairs of tetrahedra left
+     *  overlapping, flat caps dropped, tetrahedra split to repair flat caps,
+     *  flat slivers removed, and inverted tetrahedra untangled by moving a
+     *  free node. */
+    int64_t num_collapsed;
+    int64_t num_reordered;
+    int64_t num_overlaps;
+    int64_t num_caps_removed;
+    int64_t num_split;
+    int64_t num_slivers;
+    int64_t num_untangled;
+    int64_t reserved[4]; /**< zeroed */
 } mio_octree_mesh_report;
 
 /** Initialize octree_mesh options to their defaults. */
@@ -3312,6 +3333,29 @@ MIO_API mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_op
  * may be NULL/zero to query the length.
  */
 MIO_API int64_t mio_octree_mesh_warnings(char* buf, int64_t buflen);
+
+/**
+ * The stages of this thread's last mio_octree_mesh call that the report's
+ * timings cover, one name per line, in order. String rule 5: required byte
+ * length excluding NUL, -1 on error; the buffer may be NULL/zero to query the
+ * length.
+ */
+MIO_API int64_t mio_octree_mesh_stage_names(char* buf, int64_t buflen);
+
+/**
+ * The seconds each of those stages took, in the same order. Returns the number
+ * of stages (-1 on error); at most @p n values are written to @p out, which may
+ * be NULL with n = 0 to query the count.
+ */
+MIO_API int64_t mio_octree_mesh_stage_seconds(double* out, int64_t n);
+
+/**
+ * The octree's leaves at each level, from level 0, of this thread's last
+ * mio_octree_mesh call. Returns the number of levels (-1 on error); at most
+ * @p n values are written to @p out, which may be NULL with n = 0 to query the
+ * count.
+ */
+MIO_API int64_t mio_octree_mesh_leaves_per_level(int64_t* out, int64_t n);
 
 /**
  * Report what is wrong with a surface, without computing any distances.
@@ -7081,6 +7125,53 @@ MIO_API mio_mesh* mio_check_conformity(const mio_mesh* mesh, const mio_conformit
  * may be NULL/zero to query the length.
  */
 MIO_API int64_t mio_check_conformity_warnings(char* buf, int64_t buflen);
+
+/* ---- check_tetrahedra ---------------------------------------------------- */
+
+/**
+ * Options of mio_check_tetrahedra. Initialise with mio_check_tetrahedra_opts_init.
+ * 40 bytes, with a reserved tail.
+ */
+typedef struct mio_check_tetrahedra_opts {
+    /** A volume under this fraction of the longest edge cubed (plus the effect of
+     *  the written coordinates' precision) counts as zero (init: 1e-6). */
+    double zero_volume_factor;
+    int64_t reserved[4]; /**< must be zero */
+} mio_check_tetrahedra_opts;
+
+/** What mio_check_tetrahedra found. 96 bytes, with a reserved tail. */
+typedef struct mio_check_tetrahedra_report {
+    int64_t num_tetrahedra; /**< tetra and tetra10 cells examined */
+    int64_t num_inverted;   /**< volume below minus the tolerance */
+    int64_t num_degenerate; /**< volume within the tolerance */
+    int64_t num_overlaps;   /**< pairs overlapping across a shared face */
+    double min_volume;      /**< smallest signed volume (0 without tetrahedra) */
+    double max_volume;      /**< largest signed volume (0 without tetrahedra) */
+    int32_t valid;          /**< nonzero: no inverted or degenerate tetrahedron, no overlap */
+    int32_t reserved32;     /**< zeroed */
+    int64_t num_warnings;   /**< see mio_check_tetrahedra_warnings() */
+    int64_t reserved[4];    /**< zeroed */
+} mio_check_tetrahedra_report;
+
+MIO_API void mio_check_tetrahedra_opts_init(mio_check_tetrahedra_opts* opts);
+
+/**
+ * Report the inverted, degenerate and overlapping tetrahedra of a mesh's tetra
+ * and tetra10 cells (doc/check_tetrahedra.md). The mesh is not changed.
+ *
+ * @param opts   options, or NULL for the mio_check_tetrahedra_opts_init() defaults.
+ * @param report receives the summary (must be non-NULL).
+ * @return MIO_OK, or an error status (see mio_last_error()).
+ */
+MIO_API mio_status mio_check_tetrahedra(const mio_mesh* mesh, const mio_check_tetrahedra_opts* opts,
+                                        mio_check_tetrahedra_report* report);
+
+/**
+ * The warnings of this thread's last mio_check_tetrahedra call, one per line.
+ * String rule 5: required byte length excluding NUL, -1 on error; the buffer
+ * may be NULL/zero to query the length.
+ */
+MIO_API int64_t mio_check_tetrahedra_warnings(char* buf, int64_t buflen);
 
 /* ---- boundary_layer (roadmap 6.9) --------------------------------------- */
 

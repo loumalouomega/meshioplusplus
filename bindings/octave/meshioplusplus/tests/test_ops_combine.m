@@ -17,6 +17,7 @@ function tests = test_ops_combine()
         'decimate honours target_faces and frozen', @t_decimate
         'decimate_volume collapses tets and reports its maps', @t_decimate_volume
         'error_size turns the indicator into a size field', @t_error_size
+        'check_tetrahedra counts the tetrahedra', @t_check_tetrahedra
         'check_conformity reports a conforming mesh', @t_conformity
         'merge and interpolate work', @t_merge_interpolate
         'diff reports structured results', @t_diff
@@ -317,6 +318,19 @@ function t_error_size()
     expect_error(@() mio.error_size(src, 0));
     expect_error(@() mio.error_size(src, 1e-3, 'min_size', 2, 'max_size', 1));
     expect_error(@() mio.error_size(src, 1e-3, 'error_array', 'nope'));
+end
+
+function t_check_tetrahedra()
+    m = fixture();
+    r = mio.check_tetrahedra(m);
+    assert(r.num_tetrahedra == 2);
+    assert(r.num_inverted + r.num_degenerate + r.num_overlaps >= 0);
+    assert(r.min_volume <= r.max_volume);
+    assert(islogical(r.valid));
+    assert(iscellstr(r.warnings));
+    r = mio.check_tetrahedra(m, 'zero_volume_factor', 1e-6);
+    assert(r.num_tetrahedra == 2);
+    expect_error(@() mio.check_tetrahedra(m, 'zero_volume_factor', -1));
 end
 
 function t_conformity()

@@ -54,8 +54,10 @@
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "../../src/cpp/src/detail/bcc_octree_tets.hpp"
+#include "../../src/cpp/src/detail/feature_snap.hpp"
 #include "../../src/cpp/src/detail/hex_fit.hpp"
 #include "../../src/cpp/src/detail/tri_bvh.hpp"
+#include "../../src/cpp/src/operations/octree_mesh_internal.hpp"
 
 namespace {
 
@@ -489,6 +491,12 @@ TEST(OctreeMesh, RefusesBadOptionsByName) {
     bad = o;
     bad.mSizeArray = "nope";
     expect_throw(bad, "size_array");
+    bad = o;
+    bad.mCrossingMargin = 0.5;
+    expect_throw(bad, "crossing_margin");
+    bad = o;
+    bad.mZeroVolumeFactor = -1.0;
+    expect_throw(bad, "zero_volume_factor");
     EXPECT_THROW(mio::octree_mesh(mt::line_mesh(), o), std::invalid_argument);
     EXPECT_THROW(mio::octree_mesh_output_from_name("quad"), std::invalid_argument);
     EXPECT_EQ(mio::octree_mesh_output_from_name("tet"), mio::OctreeMeshOutput::Tetra);
@@ -752,6 +760,34 @@ TEST(OctreeMeshTet, OptimisationNeverWorsensTheExtremeAngles) {
                 EXPECT_TRUE(after.mGuaranteeApplies);
             }
         }
+}
+
+TEST(OctreeMeshTet, OptimisedMeshesHaveNoInvertedOrOverlappingTetrahedra) {
+    const mio::Mesh skins[] = {mio::icosa_sphere(1.0, 4), analytic::torus(1.0, 0.4, 64, 32)};
+    for (const mio::Mesh& skin : skins) {
+        // om_check_tets requires every volume to be positive.
+        const auto r = mio::octree_mesh(skin, om_tet(0.5, 0.05, true));
+        om_check_tets(r.mMesh);
+        EXPECT_EQ(r.mNumInverted, 0);
+        EXPECT_EQ(r.mNumOverlaps, 0);
+    }
+}
+
+TEST(OctreeMeshTet, TheVolumeFixCanBeSwitchedOffAndTuned) {
+    const mio::Mesh skin = analytic::torus(1.0, 0.4, 64, 32);
+    auto options = om_tet(0.5, 0.05, true);
+    options.mVolumeFix = false;
+    const auto off = mio::octree_mesh(skin, options);
+    EXPECT_EQ(off.mNumCollapsed + off.mNumCapsRemoved + off.mNumSplit + off.mNumSlivers +
+                  off.mNumUntangled + off.mNumReordered + off.mNumOverlaps,
+              0);
+    // A zero-volume factor of 0 collapses nothing (no tetrahedron has a volume under 0 times
+    // an edge cubed beyond the coordinate noise), and the result is still valid.
+    options.mVolumeFix = true;
+    options.mZeroVolumeFactor = 0.0;
+    const auto tuned = mio::octree_mesh(skin, options);
+    om_check_tets(tuned.mMesh);
+    EXPECT_EQ(tuned.mNumInverted, 0);
 }
 
 TEST(OctreeMeshTet, ReportsTheBoundarysDistanceAndManifoldness) {
@@ -1291,4 +1327,127 @@ TEST(OctreeMeshHex, CreasesShorterThanACellAreNotSnapped) {
         said = said || w.find("shorter than a cell") != std::string::npos;
     EXPECT_TRUE(said);
     EXPECT_GT(r.mNumFeatureChainsMissed, 0);
+}
+
+// ---- volume fixing and feature snapping on hand-made tetrahedra ----
+
+namespace {
+
+using meshioplusplus::detail::OctreeMeshTets;
+
+double fix_test_volume(const OctreeMeshTets& rT, const std::array<std::int64_t, 4>& rTet) {
+    const auto& a = rT.mPoints[static_cast<std::size_t>(rTet[0])];
+    const auto sub = [&](const int I) {
+        const auto& p = rT.mPoints[static_cast<std::size_t>(rTet[static_cast<std::size_t>(I)])];
+        return std::array<double, 3>{p[0] - a[0], p[1] - a[1], p[2] - a[2]};
+    };
+    const auto u = sub(1), v = sub(2), w = sub(3);
+    return (u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0]) +
+            u[2] * (v[0] * w[1] - v[1] * w[0])) /
+           6.0;
+}
+
+OctreeMeshTets fix_test_tets(const std::vector<std::array<double, 3>>& rPoints,
+                             const std::vector<std::array<std::int64_t, 4>>& rTets) {
+    OctreeMeshTets t;
+    t.mPoints = rPoints;
+    t.mTets = rTets;
+    t.mMaterial.assign(rTets.size(), 1);
+    t.mCut.assign(rTets.size(), 0);
+    t.mLevel.assign(rTets.size(), 0);
+    t.mShape.assign(rTets.size(), 0);
+    t.mOnSkin.assign(rPoints.size(), 0);
+    t.mFeature.assign(rPoints.size(), 0);
+    t.mNumMaterials = 2;
+    return t;
+}
+
+}  // namespace
+
+TEST(OctreeMeshFixVolumes, UntanglesAFreeNode) {
+    // Node 3 lies below the triangle 0-1-2 although its tetrahedron stands above it; the centroid of its neighbours (0, 1, 2 and 4) puts it back above
+    OctreeMeshTets tets = fix_test_tets(
+        {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.33, 0.33, -0.1}, {0.33, 0.33, 0.4}},
+        {{0, 1, 2, 3}, {0, 1, 2, 4}, {1, 2, 3, 4}});
+    meshioplusplus::detail::OctreeMeshSetup setup;
+    meshioplusplus::OctreeMeshOptions options;
+    meshioplusplus::OctreeMeshResult result;
+    meshioplusplus::detail::octree_mesh_fix_volumes(setup, options, result, tets);
+    EXPECT_EQ(result.mNumUntangled, 1);
+    EXPECT_EQ(result.mNumReordered, 0);
+    EXPECT_EQ(tets.mTets.size(), 3u);
+    for (const auto& t : tets.mTets)
+        EXPECT_GT(fix_test_volume(tets, t), 0.0);
+}
+
+TEST(OctreeMeshFixVolumes, SplitsAFlatSliver) {
+    // A flat tetrahedron 0-1-2-3 whose opposite edges 0-1 and 2-3 cross at (0.5, 0, 0), with all its nodes on features so that no collapse can remove it
+    OctreeMeshTets tets = fix_test_tets(
+        {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.5, -0.5, 0.0}, {0.5, 0.5, 0.0}, {0.5, 0.2, 1.0}, {0.8, -0.2, 2.0}},
+        {{0, 1, 2, 3}, {0, 1, 4, 5}, {2, 3, 4, 5}});
+    // The neighbours around the two edges are positive
+    for (std::size_t t = 1; t < 3; ++t)
+        if (fix_test_volume(tets, tets.mTets[t]) < 0.0)
+            std::swap(tets.mTets[t][0], tets.mTets[t][1]);
+    tets.mFeature = {1, 1, 1, 1, 0, 0};
+    meshioplusplus::detail::OctreeMeshSetup setup;
+    meshioplusplus::OctreeMeshOptions options;
+    meshioplusplus::OctreeMeshResult result;
+    meshioplusplus::detail::octree_mesh_fix_volumes(setup, options, result, tets);
+    EXPECT_EQ(result.mNumSlivers, 1);
+    EXPECT_EQ(result.mNumReordered, 0);
+    // The sliver is gone and each neighbour is replaced by two
+    EXPECT_EQ(tets.mTets.size(), 4u);
+    EXPECT_EQ(tets.mPoints.size(), 7u);
+    for (const auto& t : tets.mTets)
+        EXPECT_GT(fix_test_volume(tets, t), 0.0);
+}
+
+TEST(OctreeMeshFeatureSnap, KeepsGuardedTetrahedraPositive) {
+    // A cube of 6x6x6 cells, each split in six tetrahedra around its diagonal, and a ridge that runs along the edge x = y = 0 slightly inside it
+    constexpr int n = 6;
+    const double h = 1.0 / n;
+    const auto id = [&](const int I, const int J, const int K) {
+        return static_cast<std::int64_t>((I * (n + 1) + J) * (n + 1) + K);
+    };
+    OctreeMeshTets m;
+    for (int i = 0; i <= n; ++i)
+        for (int j = 0; j <= n; ++j)
+            for (int k = 0; k <= n; ++k)
+                m.mPoints.push_back({i * h, j * h, k * h});
+    const int path[6][3] = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+    for (int i = 0; i < n; ++i)
+        for (int j = 0; j < n; ++j)
+            for (int k = 0; k < n; ++k)
+                for (const auto& path_i : path) {
+                    int c[3] = {i, j, k};
+                    std::array<std::int64_t, 4> tet{};
+                    tet[0] = id(c[0], c[1], c[2]);
+                    for (int s = 0; s < 3; ++s) {
+                        ++c[path_i[s]];
+                        tet[static_cast<std::size_t>(s) + 1] = id(c[0], c[1], c[2]);
+                    }
+                    if (fix_test_volume(m, tet) < 0.0)
+                        std::swap(tet[0], tet[1]);
+                    m.mTets.push_back(tet);
+                }
+    std::vector<std::array<double, 3>> ridge;
+    std::vector<std::array<std::int64_t, 2>> edges;
+    for (int k = 0; k <= n; ++k) {
+        ridge.push_back({0.3 * h, 0.2 * h, k * h});
+        if (k > 0)
+            edges.push_back({k - 1, k});
+    }
+    const auto graph = meshioplusplus::detail::feature_graph(ridge, edges, 45.0);
+    const std::vector<std::uint8_t> inside(m.mTets.size(), 1);
+    std::vector<std::uint8_t> pinned(m.mPoints.size(), 0);
+    std::vector<std::uint8_t> feature(m.mPoints.size(), 0);
+    const double min_volume = 1.0e-12 * h * h * h;
+    meshioplusplus::detail::feature_snap(
+        m.mPoints, m.mTets, inside, inside, graph, ridge, [&](const std::array<double, 3>&) { return h; },
+        min_volume, pinned, feature);
+    EXPECT_GT(std::count(feature.begin(), feature.end(), 2) + std::count(feature.begin(), feature.end(), 1), 0);
+    // However the moves went, no tetrahedron the snap was told to guard may end up flat or inverted
+    for (const auto& t : m.mTets)
+        EXPECT_GT(fix_test_volume(m, t), min_volume);
 }

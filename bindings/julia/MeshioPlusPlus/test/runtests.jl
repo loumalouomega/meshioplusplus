@@ -1266,6 +1266,36 @@ end
     close(m)
 end
 
+@testset "operations: check_tetrahedra" begin
+    # Two tetrahedra over the face (1, 2, 3): the apexes on the same side overlap.
+    m = Mesh()
+    set_points!(m, Float64[0 1 0 0 0.2
+                           0 0 1 0 0.2
+                           0 0 0 1 0.5])
+    add_cell_block!(m, "tetra", Int64[1 1; 2 2; 3 3; 4 5])
+    c = check_tetrahedra(m)
+    @test c.num_tetrahedra == 2
+    @test c.num_inverted == 0 && c.num_degenerate == 0
+    @test c.num_overlaps == 1
+    @test !c.valid
+    @test c.min_volume > 0 && c.max_volume >= c.min_volume
+    @test c.warnings isa Vector{String}
+    @test_throws MeshioError check_tetrahedra(m; zero_volume_factor=-1.0)
+    close(m)
+
+    # One positive tetrahedron is valid; swapping two nodes inverts it.
+    good = Mesh()
+    set_points!(good, Float64[0 1 0 0; 0 0 1 0; 0 0 0 1])
+    add_cell_block!(good, "tetra", reshape(Int64[1, 2, 3, 4], 4, 1))
+    @test check_tetrahedra(good).valid
+    flipped = Mesh()
+    set_points!(flipped, Float64[0 1 0 0; 0 0 1 0; 0 0 0 1])
+    add_cell_block!(flipped, "tetra", reshape(Int64[1, 3, 2, 4], 4, 1))
+    @test check_tetrahedra(flipped).num_inverted == 1
+    close(good)
+    close(flipped)
+end
+
 @testset "operations: extrude, revolve, mirror" begin
     r = rectangle(dims=(3, 2))
     e = extrude(r; direction=(0.0, 0.0, 1.0), num_layers=4)

@@ -110,6 +110,7 @@ export gradient
 export hessian
 export estimate_error, error_size
 export check_conformity
+export check_tetrahedra
 export remesh
 export remesh_volume
 export grid, voxelize, octree, octree_mesh

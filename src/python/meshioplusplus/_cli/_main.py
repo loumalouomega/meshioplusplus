@@ -52,6 +52,15 @@ _VERBS = (
         "Quality gate: exit 1 when cells break thresholds (2: could not check)",
     ),
     _Verb(
+        "check-tetrahedra",
+        "_check_tetrahedra",
+        "check_tetrahedra_cmd",
+        (
+            "Inverted, degenerate and overlapping tetrahedra: exit 1 when any "
+            "(2: could not check)"
+        ),
+    ),
+    _Verb(
         "check-conformity",
         "_check_conformity",
         "check_conformity_cmd",

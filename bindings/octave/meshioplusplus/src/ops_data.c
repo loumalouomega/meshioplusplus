@@ -637,6 +637,11 @@ static mxArray *O_mio_octree(const mxArray **a) {
 }
 
 /* mio_o_getstring adapter: the warnings of this thread's last octree_mesh call. */
+static int64_t od_octree_mesh_stage_names(void *ctx, char *buf, int64_t buflen) {
+    (void)ctx;
+    return mio_octree_mesh_stage_names(buf, buflen);
+}
+
 static int64_t od_octree_mesh_warnings(void *ctx, char *buf, int64_t buflen) {
     (void)ctx;
     return mio_octree_mesh_warnings(buf, buflen);
@@ -652,7 +657,8 @@ static int64_t od_octree_mesh_warnings(void *ctx, char *buf, int64_t buflen) {
  *   max_level, grading_layers, fit_iterations, untangle_iterations,
  *   max_cells, max_tets, gap_outside, preserve_features,
  *   dihedral_floor_guard, keep_outside, attach_distance, attach_quality,
- *   pillow, hex_grading */
+ *   pillow, hex_grading, volume_fix, zero_volume_factor, cap_flatness,
+ *   crossing_margin, crossing_gap */
 static mxArray *O_mio_octree_mesh(const mxArray **a) {
     mio_octree_mesh_opts opts;
     mio_octree_mesh_opts_init(&opts);
@@ -697,6 +703,11 @@ static mxArray *O_mio_octree_mesh(const mxArray **a) {
     OD_BOOL(33, attach_quality);
     OD_BOOL(34, pillow);
     OD_ENUM(35, hex_grading);
+    OD_BOOL(36, volume_fix);
+    OD_DOUBLE(37, zero_volume_factor);
+    OD_DOUBLE(38, cap_flatness);
+    OD_DOUBLE(39, crossing_margin);
+    OD_DOUBLE(40, crossing_gap);
 #undef OD_ENUM
 #undef OD_DOUBLE
 #undef OD_INT64
@@ -719,11 +730,12 @@ static mxArray *O_mio_octree_mesh(const mxArray **a) {
      * it. */
     mxArray *mo = mio_o_wrap_mesh(out);
     mxArray *warnings = mio_o_getstring(od_octree_mesh_warnings, NULL, "octree_mesh");
+    mxArray *stages = mio_o_getstring(od_octree_mesh_stage_names, NULL, "octree_mesh");
     static const char *outputs[] = {"castellated", "tet", "hex"};
     const char *output_name =
         (report.output >= 0 && report.output <= 2) ? outputs[report.output] : "unknown";
 
-    enum { OD_OCTREE_MESH_N = 43 };
+    enum { OD_OCTREE_MESH_N = 53 };
     const char *names[OD_OCTREE_MESH_N];
     mxArray *values[OD_OCTREE_MESH_N];
     int k = 0;
@@ -775,9 +787,42 @@ static mxArray *O_mio_octree_mesh(const mxArray **a) {
     OD_NUM(num_winding_skipped);
     OD_NUM(num_gaps_filled);
     OD_NUM(num_gaps_skipped);
+    OD_NUM(num_collapsed);
+    OD_NUM(num_reordered);
+    OD_NUM(num_overlaps);
+    OD_NUM(num_caps_removed);
+    OD_NUM(num_split);
+    OD_NUM(num_slivers);
+    OD_NUM(num_untangled);
     OD_NUM(num_warnings);
     /* One string, newline-separated; the .m wrapper splits it. */
     OD_SET("warnings", warnings);
+    /* The stage names, newline-separated (the .m wrapper splits them), their
+     * seconds and the leaves at each level, as n x 1 columns. */
+    OD_SET("stage_names", stages);
+    {
+        const int64_t count = mio_octree_mesh_stage_seconds(NULL, 0);
+        if (count < 0) mio_o_fail("octree_mesh");
+        mxArray *ss = mio_o_column(count);
+        if (count > 0 && mio_octree_mesh_stage_seconds(mxGetPr(ss), count) < 0)
+            mio_o_fail("octree_mesh");
+        OD_SET("stage_seconds", ss);
+    }
+    {
+        const int64_t count = mio_octree_mesh_leaves_per_level(NULL, 0);
+        if (count < 0) mio_o_fail("octree_mesh");
+        mxArray *lv = mio_o_column(count);
+        if (count > 0) {
+            int64_t *tmp = (int64_t *)mxMalloc((size_t)count * sizeof(int64_t));
+            if (mio_octree_mesh_leaves_per_level(tmp, count) < 0) {
+                mxFree(tmp);
+                mio_o_fail("octree_mesh");
+            }
+            for (int64_t i = 0; i < count; ++i) mxGetPr(lv)[i] = (double)tmp[i];
+            mxFree(tmp);
+        }
+        OD_SET("leaves_per_level", lv);
+    }
 #undef OD_NUM
 #undef OD_SET
     if (k != OD_OCTREE_MESH_N) {
@@ -1090,7 +1135,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_reference_cells, 2),
     MIO_O_ENTRY(mio_voxelize, 12),
     MIO_O_ENTRY(mio_octree, 23),
-    MIO_O_ENTRY(mio_octree_mesh, 36),
+    MIO_O_ENTRY(mio_octree_mesh, 41),
     MIO_O_ENTRY(mio_compute_sdf, 16),
     MIO_O_ENTRY(mio_remesh_volume, 14),
     MIO_O_ENTRY(mio_surface_watertight_check, 1),

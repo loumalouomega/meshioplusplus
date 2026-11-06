@@ -235,6 +235,21 @@ struct OctreeMeshOptions {
     std::int64_t mMaxCells = 20000000;
     /// Refuse an output with more cells than this.
     std::int64_t mMaxTets = 100000000;
+    /// Tetrahedral output: run the volume fix after the optimisation, which collapses
+    /// degenerate tetrahedra, repairs flat caps and slivers, untangles and reorders inverted
+    /// ones and counts the overlaps.
+    bool mVolumeFix = true;
+    /// A tetrahedron is degenerate when its volume is under this fraction of its longest
+    /// edge cubed (plus the effect of six significant digits of written coordinates).
+    double mZeroVolumeFactor = 1.0e-6;
+    /// A flat tetrahedron is a cap when its apex's height over the opposite face is under
+    /// this fraction of the face's size.
+    double mCapFlatness = 0.01;
+    /// A sliver's opposite edges cross when the crossing lies this far (a fraction of each
+    /// edge) inside both.
+    double mCrossingMargin = 0.01;
+    /// ... and the edges come this close, relative to the shorter one.
+    double mCrossingGap = 0.05;
 };
 
 /// The result of `octree_mesh`.
@@ -280,6 +295,13 @@ struct OctreeMeshResult {
     std::int64_t mNumFlips = 0;                     ///< Flips the optimisation kept.
     std::int64_t mNumGapsFilled = 0;                ///< Chain gaps filled with tetrahedra.
     std::int64_t mNumGapsSkipped = 0;               ///< Chain gaps left open.
+    std::int64_t mNumCollapsed = 0;                 ///< Degenerate tetrahedra removed by collapsing their nodes.
+    std::int64_t mNumCapsRemoved = 0;               ///< Flat caps dropped because their opposite face is on the skin or an interface.
+    std::int64_t mNumSplit = 0;                     ///< Tetrahedra split at the apex of a flat cap over an interior face.
+    std::int64_t mNumSlivers = 0;                   ///< Flat slivers removed by inserting a node where their opposite edges cross.
+    std::int64_t mNumUntangled = 0;                 ///< Inverted tetrahedra repaired by moving a free node.
+    std::int64_t mNumReordered = 0;                 ///< Inverted tetrahedra made positive by swapping two nodes.
+    std::int64_t mNumOverlaps = 0;                  ///< Pairs of tetrahedra sharing a face whose opposite nodes lie on the same side of it.
     /// The Labelle-Shewchuk dihedral bound applies to every tetrahedron:
     /// `Uniform` grading, nothing snapped to features, nothing refused.
     bool mGuaranteeApplies = false;

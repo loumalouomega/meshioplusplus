@@ -867,6 +867,44 @@ def test_check_conformity_step_gates_and_reports(tmp_path):
         assert meshioplusplus.meshes_equal(py_mesh, cpp_mesh)
 
 
+def test_check_tetrahedra_step_gates_and_reports(tmp_path):
+    """``CheckTetrahedra`` stops an invalid mesh, or reports, in both engines."""
+    pts = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0.2, 0.2, 0.5]], dtype=float
+    )
+    tets = np.array([[0, 1, 2, 3], [0, 1, 2, 4]])  # the apexes share a side: overlap
+    src = tmp_path / "t.vtu"
+    meshioplusplus.write(
+        src, meshioplusplus.Mesh(pts, [("tetra", tets)]), compression=None
+    )
+
+    def settings(step, out):
+        return {
+            "Version": 1,
+            "Input": {"Path": str(src)},
+            "Operations": [dict(step, Op="CheckTetrahedra")],
+            "Output": {"Path": str(tmp_path / out)},
+        }
+
+    with pytest.raises(RuntimeError, match="1 overlapping"):
+        meshioplusplus.run_pipeline(settings({}, "gate.vtu"))
+    report = meshioplusplus.run_pipeline(settings({"Require": False}, "py.vtu"))
+    step = report["steps"][0]
+    assert step["NumTetrahedra"] == 2.0 and step["NumOverlaps"] == 1.0
+    assert step["NumInverted"] == 0.0 and step["NumDegenerate"] == 0.0
+    if hasattr(_core, "run_pipeline_json"):
+        with pytest.raises(RuntimeError, match="1 overlapping"):
+            _core.run_pipeline_json(json.dumps(settings({}, "gate_cpp.vtu")))
+        cpp_report = _core.run_pipeline_json(
+            json.dumps(settings({"Require": False}, "cpp.vtu"))
+        )
+        assert cpp_report["steps"][0]["NumOverlaps"] == 1.0
+        assert meshioplusplus.meshes_equal(
+            meshioplusplus.read(tmp_path / "py.vtu"),
+            meshioplusplus.read(tmp_path / "cpp.vtu"),
+        )
+
+
 def test_voxelize_step_takes_a_plane(tmp_path):
     """A two-entry ``Resolution`` is 2-D pixels in both engines, in ``Plane``."""
     pts = np.array([[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]], dtype=float)

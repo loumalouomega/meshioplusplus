@@ -444,6 +444,12 @@ struct _COctreeMeshOpts
     attach_quality::Int32
     pillow::Int32
     hex_grading::Int32
+    zero_volume_factor::Cdouble
+    cap_flatness::Cdouble
+    crossing_margin::Cdouble
+    crossing_gap::Cdouble
+    volume_fix::Int32
+    reserved32::Int32
     reserved::NTuple{4,Int64}
 end
 
@@ -492,7 +498,14 @@ struct _COctreeMeshReport
     num_winding_skipped::Int64
     num_gaps_filled::Int64
     num_gaps_skipped::Int64
-    reserved::NTuple{5,Int64}
+    num_collapsed::Int64
+    num_reordered::Int64
+    num_overlaps::Int64
+    num_caps_removed::Int64
+    num_split::Int64
+    num_slivers::Int64
+    num_untangled::Int64
+    reserved::NTuple{4,Int64}
 end
 
 """
@@ -892,6 +905,26 @@ struct _CConformityOpts
     tolerance::Cdouble
     attach_flags::Int32
     reserved32::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_check_tetrahedra_opts`."""
+struct _CCheckTetrahedraOpts
+    zero_volume_factor::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_check_tetrahedra_report`."""
+struct _CCheckTetrahedraReport
+    num_tetrahedra::Int64
+    num_inverted::Int64
+    num_degenerate::Int64
+    num_overlaps::Int64
+    min_volume::Cdouble
+    max_volume::Cdouble
+    valid::Int32
+    reserved32::Int32
+    num_warnings::Int64
     reserved::NTuple{4,Int64}
 end
 
@@ -2084,10 +2117,10 @@ function _check_abi_layout()
         error("meshio++: mio_octree_opts layout mismatch ($(sizeof(_COctreeOpts)) bytes)")
     sizeof(_COctreeReport) == 96 ||
         error("meshio++: mio_octree_report layout mismatch ($(sizeof(_COctreeReport)) bytes)")
-    sizeof(_COctreeMeshOpts) == 264 ||
+    sizeof(_COctreeMeshOpts) == 304 ||
         error("meshio++: mio_octree_mesh_opts layout mismatch " *
               "($(sizeof(_COctreeMeshOpts)) bytes)")
-    sizeof(_COctreeMeshReport) == 392 ||
+    sizeof(_COctreeMeshReport) == 440 ||
         error("meshio++: mio_octree_mesh_report layout mismatch " *
               "($(sizeof(_COctreeMeshReport)) bytes)")
     sizeof(_CComputeSdfOpts) == 232 ||
@@ -2167,6 +2200,14 @@ function _check_abi_layout()
      fieldoffset(_CConformityReport, 10) == 64) ||
         error("meshio++: mio_conformity_report layout mismatch " *
               "($(sizeof(_CConformityReport)) bytes)")
+    (sizeof(_CCheckTetrahedraOpts) == 40 && fieldoffset(_CCheckTetrahedraOpts, 2) == 8) ||
+        error("meshio++: mio_check_tetrahedra_opts layout mismatch " *
+              "($(sizeof(_CCheckTetrahedraOpts)) bytes)")
+    (sizeof(_CCheckTetrahedraReport) == 96 && fieldoffset(_CCheckTetrahedraReport, 5) == 32 &&
+     fieldoffset(_CCheckTetrahedraReport, 7) == 48 &&
+     fieldoffset(_CCheckTetrahedraReport, 9) == 56) ||
+        error("meshio++: mio_check_tetrahedra_report layout mismatch " *
+              "($(sizeof(_CCheckTetrahedraReport)) bytes)")
     (sizeof(_CBoundaryLayerOpts) == 64 && fieldoffset(_CBoundaryLayerOpts, 4) == 24 &&
      fieldoffset(_CBoundaryLayerOpts, 8) == 40 && fieldoffset(_CBoundaryLayerOpts, 12) == 56) ||
         error("meshio++: mio_boundary_layer_opts layout mismatch " *

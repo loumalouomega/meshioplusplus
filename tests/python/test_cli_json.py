@@ -164,6 +164,15 @@ def files(tmp_path_factory):
             for k in range(n)
         ]
     )
+    # two tetrahedra over one face: valid when the apexes are on opposite sides
+    paths["tets"] = str(d / "tets.vtu")
+    tpts = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1]], dtype=float
+    )
+    mio.write(
+        paths["tets"],
+        mio.Mesh(tpts, [("tetra", np.array([[0, 1, 2, 3], [0, 2, 1, 4]]))]),
+    )
     paths["hexes"] = str(d / "hexes.vtu")
     mio.write(paths["hexes"], mio.Mesh(hpts, [("hexahedron", hexes)]))
     # the two tetrahedra of `parts` stored as polyhedra, for poly-to-tet
@@ -275,6 +284,7 @@ CASES = [
         lambda f: ["check", f["grid"], "-r", "aspect_ratio <= 0.5 @ 10%", "--json"],
     ),
     ("check_conformity", lambda f: ["check-conformity", f["hexes"], "--json"]),
+    ("check_tetrahedra", lambda f: ["check-tetrahedra", f["tets"], "--json"]),
     ("stats", lambda f: ["stats", f["grid"], "--json"]),
     (
         "iga_evaluate_nurbs",
@@ -989,3 +999,18 @@ def test_find_intersections_and_thickness_exit_codes(files, tmp_path):
         assert _native(["find-intersections", a, "--other", b])[0] == 1
         assert _native(["find-intersections", str(tmp_path / "missing.vtu")])[0] == 2
         assert _native(["thickness", a, "--min", "3.0"])[0] == 1
+
+
+def test_check_tetrahedra_exit_codes(files, tmp_path):
+    # 0 valid, 1 not valid, 2 could not check.
+    assert _python(["check-tetrahedra", files["tets"]])[0] == 0
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0.2, 0.2, 0.5]], float)
+    bad = str(tmp_path / "overlap.vtu")
+    mio.write(bad, mio.Mesh(pts, [("tetra", np.array([[0, 1, 2, 3], [0, 1, 2, 4]]))]))
+    missing = str(tmp_path / "missing.vtu")
+    assert _python(["check-tetrahedra", bad])[0] == 1
+    assert _python(["check-tetrahedra", missing])[0] == 2
+    if NATIVE is not None:
+        assert _native(["check-tetrahedra", files["tets"]])[0] == 0
+        assert _native(["check-tetrahedra", bad])[0] == 1
+        assert _native(["check-tetrahedra", missing])[0] == 2

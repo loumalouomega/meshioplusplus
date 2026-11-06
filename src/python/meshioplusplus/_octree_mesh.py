@@ -58,6 +58,13 @@ _REPORT_INTS = (
     "num_winding_skipped",
     "num_gaps_filled",
     "num_gaps_skipped",
+    "num_collapsed",
+    "num_reordered",
+    "num_overlaps",
+    "num_caps_removed",
+    "num_split",
+    "num_slivers",
+    "num_untangled",
 )
 _REPORT_FLOATS = (
     "root_size",
@@ -124,6 +131,11 @@ def octree_mesh(
     untangle_iterations: int = 50,
     max_cells: int = 20000000,
     max_tets: int = 100000000,
+    volume_fix: bool = True,
+    zero_volume_factor: float = 1.0e-6,
+    cap_flatness: float = 0.01,
+    crossing_margin: float = 0.01,
+    crossing_gap: float = 0.05,
     return_report: bool = False,
 ):
     """Mesh the inside of a skin on a balanced octree.
@@ -182,6 +194,17 @@ def octree_mesh(
         along the skin, flips); 0 disables them.
     :param dihedral_floor_guard: undo optimisation moves that lower the
         minimum dihedral or raise the maximum.
+    :param volume_fix: tetrahedral output: run the volume fix after the
+        optimisation (collapse degenerate tetrahedra, repair flat caps and
+        slivers, untangle and reorder inverted ones, count overlaps).
+    :param zero_volume_factor: a tetrahedron is degenerate when its volume is
+        under this fraction of its longest edge cubed.
+    :param cap_flatness: a flat tetrahedron is a cap when its apex's height over
+        the opposite face is under this fraction of the face's size.
+    :param crossing_margin: a sliver's opposite edges cross when the crossing
+        lies this far (a fraction of each edge, in [0, 0.5)) inside both.
+    :param crossing_gap: ... and the edges come within this fraction of the
+        shorter one.
     :param fill: castellated output: keep ``"all"`` leaves, the ``"inside"``
         ones, or ``"cover"`` (inside or cut).
     :param keep_outside: tetrahedral output: also mesh the outside, as the
@@ -214,7 +237,12 @@ def octree_mesh(
         ``num_feature_moves``, ``num_gaps_filled`` and ``num_gaps_skipped``: the
         notches between consecutive chain nodes closed with tetrahedra, and left
         open), the optimisation (``num_optimized_moves``,
-        ``num_flips``), ``guarantee_applies``, ``num_winding_rechecks``,
+        ``num_flips``), the volume fix (``num_collapsed`` degenerate
+        tetrahedra removed, ``num_reordered`` inverted ones made positive,
+        ``num_overlaps`` pairs of tetrahedra left overlapping,
+        ``num_caps_removed`` and ``num_split`` flat caps dropped and repaired by
+        a split, ``num_slivers`` flat slivers removed, ``num_untangled``
+        inverted tetrahedra untangled), ``guarantee_applies``, ``num_winding_rechecks``,
         ``num_winding_skipped`` (deep inside a closed skin), ``timings`` (seconds
         per stage) and ``warnings``.
     :raises ValueError: on an option out of range.
@@ -256,6 +284,11 @@ def octree_mesh(
         "untangle_iterations": int(untangle_iterations),
         "max_cells": int(max_cells),
         "max_tets": int(max_tets),
+        "volume_fix": bool(volume_fix),
+        "zero_volume_factor": _nonneg("zero_volume_factor", zero_volume_factor),
+        "cap_flatness": _nonneg("cap_flatness", cap_flatness),
+        "crossing_margin": float(crossing_margin),
+        "crossing_gap": _nonneg("crossing_gap", crossing_gap),
     }
     if opts["bounds"] is not None and len(opts["bounds"]) != 6:
         raise ValueError(f"{_PREFIX}bounds must have six entries")
@@ -285,6 +318,8 @@ def octree_mesh(
     for name in ("max_cells", "max_tets"):
         if opts[name] < 1:
             raise ValueError(f"{_PREFIX}{name} must be >= 1")
+    if not 0.0 <= opts["crossing_margin"] < 0.5:
+        raise ValueError(f"{_PREFIX}crossing_margin must be in [0, 0.5)")
 
     try:
         from . import _core

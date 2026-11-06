@@ -182,6 +182,7 @@
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/error_size.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/check_tetrahedra.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
@@ -4525,7 +4526,8 @@ val octree_js(const val& rMeshObj, const val& rRootCells, double minLevel, doubl
  *   skinGrading, surfaceSize, windingThreshold, windingBeta, conformity,
  *   alphaLong, alphaShort, preserveFeatures, fitIterations,
  *   dihedralFloorGuard, fill, keepOutside, attachDistance, attachQuality,
- *   pillow, hexGrading, untangleIterations, maxCells, maxTets}`, every key optional
+ *   pillow, hexGrading, untangleIterations, maxCells, maxTets, volumeFix, zeroVolumeFactor,
+ *   capFlatness, crossingMargin, crossingGap}`, every key optional
  *   (an unknown key is an error) and defaulting to `OctreeMeshOptions`;
  *   `output` is `'tet'`, `'castellated'` or `'hex'`, `skinGrading`
  *   `'graded'` or `'uniform'`, `conformity` `'stuffing'` or `'cleaving'`,
@@ -4574,7 +4576,12 @@ val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
                                  "hexGrading",
                                  "untangleIterations",
                                  "maxCells",
-                                 "maxTets"});
+                                 "maxTets",
+                                 "volumeFix",
+                                 "zeroVolumeFactor",
+                                 "capFlatness",
+                                 "crossingMargin",
+                                 "crossingGap"});
             const auto has = [&](const char* pKey) {
                 return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined() &&
                        !rOptions[pKey].isNull();
@@ -4667,6 +4674,16 @@ val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
                 options.mMaxCells = integer("maxCells");
             if (has("maxTets"))
                 options.mMaxTets = integer("maxTets");
+            if (has("volumeFix"))
+                options.mVolumeFix = flag("volumeFix");
+            if (has("zeroVolumeFactor"))
+                options.mZeroVolumeFactor = number("zeroVolumeFactor");
+            if (has("capFlatness"))
+                options.mCapFlatness = number("capFlatness");
+            if (has("crossingMargin"))
+                options.mCrossingMargin = number("crossingMargin");
+            if (has("crossingGap"))
+                options.mCrossingGap = number("crossingGap");
         }
 
         meshioplusplus::OctreeMeshResult r =
@@ -4729,6 +4746,13 @@ val octree_mesh_js(const val& rMeshObj, const val& rOptions) {
             {"numWindingSkipped", r.mNumWindingSkipped},
             {"numGapsFilled", r.mNumGapsFilled},
             {"numGapsSkipped", r.mNumGapsSkipped},
+            {"numCollapsed", r.mNumCollapsed},
+            {"numReordered", r.mNumReordered},
+            {"numOverlaps", r.mNumOverlaps},
+            {"numCapsRemoved", r.mNumCapsRemoved},
+            {"numSplit", r.mNumSplit},
+            {"numSlivers", r.mNumSlivers},
+            {"numUntangled", r.mNumUntangled},
         };
         for (const auto& [name, value] : counters)
             out.set(name, static_cast<double>(value));
@@ -5085,6 +5109,34 @@ val check_conformity_js(const val& rMeshObj, const val& rOptions) {
         out.set("numNonManifoldFacets", static_cast<double>(r.mNumNonManifoldFacets));
         out.set("conforming", r.mConforming);
         out.set("interfaceMode", r.mInterfaceMode);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+// check_tetrahedra: inverted, degenerate and overlapping tetrahedra; options
+// {zeroVolumeFactor}. The mesh is not changed.
+val check_tetrahedra_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::TetrahedraCheckOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the checkTetrahedra options", {"zeroVolumeFactor"});
+            if (rOptions.hasOwnProperty("zeroVolumeFactor"))
+                o.mZeroVolumeFactor = rOptions["zeroVolumeFactor"].as<double>();
+        }
+        const meshioplusplus::TetrahedraCheckResult r =
+            meshioplusplus::check_tetrahedra(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("numTetrahedra", static_cast<double>(r.mNumTetrahedra));
+        out.set("numInverted", static_cast<double>(r.mNumInverted));
+        out.set("numDegenerate", static_cast<double>(r.mNumDegenerate));
+        out.set("numOverlaps", static_cast<double>(r.mNumOverlaps));
+        out.set("minVolume", r.mMinVolume);
+        out.set("maxVolume", r.mMaxVolume);
+        out.set("valid", r.mValid);
         val warnings = val::array();
         for (const std::string& w : r.mWarnings)
             warnings.call<void>("push", w);
@@ -9876,6 +9928,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("estimateError", &estimate_error_js);
     emscripten::function("errorSize", &error_size_js);
     emscripten::function("checkConformity", &check_conformity_js);
+    emscripten::function("checkTetrahedra", &check_tetrahedra_js);
     emscripten::function("remesh", &remesh_js);
     emscripten::function("remeshVolume", &remesh_volume_js);
     emscripten::function("optimizeVolume", &optimize_volume_js);

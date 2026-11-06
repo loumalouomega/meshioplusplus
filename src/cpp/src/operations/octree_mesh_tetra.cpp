@@ -26,7 +26,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <map>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -36,6 +38,7 @@
 #include "../detail/feature_snap.hpp"
 #include "../detail/isosurface_stuffing.hpp"
 #include "../detail/mesh_from_soup.hpp"
+#include "../detail/tet_checks.hpp"
 #include "octree_mesh_internal.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
@@ -469,6 +472,495 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& r
     if (rR.mNumGapsSkipped > 0)
         octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumGapsSkipped) +
                                  " gaps along feature chains not filled");
+}
+
+std::pair<double, double> octree_mesh_volume_and_tolerance(const std::vector<Vec3>& rPoints,
+                                                           const std::array<std::int64_t, 4>& rTet,
+                                                           const double ZeroVolumeFactor) {
+    return tet_volume_and_tolerance(rPoints, rTet, ZeroVolumeFactor);
+}
+
+void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& rO,
+                             OctreeMeshResult& rR, OctreeMeshTets& rTets) {
+    using Index = std::int64_t;
+    constexpr int kMaxCollapsePasses = 10;
+    // Rank from which a node is a feature corner or chain node, which a collapse never moves.
+    constexpr int kFeatureRank = 4;
+    const auto point = [&](const Index I) -> const Vec3& {
+        return rTets.mPoints[static_cast<std::size_t>(I)];
+    };
+    const auto volume_and_tolerance = [&](const std::array<Index, 4>& rT) {
+        return octree_mesh_volume_and_tolerance(rTets.mPoints, rT, rO.mZeroVolumeFactor);
+    };
+    // Higher is preferred as the node a collapse keeps.
+    const auto rank = [&](const Index I) {
+        const std::size_t i = static_cast<std::size_t>(I);
+        const int feature = i < rTets.mFeature.size() ? rTets.mFeature[i] : 0;
+        const int on_skin = i < rTets.mOnSkin.size() ? rTets.mOnSkin[i] : 0;
+        return (feature == 1 ? 3 : (feature == 2 ? 2 : 0)) * 2 + on_skin;
+    };
+    const auto considered = [&](const std::size_t T) {
+        return rTets.mMaterial[T] > 0 || rO.mKeepOutside;
+    };
+
+    // Node-to-tetrahedron incidence in compressed form, rebuilt when needed: the tetrahedra of
+    // node i are star[start[i]..start[i + 1]).
+    std::vector<std::size_t> start;
+    std::vector<std::size_t> star;
+    const auto build_star = [&]() {
+        start.assign(rTets.mPoints.size() + 1, 0);
+        for (const auto& tet : rTets.mTets)
+            for (const Index v : tet)
+                ++start[static_cast<std::size_t>(v) + 1];
+        for (std::size_t i = 0; i < rTets.mPoints.size(); ++i)
+            start[i + 1] += start[i];
+        star.resize(start.back());
+        std::vector<std::size_t> fill(start.begin(), start.end() - 1);
+        for (std::size_t t = 0; t < rTets.mTets.size(); ++t)
+            for (const Index v : rTets.mTets[t])
+                star[fill[static_cast<std::size_t>(v)]++] = t;
+    };
+    // Whether some examined tetrahedron has a volume that @p rIsBad (given the volume and its
+    // tolerance) accepts. A mesh with none skips the repair that follows, and the incidence
+    // tables and face maps it would have built for nothing.
+    const auto any_tet = [&](const auto& rIsBad) {
+        for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+            if (!considered(t))
+                continue;
+            const auto [volume, tolerance] = volume_and_tolerance(rTets.mTets[t]);
+            if (rIsBad(volume, tolerance))
+                return true;
+        }
+        return false;
+    };
+    // The conditions the passes below select a tetrahedron by.
+    const auto is_zero = [](const double Volume, const double Tolerance) {
+        return !(std::abs(Volume) > Tolerance);
+    };
+    const auto is_flat = [](const double Volume, const double Tolerance) {
+        return !(Volume > Tolerance);
+    };
+    const auto is_inverted = [](const double Volume, const double) { return !(Volume >= 0.0); };
+
+    std::vector<Index> merge(rTets.mPoints.size());
+    std::vector<std::uint8_t> touched(rTets.mPoints.size());
+    for (int pass = 0; pass < kMaxCollapsePasses; ++pass) {
+        if (!any_tet(is_zero))
+            break;
+        std::fill(touched.begin(), touched.end(), std::uint8_t{0});
+        bool any = false;
+        for (std::size_t i = 0; i < merge.size(); ++i)
+            merge[i] = static_cast<Index>(i);
+        build_star();
+        // The collapse of node A onto node B is valid when no tetrahedron around A, other than
+        // those that contain B, ends up inverted or degenerate.
+        const auto valid = [&](const Index A, const Index B) {
+            // A skin node only moves along a skin edge, otherwise the collapse pinches the skin:
+            // AB is a skin edge when a face ABC belongs to a single tetrahedron.
+            if (rTets.mOnSkin[static_cast<std::size_t>(A)]) {
+                std::map<Index, int> around_edge;
+                for (std::size_t k = start[static_cast<std::size_t>(A)];
+                     k < start[static_cast<std::size_t>(A) + 1]; ++k) {
+                    const auto& tet = rTets.mTets[star[k]];
+                    if (tet[0] == B || tet[1] == B || tet[2] == B || tet[3] == B)
+                        for (const Index v : tet)
+                            around_edge[v] += v != A && v != B;
+                }
+                const bool skin_edge =
+                    std::any_of(around_edge.begin(), around_edge.end(),
+                                [](const auto& rPair) { return rPair.second == 1; });
+                if (!skin_edge)
+                    return false;
+            }
+            for (std::size_t k = start[static_cast<std::size_t>(A)];
+                 k < start[static_cast<std::size_t>(A) + 1]; ++k) {
+                const auto& tet = rTets.mTets[star[k]];
+                if (!considered(star[k]) || tet[0] == B || tet[1] == B || tet[2] == B ||
+                    tet[3] == B)
+                    continue;
+                auto moved = tet;
+                for (Index& v : moved)
+                    v = v == A ? B : v;
+                const auto [volume_before, tolerance_before] = volume_and_tolerance(tet);
+                const auto [volume_after, tolerance_after] = volume_and_tolerance(moved);
+                // A tetrahedron that was already bad only has to not get worse.
+                if (volume_after <= tolerance_after && volume_after < volume_before)
+                    return false;
+            }
+            return true;
+        };
+        for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+            const auto& tet = rTets.mTets[t];
+            if (!considered(t) || touched[static_cast<std::size_t>(tet[0])] ||
+                touched[static_cast<std::size_t>(tet[1])] ||
+                touched[static_cast<std::size_t>(tet[2])] ||
+                touched[static_cast<std::size_t>(tet[3])])
+                continue;
+            const auto [volume, tolerance] = volume_and_tolerance(tet);
+            if (std::abs(volume) > tolerance)
+                continue;
+            // The edges as (length, A, B), with A the node that moves onto B: A never outranks
+            // B and is never a feature corner or chain node.
+            std::vector<std::tuple<double, Index, Index>> edges;
+            for (int i = 0; i < 4; ++i)
+                for (int j = i + 1; j < 4; ++j) {
+                    const double length = vec3_norm(vec3_sub(point(tet[j]), point(tet[i])));
+                    if (rank(tet[i]) < kFeatureRank && rank(tet[i]) <= rank(tet[j]))
+                        edges.emplace_back(length, tet[i], tet[j]);
+                    if (rank(tet[j]) < kFeatureRank && rank(tet[j]) <= rank(tet[i]))
+                        edges.emplace_back(length, tet[j], tet[i]);
+                }
+            std::sort(edges.begin(), edges.end());
+            for (const auto& [length, a, b] : edges) {
+                if (!valid(a, b))
+                    continue;
+                // The nodes of every tetrahedron around A and B are frozen for this pass, as
+                // their volumes were checked as they are.
+                for (const Index n : {a, b})
+                    for (std::size_t k = start[static_cast<std::size_t>(n)];
+                         k < start[static_cast<std::size_t>(n) + 1]; ++k)
+                        for (const Index v : rTets.mTets[star[k]])
+                            touched[static_cast<std::size_t>(v)] = 1;
+                merge[static_cast<std::size_t>(a)] = b;
+                any = true;
+                break;
+            }
+        }
+        if (!any)
+            break;
+        // Remap every tetrahedron and drop those with a repeated node.
+        std::size_t out = 0;
+        for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+            std::array<Index, 4> tet;
+            for (int k = 0; k < 4; ++k)
+                tet[k] = merge[static_cast<std::size_t>(rTets.mTets[t][k])];
+            if (tet[0] == tet[1] || tet[0] == tet[2] || tet[0] == tet[3] || tet[1] == tet[2] ||
+                tet[1] == tet[3] || tet[2] == tet[3]) {
+                ++rR.mNumCollapsed;
+                continue;
+            }
+            rTets.mTets[out] = tet;
+            rTets.mMaterial[out] = rTets.mMaterial[t];
+            rTets.mCut[out] = rTets.mCut[t];
+            rTets.mLevel[out] = rTets.mLevel[t];
+            rTets.mShape[out] = rTets.mShape[t];
+            ++out;
+        }
+        rTets.mTets.resize(out);
+        rTets.mMaterial.resize(out);
+        rTets.mCut.resize(out);
+        rTets.mLevel.resize(out);
+        rTets.mShape.resize(out);
+    }
+
+    // A cap is a flat tetrahedron (degenerate or slightly inverted) whose apex A lies over the
+    // inside of the opposite face BCD. Swapping two of its nodes would turn it into a positive
+    // tetrahedron outside the domain, so it is repaired instead: dropped when BCD is on the skin
+    // or an interface, or else its neighbour across BCD is split at A.
+    const auto compact = [&](const std::vector<std::uint8_t>& rDead) {
+        std::size_t out = 0;
+        for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+            if (rDead[t])
+                continue;
+            rTets.mTets[out] = rTets.mTets[t];
+            rTets.mMaterial[out] = rTets.mMaterial[t];
+            rTets.mCut[out] = rTets.mCut[t];
+            rTets.mLevel[out] = rTets.mLevel[t];
+            rTets.mShape[out] = rTets.mShape[t];
+            ++out;
+        }
+        rTets.mTets.resize(out);
+        rTets.mMaterial.resize(out);
+        rTets.mCut.resize(out);
+        rTets.mLevel.resize(out);
+        rTets.mShape.resize(out);
+    };
+    constexpr int kMaxCapPasses = 3;
+    for (int pass = 0; pass < kMaxCapPasses; ++pass) {
+        if (!any_tet(is_flat))
+            break;
+        // The tetrahedra of every face, by sorted node triplet.
+        std::map<std::array<Index, 3>, std::vector<std::size_t>> faces_of;
+        for (std::size_t t = 0; t < rTets.mTets.size(); ++t)
+            for (const auto& facet : kOctmtFacet) {
+                std::array<Index, 3> key{rTets.mTets[t][facet[0]], rTets.mTets[t][facet[1]],
+                                         rTets.mTets[t][facet[2]]};
+                std::sort(key.begin(), key.end());
+                faces_of[key].push_back(t);
+            }
+        std::vector<std::uint8_t> dead(rTets.mTets.size(), 0);
+        const std::size_t num_tets = rTets.mTets.size();
+        std::size_t num_repaired = 0;
+        for (std::size_t t = 0; t < num_tets; ++t) {
+            if (dead[t] || !considered(t))
+                continue;
+            const auto [volume, tolerance] = volume_and_tolerance(rTets.mTets[t]);
+            if (volume > tolerance)
+                continue;
+            const auto tet = rTets.mTets[t];
+            for (int i = 0; i < 4; ++i) {
+                const Index apex = tet[i];
+                std::array<Index, 3> key{tet[(i + 1) % 4], tet[(i + 2) % 4], tet[(i + 3) % 4]};
+                const Vec3& b = point(key[0]);
+                const Vec3 edge_c = vec3_sub(point(key[1]), b);
+                const Vec3 edge_d = vec3_sub(point(key[2]), b);
+                const Vec3 normal = vec3_cross(edge_c, edge_d);
+                const double area_2 = vec3_dot(normal, normal);
+                if (area_2 <= 0.0)
+                    continue;
+                // Only flat tetrahedra: the height of the apex over the face is small against
+                // the face size, otherwise it is a fold, not a cap.
+                const Vec3 to_apex = vec3_sub(point(apex), b);
+                const double height = vec3_dot(normal, to_apex);
+                if (height * height > rO.mCapFlatness * 0.5 * area_2 * std::sqrt(area_2))
+                    continue;
+                // Barycentric coordinates of the projection of the apex on the face.
+                const double lambda_c = vec3_dot(vec3_cross(to_apex, edge_d), normal) / area_2;
+                const double lambda_d = vec3_dot(vec3_cross(edge_c, to_apex), normal) / area_2;
+                if (lambda_c <= 0.0 || lambda_d <= 0.0 || lambda_c + lambda_d >= 1.0)
+                    continue;
+                std::sort(key.begin(), key.end());
+                std::size_t neighbour = t;
+                for (const std::size_t other : faces_of[key])
+                    if (other != t)
+                        neighbour = other;
+                if (neighbour == t || rTets.mMaterial[neighbour] != rTets.mMaterial[t]) {
+                    // Skin or interface face.
+                    dead[t] = 1;
+                    rTets.mOnSkin[static_cast<std::size_t>(apex)] = 1;
+                    ++rR.mNumCapsRemoved;
+                    ++num_repaired;
+                    break;
+                }
+                if (dead[neighbour])
+                    continue;
+                // Replacing each node of the shared face by the apex splits the neighbour in
+                // three, with the orientation kept.
+                std::array<std::array<Index, 4>, 3> children;
+                bool positive = true;
+                int child = 0;
+                for (const Index face_node : key) {
+                    children[child] = rTets.mTets[neighbour];
+                    for (Index& v : children[child])
+                        v = v == face_node ? apex : v;
+                    positive = positive && volume_and_tolerance(children[child]).first > 0.0;
+                    ++child;
+                }
+                if (!positive)
+                    continue;
+                dead[t] = 1;
+                dead[neighbour] = 1;
+                for (const auto& r_child : children) {
+                    rTets.mTets.push_back(r_child);
+                    rTets.mMaterial.push_back(rTets.mMaterial[neighbour]);
+                    rTets.mCut.push_back(1);
+                    rTets.mLevel.push_back(rTets.mLevel[neighbour]);
+                    rTets.mShape.push_back(0);
+                }
+                dead.resize(rTets.mTets.size(), 0);
+                ++rR.mNumSplit;
+                ++num_repaired;
+                break;
+            }
+        }
+        if (num_repaired == 0)
+            break;
+        compact(dead);
+    }
+
+    // A sliver is a flat tetrahedron whose opposite edges AB and CD cross. A node P is inserted
+    // at the crossing and the shells of both edges are split at it, so the neighbours stay
+    // conforming and the sliver, whose four children have no volume, disappears.
+    constexpr int kMaxSliverPasses = 3;
+    // The crossing has to lie inside both edges, and the edges have to be this close, relative
+    // to the shorter one, to count as crossing.
+    for (int pass = 0; pass < kMaxSliverPasses; ++pass) {
+        if (!any_tet(is_flat))
+            break;
+        build_star();
+        std::fill(touched.begin(), touched.end(), std::uint8_t{0});
+        touched.resize(rTets.mPoints.size(), 0);
+        std::vector<std::uint8_t> dead(rTets.mTets.size(), 0);
+        const std::size_t num_tets = rTets.mTets.size();
+        std::size_t num_repaired = 0;
+        const auto shell = [&](const Index A, const Index B) {
+            std::vector<std::size_t> tets;
+            for (std::size_t k = start[static_cast<std::size_t>(A)];
+                 k < start[static_cast<std::size_t>(A) + 1]; ++k) {
+                const auto& tet = rTets.mTets[star[k]];
+                if (tet[0] == B || tet[1] == B || tet[2] == B || tet[3] == B)
+                    tets.push_back(star[k]);
+            }
+            return tets;
+        };
+        for (std::size_t t = 0; t < num_tets; ++t) {
+            const auto tet = rTets.mTets[t];
+            if (dead[t] || !considered(t) || touched[static_cast<std::size_t>(tet[0])] ||
+                touched[static_cast<std::size_t>(tet[1])] ||
+                touched[static_cast<std::size_t>(tet[2])] ||
+                touched[static_cast<std::size_t>(tet[3])])
+                continue;
+            const auto [volume, tolerance] = volume_and_tolerance(tet);
+            if (volume > tolerance)
+                continue;
+            // The three pairs of opposite edges.
+            for (const auto& [i, j, k, l] :
+                 {std::array<int, 4>{0, 1, 2, 3}, std::array<int, 4>{0, 2, 1, 3},
+                  std::array<int, 4>{0, 3, 1, 2}}) {
+                const Vec3 u = vec3_sub(point(tet[j]), point(tet[i]));
+                const Vec3 v = vec3_sub(point(tet[l]), point(tet[k]));
+                const Vec3 w = vec3_sub(point(tet[i]), point(tet[k]));
+                const double uu = vec3_dot(u, u);
+                const double uv = vec3_dot(u, v);
+                const double vv = vec3_dot(v, v);
+                const double denominator = uu * vv - uv * uv;
+                if (denominator <= 1.0e-12 * uu * vv)
+                    continue;
+                const double s = (uv * vec3_dot(v, w) - vv * vec3_dot(u, w)) / denominator;
+                const double r = (uu * vec3_dot(v, w) - uv * vec3_dot(u, w)) / denominator;
+                if (s <= rO.mCrossingMargin || s >= 1.0 - rO.mCrossingMargin ||
+                    r <= rO.mCrossingMargin || r >= 1.0 - rO.mCrossingMargin)
+                    continue;
+                const Vec3 on_ab = vec3_add(point(tet[i]), vec3_scale(u, s));
+                const Vec3 on_cd = vec3_add(point(tet[k]), vec3_scale(v, r));
+                if (vec3_norm(vec3_sub(on_ab, on_cd)) >
+                    rO.mCrossingGap * std::sqrt(std::min(uu, vv)))
+                    continue;
+                // Split each other tetrahedron of the two shells: replacing one end of the edge
+                // by P keeps the orientation.
+                const Index p = static_cast<Index>(rTets.mPoints.size());
+                std::vector<std::pair<std::size_t, std::array<std::array<Index, 4>, 2>>> splits;
+                for (const auto& [e0, e1] :
+                     {std::pair<Index, Index>{tet[i], tet[j]},
+                      std::pair<Index, Index>{tet[k], tet[l]}})
+                    for (const std::size_t other : shell(e0, e1)) {
+                        if (other == t)
+                            continue;
+                        std::array<std::array<Index, 4>, 2> children{rTets.mTets[other],
+                                                                     rTets.mTets[other]};
+                        for (Index& n : children[0])
+                            n = n == e1 ? p : n;
+                        for (Index& n : children[1])
+                            n = n == e0 ? p : n;
+                        splits.push_back({other, children});
+                    }
+                rTets.mPoints.push_back(vec3_scale(vec3_add(on_ab, on_cd), 0.5));
+                bool splittable = true;
+                for (const auto& [other, children] : splits)
+                    for (const auto& r_child : children)
+                        splittable = splittable &&
+                                     (!considered(other) || volume_and_tolerance(r_child).first > 0.0);
+                if (!splittable) {
+                    rTets.mPoints.pop_back();
+                    continue;
+                }
+                const auto on_skin = [&](const Index I) {
+                    return rTets.mOnSkin[static_cast<std::size_t>(I)] != 0;
+                };
+                rTets.mOnSkin.push_back((on_skin(tet[i]) && on_skin(tet[j])) ||
+                                        (on_skin(tet[k]) && on_skin(tet[l])));
+                rTets.mFeature.push_back(0);
+                touched.push_back(1);
+                dead[t] = 1;
+                for (const auto& [other, children] : splits) {
+                    dead[other] = 1;
+                    for (const Index n : rTets.mTets[other])
+                        touched[static_cast<std::size_t>(n)] = 1;
+                    for (const auto& r_child : children) {
+                        rTets.mTets.push_back(r_child);
+                        rTets.mMaterial.push_back(rTets.mMaterial[other]);
+                        rTets.mCut.push_back(1);
+                        rTets.mLevel.push_back(rTets.mLevel[other]);
+                        rTets.mShape.push_back(0);
+                    }
+                }
+                dead.resize(rTets.mTets.size(), 0);
+                for (const Index n : tet)
+                    touched[static_cast<std::size_t>(n)] = 1;
+                ++rR.mNumSlivers;
+                ++num_repaired;
+                break;
+            }
+        }
+        if (num_repaired == 0)
+            break;
+        compact(dead);
+    }
+
+    // An inverted tetrahedron is untangled by moving a free node (neither on the skin nor on a
+    // feature) to the centroid of the nodes around it, when this leaves its whole star positive.
+    if (any_tet(is_inverted))
+        build_star();
+    for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+        if (!considered(t) || volume_and_tolerance(rTets.mTets[t]).first >= 0.0)
+            continue;
+        for (const Index node : rTets.mTets[t]) {
+            if (rank(node) != 0)
+                continue;
+            const std::size_t n = static_cast<std::size_t>(node);
+            Vec3 centroid{0.0, 0.0, 0.0};
+            double count = 0.0;
+            for (std::size_t k = start[n]; k < start[n + 1]; ++k)
+                for (const Index v : rTets.mTets[star[k]])
+                    if (v != node) {
+                        centroid = vec3_add(centroid, point(v));
+                        count += 1.0;
+                    }
+            const Vec3 previous = rTets.mPoints[n];
+            rTets.mPoints[n] = vec3_scale(centroid, 1.0 / count);
+            bool positive = true;
+            for (std::size_t k = start[n]; k < start[n + 1] && positive; ++k)
+                if (considered(star[k])) {
+                    const auto [volume, tolerance] = volume_and_tolerance(rTets.mTets[star[k]]);
+                    positive = volume > tolerance;
+                }
+            if (positive) {
+                ++rR.mNumUntangled;
+                break;
+            }
+            rTets.mPoints[n] = previous;
+        }
+    }
+
+    // The remaining negative tetrahedra (including those the collapse left within the
+    // tolerance) get two nodes swapped.
+    for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+        if (!considered(t))
+            continue;
+        if (volume_and_tolerance(rTets.mTets[t]).first < 0.0) {
+            std::swap(rTets.mTets[t][1], rTets.mTets[t][2]);
+            rTets.mCut[t] = 1;
+            ++rR.mNumReordered;
+        }
+    }
+
+    // Two tetrahedra that share a face overlap when their opposite nodes lie on the same side
+    // of it.
+    std::vector<std::uint8_t> skipped(rTets.mTets.size());
+    for (std::size_t t = 0; t < skipped.size(); ++t)
+        skipped[t] = considered(t) ? 0 : 1;
+    rR.mNumOverlaps += count_tet_overlaps(rTets.mPoints, rTets.mTets, &skipped);
+
+    if (rR.mNumCollapsed > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumCollapsed) +
+                                 " degenerate tetrahedra collapsed");
+    if (rR.mNumCapsRemoved > 0 || rR.mNumSplit > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumCapsRemoved) +
+                                 " flat caps dropped and " + std::to_string(rR.mNumSplit) +
+                                 " tetrahedra split to repair flat caps");
+    if (rR.mNumSlivers > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumSlivers) +
+                                 " flat slivers removed by inserting a node at the crossing of "
+                                 "their opposite edges");
+    if (rR.mNumUntangled > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumUntangled) +
+                                 " inverted tetrahedra untangled by moving a free node");
+    if (rR.mNumReordered > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumReordered) +
+                                 " inverted tetrahedra reordered");
+    if (rR.mNumOverlaps > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rR.mNumOverlaps) +
+                                 " overlapping tetrahedra pairs");
 }
 
 double octree_mesh_hausdorff_to_skin(const OctreeMeshSetup& rS, const std::vector<Vec3>& rPoints,

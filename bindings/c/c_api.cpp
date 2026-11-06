@@ -124,6 +124,7 @@
 #include "meshioplusplus/operations/error.hpp"
 #include "meshioplusplus/operations/error_size.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/check_tetrahedra.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
@@ -5778,17 +5779,23 @@ static_assert(offsetof(mio_gen_opts, num_twists) == 128 &&
               "mio_gen_opts layout changed");
 static_assert(sizeof(mio_octree_opts) == 176, "mio_octree_opts grew outside its reserved tail");
 static_assert(sizeof(mio_octree_report) == 96, "mio_octree_report layout changed");
-static_assert(sizeof(mio_octree_mesh_opts) == 264,
+static_assert(sizeof(mio_octree_mesh_opts) == 304,
               "mio_octree_mesh_opts grew outside its reserved tail");
-static_assert(offsetof(mio_octree_mesh_opts, hex_grading) == 228,
+static_assert(offsetof(mio_octree_mesh_opts, hex_grading) == 228 &&
+                  offsetof(mio_octree_mesh_opts, zero_volume_factor) == 232 &&
+                  offsetof(mio_octree_mesh_opts, volume_fix) == 264,
               "mio_octree_mesh_opts layout changed");
 static_assert(static_cast<int>(meshioplusplus::OctreeMeshHexGrading::Graded) ==
                   MIO_OCTREE_MESH_HEX_GRADED,
               "mio_octree_mesh_hex_grading drifted from OctreeMeshHexGrading");
-static_assert(sizeof(mio_octree_mesh_report) == 392, "mio_octree_mesh_report layout changed");
+static_assert(sizeof(mio_octree_mesh_report) == 440, "mio_octree_mesh_report layout changed");
 static_assert(offsetof(mio_octree_mesh_report, num_winding_skipped) == 328,
               "mio_octree_mesh_report layout changed");
-static_assert(offsetof(mio_octree_mesh_report, num_gaps_skipped) == 344,
+static_assert(offsetof(mio_octree_mesh_report, num_gaps_skipped) == 344 &&
+                  offsetof(mio_octree_mesh_report, num_collapsed) == 352 &&
+                  offsetof(mio_octree_mesh_report, num_overlaps) == 368 &&
+                  offsetof(mio_octree_mesh_report, num_caps_removed) == 376 &&
+                  offsetof(mio_octree_mesh_report, num_untangled) == 400,
               "mio_octree_mesh_report layout changed");
 static_assert(
     static_cast<int>(meshioplusplus::OctreeMeshOutput::Castellated) ==
@@ -6000,6 +6007,11 @@ meshioplusplus::OctreeMeshOptions capi_octree_mesh_options(const mio_octree_mesh
     options.mAttachDistance = rOpts.attach_distance != 0;
     options.mAttachQuality = rOpts.attach_quality != 0;
     options.mPillow = rOpts.pillow != 0;
+    options.mVolumeFix = rOpts.volume_fix != 0;
+    options.mZeroVolumeFactor = rOpts.zero_volume_factor;
+    options.mCapFlatness = rOpts.cap_flatness;
+    options.mCrossingMargin = rOpts.crossing_margin;
+    options.mCrossingGap = rOpts.crossing_gap;
     return options;
 }
 
@@ -6007,6 +6019,18 @@ meshioplusplus::OctreeMeshOptions capi_octree_mesh_options(const mio_octree_mesh
 std::string& capi_octree_mesh_warnings() {
     thread_local std::string warnings;
     return warnings;
+}
+
+/// The variable-length parts of the report of this thread's last mio_octree_mesh call.
+struct CapiOctreeMeshExtras {
+    std::string mStageNames;  ///< The stage names, one per line.
+    std::vector<double> mStageSeconds;
+    std::vector<std::int64_t> mLeavesPerLevel;
+};
+
+CapiOctreeMeshExtras& capi_octree_mesh_extras() {
+    thread_local CapiOctreeMeshExtras extras;
+    return extras;
 }
 
 /// Translate the flat option struct into the core's SdfOptions.
@@ -6154,6 +6178,11 @@ void mio_octree_mesh_opts_init(mio_octree_mesh_opts* opts) {
     opts->attach_quality = d.mAttachQuality ? 1 : 0;
     opts->pillow = d.mPillow ? 1 : 0;
     opts->hex_grading = static_cast<std::int32_t>(d.mHexGrading);
+    opts->volume_fix = d.mVolumeFix ? 1 : 0;
+    opts->zero_volume_factor = d.mZeroVolumeFactor;
+    opts->cap_flatness = d.mCapFlatness;
+    opts->crossing_margin = d.mCrossingMargin;
+    opts->crossing_gap = d.mCrossingGap;
 }
 
 void mio_compute_sdf_opts_init(mio_compute_sdf_opts* opts) {
@@ -6742,6 +6771,7 @@ mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_opts* opts
                           mio_octree_mesh_report* report) {
     return capi_guarded_mesh([&]() -> mio_mesh* {
         capi_octree_mesh_warnings().clear();
+        capi_octree_mesh_extras() = CapiOctreeMeshExtras{};
         capi_require(mesh, "meshio++: mesh is NULL");
         mio_octree_mesh_opts defaults;
         if (!opts) {
@@ -6756,6 +6786,14 @@ mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_opts* opts
                 warnings += '\n';
             warnings += w;
         }
+        CapiOctreeMeshExtras& extras = capi_octree_mesh_extras();
+        for (const auto& [stage, seconds] : r.mTimings) {
+            if (!extras.mStageNames.empty())
+                extras.mStageNames += '\n';
+            extras.mStageNames += stage;
+            extras.mStageSeconds.push_back(seconds);
+        }
+        extras.mLeavesPerLevel = r.mLeavesPerLevel;
         if (report) {
             *report = mio_octree_mesh_report{};
             report->output = static_cast<std::int32_t>(r.mOutput);
@@ -6800,6 +6838,13 @@ mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_opts* opts
             report->num_winding_skipped = r.mNumWindingSkipped;
             report->num_gaps_filled = r.mNumGapsFilled;
             report->num_gaps_skipped = r.mNumGapsSkipped;
+            report->num_collapsed = r.mNumCollapsed;
+            report->num_reordered = r.mNumReordered;
+            report->num_overlaps = r.mNumOverlaps;
+            report->num_caps_removed = r.mNumCapsRemoved;
+            report->num_split = r.mNumSplit;
+            report->num_slivers = r.mNumSlivers;
+            report->num_untangled = r.mNumUntangled;
             report->num_warnings = static_cast<std::int64_t>(r.mWarnings.size());
         }
         return new mio_mesh{std::move(r.mMesh)};
@@ -6811,6 +6856,38 @@ int64_t mio_octree_mesh_warnings(char* buf, int64_t buflen) {
         if (buflen < 0)
             throw std::invalid_argument("meshio++: negative warnings buffer length");
         return copy_string(capi_octree_mesh_warnings(), buf, buflen);
+    });
+}
+
+int64_t mio_octree_mesh_stage_names(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative stage names buffer length");
+        return copy_string(capi_octree_mesh_extras().mStageNames, buf, buflen);
+    });
+}
+
+int64_t mio_octree_mesh_stage_seconds(double* out, int64_t n) {
+    return capi_guarded_count([&]() {
+        if (n < 0)
+            throw std::invalid_argument("meshio++: negative stage seconds length");
+        const std::vector<double>& seconds = capi_octree_mesh_extras().mStageSeconds;
+        if (out)
+            std::copy_n(seconds.begin(),
+                        std::min<std::size_t>(seconds.size(), static_cast<std::size_t>(n)), out);
+        return static_cast<std::int64_t>(seconds.size());
+    });
+}
+
+int64_t mio_octree_mesh_leaves_per_level(int64_t* out, int64_t n) {
+    return capi_guarded_count([&]() {
+        if (n < 0)
+            throw std::invalid_argument("meshio++: negative leaves per level length");
+        const std::vector<std::int64_t>& leaves = capi_octree_mesh_extras().mLeavesPerLevel;
+        if (out)
+            std::copy_n(leaves.begin(),
+                        std::min<std::size_t>(leaves.size(), static_cast<std::size_t>(n)), out);
+        return static_cast<std::int64_t>(leaves.size());
     });
 }
 
@@ -9034,6 +9111,74 @@ int64_t mio_check_conformity_warnings(char* buf, int64_t buflen) {
         if (buflen < 0)
             throw std::invalid_argument("meshio++: negative warnings buffer length");
         return copy_string(capi_conformity_warnings(), buf, buflen);
+    });
+}
+
+static_assert(sizeof(mio_check_tetrahedra_opts) == 40, "mio_check_tetrahedra_opts layout");
+static_assert(sizeof(mio_check_tetrahedra_report) == 96, "mio_check_tetrahedra_report layout");
+static_assert(offsetof(mio_check_tetrahedra_report, min_volume) == 32 &&
+                  offsetof(mio_check_tetrahedra_report, valid) == 48 &&
+                  offsetof(mio_check_tetrahedra_report, num_warnings) == 56,
+              "mio_check_tetrahedra_report layout");
+
+}  // extern "C"
+
+namespace {
+
+/// The warnings of this thread's last mio_check_tetrahedra call.
+std::string& capi_tetrahedra_warnings() {
+    thread_local std::string warnings;
+    return warnings;
+}
+
+}  // namespace
+
+extern "C" {
+
+void mio_check_tetrahedra_opts_init(mio_check_tetrahedra_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_check_tetrahedra_opts{};
+    opts->zero_volume_factor = meshioplusplus::TetrahedraCheckOptions{}.mZeroVolumeFactor;
+}
+
+mio_status mio_check_tetrahedra(const mio_mesh* mesh, const mio_check_tetrahedra_opts* opts,
+                                mio_check_tetrahedra_report* report) {
+    return guarded([&]() -> mio_status {
+        capi_tetrahedra_warnings().clear();
+        if (!mesh)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: check_tetrahedra: mesh is NULL");
+        if (!report)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: check_tetrahedra: report is NULL");
+        meshioplusplus::TetrahedraCheckOptions o;
+        if (opts)
+            o.mZeroVolumeFactor = opts->zero_volume_factor;
+        const meshioplusplus::TetrahedraCheckResult r =
+            meshioplusplus::check_tetrahedra(mesh->mMesh, o);
+        std::string& warnings = capi_tetrahedra_warnings();
+        for (const std::string& w : r.mWarnings) {
+            if (!warnings.empty())
+                warnings += '\n';
+            warnings += w;
+        }
+        *report = mio_check_tetrahedra_report{};
+        report->num_tetrahedra = r.mNumTetrahedra;
+        report->num_inverted = r.mNumInverted;
+        report->num_degenerate = r.mNumDegenerate;
+        report->num_overlaps = r.mNumOverlaps;
+        report->min_volume = r.mMinVolume;
+        report->max_volume = r.mMaxVolume;
+        report->valid = r.mValid ? 1 : 0;
+        report->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+        return MIO_OK;
+    });
+}
+
+int64_t mio_check_tetrahedra_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_tetrahedra_warnings(), buf, buflen);
     });
 }
 

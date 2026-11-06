@@ -45,6 +45,9 @@ def _sphere():
         ({"grading_layers": 9}, "grading_layers"),
         ({"bounds": (0, 0, 0, 1)}, "six entries"),
         ({"max_cells": 0}, "max_cells"),
+        ({"crossing_margin": 0.5}, "crossing_margin"),
+        ({"zero_volume_factor": -1.0}, "zero_volume_factor"),
+        ({"cap_flatness": float("nan")}, "cap_flatness"),
     ],
 )
 def test_bad_arguments_are_refused_before_the_core(kwargs, match):
@@ -492,6 +495,10 @@ def test_notches_between_chain_nodes_are_filled(shape, max_hausdorff):
     assert report["num_gaps_filled"] > 0
     assert report["num_gaps_skipped"] >= 0
     assert report["num_inverted"] == 0
+    assert report["num_overlaps"] == 0
+    assert report["num_collapsed"] >= 0 and report["num_reordered"] >= 0
+    for key in ("num_caps_removed", "num_split", "num_slivers", "num_untangled"):
+        assert report[key] >= 0
     assert _tet_volumes(out).min() > 0.0
     _, conformity = mio.check_conformity(out, return_report=True)
     assert conformity["conforming"]
@@ -588,3 +595,24 @@ def test_pipeline_step_in_both_engines(tmp_path):
         np.testing.assert_array_equal(
             outputs[0].cells[0].data, outputs[1].cells[0].data
         )
+
+
+@needs_core
+def test_the_volume_fix_can_be_switched_off():
+    skin = _sphere()
+    _, on = mio.octree_mesh(skin, max_size=0.5, min_size=0.1, return_report=True)
+    out, off = mio.octree_mesh(
+        skin, max_size=0.5, min_size=0.1, volume_fix=False, return_report=True
+    )
+    keys = (
+        "num_collapsed",
+        "num_caps_removed",
+        "num_split",
+        "num_slivers",
+        "num_untangled",
+        "num_reordered",
+        "num_overlaps",
+    )
+    assert all(off[key] == 0 for key in keys)
+    assert on["num_inverted"] == 0 and on["num_overlaps"] == 0
+    assert out.cells

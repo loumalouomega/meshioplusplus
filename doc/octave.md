@@ -166,6 +166,7 @@ Lists follow one rule. A named list becomes a 1x1 struct. A list of same-shaped 
 - `[pieces, keys] = mio.split(m, ...)` returns an `n x 1` cell of meshes and an `n x 1` cellstr of keys, where R returns a named list.
 - A single coordinate (an origin, a spacing, a bbox corner, a centroid, a worst point) is a `1 x 3` row, like one row of `mio.points`. Statistics triples (min, mean, max) are `3 x 1` columns.
 - Warning texts that R returns as one string with newlines come back as an `n x 1` cellstr.
+- `mio.check_tetrahedra(m, 'zero_volume_factor', x)` is `mio_check_tetrahedra(m, zero_volume_factor = x)`: the same eight fields, `valid` a logical and `warnings` an `n x 1` cellstr.
 - `mio.line` names R's `end` option `'stop'`, because `end` is reserved.
 - Index arguments (`frozen` nodes, `sources`, refined `cells`) must be positive integers. A `0` or a fraction raises "is 1-based here", where R would pass it on to the library.
 

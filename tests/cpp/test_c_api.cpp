@@ -5489,6 +5489,11 @@ TEST(CApi, OctreeMeshTetrahedraAndCastellatedCells) {
     // The chain-gap counts come from the reserved tail; the box has no notch.
     EXPECT_GE(report.num_gaps_filled, 0);
     EXPECT_GE(report.num_gaps_skipped, 0);
+    // The volume-fix counts too: a box meshes without an overlap.
+    EXPECT_GE(report.num_collapsed, 0);
+    EXPECT_GE(report.num_reordered, 0);
+    EXPECT_EQ(report.num_overlaps, 0);
+    EXPECT_GE(report.num_caps_removed + report.num_split + report.num_slivers + report.num_untangled, 0);
     std::int64_t nc = 0, npc = 0;
     ASSERT_EQ(mio_mesh_cell_block_info(tets, 0, &nc, &npc, nullptr), MIO_OK);
     EXPECT_EQ(nc, report.num_tetrahedra);
@@ -5497,7 +5502,41 @@ TEST(CApi, OctreeMeshTetrahedraAndCastellatedCells) {
     const std::int64_t need = mio_octree_mesh_warnings(nullptr, 0);
     EXPECT_GE(need, 0);
     EXPECT_EQ(need == 0, report.num_warnings == 0);
+    // The stages, their seconds and the leaves per level of the same call.
+    const std::int64_t names_len = mio_octree_mesh_stage_names(nullptr, 0);
+    const std::int64_t stages = mio_octree_mesh_stage_seconds(nullptr, 0);
+    EXPECT_GT(names_len, 0);
+    EXPECT_GT(stages, 0);
+    std::vector<char> names(static_cast<std::size_t>(names_len) + 1);
+    EXPECT_EQ(mio_octree_mesh_stage_names(names.data(), names_len + 1), names_len);
+    std::vector<double> seconds(static_cast<std::size_t>(stages));
+    EXPECT_EQ(mio_octree_mesh_stage_seconds(seconds.data(), stages), stages);
+    for (const double s : seconds)
+        EXPECT_GE(s, 0.0);
+    const std::int64_t levels = mio_octree_mesh_leaves_per_level(nullptr, 0);
+    EXPECT_GT(levels, 0);
+    std::vector<std::int64_t> leaves(static_cast<std::size_t>(levels));
+    EXPECT_EQ(mio_octree_mesh_leaves_per_level(leaves.data(), levels), levels);
+    std::int64_t leaf_total = 0;
+    for (const std::int64_t n : leaves)
+        leaf_total += n;
+    EXPECT_EQ(leaf_total, report.num_leaves);
+    EXPECT_EQ(mio_octree_mesh_stage_seconds(nullptr, -1), -1);
     mio_mesh_free(tets);
+
+    // The volume fix switches off through the options.
+    opts.volume_fix = 0;
+    mio_mesh* unfixed = mio_octree_mesh(cube, &opts, &report);
+    ASSERT_NE(unfixed, nullptr) << mio_last_error();
+    EXPECT_EQ(report.num_collapsed + report.num_reordered + report.num_overlaps +
+                  report.num_caps_removed + report.num_split + report.num_slivers +
+                  report.num_untangled,
+              0);
+    mio_mesh_free(unfixed);
+    opts.volume_fix = 1;
+    opts.crossing_margin = 0.7;
+    EXPECT_EQ(mio_octree_mesh(cube, &opts, &report), nullptr);
+    opts.crossing_margin = 0.01;
 
     opts.output = MIO_OCTREE_MESH_CASTELLATED;
     mio_mesh* cells = mio_octree_mesh(cube, &opts, &report);
@@ -5505,6 +5544,10 @@ TEST(CApi, OctreeMeshTetrahedraAndCastellatedCells) {
     EXPECT_GT(report.num_hexahedra, 0);
     EXPECT_GT(report.num_surrogate_faces, 0);
     EXPECT_EQ(report.num_gaps_filled + report.num_gaps_skipped, 0);
+    EXPECT_EQ(report.num_collapsed + report.num_reordered + report.num_overlaps +
+                  report.num_caps_removed + report.num_split + report.num_slivers +
+                  report.num_untangled,
+              0);
     mio_mesh_free(cells);
 
     opts.output = MIO_OCTREE_MESH_HEX;
@@ -8549,4 +8592,40 @@ TEST(CApi, CutLevelSetAndQuadrature) {
     o.selection = "nope < 0";
     EXPECT_EQ(mio_cut_level_set(hex, &o, nullptr), nullptr);
     mio_mesh_free(hex);
+}
+
+TEST(CApi, CheckTetrahedraReportsInvertedDegenerateAndOverlapping) {
+    // Two tetrahedra over the face (0, 1, 2) with their apexes on the same side: an overlap.
+    const double points[] = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0.2, 0.2, 0.5};
+    const std::int64_t cells[] = {0, 1, 2, 3, 0, 1, 2, 4};
+    mio_mesh* mesh = mio_mesh_create();
+    ASSERT_NE(mesh, nullptr);
+    ASSERT_EQ(mio_mesh_set_points(mesh, MIO_FLOAT64, 5, 3, points), MIO_OK) << mio_last_error();
+    ASSERT_EQ(mio_mesh_add_cell_block(mesh, "tetra", 2, 4, MIO_INT64, cells), MIO_OK)
+        << mio_last_error();
+
+    mio_check_tetrahedra_opts opts;
+    mio_check_tetrahedra_opts_init(&opts);
+    EXPECT_DOUBLE_EQ(opts.zero_volume_factor, 1e-6);
+    mio_check_tetrahedra_report report;
+    ASSERT_EQ(mio_check_tetrahedra(mesh, &opts, &report), MIO_OK) << mio_last_error();
+    EXPECT_EQ(report.num_tetrahedra, 2);
+    EXPECT_EQ(report.num_inverted, 0);
+    EXPECT_EQ(report.num_degenerate, 0);
+    EXPECT_EQ(report.num_overlaps, 1);
+    EXPECT_EQ(report.valid, 0);
+    EXPECT_GT(report.min_volume, 0.0);
+    EXPECT_GE(report.max_volume, report.min_volume);
+    EXPECT_EQ(report.num_warnings, 0);
+    EXPECT_EQ(mio_check_tetrahedra_warnings(nullptr, 0), 0);
+    // NULL options take the defaults.
+    ASSERT_EQ(mio_check_tetrahedra(mesh, nullptr, &report), MIO_OK);
+    EXPECT_EQ(report.num_overlaps, 1);
+
+    // Errors: no report, a negative factor.
+    EXPECT_NE(mio_check_tetrahedra(mesh, &opts, nullptr), MIO_OK);
+    opts.zero_volume_factor = -1.0;
+    EXPECT_NE(mio_check_tetrahedra(mesh, &opts, &report), MIO_OK);
+    EXPECT_NE(mio_check_tetrahedra(nullptr, nullptr, &report), MIO_OK);
+    mio_mesh_free(mesh);
 }

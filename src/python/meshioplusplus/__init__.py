@@ -114,6 +114,7 @@ if TYPE_CHECKING:
     from ._blender import from_blender, has_blender, to_blender
     from ._boundary_layer import boundary_layer
     from ._check_conformity import check_conformity
+    from ._check_tetrahedra import check_tetrahedra
     from ._clean import clean
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
@@ -387,6 +388,7 @@ _LAZY_ATTRS = {
     "DatasetEntry": "_dataset",
     "DatasetManifest": "_dataset",
     "check_conformity": "_check_conformity",
+    "check_tetrahedra": "_check_tetrahedra",
     "find_intersections": "_find_intersections",
     "thickness": "_thickness",
     "decimate": "_decimate",
@@ -696,6 +698,7 @@ __all__ = [
     "attach_quality",
     "check_quality",
     "check_conformity",
+    "check_tetrahedra",
     "find_intersections",
     "thickness",
     "sniff_format",
