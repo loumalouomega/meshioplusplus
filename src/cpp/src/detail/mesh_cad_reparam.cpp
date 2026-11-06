@@ -28,6 +28,7 @@
 #include "cdt2d.hpp"
 #include "mesh_cad_reparam.hpp"
 #include "param_disc.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -39,22 +40,14 @@ using McrV3 = std::array<double, 3>;
 
 constexpr double kMcrPi = 3.14159265358979323846;
 
-McrV3 mcr_sub(const McrV3& rA, const McrV3& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-double mcr_dot(const McrV3& rA, const McrV3& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
 /// The angle at `rO` of the triangle `rO, rA, rB`, in radians; 0 when an
 /// edge has no length.
 double mcr_angle(const McrV3& rO, const McrV3& rA, const McrV3& rB) {
-    const McrV3 a = mcr_sub(rA, rO);
-    const McrV3 b = mcr_sub(rB, rO);
+    const McrV3 a = vec3_sub(rA, rO);
+    const McrV3 b = vec3_sub(rB, rO);
     const McrV3 c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
-    const double s = std::sqrt(mcr_dot(c, c));
-    const double d = mcr_dot(a, b);
+    const double s = std::sqrt(vec3_dot(c, c));
+    const double d = vec3_dot(a, b);
     if (!(s > 0.0) && !(std::fabs(d) > 0.0))
         return 0.0;
     return std::atan2(s, d);
@@ -70,9 +63,9 @@ std::array<double, 2> mcr_eigen(const McrV3& rSu, const McrV3& rSv, double L11, 
         c1[i] = rSu[i] / L11;
         c2[i] = rSv[i] / L22 - rSu[i] * L12 / (L11 * L22);
     }
-    const double a = mcr_dot(c1, c1);
-    const double b = mcr_dot(c1, c2);
-    const double d = mcr_dot(c2, c2);
+    const double a = vec3_dot(c1, c1);
+    const double b = vec3_dot(c1, c2);
+    const double d = vec3_dot(c2, c2);
     const double root = std::sqrt((a - d) * (a - d) + 4.0 * b * b);
     return {0.5 * (a + d - root), 0.5 * (a + d + root)};
 }
@@ -429,8 +422,8 @@ std::string mcad_build_disc(const McadCoarseMesh& rCoarse,
             double len = 0.0;
             for (std::size_t k = 0; k < loops[l].size(); ++k) {
                 const McrV3 d =
-                    mcr_sub(r_c.mX[loops[l][(k + 1) % loops[l].size()]], r_c.mX[loops[l][k]]);
-                len += std::sqrt(mcr_dot(d, d));
+                    vec3_sub(r_c.mX[loops[l][(k + 1) % loops[l].size()]], r_c.mX[loops[l][k]]);
+                len += std::sqrt(vec3_dot(d, d));
             }
             if (len > longest) {
                 longest = len;
@@ -485,9 +478,9 @@ std::string mcad_build_disc(const McadCoarseMesh& rCoarse,
         const auto& r_t = r_c.mTris[t];
         const double area = 0.5 * std::fabs((u[r_t[1]] - u[r_t[0]]) * (v[r_t[2]] - v[r_t[0]]) -
                                             (u[r_t[2]] - u[r_t[0]]) * (v[r_t[1]] - v[r_t[0]]));
-        me += area * mcr_dot(j[0], j[0]);
-        mf += area * mcr_dot(j[0], j[1]);
-        mg += area * mcr_dot(j[1], j[1]);
+        me += area * vec3_dot(j[0], j[0]);
+        mf += area * vec3_dot(j[0], j[1]);
+        mg += area * vec3_dot(j[1], j[1]);
         total += area;
     }
     if (total > 0.0) {

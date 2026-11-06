@@ -31,6 +31,7 @@
 #include "dense_chol.hpp"
 #include "feature_fit.hpp"
 #include "lsq_fit.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -39,20 +40,8 @@ namespace {
 
 constexpr double kFfPi = 3.14159265358979323846;
 
-double ff_dot(const PatchVec& rA, const PatchVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-PatchVec ff_sub(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
 PatchVec ff_axpy(const PatchVec& rA, double S, const PatchVec& rB) {
     return {rA[0] + S * rB[0], rA[1] + S * rB[1], rA[2] + S * rB[2]};
-}
-
-double ff_norm(const PatchVec& rA) {
-    return std::sqrt(ff_dot(rA, rA));
 }
 
 // The vertex's height along and distance from the axis through pP[0..2]
@@ -60,8 +49,8 @@ double ff_norm(const PatchVec& rA) {
 void ff_axial(const double* pP, const PatchVec& rX, double& rH, double& rRho) {
     const PatchVec d{rX[0] - pP[0], rX[1] - pP[1], rX[2] - pP[2]};
     const PatchVec a{pP[3], pP[4], pP[5]};
-    rH = ff_dot(d, a);
-    rRho = ff_norm(ff_axpy(d, -rH, a));
+    rH = vec3_dot(d, a);
+    rRho = vec3_norm(ff_axpy(d, -rH, a));
 }
 
 // Outward unit vertex normals (area-weighted) and which vertices no
@@ -71,8 +60,8 @@ void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<Patc
     rNormals.assign(rPts.size(), PatchVec{0.0, 0.0, 0.0});
     std::map<std::pair<std::size_t, std::size_t>, int> uses;
     for (const PatchTri& t : rTris) {
-        const PatchVec e1 = ff_sub(rPts[t[1]], rPts[t[0]]);
-        const PatchVec e2 = ff_sub(rPts[t[2]], rPts[t[0]]);
+        const PatchVec e1 = vec3_sub(rPts[t[1]], rPts[t[0]]);
+        const PatchVec e2 = vec3_sub(rPts[t[2]], rPts[t[0]]);
         const PatchVec n{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
                          e1[0] * e2[1] - e1[1] * e2[0]};
         for (std::size_t v : t)
@@ -84,7 +73,7 @@ void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<Patc
         }
     }
     for (PatchVec& n : rNormals) {
-        const double len = ff_norm(n);
+        const double len = vec3_norm(n);
         if (len > 0.0)
             n = {n[0] / len, n[1] / len, n[2] / len};
     }
@@ -107,7 +96,7 @@ double primitive_distance(int Type, const double* pP, const PatchVec& rX) {
         }
         case 2: {
             const PatchVec d{rX[0] - pP[0], rX[1] - pP[1], rX[2] - pP[2]};
-            return std::fabs(ff_norm(d) - pP[6]);
+            return std::fabs(vec3_norm(d) - pP[6]);
         }
         case 3: {
             double h = 0.0, rho = 0.0;
@@ -143,7 +132,7 @@ FilletFit fillet_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchT
     ff_vertex_normals(rPts, rTris, normals, interior);
     std::vector<std::size_t> verts;
     for (std::size_t v = 0; v < rPts.size(); ++v)
-        if (interior[v] && ff_norm(normals[v]) > 0.5)
+        if (interior[v] && vec3_norm(normals[v]) > 0.5)
             verts.push_back(v);
     if (verts.size() < 4)
         return out;
@@ -227,7 +216,7 @@ HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<Pa
                          const PatchVec& rOrigin, const PatchVec& rAxis, bool VariablePitch) {
     HelicoidFit out;
     const std::size_t n = rPts.size();
-    const double alen = ff_norm(rAxis);
+    const double alen = vec3_norm(rAxis);
     if (n < 4 || rTris.empty() || !(alen > 0.0))
         return out;
     out.mOrigin = rOrigin;
@@ -236,11 +225,11 @@ HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<Pa
     std::vector<double> z(n), rho(n), phi(n);
     double rho_max = 0.0;
     for (std::size_t v = 0; v < n; ++v) {
-        const PatchVec d = ff_sub(rPts[v], rOrigin);
-        z[v] = ff_dot(d, out.mAxis);
+        const PatchVec d = vec3_sub(rPts[v], rOrigin);
+        z[v] = vec3_dot(d, out.mAxis);
         const PatchVec radial = ff_axpy(d, -z[v], out.mAxis);
-        rho[v] = ff_norm(radial);
-        phi[v] = std::atan2(ff_dot(radial, out.mE2), ff_dot(radial, out.mE1));
+        rho[v] = vec3_norm(radial);
+        phi[v] = std::atan2(vec3_dot(radial, out.mE2), vec3_dot(radial, out.mE1));
         rho_max = std::max(rho_max, rho[v]);
     }
     for (double r : rho)
@@ -354,13 +343,8 @@ HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<Pa
 
 namespace {
 
-PatchVec ff_cross(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
 PatchVec ff_unit(const PatchVec& rA) {
-    const double len = ff_norm(rA);
+    const double len = vec3_norm(rA);
     return len > 0.0 ? PatchVec{rA[0] / len, rA[1] / len, rA[2] / len} : PatchVec{0.0, 0.0, 0.0};
 }
 
@@ -472,11 +456,11 @@ double ff_min_radius(const std::function<double(double)>& rF, double RMin, doubl
 
 // The nearest point of the segment [rA, rB] to rP, as the fraction along it.
 double ff_segment_fraction(const PatchVec& rP, const PatchVec& rA, const PatchVec& rB) {
-    const PatchVec d = ff_sub(rB, rA);
-    const double dd = ff_dot(d, d);
+    const PatchVec d = vec3_sub(rB, rA);
+    const double dd = vec3_dot(d, d);
     if (!(dd > 0.0))
         return 0.0;
-    return std::clamp(ff_dot(ff_sub(rP, rA), d) / dd, 0.0, 1.0);
+    return std::clamp(vec3_dot(vec3_sub(rP, rA), d) / dd, 0.0, 1.0);
 }
 
 double ff_wrap(double A) {
@@ -549,7 +533,7 @@ PatchVec RollingBallFit::RailAt(double T) const {
     const std::size_t b = (a + 1) % n;
     const double t0 = mRailT[a], t1 = a + 1 < n ? mRailT[a + 1] : mLength;
     const double f = t1 > t0 ? (T - t0) / (t1 - t0) : 0.0;
-    return ff_axpy(mRail[a], f, ff_sub(mRail[b], mRail[a]));
+    return ff_axpy(mRail[a], f, vec3_sub(mRail[b], mRail[a]));
 }
 
 PatchVec RollingBallFit::RailTangent(double T) const {
@@ -577,9 +561,9 @@ PatchVec RollingBallFit::RailTangent(double T) const {
         const std::size_t e = (s + 1) % n;
         const double t0 = mRailT[s], t1 = s + 1 < n ? mRailT[s + 1] : mLength;
         const double f = t1 > t0 ? (U - t0) / (t1 - t0) : 0.0;
-        return ff_axpy(mRail[s], f, ff_sub(mRail[e], mRail[s]));
+        return ff_axpy(mRail[s], f, vec3_sub(mRail[e], mRail[s]));
     };
-    return ff_unit(ff_sub(at(b), at(a)));
+    return ff_unit(vec3_sub(at(b), at(a)));
 }
 
 RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
@@ -593,14 +577,14 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
     ff_vertex_normals(rPts, rTris, normals, interior);
     std::vector<std::size_t> verts;
     for (std::size_t v = 0; v < rPts.size(); ++v)
-        if (interior[v] && ff_norm(normals[v]) > 0.5)
+        if (interior[v] && vec3_norm(normals[v]) > 0.5)
             verts.push_back(v);
     if (verts.size() < 8)
         return out;
     const double inf = std::numeric_limits<double>::infinity();
     auto dist = [&](const ClosestPoint& rS, const PatchVec& rX) {
         PatchVec f{};
-        return rS(rX, f) ? ff_norm(ff_sub(rX, f)) : inf;
+        return rS(rX, f) ? vec3_norm(vec3_sub(rX, f)) : inf;
     };
     auto misfit = [&](std::size_t V, int Side, double R) {
         const PatchVec c = ff_axpy(rPts[V], -Side * R, normals[V]);
@@ -685,7 +669,7 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
             stack.pop_back();
             for (std::size_t w : adj[u]) {
                 if (u < w)
-                    comp_len.back() += ff_norm(ff_sub(rPts[w], rPts[u]));
+                    comp_len.back() += vec3_norm(vec3_sub(rPts[w], rPts[u]));
                 if (comp[w] < 0) {
                     comp[w] = id;
                     stack.push_back(w);
@@ -736,7 +720,7 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
             const PatchVec& a = rLine[s];
             const PatchVec& b = rLine[(s + 1) % rLine.size()];
             const double f = ff_segment_fraction(rP, a, b);
-            const double d = ff_norm(ff_sub(rP, ff_axpy(a, f, ff_sub(b, a))));
+            const double d = vec3_norm(vec3_sub(rP, ff_axpy(a, f, vec3_sub(b, a))));
             if (d < nearest) {
                 nearest = d;
                 const double t1 = s + 1 < rLine.size() ? rAt[s + 1] : Total;
@@ -750,12 +734,12 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
     double coarse_len = 0.0;
     for (std::size_t i = 0; i < chain.size(); ++i) {
         if (i > 0)
-            coarse_len += ff_norm(ff_sub(rPts[chain[i]], rPts[chain[i - 1]]));
+            coarse_len += vec3_norm(vec3_sub(rPts[chain[i]], rPts[chain[i - 1]]));
         coarse.push_back(rPts[chain[i]]);
         coarse_at.push_back(coarse_len);
     }
     if (closed)
-        coarse_len += ff_norm(ff_sub(rPts[chain.front()], rPts[chain.back()]));
+        coarse_len += vec3_norm(vec3_sub(rPts[chain.front()], rPts[chain.back()]));
     if (!(coarse_len > 0.0))
         return out;
     std::vector<PatchVec> centres(kept.size()), feet(kept.size());
@@ -784,14 +768,14 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
         const double w = 1.0 / static_cast<double>(bin_count[b]);
         const PatchVec p{bin_sum[b][0] * w, bin_sum[b][1] * w, bin_sum[b][2] * w};
         if (!out.mRail.empty())
-            len += ff_norm(ff_sub(p, out.mRail.back()));
+            len += vec3_norm(vec3_sub(p, out.mRail.back()));
         out.mRail.push_back(p);
         out.mRailT.push_back(len);
     }
     if (out.mRail.size() < 3)
         return out;
     if (closed)
-        len += ff_norm(ff_sub(out.mRail.front(), out.mRail.back()));
+        len += vec3_norm(vec3_sub(out.mRail.front(), out.mRail.back()));
     out.mLength = len;
     if (!(len > 0.0))
         return out;
@@ -865,24 +849,24 @@ RollingBallSection rolling_ball_section(const RollingBallFit& rFit, const Closes
     }
     const PatchVec on_rail = rFit.RailAt(T);
     PatchVec c =
-        ff_axpy(rFit.mCentres[nearest], 1.0, ff_sub(on_rail, rFit.RailAt(rFit.mT[nearest])));
+        ff_axpy(rFit.mCentres[nearest], 1.0, vec3_sub(on_rail, rFit.RailAt(rFit.mT[nearest])));
     // The section's plane goes through the rail point, so consecutive balls
     // advance along the spine as the rail does.
     const PatchVec t = ff_unit(rTangent);
-    c = ff_axpy(c, -ff_dot(ff_sub(c, on_rail), t), t);
+    c = ff_axpy(c, -vec3_dot(vec3_sub(c, on_rail), t), t);
     PatchVec f1{}, f2{};
     for (int it = 0; it < 60; ++it) {
         if (!rS1(c, f1) || !rS2(c, f2))
             return out;
-        const PatchVec g1 = ff_sub(c, f1), g2 = ff_sub(c, f2);
-        const double d1 = ff_norm(g1), d2 = ff_norm(g2);
+        const PatchVec g1 = vec3_sub(c, f1), g2 = vec3_sub(c, f2);
+        const double d1 = vec3_norm(g1), d2 = vec3_norm(g2);
         if (!(d1 > 0.0) || !(d2 > 0.0))
             return out;
         const PatchVec u1{g1[0] / d1, g1[1] / d1, g1[2] / d1};
         const PatchVec u2{g2[0] / d2, g2[1] / d2, g2[2] / d2};
-        const PatchVec w1 = ff_axpy(u1, -ff_dot(u1, t), t), w2 = ff_axpy(u2, -ff_dot(u2, t), t);
-        const double a11 = ff_dot(u1, w1), a12 = ff_dot(u1, w2), a21 = ff_dot(u2, w1),
-                     a22 = ff_dot(u2, w2);
+        const PatchVec w1 = ff_axpy(u1, -vec3_dot(u1, t), t), w2 = ff_axpy(u2, -vec3_dot(u2, t), t);
+        const double a11 = vec3_dot(u1, w1), a12 = vec3_dot(u1, w2), a21 = vec3_dot(u2, w1),
+                     a22 = vec3_dot(u2, w2);
         const double det = a11 * a22 - a12 * a21;
         if (!(std::fabs(det) > 1e-12))
             return out;
@@ -890,17 +874,19 @@ RollingBallSection rolling_ball_section(const RollingBallFit& rFit, const Closes
         const double al = (-e1 * a22 + e2 * a12) / det, be = (-e2 * a11 + e1 * a21) / det;
         const PatchVec step = ff_axpy(ff_axpy({0.0, 0.0, 0.0}, al, w1), be, w2);
         c = ff_axpy(c, 1.0, step);
-        if (ff_norm(step) <= 1e-13 * Scale)
+        if (vec3_norm(step) <= 1e-13 * Scale)
             break;
     }
     if (!rS1(c, f1) || !rS2(c, f2))
         return out;
     const double tol = 1e-6 * Scale;
-    if (std::fabs(ff_norm(ff_sub(c, f1)) - r) > tol || std::fabs(ff_norm(ff_sub(c, f2)) - r) > tol)
+    if (std::fabs(vec3_norm(vec3_sub(c, f1)) - r) > tol ||
+        std::fabs(vec3_norm(vec3_sub(c, f2)) - r) > tol)
         return out;
     // A foot far off the cross-section belongs to another ball.
     const double off = std::fabs(rFit.mRadius.Slope(T)) * r + 0.5 * r;
-    if (std::fabs(ff_dot(ff_sub(f1, c), t)) > off || std::fabs(ff_dot(ff_sub(f2, c), t)) > off)
+    if (std::fabs(vec3_dot(vec3_sub(f1, c), t)) > off ||
+        std::fabs(vec3_dot(vec3_sub(f2, c), t)) > off)
         return out;
     out.mOk = true;
     out.mCentre = c;
@@ -949,11 +935,11 @@ void ff_cylindrical(const std::vector<PatchVec>& rPts, const PatchVec& rO, const
     rRho.resize(n);
     rPhi.resize(n);
     for (std::size_t v = 0; v < n; ++v) {
-        const PatchVec d = ff_sub(rPts[v], rO);
-        rZ[v] = ff_dot(d, rA);
+        const PatchVec d = vec3_sub(rPts[v], rO);
+        rZ[v] = vec3_dot(d, rA);
         const PatchVec radial = ff_axpy(d, -rZ[v], rA);
-        rRho[v] = ff_norm(radial);
-        rPhi[v] = std::atan2(ff_dot(radial, rE2), ff_dot(radial, rE1));
+        rRho[v] = vec3_norm(radial);
+        rPhi[v] = std::atan2(vec3_dot(radial, rE2), vec3_dot(radial, rE1));
     }
 }
 
@@ -1037,8 +1023,8 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
     std::vector<double> area(n, 0.0);
     std::vector<std::vector<std::size_t>> adj(n);
     for (const PatchTri& t : rTris) {
-        const double a =
-            0.5 * ff_norm(ff_cross(ff_sub(rPts[t[1]], rPts[t[0]]), ff_sub(rPts[t[2]], rPts[t[0]])));
+        const double a = 0.5 * vec3_norm(vec3_cross(vec3_sub(rPts[t[1]], rPts[t[0]]),
+                                                    vec3_sub(rPts[t[2]], rPts[t[0]])));
         for (int k = 0; k < 3; ++k) {
             area[t[static_cast<std::size_t>(k)]] += a / 3.0;
             adj[t[static_cast<std::size_t>(k)]].push_back(t[static_cast<std::size_t>((k + 1) % 3)]);
@@ -1063,7 +1049,7 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
     centre = {centre[0] / wsum, centre[1] / wsum, centre[2] / wsum};
     double scale = 0.0;
     for (std::size_t v : live)
-        scale = std::max(scale, ff_norm(ff_sub(rPts[v], centre)));
+        scale = std::max(scale, vec3_norm(vec3_sub(rPts[v], centre)));
     if (!(scale > 0.0))
         return out;
     // The screw: its axis, a point on it and its advance per radian.
@@ -1075,7 +1061,7 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
             const PatchVec x{(rPts[v][0] - centre[0]) / scale, (rPts[v][1] - centre[1]) / scale,
                              (rPts[v][2] - centre[2]) / scale};
             const PatchVec& nv = normals[v];
-            const PatchVec m = ff_cross(x, nv);
+            const PatchVec m = vec3_cross(x, nv);
             for (int i = 0; i < 3; ++i)
                 for (int j = 0; j < 3; ++j) {
                     A[i * 3 + j] +=
@@ -1129,17 +1115,17 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
             cbar[static_cast<std::size_t>(i)] = -s;
         }
         axis = c;
-        k = scale * ff_dot(c, cbar);
-        origin = ff_axpy(centre, scale, ff_cross(c, cbar));
+        k = scale * vec3_dot(c, cbar);
+        origin = ff_axpy(centre, scale, vec3_cross(c, cbar));
     } else {
         origin = *pOrigin;
         axis = ff_unit(*pAxis);
-        if (!(ff_norm(axis) > 0.0))
+        if (!(vec3_norm(axis) > 0.0))
             return out;
         double num = 0.0, den = 0.0;
         for (std::size_t v : live) {
-            const double na = ff_dot(normals[v], axis);
-            num += area[v] * na * ff_dot(normals[v], ff_cross(axis, ff_sub(rPts[v], origin)));
+            const double na = vec3_dot(normals[v], axis);
+            num += area[v] * na * vec3_dot(normals[v], vec3_cross(axis, vec3_sub(rPts[v], origin)));
             den += area[v] * na * na;
         }
         if (!(den > 1e-12 * wsum))
@@ -1150,7 +1136,7 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
     if (!(std::fabs(k) * 2.0 * kFfPi > 1e-3 * scale))
         return out;
     // Move the origin to the foot of the patch's centre on the axis.
-    origin = ff_axpy(origin, ff_dot(ff_sub(centre, origin), axis), axis);
+    origin = ff_axpy(origin, vec3_dot(vec3_sub(centre, origin), axis), axis);
     PatchVec e1{}, e2{};
     lsq_frame(axis.data(), e1.data(), e2.data());
     std::vector<double> z, rho, phi, theta0;
@@ -1191,8 +1177,8 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
         Screw s;
         s.mA = ff_unit(ff_axpy(ff_axpy(axis, rP[0], e1), rP[1], e2));
         s.mO = ff_axpy(ff_axpy(origin, rP[2], e1), rP[3], e2);
-        s.mE1 = ff_unit(ff_axpy(e1, -ff_dot(e1, s.mA), s.mA));
-        s.mE2 = ff_cross(s.mA, s.mE1);
+        s.mE1 = ff_unit(ff_axpy(e1, -vec3_dot(e1, s.mA), s.mA));
+        s.mE2 = vec3_cross(s.mA, s.mE1);
         s.mK = rP[4];
         if (rP.size() > 5) {
             s.mTaper = rP[5];
@@ -1208,11 +1194,11 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
         if (pTheta)
             pTheta->clear();
         for (std::size_t v : rWhich) {
-            const PatchVec d = ff_sub(rPts[v], rS.mO);
-            const double zz = ff_dot(d, rS.mA);
+            const PatchVec d = vec3_sub(rPts[v], rS.mO);
+            const double zz = vec3_dot(d, rS.mA);
             const PatchVec radial = ff_axpy(d, -zz, rS.mA);
-            const double rr = ff_norm(radial);
-            const double ph = std::atan2(ff_dot(radial, rS.mE2), ff_dot(radial, rS.mE1));
+            const double rr = vec3_norm(radial);
+            const double ph = std::atan2(vec3_dot(radial, rS.mE2), vec3_dot(radial, rS.mE1));
             const double th = theta0[v] + ff_wrap(ph - theta0[v]);
             double zeta, rho_u = rr;
             if (General) {
@@ -1329,11 +1315,12 @@ PatchVec ff_line_at(const std::vector<PatchVec>& rLine, const std::vector<double
         T -= Length * std::floor(T / Length);
     } else if (T <= 0.0) {
         const double d = rAt[1] - rAt[0];
-        return d > 0.0 ? ff_axpy(rLine[0], T / d, ff_sub(rLine[1], rLine[0])) : rLine[0];
+        return d > 0.0 ? ff_axpy(rLine[0], T / d, vec3_sub(rLine[1], rLine[0])) : rLine[0];
     } else if (T >= Length) {
         const double d = rAt[n - 1] - rAt[n - 2];
-        return d > 0.0 ? ff_axpy(rLine[n - 1], (T - Length) / d, ff_sub(rLine[n - 1], rLine[n - 2]))
-                       : rLine[n - 1];
+        return d > 0.0
+                   ? ff_axpy(rLine[n - 1], (T - Length) / d, vec3_sub(rLine[n - 1], rLine[n - 2]))
+                   : rLine[n - 1];
     }
     const std::size_t i =
         static_cast<std::size_t>(std::upper_bound(rAt.begin(), rAt.end(), T) - rAt.begin());
@@ -1341,7 +1328,7 @@ PatchVec ff_line_at(const std::vector<PatchVec>& rLine, const std::vector<double
     const std::size_t b = (a + 1) % n;
     const double t0 = rAt[a], t1 = a + 1 < n ? rAt[a + 1] : Length;
     const double f = t1 > t0 ? (T - t0) / (t1 - t0) : 0.0;
-    return ff_axpy(rLine[a], f, ff_sub(rLine[b], rLine[a]));
+    return ff_axpy(rLine[a], f, vec3_sub(rLine[b], rLine[a]));
 }
 
 // The polyline's unit tangent at T, a central difference over a few segments.
@@ -1360,8 +1347,8 @@ PatchVec ff_line_tangent(const std::vector<PatchVec>& rLine, const std::vector<d
             b = a + h;
         }
     }
-    return ff_unit(ff_sub(ff_line_at(rLine, rAt, Closed, Length, b),
-                          ff_line_at(rLine, rAt, Closed, Length, a)));
+    return ff_unit(vec3_sub(ff_line_at(rLine, rAt, Closed, Length, b),
+                            ff_line_at(rLine, rAt, Closed, Length, a)));
 }
 
 // The arc length of a polyline's point nearest to rP.
@@ -1373,7 +1360,7 @@ double ff_line_along(const std::vector<PatchVec>& rLine, const std::vector<doubl
         const PatchVec& a = rLine[s];
         const PatchVec& b = rLine[(s + 1) % rLine.size()];
         const double f = ff_segment_fraction(rP, a, b);
-        const double d = ff_norm(ff_sub(rP, ff_axpy(a, f, ff_sub(b, a))));
+        const double d = vec3_norm(vec3_sub(rP, ff_axpy(a, f, vec3_sub(b, a))));
         if (d < nearest) {
             nearest = d;
             const double t1 = s + 1 < rLine.size() ? rAt[s + 1] : Length;
@@ -1393,8 +1380,8 @@ bool ff_plane_cut(const std::vector<PatchVec>& rLine, bool Closed, double Length
         return false;
     std::vector<PatchVec> line = rLine;
     if (!Closed) {
-        const PatchVec d0 = ff_unit(ff_sub(rLine[0], rLine[1]));
-        const PatchVec d1 = ff_unit(ff_sub(rLine[n - 1], rLine[n - 2]));
+        const PatchVec d0 = ff_unit(vec3_sub(rLine[0], rLine[1]));
+        const PatchVec d1 = ff_unit(vec3_sub(rLine[n - 1], rLine[n - 2]));
         line.insert(line.begin(), ff_axpy(rLine[0], Length, d0));
         line.push_back(ff_axpy(rLine[n - 1], Length, d1));
     }
@@ -1404,11 +1391,11 @@ bool ff_plane_cut(const std::vector<PatchVec>& rLine, bool Closed, double Length
     for (std::size_t s = 0; s < nseg; ++s) {
         const PatchVec& a = line[s];
         const PatchVec& b = line[(s + 1) % line.size()];
-        const double da = ff_dot(ff_sub(a, rO), rN), db = ff_dot(ff_sub(b, rO), rN);
+        const double da = vec3_dot(vec3_sub(a, rO), rN), db = vec3_dot(vec3_sub(b, rO), rN);
         if ((da > 0.0 && db > 0.0) || (da < 0.0 && db < 0.0) || da == db)
             continue;
-        const PatchVec c = ff_axpy(a, da / (da - db), ff_sub(b, a));
-        const double d = ff_norm(ff_sub(c, rO));
+        const PatchVec c = ff_axpy(a, da / (da - db), vec3_sub(b, a));
+        const double d = vec3_norm(vec3_sub(c, rO));
         if (d < best) {
             best = d;
             rCut = c;
@@ -1432,7 +1419,7 @@ PatchVec ff_conic_at(const PatchVec& rR1, const PatchVec& rA, const PatchVec& rR
 double ff_conic_distance(const PatchVec& rR1, const PatchVec& rA, const PatchVec& rR2, double W,
                          const PatchVec& rP) {
     constexpr int kScan = 48;
-    auto dist = [&](double U) { return ff_norm(ff_sub(ff_conic_at(rR1, rA, rR2, W, U), rP)); };
+    auto dist = [&](double U) { return vec3_norm(vec3_sub(ff_conic_at(rR1, rA, rR2, W, U), rP)); };
     int arg = 0;
     double low = std::numeric_limits<double>::infinity();
     for (int i = 0; i <= kScan; ++i) {
@@ -1494,7 +1481,7 @@ bool ff_boundary_chain(const std::vector<PatchVec>& rPts,
             stack.pop_back();
             for (std::size_t w : adj[u]) {
                 if (u < w)
-                    comp_len.back() += ff_norm(ff_sub(rPts[w], rPts[u]));
+                    comp_len.back() += vec3_norm(vec3_sub(rPts[w], rPts[u]));
                 if (comp[w] < 0) {
                     comp[w] = id;
                     stack.push_back(w);
@@ -1546,10 +1533,10 @@ PatchVec SectionBlendFit::Normal(double T) const {
     // the direction both are level in, n1 x n2.
     PatchVec n1{}, n2{};
     if (mNormal1 && mNormal2 && mNormal1(r1, n1) && mNormal2(r1, n2)) {
-        PatchVec e = ff_cross(n1, n2);
-        if (ff_norm(e) > 0.1) {
+        PatchVec e = vec3_cross(n1, n2);
+        if (vec3_norm(e) > 0.1) {
             e = ff_unit(e);
-            tan = ff_dot(e, tan) < 0.0 ? PatchVec{-e[0], -e[1], -e[2]} : e;
+            tan = vec3_dot(e, tan) < 0.0 ? PatchVec{-e[0], -e[1], -e[2]} : e;
         }
     }
     return tan;
@@ -1560,7 +1547,7 @@ double SectionBlendFit::ParameterOf(const PatchVec& rX) const {
     // rX: a secant iteration on (rX - R1(T)) . N(T).
     double t = ff_line_along(mRail1, mRail1T, mClosed, mLength, rX);
     auto f = [&](double T) {
-        return ff_dot(ff_sub(rX, ff_line_at(mRail1, mRail1T, mClosed, mLength, T)), Normal(T));
+        return vec3_dot(vec3_sub(rX, ff_line_at(mRail1, mRail1T, mClosed, mLength, T)), Normal(T));
     };
     const double h = 1e-3 * mLength;
     double f0 = f(t);
@@ -1580,10 +1567,10 @@ bool SectionBlendFit::Section(double T, PatchVec& rR1, PatchVec& rR2, PatchVec& 
         return false;
     rR1 = ff_line_at(mRail1, mRail1T, mClosed, mLength, T);
     const PatchVec tan = Normal(T);
-    if (!(ff_norm(tan) > 0.0) || !ff_plane_cut(mRail2, mClosed, mLength2, rR1, tan, rR2))
+    if (!(vec3_norm(tan) > 0.0) || !ff_plane_cut(mRail2, mClosed, mLength2, rR1, tan, rR2))
         return false;
-    const PatchVec chord = ff_sub(rR2, rR1);
-    if (!(ff_norm(chord) > 0.0))
+    const PatchVec chord = vec3_sub(rR2, rR1);
+    if (!(vec3_norm(chord) > 0.0))
         return false;
     if (mChamfer) {
         rApex = ff_axpy(rR1, 0.5, chord);
@@ -1594,16 +1581,16 @@ bool SectionBlendFit::Section(double T, PatchVec& rR1, PatchVec& rR2, PatchVec& 
     PatchVec n1{}, n2{};
     if (!mNormal1 || !mNormal2 || !mNormal1(rR1, n1) || !mNormal2(rR2, n2))
         return false;
-    PatchVec d1 = ff_unit(ff_cross(tan, n1)), d2 = ff_unit(ff_cross(tan, n2));
-    if (!(ff_norm(d1) > 0.0) || !(ff_norm(d2) > 0.0))
+    PatchVec d1 = ff_unit(vec3_cross(tan, n1)), d2 = ff_unit(vec3_cross(tan, n2));
+    if (!(vec3_norm(d1) > 0.0) || !(vec3_norm(d2) > 0.0))
         return false;
-    if (ff_dot(d1, chord) < 0.0)
+    if (vec3_dot(d1, chord) < 0.0)
         d1 = {-d1[0], -d1[1], -d1[2]};
-    if (ff_dot(d2, chord) > 0.0)
+    if (vec3_dot(d2, chord) > 0.0)
         d2 = {-d2[0], -d2[1], -d2[2]};
     // rR1 + a d1 = rR2 + b d2, by least squares.
-    const double a11 = 1.0, a12 = -ff_dot(d1, d2), a22 = 1.0;
-    const double r1 = ff_dot(d1, chord), r2 = -ff_dot(d2, chord);
+    const double a11 = 1.0, a12 = -vec3_dot(d1, d2), a22 = 1.0;
+    const double r1 = vec3_dot(d1, chord), r2 = -vec3_dot(d2, chord);
     const double det = a11 * a22 - a12 * a12;
     if (!(det > 1e-10))
         return false;  // parallel tangents: no apex
@@ -1620,7 +1607,7 @@ bool SectionBlendFit::At(double T, double U, PatchVec& rP) const {
     if (!Section(T, r1, r2, apex))
         return false;
     if (mChamfer) {
-        rP = ff_axpy(r1, U, ff_sub(r2, r1));
+        rP = ff_axpy(r1, U, vec3_sub(r2, r1));
         return true;
     }
     const double w = mWeight.At(T);
@@ -1648,7 +1635,7 @@ SectionBlendFit section_blend_fit(const std::vector<PatchVec>& rPts,
             return inf;
         if (pFoot)
             *pFoot = f;
-        return ff_norm(ff_sub(rX, f));
+        return vec3_norm(vec3_sub(rX, f));
     };
     // The rails: the boundary edges along each surface, chained -- those the
     // caller says it lies across, else those whose ends both lie on it.
@@ -1686,12 +1673,12 @@ SectionBlendFit section_blend_fit(const std::vector<PatchVec>& rPts,
             if (!std::isfinite(dist(rS, rPts[v], &f)))
                 return false;
             if (!rLine.empty())
-                rLen += ff_norm(ff_sub(f, rLine.back()));
+                rLen += vec3_norm(vec3_sub(f, rLine.back()));
             rLine.push_back(f);
             rAt.push_back(rLen);
         }
         if (out.mClosed)
-            rLen += ff_norm(ff_sub(rLine.front(), rLine.back()));
+            rLen += vec3_norm(vec3_sub(rLine.front(), rLine.back()));
         return rLen > 0.0;
     };
     if (!rail(chain1, rS1, out.mRail1, out.mRail1T, out.mLength) ||
@@ -1703,7 +1690,7 @@ SectionBlendFit section_blend_fit(const std::vector<PatchVec>& rPts,
     // conic weight its barycentric coordinates give.
     std::vector<std::size_t> verts;
     for (std::size_t v = 0; v < rPts.size(); ++v)
-        if (interior[v] && ff_norm(normals[v]) > 0.5)
+        if (interior[v] && vec3_norm(normals[v]) > 0.5)
             verts.push_back(v);
     verts = ff_spread(verts, 256);
     if (verts.size() < 6)
@@ -1721,16 +1708,16 @@ SectionBlendFit section_blend_fit(const std::vector<PatchVec>& rPts,
             continue;
         const double f = ff_segment_fraction(x, r1, r2);
         at.push_back(t);
-        chord_dist.push_back(ff_norm(ff_sub(x, ff_axpy(r1, f, ff_sub(r2, r1)))));
+        chord_dist.push_back(vec3_norm(vec3_sub(x, ff_axpy(r1, f, vec3_sub(r2, r1)))));
         if (!probe.Section(t, r1, r2, apex))
             continue;
         // Barycentric coordinates in (r1, apex, r2), in that triangle's plane.
-        const PatchVec e1 = ff_sub(apex, r1), e2 = ff_sub(r2, r1), q = ff_sub(x, r1);
-        const double g11 = ff_dot(e1, e1), g12 = ff_dot(e1, e2), g22 = ff_dot(e2, e2);
+        const PatchVec e1 = vec3_sub(apex, r1), e2 = vec3_sub(r2, r1), q = vec3_sub(x, r1);
+        const double g11 = vec3_dot(e1, e1), g12 = vec3_dot(e1, e2), g22 = vec3_dot(e2, e2);
         const double det = g11 * g22 - g12 * g12;
         if (!(det > 0.0))
             continue;
-        const double q1 = ff_dot(q, e1), q2 = ff_dot(q, e2);
+        const double q1 = vec3_dot(q, e1), q2 = vec3_dot(q, e2);
         const double b1 = (q1 * g22 - q2 * g12) / det, b2 = (q2 * g11 - q1 * g12) / det;
         const double b0 = 1.0 - b1 - b2;
         if (!(b0 > 0.0) || !(b2 > 0.0) || b1 < 0.0)
@@ -1864,7 +1851,7 @@ JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
             if (!rSurfaces[i](rX, foot[i]))
                 return false;
             const PatchVec d{rX[0] - foot[i][0], rX[1] - foot[i][1], rX[2] - foot[i][2]};
-            const double len = ff_norm(d);
+            const double len = vec3_norm(d);
             rWorst = std::max(rWorst, len);
             if (rNormals[i] && rNormals[i](rX, normal[i]))
                 continue;
@@ -1888,7 +1875,7 @@ JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
         }
         for (std::size_t i = 0; i < n; ++i) {
             const PatchVec& nn = normal[i];
-            const double off = ff_dot(nn, foot[i]);
+            const double off = vec3_dot(nn, foot[i]);
             for (std::size_t r = 0; r < 3; ++r) {
                 for (std::size_t c = 0; c < 3; ++c)
                     a[r * 3 + c] += nn[r] * nn[c];
@@ -1904,7 +1891,7 @@ JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
             const PatchVec q{p[0] + step[0], p[1] + step[1], p[2] + step[2]};
             double w = 0.0;
             if (measure(q, w) && w <= worst) {
-                moved = ff_norm(step) > 1e-13 * Scale;
+                moved = vec3_norm(step) > 1e-13 * Scale;
                 p = q;
                 worst = w;
                 break;

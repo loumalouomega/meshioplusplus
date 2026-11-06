@@ -58,6 +58,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 
@@ -104,11 +105,6 @@ std::string mcad_why(const std::exception& rE) {
     return s;
 }
 
-double mcad_dist(const Vec3& rA, const Vec3& rB) {
-    return std::sqrt((rA[0] - rB[0]) * (rA[0] - rB[0]) + (rA[1] - rB[1]) * (rA[1] - rB[1]) +
-                     (rA[2] - rB[2]) * (rA[2] - rB[2]));
-}
-
 double mcad_segment_distance(const Vec3& rP, const Vec3& rA, const Vec3& rB) {
     const Vec3 d{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
     const double len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
@@ -117,7 +113,8 @@ double mcad_segment_distance(const Vec3& rP, const Vec3& rA, const Vec3& rB) {
         t = std::clamp(
             ((rP[0] - rA[0]) * d[0] + (rP[1] - rA[1]) * d[1] + (rP[2] - rA[2]) * d[2]) / len2, 0.0,
             1.0);
-    return mcad_dist(rP, {rA[0] + t * d[0], rA[1] + t * d[1], rA[2] + t * d[2]});
+    return detail::vec3_norm(
+        detail::vec3_sub(rP, {rA[0] + t * d[0], rA[1] + t * d[1], rA[2] + t * d[2]}));
 }
 
 /// A straight trim in the parameters, for the boundary of an untrimmed face.
@@ -239,7 +236,7 @@ public:
     void AddSegment(const Vec3& rA, const Vec3& rB) {
         const Vec3 m{0.5 * (rA[0] + rB[0]), 0.5 * (rA[1] + rB[1]), 0.5 * (rA[2] + rB[2])};
         mSegments[KeyOf(m)].push_back({rA, rB});
-        mLongest = std::max(mLongest, mcad_dist(rA, rB));
+        mLongest = std::max(mLongest, detail::vec3_norm(detail::vec3_sub(rA, rB)));
     }
     /// Whether a point lies within `Rp` of a point or `Rs` of a segment.
     bool Near(const Vec3& rP, double Rp, double Rs) const {
@@ -255,7 +252,7 @@ public:
                     if (it == mPoints.end())
                         continue;
                     for (const Vec3& r_q : it->second)
-                        if (mcad_dist(r_q, rP) < Rp)
+                        if (detail::vec3_norm(detail::vec3_sub(r_q, rP)) < Rp)
                             return true;
                 }
         // A segment within Rs has its midpoint within Rs + half its length.
@@ -506,9 +503,9 @@ double mcad_min_angle(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
 /// Circumradius over shortest edge of a triangle on the surface: the
 /// product of its two longer edges over twice its area's double.
 double mcad_ratio(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
-    const double la = mcad_dist(rB, rC);
-    const double lb = mcad_dist(rC, rA);
-    const double lc = mcad_dist(rA, rB);
+    const double la = detail::vec3_norm(detail::vec3_sub(rB, rC));
+    const double lb = detail::vec3_norm(detail::vec3_sub(rC, rA));
+    const double lc = detail::vec3_norm(detail::vec3_sub(rA, rB));
     const Vec3 u{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
     const Vec3 v{rC[0] - rA[0], rC[1] - rA[1], rC[2] - rA[2]};
     const Vec3 c{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
@@ -1222,7 +1219,7 @@ McadCrossings mcad_face_crossings(const McadFace& rF, const std::vector<McadUse>
             const std::size_t piece = r_u.mSame ? r_o[1] : n - 2 - r_o[1];
             const auto& r_pts = rEdges[edge].mSamples.mPoints;
             ask[i] = {edge, piece};
-            tiny[i] = !(mcad_dist(r_pts[piece], r_pts[piece + 1]) > Tol);
+            tiny[i] = !(detail::vec3_norm(detail::vec3_sub(r_pts[piece], r_pts[piece + 1])) > Tol);
             embedded[i] = r_u.mEmbedded;
             use[i] = r_o[0];
         }
@@ -1653,10 +1650,11 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                     double t0 = 0.0;
                     for (int j = 1; j <= kScan; ++j) {
                         double t1 = t_max * double(j) / kScan;
-                        if (mcad_dist(surface(at(S, t1)), r_p) >= R) {
+                        if (detail::vec3_norm(detail::vec3_sub(surface(at(S, t1)), r_p)) >= R) {
                             for (int it = 0; it < 60; ++it) {
                                 const double tm = 0.5 * (t0 + t1);
-                                if (mcad_dist(surface(at(S, tm)), r_p) >= R)
+                                if (detail::vec3_norm(detail::vec3_sub(surface(at(S, tm)), r_p)) >=
+                                    R)
                                     t1 = tm;
                                 else
                                     t0 = tm;
@@ -1682,7 +1680,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                         }
                         const Vec3 x = surface(at(double(i) / kTrace, t));
                         if (i > 0)
-                            cum.push_back(cum.back() + mcad_dist(prev, x));
+                            cum.push_back(cum.back() +
+                                          detail::vec3_norm(detail::vec3_sub(prev, x)));
                         prev = x;
                     }
                     if (!ok)
@@ -1731,8 +1730,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 const double hx = rQ.pSize ? rQ.pSize->At(x) : h;
                 if (grid.Near(x, 0.5 * hx, 0.4 * hx))
                     continue;
-                if (std::any_of(ring_band.begin(), ring_band.end(),
-                                [&](const auto& rB) { return mcad_dist(x, rB.first) < rB.second; }))
+                if (std::any_of(ring_band.begin(), ring_band.end(), [&](const auto& rB) {
+                        return detail::vec3_norm(detail::vec3_sub(x, rB.first)) < rB.second;
+                    }))
                     continue;
                 const std::int64_t v_id = cdt.InsertSteiner(xp);
                 if (v_id < 0)
@@ -1955,14 +1955,15 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 continue;
             double nearest = std::numeric_limits<double>::infinity();
             for (const std::int64_t p : face_poles)
-                nearest = std::min(nearest, mcad_dist(pl.mJacAt[k], pos(p)));
+                nearest =
+                    std::min(nearest, detail::vec3_norm(detail::vec3_sub(pl.mJacAt[k], pos(p))));
             pole_reach = std::max(pole_reach, nearest);
         }
     const auto pole_near = [&](std::int64_t Id) -> std::int64_t {
         std::int64_t best = -1;
         double best_d = std::numeric_limits<double>::infinity();
         for (const std::int64_t p : face_poles) {
-            const double d = Id == p ? 0.0 : mcad_dist(pos(Id), pos(p));
+            const double d = Id == p ? 0.0 : detail::vec3_norm(detail::vec3_sub(pos(Id), pos(p)));
             if (d <= pole_reach && d < best_d) {
                 best = p;
                 best_d = d;
@@ -2006,8 +2007,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         if (!(rQ.mMinAngleDeg > 0.0) || varying)
             return false;
         const double shortest =
-            std::min({mcad_dist(pos(rIds[0]), pos(rIds[1])), mcad_dist(pos(rIds[1]), pos(rIds[2])),
-                      mcad_dist(pos(rIds[2]), pos(rIds[0]))});
+            std::min({detail::vec3_norm(detail::vec3_sub(pos(rIds[0]), pos(rIds[1]))),
+                      detail::vec3_norm(detail::vec3_sub(pos(rIds[1]), pos(rIds[2]))),
+                      detail::vec3_norm(detail::vec3_sub(pos(rIds[2]), pos(rIds[0])))});
         return shortest < 0.25 * h && stretched(rT);
     };
     // A triangle judged on the surface; one a pole collapses, within h of a
@@ -2380,8 +2382,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             if (by_metric) {
                 // The longest edge in the metric against the unit, by the slack.
                 const auto t = in_metric(pos(rIds[0]), pos(rIds[1]), pos(rIds[2]));
-                const double longest =
-                    std::max({mcad_dist(t[1], t[2]), mcad_dist(t[2], t[0]), mcad_dist(t[0], t[1])});
+                const double longest = std::max({detail::vec3_norm(detail::vec3_sub(t[1], t[2])),
+                                                 detail::vec3_norm(detail::vec3_sub(t[2], t[0])),
+                                                 detail::vec3_norm(detail::vec3_sub(t[0], t[1]))});
                 const double s = longest / detail::kMeshCadSizeSlack;
                 return s > 1.0 ? s : 0.0;
             }
@@ -2390,8 +2393,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             const Vec3& pa = pos(rIds[0]);
             const Vec3& pb = pos(rIds[1]);
             const Vec3& pc = pos(rIds[2]);
-            const double longest =
-                std::max({mcad_dist(pb, pc), mcad_dist(pc, pa), mcad_dist(pa, pb)});
+            const double longest = std::max({detail::vec3_norm(detail::vec3_sub(pb, pc)),
+                                             detail::vec3_norm(detail::vec3_sub(pc, pa)),
+                                             detail::vec3_norm(detail::vec3_sub(pa, pb))});
             const Vec3 centre{(pa[0] + pb[0] + pc[0]) / 3.0, (pa[1] + pb[1] + pc[1]) / 3.0,
                               (pa[2] + pb[2] + pc[2]) / 3.0};
             const double s = longest / (detail::kMeshCadSizeSlack * p_refine_size->At(centre));
@@ -2533,8 +2537,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             const Vec3& pa = pos(mesh_of.at(rT[0]));
             const Vec3& pb = pos(mesh_of.at(rT[1]));
             const Vec3& pc = pos(mesh_of.at(rT[2]));
-            const double shortest =
-                std::min({mcad_dist(pa, pb), mcad_dist(pb, pc), mcad_dist(pc, pa)});
+            const double shortest = std::min({detail::vec3_norm(detail::vec3_sub(pa, pb)),
+                                              detail::vec3_norm(detail::vec3_sub(pb, pc)),
+                                              detail::vec3_norm(detail::vec3_sub(pc, pa))});
             const Vec3 x = lift(rC);
             // A fold's centroid keeps a quarter of its shortest edge from
             // the cavity's vertices.
@@ -2544,7 +2549,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                                 : std::max(slack * ratio_bound * shortest, stretched_floor(rC));
             for (const std::int64_t w : rAround) {
                 const auto it = mesh_of.find(w);
-                if (it != mesh_of.end() && mcad_dist(pos(it->second), x) < radius)
+                if (it != mesh_of.end() &&
+                    detail::vec3_norm(detail::vec3_sub(pos(it->second), x)) < radius)
                     return false;
             }
             return true;
@@ -2556,12 +2562,14 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 const Vec3& pa = pos(mesh_of.at(rT[0]));
                 const Vec3& pb = pos(mesh_of.at(rT[1]));
                 const Vec3& pc = pos(mesh_of.at(rT[2]));
-                const double shortest =
-                    std::min({mcad_dist(pa, pb), mcad_dist(pb, pc), mcad_dist(pc, pa)});
+                const double shortest = std::min({detail::vec3_norm(detail::vec3_sub(pa, pb)),
+                                                  detail::vec3_norm(detail::vec3_sub(pb, pc)),
+                                                  detail::vec3_norm(detail::vec3_sub(pc, pa))});
                 const auto& xa = cdt.Point(A);
                 const auto& xb = cdt.Point(B);
                 const detail::Cdt2d::Vec2 mid{0.5 * (xa[0] + xb[0]), 0.5 * (xa[1] + xb[1])};
-                return 0.5 * mcad_dist(pos(mesh_of.at(A)), pos(mesh_of.at(B))) >=
+                return 0.5 * detail::vec3_norm(
+                                 detail::vec3_sub(pos(mesh_of.at(A)), pos(mesh_of.at(B)))) >=
                        std::max(0.25 * shortest, stretched_floor(mid));
             }
             if (by_metric) {
@@ -2587,17 +2595,20 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 const Vec3& r_b = pos(mesh_of.at(B));
                 const Vec3 mid{0.5 * (r_a[0] + r_b[0]), 0.5 * (r_a[1] + r_b[1]),
                                0.5 * (r_a[2] + r_b[2])};
-                return mcad_dist(r_a, r_b) > detail::kMeshCadSizeSlack * p_refine_size->At(mid);
+                return detail::vec3_norm(detail::vec3_sub(r_a, r_b)) >
+                       detail::kMeshCadSizeSlack * p_refine_size->At(mid);
             }
             const Vec3& pa = pos(mesh_of.at(rT[0]));
             const Vec3& pb = pos(mesh_of.at(rT[1]));
             const Vec3& pc = pos(mesh_of.at(rT[2]));
-            const double shortest =
-                std::min({mcad_dist(pa, pb), mcad_dist(pb, pc), mcad_dist(pc, pa)});
+            const double shortest = std::min({detail::vec3_norm(detail::vec3_sub(pa, pb)),
+                                              detail::vec3_norm(detail::vec3_sub(pb, pc)),
+                                              detail::vec3_norm(detail::vec3_sub(pc, pa))});
             const auto& xa = cdt.Point(A);
             const auto& xb = cdt.Point(B);
             const detail::Cdt2d::Vec2 mid{0.5 * (xa[0] + xb[0]), 0.5 * (xa[1] + xb[1])};
-            return 0.5 * mcad_dist(pos(mesh_of.at(A)), pos(mesh_of.at(B))) >=
+            return 0.5 * detail::vec3_norm(
+                             detail::vec3_sub(pos(mesh_of.at(A)), pos(mesh_of.at(B)))) >=
                    std::max(slack * ratio_bound * shortest / std::sqrt(2.0), stretched_floor(mid));
         };
         ro.mMinAngle = [&](const detail::Cdt2d::Tri& rT) {
@@ -2665,7 +2676,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 }
             ro.mDistance = [&](std::int64_t P, std::int64_t V, const detail::Cdt2d::Vec2& rX) {
                 catch_up();
-                return mcad_dist(pos(mesh_of.at(P)), V >= 0 ? pos(mesh_of.at(V)) : lift(rX));
+                return detail::vec3_norm(
+                    detail::vec3_sub(pos(mesh_of.at(P)), V >= 0 ? pos(mesh_of.at(V)) : lift(rX)));
             };
         }
         std::set<detail::Cdt2dSplitRequest> asked;
@@ -3086,7 +3098,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                                (180.0 / 3.14159265358979323846);
             min_angle = std::min(min_angle, ang);
             max_angle = std::max(max_angle, ang);
-            const double e = mcad_dist(o, p);
+            const double e = detail::vec3_norm(detail::vec3_sub(o, p));
             min_edge = std::min(min_edge, e);
             max_edge = std::max(max_edge, e);
         }
@@ -3610,11 +3622,13 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     const Probe& b = probe[j];
                     // The largest of the three distances, ends either way.
                     const double same =
-                        std::max({mcad_dist(a.mStart, b.mStart), mcad_dist(a.mEnd, b.mEnd),
-                                  mcad_dist(a.mMid, b.mMid)});
+                        std::max({detail::vec3_norm(detail::vec3_sub(a.mStart, b.mStart)),
+                                  detail::vec3_norm(detail::vec3_sub(a.mEnd, b.mEnd)),
+                                  detail::vec3_norm(detail::vec3_sub(a.mMid, b.mMid))});
                     const double flipped =
-                        std::max({mcad_dist(a.mStart, b.mEnd), mcad_dist(a.mEnd, b.mStart),
-                                  mcad_dist(a.mMid, b.mMid)});
+                        std::max({detail::vec3_norm(detail::vec3_sub(a.mStart, b.mEnd)),
+                                  detail::vec3_norm(detail::vec3_sub(a.mEnd, b.mStart)),
+                                  detail::vec3_norm(detail::vec3_sub(a.mMid, b.mMid))});
                     const double gap = std::min(same, flipped);
                     if (gap <= model_tol) {
                         taken[j] = true;
@@ -3763,7 +3777,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     // first use. Models whose uses start together are not touched.
     const auto closed_3d = [&](std::size_t U) {
         const detail::TrimTrace& r_t = *traces[U];
-        return r_t.Length() > tol && mcad_dist(r_t.Point(r_t.Start()), r_t.Point(r_t.End())) <= tol;
+        return r_t.Length() > tol && detail::vec3_norm(detail::vec3_sub(
+                                         r_t.Point(r_t.Start()), r_t.Point(r_t.End()))) <= tol;
     };
     const auto rotatable = [&](std::size_t U) {
         if (uses[U].mLoopSize != 1 || !closed_3d(U))
@@ -3783,7 +3798,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         const double te = edge_tol[e];
         bool apart = false;
         for (const std::size_t u : r_e.mUses)
-            apart = apart || mcad_dist(start_of(u), start_of(r_e.mUses.front())) > tol;
+            apart = apart || detail::vec3_norm(
+                                 detail::vec3_sub(start_of(u), start_of(r_e.mUses.front()))) > tol;
         if (!apart)
             continue;
         std::size_t anchor = r_e.mUses.front();
@@ -3795,7 +3811,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         r_e.mMaster = anchor;
         const Vec3 p = start_of(anchor);
         for (const std::size_t u : r_e.mUses) {
-            const double d = mcad_dist(start_of(u), p);
+            const double d = detail::vec3_norm(detail::vec3_sub(start_of(u), p));
             if (u == anchor || d <= tol)
                 continue;
             if (rotatable(u)) {
@@ -3876,7 +3892,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 for (const auto& r_loop : r_f.mLoops)
                     for (const std::size_t l : r_loop)
                         for (int k = 0; k < 2 && !joined; ++k)
-                            if (mcad_dist(end_point(l, k), p) <= tol) {
+                            if (detail::vec3_norm(detail::vec3_sub(end_point(l, k), p)) <= tol) {
                                 corners.Join(slot(u, end), slot(l, k));
                                 joined = true;
                             }
@@ -3906,8 +3922,9 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     for (std::size_t s = 0; s < 2 * uses.size(); ++s) {
         if (!live(s / 2))
             continue;
-        const double gap = mcad_dist(end_point(s / 2, static_cast<int>(s % 2)),
-                                     boundary[static_cast<std::size_t>(corner_id[s])]);
+        const double gap =
+            detail::vec3_norm(detail::vec3_sub(end_point(s / 2, static_cast<int>(s % 2)),
+                                               boundary[static_cast<std::size_t>(corner_id[s])]));
         max_gap = std::max(max_gap, gap);
         const std::int64_t se = uses[s / 2].mEdge;
         const double declared = std::max(se >= 0 ? corner_tol[static_cast<std::size_t>(se)] : 0.0,
@@ -4091,7 +4108,9 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             const Vec3& x = boundary[c];
             const Vec3 a{x[0] - p[0], x[1] - p[1], x[2] - p[2]};
             const Vec3 b{q[0] - x[0], q[1] - x[1], q[2] - x[2]};
-            const double la = mcad_dist(p, x), lb = mcad_dist(x, q), chord = mcad_dist(p, q);
+            const double la = detail::vec3_norm(detail::vec3_sub(p, x)),
+                         lb = detail::vec3_norm(detail::vec3_sub(x, q)),
+                         chord = detail::vec3_norm(detail::vec3_sub(p, q));
             const double cos_turn = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (la * lb);
             if (!(la > 0.0 && lb > 0.0) || !(cos_turn > std::cos(30.0 * kMcadPi / 180.0)))
                 continue;
@@ -4570,9 +4589,9 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             for (const auto& r_loop : r_f.mLoops)
                 for (const std::size_t u : r_loop)
                     for (std::size_t k = 0; k + 1 < uses[u].mIds.size(); ++k)
-                        perimeter +=
-                            mcad_dist(boundary[static_cast<std::size_t>(uses[u].mIds[k])],
-                                      boundary[static_cast<std::size_t>(uses[u].mIds[k + 1])]);
+                        perimeter += detail::vec3_norm(detail::vec3_sub(
+                            boundary[static_cast<std::size_t>(uses[u].mIds[k])],
+                            boundary[static_cast<std::size_t>(uses[u].mIds[k + 1])]));
             if (!(perimeter > 0.0))
                 continue;
             width[f] = 2.0 * area / perimeter;
@@ -4999,8 +5018,9 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 for (const auto& r_a : faces[f].mAsks) {
                     const McadEdge& r_e = edges[r_a[0]];
                     if (r_e.mFail != MeshCadFaceStatus::Ok || r_e.mSamples.mDegenerate ||
-                        !(mcad_dist(r_e.mSamples.mPoints[r_a[1]],
-                                    r_e.mSamples.mPoints[r_a[1] + 1]) > tol))
+                        !(detail::vec3_norm(detail::vec3_sub(r_e.mSamples.mPoints[r_a[1]],
+                                                             r_e.mSamples.mPoints[r_a[1] + 1])) >
+                          tol))
                         continue;
                     split[r_a[0]][r_a[1]] |= r_a[2];
                 }
@@ -5033,7 +5053,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     for (std::size_t k = 0; k + 1 < r_p.size(); ++k)
                         if (mcad_piece_turning(*traces[r_e.mMaster], r_p[k], r_p[k + 1]) >
                                 kMcadPi / 3.0 &&
-                            mcad_dist(r_e.mSamples.mPoints[k], r_e.mSamples.mPoints[k + 1]) > tol)
+                            detail::vec3_norm(detail::vec3_sub(r_e.mSamples.mPoints[k],
+                                                               r_e.mSamples.mPoints[k + 1])) > tol)
                             split[e][k] |= 0;
                 }
             }
@@ -5083,7 +5104,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                             return r_tr.Point(r_tr.ParamAtLength(f * r_e.mSamples.mLength));
                         };
                         const auto from_corner = [&](double A) {
-                            return mcad_dist(corner, at_fraction(p_lop->mEnd == 1 ? A : 1.0 - A));
+                            return detail::vec3_norm(detail::vec3_sub(
+                                corner, at_fraction(p_lop->mEnd == 1 ? A : 1.0 - A)));
                         };
                         // A piece that ends inside the ball is the shrink
                         // rule's, not split here.
@@ -5259,7 +5281,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             for (std::size_t k = 0; k < 3; ++k) {
                 amin[o] = std::min(amin[o], ang[k]);
                 amax[o] = std::max(amax[o], ang[k]);
-                const double e = mcad_dist(at(r_t[k]), at(r_t[(k + 1) % 3]));
+                const double e =
+                    detail::vec3_norm(detail::vec3_sub(at(r_t[k]), at(r_t[(k + 1) % 3])));
                 emin[o] = std::min(emin[o], e);
                 emax[o] = std::max(emax[o], e);
             }
@@ -6690,7 +6713,9 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
             const Vec3 a = point_of(r_n[0]);
             const Vec3 b = point_of(p);
             const Vec3 c = point_of(r_n[1]);
-            const double ab = mcad_dist(a, b), bc = mcad_dist(b, c), ca = mcad_dist(c, a);
+            const double ab = detail::vec3_norm(detail::vec3_sub(a, b)),
+                         bc = detail::vec3_norm(detail::vec3_sub(b, c)),
+                         ca = detail::vec3_norm(detail::vec3_sub(c, a));
             const Vec3 u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
             const Vec3 v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
             const Vec3 w{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],

@@ -41,6 +41,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 // Project includes (private, not installed)
 #include "../detail/sparse_solve.hpp"
@@ -51,23 +52,6 @@ namespace meshioplusplus {
 namespace {
 
 using GeoVec = std::array<double, 3>;
-
-GeoVec geo_sub(const GeoVec& rA, const GeoVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-double geo_dot(const GeoVec& rA, const GeoVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-GeoVec geo_cross(const GeoVec& rA, const GeoVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
-double geo_norm(const GeoVec& rA) {
-    return std::sqrt(geo_dot(rA, rA));
-}
 
 // One surface triangle and its cotangents (at corners 0, 1, 2).
 using GeoTriangle = detail::SurfaceFemTriangle;
@@ -232,7 +216,8 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
         const GeoVec& p0 = xyz[t.mNodes[0]];
         const GeoVec& p1 = xyz[t.mNodes[1]];
         const GeoVec& p2 = xyz[t.mNodes[2]];
-        const GeoVec normal = geo_cross(geo_sub(p1, p0), geo_sub(p2, p0));
+        const GeoVec normal =
+            detail::vec3_cross(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0));
         const double area2 = t.mDoubleArea;
         GeoVec unit_n{normal[0] / area2, normal[1] / area2, normal[2] / area2};
         // grad u = sum_i u_i (N x e_i) / (2 A), e_i the edge opposite corner i,
@@ -240,13 +225,13 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
         GeoVec grad{0.0, 0.0, 0.0};
         const std::array<const GeoVec*, 3> p = {&p0, &p1, &p2};
         for (std::size_t k = 0; k < 3; ++k) {
-            const GeoVec e = geo_sub(*p[(k + 2) % 3], *p[(k + 1) % 3]);
-            const GeoVec ne = geo_cross(unit_n, e);
+            const GeoVec e = detail::vec3_sub(*p[(k + 2) % 3], *p[(k + 1) % 3]);
+            const GeoVec ne = detail::vec3_cross(unit_n, e);
             const double uk = u[t.mNodes[k]];
             for (std::size_t c = 0; c < 3; ++c)
                 grad[c] += uk * ne[c] / area2;
         }
-        const double len = geo_norm(grad);
+        const double len = detail::vec3_norm(grad);
         if (!(len > 0.0))
             continue;
         const GeoVec x{-grad[0] / len, -grad[1] / len, -grad[2] / len};
@@ -254,9 +239,10 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
             // Corner k, its two neighbours j (next) and l (after): the edges from
             // k to them, weighted by the cotangents of the angles opposite them.
             const std::size_t j = (k + 1) % 3, l = (k + 2) % 3;
-            const GeoVec e1 = geo_sub(*p[j], *p[k]);
-            const GeoVec e2 = geo_sub(*p[l], *p[k]);
-            div[t.mNodes[k]] += 0.5 * (t.mCot[l] * geo_dot(e1, x) + t.mCot[j] * geo_dot(e2, x));
+            const GeoVec e1 = detail::vec3_sub(*p[j], *p[k]);
+            const GeoVec e2 = detail::vec3_sub(*p[l], *p[k]);
+            div[t.mNodes[k]] +=
+                0.5 * (t.mCot[l] * detail::vec3_dot(e1, x) + t.mCot[j] * detail::vec3_dot(e2, x));
         }
     }
 

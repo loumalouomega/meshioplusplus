@@ -33,6 +33,7 @@
 // Project includes
 #include "edge_sampler.hpp"
 #include "nurbs_eval.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -51,11 +52,6 @@ constexpr double kEdgsGaussW[5] = {
     throw std::invalid_argument("meshio++: mesh_cad_surface: " + rWhat);
 }
 
-double edgs_dist(const EdgeVec3& rA, const EdgeVec3& rB) {
-    return std::sqrt((rA[0] - rB[0]) * (rA[0] - rB[0]) + (rA[1] - rB[1]) * (rA[1] - rB[1]) +
-                     (rA[2] - rB[2]) * (rA[2] - rB[2]));
-}
-
 /// The distance from `rP` to the segment `rA rB`.
 double edgs_segment_distance(const EdgeVec3& rP, const EdgeVec3& rA, const EdgeVec3& rB) {
     EdgeVec3 d{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
@@ -66,7 +62,7 @@ double edgs_segment_distance(const EdgeVec3& rP, const EdgeVec3& rA, const EdgeV
             ((rP[0] - rA[0]) * d[0] + (rP[1] - rA[1]) * d[1] + (rP[2] - rA[2]) * d[2]) / len2, 0.0,
             1.0);
     const EdgeVec3 q{rA[0] + t * d[0], rA[1] + t * d[1], rA[2] + t * d[2]};
-    return edgs_dist(rP, q);
+    return vec3_norm(vec3_sub(rP, q));
 }
 
 }  // namespace
@@ -604,19 +600,20 @@ bool edge_same_direction(const TrimTrace& rA, const TrimTrace& rB, double StartL
         const EdgeVec3 a3 = rA.Point(rA.ParamAtLength(0.75 * la));
         const EdgeVec3 b1 = at_b(0.25);
         const EdgeVec3 b3 = at_b(0.75);
-        return edgs_dist(a1, b1) + edgs_dist(a3, b3) <= edgs_dist(a1, b3) + edgs_dist(a3, b1);
+        return vec3_norm(vec3_sub(a1, b1)) + vec3_norm(vec3_sub(a3, b3)) <=
+               vec3_norm(vec3_sub(a1, b3)) + vec3_norm(vec3_sub(a3, b1));
     }
-    double same = edgs_dist(rA.Point(rA.Start()), rB.Point(rB.Start())) +
-                  edgs_dist(rA.Point(rA.End()), rB.Point(rB.End()));
-    double opposite = edgs_dist(rA.Point(rA.Start()), rB.Point(rB.End())) +
-                      edgs_dist(rA.Point(rA.End()), rB.Point(rB.Start()));
+    double same = vec3_norm(vec3_sub(rA.Point(rA.Start()), rB.Point(rB.Start()))) +
+                  vec3_norm(vec3_sub(rA.Point(rA.End()), rB.Point(rB.End())));
+    double opposite = vec3_norm(vec3_sub(rA.Point(rA.Start()), rB.Point(rB.End()))) +
+                      vec3_norm(vec3_sub(rA.Point(rA.End()), rB.Point(rB.Start())));
     if (la > 0.0 && lb > 0.0) {
         const EdgeVec3 a1 = rA.Point(rA.ParamAtLength(0.25 * la));
         const EdgeVec3 a3 = rA.Point(rA.ParamAtLength(0.75 * la));
         const EdgeVec3 b1 = rB.Point(rB.ParamAtLength(0.25 * lb));
         const EdgeVec3 b3 = rB.Point(rB.ParamAtLength(0.75 * lb));
-        same += edgs_dist(a1, b1) + edgs_dist(a3, b3);
-        opposite += edgs_dist(a1, b3) + edgs_dist(a3, b1);
+        same += vec3_norm(vec3_sub(a1, b1)) + vec3_norm(vec3_sub(a3, b3));
+        opposite += vec3_norm(vec3_sub(a1, b3)) + vec3_norm(vec3_sub(a3, b1));
     }
     return same <= opposite;
 }
@@ -627,10 +624,10 @@ double edge_closest_length(const TrimTrace& rTrace, const EdgeVec3& rP) {
         return 0.0;
     constexpr int kSteps = 64;
     double best_l = 0.0;
-    double best_d = edgs_dist(rTrace.Point(rTrace.Start()), rP);
+    double best_d = vec3_norm(vec3_sub(rTrace.Point(rTrace.Start()), rP));
     for (int i = 1; i < kSteps; ++i) {
         const double l = length * double(i) / double(kSteps);
-        const double d = edgs_dist(rTrace.Point(rTrace.ParamAtLength(l)), rP);
+        const double d = vec3_norm(vec3_sub(rTrace.Point(rTrace.ParamAtLength(l)), rP));
         if (d < best_d) {
             best_d = d;
             best_l = l;
@@ -658,7 +655,7 @@ double edge_closest_length(const TrimTrace& rTrace, const EdgeVec3& rP) {
         }
         t = next;
     }
-    return edgs_dist(rTrace.Point(t), rP) <= best_d ? rTrace.LengthAt(t) : best_l;
+    return vec3_norm(vec3_sub(rTrace.Point(t), rP)) <= best_d ? rTrace.LengthAt(t) : best_l;
 }
 
 EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster, bool SameDirection,
@@ -684,8 +681,8 @@ EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
     const double span = std::fabs(rOther.End() - rOther.Start());
     out.mParams.front() = start;
     out.mParams.back() = end;
-    out.mMaxGap = std::max(edgs_dist(rOther.Point(start), point_at(0)),
-                           edgs_dist(rOther.Point(end), point_at(m - 1)));
+    out.mMaxGap = std::max(vec3_norm(vec3_sub(rOther.Point(start), point_at(0))),
+                           vec3_norm(vec3_sub(rOther.Point(end), point_at(m - 1))));
     double prev = start;
     bool wrapped = false;
     for (std::size_t k = 1; k + 1 < m; ++k) {
@@ -722,7 +719,7 @@ EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
             t = next;
         }
         out.mParams[k] = t;
-        out.mMaxGap = std::max(out.mMaxGap, edgs_dist(rOther.Point(t), p));
+        out.mMaxGap = std::max(out.mMaxGap, vec3_norm(vec3_sub(rOther.Point(t), p)));
         prev = t;
     }
     return out;

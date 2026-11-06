@@ -24,6 +24,7 @@
 #include "surface_fem.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -31,23 +32,6 @@ namespace detail {
 namespace {
 
 using SfVec = std::array<double, 3>;
-
-SfVec sf_sub(const SfVec& rA, const SfVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-double sf_dot(const SfVec& rA, const SfVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-SfVec sf_cross(const SfVec& rA, const SfVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
-double sf_norm(const SfVec& rA) {
-    return std::sqrt(sf_dot(rA, rA));
-}
 
 }  // namespace
 
@@ -104,17 +88,17 @@ SurfaceFem build_surface_fem(const Mesh& rMesh, const std::string& rOp) {
         const SfVec& a = fem.mPoints[t.mNodes[0]];
         const SfVec& b = fem.mPoints[t.mNodes[1]];
         const SfVec& c = fem.mPoints[t.mNodes[2]];
-        const double ab = sf_norm(sf_sub(b, a)), bc = sf_norm(sf_sub(c, b)),
-                     ca = sf_norm(sf_sub(a, c));
-        t.mDoubleArea = sf_norm(sf_cross(sf_sub(b, a), sf_sub(c, a)));
+        const double ab = vec3_norm(vec3_sub(b, a)), bc = vec3_norm(vec3_sub(c, b)),
+                     ca = vec3_norm(vec3_sub(a, c));
+        t.mDoubleArea = vec3_norm(vec3_cross(vec3_sub(b, a), vec3_sub(c, a)));
         const double longest = std::max({ab, bc, ca});
         if (!(t.mDoubleArea > 1e-14 * longest * longest)) {
             ++fem.mNumDegenerate;
             continue;
         }
-        t.mCot[0] = sf_dot(sf_sub(b, a), sf_sub(c, a)) / t.mDoubleArea;
-        t.mCot[1] = sf_dot(sf_sub(a, b), sf_sub(c, b)) / t.mDoubleArea;
-        t.mCot[2] = sf_dot(sf_sub(a, c), sf_sub(b, c)) / t.mDoubleArea;
+        t.mCot[0] = vec3_dot(vec3_sub(b, a), vec3_sub(c, a)) / t.mDoubleArea;
+        t.mCot[1] = vec3_dot(vec3_sub(a, b), vec3_sub(c, b)) / t.mDoubleArea;
+        t.mCot[2] = vec3_dot(vec3_sub(a, c), vec3_sub(b, c)) / t.mDoubleArea;
         edge_sum += ab + bc + ca;
         edge_count += 3;
         fem.mTriangles.push_back(t);

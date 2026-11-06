@@ -42963,6 +42963,35 @@ Cdt2dPolygon cdt2d_triangulate_polygon(const std::vector<std::vector<Cdt2d::Vec2
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/cdt2d.hpp =====
+// ===== begin src/cpp/src/detail/cell_centroids.hpp =====
+/**
+ * @file detail/cell_centroids.hpp
+ * @brief Per-cell centroids of a whole mesh, shared by `partition` and
+ * `interpolate` (doc/geometry_kernels.md).
+ */
+
+// System includes
+#include <cstddef>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/**
+ * @brief Per-cell centroids in global (block-major) cell order, always three
+ * doubles per cell with unused axes zero: the mean of the cell's nodes, where a
+ * polyhedron counts each distinct node of its faces once.
+ *
+ * The accumulation order is fixed (it is pinned by `partition`'s and
+ * `interpolate`'s numpy parity tests, and by `_partition.py`'s `_centroids`).
+ * @param rMesh The mesh.
+ * @param TotalCells The mesh's total cell count over every block.
+ */
+std::vector<double> cell_centroids(const Mesh& rMesh, std::size_t TotalCells);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/cell_centroids.hpp =====
 // ===== begin src/cpp/src/detail/cell_components.hpp =====
 /**
  * @file detail/cell_components.hpp
@@ -47144,6 +47173,91 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/feature_snap.hpp =====
+// ===== begin src/cpp/src/detail/fem_kernels.hpp =====
+/**
+ * @file detail/fem_kernels.hpp
+ * @brief Shared per-element kernels: the formulas several operations used to
+ * carry private copies of (doc/geometry_kernels.md).
+ *
+ * Everything here is a plain inline function or a `constexpr` table over
+ * `detail::Vec3` corners already gathered through the uniform mesh API, so it
+ * works under every mesh backend and costs nothing over an inline copy. The
+ * header is private (not installed), so a change here is not an ABI event.
+ * Kernels over a whole mesh live beside it (`cell_centroids.hpp`).
+ *
+ * Each kernel keeps the exact arithmetic of the copies it replaced: the
+ * operations' outputs are pinned bit for bit by the determinism digests
+ * (doc/benchmarks.md, "Determinism check"). A copy whose arithmetic differs
+ * (another determinant expansion, another degenerate-corner value) is not
+ * folded in here until its own output is proven unchanged.
+ */
+
+// System includes
+#include <limits>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/**
+ * @brief Six times the signed volume of the tetrahedron (A, B, C, D): the
+ * triple product of its three edges out of A. Positive when D lies on the side
+ * of (A, B, C) its right-hand normal points to (meshio's order).
+ */
+inline double tet_volume6(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
+    return triple_product(vec3_sub(rB, rA), vec3_sub(rC, rA), vec3_sub(rD, rA));
+}
+
+/** @brief The signed volume of the tetrahedron (A, B, C, D), `tet_volume6 / 6`. */
+inline double tet_volume(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
+    return tet_volume6(rA, rB, rC, rD) / 6.0;
+}
+
+/**
+ * @brief The determinant of the three edge vectors at a corner, each scaled to
+ * unit length first: the per-corner factor of the scaled Jacobian (Verdict's
+ * definition, as `quality` reports it).
+ * @return NaN when an edge is shorter than @p Eps.
+ */
+inline double det_unit3(const Vec3& rA, const Vec3& rB, const Vec3& rC, double Eps) {
+    const double na = vec3_norm(rA);
+    const double nb = vec3_norm(rB);
+    const double nc = vec3_norm(rC);
+    if (na < Eps || nb < Eps || nc < Eps)
+        return std::numeric_limits<double>::quiet_NaN();
+    return det3(vec3_scale(rA, 1.0 / na), vec3_scale(rB, 1.0 / nb), vec3_scale(rC, 1.0 / nc));
+}
+
+/**
+ * @brief The corner's scaled Jacobian as a ratio, `det(a, b, c) / (|a||b||c|)`
+ * (the determinant is not normalised edge by edge, unlike `det_unit3`).
+ * @return @p Degenerate when an edge has zero (or NaN) length.
+ */
+inline double corner_jacobian_ratio(const Vec3& rA, const Vec3& rB, const Vec3& rC,
+                                    double Degenerate) {
+    const double l = vec3_norm(rA) * vec3_norm(rB) * vec3_norm(rC);
+    if (!(l > 0.0))
+        return Degenerate;
+    return triple_product(rA, rB, rC) / l;
+}
+
+/**
+ * @brief Each corner of a linear hexahedron (VTK/meshio order) and its three
+ * edge neighbours, right-handed for a well-oriented cell: the corner frames of
+ * the scaled Jacobian (Knupp's hexahedron corners).
+ */
+inline constexpr int kHexCornerEdges[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {0, 2, 7},
+                                              {7, 5, 0}, {4, 6, 1}, {5, 7, 2}, {6, 4, 3}};
+
+/**
+ * @brief Each corner of a linear wedge (meshio order) and its three edge
+ * neighbours, in the order the wedge's scaled Jacobian reads them.
+ */
+inline constexpr int kWedgeCornerEdges[6][3] = {{1, 2, 3}, {2, 0, 4}, {0, 1, 5},
+                                                {5, 4, 0}, {3, 5, 1}, {4, 3, 2}};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/fem_kernels.hpp =====
 // ===== begin src/cpp/src/detail/quad_layout.hpp =====
 /**
  * @file detail/quad_layout.hpp
@@ -70031,15 +70145,6 @@ namespace {
 constexpr double kBnPi = 3.14159265358979323846;
 constexpr double kBnTwoPi = 2.0 * kBnPi;
 
-double bn_dot(const PatchVec& rA, const PatchVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-double bn_dist(const PatchVec& rA, const PatchVec& rB) {
-    const double d[3] = {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-    return std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-}
-
 // The knot span of `T` (clamped to the domain) of `N` poles of degree `P`.
 std::size_t bn_span(int P, const std::vector<double>& rK, std::size_t N, double T) {
     const std::size_t p = static_cast<std::size_t>(P);
@@ -70347,8 +70452,8 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
     const auto raw = [&](const PatchVec& rP, const BnSample* pNear, double* pX) {
         const PatchVec d{rP[0] - rSurface.mOrigin[0], rP[1] - rSurface.mOrigin[1],
                          rP[2] - rSurface.mOrigin[2]};
-        const double dx = bn_dot(d, rSurface.mX), dy = bn_dot(d, rSurface.mY),
-                     dz = bn_dot(d, rSurface.mZ);
+        const double dx = vec3_dot(d, rSurface.mX), dy = vec3_dot(d, rSurface.mY),
+                     dz = vec3_dot(d, rSurface.mZ);
         switch (kind) {
             case 1:
                 pX[0] = dx;
@@ -70377,7 +70482,8 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
                             const double gv = bs->V0() + (bs->V1() - bs->V0()) * j / kGrid;
                             BsplineEval e;
                             bspline_eval(*bs, gu, gv, 0, e);
-                            nodes.push_back({bn_dist({e.mS[0], e.mS[1], e.mS[2]}, rP), {gu, gv}});
+                            nodes.push_back(
+                                {vec3_norm(vec3_sub({e.mS[0], e.mS[1], e.mS[2]}, rP)), {gu, gv}});
                         }
                     const std::size_t starts = std::min(kStarts, nodes.size());
                     std::partial_sort(nodes.begin(),
@@ -70693,7 +70799,7 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
         const PatchVec dc{rT.pSrc->mCentre[0] - rSurface.mOrigin[0],
                           rT.pSrc->mCentre[1] - rSurface.mOrigin[1],
                           rT.pSrc->mCentre[2] - rSurface.mOrigin[2]};
-        const double cu = bn_dot(dc, rSurface.mX), cv = bn_dot(dc, rSurface.mY);
+        const double cu = vec3_dot(dc, rSurface.mX), cv = vec3_dot(dc, rSurface.mY);
         double a0 = 0.0, a = 0.0;
         for (std::size_t i = 0; i < rT.mS.size(); ++i) {
             const double x = std::atan2(rT.mS[i].mX[1] - cv, rT.mS[i].mX[0] - cu);
@@ -70844,7 +70950,7 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
                     BnSample m;
                     m.mT = 0.5 * (t.mS[i].mT + t.mS[i + 1].mT);
                     m.mP = bn_at(t, m.mT);
-                    if (bn_dist(on, m.mP) <= follow)
+                    if (vec3_norm(vec3_sub(on, m.mP)) <= follow)
                         continue;
                     raw(m.mP, &t.mS[i], m.mX);
                     if (!raw_ok) {
@@ -70909,7 +71015,8 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
                 continue;
             for (const BnSample& s : t.mS) {
                 const auto uv = uv_of(s);
-                const double off = bn_dist(nurbs_patch_point(patch, uv[0], uv[1]), s.mP);
+                const double off =
+                    vec3_norm(vec3_sub(nurbs_patch_point(patch, uv[0], uv[1]), s.mP));
                 if (off > 4.0 * Tol + 10.0 * tiny) {
                     rWhy = "a loop point lies " + std::to_string(off) + " off the " +
                            (kind == 6 ? "B-spline" : "analytic") +
@@ -71005,11 +71112,6 @@ namespace meshioplusplus {
 namespace detail {
 
 namespace {
-
-double bc_dist(const PatchVec& rA, const PatchVec& rB) {
-    const double x = rA[0] - rB[0], y = rA[1] - rB[1], z = rA[2] - rB[2];
-    return std::sqrt(x * x + y * y + z * z);
-}
 
 // The basis values (and first derivatives) of span `Span` at `T`.
 void bc_basis(const BsplineCurve& rC, std::size_t Span, double T, double* pN, double* pD) {
@@ -71240,7 +71342,7 @@ CurveFitResult bspline_curve_fit(const std::vector<PatchVec>& rPts,
     // Chord-length parameters.
     std::vector<double> t(m, 0.0);
     for (std::size_t k = 1; k < m; ++k)
-        t[k] = t[k - 1] + bc_dist(rPts[k], rPts[k - 1]);
+        t[k] = t[k - 1] + vec3_norm(vec3_sub(rPts[k], rPts[k - 1]));
     const double len = t.back();
     if (!(len > 0.0))
         return out;
@@ -74740,6 +74842,79 @@ void cell_node_neighbors(const CellIncidence& rCellNodes, const CellIncidence& r
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/cell_adjacency.cpp =====
+// ===== begin src/cpp/src/detail/cell_centroids.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+std::vector<double> cell_centroids(const Mesh& rMesh, std::size_t TotalCells) {
+    const NDArray& points = rMesh.Points();
+    const DoubleView points_v(points);
+    const std::size_t pdim = rMesh.PointDim();
+    const std::size_t dim = std::min<std::size_t>(pdim, 3);
+
+    std::vector<double> cent(3 * TotalCells, 0.0);
+    std::size_t base = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t ncells = cb.NumCells();
+        if (cb.IsPolyhedron()) {
+            parallel_for(ncells, [&, base](std::size_t c) {
+                static thread_local std::vector<std::int64_t> nodes;
+                nodes.clear();
+                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
+                    const auto face = cb.Face(c, f);
+                    nodes.insert(nodes.end(), face.first, face.first + face.second);
+                }
+                std::sort(nodes.begin(), nodes.end());
+                nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+                double* out = cent.data() + 3 * (base + c);
+                for (std::int64_t node : nodes)
+                    for (std::size_t d = 0; d < dim; ++d)
+                        out[d] += points_v[static_cast<std::size_t>(node) * pdim + d];
+                if (!nodes.empty())
+                    for (std::size_t d = 0; d < dim; ++d)
+                        out[d] /= static_cast<double>(nodes.size());
+            });
+        } else if (cb.IsRagged()) {
+            parallel_for(ncells, [&, base](std::size_t c) {
+                const std::int64_t* row = cb.Row(c);
+                const std::size_t nn = cb.RowSize(c);
+                double* out = cent.data() + 3 * (base + c);
+                for (std::size_t k = 0; k < nn; ++k)
+                    for (std::size_t d = 0; d < dim; ++d)
+                        out[d] += points_v[static_cast<std::size_t>(row[k]) * pdim + d];
+                if (nn > 0)
+                    for (std::size_t d = 0; d < dim; ++d)
+                        out[d] /= static_cast<double>(nn);
+            });
+        } else {
+            const NDArray& conn = cb.Conn();
+            const Int64View conn_v(conn);
+            const std::size_t npc = cb.NodesPerCell();
+            parallel_for(ncells, [&, base](std::size_t c) {
+                double* out = cent.data() + 3 * (base + c);
+                for (std::size_t k = 0; k < npc; ++k) {
+                    const std::size_t node = static_cast<std::size_t>(conn_v[c * npc + k]);
+                    for (std::size_t d = 0; d < dim; ++d)
+                        out[d] += points_v[node * pdim + d];
+                }
+                if (npc > 0)
+                    for (std::size_t d = 0; d < dim; ++d)
+                        out[d] /= static_cast<double>(npc);
+            });
+        }
+        base += ncells;
+    }
+    return cent;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/cell_centroids.cpp =====
 // ===== begin src/cpp/src/detail/cell_components.cpp =====
 #include <algorithm>
 #include <cstddef>
@@ -77331,24 +77506,14 @@ constexpr double kCfPi = 3.14159265358979323846;
 
 using CfComplex = std::complex<double>;
 
-PatchVec cf_sub(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-double cf_dot(const PatchVec& rA, const PatchVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-PatchVec cf_cross(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
 PatchVec cf_unit(const PatchVec& rA) {
-    const double l = std::sqrt(cf_dot(rA, rA));
+    const double l = std::sqrt(vec3_dot(rA, rA));
     return l > 0.0 ? PatchVec{rA[0] / l, rA[1] / l, rA[2] / l} : PatchVec{0.0, 0.0, 0.0};
 }
 
 // The angle of the 3-D vector `rD` in triangle F's frame.
 double cf_angle(const CrossField& rF, std::size_t F, const PatchVec& rD) {
-    return std::atan2(cf_dot(rD, rF.mE2[F]), cf_dot(rD, rF.mE1[F]));
+    return std::atan2(vec3_dot(rD, rF.mE2[F]), vec3_dot(rD, rF.mE1[F]));
 }
 
 // `A` wrapped into (-pi/4, pi/4].
@@ -77391,12 +77556,12 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
     std::vector<double> area(nt, 0.0);
     for (std::size_t f = 0; f < nt; ++f) {
         const PatchVec& a = rPts[rTris[f][0]];
-        const PatchVec u = cf_sub(rPts[rTris[f][1]], a), v = cf_sub(rPts[rTris[f][2]], a);
-        const PatchVec n = cf_cross(u, v);
-        area[f] = 0.5 * std::sqrt(cf_dot(n, n));
+        const PatchVec u = vec3_sub(rPts[rTris[f][1]], a), v = vec3_sub(rPts[rTris[f][2]], a);
+        const PatchVec n = vec3_cross(u, v);
+        area[f] = 0.5 * std::sqrt(vec3_dot(n, n));
         out.mNormal[f] = cf_unit(n);
         out.mE1[f] = cf_unit(u);
-        out.mE2[f] = cf_cross(out.mNormal[f], out.mE1[f]);
+        out.mE2[f] = vec3_cross(out.mNormal[f], out.mE1[f]);
     }
 
     // Edges and the triangles beside each.
@@ -77420,7 +77585,7 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
         const bool feature = std::binary_search(features.begin(), features.end(), kv.first);
         if (!(boundary && rOptions.mConstrainBoundary) && !feature)
             continue;
-        const PatchVec d = cf_sub(rPts[kv.first.second], rPts[kv.first.first]);
+        const PatchVec d = vec3_sub(rPts[kv.first.second], rPts[kv.first.first]);
         for (std::size_t f : kv.second) {
             fixed[f] += std::polar(1.0, 4.0 * cf_angle(out, f, d));
             is_fixed[f] = 1;
@@ -77449,11 +77614,11 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
                     continue;
                 const std::size_t g = adj[0] == f ? adj[1] : adj[0];
                 const double beta = std::acos(
-                    std::max(-1.0, std::min(1.0, cf_dot(out.mNormal[f], out.mNormal[g]))));
-                const PatchVec e = cf_sub(rPts[b], rPts[a]);
-                const double len = std::sqrt(cf_dot(e, e));
-                const PatchVec across = cf_unit(cf_cross(out.mNormal[f], e));
-                const double x = cf_dot(across, out.mE1[f]), y = cf_dot(across, out.mE2[f]);
+                    std::max(-1.0, std::min(1.0, vec3_dot(out.mNormal[f], out.mNormal[g]))));
+                const PatchVec e = vec3_sub(rPts[b], rPts[a]);
+                const double len = std::sqrt(vec3_dot(e, e));
+                const PatchVec across = cf_unit(vec3_cross(out.mNormal[f], e));
+                const double x = vec3_dot(across, out.mE1[f]), y = vec3_dot(across, out.mE2[f]);
                 t00 += beta * len * x * x;
                 t01 += beta * len * x * y;
                 t11 += beta * len * y * y;
@@ -77487,7 +77652,7 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
         if (kv.second.size() != 2)
             continue;
         const std::size_t f = kv.second[0], g = kv.second[1];
-        const PatchVec d = cf_sub(rPts[kv.first.second], rPts[kv.first.first]);
+        const PatchVec d = vec3_sub(rPts[kv.first.second], rPts[kv.first.first]);
         const double af = cf_angle(out, f, d), ag = cf_angle(out, g, d);
         // z_f ~ c z_g: the cross carried from g into f's frame.
         const CfComplex c = std::polar(1.0, 4.0 * (af - ag));
@@ -77587,14 +77752,14 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
             const int iv = t[0] == v ? 0 : (t[1] == v ? 1 : 2);
             const std::size_t prev = t[static_cast<std::size_t>((iv + 2) % 3)];
             const std::size_t next = t[static_cast<std::size_t>((iv + 1) % 3)];
-            const PatchVec a = cf_unit(cf_sub(rPts[next], rPts[v]));
-            const PatchVec b = cf_unit(cf_sub(rPts[prev], rPts[v]));
-            angles += std::acos(std::max(-1.0, std::min(1.0, cf_dot(a, b))));
+            const PatchVec a = cf_unit(vec3_sub(rPts[next], rPts[v]));
+            const PatchVec b = cf_unit(vec3_sub(rPts[prev], rPts[v]));
+            angles += std::acos(std::max(-1.0, std::min(1.0, vec3_dot(a, b))));
             const auto& adj = edge_tris[cf_edge(v, prev)];
             if (adj.size() != 2)
                 break;  // a boundary vertex
             const std::size_t g = adj[0] == f ? adj[1] : adj[0];
-            const PatchVec d = cf_sub(rPts[prev], rPts[v]);
+            const PatchVec d = vec3_sub(rPts[prev], rPts[v]);
             const double carried = out.mTheta[f] + cf_angle(out, g, d) - cf_angle(out, f, d);
             turn += cf_wrap_quarter(out.mTheta[g] - carried);
             f = g;
@@ -78190,11 +78355,6 @@ namespace {
 
 constexpr double kCuPi = 3.14159265358979323846;
 
-double cu_dist(const CurvedVec3& rA, const CurvedVec3& rB) {
-    return std::sqrt((rA[0] - rB[0]) * (rA[0] - rB[0]) + (rA[1] - rB[1]) * (rA[1] - rB[1]) +
-                     (rA[2] - rB[2]) * (rA[2] - rB[2]));
-}
-
 }  // namespace
 
 CurvedUntangleReport curved_untangle(
@@ -78266,8 +78426,8 @@ CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangle
         for (const std::size_t e : around[F]) {
             const std::size_t corners = rElems[e].mQuad ? 4 : 3;
             for (std::size_t k = 0; k < corners; ++k)
-                h = std::min(h, cu_dist(node(rElems[e].mNodes[k]),
-                                        node(rElems[e].mNodes[(k + 1) % corners])));
+                h = std::min(h, vec3_norm(vec3_sub(node(rElems[e].mNodes[k]),
+                                                   node(rElems[e].mNodes[(k + 1) % corners]))));
         }
         const auto& uv = rUv[F];
         for (std::size_t d = 0; d < 2; ++d) {
@@ -78275,7 +78435,7 @@ CurvedUntangleReport curved_untangle(int Order, const std::vector<CurvedUntangle
             std::array<double, 2> a = uv, b = uv;
             a[d] -= du;
             b[d] += du;
-            const double speed = cu_dist(rLift(F, a), rLift(F, b)) / (2.0 * du);
+            const double speed = vec3_norm(vec3_sub(rLift(F, a), rLift(F, b))) / (2.0 * du);
             step[F][d] = speed > 0.0 && std::isfinite(h) ? 0.25 * h / speed : 0.0;
         }
     };
@@ -78407,11 +78567,6 @@ CgEdge cg_edge(std::size_t A, std::size_t B) {
     return {std::min(A, B), std::max(A, B)};
 }
 
-double cg_dist(const PatchVec& rA, const PatchVec& rB) {
-    const double dx = rA[0] - rB[0], dy = rA[1] - rB[1], dz = rA[2] - rB[2];
-    return std::sqrt(dx * dx + dy * dy + dz * dz);
-}
-
 // Per vertex its neighbours, ascending (indices up to the largest one used).
 std::vector<std::vector<std::size_t>> cg_neighbours(const std::vector<PatchTri>& rTris,
                                                     std::size_t NumPts) {
@@ -78459,7 +78614,7 @@ void cg_dijkstra(const std::vector<PatchVec>& rPts,
         for (std::size_t w : rNb[v]) {
             if (w < rBlocked.size() && rBlocked[w])
                 continue;
-            const double nd = d + cg_dist(rPts[v], rPts[w]);
+            const double nd = d + vec3_norm(vec3_sub(rPts[v], rPts[w]));
             if (nd < rDist[w]) {
                 rDist[w] = nd;
                 rPrev[w] = v;
@@ -78514,7 +78669,7 @@ std::vector<double> cg_arc(const std::vector<PatchVec>& rPts, const std::vector<
     rLength = 0.0;
     for (std::size_t i = 0; i < rLoop.size(); ++i) {
         s[i] = rLength;
-        rLength += cg_dist(rPts[rLoop[i]], rPts[rLoop[(i + 1) % rLoop.size()]]);
+        rLength += vec3_norm(vec3_sub(rPts[rLoop[i]], rPts[rLoop[(i + 1) % rLoop.size()]]));
     }
     return s;
 }
@@ -79762,11 +79917,6 @@ constexpr double kEdgsGaussW[5] = {
     throw std::invalid_argument("meshio++: mesh_cad_surface: " + rWhat);
 }
 
-double edgs_dist(const EdgeVec3& rA, const EdgeVec3& rB) {
-    return std::sqrt((rA[0] - rB[0]) * (rA[0] - rB[0]) + (rA[1] - rB[1]) * (rA[1] - rB[1]) +
-                     (rA[2] - rB[2]) * (rA[2] - rB[2]));
-}
-
 /// The distance from `rP` to the segment `rA rB`.
 double edgs_segment_distance(const EdgeVec3& rP, const EdgeVec3& rA, const EdgeVec3& rB) {
     EdgeVec3 d{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
@@ -79777,7 +79927,7 @@ double edgs_segment_distance(const EdgeVec3& rP, const EdgeVec3& rA, const EdgeV
             ((rP[0] - rA[0]) * d[0] + (rP[1] - rA[1]) * d[1] + (rP[2] - rA[2]) * d[2]) / len2, 0.0,
             1.0);
     const EdgeVec3 q{rA[0] + t * d[0], rA[1] + t * d[1], rA[2] + t * d[2]};
-    return edgs_dist(rP, q);
+    return vec3_norm(vec3_sub(rP, q));
 }
 
 }  // namespace
@@ -80315,19 +80465,20 @@ bool edge_same_direction(const TrimTrace& rA, const TrimTrace& rB, double StartL
         const EdgeVec3 a3 = rA.Point(rA.ParamAtLength(0.75 * la));
         const EdgeVec3 b1 = at_b(0.25);
         const EdgeVec3 b3 = at_b(0.75);
-        return edgs_dist(a1, b1) + edgs_dist(a3, b3) <= edgs_dist(a1, b3) + edgs_dist(a3, b1);
+        return vec3_norm(vec3_sub(a1, b1)) + vec3_norm(vec3_sub(a3, b3)) <=
+               vec3_norm(vec3_sub(a1, b3)) + vec3_norm(vec3_sub(a3, b1));
     }
-    double same = edgs_dist(rA.Point(rA.Start()), rB.Point(rB.Start())) +
-                  edgs_dist(rA.Point(rA.End()), rB.Point(rB.End()));
-    double opposite = edgs_dist(rA.Point(rA.Start()), rB.Point(rB.End())) +
-                      edgs_dist(rA.Point(rA.End()), rB.Point(rB.Start()));
+    double same = vec3_norm(vec3_sub(rA.Point(rA.Start()), rB.Point(rB.Start()))) +
+                  vec3_norm(vec3_sub(rA.Point(rA.End()), rB.Point(rB.End())));
+    double opposite = vec3_norm(vec3_sub(rA.Point(rA.Start()), rB.Point(rB.End()))) +
+                      vec3_norm(vec3_sub(rA.Point(rA.End()), rB.Point(rB.Start())));
     if (la > 0.0 && lb > 0.0) {
         const EdgeVec3 a1 = rA.Point(rA.ParamAtLength(0.25 * la));
         const EdgeVec3 a3 = rA.Point(rA.ParamAtLength(0.75 * la));
         const EdgeVec3 b1 = rB.Point(rB.ParamAtLength(0.25 * lb));
         const EdgeVec3 b3 = rB.Point(rB.ParamAtLength(0.75 * lb));
-        same += edgs_dist(a1, b1) + edgs_dist(a3, b3);
-        opposite += edgs_dist(a1, b3) + edgs_dist(a3, b1);
+        same += vec3_norm(vec3_sub(a1, b1)) + vec3_norm(vec3_sub(a3, b3));
+        opposite += vec3_norm(vec3_sub(a1, b3)) + vec3_norm(vec3_sub(a3, b1));
     }
     return same <= opposite;
 }
@@ -80338,10 +80489,10 @@ double edge_closest_length(const TrimTrace& rTrace, const EdgeVec3& rP) {
         return 0.0;
     constexpr int kSteps = 64;
     double best_l = 0.0;
-    double best_d = edgs_dist(rTrace.Point(rTrace.Start()), rP);
+    double best_d = vec3_norm(vec3_sub(rTrace.Point(rTrace.Start()), rP));
     for (int i = 1; i < kSteps; ++i) {
         const double l = length * double(i) / double(kSteps);
-        const double d = edgs_dist(rTrace.Point(rTrace.ParamAtLength(l)), rP);
+        const double d = vec3_norm(vec3_sub(rTrace.Point(rTrace.ParamAtLength(l)), rP));
         if (d < best_d) {
             best_d = d;
             best_l = l;
@@ -80369,7 +80520,7 @@ double edge_closest_length(const TrimTrace& rTrace, const EdgeVec3& rP) {
         }
         t = next;
     }
-    return edgs_dist(rTrace.Point(t), rP) <= best_d ? rTrace.LengthAt(t) : best_l;
+    return vec3_norm(vec3_sub(rTrace.Point(t), rP)) <= best_d ? rTrace.LengthAt(t) : best_l;
 }
 
 EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster, bool SameDirection,
@@ -80395,8 +80546,8 @@ EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
     const double span = std::fabs(rOther.End() - rOther.Start());
     out.mParams.front() = start;
     out.mParams.back() = end;
-    out.mMaxGap = std::max(edgs_dist(rOther.Point(start), point_at(0)),
-                           edgs_dist(rOther.Point(end), point_at(m - 1)));
+    out.mMaxGap = std::max(vec3_norm(vec3_sub(rOther.Point(start), point_at(0))),
+                           vec3_norm(vec3_sub(rOther.Point(end), point_at(m - 1))));
     double prev = start;
     bool wrapped = false;
     for (std::size_t k = 1; k + 1 < m; ++k) {
@@ -80433,7 +80584,7 @@ EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
             t = next;
         }
         out.mParams[k] = t;
-        out.mMaxGap = std::max(out.mMaxGap, edgs_dist(rOther.Point(t), p));
+        out.mMaxGap = std::max(out.mMaxGap, vec3_norm(vec3_sub(rOther.Point(t), p)));
         prev = t;
     }
     return out;
@@ -81931,20 +82082,8 @@ namespace {
 
 constexpr double kFfPi = 3.14159265358979323846;
 
-double ff_dot(const PatchVec& rA, const PatchVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-PatchVec ff_sub(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
 PatchVec ff_axpy(const PatchVec& rA, double S, const PatchVec& rB) {
     return {rA[0] + S * rB[0], rA[1] + S * rB[1], rA[2] + S * rB[2]};
-}
-
-double ff_norm(const PatchVec& rA) {
-    return std::sqrt(ff_dot(rA, rA));
 }
 
 // The vertex's height along and distance from the axis through pP[0..2]
@@ -81952,8 +82091,8 @@ double ff_norm(const PatchVec& rA) {
 void ff_axial(const double* pP, const PatchVec& rX, double& rH, double& rRho) {
     const PatchVec d{rX[0] - pP[0], rX[1] - pP[1], rX[2] - pP[2]};
     const PatchVec a{pP[3], pP[4], pP[5]};
-    rH = ff_dot(d, a);
-    rRho = ff_norm(ff_axpy(d, -rH, a));
+    rH = vec3_dot(d, a);
+    rRho = vec3_norm(ff_axpy(d, -rH, a));
 }
 
 // Outward unit vertex normals (area-weighted) and which vertices no
@@ -81963,8 +82102,8 @@ void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<Patc
     rNormals.assign(rPts.size(), PatchVec{0.0, 0.0, 0.0});
     std::map<std::pair<std::size_t, std::size_t>, int> uses;
     for (const PatchTri& t : rTris) {
-        const PatchVec e1 = ff_sub(rPts[t[1]], rPts[t[0]]);
-        const PatchVec e2 = ff_sub(rPts[t[2]], rPts[t[0]]);
+        const PatchVec e1 = vec3_sub(rPts[t[1]], rPts[t[0]]);
+        const PatchVec e2 = vec3_sub(rPts[t[2]], rPts[t[0]]);
         const PatchVec n{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
                          e1[0] * e2[1] - e1[1] * e2[0]};
         for (std::size_t v : t)
@@ -81976,7 +82115,7 @@ void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<Patc
         }
     }
     for (PatchVec& n : rNormals) {
-        const double len = ff_norm(n);
+        const double len = vec3_norm(n);
         if (len > 0.0)
             n = {n[0] / len, n[1] / len, n[2] / len};
     }
@@ -81999,7 +82138,7 @@ double primitive_distance(int Type, const double* pP, const PatchVec& rX) {
         }
         case 2: {
             const PatchVec d{rX[0] - pP[0], rX[1] - pP[1], rX[2] - pP[2]};
-            return std::fabs(ff_norm(d) - pP[6]);
+            return std::fabs(vec3_norm(d) - pP[6]);
         }
         case 3: {
             double h = 0.0, rho = 0.0;
@@ -82035,7 +82174,7 @@ FilletFit fillet_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchT
     ff_vertex_normals(rPts, rTris, normals, interior);
     std::vector<std::size_t> verts;
     for (std::size_t v = 0; v < rPts.size(); ++v)
-        if (interior[v] && ff_norm(normals[v]) > 0.5)
+        if (interior[v] && vec3_norm(normals[v]) > 0.5)
             verts.push_back(v);
     if (verts.size() < 4)
         return out;
@@ -82119,7 +82258,7 @@ HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<Pa
                          const PatchVec& rOrigin, const PatchVec& rAxis, bool VariablePitch) {
     HelicoidFit out;
     const std::size_t n = rPts.size();
-    const double alen = ff_norm(rAxis);
+    const double alen = vec3_norm(rAxis);
     if (n < 4 || rTris.empty() || !(alen > 0.0))
         return out;
     out.mOrigin = rOrigin;
@@ -82128,11 +82267,11 @@ HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<Pa
     std::vector<double> z(n), rho(n), phi(n);
     double rho_max = 0.0;
     for (std::size_t v = 0; v < n; ++v) {
-        const PatchVec d = ff_sub(rPts[v], rOrigin);
-        z[v] = ff_dot(d, out.mAxis);
+        const PatchVec d = vec3_sub(rPts[v], rOrigin);
+        z[v] = vec3_dot(d, out.mAxis);
         const PatchVec radial = ff_axpy(d, -z[v], out.mAxis);
-        rho[v] = ff_norm(radial);
-        phi[v] = std::atan2(ff_dot(radial, out.mE2), ff_dot(radial, out.mE1));
+        rho[v] = vec3_norm(radial);
+        phi[v] = std::atan2(vec3_dot(radial, out.mE2), vec3_dot(radial, out.mE1));
         rho_max = std::max(rho_max, rho[v]);
     }
     for (double r : rho)
@@ -82246,13 +82385,8 @@ HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<Pa
 
 namespace {
 
-PatchVec ff_cross(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
 PatchVec ff_unit(const PatchVec& rA) {
-    const double len = ff_norm(rA);
+    const double len = vec3_norm(rA);
     return len > 0.0 ? PatchVec{rA[0] / len, rA[1] / len, rA[2] / len} : PatchVec{0.0, 0.0, 0.0};
 }
 
@@ -82364,11 +82498,11 @@ double ff_min_radius(const std::function<double(double)>& rF, double RMin, doubl
 
 // The nearest point of the segment [rA, rB] to rP, as the fraction along it.
 double ff_segment_fraction(const PatchVec& rP, const PatchVec& rA, const PatchVec& rB) {
-    const PatchVec d = ff_sub(rB, rA);
-    const double dd = ff_dot(d, d);
+    const PatchVec d = vec3_sub(rB, rA);
+    const double dd = vec3_dot(d, d);
     if (!(dd > 0.0))
         return 0.0;
-    return std::clamp(ff_dot(ff_sub(rP, rA), d) / dd, 0.0, 1.0);
+    return std::clamp(vec3_dot(vec3_sub(rP, rA), d) / dd, 0.0, 1.0);
 }
 
 double ff_wrap(double A) {
@@ -82441,7 +82575,7 @@ PatchVec RollingBallFit::RailAt(double T) const {
     const std::size_t b = (a + 1) % n;
     const double t0 = mRailT[a], t1 = a + 1 < n ? mRailT[a + 1] : mLength;
     const double f = t1 > t0 ? (T - t0) / (t1 - t0) : 0.0;
-    return ff_axpy(mRail[a], f, ff_sub(mRail[b], mRail[a]));
+    return ff_axpy(mRail[a], f, vec3_sub(mRail[b], mRail[a]));
 }
 
 PatchVec RollingBallFit::RailTangent(double T) const {
@@ -82469,9 +82603,9 @@ PatchVec RollingBallFit::RailTangent(double T) const {
         const std::size_t e = (s + 1) % n;
         const double t0 = mRailT[s], t1 = s + 1 < n ? mRailT[s + 1] : mLength;
         const double f = t1 > t0 ? (U - t0) / (t1 - t0) : 0.0;
-        return ff_axpy(mRail[s], f, ff_sub(mRail[e], mRail[s]));
+        return ff_axpy(mRail[s], f, vec3_sub(mRail[e], mRail[s]));
     };
-    return ff_unit(ff_sub(at(b), at(a)));
+    return ff_unit(vec3_sub(at(b), at(a)));
 }
 
 RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
@@ -82485,14 +82619,14 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
     ff_vertex_normals(rPts, rTris, normals, interior);
     std::vector<std::size_t> verts;
     for (std::size_t v = 0; v < rPts.size(); ++v)
-        if (interior[v] && ff_norm(normals[v]) > 0.5)
+        if (interior[v] && vec3_norm(normals[v]) > 0.5)
             verts.push_back(v);
     if (verts.size() < 8)
         return out;
     const double inf = std::numeric_limits<double>::infinity();
     auto dist = [&](const ClosestPoint& rS, const PatchVec& rX) {
         PatchVec f{};
-        return rS(rX, f) ? ff_norm(ff_sub(rX, f)) : inf;
+        return rS(rX, f) ? vec3_norm(vec3_sub(rX, f)) : inf;
     };
     auto misfit = [&](std::size_t V, int Side, double R) {
         const PatchVec c = ff_axpy(rPts[V], -Side * R, normals[V]);
@@ -82577,7 +82711,7 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
             stack.pop_back();
             for (std::size_t w : adj[u]) {
                 if (u < w)
-                    comp_len.back() += ff_norm(ff_sub(rPts[w], rPts[u]));
+                    comp_len.back() += vec3_norm(vec3_sub(rPts[w], rPts[u]));
                 if (comp[w] < 0) {
                     comp[w] = id;
                     stack.push_back(w);
@@ -82628,7 +82762,7 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
             const PatchVec& a = rLine[s];
             const PatchVec& b = rLine[(s + 1) % rLine.size()];
             const double f = ff_segment_fraction(rP, a, b);
-            const double d = ff_norm(ff_sub(rP, ff_axpy(a, f, ff_sub(b, a))));
+            const double d = vec3_norm(vec3_sub(rP, ff_axpy(a, f, vec3_sub(b, a))));
             if (d < nearest) {
                 nearest = d;
                 const double t1 = s + 1 < rLine.size() ? rAt[s + 1] : Total;
@@ -82642,12 +82776,12 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
     double coarse_len = 0.0;
     for (std::size_t i = 0; i < chain.size(); ++i) {
         if (i > 0)
-            coarse_len += ff_norm(ff_sub(rPts[chain[i]], rPts[chain[i - 1]]));
+            coarse_len += vec3_norm(vec3_sub(rPts[chain[i]], rPts[chain[i - 1]]));
         coarse.push_back(rPts[chain[i]]);
         coarse_at.push_back(coarse_len);
     }
     if (closed)
-        coarse_len += ff_norm(ff_sub(rPts[chain.front()], rPts[chain.back()]));
+        coarse_len += vec3_norm(vec3_sub(rPts[chain.front()], rPts[chain.back()]));
     if (!(coarse_len > 0.0))
         return out;
     std::vector<PatchVec> centres(kept.size()), feet(kept.size());
@@ -82676,14 +82810,14 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
         const double w = 1.0 / static_cast<double>(bin_count[b]);
         const PatchVec p{bin_sum[b][0] * w, bin_sum[b][1] * w, bin_sum[b][2] * w};
         if (!out.mRail.empty())
-            len += ff_norm(ff_sub(p, out.mRail.back()));
+            len += vec3_norm(vec3_sub(p, out.mRail.back()));
         out.mRail.push_back(p);
         out.mRailT.push_back(len);
     }
     if (out.mRail.size() < 3)
         return out;
     if (closed)
-        len += ff_norm(ff_sub(out.mRail.front(), out.mRail.back()));
+        len += vec3_norm(vec3_sub(out.mRail.front(), out.mRail.back()));
     out.mLength = len;
     if (!(len > 0.0))
         return out;
@@ -82757,24 +82891,24 @@ RollingBallSection rolling_ball_section(const RollingBallFit& rFit, const Closes
     }
     const PatchVec on_rail = rFit.RailAt(T);
     PatchVec c =
-        ff_axpy(rFit.mCentres[nearest], 1.0, ff_sub(on_rail, rFit.RailAt(rFit.mT[nearest])));
+        ff_axpy(rFit.mCentres[nearest], 1.0, vec3_sub(on_rail, rFit.RailAt(rFit.mT[nearest])));
     // The section's plane goes through the rail point, so consecutive balls
     // advance along the spine as the rail does.
     const PatchVec t = ff_unit(rTangent);
-    c = ff_axpy(c, -ff_dot(ff_sub(c, on_rail), t), t);
+    c = ff_axpy(c, -vec3_dot(vec3_sub(c, on_rail), t), t);
     PatchVec f1{}, f2{};
     for (int it = 0; it < 60; ++it) {
         if (!rS1(c, f1) || !rS2(c, f2))
             return out;
-        const PatchVec g1 = ff_sub(c, f1), g2 = ff_sub(c, f2);
-        const double d1 = ff_norm(g1), d2 = ff_norm(g2);
+        const PatchVec g1 = vec3_sub(c, f1), g2 = vec3_sub(c, f2);
+        const double d1 = vec3_norm(g1), d2 = vec3_norm(g2);
         if (!(d1 > 0.0) || !(d2 > 0.0))
             return out;
         const PatchVec u1{g1[0] / d1, g1[1] / d1, g1[2] / d1};
         const PatchVec u2{g2[0] / d2, g2[1] / d2, g2[2] / d2};
-        const PatchVec w1 = ff_axpy(u1, -ff_dot(u1, t), t), w2 = ff_axpy(u2, -ff_dot(u2, t), t);
-        const double a11 = ff_dot(u1, w1), a12 = ff_dot(u1, w2), a21 = ff_dot(u2, w1),
-                     a22 = ff_dot(u2, w2);
+        const PatchVec w1 = ff_axpy(u1, -vec3_dot(u1, t), t), w2 = ff_axpy(u2, -vec3_dot(u2, t), t);
+        const double a11 = vec3_dot(u1, w1), a12 = vec3_dot(u1, w2), a21 = vec3_dot(u2, w1),
+                     a22 = vec3_dot(u2, w2);
         const double det = a11 * a22 - a12 * a21;
         if (!(std::fabs(det) > 1e-12))
             return out;
@@ -82782,17 +82916,19 @@ RollingBallSection rolling_ball_section(const RollingBallFit& rFit, const Closes
         const double al = (-e1 * a22 + e2 * a12) / det, be = (-e2 * a11 + e1 * a21) / det;
         const PatchVec step = ff_axpy(ff_axpy({0.0, 0.0, 0.0}, al, w1), be, w2);
         c = ff_axpy(c, 1.0, step);
-        if (ff_norm(step) <= 1e-13 * Scale)
+        if (vec3_norm(step) <= 1e-13 * Scale)
             break;
     }
     if (!rS1(c, f1) || !rS2(c, f2))
         return out;
     const double tol = 1e-6 * Scale;
-    if (std::fabs(ff_norm(ff_sub(c, f1)) - r) > tol || std::fabs(ff_norm(ff_sub(c, f2)) - r) > tol)
+    if (std::fabs(vec3_norm(vec3_sub(c, f1)) - r) > tol ||
+        std::fabs(vec3_norm(vec3_sub(c, f2)) - r) > tol)
         return out;
     // A foot far off the cross-section belongs to another ball.
     const double off = std::fabs(rFit.mRadius.Slope(T)) * r + 0.5 * r;
-    if (std::fabs(ff_dot(ff_sub(f1, c), t)) > off || std::fabs(ff_dot(ff_sub(f2, c), t)) > off)
+    if (std::fabs(vec3_dot(vec3_sub(f1, c), t)) > off ||
+        std::fabs(vec3_dot(vec3_sub(f2, c), t)) > off)
         return out;
     out.mOk = true;
     out.mCentre = c;
@@ -82841,11 +82977,11 @@ void ff_cylindrical(const std::vector<PatchVec>& rPts, const PatchVec& rO, const
     rRho.resize(n);
     rPhi.resize(n);
     for (std::size_t v = 0; v < n; ++v) {
-        const PatchVec d = ff_sub(rPts[v], rO);
-        rZ[v] = ff_dot(d, rA);
+        const PatchVec d = vec3_sub(rPts[v], rO);
+        rZ[v] = vec3_dot(d, rA);
         const PatchVec radial = ff_axpy(d, -rZ[v], rA);
-        rRho[v] = ff_norm(radial);
-        rPhi[v] = std::atan2(ff_dot(radial, rE2), ff_dot(radial, rE1));
+        rRho[v] = vec3_norm(radial);
+        rPhi[v] = std::atan2(vec3_dot(radial, rE2), vec3_dot(radial, rE1));
     }
 }
 
@@ -82929,8 +83065,8 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
     std::vector<double> area(n, 0.0);
     std::vector<std::vector<std::size_t>> adj(n);
     for (const PatchTri& t : rTris) {
-        const double a =
-            0.5 * ff_norm(ff_cross(ff_sub(rPts[t[1]], rPts[t[0]]), ff_sub(rPts[t[2]], rPts[t[0]])));
+        const double a = 0.5 * vec3_norm(vec3_cross(vec3_sub(rPts[t[1]], rPts[t[0]]),
+                                                    vec3_sub(rPts[t[2]], rPts[t[0]])));
         for (int k = 0; k < 3; ++k) {
             area[t[static_cast<std::size_t>(k)]] += a / 3.0;
             adj[t[static_cast<std::size_t>(k)]].push_back(t[static_cast<std::size_t>((k + 1) % 3)]);
@@ -82955,7 +83091,7 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
     centre = {centre[0] / wsum, centre[1] / wsum, centre[2] / wsum};
     double scale = 0.0;
     for (std::size_t v : live)
-        scale = std::max(scale, ff_norm(ff_sub(rPts[v], centre)));
+        scale = std::max(scale, vec3_norm(vec3_sub(rPts[v], centre)));
     if (!(scale > 0.0))
         return out;
     // The screw: its axis, a point on it and its advance per radian.
@@ -82967,7 +83103,7 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
             const PatchVec x{(rPts[v][0] - centre[0]) / scale, (rPts[v][1] - centre[1]) / scale,
                              (rPts[v][2] - centre[2]) / scale};
             const PatchVec& nv = normals[v];
-            const PatchVec m = ff_cross(x, nv);
+            const PatchVec m = vec3_cross(x, nv);
             for (int i = 0; i < 3; ++i)
                 for (int j = 0; j < 3; ++j) {
                     A[i * 3 + j] +=
@@ -83021,17 +83157,17 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
             cbar[static_cast<std::size_t>(i)] = -s;
         }
         axis = c;
-        k = scale * ff_dot(c, cbar);
-        origin = ff_axpy(centre, scale, ff_cross(c, cbar));
+        k = scale * vec3_dot(c, cbar);
+        origin = ff_axpy(centre, scale, vec3_cross(c, cbar));
     } else {
         origin = *pOrigin;
         axis = ff_unit(*pAxis);
-        if (!(ff_norm(axis) > 0.0))
+        if (!(vec3_norm(axis) > 0.0))
             return out;
         double num = 0.0, den = 0.0;
         for (std::size_t v : live) {
-            const double na = ff_dot(normals[v], axis);
-            num += area[v] * na * ff_dot(normals[v], ff_cross(axis, ff_sub(rPts[v], origin)));
+            const double na = vec3_dot(normals[v], axis);
+            num += area[v] * na * vec3_dot(normals[v], vec3_cross(axis, vec3_sub(rPts[v], origin)));
             den += area[v] * na * na;
         }
         if (!(den > 1e-12 * wsum))
@@ -83042,7 +83178,7 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
     if (!(std::fabs(k) * 2.0 * kFfPi > 1e-3 * scale))
         return out;
     // Move the origin to the foot of the patch's centre on the axis.
-    origin = ff_axpy(origin, ff_dot(ff_sub(centre, origin), axis), axis);
+    origin = ff_axpy(origin, vec3_dot(vec3_sub(centre, origin), axis), axis);
     PatchVec e1{}, e2{};
     lsq_frame(axis.data(), e1.data(), e2.data());
     std::vector<double> z, rho, phi, theta0;
@@ -83083,8 +83219,8 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
         Screw s;
         s.mA = ff_unit(ff_axpy(ff_axpy(axis, rP[0], e1), rP[1], e2));
         s.mO = ff_axpy(ff_axpy(origin, rP[2], e1), rP[3], e2);
-        s.mE1 = ff_unit(ff_axpy(e1, -ff_dot(e1, s.mA), s.mA));
-        s.mE2 = ff_cross(s.mA, s.mE1);
+        s.mE1 = ff_unit(ff_axpy(e1, -vec3_dot(e1, s.mA), s.mA));
+        s.mE2 = vec3_cross(s.mA, s.mE1);
         s.mK = rP[4];
         if (rP.size() > 5) {
             s.mTaper = rP[5];
@@ -83100,11 +83236,11 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
         if (pTheta)
             pTheta->clear();
         for (std::size_t v : rWhich) {
-            const PatchVec d = ff_sub(rPts[v], rS.mO);
-            const double zz = ff_dot(d, rS.mA);
+            const PatchVec d = vec3_sub(rPts[v], rS.mO);
+            const double zz = vec3_dot(d, rS.mA);
             const PatchVec radial = ff_axpy(d, -zz, rS.mA);
-            const double rr = ff_norm(radial);
-            const double ph = std::atan2(ff_dot(radial, rS.mE2), ff_dot(radial, rS.mE1));
+            const double rr = vec3_norm(radial);
+            const double ph = std::atan2(vec3_dot(radial, rS.mE2), vec3_dot(radial, rS.mE1));
             const double th = theta0[v] + ff_wrap(ph - theta0[v]);
             double zeta, rho_u = rr;
             if (General) {
@@ -83221,11 +83357,12 @@ PatchVec ff_line_at(const std::vector<PatchVec>& rLine, const std::vector<double
         T -= Length * std::floor(T / Length);
     } else if (T <= 0.0) {
         const double d = rAt[1] - rAt[0];
-        return d > 0.0 ? ff_axpy(rLine[0], T / d, ff_sub(rLine[1], rLine[0])) : rLine[0];
+        return d > 0.0 ? ff_axpy(rLine[0], T / d, vec3_sub(rLine[1], rLine[0])) : rLine[0];
     } else if (T >= Length) {
         const double d = rAt[n - 1] - rAt[n - 2];
-        return d > 0.0 ? ff_axpy(rLine[n - 1], (T - Length) / d, ff_sub(rLine[n - 1], rLine[n - 2]))
-                       : rLine[n - 1];
+        return d > 0.0
+                   ? ff_axpy(rLine[n - 1], (T - Length) / d, vec3_sub(rLine[n - 1], rLine[n - 2]))
+                   : rLine[n - 1];
     }
     const std::size_t i =
         static_cast<std::size_t>(std::upper_bound(rAt.begin(), rAt.end(), T) - rAt.begin());
@@ -83233,7 +83370,7 @@ PatchVec ff_line_at(const std::vector<PatchVec>& rLine, const std::vector<double
     const std::size_t b = (a + 1) % n;
     const double t0 = rAt[a], t1 = a + 1 < n ? rAt[a + 1] : Length;
     const double f = t1 > t0 ? (T - t0) / (t1 - t0) : 0.0;
-    return ff_axpy(rLine[a], f, ff_sub(rLine[b], rLine[a]));
+    return ff_axpy(rLine[a], f, vec3_sub(rLine[b], rLine[a]));
 }
 
 // The polyline's unit tangent at T, a central difference over a few segments.
@@ -83252,8 +83389,8 @@ PatchVec ff_line_tangent(const std::vector<PatchVec>& rLine, const std::vector<d
             b = a + h;
         }
     }
-    return ff_unit(ff_sub(ff_line_at(rLine, rAt, Closed, Length, b),
-                          ff_line_at(rLine, rAt, Closed, Length, a)));
+    return ff_unit(vec3_sub(ff_line_at(rLine, rAt, Closed, Length, b),
+                            ff_line_at(rLine, rAt, Closed, Length, a)));
 }
 
 // The arc length of a polyline's point nearest to rP.
@@ -83265,7 +83402,7 @@ double ff_line_along(const std::vector<PatchVec>& rLine, const std::vector<doubl
         const PatchVec& a = rLine[s];
         const PatchVec& b = rLine[(s + 1) % rLine.size()];
         const double f = ff_segment_fraction(rP, a, b);
-        const double d = ff_norm(ff_sub(rP, ff_axpy(a, f, ff_sub(b, a))));
+        const double d = vec3_norm(vec3_sub(rP, ff_axpy(a, f, vec3_sub(b, a))));
         if (d < nearest) {
             nearest = d;
             const double t1 = s + 1 < rLine.size() ? rAt[s + 1] : Length;
@@ -83285,8 +83422,8 @@ bool ff_plane_cut(const std::vector<PatchVec>& rLine, bool Closed, double Length
         return false;
     std::vector<PatchVec> line = rLine;
     if (!Closed) {
-        const PatchVec d0 = ff_unit(ff_sub(rLine[0], rLine[1]));
-        const PatchVec d1 = ff_unit(ff_sub(rLine[n - 1], rLine[n - 2]));
+        const PatchVec d0 = ff_unit(vec3_sub(rLine[0], rLine[1]));
+        const PatchVec d1 = ff_unit(vec3_sub(rLine[n - 1], rLine[n - 2]));
         line.insert(line.begin(), ff_axpy(rLine[0], Length, d0));
         line.push_back(ff_axpy(rLine[n - 1], Length, d1));
     }
@@ -83296,11 +83433,11 @@ bool ff_plane_cut(const std::vector<PatchVec>& rLine, bool Closed, double Length
     for (std::size_t s = 0; s < nseg; ++s) {
         const PatchVec& a = line[s];
         const PatchVec& b = line[(s + 1) % line.size()];
-        const double da = ff_dot(ff_sub(a, rO), rN), db = ff_dot(ff_sub(b, rO), rN);
+        const double da = vec3_dot(vec3_sub(a, rO), rN), db = vec3_dot(vec3_sub(b, rO), rN);
         if ((da > 0.0 && db > 0.0) || (da < 0.0 && db < 0.0) || da == db)
             continue;
-        const PatchVec c = ff_axpy(a, da / (da - db), ff_sub(b, a));
-        const double d = ff_norm(ff_sub(c, rO));
+        const PatchVec c = ff_axpy(a, da / (da - db), vec3_sub(b, a));
+        const double d = vec3_norm(vec3_sub(c, rO));
         if (d < best) {
             best = d;
             rCut = c;
@@ -83324,7 +83461,7 @@ PatchVec ff_conic_at(const PatchVec& rR1, const PatchVec& rA, const PatchVec& rR
 double ff_conic_distance(const PatchVec& rR1, const PatchVec& rA, const PatchVec& rR2, double W,
                          const PatchVec& rP) {
     constexpr int kScan = 48;
-    auto dist = [&](double U) { return ff_norm(ff_sub(ff_conic_at(rR1, rA, rR2, W, U), rP)); };
+    auto dist = [&](double U) { return vec3_norm(vec3_sub(ff_conic_at(rR1, rA, rR2, W, U), rP)); };
     int arg = 0;
     double low = std::numeric_limits<double>::infinity();
     for (int i = 0; i <= kScan; ++i) {
@@ -83386,7 +83523,7 @@ bool ff_boundary_chain(const std::vector<PatchVec>& rPts,
             stack.pop_back();
             for (std::size_t w : adj[u]) {
                 if (u < w)
-                    comp_len.back() += ff_norm(ff_sub(rPts[w], rPts[u]));
+                    comp_len.back() += vec3_norm(vec3_sub(rPts[w], rPts[u]));
                 if (comp[w] < 0) {
                     comp[w] = id;
                     stack.push_back(w);
@@ -83438,10 +83575,10 @@ PatchVec SectionBlendFit::Normal(double T) const {
     // the direction both are level in, n1 x n2.
     PatchVec n1{}, n2{};
     if (mNormal1 && mNormal2 && mNormal1(r1, n1) && mNormal2(r1, n2)) {
-        PatchVec e = ff_cross(n1, n2);
-        if (ff_norm(e) > 0.1) {
+        PatchVec e = vec3_cross(n1, n2);
+        if (vec3_norm(e) > 0.1) {
             e = ff_unit(e);
-            tan = ff_dot(e, tan) < 0.0 ? PatchVec{-e[0], -e[1], -e[2]} : e;
+            tan = vec3_dot(e, tan) < 0.0 ? PatchVec{-e[0], -e[1], -e[2]} : e;
         }
     }
     return tan;
@@ -83452,7 +83589,7 @@ double SectionBlendFit::ParameterOf(const PatchVec& rX) const {
     // rX: a secant iteration on (rX - R1(T)) . N(T).
     double t = ff_line_along(mRail1, mRail1T, mClosed, mLength, rX);
     auto f = [&](double T) {
-        return ff_dot(ff_sub(rX, ff_line_at(mRail1, mRail1T, mClosed, mLength, T)), Normal(T));
+        return vec3_dot(vec3_sub(rX, ff_line_at(mRail1, mRail1T, mClosed, mLength, T)), Normal(T));
     };
     const double h = 1e-3 * mLength;
     double f0 = f(t);
@@ -83472,10 +83609,10 @@ bool SectionBlendFit::Section(double T, PatchVec& rR1, PatchVec& rR2, PatchVec& 
         return false;
     rR1 = ff_line_at(mRail1, mRail1T, mClosed, mLength, T);
     const PatchVec tan = Normal(T);
-    if (!(ff_norm(tan) > 0.0) || !ff_plane_cut(mRail2, mClosed, mLength2, rR1, tan, rR2))
+    if (!(vec3_norm(tan) > 0.0) || !ff_plane_cut(mRail2, mClosed, mLength2, rR1, tan, rR2))
         return false;
-    const PatchVec chord = ff_sub(rR2, rR1);
-    if (!(ff_norm(chord) > 0.0))
+    const PatchVec chord = vec3_sub(rR2, rR1);
+    if (!(vec3_norm(chord) > 0.0))
         return false;
     if (mChamfer) {
         rApex = ff_axpy(rR1, 0.5, chord);
@@ -83486,16 +83623,16 @@ bool SectionBlendFit::Section(double T, PatchVec& rR1, PatchVec& rR2, PatchVec& 
     PatchVec n1{}, n2{};
     if (!mNormal1 || !mNormal2 || !mNormal1(rR1, n1) || !mNormal2(rR2, n2))
         return false;
-    PatchVec d1 = ff_unit(ff_cross(tan, n1)), d2 = ff_unit(ff_cross(tan, n2));
-    if (!(ff_norm(d1) > 0.0) || !(ff_norm(d2) > 0.0))
+    PatchVec d1 = ff_unit(vec3_cross(tan, n1)), d2 = ff_unit(vec3_cross(tan, n2));
+    if (!(vec3_norm(d1) > 0.0) || !(vec3_norm(d2) > 0.0))
         return false;
-    if (ff_dot(d1, chord) < 0.0)
+    if (vec3_dot(d1, chord) < 0.0)
         d1 = {-d1[0], -d1[1], -d1[2]};
-    if (ff_dot(d2, chord) > 0.0)
+    if (vec3_dot(d2, chord) > 0.0)
         d2 = {-d2[0], -d2[1], -d2[2]};
     // rR1 + a d1 = rR2 + b d2, by least squares.
-    const double a11 = 1.0, a12 = -ff_dot(d1, d2), a22 = 1.0;
-    const double r1 = ff_dot(d1, chord), r2 = -ff_dot(d2, chord);
+    const double a11 = 1.0, a12 = -vec3_dot(d1, d2), a22 = 1.0;
+    const double r1 = vec3_dot(d1, chord), r2 = -vec3_dot(d2, chord);
     const double det = a11 * a22 - a12 * a12;
     if (!(det > 1e-10))
         return false;  // parallel tangents: no apex
@@ -83512,7 +83649,7 @@ bool SectionBlendFit::At(double T, double U, PatchVec& rP) const {
     if (!Section(T, r1, r2, apex))
         return false;
     if (mChamfer) {
-        rP = ff_axpy(r1, U, ff_sub(r2, r1));
+        rP = ff_axpy(r1, U, vec3_sub(r2, r1));
         return true;
     }
     const double w = mWeight.At(T);
@@ -83540,7 +83677,7 @@ SectionBlendFit section_blend_fit(const std::vector<PatchVec>& rPts,
             return inf;
         if (pFoot)
             *pFoot = f;
-        return ff_norm(ff_sub(rX, f));
+        return vec3_norm(vec3_sub(rX, f));
     };
     // The rails: the boundary edges along each surface, chained -- those the
     // caller says it lies across, else those whose ends both lie on it.
@@ -83578,12 +83715,12 @@ SectionBlendFit section_blend_fit(const std::vector<PatchVec>& rPts,
             if (!std::isfinite(dist(rS, rPts[v], &f)))
                 return false;
             if (!rLine.empty())
-                rLen += ff_norm(ff_sub(f, rLine.back()));
+                rLen += vec3_norm(vec3_sub(f, rLine.back()));
             rLine.push_back(f);
             rAt.push_back(rLen);
         }
         if (out.mClosed)
-            rLen += ff_norm(ff_sub(rLine.front(), rLine.back()));
+            rLen += vec3_norm(vec3_sub(rLine.front(), rLine.back()));
         return rLen > 0.0;
     };
     if (!rail(chain1, rS1, out.mRail1, out.mRail1T, out.mLength) ||
@@ -83595,7 +83732,7 @@ SectionBlendFit section_blend_fit(const std::vector<PatchVec>& rPts,
     // conic weight its barycentric coordinates give.
     std::vector<std::size_t> verts;
     for (std::size_t v = 0; v < rPts.size(); ++v)
-        if (interior[v] && ff_norm(normals[v]) > 0.5)
+        if (interior[v] && vec3_norm(normals[v]) > 0.5)
             verts.push_back(v);
     verts = ff_spread(verts, 256);
     if (verts.size() < 6)
@@ -83613,16 +83750,16 @@ SectionBlendFit section_blend_fit(const std::vector<PatchVec>& rPts,
             continue;
         const double f = ff_segment_fraction(x, r1, r2);
         at.push_back(t);
-        chord_dist.push_back(ff_norm(ff_sub(x, ff_axpy(r1, f, ff_sub(r2, r1)))));
+        chord_dist.push_back(vec3_norm(vec3_sub(x, ff_axpy(r1, f, vec3_sub(r2, r1)))));
         if (!probe.Section(t, r1, r2, apex))
             continue;
         // Barycentric coordinates in (r1, apex, r2), in that triangle's plane.
-        const PatchVec e1 = ff_sub(apex, r1), e2 = ff_sub(r2, r1), q = ff_sub(x, r1);
-        const double g11 = ff_dot(e1, e1), g12 = ff_dot(e1, e2), g22 = ff_dot(e2, e2);
+        const PatchVec e1 = vec3_sub(apex, r1), e2 = vec3_sub(r2, r1), q = vec3_sub(x, r1);
+        const double g11 = vec3_dot(e1, e1), g12 = vec3_dot(e1, e2), g22 = vec3_dot(e2, e2);
         const double det = g11 * g22 - g12 * g12;
         if (!(det > 0.0))
             continue;
-        const double q1 = ff_dot(q, e1), q2 = ff_dot(q, e2);
+        const double q1 = vec3_dot(q, e1), q2 = vec3_dot(q, e2);
         const double b1 = (q1 * g22 - q2 * g12) / det, b2 = (q2 * g11 - q1 * g12) / det;
         const double b0 = 1.0 - b1 - b2;
         if (!(b0 > 0.0) || !(b2 > 0.0) || b1 < 0.0)
@@ -83756,7 +83893,7 @@ JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
             if (!rSurfaces[i](rX, foot[i]))
                 return false;
             const PatchVec d{rX[0] - foot[i][0], rX[1] - foot[i][1], rX[2] - foot[i][2]};
-            const double len = ff_norm(d);
+            const double len = vec3_norm(d);
             rWorst = std::max(rWorst, len);
             if (rNormals[i] && rNormals[i](rX, normal[i]))
                 continue;
@@ -83780,7 +83917,7 @@ JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
         }
         for (std::size_t i = 0; i < n; ++i) {
             const PatchVec& nn = normal[i];
-            const double off = ff_dot(nn, foot[i]);
+            const double off = vec3_dot(nn, foot[i]);
             for (std::size_t r = 0; r < 3; ++r) {
                 for (std::size_t c = 0; c < 3; ++c)
                     a[r * 3 + c] += nn[r] * nn[c];
@@ -83796,7 +83933,7 @@ JunctionPoint junction_closest(const std::vector<ClosestPoint>& rSurfaces,
             const PatchVec q{p[0] + step[0], p[1] + step[1], p[2] + step[2]};
             double w = 0.0;
             if (measure(q, w) && w <= worst) {
-                moved = ff_norm(step) > 1e-13 * Scale;
+                moved = vec3_norm(step) > 1e-13 * Scale;
                 p = q;
                 worst = w;
                 break;
@@ -83843,10 +83980,6 @@ constexpr double kFeatsnapFloorDeg = 2.0;
 // Lower floor for the nodes of a chain: its last step onto the edge can leave a
 // sliver beside a free interior node, which the optimization repairs.
 constexpr double kFeatsnapChainFloorDeg = 0.1;
-
-double featsnap_volume(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
-    return triple_product(vec3_sub(rB, rA), vec3_sub(rC, rA), vec3_sub(rD, rA)) / 6.0;
-}
 
 // The nearest point of a polyline (skin point ids) to `rP`, and its distance.
 std::pair<Vec3, double> featsnap_on_polyline(const std::vector<Vec3>& rSkin,
@@ -84060,7 +84193,7 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                 const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
                 p[c] = q == V ? rAt : rPoints[static_cast<std::size_t>(q)];
             }
-            if (featsnap_volume(p[0], p[1], p[2], p[3]) <= MinVolume) {
+            if (tet_volume(p[0], p[1], p[2], p[3]) <= MinVolume) {
                 rPositive = false;
                 return 0.0;
             }
@@ -84078,7 +84211,7 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
                 const std::int64_t q = rTets[static_cast<std::size_t>(t)][c];
                 p[c] = q == V ? rAt : rPoints[static_cast<std::size_t>(q)];
             }
-            if (featsnap_volume(p[0], p[1], p[2], p[3]) <= MinVolume)
+            if (tet_volume(p[0], p[1], p[2], p[3]) <= MinVolume)
                 return false;
         }
         return true;
@@ -88119,10 +88252,6 @@ namespace {
 constexpr int kHexfitFace[6][4] = {{0, 4, 7, 3}, {1, 2, 6, 5}, {0, 1, 5, 4},
                                    {3, 7, 6, 2}, {0, 3, 2, 1}, {4, 5, 6, 7}};
 
-// Each corner's three edge neighbours, right-handed.
-constexpr int kHexfitCorner[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {0, 2, 7},
-                                     {7, 5, 0}, {4, 6, 1}, {5, 7, 2}, {6, 4, 3}};
-
 // The face-connected components of the cells of a 2x2x2 block in @p Mask.
 int hexfit_components(unsigned Mask) {
     unsigned left = Mask;
@@ -88163,13 +88292,10 @@ std::array<std::uint8_t, 256> hexfit_valid_table() {
 
 double hexfit_corner(const std::vector<Vec3>& rP, const std::array<std::int64_t, 8>& rH, int C) {
     const Vec3& o = rP[static_cast<std::size_t>(rH[static_cast<std::size_t>(C)])];
-    const Vec3 a = vec3_sub(rP[static_cast<std::size_t>(rH[kHexfitCorner[C][0]])], o);
-    const Vec3 b = vec3_sub(rP[static_cast<std::size_t>(rH[kHexfitCorner[C][1]])], o);
-    const Vec3 c = vec3_sub(rP[static_cast<std::size_t>(rH[kHexfitCorner[C][2]])], o);
-    const double l = vec3_norm(a) * vec3_norm(b) * vec3_norm(c);
-    if (!(l > 0.0))
-        return -1.0;
-    return triple_product(a, b, c) / l;
+    const Vec3 a = vec3_sub(rP[static_cast<std::size_t>(rH[kHexCornerEdges[C][0]])], o);
+    const Vec3 b = vec3_sub(rP[static_cast<std::size_t>(rH[kHexCornerEdges[C][1]])], o);
+    const Vec3 c = vec3_sub(rP[static_cast<std::size_t>(rH[kHexCornerEdges[C][2]])], o);
+    return corner_jacobian_ratio(a, b, c, -1.0);
 }
 
 }  // namespace
@@ -88584,7 +88710,7 @@ HexUntangleReport hex_untangle(std::vector<Vec3>& rPoints,
             const auto v = static_cast<std::size_t>(rHexes[h][static_cast<std::size_t>(c)]);
             inc[v].push_back(static_cast<std::int64_t>(h));
             for (int e = 0; e < 3; ++e)
-                nbr[v].push_back(rHexes[h][static_cast<std::size_t>(kHexfitCorner[c][e])]);
+                nbr[v].push_back(rHexes[h][static_cast<std::size_t>(kHexCornerEdges[c][e])]);
         }
     for (auto& n : nbr) {
         std::sort(n.begin(), n.end());
@@ -88768,10 +88894,6 @@ namespace {
 
 using IsostuffEdge = std::pair<std::int64_t, std::int64_t>;
 
-double isostuff_volume(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
-    return triple_product(vec3_sub(rB, rA), vec3_sub(rC, rA), vec3_sub(rD, rA)) / 6.0;
-}
-
 // The pieces of one tetrahedron on the side whose vertices have sign `Target`.
 struct IsostuffCutter {
     const std::vector<Vec3>* pPoints = nullptr;
@@ -88951,7 +89073,7 @@ StuffReport isosurface_stuff(StuffMesh& rMesh, std::vector<std::int8_t>& rSign,
             Vec3 p[4];
             for (std::size_t c = 0; c < 4; ++c)
                 p[c] = t[c] == v ? target : rMesh.mPoints[static_cast<std::size_t>(t[c])];
-            ok = isostuff_volume(p[0], p[1], p[2], p[3]) > rOptions.mMinVolume;
+            ok = tet_volume(p[0], p[1], p[2], p[3]) > rOptions.mMinVolume;
         }
         if (!ok) {
             ++report.mNumWarpRefused;
@@ -89012,7 +89134,7 @@ StuffReport isosurface_stuff(StuffMesh& rMesh, std::vector<std::int8_t>& rSign,
             Vec3 p[4];
             for (std::size_t c = 0; c < 4; ++c)
                 p[c] = out.mPoints[static_cast<std::size_t>(rT[c])];
-            const double vol = isostuff_volume(p[0], p[1], p[2], p[3]);
+            const double vol = tet_volume(p[0], p[1], p[2], p[3]);
             if (vol < 0.0)
                 std::swap(rT[2], rT[3]);
             if (std::abs(vol) <= rOptions.mMinVolume)
@@ -90178,12 +90300,10 @@ double layer_cell_scaled_jacobian(const double* pX, const LayerSweepCell& rCell,
             sj = std::min(sj, ls_corner(c[b + 4], c[p + 4], c[n + 4], c[b]));
         }
     } else if (Kind == 6) {
-        static constexpr int kT[6][3] = {{1, 2, 3}, {2, 0, 4}, {0, 1, 5},
-                                         {5, 4, 0}, {3, 5, 1}, {4, 3, 2}};
         for (std::size_t i = 0; i < 6; ++i)
-            sj = std::min(sj, ls_corner(c[i], c[static_cast<std::size_t>(kT[i][0])],
-                                        c[static_cast<std::size_t>(kT[i][1])],
-                                        c[static_cast<std::size_t>(kT[i][2])]));
+            sj = std::min(sj, ls_corner(c[i], c[static_cast<std::size_t>(kWedgeCornerEdges[i][0])],
+                                        c[static_cast<std::size_t>(kWedgeCornerEdges[i][1])],
+                                        c[static_cast<std::size_t>(kWedgeCornerEdges[i][2])]));
     } else if (Kind == 5) {
         for (std::size_t i = 0; i < 4; ++i)
             sj = std::min(sj, ls_corner(c[i], c[(i + 1) % 4], c[(i + 3) % 4], c[4]));
@@ -92567,22 +92687,14 @@ using McrV3 = std::array<double, 3>;
 
 constexpr double kMcrPi = 3.14159265358979323846;
 
-McrV3 mcr_sub(const McrV3& rA, const McrV3& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-double mcr_dot(const McrV3& rA, const McrV3& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
 /// The angle at `rO` of the triangle `rO, rA, rB`, in radians; 0 when an
 /// edge has no length.
 double mcr_angle(const McrV3& rO, const McrV3& rA, const McrV3& rB) {
-    const McrV3 a = mcr_sub(rA, rO);
-    const McrV3 b = mcr_sub(rB, rO);
+    const McrV3 a = vec3_sub(rA, rO);
+    const McrV3 b = vec3_sub(rB, rO);
     const McrV3 c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
-    const double s = std::sqrt(mcr_dot(c, c));
-    const double d = mcr_dot(a, b);
+    const double s = std::sqrt(vec3_dot(c, c));
+    const double d = vec3_dot(a, b);
     if (!(s > 0.0) && !(std::fabs(d) > 0.0))
         return 0.0;
     return std::atan2(s, d);
@@ -92598,9 +92710,9 @@ std::array<double, 2> mcr_eigen(const McrV3& rSu, const McrV3& rSv, double L11, 
         c1[i] = rSu[i] / L11;
         c2[i] = rSv[i] / L22 - rSu[i] * L12 / (L11 * L22);
     }
-    const double a = mcr_dot(c1, c1);
-    const double b = mcr_dot(c1, c2);
-    const double d = mcr_dot(c2, c2);
+    const double a = vec3_dot(c1, c1);
+    const double b = vec3_dot(c1, c2);
+    const double d = vec3_dot(c2, c2);
     const double root = std::sqrt((a - d) * (a - d) + 4.0 * b * b);
     return {0.5 * (a + d - root), 0.5 * (a + d + root)};
 }
@@ -92957,8 +93069,8 @@ std::string mcad_build_disc(const McadCoarseMesh& rCoarse,
             double len = 0.0;
             for (std::size_t k = 0; k < loops[l].size(); ++k) {
                 const McrV3 d =
-                    mcr_sub(r_c.mX[loops[l][(k + 1) % loops[l].size()]], r_c.mX[loops[l][k]]);
-                len += std::sqrt(mcr_dot(d, d));
+                    vec3_sub(r_c.mX[loops[l][(k + 1) % loops[l].size()]], r_c.mX[loops[l][k]]);
+                len += std::sqrt(vec3_dot(d, d));
             }
             if (len > longest) {
                 longest = len;
@@ -93013,9 +93125,9 @@ std::string mcad_build_disc(const McadCoarseMesh& rCoarse,
         const auto& r_t = r_c.mTris[t];
         const double area = 0.5 * std::fabs((u[r_t[1]] - u[r_t[0]]) * (v[r_t[2]] - v[r_t[0]]) -
                                             (u[r_t[2]] - u[r_t[0]]) * (v[r_t[1]] - v[r_t[0]]));
-        me += area * mcr_dot(j[0], j[0]);
-        mf += area * mcr_dot(j[0], j[1]);
-        mg += area * mcr_dot(j[1], j[1]);
+        me += area * vec3_dot(j[0], j[0]);
+        mf += area * vec3_dot(j[0], j[1]);
+        mg += area * vec3_dot(j[1], j[1]);
         total += area;
     }
     if (total > 0.0) {
@@ -95163,20 +95275,6 @@ namespace {
 
 constexpr double kPdPi = 3.14159265358979323846;
 
-PatchVec pd_sub(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-double pd_dot(const PatchVec& rA, const PatchVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-PatchVec pd_cross(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-double pd_norm(const PatchVec& rA) {
-    return std::sqrt(pd_dot(rA, rA));
-}
-
 // The vertices the triangles use, ascending.
 std::vector<std::size_t> pd_used(const std::vector<PatchTri>& rTris) {
     std::vector<std::size_t> v;
@@ -95282,7 +95380,7 @@ DiscParam param_lscm(const std::vector<PatchVec>& rPts, const std::vector<PatchT
     double far = -1.0;
     for (std::size_t i = 0; i < loop.size(); ++i)
         for (std::size_t j = i + 1; j < loop.size(); ++j) {
-            const double d = pd_norm(pd_sub(rPts[loop[i]], rPts[loop[j]]));
+            const double d = vec3_norm(vec3_sub(rPts[loop[i]], rPts[loop[j]]));
             if (d > far) {
                 far = d;
                 pa = loop[i];
@@ -95302,19 +95400,19 @@ DiscParam param_lscm(const std::vector<PatchVec>& rPts, const std::vector<PatchT
     std::vector<SparseTriplet> ata;
     std::vector<double> atb(m, 0.0);
     for (const PatchTri& t : rTris) {
-        const PatchVec e1 = pd_sub(rPts[t[1]], rPts[t[0]]);
-        const PatchVec e2 = pd_sub(rPts[t[2]], rPts[t[0]]);
-        const PatchVec nrm = pd_cross(e1, e2);
-        const double twice = pd_norm(nrm);
-        const double l1 = pd_norm(e1);
+        const PatchVec e1 = vec3_sub(rPts[t[1]], rPts[t[0]]);
+        const PatchVec e2 = vec3_sub(rPts[t[2]], rPts[t[0]]);
+        const PatchVec nrm = vec3_cross(e1, e2);
+        const double twice = vec3_norm(nrm);
+        const double l1 = vec3_norm(e1);
         if (!(twice > 0.0) || !(l1 > 0.0))
             continue;
         // The triangle in its own plane, counter-clockwise.
         const PatchVec ex = {e1[0] / l1, e1[1] / l1, e1[2] / l1};
         const PatchVec nz = {nrm[0] / twice, nrm[1] / twice, nrm[2] / twice};
-        const PatchVec ey = pd_cross(nz, ex);
-        const double x[3] = {0.0, l1, pd_dot(e2, ex)};
-        const double y[3] = {0.0, 0.0, pd_dot(e2, ey)};
+        const PatchVec ey = vec3_cross(nz, ex);
+        const double x[3] = {0.0, l1, vec3_dot(e2, ex)};
+        const double y[3] = {0.0, 0.0, vec3_dot(e2, ey)};
         // The gradient of each hat function: the opposite edge turned 90 degrees.
         double gx[3], gy[3];
         for (int j = 0; j < 3; ++j) {
@@ -95416,12 +95514,12 @@ bool pd_mean_value_interior(const std::vector<PatchVec>& rPts, const std::vector
                 const std::size_t i = t[static_cast<std::size_t>(c)];
                 const std::size_t j = t[static_cast<std::size_t>((c + 1) % 3)];
                 const std::size_t k = t[static_cast<std::size_t>((c + 2) % 3)];
-                const PatchVec a = pd_sub(rPts[j], rPts[i]);
-                const PatchVec b = pd_sub(rPts[k], rPts[i]);
-                const double la = pd_norm(a), lb = pd_norm(b);
+                const PatchVec a = vec3_sub(rPts[j], rPts[i]);
+                const PatchVec b = vec3_sub(rPts[k], rPts[i]);
+                const double la = vec3_norm(a), lb = vec3_norm(b);
                 if (!(la > 0.0) || !(lb > 0.0))
                     continue;
-                const double cosv = std::min(1.0, std::max(-1.0, pd_dot(a, b) / (la * lb)));
+                const double cosv = std::min(1.0, std::max(-1.0, vec3_dot(a, b) / (la * lb)));
                 const double half = std::tan(0.5 * std::acos(cosv));
                 w[{i, j}] += half / la;
                 w[{i, k}] += half / lb;
@@ -95471,7 +95569,7 @@ DiscParam param_mean_value(const std::vector<PatchVec>& rPts, const std::vector<
     // The boundary on a circle by arc length.
     std::vector<double> cum(loop.size() + 1, 0.0);
     for (std::size_t i = 0; i < loop.size(); ++i)
-        cum[i + 1] = cum[i] + pd_norm(pd_sub(rPts[loop[(i + 1) % loop.size()]], rPts[loop[i]]));
+        cum[i + 1] = cum[i] + vec3_norm(vec3_sub(rPts[loop[(i + 1) % loop.size()]], rPts[loop[i]]));
     const double len = cum.back();
     if (!(len > 0.0))
         return out;
@@ -95532,7 +95630,7 @@ DiscParam param_annulus(const std::vector<PatchVec>& rPts, const std::vector<Pat
         cum[l].assign(r_l.size() + 1, 0.0);
         for (std::size_t i = 0; i < r_l.size(); ++i)
             cum[l][i + 1] =
-                cum[l][i] + pd_norm(pd_sub(rPts[r_l[(i + 1) % r_l.size()]], rPts[r_l[i]]));
+                cum[l][i] + vec3_norm(vec3_sub(rPts[r_l[(i + 1) % r_l.size()]], rPts[r_l[i]]));
         if (!(cum[l].back() > 0.0))
             return out;
     }
@@ -95540,11 +95638,11 @@ DiscParam param_annulus(const std::vector<PatchVec>& rPts, const std::vector<Pat
     const std::size_t inner = 1 - outer;
     double area = 0.0;
     for (const PatchTri& t : rTris) {
-        const PatchVec a = pd_sub(rPts[t[1]], rPts[t[0]]);
-        const PatchVec b = pd_sub(rPts[t[2]], rPts[t[0]]);
+        const PatchVec a = vec3_sub(rPts[t[1]], rPts[t[0]]);
+        const PatchVec b = vec3_sub(rPts[t[2]], rPts[t[0]]);
         const PatchVec c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
                          a[0] * b[1] - a[1] * b[0]};
-        area += 0.5 * pd_norm(c);
+        area += 0.5 * vec3_norm(c);
     }
     const double len = 0.5 * (cum[0].back() + cum[1].back());
     const double width = area / len;
@@ -95566,7 +95664,7 @@ DiscParam param_annulus(const std::vector<PatchVec>& rPts, const std::vector<Pat
     std::size_t start = 0;
     double best = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < r_i.size(); ++i) {
-        const double d = pd_norm(pd_sub(rPts[r_i[i]], rPts[r_o[0]]));
+        const double d = vec3_norm(vec3_sub(rPts[r_i[i]], rPts[r_o[0]]));
         if (d < best) {
             best = d;
             start = i;
@@ -95622,7 +95720,7 @@ DiscParam param_square(const std::vector<PatchVec>& rPts, const std::vector<Patc
         std::vector<double> cum(b - a + 1, 0.0);
         for (std::size_t t = a; t < b; ++t)
             cum[t - a + 1] =
-                cum[t - a] + pd_norm(pd_sub(rPts[rLoop[(t + 1) % nb]], rPts[rLoop[t % nb]]));
+                cum[t - a] + vec3_norm(vec3_sub(rPts[rLoop[(t + 1) % nb]], rPts[rLoop[t % nb]]));
         const double len = cum.back();
         if (!(len > 0.0))
             return out;
@@ -95779,33 +95877,8 @@ namespace {
 
 constexpr double kPfPi = 3.14159265358979323846;
 
-double pf_dot(const PatchVec& rA, const PatchVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-PatchVec pf_cross(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
-double pf_norm(const PatchVec& rA) {
-    return std::sqrt(pf_dot(rA, rA));
-}
-
-PatchVec pf_sub(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-PatchVec pf_add(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[0] + rB[0], rA[1] + rB[1], rA[2] + rB[2]};
-}
-
-PatchVec pf_scale(const PatchVec& rA, double S) {
-    return {rA[0] * S, rA[1] * S, rA[2] * S};
-}
-
 void pf_normalize(PatchVec& rA) {
-    const double d = pf_norm(rA);
+    const double d = vec3_norm(rA);
     rA = {rA[0] / d, rA[1] / d, rA[2] / d};
 }
 
@@ -95813,9 +95886,9 @@ void pf_normalize(PatchVec& rA) {
 void pf_frame(const PatchVec& rA, PatchVec& rE1, PatchVec& rE2) {
     const PatchVec seed =
         std::fabs(rA[0]) < 0.9 ? PatchVec{1.0, 0.0, 0.0} : PatchVec{0.0, 1.0, 0.0};
-    rE1 = pf_sub(seed, pf_scale(rA, pf_dot(seed, rA)));
+    rE1 = vec3_sub(seed, vec3_scale(rA, vec3_dot(seed, rA)));
     pf_normalize(rE1);
-    rE2 = pf_cross(rA, rE1);
+    rE2 = vec3_cross(rA, rE1);
 }
 
 // Local points and triangles of a subset of a patch's triangles.
@@ -95905,7 +95978,7 @@ void pf_split(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rT
     std::vector<std::pair<double, std::size_t>> keyed;
     keyed.reserve(rSubset.size());
     for (std::size_t t : rSubset)
-        keyed.emplace_back(pf_dot(rNormals[t], e), t);
+        keyed.emplace_back(vec3_dot(rNormals[t], e), t);
     std::sort(keyed.begin(), keyed.end());
     // The area-weighted median; both halves keep at least one triangle.
     std::size_t k = 0;
@@ -95929,12 +96002,13 @@ void pf_split(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rT
 
 PatchVec PatchFlat::At(double S, double T, double H) const {
     if (!mCylinder)
-        return pf_add(pf_add(pf_add(mOrigin, pf_scale(mE1, S)), pf_scale(mE2, T)),
-                      pf_scale(mAxis, H));
+        return vec3_add(vec3_add(vec3_add(mOrigin, vec3_scale(mE1, S)), vec3_scale(mE2, T)),
+                        vec3_scale(mAxis, H));
     const double th = mTheta0 + S / mRadius;
-    return pf_add(
-        pf_add(mOrigin, pf_scale(mAxis, T)),
-        pf_scale(pf_add(pf_scale(mE1, std::cos(th)), pf_scale(mE2, std::sin(th))), mRadius + H));
+    return vec3_add(
+        vec3_add(mOrigin, vec3_scale(mAxis, T)),
+        vec3_scale(vec3_add(vec3_scale(mE1, std::cos(th)), vec3_scale(mE2, std::sin(th))),
+                   mRadius + H));
 }
 
 bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
@@ -95946,13 +96020,13 @@ bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
         return false;
     PatchVec c{0.0, 0.0, 0.0};
     for (const PatchVec& p : rPts)
-        c = pf_add(c, p);
+        c = vec3_add(c, p);
     c = {c[0] / static_cast<double>(n), c[1] / static_cast<double>(n),
          c[2] / static_cast<double>(n)};
     double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
     if (Kind == 0) {
         for (const PatchVec& p : rPts) {
-            const PatchVec d = pf_sub(p, c);
+            const PatchVec d = vec3_sub(p, c);
             for (int i = 0; i < 3; ++i)
                 for (int j = 0; j < 3; ++j)
                     m[i * 3 + j] += d[static_cast<std::size_t>(i)] * d[static_cast<std::size_t>(j)];
@@ -95961,12 +96035,12 @@ bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
         rOut.mOrigin = c;
         rOut.mAxis = {v[0], v[1], v[2]};  // the smallest spread: the normal
         rOut.mE1 = {v[6], v[7], v[8]};
-        rOut.mE2 = pf_cross(rOut.mAxis, rOut.mE1);
+        rOut.mE2 = vec3_cross(rOut.mAxis, rOut.mE1);
         for (const PatchVec& p : rPts) {
-            const PatchVec d = pf_sub(p, c);
-            rOut.mS.push_back(pf_dot(d, rOut.mE1));
-            rOut.mT.push_back(pf_dot(d, rOut.mE2));
-            rOut.mH.push_back(pf_dot(d, rOut.mAxis));
+            const PatchVec d = vec3_sub(p, c);
+            rOut.mS.push_back(vec3_dot(d, rOut.mE1));
+            rOut.mT.push_back(vec3_dot(d, rOut.mE2));
+            rOut.mH.push_back(vec3_dot(d, rOut.mAxis));
         }
         return true;
     }
@@ -95977,7 +96051,7 @@ bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
                                 rNormals[f][static_cast<std::size_t>(j)];
     lsq_sym3_eigen(m, w, v);
     PatchVec axis{v[0], v[1], v[2]};
-    if (pf_norm(axis) < 0.5)
+    if (vec3_norm(axis) < 0.5)
         return false;
     pf_normalize(axis);
     PatchVec e1, e2;
@@ -95985,8 +96059,8 @@ bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
     // The circle the points' projections fit (Kasa): x^2 + y^2 + D x + E y + F = 0.
     double a[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, b[3] = {0, 0, 0};
     for (const PatchVec& p : rPts) {
-        const PatchVec d = pf_sub(p, c);
-        const double x = pf_dot(d, e1), y = pf_dot(d, e2), r[3] = {x, y, 1.0};
+        const PatchVec d = vec3_sub(p, c);
+        const double x = vec3_dot(d, e1), y = vec3_dot(d, e2), r[3] = {x, y, 1.0};
         const double rhs = -(x * x + y * y);
         for (int i = 0; i < 3; ++i) {
             for (int j = 0; j < 3; ++j)
@@ -96015,11 +96089,11 @@ bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
     if (!(r2 > 0.0) || !std::isfinite(r2))
         return false;
     const double radius = std::sqrt(r2);
-    const PatchVec origin = pf_add(pf_add(c, pf_scale(e1, cx)), pf_scale(e2, cy));
+    const PatchVec origin = vec3_add(vec3_add(c, vec3_scale(e1, cx)), vec3_scale(e2, cy));
     std::vector<double> theta(n);
     for (std::size_t i = 0; i < n; ++i) {
-        const PatchVec d = pf_sub(rPts[i], origin);
-        theta[i] = std::atan2(pf_dot(d, e2), pf_dot(d, e1));
+        const PatchVec d = vec3_sub(rPts[i], origin);
+        theta[i] = std::atan2(vec3_dot(d, e2), vec3_dot(d, e1));
     }
     // Cut the circle in the widest gap between the points' angles.
     std::vector<double> sorted = theta;
@@ -96042,11 +96116,11 @@ bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
     for (std::size_t i = 0; i < n; ++i) {
         double th = theta[i] - rOut.mTheta0;
         th -= 2.0 * kPfPi * std::floor(th / (2.0 * kPfPi));
-        const PatchVec d = pf_sub(rPts[i], origin);
+        const PatchVec d = vec3_sub(rPts[i], origin);
         rOut.mS.push_back(radius * th);
-        rOut.mT.push_back(pf_dot(d, axis));
-        const PatchVec radial = pf_sub(d, pf_scale(axis, pf_dot(d, axis)));
-        rOut.mH.push_back(pf_norm(radial) - radius);
+        rOut.mT.push_back(vec3_dot(d, axis));
+        const PatchVec radial = vec3_sub(d, vec3_scale(axis, vec3_dot(d, axis)));
+        rOut.mH.push_back(vec3_norm(radial) - radius);
     }
     return true;
 }
@@ -96076,11 +96150,11 @@ void patch_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri
     rNormals.assign(nt, PatchVec{0.0, 0.0, 0.0});
     rAreas.assign(nt, 0.0);
     for (std::size_t t = 0; t < nt; ++t) {
-        const PatchVec e1 = pf_sub(rPts[rTris[t][1]], rPts[rTris[t][0]]);
-        const PatchVec e2 = pf_sub(rPts[rTris[t][2]], rPts[rTris[t][0]]);
-        PatchVec nrm = pf_cross(e1, e2);
-        rAreas[t] = 0.5 * pf_norm(nrm);
-        if (pf_norm(nrm) > 0.0)
+        const PatchVec e1 = vec3_sub(rPts[rTris[t][1]], rPts[rTris[t][0]]);
+        const PatchVec e2 = vec3_sub(rPts[rTris[t][2]], rPts[rTris[t][0]]);
+        PatchVec nrm = vec3_cross(e1, e2);
+        rAreas[t] = 0.5 * vec3_norm(nrm);
+        if (vec3_norm(nrm) > 0.0)
             pf_normalize(nrm);
         rNormals[t] = nrm;
     }
@@ -96123,7 +96197,7 @@ std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
     const PatchVec e{v[6], v[7], v[8]};
     std::vector<std::pair<double, std::size_t>> keyed;
     for (std::size_t t = 0; t < rTris.size(); ++t)
-        keyed.emplace_back(pf_dot(normals[t], e), t);
+        keyed.emplace_back(vec3_dot(normals[t], e), t);
     std::sort(keyed.begin(), keyed.end());
     std::size_t k = 0;
     double acc = 0.0;
@@ -96201,7 +96275,7 @@ std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
     // The direction the centroids spread along most.
     double m[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, w[3], v[9];
     for (std::size_t t = 0; t < nt; ++t) {
-        const PatchVec d = pf_sub(centroids[t], mean);
+        const PatchVec d = vec3_sub(centroids[t], mean);
         for (int i = 0; i < 3; ++i)
             for (int j = 0; j < 3; ++j)
                 m[i * 3 + j] += areas[t] * d[static_cast<std::size_t>(i)] * d[static_cast<std::size_t>(j)];
@@ -96211,7 +96285,7 @@ std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
     std::vector<std::pair<double, std::size_t>> keyed;
     keyed.reserve(nt);
     for (std::size_t t = 0; t < nt; ++t)
-        keyed.emplace_back(pf_dot(pf_sub(centroids[t], mean), e), t);
+        keyed.emplace_back(vec3_dot(vec3_sub(centroids[t], mean), e), t);
     std::sort(keyed.begin(), keyed.end());
     std::size_t k = 0;
     double acc = 0.0;
@@ -96260,20 +96334,6 @@ namespace detail {
 namespace {
 
 constexpr double kPnPi = 3.14159265358979323846;
-
-PatchVec pn_sub(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-double pn_dot(const PatchVec& rA, const PatchVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-PatchVec pn_cross(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-double pn_norm(const PatchVec& rA) {
-    return std::sqrt(pn_dot(rA, rA));
-}
 
 // A piece of a patch side: chain parameters `[mTb, mTe]` (in the side's
 // direction) on side parameters `[mS0, mS1]`.
@@ -96410,8 +96470,8 @@ PatchVec pn_normal(const BsplineSurface& rS, double U, double V) {
     BsplineEval e;
     bspline_eval(rS, U, V, 1, e);
     const PatchVec su{e.mSu[0], e.mSu[1], e.mSu[2]}, sv{e.mSv[0], e.mSv[1], e.mSv[2]};
-    PatchVec n = pn_cross(su, sv);
-    const double l = pn_norm(n);
+    PatchVec n = vec3_cross(su, sv);
+    const double l = vec3_norm(n);
     return l > 0.0 ? PatchVec{n[0] / l, n[1] / l, n[2] / l} : PatchVec{0.0, 0.0, 0.0};
 }
 
@@ -96609,11 +96669,11 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
         for (const PatchTri& t : rTris)
             if (t[0] == v || t[1] == v || t[2] == v) {
                 const PatchVec a =
-                    pn_cross(pn_sub(rPts[t[1]], rPts[t[0]]), pn_sub(rPts[t[2]], rPts[t[0]]));
+                    vec3_cross(vec3_sub(rPts[t[1]], rPts[t[0]]), vec3_sub(rPts[t[2]], rPts[t[0]]));
                 for (std::size_t j = 0; j < 3; ++j)
                     n[j] += a[j];
             }
-        const double l = pn_norm(n);
+        const double l = vec3_norm(n);
         if (l > 0.0)
             ev_normal[v] = {n[0] / l, n[1] / l, n[2] / l};
     }
@@ -96630,7 +96690,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                     continue;
                 const PatchVec& o = end == 0 ? curve.mPoles.front() : curve.mPoles.back();
                 PatchVec& q = end == 0 ? curve.mPoles[1] : curve.mPoles[curve.mPoles.size() - 2];
-                const double h = pn_dot(pn_sub(q, o), it->second);
+                const double h = vec3_dot(vec3_sub(q, o), it->second);
                 for (std::size_t j = 0; j < 3; ++j)
                     q[j] -= h * it->second[j];
             }
@@ -96675,7 +96735,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                 const std::size_t lo = std::min(sg.mBegin, sg.mEnd),
                                   hi = std::max(sg.mBegin, sg.mEnd);
                 for (std::size_t t = lo; t < hi; ++t)
-                    len += pn_norm(pn_sub(rPts[cv[t + 1]], rPts[cv[t]]));
+                    len += vec3_norm(vec3_sub(rPts[cv[t + 1]], rPts[cv[t]]));
                 lengths.push_back(len);
                 side.mSegments.push_back(seg);
                 chain_uses[sg.mChain].push_back({i, j, side.mSegments.size() - 1});
@@ -96740,7 +96800,8 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
     // Area-weighted vertex normals, for the fold test.
     std::vector<PatchVec> vertex_normal(rPts.size(), PatchVec{0.0, 0.0, 0.0});
     for (const PatchTri& t : rTris) {
-        const PatchVec a = pn_cross(pn_sub(rPts[t[1]], rPts[t[0]]), pn_sub(rPts[t[2]], rPts[t[0]]));
+        const PatchVec a =
+            vec3_cross(vec3_sub(rPts[t[1]], rPts[t[0]]), vec3_sub(rPts[t[2]], rPts[t[0]]));
         for (std::size_t v : t)
             for (std::size_t j = 0; j < 3; ++j)
                 vertex_normal[v][j] += a[j];
@@ -96809,7 +96870,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
             // The angle between the tangent planes: two patches whose
             // parameters turn opposite ways have opposite normals on one
             // smooth surface (the face's sense is set apart).
-            const double c = std::min(1.0, std::fabs(pn_dot(n, g.mNormal)));
+            const double c = std::min(1.0, std::fabs(vec3_dot(n, g.mNormal)));
             worst = std::max(worst, std::acos(c) * 180.0 / kPnPi);
         }
         return worst;
@@ -97114,7 +97175,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                         near_v = v;
                     }
                 }
-                if (pn_dot(pn_normal(p.mSurface, u, w), vertex_normal[near_v]) < 0.0) {
+                if (vec3_dot(pn_normal(p.mSurface, u, w), vertex_normal[near_v]) < 0.0) {
                     log::debug("pn: patch {} folds near ({}, {})", I, u, w);
                     return false;
                 }
@@ -97145,7 +97206,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
             BsplineEval e;
             bspline_eval(s, p.mU[v], p.mV[v], 0, e);
             const PatchVec q{e.mS[0], e.mS[1], e.mS[2]};
-            const double d = pn_norm(pn_sub(q, rPts[v]));
+            const double d = vec3_norm(vec3_sub(q, rPts[v]));
             if (d > worst) {
                 worst = d;
                 wu = p.mU[v];
@@ -100068,29 +100129,16 @@ constexpr std::size_t kQlNone = std::numeric_limits<std::size_t>::max();
 // About the triangles a cell of the layout needs for its patch to fit.
 constexpr std::size_t kQlStripTriangles = 48;
 
-PatchVec ql_sub(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-double ql_dot(const PatchVec& rA, const PatchVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-PatchVec ql_cross(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-double ql_norm(const PatchVec& rA) {
-    return std::sqrt(ql_dot(rA, rA));
-}
 PatchVec ql_unit(const PatchVec& rA) {
-    const double l = ql_norm(rA);
+    const double l = vec3_norm(rA);
     return l > 0.0 ? PatchVec{rA[0] / l, rA[1] / l, rA[2] / l} : PatchVec{0.0, 0.0, 0.0};
 }
 // The angle between two vectors, in degrees.
 double ql_angle_deg(const PatchVec& rA, const PatchVec& rB) {
-    const double la = ql_norm(rA), lb = ql_norm(rB);
+    const double la = vec3_norm(rA), lb = vec3_norm(rB);
     if (!(la > 0.0) || !(lb > 0.0))
         return 180.0;
-    const double c = std::max(-1.0, std::min(1.0, ql_dot(rA, rB) / (la * lb)));
+    const double c = std::max(-1.0, std::min(1.0, vec3_dot(rA, rB) / (la * lb)));
     return std::acos(c) * 180.0 / kQlPi;
 }
 
@@ -100315,8 +100363,8 @@ bool ql_fan(const QlState& rS, std::size_t V, std::vector<std::size_t>& rFan,
 double ql_tri_angle(const QlState& rS, std::size_t F, std::size_t V) {
     const PatchTri& t = rS.mTris[F];
     const std::size_t iv = t[0] == V ? 0 : (t[1] == V ? 1 : 2);
-    return ql_angle_deg(ql_sub(rS.mPts[t[(iv + 1) % 3]], rS.mPts[V]),
-                        ql_sub(rS.mPts[t[(iv + 2) % 3]], rS.mPts[V])) *
+    return ql_angle_deg(vec3_sub(rS.mPts[t[(iv + 1) % 3]], rS.mPts[V]),
+                        vec3_sub(rS.mPts[t[(iv + 2) % 3]], rS.mPts[V])) *
            kQlPi / 180.0;
 }
 
@@ -100361,9 +100409,9 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
     for (std::size_t i = 0; i < m; ++i) {
         phi[i] = total;
         total += ql_tri_angle(rS, fan[i], Sing);
-        const PatchVec d = ql_sub(rS.mPts[nbrs[i]], rS.mPts[Sing]);
+        const PatchVec d = vec3_sub(rS.mPts[nbrs[i]], rS.mPts[Sing]);
         const std::size_t f = fan[i];
-        const double a = std::atan2(ql_dot(d, rS.mField.mE2[f]), ql_dot(d, rS.mField.mE1[f])) -
+        const double a = std::atan2(vec3_dot(d, rS.mField.mE2[f]), vec3_dot(d, rS.mField.mE1[f])) -
                          rS.mField.mTheta[f];
         const double q = 0.5 * kQlPi;
         double w = std::fmod(a, q);
@@ -100418,7 +100466,7 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
     bool ok = true;
     for (std::size_t i : pick) {
         std::vector<std::size_t> path{Sing, nbrs[i]};
-        PatchVec dir = ql_unit(ql_sub(rS.mPts[nbrs[i]], rS.mPts[Sing]));
+        PatchVec dir = ql_unit(vec3_sub(rS.mPts[nbrs[i]], rS.mPts[Sing]));
         std::size_t v = nbrs[i];
         while (!rS.mMesh.mOnBoundary[v] && ok) {
             // On the piece's boundary?
@@ -100441,7 +100489,7 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
                 const PatchVec c{(rS.mPts[t[0]][0] + rS.mPts[t[1]][0] + rS.mPts[t[2]][0]) / 3.0,
                                  (rS.mPts[t[0]][1] + rS.mPts[t[1]][1] + rS.mPts[t[2]][1]) / 3.0,
                                  (rS.mPts[t[0]][2] + rS.mPts[t[1]][2] + rS.mPts[t[2]][2]) / 3.0};
-                const double s = ql_dot(ql_unit(ql_sub(c, rS.mPts[v])), dir);
+                const double s = vec3_dot(ql_unit(vec3_sub(c, rS.mPts[v])), dir);
                 if (s > fbest) {
                     fbest = s;
                     ft = f;
@@ -100451,7 +100499,7 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
             double bbest = -2.0;
             for (int k = 0; k < 4; ++k) {
                 const PatchVec b = cross_branch(rS.mField, ft, k);
-                const double s = ql_dot(b, dir);
+                const double s = vec3_dot(b, dir);
                 if (s > bbest) {
                     bbest = s;
                     branch = b;
@@ -100464,7 +100512,7 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
                 for (std::size_t u : rS.mTris[f]) {
                     if (u == v || used[u])
                         continue;
-                    const double s = ql_dot(ql_unit(ql_sub(rS.mPts[u], rS.mPts[v])), branch);
+                    const double s = vec3_dot(ql_unit(vec3_sub(rS.mPts[u], rS.mPts[v])), branch);
                     if (s > nbest + 1e-12 || (std::abs(s - nbest) <= 1e-12 && u < next)) {
                         nbest = s;
                         next = u;
@@ -100474,7 +100522,7 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
                 ok = false;
                 break;
             }
-            dir = ql_unit(ql_sub(rS.mPts[next], rS.mPts[v]));
+            dir = ql_unit(vec3_sub(rS.mPts[next], rS.mPts[v]));
             used[next] = 1;
             path.push_back(next);
             v = next;
@@ -100548,20 +100596,20 @@ std::vector<double> ql_turns(const QlState& rS, const std::vector<std::size_t>& 
             if (!rIn[f])
                 continue;
             const PatchTri& t = rS.mTris[f];
-            const PatchVec c = ql_cross(ql_sub(rS.mPts[t[1]], rS.mPts[t[0]]),
-                                        ql_sub(rS.mPts[t[2]], rS.mPts[t[0]]));
+            const PatchVec c = vec3_cross(vec3_sub(rS.mPts[t[1]], rS.mPts[t[0]]),
+                                          vec3_sub(rS.mPts[t[2]], rS.mPts[t[0]]));
             for (std::size_t j = 0; j < 3; ++j)
                 n[j] += c[j];
         }
         // In the tangent plane: the chords without their normal parts.
         n = ql_unit(n);
         const auto flat = [&](const PatchVec& rD) {
-            const double h = ql_dot(rD, n);
+            const double h = vec3_dot(rD, n);
             return PatchVec{rD[0] - h * n[0], rD[1] - h * n[1], rD[2] - h * n[2]};
         };
-        const PatchVec da = flat(ql_sub(a, p)), db = flat(ql_sub(b, p));
+        const PatchVec da = flat(vec3_sub(a, p)), db = flat(vec3_sub(b, p));
         double ang = ql_angle_deg(da, db);
-        if (ql_dot(ql_cross(PatchVec{-da[0], -da[1], -da[2]}, db), n) < 0.0)
+        if (vec3_dot(vec3_cross(PatchVec{-da[0], -da[1], -da[2]}, db), n) < 0.0)
             ang = 360.0 - ang;
         beta[i] = ang;
     }
@@ -100575,7 +100623,7 @@ bool ql_split_ngon(QlState& rS, const QlPiece& rPiece, const std::vector<std::si
     const std::size_t nb = rB.size();
     std::vector<double> s(nb + 1, 0.0);
     for (std::size_t i = 0; i < nb; ++i)
-        s[i + 1] = s[i] + ql_norm(ql_sub(rS.mPts[rB[(i + 1) % nb]], rS.mPts[rB[i]]));
+        s[i + 1] = s[i] + vec3_norm(vec3_sub(rS.mPts[rB[(i + 1) % nb]], rS.mPts[rB[i]]));
     const double perim = s[nb];
     const auto gap = [&](std::size_t A, std::size_t B) {
         return B >= A ? s[B] - s[A] : perim - s[A] + s[B];
@@ -100789,7 +100837,7 @@ std::vector<std::size_t> ql_corners(QlState& rS, const QlPiece& rPiece,
         pos[rB[i]] = i;
     std::vector<double> s(nb + 1, 0.0);
     for (std::size_t i = 0; i < nb; ++i)
-        s[i + 1] = s[i] + ql_norm(ql_sub(rS.mPts[rB[(i + 1) % nb]], rS.mPts[rB[i]]));
+        s[i + 1] = s[i] + vec3_norm(vec3_sub(rS.mPts[rB[(i + 1) % nb]], rS.mPts[rB[i]]));
     const double perim = s[nb];
     const auto gap = [&](std::size_t A, std::size_t B) {  // arc length from A forward to B
         return B >= A ? s[B] - s[A] : perim - s[A] + s[B];
@@ -101014,7 +101062,7 @@ bool ql_split_strips(QlState& rS, const QlQuad& rQ, std::size_t D, std::size_t N
     const auto cumulative = [&](const std::vector<std::size_t>& rSt) {
         std::vector<double> c(rSt.size(), 0.0);
         for (std::size_t t = 1; t < rSt.size(); ++t)
-            c[t] = c[t - 1] + ql_norm(ql_sub(rS.mPts[b[rSt[t]]], rS.mPts[b[rSt[t - 1]]]));
+            c[t] = c[t - 1] + vec3_norm(vec3_sub(rS.mPts[b[rSt[t]]], rS.mPts[b[rSt[t - 1]]]));
         return c;
     };
     const std::size_t c0 = rQ.mCorners[D], c1 = rQ.mCorners[(D + 1) % 4];
@@ -101123,7 +101171,7 @@ std::vector<QlQuad> ql_refine(QlState& rS, std::vector<QlQuad> Quads, double Tar
             for (std::size_t t = a; t < e; ++t) {
                 const std::size_t u = q.mBoundary[t], v = q.mBoundary[(t + 1) % nb];
                 half[{u, v}] = {i, j};
-                len[i][j] += ql_norm(ql_sub(rS.mPts[v], rS.mPts[u]));
+                len[i][j] += vec3_norm(vec3_sub(rS.mPts[v], rS.mPts[u]));
             }
         }
     }
@@ -101191,8 +101239,8 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
     // 1. Features: creases and label changes are cuts.
     std::vector<PatchVec> normal(nt);
     for (std::size_t f = 0; f < nt; ++f)
-        normal[f] = ql_unit(ql_cross(ql_sub(rPts[rTris[f][1]], rPts[rTris[f][0]]),
-                                     ql_sub(rPts[rTris[f][2]], rPts[rTris[f][0]])));
+        normal[f] = ql_unit(vec3_cross(vec3_sub(rPts[rTris[f][1]], rPts[rTris[f][0]]),
+                                       vec3_sub(rPts[rTris[f][2]], rPts[rTris[f][0]])));
     const bool labelled = rOptions.mLabels.size() == nt;
     std::vector<std::array<std::uint8_t, 3>> feature(nt, {0, 0, 0});
     CrossFieldOptions co;
@@ -101835,29 +101883,16 @@ QrV3 qr_at(const double* pX, std::int64_t Id) {
     const auto i = static_cast<std::size_t>(Id);
     return {pX[3 * i], pX[3 * i + 1], pX[3 * i + 2]};
 }
-QrV3 qr_sub(const QrV3& rA, const QrV3& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-QrV3 qr_cross(const QrV3& rA, const QrV3& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-double qr_dot(const QrV3& rA, const QrV3& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-double qr_norm(const QrV3& rA) {
-    return std::sqrt(qr_dot(rA, rA));
-}
 
 /// The quad's unit normal (its vector area normalised); zero when none.
 QrV3 qr_normal(const std::array<QrV3, 4>& rP) {
     QrV3 n{0.0, 0.0, 0.0};
     for (std::size_t i = 0; i < 4; ++i) {
-        const QrV3 c = qr_cross(rP[i], rP[(i + 1) % 4]);
+        const QrV3 c = vec3_cross(rP[i], rP[(i + 1) % 4]);
         for (std::size_t k = 0; k < 3; ++k)
             n[k] += c[k];
     }
-    const double l = qr_norm(n);
+    const double l = vec3_norm(n);
     if (!(l > 0.0))
         return {0.0, 0.0, 0.0};
     return {n[0] / l, n[1] / l, n[2] / l};
@@ -101874,12 +101909,12 @@ double quad_scaled_jacobian(const double* pX, const std::array<std::int64_t, 4>&
     const QrV3 n = qr_normal(p);
     double sj = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < 4; ++i) {
-        const QrV3 e1 = qr_sub(p[(i + 1) % 4], p[i]);
-        const QrV3 e2 = qr_sub(p[(i + 3) % 4], p[i]);
-        const double l = qr_norm(e1) * qr_norm(e2);
+        const QrV3 e1 = vec3_sub(p[(i + 1) % 4], p[i]);
+        const QrV3 e2 = vec3_sub(p[(i + 3) % 4], p[i]);
+        const double l = vec3_norm(e1) * vec3_norm(e2);
         if (!(l > 0.0))
             return 0.0;
-        sj = std::min(sj, qr_dot(qr_cross(e1, e2), n) / l);
+        sj = std::min(sj, vec3_dot(vec3_cross(e1, e2), n) / l);
     }
     return sj;
 }
@@ -101892,12 +101927,12 @@ double qr_quality(const std::array<QrV3, 4>& rP) {
     const QrV3 n = qr_normal(p);
     double q = 1.0;
     for (std::size_t i = 0; i < 4; ++i) {
-        const QrV3 e1 = qr_sub(p[(i + 1) % 4], p[i]);
-        const QrV3 e2 = qr_sub(p[(i + 3) % 4], p[i]);
-        const double s = qr_dot(qr_cross(e1, e2), n);
+        const QrV3 e1 = vec3_sub(p[(i + 1) % 4], p[i]);
+        const QrV3 e2 = vec3_sub(p[(i + 3) % 4], p[i]);
+        const double s = vec3_dot(vec3_cross(e1, e2), n);
         if (!(s > 0.0))
             return 0.0;  // a reflex or flat corner
-        const double deg = std::atan2(s, qr_dot(e1, e2)) * (180.0 / 3.14159265358979323846);
+        const double deg = std::atan2(s, vec3_dot(e1, e2)) * (180.0 / 3.14159265358979323846);
         q = std::min(q, 1.0 - std::fabs(deg - 90.0) / 90.0);
     }
     return std::max(0.0, q);
@@ -102060,7 +102095,7 @@ QuadRecombineResult quad_recombine(
             of_edge.emplace(std::make_pair(rTris[t][k], rTris[t][(k + 1) % 3]), t);
     const auto normal_of = [&](std::size_t T) {
         const QrV3 a = qr_at(pX, rTris[T][0]);
-        return qr_cross(qr_sub(qr_at(pX, rTris[T][1]), a), qr_sub(qr_at(pX, rTris[T][2]), a));
+        return vec3_cross(vec3_sub(qr_at(pX, rTris[T][1]), a), vec3_sub(qr_at(pX, rTris[T][2]), a));
     };
     struct Candidate {
         double mQuality;
@@ -102108,10 +102143,10 @@ QuadRecombineResult quad_recombine(
         }
         const std::array<std::int64_t, 4> quad{a, d, b, c};
         const QrV3 n1 = normal_of(t1), n2 = normal_of(t2);
-        const double l = qr_norm(n1) * qr_norm(n2);
+        const double l = vec3_norm(n1) * vec3_norm(n2);
         if (!(l > 0.0))
             continue;
-        const double q = quad_recombine_quality(pX, quad) * std::max(0.0, qr_dot(n1, n2) / l);
+        const double q = quad_recombine_quality(pX, quad) * std::max(0.0, vec3_dot(n1, n2) / l);
         if (!(q >= MinQuality && q > 0.0))
             continue;
         if (pMidpoint && !qr_splits_well(pX, quad, *pMidpoint, MinQuality))
@@ -106177,19 +106212,8 @@ namespace meshioplusplus {
 namespace detail {
 namespace {
 
-using Vec3 = std::array<double, 3>;
-
 Vec3 sl_sub(const double* pA, const double* pB) {
     return {pA[0] - pB[0], pA[1] - pB[1], pA[2] - pB[2]};
-}
-
-Vec3 sl_cross(const Vec3& rA, const Vec3& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
-double sl_dot(const Vec3& rA, const Vec3& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
 }
 
 // How a cell of a given type name is cut into simplices, as corner indices into
@@ -106396,7 +106420,7 @@ public:
                 best_point[c] = pPoint[c] - (mDim == 2 ? distance * normal[c] : 0.0);
             }
             if (mDim == 2) {
-                const double along = sl_dot({best_vec[0], best_vec[1], best_vec[2]}, normal);
+                const double along = vec3_dot({best_vec[0], best_vec[1], best_vec[2]}, normal);
                 for (std::size_t c = 0; c < 3; ++c)
                     best_vec[c] -= along * normal[c];
             }
@@ -106422,12 +106446,12 @@ public:
             const Vec3 a = sl_sub(point(s.mNode[0]), point(s.mNode[3]));
             const Vec3 b = sl_sub(point(s.mNode[1]), point(s.mNode[3]));
             const Vec3 c = sl_sub(point(s.mNode[2]), point(s.mNode[3]));
-            return std::fabs(sl_dot(a, sl_cross(b, c))) / 6.0;
+            return std::fabs(vec3_dot(a, vec3_cross(b, c))) / 6.0;
         }
         const Vec3 a = sl_sub(point(s.mNode[1]), point(s.mNode[0]));
         const Vec3 b = sl_sub(point(s.mNode[2]), point(s.mNode[0]));
-        const Vec3 n = sl_cross(a, b);
-        return 0.5 * std::sqrt(sl_dot(n, n));
+        const Vec3 n = vec3_cross(a, b);
+        return 0.5 * std::sqrt(vec3_dot(n, n));
     }
 
     Vec3 Centroid(std::size_t Simplex) const {
@@ -106463,12 +106487,12 @@ private:
             const Vec3 b = sl_sub(point(s.mNode[1]), d);
             const Vec3 c = sl_sub(point(s.mNode[2]), d);
             const Vec3 p = sl_sub(pPoint, d);
-            const double det = sl_dot(a, sl_cross(b, c));
+            const double det = vec3_dot(a, vec3_cross(b, c));
             if (!(std::fabs(det) > 0.0))
                 return false;
-            pLambda[0] = sl_dot(p, sl_cross(b, c)) / det;
-            pLambda[1] = sl_dot(a, sl_cross(p, c)) / det;
-            pLambda[2] = sl_dot(a, sl_cross(b, p)) / det;
+            pLambda[0] = vec3_dot(p, vec3_cross(b, c)) / det;
+            pLambda[1] = vec3_dot(a, vec3_cross(p, c)) / det;
+            pLambda[2] = vec3_dot(a, vec3_cross(b, p)) / det;
             pLambda[3] = 1.0 - pLambda[0] - pLambda[1] - pLambda[2];
             for (int k = 0; k < 4; ++k)
                 if (!(pLambda[k] >= -kEps))
@@ -106479,17 +106503,17 @@ private:
         const Vec3 u = sl_sub(point(s.mNode[1]), origin);
         const Vec3 v = sl_sub(point(s.mNode[2]), origin);
         const Vec3 w = sl_sub(pPoint, origin);
-        const Vec3 n = sl_cross(u, v);
-        const double area2 = sl_dot(n, n);
+        const Vec3 n = vec3_cross(u, v);
+        const double area2 = vec3_dot(n, n);
         if (!(area2 > 0.0))
             return false;
         const double len = std::sqrt(area2);
         rNormal = {n[0] / len, n[1] / len, n[2] / len};
-        rDistance = sl_dot(w, rNormal);
+        rDistance = vec3_dot(w, rNormal);
         if (!(std::fabs(rDistance) <= mTol))
             return false;
-        pLambda[1] = sl_dot(sl_cross(w, v), n) / area2;
-        pLambda[2] = sl_dot(sl_cross(u, w), n) / area2;
+        pLambda[1] = vec3_dot(vec3_cross(w, v), n) / area2;
+        pLambda[2] = vec3_dot(vec3_cross(u, w), n) / area2;
         pLambda[0] = 1.0 - pLambda[1] - pLambda[2];
         for (int k = 0; k < 3; ++k)
             if (!(pLambda[k] >= -kEps))
@@ -107867,23 +107891,6 @@ namespace {
 
 using SfVec = std::array<double, 3>;
 
-SfVec sf_sub(const SfVec& rA, const SfVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-double sf_dot(const SfVec& rA, const SfVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-SfVec sf_cross(const SfVec& rA, const SfVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
-double sf_norm(const SfVec& rA) {
-    return std::sqrt(sf_dot(rA, rA));
-}
-
 }  // namespace
 
 SurfaceFem build_surface_fem(const Mesh& rMesh, const std::string& rOp) {
@@ -107939,17 +107946,17 @@ SurfaceFem build_surface_fem(const Mesh& rMesh, const std::string& rOp) {
         const SfVec& a = fem.mPoints[t.mNodes[0]];
         const SfVec& b = fem.mPoints[t.mNodes[1]];
         const SfVec& c = fem.mPoints[t.mNodes[2]];
-        const double ab = sf_norm(sf_sub(b, a)), bc = sf_norm(sf_sub(c, b)),
-                     ca = sf_norm(sf_sub(a, c));
-        t.mDoubleArea = sf_norm(sf_cross(sf_sub(b, a), sf_sub(c, a)));
+        const double ab = vec3_norm(vec3_sub(b, a)), bc = vec3_norm(vec3_sub(c, b)),
+                     ca = vec3_norm(vec3_sub(a, c));
+        t.mDoubleArea = vec3_norm(vec3_cross(vec3_sub(b, a), vec3_sub(c, a)));
         const double longest = std::max({ab, bc, ca});
         if (!(t.mDoubleArea > 1e-14 * longest * longest)) {
             ++fem.mNumDegenerate;
             continue;
         }
-        t.mCot[0] = sf_dot(sf_sub(b, a), sf_sub(c, a)) / t.mDoubleArea;
-        t.mCot[1] = sf_dot(sf_sub(a, b), sf_sub(c, b)) / t.mDoubleArea;
-        t.mCot[2] = sf_dot(sf_sub(a, c), sf_sub(b, c)) / t.mDoubleArea;
+        t.mCot[0] = vec3_dot(vec3_sub(b, a), vec3_sub(c, a)) / t.mDoubleArea;
+        t.mCot[1] = vec3_dot(vec3_sub(a, b), vec3_sub(c, b)) / t.mDoubleArea;
+        t.mCot[2] = vec3_dot(vec3_sub(a, c), vec3_sub(b, c)) / t.mDoubleArea;
         edge_sum += ab + bc + ca;
         edge_count += 3;
         fem.mTriangles.push_back(t);
@@ -108319,11 +108326,6 @@ double spj_dot(const double* pA, const double* pB) {
     return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
 }
 
-double spj_dist(const EdgeVec3& rA, const EdgeVec3& rB) {
-    return std::sqrt((rA[0] - rB[0]) * (rA[0] - rB[0]) + (rA[1] - rB[1]) * (rA[1] - rB[1]) +
-                     (rA[2] - rB[2]) * (rA[2] - rB[2]));
-}
-
 // Seeds per direction: (degree + 1) per span of nonzero length, 8 to 32.
 int spj_count(const NurbsPatch& rPatch, std::size_t D) {
     if (D >= rPatch.mKnots.size() || D >= rPatch.mDegrees.size())
@@ -108359,7 +108361,7 @@ double SurfaceProjector::Polish(const EdgeVec3& rP, std::array<double, 2>& rUv) 
     const auto dist = [&](double U, double V) {
         EdgeVec3 x{};
         pSurface->Eval(U, V, x.data(), nullptr, nullptr);
-        return spj_dist(x, rP);
+        return vec3_norm(vec3_sub(x, rP));
     };
     double best = dist(rUv[0], rUv[1]);
     for (int it = 0; it < 50; ++it) {
@@ -108409,7 +108411,7 @@ std::array<double, 2> SurfaceProjector::Project(const EdgeVec3& rP, EdgeVec3& rX
     std::array<double, kStarts> near_d{};
     near_d.fill(std::numeric_limits<double>::infinity());
     for (std::size_t s = 0; s < mSeedX.size(); ++s) {
-        const double d = spj_dist(mSeedX[s], rP);
+        const double d = vec3_norm(vec3_sub(mSeedX[s], rP));
         for (std::size_t k = 0; k < kStarts; ++k)
             if (d < near_d[k]) {
                 for (std::size_t m = kStarts - 1; m > k; --m) {
@@ -146707,9 +146709,6 @@ using LmPoint = std::array<double, 3>;
 LmPoint lm_sub(const LmPoint& a, const LmPoint& b) {
     return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
 }
-double lm_dot(const LmPoint& a, const LmPoint& b) {
-    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-}
 LmPoint lm_cross(const LmPoint& a, const LmPoint& b) {
     return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
 }
@@ -146720,30 +146719,30 @@ bool lm_on_side(const std::vector<LmPoint>& rP, const LmPoint& rQ) {
     double scale = 0.0;
     for (std::size_t k = 0; k < rP.size(); ++k) {
         const LmPoint d = lm_sub(rP[(k + 1) % rP.size()], rP[k]);
-        scale = std::max(scale, std::sqrt(lm_dot(d, d)));
+        scale = std::max(scale, std::sqrt(detail::vec3_dot(d, d)));
     }
     const double tol = 1e-6 * (scale > 0 ? scale : 1.0);
     if (rP.size() == 2) {
         const LmPoint d = lm_sub(rP[1], rP[0]);
         const LmPoint q = lm_sub(rQ, rP[0]);
-        const double len2 = lm_dot(d, d);
+        const double len2 = detail::vec3_dot(d, d);
         if (len2 == 0.0)
             return false;
-        const double t = lm_dot(q, d) / len2;
+        const double t = detail::vec3_dot(q, d) / len2;
         const LmPoint off = lm_cross(q, d);
-        return t >= -1e-6 && t <= 1 + 1e-6 && std::sqrt(lm_dot(off, off) / len2) <= tol;
+        return t >= -1e-6 && t <= 1 + 1e-6 && std::sqrt(detail::vec3_dot(off, off) / len2) <= tol;
     }
     auto in_triangle = [&](const LmPoint& a, const LmPoint& b, const LmPoint& c) {
         const LmPoint n = lm_cross(lm_sub(b, a), lm_sub(c, a));
-        const double n2 = lm_dot(n, n);
+        const double n2 = detail::vec3_dot(n, n);
         if (n2 == 0.0)
             return false;
-        if (std::abs(lm_dot(lm_sub(rQ, a), n)) / std::sqrt(n2) > tol)
+        if (std::abs(detail::vec3_dot(lm_sub(rQ, a), n)) / std::sqrt(n2) > tol)
             return false;
         const double eps = -1e-6 * n2;
-        return lm_dot(lm_cross(lm_sub(b, a), lm_sub(rQ, a)), n) >= eps &&
-               lm_dot(lm_cross(lm_sub(c, b), lm_sub(rQ, b)), n) >= eps &&
-               lm_dot(lm_cross(lm_sub(a, c), lm_sub(rQ, c)), n) >= eps;
+        return detail::vec3_dot(lm_cross(lm_sub(b, a), lm_sub(rQ, a)), n) >= eps &&
+               detail::vec3_dot(lm_cross(lm_sub(c, b), lm_sub(rQ, b)), n) >= eps &&
+               detail::vec3_dot(lm_cross(lm_sub(a, c), lm_sub(rQ, c)), n) >= eps;
     };
     if (rP.size() == 3)
         return in_triangle(rP[0], rP[1], rP[2]);
@@ -216555,21 +216554,8 @@ constexpr double kBlMinJacobian = 1e-6;
     throw std::invalid_argument(std::string(kBoundaryLayerPrefix) + rWhy);
 }
 
-BlV3 bl_sub(const BlV3& rA, const BlV3& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-double bl_dot(const BlV3& rA, const BlV3& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-BlV3 bl_cross(const BlV3& rA, const BlV3& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-double bl_norm(const BlV3& rA) {
-    return std::sqrt(bl_dot(rA, rA));
-}
 BlV3 bl_unit(const BlV3& rA) {
-    const double l = bl_norm(rA);
+    const double l = detail::vec3_norm(rA);
     return l > 0.0 ? BlV3{rA[0] / l, rA[1] / l, rA[2] / l} : BlV3{0.0, 0.0, 0.0};
 }
 
@@ -216858,9 +216844,9 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
             const std::int64_t p = faces[f][static_cast<std::size_t>(i)];
             const std::int64_t q = faces[f][static_cast<std::size_t>((i + 1) % k)];
             const std::int64_t r = faces[f][static_cast<std::size_t>((i + k - 1) % k)];
-            const BlV3 u = bl_unit(bl_sub(point(q), point(p)));
-            const BlV3 v = bl_unit(bl_sub(point(r), point(p)));
-            const double angle = std::acos(std::clamp(bl_dot(u, v), -1.0, 1.0));
+            const BlV3 u = bl_unit(detail::vec3_sub(point(q), point(p)));
+            const BlV3 v = bl_unit(detail::vec3_sub(point(r), point(p)));
+            const double angle = std::acos(std::clamp(detail::vec3_dot(u, v), -1.0, 1.0));
             around[static_cast<std::size_t>(p)].push_back({f, angle});
             nbrs[static_cast<std::size_t>(p)].push_back(q);
             nbrs[static_cast<std::size_t>(p)].push_back(r);
@@ -216890,7 +216876,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
                 double lo = std::numeric_limits<double>::infinity();
                 for (const auto& [f, w] : r_a) {
                     (void)w;
-                    const double d = bl_dot(rN, fn[f]);
+                    const double d = detail::vec3_dot(rN, fn[f]);
                     if (d < lo) {
                         lo = d;
                         rWho = f;
@@ -216929,7 +216915,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
         double lo = std::numeric_limits<double>::infinity();
         for (const auto& [f, w] : around[P]) {
             (void)w;
-            lo = std::min(lo, bl_dot(rN, fn[f]));
+            lo = std::min(lo, detail::vec3_dot(rN, fn[f]));
         }
         return lo;
     };
@@ -216996,8 +216982,8 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
                 return;
             double shortest = std::numeric_limits<double>::infinity();
             for (const std::int64_t q : nbrs[P])
-                shortest = std::min(shortest,
-                                    bl_norm(bl_sub(point(q), point(static_cast<std::int64_t>(P)))));
+                shortest = std::min(shortest, detail::vec3_norm(detail::vec3_sub(
+                                                  point(q), point(static_cast<std::int64_t>(P)))));
             const double want = total * stretch[P];
             const detail::TriRayHit hit =
                 detail::tri_bvh_ray(tree, point(static_cast<std::int64_t>(P)), dir[P],
@@ -218528,18 +218514,12 @@ ConsSimplices cons_extract_simplices(const Mesh& rOriginal, const Mesh& rSimplex
 // clip kernel never needs anything the mesh's own dtype provides.
 // -------------------------------------------------------------------------
 
-double cons_signed_tet_volume(const detail::Vec3 v[4]) {
-    return detail::triple_product(detail::vec3_sub(v[1], v[0]), detail::vec3_sub(v[2], v[0]),
-                                  detail::vec3_sub(v[3], v[0])) /
-           6.0;
-}
-
 // Positively-oriented copy of a tetra's 4 corners (swap the first two if the
 // signed volume came out negative). The clip kernel's face table assumes
 // this orientation, so this removes any dependence on convert_cells'
 // simplexification always producing positive volumes.
 std::array<detail::Vec3, 4> cons_oriented_tet(const detail::Vec3 v[4]) {
-    if (cons_signed_tet_volume(v) < 0.0)
+    if (detail::tet_volume(v[0], v[1], v[2], v[3]) < 0.0)
         return {v[1], v[0], v[2], v[3]};
     return {v[0], v[1], v[2], v[3]};
 }
@@ -220282,17 +220262,8 @@ namespace {
 
 using CoordVec = std::array<double, 3>;
 
-double coord_dot(const CoordVec& rA, const CoordVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-CoordVec coord_cross(const CoordVec& rA, const CoordVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
 CoordVec coord_unit(const CoordVec& rA) {
-    const double n = std::sqrt(coord_dot(rA, rA));
+    const double n = std::sqrt(detail::vec3_dot(rA, rA));
     return {rA[0] / n, rA[1] / n, rA[2] / n};
 }
 
@@ -220307,14 +220278,15 @@ struct CoordFrame {
 bool coord_local(const CoordFrame& rF, CoordinateSystem System, const CoordVec& rP,
                  CoordVec& rCoords, std::array<CoordVec, 3>& rBasis) {
     const CoordVec d{rP[0] - rF.mOrigin[0], rP[1] - rF.mOrigin[1], rP[2] - rF.mOrigin[2]};
-    const double z = coord_dot(d, rF.mAxis);
+    const double z = detail::vec3_dot(d, rF.mAxis);
     const CoordVec rho{d[0] - z * rF.mAxis[0], d[1] - z * rF.mAxis[1], d[2] - z * rF.mAxis[2]};
-    const double r_cyl = std::sqrt(coord_dot(rho, rho));
-    const double scale = std::sqrt(coord_dot(d, d));
+    const double r_cyl = std::sqrt(detail::vec3_dot(rho, rho));
+    const double scale = std::sqrt(detail::vec3_dot(d, d));
     const bool on_axis = !(r_cyl > 1e-14 * std::max(scale, 1.0));
     const CoordVec e_rho = on_axis ? rF.mE1 : coord_unit(rho);
-    const double angle = on_axis ? 0.0 : std::atan2(coord_dot(rho, rF.mE2), coord_dot(rho, rF.mE1));
-    const CoordVec e_phi = coord_cross(rF.mAxis, e_rho);
+    const double angle =
+        on_axis ? 0.0 : std::atan2(detail::vec3_dot(rho, rF.mE2), detail::vec3_dot(rho, rF.mE1));
+    const CoordVec e_phi = detail::vec3_cross(rF.mAxis, e_rho);
     if (System == CoordinateSystem::Cylindrical) {
         rCoords = {r_cyl, angle, z};
         rBasis = {e_rho, e_phi, rF.mAxis};
@@ -220410,7 +220382,7 @@ CoordinateSystem coordinate_system_from_name(const std::string& rName) {
 
 CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions& rOptions) {
     CoordFrame frame;
-    const double axis_len = std::sqrt(coord_dot(rOptions.mAxis, rOptions.mAxis));
+    const double axis_len = std::sqrt(detail::vec3_dot(rOptions.mAxis, rOptions.mAxis));
     if (!(axis_len > 0.0) || !std::isfinite(axis_len))
         throw std::invalid_argument("convert_coordinates: the axis must be a nonzero vector");
     frame.mAxis = coord_unit(rOptions.mAxis);
@@ -220418,18 +220390,18 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
     // e1: the reference projected off the axis, or x / y when it lies along it.
     for (const CoordVec& candidate :
          {rOptions.mReference, CoordVec{1.0, 0.0, 0.0}, CoordVec{0.0, 1.0, 0.0}}) {
-        const double along = coord_dot(candidate, frame.mAxis);
+        const double along = detail::vec3_dot(candidate, frame.mAxis);
         const CoordVec off{candidate[0] - along * frame.mAxis[0],
                            candidate[1] - along * frame.mAxis[1],
                            candidate[2] - along * frame.mAxis[2]};
-        const double len = std::sqrt(coord_dot(off, off));
-        const double clen = std::sqrt(coord_dot(candidate, candidate));
+        const double len = std::sqrt(detail::vec3_dot(off, off));
+        const double clen = std::sqrt(detail::vec3_dot(candidate, candidate));
         if (len > 1e-9 * clen) {
             frame.mE1 = coord_unit(off);
             break;
         }
     }
-    frame.mE2 = coord_cross(frame.mAxis, frame.mE1);
+    frame.mE2 = detail::vec3_cross(frame.mAxis, frame.mE1);
 
     // Positions: the points, and the cell centroids (distinct nodes).
     const std::size_t n = rMesh.NumPoints();
@@ -227128,20 +227100,6 @@ namespace {
 
 using ExVec = std::array<double, 3>;
 
-ExVec ex_sub(const ExVec& rA, const ExVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-ExVec ex_cross(const ExVec& rA, const ExVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-double ex_dot(const ExVec& rA, const ExVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-double ex_norm(const ExVec& rA) {
-    return std::sqrt(ex_dot(rA, rA));
-}
-
 // The profile: the cells that are swept, and what else the mesh holds.
 struct ExProfile {
     bool mCurve = false;                               // lines sweep to quads
@@ -227688,7 +227646,7 @@ SweepResult extrude(const Mesh& rMesh, const ExtrudeOptions& rOptions) {
     for (const double c : d)
         if (!std::isfinite(c))
             throw std::invalid_argument("meshio++: extrude: the direction must be finite");
-    const double dl = ex_norm(d);
+    const double dl = detail::vec3_norm(d);
     if (!(dl > 0.0))
         throw std::invalid_argument("meshio++: extrude: the direction must not be zero");
     if (!std::isfinite(o.mRatio) || !(o.mRatio > 0.0))
@@ -227730,16 +227688,16 @@ SweepResult extrude(const Mesh& rMesh, const ExtrudeOptions& rOptions) {
     ExProfile pr = ex_gather(rMesh, op);
     if (pr.mCurve) {
         for (std::size_t l = 0; l < pr.mLines.size(); ++l) {
-            const ExVec e = ex_sub(pr.Point(pr.mLines[l][1]), pr.Point(pr.mLines[l][0]));
-            if (ex_norm(ex_cross(e, d)) <= 1e-9 * ex_norm(e) * dl)
+            const ExVec e = detail::vec3_sub(pr.Point(pr.mLines[l][1]), pr.Point(pr.mLines[l][0]));
+            if (detail::vec3_norm(detail::vec3_cross(e, d)) <= 1e-9 * detail::vec3_norm(e) * dl)
                 throw std::invalid_argument("meshio++: extrude: line " + std::to_string(l) +
                                             " is parallel to the direction (or has no length)");
         }
     } else {
         for (std::size_t f = 0; f < pr.mFaces.size(); ++f) {
             const ExVec nrm = ex_face_normal(pr, pr.mFaces[f]);
-            const double s = ex_dot(nrm, d);
-            if (std::abs(s) <= 1e-9 * ex_norm(nrm) * dl)
+            const double s = detail::vec3_dot(nrm, d);
+            if (std::abs(s) <= 1e-9 * detail::vec3_norm(nrm) * dl)
                 throw std::invalid_argument("meshio++: extrude: face " + std::to_string(f) +
                                             " is parallel to the direction (or has no area)");
             if (s < 0.0) {
@@ -227783,7 +227741,7 @@ SweepResult revolve(const Mesh& rMesh, const RevolveOptions& rOptions) {
     for (std::size_t c = 0; c < 3; ++c)
         if (!std::isfinite(axis[c]) || !std::isfinite(origin[c]))
             throw std::invalid_argument("meshio++: revolve: the axis must be finite");
-    const double al = ex_norm(axis);
+    const double al = detail::vec3_norm(axis);
     if (!(al > 0.0))
         throw std::invalid_argument("meshio++: revolve: the axis must not be zero");
     if (!std::isfinite(o.mTolerance) || o.mTolerance < 0.0)
@@ -227823,14 +227781,15 @@ SweepResult revolve(const Mesh& rMesh, const RevolveOptions& rOptions) {
         }
         any = true;
     }
-    const double tol = o.mTolerance * ex_norm(ex_sub(hi, lo));
+    const double tol = o.mTolerance * detail::vec3_norm(detail::vec3_sub(hi, lo));
     std::vector<char> on_axis(n, 0);
     const auto radial = [&](std::int64_t P) {
-        const ExVec r = ex_sub(pr.Point(P), origin);
-        return ex_cross(axis, r);  // the motion at P; its length is the distance to the axis
+        const ExVec r = detail::vec3_sub(pr.Point(P), origin);
+        return detail::vec3_cross(axis,
+                                  r);  // the motion at P; its length is the distance to the axis
     };
     for (std::size_t p = 0; p < n; ++p)
-        if (pr.mUsed[p] && ex_norm(radial(static_cast<std::int64_t>(p))) <= tol) {
+        if (pr.mUsed[p] && detail::vec3_norm(radial(static_cast<std::int64_t>(p))) <= tol) {
             on_axis[p] = 1;
             ++res.mNumOnAxis;
         }
@@ -227843,10 +227802,11 @@ SweepResult revolve(const Mesh& rMesh, const RevolveOptions& rOptions) {
                 continue;
             }
             const ExVec a = pr.Point(r_l[0]), b = pr.Point(r_l[1]);
-            const ExVec e = ex_sub(b, a);
+            const ExVec e = detail::vec3_sub(b, a);
             const ExVec mid{0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1]), 0.5 * (a[2] + b[2])};
-            const ExVec m = ex_cross(axis, ex_sub(mid, origin));
-            if (ex_norm(ex_cross(e, m)) <= 1e-9 * ex_norm(e) * ex_norm(m))
+            const ExVec m = detail::vec3_cross(axis, detail::vec3_sub(mid, origin));
+            if (detail::vec3_norm(detail::vec3_cross(e, m)) <=
+                1e-9 * detail::vec3_norm(e) * detail::vec3_norm(m))
                 throw std::invalid_argument("meshio++: revolve: line " + std::to_string(l) +
                                             " moves along itself (or has no length)");
         }
@@ -227864,8 +227824,8 @@ SweepResult revolve(const Mesh& rMesh, const RevolveOptions& rOptions) {
                 if (on_axis[static_cast<std::size_t>(v)])
                     continue;
                 const ExVec m = radial(v);
-                const double s = ex_dot(nrm, m);
-                if (std::abs(s) <= 1e-9 * ex_norm(nrm) * ex_norm(m))
+                const double s = detail::vec3_dot(nrm, m);
+                if (std::abs(s) <= 1e-9 * detail::vec3_norm(nrm) * detail::vec3_norm(m))
                     continue;
                 (s > 0.0 ? pos : neg) += 1;
             }
@@ -230649,23 +230609,6 @@ namespace {
 
 using GeoVec = std::array<double, 3>;
 
-GeoVec geo_sub(const GeoVec& rA, const GeoVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-double geo_dot(const GeoVec& rA, const GeoVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-GeoVec geo_cross(const GeoVec& rA, const GeoVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
-double geo_norm(const GeoVec& rA) {
-    return std::sqrt(geo_dot(rA, rA));
-}
-
 // One surface triangle and its cotangents (at corners 0, 1, 2).
 using GeoTriangle = detail::SurfaceFemTriangle;
 
@@ -230829,7 +230772,8 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
         const GeoVec& p0 = xyz[t.mNodes[0]];
         const GeoVec& p1 = xyz[t.mNodes[1]];
         const GeoVec& p2 = xyz[t.mNodes[2]];
-        const GeoVec normal = geo_cross(geo_sub(p1, p0), geo_sub(p2, p0));
+        const GeoVec normal =
+            detail::vec3_cross(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0));
         const double area2 = t.mDoubleArea;
         GeoVec unit_n{normal[0] / area2, normal[1] / area2, normal[2] / area2};
         // grad u = sum_i u_i (N x e_i) / (2 A), e_i the edge opposite corner i,
@@ -230837,13 +230781,13 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
         GeoVec grad{0.0, 0.0, 0.0};
         const std::array<const GeoVec*, 3> p = {&p0, &p1, &p2};
         for (std::size_t k = 0; k < 3; ++k) {
-            const GeoVec e = geo_sub(*p[(k + 2) % 3], *p[(k + 1) % 3]);
-            const GeoVec ne = geo_cross(unit_n, e);
+            const GeoVec e = detail::vec3_sub(*p[(k + 2) % 3], *p[(k + 1) % 3]);
+            const GeoVec ne = detail::vec3_cross(unit_n, e);
             const double uk = u[t.mNodes[k]];
             for (std::size_t c = 0; c < 3; ++c)
                 grad[c] += uk * ne[c] / area2;
         }
-        const double len = geo_norm(grad);
+        const double len = detail::vec3_norm(grad);
         if (!(len > 0.0))
             continue;
         const GeoVec x{-grad[0] / len, -grad[1] / len, -grad[2] / len};
@@ -230851,9 +230795,10 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
             // Corner k, its two neighbours j (next) and l (after): the edges from
             // k to them, weighted by the cotangents of the angles opposite them.
             const std::size_t j = (k + 1) % 3, l = (k + 2) % 3;
-            const GeoVec e1 = geo_sub(*p[j], *p[k]);
-            const GeoVec e2 = geo_sub(*p[l], *p[k]);
-            div[t.mNodes[k]] += 0.5 * (t.mCot[l] * geo_dot(e1, x) + t.mCot[j] * geo_dot(e2, x));
+            const GeoVec e1 = detail::vec3_sub(*p[j], *p[k]);
+            const GeoVec e2 = detail::vec3_sub(*p[l], *p[k]);
+            div[t.mNodes[k]] +=
+                0.5 * (t.mCot[l] * detail::vec3_dot(e1, x) + t.mCot[j] * detail::vec3_dot(e2, x));
         }
     }
 
@@ -235191,71 +235136,6 @@ std::size_t interp_total_cells(const Mesh& rMesh) {
     return total;
 }
 
-// Per-cell centroids in global cell order, always 3 doubles per cell (unused
-// axes zero) — the exact accumulation order of partition.cpp's
-// partition_centroids (anon-namespace, so duplicated here; keep the two and
-// _partition.py's _centroids in step, the numpy parity test pins this).
-std::vector<double> interp_centroids(const Mesh& rMesh, std::size_t total) {
-    const NDArray& points = rMesh.Points();
-    const detail::DoubleView points_v(points);
-    const std::size_t pdim = rMesh.PointDim();
-    const std::size_t dim = std::min<std::size_t>(pdim, 3);
-
-    std::vector<double> cent(3 * total, 0.0);
-    std::size_t base = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t ncells = cb.NumCells();
-        if (cb.IsPolyhedron()) {
-            parallel_for(ncells, [&, base](std::size_t c) {
-                static thread_local std::vector<std::int64_t> nodes;
-                nodes.clear();
-                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
-                    const auto face = cb.Face(c, f);
-                    nodes.insert(nodes.end(), face.first, face.first + face.second);
-                }
-                std::sort(nodes.begin(), nodes.end());
-                nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
-                double* out = cent.data() + 3 * (base + c);
-                for (std::int64_t node : nodes)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += points_v[static_cast<std::size_t>(node) * pdim + d];
-                if (!nodes.empty())
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] /= static_cast<double>(nodes.size());
-            });
-        } else if (cb.IsRagged()) {
-            parallel_for(ncells, [&, base](std::size_t c) {
-                const std::int64_t* row = cb.Row(c);
-                const std::size_t nn = cb.RowSize(c);
-                double* out = cent.data() + 3 * (base + c);
-                for (std::size_t k = 0; k < nn; ++k)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += points_v[static_cast<std::size_t>(row[k]) * pdim + d];
-                if (nn > 0)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] /= static_cast<double>(nn);
-            });
-        } else {
-            const NDArray& conn = cb.Conn();
-            const detail::Int64View conn_v(conn);
-            const std::size_t npc = cb.NodesPerCell();
-            parallel_for(ncells, [&, base](std::size_t c) {
-                double* out = cent.data() + 3 * (base + c);
-                for (std::size_t k = 0; k < npc; ++k) {
-                    const std::size_t node = static_cast<std::size_t>(conn_v[c * npc + k]);
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += points_v[node * pdim + d];
-                }
-                if (npc > 0)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] /= static_cast<double>(npc);
-            });
-        }
-        base += ncells;
-    }
-    return cent;
-}
-
 // The grid cell size for `n` items spread over the bbox `[pLo, pHi]`: the
 // largest axis extent divided by the smallest integer R with R*R*R >= n.
 // Deliberately no cbrt/pow — the integer loop is exact in both C++ and Python,
@@ -235771,8 +235651,8 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
                 cell_names.size());
         } else {
             const std::size_t tgt_total = interp_total_cells(rTarget);
-            const std::vector<double> scent = interp_centroids(rSource, src_total);
-            const std::vector<double> tcent = interp_centroids(rTarget, tgt_total);
+            const std::vector<double> scent = detail::cell_centroids(rSource, src_total);
+            const std::vector<double> tcent = detail::cell_centroids(rTarget, tgt_total);
             auto ccoord = [&](std::int64_t i) {
                 const std::size_t j = static_cast<std::size_t>(i);
                 return detail::Vec3{scent[3 * j], scent[3 * j + 1], scent[3 * j + 2]};
@@ -236946,11 +236826,6 @@ std::string mcad_why(const std::exception& rE) {
     return s;
 }
 
-double mcad_dist(const Vec3& rA, const Vec3& rB) {
-    return std::sqrt((rA[0] - rB[0]) * (rA[0] - rB[0]) + (rA[1] - rB[1]) * (rA[1] - rB[1]) +
-                     (rA[2] - rB[2]) * (rA[2] - rB[2]));
-}
-
 double mcad_segment_distance(const Vec3& rP, const Vec3& rA, const Vec3& rB) {
     const Vec3 d{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
     const double len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
@@ -236959,7 +236834,8 @@ double mcad_segment_distance(const Vec3& rP, const Vec3& rA, const Vec3& rB) {
         t = std::clamp(
             ((rP[0] - rA[0]) * d[0] + (rP[1] - rA[1]) * d[1] + (rP[2] - rA[2]) * d[2]) / len2, 0.0,
             1.0);
-    return mcad_dist(rP, {rA[0] + t * d[0], rA[1] + t * d[1], rA[2] + t * d[2]});
+    return detail::vec3_norm(
+        detail::vec3_sub(rP, {rA[0] + t * d[0], rA[1] + t * d[1], rA[2] + t * d[2]}));
 }
 
 /// A straight trim in the parameters, for the boundary of an untrimmed face.
@@ -237081,7 +236957,7 @@ public:
     void AddSegment(const Vec3& rA, const Vec3& rB) {
         const Vec3 m{0.5 * (rA[0] + rB[0]), 0.5 * (rA[1] + rB[1]), 0.5 * (rA[2] + rB[2])};
         mSegments[KeyOf(m)].push_back({rA, rB});
-        mLongest = std::max(mLongest, mcad_dist(rA, rB));
+        mLongest = std::max(mLongest, detail::vec3_norm(detail::vec3_sub(rA, rB)));
     }
     /// Whether a point lies within `Rp` of a point or `Rs` of a segment.
     bool Near(const Vec3& rP, double Rp, double Rs) const {
@@ -237097,7 +236973,7 @@ public:
                     if (it == mPoints.end())
                         continue;
                     for (const Vec3& r_q : it->second)
-                        if (mcad_dist(r_q, rP) < Rp)
+                        if (detail::vec3_norm(detail::vec3_sub(r_q, rP)) < Rp)
                             return true;
                 }
         // A segment within Rs has its midpoint within Rs + half its length.
@@ -237348,9 +237224,9 @@ double mcad_min_angle(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
 /// Circumradius over shortest edge of a triangle on the surface: the
 /// product of its two longer edges over twice its area's double.
 double mcad_ratio(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
-    const double la = mcad_dist(rB, rC);
-    const double lb = mcad_dist(rC, rA);
-    const double lc = mcad_dist(rA, rB);
+    const double la = detail::vec3_norm(detail::vec3_sub(rB, rC));
+    const double lb = detail::vec3_norm(detail::vec3_sub(rC, rA));
+    const double lc = detail::vec3_norm(detail::vec3_sub(rA, rB));
     const Vec3 u{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
     const Vec3 v{rC[0] - rA[0], rC[1] - rA[1], rC[2] - rA[2]};
     const Vec3 c{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
@@ -238064,7 +237940,7 @@ McadCrossings mcad_face_crossings(const McadFace& rF, const std::vector<McadUse>
             const std::size_t piece = r_u.mSame ? r_o[1] : n - 2 - r_o[1];
             const auto& r_pts = rEdges[edge].mSamples.mPoints;
             ask[i] = {edge, piece};
-            tiny[i] = !(mcad_dist(r_pts[piece], r_pts[piece + 1]) > Tol);
+            tiny[i] = !(detail::vec3_norm(detail::vec3_sub(r_pts[piece], r_pts[piece + 1])) > Tol);
             embedded[i] = r_u.mEmbedded;
             use[i] = r_o[0];
         }
@@ -238495,10 +238371,11 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                     double t0 = 0.0;
                     for (int j = 1; j <= kScan; ++j) {
                         double t1 = t_max * double(j) / kScan;
-                        if (mcad_dist(surface(at(S, t1)), r_p) >= R) {
+                        if (detail::vec3_norm(detail::vec3_sub(surface(at(S, t1)), r_p)) >= R) {
                             for (int it = 0; it < 60; ++it) {
                                 const double tm = 0.5 * (t0 + t1);
-                                if (mcad_dist(surface(at(S, tm)), r_p) >= R)
+                                if (detail::vec3_norm(detail::vec3_sub(surface(at(S, tm)), r_p)) >=
+                                    R)
                                     t1 = tm;
                                 else
                                     t0 = tm;
@@ -238524,7 +238401,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                         }
                         const Vec3 x = surface(at(double(i) / kTrace, t));
                         if (i > 0)
-                            cum.push_back(cum.back() + mcad_dist(prev, x));
+                            cum.push_back(cum.back() +
+                                          detail::vec3_norm(detail::vec3_sub(prev, x)));
                         prev = x;
                     }
                     if (!ok)
@@ -238573,8 +238451,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 const double hx = rQ.pSize ? rQ.pSize->At(x) : h;
                 if (grid.Near(x, 0.5 * hx, 0.4 * hx))
                     continue;
-                if (std::any_of(ring_band.begin(), ring_band.end(),
-                                [&](const auto& rB) { return mcad_dist(x, rB.first) < rB.second; }))
+                if (std::any_of(ring_band.begin(), ring_band.end(), [&](const auto& rB) {
+                        return detail::vec3_norm(detail::vec3_sub(x, rB.first)) < rB.second;
+                    }))
                     continue;
                 const std::int64_t v_id = cdt.InsertSteiner(xp);
                 if (v_id < 0)
@@ -238797,14 +238676,15 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 continue;
             double nearest = std::numeric_limits<double>::infinity();
             for (const std::int64_t p : face_poles)
-                nearest = std::min(nearest, mcad_dist(pl.mJacAt[k], pos(p)));
+                nearest =
+                    std::min(nearest, detail::vec3_norm(detail::vec3_sub(pl.mJacAt[k], pos(p))));
             pole_reach = std::max(pole_reach, nearest);
         }
     const auto pole_near = [&](std::int64_t Id) -> std::int64_t {
         std::int64_t best = -1;
         double best_d = std::numeric_limits<double>::infinity();
         for (const std::int64_t p : face_poles) {
-            const double d = Id == p ? 0.0 : mcad_dist(pos(Id), pos(p));
+            const double d = Id == p ? 0.0 : detail::vec3_norm(detail::vec3_sub(pos(Id), pos(p)));
             if (d <= pole_reach && d < best_d) {
                 best = p;
                 best_d = d;
@@ -238848,8 +238728,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         if (!(rQ.mMinAngleDeg > 0.0) || varying)
             return false;
         const double shortest =
-            std::min({mcad_dist(pos(rIds[0]), pos(rIds[1])), mcad_dist(pos(rIds[1]), pos(rIds[2])),
-                      mcad_dist(pos(rIds[2]), pos(rIds[0]))});
+            std::min({detail::vec3_norm(detail::vec3_sub(pos(rIds[0]), pos(rIds[1]))),
+                      detail::vec3_norm(detail::vec3_sub(pos(rIds[1]), pos(rIds[2]))),
+                      detail::vec3_norm(detail::vec3_sub(pos(rIds[2]), pos(rIds[0])))});
         return shortest < 0.25 * h && stretched(rT);
     };
     // A triangle judged on the surface; one a pole collapses, within h of a
@@ -239222,8 +239103,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             if (by_metric) {
                 // The longest edge in the metric against the unit, by the slack.
                 const auto t = in_metric(pos(rIds[0]), pos(rIds[1]), pos(rIds[2]));
-                const double longest =
-                    std::max({mcad_dist(t[1], t[2]), mcad_dist(t[2], t[0]), mcad_dist(t[0], t[1])});
+                const double longest = std::max({detail::vec3_norm(detail::vec3_sub(t[1], t[2])),
+                                                 detail::vec3_norm(detail::vec3_sub(t[2], t[0])),
+                                                 detail::vec3_norm(detail::vec3_sub(t[0], t[1]))});
                 const double s = longest / detail::kMeshCadSizeSlack;
                 return s > 1.0 ? s : 0.0;
             }
@@ -239232,8 +239114,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             const Vec3& pa = pos(rIds[0]);
             const Vec3& pb = pos(rIds[1]);
             const Vec3& pc = pos(rIds[2]);
-            const double longest =
-                std::max({mcad_dist(pb, pc), mcad_dist(pc, pa), mcad_dist(pa, pb)});
+            const double longest = std::max({detail::vec3_norm(detail::vec3_sub(pb, pc)),
+                                             detail::vec3_norm(detail::vec3_sub(pc, pa)),
+                                             detail::vec3_norm(detail::vec3_sub(pa, pb))});
             const Vec3 centre{(pa[0] + pb[0] + pc[0]) / 3.0, (pa[1] + pb[1] + pc[1]) / 3.0,
                               (pa[2] + pb[2] + pc[2]) / 3.0};
             const double s = longest / (detail::kMeshCadSizeSlack * p_refine_size->At(centre));
@@ -239375,8 +239258,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             const Vec3& pa = pos(mesh_of.at(rT[0]));
             const Vec3& pb = pos(mesh_of.at(rT[1]));
             const Vec3& pc = pos(mesh_of.at(rT[2]));
-            const double shortest =
-                std::min({mcad_dist(pa, pb), mcad_dist(pb, pc), mcad_dist(pc, pa)});
+            const double shortest = std::min({detail::vec3_norm(detail::vec3_sub(pa, pb)),
+                                              detail::vec3_norm(detail::vec3_sub(pb, pc)),
+                                              detail::vec3_norm(detail::vec3_sub(pc, pa))});
             const Vec3 x = lift(rC);
             // A fold's centroid keeps a quarter of its shortest edge from
             // the cavity's vertices.
@@ -239386,7 +239270,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                                 : std::max(slack * ratio_bound * shortest, stretched_floor(rC));
             for (const std::int64_t w : rAround) {
                 const auto it = mesh_of.find(w);
-                if (it != mesh_of.end() && mcad_dist(pos(it->second), x) < radius)
+                if (it != mesh_of.end() &&
+                    detail::vec3_norm(detail::vec3_sub(pos(it->second), x)) < radius)
                     return false;
             }
             return true;
@@ -239398,12 +239283,14 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 const Vec3& pa = pos(mesh_of.at(rT[0]));
                 const Vec3& pb = pos(mesh_of.at(rT[1]));
                 const Vec3& pc = pos(mesh_of.at(rT[2]));
-                const double shortest =
-                    std::min({mcad_dist(pa, pb), mcad_dist(pb, pc), mcad_dist(pc, pa)});
+                const double shortest = std::min({detail::vec3_norm(detail::vec3_sub(pa, pb)),
+                                                  detail::vec3_norm(detail::vec3_sub(pb, pc)),
+                                                  detail::vec3_norm(detail::vec3_sub(pc, pa))});
                 const auto& xa = cdt.Point(A);
                 const auto& xb = cdt.Point(B);
                 const detail::Cdt2d::Vec2 mid{0.5 * (xa[0] + xb[0]), 0.5 * (xa[1] + xb[1])};
-                return 0.5 * mcad_dist(pos(mesh_of.at(A)), pos(mesh_of.at(B))) >=
+                return 0.5 * detail::vec3_norm(
+                                 detail::vec3_sub(pos(mesh_of.at(A)), pos(mesh_of.at(B)))) >=
                        std::max(0.25 * shortest, stretched_floor(mid));
             }
             if (by_metric) {
@@ -239429,17 +239316,20 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 const Vec3& r_b = pos(mesh_of.at(B));
                 const Vec3 mid{0.5 * (r_a[0] + r_b[0]), 0.5 * (r_a[1] + r_b[1]),
                                0.5 * (r_a[2] + r_b[2])};
-                return mcad_dist(r_a, r_b) > detail::kMeshCadSizeSlack * p_refine_size->At(mid);
+                return detail::vec3_norm(detail::vec3_sub(r_a, r_b)) >
+                       detail::kMeshCadSizeSlack * p_refine_size->At(mid);
             }
             const Vec3& pa = pos(mesh_of.at(rT[0]));
             const Vec3& pb = pos(mesh_of.at(rT[1]));
             const Vec3& pc = pos(mesh_of.at(rT[2]));
-            const double shortest =
-                std::min({mcad_dist(pa, pb), mcad_dist(pb, pc), mcad_dist(pc, pa)});
+            const double shortest = std::min({detail::vec3_norm(detail::vec3_sub(pa, pb)),
+                                              detail::vec3_norm(detail::vec3_sub(pb, pc)),
+                                              detail::vec3_norm(detail::vec3_sub(pc, pa))});
             const auto& xa = cdt.Point(A);
             const auto& xb = cdt.Point(B);
             const detail::Cdt2d::Vec2 mid{0.5 * (xa[0] + xb[0]), 0.5 * (xa[1] + xb[1])};
-            return 0.5 * mcad_dist(pos(mesh_of.at(A)), pos(mesh_of.at(B))) >=
+            return 0.5 * detail::vec3_norm(
+                             detail::vec3_sub(pos(mesh_of.at(A)), pos(mesh_of.at(B)))) >=
                    std::max(slack * ratio_bound * shortest / std::sqrt(2.0), stretched_floor(mid));
         };
         ro.mMinAngle = [&](const detail::Cdt2d::Tri& rT) {
@@ -239507,7 +239397,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 }
             ro.mDistance = [&](std::int64_t P, std::int64_t V, const detail::Cdt2d::Vec2& rX) {
                 catch_up();
-                return mcad_dist(pos(mesh_of.at(P)), V >= 0 ? pos(mesh_of.at(V)) : lift(rX));
+                return detail::vec3_norm(
+                    detail::vec3_sub(pos(mesh_of.at(P)), V >= 0 ? pos(mesh_of.at(V)) : lift(rX)));
             };
         }
         std::set<detail::Cdt2dSplitRequest> asked;
@@ -239928,7 +239819,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                                (180.0 / 3.14159265358979323846);
             min_angle = std::min(min_angle, ang);
             max_angle = std::max(max_angle, ang);
-            const double e = mcad_dist(o, p);
+            const double e = detail::vec3_norm(detail::vec3_sub(o, p));
             min_edge = std::min(min_edge, e);
             max_edge = std::max(max_edge, e);
         }
@@ -240452,11 +240343,13 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     const Probe& b = probe[j];
                     // The largest of the three distances, ends either way.
                     const double same =
-                        std::max({mcad_dist(a.mStart, b.mStart), mcad_dist(a.mEnd, b.mEnd),
-                                  mcad_dist(a.mMid, b.mMid)});
+                        std::max({detail::vec3_norm(detail::vec3_sub(a.mStart, b.mStart)),
+                                  detail::vec3_norm(detail::vec3_sub(a.mEnd, b.mEnd)),
+                                  detail::vec3_norm(detail::vec3_sub(a.mMid, b.mMid))});
                     const double flipped =
-                        std::max({mcad_dist(a.mStart, b.mEnd), mcad_dist(a.mEnd, b.mStart),
-                                  mcad_dist(a.mMid, b.mMid)});
+                        std::max({detail::vec3_norm(detail::vec3_sub(a.mStart, b.mEnd)),
+                                  detail::vec3_norm(detail::vec3_sub(a.mEnd, b.mStart)),
+                                  detail::vec3_norm(detail::vec3_sub(a.mMid, b.mMid))});
                     const double gap = std::min(same, flipped);
                     if (gap <= model_tol) {
                         taken[j] = true;
@@ -240605,7 +240498,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     // first use. Models whose uses start together are not touched.
     const auto closed_3d = [&](std::size_t U) {
         const detail::TrimTrace& r_t = *traces[U];
-        return r_t.Length() > tol && mcad_dist(r_t.Point(r_t.Start()), r_t.Point(r_t.End())) <= tol;
+        return r_t.Length() > tol && detail::vec3_norm(detail::vec3_sub(
+                                         r_t.Point(r_t.Start()), r_t.Point(r_t.End()))) <= tol;
     };
     const auto rotatable = [&](std::size_t U) {
         if (uses[U].mLoopSize != 1 || !closed_3d(U))
@@ -240625,7 +240519,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         const double te = edge_tol[e];
         bool apart = false;
         for (const std::size_t u : r_e.mUses)
-            apart = apart || mcad_dist(start_of(u), start_of(r_e.mUses.front())) > tol;
+            apart = apart || detail::vec3_norm(
+                                 detail::vec3_sub(start_of(u), start_of(r_e.mUses.front()))) > tol;
         if (!apart)
             continue;
         std::size_t anchor = r_e.mUses.front();
@@ -240637,7 +240532,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
         r_e.mMaster = anchor;
         const Vec3 p = start_of(anchor);
         for (const std::size_t u : r_e.mUses) {
-            const double d = mcad_dist(start_of(u), p);
+            const double d = detail::vec3_norm(detail::vec3_sub(start_of(u), p));
             if (u == anchor || d <= tol)
                 continue;
             if (rotatable(u)) {
@@ -240718,7 +240613,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 for (const auto& r_loop : r_f.mLoops)
                     for (const std::size_t l : r_loop)
                         for (int k = 0; k < 2 && !joined; ++k)
-                            if (mcad_dist(end_point(l, k), p) <= tol) {
+                            if (detail::vec3_norm(detail::vec3_sub(end_point(l, k), p)) <= tol) {
                                 corners.Join(slot(u, end), slot(l, k));
                                 joined = true;
                             }
@@ -240748,8 +240643,9 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
     for (std::size_t s = 0; s < 2 * uses.size(); ++s) {
         if (!live(s / 2))
             continue;
-        const double gap = mcad_dist(end_point(s / 2, static_cast<int>(s % 2)),
-                                     boundary[static_cast<std::size_t>(corner_id[s])]);
+        const double gap =
+            detail::vec3_norm(detail::vec3_sub(end_point(s / 2, static_cast<int>(s % 2)),
+                                               boundary[static_cast<std::size_t>(corner_id[s])]));
         max_gap = std::max(max_gap, gap);
         const std::int64_t se = uses[s / 2].mEdge;
         const double declared = std::max(se >= 0 ? corner_tol[static_cast<std::size_t>(se)] : 0.0,
@@ -240933,7 +240829,9 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             const Vec3& x = boundary[c];
             const Vec3 a{x[0] - p[0], x[1] - p[1], x[2] - p[2]};
             const Vec3 b{q[0] - x[0], q[1] - x[1], q[2] - x[2]};
-            const double la = mcad_dist(p, x), lb = mcad_dist(x, q), chord = mcad_dist(p, q);
+            const double la = detail::vec3_norm(detail::vec3_sub(p, x)),
+                         lb = detail::vec3_norm(detail::vec3_sub(x, q)),
+                         chord = detail::vec3_norm(detail::vec3_sub(p, q));
             const double cos_turn = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (la * lb);
             if (!(la > 0.0 && lb > 0.0) || !(cos_turn > std::cos(30.0 * kMcadPi / 180.0)))
                 continue;
@@ -241412,9 +241310,9 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             for (const auto& r_loop : r_f.mLoops)
                 for (const std::size_t u : r_loop)
                     for (std::size_t k = 0; k + 1 < uses[u].mIds.size(); ++k)
-                        perimeter +=
-                            mcad_dist(boundary[static_cast<std::size_t>(uses[u].mIds[k])],
-                                      boundary[static_cast<std::size_t>(uses[u].mIds[k + 1])]);
+                        perimeter += detail::vec3_norm(detail::vec3_sub(
+                            boundary[static_cast<std::size_t>(uses[u].mIds[k])],
+                            boundary[static_cast<std::size_t>(uses[u].mIds[k + 1])]));
             if (!(perimeter > 0.0))
                 continue;
             width[f] = 2.0 * area / perimeter;
@@ -241841,8 +241739,9 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 for (const auto& r_a : faces[f].mAsks) {
                     const McadEdge& r_e = edges[r_a[0]];
                     if (r_e.mFail != MeshCadFaceStatus::Ok || r_e.mSamples.mDegenerate ||
-                        !(mcad_dist(r_e.mSamples.mPoints[r_a[1]],
-                                    r_e.mSamples.mPoints[r_a[1] + 1]) > tol))
+                        !(detail::vec3_norm(detail::vec3_sub(r_e.mSamples.mPoints[r_a[1]],
+                                                             r_e.mSamples.mPoints[r_a[1] + 1])) >
+                          tol))
                         continue;
                     split[r_a[0]][r_a[1]] |= r_a[2];
                 }
@@ -241875,7 +241774,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     for (std::size_t k = 0; k + 1 < r_p.size(); ++k)
                         if (mcad_piece_turning(*traces[r_e.mMaster], r_p[k], r_p[k + 1]) >
                                 kMcadPi / 3.0 &&
-                            mcad_dist(r_e.mSamples.mPoints[k], r_e.mSamples.mPoints[k + 1]) > tol)
+                            detail::vec3_norm(detail::vec3_sub(r_e.mSamples.mPoints[k],
+                                                               r_e.mSamples.mPoints[k + 1])) > tol)
                             split[e][k] |= 0;
                 }
             }
@@ -241925,7 +241825,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                             return r_tr.Point(r_tr.ParamAtLength(f * r_e.mSamples.mLength));
                         };
                         const auto from_corner = [&](double A) {
-                            return mcad_dist(corner, at_fraction(p_lop->mEnd == 1 ? A : 1.0 - A));
+                            return detail::vec3_norm(detail::vec3_sub(
+                                corner, at_fraction(p_lop->mEnd == 1 ? A : 1.0 - A)));
                         };
                         // A piece that ends inside the ball is the shrink
                         // rule's, not split here.
@@ -242101,7 +242002,8 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             for (std::size_t k = 0; k < 3; ++k) {
                 amin[o] = std::min(amin[o], ang[k]);
                 amax[o] = std::max(amax[o], ang[k]);
-                const double e = mcad_dist(at(r_t[k]), at(r_t[(k + 1) % 3]));
+                const double e =
+                    detail::vec3_norm(detail::vec3_sub(at(r_t[k]), at(r_t[(k + 1) % 3])));
                 emin[o] = std::min(emin[o], e);
                 emax[o] = std::max(emax[o], e);
             }
@@ -243532,7 +243434,9 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
             const Vec3 a = point_of(r_n[0]);
             const Vec3 b = point_of(p);
             const Vec3 c = point_of(r_n[1]);
-            const double ab = mcad_dist(a, b), bc = mcad_dist(b, c), ca = mcad_dist(c, a);
+            const double ab = detail::vec3_norm(detail::vec3_sub(a, b)),
+                         bc = detail::vec3_norm(detail::vec3_sub(b, c)),
+                         ca = detail::vec3_norm(detail::vec3_sub(c, a));
             const Vec3 u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
             const Vec3 v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
             const Vec3 w{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
@@ -244659,14 +244563,6 @@ namespace {
 
 using MphVec = std::array<double, 3>;
 
-MphVec mph_sub(const MphVec& rA, const MphVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-double mph_dot(const MphVec& rA, const MphVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
 /// The cell types `morph` moves: linear volume and surface cells, and the
 /// lower-dimensional ones it carries along.
 bool mph_supported(const std::string& rType) {
@@ -244790,16 +244686,16 @@ double mph_simplex_measure(const std::vector<MphVec>& rXyz, const std::int64_t* 
     const MphVec& p0 = rXyz[static_cast<std::size_t>(pNodes[0])];
     MphVec e[3];
     for (int k = 0; k < D; ++k)
-        e[k] = mph_sub(rXyz[static_cast<std::size_t>(pNodes[k + 1])], p0);
+        e[k] = detail::vec3_sub(rXyz[static_cast<std::size_t>(pNodes[k + 1])], p0);
     if (D == 2) {
-        const double g00 = mph_dot(e[0], e[0]), g01 = mph_dot(e[0], e[1]),
-                     g11 = mph_dot(e[1], e[1]);
+        const double g00 = detail::vec3_dot(e[0], e[0]), g01 = detail::vec3_dot(e[0], e[1]),
+                     g11 = detail::vec3_dot(e[1], e[1]);
         const double det = g00 * g11 - g01 * g01;
         return det > 0.0 ? 0.5 * std::sqrt(det) : 0.0;
     }
     const MphVec x{e[1][1] * e[2][2] - e[1][2] * e[2][1], e[1][2] * e[2][0] - e[1][0] * e[2][2],
                    e[1][0] * e[2][1] - e[1][1] * e[2][0]};
-    return std::abs(mph_dot(e[0], x)) / 6.0;
+    return std::abs(detail::vec3_dot(e[0], x)) / 6.0;
 }
 
 void mph_simplex_stiffness(const std::vector<MphVec>& rXyz, const std::int64_t* pNodes, int D,
@@ -244808,12 +244704,12 @@ void mph_simplex_stiffness(const std::vector<MphVec>& rXyz, const std::int64_t* 
     const MphVec& p0 = rXyz[static_cast<std::size_t>(pNodes[0])];
     MphVec e[3];
     for (int k = 0; k < D; ++k)
-        e[k] = mph_sub(rXyz[static_cast<std::size_t>(pNodes[k + 1])], p0);
+        e[k] = detail::vec3_sub(rXyz[static_cast<std::size_t>(pNodes[k + 1])], p0);
     // G = E^T E, the gradients' Gram matrix is its inverse: K = |c| B G^-1 B^T.
     double g[3][3], inv[3][3];
     for (int a = 0; a < D; ++a)
         for (int b = 0; b < D; ++b)
-            g[a][b] = mph_dot(e[a], e[b]);
+            g[a][b] = detail::vec3_dot(e[a], e[b]);
     if (D == 2) {
         const double det = g[0][0] * g[1][1] - g[0][1] * g[1][0];
         inv[0][0] = g[1][1] / det;
@@ -245035,7 +244931,7 @@ MorphResult morph(const Mesh& rMesh, const MorphOptions& rOptions) {
             ++result.mNumInverted;
         const MphVec& n0 = before.mNormal[c];
         const MphVec& n1 = after.mNormal[c];
-        if (mph_dot(n0, n0) > 0.0 && !(mph_dot(n0, n1) > 0.0))
+        if (detail::vec3_dot(n0, n0) > 0.0 && !(detail::vec3_dot(n0, n1) > 0.0))
             ++result.mNumInverted;
     }
     if (result.mNumInverted > 0 && !rOptions.mAllowInverted)
@@ -250253,25 +250149,11 @@ inline Vec3 optvol_point(const std::vector<double>& rXyz, std::int64_t v) {
     return {rXyz[o], rXyz[o + 1], rXyz[o + 2]};
 }
 
-// Six times the signed volume of tetra (p0,p1,p2,p3): triple product of the
-// three edges out of p0. Sign is the orientation, magnitude 6*|volume|; used
-// for both the convexity/validity tests and the tiling checks (no division,
-// no in-sphere test anywhere).
-inline double optvol_svol6(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3) {
-    return detail::triple_product(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
-                                  detail::vec3_sub(p3, p0));
-}
-
-// det of the three UNIT outgoing edges at a corner -- the per-corner factor of
-// the scaled Jacobian (quality.cpp's quality_det_unit3, re-derived here rather
-// than reached into its anonymous namespace). NaN on a zero-length edge.
-inline double optvol_det_unit3(const Vec3& u, const Vec3& v, const Vec3& w, double eps) {
-    const double lu = detail::vec3_norm(u), lv = detail::vec3_norm(v), lw = detail::vec3_norm(w);
-    if (lu < eps || lv < eps || lw < eps)
-        return std::numeric_limits<double>::quiet_NaN();
-    return detail::triple_product(detail::vec3_scale(u, 1.0 / lu), detail::vec3_scale(v, 1.0 / lv),
-                                  detail::vec3_scale(w, 1.0 / lw));
-}
+// Six times the signed volume of a tetra (`detail::tet_volume6`) is the sign
+// of its orientation and 6*|volume|; it serves both the convexity/validity
+// tests and the tiling checks (no division, no in-sphere test anywhere). The
+// per-corner factor of the scaled Jacobian is `detail::det_unit3`, the kernel
+// `quality` reports with.
 
 // Orientation-normalised scaled Jacobian in [0, 1]: the tet is measured on its
 // positively-oriented reordering, so a negatively-stored but well-shaped tet
@@ -250282,16 +250164,16 @@ inline double optvol_det_unit3(const Vec3& u, const Vec3& v, const Vec3& w, doub
 double optvol_quality(const Vec3& q0, const Vec3& q1, const Vec3& q2, const Vec3& q3,
                       double eps_len) {
     Vec3 p0 = q0, p1 = q1, p2 = q2, p3 = q3;
-    if (optvol_svol6(p0, p1, p2, p3) < 0.0)
+    if (detail::tet_volume6(p0, p1, p2, p3) < 0.0)
         std::swap(p2, p3);  // reorder to positive orientation
-    const double j0 = optvol_det_unit3(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
-                                       detail::vec3_sub(p3, p0), eps_len);
-    const double j1 = optvol_det_unit3(detail::vec3_sub(p2, p1), detail::vec3_sub(p0, p1),
-                                       detail::vec3_sub(p3, p1), eps_len);
-    const double j2 = optvol_det_unit3(detail::vec3_sub(p0, p2), detail::vec3_sub(p1, p2),
-                                       detail::vec3_sub(p3, p2), eps_len);
-    const double j3 = optvol_det_unit3(detail::vec3_sub(p0, p3), detail::vec3_sub(p2, p3),
-                                       detail::vec3_sub(p1, p3), eps_len);
+    const double j0 = detail::det_unit3(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
+                                        detail::vec3_sub(p3, p0), eps_len);
+    const double j1 = detail::det_unit3(detail::vec3_sub(p2, p1), detail::vec3_sub(p0, p1),
+                                        detail::vec3_sub(p3, p1), eps_len);
+    const double j2 = detail::det_unit3(detail::vec3_sub(p0, p2), detail::vec3_sub(p1, p2),
+                                        detail::vec3_sub(p3, p2), eps_len);
+    const double j3 = detail::det_unit3(detail::vec3_sub(p0, p3), detail::vec3_sub(p2, p3),
+                                        detail::vec3_sub(p1, p3), eps_len);
     if (!(std::isfinite(j0) && std::isfinite(j1) && std::isfinite(j2) && std::isfinite(j3)))
         return 0.0;
     const double sj = std::sqrt(2.0) * std::min({j0, j1, j2, j3});
@@ -250307,8 +250189,8 @@ double optvol_quality_tet(const std::vector<double>& rXyz, const Tet& t, double 
 
 // Store a tet in positive orientation (swap the last two corners if needed).
 inline Tet optvol_orient_positive(const std::vector<double>& rXyz, Tet t) {
-    if (optvol_svol6(optvol_point(rXyz, t[0]), optvol_point(rXyz, t[1]), optvol_point(rXyz, t[2]),
-                     optvol_point(rXyz, t[3])) < 0.0)
+    if (detail::tet_volume6(optvol_point(rXyz, t[0]), optvol_point(rXyz, t[1]),
+                            optvol_point(rXyz, t[2]), optvol_point(rXyz, t[3])) < 0.0)
         std::swap(t[2], t[3]);
     return t;
 }
@@ -250413,17 +250295,17 @@ std::int64_t optvol_pass_23(std::vector<double>& rXyz, std::vector<Tet>& rTets, 
             const Vec3 pf0 = optvol_point(rXyz, f0), pf1 = optvol_point(rXyz, f1),
                        pf2 = optvol_point(rXyz, f2), pd = optvol_point(rXyz, d),
                        pe = optvol_point(rXyz, e);
-            if (optvol_svol6(pf0, pf1, pf2, pd) < 0.0) {
+            if (detail::tet_volume6(pf0, pf1, pf2, pd) < 0.0) {
                 std::swap(f1, f2);
             }
             const Vec3 g0 = optvol_point(rXyz, f0), g1 = optvol_point(rXyz, f1),
                        g2 = optvol_point(rXyz, f2);
-            if (optvol_svol6(g0, g1, g2, pe) >= -eps_vol6)
+            if (detail::tet_volume6(g0, g1, g2, pe) >= -eps_vol6)
                 continue;  // apex e not strictly on the opposite side
             const Tet A{f0, f1, e, d}, B{f1, f2, e, d}, C{f2, f0, e, d};
-            const double vA = optvol_svol6(g0, g1, pe, pd);
-            const double vB = optvol_svol6(g1, g2, pe, pd);
-            const double vC = optvol_svol6(g2, g0, pe, pd);
+            const double vA = detail::tet_volume6(g0, g1, pe, pd);
+            const double vB = detail::tet_volume6(g1, g2, pe, pd);
+            const double vC = detail::tet_volume6(g2, g0, pe, pd);
             if (vA <= eps_vol6 || vB <= eps_vol6 || vC <= eps_vol6)
                 continue;  // non-convex union -> invalid flip
             const double q_old = std::min(rQuality(rTets[t]), rQuality(rTets[u]));
@@ -250538,24 +250420,25 @@ std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets, 
         std::int64_t a = others[0], b = others[1], c = others[2];
         const Vec3 pu = optvol_point(rXyz, uu), pv = optvol_point(rXyz, vv);
         Vec3 pa = optvol_point(rXyz, a), pb = optvol_point(rXyz, b), pc = optvol_point(rXyz, c);
-        if (optvol_svol6(pa, pb, pc, pu) < 0.0) {
+        if (detail::tet_volume6(pa, pb, pc, pu) < 0.0) {
             std::swap(b, c);
             std::swap(pb, pc);
         }
         // u on the positive side of (a,b,c); a valid removal needs v strictly on
         // the far side, and the two caps must tile the three old tets.
-        if (optvol_svol6(pa, pb, pc, pv) >= -eps_vol6)
+        if (detail::tet_volume6(pa, pb, pc, pv) >= -eps_vol6)
             continue;
-        const double vcap1 = optvol_svol6(pa, pb, pc, pu);  // > 0
-        const double vcap2 = optvol_svol6(pa, pc, pb, pv);  // stored orientation, should be > 0
+        const double vcap1 = detail::tet_volume6(pa, pb, pc, pu);  // > 0
+        const double vcap2 =
+            detail::tet_volume6(pa, pc, pb, pv);  // stored orientation, should be > 0
         if (vcap1 <= eps_vol6 || vcap2 <= eps_vol6)
             continue;
         double old_sum = 0.0;
         for (int r = 0; r < 3; ++r)
-            old_sum += std::fabs(optvol_svol6(optvol_point(rXyz, rTets[ring_tets[r]][0]),
-                                              optvol_point(rXyz, rTets[ring_tets[r]][1]),
-                                              optvol_point(rXyz, rTets[ring_tets[r]][2]),
-                                              optvol_point(rXyz, rTets[ring_tets[r]][3])));
+            old_sum += std::fabs(detail::tet_volume6(optvol_point(rXyz, rTets[ring_tets[r]][0]),
+                                                     optvol_point(rXyz, rTets[ring_tets[r]][1]),
+                                                     optvol_point(rXyz, rTets[ring_tets[r]][2]),
+                                                     optvol_point(rXyz, rTets[ring_tets[r]][3])));
         const double new_sum = vcap1 + vcap2;
         if (std::fabs(new_sum - old_sum) > 1e-9 * old_sum + eps_vol6)
             continue;  // not a clean tiling -> non-convex / invalid
@@ -250640,7 +250523,7 @@ double optvol_min_dihedral_tet(const std::vector<double>& rXyz, const Tet& t) {
 double optvol_worst_q(const std::vector<double>& rXyz, const Tet& t, double eps_vol6) {
     const Vec3 a = optvol_point(rXyz, t[0]), b = optvol_point(rXyz, t[1]),
                c = optvol_point(rXyz, t[2]), d = optvol_point(rXyz, t[3]);
-    if (optvol_svol6(a, b, c, d) <= eps_vol6)
+    if (detail::tet_volume6(a, b, c, d) <= eps_vol6)
         return -1.0;
     return optvol_min_dihedral(a, b, c, d);
 }
@@ -250816,13 +250699,15 @@ std::int64_t optvol_pass_edge_removal(std::vector<double>& rXyz, std::vector<Tet
             continue;  // a boundary edge (open fan) or a non-manifold one
         // Orient the ring so that (r_i, r_j, r_l, u) is positive for i < j < l.
         const Vec3 pu = optvol_point(rXyz, uu), pv = optvol_point(rXyz, vv);
-        if (optvol_svol6(pu, pv, optvol_point(rXyz, ring[0]), optvol_point(rXyz, ring[1])) > 0.0)
+        if (detail::tet_volume6(pu, pv, optvol_point(rXyz, ring[0]), optvol_point(rXyz, ring[1])) >
+            0.0)
             std::reverse(ring.begin() + 1, ring.end());
 
         double old_sum = 0.0;
         for (const std::size_t t : ring_tets) {
             const Tet& o = rTets[t];
-            old_sum += std::fabs(optvol_svol6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
+            old_sum +=
+                std::fabs(detail::tet_volume6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
                                               optvol_point(rXyz, o[2]), optvol_point(rXyz, o[3])));
         }
         // best[i][l]: the best least angle over triangulations of r_i .. r_l.
@@ -250877,8 +250762,8 @@ std::int64_t optvol_pass_edge_removal(std::vector<double>& rXyz, std::vector<Tet
         }
         double new_sum = 0.0;
         for (const Tet& o : made)
-            new_sum += optvol_svol6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
-                                    optvol_point(rXyz, o[2]), optvol_point(rXyz, o[3]));
+            new_sum += detail::tet_volume6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
+                                           optvol_point(rXyz, o[2]), optvol_point(rXyz, o[3]));
         if (std::fabs(new_sum - old_sum) > 1e-9 * old_sum + eps_vol6)
             continue;  // not a clean tiling of the ring
         for (const std::size_t t : ring_tets)
@@ -251043,17 +250928,17 @@ std::int64_t optvol_pass_multi_face(std::vector<double>& rXyz, std::vector<Tet>&
         if (ring.size() != k)
             continue;
         const Vec3 pa = optvol_point(rXyz, a), pb = optvol_point(rXyz, b);
-        const double sign =
-            optvol_svol6(pa, pb, optvol_point(rXyz, ring[0]), optvol_point(rXyz, ring[1])) > 0.0
-                ? 1.0
-                : -1.0;
+        const double sign = detail::tet_volume6(pa, pb, optvol_point(rXyz, ring[0]),
+                                                optvol_point(rXyz, ring[1])) > 0.0
+                                ? 1.0
+                                : -1.0;
         std::vector<Tet> made;
         double new_sum = 0.0;
         bool valid = true;
         for (std::size_t i = 0; i < k && valid; ++i) {
             Tet t{a, b, ring[i], ring[(i + 1) % k]};
             const double s6 =
-                optvol_svol6(pa, pb, optvol_point(rXyz, t[2]), optvol_point(rXyz, t[3]));
+                detail::tet_volume6(pa, pb, optvol_point(rXyz, t[2]), optvol_point(rXyz, t[3]));
             if (s6 * sign <= eps_vol6)
                 valid = false;
             if (sign < 0.0)
@@ -251068,9 +250953,9 @@ std::int64_t optvol_pass_multi_face(std::vector<double>& rXyz, std::vector<Tet>&
             for (const std::size_t t : {f.mTa, f.mTb}) {
                 q_old = std::min(q_old, optvol_worst_q(rXyz, rTets[t], eps_vol6));
                 const Tet& o = rTets[t];
-                old_sum +=
-                    std::fabs(optvol_svol6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
-                                           optvol_point(rXyz, o[2]), optvol_point(rXyz, o[3])));
+                old_sum += std::fabs(
+                    detail::tet_volume6(optvol_point(rXyz, o[0]), optvol_point(rXyz, o[1]),
+                                        optvol_point(rXyz, o[2]), optvol_point(rXyz, o[3])));
             }
         if (std::fabs(new_sum - old_sum) > 1e-9 * old_sum + eps_vol6)
             continue;
@@ -251167,7 +251052,7 @@ std::int64_t optvol_smooth_worst(std::vector<double>& rXyz, const std::vector<Te
                     p[c] = t[static_cast<std::size_t>(c)] == v64
                                ? x
                                : optvol_point(rXyz, t[static_cast<std::size_t>(c)]);
-                if (optvol_svol6(p[0], p[1], p[2], p[3]) <= eps_vol6)
+                if (detail::tet_volume6(p[0], p[1], p[2], p[3]) <= eps_vol6)
                     return -1.0;
                 m = std::min(m, optvol_min_dihedral(p[0], p[1], p[2], p[3]));
             }
@@ -252188,71 +252073,6 @@ std::size_t partition_total_cells(const Mesh& rMesh) {
     return total;
 }
 
-// Per-cell centroids in global cell order, always 3 doubles per cell (unused
-// axes zero). The mean of the cell's nodes; polyhedra use the distinct nodes
-// across their faces (a node shared by several faces counts once).
-std::vector<double> partition_centroids(const Mesh& rMesh, std::size_t total) {
-    const NDArray& points = rMesh.Points();
-    const detail::DoubleView points_v(points);
-    const std::size_t pdim = rMesh.PointDim();
-    const std::size_t dim = std::min<std::size_t>(pdim, 3);
-
-    std::vector<double> cent(3 * total, 0.0);
-    std::size_t base = 0;
-    for (const auto cb : rMesh.CellRange()) {
-        const std::size_t ncells = cb.NumCells();
-        if (cb.IsPolyhedron()) {
-            parallel_for(ncells, [&, base](std::size_t c) {
-                static thread_local std::vector<std::int64_t> nodes;
-                nodes.clear();
-                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
-                    const auto face = cb.Face(c, f);
-                    nodes.insert(nodes.end(), face.first, face.first + face.second);
-                }
-                std::sort(nodes.begin(), nodes.end());
-                nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
-                double* out = cent.data() + 3 * (base + c);
-                for (std::int64_t node : nodes)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += points_v[static_cast<std::size_t>(node) * pdim + d];
-                if (!nodes.empty())
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] /= static_cast<double>(nodes.size());
-            });
-        } else if (cb.IsRagged()) {
-            parallel_for(ncells, [&, base](std::size_t c) {
-                const std::int64_t* row = cb.Row(c);
-                const std::size_t nn = cb.RowSize(c);
-                double* out = cent.data() + 3 * (base + c);
-                for (std::size_t k = 0; k < nn; ++k)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += detail::read_double(points,
-                                                      static_cast<std::size_t>(row[k]) * pdim + d);
-                if (nn > 0)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] /= static_cast<double>(nn);
-            });
-        } else {
-            const NDArray& conn = cb.Conn();
-            const detail::Int64View conn_v(conn);
-            const std::size_t npc = cb.NodesPerCell();
-            parallel_for(ncells, [&, base](std::size_t c) {
-                double* out = cent.data() + 3 * (base + c);
-                for (std::size_t k = 0; k < npc; ++k) {
-                    const std::size_t node = static_cast<std::size_t>(conn_v[c * npc + k]);
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] += points_v[node * pdim + d];
-                }
-                if (npc > 0)
-                    for (std::size_t d = 0; d < dim; ++d)
-                        out[d] /= static_cast<double>(npc);
-            });
-        }
-        base += ncells;
-    }
-    return cent;
-}
-
 // The validated per-cell weights (global cell order) from a scalar numeric
 // cell_data array.
 std::vector<double> partition_weights(const Mesh& rMesh, const std::string& rKey,
@@ -252312,7 +252132,7 @@ std::vector<int> partition_sfc_parts(const Mesh& rMesh, const PartitionOptions& 
     if (total == 0 || nparts == 1)
         return parts;
 
-    const std::vector<double> cent = partition_centroids(rMesh, total);
+    const std::vector<double> cent = detail::cell_centroids(rMesh, total);
     const std::size_t dim = std::min<std::size_t>(rMesh.PointDim(), 3);
     const int bits = detail::sfc_bits;
 
@@ -257052,15 +256872,6 @@ namespace {
 
 using PtnVec = std::array<double, 3>;
 
-double ptn_dot(const PtnVec& rA, const PtnVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-PtnVec ptn_cross(const PtnVec& rA, const PtnVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
 /// The sign that makes the largest-magnitude component positive (the lowest
 /// axis on a tie).
 double ptn_canonical_sign(const PtnVec& rN) {
@@ -257108,12 +256919,13 @@ bool ptn_fit(const std::vector<PtnVec>& rP, std::size_t Self, const std::int64_t
     const PtnVec r0{t[0] - l[0], t[3], t[5]};
     const PtnVec r1{t[3], t[1] - l[0], t[4]};
     const PtnVec r2{t[5], t[4], t[2] - l[0]};
-    const std::array<PtnVec, 3> cand{ptn_cross(r0, r1), ptn_cross(r0, r2), ptn_cross(r1, r2)};
+    const std::array<PtnVec, 3> cand{detail::vec3_cross(r0, r1), detail::vec3_cross(r0, r2),
+                                     detail::vec3_cross(r1, r2)};
     std::size_t best = 0;
     for (std::size_t j = 1; j < 3; ++j)
-        if (ptn_dot(cand[j], cand[j]) > ptn_dot(cand[best], cand[best]))
+        if (detail::vec3_dot(cand[j], cand[j]) > detail::vec3_dot(cand[best], cand[best]))
             best = j;
-    const double len = std::sqrt(ptn_dot(cand[best], cand[best]));
+    const double len = std::sqrt(detail::vec3_dot(cand[best], cand[best]));
     if (!(len > 0.0))
         return false;
     rNormal = {cand[best][0] / len, cand[best][1] / len, cand[best][2] / len};
@@ -257206,7 +257018,7 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
         for (std::size_t i = 0; i < n; ++i) {
             const PtnVec to{rOptions.mViewpoint[0] - p[i][0], rOptions.mViewpoint[1] - p[i][1],
                             rOptions.mViewpoint[2] - p[i][2]};
-            if (ok[i] && ptn_dot(normal[i], to) < 0.0)
+            if (ok[i] && detail::vec3_dot(normal[i], to) < 0.0)
                 normal[i] = {-normal[i][0], -normal[i][1], -normal[i][2]};
         }
     } else if (rOptions.mOrientation == NormalOrientation::Consistent) {
@@ -257283,7 +257095,7 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
                     const auto t = static_cast<std::size_t>(*it);
                     if (done[t])
                         continue;
-                    const double w = 1.0 - std::abs(ptn_dot(normal[S], normal[t]));
+                    const double w = 1.0 - std::abs(detail::vec3_dot(normal[S], normal[t]));
                     const auto src = static_cast<std::int64_t>(S);
                     if (w < key[t] || (w == key[t] && src < key_src[t])) {
                         key[t] = w;
@@ -257301,7 +257113,7 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
                 if (done[ti] || w != key[ti] || s != key_src[ti])
                     continue;
                 done[ti] = 1;
-                if (ptn_dot(normal[ti], normal[static_cast<std::size_t>(s)]) < 0.0)
+                if (detail::vec3_dot(normal[ti], normal[static_cast<std::size_t>(s)]) < 0.0)
                     normal[ti] = {-normal[ti][0], -normal[ti][1], -normal[ti][2]};
                 push_from(ti);
             }
@@ -257316,8 +257128,8 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
             double outward = 0.0, spread = 0.0;
             for (const std::size_t m : members) {
                 const PtnVec d{p[m][0] - c[0], p[m][1] - c[1], p[m][2] - c[2]};
-                outward += ptn_dot(normal[m], d);
-                spread += std::sqrt(ptn_dot(d, d));
+                outward += detail::vec3_dot(normal[m], d);
+                spread += std::sqrt(detail::vec3_dot(d, d));
             }
             double flip = 1.0;
             if (std::abs(outward) > 1e-6 * spread)
@@ -260906,6 +260718,8 @@ ProjectToCadResult project_to_cad(const Mesh& rMesh, const BrepInfo& rBrep,
 
 // Project includes
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 
 namespace {
@@ -260982,17 +260796,6 @@ double quality_angle_deg(const Vec3& u, const Vec3& v, double eps) {
     double c = detail::vec3_dot(u, v) / (nu * nv);
     c = std::clamp(c, -1.0, 1.0);
     return std::acos(c) * QUALITY_RAD2DEG;
-}
-
-// det of the three unit edge vectors; NaN if any is degenerate.
-double quality_det_unit3(const Vec3& a, const Vec3& b, const Vec3& c, double eps) {
-    const double na = detail::vec3_norm(a);
-    const double nb = detail::vec3_norm(b);
-    const double nc = detail::vec3_norm(c);
-    if (na < eps || nb < eps || nc < eps)
-        return QUALITY_NAN;
-    return detail::det3(detail::vec3_scale(a, 1.0 / na), detail::vec3_scale(b, 1.0 / nb),
-                        detail::vec3_scale(c, 1.0 / nc));
 }
 
 // Signed volume via a cell-centroid / face-centroid fan over outward-wound
@@ -261164,9 +260967,7 @@ void quality_tetra(const std::vector<Vec3>& c, double eps, double* m) {
     const Vec3& p1 = c[1];
     const Vec3& p2 = c[2];
     const Vec3& p3 = c[3];
-    const double vol = detail::triple_product(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
-                                              detail::vec3_sub(p3, p0)) /
-                       6.0;
+    const double vol = detail::tet_volume(p0, p1, p2, p3);
     m[QM_VOLUME] = vol;
     const double edges[6] = {quality_edge_len(p0, p1), quality_edge_len(p0, p2),
                              quality_edge_len(p0, p3), quality_edge_len(p1, p2),
@@ -261176,13 +260977,13 @@ void quality_tetra(const std::vector<Vec3>& c, double eps, double* m) {
         emin = std::min(emin, e);
 
     // Scaled Jacobian: sqrt(2) * min corner det of unit outgoing edges.
-    const double j0 = quality_det_unit3(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
+    const double j0 = detail::det_unit3(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0),
                                         detail::vec3_sub(p3, p0), eps);
-    const double j1 = quality_det_unit3(detail::vec3_sub(p2, p1), detail::vec3_sub(p0, p1),
+    const double j1 = detail::det_unit3(detail::vec3_sub(p2, p1), detail::vec3_sub(p0, p1),
                                         detail::vec3_sub(p3, p1), eps);
-    const double j2 = quality_det_unit3(detail::vec3_sub(p0, p2), detail::vec3_sub(p1, p2),
+    const double j2 = detail::det_unit3(detail::vec3_sub(p0, p2), detail::vec3_sub(p1, p2),
                                         detail::vec3_sub(p3, p2), eps);
-    const double j3 = quality_det_unit3(detail::vec3_sub(p0, p3), detail::vec3_sub(p2, p3),
+    const double j3 = detail::det_unit3(detail::vec3_sub(p0, p3), detail::vec3_sub(p2, p3),
                                         detail::vec3_sub(p1, p3), eps);
     double sj = QUALITY_NAN;
     if (std::isfinite(j0) && std::isfinite(j1) && std::isfinite(j2) && std::isfinite(j3))
@@ -261271,14 +261072,13 @@ void quality_hex(const std::vector<Vec3>& c, const std::vector<detail::CellFaceD
         emin = std::min(emin, quality_edge_len(c[e[0]], c[e[1]]));
 
     // Scaled Jacobian: min corner det of unit outgoing element edges.
-    const int tj[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {0, 2, 7},
-                          {7, 5, 0}, {4, 6, 1}, {5, 7, 2}, {6, 4, 3}};
     double sj = std::numeric_limits<double>::max();
     bool sj_ok = true;
     for (int n = 0; n < 8; ++n) {
-        const double d = quality_det_unit3(detail::vec3_sub(c[tj[n][0]], c[n]),
-                                           detail::vec3_sub(c[tj[n][1]], c[n]),
-                                           detail::vec3_sub(c[tj[n][2]], c[n]), eps);
+        const double d =
+            detail::det_unit3(detail::vec3_sub(c[detail::kHexCornerEdges[n][0]], c[n]),
+                              detail::vec3_sub(c[detail::kHexCornerEdges[n][1]], c[n]),
+                              detail::vec3_sub(c[detail::kHexCornerEdges[n][2]], c[n]), eps);
         if (!std::isfinite(d)) {
             sj_ok = false;
             break;
@@ -261324,13 +261124,13 @@ void quality_wedge(const std::vector<Vec3>& c, const std::vector<detail::CellFac
         emin = std::min(emin, quality_edge_len(c[e[0]], c[e[1]]));
 
     // Scaled Jacobian at the 6 corners; (2/sqrt3) factor => 1 for a right prism.
-    const int tj[6][3] = {{1, 2, 3}, {2, 0, 4}, {0, 1, 5}, {5, 4, 0}, {3, 5, 1}, {4, 3, 2}};
     double sj = std::numeric_limits<double>::max();
     bool sj_ok = true;
     for (int n = 0; n < 6; ++n) {
-        const double d = quality_det_unit3(detail::vec3_sub(c[tj[n][0]], c[n]),
-                                           detail::vec3_sub(c[tj[n][1]], c[n]),
-                                           detail::vec3_sub(c[tj[n][2]], c[n]), eps);
+        const double d =
+            detail::det_unit3(detail::vec3_sub(c[detail::kWedgeCornerEdges[n][0]], c[n]),
+                              detail::vec3_sub(c[detail::kWedgeCornerEdges[n][1]], c[n]),
+                              detail::vec3_sub(c[detail::kWedgeCornerEdges[n][2]], c[n]), eps);
         if (!std::isfinite(d)) {
             sj_ok = false;
             break;
@@ -261365,7 +261165,7 @@ void quality_pyramid(const std::vector<Vec3>& c, const std::vector<detail::CellF
         const int nxt = (i + 1) % 4;
         const int prv = (i + 3) % 4;
         const double d =
-            quality_det_unit3(detail::vec3_sub(c[nxt], c[i]), detail::vec3_sub(c[prv], c[i]),
+            detail::det_unit3(detail::vec3_sub(c[nxt], c[i]), detail::vec3_sub(c[prv], c[i]),
                               detail::vec3_sub(c[4], c[i]), eps);
         if (!std::isfinite(d)) {
             sj_ok = false;
@@ -261908,10 +261708,6 @@ constexpr const char* kRcsPrefix = "meshio++: reconstruct_surface: ";
     throw std::invalid_argument(kRcsPrefix + rWhat);
 }
 
-double rcs_dot(const RcsVec& rA, const RcsVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
 /// Sorts and deduplicates @p rIds.
 void rcs_unique(std::vector<std::int64_t>& rIds) {
     std::sort(rIds.begin(), rIds.end());
@@ -262019,7 +261815,7 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
             }
             if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2]))
                 rcs_fail("point " + std::to_string(i) + " has a non-finite coordinate");
-            const double len = std::sqrt(rcs_dot(v, v));
+            const double len = std::sqrt(detail::vec3_dot(v, v));
             if (!std::isfinite(len) || !(len > 0.0))
                 continue;
             pts.push_back(p);
@@ -262158,18 +261954,18 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
         const RcsVec& p0 = pts[static_cast<std::size_t>(near[0].second)];
         const RcsVec& n0 = nrm[static_cast<std::size_t>(near[0].second)];
         const RcsVec d0{x[0] - p0[0], x[1] - p0[1], x[2] - p0[2]};
-        const double f0 = rcs_dot(d0, n0);
+        const double f0 = detail::vec3_dot(d0, n0);
         // Hoppe's test: the projection onto the nearest plane, x - f0 n0,
         // lies within max_dist of p0 (its offset from p0 is d0 - f0 n0).
         const RcsVec t{d0[0] - f0 * n0[0], d0[1] - f0 * n0[1], d0[2] - f0 * n0[2]};
-        if (rcs_dot(t, t) > max_d2)
+        if (detail::vec3_dot(t, t) > max_d2)
             return;
         double num = 0.0, den = 0.0;
         for (std::size_t j = 0; j < got; ++j) {
             const auto id = static_cast<std::size_t>(near[j].second);
             const RcsVec d{x[0] - pts[id][0], x[1] - pts[id][1], x[2] - pts[id][2]};
             const double w = std::exp(-near[j].first * inv_s2);
-            num += w * rcs_dot(d, nrm[id]);
+            num += w * detail::vec3_dot(d, nrm[id]);
             den += w;
         }
         // Keep the level set off the node itself: a value near zero would
@@ -265152,15 +264948,6 @@ RegMat reg_mul(const RegMat& rA, const RegMat& rB) {
     return c;
 }
 
-double reg_dot(const RegVec& rA, const RegVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-RegVec reg_cross(const RegVec& rA, const RegVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
 /// Eigen-decomposition of a symmetric N x N matrix (row-major) by cyclic
 /// Jacobi: eigenvalues in `rW`, eigenvectors as the columns of `rV`.
 template <std::size_t N>
@@ -265219,7 +265006,7 @@ RegMat reg_quaternion(double W, double X, double Y, double Z) {
 
 /// The rotation by the vector `rW` (axis times angle), exactly.
 RegMat reg_rodrigues(const RegVec& rW) {
-    const double angle = std::sqrt(reg_dot(rW, rW));
+    const double angle = std::sqrt(detail::vec3_dot(rW, rW));
     if (!(angle > 0.0))
         return {1, 0, 0, 0, 1, 0, 0, 0, 1};
     const double h = 0.5 * angle, s = std::sin(h) / angle;
@@ -265282,7 +265069,7 @@ public:
                         c[a] += mQuery.mFaceNormal[t][a];
                 }
                 for (RegVec& c : mCellNormal) {
-                    const double len = std::sqrt(reg_dot(c, c));
+                    const double len = std::sqrt(detail::vec3_dot(c, c));
                     if (len > 0.0)
                         c = {c[0] / len, c[1] / len, c[2] / len};
                     else
@@ -265366,7 +265153,7 @@ RegPairs reg_pairs(const RegTarget& rTarget, const std::vector<RegVec>& rSource,
     RegPairs out;
     for (std::size_t i = 0; i < moved.size(); ++i) {
         const RegVec d{q[i][0] - moved[i][0], q[i][1] - moved[i][1], q[i][2] - moved[i][2]};
-        const double d2 = reg_dot(d, d);
+        const double d2 = detail::vec3_dot(d, d);
         if (MaxDistance > 0.0 && d2 > MaxDistance * MaxDistance)
             continue;
         if (NeedNormals &&
@@ -265436,7 +265223,7 @@ void reg_point_to_plane(const RegPairs& rPairs, RegMat& rR, RegVec& rT) {
     double scale = 0.0;
     for (const RegVec& p : rPairs.mP) {
         const RegVec d{p[0] - c[0], p[1] - c[1], p[2] - c[2]};
-        scale += reg_dot(d, d);
+        scale += detail::vec3_dot(d, d);
     }
     scale = std::sqrt(scale / m);
     if (!(scale > 0.0))
@@ -265449,9 +265236,9 @@ void reg_point_to_plane(const RegPairs& rPairs, RegMat& rR, RegVec& rT) {
         const RegVec q{(rPairs.mQ[i][0] - c[0]) / scale, (rPairs.mQ[i][1] - c[1]) / scale,
                        (rPairs.mQ[i][2] - c[2]) / scale};
         const RegVec& nn = rPairs.mN[i];
-        const RegVec x = reg_cross(p, nn);
+        const RegVec x = detail::vec3_cross(p, nn);
         const std::array<double, 6> row{x[0], x[1], x[2], nn[0], nn[1], nn[2]};
-        const double b = reg_dot({q[0] - p[0], q[1] - p[1], q[2] - p[2]}, nn);
+        const double b = detail::vec3_dot({q[0] - p[0], q[1] - p[1], q[2] - p[2]}, nn);
         for (std::size_t r = 0; r < 6; ++r) {
             g[r] += row[r] * b;
             for (std::size_t s = 0; s < 6; ++s)
@@ -265552,7 +265339,7 @@ RegistrationResult register_rigid(const Mesh& rSource, const Mesh& rTarget,
             rot, tr, {0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])});
         const RegVec stepped = reg_apply(d_rot, d_tr, centre);
         const RegVec shift{stepped[0] - centre[0], stepped[1] - centre[1], stepped[2] - centre[2]};
-        const double moved = std::sqrt(reg_dot(shift, shift));
+        const double moved = std::sqrt(detail::vec3_dot(shift, shift));
         rot = reg_mul(d_rot, rot);
         tr = reg_apply(d_rot, d_tr, tr);
         result.mIterations = it;
@@ -283046,25 +282833,6 @@ using TetV3 = std::array<double, 3>;
     throw std::invalid_argument(std::string(kTetPrefix) + rWhy);
 }
 
-TetV3 tet_sub(const TetV3& rA, const TetV3& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-TetV3 tet_cross(const TetV3& rA, const TetV3& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
-double tet_dot(const TetV3& rA, const TetV3& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-// Six times the signed volume of (A, B, C, D): positive when D lies on the
-// side of (A, B, C) its right-hand normal points away from, meshio's order.
-double tet_volume6(const TetV3& rA, const TetV3& rB, const TetV3& rC, const TetV3& rD) {
-    return tet_dot(tet_sub(rB, rA), tet_cross(tet_sub(rC, rA), tet_sub(rD, rA)));
-}
-
 // The six dihedral angles of a tetrahedron, in degrees: at each edge, pi
 // less the angle between the outward normals of the two faces there.
 void tet_dihedrals(const std::array<TetV3, 4>& rX, double& rLo, double& rHi) {
@@ -283074,8 +282842,8 @@ void tet_dihedrals(const std::array<TetV3, 4>& rX, double& rLo, double& rHi) {
         const TetV3& a = rX[static_cast<std::size_t>(kFaces[f][0])];
         const TetV3& b = rX[static_cast<std::size_t>(kFaces[f][1])];
         const TetV3& c = rX[static_cast<std::size_t>(kFaces[f][2])];
-        TetV3 v = tet_cross(tet_sub(b, a), tet_sub(c, a));
-        const double l = std::sqrt(tet_dot(v, v));
+        TetV3 v = detail::vec3_cross(detail::vec3_sub(b, a), detail::vec3_sub(c, a));
+        const double l = std::sqrt(detail::vec3_dot(v, v));
         if (l > 0.0)
             v = {v[0] / l, v[1] / l, v[2] / l};
         n[static_cast<std::size_t>(f)] = v;
@@ -283084,9 +282852,9 @@ void tet_dihedrals(const std::array<TetV3, 4>& rX, double& rLo, double& rHi) {
     // the other two corners.
     for (int f = 0; f < 4; ++f)
         for (int g = f + 1; g < 4; ++g) {
-            const double c =
-                std::clamp(-tet_dot(n[static_cast<std::size_t>(f)], n[static_cast<std::size_t>(g)]),
-                           -1.0, 1.0);
+            const double c = std::clamp(
+                -detail::vec3_dot(n[static_cast<std::size_t>(f)], n[static_cast<std::size_t>(g)]),
+                -1.0, 1.0);
             const double angle = std::acos(c) * (180.0 / kTetPi);
             rLo = std::min(rLo, angle);
             rHi = std::max(rHi, angle);
@@ -283303,10 +283071,11 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
     std::vector<char> turned(ns, 0);
     for (std::size_t s = 0; s < ns; ++s) {
         for (const std::size_t t : shells[s])
-            volume[s] += tet_volume6({0.0, 0.0, 0.0}, x[static_cast<std::size_t>(tris[t][0])],
-                                     x[static_cast<std::size_t>(tris[t][1])],
-                                     x[static_cast<std::size_t>(tris[t][2])]) /
-                         6.0;
+            volume[s] +=
+                detail::tet_volume6({0.0, 0.0, 0.0}, x[static_cast<std::size_t>(tris[t][0])],
+                                    x[static_cast<std::size_t>(tris[t][1])],
+                                    x[static_cast<std::size_t>(tris[t][2])]) /
+                6.0;
         if (volume[s] < 0.0) {
             turned[s] = 1;
             volume[s] = -volume[s];
@@ -283422,10 +283191,10 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                                                  "the tetrahedral mesher returned a bad index");
                     t[j] = global[static_cast<std::size_t>(r_tet[j])];
                 }
-                if (tet_volume6(points[static_cast<std::size_t>(t[0])],
-                                points[static_cast<std::size_t>(t[1])],
-                                points[static_cast<std::size_t>(t[2])],
-                                points[static_cast<std::size_t>(t[3])]) < 0.0)
+                if (detail::tet_volume6(points[static_cast<std::size_t>(t[0])],
+                                        points[static_cast<std::size_t>(t[1])],
+                                        points[static_cast<std::size_t>(t[2])],
+                                        points[static_cast<std::size_t>(t[3])]) < 0.0)
                     std::swap(t[1], t[2]);
                 tets.push_back(t);
                 tet_region.push_back(static_cast<std::int64_t>(s));
@@ -283448,9 +283217,9 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         double edge_sum = 0.0;
         for (const auto& r_t : tris)
             for (std::size_t k = 0; k < 3; ++k) {
-                const TetV3 e = tet_sub(x[static_cast<std::size_t>(r_t[(k + 1) % 3])],
-                                        x[static_cast<std::size_t>(r_t[k])]);
-                edge_sum += std::sqrt(tet_dot(e, e));
+                const TetV3 e = detail::vec3_sub(x[static_cast<std::size_t>(r_t[(k + 1) % 3])],
+                                                 x[static_cast<std::size_t>(r_t[k])]);
+                edge_sum += std::sqrt(detail::vec3_dot(e, e));
             }
         const double mean_edge = edge_sum / (3.0 * static_cast<double>(nt));
         const double skin_size = maxh > 0.0 ? std::min(maxh, mean_edge) : mean_edge;
@@ -283526,10 +283295,10 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                     for (std::size_t k = 0; k < 4; ++k)
                         t[k] = static_cast<std::int64_t>(base) +
                                detail::read_int(cells.Conn(), 4 * c + k);
-                    if (tet_volume6(points[static_cast<std::size_t>(t[0])],
-                                    points[static_cast<std::size_t>(t[1])],
-                                    points[static_cast<std::size_t>(t[2])],
-                                    points[static_cast<std::size_t>(t[3])]) < 0.0)
+                    if (detail::tet_volume6(points[static_cast<std::size_t>(t[0])],
+                                            points[static_cast<std::size_t>(t[1])],
+                                            points[static_cast<std::size_t>(t[2])],
+                                            points[static_cast<std::size_t>(t[3])]) < 0.0)
                         std::swap(t[1], t[2]);
                     tets.push_back(t);
                     tet_region.push_back(static_cast<std::int64_t>(s));
@@ -283562,12 +283331,13 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                     continue;
                 // Facing away from the tetrahedron's fourth corner.
                 const TetV3& r_a = points[static_cast<std::size_t>(v[0])];
-                const TetV3 n = tet_cross(tet_sub(points[static_cast<std::size_t>(v[1])], r_a),
-                                          tet_sub(points[static_cast<std::size_t>(v[2])], r_a));
-                if (tet_dot(
-                        n,
-                        tet_sub(points[static_cast<std::size_t>(r_t[static_cast<std::size_t>(f)])],
-                                r_a)) > 0.0)
+                const TetV3 n = detail::vec3_cross(
+                    detail::vec3_sub(points[static_cast<std::size_t>(v[1])], r_a),
+                    detail::vec3_sub(points[static_cast<std::size_t>(v[2])], r_a));
+                if (detail::vec3_dot(
+                        n, detail::vec3_sub(
+                               points[static_cast<std::size_t>(r_t[static_cast<std::size_t>(f)])],
+                               r_a)) > 0.0)
                     std::swap(v[1], v[2]);
                 bnd.push_back(v);
             }
@@ -283629,7 +283399,7 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         const std::array<TetV3, 4> c{
             points[static_cast<std::size_t>(r_t[0])], points[static_cast<std::size_t>(r_t[1])],
             points[static_cast<std::size_t>(r_t[2])], points[static_cast<std::size_t>(r_t[3])]};
-        result.mVolume += tet_volume6(c[0], c[1], c[2], c[3]) / 6.0;
+        result.mVolume += detail::tet_volume6(c[0], c[1], c[2], c[3]) / 6.0;
         tet_dihedrals(c, lo, hi);
     }
     result.mMinDihedralDeg = tets.empty() ? 0.0 : lo;

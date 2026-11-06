@@ -30,6 +30,7 @@
 #include <vector>
 
 // Project includes
+#include "../detail/fem_kernels.hpp"
 #include "../detail/tri_bvh.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -40,6 +41,7 @@
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 
@@ -54,25 +56,6 @@ using TetV3 = std::array<double, 3>;
     throw std::invalid_argument(std::string(kTetPrefix) + rWhy);
 }
 
-TetV3 tet_sub(const TetV3& rA, const TetV3& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-
-TetV3 tet_cross(const TetV3& rA, const TetV3& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-
-double tet_dot(const TetV3& rA, const TetV3& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-// Six times the signed volume of (A, B, C, D): positive when D lies on the
-// side of (A, B, C) its right-hand normal points away from, meshio's order.
-double tet_volume6(const TetV3& rA, const TetV3& rB, const TetV3& rC, const TetV3& rD) {
-    return tet_dot(tet_sub(rB, rA), tet_cross(tet_sub(rC, rA), tet_sub(rD, rA)));
-}
-
 // The six dihedral angles of a tetrahedron, in degrees: at each edge, pi
 // less the angle between the outward normals of the two faces there.
 void tet_dihedrals(const std::array<TetV3, 4>& rX, double& rLo, double& rHi) {
@@ -82,8 +65,8 @@ void tet_dihedrals(const std::array<TetV3, 4>& rX, double& rLo, double& rHi) {
         const TetV3& a = rX[static_cast<std::size_t>(kFaces[f][0])];
         const TetV3& b = rX[static_cast<std::size_t>(kFaces[f][1])];
         const TetV3& c = rX[static_cast<std::size_t>(kFaces[f][2])];
-        TetV3 v = tet_cross(tet_sub(b, a), tet_sub(c, a));
-        const double l = std::sqrt(tet_dot(v, v));
+        TetV3 v = detail::vec3_cross(detail::vec3_sub(b, a), detail::vec3_sub(c, a));
+        const double l = std::sqrt(detail::vec3_dot(v, v));
         if (l > 0.0)
             v = {v[0] / l, v[1] / l, v[2] / l};
         n[static_cast<std::size_t>(f)] = v;
@@ -92,9 +75,9 @@ void tet_dihedrals(const std::array<TetV3, 4>& rX, double& rLo, double& rHi) {
     // the other two corners.
     for (int f = 0; f < 4; ++f)
         for (int g = f + 1; g < 4; ++g) {
-            const double c =
-                std::clamp(-tet_dot(n[static_cast<std::size_t>(f)], n[static_cast<std::size_t>(g)]),
-                           -1.0, 1.0);
+            const double c = std::clamp(
+                -detail::vec3_dot(n[static_cast<std::size_t>(f)], n[static_cast<std::size_t>(g)]),
+                -1.0, 1.0);
             const double angle = std::acos(c) * (180.0 / kTetPi);
             rLo = std::min(rLo, angle);
             rHi = std::max(rHi, angle);
@@ -311,10 +294,11 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
     std::vector<char> turned(ns, 0);
     for (std::size_t s = 0; s < ns; ++s) {
         for (const std::size_t t : shells[s])
-            volume[s] += tet_volume6({0.0, 0.0, 0.0}, x[static_cast<std::size_t>(tris[t][0])],
-                                     x[static_cast<std::size_t>(tris[t][1])],
-                                     x[static_cast<std::size_t>(tris[t][2])]) /
-                         6.0;
+            volume[s] +=
+                detail::tet_volume6({0.0, 0.0, 0.0}, x[static_cast<std::size_t>(tris[t][0])],
+                                    x[static_cast<std::size_t>(tris[t][1])],
+                                    x[static_cast<std::size_t>(tris[t][2])]) /
+                6.0;
         if (volume[s] < 0.0) {
             turned[s] = 1;
             volume[s] = -volume[s];
@@ -430,10 +414,10 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                                                  "the tetrahedral mesher returned a bad index");
                     t[j] = global[static_cast<std::size_t>(r_tet[j])];
                 }
-                if (tet_volume6(points[static_cast<std::size_t>(t[0])],
-                                points[static_cast<std::size_t>(t[1])],
-                                points[static_cast<std::size_t>(t[2])],
-                                points[static_cast<std::size_t>(t[3])]) < 0.0)
+                if (detail::tet_volume6(points[static_cast<std::size_t>(t[0])],
+                                        points[static_cast<std::size_t>(t[1])],
+                                        points[static_cast<std::size_t>(t[2])],
+                                        points[static_cast<std::size_t>(t[3])]) < 0.0)
                     std::swap(t[1], t[2]);
                 tets.push_back(t);
                 tet_region.push_back(static_cast<std::int64_t>(s));
@@ -456,9 +440,9 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         double edge_sum = 0.0;
         for (const auto& r_t : tris)
             for (std::size_t k = 0; k < 3; ++k) {
-                const TetV3 e = tet_sub(x[static_cast<std::size_t>(r_t[(k + 1) % 3])],
-                                        x[static_cast<std::size_t>(r_t[k])]);
-                edge_sum += std::sqrt(tet_dot(e, e));
+                const TetV3 e = detail::vec3_sub(x[static_cast<std::size_t>(r_t[(k + 1) % 3])],
+                                                 x[static_cast<std::size_t>(r_t[k])]);
+                edge_sum += std::sqrt(detail::vec3_dot(e, e));
             }
         const double mean_edge = edge_sum / (3.0 * static_cast<double>(nt));
         const double skin_size = maxh > 0.0 ? std::min(maxh, mean_edge) : mean_edge;
@@ -534,10 +518,10 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                     for (std::size_t k = 0; k < 4; ++k)
                         t[k] = static_cast<std::int64_t>(base) +
                                detail::read_int(cells.Conn(), 4 * c + k);
-                    if (tet_volume6(points[static_cast<std::size_t>(t[0])],
-                                    points[static_cast<std::size_t>(t[1])],
-                                    points[static_cast<std::size_t>(t[2])],
-                                    points[static_cast<std::size_t>(t[3])]) < 0.0)
+                    if (detail::tet_volume6(points[static_cast<std::size_t>(t[0])],
+                                            points[static_cast<std::size_t>(t[1])],
+                                            points[static_cast<std::size_t>(t[2])],
+                                            points[static_cast<std::size_t>(t[3])]) < 0.0)
                         std::swap(t[1], t[2]);
                     tets.push_back(t);
                     tet_region.push_back(static_cast<std::int64_t>(s));
@@ -570,12 +554,13 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                     continue;
                 // Facing away from the tetrahedron's fourth corner.
                 const TetV3& r_a = points[static_cast<std::size_t>(v[0])];
-                const TetV3 n = tet_cross(tet_sub(points[static_cast<std::size_t>(v[1])], r_a),
-                                          tet_sub(points[static_cast<std::size_t>(v[2])], r_a));
-                if (tet_dot(
-                        n,
-                        tet_sub(points[static_cast<std::size_t>(r_t[static_cast<std::size_t>(f)])],
-                                r_a)) > 0.0)
+                const TetV3 n = detail::vec3_cross(
+                    detail::vec3_sub(points[static_cast<std::size_t>(v[1])], r_a),
+                    detail::vec3_sub(points[static_cast<std::size_t>(v[2])], r_a));
+                if (detail::vec3_dot(
+                        n, detail::vec3_sub(
+                               points[static_cast<std::size_t>(r_t[static_cast<std::size_t>(f)])],
+                               r_a)) > 0.0)
                     std::swap(v[1], v[2]);
                 bnd.push_back(v);
             }
@@ -637,7 +622,7 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         const std::array<TetV3, 4> c{
             points[static_cast<std::size_t>(r_t[0])], points[static_cast<std::size_t>(r_t[1])],
             points[static_cast<std::size_t>(r_t[2])], points[static_cast<std::size_t>(r_t[3])]};
-        result.mVolume += tet_volume6(c[0], c[1], c[2], c[3]) / 6.0;
+        result.mVolume += detail::tet_volume6(c[0], c[1], c[2], c[3]) / 6.0;
         tet_dihedrals(c, lo, hi);
     }
     result.mMinDihedralDeg = tets.empty() ? 0.0 : lo;

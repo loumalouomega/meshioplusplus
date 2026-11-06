@@ -42,26 +42,13 @@
 #include "meshioplusplus/operations/extrude.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 
 namespace {
 
 using ExVec = std::array<double, 3>;
-
-ExVec ex_sub(const ExVec& rA, const ExVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-ExVec ex_cross(const ExVec& rA, const ExVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-double ex_dot(const ExVec& rA, const ExVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-double ex_norm(const ExVec& rA) {
-    return std::sqrt(ex_dot(rA, rA));
-}
 
 // The profile: the cells that are swept, and what else the mesh holds.
 struct ExProfile {
@@ -609,7 +596,7 @@ SweepResult extrude(const Mesh& rMesh, const ExtrudeOptions& rOptions) {
     for (const double c : d)
         if (!std::isfinite(c))
             throw std::invalid_argument("meshio++: extrude: the direction must be finite");
-    const double dl = ex_norm(d);
+    const double dl = detail::vec3_norm(d);
     if (!(dl > 0.0))
         throw std::invalid_argument("meshio++: extrude: the direction must not be zero");
     if (!std::isfinite(o.mRatio) || !(o.mRatio > 0.0))
@@ -651,16 +638,16 @@ SweepResult extrude(const Mesh& rMesh, const ExtrudeOptions& rOptions) {
     ExProfile pr = ex_gather(rMesh, op);
     if (pr.mCurve) {
         for (std::size_t l = 0; l < pr.mLines.size(); ++l) {
-            const ExVec e = ex_sub(pr.Point(pr.mLines[l][1]), pr.Point(pr.mLines[l][0]));
-            if (ex_norm(ex_cross(e, d)) <= 1e-9 * ex_norm(e) * dl)
+            const ExVec e = detail::vec3_sub(pr.Point(pr.mLines[l][1]), pr.Point(pr.mLines[l][0]));
+            if (detail::vec3_norm(detail::vec3_cross(e, d)) <= 1e-9 * detail::vec3_norm(e) * dl)
                 throw std::invalid_argument("meshio++: extrude: line " + std::to_string(l) +
                                             " is parallel to the direction (or has no length)");
         }
     } else {
         for (std::size_t f = 0; f < pr.mFaces.size(); ++f) {
             const ExVec nrm = ex_face_normal(pr, pr.mFaces[f]);
-            const double s = ex_dot(nrm, d);
-            if (std::abs(s) <= 1e-9 * ex_norm(nrm) * dl)
+            const double s = detail::vec3_dot(nrm, d);
+            if (std::abs(s) <= 1e-9 * detail::vec3_norm(nrm) * dl)
                 throw std::invalid_argument("meshio++: extrude: face " + std::to_string(f) +
                                             " is parallel to the direction (or has no area)");
             if (s < 0.0) {
@@ -704,7 +691,7 @@ SweepResult revolve(const Mesh& rMesh, const RevolveOptions& rOptions) {
     for (std::size_t c = 0; c < 3; ++c)
         if (!std::isfinite(axis[c]) || !std::isfinite(origin[c]))
             throw std::invalid_argument("meshio++: revolve: the axis must be finite");
-    const double al = ex_norm(axis);
+    const double al = detail::vec3_norm(axis);
     if (!(al > 0.0))
         throw std::invalid_argument("meshio++: revolve: the axis must not be zero");
     if (!std::isfinite(o.mTolerance) || o.mTolerance < 0.0)
@@ -744,14 +731,15 @@ SweepResult revolve(const Mesh& rMesh, const RevolveOptions& rOptions) {
         }
         any = true;
     }
-    const double tol = o.mTolerance * ex_norm(ex_sub(hi, lo));
+    const double tol = o.mTolerance * detail::vec3_norm(detail::vec3_sub(hi, lo));
     std::vector<char> on_axis(n, 0);
     const auto radial = [&](std::int64_t P) {
-        const ExVec r = ex_sub(pr.Point(P), origin);
-        return ex_cross(axis, r);  // the motion at P; its length is the distance to the axis
+        const ExVec r = detail::vec3_sub(pr.Point(P), origin);
+        return detail::vec3_cross(axis,
+                                  r);  // the motion at P; its length is the distance to the axis
     };
     for (std::size_t p = 0; p < n; ++p)
-        if (pr.mUsed[p] && ex_norm(radial(static_cast<std::int64_t>(p))) <= tol) {
+        if (pr.mUsed[p] && detail::vec3_norm(radial(static_cast<std::int64_t>(p))) <= tol) {
             on_axis[p] = 1;
             ++res.mNumOnAxis;
         }
@@ -764,10 +752,11 @@ SweepResult revolve(const Mesh& rMesh, const RevolveOptions& rOptions) {
                 continue;
             }
             const ExVec a = pr.Point(r_l[0]), b = pr.Point(r_l[1]);
-            const ExVec e = ex_sub(b, a);
+            const ExVec e = detail::vec3_sub(b, a);
             const ExVec mid{0.5 * (a[0] + b[0]), 0.5 * (a[1] + b[1]), 0.5 * (a[2] + b[2])};
-            const ExVec m = ex_cross(axis, ex_sub(mid, origin));
-            if (ex_norm(ex_cross(e, m)) <= 1e-9 * ex_norm(e) * ex_norm(m))
+            const ExVec m = detail::vec3_cross(axis, detail::vec3_sub(mid, origin));
+            if (detail::vec3_norm(detail::vec3_cross(e, m)) <=
+                1e-9 * detail::vec3_norm(e) * detail::vec3_norm(m))
                 throw std::invalid_argument("meshio++: revolve: line " + std::to_string(l) +
                                             " moves along itself (or has no length)");
         }
@@ -785,8 +774,8 @@ SweepResult revolve(const Mesh& rMesh, const RevolveOptions& rOptions) {
                 if (on_axis[static_cast<std::size_t>(v)])
                     continue;
                 const ExVec m = radial(v);
-                const double s = ex_dot(nrm, m);
-                if (std::abs(s) <= 1e-9 * ex_norm(nrm) * ex_norm(m))
+                const double s = detail::vec3_dot(nrm, m);
+                if (std::abs(s) <= 1e-9 * detail::vec3_norm(nrm) * detail::vec3_norm(m))
                     continue;
                 (s > 0.0 ? pos : neg) += 1;
             }

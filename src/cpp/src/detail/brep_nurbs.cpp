@@ -28,6 +28,7 @@
 
 // Project includes (private, not installed)
 #include "brep_nurbs.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -36,15 +37,6 @@ namespace {
 
 constexpr double kBnPi = 3.14159265358979323846;
 constexpr double kBnTwoPi = 2.0 * kBnPi;
-
-double bn_dot(const PatchVec& rA, const PatchVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-double bn_dist(const PatchVec& rA, const PatchVec& rB) {
-    const double d[3] = {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-    return std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-}
 
 // The knot span of `T` (clamped to the domain) of `N` poles of degree `P`.
 std::size_t bn_span(int P, const std::vector<double>& rK, std::size_t N, double T) {
@@ -353,8 +345,8 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
     const auto raw = [&](const PatchVec& rP, const BnSample* pNear, double* pX) {
         const PatchVec d{rP[0] - rSurface.mOrigin[0], rP[1] - rSurface.mOrigin[1],
                          rP[2] - rSurface.mOrigin[2]};
-        const double dx = bn_dot(d, rSurface.mX), dy = bn_dot(d, rSurface.mY),
-                     dz = bn_dot(d, rSurface.mZ);
+        const double dx = vec3_dot(d, rSurface.mX), dy = vec3_dot(d, rSurface.mY),
+                     dz = vec3_dot(d, rSurface.mZ);
         switch (kind) {
             case 1:
                 pX[0] = dx;
@@ -383,7 +375,8 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
                             const double gv = bs->V0() + (bs->V1() - bs->V0()) * j / kGrid;
                             BsplineEval e;
                             bspline_eval(*bs, gu, gv, 0, e);
-                            nodes.push_back({bn_dist({e.mS[0], e.mS[1], e.mS[2]}, rP), {gu, gv}});
+                            nodes.push_back(
+                                {vec3_norm(vec3_sub({e.mS[0], e.mS[1], e.mS[2]}, rP)), {gu, gv}});
                         }
                     const std::size_t starts = std::min(kStarts, nodes.size());
                     std::partial_sort(nodes.begin(),
@@ -699,7 +692,7 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
         const PatchVec dc{rT.pSrc->mCentre[0] - rSurface.mOrigin[0],
                           rT.pSrc->mCentre[1] - rSurface.mOrigin[1],
                           rT.pSrc->mCentre[2] - rSurface.mOrigin[2]};
-        const double cu = bn_dot(dc, rSurface.mX), cv = bn_dot(dc, rSurface.mY);
+        const double cu = vec3_dot(dc, rSurface.mX), cv = vec3_dot(dc, rSurface.mY);
         double a0 = 0.0, a = 0.0;
         for (std::size_t i = 0; i < rT.mS.size(); ++i) {
             const double x = std::atan2(rT.mS[i].mX[1] - cv, rT.mS[i].mX[0] - cu);
@@ -850,7 +843,7 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
                     BnSample m;
                     m.mT = 0.5 * (t.mS[i].mT + t.mS[i + 1].mT);
                     m.mP = bn_at(t, m.mT);
-                    if (bn_dist(on, m.mP) <= follow)
+                    if (vec3_norm(vec3_sub(on, m.mP)) <= follow)
                         continue;
                     raw(m.mP, &t.mS[i], m.mX);
                     if (!raw_ok) {
@@ -915,7 +908,8 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
                 continue;
             for (const BnSample& s : t.mS) {
                 const auto uv = uv_of(s);
-                const double off = bn_dist(nurbs_patch_point(patch, uv[0], uv[1]), s.mP);
+                const double off =
+                    vec3_norm(vec3_sub(nurbs_patch_point(patch, uv[0], uv[1]), s.mP));
                 if (off > 4.0 * Tol + 10.0 * tiny) {
                     rWhy = "a loop point lies " + std::to_string(off) + " off the " +
                            (kind == 6 ? "B-spline" : "analytic") +

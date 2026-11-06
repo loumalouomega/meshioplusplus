@@ -36,21 +36,13 @@
 #include "meshioplusplus/operations/neighbors.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 
 namespace {
 
 using PtnVec = std::array<double, 3>;
-
-double ptn_dot(const PtnVec& rA, const PtnVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-
-PtnVec ptn_cross(const PtnVec& rA, const PtnVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
 
 /// The sign that makes the largest-magnitude component positive (the lowest
 /// axis on a tie).
@@ -99,12 +91,13 @@ bool ptn_fit(const std::vector<PtnVec>& rP, std::size_t Self, const std::int64_t
     const PtnVec r0{t[0] - l[0], t[3], t[5]};
     const PtnVec r1{t[3], t[1] - l[0], t[4]};
     const PtnVec r2{t[5], t[4], t[2] - l[0]};
-    const std::array<PtnVec, 3> cand{ptn_cross(r0, r1), ptn_cross(r0, r2), ptn_cross(r1, r2)};
+    const std::array<PtnVec, 3> cand{detail::vec3_cross(r0, r1), detail::vec3_cross(r0, r2),
+                                     detail::vec3_cross(r1, r2)};
     std::size_t best = 0;
     for (std::size_t j = 1; j < 3; ++j)
-        if (ptn_dot(cand[j], cand[j]) > ptn_dot(cand[best], cand[best]))
+        if (detail::vec3_dot(cand[j], cand[j]) > detail::vec3_dot(cand[best], cand[best]))
             best = j;
-    const double len = std::sqrt(ptn_dot(cand[best], cand[best]));
+    const double len = std::sqrt(detail::vec3_dot(cand[best], cand[best]));
     if (!(len > 0.0))
         return false;
     rNormal = {cand[best][0] / len, cand[best][1] / len, cand[best][2] / len};
@@ -197,7 +190,7 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
         for (std::size_t i = 0; i < n; ++i) {
             const PtnVec to{rOptions.mViewpoint[0] - p[i][0], rOptions.mViewpoint[1] - p[i][1],
                             rOptions.mViewpoint[2] - p[i][2]};
-            if (ok[i] && ptn_dot(normal[i], to) < 0.0)
+            if (ok[i] && detail::vec3_dot(normal[i], to) < 0.0)
                 normal[i] = {-normal[i][0], -normal[i][1], -normal[i][2]};
         }
     } else if (rOptions.mOrientation == NormalOrientation::Consistent) {
@@ -274,7 +267,7 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
                     const auto t = static_cast<std::size_t>(*it);
                     if (done[t])
                         continue;
-                    const double w = 1.0 - std::abs(ptn_dot(normal[S], normal[t]));
+                    const double w = 1.0 - std::abs(detail::vec3_dot(normal[S], normal[t]));
                     const auto src = static_cast<std::int64_t>(S);
                     if (w < key[t] || (w == key[t] && src < key_src[t])) {
                         key[t] = w;
@@ -292,7 +285,7 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
                 if (done[ti] || w != key[ti] || s != key_src[ti])
                     continue;
                 done[ti] = 1;
-                if (ptn_dot(normal[ti], normal[static_cast<std::size_t>(s)]) < 0.0)
+                if (detail::vec3_dot(normal[ti], normal[static_cast<std::size_t>(s)]) < 0.0)
                     normal[ti] = {-normal[ti][0], -normal[ti][1], -normal[ti][2]};
                 push_from(ti);
             }
@@ -307,8 +300,8 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
             double outward = 0.0, spread = 0.0;
             for (const std::size_t m : members) {
                 const PtnVec d{p[m][0] - c[0], p[m][1] - c[1], p[m][2] - c[2]};
-                outward += ptn_dot(normal[m], d);
-                spread += std::sqrt(ptn_dot(d, d));
+                outward += detail::vec3_dot(normal[m], d);
+                spread += std::sqrt(detail::vec3_dot(d, d));
             }
             double flip = 1.0;
             if (std::abs(outward) > 1e-6 * spread)

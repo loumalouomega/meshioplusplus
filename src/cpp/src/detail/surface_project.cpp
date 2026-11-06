@@ -24,6 +24,7 @@
 
 // Project includes
 #include "meshioplusplus/nurbs.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 #include "surface_project.hpp"
 
 namespace meshioplusplus::detail {
@@ -32,11 +33,6 @@ namespace {
 
 double spj_dot(const double* pA, const double* pB) {
     return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
-}
-
-double spj_dist(const EdgeVec3& rA, const EdgeVec3& rB) {
-    return std::sqrt((rA[0] - rB[0]) * (rA[0] - rB[0]) + (rA[1] - rB[1]) * (rA[1] - rB[1]) +
-                     (rA[2] - rB[2]) * (rA[2] - rB[2]));
 }
 
 // Seeds per direction: (degree + 1) per span of nonzero length, 8 to 32.
@@ -74,7 +70,7 @@ double SurfaceProjector::Polish(const EdgeVec3& rP, std::array<double, 2>& rUv) 
     const auto dist = [&](double U, double V) {
         EdgeVec3 x{};
         pSurface->Eval(U, V, x.data(), nullptr, nullptr);
-        return spj_dist(x, rP);
+        return vec3_norm(vec3_sub(x, rP));
     };
     double best = dist(rUv[0], rUv[1]);
     for (int it = 0; it < 50; ++it) {
@@ -124,7 +120,7 @@ std::array<double, 2> SurfaceProjector::Project(const EdgeVec3& rP, EdgeVec3& rX
     std::array<double, kStarts> near_d{};
     near_d.fill(std::numeric_limits<double>::infinity());
     for (std::size_t s = 0; s < mSeedX.size(); ++s) {
-        const double d = spj_dist(mSeedX[s], rP);
+        const double d = vec3_norm(vec3_sub(mSeedX[s], rP));
         for (std::size_t k = 0; k < kStarts; ++k)
             if (d < near_d[k]) {
                 for (std::size_t m = kStarts - 1; m > k; --m) {

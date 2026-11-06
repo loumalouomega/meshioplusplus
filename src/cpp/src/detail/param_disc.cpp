@@ -29,6 +29,7 @@
 // Project includes (private, not installed)
 #include "param_disc.hpp"
 #include "sparse_solve.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -36,20 +37,6 @@ namespace detail {
 namespace {
 
 constexpr double kPdPi = 3.14159265358979323846;
-
-PatchVec pd_sub(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
-}
-double pd_dot(const PatchVec& rA, const PatchVec& rB) {
-    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
-}
-PatchVec pd_cross(const PatchVec& rA, const PatchVec& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
-}
-double pd_norm(const PatchVec& rA) {
-    return std::sqrt(pd_dot(rA, rA));
-}
 
 // The vertices the triangles use, ascending.
 std::vector<std::size_t> pd_used(const std::vector<PatchTri>& rTris) {
@@ -156,7 +143,7 @@ DiscParam param_lscm(const std::vector<PatchVec>& rPts, const std::vector<PatchT
     double far = -1.0;
     for (std::size_t i = 0; i < loop.size(); ++i)
         for (std::size_t j = i + 1; j < loop.size(); ++j) {
-            const double d = pd_norm(pd_sub(rPts[loop[i]], rPts[loop[j]]));
+            const double d = vec3_norm(vec3_sub(rPts[loop[i]], rPts[loop[j]]));
             if (d > far) {
                 far = d;
                 pa = loop[i];
@@ -176,19 +163,19 @@ DiscParam param_lscm(const std::vector<PatchVec>& rPts, const std::vector<PatchT
     std::vector<SparseTriplet> ata;
     std::vector<double> atb(m, 0.0);
     for (const PatchTri& t : rTris) {
-        const PatchVec e1 = pd_sub(rPts[t[1]], rPts[t[0]]);
-        const PatchVec e2 = pd_sub(rPts[t[2]], rPts[t[0]]);
-        const PatchVec nrm = pd_cross(e1, e2);
-        const double twice = pd_norm(nrm);
-        const double l1 = pd_norm(e1);
+        const PatchVec e1 = vec3_sub(rPts[t[1]], rPts[t[0]]);
+        const PatchVec e2 = vec3_sub(rPts[t[2]], rPts[t[0]]);
+        const PatchVec nrm = vec3_cross(e1, e2);
+        const double twice = vec3_norm(nrm);
+        const double l1 = vec3_norm(e1);
         if (!(twice > 0.0) || !(l1 > 0.0))
             continue;
         // The triangle in its own plane, counter-clockwise.
         const PatchVec ex = {e1[0] / l1, e1[1] / l1, e1[2] / l1};
         const PatchVec nz = {nrm[0] / twice, nrm[1] / twice, nrm[2] / twice};
-        const PatchVec ey = pd_cross(nz, ex);
-        const double x[3] = {0.0, l1, pd_dot(e2, ex)};
-        const double y[3] = {0.0, 0.0, pd_dot(e2, ey)};
+        const PatchVec ey = vec3_cross(nz, ex);
+        const double x[3] = {0.0, l1, vec3_dot(e2, ex)};
+        const double y[3] = {0.0, 0.0, vec3_dot(e2, ey)};
         // The gradient of each hat function: the opposite edge turned 90 degrees.
         double gx[3], gy[3];
         for (int j = 0; j < 3; ++j) {
@@ -290,12 +277,12 @@ bool pd_mean_value_interior(const std::vector<PatchVec>& rPts, const std::vector
                 const std::size_t i = t[static_cast<std::size_t>(c)];
                 const std::size_t j = t[static_cast<std::size_t>((c + 1) % 3)];
                 const std::size_t k = t[static_cast<std::size_t>((c + 2) % 3)];
-                const PatchVec a = pd_sub(rPts[j], rPts[i]);
-                const PatchVec b = pd_sub(rPts[k], rPts[i]);
-                const double la = pd_norm(a), lb = pd_norm(b);
+                const PatchVec a = vec3_sub(rPts[j], rPts[i]);
+                const PatchVec b = vec3_sub(rPts[k], rPts[i]);
+                const double la = vec3_norm(a), lb = vec3_norm(b);
                 if (!(la > 0.0) || !(lb > 0.0))
                     continue;
-                const double cosv = std::min(1.0, std::max(-1.0, pd_dot(a, b) / (la * lb)));
+                const double cosv = std::min(1.0, std::max(-1.0, vec3_dot(a, b) / (la * lb)));
                 const double half = std::tan(0.5 * std::acos(cosv));
                 w[{i, j}] += half / la;
                 w[{i, k}] += half / lb;
@@ -345,7 +332,7 @@ DiscParam param_mean_value(const std::vector<PatchVec>& rPts, const std::vector<
     // The boundary on a circle by arc length.
     std::vector<double> cum(loop.size() + 1, 0.0);
     for (std::size_t i = 0; i < loop.size(); ++i)
-        cum[i + 1] = cum[i] + pd_norm(pd_sub(rPts[loop[(i + 1) % loop.size()]], rPts[loop[i]]));
+        cum[i + 1] = cum[i] + vec3_norm(vec3_sub(rPts[loop[(i + 1) % loop.size()]], rPts[loop[i]]));
     const double len = cum.back();
     if (!(len > 0.0))
         return out;
@@ -406,7 +393,7 @@ DiscParam param_annulus(const std::vector<PatchVec>& rPts, const std::vector<Pat
         cum[l].assign(r_l.size() + 1, 0.0);
         for (std::size_t i = 0; i < r_l.size(); ++i)
             cum[l][i + 1] =
-                cum[l][i] + pd_norm(pd_sub(rPts[r_l[(i + 1) % r_l.size()]], rPts[r_l[i]]));
+                cum[l][i] + vec3_norm(vec3_sub(rPts[r_l[(i + 1) % r_l.size()]], rPts[r_l[i]]));
         if (!(cum[l].back() > 0.0))
             return out;
     }
@@ -414,11 +401,11 @@ DiscParam param_annulus(const std::vector<PatchVec>& rPts, const std::vector<Pat
     const std::size_t inner = 1 - outer;
     double area = 0.0;
     for (const PatchTri& t : rTris) {
-        const PatchVec a = pd_sub(rPts[t[1]], rPts[t[0]]);
-        const PatchVec b = pd_sub(rPts[t[2]], rPts[t[0]]);
+        const PatchVec a = vec3_sub(rPts[t[1]], rPts[t[0]]);
+        const PatchVec b = vec3_sub(rPts[t[2]], rPts[t[0]]);
         const PatchVec c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
                          a[0] * b[1] - a[1] * b[0]};
-        area += 0.5 * pd_norm(c);
+        area += 0.5 * vec3_norm(c);
     }
     const double len = 0.5 * (cum[0].back() + cum[1].back());
     const double width = area / len;
@@ -440,7 +427,7 @@ DiscParam param_annulus(const std::vector<PatchVec>& rPts, const std::vector<Pat
     std::size_t start = 0;
     double best = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < r_i.size(); ++i) {
-        const double d = pd_norm(pd_sub(rPts[r_i[i]], rPts[r_o[0]]));
+        const double d = vec3_norm(vec3_sub(rPts[r_i[i]], rPts[r_o[0]]));
         if (d < best) {
             best = d;
             start = i;
@@ -496,7 +483,7 @@ DiscParam param_square(const std::vector<PatchVec>& rPts, const std::vector<Patc
         std::vector<double> cum(b - a + 1, 0.0);
         for (std::size_t t = a; t < b; ++t)
             cum[t - a + 1] =
-                cum[t - a] + pd_norm(pd_sub(rPts[rLoop[(t + 1) % nb]], rPts[rLoop[t % nb]]));
+                cum[t - a] + vec3_norm(vec3_sub(rPts[rLoop[(t + 1) % nb]], rPts[rLoop[t % nb]]));
         const double len = cum.back();
         if (!(len > 0.0))
             return out;
