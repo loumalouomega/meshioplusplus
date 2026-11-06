@@ -4547,6 +4547,9 @@ PYBIND11_MODULE(_core, m) {
             out["num_winding_skipped"] = r.mNumWindingSkipped;
             out["num_gaps_filled"] = r.mNumGapsFilled;
             out["num_gaps_skipped"] = r.mNumGapsSkipped;
+            out["num_collapsed"] = r.mNumCollapsed;
+            out["num_reordered"] = r.mNumReordered;
+            out["num_overlaps"] = r.mNumOverlaps;
             py::dict quality;
             quality["num_cells"] = r.mQuality.mNumCells;
             quality["num_inverted"] = r.mQuality.mNumInverted;

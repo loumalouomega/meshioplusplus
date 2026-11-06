@@ -5869,7 +5869,9 @@ static_assert(static_cast<int>(meshioplusplus::OctreeMeshHexGrading::Graded) ==
 static_assert(sizeof(mio_octree_mesh_report) == 392, "mio_octree_mesh_report layout changed");
 static_assert(offsetof(mio_octree_mesh_report, num_winding_skipped) == 328,
               "mio_octree_mesh_report layout changed");
-static_assert(offsetof(mio_octree_mesh_report, num_gaps_skipped) == 344,
+static_assert(offsetof(mio_octree_mesh_report, num_gaps_skipped) == 344 &&
+                  offsetof(mio_octree_mesh_report, num_collapsed) == 352 &&
+                  offsetof(mio_octree_mesh_report, num_overlaps) == 368,
               "mio_octree_mesh_report layout changed");
 static_assert(
     static_cast<int>(meshioplusplus::OctreeMeshOutput::Castellated) ==
@@ -6920,6 +6922,9 @@ mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_opts* opts
             report->num_winding_skipped = r.mNumWindingSkipped;
             report->num_gaps_filled = r.mNumGapsFilled;
             report->num_gaps_skipped = r.mNumGapsSkipped;
+            report->num_collapsed = r.mNumCollapsed;
+            report->num_reordered = r.mNumReordered;
+            report->num_overlaps = r.mNumOverlaps;
             report->num_warnings = static_cast<std::int64_t>(r.mWarnings.size());
         }
         return new mio_mesh{std::move(r.mMesh)};

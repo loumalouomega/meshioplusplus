@@ -492,7 +492,10 @@ struct _COctreeMeshReport
     num_winding_skipped::Int64
     num_gaps_filled::Int64
     num_gaps_skipped::Int64
-    reserved::NTuple{5,Int64}
+    num_collapsed::Int64
+    num_reordered::Int64
+    num_overlaps::Int64
+    reserved::NTuple{2,Int64}
 end
 
 """

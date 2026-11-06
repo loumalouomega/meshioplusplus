@@ -5264,6 +5264,12 @@ export interface OctreeMeshResult {
   numGapsFilled: number;
   /** Notches left open. */
   numGapsSkipped: number;
+  /** Degenerate tetrahedra removed by collapsing their nodes. */
+  numCollapsed: number;
+  /** Inverted tetrahedra made positive by swapping two nodes. */
+  numReordered: number;
+  /** Pairs of tetrahedra sharing a face whose opposite nodes lie on the same side of it. */
+  numOverlaps: number;
   /** Seconds spent in each stage, in order, as `[stage, seconds]` pairs. */
   timings: Array<[string, number]>;
   /** Everything that did not meet its target, in order. */

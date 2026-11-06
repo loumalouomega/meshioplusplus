@@ -492,6 +492,8 @@ def test_notches_between_chain_nodes_are_filled(shape, max_hausdorff):
     assert report["num_gaps_filled"] > 0
     assert report["num_gaps_skipped"] >= 0
     assert report["num_inverted"] == 0
+    assert report["num_overlaps"] == 0
+    assert report["num_collapsed"] >= 0 and report["num_reordered"] >= 0
     assert _tet_volumes(out).min() > 0.0
     _, conformity = mio.check_conformity(out, return_report=True)
     assert conformity["conforming"]

@@ -3220,8 +3220,8 @@ num_warped, num_warp_refused, min_dihedral, max_dihedral, min_scaled_jacobian,
 hausdorff_to_skin, num_inverted, num_boundary_edges_open,
 num_non_manifold_boundary_edges, num_corners, num_corners_snapped,
 num_feature_chains, num_feature_chains_missed, num_feature_moves,
-num_optimized_moves, num_flips, num_winding_rechecks, num_winding_skipped, num_gaps_filled, num_gaps_skipped, num_warnings,
-warnings)`,
+num_optimized_moves, num_flips, num_winding_rechecks, num_winding_skipped, num_gaps_filled, num_gaps_skipped, num_collapsed, num_reordered, num_overlaps,
+num_warnings, warnings)`,
 with `output` the name of the output produced and `warnings` a
 `Vector{String}`, one entry per warning.
 """
@@ -3312,6 +3312,8 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
      num_winding_rechecks=Int(r.num_winding_rechecks),
      num_winding_skipped=Int(r.num_winding_skipped),
      num_gaps_filled=Int(r.num_gaps_filled), num_gaps_skipped=Int(r.num_gaps_skipped),
+     num_collapsed=Int(r.num_collapsed), num_reordered=Int(r.num_reordered),
+     num_overlaps=Int(r.num_overlaps),
      num_warnings=Int(r.num_warnings),
      warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
 end

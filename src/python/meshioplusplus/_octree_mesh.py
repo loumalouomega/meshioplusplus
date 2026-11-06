@@ -58,6 +58,9 @@ _REPORT_INTS = (
     "num_winding_skipped",
     "num_gaps_filled",
     "num_gaps_skipped",
+    "num_collapsed",
+    "num_reordered",
+    "num_overlaps",
 )
 _REPORT_FLOATS = (
     "root_size",
@@ -214,7 +217,9 @@ def octree_mesh(
         ``num_feature_moves``, ``num_gaps_filled`` and ``num_gaps_skipped``: the
         notches between consecutive chain nodes closed with tetrahedra, and left
         open), the optimisation (``num_optimized_moves``,
-        ``num_flips``), ``guarantee_applies``, ``num_winding_rechecks``,
+        ``num_flips``), the volume fix (``num_collapsed`` degenerate
+        tetrahedra removed, ``num_reordered`` inverted ones made positive,
+        ``num_overlaps`` pairs of tetrahedra left overlapping), ``guarantee_applies``, ``num_winding_rechecks``,
         ``num_winding_skipped`` (deep inside a closed skin), ``timings`` (seconds
         per stage) and ``warnings``.
     :raises ValueError: on an option out of range.
