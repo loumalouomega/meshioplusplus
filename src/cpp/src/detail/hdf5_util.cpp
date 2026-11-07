@@ -35,6 +35,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "../formats/library_preflight.hpp"
 #include "library_lock.hpp"
+#include "dtype_table.hpp"
 
 namespace meshioplusplus {
 namespace h5 {
@@ -111,55 +112,16 @@ Hid create_group(hid_t loc, const std::string& rName) {
 }
 
 hid_t native_type(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return H5T_NATIVE_FLOAT;
-        case DType::Float64:
-            return H5T_NATIVE_DOUBLE;
-        case DType::Int8:
-            return H5T_NATIVE_INT8;
-        case DType::Int16:
-            return H5T_NATIVE_INT16;
-        case DType::Int32:
-            return H5T_NATIVE_INT32;
-        case DType::Int64:
-            return H5T_NATIVE_INT64;
-        case DType::UInt8:
-            return H5T_NATIVE_UINT8;
-        case DType::UInt16:
-            return H5T_NATIVE_UINT16;
-        case DType::UInt32:
-            return H5T_NATIVE_UINT32;
-        case DType::UInt64:
-            return H5T_NATIVE_UINT64;
-    }
-    return H5T_NATIVE_DOUBLE;
+    return detail::DTypeUtils::Pick<hid_t>(
+        dt, {H5T_NATIVE_FLOAT, H5T_NATIVE_DOUBLE, H5T_NATIVE_INT8, H5T_NATIVE_INT16,
+             H5T_NATIVE_INT32, H5T_NATIVE_INT64, H5T_NATIVE_UINT8, H5T_NATIVE_UINT16,
+             H5T_NATIVE_UINT32, H5T_NATIVE_UINT64});
 }
 
 hid_t file_type(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return H5T_IEEE_F32LE;
-        case DType::Float64:
-            return H5T_IEEE_F64LE;
-        case DType::Int8:
-            return H5T_STD_I8LE;
-        case DType::Int16:
-            return H5T_STD_I16LE;
-        case DType::Int32:
-            return H5T_STD_I32LE;
-        case DType::Int64:
-            return H5T_STD_I64LE;
-        case DType::UInt8:
-            return H5T_STD_U8LE;
-        case DType::UInt16:
-            return H5T_STD_U16LE;
-        case DType::UInt32:
-            return H5T_STD_U32LE;
-        case DType::UInt64:
-            return H5T_STD_U64LE;
-    }
-    return H5T_IEEE_F64LE;
+    return detail::DTypeUtils::Pick<hid_t>(
+        dt, {H5T_IEEE_F32LE, H5T_IEEE_F64LE, H5T_STD_I8LE, H5T_STD_I16LE, H5T_STD_I32LE,
+             H5T_STD_I64LE, H5T_STD_U8LE, H5T_STD_U16LE, H5T_STD_U32LE, H5T_STD_U64LE});
 }
 
 DType dtype_from_h5(hid_t type_id) {

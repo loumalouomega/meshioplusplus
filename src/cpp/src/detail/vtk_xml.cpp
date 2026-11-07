@@ -39,6 +39,7 @@
 #include "row_writer.hpp"
 #include "vtu_decode.hpp"
 #include "typed_view.hpp"
+#include "dtype_table.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -81,29 +82,9 @@ const char* vtkxml_parse_decimal(const char* pFirst, const char* pLast, TInt& rV
 }  // namespace
 
 const char* vtu_type_str(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return "Float32";
-        case DType::Float64:
-            return "Float64";
-        case DType::Int8:
-            return "Int8";
-        case DType::Int16:
-            return "Int16";
-        case DType::Int32:
-            return "Int32";
-        case DType::Int64:
-            return "Int64";
-        case DType::UInt8:
-            return "UInt8";
-        case DType::UInt16:
-            return "UInt16";
-        case DType::UInt32:
-            return "UInt32";
-        case DType::UInt64:
-            return "UInt64";
-    }
-    return "Float64";
+    return detail::DTypeUtils::Pick<const char*>(
+        dt, {"Float32", "Float64", "Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32",
+             "UInt64"});
 }
 
 DType dtype_from_vtu(const std::string& rS) {

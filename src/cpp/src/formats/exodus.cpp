@@ -49,6 +49,7 @@
 #include "meshioplusplus/types.hpp"
 #include "../detail/typed_view.hpp"
 #include "library_preflight.hpp"
+#include "../detail/dtype_table.hpp"
 
 namespace meshioplusplus {
 
@@ -114,29 +115,9 @@ NDArray exo_gather_columns(const NDArray& rIn, const std::vector<int>& rPerm) {
 }
 
 nc_type nc_type_of(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return NC_FLOAT;
-        case DType::Float64:
-            return NC_DOUBLE;
-        case DType::Int8:
-            return NC_BYTE;
-        case DType::Int16:
-            return NC_SHORT;
-        case DType::Int32:
-            return NC_INT;
-        case DType::Int64:
-            return NC_INT64;
-        case DType::UInt8:
-            return NC_UBYTE;
-        case DType::UInt16:
-            return NC_USHORT;
-        case DType::UInt32:
-            return NC_UINT;
-        case DType::UInt64:
-            return NC_UINT64;
-    }
-    return NC_DOUBLE;
+    return detail::DTypeUtils::Pick<nc_type>(
+        dt, {NC_FLOAT, NC_DOUBLE, NC_BYTE, NC_SHORT, NC_INT, NC_INT64, NC_UBYTE, NC_USHORT, NC_UINT,
+             NC_UINT64});
 }
 
 DType dtype_of(nc_type t) {

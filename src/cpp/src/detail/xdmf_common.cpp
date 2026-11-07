@@ -39,6 +39,9 @@
 #include "meshioplusplus/detail/hdf5_util.hpp"
 #endif
 
+// Project includes (private, not installed)
+#include "dtype_table.hpp"
+
 namespace meshioplusplus {
 namespace xdmfcommon {
 
@@ -178,29 +181,11 @@ std::vector<NDArray> split_raw_cell_data(const NDArray& rRaw,
 // ---- write-path helpers ----
 
 std::pair<const char*, const char*> numpy_to_xdmf_dtype(DType dt) {
-    switch (dt) {
-        case DType::Int8:
-            return {"Int", "1"};
-        case DType::Int16:
-            return {"Int", "2"};
-        case DType::Int32:
-            return {"Int", "4"};
-        case DType::Int64:
-            return {"Int", "8"};
-        case DType::UInt8:
-            return {"UInt", "1"};
-        case DType::UInt16:
-            return {"UInt", "2"};
-        case DType::UInt32:
-            return {"UInt", "4"};
-        case DType::UInt64:
-            return {"UInt", "8"};
-        case DType::Float32:
-            return {"Float", "4"};
-        case DType::Float64:
-            return {"Float", "8"};
-    }
-    return {"Float", "8"};
+    using Name = std::pair<const char*, const char*>;
+    return detail::DTypeUtils::Pick<Name>(
+        dt, {Name{"Float", "4"}, Name{"Float", "8"}, Name{"Int", "1"}, Name{"Int", "2"},
+             Name{"Int", "4"}, Name{"Int", "8"}, Name{"UInt", "1"}, Name{"UInt", "2"},
+             Name{"UInt", "4"}, Name{"UInt", "8"}});
 }
 
 std::string attribute_type(const std::vector<std::size_t>& rShape) {

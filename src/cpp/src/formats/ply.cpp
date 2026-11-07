@@ -45,6 +45,7 @@
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/dtype_table.hpp"
 
 namespace meshioplusplus {
 
@@ -75,29 +76,9 @@ DType ply_to_dtype(const std::string& rS) {
 }
 
 const char* dtype_to_ply(DType dt) {
-    switch (dt) {
-        case DType::Int8:
-            return "int8";
-        case DType::Int16:
-            return "int16";
-        case DType::Int32:
-            return "int32";
-        case DType::Int64:
-            return "int64";
-        case DType::UInt8:
-            return "uint8";
-        case DType::UInt16:
-            return "uint16";
-        case DType::UInt32:
-            return "uint32";
-        case DType::UInt64:
-            return "uint64";
-        case DType::Float32:
-            return "float";
-        case DType::Float64:
-            return "double";
-    }
-    return "double";
+    return detail::DTypeUtils::Pick<const char*>(
+        dt, {"float", "double", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+             "uint64"});
 }
 
 std::string cell_type_from_count(std::size_t n) {
