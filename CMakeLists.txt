@@ -148,6 +148,22 @@ if(EMSCRIPTEN AND NOT MESHIOPLUSPLUS_WASM_FULL)
   set(_mio_probe_optional OFF)
 endif()
 
+# Link-time optimisation for every target of the tree (roadmap 5.12.3). Off by
+# default: the measured trial in doc/benchmarks.md ("Link-time optimisation")
+# records what it gains and costs, and a gate that pins instruction counts
+# must be re-recorded under the same setting it checks.
+option(MESHIOPLUSPLUS_ENABLE_LTO "Build with link-time optimisation (INTERPROCEDURAL_OPTIMIZATION)" OFF)
+if(MESHIOPLUSPLUS_ENABLE_LTO)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT _mio_ipo_ok OUTPUT _mio_ipo_msg LANGUAGES CXX)
+  if(_mio_ipo_ok)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+    message(STATUS "meshio++: link-time optimisation enabled")
+  else()
+    message(WARNING "meshio++: MESHIOPLUSPLUS_ENABLE_LTO is set, but this toolchain has no IPO support: ${_mio_ipo_msg}")
+  endif()
+endif()
+
 # The pybind11 extension is the default consumer of meshioplusplus_core_obj,
 # but non-Python consumers (the GoogleTest suite, the Emscripten/WASM target
 # below) must be configurable without ever locating a Python interpreter or
