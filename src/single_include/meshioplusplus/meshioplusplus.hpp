@@ -44867,13 +44867,178 @@ std::vector<std::int64_t> patch_split_to_discs(const std::vector<PatchVec>& rPts
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/cut_graph.hpp =====
+// ===== begin src/cpp/src/detail/typed_view.hpp =====
+/**
+ * @file detail/typed_view.hpp
+ * @brief An array's elements as `int64_t` or `double`, with the dtype switch
+ * taken once per array instead of once per element.
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * `Int64View` reads every element exactly as `detail::read_int` does, and
+ * `DoubleView` exactly as `detail::read_double` does -- a pointer into the
+ * array itself when its dtype already is the target, otherwise one converted
+ * copy made in parallel through `dispatch_dtype`. A hot loop then indexes a
+ * plain pointer. `DoubleSink` is the write-side twin: a hot loop stores into a
+ * plain `double*`, and one `Commit()` converts it exactly as `write_double`
+ * would. Roadmap §3, "Hoist the dtype switch in operations".
+ */
+
+// System includes
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <type_traits>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// One element as `read_int` converts it.
+template <class T>
+inline std::int64_t typed_view_int(T v) {
+    if constexpr (std::is_floating_point_v<T>) {
+        const double d = static_cast<double>(v);
+        if (!(d == d))
+            return 0;
+        if (d >= 9223372036854775807.0)
+            return std::numeric_limits<std::int64_t>::max();
+        if (d < -9223372036854775808.0)
+            return std::numeric_limits<std::int64_t>::min();
+        return static_cast<std::int64_t>(d);
+    } else {
+        return static_cast<std::int64_t>(v);
+    }
+}
+
+/// An array read as `int64_t`, as `read_int` reads each element.
+class Int64View {
+public:
+    explicit Int64View(const NDArray& rA) {
+        const std::size_t n = rA.Size();
+        if (rA.Dtype() == DType::Int64) {
+            mpData = rA.As<std::int64_t>();
+            return;
+        }
+        mOwned.resize(n);
+        dispatch_dtype(rA.Dtype(), [&]<class T>() {
+            const T* src = rA.As<T>();
+            std::int64_t* dst = mOwned.data();
+            parallel_for_bw(n, [&](std::size_t i) { dst[i] = typed_view_int<T>(src[i]); });
+        });
+        mpData = mOwned.data();
+    }
+    Int64View(const Int64View&) = delete;
+    Int64View& operator=(const Int64View&) = delete;
+
+    const std::int64_t* Data() const { return mpData; }
+    std::int64_t operator[](std::size_t i) const { return mpData[i]; }
+
+private:
+    const std::int64_t* mpData = nullptr;
+    std::vector<std::int64_t> mOwned;
+};
+
+/// An array read as `double`, as `read_double` reads each element.
+class DoubleView {
+public:
+    explicit DoubleView(const NDArray& rA) {
+        const std::size_t n = rA.Size();
+        if (rA.Dtype() == DType::Float64) {
+            mpData = rA.As<double>();
+            return;
+        }
+        mOwned.resize(n);
+        dispatch_dtype(rA.Dtype(), [&]<class T>() {
+            const T* src = rA.As<T>();
+            double* dst = mOwned.data();
+            parallel_for_bw(n, [&](std::size_t i) { dst[i] = static_cast<double>(src[i]); });
+        });
+        mpData = mOwned.data();
+    }
+    DoubleView(const DoubleView&) = delete;
+    DoubleView& operator=(const DoubleView&) = delete;
+
+    const double* Data() const { return mpData; }
+    double operator[](std::size_t i) const { return mpData[i]; }
+
+private:
+    const double* mpData = nullptr;
+    std::vector<double> mOwned;
+};
+
+/// One element as `write_double` stores it into a `T` array.
+template <class T>
+inline T typed_view_store(double v) {
+    if constexpr (std::is_floating_point_v<T>) {
+        return static_cast<T>(v);
+    } else {
+        if (!std::isfinite(v))
+            return static_cast<T>(0);
+        const long double r = std::round(static_cast<long double>(v));
+        const long double lo = static_cast<long double>(std::numeric_limits<T>::min());
+        const long double hi = static_cast<long double>(std::numeric_limits<T>::max());
+        return static_cast<T>(r < lo ? lo : (r > hi ? hi : r));
+    }
+}
+
+/// The write-side twin of `DoubleView`: elements `[First, First + Count)` of an
+/// array, written as `double` and stored as `write_double` would store them.
+///
+/// `Data()[i]` is element `First + i`. When the array already is float64 that
+/// is the array itself and `Commit()` has nothing to do; otherwise it is an
+/// owned `double` buffer that `Commit()` converts into the array in one
+/// parallel pass. A hot loop writes a plain pointer instead of dispatching on
+/// the destination dtype for every value.
+class DoubleSink {
+public:
+    DoubleSink(NDArray& rA, std::size_t First, std::size_t Count)
+        : mrArray(rA), mFirst(First), mCount(Count) {
+        if (rA.Dtype() == DType::Float64) {
+            mpData = rA.As<double>() + First;
+        } else {
+            mOwned.resize(Count);
+            mpData = mOwned.data();
+        }
+    }
+    DoubleSink(const DoubleSink&) = delete;
+    DoubleSink& operator=(const DoubleSink&) = delete;
+
+    double* Data() { return mpData; }
+
+    /// Stores the buffered values into the array. Call once, after the loop.
+    void Commit() {
+        if (mOwned.empty())
+            return;
+        dispatch_dtype(mrArray.Dtype(), [&]<class T>() {
+            T* dst = mrArray.As<T>() + mFirst;
+            const double* src = mOwned.data();
+            parallel_for_bw(mCount, [&](std::size_t i) { dst[i] = typed_view_store<T>(src[i]); });
+        });
+    }
+
+private:
+    NDArray& mrArray;
+    std::size_t mFirst;
+    std::size_t mCount;
+    double* mpData = nullptr;
+    std::vector<double> mOwned;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/typed_view.hpp =====
 // ===== begin src/cpp/src/detail/data_plumbing.hpp =====
 /**
  * @file detail/data_plumbing.hpp
  * @brief Row plumbing shared by the operations that rebuild a mesh from a
  * subset or a refinement of another: gathering the point table, compacting it
  * by a `used` mask, replicating parent cell rows to children, and copying the
- * geometry under new coordinates.
+ * geometry under new coordinates, and appending computed rows to a copy.
  *
  * A **core-private** header (the `slot_runs.hpp` precedent): it lives beside
  * the `.cpp` files, no installed header names it, and it adds nothing to the
@@ -44891,6 +45056,7 @@ std::vector<std::int64_t> patch_split_to_discs(const std::vector<PatchVec>& rPts
 #include <vector>
 
 // Project includes
+
 
 namespace meshioplusplus {
 namespace detail {
@@ -45011,6 +45177,28 @@ inline void clone_geometry_into(const Mesh& rMesh, NDArray Points, Mesh& rOut) {
     // keyed by id, not by entity index, so there is nothing to remap.
     for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
         rOut.AddPropertySet(rMesh.GetPropertySet(i));
+}
+
+/**
+ * @brief @p rA, whose first @p NumRows rows hold @p NumComp values each, with
+ * @p NumNew rows appended: the original bytes are copied, and @p rFill
+ * receives the appended values (`NumNew * NumComp` doubles, row-major) to
+ * write, stored once in @p rA's dtype by a DoubleSink commit.
+ *
+ * The rows' arithmetic stays in each caller's @p rFill (a mean, a midpoint, a
+ * key's average), so the values are unchanged.
+ */
+template <class TFill>
+NDArray append_rows(const NDArray& rA, std::size_t NumRows, std::size_t NumNew, std::size_t NumComp,
+                    TFill&& rFill) {
+    std::vector<std::size_t> shape = rA.Shape();
+    shape[0] = NumRows + NumNew;
+    NDArray b = NDArray::Uninit(rA.Dtype(), std::move(shape));
+    std::memcpy(b.Data(), rA.Data(), rA.Nbytes());
+    DoubleSink sink(b, NumRows * NumComp, NumNew * NumComp);
+    rFill(sink.Data());
+    sink.Commit();
+    return b;
 }
 
 }  // namespace detail
@@ -45181,6 +45369,29 @@ void decim_kill_and_migrate(std::vector<std::int64_t>& rConn,
     rRows[static_cast<std::size_t>(r)].clear();
 }
 
+/// Emits one `K`-corner block of type `Type` per block of `rSrc` (1:1, possibly
+/// empty): the alive cells of the flat `rConn` in their original order, their
+/// corners renumbered through `rRemap`, and per block the cell map from
+/// `rIn`'s cells (input cell -> output row, -1 for a removed cell) into
+/// `rCellMaps`. `pParentName` names an int cell_data of `rSrc` mapping each of
+/// its cells to the `rIn` cell it came from (decimate's `convert:parent_cell`,
+/// which simplexify adds), whose first surviving child is its entry; nullptr
+/// (decimate_volume, which works on its input) is the identity.
+template <int K>
+void decim_emit_blocks(const Mesh& rIn, const Mesh& rSrc, const char* pParentName,
+                       const std::vector<std::uint8_t>& rAlive,
+                       const std::vector<std::int64_t>& rConn,
+                       const std::vector<std::int64_t>& rBases,
+                       const std::vector<std::int64_t>& rRemap, CellType Type, Mesh& rOut,
+                       std::vector<NDArray>& rCellMaps);
+
+/// Carries `rIn`'s named regions onto the decimated `rOut` through its point
+/// map and per-block cell maps (`FirstChild` for decimate, `Direct` for
+/// decimate_volume); see detail/region_remap.hpp.
+void decim_remap_regions(const Mesh& rIn, Mesh& rOut, const NDArray& rPointMap,
+                         const std::vector<NDArray>& rCellMaps, CellMapKind Kind,
+                         const char* pOpName);
+
 /// Marks in `rUsed` every corner of an alive cell of the flat `K`-per-cell
 /// `rConn`, numbers the used points ascending into `rRemap` (-1 elsewhere),
 /// and returns how many are used.
@@ -45204,171 +45415,6 @@ std::size_t decim_compact_points(const std::vector<std::uint8_t>& rAlive,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/decimate_shared.hpp =====
-// ===== begin src/cpp/src/detail/typed_view.hpp =====
-/**
- * @file detail/typed_view.hpp
- * @brief An array's elements as `int64_t` or `double`, with the dtype switch
- * taken once per array instead of once per element.
- *
- * A **core-private** header (the `slot_runs.hpp` precedent): no installed
- * header names it, and it adds nothing to the API or the ABI.
- *
- * `Int64View` reads every element exactly as `detail::read_int` does, and
- * `DoubleView` exactly as `detail::read_double` does -- a pointer into the
- * array itself when its dtype already is the target, otherwise one converted
- * copy made in parallel through `dispatch_dtype`. A hot loop then indexes a
- * plain pointer. `DoubleSink` is the write-side twin: a hot loop stores into a
- * plain `double*`, and one `Commit()` converts it exactly as `write_double`
- * would. Roadmap §3, "Hoist the dtype switch in operations".
- */
-
-// System includes
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <limits>
-#include <type_traits>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-namespace detail {
-
-/// One element as `read_int` converts it.
-template <class T>
-inline std::int64_t typed_view_int(T v) {
-    if constexpr (std::is_floating_point_v<T>) {
-        const double d = static_cast<double>(v);
-        if (!(d == d))
-            return 0;
-        if (d >= 9223372036854775807.0)
-            return std::numeric_limits<std::int64_t>::max();
-        if (d < -9223372036854775808.0)
-            return std::numeric_limits<std::int64_t>::min();
-        return static_cast<std::int64_t>(d);
-    } else {
-        return static_cast<std::int64_t>(v);
-    }
-}
-
-/// An array read as `int64_t`, as `read_int` reads each element.
-class Int64View {
-public:
-    explicit Int64View(const NDArray& rA) {
-        const std::size_t n = rA.Size();
-        if (rA.Dtype() == DType::Int64) {
-            mpData = rA.As<std::int64_t>();
-            return;
-        }
-        mOwned.resize(n);
-        dispatch_dtype(rA.Dtype(), [&]<class T>() {
-            const T* src = rA.As<T>();
-            std::int64_t* dst = mOwned.data();
-            parallel_for_bw(n, [&](std::size_t i) { dst[i] = typed_view_int<T>(src[i]); });
-        });
-        mpData = mOwned.data();
-    }
-    Int64View(const Int64View&) = delete;
-    Int64View& operator=(const Int64View&) = delete;
-
-    const std::int64_t* Data() const { return mpData; }
-    std::int64_t operator[](std::size_t i) const { return mpData[i]; }
-
-private:
-    const std::int64_t* mpData = nullptr;
-    std::vector<std::int64_t> mOwned;
-};
-
-/// An array read as `double`, as `read_double` reads each element.
-class DoubleView {
-public:
-    explicit DoubleView(const NDArray& rA) {
-        const std::size_t n = rA.Size();
-        if (rA.Dtype() == DType::Float64) {
-            mpData = rA.As<double>();
-            return;
-        }
-        mOwned.resize(n);
-        dispatch_dtype(rA.Dtype(), [&]<class T>() {
-            const T* src = rA.As<T>();
-            double* dst = mOwned.data();
-            parallel_for_bw(n, [&](std::size_t i) { dst[i] = static_cast<double>(src[i]); });
-        });
-        mpData = mOwned.data();
-    }
-    DoubleView(const DoubleView&) = delete;
-    DoubleView& operator=(const DoubleView&) = delete;
-
-    const double* Data() const { return mpData; }
-    double operator[](std::size_t i) const { return mpData[i]; }
-
-private:
-    const double* mpData = nullptr;
-    std::vector<double> mOwned;
-};
-
-/// One element as `write_double` stores it into a `T` array.
-template <class T>
-inline T typed_view_store(double v) {
-    if constexpr (std::is_floating_point_v<T>) {
-        return static_cast<T>(v);
-    } else {
-        if (!std::isfinite(v))
-            return static_cast<T>(0);
-        const long double r = std::round(static_cast<long double>(v));
-        const long double lo = static_cast<long double>(std::numeric_limits<T>::min());
-        const long double hi = static_cast<long double>(std::numeric_limits<T>::max());
-        return static_cast<T>(r < lo ? lo : (r > hi ? hi : r));
-    }
-}
-
-/// The write-side twin of `DoubleView`: elements `[First, First + Count)` of an
-/// array, written as `double` and stored as `write_double` would store them.
-///
-/// `Data()[i]` is element `First + i`. When the array already is float64 that
-/// is the array itself and `Commit()` has nothing to do; otherwise it is an
-/// owned `double` buffer that `Commit()` converts into the array in one
-/// parallel pass. A hot loop writes a plain pointer instead of dispatching on
-/// the destination dtype for every value.
-class DoubleSink {
-public:
-    DoubleSink(NDArray& rA, std::size_t First, std::size_t Count)
-        : mrArray(rA), mFirst(First), mCount(Count) {
-        if (rA.Dtype() == DType::Float64) {
-            mpData = rA.As<double>() + First;
-        } else {
-            mOwned.resize(Count);
-            mpData = mOwned.data();
-        }
-    }
-    DoubleSink(const DoubleSink&) = delete;
-    DoubleSink& operator=(const DoubleSink&) = delete;
-
-    double* Data() { return mpData; }
-
-    /// Stores the buffered values into the array. Call once, after the loop.
-    void Commit() {
-        if (mOwned.empty())
-            return;
-        dispatch_dtype(mrArray.Dtype(), [&]<class T>() {
-            T* dst = mrArray.As<T>() + mFirst;
-            const double* src = mOwned.data();
-            parallel_for_bw(mCount, [&](std::size_t i) { dst[i] = typed_view_store<T>(src[i]); });
-        });
-    }
-
-private:
-    NDArray& mrArray;
-    std::size_t mFirst;
-    std::size_t mCount;
-    double* mpData = nullptr;
-    std::vector<double> mOwned;
-};
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/src/detail/typed_view.hpp =====
 // ===== begin src/cpp/src/detail/drawing.hpp =====
 /**
  * @file detail/drawing.hpp
@@ -81804,6 +81850,76 @@ NDArray decim_point_map(const std::vector<std::int64_t>& rSuccessor,
         dst[i] = rRemap[static_cast<std::size_t>(v)];
     }
     return pm;
+}
+
+template <int K>
+void decim_emit_blocks(const Mesh& rIn, const Mesh& rSrc, const char* pParentName,
+                       const std::vector<std::uint8_t>& rAlive,
+                       const std::vector<std::int64_t>& rConn,
+                       const std::vector<std::int64_t>& rBases,
+                       const std::vector<std::int64_t>& rRemap, CellType Type, Mesh& rOut,
+                       std::vector<NDArray>& rCellMaps) {
+    constexpr std::size_t kCorners = K;
+    const std::size_t nblocks = rSrc.NumCellBlocks();
+    const bool has_parent = pParentName != nullptr && rSrc.HasCellData(pParentName) &&
+                            rSrc.CellDataNumBlocks(pParentName) == nblocks;
+    std::size_t bi = 0;
+    std::vector<std::size_t> in_cells;
+    for (const auto cb : rIn.CellRange())
+        in_cells.push_back(cb.NumCells());
+    for (const auto cb : rSrc.CellRange()) {
+        const std::size_t nc = cb.NumCells();
+        const std::size_t base = static_cast<std::size_t>(rBases[bi]);
+        std::size_t alive_in_block = 0;
+        for (std::size_t c = 0; c < nc; ++c)
+            if (rAlive[base + c])
+                ++alive_in_block;
+        NDArray block = NDArray::Uninit(DType::Int64, {alive_in_block, kCorners});
+        std::int64_t* dst = block.As<std::int64_t>();
+        const NDArray* p_parent = has_parent ? &rSrc.CellData(pParentName, bi) : nullptr;
+        std::vector<std::int64_t> cell_map(bi < in_cells.size() ? in_cells[bi] : nc, -1);
+        std::size_t w = 0;
+        for (std::size_t c = 0; c < nc; ++c) {
+            if (!rAlive[base + c])
+                continue;
+            for (std::size_t k = 0; k < kCorners; ++k)
+                dst[w * kCorners + k] =
+                    rRemap[static_cast<std::size_t>(rConn[(base + c) * kCorners + k])];
+            const std::int64_t parent =
+                p_parent != nullptr ? read_int(*p_parent, c) : static_cast<std::int64_t>(c);
+            if (parent >= 0 && static_cast<std::size_t>(parent) < cell_map.size() &&
+                cell_map[static_cast<std::size_t>(parent)] < 0)
+                cell_map[static_cast<std::size_t>(parent)] = static_cast<std::int64_t>(w);
+            ++w;
+        }
+        rOut.AddCellBlock(cell_type_name(Type), std::move(block));
+        rCellMaps.push_back(NDArrayUtils::Int64Vector(cell_map));
+        ++bi;
+    }
+}
+
+template void decim_emit_blocks<3>(const Mesh&, const Mesh&, const char*,
+                                   const std::vector<std::uint8_t>&,
+                                   const std::vector<std::int64_t>&,
+                                   const std::vector<std::int64_t>&,
+                                   const std::vector<std::int64_t>&, CellType, Mesh&,
+                                   std::vector<NDArray>&);
+template void decim_emit_blocks<4>(const Mesh&, const Mesh&, const char*,
+                                   const std::vector<std::uint8_t>&,
+                                   const std::vector<std::int64_t>&,
+                                   const std::vector<std::int64_t>&,
+                                   const std::vector<std::int64_t>&, CellType, Mesh&,
+                                   std::vector<NDArray>&);
+
+void decim_remap_regions(const Mesh& rIn, Mesh& rOut, const NDArray& rPointMap,
+                         const std::vector<NDArray>& rCellMaps, CellMapKind Kind,
+                         const char* pOpName) {
+    RegionRemap rmap;
+    rmap.pPointMap = &rPointMap;
+    rmap.mCellMapKind = Kind;
+    rmap.pCellMaps = &rCellMaps;
+    rmap.mOpName = pOpName;
+    remap_regions(rIn, rOut, rmap);
 }
 
 }  // namespace detail
@@ -221422,23 +221538,19 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds,
         const NDArray& points = mesh.Points();
         const detail::DoubleView points_v(points);
         const std::size_t dim = detail::cols(points);
-        NDArray np = NDArray::Uninit(points.Dtype(), {num_points + num_new, dim});
-        std::memcpy(np.Data(), points.Data(), points.Nbytes());
-        // The appended rows only, stored by one Commit() (see DoubleSink).
-        detail::DoubleSink sink(np, num_points * dim, num_new * dim);
-        double* const new_xyz = sink.Data();
-        parallel_for_bw(num_new, [&](std::size_t i) {
-            const std::int64_t* src = src_nodes.data() + src_start[i];
-            const std::size_t count = src_start[i + 1] - src_start[i];
-            for (std::size_t d = 0; d < dim; ++d) {
-                double sum = 0.0;
-                for (std::size_t j = 0; j < count; ++j)
-                    sum += points_v[static_cast<std::size_t>(src[j]) * dim + d];
-                new_xyz[i * dim + d] = sum / static_cast<double>(count);
-            }
-        });
-        sink.Commit();
-        out.AssignPoints(std::move(np));
+        out.AssignPoints(
+            detail::append_rows(points, num_points, num_new, dim, [&](double* const new_xyz) {
+                parallel_for_bw(num_new, [&](std::size_t i) {
+                    const std::int64_t* src = src_nodes.data() + src_start[i];
+                    const std::size_t count = src_start[i + 1] - src_start[i];
+                    for (std::size_t d = 0; d < dim; ++d) {
+                        double sum = 0.0;
+                        for (std::size_t j = 0; j < count; ++j)
+                            sum += points_v[static_cast<std::size_t>(src[j]) * dim + d];
+                        new_xyz[i * dim + d] = sum / static_cast<double>(count);
+                    }
+                });
+            }));
     }
     // The new points' point_data next, while their sources are still here;
     // then the sources go before the blocks are added (roadmap §6.1).
@@ -221452,24 +221564,20 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds,
                 continue;  // not per-point data; copy verbatim rather than mangle
             }
             const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
-            std::vector<std::size_t> shape = a.Shape();
-            shape[0] = num_points + num_new;
-            NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
-            std::memcpy(b.Data(), a.Data(), a.Nbytes());
-            detail::DoubleSink sink(b, num_points * ncomp, num_new * ncomp);
-            double* const new_vals = sink.Data();
-            parallel_for_bw(num_new, [&](std::size_t i) {
-                const std::int64_t* src = src_nodes.data() + src_start[i];
-                const std::size_t count = src_start[i + 1] - src_start[i];
-                for (std::size_t k = 0; k < ncomp; ++k) {
-                    double sum = 0.0;
-                    for (std::size_t j = 0; j < count; ++j)
-                        sum += a_v[static_cast<std::size_t>(src[j]) * ncomp + k];
-                    new_vals[i * ncomp + k] = sum / static_cast<double>(count);
-                }
-            });
-            sink.Commit();
-            new_point_data.emplace_back(name, std::move(b));
+            new_point_data.emplace_back(
+                name,
+                detail::append_rows(a, num_points, num_new, ncomp, [&](double* const new_vals) {
+                    parallel_for_bw(num_new, [&](std::size_t i) {
+                        const std::int64_t* src = src_nodes.data() + src_start[i];
+                        const std::size_t count = src_start[i + 1] - src_start[i];
+                        for (std::size_t k = 0; k < ncomp; ++k) {
+                            double sum = 0.0;
+                            for (std::size_t j = 0; j < count; ++j)
+                                sum += a_v[static_cast<std::size_t>(src[j]) * ncomp + k];
+                            new_vals[i * ncomp + k] = sum / static_cast<double>(count);
+                        }
+                    });
+                }));
         }
     }
     std::vector<std::int64_t>().swap(src_nodes);
@@ -221598,20 +221706,15 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
     const NDArray& points = rMesh.Points();
     const detail::DoubleView points_v(points);
     const std::size_t dim = detail::cols(points);
-    {
-        NDArray new_points = NDArray::Uninit(points.Dtype(), {num_points + new_edges.size(), dim});
-        std::memcpy(new_points.Data(), points.Data(), points.Nbytes());
-        detail::DoubleSink sink(new_points, num_points * dim, new_edges.size() * dim);
-        double* const mid_xyz = sink.Data();
-        parallel_for_bw(new_edges.size(), [&](std::size_t i) {
-            const std::size_t a = static_cast<std::size_t>(new_edges[i].first);
-            const std::size_t b = static_cast<std::size_t>(new_edges[i].second);
-            for (std::size_t k = 0; k < dim; ++k)
-                mid_xyz[i * dim + k] = 0.5 * (points_v[a * dim + k] + points_v[b * dim + k]);
-        });
-        sink.Commit();
-        out.AssignPoints(std::move(new_points));
-    }
+    out.AssignPoints(
+        detail::append_rows(points, num_points, new_edges.size(), dim, [&](double* const mid_xyz) {
+            parallel_for_bw(new_edges.size(), [&](std::size_t i) {
+                const std::size_t a = static_cast<std::size_t>(new_edges[i].first);
+                const std::size_t b = static_cast<std::size_t>(new_edges[i].second);
+                for (std::size_t k = 0; k < dim; ++k)
+                    mid_xyz[i * dim + k] = 0.5 * (points_v[a * dim + k] + points_v[b * dim + k]);
+            });
+        }));
 
     // --- phase 4: connectivity = corners + the mid node of each edge ---
     bi = 0;
@@ -221650,20 +221753,17 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
             continue;
         }
         const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
-        std::vector<std::size_t> shape = a.Shape();
-        shape[0] = num_points + new_edges.size();
-        NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
-        std::memcpy(b.Data(), a.Data(), a.Nbytes());
-        detail::DoubleSink sink(b, num_points * ncomp, new_edges.size() * ncomp);
-        double* const mid_vals = sink.Data();
-        parallel_for_bw(new_edges.size(), [&](std::size_t i) {
-            const std::size_t p = static_cast<std::size_t>(new_edges[i].first);
-            const std::size_t q = static_cast<std::size_t>(new_edges[i].second);
-            for (std::size_t k = 0; k < ncomp; ++k)
-                mid_vals[i * ncomp + k] = 0.5 * (a_v[p * ncomp + k] + a_v[q * ncomp + k]);
-        });
-        sink.Commit();
-        out.AddPointData(name, std::move(b));
+        out.AddPointData(
+            name, detail::append_rows(
+                      a, num_points, new_edges.size(), ncomp, [&](double* const mid_vals) {
+                          parallel_for_bw(new_edges.size(), [&](std::size_t i) {
+                              const std::size_t p = static_cast<std::size_t>(new_edges[i].first);
+                              const std::size_t q = static_cast<std::size_t>(new_edges[i].second);
+                              for (std::size_t k = 0; k < ncomp; ++k)
+                                  mid_vals[i * ncomp + k] =
+                                      0.5 * (a_v[p * ncomp + k] + a_v[q * ncomp + k]);
+                          });
+                      }));
     }
 
     ccells_copy_cell_data(rMesh, out);
@@ -225652,7 +225752,6 @@ Mesh data_to_sets(const Mesh& rMesh, DataLocation Location, const std::string& r
 #include <stdexcept>
 #include <string>
 #include <tuple>
-#include <utility>
 #include <vector>
 
 // Project includes
@@ -226071,44 +226170,9 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
 
     // One triangle block per input block (1:1, possibly empty), plus the
     // per-input-block cell maps composed through the simplexify child map.
-    {
-        const bool has_parent = simp.HasCellData("convert:parent_cell") &&
-                                simp.CellDataNumBlocks("convert:parent_cell") == nblocks;
-        std::size_t bi = 0;
-        std::vector<std::size_t> in_cells;
-        for (const auto cb : rMesh.CellRange())
-            in_cells.push_back(cb.NumCells());
-        for (const auto cb : simp.CellRange()) {
-            const std::size_t nc = cb.NumCells();
-            const std::size_t base = static_cast<std::size_t>(faces.mBlockBase[bi]);
-            std::size_t alive_in_block = 0;
-            for (std::size_t c = 0; c < nc; ++c)
-                if (face_alive[base + c])
-                    ++alive_in_block;
-            NDArray block = NDArray::Uninit(DType::Int64, {alive_in_block, 3});
-            std::int64_t* dst = block.As<std::int64_t>();
-            const NDArray* p_parent =
-                has_parent ? &simp.CellData("convert:parent_cell", bi) : nullptr;
-            std::vector<std::int64_t> cell_map(bi < in_cells.size() ? in_cells[bi] : nc, -1);
-            std::size_t w = 0;
-            for (std::size_t c = 0; c < nc; ++c) {
-                if (!face_alive[base + c])
-                    continue;
-                for (std::size_t k = 0; k < 3; ++k)
-                    dst[w * 3 + k] =
-                        remap[static_cast<std::size_t>(faces.mCorners[(base + c) * 3 + k])];
-                const std::int64_t parent = p_parent != nullptr ? detail::read_int(*p_parent, c)
-                                                                : static_cast<std::int64_t>(c);
-                if (parent >= 0 && static_cast<std::size_t>(parent) < cell_map.size() &&
-                    cell_map[static_cast<std::size_t>(parent)] < 0)
-                    cell_map[static_cast<std::size_t>(parent)] = static_cast<std::int64_t>(w);
-                ++w;
-            }
-            out.AddCellBlock(cell_type_name(CellType::Triangle), std::move(block));
-            result.mCellMaps.push_back(detail::NDArrayUtils::Int64Vector(cell_map));
-            ++bi;
-        }
-    }
+    detail::decim_emit_blocks<3>(rMesh, simp, "convert:parent_cell", face_alive, faces.mCorners,
+                                 faces.mBlockBase, remap, CellType::Triangle, out,
+                                 result.mCellMaps);
 
     // cell_data: the surviving faces' own rows (simplexify already replicated a
     // parent's row to its triangles); convert:parent_cell is consumed above,
@@ -226127,14 +226191,8 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     // which the run scan steps over. A side edge moves to the triangle edge
     // joining its surviving nodes; one a collapse removed is lost, with a
     // warning. See detail/region_remap.hpp.
-    {
-        detail::RegionRemap rmap;
-        rmap.pPointMap = &result.mPointMap;
-        rmap.mCellMapKind = detail::CellMapKind::FirstChild;
-        rmap.pCellMaps = &result.mCellMaps;
-        rmap.mOpName = "decimate";
-        detail::remap_regions(rMesh, result.mMesh, rmap);
-    }
+    detail::decim_remap_regions(rMesh, result.mMesh, result.mPointMap, result.mCellMaps,
+                                detail::CellMapKind::FirstChild, "decimate");
 
     return result;
 }
@@ -226718,46 +226776,16 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
     out.AssignPoints(detail::decim_emit_points(rMesh.Points(), xyz, used, n, num_used, dim));
 
-    {
-        std::size_t bi = 0;
-        for (const auto cb : rMesh.CellRange()) {
-            const std::size_t nc = cb.NumCells();
-            const std::size_t base = static_cast<std::size_t>(bases[bi]);
-            std::size_t alive_in_block = 0;
-            for (std::size_t c = 0; c < nc; ++c)
-                if (tet_alive[base + c])
-                    ++alive_in_block;
-            NDArray block = NDArray::Uninit(DType::Int64, {alive_in_block, 4});
-            std::int64_t* dst = block.As<std::int64_t>();
-            std::vector<std::int64_t> cell_map(nc, -1);
-            std::size_t w = 0;
-            for (std::size_t c = 0; c < nc; ++c) {
-                if (!tet_alive[base + c])
-                    continue;
-                for (std::size_t k = 0; k < 4; ++k)
-                    dst[w * 4 + k] = remap[static_cast<std::size_t>(tet_conn[(base + c) * 4 + k])];
-                cell_map[c] = static_cast<std::int64_t>(w);
-                ++w;
-            }
-            out.AddCellBlock(cell_type_name(CellType::Tetra), std::move(block));
-            result.mCellMaps.push_back(detail::NDArrayUtils::Int64Vector(cell_map));
-            ++bi;
-        }
-    }
+    detail::decim_emit_blocks<4>(rMesh, rMesh, nullptr, tet_alive, tet_conn, bases, remap,
+                                 CellType::Tetra, out, result.mCellMaps);
 
     detail::decim_emit_data(rMesh, tet_alive, bases, nullptr, float_data, used, n, num_used, out);
 
     result.mPointMap = detail::decim_point_map(successor, remap, n);
     result.mPointsRemoved = static_cast<std::int64_t>(n - num_used);
 
-    {
-        detail::RegionRemap rmap;
-        rmap.pPointMap = &result.mPointMap;
-        rmap.mCellMapKind = detail::CellMapKind::Direct;
-        rmap.pCellMaps = &result.mCellMaps;
-        rmap.mOpName = "decimate_volume";
-        detail::remap_regions(rMesh, result.mMesh, rmap);
-    }
+    detail::decim_remap_regions(rMesh, result.mMesh, result.mPointMap, result.mCellMaps,
+                                detail::CellMapKind::Direct, "decimate_volume");
 
     return result;
 }
@@ -258432,6 +258460,16 @@ struct PrimSoup {
     }
 };
 
+// An empty soup mapped by @p Map with radius @p Radius about @p rCenter.
+PrimSoup prim_soup(PrimMap Map, double Radius,
+                   const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}}) {
+    PrimSoup soup;
+    soup.mMap = Map;
+    soup.mRadius = Radius;
+    soup.mCenter = rCenter;
+    return soup;
+}
+
 struct PrimRegionSpec {
     const char* mName;
     std::uint16_t mBit;
@@ -258443,8 +258481,8 @@ struct PrimRegionSpec {
 
 void prim_check_count(const char* pShape, const char* pWhat, std::int64_t Value) {
     if (Value < 0)
-        prim_fail(pShape, std::string(pWhat) + " must not be negative, got " +
-                              std::to_string(Value));
+        prim_fail(pShape,
+                  std::string(pWhat) + " must not be negative, got " + std::to_string(Value));
 }
 
 void prim_check_positive(const char* pShape, const char* pWhat, double Value) {
@@ -258464,6 +258502,16 @@ void prim_check_order(const char* pShape, int Order) {
                                   const char* pChoices) {
     prim_fail(pShape, std::string("unknown ") + pWhat + " '" + rGot +
                           "' (expected one of: " + pChoices + ")");
+}
+
+// The cell type a primitive with two choices builds: true for @p pAlt, false
+// for @p pDefault, and a throw naming @p pChoices for anything else.
+bool prim_cell_type_is(const char* pShape, const std::string& rCellType, const char* pAlt,
+                       const char* pDefault, const char* pChoices) {
+    const bool alt = rCellType == pAlt;
+    if (!alt && rCellType != pDefault)
+        prim_bad_choice(pShape, "cell_type", rCellType, pChoices);
+    return alt;
 }
 
 // Saturating product: the budget check must not wrap on an absurd request.
@@ -259286,7 +259334,8 @@ std::int64_t prim_add_polar_layer(PrimSoup& rSoup, std::int64_t N, double Z,
     for (std::int64_t k = 1; k <= N; ++k)
         for (std::int64_t m = 0; m < 6 * k; ++m) {
             const double rho = static_cast<double>(k) / static_cast<double>(N);
-            const double ang = (2.0 * kPrimPi * static_cast<double>(m)) / static_cast<double>(6 * k);
+            const double ang =
+                (2.0 * kPrimPi * static_cast<double>(m)) / static_cast<double>(6 * k);
             rSoup.AddNode(rho, ang, Z, static_cast<std::uint16_t>(LayerMask | (k == N ? 4 : 0)));
         }
     return first;
@@ -259308,7 +259357,9 @@ void prim_polar_triangles(std::int64_t N, std::int64_t Base, Emit&& rEmit,
     for (std::int64_t k = 1; k <= N; ++k)
         for (std::int64_t s = 0; s < Sectors; ++s) {
             auto outer = [&](std::int64_t t) { return ring(k, s * k + t); };
-            auto inner = [&](std::int64_t t) { return k == 1 ? Base : ring(k - 1, s * (k - 1) + t); };
+            auto inner = [&](std::int64_t t) {
+                return k == 1 ? Base : ring(k - 1, s * (k - 1) + t);
+            };
             for (std::int64_t t = 0; t < k; ++t) {
                 rEmit(inner(t), outer(t), outer(t + 1));
                 if (t < k - 1)
@@ -259333,9 +259384,7 @@ Mesh rectangle(const std::array<std::int64_t, 2>& rDims, const std::array<double
             prim_check_positive(shape, "size", rSize[k]);
     }
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (rSplit != "zigzag" && rSplit != "up" && rSplit != "down" && rSplit != "center")
         prim_bad_choice(shape, "split", rSplit, "zigzag, up, down, center");
     const std::int64_t nx = rDims[0], ny = rDims[1];
@@ -259366,10 +259415,11 @@ Mesh rectangle(const std::array<std::int64_t, 2>& rDims, const std::array<double
     if (center)
         for (std::int64_t j = 0; j < ny; ++j)
             for (std::int64_t i = 0; i < nx; ++i)
-                soup.AddNode(
-                    rOrigin[0] + (lx * static_cast<double>(2 * i + 1)) / static_cast<double>(2 * nx),
-                    rOrigin[1] + (ly * static_cast<double>(2 * j + 1)) / static_cast<double>(2 * ny),
-                    rOrigin[2], 0);
+                soup.AddNode(rOrigin[0] + (lx * static_cast<double>(2 * i + 1)) /
+                                              static_cast<double>(2 * nx),
+                             rOrigin[1] + (ly * static_cast<double>(2 * j + 1)) /
+                                              static_cast<double>(2 * ny),
+                             rOrigin[2], 0);
 
     PrimBlock& blk = soup.Block(tri ? CellType::Triangle : CellType::Quad, tri ? 3 : 4);
     blk.mConn.reserve(static_cast<std::size_t>(nx * ny * per_cell) * blk.mWidth);
@@ -259453,7 +259503,8 @@ Mesh box(const std::array<std::int64_t, 3>& rDims, const std::array<double, 3>& 
     const CellType type = rCellType == "hexahedron" ? CellType::Hexahedron
                           : rCellType == "tetra"    ? CellType::Tetra
                                                     : CellType::Wedge;
-    PrimBlock& blk = soup.Block(type, type == CellType::Hexahedron ? 8 : (type == CellType::Tetra ? 4 : 6));
+    PrimBlock& blk =
+        soup.Block(type, type == CellType::Hexahedron ? 8 : (type == CellType::Tetra ? 4 : 6));
     for (std::int64_t k = 0; k < nz; ++k)
         for (std::int64_t j = 0; j < ny; ++j)
             for (std::int64_t i = 0; i < nx; ++i) {
@@ -259484,9 +259535,7 @@ Mesh disk(double Radius, std::int64_t N, const std::array<double, 3>& rCenter,
     prim_check_positive(shape, "radius", Radius);
     prim_check_count(shape, "n", N);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (N == 0)
         return prim_empty();
     prim_check_budget(shape, prim_mul(prim_mul(N, N), tri ? 6 : 1), MaxCells);
@@ -259527,27 +259576,22 @@ Mesh uv_sphere(double Radius, std::int64_t Nu, std::int64_t Nv,
     prim_check_count(shape, "nu", Nu);
     prim_check_count(shape, "nv", Nv);
     prim_check_order(shape, Order);
-    const bool quad = rCellType == "quad";
-    if (!quad && rCellType != "triangle")
-        prim_bad_choice(shape, "cell_type", rCellType, "triangle, quad");
+    const bool quad = prim_cell_type_is(shape, rCellType, "quad", "triangle", "triangle, quad");
     if (Nu == 0 || Nv == 0)
         return prim_empty();
     if (Nu < 3)
         prim_fail(shape, "nu must be at least 3, got " + std::to_string(Nu));
     if (Nv < 2)
         prim_fail(shape, "nv must be at least 2, got " + std::to_string(Nv));
-    prim_check_budget(shape,
-                      quad ? prim_mul(Nu, Nv) : prim_mul(prim_mul(2, Nu), Nv - 1), MaxCells);
+    prim_check_budget(shape, quad ? prim_mul(Nu, Nv) : prim_mul(prim_mul(2, Nu), Nv - 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Sphere;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Sphere, Radius, rCenter);
     soup.AddNode(0.0, 0.0, 0.0, kPrimDegenerate);
     for (std::int64_t j = 1; j < Nv; ++j)
         for (std::int64_t i = 0; i < Nu; ++i)
             soup.AddNode((kPrimPi * static_cast<double>(j)) / static_cast<double>(Nv),
-                         (2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(Nu), 0.0, 0);
+                         (2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(Nu), 0.0,
+                         0);
     const std::int64_t south = soup.AddNode(kPrimPi, 0.0, 0.0, kPrimDegenerate);
     auto ring = [&](std::int64_t j, std::int64_t i) { return 1 + (j - 1) * Nu + (i % Nu); };
 
@@ -259593,22 +259637,19 @@ Mesh icosa_sphere(double Radius, std::int64_t Subdivisions, const std::array<dou
         cells = prim_mul(cells, 4);
     prim_check_budget(shape, cells, MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Unit;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Unit, Radius, rCenter);
     const double t = (1.0 + std::sqrt(5.0)) / 2.0;
     const double len = std::sqrt(1.0 + t * t);
     const double one = 1.0 / len, tau = t / len;
-    const double verts[12][3] = {{-one, tau, 0}, {one, tau, 0},   {-one, -tau, 0}, {one, -tau, 0},
-                                 {0, -one, tau}, {0, one, tau},   {0, -one, -tau}, {0, one, -tau},
-                                 {tau, 0, -one}, {tau, 0, one},   {-tau, 0, -one}, {-tau, 0, one}};
+    const double verts[12][3] = {{-one, tau, 0}, {one, tau, 0}, {-one, -tau, 0}, {one, -tau, 0},
+                                 {0, -one, tau}, {0, one, tau}, {0, -one, -tau}, {0, one, -tau},
+                                 {tau, 0, -one}, {tau, 0, one}, {-tau, 0, -one}, {-tau, 0, one}};
     for (const auto& v : verts)
         soup.AddNode(v[0], v[1], v[2], 0);
     static const std::int64_t kFaces[20][3] = {
-        {0, 11, 5}, {0, 5, 1},  {0, 1, 7},  {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4},
+        {0, 11, 5},  {0, 5, 1},  {0, 1, 7},  {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4},
         {11, 10, 2}, {10, 7, 6}, {7, 1, 8},  {3, 9, 4},  {3, 4, 2},   {3, 2, 6}, {3, 6, 8},
-        {3, 8, 9},  {4, 9, 5},  {2, 4, 11}, {6, 2, 10}, {8, 6, 7},   {9, 8, 1}};
+        {3, 8, 9},   {4, 9, 5},  {2, 4, 11}, {6, 2, 10}, {8, 6, 7},   {9, 8, 1}};
     std::vector<std::int64_t> faces;
     for (const auto& f : kFaces)
         faces.insert(faces.end(), {f[0], f[1], f[2]});
@@ -259668,17 +259709,13 @@ Mesh cylinder(double Radius, double Height, std::int64_t Nxy, std::int64_t Nz,
     prim_check_count(shape, "nxy", Nxy);
     prim_check_count(shape, "nz", Nz);
     prim_check_order(shape, Order);
-    const bool wedge = rCellType == "wedge";
-    if (!wedge && rCellType != "hexahedron")
-        prim_bad_choice(shape, "cell_type", rCellType, "hexahedron, wedge");
+    const bool wedge =
+        prim_cell_type_is(shape, rCellType, "wedge", "hexahedron", "hexahedron, wedge");
     if (Nxy == 0 || Nz == 0)
         return prim_empty();
     prim_check_budget(shape, prim_mul(prim_mul(prim_mul(Nxy, Nxy), Nz), wedge ? 6 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = wedge ? PrimMap::Polar : PrimMap::Squircle;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(wedge ? PrimMap::Polar : PrimMap::Squircle, Radius, rCenter);
     // Bits: 1 top, 2 bottom, 4 side (the rim of the disk).
     std::int64_t layer_nodes = 0;
     for (std::int64_t k = 0; k <= Nz; ++k) {
@@ -259814,9 +259851,7 @@ Mesh annulus(double InnerRadius, double OuterRadius, std::int64_t Ntheta, std::i
     prim_check_count(shape, "ntheta", Ntheta);
     prim_check_count(shape, "nr", Nr);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Ntheta == 0 || Nr == 0)
         return prim_empty();
     prim_check_positive(shape, "inner_radius", InnerRadius);
@@ -259835,10 +259870,7 @@ Mesh annulus(double InnerRadius, double OuterRadius, std::int64_t Ntheta, std::i
                              std::to_string(Angle) + " over " + std::to_string(Ntheta) + " cells");
     prim_check_budget(shape, prim_mul(prim_mul(Ntheta, Nr), tri ? 2 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Polar;
-    soup.mRadius = 1.0;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Polar, 1.0, rCenter);
     const std::int64_t np = full ? Ntheta : Ntheta + 1;
     for (std::int64_t k = 0; k <= Nr; ++k) {
         const double rho =
@@ -259882,9 +259914,7 @@ Mesh lshape(std::int64_t N, double Size, const std::array<double, 3>& rCenter,
     constexpr const char* shape = "lshape";
     prim_check_count(shape, "n", N);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (N == 0)
         return prim_empty();
     prim_check_positive(shape, "size", Size);
@@ -259943,9 +259973,7 @@ Mesh plate_with_hole(double Radius, double Size, std::int64_t Nt, std::int64_t N
     prim_check_count(shape, "nt", Nt);
     prim_check_count(shape, "nr", Nr);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Nt == 0 || Nr == 0)
         return prim_empty();
     prim_check_positive(shape, "radius", Radius);
@@ -259956,10 +259984,7 @@ Mesh plate_with_hole(double Radius, double Size, std::int64_t Nt, std::int64_t N
     const std::int64_t m = prim_mul(4, Nt);
     prim_check_budget(shape, prim_mul(prim_mul(m, Nr), tri ? 2 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Plate;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Plate, Radius, rCenter);
     soup.mHalf = Size / 2.0;
     soup.mPeriod = static_cast<double>(m);
     soup.mNt = static_cast<double>(Nt);
@@ -260077,15 +260102,15 @@ struct PrimRefCell {
 
 const std::vector<std::string>& prim_all_reference_types() {
     static const std::vector<std::string> kAll = {
-        "vertex", "line",  "triangle", "quad",         "tetra",    "hexahedron",
-        "wedge",  "pyramid", "line3",   "triangle6",   "quad8",    "tetra10",
+        "vertex",       "line",    "triangle",  "quad",      "tetra", "hexahedron",
+        "wedge",        "pyramid", "line3",     "triangle6", "quad8", "tetra10",
         "hexahedron20", "wedge15", "pyramid13", "polyhedron"};
     return kAll;
 }
 
 const std::vector<std::string>& prim_pair_reference_types() {
-    static const std::vector<std::string> kPairs = {"line", "triangle", "quad", "tetra",
-                                                    "hexahedron", "wedge", "pyramid"};
+    static const std::vector<std::string> kPairs = {"line",       "triangle", "quad",   "tetra",
+                                                    "hexahedron", "wedge",    "pyramid"};
     return kPairs;
 }
 
@@ -260187,8 +260212,10 @@ Mesh reference_cells(const std::vector<std::string>& rTypes, bool Pairs) {
         if (Pairs) {
             const auto& ok = prim_pair_reference_types();
             if (std::find(ok.begin(), ok.end(), types[i]) == ok.end())
-                prim_fail(shape, "pairs=True supports line, triangle, quad, tetra, hexahedron, "
-                                 "wedge and pyramid, not '" + types[i] + "'");
+                prim_fail(shape,
+                          "pairs=True supports line, triangle, quad, tetra, hexahedron, "
+                          "wedge and pyramid, not '" +
+                              types[i] + "'");
         }
     }
 
@@ -260216,8 +260243,8 @@ Mesh reference_cells(const std::vector<std::string>& rTypes, bool Pairs) {
         } else {
             // A quadratic name maps back to its linear base.
             static const std::pair<const char*, const char*> kBase[] = {
-                {"line3", "line"},     {"triangle6", "triangle"}, {"quad8", "quad"},
-                {"tetra10", "tetra"},  {"hexahedron20", "hexahedron"}, {"wedge15", "wedge"},
+                {"line3", "line"},       {"triangle6", "triangle"},      {"quad8", "quad"},
+                {"tetra10", "tetra"},    {"hexahedron20", "hexahedron"}, {"wedge15", "wedge"},
                 {"pyramid13", "pyramid"}};
             const char* base = nullptr;
             for (const auto& kv : kBase)
@@ -260313,10 +260340,7 @@ Mesh circle(double Radius, std::int64_t N, const std::array<double, 3>& rCenter,
         prim_fail(shape, "n must be at least 3, got " + std::to_string(N));
     prim_check_budget(shape, N, MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Polar;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Polar, Radius, rCenter);
     for (std::int64_t i = 0; i < N; ++i)
         soup.AddNode(1.0, (2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(N), 0.0,
                      0);
@@ -260342,10 +260366,7 @@ Mesh helix(double Radius, double Pitch, double Turns, std::int64_t N,
                              std::to_string(N) + " and turns " + std::to_string(Turns));
     prim_check_budget(shape, N, MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Polar;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Polar, Radius, rCenter);
     for (std::int64_t i = 0; i <= N; ++i)
         soup.AddNode(1.0, (2.0 * kPrimPi * Turns * static_cast<double>(i)) / static_cast<double>(N),
                      (Pitch * Turns * static_cast<double>(i)) / static_cast<double>(N), 0);
@@ -260447,10 +260468,7 @@ Mesh prim_seeded_sphere(const char* pShape, const double (&rVerts)[NV][3],
     for (std::int64_t s = 0; s < Subdivisions; ++s)
         cells = prim_mul(cells, 4);
     prim_check_budget(pShape, cells, MaxCells);
-    PrimSoup soup;
-    soup.mMap = PrimMap::Unit;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Unit, Radius, rCenter);
     for (const auto& v : rVerts)
         soup.AddNode(v[0], v[1], v[2], 0);
     std::vector<std::int64_t> faces;
@@ -260564,18 +260582,13 @@ Mesh cube_sphere(double Radius, std::int64_t N, const std::array<double, 3>& rCe
     prim_check_positive(shape, "radius", Radius);
     prim_check_count(shape, "n", N);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (N == 0)
         return prim_empty();
     const PrimCubeLattice lat{N, N, N};
     prim_check_budget(shape, prim_mul(lat.NumFaces(), tri ? 2 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Project;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Project, Radius, rCenter);
     const double n = static_cast<double>(N);
     prim_cube_nodes(lat, [&](std::int64_t I, std::int64_t J, std::int64_t K) {
         soup.AddNode(static_cast<double>(2 * I - N) / n, static_cast<double>(2 * J - N) / n,
@@ -260598,9 +260611,7 @@ Mesh box_surface(const std::array<std::int64_t, 3>& rDims, const std::array<doub
             prim_check_positive(shape, "size", rSize[k]);
     }
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (rDims[0] == 0 || rDims[1] == 0 || rDims[2] == 0)
         return prim_empty();
     const PrimCubeLattice lat{rDims[0], rDims[1], rDims[2]};
@@ -260638,10 +260649,7 @@ Mesh geo_sphere(double Radius, std::int64_t N, const std::array<double, 3>& rCen
         return prim_empty();
     prim_check_budget(shape, prim_mul(20, prim_mul(N, N)), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Project;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Project, Radius, rCenter);
     const double t = (1.0 + std::sqrt(5.0)) / 2.0;
     const double len = std::sqrt(1.0 + t * t);
     const double one = 1.0 / len, tau = t / len;
@@ -260739,9 +260747,7 @@ Mesh torus(double MajorRadius, double MinorRadius, std::int64_t Nu, std::int64_t
     prim_check_count(shape, "nu", Nu);
     prim_check_count(shape, "nv", Nv);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Nu == 0 || Nv == 0)
         return prim_empty();
     if (Nu < 3 || Nv < 3)
@@ -260749,9 +260755,7 @@ Mesh torus(double MajorRadius, double MinorRadius, std::int64_t Nu, std::int64_t
                              std::to_string(Nv));
     prim_check_budget(shape, prim_mul(prim_mul(Nu, Nv), tri ? 2 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Torus;
-    soup.mRadius = MajorRadius;
+    PrimSoup soup = prim_soup(PrimMap::Torus, MajorRadius);
     soup.mRadius2 = MinorRadius;
     soup.mCenter = rCenter;
     for (std::int64_t i = 0; i < Nu; ++i)
@@ -260781,18 +260785,14 @@ Mesh moebius(double Radius, double Width, std::int64_t Nu, std::int64_t Nv, std:
     prim_check_count(shape, "nv", Nv);
     prim_check_count(shape, "num_twists", NumTwists);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Nu == 0 || Nv == 0)
         return prim_empty();
     if (Nu < 3)
         prim_fail(shape, "nu must be at least 3, got " + std::to_string(Nu));
     prim_check_budget(shape, prim_mul(prim_mul(Nu, Nv), tri ? 2 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Moebius;
-    soup.mRadius = Radius;
+    PrimSoup soup = prim_soup(PrimMap::Moebius, Radius);
     soup.mHalf = Width / 2.0;
     soup.mTwists = NumTwists;
     soup.mCenter = rCenter;
@@ -260831,19 +260831,14 @@ Mesh tube(double Radius, double Height, std::int64_t Ntheta, std::int64_t Nz,
     prim_check_count(shape, "ntheta", Ntheta);
     prim_check_count(shape, "nz", Nz);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Ntheta == 0 || Nz == 0)
         return prim_empty();
     if (Ntheta < 3)
         prim_fail(shape, "ntheta must be at least 3, got " + std::to_string(Ntheta));
     prim_check_budget(shape, prim_mul(prim_mul(Ntheta, Nz), tri ? 2 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Polar;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Polar, Radius, rCenter);
     for (std::int64_t k = 0; k <= Nz; ++k) {
         const double z = (Height * static_cast<double>(2 * k - Nz)) / static_cast<double>(2 * Nz);
         const std::uint16_t mask = (k == 0 ? 1 : 0) | (k == Nz ? 2 : 0);
@@ -260921,9 +260916,7 @@ Mesh cone(double Radius, double Height, std::int64_t Ntheta, std::int64_t Nz,
     prim_check_count(shape, "ntheta", Ntheta);
     prim_check_count(shape, "nz", Nz);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Ntheta == 0 || Nz == 0)
         return prim_empty();
     if (Ntheta < 3)
@@ -260931,10 +260924,7 @@ Mesh cone(double Radius, double Height, std::int64_t Ntheta, std::int64_t Nz,
     const std::int64_t rings = 2 * Nz - 1;
     prim_check_budget(shape, prim_ring_cell_count(rings, Ntheta, tri), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Polar;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Polar, Radius, rCenter);
     soup.AddNode(0.0, 0.0, Height, kPrimDegenerate);
     for (std::int64_t r = 1; r <= rings; ++r) {
         // Down the slant to the rim (r = Nz), then in across the base.
@@ -260966,9 +260956,7 @@ Mesh capsule(double Radius, double Height, std::int64_t Ntheta, std::int64_t Nz,
     prim_check_count(shape, "nz", Nz);
     prim_check_count(shape, "ncap", Ncap);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Ntheta == 0 || Nz == 0 || Ncap == 0)
         return prim_empty();
     if (Ntheta < 3)
@@ -260976,9 +260964,7 @@ Mesh capsule(double Radius, double Height, std::int64_t Ntheta, std::int64_t Nz,
     const std::int64_t rings = 2 * Ncap + Nz - 1;
     prim_check_budget(shape, prim_ring_cell_count(rings, Ntheta, tri), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Capsule;
-    soup.mRadius = Radius;
+    PrimSoup soup = prim_soup(PrimMap::Capsule, Radius);
     soup.mHalf = Height / 2.0;
     soup.mCenter = rCenter;
     const double side = (2.0 * soup.mHalf) / Radius;
@@ -261114,18 +261100,14 @@ Mesh ball(double Radius, std::int64_t N, const std::array<double, 3>& rCenter,
     prim_check_positive(shape, "radius", Radius);
     prim_check_count(shape, "n", N);
     prim_check_order(shape, Order);
-    const bool tet = rCellType == "tetra";
-    if (!tet && rCellType != "hexahedron")
-        prim_bad_choice(shape, "cell_type", rCellType, "hexahedron, tetra");
+    const bool tet =
+        prim_cell_type_is(shape, rCellType, "tetra", "hexahedron", "hexahedron, tetra");
     if (N == 0)
         return prim_empty();
     const std::int64_t m = 2 * N;
     prim_check_budget(shape, prim_mul(prim_mul(prim_mul(m, m), m), tet ? 6 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Ball;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Ball, Radius, rCenter);
     const double n = static_cast<double>(N);
     for (std::int64_t k = 0; k <= m; ++k)
         for (std::int64_t j = 0; j <= m; ++j)
@@ -261162,9 +261144,7 @@ Mesh spherical_shell(double InnerRadius, double OuterRadius, std::int64_t N, std
     const PrimCubeLattice lat{N, N, N};
     prim_check_budget(shape, prim_mul(lat.NumFaces(), Nr), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Shell;
-    soup.mRadius = InnerRadius;
+    PrimSoup soup = prim_soup(PrimMap::Shell, InnerRadius);
     soup.mRadius2 = OuterRadius;
     soup.mRatio = Ratio;
     soup.mLayers = static_cast<double>(Nr);
@@ -261210,9 +261190,7 @@ Mesh pipe(double InnerRadius, double OuterRadius, double Height, std::int64_t Nt
         prim_fail(shape, "ntheta must be at least 3, got " + std::to_string(Ntheta));
     prim_check_budget(shape, prim_mul(prim_mul(Ntheta, Nr), Nz), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Graded;
-    soup.mRadius = InnerRadius;
+    PrimSoup soup = prim_soup(PrimMap::Graded, InnerRadius);
     soup.mRadius2 = OuterRadius;
     soup.mRatio = Ratio;
     soup.mLayers = static_cast<double>(Nr);
@@ -261247,9 +261225,8 @@ Mesh fichera(std::int64_t N, double Size, const std::array<double, 3>& rCenter,
     constexpr const char* shape = "fichera";
     prim_check_count(shape, "n", N);
     prim_check_order(shape, Order);
-    const bool tet = rCellType == "tetra";
-    if (!tet && rCellType != "hexahedron")
-        prim_bad_choice(shape, "cell_type", rCellType, "hexahedron, tetra");
+    const bool tet =
+        prim_cell_type_is(shape, rCellType, "tetra", "hexahedron", "hexahedron, tetra");
     if (N == 0)
         return prim_empty();
     prim_check_positive(shape, "size", Size);
@@ -261341,9 +261318,7 @@ Mesh solid_torus(double MajorRadius, double MinorRadius, std::int64_t N, std::in
         prim_fail(shape, "nu must be at least 3, got " + std::to_string(Nu));
     prim_check_budget(shape, prim_mul(prim_mul(N, N), Nu), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::SolidTorus;
-    soup.mRadius = MajorRadius;
+    PrimSoup soup = prim_soup(PrimMap::SolidTorus, MajorRadius);
     soup.mRadius2 = MinorRadius;
     soup.mCenter = rCenter;
     const std::int64_t p = N + 1, layer = p * p;
@@ -263861,52 +263836,50 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         const NDArray& points_arr = rMesh.Points();
         const detail::DoubleView points(points_arr);
         const std::size_t dim = detail::cols(points_arr);
-        NDArray new_points = NDArray::Uninit(points_arr.Dtype(), {num_points_out, dim});
-        std::memcpy(new_points.Data(), points_arr.Data(), points_arr.Nbytes());
         // The appended rows only: indexed from `num_points`, stored by one
-        // Commit() instead of a dtype switch per coordinate.
-        detail::DoubleSink sink(new_points, num_points * dim, (num_points_out - num_points) * dim);
-        double* const new_xyz = sink.Data();
-        parallel_for_bw(new_entities.size(), [&](std::size_t i) {
-            const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
-            const std::size_t first = key[0] < 0 ? 2 : 0;
-            const double inv = 1.0 / static_cast<double>(4 - first);
-            for (std::size_t k = 0; k < dim; ++k) {
-                double sum = 0.0;
-                for (std::size_t c = first; c < 4; ++c)
-                    sum += points[static_cast<std::size_t>(key[c]) * dim + k];
-                new_xyz[i * dim + k] = sum * inv;
-            }
-        });
-        // Body centres: the mean of the parent's eight corners.
-        if (total_bodies > 0) {
-            std::size_t bi = 0;
-            for (const auto cb : rMesh.CellRange()) {
-                const RefineBlockDesc& d = descs[bi++];
-                if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
-                    continue;
-                const detail::Int64View conn(cb.Conn());
-                const std::size_t npc = cb.NodesPerCell();
-                const std::size_t ncorners = d.mNumCorners;
-                const double inv = 1.0 / static_cast<double>(ncorners);
-                parallel_for_bw(d.mNumCells, [&](std::size_t c) {
-                    const std::int64_t body = body_of_cell[d.mFirstCell + c];
-                    if (body < 0)
-                        return;
+        // commit instead of a dtype switch per coordinate.
+        out.AssignPoints(detail::append_rows(
+            points_arr, num_points, num_points_out - num_points, dim, [&](double* const new_xyz) {
+                parallel_for_bw(new_entities.size(), [&](std::size_t i) {
+                    const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
+                    const std::size_t first = key[0] < 0 ? 2 : 0;
+                    const double inv = 1.0 / static_cast<double>(4 - first);
                     for (std::size_t k = 0; k < dim; ++k) {
                         double sum = 0.0;
-                        for (std::size_t n = 0; n < ncorners; ++n) {
-                            const std::size_t p = static_cast<std::size_t>(conn[c * npc + n]);
-                            sum += points[p * dim + k];
-                        }
-                        new_xyz[(static_cast<std::size_t>(body) - num_points) * dim + k] =
-                            sum * inv;
+                        for (std::size_t c = first; c < 4; ++c)
+                            sum += points[static_cast<std::size_t>(key[c]) * dim + k];
+                        new_xyz[i * dim + k] = sum * inv;
                     }
                 });
-            }
-        }
-        sink.Commit();
-        out.AssignPoints(std::move(new_points));
+                // Body centres: the mean of the parent's eight corners.
+                if (total_bodies > 0) {
+                    std::size_t bi = 0;
+                    for (const auto cb : rMesh.CellRange()) {
+                        const RefineBlockDesc& d = descs[bi++];
+                        if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
+                            continue;
+                        const detail::Int64View conn(cb.Conn());
+                        const std::size_t npc = cb.NodesPerCell();
+                        const std::size_t ncorners = d.mNumCorners;
+                        const double inv = 1.0 / static_cast<double>(ncorners);
+                        parallel_for_bw(d.mNumCells, [&](std::size_t c) {
+                            const std::int64_t body = body_of_cell[d.mFirstCell + c];
+                            if (body < 0)
+                                return;
+                            for (std::size_t k = 0; k < dim; ++k) {
+                                double sum = 0.0;
+                                for (std::size_t n = 0; n < ncorners; ++n) {
+                                    const std::size_t p =
+                                        static_cast<std::size_t>(conn[c * npc + n]);
+                                    sum += points[p * dim + k];
+                                }
+                                new_xyz[(static_cast<std::size_t>(body) - num_points) * dim + k] =
+                                    sum * inv;
+                            }
+                        });
+                    }
+                }
+            }));
     }
 
     // --- phase 6: child counts, then connectivity ----------------------------
@@ -263994,51 +263967,50 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         }
         const detail::DoubleView av(a);
         const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
-        std::vector<std::size_t> shape = a.Shape();
-        shape[0] = num_points_out;
-        NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
-        std::memcpy(b.Data(), a.Data(), a.Nbytes());
-        detail::DoubleSink sink(b, num_points * ncomp, (num_points_out - num_points) * ncomp);
-        double* const new_vals = sink.Data();
-        parallel_for_bw(new_entities.size(), [&](std::size_t i) {
-            const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
-            const std::size_t first = key[0] < 0 ? 2 : 0;
-            const double inv = 1.0 / static_cast<double>(4 - first);
-            for (std::size_t k = 0; k < ncomp; ++k) {
-                double sum = 0.0;
-                for (std::size_t c = first; c < 4; ++c)
-                    sum += av[static_cast<std::size_t>(key[c]) * ncomp + k];
-                new_vals[i * ncomp + k] = sum * inv;
-            }
-        });
-        if (total_bodies > 0) {
-            std::size_t bi = 0;
-            for (const auto cb : rMesh.CellRange()) {
-                const RefineBlockDesc& d = descs[bi++];
-                if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
-                    continue;
-                const detail::Int64View conn(cb.Conn());
-                const std::size_t npc = cb.NodesPerCell();
-                const std::size_t ncorners = d.mNumCorners;
-                const double inv = 1.0 / static_cast<double>(ncorners);
-                parallel_for_bw(d.mNumCells, [&](std::size_t c) {
-                    const std::int64_t body = body_of_cell[d.mFirstCell + c];
-                    if (body < 0)
-                        return;
-                    for (std::size_t k = 0; k < ncomp; ++k) {
-                        double sum = 0.0;
-                        for (std::size_t n = 0; n < ncorners; ++n) {
-                            const std::size_t p = static_cast<std::size_t>(conn[c * npc + n]);
-                            sum += av[p * ncomp + k];
+        out.AddPointData(
+            name,
+            detail::append_rows(
+                a, num_points, num_points_out - num_points, ncomp, [&](double* const new_vals) {
+                    parallel_for_bw(new_entities.size(), [&](std::size_t i) {
+                        const RefineNodeKey& key =
+                            entities[static_cast<std::size_t>(new_entities[i])];
+                        const std::size_t first = key[0] < 0 ? 2 : 0;
+                        const double inv = 1.0 / static_cast<double>(4 - first);
+                        for (std::size_t k = 0; k < ncomp; ++k) {
+                            double sum = 0.0;
+                            for (std::size_t c = first; c < 4; ++c)
+                                sum += av[static_cast<std::size_t>(key[c]) * ncomp + k];
+                            new_vals[i * ncomp + k] = sum * inv;
                         }
-                        new_vals[(static_cast<std::size_t>(body) - num_points) * ncomp + k] =
-                            sum * inv;
+                    });
+                    if (total_bodies > 0) {
+                        std::size_t bi = 0;
+                        for (const auto cb : rMesh.CellRange()) {
+                            const RefineBlockDesc& d = descs[bi++];
+                            if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
+                                continue;
+                            const detail::Int64View conn(cb.Conn());
+                            const std::size_t npc = cb.NodesPerCell();
+                            const std::size_t ncorners = d.mNumCorners;
+                            const double inv = 1.0 / static_cast<double>(ncorners);
+                            parallel_for_bw(d.mNumCells, [&](std::size_t c) {
+                                const std::int64_t body = body_of_cell[d.mFirstCell + c];
+                                if (body < 0)
+                                    return;
+                                for (std::size_t k = 0; k < ncomp; ++k) {
+                                    double sum = 0.0;
+                                    for (std::size_t n = 0; n < ncorners; ++n) {
+                                        const std::size_t p =
+                                            static_cast<std::size_t>(conn[c * npc + n]);
+                                        sum += av[p * ncomp + k];
+                                    }
+                                    new_vals[(static_cast<std::size_t>(body) - num_points) * ncomp +
+                                             k] = sum * inv;
+                                }
+                            });
+                        }
                     }
-                });
-            }
-        }
-        sink.Commit();
-        out.AddPointData(name, std::move(b));
+                }));
     }
 
     // --- phase 8: cell_data gathered parent -> children ----------------------
@@ -283150,25 +283122,19 @@ TetToPolyResult tet_to_poly(const Mesh& rMesh, const TetToPolyOptions& rOptions)
     // Append the source-node mean of every new point to a per-point array.
     auto extend = [&](const NDArray& rA) {
         const std::size_t ncomp = num_points == 0 ? 0 : rA.Size() / num_points;
-        std::vector<std::size_t> shape = rA.Shape();
-        shape[0] = num_points + num_new;
-        NDArray b = NDArray::Uninit(rA.Dtype(), std::move(shape));
-        std::memcpy(b.Data(), rA.Data(), rA.Nbytes());
         const detail::DoubleView av(rA);
-        detail::DoubleSink sink(b, num_points * ncomp, num_new * ncomp);
-        double* const vals = sink.Data();
-        parallel_for(num_new, [&](std::size_t i) {
-            std::int64_t src[4];
-            const std::size_t count = sources(i, src);
-            for (std::size_t k = 0; k < ncomp; ++k) {
-                double sum = 0.0;
-                for (std::size_t j = 0; j < count; ++j)
-                    sum += av[static_cast<std::size_t>(src[j]) * ncomp + k];
-                vals[i * ncomp + k] = sum / static_cast<double>(count);
-            }
+        return detail::append_rows(rA, num_points, num_new, ncomp, [&](double* const vals) {
+            parallel_for(num_new, [&](std::size_t i) {
+                std::int64_t src[4];
+                const std::size_t count = sources(i, src);
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    double sum = 0.0;
+                    for (std::size_t j = 0; j < count; ++j)
+                        sum += av[static_cast<std::size_t>(src[j]) * ncomp + k];
+                    vals[i * ncomp + k] = sum / static_cast<double>(count);
+                }
+            });
         });
-        sink.Commit();
-        return b;
     };
 
     Mesh out;
@@ -286692,6 +286658,7 @@ bool regions_equal(const Region& rA, const Region& rB) {
 #include <string>
 #include <system_error>
 #include <unordered_map>
+#include <vector>
 
 // Project includes
 
@@ -286766,55 +286733,217 @@ std::map<std::string, ReadFn> registry_guard_readers(std::map<std::string, ReadF
 
 }  // namespace
 
-const std::map<std::string, ReadFn>& registry_readers() {
-    static const std::map<std::string, ReadFn> m = registry_guard_readers({
-        {"abaqus", meshioplusplus::read_abaqus},
-        {"abaqus_fil",
-         [](const std::string& path) { return meshioplusplus::read_abaqus_fil(path); }},
-        {"lsdyna", meshioplusplus::read_lsdyna},
+namespace {
+
+// Whether the VTK XML writers compress their arrays. The zlib codec follows
+// the build, exactly like the xdmf entry's heavy-data format: a hardcoded
+// zlib=true is a WriteError on a -DMESHIOPLUSPLUS_WITH_ZLIB=OFF build, and
+// "falls back to Python" holds for every binding with a Python shim, but not
+// for a caller reaching this table directly, e.g. WASM/C API/Fortran or the
+// sequence engine's per-step writes.
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+constexpr bool kRegistryZlib = true;
+#else
+constexpr bool kRegistryZlib = false;
+#endif
+
+/**
+ * @brief One format's entries in the registry: what reads it, what writes it,
+ * its options-aware reader and its metadata reader.
+ *
+ * An empty function means the format does not offer that entry (gmsh22 only
+ * writes, iges only reads, most formats have no options-aware reader).
+ * registry_readers(), registry_writers(), registry_readers_ex() and
+ * registry_metadata_readers() are built from these rows; the extension table,
+ * many extensions to one format, stays its own.
+ */
+struct RegistryRow {
+    const char* mName;
+    ReadFn mRead;
+    WriteFn mWrite;
+    ReadExFn mReadEx;
+    MetadataFn mMetadata;
+};
+
+const std::vector<RegistryRow>& registry_rows() {
+    static const std::vector<RegistryRow> rows = {
+        {.mName = "abaqus",
+         .mRead = meshioplusplus::read_abaqus,
+         .mWrite = meshioplusplus::write_abaqus},
+        {.mName = "abaqus_fil",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_abaqus_fil(path); },
+         .mWrite = [](const std::string& p,
+                      const Mesh& m) { meshioplusplus::write_abaqus_fil(p, m); },
+         // Abaqus .fil honours mTimeStep (its steps are the increments) and the
+         // narrowing options.
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_abaqus_fil(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_abaqus_fil_metadata},
+        {.mName = "lsdyna",
+         .mRead = meshioplusplus::read_lsdyna,
+         .mWrite = meshioplusplus::write_lsdyna},
         // The d3plot family's base file is named `d3plot`: resolve_format
         // matches the basename, sniff_format the control block.
-        {"lsdyna_d3plot",
-         [](const std::string& path) { return meshioplusplus::read_lsdyna_d3plot(path); }},
+        {.mName = "lsdyna_d3plot",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_lsdyna_d3plot(path); },
+         .mWrite = [](const std::string& rPath,
+                      const Mesh& rMesh) { meshioplusplus::write_lsdyna_d3plot(rPath, rMesh); },
+         // LS-DYNA d3plot honours mTimeStep (its steps are the family's states)
+         // and the narrowing options.
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_lsdyna_d3plot(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_lsdyna_d3plot_metadata},
         // LS-DYNA's binary output database: `binout`, found by name or header.
-        {"lsdyna_binout",
-         [](const std::string& path) { return meshioplusplus::read_lsdyna_binout(path); }},
-        {"code_aster", meshioplusplus::read_code_aster},
+        {.mName = "lsdyna_binout",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_lsdyna_binout(path); },
+         // No extension (`binout`): by name or explicit format only.
+         .mWrite = [](const std::string& p,
+                      const Mesh& m) { meshioplusplus::write_lsdyna_binout(p, m); },
+         // LS-DYNA binout honours mTimeStep (its steps are nodout's outputs)
+         // and the narrowing options.
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_lsdyna_binout(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_lsdyna_binout_metadata},
+        {.mName = "code_aster",
+         .mRead = meshioplusplus::read_code_aster,
+         .mWrite = meshioplusplus::write_code_aster},
         // A lambda: read_patran is overloaded (result files).
-        {"patran", [](const std::string& path) { return meshioplusplus::read_patran(path); }},
-        {"femap", [](const std::string& path) { return meshioplusplus::read_femap(path); }},
-        {"libmesh", meshioplusplus::read_libmesh},
-        {"radioss", meshioplusplus::read_radioss},
+        {.mName = "patran",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_patran(path); },
+         .mWrite = meshioplusplus::write_patran},
+        {.mName = "femap",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_femap(path); },
+         .mWrite = meshioplusplus::write_femap,
+         // Femap honours mTimeStep (its steps are the 450 output sets) and the
+         // data narrowing options.
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_femap(path, opts); },
+         .mMetadata = meshioplusplus::read_femap_metadata},
+        {.mName = "libmesh",
+         .mRead = meshioplusplus::read_libmesh,
+         .mWrite = meshioplusplus::write_libmesh},
+        {.mName = "radioss",
+         .mRead = meshioplusplus::read_radioss,
+         .mWrite = [](const std::string& p,
+                      const Mesh& m) { meshioplusplus::write_radioss(p, m); }},
         // Found by name (`<run>A001`...) or magic, never an extension.
-        {"radioss_anim", meshioplusplus::read_radioss_anim},
+        {.mName = "radioss_anim",
+         .mRead = meshioplusplus::read_radioss_anim,
+         .mWrite = meshioplusplus::write_radioss_anim,
+         .mMetadata = meshioplusplus::read_radioss_anim_metadata},
         // OpenRadioss time-history files: `<run>T01`, found by name or header.
-        {"radioss_th",
-         [](const std::string& path) { return meshioplusplus::read_radioss_th(path); }},
+        {.mName = "radioss_th",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_radioss_th(path); },
+         // No extension (`<run>T01`): by name or explicit format only.
+         .mWrite = meshioplusplus::write_radioss_th,
+         // Radioss time history honours mTimeStep (its steps are the outputs)
+         // and the narrowing options.
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_radioss_th(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_radioss_th_metadata},
         // A .dat file is Tecplot's unless it opens as a Marc deck (resolve_format).
-        {"marc", meshioplusplus::read_marc},
-        {"marc_t19", [](const std::string& path) { return meshioplusplus::read_marc_t19(path); }},
+        {.mName = "marc",
+         .mRead = meshioplusplus::read_marc,
+         // By name only: ".dat" writes Tecplot (resolve_write_format).
+         .mWrite = meshioplusplus::write_marc},
+        {.mName = "marc_t19",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_marc_t19(path); },
+         .mWrite = meshioplusplus::write_marc_t19,
+         // Marc .t19: mTimeStep picks the increment.
+         .mReadEx = meshioplusplus::read_marc_t19,
+         .mMetadata = meshioplusplus::read_marc_t19_metadata},
         // Fixed file names (z88i1.txt ...): resolve_format matches the basename.
-        {"z88", [](const std::string& path) { return meshioplusplus::read_z88(path); }},
+        {.mName = "z88",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_z88(path); },
+         .mWrite = [](const std::string& p, const Mesh& m) { meshioplusplus::write_z88(p, m); }},
         // A directory, not a file: no extension maps to it; sniff_format finds it.
-        {"elmer", [](const std::string& path) { return meshioplusplus::read_elmer(path); }},
-        {"febio", [](const std::string& path) { return meshioplusplus::read_febio(path); }},
-        {"xplt", [](const std::string& path) { return meshioplusplus::read_xplt(path); }},
-        {"ansys_rst", [](const std::string& path) { return meshioplusplus::read_ansys_rst(path); }},
-        {"ansys_rst_cyclic",
-         [](const std::string& path) { return meshioplusplus::read_ansys_rst_cyclic(path); }},
+        {.mName = "elmer",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_elmer(path); },
+         .mWrite = [](const std::string& p, const Mesh& m) { meshioplusplus::write_elmer(p, m); },
+         // Elmer honours mPiece/mPieceSet (one part of a partitioned mesh) and
+         // mLenient (skip element types with no meshio++ cell type).
+         .mReadEx = meshioplusplus::read_elmer},
+        {.mName = "febio",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_febio(path); },
+         .mWrite = meshioplusplus::write_febio,
+         // FEBio .feb honours mLenient (downgrade tet5/tet15 to tetra/tetra10).
+         .mReadEx = meshioplusplus::read_febio},
+        {.mName = "xplt",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_xplt(path); },
+         .mWrite = [](const std::string& rPath,
+                      const Mesh& rMesh) { meshioplusplus::write_xplt(rPath, rMesh); },
+         // FEBio .xplt honours mTimeStep (one state), the narrowing options and
+         // mLenient (downgrade tet5/tet15 domains).
+         .mReadEx = meshioplusplus::read_xplt,
+         .mMetadata = meshioplusplus::read_xplt_metadata},
+        {.mName = "ansys_rst",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_ansys_rst(path); },
+         .mWrite = meshioplusplus::write_ansys_rst,
+         // Ansys .rst/.rth: mTimeStep picks the result set, like .xplt.
+         .mReadEx = meshioplusplus::read_ansys_rst,
+         .mMetadata = meshioplusplus::read_ansys_rst_metadata},
+        {.mName = "ansys_rst_cyclic",
+         .mRead =
+             [](const std::string& path) { return meshioplusplus::read_ansys_rst_cyclic(path); },
+         // Its full-rotor reading (a static cyclic model): no extension, by name only.
+         .mReadEx = meshioplusplus::read_ansys_rst_cyclic,
+         .mMetadata = meshioplusplus::read_ansys_rst_cyclic_metadata},
         // Read-only, and a lambda for the same reason as ensight's: overloaded.
-        {"frd", [](const std::string& path) { return meshioplusplus::read_frd(path); }},
-        {"ansys", meshioplusplus::read_ansys},
-        {"avsucd", meshioplusplus::read_avsucd},
-        {"dolfin", meshioplusplus::read_dolfin},
+        {.mName = "frd",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_frd(path); },
+         .mWrite = [](const std::string& p, const Mesh& m) { meshioplusplus::write_frd(p, m); },
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); },
+         .mMetadata = meshioplusplus::read_frd_metadata},
+        {.mName = "ansys",
+         .mRead = meshioplusplus::read_ansys,
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
+        {.mName = "avsucd",
+         .mRead = meshioplusplus::read_avsucd,
+         .mWrite = meshioplusplus::write_avsucd},
+        {.mName = "dolfin",
+         .mRead = meshioplusplus::read_dolfin,
+         .mWrite = meshioplusplus::write_dolfin},
         // A lambda, not `&read_ensight`: the ReadOptions overload makes the
         // bare name ambiguous (the exodus/mdpa/med/cgns/tecplot story again).
-        {"ensight", [](const std::string& path) { return meshioplusplus::read_ensight(path); }},
-        {"flac3d", meshioplusplus::read_flac3d},
-        {"dex", meshioplusplus::read_dex},
-        {"flux", meshioplusplus::read_flux},
-        {"freefem", meshioplusplus::read_freefem},
-        // UNGUARDED, unlike gid's writer entry: gidpost is write-only, so
+        {.mName = "ensight",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_ensight(path); },
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_ensight(p, mm, /*binary=*/true); },
+         // EnSight honours mTimeStep AND the narrowing options -- a .case
+         // file's VARIABLE entries are only ever read here, never by the
+         // plain overload. IWYU pragma: keep
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_ensight(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_ensight_metadata},
+        {.mName = "flac3d",
+         .mRead = meshioplusplus::read_flac3d,
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_flac3d(p, mm, ".16e", /*binary=*/false);
+             }},
+        {.mName = "dex", .mRead = meshioplusplus::read_dex, .mWrite = meshioplusplus::write_dex},
+        {.mName = "flux", .mRead = meshioplusplus::read_flux, .mWrite = meshioplusplus::write_flux},
+        {.mName = "freefem",
+         .mRead = meshioplusplus::read_freefem,
+         .mWrite = meshioplusplus::write_freefem},
+        // Kratos CAD JSON: a lambda, read_cad_json is overloaded (BrepInfo).
+        {.mName = "cad_json",
+         .mRead = [](const std::string& p) { return meshioplusplus::read_cad_json(p); },
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_cad_json(p, mm); }},
+        // The reader is UNGUARDED, unlike the writer: gidpost is write-only, so
         // reading needs none of it. read_gid's real dependencies are per
         // flavour (ascii: none, binary: zlib, hdf5: HDF5), which makes `gid`
         // readable in strictly more build configurations than it is writable
@@ -286822,383 +286951,476 @@ const std::map<std::string, ReadFn>& registry_readers() {
         // cannot write GiD at all, yet read the ascii flavour fine. For the
         // same reason gid must NOT appear in registry_compiled_out(): there is
         // no missing dependency to name.
-        // Kratos CAD JSON: a lambda, read_cad_json is overloaded (BrepInfo).
-        {"cad_json", [](const std::string& p) { return meshioplusplus::read_cad_json(p); }},
-        {"gid", [](const std::string& p) { return meshioplusplus::read_gid(p); }},
+        {.mName = "gid",
+         .mRead = [](const std::string& p) { return meshioplusplus::read_gid(p); },
+         // gidpost itself has no read functions at all -- meshio++'s own
+         // read_gid (the mRead entry above) is a hand-rolled reader that
+         // does not depend on it, which is why gid is readable in strictly
+         // more build configurations than it is writable. GidMode::Auto
+         // infers the flavour (ascii/binary/hdf5) from the path's extension.
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gid(p, mm); },
+         .mReadEx = meshioplusplus::read_gid,
+         .mMetadata = meshioplusplus::read_gid_metadata},
         // IGES and STEP read through the optional OpenCASCADE backend
         // (roadmap 6.2.1); registered either way, so a build without it
         // throws Unsupported naming the flag instead of "unknown format".
-        {"iges", [](const std::string& p) { return meshioplusplus::read_iges(p); }},
-        {"gmsh", [](const std::string& path) { return meshioplusplus::read_gmsh(path); }},
-        {"ip", meshioplusplus::read_ip},
+        {.mName = "iges",
+         .mRead = [](const std::string& p) { return meshioplusplus::read_iges(p); }},
+        {.mName = "gmsh",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_gmsh(path); },
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_gmsh41(p, mm, /*binary=*/true); },
+         // A lambda, not `&read_gmsh`: the GmshInfo overload makes the bare name
+         // ambiguous (the exodus/mdpa story again). The info is dropped here, so
+         // the flat bindings see no `$Entities` bounding entities.
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_gmsh(path, opts); },
+         .mMetadata = meshioplusplus::read_gmsh_metadata},
+        {.mName = "ip", .mRead = meshioplusplus::read_ip, .mWrite = meshioplusplus::write_ip},
         // mdpa now has read overloads (ReadOptions / MdpaInfo), so the plain
         // function pointer no longer converts to ReadFn -- the hazard noted
-        // for unv/med below. The MdpaInfo is dropped here, like MedInfo.
-        {"mdpa", [](const std::string& path) { return meshioplusplus::read_mdpa(path); }},
-        {"medit", meshioplusplus::read_medit},
-        {"medit_sol", meshioplusplus::read_medit_sol},
+        // for unv/med. The MdpaInfo is dropped here, like MedInfo.
+        {.mName = "mdpa",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_mdpa(path); },
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mdpa(p, mm); },
+         // mdpa honours mLenient rather than the narrowing options -- the same
+         // "options-aware is several capabilities, not one" note as exodus. This
+         // entry is what makes `--lenient` reach the C API, Fortran, Julia, R,
+         // WASM and the native CLI with no per-binding code.
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_mdpa(path, opts); }},
+        {.mName = "medit",
+         .mRead = meshioplusplus::read_medit,
+         .mWrite = meshioplusplus::write_medit},
+        {.mName = "medit_sol",
+         .mRead = meshioplusplus::read_medit_sol,
+         .mWrite = meshioplusplus::write_medit_sol},
         // A lambda: read_mfem is overloaded (grid functions). `.mesh` stays
         // medit's extension; resolve_format hands MFEM files over by content.
-        {"mfem", [](const std::string& path) { return meshioplusplus::read_mfem(path); }},
-        {"mff", meshioplusplus::read_mff},
-        {"mfm", meshioplusplus::read_mfm},
-        {"mphbin", meshioplusplus::read_mphbin},
-        {"mphtxt", meshioplusplus::read_mphtxt},
-        {"nastran", meshioplusplus::read_nastran},
-        {"nastran_op2",
-         [](const std::string& path) { return meshioplusplus::read_nastran_op2(path); }},
-        {"netgen", meshioplusplus::read_netgen},
-        {"obj", meshioplusplus::read_obj},
-        {"off", meshioplusplus::read_off},
+        {.mName = "mfem",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_mfem(path); },
+         .mWrite = [](const std::string& path,
+                      const Mesh& mesh) { meshioplusplus::write_mfem(path, mesh); },
+         // MFEM honours mPiece/mPieceSet (one rank of a parallel mesh).
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_mfem(path, {}, opts);
+             }},
+        {.mName = "mff", .mRead = meshioplusplus::read_mff, .mWrite = meshioplusplus::write_mff},
+        {.mName = "mfm",
+         .mRead = meshioplusplus::read_mfm,
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_mfm(p, mm, ".16e"); }},
+        {.mName = "mphbin",
+         .mRead = meshioplusplus::read_mphbin,
+         .mWrite = meshioplusplus::write_mphbin},
+        {.mName = "mphtxt",
+         .mRead = meshioplusplus::read_mphtxt,
+         .mWrite = meshioplusplus::write_mphtxt},
+        {.mName = "nastran",
+         .mRead = meshioplusplus::read_nastran,
+         .mWrite = meshioplusplus::write_nastran},
+        {.mName = "nastran_op2",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_nastran_op2(path); },
+         .mWrite = meshioplusplus::write_nastran_op2,
+         // Nastran OP2 honours mTimeStep (its steps are the subcases, modes and
+         // times of its result tables) and the narrowing options.
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_nastran_op2(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_nastran_op2_metadata},
+        {.mName = "netgen",
+         .mRead = meshioplusplus::read_netgen,
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_netgen(p, mm, ".16e"); }},
+        {.mName = "obj", .mRead = meshioplusplus::read_obj, .mWrite = meshioplusplus::write_obj},
+        {.mName = "off", .mRead = meshioplusplus::read_off, .mWrite = meshioplusplus::write_off},
         // pcd/xyz take a trailing defaulted options struct, so the function pointers do
         // not convert to ReadFn -- wrapped like vtu/mdpa.
-        {"pcd", [](const std::string& path) { return meshioplusplus::read_pcd(path); }},
-        {"permas", meshioplusplus::read_permas},
-        {"ply", meshioplusplus::read_ply},
-        {"stl", meshioplusplus::read_stl},
-        {"step", [](const std::string& p) { return meshioplusplus::read_step(p); }},
-        {"su2", meshioplusplus::read_su2},
+        {.mName = "pcd",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_pcd(path); },
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_pcd(p, mm); }},
+        {.mName = "permas",
+         .mRead = meshioplusplus::read_permas,
+         .mWrite = meshioplusplus::write_permas},
+        {.mName = "ply",
+         .mRead = meshioplusplus::read_ply,
+         // ply/stl default to skin=true (matching the Python shims): a volume
+         // mesh writes its extracted boundary skin instead of dropping the
+         // volume cells.
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_ply(p, mm, /*binary=*/true, /*skin=*/true);
+             }},
+        {.mName = "stl",
+         .mRead = meshioplusplus::read_stl,
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
+             }},
+        {.mName = "step",
+         .mRead = [](const std::string& p) { return meshioplusplus::read_step(p); },
+         // STEP is read through the optional OpenCASCADE backend (roadmap
+         // §6.2.1) and written without it, one face per surface by default
+         // (StepFaces::Auto: coplanar facets merged, fitted patches analytic).
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_step(p, mm); }},
+        {.mName = "su2", .mRead = meshioplusplus::read_su2, .mWrite = meshioplusplus::write_su2},
         // 2-D drawings, read only as the structure meshio++ writes; both take a
         // trailing defaulted ReadOptions (strict=False is mLenient), so lambdas.
-        {"gltf", [](const std::string& path) { return meshioplusplus::read_gltf(path); }},
-        {"svg", [](const std::string& path) { return meshioplusplus::read_svg(path); }},
-        {"tikz", [](const std::string& path) { return meshioplusplus::read_tikz(path); }},
+        {.mName = "gltf",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_gltf(path); },
+         // svg/tikz are 2D-drawing formats (read only as the structure meshio++
+         // writes); the flat bindings emit them with the fixed default styling
+         // (per-call overrides are out of scope for v1, per registry.hpp).
+         // .glb/.gltf are told apart by the writer, so the flat bindings write the
+         // container the suffix names with the defaults.
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gltf(p, mm); },
+         // svg and tikz honour mLenient (strict=False: read a drawing that lacks the
+         // meshio++ marker) and the narrowing options (the fill array).
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_gltf(path, GltfReadOptions{}, opts);
+             }},
+        {.mName = "svg",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_svg(path); },
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_svg(p, mm); },
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_svg(path, opts); }},
+        {.mName = "tikz",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_tikz(path); },
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_tikz(p, mm); },
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_tikz(path, opts); }},
         // A lambda, not `&read_tecplot`: the ReadOptions overload makes the
         // bare name ambiguous (the exodus/mdpa/med/cgns story again).
-        {"tecplot",
-         [](const std::string& path) { return meshioplusplus::read_tecplot(path); }},
-        {"tetgen", meshioplusplus::read_tetgen},
-        {"triangle", meshioplusplus::read_triangle},
-        {"ugrid", meshioplusplus::read_ugrid},
-        {"unv", [](const std::string& path) { return meshioplusplus::read_unv(path); }},
-        {"vti", [](const std::string& path) { return meshioplusplus::read_vti(path); }},
-        {"vtk", meshioplusplus::read_vtk},
-        {"vts", [](const std::string& path) { return meshioplusplus::read_vts(path); }},
-        {"vtr", [](const std::string& path) { return meshioplusplus::read_vtr(path); }},
-        {"vtm", [](const std::string& path) { return meshioplusplus::read_vtm(path); }},
+        {.mName = "tecplot",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_tecplot(path); },
+         .mWrite = meshioplusplus::write_tecplot,
+         // Tecplot honours mTimeStep -- selects one zone of a transient
+         // (SOLUTIONTIME/STRANDID) file's timeline instead of always the
+         // first. IWYU pragma: keep
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_tecplot(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_tecplot_metadata},
+        {.mName = "tetgen",
+         .mRead = meshioplusplus::read_tetgen,
+         .mWrite = meshioplusplus::write_tetgen},
+        {.mName = "triangle",
+         .mRead = meshioplusplus::read_triangle,
+         .mWrite = meshioplusplus::write_triangle},
+        {.mName = "ugrid",
+         .mRead = meshioplusplus::read_ugrid,
+         .mWrite = meshioplusplus::write_ugrid},
+        {.mName = "unv",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_unv(path); },
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_unv(p, mm); },
+         // UNV honours mTimeStep (the steps of its 2414/55/56/58 results) and the
+         // narrowing options.
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_unv(path, opts); },
+         .mMetadata = meshioplusplus::read_unv_metadata},
+        {.mName = "vti",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vti(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vti(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_vti,
+         .mMetadata = meshioplusplus::read_vti_metadata},
+        {.mName = "vtk",
+         .mRead = meshioplusplus::read_vtk,
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true);
+             }},
+        {.mName = "vts",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vts(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vts(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_vts,
+         .mMetadata = meshioplusplus::read_vts_metadata},
+        {.mName = "vtr",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vtr(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vtr(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_vtr,
+         .mMetadata = meshioplusplus::read_vtr_metadata},
+        {.mName = "vtm",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vtm(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vtm(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_vtm,
+         .mMetadata = meshioplusplus::read_vtm_metadata},
         // The ParaView index formats take a trailing defaulted ReadOptions, so they
         // are wrapped like vtm above.
-        {"pvd", [](const std::string& path) { return meshioplusplus::read_pvd(path); }},
-        {"pvtu", [](const std::string& path) { return meshioplusplus::read_pvtu(path); }},
-        {"pvtp", [](const std::string& path) { return meshioplusplus::read_pvtp(path); }},
+        {.mName = "pvd",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_pvd(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_pvd(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_pvd,
+         .mMetadata = meshioplusplus::read_pvd_metadata},
+        {.mName = "pvtu",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_pvtu(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_pvtu(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_pvtu,
+         .mMetadata = meshioplusplus::read_pvtu_metadata},
+        {.mName = "pvtp",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_pvtp(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_pvtp(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_pvtp,
+         .mMetadata = meshioplusplus::read_pvtp_metadata},
         // vti/vtp/vtu take a trailing defaulted ReadOptions, so the function
-        // pointers no longer convert to ReadFn -- wrapped like unv/med below.
-        {"vtp", [](const std::string& path) { return meshioplusplus::read_vtp(path); }},
-        {"vtu", [](const std::string& path) { return meshioplusplus::read_vtu(path); }},
-        {"wkt", meshioplusplus::read_wkt},
-        {"xdmf", [](const std::string& path) { return meshioplusplus::read_xdmf(path); }},
-        {"neuroglancer", meshioplusplus::read_neuroglancer},
-        {"xyz", [](const std::string& path) { return meshioplusplus::read_xyz(path); }},
+        // pointers no longer convert to ReadFn -- wrapped like unv/med.
+        {.mName = "vtp",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vtp(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vtp(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_vtp,
+         .mMetadata = meshioplusplus::read_vtp_metadata},
+        {.mName = "vtu",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vtu(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vtu(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_vtu,
+         .mMetadata = meshioplusplus::read_vtu_metadata},
+        {.mName = "wkt", .mRead = meshioplusplus::read_wkt, .mWrite = meshioplusplus::write_wkt},
+        {.mName = "xdmf",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_xdmf(path); },
+         // XDMF's heavy-data format follows the build: HDF companion file when
+         // HDF5 is available (the Python writer's default), inline XML text
+         // otherwise (the only always-available option; what WASM ships).
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+                 meshioplusplus::write_xdmf(p, mm, "HDF");
+#else
+                 meshioplusplus::write_xdmf(p, mm, "XML");
+#endif
+             },
+         .mReadEx = meshioplusplus::read_xdmf,
+         .mMetadata = meshioplusplus::read_xdmf_metadata},
+        {.mName = "neuroglancer",
+         .mRead = meshioplusplus::read_neuroglancer,
+         .mWrite = meshioplusplus::write_neuroglancer},
+        {.mName = "xyz",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_xyz(path); },
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_xyz(p, mm); }},
         // Side-channel info (cell-tag family names) is not carried by the flat
         // bindings -- v1 limitation, see doc/wasm.md and doc/c_api.md. Ansys
         // components travel as regions since v16.3.0, so they survive here.
-        {"ansysinp",
-         [](const std::string& path) {
-             meshioplusplus::AnsysInfo info;
-             return meshioplusplus::read_ansysinp(path, info);
-         }},
-        {"openfoam",
-         [](const std::string& path) {
-             meshioplusplus::OpenFoamInfo info;
-             return meshioplusplus::read_openfoam(path, info);
-         }},
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-        // A lambda, not `&read_cgns`: the ReadOptions overload makes the bare
-        // name ambiguous (the exodus/mdpa/med story again).
-        {"cgns", [](const std::string& path) { return meshioplusplus::read_cgns(path); }},
-        {"h5m", meshioplusplus::read_h5m},
-        {"hmf", meshioplusplus::read_hmf},
-        // A lambda for the same overload reason as cgns above.
-        {"vtkhdf", [](const std::string& path) { return meshioplusplus::read_vtkhdf(path); }},
-        {"nastran_h5",
-         [](const std::string& path) { return meshioplusplus::read_nastran_h5(path); }},
-        {"med",
-         [](const std::string& path) {
-             // The family-id maps/link names/mesh metadata in MedInfo are
-             // still dropped here, but group *names* are not lost: read_med
-             // attaches them as named regions directly on the Mesh (see
-             // med_attach_point_regions/med_attach_cell_regions in med.cpp),
-             // so they reach WASM/C API/Fortran through this path too.
-             meshioplusplus::MedInfo info;
-             return meshioplusplus::read_med(path, info);
-         }},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_NETCDF
-        // Explicit lambda, not `&read_exodus`: the overload set now also holds
-        // the ExodusInfo form, and taking its address would be ambiguous. The
-        // provenance strings are dropped here, as MedInfo's are below.
-        {"exodus", [](const std::string& path) { return meshioplusplus::read_exodus(path); }},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
-        {"vtx", [](const std::string& path) { return meshioplusplus::read_vtx(path); }},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_TECIO
-        {"szplt", [](const std::string& path) { return meshioplusplus::read_szplt(path); }},
-#endif
-    });
-    return m;
-}
-
-const std::map<std::string, WriteFn>& registry_writers() {
-    static const std::map<std::string, WriteFn> m = {
-        {"abaqus", meshioplusplus::write_abaqus},
-        {"lsdyna", meshioplusplus::write_lsdyna},
-        {"code_aster", meshioplusplus::write_code_aster},
-        {"patran", meshioplusplus::write_patran},
-        {"femap", meshioplusplus::write_femap},
-        {"frd", [](const std::string& p, const Mesh& m) { meshioplusplus::write_frd(p, m); }},
-        {"libmesh", meshioplusplus::write_libmesh},
-        {"z88",
-         [](const std::string& p, const Mesh& m) { meshioplusplus::write_z88(p, m); }},
-        {"radioss",
-         [](const std::string& p, const Mesh& m) { meshioplusplus::write_radioss(p, m); }},
-        // No extension (`<run>T01`): by name or explicit format only.
-        {"radioss_th", meshioplusplus::write_radioss_th},
-        {"nastran_op2", meshioplusplus::write_nastran_op2},
-        // No extension (`binout`): by name or explicit format only.
-        {"lsdyna_binout",
-         [](const std::string& p, const Mesh& m) { meshioplusplus::write_lsdyna_binout(p, m); }},
-        {"abaqus_fil",
-         [](const std::string& p, const Mesh& m) { meshioplusplus::write_abaqus_fil(p, m); }},
-        // By name only: ".dat" writes Tecplot (resolve_write_format).
-        {"marc", meshioplusplus::write_marc},
-        {"marc_t19", meshioplusplus::write_marc_t19},
-        {"elmer",
-         [](const std::string& p, const Mesh& m) { meshioplusplus::write_elmer(p, m); }},
-        {"febio", meshioplusplus::write_febio},
-        {"ansys", [](const std::string& p,
-                     const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
-        {"avsucd", meshioplusplus::write_avsucd},
-        {"dolfin", meshioplusplus::write_dolfin},
-        {"ensight", [](const std::string& p,
-                       const Mesh& mm) { meshioplusplus::write_ensight(p, mm, /*binary=*/true); }},
-        {"flac3d",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::write_flac3d(p, mm, ".16e", /*binary=*/false);
-         }},
-        {"dex", meshioplusplus::write_dex},
-        {"flux", meshioplusplus::write_flux},
-        {"freefem", meshioplusplus::write_freefem},
-        // gidpost itself has no read functions at all -- meshio++'s own
-        // read_gid (registry_readers() above) is a hand-rolled reader that
-        // does not depend on it, which is why gid is readable in strictly
-        // more build configurations than it is writable. GidMode::Auto
-        // infers the flavour (ascii/binary/hdf5) from the path's extension.
-        {"gid", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gid(p, mm); }},
-        {"gmsh", [](const std::string& p,
-                    const Mesh& mm) { meshioplusplus::write_gmsh41(p, mm, /*binary=*/true); }},
+        {.mName = "ansysinp",
+         .mRead =
+             [](const std::string& path) {
+                 meshioplusplus::AnsysInfo info;
+                 return meshioplusplus::read_ansysinp(path, info);
+             },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::AnsysInfo info;  // no point_sets/cell_sets side channel in v1
+                 meshioplusplus::write_ansysinp(p, mm, info);
+             },
+         // Ansys .cdb honours mLenient (skip elements with no meshio++ cell type).
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 meshioplusplus::AnsysInfo info;
+                 return meshioplusplus::read_ansysinp(path, opts, info);
+             }},
+        {.mName = "openfoam",
+         .mRead =
+             [](const std::string& path) {
+                 meshioplusplus::OpenFoamInfo info;
+                 return meshioplusplus::read_openfoam(path, info);
+             },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 // No patch-name/type side channel here, so this yields a single
+                 // `defaultFaces` patch -- a valid, loadable case (see
+                 // write_openfoam). The flat bindings get that rather than an error.
+                 meshioplusplus::OpenFoamInfo info;
+                 meshioplusplus::write_openfoam(p, mm, info);
+             },
+         // OpenFOAM honours mTimeStep (selects a time-directory) AND
+         // mDataArrays (which fields to read) -- the OpenFoamInfo is dropped
+         // here exactly as the plain reader entry drops it. IWYU pragma: keep
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 meshioplusplus::OpenFoamInfo info;
+                 return meshioplusplus::read_openfoam(path, opts, info);
+             },
+         .mMetadata = meshioplusplus::read_openfoam_metadata},
         // Distinct from "gmsh" (4.1): 2.2 stores each element's physical tag
         // directly, so it is the version that round-trips named Cell region
         // MEMBERSHIP, not just names -- write_gmsh22 already synthesizes
         // gmsh:physical from Cell regions when the mesh has none of its own.
         // Was reachable only from Python (gmsh22_write) until this entry; the
         // flat bindings (WASM/C API/Fortran) had no way to select it at all.
-        {"cad_json",
-         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_cad_json(p, mm); }},
-        {"gmsh22", [](const std::string& p,
+        {.mName = "gmsh22",
+         .mWrite = [](const std::string& p,
                       const Mesh& mm) { meshioplusplus::write_gmsh22(p, mm, /*binary=*/true); }},
-        {"ip", meshioplusplus::write_ip},
-        {"mdpa", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mdpa(p, mm); }},
-        {"medit", meshioplusplus::write_medit},
-        {"medit_sol", meshioplusplus::write_medit_sol},
-        {"mfem",
-         [](const std::string& path, const Mesh& mesh) { meshioplusplus::write_mfem(path, mesh); }},
-        {"mff", meshioplusplus::write_mff},
-        {"mfm",
-         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mfm(p, mm, ".16e"); }},
-        {"mphbin", meshioplusplus::write_mphbin},
-        {"mphtxt", meshioplusplus::write_mphtxt},
-        {"nastran", meshioplusplus::write_nastran},
-        {"netgen",
-         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_netgen(p, mm, ".16e"); }},
-        {"obj", meshioplusplus::write_obj},
-        {"off", meshioplusplus::write_off},
-        {"pcd", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_pcd(p, mm); }},
-        {"permas", meshioplusplus::write_permas},
-        // ply/stl default to skin=true (matching the Python shims): a volume
-        // mesh writes its extracted boundary skin instead of dropping the
-        // volume cells.
-        {"ply",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::write_ply(p, mm, /*binary=*/true, /*skin=*/true);
-         }},
-        {"stl",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
-         }},
-        // STEP is read through the optional OpenCASCADE backend (roadmap
-        // §6.2.1) and written without it, one face per surface by default
-        // (StepFaces::Auto: coplanar facets merged, fitted patches analytic).
-        {"step", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_step(p, mm); }},
-        {"su2", meshioplusplus::write_su2},
-        // svg/tikz are 2D-drawing formats (read only as the structure meshio++
-        // writes); the flat bindings emit them with the fixed default styling
-        // (per-call overrides are out of scope for v1, per registry.hpp).
-        // .glb/.gltf are told apart by the writer, so the flat bindings write the
-        // container the suffix names with the defaults.
-        {"gltf", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gltf(p, mm); }},
-        {"svg", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_svg(p, mm); }},
-        {"tikz", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_tikz(p, mm); }},
-        {"tecplot", meshioplusplus::write_tecplot},
-        {"tetgen", meshioplusplus::write_tetgen},
-        {"triangle", meshioplusplus::write_triangle},
-        {"ugrid", meshioplusplus::write_ugrid},
-        {"unv", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_unv(p, mm); }},
-        {"vti",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"vts",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_vts(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_vts(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"vtr",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_vtr(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_vtr(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"vtm",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"pvd",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_pvd(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_pvd(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"pvtu",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_pvtu(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_pvtu(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"pvtp",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_pvtp(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_pvtp(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"vtk",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true);
-         }},
-        // The zlib codec follows the build, exactly like the xdmf entry below:
-        // a hardcoded zlib=true is a WriteError on a -DMESHIOPLUSPLUS_WITH_ZLIB=OFF
-        // build (comment above already documented "falls back to Python" as
-        // the assumption -- true for every binding with a Python shim to fall
-        // back to, but not for a caller reaching this table directly, e.g.
-        // WASM/C API/Fortran or the sequence engine's per-step writes).
-        {"vtp",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_vtp(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_vtp(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"vtu",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_vtu(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_vtu(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"wkt", meshioplusplus::write_wkt},
-        // XDMF's heavy-data format follows the build: HDF companion file when
-        // HDF5 is available (the Python writer's default), inline XML text
-        // otherwise (the only always-available option; what WASM ships).
-        {"neuroglancer", meshioplusplus::write_neuroglancer},
-        {"xyz", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_xyz(p, mm); }},
-        {"xdmf",
-         [](const std::string& p, const Mesh& mm) {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
-             meshioplusplus::write_xdmf(p, mm, "HDF");
-#else
-             meshioplusplus::write_xdmf(p, mm, "XML");
-#endif
-         }},
-        {"ansysinp",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::AnsysInfo info;  // no point_sets/cell_sets side channel in v1
-             meshioplusplus::write_ansysinp(p, mm, info);
-         }},
-        {"openfoam",
-         [](const std::string& p, const Mesh& mm) {
-             // No patch-name/type side channel here, so this yields a single
-             // `defaultFaces` patch -- a valid, loadable case (see
-             // write_openfoam). The flat bindings get that rather than an error.
-             meshioplusplus::OpenFoamInfo info;
-             meshioplusplus::write_openfoam(p, mm, info);
-         }},
-        {"radioss_anim", meshioplusplus::write_radioss_anim},
-        {"xplt",
-         [](const std::string& rPath, const Mesh& rMesh) {
-             meshioplusplus::write_xplt(rPath, rMesh);
-         }},
-        {"ansys_rst", meshioplusplus::write_ansys_rst},
-        {"lsdyna_d3plot",
-         [](const std::string& rPath, const Mesh& rMesh) {
-             meshioplusplus::write_lsdyna_d3plot(rPath, rMesh);
-         }},
-#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
-        {"vtx", meshioplusplus::write_vtx},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_TECIO
-        {"szplt", meshioplusplus::write_szplt},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-        {"cgns", [](const std::string& p,
-                    const Mesh& mm) { meshioplusplus::write_cgns(p, mm, /*gzip_level=*/4); }},
-        {"h5m",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::write_h5m(p, mm, /*add_global_ids=*/true, /*gzip_level=*/4);
-         }},
-        {"hmf", [](const std::string& p,
-                   const Mesh& mm) { meshioplusplus::write_hmf(p, mm, /*gzip_level=*/4); }},
-        {"nastran_h5", meshioplusplus::write_nastran_h5},
-        // UnstructuredGrid with the oldest covering version; PolyData and the
-        // composite types are reached through write_vtkhdf's `Type` argument.
-        {"vtkhdf", [](const std::string& p,
-                      const Mesh& mm) { meshioplusplus::write_vtkhdf(p, mm, /*gzip_level=*/4); }},
-        {"med",
-         [](const std::string& p, const Mesh& mm) {
-             // No point_tags/cell_tags to hand over here (they live in the
-             // dropped MedInfo), but write_med synthesizes them from any
-             // Point/Cell regions the mesh carries (see
-             // med_point_regions_to_tags/med_cell_regions_to_tags in
-             // med.cpp), so a mesh converted from e.g. Abaqus through this
-             // registry path still carries its named groups into the file.
-             meshioplusplus::MedInfo info;
-             meshioplusplus::write_med(p, mm, info);
-         }},
+        // A lambda, not `&read_cgns`: the ReadOptions overload makes the bare
+        // name ambiguous (the exodus/mdpa/med story again).
+        {.mName = "cgns",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_cgns(path); },
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_cgns(p, mm, /*gzip_level=*/4); },
+         // CGNS honours mTimeStep the same way exodus/med do -- selects one
+         // FlowSolution_t of a transient (BaseIterativeData_t/
+         // ZoneIterativeData_t) file. IWYU pragma: keep
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_cgns(path, opts); },
+         .mMetadata = meshioplusplus::read_cgns_metadata},
+        {.mName = "h5m",
+         .mRead = meshioplusplus::read_h5m,
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_h5m(p, mm, /*add_global_ids=*/true, /*gzip_level=*/4);
+             }},
+        {.mName = "hmf",
+         .mRead = meshioplusplus::read_hmf,
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_hmf(p, mm, /*gzip_level=*/4); }},
+        // A lambda for the same overload reason as cgns above.
+        {.mName = "vtkhdf",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vtkhdf(path); },
+         // UnstructuredGrid with the oldest covering version; PolyData and the
+         // composite types are reached through write_vtkhdf's `Type` argument.
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_vtkhdf(p, mm, /*gzip_level=*/4); },
+         // VTKHDF honours mTimeStep (a step of a transient file), mPiece/mPieceSet
+         // (one partition or composite block instead of the merged mesh), mLenient
+         // (skip poly-vertex/poly-line/strip cells) and the narrowing options.
+         // IWYU pragma: keep
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_vtkhdf(path, opts); },
+         .mMetadata = meshioplusplus::read_vtkhdf_metadata},
+        {.mName = "nastran_h5",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_nastran_h5(path); },
+         .mWrite = meshioplusplus::write_nastran_h5,
+         // MSC Nastran HDF5 honours mTimeStep (one result domain) and the
+         // narrowing options, which skip the result tables not asked for.
+         // IWYU pragma: keep
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_nastran_h5(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_nastran_h5_metadata},
+        {.mName = "med",
+         .mRead =
+             [](const std::string& path) {
+                 // The family-id maps/link names/mesh metadata in MedInfo are
+                 // still dropped here, but group *names* are not lost: read_med
+                 // attaches them as named regions directly on the Mesh (see
+                 // med_attach_point_regions/med_attach_cell_regions in med.cpp),
+                 // so they reach WASM/C API/Fortran through this path too.
+                 meshioplusplus::MedInfo info;
+                 return meshioplusplus::read_med(path, info);
+             },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 // No point_tags/cell_tags to hand over here (they live in the
+                 // dropped MedInfo), but write_med synthesizes them from any
+                 // Point/Cell regions the mesh carries (see
+                 // med_point_regions_to_tags/med_cell_regions_to_tags in
+                 // med.cpp), so a mesh converted from e.g. Abaqus through this
+                 // registry path still carries its named groups into the file.
+                 meshioplusplus::MedInfo info;
+                 meshioplusplus::write_med(p, mm, info);
+             },
+         // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
+         // instead of deferring the whole file to Python) and `mTimeStep`
+         // (select one step of a multi-step field) -- neither is a narrowing
+         // option, the same "options-aware is several capabilities, not one"
+         // note as exodus and mdpa. The `MedInfo` is dropped here exactly as
+         // the plain reader entry drops it, so the flat bindings get the mesh
+         // and its representable fields but not `mFieldUnits`/`mStepMeta`; that
+         // is a documented gap, not a silent loss, and it is strictly more than
+         // the hard failure they used to get. IWYU pragma: keep
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 meshioplusplus::MedInfo info;
+                 return meshioplusplus::read_med(path, info, opts);
+             },
+         .mMetadata = meshioplusplus::read_med_metadata},
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
-        {"exodus", meshioplusplus::write_exodus},
+        // Explicit lambda, not `&read_exodus`: the overload set now also holds
+        // the ExodusInfo form, and taking its address would be ambiguous. The
+        // provenance strings are dropped here, as MedInfo's are.
+        {.mName = "exodus",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_exodus(path); },
+         .mWrite = meshioplusplus::write_exodus,
+         // Exodus honours mTimeStep rather than the narrowing options -- being
+         // "options-aware" is not one capability but several, and a time series
+         // is the one this format has. IWYU pragma: keep
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_exodus(path, opts); },
+         .mMetadata = meshioplusplus::read_exodus_metadata},
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+        {.mName = "vtx",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vtx(path); },
+         .mWrite = meshioplusplus::write_vtx,
+         // VTX honours mTimeStep, mPointsOnly, mDataArrays and mGhosts.
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_vtx(path, opts); },
+         .mMetadata = meshioplusplus::read_vtx_metadata},
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+        {.mName = "szplt",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_szplt(path); },
+         .mWrite = meshioplusplus::write_szplt,
+         // .szplt honours mTimeStep (the distinct solution times), as tecplot.
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_szplt(path, opts); },
+         .mMetadata = meshioplusplus::read_szplt_metadata},
 #endif
     };
+    return rows;
+}
+
+// The rows' entries of one kind, as the map type its accessor returns.
+template <class TMap, class TField>
+TMap registry_collect(TField RegistryRow::*pField) {
+    TMap out;
+    for (const RegistryRow& r_row : registry_rows())
+        if (r_row.*pField)
+            out.emplace(r_row.mName, r_row.*pField);
+    return out;
+}
+
+}  // namespace
+
+const std::map<std::string, ReadFn>& registry_readers() {
+    static const std::map<std::string, ReadFn> m = registry_guard_readers(
+        registry_collect<std::map<std::string, ReadFn>>(&RegistryRow::mRead));
+    return m;
+}
+
+const std::map<std::string, WriteFn>& registry_writers() {
+    static const std::map<std::string, WriteFn> m =
+        registry_collect<std::map<std::string, WriteFn>>(&RegistryRow::mWrite);
     return m;
 }
 
@@ -287455,224 +287677,14 @@ std::string resolve_write_format(const std::string& rPath, const std::string& rF
 const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
     // Sparse by design -- populated per format as native selective-read support
     // lands. An absent format falls back to a full read in registry_read().
-    static const std::unordered_map<std::string, ReadExFn> m = {
-#ifdef MESHIOPLUSPLUS_HAS_NETCDF
-        // Exodus honours mTimeStep rather than the narrowing options -- being
-        // "options-aware" is not one capability but several, and a time series
-        // is the one this format has. IWYU pragma: keep
-        {"exodus", [](const std::string& path,
-                      const ReadOptions& opts) { return meshioplusplus::read_exodus(path, opts); }},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
-        // VTX honours mTimeStep, mPointsOnly, mDataArrays and mGhosts.
-        {"vtx", [](const std::string& path,
-                   const ReadOptions& opts) { return meshioplusplus::read_vtx(path, opts); }},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_TECIO
-        // .szplt honours mTimeStep (the distinct solution times), as tecplot.
-        {"szplt", [](const std::string& path,
-                     const ReadOptions& opts) { return meshioplusplus::read_szplt(path, opts); }},
-#endif
-        // A lambda, not `&read_gmsh`: the GmshInfo overload makes the bare name
-        // ambiguous (the exodus/mdpa story again). The info is dropped here, so
-        // the flat bindings see no `$Entities` bounding entities.
-        {"gmsh", [](const std::string& path,
-                    const ReadOptions& opts) { return meshioplusplus::read_gmsh(path, opts); }},
-        // mdpa honours mLenient rather than the narrowing options -- the same
-        // "options-aware is several capabilities, not one" note as exodus. This
-        // entry is what makes `--lenient` reach the C API, Fortran, Julia, R,
-        // WASM and the native CLI with no per-binding code.
-        {"mdpa", [](const std::string& path,
-                    const ReadOptions& opts) { return meshioplusplus::read_mdpa(path, opts); }},
-        // Tecplot honours mTimeStep -- selects one zone of a transient
-        // (SOLUTIONTIME/STRANDID) file's timeline instead of always the
-        // first. IWYU pragma: keep
-        {"tecplot",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_tecplot(path, opts);
-         }},
-        // EnSight honours mTimeStep AND the narrowing options -- a .case
-        // file's VARIABLE entries are only ever read here, never by the
-        // plain overload. IWYU pragma: keep
-        {"ensight",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_ensight(path, opts);
-         }},
-        {"frd", [](const std::string& path,
-                   const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); }},
-        // svg and tikz honour mLenient (strict=False: read a drawing that lacks the
-        // meshio++ marker) and the narrowing options (the fill array).
-        {"gltf", [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_gltf(path, GltfReadOptions{}, opts);
-         }},
-        {"svg", [](const std::string& path,
-                   const ReadOptions& opts) { return meshioplusplus::read_svg(path, opts); }},
-        {"tikz", [](const std::string& path,
-                    const ReadOptions& opts) { return meshioplusplus::read_tikz(path, opts); }},
-        // Abaqus .fil honours mTimeStep (its steps are the increments) and the
-        // narrowing options.
-        {"abaqus_fil",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_abaqus_fil(path, opts);
-         }},
-        // Nastran OP2 honours mTimeStep (its steps are the subcases, modes and
-        // times of its result tables) and the narrowing options.
-        {"nastran_op2",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_nastran_op2(path, opts);
-         }},
-        // LS-DYNA d3plot honours mTimeStep (its steps are the family's states)
-        // and the narrowing options.
-        {"lsdyna_d3plot",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_lsdyna_d3plot(path, opts);
-         }},
-        // LS-DYNA binout honours mTimeStep (its steps are nodout's outputs)
-        // and the narrowing options.
-        {"lsdyna_binout",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_lsdyna_binout(path, opts);
-         }},
-        // Radioss time history honours mTimeStep (its steps are the outputs)
-        // and the narrowing options.
-        {"radioss_th",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_radioss_th(path, opts);
-         }},
-        // Femap honours mTimeStep (its steps are the 450 output sets) and the
-        // data narrowing options.
-        {"femap", [](const std::string& path,
-                     const ReadOptions& opts) { return meshioplusplus::read_femap(path, opts); }},
-        // Elmer honours mPiece/mPieceSet (one part of a partitioned mesh) and
-        // mLenient (skip element types with no meshio++ cell type).
-        {"elmer", meshioplusplus::read_elmer},
-        // MFEM honours mPiece/mPieceSet (one rank of a parallel mesh).
-        {"mfem", [](const std::string& path,
-                    const ReadOptions& opts) { return meshioplusplus::read_mfem(path, {}, opts); }},
-        // Ansys .cdb honours mLenient (skip elements with no meshio++ cell type).
-        {"ansysinp",
-         [](const std::string& path, const ReadOptions& opts) {
-             meshioplusplus::AnsysInfo info;
-             return meshioplusplus::read_ansysinp(path, opts, info);
-         }},
-        // FEBio .feb honours mLenient (downgrade tet5/tet15 to tetra/tetra10).
-        {"febio", meshioplusplus::read_febio},
-        // FEBio .xplt honours mTimeStep (one state), the narrowing options and
-        // mLenient (downgrade tet5/tet15 domains).
-        {"xplt", meshioplusplus::read_xplt},
-        // Ansys .rst/.rth: mTimeStep picks the result set, like .xplt.
-        {"ansys_rst", meshioplusplus::read_ansys_rst},
-        // Its full-rotor reading (a static cyclic model): no extension, by name only.
-        {"ansys_rst_cyclic", meshioplusplus::read_ansys_rst_cyclic},
-        // Marc .t19: mTimeStep picks the increment.
-        {"marc_t19", meshioplusplus::read_marc_t19},
-        // UNV honours mTimeStep (the steps of its 2414/55/56/58 results) and the
-        // narrowing options.
-        {"unv", [](const std::string& path,
-                   const ReadOptions& opts) { return meshioplusplus::read_unv(path, opts); }},
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-        // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
-        // instead of deferring the whole file to Python) and `mTimeStep`
-        // (select one step of a multi-step field) -- neither is a narrowing
-        // option, the same "options-aware is several capabilities, not one"
-        // note as exodus and mdpa. The `MedInfo` is dropped here exactly as
-        // the plain reader entry drops it, so the flat bindings get the mesh
-        // and its representable fields but not `mFieldUnits`/`mStepMeta`; that
-        // is a documented gap, not a silent loss, and it is strictly more than
-        // the hard failure they used to get. IWYU pragma: keep
-        {"med",
-         [](const std::string& path, const ReadOptions& opts) {
-             meshioplusplus::MedInfo info;
-             return meshioplusplus::read_med(path, info, opts);
-         }},
-        // CGNS honours mTimeStep the same way exodus/med do -- selects one
-        // FlowSolution_t of a transient (BaseIterativeData_t/
-        // ZoneIterativeData_t) file. IWYU pragma: keep
-        {"cgns", [](const std::string& path,
-                    const ReadOptions& opts) { return meshioplusplus::read_cgns(path, opts); }},
-        // VTKHDF honours mTimeStep (a step of a transient file), mPiece/mPieceSet
-        // (one partition or composite block instead of the merged mesh), mLenient
-        // (skip poly-vertex/poly-line/strip cells) and the narrowing options.
-        // IWYU pragma: keep
-        {"vtkhdf", [](const std::string& path,
-                      const ReadOptions& opts) { return meshioplusplus::read_vtkhdf(path, opts); }},
-        // MSC Nastran HDF5 honours mTimeStep (one result domain) and the
-        // narrowing options, which skip the result tables not asked for.
-        // IWYU pragma: keep
-        {"nastran_h5",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_nastran_h5(path, opts);
-         }},
-#endif
-        // OpenFOAM honours mTimeStep (selects a time-directory) AND
-        // mDataArrays (which fields to read) -- the OpenFoamInfo is dropped
-        // here exactly as the plain reader entry drops it. IWYU pragma: keep
-        {"openfoam",
-         [](const std::string& path, const ReadOptions& opts) {
-             meshioplusplus::OpenFoamInfo info;
-             return meshioplusplus::read_openfoam(path, opts, info);
-         }},
-        {"gid", meshioplusplus::read_gid},
-        {"vti", meshioplusplus::read_vti},
-        {"vts", meshioplusplus::read_vts},
-        {"vtr", meshioplusplus::read_vtr},
-        {"vtm", meshioplusplus::read_vtm},
-        {"pvd", meshioplusplus::read_pvd},
-        {"pvtu", meshioplusplus::read_pvtu},
-        {"pvtp", meshioplusplus::read_pvtp},
-        {"vtp", meshioplusplus::read_vtp},
-        {"vtu", meshioplusplus::read_vtu},
-        {"xdmf", meshioplusplus::read_xdmf},
-    };
+    static const std::unordered_map<std::string, ReadExFn> m =
+        registry_collect<std::unordered_map<std::string, ReadExFn>>(&RegistryRow::mReadEx);
     return m;
 }
 
 const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
-    static const std::unordered_map<std::string, MetadataFn> m = {
-#ifdef MESHIOPLUSPLUS_HAS_NETCDF
-        {"exodus", meshioplusplus::read_exodus_metadata},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
-        {"vtx", meshioplusplus::read_vtx_metadata},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_TECIO
-        {"szplt", meshioplusplus::read_szplt_metadata},
-#endif
-        {"gmsh", meshioplusplus::read_gmsh_metadata},
-        {"gid", meshioplusplus::read_gid_metadata},
-        {"tecplot", meshioplusplus::read_tecplot_metadata},
-        {"ensight", meshioplusplus::read_ensight_metadata},
-        {"frd", meshioplusplus::read_frd_metadata},
-        {"femap", meshioplusplus::read_femap_metadata},
-        {"abaqus_fil", meshioplusplus::read_abaqus_fil_metadata},
-        {"lsdyna_d3plot", meshioplusplus::read_lsdyna_d3plot_metadata},
-        {"lsdyna_binout", meshioplusplus::read_lsdyna_binout_metadata},
-        {"radioss_anim", meshioplusplus::read_radioss_anim_metadata},
-        {"radioss_th", meshioplusplus::read_radioss_th_metadata},
-        {"nastran_op2", meshioplusplus::read_nastran_op2_metadata},
-        {"xplt", meshioplusplus::read_xplt_metadata},
-        {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},
-        {"ansys_rst_cyclic", meshioplusplus::read_ansys_rst_cyclic_metadata},
-        {"marc_t19", meshioplusplus::read_marc_t19_metadata},
-        {"unv", meshioplusplus::read_unv_metadata},
-        {"openfoam", meshioplusplus::read_openfoam_metadata},
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-        {"med", meshioplusplus::read_med_metadata},
-        {"cgns", meshioplusplus::read_cgns_metadata},
-        {"vtkhdf", meshioplusplus::read_vtkhdf_metadata},
-        {"nastran_h5", meshioplusplus::read_nastran_h5_metadata},
-#endif
-        {"vti", meshioplusplus::read_vti_metadata},
-        {"vts", meshioplusplus::read_vts_metadata},
-        {"vtr", meshioplusplus::read_vtr_metadata},
-        {"vtm", meshioplusplus::read_vtm_metadata},
-        {"pvd", meshioplusplus::read_pvd_metadata},
-        {"pvtu", meshioplusplus::read_pvtu_metadata},
-        {"pvtp", meshioplusplus::read_pvtp_metadata},
-        {"vtp", meshioplusplus::read_vtp_metadata},
-        {"vtu", meshioplusplus::read_vtu_metadata},
-        {"xdmf", meshioplusplus::read_xdmf_metadata},
-    };
+    static const std::unordered_map<std::string, MetadataFn> m =
+        registry_collect<std::unordered_map<std::string, MetadataFn>>(&RegistryRow::mMetadata);
     return m;
 }
 
