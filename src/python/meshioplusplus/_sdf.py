@@ -156,7 +156,19 @@ def _watertight_py(surface):
     if len(verts):
         n = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
         degenerate = int(np.sum(np.sum(n * n, axis=1) <= 0.0))
+    return soup_quality(verts, degenerate)
 
+
+def soup_quality(verts, degenerate):
+    """The watertightness report of a triangle soup's ``(t, 3)`` corner ids.
+
+    Every undirected edge is counted with the number of its directed uses in
+    increasing-id order: once-used edges are boundary, edges used more than
+    twice non-manifold, and an edge used twice in one direction an
+    inconsistently wound pair. ``degenerate`` (the zero-area triangles) is the
+    caller's count, as ``compute_sdf``'s check and ``soup_quality`` in
+    ``_normals`` each define it. Shared by both.
+    """
     counts = {}
     for tri in verts:
         for e in range(3):

@@ -18,6 +18,7 @@ import numpy as np
 
 from ._fallback import core_op_declined
 from ._mesh import Mesh
+from ._set_remap import remap_piece_sets
 
 
 # --------------------------------------------------------------------------- #
@@ -214,68 +215,6 @@ def _split_py(mesh, by, tag):
     return pieces
 
 
-# --------------------------------------------------------------------------- #
-# set remapping (per piece)                                                    #
-# --------------------------------------------------------------------------- #
-def _cell_set_is_remappable(mesh, blocks):
-    """Whether a ``cell_sets`` entry is per-block cell-index lists.
-
-    Formats can stash other per-block side data in ``cell_sets`` — gmsh's
-    ``gmsh:bounding_entities`` holds entity tags (negative values included),
-    not cell indices. Split reorders/drops blocks, so such entries cannot be
-    carried meaningfully and are skipped rather than crashed on.
-    """
-    for b, cb in enumerate(mesh.cells):
-        if b >= len(blocks) or blocks[b] is None:
-            continue
-        idx = np.asarray(blocks[b]).reshape(-1)
-        if len(idx) == 0:
-            continue
-        if idx.dtype.kind not in "iu":
-            return False
-        if idx.min() < 0 or idx.max() >= len(cb.data):
-            return False
-    return True
-
-
-def _remap_piece_sets(src, out, point_map, cell_maps):
-    point_sets = getattr(src, "point_sets", None)
-    if point_sets:
-        pm = np.asarray(point_map, dtype=np.int64)
-        new_ps = {}
-        for name, idx in point_sets.items():
-            idx = np.asarray(idx)
-            if idx.dtype.kind not in "iu" or (
-                len(idx) and (idx.min() < 0 or idx.max() >= len(pm))
-            ):
-                continue  # not point indices -- cannot be remapped
-            mapped = pm[idx.astype(np.int64)]
-            new_ps[name] = mapped[mapped >= 0]
-        if new_ps:
-            out.point_sets = new_ps
-    cell_sets = getattr(src, "cell_sets", None)
-    if cell_sets and cell_maps is not None:
-        emit_blocks = [
-            b for b in range(len(cell_maps)) if np.any(np.asarray(cell_maps[b]) >= 0)
-        ]
-        new_cs = {}
-        for name, blocks in cell_sets.items():
-            if not _cell_set_is_remappable(src, blocks):
-                continue  # side data, not cell indices -- cannot be carried
-            out_blocks = []
-            for b in emit_blocks:
-                if b < len(blocks) and blocks[b] is not None:
-                    mapped = np.asarray(cell_maps[b], dtype=np.int64)[
-                        np.asarray(blocks[b], dtype=np.int64).reshape(-1)
-                    ]
-                    out_blocks.append(mapped[mapped >= 0])
-                else:
-                    out_blocks.append(np.empty(0, dtype=np.int64))
-            new_cs[name] = out_blocks
-        if new_cs:
-            out.cell_sets = new_cs
-
-
 def _split_by_cell_sets(mesh):
     """Python-only region split by named cell_sets (one piece per set)."""
     result = {}
@@ -287,7 +226,7 @@ def _split_by_cell_sets(mesh):
             else:
                 kept.append([])
         out, pm, cm = _build_subset_py(mesh, kept)
-        _remap_piece_sets(mesh, out, pm, cm)
+        remap_piece_sets(mesh, out, pm, cm, keep_invalid=False, drop_empty_blocks=True)
         result[name] = out
     return result
 
@@ -365,6 +304,8 @@ def split(mesh, by: str = "type", tag: str | None = None) -> dict:
         # therefore `point_sets`/`cell_sets`, which are views over them);
         # remapping again here would apply the maps twice.
         if not used_cpp:
-            _remap_piece_sets(mesh, out, pm, cm)
+            remap_piece_sets(
+                mesh, out, pm, cm, keep_invalid=False, drop_empty_blocks=True
+            )
         result[key] = out
     return result

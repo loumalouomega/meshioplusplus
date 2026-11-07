@@ -18,6 +18,7 @@ here anyway because the core cannot see them across the Python boundary.
 
 import numpy as np
 
+from ._adjacency import _csr_from_pairs
 from ._fallback import core_op_declined
 from ._mesh import Mesh
 from ._refine_templates import EDGES
@@ -85,19 +86,7 @@ def _edge_graph(mesh, n):
     if not src:
         return np.zeros(n + 1, dtype=np.int64), np.zeros(0, dtype=np.int64)
 
-    a = np.concatenate(src)
-    b = np.concatenate(dst)
-    keep = (a >= 0) & (a < n) & (b >= 0) & (b < n) & (a != b)
-    a, b = a[keep], b[keep]
-    order = np.lexsort((b, a))
-    a, b = a[order], b[order]
-    if a.size:
-        uniq = np.ones(a.size, dtype=bool)
-        uniq[1:] = (a[1:] != a[:-1]) | (b[1:] != b[:-1])
-        a, b = a[uniq], b[uniq]
-    xadj = np.zeros(n + 1, dtype=np.int64)
-    xadj[1:] = np.cumsum(np.bincount(a, minlength=n))
-    return xadj, b
+    return _csr_from_pairs(np.concatenate(src), np.concatenate(dst), n)
 
 
 def _has_volume_cells(mesh):

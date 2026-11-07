@@ -29,6 +29,7 @@ import numpy as np
 
 from ._fallback import core_op_declined
 from ._mesh import Mesh, topological_dimension
+from ._set_remap import remap_piece_sets
 
 _SFC_BITS = 21
 
@@ -315,71 +316,6 @@ def _build_piece(mesh, flat, part, record_ids):
     return out, point_map, cell_maps
 
 
-def _cell_set_is_remappable(mesh, blocks):
-    """Whether a ``cell_sets`` entry is per-block cell-index lists.
-
-    Formats can stash *other* per-block side data in ``cell_sets`` — gmsh's
-    ``gmsh:bounding_entities`` holds entity tags (negative values included),
-    not cell indices — and remapping those as indices would crash or corrupt
-    them.
-    """
-    for b, cb in enumerate(mesh.cells):
-        if b >= len(blocks) or blocks[b] is None:
-            continue
-        idx = np.asarray(blocks[b]).reshape(-1)
-        if len(idx) == 0:
-            continue
-        if idx.dtype.kind not in "iu":
-            return False
-        if idx.min() < 0 or idx.max() >= len(cb.data):
-            return False
-    return True
-
-
-def _remap_piece_sets(src, out, point_map, cell_maps):
-    """Remap the shim-only point_sets/cell_sets into a piece (all blocks kept).
-
-    Entries that are not actually cell/point indices are copied through
-    unchanged (the piece keeps the input's block structure 1:1, so per-block
-    side data stays aligned).
-    """
-    point_sets = getattr(src, "point_sets", None)
-    if point_sets:
-        pm = np.asarray(point_map, dtype=np.int64)
-        new_ps = {}
-        for name, idx in point_sets.items():
-            idx = np.asarray(idx)
-            if idx.dtype.kind in "iu" and (
-                len(idx) == 0 or (idx.min() >= 0 and idx.max() < len(pm))
-            ):
-                mapped = pm[idx.astype(np.int64)]
-                new_ps[name] = mapped[mapped >= 0]
-            else:
-                new_ps[name] = idx.copy()
-        out.point_sets = new_ps
-    cell_sets = getattr(src, "cell_sets", None)
-    if cell_sets and cell_maps is not None:
-        new_cs = {}
-        for name, blocks in cell_sets.items():
-            if not _cell_set_is_remappable(src, blocks):
-                new_cs[name] = [
-                    None if b is None else np.asarray(b).copy() for b in blocks
-                ]
-                continue
-            out_blocks = []
-            for b in range(len(cell_maps)):
-                if b < len(blocks) and blocks[b] is not None:
-                    mapped = np.asarray(cell_maps[b], dtype=np.int64)[
-                        np.asarray(blocks[b], dtype=np.int64).reshape(-1)
-                    ]
-                    out_blocks.append(mapped[mapped >= 0])
-                else:
-                    out_blocks.append(np.empty(0, dtype=np.int64))
-            new_cs[name] = out_blocks
-        if new_cs:
-            out.cell_sets = new_cs
-
-
 # --------------------------------------------------------------------------- #
 # shared validation + label computation                                        #
 # --------------------------------------------------------------------------- #
@@ -663,6 +599,8 @@ def partition(
         # therefore `point_sets`/`cell_sets`, which are views over them);
         # remapping again here would apply the maps twice.
         if not used_cpp:
-            _remap_piece_sets(mesh, out, pm, cm)
+            remap_piece_sets(
+                mesh, out, pm, cm, keep_invalid=True, drop_empty_blocks=False
+            )
         result.append(out)
     return result
