@@ -981,6 +981,20 @@ A series chunk is one step's rows, capped at 4 MiB, so the parallel path is only
 
 One thread runs the same compression on the caller, which is the work the `H5Dwrite` path did; below about 8 MiB per array and step there is nothing to spread.
 
+### Compression outside the library lock
+
+Roadmap 5.8.2, first step. The process-wide lock that serialises HDF5 and the other non-thread-safe libraries ([threads and the GIL](./architecture.md#threads-and-the-gil)) is held for a whole read or write, so the deflate of one file's datasets kept every other thread out of HDF5. `detail::LibraryUnlock` gives every level the calling thread holds back for a stretch that makes no library call, and takes them again after; the parallel compress of `h5u_write_deflate_chunks` (whole-dataset writes and appended rows) and the parallel inflate of `h5u_read_deflate_chunks` run inside one. The invariant, no two threads inside the libraries, is unchanged: the chunks are read and written under the lock, only zlib runs outside it. `LibraryLock.UnlockReleasesEveryLevelAndRestoresThem` and `LibraryLock.ConcurrentGzipVtkhdfRoundTripsWithTheLockGivenUp` (eight threads, multi-chunk gzip datasets) cover it.
+
+A 125,000-hexahedron box with a vector and a scalar point field written and read as gzip-6 VTKHDF through `_core.vtkhdf_write`/`vtkhdf_read`, k files at once from a `ThreadPoolExecutor`, `OMP_NUM_THREADS=1` as the architecture page recommends for a thread pool (best of three, OpenMP build, 4 cores):
+
+| Files at once | Write before | Write after | Read before | Read after |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.45 s | 0.42 s | 0.10 s | 0.09 s |
+| 2 | 0.87 s | 0.48 s | 0.18 s | 0.18 s |
+| 4 | 1.73 s | 0.61 s | 0.37 s | 0.37 s |
+
+Writes now overlap; reads do not, since their time is the chunk reads and the mesh assembly, which still run under the lock. Moving the assembly out is the rest of the item.
+
 ### `decimate_volume` and `conservative_interpolate` rows
 
 Roadmap 5.1.2. The two operations had no row in `meshioplusplus_bench_ops` because they were too slow for the sweep. Both were profiled at tier S under Callgrind before the rows were added; each change below leaves the rows' digests unchanged on SEQ and THREADS at one and four threads (tiers S and M for `conservative_interpolate`, S for `decimate_volume`), and `decimate_volume`'s output is also byte-identical before and after on boxes of 6, 9, 12 and 14 cells a side.

@@ -49470,15 +49470,51 @@ namespace detail {
 /// The process-wide mutex; prefer `LibraryLock`.
 std::recursive_mutex& library_mutex();
 
+/// How many `LibraryLock`s the calling thread holds (0 when none).
+int& library_lock_depth();
+
 /// RAII guard over `library_mutex()`.
 class LibraryLock {
 public:
-    LibraryLock() : mLock(library_mutex()) {}
+    LibraryLock() {
+        library_mutex().lock();
+        ++library_lock_depth();
+    }
+    ~LibraryLock() {
+        --library_lock_depth();
+        library_mutex().unlock();
+    }
     LibraryLock(const LibraryLock&) = delete;
     LibraryLock& operator=(const LibraryLock&) = delete;
+};
+
+/**
+ * @brief Gives the lock up for a stretch of pure computation (roadmap 5.8.2).
+ *
+ * Releases every level the calling thread holds and takes them all back when
+ * it goes out of scope, so another thread's HDF5 read or write runs while
+ * this one compresses or inflates. A no-op on a thread that holds no lock.
+ * Inside it, make **no** library call and touch no library handle: the
+ * invariant -- no two threads inside the libraries -- rests on that. Handles
+ * opened before it stay open and valid; only their use waits.
+ */
+class LibraryUnlock {
+public:
+    LibraryUnlock() : mDepth(library_lock_depth()) {
+        for (int i = 0; i < mDepth; ++i)
+            library_mutex().unlock();
+        library_lock_depth() = 0;
+    }
+    ~LibraryUnlock() {
+        for (int i = 0; i < mDepth; ++i)
+            library_mutex().lock();
+        library_lock_depth() = mDepth;
+    }
+    LibraryUnlock(const LibraryUnlock&) = delete;
+    LibraryUnlock& operator=(const LibraryUnlock&) = delete;
 
 private:
-    std::lock_guard<std::recursive_mutex> mLock;
+    int mDepth;
 };
 
 }  // namespace detail
@@ -87417,24 +87453,30 @@ bool h5u_write_deflate_chunks(hid_t d, const void* pSrc, DType Dt, std::size_t R
     const auto* src = static_cast<const Bytef*>(pSrc);
     std::vector<std::vector<Bytef>> packed(nchunks);
     std::vector<int> status(nchunks, Z_OK);
-    parallel_for(
-        nchunks,
-        [&](std::size_t c) {
-            const std::size_t first = c * chunk_bytes;
-            const std::size_t have = std::min(chunk_bytes, total - first);
-            std::vector<Bytef> padded;
-            const Bytef* in = src + first;
-            if (have < chunk_bytes) {
-                padded.assign(chunk_bytes, 0);
-                std::memcpy(padded.data(), in, have);
-                in = padded.data();
-            }
-            uLongf n = compressBound(static_cast<uLong>(chunk_bytes));
-            packed[c].resize(n);
-            status[c] = compress2(packed[c].data(), &n, in, static_cast<uLong>(chunk_bytes), Level);
-            packed[c].resize(n);
-        },
-        1);
+    {
+        // No HDF5 call in here: another thread may use the library meanwhile
+        // (roadmap 5.8.2).
+        const detail::LibraryUnlock unlock;
+        parallel_for(
+            nchunks,
+            [&](std::size_t c) {
+                const std::size_t first = c * chunk_bytes;
+                const std::size_t have = std::min(chunk_bytes, total - first);
+                std::vector<Bytef> padded;
+                const Bytef* in = src + first;
+                if (have < chunk_bytes) {
+                    padded.assign(chunk_bytes, 0);
+                    std::memcpy(padded.data(), in, have);
+                    in = padded.data();
+                }
+                uLongf n = compressBound(static_cast<uLong>(chunk_bytes));
+                packed[c].resize(n);
+                status[c] =
+                    compress2(packed[c].data(), &n, in, static_cast<uLong>(chunk_bytes), Level);
+                packed[c].resize(n);
+            },
+            1);
+    }
     std::vector<hsize_t> offset(Rank, 0);
     for (std::size_t c = 0; c < nchunks; ++c) {
         if (status[c] != Z_OK)
@@ -87495,36 +87537,41 @@ bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
 
     auto* dst = reinterpret_cast<Bytef*>(rOut.Data());
     std::vector<std::uint8_t> ok(nchunks, 0);
-    parallel_for(
-        nchunks,
-        [&](std::size_t c) {
-            const std::size_t first = c * chunk_bytes;
-            const std::size_t want = std::min(chunk_bytes, rOut.Nbytes() - first);
-            if (masks[c] & 1u) {  // the filter was skipped: the chunk is stored raw
-                if (packed[c].size() >= want) {
-                    std::memcpy(dst + first, packed[c].data(), want);
-                    ok[c] = 1;
+    {
+        // No HDF5 call in here: another thread may use the library meanwhile
+        // (roadmap 5.8.2).
+        const detail::LibraryUnlock unlock;
+        parallel_for(
+            nchunks,
+            [&](std::size_t c) {
+                const std::size_t first = c * chunk_bytes;
+                const std::size_t want = std::min(chunk_bytes, rOut.Nbytes() - first);
+                if (masks[c] & 1u) {  // the filter was skipped: the chunk is stored raw
+                    if (packed[c].size() >= want) {
+                        std::memcpy(dst + first, packed[c].data(), want);
+                        ok[c] = 1;
+                    }
+                    return;
                 }
-                return;
-            }
-            // The last chunk inflates to a whole chunk (HDF5 pads it); only
-            // its leading `want` bytes belong to the dataset.
-            std::vector<Bytef> tail;
-            Bytef* out = dst + first;
-            if (want < chunk_bytes) {
-                tail.resize(chunk_bytes);
-                out = tail.data();
-            }
-            uLongf n = static_cast<uLongf>(chunk_bytes);
-            const int rc =
-                uncompress(out, &n, packed[c].data(), static_cast<uLong>(packed[c].size()));
-            if (rc != Z_OK || n != chunk_bytes)
-                return;
-            if (!tail.empty())
-                std::memcpy(dst + first, tail.data(), want);
-            ok[c] = 1;
-        },
-        1);
+                // The last chunk inflates to a whole chunk (HDF5 pads it); only
+                // its leading `want` bytes belong to the dataset.
+                std::vector<Bytef> tail;
+                Bytef* out = dst + first;
+                if (want < chunk_bytes) {
+                    tail.resize(chunk_bytes);
+                    out = tail.data();
+                }
+                uLongf n = static_cast<uLongf>(chunk_bytes);
+                const int rc =
+                    uncompress(out, &n, packed[c].data(), static_cast<uLong>(packed[c].size()));
+                if (rc != Z_OK || n != chunk_bytes)
+                    return;
+                if (!tail.empty())
+                    std::memcpy(dst + first, tail.data(), want);
+                ok[c] = 1;
+            },
+            1);
+    }
     for (std::uint8_t k : ok)
         if (!k)
             throw ReadError("HDF5: a compressed chunk does not inflate to its declared size");
@@ -92407,6 +92454,11 @@ namespace detail {
 std::recursive_mutex& library_mutex() {
     static std::recursive_mutex sMutex;
     return sMutex;
+}
+
+int& library_lock_depth() {
+    thread_local int tDepth = 0;
+    return tDepth;
 }
 
 }  // namespace detail

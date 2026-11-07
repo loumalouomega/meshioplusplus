@@ -34,6 +34,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "../formats/library_preflight.hpp"
+#include "library_lock.hpp"
 
 namespace meshioplusplus {
 namespace h5 {
@@ -262,24 +263,30 @@ bool h5u_write_deflate_chunks(hid_t d, const void* pSrc, DType Dt, std::size_t R
     const auto* src = static_cast<const Bytef*>(pSrc);
     std::vector<std::vector<Bytef>> packed(nchunks);
     std::vector<int> status(nchunks, Z_OK);
-    parallel_for(
-        nchunks,
-        [&](std::size_t c) {
-            const std::size_t first = c * chunk_bytes;
-            const std::size_t have = std::min(chunk_bytes, total - first);
-            std::vector<Bytef> padded;
-            const Bytef* in = src + first;
-            if (have < chunk_bytes) {
-                padded.assign(chunk_bytes, 0);
-                std::memcpy(padded.data(), in, have);
-                in = padded.data();
-            }
-            uLongf n = compressBound(static_cast<uLong>(chunk_bytes));
-            packed[c].resize(n);
-            status[c] = compress2(packed[c].data(), &n, in, static_cast<uLong>(chunk_bytes), Level);
-            packed[c].resize(n);
-        },
-        1);
+    {
+        // No HDF5 call in here: another thread may use the library meanwhile
+        // (roadmap 5.8.2).
+        const detail::LibraryUnlock unlock;
+        parallel_for(
+            nchunks,
+            [&](std::size_t c) {
+                const std::size_t first = c * chunk_bytes;
+                const std::size_t have = std::min(chunk_bytes, total - first);
+                std::vector<Bytef> padded;
+                const Bytef* in = src + first;
+                if (have < chunk_bytes) {
+                    padded.assign(chunk_bytes, 0);
+                    std::memcpy(padded.data(), in, have);
+                    in = padded.data();
+                }
+                uLongf n = compressBound(static_cast<uLong>(chunk_bytes));
+                packed[c].resize(n);
+                status[c] =
+                    compress2(packed[c].data(), &n, in, static_cast<uLong>(chunk_bytes), Level);
+                packed[c].resize(n);
+            },
+            1);
+    }
     std::vector<hsize_t> offset(Rank, 0);
     for (std::size_t c = 0; c < nchunks; ++c) {
         if (status[c] != Z_OK)
@@ -340,36 +347,41 @@ bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
 
     auto* dst = reinterpret_cast<Bytef*>(rOut.Data());
     std::vector<std::uint8_t> ok(nchunks, 0);
-    parallel_for(
-        nchunks,
-        [&](std::size_t c) {
-            const std::size_t first = c * chunk_bytes;
-            const std::size_t want = std::min(chunk_bytes, rOut.Nbytes() - first);
-            if (masks[c] & 1u) {  // the filter was skipped: the chunk is stored raw
-                if (packed[c].size() >= want) {
-                    std::memcpy(dst + first, packed[c].data(), want);
-                    ok[c] = 1;
+    {
+        // No HDF5 call in here: another thread may use the library meanwhile
+        // (roadmap 5.8.2).
+        const detail::LibraryUnlock unlock;
+        parallel_for(
+            nchunks,
+            [&](std::size_t c) {
+                const std::size_t first = c * chunk_bytes;
+                const std::size_t want = std::min(chunk_bytes, rOut.Nbytes() - first);
+                if (masks[c] & 1u) {  // the filter was skipped: the chunk is stored raw
+                    if (packed[c].size() >= want) {
+                        std::memcpy(dst + first, packed[c].data(), want);
+                        ok[c] = 1;
+                    }
+                    return;
                 }
-                return;
-            }
-            // The last chunk inflates to a whole chunk (HDF5 pads it); only
-            // its leading `want` bytes belong to the dataset.
-            std::vector<Bytef> tail;
-            Bytef* out = dst + first;
-            if (want < chunk_bytes) {
-                tail.resize(chunk_bytes);
-                out = tail.data();
-            }
-            uLongf n = static_cast<uLongf>(chunk_bytes);
-            const int rc =
-                uncompress(out, &n, packed[c].data(), static_cast<uLong>(packed[c].size()));
-            if (rc != Z_OK || n != chunk_bytes)
-                return;
-            if (!tail.empty())
-                std::memcpy(dst + first, tail.data(), want);
-            ok[c] = 1;
-        },
-        1);
+                // The last chunk inflates to a whole chunk (HDF5 pads it); only
+                // its leading `want` bytes belong to the dataset.
+                std::vector<Bytef> tail;
+                Bytef* out = dst + first;
+                if (want < chunk_bytes) {
+                    tail.resize(chunk_bytes);
+                    out = tail.data();
+                }
+                uLongf n = static_cast<uLongf>(chunk_bytes);
+                const int rc =
+                    uncompress(out, &n, packed[c].data(), static_cast<uLong>(packed[c].size()));
+                if (rc != Z_OK || n != chunk_bytes)
+                    return;
+                if (!tail.empty())
+                    std::memcpy(dst + first, tail.data(), want);
+                ok[c] = 1;
+            },
+            1);
+    }
     for (std::uint8_t k : ok)
         if (!k)
             throw ReadError("HDF5: a compressed chunk does not inflate to its declared size");

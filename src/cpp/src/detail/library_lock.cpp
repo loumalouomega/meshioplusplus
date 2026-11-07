@@ -25,5 +25,10 @@ std::recursive_mutex& library_mutex() {
     return sMutex;
 }
 
+int& library_lock_depth() {
+    thread_local int tDepth = 0;
+    return tDepth;
+}
+
 }  // namespace detail
 }  // namespace meshioplusplus
