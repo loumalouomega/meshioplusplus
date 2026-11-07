@@ -2098,6 +2098,56 @@ void write_physical_names(std::ostream& rOs, const Mesh& rMesh,
 
 // Writes the cell-data array named `rName` as one $ElementData-style section,
 // concatenated across cell blocks.
+/// The Gmsh element type of a meshio cell type, or a WriteError naming it.
+int gmsh_block_type(const std::unordered_map<std::string, int>& rM2g, const std::string& rType) {
+    const auto it = rM2g.find(rType);
+    if (it == rM2g.end())
+        throw WriteError("Gmsh writer: unsupported cell type " + rType);
+    return it->second;
+}
+
+/// The meshio corner written as a Gmsh element's node @p J (@p rPerm empty:
+/// the two orders agree).
+inline std::size_t gmsh_perm_src(const std::vector<int>& rPerm, std::size_t J) {
+    return rPerm.empty() ? J : static_cast<std::size_t>(rPerm[J]);
+}
+
+/// Every point_data array but `gmsh:dim_tags` as a `$NodeData` section, alike
+/// in the 2.2 and 4.1 writers: one-based node tags, `%.17g` values in ASCII,
+/// native int32 tags and float64 values in binary.
+void gmsh_write_node_data(std::ostream& os, const Mesh& rMesh, bool binary) {
+    for (const auto& name : rMesh.PointDataNames()) {
+        if (name == "gmsh:dim_tags")
+            continue;
+        const NDArray& d = rMesh.PointData(name);
+        std::size_t ncomp = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
+        std::size_t rows = d.Shape().empty() ? 0 : d.Shape()[0];
+        os << "$NodeData\n1\n\"" << name << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows << "\n";
+        const detail::DoubleView values(d);
+        char buf[32];
+        for (std::size_t r = 0; r < rows; ++r) {
+            if (binary) {
+                std::int32_t id = static_cast<std::int32_t>(r + 1);
+                os.write(reinterpret_cast<const char*>(&id), 4);
+                for (std::size_t c = 0; c < ncomp; ++c) {
+                    double v = values[r * ncomp + c];
+                    os.write(reinterpret_cast<const char*>(&v), 8);
+                }
+            } else {
+                os << (r + 1);
+                for (std::size_t c = 0; c < ncomp; ++c) {
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g", values[r * ncomp + c]);
+                    os << buf;
+                }
+                os << '\n';
+            }
+        }
+        if (binary)
+            os << '\n';
+        os << "$EndNodeData\n";
+    }
+}
+
 void write_data(std::ostream& rOs, const char* pTag, const std::string& rName, const Mesh& rMesh,
                 bool binary) {
     // Concatenate blocks.
@@ -2576,10 +2626,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
     std::size_t consecutive = 0;
     for (std::size_t k = 0; k < nblocks; ++k) {
         const auto cb = rMesh.Cells(k);
-        auto it = m2g.find(cb.Type());
-        if (it == m2g.end())
-            throw WriteError("Gmsh writer: unsupported cell type " + cb.Type());
-        int gtype = it->second;
+        const int gtype = gmsh_block_type(m2g, cb.Type());
         const NDArray& conn = cb.Conn();
         std::size_t n = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
         const std::vector<int>& perm = meshio_to_gmsh_perm(cb.Type());
@@ -2601,7 +2648,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
                 os.write(reinterpret_cast<const char*>(&t0), 4);
                 os.write(reinterpret_cast<const char*>(&t1), 4);
                 for (std::size_t j = 0; j < n; ++j) {
-                    std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
+                    const std::size_t src = gmsh_perm_src(perm, j);
                     std::int32_t node = static_cast<std::int32_t>(indices[r * n + src] + 1);
                     os.write(reinterpret_cast<const char*>(&node), 4);
                 }
@@ -2611,7 +2658,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
                 os << (consecutive + r + 1) << ' ' << gtype << " 2 " << physical[r] << ' '
                    << geometrical[r];
                 for (std::size_t j = 0; j < n; ++j) {
-                    std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
+                    const std::size_t src = gmsh_perm_src(perm, j);
                     os << ' ' << (indices[r * n + src] + 1);
                 }
                 os << '\n';
@@ -2624,37 +2671,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
     os << "$EndElements\n";
     gmsh_write_periodic(os, rInfo, binary, 22);
 
-    for (const auto& name : rMesh.PointDataNames()) {
-        if (name == "gmsh:dim_tags")
-            continue;
-        // Reusing write_data (cell-data-shaped) for point data is awkward; inline:
-        const NDArray& d = rMesh.PointData(name);
-        std::size_t ncomp = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
-        std::size_t rows = d.Shape().empty() ? 0 : d.Shape()[0];
-        os << "$NodeData\n1\n\"" << name << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows << "\n";
-        const detail::DoubleView values(d);
-        char buf[32];
-        for (std::size_t r = 0; r < rows; ++r) {
-            if (binary) {
-                std::int32_t id = static_cast<std::int32_t>(r + 1);
-                os.write(reinterpret_cast<const char*>(&id), 4);
-                for (std::size_t c = 0; c < ncomp; ++c) {
-                    double v = values[r * ncomp + c];
-                    os.write(reinterpret_cast<const char*>(&v), 8);
-                }
-            } else {
-                os << (r + 1);
-                for (std::size_t c = 0; c < ncomp; ++c) {
-                    detail::snprintf_c(buf, sizeof(buf), " %.17g", values[r * ncomp + c]);
-                    os << buf;
-                }
-                os << '\n';
-            }
-        }
-        if (binary)
-            os << '\n';
-        os << "$EndNodeData\n";
-    }
+    gmsh_write_node_data(os, rMesh, binary);
 
     for (const auto& name : rMesh.CellDataNames()) {
         if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags")
@@ -2954,10 +2971,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
     std::size_t tag0 = 1;
     for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci) {
         const auto cb = rMesh.Cells(ci);
-        auto it = m2g.find(cb.Type());
-        if (it == m2g.end())
-            throw WriteError("Gmsh writer: unsupported cell type " + cb.Type());
-        int gtype = it->second;
+        const int gtype = gmsh_block_type(m2g, cb.Type());
         int bdim = cell_dim(cb.Type());
         int entity_tag =
             (has_geometrical && ci < rMesh.CellDataNumBlocks("gmsh:geometrical") &&
@@ -2997,7 +3011,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
             for (std::size_t r = 0; r < count; ++r) {
                 os << (tag0 + r);
                 for (std::size_t j = 0; j < n; ++j) {
-                    std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
+                    const std::size_t src = gmsh_perm_src(perm, j);
                     os << " " << (indices[r * n + src] + 1);
                 }
                 os << "\n";
@@ -3010,34 +3024,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
     os << "$EndElements\n";
     gmsh_write_periodic(os, rInfo, binary, 41);
 
-    for (const auto& name : rMesh.PointDataNames()) {
-        if (name == "gmsh:dim_tags")
-            continue;
-        const NDArray& d = rMesh.PointData(name);
-        std::size_t ncomp = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
-        std::size_t rows = d.Shape().empty() ? 0 : d.Shape()[0];
-        os << "$NodeData\n1\n\"" << name << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows << "\n";
-        const detail::DoubleView values(d);
-        char buf[32];
-        for (std::size_t r = 0; r < rows; ++r) {
-            if (binary) {
-                std::int32_t id = static_cast<std::int32_t>(r + 1);
-                os.write(reinterpret_cast<const char*>(&id), 4);
-                for (std::size_t c = 0; c < ncomp; ++c)
-                    put_f64(values[r * ncomp + c]);
-            } else {
-                os << (r + 1);
-                for (std::size_t c = 0; c < ncomp; ++c) {
-                    detail::snprintf_c(buf, sizeof(buf), " %.17g", values[r * ncomp + c]);
-                    os << buf;
-                }
-                os << '\n';
-            }
-        }
-        if (binary)
-            os << '\n';
-        os << "$EndNodeData\n";
-    }
+    gmsh_write_node_data(os, rMesh, binary);
 
     for (const auto& name : rMesh.CellDataNames()) {
         if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags")

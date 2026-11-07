@@ -121,22 +121,24 @@ void svg_append_colorbar(std::ostream& rOs, const detail::FaceColors& rColors, d
         << "</text>";
 }
 
-// 3D rendering path: project the (already skin-extracted) surface mesh with
-// the orthographic camera and emit its faces back-to-front. Replicates the
-// flat path's bbox -> y-flip -> image_width scaling -> <path> emission, but
-// over the sorted projected faces.
-void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mesh& rDrawMesh,
-                    const std::string& rFloatFmt, const std::optional<std::string>& rStrokeWidth,
-                    const std::optional<double>& rImageWidth, const std::string& rFill,
-                    const std::string& rStroke, double azimuth, double elevation, double roll,
-                    const detail::ColorSpec& rColorSpec, const std::string& rNanColor) {
-    detail::ProjectedSurface ps = detail::project_surface(rDrawMesh, azimuth, elevation, roll);
-    const detail::FaceColors colors = detail::resolve_face_colors(
-        rColorSpec, rSourceMesh, rDrawMesh, detail::color_faces_from_projection(ps.mFaces));
-    std::vector<double>& x = ps.mX;
-    std::vector<double>& y = ps.mY;
-    const std::size_t num_points = x.size();
+/// The drawing's frame: the bounding box of the 2-D points, the y-flip into
+/// SVG's y-down screen space, the optional scaling to `image_width` and the
+/// stroke width (a hundredth of the width unless given). Flips and scales
+/// `rX`/`rY` in place; the flat and the projected writers share it.
+struct SvgFrame {
+    double mMinX = 0.0;
+    double mMinY = 0.0;
+    double mWidth = 0.0;
+    double mHeight = 0.0;
+    double mYFlip = 0.0;
+    double mScale = 1.0;
+    std::string mStrokeWidth;
+};
 
+SvgFrame svg_fit_frame(std::vector<double>& x, std::vector<double>& y,
+                       const std::optional<double>& rImageWidth,
+                       const std::optional<std::string>& rStrokeWidth) {
+    const std::size_t num_points = x.size();
     double min_x = 0.0, max_x = 0.0, min_y = 0.0, max_y = 0.0;
     if (num_points > 0) {
         min_x = max_x = x[0];
@@ -149,7 +151,7 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
         }
     }
 
-    // Flip y (projected math convention y-up -> SVG screen convention y-down).
+    // Flip y (mesh math convention y-up -> SVG screen convention y-down).
     const double y_flip = max_y + min_y;
     for (std::size_t i = 0; i < num_points; ++i)
         y[i] = max_y + min_y - y[i];
@@ -179,6 +181,29 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
         detail::snprintf_c(buf, sizeof(buf), "%g", width / 100.0);
         stroke_width = buf;
     }
+
+    return {min_x, min_y, width, height, y_flip, applied_scale, stroke_width};
+}
+
+// 3D rendering path: project the (already skin-extracted) surface mesh with
+// the orthographic camera and emit its faces back-to-front. Replicates the
+// flat path's bbox -> y-flip -> image_width scaling -> <path> emission, but
+// over the sorted projected faces.
+void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mesh& rDrawMesh,
+                    const std::string& rFloatFmt, const std::optional<std::string>& rStrokeWidth,
+                    const std::optional<double>& rImageWidth, const std::string& rFill,
+                    const std::string& rStroke, double azimuth, double elevation, double roll,
+                    const detail::ColorSpec& rColorSpec, const std::string& rNanColor) {
+    detail::ProjectedSurface ps = detail::project_surface(rDrawMesh, azimuth, elevation, roll);
+    const detail::FaceColors colors = detail::resolve_face_colors(
+        rColorSpec, rSourceMesh, rDrawMesh, detail::color_faces_from_projection(ps.mFaces));
+    std::vector<double>& x = ps.mX;
+    std::vector<double>& y = ps.mY;
+    const SvgFrame frame = svg_fit_frame(x, y, rImageWidth, rStrokeWidth);
+    const double min_x = frame.mMinX, min_y = frame.mMinY;
+    const double width = frame.mWidth, height = frame.mHeight;
+    const double y_flip = frame.mYFlip, applied_scale = frame.mScale;
+    const std::string& stroke_width = frame.mStrokeWidth;
 
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
@@ -390,48 +415,11 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
         y[i] = (1 < dim) ? point_values[i * dim + 1] : 0.0;
     }
 
-    double min_x = 0.0, max_x = 0.0, min_y = 0.0, max_y = 0.0;
-    if (num_points > 0) {
-        min_x = max_x = x[0];
-        min_y = max_y = y[0];
-        for (std::size_t i = 1; i < num_points; ++i) {
-            min_x = std::min(min_x, x[i]);
-            max_x = std::max(max_x, x[i]);
-            min_y = std::min(min_y, y[i]);
-            max_y = std::max(max_y, y[i]);
-        }
-    }
-
-    // Flip y (mesh math convention y-up -> SVG screen convention y-down).
-    const double y_flip = max_y + min_y;
-    for (std::size_t i = 0; i < num_points; ++i)
-        y[i] = max_y + min_y - y[i];
-
-    double width = max_x - min_x;
-    double height = max_y - min_y;
-
-    double applied_scale = 1.0;
-    if (rImageWidth.has_value() && width != 0.0) {
-        const double scaling_factor = *rImageWidth / width;
-        applied_scale = scaling_factor;
-        min_x *= scaling_factor;
-        min_y *= scaling_factor;
-        width *= scaling_factor;
-        height *= scaling_factor;
-        for (std::size_t i = 0; i < num_points; ++i) {
-            x[i] *= scaling_factor;
-            y[i] *= scaling_factor;
-        }
-    }
-
-    std::string stroke_width;
-    if (rStrokeWidth.has_value()) {
-        stroke_width = *rStrokeWidth;
-    } else {
-        char buf[64];
-        detail::snprintf_c(buf, sizeof(buf), "%g", width / 100.0);
-        stroke_width = buf;
-    }
+    const SvgFrame frame = svg_fit_frame(x, y, rImageWidth, rStrokeWidth);
+    const double min_x = frame.mMinX, min_y = frame.mMinY;
+    const double width = frame.mWidth, height = frame.mHeight;
+    const double y_flip = frame.mYFlip, applied_scale = frame.mScale;
+    const std::string& stroke_width = frame.mStrokeWidth;
 
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
