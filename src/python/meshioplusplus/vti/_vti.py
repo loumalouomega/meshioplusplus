@@ -202,45 +202,81 @@ def emit_data_arrays(
     lines.append(f"</{section}>")
 
 
-def write(filename, mesh, binary=True, compression="zlib", header_type=None):
+def lattice_hex_conn(dims):
+    """The hexahedron connectivity of a ``dims``-cell lattice, x fastest.
+
+    The structured formats never store it: it is ``_grid._lattice_py``'s index
+    formula, which depends on ``dims`` alone (its points are discarded).
+    """
+    _, conn = _lattice_py(dims, np.zeros(3), np.ones(3))
+    return conn
+
+
+def read_lattice_piece(grid, piece, reader, prefix, read_points):
+    """One ``.vtr``/``.vts`` piece: its extent, the points ``read_points(piece,
+    reader, dims, num_points)`` returns, the implicit hexahedra and the data."""
+    dims, num_points, num_cells = extent_dims(grid, piece, prefix)
+    if num_points == 0:
+        return Mesh(
+            np.empty((0, 3)), [], field_data=field_arrays(piece, reader, prefix)
+        )
+    points = read_points(piece, reader, dims, num_points)
+    cells = [] if num_cells == 0 else [("hexahedron", lattice_hex_conn(dims))]
+    point_data, cell_data = read_extent_data(
+        piece, reader, num_points, num_cells, prefix
+    )
+    return Mesh(
+        points,
+        cells,
+        point_data=point_data,
+        cell_data=cell_data,
+        field_data=field_arrays(piece, reader, prefix),
+    )
+
+
+def write_lattice(
+    filename,
+    mesh,
+    *,
+    grid,
+    prefix,
+    not_lattice,
+    binary,
+    compression,
+    header_type,
+    grid_attrs=None,
+    geometry=None,
+):
+    """A whole ``.vti``/``.vtr``/``.vts`` file of a dense one-block lattice.
+
+    ``not_lattice`` is the error when the mesh is not one. ``grid_attrs(dims,
+    origin, spacing)`` adds attributes to the ``<grid>`` tag (``.vti``'s
+    Origin/Spacing); ``geometry(lines, emit, dims, origin, spacing,
+    compression)`` writes the piece's geometry section (``.vtr``'s
+    Coordinates, ``.vts``'s Points; ``.vti`` has none).
+    """
     spec = lattice_from_mesh(mesh)
     if spec is None:
-        raise WriteError(
-            "ImageData is a regular lattice, and this mesh is not one: it needs "
-            "exactly one hexahedron block whose points tile an axis-aligned box "
-            "with uniform spacing. A partial grid (voxelize's 'surface'/'inside' "
-            "fill, or an octree) cannot be written as .vti either -- write it as "
-            ".vtu, which stores the cells explicitly."
-        )
+        raise WriteError(not_lattice)
     dims, origin, spacing = spec
     if header_type is None:
         header_type = "UInt32"
     if compression not in (None, "zlib", "lzma", "lz4", "zstd"):
-        raise WriteError(f"Unknown VTI compression '{compression}'")
+        raise WriteError(f"Unknown {prefix} compression '{compression}'")
     if not binary:
         compression = None
 
     ext = f"0 {int(dims[0])} 0 {int(dims[1])} 0 {int(dims[2])}"
     lines = ['<?xml version="1.0"?>']
-    attrs = 'type="ImageData" version="0.1" byte_order="LittleEndian"'
+    attrs = f'type="{grid}" version="0.1" byte_order="LittleEndian"'
     if compression:
         attrs += f' compressor="{_COMPRESSION_TO_ATTR[compression]}"'
     if header_type != "UInt32":
         attrs += f' header_type="{header_type}"'
     lines.append(f"<VTKFile {attrs}>")
     lines.append(_provenance.render_xml_comment(_provenance.SlotTier.BLOCK))
-
-    # %.17g, matching the C++ writer exactly: the stream default of six
-    # significant digits would lose ~10 digits of a real origin, placing the grid
-    # 1e-7 off its own points with nothing downstream to flag it.
-    def num(v):
-        return f"{float(v):.17g}"
-
-    lines.append(
-        f'<ImageData WholeExtent="{ext}" '
-        f'Origin="{num(origin[0])} {num(origin[1])} {num(origin[2])}" '
-        f'Spacing="{num(spacing[0])} {num(spacing[1])} {num(spacing[2])}">'
-    )
+    extra = grid_attrs(dims, origin, spacing) if grid_attrs else ""
+    lines.append(f'<{grid} WholeExtent="{ext}"{extra}>')
 
     def emit(section, items, field=False):
         emit_data_arrays(
@@ -248,9 +284,13 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         )
 
     emit(
-        "FieldData", field_arrays_for_write(mesh, "VTI", numpy_to_vtu_type), field=True
+        "FieldData",
+        field_arrays_for_write(mesh, prefix, numpy_to_vtu_type),
+        field=True,
     )
     lines.append(f'<Piece Extent="{ext}">')
+    if geometry is not None:
+        geometry(lines, emit, dims, origin, spacing, compression)
     emit("PointData", sorted(mesh.point_data.items()))
     # A lattice has exactly one block, so cell_data's per-block list has one
     # entry; concatenating anyway keeps a mis-shaped input from being written
@@ -264,7 +304,40 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     )
 
     lines.append("</Piece>")
-    lines.append("</ImageData>")
+    lines.append(f"</{grid}>")
     lines.append("</VTKFile>")
     with open(filename, "w") as f:
         f.write("\n".join(lines) + "\n")
+
+
+def _vti_grid_attrs(dims, origin, spacing):
+    # %.17g, matching the C++ writer exactly: the stream default of six
+    # significant digits would lose ~10 digits of a real origin, placing the grid
+    # 1e-7 off its own points with nothing downstream to flag it.
+    def num(v):
+        return f"{float(v):.17g}"
+
+    return (
+        f' Origin="{num(origin[0])} {num(origin[1])} {num(origin[2])}"'
+        f' Spacing="{num(spacing[0])} {num(spacing[1])} {num(spacing[2])}"'
+    )
+
+
+def write(filename, mesh, binary=True, compression="zlib", header_type=None):
+    write_lattice(
+        filename,
+        mesh,
+        grid="ImageData",
+        prefix="VTI",
+        not_lattice=(
+            "ImageData is a regular lattice, and this mesh is not one: it needs "
+            "exactly one hexahedron block whose points tile an axis-aligned box "
+            "with uniform spacing. A partial grid (voxelize's 'surface'/'inside' "
+            "fill, or an octree) cannot be written as .vti either -- write it as "
+            ".vtu, which stores the cells explicitly."
+        ),
+        binary=binary,
+        compression=compression,
+        header_type=header_type,
+        grid_attrs=_vti_grid_attrs,
+    )
