@@ -44,7 +44,6 @@
 #include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
-#include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
 #include "../detail/data_plumbing.hpp"
