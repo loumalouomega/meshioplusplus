@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -1318,6 +1319,80 @@ TEST(H5Util, AppendableDatasetIsChunkedAndGrowsAlongAxisZero) {
 }
 
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
+// Roadmap 5.8.1: appended rows that span whole chunks of a gzip dataset are
+// compressed in parallel and written chunk by chunk. The stored chunks must
+// be the bytes HDF5's own filter writes for the same appends, so the file is
+// the one the H5Dwrite path made, on every backend and thread count.
+TEST(H5Util, AppendedGzipChunksMatchHdf5sOwnFilter) {
+    H5utilTempFile f(".h5");
+    constexpr hsize_t kChunkRows = 64;
+    constexpr int kLevel = 4;
+    // Head-only, chunk-aligned, unaligned-with-tail and one-chunk appends.
+    const std::vector<std::size_t> appends = {10, 300, 5, 200, 64, 1, 129};
+    std::vector<double> all;
+    {
+        h5::Hid file = h5::create_file(f.mPath);
+        h5::create_appendable_dataset(file, "ours", meshioplusplus::DType::Float64, {3}, kChunkRows,
+                                      kLevel);
+        // The reference: the same dataset, grown by plain H5Dwrite.
+        const hsize_t dims[2] = {0, 3}, maxdims[2] = {H5S_UNLIMITED, 3}, chunk[2] = {kChunkRows, 3};
+        h5::Hid space(H5Screate_simple(2, dims, maxdims), H5Sclose);
+        h5::Hid dcpl(H5Pcreate(H5P_DATASET_CREATE), H5Pclose);
+        H5Pset_chunk(dcpl, 2, chunk);
+        H5Pset_deflate(dcpl, kLevel);
+        h5::Hid ref(H5Dcreate2(file, "ref", H5T_IEEE_F64LE, space, H5P_DEFAULT, dcpl, H5P_DEFAULT),
+                    H5Dclose);
+        ASSERT_TRUE(ref.Valid());
+        hsize_t rows = 0;
+        for (std::size_t n : appends) {
+            std::vector<double> v(n * 3);
+            for (std::size_t i = 0; i < v.size(); ++i)
+                v[i] = std::sin(static_cast<double>(all.size() + i)) * 1e3;
+            all.insert(all.end(), v.begin(), v.end());
+            meshioplusplus::NDArray a =
+                meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Float64, {n, 3});
+            std::memcpy(a.Data(), v.data(), v.size() * sizeof(double));
+            h5::append_rows(file, "ours", a);
+
+            const hsize_t grown[2] = {rows + n, 3};
+            ASSERT_GE(H5Dset_extent(ref, grown), 0);
+            h5::Hid fspace(H5Dget_space(ref), H5Sclose);
+            const hsize_t start[2] = {rows, 0}, count[2] = {n, 3};
+            H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start, nullptr, count, nullptr);
+            h5::Hid mem(H5Screate_simple(2, count, nullptr), H5Sclose);
+            ASSERT_GE(H5Dwrite(ref, H5T_NATIVE_DOUBLE, mem, fspace, H5P_DEFAULT, v.data()), 0);
+            rows += n;
+        }
+    }
+    h5::Hid file = h5::open_file_read(f.mPath);
+    auto ours = h5::read_dataset(file, "ours");
+    ASSERT_EQ(ours.Shape(), (std::vector<std::size_t>{all.size() / 3, 3}));
+    EXPECT_EQ(std::memcmp(ours.Data(), all.data(), all.size() * sizeof(double)), 0);
+
+    h5::Hid a(H5Dopen2(file, "ours", H5P_DEFAULT), H5Dclose);
+    h5::Hid b(H5Dopen2(file, "ref", H5P_DEFAULT), H5Dclose);
+    const std::size_t nrows = all.size() / 3;
+    for (hsize_t r = 0; r < nrows; r += kChunkRows) {
+        const hsize_t offset[2] = {r, 0};
+        hsize_t sa = 0, sb = 0;
+        ASSERT_GE(H5Dget_chunk_storage_size(a, offset, &sa), 0);
+        ASSERT_GE(H5Dget_chunk_storage_size(b, offset, &sb), 0);
+        ASSERT_EQ(sa, sb) << "chunk at row " << r;
+        std::vector<unsigned char> ca(sa), cb(sb);
+        std::uint32_t ma = 0, mb = 0;
+#if H5_VERSION_GE(2, 0, 0)
+        std::size_t na = ca.size(), nb = cb.size();
+        ASSERT_GE(H5Dread_chunk2(a, H5P_DEFAULT, offset, &ma, ca.data(), &na), 0);
+        ASSERT_GE(H5Dread_chunk2(b, H5P_DEFAULT, offset, &mb, cb.data(), &nb), 0);
+#else
+        ASSERT_GE(H5Dread_chunk(a, H5P_DEFAULT, offset, &ma, ca.data()), 0);
+        ASSERT_GE(H5Dread_chunk(b, H5P_DEFAULT, offset, &mb, cb.data()), 0);
+#endif
+        EXPECT_EQ(ma, mb);
+        EXPECT_EQ(ca, cb) << "chunk at row " << r;
+    }
+}
+
 namespace {
 // Writes "d" as one chunk of `n` elements of `elem` bytes with the deflate filter, and
 // the `payload` bytes as the chunk: deflated by zlib with the filter applied (`deflated`),
