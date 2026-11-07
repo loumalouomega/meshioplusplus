@@ -596,6 +596,101 @@ mio_status array_out(const NDArray& rArr, const void** ppData, mio_dtype* pDtype
     return MIO_OK;
 }
 
+// The accessors every result handle with a mesh, a point map and per-block
+// cell maps carries (`mio_<op>_result_mesh`, `_take_mesh`, `_point_map`,
+// `_num_cell_maps`, `_cell_map`): one body each, the exported functions
+// forwarding to them. NULL and range errors keep their codes and messages.
+
+// A 1-D map's (data, dtype, length) out-params; any may be NULL.
+mio_status capi_map_out(const NDArray& rMap, const void** ppData, mio_dtype* pDtype, int64_t* pN) {
+    if (ppData)
+        *ppData = rMap.Data();
+    if (pDtype)
+        *pDtype = from_dtype(rMap.Dtype());
+    if (pN)
+        *pN = rMap.Shape().empty() ? 0 : static_cast<int64_t>(rMap.Shape()[0]);
+    return MIO_OK;
+}
+
+// The result's mesh, borrowed; NULL (and no error) for a NULL result.
+template <class TResult>
+const mio_mesh* capi_result_mesh(const TResult* pResult) {
+    return capi_guarded_null<const mio_mesh>([&]() -> const mio_mesh* {
+        if (!pResult)
+            return nullptr;
+        return &pResult->mMesh;
+    });
+}
+
+// The result's mesh, moved into a new handle the caller owns.
+template <class TResult>
+mio_mesh* capi_result_take_mesh(TResult* pResult) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(pResult, "meshio++: result is NULL");
+        return new mio_mesh{std::move(pResult->mMesh.mMesh)};
+    });
+}
+
+template <class TResult>
+mio_status capi_result_point_map(const TResult* pResult, const void** ppData, mio_dtype* pDtype,
+                                 int64_t* pN) {
+    return guarded([&]() -> mio_status {
+        if (!pResult)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        return capi_map_out(pResult->mPointMap, ppData, pDtype, pN);
+    });
+}
+
+template <class TResult>
+int64_t capi_result_num_cell_maps(const TResult* pResult) {
+    return capi_guarded_count([&]() -> int64_t {
+        capi_require(pResult, "meshio++: result is NULL");
+        return static_cast<int64_t>(pResult->mCellMaps.size());
+    });
+}
+
+template <class TResult>
+mio_status capi_result_cell_map(const TResult* pResult, int64_t Block, const void** ppData,
+                                mio_dtype* pDtype, int64_t* pN) {
+    return guarded([&]() -> mio_status {
+        if (!pResult)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        if (Block < 0 || static_cast<std::size_t>(Block) >= pResult->mCellMaps.size())
+            return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-map block index out of range");
+        return capi_map_out(pResult->mCellMaps[static_cast<std::size_t>(Block)], ppData, pDtype,
+                            pN);
+    });
+}
+
+// The mReason of entry Index of rEntries, copied into a caller buffer; an
+// out-of-range index throws pRangeMessage. Runs inside capi_guarded_count.
+template <class TEntry>
+int64_t capi_indexed_reason(const std::vector<TEntry>& rEntries, int64_t Index,
+                            const char* pRangeMessage, char* pBuf, int64_t BufLen) {
+    if (Index < 0 || static_cast<std::size_t>(Index) >= rEntries.size())
+        throw std::invalid_argument(pRangeMessage);
+    if (BufLen < 0)
+        throw std::invalid_argument("meshio++: negative reason buffer length");
+    return copy_string(rEntries[static_cast<std::size_t>(Index)].mReason, pBuf, BufLen);
+}
+
+// The edge list rLists(Index) of a mesh_cad_surface report, copied as far as it
+// fits into a caller buffer; returns its full length, or -1 (no error) for an
+// out-of-range index. TGet maps an entry of rLists to its edge vector. Runs
+// inside capi_guarded_count.
+template <class TEntry, class TGet>
+int64_t capi_copy_indexed_edges(const std::vector<TEntry>& rLists, int64_t Index, int64_t* pEdges,
+                                int64_t N, TGet&& rGet) {
+    if (Index < 0 || static_cast<std::size_t>(Index) >= rLists.size())
+        return -1;
+    if (N < 0 || (N > 0 && !pEdges))
+        throw std::invalid_argument("meshio++: mesh_cad_surface: bad edges buffer");
+    const auto& r_e = rGet(rLists[static_cast<std::size_t>(Index)]);
+    const auto count = std::min<std::int64_t>(N, static_cast<std::int64_t>(r_e.size()));
+    std::copy(r_e.begin(), r_e.begin() + count, pEdges);
+    return static_cast<int64_t>(r_e.size());
+}
+
 // Shared body of the three named-data setters (they differ only in the
 // leading-dimension check and the uniform-API call).
 template <class AddFn>
@@ -2895,59 +2990,25 @@ mio_convert_cells_result* mio_convert_cells(const mio_mesh* mesh, const char* mo
 }
 
 const mio_mesh* mio_convert_cells_result_mesh(const mio_convert_cells_result* result) {
-    return capi_guarded_null<const mio_mesh>([&]() -> const mio_mesh* {
-        if (!result)
-            return nullptr;
-        return &result->mMesh;
-    });
+    return capi_result_mesh(result);
 }
 
 mio_mesh* mio_convert_cells_result_take_mesh(mio_convert_cells_result* result) {
-    return capi_guarded_mesh([&]() -> mio_mesh* {
-        capi_require(result, "meshio++: result is NULL");
-        return new mio_mesh{std::move(result->mMesh.mMesh)};
-    });
+    return capi_result_take_mesh(result);
 }
 
 mio_status mio_convert_cells_result_point_map(const mio_convert_cells_result* result,
                                               const void** data, mio_dtype* dtype, int64_t* n) {
-    return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
-        const NDArray& a = result->mPointMap;
-        if (data)
-            *data = a.Data();
-        if (dtype)
-            *dtype = from_dtype(a.Dtype());
-        if (n)
-            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
-        return MIO_OK;
-    });
+    return capi_result_point_map(result, data, dtype, n);
 }
 
 int64_t mio_convert_cells_result_num_cell_maps(const mio_convert_cells_result* result) {
-    return capi_guarded_count([&]() -> int64_t {
-        capi_require(result, "meshio++: result is NULL");
-        return static_cast<int64_t>(result->mCellMaps.size());
-    });
+    return capi_result_num_cell_maps(result);
 }
 
 mio_status mio_convert_cells_result_cell_map(const mio_convert_cells_result* result, int64_t block,
                                              const void** data, mio_dtype* dtype, int64_t* n) {
-    return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
-        if (block < 0 || static_cast<std::size_t>(block) >= result->mCellMaps.size())
-            return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-map block index out of range");
-        const NDArray& a = result->mCellMaps[static_cast<std::size_t>(block)];
-        if (data)
-            *data = a.Data();
-        if (dtype)
-            *dtype = from_dtype(a.Dtype());
-        if (n)
-            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
-        return MIO_OK;
-    });
+    return capi_result_cell_map(result, block, data, dtype, n);
 }
 
 void mio_convert_cells_result_free(mio_convert_cells_result* result) {
@@ -2968,43 +3029,20 @@ mio_subdivide_result* mio_subdivide(const mio_mesh* mesh, int record_parent_ids)
 }
 
 const mio_mesh* mio_subdivide_result_mesh(const mio_subdivide_result* result) {
-    return capi_guarded_null<const mio_mesh>([&]() -> const mio_mesh* {
-        if (!result)
-            return nullptr;
-        return &result->mMesh;
-    });
+    return capi_result_mesh(result);
 }
 
 mio_mesh* mio_subdivide_result_take_mesh(mio_subdivide_result* result) {
-    return capi_guarded_mesh([&]() -> mio_mesh* {
-        capi_require(result, "meshio++: result is NULL");
-        return new mio_mesh{std::move(result->mMesh.mMesh)};
-    });
+    return capi_result_take_mesh(result);
 }
 
 int64_t mio_subdivide_result_num_cell_maps(const mio_subdivide_result* result) {
-    return capi_guarded_count([&]() -> int64_t {
-        capi_require(result, "meshio++: result is NULL");
-        return static_cast<int64_t>(result->mCellMaps.size());
-    });
+    return capi_result_num_cell_maps(result);
 }
 
 mio_status mio_subdivide_result_cell_map(const mio_subdivide_result* result, int64_t block,
                                          const void** data, mio_dtype* dtype, int64_t* n) {
-    return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
-        if (block < 0 || static_cast<std::size_t>(block) >= result->mCellMaps.size())
-            return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-map block index out of range");
-        const NDArray& a = result->mCellMaps[static_cast<std::size_t>(block)];
-        if (data)
-            *data = a.Data();
-        if (dtype)
-            *dtype = from_dtype(a.Dtype());
-        if (n)
-            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
-        return MIO_OK;
-    });
+    return capi_result_cell_map(result, block, data, dtype, n);
 }
 
 void mio_subdivide_result_free(mio_subdivide_result* result) {
@@ -3061,18 +3099,11 @@ mio_agglomerate_result* mio_agglomerate_ex(const mio_mesh* mesh, const mio_agglo
 }
 
 const mio_mesh* mio_agglomerate_result_mesh(const mio_agglomerate_result* result) {
-    return capi_guarded_null<const mio_mesh>([&]() -> const mio_mesh* {
-        if (!result)
-            return nullptr;
-        return &result->mMesh;
-    });
+    return capi_result_mesh(result);
 }
 
 mio_mesh* mio_agglomerate_result_take_mesh(mio_agglomerate_result* result) {
-    return capi_guarded_mesh([&]() -> mio_mesh* {
-        capi_require(result, "meshio++: result is NULL");
-        return new mio_mesh{std::move(result->mMesh.mMesh)};
-    });
+    return capi_result_take_mesh(result);
 }
 
 mio_status mio_agglomerate_result_cell_map(const mio_agglomerate_result* result, const void** data,
@@ -3123,18 +3154,11 @@ mio_tet_to_poly_result* mio_tet_to_poly(const mio_mesh* mesh, const mio_tet_to_p
 }
 
 const mio_mesh* mio_tet_to_poly_result_mesh(const mio_tet_to_poly_result* result) {
-    return capi_guarded_null<const mio_mesh>([&]() -> const mio_mesh* {
-        if (!result)
-            return nullptr;
-        return &result->mMesh;
-    });
+    return capi_result_mesh(result);
 }
 
 mio_mesh* mio_tet_to_poly_result_take_mesh(mio_tet_to_poly_result* result) {
-    return capi_guarded_mesh([&]() -> mio_mesh* {
-        capi_require(result, "meshio++: result is NULL");
-        return new mio_mesh{std::move(result->mMesh.mMesh)};
-    });
+    return capi_result_take_mesh(result);
 }
 
 mio_status mio_tet_to_poly_result_vertex_map(const mio_tet_to_poly_result* result,
@@ -3281,59 +3305,25 @@ mio_refine_result* mio_refine_ex(const mio_mesh* mesh, const mio_refine_opts* op
 }
 
 const mio_mesh* mio_refine_result_mesh(const mio_refine_result* result) {
-    return capi_guarded_null<const mio_mesh>([&]() -> const mio_mesh* {
-        if (!result)
-            return nullptr;
-        return &result->mMesh;
-    });
+    return capi_result_mesh(result);
 }
 
 mio_mesh* mio_refine_result_take_mesh(mio_refine_result* result) {
-    return capi_guarded_mesh([&]() -> mio_mesh* {
-        capi_require(result, "meshio++: result is NULL");
-        return new mio_mesh{std::move(result->mMesh.mMesh)};
-    });
+    return capi_result_take_mesh(result);
 }
 
 mio_status mio_refine_result_point_map(const mio_refine_result* result, const void** data,
                                        mio_dtype* dtype, int64_t* n) {
-    return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
-        const NDArray& a = result->mPointMap;
-        if (data)
-            *data = a.Data();
-        if (dtype)
-            *dtype = from_dtype(a.Dtype());
-        if (n)
-            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
-        return MIO_OK;
-    });
+    return capi_result_point_map(result, data, dtype, n);
 }
 
 int64_t mio_refine_result_num_cell_maps(const mio_refine_result* result) {
-    return capi_guarded_count([&]() -> int64_t {
-        capi_require(result, "meshio++: result is NULL");
-        return static_cast<int64_t>(result->mCellMaps.size());
-    });
+    return capi_result_num_cell_maps(result);
 }
 
 mio_status mio_refine_result_cell_map(const mio_refine_result* result, int64_t block,
                                       const void** data, mio_dtype* dtype, int64_t* n) {
-    return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
-        if (block < 0 || static_cast<std::size_t>(block) >= result->mCellMaps.size())
-            return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-map block index out of range");
-        const NDArray& a = result->mCellMaps[static_cast<std::size_t>(block)];
-        if (data)
-            *data = a.Data();
-        if (dtype)
-            *dtype = from_dtype(a.Dtype());
-        if (n)
-            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
-        return MIO_OK;
-    });
+    return capi_result_cell_map(result, block, data, dtype, n);
 }
 
 void mio_refine_result_free(mio_refine_result* result) {
@@ -3384,6 +3374,27 @@ mio_mesh* mio_tessellate(const mio_mesh* mesh, const mio_tessellate_opts* opts,
 
 namespace {
 
+// The options of decimate and decimate_volume, from either the positional
+// arguments or the fields of their _opts struct: the count is mTargetFaces or
+// mTargetCells, and a NULL placement is "optimal".
+extern "C++" {
+template <class TOptions>
+TOptions capi_decimate_options(double TargetRatio, std::int64_t TOptions::*pCount,
+                               std::int64_t TargetCount, double MaxError, const char* pPlacement,
+                               int PreserveBoundary, int PreserveFeatures, double FeatureAngle) {
+    TOptions options;
+    options.mTargetRatio = TargetRatio;
+    options.*pCount = TargetCount;
+    options.mMaxError = MaxError;
+    options.mPlacement =
+        meshioplusplus::decimate_placement_from_name(pPlacement ? pPlacement : "optimal");
+    options.mPreserveBoundary = PreserveBoundary != 0;
+    options.mPreserveFeatures = PreserveFeatures != 0;
+    options.mFeatureAngleDeg = FeatureAngle;
+    return options;
+}
+}  // extern "C++"
+
 mio_decimate_result* capi_decimate(const mio_mesh* pMesh,
                                    const meshioplusplus::DecimateOptions& rOptions) {
     capi_require(pMesh, "meshio++: mesh is NULL");
@@ -3405,16 +3416,10 @@ mio_decimate_result* mio_decimate(const mio_mesh* mesh, double target_ratio, int
                                   double max_error, const char* placement, int preserve_boundary,
                                   int preserve_features, double feature_angle) {
     return capi_guarded_null<mio_decimate_result>([&]() -> mio_decimate_result* {
-        meshioplusplus::DecimateOptions options;
-        options.mTargetRatio = target_ratio;
-        options.mTargetFaces = target_faces;
-        options.mMaxError = max_error;
-        options.mPlacement =
-            meshioplusplus::decimate_placement_from_name(placement ? placement : "optimal");
-        options.mPreserveBoundary = preserve_boundary != 0;
-        options.mPreserveFeatures = preserve_features != 0;
-        options.mFeatureAngleDeg = feature_angle;
-        return capi_decimate(mesh, options);
+        return capi_decimate(
+            mesh, capi_decimate_options(
+                      target_ratio, &meshioplusplus::DecimateOptions::mTargetFaces, target_faces,
+                      max_error, placement, preserve_boundary, preserve_features, feature_angle));
     });
 }
 
@@ -3435,15 +3440,10 @@ mio_decimate_result* mio_decimate_ex(const mio_mesh* mesh, const mio_decimate_op
     return capi_guarded_null<mio_decimate_result>([&]() -> mio_decimate_result* {
         capi_require(opts, "meshio++: opts is NULL");
         capi_require(mesh, "meshio++: mesh is NULL");
-        meshioplusplus::DecimateOptions options;
-        options.mTargetRatio = opts->target_ratio;
-        options.mTargetFaces = opts->target_faces;
-        options.mMaxError = opts->max_error;
-        options.mPlacement = meshioplusplus::decimate_placement_from_name(
-            opts->placement ? opts->placement : "optimal");
-        options.mPreserveBoundary = opts->preserve_boundary != 0;
-        options.mPreserveFeatures = opts->preserve_features != 0;
-        options.mFeatureAngleDeg = opts->feature_angle;
+        meshioplusplus::DecimateOptions options = capi_decimate_options(
+            opts->target_ratio, &meshioplusplus::DecimateOptions::mTargetFaces, opts->target_faces,
+            opts->max_error, opts->placement, opts->preserve_boundary, opts->preserve_features,
+            opts->feature_angle);
         options.mFrozen = capi_frozen_mask(mesh, opts->frozen, opts->num_frozen, "decimate");
         return capi_decimate(mesh, options);
     });
@@ -3452,59 +3452,25 @@ mio_decimate_result* mio_decimate_ex(const mio_mesh* mesh, const mio_decimate_op
 static_assert(sizeof(mio_decimate_opts) == 96, "mio_decimate_opts grew outside its reserved tail");
 
 const mio_mesh* mio_decimate_result_mesh(const mio_decimate_result* result) {
-    return capi_guarded_null<const mio_mesh>([&]() -> const mio_mesh* {
-        if (!result)
-            return nullptr;
-        return &result->mMesh;
-    });
+    return capi_result_mesh(result);
 }
 
 mio_mesh* mio_decimate_result_take_mesh(mio_decimate_result* result) {
-    return capi_guarded_mesh([&]() -> mio_mesh* {
-        capi_require(result, "meshio++: result is NULL");
-        return new mio_mesh{std::move(result->mMesh.mMesh)};
-    });
+    return capi_result_take_mesh(result);
 }
 
 mio_status mio_decimate_result_point_map(const mio_decimate_result* result, const void** data,
                                          mio_dtype* dtype, int64_t* n) {
-    return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
-        const NDArray& a = result->mPointMap;
-        if (data)
-            *data = a.Data();
-        if (dtype)
-            *dtype = from_dtype(a.Dtype());
-        if (n)
-            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
-        return MIO_OK;
-    });
+    return capi_result_point_map(result, data, dtype, n);
 }
 
 int64_t mio_decimate_result_num_cell_maps(const mio_decimate_result* result) {
-    return capi_guarded_count([&]() -> int64_t {
-        capi_require(result, "meshio++: result is NULL");
-        return static_cast<int64_t>(result->mCellMaps.size());
-    });
+    return capi_result_num_cell_maps(result);
 }
 
 mio_status mio_decimate_result_cell_map(const mio_decimate_result* result, int64_t block,
                                         const void** data, mio_dtype* dtype, int64_t* n) {
-    return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
-        if (block < 0 || static_cast<std::size_t>(block) >= result->mCellMaps.size())
-            return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-map block index out of range");
-        const NDArray& a = result->mCellMaps[static_cast<std::size_t>(block)];
-        if (data)
-            *data = a.Data();
-        if (dtype)
-            *dtype = from_dtype(a.Dtype());
-        if (n)
-            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
-        return MIO_OK;
-    });
+    return capi_result_cell_map(result, block, data, dtype, n);
 }
 
 int64_t mio_decimate_result_faces_removed(const mio_decimate_result* result) {
@@ -3564,16 +3530,11 @@ mio_decimate_volume_result* mio_decimate_volume(const mio_mesh* mesh, double tar
                                                 const char* placement, int preserve_boundary,
                                                 int preserve_features, double feature_angle) {
     return capi_guarded_null<mio_decimate_volume_result>([&]() -> mio_decimate_volume_result* {
-        meshioplusplus::DecimateVolumeOptions options;
-        options.mTargetRatio = target_ratio;
-        options.mTargetCells = target_cells;
-        options.mMaxError = max_error;
-        options.mPlacement =
-            meshioplusplus::decimate_placement_from_name(placement ? placement : "optimal");
-        options.mPreserveBoundary = preserve_boundary != 0;
-        options.mPreserveFeatures = preserve_features != 0;
-        options.mFeatureAngleDeg = feature_angle;
-        return capi_decimate_volume(mesh, options);
+        return capi_decimate_volume(
+            mesh, capi_decimate_options(target_ratio,
+                                        &meshioplusplus::DecimateVolumeOptions::mTargetCells,
+                                        target_cells, max_error, placement, preserve_boundary,
+                                        preserve_features, feature_angle));
     });
 }
 
@@ -3595,15 +3556,10 @@ mio_decimate_volume_result* mio_decimate_volume_ex(const mio_mesh* mesh,
     return capi_guarded_null<mio_decimate_volume_result>([&]() -> mio_decimate_volume_result* {
         capi_require(opts, "meshio++: opts is NULL");
         capi_require(mesh, "meshio++: mesh is NULL");
-        meshioplusplus::DecimateVolumeOptions options;
-        options.mTargetRatio = opts->target_ratio;
-        options.mTargetCells = opts->target_cells;
-        options.mMaxError = opts->max_error;
-        options.mPlacement = meshioplusplus::decimate_placement_from_name(
-            opts->placement ? opts->placement : "optimal");
-        options.mPreserveBoundary = opts->preserve_boundary != 0;
-        options.mPreserveFeatures = opts->preserve_features != 0;
-        options.mFeatureAngleDeg = opts->feature_angle;
+        meshioplusplus::DecimateVolumeOptions options = capi_decimate_options(
+            opts->target_ratio, &meshioplusplus::DecimateVolumeOptions::mTargetCells,
+            opts->target_cells, opts->max_error, opts->placement, opts->preserve_boundary,
+            opts->preserve_features, opts->feature_angle);
         options.mFrozen = capi_frozen_mask(mesh, opts->frozen, opts->num_frozen, "decimate_volume");
         return capi_decimate_volume(mesh, options);
     });
@@ -3613,60 +3569,26 @@ static_assert(sizeof(mio_decimate_volume_opts) == 96,
               "mio_decimate_volume_opts grew outside its reserved tail");
 
 const mio_mesh* mio_decimate_volume_result_mesh(const mio_decimate_volume_result* result) {
-    return capi_guarded_null<const mio_mesh>([&]() -> const mio_mesh* {
-        if (!result)
-            return nullptr;
-        return &result->mMesh;
-    });
+    return capi_result_mesh(result);
 }
 
 mio_mesh* mio_decimate_volume_result_take_mesh(mio_decimate_volume_result* result) {
-    return capi_guarded_mesh([&]() -> mio_mesh* {
-        capi_require(result, "meshio++: result is NULL");
-        return new mio_mesh{std::move(result->mMesh.mMesh)};
-    });
+    return capi_result_take_mesh(result);
 }
 
 mio_status mio_decimate_volume_result_point_map(const mio_decimate_volume_result* result,
                                                 const void** data, mio_dtype* dtype, int64_t* n) {
-    return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
-        const NDArray& a = result->mPointMap;
-        if (data)
-            *data = a.Data();
-        if (dtype)
-            *dtype = from_dtype(a.Dtype());
-        if (n)
-            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
-        return MIO_OK;
-    });
+    return capi_result_point_map(result, data, dtype, n);
 }
 
 int64_t mio_decimate_volume_result_num_cell_maps(const mio_decimate_volume_result* result) {
-    return capi_guarded_count([&]() -> int64_t {
-        capi_require(result, "meshio++: result is NULL");
-        return static_cast<int64_t>(result->mCellMaps.size());
-    });
+    return capi_result_num_cell_maps(result);
 }
 
 mio_status mio_decimate_volume_result_cell_map(const mio_decimate_volume_result* result,
                                                int64_t block, const void** data, mio_dtype* dtype,
                                                int64_t* n) {
-    return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
-        if (block < 0 || static_cast<std::size_t>(block) >= result->mCellMaps.size())
-            return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-map block index out of range");
-        const NDArray& a = result->mCellMaps[static_cast<std::size_t>(block)];
-        if (data)
-            *data = a.Data();
-        if (dtype)
-            *dtype = from_dtype(a.Dtype());
-        if (n)
-            *n = a.Shape().empty() ? 0 : static_cast<int64_t>(a.Shape()[0]);
-        return MIO_OK;
-    });
+    return capi_result_cell_map(result, block, data, dtype, n);
 }
 
 int64_t mio_decimate_volume_result_tets_removed(const mio_decimate_volume_result* result) {
@@ -4372,10 +4294,7 @@ mio_status mio_reorder_result_cell_perm(const mio_reorder_result* result, int64_
 }
 
 mio_mesh* mio_reorder_result_take_mesh(mio_reorder_result* result) {
-    return capi_guarded_mesh([&]() -> mio_mesh* {
-        capi_require(result, "meshio++: result is NULL");
-        return new mio_mesh{std::move(result->mMesh.mMesh)};
-    });
+    return capi_result_take_mesh(result);
 }
 
 void mio_reorder_result_free(mio_reorder_result* result) {
@@ -8751,12 +8670,9 @@ int32_t mio_mesh_cad_surface_face_status(int64_t face) {
 
 int64_t mio_mesh_cad_surface_face_reason(int64_t face, char* buf, int64_t buflen) {
     return capi_guarded_count([&]() {
-        const auto& faces = capi_mesh_cad_state().mFaces;
-        if (face < 0 || static_cast<std::size_t>(face) >= faces.size())
-            throw std::invalid_argument("meshio++: mesh_cad_surface: face index out of range");
-        if (buflen < 0)
-            throw std::invalid_argument("meshio++: negative reason buffer length");
-        return copy_string(faces[static_cast<std::size_t>(face)].mReason, buf, buflen);
+        return capi_indexed_reason(capi_mesh_cad_state().mFaces, face,
+                                   "meshio++: mesh_cad_surface: face index out of range", buf,
+                                   buflen);
     });
 }
 
@@ -8782,15 +8698,8 @@ int64_t mio_mesh_cad_surface_angle_histogram(int64_t* bins, int64_t n) {
 
 int64_t mio_mesh_cad_surface_face_size_limits(int64_t face, int64_t* edges, int64_t n) {
     return capi_guarded_count([&]() -> int64_t {
-        const auto& r_l = capi_mesh_cad_state().mSizes.mLimitedByEdges;
-        if (face < 0 || static_cast<std::size_t>(face) >= r_l.size())
-            return -1;
-        if (n < 0 || (n > 0 && !edges))
-            throw std::invalid_argument("meshio++: mesh_cad_surface: bad edges buffer");
-        const auto& r_e = r_l[static_cast<std::size_t>(face)];
-        const auto count = std::min<std::int64_t>(n, static_cast<std::int64_t>(r_e.size()));
-        std::copy(r_e.begin(), r_e.begin() + count, edges);
-        return static_cast<int64_t>(r_e.size());
+        return capi_copy_indexed_edges(capi_mesh_cad_state().mSizes.mLimitedByEdges, face, edges, n,
+                                       [](const auto& rEntry) -> const auto& { return rEntry; });
     });
 }
 
@@ -8800,15 +8709,8 @@ int64_t mio_mesh_cad_surface_num_virtual_edges(void) {
 
 int64_t mio_mesh_cad_surface_virtual_edge(int64_t index, int64_t* edges, int64_t n) {
     return capi_guarded_count([&]() -> int64_t {
-        const auto& r_v = capi_mesh_cad_state().mSizes.mVirtualEdges;
-        if (index < 0 || static_cast<std::size_t>(index) >= r_v.size())
-            return -1;
-        if (n < 0 || (n > 0 && !edges))
-            throw std::invalid_argument("meshio++: mesh_cad_surface: bad edges buffer");
-        const auto& r_c = r_v[static_cast<std::size_t>(index)];
-        const auto count = std::min<std::int64_t>(n, static_cast<std::int64_t>(r_c.size()));
-        std::copy(r_c.begin(), r_c.begin() + count, edges);
-        return static_cast<int64_t>(r_c.size());
+        return capi_copy_indexed_edges(capi_mesh_cad_state().mSizes.mVirtualEdges, index, edges, n,
+                                       [](const auto& rEntry) -> const auto& { return rEntry; });
     });
 }
 
@@ -8839,13 +8741,9 @@ mio_status mio_mesh_cad_surface_reparametrised(int64_t index, int64_t* face,
 
 int64_t mio_mesh_cad_surface_reparam_reason(int64_t index, char* buf, int64_t buflen) {
     return capi_guarded_count([&]() {
-        const auto& r_v = capi_mesh_cad_state().mExtras.mReparametrised;
-        if (index < 0 || static_cast<std::size_t>(index) >= r_v.size())
-            throw std::invalid_argument(
-                "meshio++: mesh_cad_surface: reparametrised index out of range");
-        if (buflen < 0)
-            throw std::invalid_argument("meshio++: negative reason buffer length");
-        return copy_string(r_v[static_cast<std::size_t>(index)].mReason, buf, buflen);
+        return capi_indexed_reason(capi_mesh_cad_state().mExtras.mReparametrised, index,
+                                   "meshio++: mesh_cad_surface: reparametrised index out of range",
+                                   buf, buflen);
     });
 }
 
@@ -8875,27 +8773,17 @@ mio_status mio_mesh_cad_surface_merged_face(int64_t index, int64_t* sliver, int6
 
 int64_t mio_mesh_cad_surface_merged_face_edges(int64_t index, int64_t* edges, int64_t n) {
     return capi_guarded_count([&]() -> int64_t {
-        const auto& r_v = capi_mesh_cad_state().mExtras.mMergedFaces;
-        if (index < 0 || static_cast<std::size_t>(index) >= r_v.size())
-            return -1;
-        if (n < 0 || (n > 0 && !edges))
-            throw std::invalid_argument("meshio++: mesh_cad_surface: bad edges buffer");
-        const auto& r_e = r_v[static_cast<std::size_t>(index)].mEdges;
-        const auto count = std::min<std::int64_t>(n, static_cast<std::int64_t>(r_e.size()));
-        std::copy(r_e.begin(), r_e.begin() + count, edges);
-        return static_cast<int64_t>(r_e.size());
+        return capi_copy_indexed_edges(
+            capi_mesh_cad_state().mExtras.mMergedFaces, index, edges, n,
+            [](const auto& rEntry) -> const auto& { return rEntry.mEdges; });
     });
 }
 
 int64_t mio_mesh_cad_surface_merged_face_reason(int64_t index, char* buf, int64_t buflen) {
     return capi_guarded_count([&]() {
-        const auto& r_v = capi_mesh_cad_state().mExtras.mMergedFaces;
-        if (index < 0 || static_cast<std::size_t>(index) >= r_v.size())
-            throw std::invalid_argument(
-                "meshio++: mesh_cad_surface: merged face index out of range");
-        if (buflen < 0)
-            throw std::invalid_argument("meshio++: negative reason buffer length");
-        return copy_string(r_v[static_cast<std::size_t>(index)].mReason, buf, buflen);
+        return capi_indexed_reason(capi_mesh_cad_state().mExtras.mMergedFaces, index,
+                                   "meshio++: mesh_cad_surface: merged face index out of range",
+                                   buf, buflen);
     });
 }
 
@@ -9651,13 +9539,9 @@ mio_status mio_mesh_cad_surface_lopped_corner(int64_t index, int64_t* face, int6
 
 int64_t mio_mesh_cad_surface_lopped_corner_reason(int64_t index, char* buf, int64_t buflen) {
     return capi_guarded_count([&]() {
-        const auto& r_v = capi_mesh_cad_state().mExtras.mLoppedCorners;
-        if (index < 0 || static_cast<std::size_t>(index) >= r_v.size())
-            throw std::invalid_argument(
-                "meshio++: mesh_cad_surface: lopped corner index out of range");
-        if (buflen < 0)
-            throw std::invalid_argument("meshio++: negative reason buffer length");
-        return copy_string(r_v[static_cast<std::size_t>(index)].mReason, buf, buflen);
+        return capi_indexed_reason(capi_mesh_cad_state().mExtras.mLoppedCorners, index,
+                                   "meshio++: mesh_cad_surface: lopped corner index out of range",
+                                   buf, buflen);
     });
 }
 
