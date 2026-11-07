@@ -1,68 +1,35 @@
 from .._decimate_volume import decimate_volume
 from .._helpers import read, write
-from ._common import add_io_args
+from ._common import add_decimate_args, decimate_summary
+
+_HELP = {
+    "in": "tet mesh file to be read from",
+    "ratio": "fraction of the tets to KEEP, in (0, 1]",
+    "count": "absolute tet count to stop at (within one collapse)",
+    "max_error": "collapse only while the cheapest boundary-touching quadric "
+    "error is at most this",
+    "placement": (
+        "where the surviving vertex goes: the quadric minimizer (midpoint "
+        "when ill-conditioned or purely interior), the edge midpoint, or "
+        "the cheaper endpoint (default: optimal)"
+    ),
+    "features": "allow boundary feature vertices (sharp corners/creases) to collapse",
+    "angle": "degrees between boundary-triangle normals above which a vertex "
+    "is a feature (default: 30)",
+}
+
+_BOUNDARY = (
+    ("--preserve-boundary",),
+    {
+        "action": "store_true",
+        "help": "pin every boundary vertex outright, reproducing `decimate`'s own "
+        "default instead of letting boundary vertices participate",
+    },
+)
 
 
 def add_args(parser):
-    add_io_args(
-        parser,
-        "decimated mesh to be written to",
-        in_help="tet mesh file to be read from",
-    )
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument(
-        "--ratio",
-        type=float,
-        default=None,
-        help="fraction of the tets to KEEP, in (0, 1]",
-    )
-    group.add_argument(
-        "--target-cells",
-        type=int,
-        default=None,
-        help="absolute tet count to stop at (within one collapse)",
-    )
-    group.add_argument(
-        "--max-error",
-        type=float,
-        default=None,
-        help="collapse only while the cheapest boundary-touching quadric "
-        "error is at most this",
-    )
-    parser.add_argument(
-        "--placement",
-        choices=["optimal", "midpoint", "endpoint"],
-        default="optimal",
-        help=(
-            "where the surviving vertex goes: the quadric minimizer (midpoint "
-            "when ill-conditioned or purely interior), the edge midpoint, or "
-            "the cheaper endpoint (default: optimal)"
-        ),
-    )
-    parser.add_argument(
-        "--preserve-boundary",
-        action="store_true",
-        help="pin every boundary vertex outright, reproducing `decimate`'s own "
-        "default instead of letting boundary vertices participate",
-    )
-    parser.add_argument(
-        "--no-preserve-features",
-        dest="preserve_features",
-        action="store_false",
-        help="allow boundary feature vertices (sharp corners/creases) to collapse",
-    )
-    parser.add_argument(
-        "--feature-angle",
-        type=float,
-        default=30.0,
-        help="degrees between boundary-triangle normals above which a vertex "
-        "is a feature (default: 30)",
-    )
-    parser.add_argument(
-        "--quiet",
-        action="store_true",
-        help="do not print the collapse summary",
-    )
+    add_decimate_args(parser, "cells", _HELP, _BOUNDARY)
 
 
 def decimate_volume_cmd(args):
@@ -79,13 +46,6 @@ def decimate_volume_cmd(args):
         return_report=True,
     )
     if not args.quiet:
-        tets_out = sum(len(cb.data) for cb in out.cells)
-        print(
-            f"decimated to {tets_out} tets "
-            f"({report['tets_removed']} removed, "
-            f"{report['points_removed']} points removed, "
-            f"{report['collapses_rejected']} collapses rejected, "
-            f"max error {report['max_error_applied']:.6g})"
-        )
+        print(decimate_summary(out, report, "tets", "tets_removed"))
     write(args.outfile, out, file_format=args.output_format)
     return 0

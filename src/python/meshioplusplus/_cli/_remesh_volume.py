@@ -1,6 +1,6 @@
 from .._helpers import read, write
 from .._remesh_volume import remesh_volume
-from ._common import add_io_args
+from ._common import add_box_args, add_io_args, parse_bounds, parse_ints
 
 
 def add_args(parser):
@@ -23,21 +23,12 @@ def add_args(parser):
         help="cubic cell size of the root lattice (exactly one of "
         "--resolution/--cell-size)",
     )
-    parser.add_argument(
-        "--bounds",
-        type=str,
-        default=None,
-        help="'xlo,ylo,zlo,xhi,yhi,zhi'; the mesh's bounding box by default "
-        "(negatives need --bounds=)",
-    )
-    parser.add_argument(
-        "--padding", type=float, default=0.0, help="grow the box by this on every side"
-    )
-    parser.add_argument(
-        "--padding-relative",
-        type=float,
-        default=0.1,
-        help="grow the box by this fraction of its diagonal on every side (default: 0.1)",
+    add_box_args(
+        parser,
+        padding_relative=0.1,
+        padding_relative_help=(
+            "grow the box by this fraction of its diagonal on every side (default: 0.1)"
+        ),
     )
     parser.add_argument(
         "--max-cells",
@@ -81,18 +72,8 @@ def add_args(parser):
 def remesh_volume_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
 
-    resolution = None
-    if args.resolution is not None:
-        resolution = [int(x) for x in args.resolution.split(",")]
-        if len(resolution) != 3:
-            raise ValueError("remesh-volume: --resolution expects 'nx,ny,nz'")
-    bounds = None
-    if args.bounds is not None:
-        bounds = [float(x) for x in args.bounds.split(",")]
-        if len(bounds) != 6:
-            raise ValueError(
-                "remesh-volume: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'"
-            )
+    resolution = parse_ints(args.resolution, "remesh-volume", "--resolution")
+    bounds = parse_bounds(args.bounds, "remesh-volume")
 
     out, report = remesh_volume(
         mesh,
