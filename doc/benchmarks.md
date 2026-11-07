@@ -981,6 +981,27 @@ A series chunk is one step's rows, capped at 4 MiB, so the parallel path is only
 
 One thread runs the same compression on the caller, which is the work the `H5Dwrite` path did; below about 8 MiB per array and step there is nothing to spread.
 
+### Link-time optimisation
+
+Roadmap 5.12.3. `-DMESHIOPLUSPLUS_ENABLE_LTO=ON` sets `INTERPROCEDURAL_OPTIMIZATION` for every target of the tree (GCC 13.3, `-flto=auto`). It stays **off by default**. A SEQ tree with it and one without (no HDF5, no OpenCASCADE, the instruction gate's configuration) were compared:
+
+- **Output**: every row of `meshioplusplus_bench_ops` (265 at tiers S and M) has the same digest in both.
+- **Size**: the native CLI's text goes from 23.1 to 15.9 MB and `meshioplusplus_bench_ops`' from 21.4 to 13.6 MB, about a third less. The full LTO build of both took 6.5 minutes on 4 cores.
+- **Speed**: mixed. Over the rows above 10 ms, two interleaved rounds, one thread, the geometric mean of LTO's time over the plain build's is 1.017 at tier S and 0.974 at tier M, and single rows move both ways by 20% to 60%. Cachegrind separates the real changes from the noise:
+
+| Row (tier S) | Instructions, plain | With LTO | Ratio |
+| --- | ---: | ---: | ---: |
+| `read_vtk_ascii` | 11.3 M | 15.9 M | 1.40 |
+| `mesh_cad_surface_untangle` | 269 M | 331 M | 1.23 |
+| `gradient` | 203 M | 231 M | 1.14 |
+| `read_ugrid` | 13.4 M | 14.5 M | 1.08 |
+| `smooth_volume` | 942 M | 965 M | 1.02 |
+| `split` | 9.64 M | 9.67 M | 1.00 |
+| `hausdorff` | 154 M | 152 M | 0.99 |
+| `decimate` | 43.2 M | 40.6 M | 0.94 |
+
+Cross-unit inlining changes which loops GCC unrolls and vectorises, and on this core it costs about as much as it saves. A default would also need the instruction-count baseline re-recorded under it, and every consumer of the installed C++ API to accept LTO objects. The option is there for a builder who wants the smaller binaries; the wheels and the release binaries do not set it.
+
 ### Compression outside the library lock
 
 Roadmap 5.8.2, first step. The process-wide lock that serialises HDF5 and the other non-thread-safe libraries ([threads and the GIL](./architecture.md#threads-and-the-gil)) is held for a whole read or write, so the deflate of one file's datasets kept every other thread out of HDF5. `detail::LibraryUnlock` gives every level the calling thread holds back for a stretch that makes no library call, and takes them again after; the parallel compress of `h5u_write_deflate_chunks` (whole-dataset writes and appended rows) and the parallel inflate of `h5u_read_deflate_chunks` run inside one. The invariant, no two threads inside the libraries, is unchanged: the chunks are read and written under the lock, only zlib runs outside it. `LibraryLock.UnlockReleasesEveryLevelAndRestoresThem` and `LibraryLock.ConcurrentGzipVtkhdfRoundTripsWithTheLockGivenUp` (eight threads, multi-chunk gzip datasets) cover it.
