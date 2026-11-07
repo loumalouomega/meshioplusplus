@@ -219715,15 +219715,17 @@ std::array<detail::Vec3, 4> cons_oriented_tet(const detail::Vec3 v[4]) {
 // new capping face. Works unmodified for the 2D triangle-triangle clip too
 // (called with pNewPts == nullptr there, since a planar 2D clip needs no
 // capping step).
-std::vector<detail::Vec3> cons_clip_ring(const std::vector<detail::Vec3>& rPoly,
-                                         const detail::Vec3& rPlanePoint,
-                                         const detail::Vec3& rPlaneNormal,
-                                         std::vector<detail::Vec3>* pNewPts, double EpsSide = 0.0) {
-    if (rPoly.empty())
-        return {};
-    const std::size_t n = rPoly.size();
-    std::vector<detail::Vec3> out;
-    out.reserve(n + 1);
+//
+// The ring `pPoly[0, n)` is clipped into `rOut` (cleared first, never aliasing
+// the input), so a caller reuses its buffers across clips.
+void cons_clip_ring(const detail::Vec3* pPoly, std::size_t n, const detail::Vec3& rPlanePoint,
+                    const detail::Vec3& rPlaneNormal, std::vector<detail::Vec3>& rOut,
+                    std::vector<detail::Vec3>* pNewPts, double EpsSide = 0.0) {
+    rOut.clear();
+    if (n == 0)
+        return;
+    const detail::Vec3* rPoly = pPoly;
+    std::vector<detail::Vec3>& out = rOut;
     auto s = [&](const detail::Vec3& p) {
         return detail::vec3_dot(detail::vec3_sub(p, rPlanePoint), rPlaneNormal);
     };
@@ -219755,7 +219757,6 @@ std::vector<detail::Vec3> cons_clip_ring(const std::vector<detail::Vec3>& rPoly,
         if (cur_in)
             out.push_back(cur);
     }
-    return out;
 }
 
 // Exact overlap area of two triangles, in the xy-plane (z ignored) -- the
@@ -219777,13 +219778,15 @@ double cons_clip_triangle_triangle_area(const detail::Vec3 tgtIn[3], const detai
     const std::array<detail::Vec3, 3> src = ccw(srcIn);
 
     std::vector<detail::Vec3> poly{tgt[0], tgt[1], tgt[2]};
+    std::vector<detail::Vec3> clipped;
     for (int e = 0; e < 3 && !poly.empty(); ++e) {
         const detail::Vec3& a = src[static_cast<std::size_t>(e)];
         const detail::Vec3& b = src[static_cast<std::size_t>((e + 1) % 3)];
         // Left of a->b (CCW inside) written as a plane test: s <= 0 iff
         // cross_z(b - a, p - a) >= 0.
         const detail::Vec3 normal{b[1] - a[1], a[0] - b[0], 0.0};
-        poly = cons_clip_ring(poly, a, normal, nullptr);
+        cons_clip_ring(poly.data(), poly.size(), a, normal, clipped, nullptr);
+        poly.swap(clipped);
     }
     if (poly.size() < 3)
         return 0.0;
@@ -219797,6 +219800,17 @@ double cons_clip_triangle_triangle_area(const detail::Vec3 tgtIn[3], const detai
 // clip's new boundary chord is capped with a fan-triangulated, angle-sorted
 // polygon -- never a general polyhedron-polyhedron clipper. See the header
 // doc comment for the full algorithm description.
+// The buffers of one thread's tetra-tetra clips.
+struct ConsClipScratch {
+    std::vector<std::array<detail::Vec3, 3>> mTris;
+    std::vector<std::array<detail::Vec3, 3>> mKept;
+    std::vector<detail::Vec3> mChord;
+    std::vector<detail::Vec3> mNewPts;
+    std::vector<detail::Vec3> mRing;
+    std::vector<detail::Vec3> mUniq;
+    std::vector<std::pair<double, std::size_t>> mOrder;
+};
+
 double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::Vec3 srcIn[4]) {
     // Recentre on the source tet's own corner average before any arithmetic
     // -- poly_measure's own numerical-stability lesson: this keeps the final
@@ -219831,8 +219845,18 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
     // valid for a positively-oriented tetra.
     static constexpr int kFaces[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
 
-    std::vector<std::array<detail::Vec3, 3>> tris;
-    tris.reserve(4);
+    // Scratch reused across the calls of a thread (the clip runs once per
+    // candidate pair): only the allocations go, every value is computed as
+    // before.
+    thread_local ConsClipScratch tScratch;
+    auto& tris = tScratch.mTris;
+    auto& kept = tScratch.mKept;
+    auto& chord = tScratch.mChord;
+    auto& new_pts = tScratch.mNewPts;
+    auto& ring = tScratch.mRing;
+    auto& uniq = tScratch.mUniq;
+    auto& order = tScratch.mOrder;
+    tris.clear();
     for (const auto& f : kFaces)
         tris.push_back({src[static_cast<std::size_t>(f[0])], src[static_cast<std::size_t>(f[1])],
                         src[static_cast<std::size_t>(f[2])]});
@@ -219857,18 +219881,17 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
             for (const detail::Vec3& p : t)
                 cuts = cuts || side(p) > eps_side;
 
-        std::vector<std::array<detail::Vec3, 3>> kept;
-        std::vector<detail::Vec3> chord;
+        kept.clear();
+        chord.clear();
         for (const auto& t : tris) {
-            std::vector<detail::Vec3> new_pts;
-            const std::vector<detail::Vec3> ring =
-                cons_clip_ring({t[0], t[1], t[2]}, p0, normal, &new_pts, eps_side);
+            new_pts.clear();
+            cons_clip_ring(t.data(), 3, p0, normal, ring, &new_pts, eps_side);
             for (const detail::Vec3& p : new_pts)
                 chord.push_back(p);
             for (std::size_t i = 1; i + 1 < ring.size(); ++i)
                 kept.push_back({ring[0], ring[i], ring[i + 1]});
         }
-        tris = std::move(kept);
+        tris.swap(kept);
         if (!cuts)
             continue;  // nothing removed: no hole, and capping would double a face
         // The hole's boundary also runs through every kept vertex that lies ON
@@ -219884,7 +219907,7 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
         // the dedup'd chord, angle-sorted around the cutting plane's own 2D
         // basis and fan-triangulated -- always valid, since the cap of a
         // convex polytope clipped by one more plane is itself convex.
-        std::vector<detail::Vec3> uniq;
+        uniq.clear();
         for (const detail::Vec3& p : chord) {
             bool dup = false;
             for (const detail::Vec3& q : uniq) {
@@ -219909,7 +219932,7 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
                 detail::vec3_sub(arbitrary, detail::vec3_scale(w, detail::vec3_dot(arbitrary, w))));
             const detail::Vec3 v = detail::vec3_cross(w, u);
 
-            std::vector<std::pair<double, std::size_t>> order(uniq.size());
+            order.resize(uniq.size());
             for (std::size_t i = 0; i < uniq.size(); ++i) {
                 const detail::Vec3 d = detail::vec3_sub(uniq[i], cc);
                 order[i] = {std::atan2(detail::vec3_dot(d, v), detail::vec3_dot(d, u)), i};
@@ -226143,6 +226166,33 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
     }
 
     // --- phase 8: the SERIAL greedy loop --------------------------------------
+    // Guard 6's "before" volume of a tet, kept until one of its corners moves:
+    // a commit moves only the survivor, so the survivor's tets are dropped
+    // from it. The same function of the same corners, so the same bits.
+    std::vector<double> before_volume(num_tets, 0.0);
+    std::vector<std::uint8_t> before_known(num_tets, 0);
+    const auto tet_volume_now = [&](std::int64_t t) {
+        const auto ut = static_cast<std::size_t>(t);
+        if (!before_known[ut]) {
+            before_volume[ut] = dv_tet_volume(xyz, tet_conn, t, -1, -1, nullptr);
+            before_known[ut] = 1;
+        }
+        return before_volume[ut];
+    };
+    // The vertex-link rings (decim_corner_ring over a vertex's tets), kept
+    // until the vertex's tets change: a commit changes them for the two
+    // endpoints, every corner of a tet that dies, and every corner of a tet
+    // that moves from `r` to `s` (all in the survivor's new ring).
+    std::vector<std::vector<std::int64_t>> ring_cache(n);
+    std::vector<std::uint8_t> ring_known(n, 0);
+    const auto ring_of = [&](std::int64_t v) -> const std::vector<std::int64_t>& {
+        const auto uv = static_cast<std::size_t>(v);
+        if (!ring_known[uv]) {
+            ring_cache[uv] = detail::decim_corner_ring<4>(vtets[uv], tet_conn, v);
+            ring_known[uv] = 1;
+        }
+        return ring_cache[uv];
+    };
     DecimateVolumeResult result;
     std::int64_t alive_tets = static_cast<std::int64_t>(num_tets);
     while (true) {
@@ -226179,10 +226229,8 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
         // Guard 2: the vertex-link condition, exact set equality.
         {
-            const std::vector<std::int64_t> link_a =
-                detail::decim_corner_ring<4>(vtets[static_cast<std::size_t>(a)], tet_conn, a);
-            const std::vector<std::int64_t> link_b =
-                detail::decim_corner_ring<4>(vtets[static_cast<std::size_t>(b)], tet_conn, b);
+            const std::vector<std::int64_t>& link_a = ring_of(a);
+            const std::vector<std::int64_t>& link_b = ring_of(b);
             std::vector<std::int64_t> link_ab;
             link_ab.reserve(shared.size() * 2);
             for (std::int64_t t : shared) {
@@ -226273,7 +226321,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
         for (std::int64_t t : vtets[static_cast<std::size_t>(a)]) {
             if (std::binary_search(shared.begin(), shared.end(), t))
                 continue;
-            const double before = dv_tet_volume(xyz, tet_conn, t, -1, -1, nullptr);
+            const double before = tet_volume_now(t);
             const double after = dv_tet_volume(xyz, tet_conn, t, a, b, placed.mX);
             if (dv_tet_inverts(before, after)) {
                 flips = true;
@@ -226284,7 +226332,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
             for (std::int64_t t : vtets[static_cast<std::size_t>(b)]) {
                 if (std::binary_search(shared.begin(), shared.end(), t))
                     continue;
-                const double before = dv_tet_volume(xyz, tet_conn, t, -1, -1, nullptr);
+                const double before = tet_volume_now(t);
                 const double after = dv_tet_volume(xyz, tet_conn, t, a, b, placed.mX);
                 if (dv_tet_inverts(before, after)) {
                     flips = true;
@@ -226302,9 +226350,17 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
         detail::decim_commit_blend(xyz, quads, float_data, placed.mX, s, r);
 
+        for (std::int64_t t : shared)
+            for (int k = 0; k < 4; ++k)
+                ring_known[static_cast<std::size_t>(
+                    tet_conn[static_cast<std::size_t>(t) * 4 + static_cast<std::size_t>(k)])] = 0;
+        ring_known[static_cast<std::size_t>(s)] = 0;
+        ring_known[static_cast<std::size_t>(r)] = 0;
         alive_tets -= static_cast<std::int64_t>(shared.size());
         result.mTetsRemoved += static_cast<std::int64_t>(shared.size());
         detail::decim_kill_and_migrate<4>(tet_conn, vtets, tet_alive, shared, s, r);
+        for (std::int64_t t : vtets[static_cast<std::size_t>(s)])
+            before_known[static_cast<std::size_t>(t)] = 0;
 
         // Kill the shared boundary faces, then migrate r's remaining alive
         // boundary faces onto s (decimate.cpp's own vfaces/face_alive commit
@@ -226321,8 +226377,9 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
             result.mMaxErrorApplied = std::max(result.mMaxErrorApplied, score);
 
         // Re-score the survivor's remaining edges via its updated link.
-        const std::vector<std::int64_t> link_s =
-            detail::decim_corner_ring<4>(vtets[static_cast<std::size_t>(s)], tet_conn, s);
+        const std::vector<std::int64_t>& link_s = ring_of(s);
+        for (std::int64_t w : link_s)
+            ring_known[static_cast<std::size_t>(w)] = 0;
         for (std::int64_t w : link_s) {
             if (pinned[static_cast<std::size_t>(s)] && pinned[static_cast<std::size_t>(w)])
                 continue;

@@ -412,6 +412,33 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
     }
 
     // --- phase 8: the SERIAL greedy loop --------------------------------------
+    // Guard 6's "before" volume of a tet, kept until one of its corners moves:
+    // a commit moves only the survivor, so the survivor's tets are dropped
+    // from it. The same function of the same corners, so the same bits.
+    std::vector<double> before_volume(num_tets, 0.0);
+    std::vector<std::uint8_t> before_known(num_tets, 0);
+    const auto tet_volume_now = [&](std::int64_t t) {
+        const auto ut = static_cast<std::size_t>(t);
+        if (!before_known[ut]) {
+            before_volume[ut] = dv_tet_volume(xyz, tet_conn, t, -1, -1, nullptr);
+            before_known[ut] = 1;
+        }
+        return before_volume[ut];
+    };
+    // The vertex-link rings (decim_corner_ring over a vertex's tets), kept
+    // until the vertex's tets change: a commit changes them for the two
+    // endpoints, every corner of a tet that dies, and every corner of a tet
+    // that moves from `r` to `s` (all in the survivor's new ring).
+    std::vector<std::vector<std::int64_t>> ring_cache(n);
+    std::vector<std::uint8_t> ring_known(n, 0);
+    const auto ring_of = [&](std::int64_t v) -> const std::vector<std::int64_t>& {
+        const auto uv = static_cast<std::size_t>(v);
+        if (!ring_known[uv]) {
+            ring_cache[uv] = detail::decim_corner_ring<4>(vtets[uv], tet_conn, v);
+            ring_known[uv] = 1;
+        }
+        return ring_cache[uv];
+    };
     DecimateVolumeResult result;
     std::int64_t alive_tets = static_cast<std::int64_t>(num_tets);
     while (true) {
@@ -448,10 +475,8 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
         // Guard 2: the vertex-link condition, exact set equality.
         {
-            const std::vector<std::int64_t> link_a =
-                detail::decim_corner_ring<4>(vtets[static_cast<std::size_t>(a)], tet_conn, a);
-            const std::vector<std::int64_t> link_b =
-                detail::decim_corner_ring<4>(vtets[static_cast<std::size_t>(b)], tet_conn, b);
+            const std::vector<std::int64_t>& link_a = ring_of(a);
+            const std::vector<std::int64_t>& link_b = ring_of(b);
             std::vector<std::int64_t> link_ab;
             link_ab.reserve(shared.size() * 2);
             for (std::int64_t t : shared) {
@@ -542,7 +567,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
         for (std::int64_t t : vtets[static_cast<std::size_t>(a)]) {
             if (std::binary_search(shared.begin(), shared.end(), t))
                 continue;
-            const double before = dv_tet_volume(xyz, tet_conn, t, -1, -1, nullptr);
+            const double before = tet_volume_now(t);
             const double after = dv_tet_volume(xyz, tet_conn, t, a, b, placed.mX);
             if (dv_tet_inverts(before, after)) {
                 flips = true;
@@ -553,7 +578,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
             for (std::int64_t t : vtets[static_cast<std::size_t>(b)]) {
                 if (std::binary_search(shared.begin(), shared.end(), t))
                     continue;
-                const double before = dv_tet_volume(xyz, tet_conn, t, -1, -1, nullptr);
+                const double before = tet_volume_now(t);
                 const double after = dv_tet_volume(xyz, tet_conn, t, a, b, placed.mX);
                 if (dv_tet_inverts(before, after)) {
                     flips = true;
@@ -571,9 +596,17 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
         detail::decim_commit_blend(xyz, quads, float_data, placed.mX, s, r);
 
+        for (std::int64_t t : shared)
+            for (int k = 0; k < 4; ++k)
+                ring_known[static_cast<std::size_t>(
+                    tet_conn[static_cast<std::size_t>(t) * 4 + static_cast<std::size_t>(k)])] = 0;
+        ring_known[static_cast<std::size_t>(s)] = 0;
+        ring_known[static_cast<std::size_t>(r)] = 0;
         alive_tets -= static_cast<std::int64_t>(shared.size());
         result.mTetsRemoved += static_cast<std::int64_t>(shared.size());
         detail::decim_kill_and_migrate<4>(tet_conn, vtets, tet_alive, shared, s, r);
+        for (std::int64_t t : vtets[static_cast<std::size_t>(s)])
+            before_known[static_cast<std::size_t>(t)] = 0;
 
         // Kill the shared boundary faces, then migrate r's remaining alive
         // boundary faces onto s (decimate.cpp's own vfaces/face_alive commit
@@ -590,8 +623,9 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
             result.mMaxErrorApplied = std::max(result.mMaxErrorApplied, score);
 
         // Re-score the survivor's remaining edges via its updated link.
-        const std::vector<std::int64_t> link_s =
-            detail::decim_corner_ring<4>(vtets[static_cast<std::size_t>(s)], tet_conn, s);
+        const std::vector<std::int64_t>& link_s = ring_of(s);
+        for (std::int64_t w : link_s)
+            ring_known[static_cast<std::size_t>(w)] = 0;
         for (std::int64_t w : link_s) {
             if (pinned[static_cast<std::size_t>(s)] && pinned[static_cast<std::size_t>(w)])
                 continue;

@@ -981,6 +981,19 @@ A series chunk is one step's rows, capped at 4 MiB, so the parallel path is only
 
 One thread runs the same compression on the caller, which is the work the `H5Dwrite` path did; below about 8 MiB per array and step there is nothing to spread.
 
+### `decimate_volume` and `conservative_interpolate` rows
+
+Roadmap 5.1.2. The two operations had no row in `meshioplusplus_bench_ops` because they were too slow for the sweep. Both were profiled at tier S under Callgrind before the rows were added; each change below leaves the rows' digests unchanged on SEQ and THREADS at one and four threads (tiers S and M for `conservative_interpolate`, S for `decimate_volume`), and `decimate_volume`'s output is also byte-identical before and after on boxes of 6, 9, 12 and 14 cells a side.
+
+- **`decimate_volume`** spent 35% of its instructions on the inversion guard's "before" volumes and 30% rebuilding the link ring of each endpoint on every attempt. A tet's volume is now kept until one of its corners moves (a commit moves only the survivor), and a vertex's ring until its tets change (the endpoints, the corners of the tets that die and the survivor's new ring). Tier S goes from 1.48 to 0.86 s (SEQ).
+- **Why it still grows far faster than the cell count.** The greedy order collapses onto one survivor again and again: on a box of 16 cells a side (24,576 tetrahedra) one vertex ends with 696 tets around it against 24 in the input, and every attempt on it walks that whole star, with 234,410 rejected collapses for 12,290 tets removed. Box sides 12, 14, 16 took 1.5, 22.6 and 110 s before, 0.96 and 10.3 s (12, 14) after. Bounding the star (a valence cap, or a priority that penalises a growing star) would change which collapses happen; that is a behaviour change for its own entry, so the row runs at tier S only.
+- **`conservative_interpolate`** grows linearly (15.6x the cells, 13.9x the time from S to M) but allocated in every tetra-tetra clip: about a third of its instructions were `malloc` and `free`. The clip now reuses per-thread buffers, with every value computed as before. Tier S goes from 0.60 to 0.29 s and tier M from 12.2 to 5.75 s (SEQ; 1.6 s on four threads). The row runs at tiers S and M. A box-separation reject before the clip was tried and dropped: on these meshes nearly every candidate the grid returns has a box touching the target's, so it skipped almost nothing.
+
+| Row (tier S, SEQ) | Before | After | Instructions |
+| --- | ---: | ---: | ---: |
+| `decimate_volume` | 1.48 s | 0.86 s | 8.89 G |
+| `conservative_interpolate` | 0.60 s | 0.29 s | 3.14 G |
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.

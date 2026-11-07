@@ -87,6 +87,8 @@
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/operations/decimate_volume.hpp"
+#include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
@@ -1062,9 +1064,27 @@ int main(int argc, char** argv) {
         row("compute_curvature",
             [&](MeshDigest* pD) { of(pD, mio::compute_curvature(surface).mMesh); });
         // Rows for operations that had none (roadmap 5.1.2). `decimate_volume`
-        // and `conservative_interpolate` have none yet: both grow far faster than
-        // the cell count (over 17 min and about 3 s at tier M and S), so a row
-        // here would stall the sweep.
+        // runs at tier S only: its greedy order grows one vertex's star to
+        // hundreds of tets, and every attempt on it walks the whole star, so
+        // it grows far faster than the cell count (10 s at 16,464 tets, over
+        // 17 min at tier M; benchmarks.md). `conservative_interpolate` grows
+        // linearly but costs about 65 us a target tet, so it stops at tier M.
+        if (tier == "S")
+            row("decimate_volume", [&](MeshDigest* pD) {
+                mio::DecimateVolumeOptions o;
+                o.mTargetRatio = 0.5;
+                auto r = mio::decimate_volume(volume, o);
+                of(pD, r.mMesh);
+                if (pD)
+                    pD->Array(r.mPointMap);
+            });
+        // The field of `with_field` carried onto the cube coarsened by half.
+        const BenchLazyMesh coarse_cube(
+            [&] { return bench_ops_tet_cube(std::max<std::size_t>(2, n / 2)); });
+        if (tier == "S" || tier == "M")
+            row("conservative_interpolate", [&](MeshDigest* pD) {
+                of(pD, mio::conservative_interpolate(with_field, coarse_cube));
+            });
         const BenchLazyMesh shifted([&] {
             return bench_ops_moved(surface, [](std::size_t, double* pP) {
                 pP[0] += 0.31;

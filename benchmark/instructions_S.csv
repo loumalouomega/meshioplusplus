@@ -64,6 +64,8 @@ undo_green,10368,15049763
 hessian,10368,121213855
 compute_normals,10368,3266728
 compute_curvature,10368,3391698
+decimate_volume,10368,8894142325
+conservative_interpolate,10368,3136315481
 find_intersections,10368,7178351
 tet_to_poly,10368,254844851
 poly_to_tet,10368,186591311
