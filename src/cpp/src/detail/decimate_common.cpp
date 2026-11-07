@@ -26,6 +26,7 @@
 
 // Project includes (private, not installed)
 #include "decimate_shared.hpp"
+#include "math_utils.hpp"
 #include "slot_runs.hpp"
 
 namespace meshioplusplus {
@@ -186,24 +187,13 @@ bool decim_quadric_optimal_point(const double q[10], const double pFallback[3], 
     // bvec = (q3, q6, q8), via the cofactor (adjugate) form. On an exactly
     // planar patch A is singular by construction, so the fallback is the hot
     // path there -- expected, not a defect.
-    const double c00 = q[4] * q[7] - q[5] * q[5];
-    const double c01 = q[2] * q[5] - q[1] * q[7];
-    const double c02 = q[1] * q[5] - q[2] * q[4];
-    const double det = q[0] * c00 + q[1] * c01 + q[2] * c02;
-    double scale = std::abs(q[0]);
-    scale = std::max(scale, std::abs(q[1]));
-    scale = std::max(scale, std::abs(q[2]));
-    scale = std::max(scale, std::abs(q[4]));
-    scale = std::max(scale, std::abs(q[5]));
-    scale = std::max(scale, std::abs(q[7]));
-    if (std::abs(det) > 1e-12 * (scale * scale * scale)) {
-        const double c11 = q[0] * q[7] - q[2] * q[2];
-        const double c12 = q[1] * q[2] - q[0] * q[5];
-        const double c22 = q[0] * q[4] - q[1] * q[1];
-        const double inv = 1.0 / det;
-        pOut[0] = -(c00 * q[3] + c01 * q[6] + c02 * q[8]) * inv;
-        pOut[1] = -(c01 * q[3] + c11 * q[6] + c12 * q[8]) * inv;
-        pOut[2] = -(c02 * q[3] + c12 * q[6] + c22 * q[8]) * inv;
+    // The solve returns (adj A . bvec) / det; negating that product rounds as
+    // the copy's -(adj A . bvec) * inv did, zero signs included.
+    const double bvec[3] = {q[3], q[6], q[8]};
+    if (MathUtils::SolveSymmetric3(q[0], q[1], q[2], q[4], q[5], q[7], bvec, pOut)) {
+        pOut[0] = -pOut[0];
+        pOut[1] = -pOut[1];
+        pOut[2] = -pOut[2];
         return true;
     }
     pOut[0] = pFallback[0];

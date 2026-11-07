@@ -42,6 +42,7 @@
 #include "../detail/lsq_fit.hpp"
 #include "../detail/primitive_geom.hpp"
 #include "../detail/surface_rings.hpp"
+#include "../detail/math_utils.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -70,12 +71,8 @@ struct FpFit {
     double mFraction = 0.0;
 };
 
-double fp_dot(const double* pA, const double* pB) {
-    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
-}
-
 void fp_normalize(double* pV) {
-    const double len = std::sqrt(fp_dot(pV, pV));
+    const double len = std::sqrt(detail::MathUtils::Dot(pV, pV));
     if (len > 0.0)
         for (int k = 0; k < 3; ++k)
             pV[k] /= len;
@@ -192,12 +189,12 @@ FpFit fp_plane(const FpPatch& rP, double Tol) {
     double nrm[3] = {v[0], v[1], v[2]};
     double total[3];
     fp_mean(rP.mNormals, total);
-    if (fp_dot(total, nrm) < 0.0)
+    if (detail::MathUtils::Dot(total, nrm) < 0.0)
         for (int k = 0; k < 3; ++k)
             nrm[k] = -nrm[k];
     std::vector<double> dist(n);
     for (std::size_t i = 0; i < n; ++i)
-        dist[i] = fp_dot(&rP.mPts[i * 3], nrm);
+        dist[i] = detail::MathUtils::Dot(&rP.mPts[i * 3], nrm);
     fp_stats(dist, Tol, fit);
     for (int k = 0; k < 3; ++k)
         fit.mParams[3 + k] = nrm[k];
@@ -214,7 +211,7 @@ FpFit fp_sphere(const FpPatch& rP, double Tol, int MaxIt) {
     for (std::size_t i = 0; i < n; ++i) {
         const double* p = &rP.mPts[i * 3];
         const double row[4] = {2.0 * p[0], 2.0 * p[1], 2.0 * p[2], 1.0};
-        const double rhs = fp_dot(p, p);
+        const double rhs = detail::MathUtils::Dot(p, p);
         for (int r = 0; r < 4; ++r) {
             for (int s = 0; s < 4; ++s)
                 a[static_cast<std::size_t>(r * 4 + s)] += row[r] * row[s];
@@ -232,7 +229,7 @@ FpFit fp_sphere(const FpPatch& rP, double Tol, int MaxIt) {
         for (std::size_t i = 0; i < n; ++i) {
             const double* p = &rP.mPts[i * 3];
             const double d[3] = {p[0] - rT[0], p[1] - rT[1], p[2] - rT[2]};
-            pOut[i] = std::sqrt(fp_dot(d, d)) - rT[3];
+            pOut[i] = std::sqrt(detail::MathUtils::Dot(d, d)) - rT[3];
         }
     };
     detail::lsq_levenberg_marquardt(theta, typical, n, resid, MaxIt);
@@ -252,15 +249,15 @@ FpFit fp_sphere(const FpPatch& rP, double Tol, int MaxIt) {
 // Distance of a point to the line through pPoint along unit pDir.
 double fp_line_distance(const double* pP, const double* pPoint, const double* pDir) {
     const double v[3] = {pP[0] - pPoint[0], pP[1] - pPoint[1], pP[2] - pPoint[2]};
-    const double h = fp_dot(v, pDir);
+    const double h = detail::MathUtils::Dot(v, pDir);
     const double r[3] = {v[0] - h * pDir[0], v[1] - h * pDir[1], v[2] - h * pDir[2]};
-    return std::sqrt(fp_dot(r, r));
+    return std::sqrt(detail::MathUtils::Dot(r, r));
 }
 
 // The axis point nearest the origin's projection: the foot of the origin
 // (the shifted centroid) on the line.
 void fp_foot_of_origin(const double* pPoint, const double* pDir, double* pOut) {
-    const double h = -fp_dot(pPoint, pDir);
+    const double h = -detail::MathUtils::Dot(pPoint, pDir);
     for (int k = 0; k < 3; ++k)
         pOut[k] = pPoint[k] + h * pDir[k];
 }
@@ -315,7 +312,7 @@ FpFit fp_cone(const FpPatch& rP, double Tol, int MaxIt) {
     for (std::size_t i = 0; i < n; ++i) {
         const double* p = &rP.mPts[i * 3];
         const double v[3] = {p[0] - point[0], p[1] - point[1], p[2] - point[2]};
-        const double h = fp_dot(v, dir);
+        const double h = detail::MathUtils::Dot(v, dir);
         const double rho = fp_line_distance(p, point, dir);
         sh += h;
         sr += rho;
@@ -349,9 +346,9 @@ FpFit fp_cone(const FpPatch& rP, double Tol, int MaxIt) {
         for (std::size_t i = 0; i < n; ++i) {
             const double* p = &rP.mPts[i * 3];
             const double v[3] = {p[0] - a[0], p[1] - a[1], p[2] - a[2]};
-            const double h = fp_dot(v, d);
+            const double h = detail::MathUtils::Dot(v, d);
             const double r[3] = {v[0] - h * d[0], v[1] - h * d[1], v[2] - h * d[2]};
-            pOut[i] = std::sqrt(fp_dot(r, r)) * ca - h * sa;
+            pOut[i] = std::sqrt(detail::MathUtils::Dot(r, r)) * ca - h * sa;
         }
     };
     detail::lsq_levenberg_marquardt(theta, typical, n, resid, MaxIt);
@@ -390,7 +387,7 @@ bool fp_torus_guess(const FpPatch& rP, double Minor, double* pCentre, double* pA
     std::vector<double> a(9, 0.0), b(3, 0.0);
     for (std::size_t f = 0; f < nf; ++f) {
         const double d[3] = {q[f * 3] - qm[0], q[f * 3 + 1] - qm[1], q[f * 3 + 2] - qm[2]};
-        const double u = fp_dot(d, e1), t = fp_dot(d, e2);
+        const double u = detail::MathUtils::Dot(d, e1), t = detail::MathUtils::Dot(d, e2);
         const double row[3] = {2.0 * u, 2.0 * t, 1.0};
         const double rhs = u * u + t * t;
         for (int r = 0; r < 3; ++r) {
@@ -408,9 +405,10 @@ bool fp_torus_guess(const FpPatch& rP, double Minor, double* pCentre, double* pA
     double score = 0.0;
     for (std::size_t f = 0; f < nf; ++f) {
         const double d[3] = {q[f * 3] - qm[0], q[f * 3 + 1] - qm[1], q[f * 3 + 2] - qm[2]};
-        const double u = fp_dot(d, e1) - b[0], t = fp_dot(d, e2) - b[1];
+        const double u = detail::MathUtils::Dot(d, e1) - b[0],
+                     t = detail::MathUtils::Dot(d, e2) - b[1];
         const double radial = std::sqrt(u * u + t * t) - rMajor;
-        const double off = fp_dot(d, axis);
+        const double off = detail::MathUtils::Dot(d, axis);
         score += radial * radial + off * off;
     }
     rScore = score;
@@ -459,9 +457,9 @@ FpFit fp_torus(const FpPatch& rP, double Tol, int MaxIt) {
         for (std::size_t i = 0; i < n; ++i) {
             const double* p = &rP.mPts[i * 3];
             const double v[3] = {p[0] - c[0], p[1] - c[1], p[2] - c[2]};
-            const double h = fp_dot(v, d);
+            const double h = detail::MathUtils::Dot(v, d);
             const double r[3] = {v[0] - h * d[0], v[1] - h * d[1], v[2] - h * d[2]};
-            const double radial = std::sqrt(fp_dot(r, r)) - rT[5];
+            const double radial = std::sqrt(detail::MathUtils::Dot(r, r)) - rT[5];
             pOut[i] = std::sqrt(radial * radial + h * h) - rT[6];
         }
     };
@@ -613,7 +611,7 @@ PrimitiveFit fit_primitive_samples(const std::vector<double>& rPts,
             v -= patch.mShift[k];
         }
     const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-    patch.mDiag = std::sqrt(fp_dot(ext, ext));
+    patch.mDiag = std::sqrt(detail::MathUtils::Dot(ext, ext));
     patch.mNormals = rNormals;
     patch.mCentres = rCentres;
     for (std::size_t f = 0; f < patch.mCentres.size() / 3; ++f)
@@ -725,7 +723,7 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
                     v -= patch.mShift[k];
                 }
             const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-            patch.mDiag = std::sqrt(fp_dot(ext, ext));
+            patch.mDiag = std::sqrt(detail::MathUtils::Dot(ext, ext));
         }
         for (std::size_t f : faces_of[r]) {
             const std::int64_t* ring = rings.mNodes.data() + rings.mStart[f];

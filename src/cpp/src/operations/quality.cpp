@@ -42,6 +42,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/fem_kernels.hpp"
+#include "../detail/geometry_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -322,12 +323,10 @@ void quality_tetra(const std::vector<Vec3>& c, double eps, double* m) {
     m[QM_SCALED_JACOBIAN] = sj;
 
     // Radius (aspect) ratio R / (3 r); 1 for a regular tetra.
-    auto tri_area = [&](const Vec3& x, const Vec3& y, const Vec3& z) {
-        return 0.5 * detail::vec3_norm(
-                         detail::vec3_cross(detail::vec3_sub(y, x), detail::vec3_sub(z, x)));
-    };
+    using detail::GeometryUtils;
     const double face_sum =
-        tri_area(p0, p1, p2) + tri_area(p0, p1, p3) + tri_area(p0, p2, p3) + tri_area(p1, p2, p3);
+        GeometryUtils::TriangleArea(p0, p1, p2) + GeometryUtils::TriangleArea(p0, p1, p3) +
+        GeometryUtils::TriangleArea(p0, p2, p3) + GeometryUtils::TriangleArea(p1, p2, p3);
     if (face_sum > eps) {
         const double r = 3.0 * abs_vol / face_sum;
         // Circumcenter O: 2 (p_i - p0) . O = |p_i|^2 - |p0|^2, i = 1,2,3.

@@ -26,14 +26,11 @@
 #include "meshioplusplus/nurbs.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "surface_project.hpp"
+#include "math_utils.hpp"
 
 namespace meshioplusplus::detail {
 
 namespace {
-
-double spj_dot(const double* pA, const double* pB) {
-    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
-}
 
 // Seeds per direction: (degree + 1) per span of nonzero length, 8 to 32.
 int spj_count(const NurbsPatch& rPatch, std::size_t D) {
@@ -77,15 +74,15 @@ double SurfaceProjector::Polish(const EdgeVec3& rP, std::array<double, 2>& rUv) 
         double s[3], su[3], sv[3], suu[3], suv[3], svv[3];
         pSurface->Eval2(rUv[0], rUv[1], s, su, sv, suu, suv, svv);
         const double r[3] = {s[0] - rP[0], s[1] - rP[1], s[2] - rP[2]};
-        const double g0 = spj_dot(r, su), g1 = spj_dot(r, sv);
-        double h00 = spj_dot(su, su) + spj_dot(r, suu);
-        double h01 = spj_dot(su, sv) + spj_dot(r, suv);
-        double h11 = spj_dot(sv, sv) + spj_dot(r, svv);
+        const double g0 = detail::MathUtils::Dot(r, su), g1 = detail::MathUtils::Dot(r, sv);
+        double h00 = detail::MathUtils::Dot(su, su) + detail::MathUtils::Dot(r, suu);
+        double h01 = detail::MathUtils::Dot(su, sv) + detail::MathUtils::Dot(r, suv);
+        double h11 = detail::MathUtils::Dot(sv, sv) + detail::MathUtils::Dot(r, svv);
         double det = h00 * h11 - h01 * h01;
         if (!(h00 > 0.0) || !(det > 0.0)) {
-            h00 = spj_dot(su, su);
-            h01 = spj_dot(su, sv);
-            h11 = spj_dot(sv, sv);
+            h00 = detail::MathUtils::Dot(su, su);
+            h01 = detail::MathUtils::Dot(su, sv);
+            h11 = detail::MathUtils::Dot(sv, sv);
             det = h00 * h11 - h01 * h01;
             if (!(det > 0.0))
                 break;

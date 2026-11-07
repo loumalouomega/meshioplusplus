@@ -31,6 +31,7 @@
 #include "dense_chol.hpp"
 #include "feature_fit.hpp"
 #include "lsq_fit.hpp"
+#include "math_utils.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
@@ -343,11 +344,6 @@ HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<Pa
 
 namespace {
 
-PatchVec ff_unit(const PatchVec& rA) {
-    const double len = vec3_norm(rA);
-    return len > 0.0 ? PatchVec{rA[0] / len, rA[1] / len, rA[2] / len} : PatchVec{0.0, 0.0, 0.0};
-}
-
 std::size_t ff_law_size(bool Periodic, int Degree) {
     return Periodic ? static_cast<std::size_t>(2 * Degree + 1)
                     : static_cast<std::size_t>(Degree + 1);
@@ -563,7 +559,7 @@ PatchVec RollingBallFit::RailTangent(double T) const {
         const double f = t1 > t0 ? (U - t0) / (t1 - t0) : 0.0;
         return ff_axpy(mRail[s], f, vec3_sub(mRail[e], mRail[s]));
     };
-    return ff_unit(vec3_sub(at(b), at(a)));
+    return MathUtils::UnitByDivision(vec3_sub(at(b), at(a)));
 }
 
 RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
@@ -852,7 +848,7 @@ RollingBallSection rolling_ball_section(const RollingBallFit& rFit, const Closes
         ff_axpy(rFit.mCentres[nearest], 1.0, vec3_sub(on_rail, rFit.RailAt(rFit.mT[nearest])));
     // The section's plane goes through the rail point, so consecutive balls
     // advance along the spine as the rail does.
-    const PatchVec t = ff_unit(rTangent);
+    const PatchVec t = MathUtils::UnitByDivision(rTangent);
     c = ff_axpy(c, -vec3_dot(vec3_sub(c, on_rail), t), t);
     PatchVec f1{}, f2{};
     for (int it = 0; it < 60; ++it) {
@@ -1119,7 +1115,7 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
         origin = ff_axpy(centre, scale, vec3_cross(c, cbar));
     } else {
         origin = *pOrigin;
-        axis = ff_unit(*pAxis);
+        axis = MathUtils::UnitByDivision(*pAxis);
         if (!(vec3_norm(axis) > 0.0))
             return out;
         double num = 0.0, den = 0.0;
@@ -1175,9 +1171,9 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
     };
     auto screw_of = [&](const std::vector<double>& rP) {
         Screw s;
-        s.mA = ff_unit(ff_axpy(ff_axpy(axis, rP[0], e1), rP[1], e2));
+        s.mA = MathUtils::UnitByDivision(ff_axpy(ff_axpy(axis, rP[0], e1), rP[1], e2));
         s.mO = ff_axpy(ff_axpy(origin, rP[2], e1), rP[3], e2);
-        s.mE1 = ff_unit(ff_axpy(e1, -vec3_dot(e1, s.mA), s.mA));
+        s.mE1 = MathUtils::UnitByDivision(ff_axpy(e1, -vec3_dot(e1, s.mA), s.mA));
         s.mE2 = vec3_cross(s.mA, s.mE1);
         s.mK = rP[4];
         if (rP.size() > 5) {
@@ -1347,8 +1343,8 @@ PatchVec ff_line_tangent(const std::vector<PatchVec>& rLine, const std::vector<d
             b = a + h;
         }
     }
-    return ff_unit(vec3_sub(ff_line_at(rLine, rAt, Closed, Length, b),
-                            ff_line_at(rLine, rAt, Closed, Length, a)));
+    return MathUtils::UnitByDivision(vec3_sub(ff_line_at(rLine, rAt, Closed, Length, b),
+                                              ff_line_at(rLine, rAt, Closed, Length, a)));
 }
 
 // The arc length of a polyline's point nearest to rP.
@@ -1380,8 +1376,8 @@ bool ff_plane_cut(const std::vector<PatchVec>& rLine, bool Closed, double Length
         return false;
     std::vector<PatchVec> line = rLine;
     if (!Closed) {
-        const PatchVec d0 = ff_unit(vec3_sub(rLine[0], rLine[1]));
-        const PatchVec d1 = ff_unit(vec3_sub(rLine[n - 1], rLine[n - 2]));
+        const PatchVec d0 = MathUtils::UnitByDivision(vec3_sub(rLine[0], rLine[1]));
+        const PatchVec d1 = MathUtils::UnitByDivision(vec3_sub(rLine[n - 1], rLine[n - 2]));
         line.insert(line.begin(), ff_axpy(rLine[0], Length, d0));
         line.push_back(ff_axpy(rLine[n - 1], Length, d1));
     }
@@ -1535,7 +1531,7 @@ PatchVec SectionBlendFit::Normal(double T) const {
     if (mNormal1 && mNormal2 && mNormal1(r1, n1) && mNormal2(r1, n2)) {
         PatchVec e = vec3_cross(n1, n2);
         if (vec3_norm(e) > 0.1) {
-            e = ff_unit(e);
+            e = MathUtils::UnitByDivision(e);
             tan = vec3_dot(e, tan) < 0.0 ? PatchVec{-e[0], -e[1], -e[2]} : e;
         }
     }
@@ -1581,7 +1577,8 @@ bool SectionBlendFit::Section(double T, PatchVec& rR1, PatchVec& rR2, PatchVec& 
     PatchVec n1{}, n2{};
     if (!mNormal1 || !mNormal2 || !mNormal1(rR1, n1) || !mNormal2(rR2, n2))
         return false;
-    PatchVec d1 = ff_unit(vec3_cross(tan, n1)), d2 = ff_unit(vec3_cross(tan, n2));
+    PatchVec d1 = MathUtils::UnitByDivision(vec3_cross(tan, n1)),
+             d2 = MathUtils::UnitByDivision(vec3_cross(tan, n2));
     if (!(vec3_norm(d1) > 0.0) || !(vec3_norm(d2) > 0.0))
         return false;
     if (vec3_dot(d1, chord) < 0.0)

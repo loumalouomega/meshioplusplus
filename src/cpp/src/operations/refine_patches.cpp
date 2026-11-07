@@ -44,6 +44,7 @@
 #include "../detail/patch_output.hpp"
 #include "../detail/primitive_geom.hpp"
 #include "../detail/surface_rings.hpp"
+#include "../detail/math_utils.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -102,10 +103,6 @@ struct RpProxy {
     double mMax = 0.0;
 };
 
-double rp_dot(const double* pA, const double* pB) {
-    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
-}
-
 // The distance of a point from the proxy and, when pN is given, the proxy's
 // unit normal there (false: no normal, the normal term is then zero).
 double rp_distance(const RpProxy& rP, const double* pX, double* pN, bool* pHasN) {
@@ -120,7 +117,8 @@ double rp_distance(const RpProxy& rP, const double* pX, double* pN, bool* pHasN)
         return d;
     }
     const double r[3] = {pX[0] - rP.mO[0], pX[1] - rP.mO[1], pX[2] - rP.mO[2]};
-    const double x = rp_dot(r, rP.mE1), y = rp_dot(r, rP.mE2), h = rp_dot(r, rP.mN);
+    const double x = detail::MathUtils::Dot(r, rP.mE1), y = detail::MathUtils::Dot(r, rP.mE2),
+                 h = detail::MathUtils::Dot(r, rP.mN);
     const double* q = rP.mQ;
     const double z = q[0] + q[1] * x + q[2] * y + q[3] * x * x + q[4] * x * y + q[5] * y * y;
     const double gx = q[1] + 2.0 * q[3] * x + q[4] * y, gy = q[2] + q[4] * x + 2.0 * q[5] * y;
@@ -143,7 +141,8 @@ double rp_cost(const RpSurface& rS, std::size_t F, const RpProxy& rP) {
     const double d = rp_distance(rP, &rS.mCentroid[F * 3], n, &has_n);
     double c = d * d / (rS.mTol * rS.mTol);
     if (has_n)
-        c += rS.mWeight * std::max(0.0, 1.0 - std::abs(rp_dot(n, &rS.mNormal[F * 3])));
+        c += rS.mWeight *
+             std::max(0.0, 1.0 - std::abs(detail::MathUtils::Dot(n, &rS.mNormal[F * 3])));
     return rS.mArea[F] * c;
 }
 
@@ -236,7 +235,7 @@ void rp_fit_quadric(const RpSurface& rS, const std::vector<std::int64_t>& rFaces
         for (int k = 0; k < 3; ++k)
             mean[k] += rS.mArea[static_cast<std::size_t>(f)] *
                        rS.mNormal[static_cast<std::size_t>(f) * 3 + static_cast<std::size_t>(k)];
-    if (rp_dot(mean, nrm) < 0.0)
+    if (detail::MathUtils::Dot(mean, nrm) < 0.0)
         for (double& x : nrm)
             x = -x;
     rP.mKind = RefineProxy::Freeform;
@@ -254,9 +253,9 @@ void rp_fit_quadric(const RpSurface& rS, const std::vector<std::int64_t>& rFaces
     std::vector<double> xs(n), ys(n), hs(n);
     for (std::size_t i = 0; i < n; ++i) {
         const double r[3] = {rPts[i * 3] - c[0], rPts[i * 3 + 1] - c[1], rPts[i * 3 + 2] - c[2]};
-        xs[i] = rp_dot(r, rP.mE1);
-        ys[i] = rp_dot(r, rP.mE2);
-        hs[i] = rp_dot(r, rP.mN);
+        xs[i] = detail::MathUtils::Dot(r, rP.mE1);
+        ys[i] = detail::MathUtils::Dot(r, rP.mE2);
+        hs[i] = detail::MathUtils::Dot(r, rP.mN);
         ext = std::max(ext, std::max(std::abs(xs[i]), std::abs(ys[i])));
     }
     if (!(ext > 0.0))
@@ -623,7 +622,7 @@ RefinePatchesResult refine_patches(const Mesh& rMesh, const RefinePatchesOptions
                 const bool zb = nb[0] == 0.0 && nb[1] == 0.0 && nb[2] == 0.0;
                 bool ok = true;
                 if (!za && !zb) {
-                    double dot = rp_dot(na, nb);
+                    double dot = detail::MathUtils::Dot(na, nb);
                     if (uses[b].mForward == uses[b + 1].mForward)
                         dot = -dot;
                     ok = !(dot < cos_feature);

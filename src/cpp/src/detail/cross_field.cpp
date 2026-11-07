@@ -23,6 +23,7 @@
 
 // Project includes
 #include "cross_field.hpp"
+#include "math_utils.hpp"
 #include "sparse_solve.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 
@@ -34,11 +35,6 @@ namespace {
 constexpr double kCfPi = 3.14159265358979323846;
 
 using CfComplex = std::complex<double>;
-
-PatchVec cf_unit(const PatchVec& rA) {
-    const double l = std::sqrt(vec3_dot(rA, rA));
-    return l > 0.0 ? PatchVec{rA[0] / l, rA[1] / l, rA[2] / l} : PatchVec{0.0, 0.0, 0.0};
-}
 
 // The angle of the 3-D vector `rD` in triangle F's frame.
 double cf_angle(const CrossField& rF, std::size_t F, const PatchVec& rD) {
@@ -88,8 +84,8 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
         const PatchVec u = vec3_sub(rPts[rTris[f][1]], a), v = vec3_sub(rPts[rTris[f][2]], a);
         const PatchVec n = vec3_cross(u, v);
         area[f] = 0.5 * std::sqrt(vec3_dot(n, n));
-        out.mNormal[f] = cf_unit(n);
-        out.mE1[f] = cf_unit(u);
+        out.mNormal[f] = MathUtils::UnitByDivision(n);
+        out.mE1[f] = MathUtils::UnitByDivision(u);
         out.mE2[f] = vec3_cross(out.mNormal[f], out.mE1[f]);
     }
 
@@ -146,7 +142,7 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
                     std::max(-1.0, std::min(1.0, vec3_dot(out.mNormal[f], out.mNormal[g]))));
                 const PatchVec e = vec3_sub(rPts[b], rPts[a]);
                 const double len = std::sqrt(vec3_dot(e, e));
-                const PatchVec across = cf_unit(vec3_cross(out.mNormal[f], e));
+                const PatchVec across = MathUtils::UnitByDivision(vec3_cross(out.mNormal[f], e));
                 const double x = vec3_dot(across, out.mE1[f]), y = vec3_dot(across, out.mE2[f]);
                 t00 += beta * len * x * x;
                 t01 += beta * len * x * y;
@@ -281,8 +277,8 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
             const int iv = t[0] == v ? 0 : (t[1] == v ? 1 : 2);
             const std::size_t prev = t[static_cast<std::size_t>((iv + 2) % 3)];
             const std::size_t next = t[static_cast<std::size_t>((iv + 1) % 3)];
-            const PatchVec a = cf_unit(vec3_sub(rPts[next], rPts[v]));
-            const PatchVec b = cf_unit(vec3_sub(rPts[prev], rPts[v]));
+            const PatchVec a = MathUtils::UnitByDivision(vec3_sub(rPts[next], rPts[v]));
+            const PatchVec b = MathUtils::UnitByDivision(vec3_sub(rPts[prev], rPts[v]));
             angles += std::acos(std::max(-1.0, std::min(1.0, vec3_dot(a, b))));
             const auto& adj = edge_tris[cf_edge(v, prev)];
             if (adj.size() != 2)

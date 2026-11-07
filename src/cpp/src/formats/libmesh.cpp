@@ -53,6 +53,7 @@
 #include "meshioplusplus/detail/geometry.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/math_utils.hpp"
 
 // External includes
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
@@ -652,43 +653,43 @@ LmFile lm_parse(const std::string& rText, bool Xdr) {
 
 using LmPoint = std::array<double, 3>;
 
-LmPoint lm_sub(const LmPoint& a, const LmPoint& b) {
-    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
-}
-LmPoint lm_cross(const LmPoint& a, const LmPoint& b) {
-    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
-}
-
 // Whether `rQ` lies on the (flat) side whose corners are `rP`: on the segment
 // for two corners, else on the plane and inside the triangle or quad.
 bool lm_on_side(const std::vector<LmPoint>& rP, const LmPoint& rQ) {
     double scale = 0.0;
     for (std::size_t k = 0; k < rP.size(); ++k) {
-        const LmPoint d = lm_sub(rP[(k + 1) % rP.size()], rP[k]);
+        const LmPoint d = detail::MathUtils::Sub(rP[(k + 1) % rP.size()], rP[k]);
         scale = std::max(scale, std::sqrt(detail::vec3_dot(d, d)));
     }
     const double tol = 1e-6 * (scale > 0 ? scale : 1.0);
     if (rP.size() == 2) {
-        const LmPoint d = lm_sub(rP[1], rP[0]);
-        const LmPoint q = lm_sub(rQ, rP[0]);
+        const LmPoint d = detail::MathUtils::Sub(rP[1], rP[0]);
+        const LmPoint q = detail::MathUtils::Sub(rQ, rP[0]);
         const double len2 = detail::vec3_dot(d, d);
         if (len2 == 0.0)
             return false;
         const double t = detail::vec3_dot(q, d) / len2;
-        const LmPoint off = lm_cross(q, d);
+        const LmPoint off = detail::MathUtils::Cross(q, d);
         return t >= -1e-6 && t <= 1 + 1e-6 && std::sqrt(detail::vec3_dot(off, off) / len2) <= tol;
     }
     auto in_triangle = [&](const LmPoint& a, const LmPoint& b, const LmPoint& c) {
-        const LmPoint n = lm_cross(lm_sub(b, a), lm_sub(c, a));
+        const LmPoint n =
+            detail::MathUtils::Cross(detail::MathUtils::Sub(b, a), detail::MathUtils::Sub(c, a));
         const double n2 = detail::vec3_dot(n, n);
         if (n2 == 0.0)
             return false;
-        if (std::abs(detail::vec3_dot(lm_sub(rQ, a), n)) / std::sqrt(n2) > tol)
+        if (std::abs(detail::vec3_dot(detail::MathUtils::Sub(rQ, a), n)) / std::sqrt(n2) > tol)
             return false;
         const double eps = -1e-6 * n2;
-        return detail::vec3_dot(lm_cross(lm_sub(b, a), lm_sub(rQ, a)), n) >= eps &&
-               detail::vec3_dot(lm_cross(lm_sub(c, b), lm_sub(rQ, b)), n) >= eps &&
-               detail::vec3_dot(lm_cross(lm_sub(a, c), lm_sub(rQ, c)), n) >= eps;
+        return detail::vec3_dot(detail::MathUtils::Cross(detail::MathUtils::Sub(b, a),
+                                                         detail::MathUtils::Sub(rQ, a)),
+                                n) >= eps &&
+               detail::vec3_dot(detail::MathUtils::Cross(detail::MathUtils::Sub(c, b),
+                                                         detail::MathUtils::Sub(rQ, b)),
+                                n) >= eps &&
+               detail::vec3_dot(detail::MathUtils::Cross(detail::MathUtils::Sub(a, c),
+                                                         detail::MathUtils::Sub(rQ, c)),
+                                n) >= eps;
     };
     if (rP.size() == 3)
         return in_triangle(rP[0], rP[1], rP[2]);

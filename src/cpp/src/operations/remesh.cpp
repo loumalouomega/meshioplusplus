@@ -66,6 +66,8 @@
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+#include "../detail/geometry_utils.hpp"
+
 namespace meshioplusplus {
 
 namespace {
@@ -179,12 +181,7 @@ void remesh_item_weights(const RemeshSurface& rS, const detail::DecimCsr& rVerte
         const double* v0 = rS.mXyz.data() + static_cast<std::size_t>(i0) * 3;
         const double* v1 = rS.mXyz.data() + static_cast<std::size_t>(i1) * 3;
         const double* v2 = rS.mXyz.data() + static_cast<std::size_t>(i2) * 3;
-
-        const double e0[3] = {v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]};
-        const double e1[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
-        const double c[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
-                             e0[0] * e1[1] - e0[1] * e1[0]};
-        face_area[f] = 0.5 * std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) / 3.0;
+        face_area[f] = detail::GeometryUtils::TriangleArea(v0, v1, v2) / 3.0;
     });
     parallel_for(rS.mNumPoints, [&](std::size_t i) {
         double a = 0.0;

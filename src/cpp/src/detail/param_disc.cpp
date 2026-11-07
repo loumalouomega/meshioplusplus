@@ -27,6 +27,7 @@
 #include <vector>
 
 // Project includes (private, not installed)
+#include "geometry_utils.hpp"
 #include "param_disc.hpp"
 #include "sparse_solve.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
@@ -46,6 +47,46 @@ std::vector<std::size_t> pd_used(const std::vector<PatchTri>& rTris) {
     std::sort(v.begin(), v.end());
     v.erase(std::unique(v.begin(), v.end()), v.end());
     return v;
+}
+
+// V - E + F of the triangles: 1 for a disc, 0 for an annulus.
+long long pd_euler_characteristic(const std::vector<PatchTri>& rTris) {
+    std::set<std::pair<std::size_t, std::size_t>> edges;
+    for (const PatchTri& t : rTris)
+        for (int k = 0; k < 3; ++k) {
+            std::size_t a = t[static_cast<std::size_t>(k)],
+                        b = t[static_cast<std::size_t>((k + 1) % 3)];
+            if (a > b)
+                std::swap(a, b);
+            edges.insert({a, b});
+        }
+    const long long v = static_cast<long long>(pd_used(rTris).size());
+    const long long e = static_cast<long long>(edges.size());
+    const long long f = static_cast<long long>(rTris.size());
+    return v - e + f;
+}
+
+// Twice triangle T's signed area in the (u, v) plane.
+double pd_signed_area2(const std::vector<double>& rU, const std::vector<double>& rV,
+                       const PatchTri& rT) {
+    return GeometryUtils::SignedTwiceArea2D(rU[rT[0]], rV[rT[0]], rU[rT[1]], rV[rT[1]], rU[rT[2]],
+                                            rV[rT[2]]);
+}
+
+// The end of every disc map: keep the 3-D orientation (the majority of the
+// triangles counter-clockwise, flipping v otherwise), count the flips left
+// and mark the map made.
+void pd_orient_finish(const std::vector<PatchTri>& rTris, DiscParam& rOut) {
+    std::size_t pos = 0, neg = 0;
+    for (const PatchTri& t : rTris) {
+        const double s = pd_signed_area2(rOut.mU, rOut.mV, t);
+        (s >= 0.0 ? pos : neg) += 1;
+    }
+    if (neg > pos)
+        for (double& v : rOut.mV)
+            v = -v;
+    rOut.mNumFlips = param_flips(rTris, rOut.mU, rOut.mV);
+    rOut.mOk = true;
 }
 
 }  // namespace
@@ -99,27 +140,14 @@ bool param_is_disc(const std::vector<PatchTri>& rTris) {
     const std::vector<std::vector<std::size_t>> loops = param_boundary_loops(rTris, ok);
     if (!ok || loops.size() != 1)
         return false;
-    std::set<std::pair<std::size_t, std::size_t>> edges;
-    for (const PatchTri& t : rTris)
-        for (int k = 0; k < 3; ++k) {
-            std::size_t a = t[static_cast<std::size_t>(k)],
-                        b = t[static_cast<std::size_t>((k + 1) % 3)];
-            if (a > b)
-                std::swap(a, b);
-            edges.insert({a, b});
-        }
-    const long long v = static_cast<long long>(pd_used(rTris).size());
-    const long long e = static_cast<long long>(edges.size());
-    const long long f = static_cast<long long>(rTris.size());
-    return v - e + f == 1;
+    return pd_euler_characteristic(rTris) == 1;
 }
 
 std::size_t param_flips(const std::vector<PatchTri>& rTris, const std::vector<double>& rU,
                         const std::vector<double>& rV) {
     std::size_t pos = 0, neg = 0, zero = 0;
     for (const PatchTri& t : rTris) {
-        const double a = (rU[t[1]] - rU[t[0]]) * (rV[t[2]] - rV[t[0]]) -
-                         (rU[t[2]] - rU[t[0]]) * (rV[t[1]] - rV[t[0]]);
+        const double a = pd_signed_area2(rU, rV, t);
         if (a > 0.0)
             ++pos;
         else if (a < 0.0)
@@ -240,17 +268,7 @@ DiscParam param_lscm(const std::vector<PatchVec>& rPts, const std::vector<PatchT
     out.mU[pb] = pin_u[1];
     out.mV[pb] = pin_v[1];
     // Keep the 3-D orientation: the majority of triangles counter-clockwise.
-    std::size_t pos = 0, neg = 0;
-    for (const PatchTri& t : rTris) {
-        const double s = (out.mU[t[1]] - out.mU[t[0]]) * (out.mV[t[2]] - out.mV[t[0]]) -
-                         (out.mU[t[2]] - out.mU[t[0]]) * (out.mV[t[1]] - out.mV[t[0]]);
-        (s >= 0.0 ? pos : neg) += 1;
-    }
-    if (neg > pos)
-        for (double& v : out.mV)
-            v = -v;
-    out.mNumFlips = param_flips(rTris, out.mU, out.mV);
-    out.mOk = true;
+    pd_orient_finish(rTris, out);
     return out;
 }
 
@@ -350,17 +368,7 @@ DiscParam param_mean_value(const std::vector<PatchVec>& rPts, const std::vector<
         return out;
     // The loop runs the way the triangles do, so they come out counter-
     // clockwise when the loop is: flip v otherwise.
-    std::size_t pos = 0, neg = 0;
-    for (const PatchTri& t : rTris) {
-        const double s = (out.mU[t[1]] - out.mU[t[0]]) * (out.mV[t[2]] - out.mV[t[0]]) -
-                         (out.mU[t[2]] - out.mU[t[0]]) * (out.mV[t[1]] - out.mV[t[0]]);
-        (s >= 0.0 ? pos : neg) += 1;
-    }
-    if (neg > pos)
-        for (double& v : out.mV)
-            v = -v;
-    out.mNumFlips = param_flips(rTris, out.mU, out.mV);
-    out.mOk = true;
+    pd_orient_finish(rTris, out);
     return out;
 }
 
@@ -370,22 +378,8 @@ DiscParam param_annulus(const std::vector<PatchVec>& rPts, const std::vector<Pat
     const std::vector<std::vector<std::size_t>> loops = param_boundary_loops(rTris, ok);
     if (!ok || loops.size() != 2)
         return out;
-    {
-        std::set<std::pair<std::size_t, std::size_t>> edges;
-        for (const PatchTri& t : rTris)
-            for (int k = 0; k < 3; ++k) {
-                std::size_t a = t[static_cast<std::size_t>(k)],
-                            b = t[static_cast<std::size_t>((k + 1) % 3)];
-                if (a > b)
-                    std::swap(a, b);
-                edges.insert({a, b});
-            }
-        const long long v = static_cast<long long>(pd_used(rTris).size());
-        const long long e = static_cast<long long>(edges.size());
-        const long long f = static_cast<long long>(rTris.size());
-        if (v - e + f != 0)
-            return out;
-    }
+    if (pd_euler_characteristic(rTris) != 0)
+        return out;
     const std::size_t n = rPts.size();
     std::array<std::vector<double>, 2> cum;
     for (std::size_t l = 0; l < 2; ++l) {
@@ -445,18 +439,8 @@ DiscParam param_annulus(const std::vector<PatchVec>& rPts, const std::vector<Pat
     }
     if (!pd_mean_value_interior(rPts, rTris, on_boundary, out))
         return out;
-    std::size_t pos = 0, neg = 0;
-    for (const PatchTri& t : rTris) {
-        const double s = (out.mU[t[1]] - out.mU[t[0]]) * (out.mV[t[2]] - out.mV[t[0]]) -
-                         (out.mU[t[2]] - out.mU[t[0]]) * (out.mV[t[1]] - out.mV[t[0]]);
-        (s >= 0.0 ? pos : neg) += 1;
-    }
-    if (neg > pos)
-        for (double& v : out.mV)
-            v = -v;
-    out.mNumFlips = param_flips(rTris, out.mU, out.mV);
     out.mMethod = 6;
-    out.mOk = true;
+    pd_orient_finish(rTris, out);
     return out;
 }
 

@@ -44,6 +44,7 @@
 #include "primitive_geom.hpp"
 #include "step_brep.hpp"
 #include "step_stream.hpp"
+#include "math_utils.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -52,15 +53,6 @@ namespace {
 constexpr const char* kSbPrefix = "meshio++: step: ";
 constexpr double kSbPi = 3.14159265358979323846;
 constexpr int kSbParams = kPrimitiveParams;
-
-double sb_dot(const double* pA, const double* pB) {
-    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
-}
-
-double sb_dist(const double* pA, const double* pB) {
-    const double d[3] = {pA[0] - pB[0], pA[1] - pB[1], pA[2] - pB[2]};
-    return std::sqrt(sb_dot(d, d));
-}
 
 // A unit direction perpendicular to unit pA: the axis least aligned with it,
 // made orthogonal.
@@ -71,10 +63,10 @@ void sb_perpendicular(const double* pA, double* pOut) {
             k = j;
     double e[3] = {0.0, 0.0, 0.0};
     e[k] = 1.0;
-    const double h = sb_dot(e, pA);
+    const double h = detail::MathUtils::Dot(e, pA);
     for (int j = 0; j < 3; ++j)
         pOut[j] = e[j] - h * pA[j];
-    const double len = std::sqrt(sb_dot(pOut, pOut));
+    const double len = std::sqrt(detail::MathUtils::Dot(pOut, pOut));
     for (int j = 0; j < 3; ++j)
         pOut[j] /= len;
 }
@@ -83,11 +75,11 @@ void sb_perpendicular(const double* pA, double* pOut) {
 double sb_segment_distance(const double* pP, const double* pA, const double* pB) {
     const double ab[3] = {pB[0] - pA[0], pB[1] - pA[1], pB[2] - pA[2]};
     const double ap[3] = {pP[0] - pA[0], pP[1] - pA[1], pP[2] - pA[2]};
-    const double len2 = sb_dot(ab, ab);
-    double t = len2 > 0.0 ? sb_dot(ap, ab) / len2 : 0.0;
+    const double len2 = detail::MathUtils::Dot(ab, ab);
+    double t = len2 > 0.0 ? detail::MathUtils::Dot(ap, ab) / len2 : 0.0;
     t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
     const double q[3] = {pA[0] + t * ab[0], pA[1] + t * ab[1], pA[2] + t * ab[2]};
-    return sb_dist(pP, q);
+    return detail::MathUtils::Distance(pP, q);
 }
 
 std::uint64_t sb_key(std::int64_t U, std::int64_t V) {
@@ -248,7 +240,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 std::max(hi[k], xyz[static_cast<std::size_t>(v) * 3 + static_cast<std::size_t>(k)]);
         }
     const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-    const double diag = std::sqrt(sb_dot(ext, ext));
+    const double diag = std::sqrt(detail::MathUtils::Dot(ext, ext));
     const double eps = 1e-6 * diag;
 
     // The fit table and each facet's row.
@@ -379,7 +371,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             }
             double n[3];
             if (primitive_normal(row.mType, row.mParams, c, n))
-                agree[static_cast<std::size_t>(r)] += sb_dot(n, &normals[f * 3]);
+                agree[static_cast<std::size_t>(r)] += detail::MathUtils::Dot(n, &normals[f * 3]);
         }
         for (std::size_t r = 0; r < rows.size(); ++r) {
             const bool freeform = rows[r].mType == 6;
@@ -434,7 +426,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                     twice[1] += a[2] * e[0] - a[0] * e[2];
                     twice[2] += a[0] * e[1] - a[1] * e[0];
                 }
-                area[f] = 0.5 * std::sqrt(sb_dot(twice, twice));
+                area[f] = 0.5 * std::sqrt(detail::MathUtils::Dot(twice, twice));
             }
             std::vector<std::size_t> order(nf);
             std::iota(order.begin(), order.end(), std::size_t{0});
@@ -461,7 +453,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                         if (other < 0)
                             continue;
                         const std::size_t o = static_cast<std::size_t>(other);
-                        if (group[o] != -1 || sb_dot(&normals[o * 3], n0) <= 0.0)
+                        if (group[o] != -1 || detail::MathUtils::Dot(&normals[o * 3], n0) <= 0.0)
                             continue;
                         bool flat = true;
                         for (std::int64_t j = start[o]; j < start[o + 1] && flat; ++j) {
@@ -469,7 +461,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                 &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(j)]) *
                                      3];
                             const double d[3] = {p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]};
-                            flat = std::fabs(sb_dot(d, n0)) <= eps;
+                            flat = std::fabs(detail::MathUtils::Dot(d, n0)) <= eps;
                         }
                         if (!flat)
                             continue;
@@ -549,7 +541,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                         for (int j = 0; j < 3; ++j)
                             q[j] = out[j];
                 }
-            if (sb_dist(q, &xyz[v * 3]) <= tol)
+            if (detail::MathUtils::Distance(q, &xyz[v * 3]) <= tol)
                 for (int j = 0; j < 3; ++j)
                     pos[v * 3 + static_cast<std::size_t>(j)] = q[j];
         }
@@ -679,8 +671,9 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                     std::size_t far_index = 1;
                     double best = -1.0;
                     for (std::size_t i = 1; i < last; ++i) {
-                        const double d = sb_dist(&pos[static_cast<std::size_t>(vs[i]) * 3],
-                                                 &pos[static_cast<std::size_t>(vs[0]) * 3]);
+                        const double d =
+                            detail::MathUtils::Distance(&pos[static_cast<std::size_t>(vs[i]) * 3],
+                                                        &pos[static_cast<std::size_t>(vs[0]) * 3]);
                         if (d > best) {
                             best = d;
                             far_index = i;
@@ -766,7 +759,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 if (a.mType == 2 && b.mType == 2) {
                     double d[3] = {b.mParams[0] - a.mParams[0], b.mParams[1] - a.mParams[1],
                                    b.mParams[2] - a.mParams[2]};
-                    const double len = std::sqrt(sb_dot(d, d));
+                    const double len = std::sqrt(detail::MathUtils::Dot(d, d));
                     if (len > 0.0)
                         axes.push_back({a.mParams[0], a.mParams[1], a.mParams[2], d[0] / len,
                                         d[1] / len, d[2] / len});
@@ -780,10 +773,10 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 for (std::size_t i = 0; i < vs.size(); ++i) {
                     const double* p = &pos[static_cast<std::size_t>(vs[i]) * 3];
                     const double v[3] = {p[0] - x[0], p[1] - x[1], p[2] - x[2]};
-                    h[i] = sb_dot(v, d);
+                    h[i] = detail::MathUtils::Dot(v, d);
                     const double r[3] = {v[0] - h[i] * d[0], v[1] - h[i] * d[1],
                                          v[2] - h[i] * d[2]};
-                    rho[i] = std::sqrt(sb_dot(r, r));
+                    rho[i] = std::sqrt(detail::MathUtils::Dot(r, r));
                     hm += h[i];
                     rm += rho[i];
                 }
@@ -1056,7 +1049,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                         BsplineEval ev;
                         bspline_eval(bs, gu, gv, 0, ev);
                         const double d[3] = {ev.mS[0] - p[0], ev.mS[1] - p[1], ev.mS[2] - p[2]};
-                        const double dd = sb_dot(d, d);
+                        const double dd = detail::MathUtils::Dot(d, d);
                         if (dd < best) {
                             best = dd;
                             bu = gu;
@@ -1080,7 +1073,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 const PatchVec q =
                     bspline_curve_eval(rPiece, rPiece.T0() + f * (rPiece.T1() - rPiece.T0()));
                 const double d[3] = {ev.mS[0] - q[0], ev.mS[1] - q[1], ev.mS[2] - q[2]};
-                if (std::sqrt(sb_dot(d, d)) > 1e-3 * tol)
+                if (std::sqrt(detail::MathUtils::Dot(d, d)) > 1e-3 * tol)
                     return 0;
             }
             if (context_2d == 0)
@@ -1112,7 +1105,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 const double* pa = &pos[static_cast<std::size_t>(a) * 3];
                 const double* pb = &pos[static_cast<std::size_t>(b) * 3];
                 double d[3] = {pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
-                const double len = std::sqrt(sb_dot(d, d));
+                const double len = std::sqrt(detail::MathUtils::Dot(d, d));
                 if (!(len > 0.0))
                     throw WriteError(std::string(kSbPrefix) +
                                      "an edge has zero length (coincident "
@@ -1137,7 +1130,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                          q[2] - s.mCentre[2]};
                     const double x[3] = {u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2],
                                          u[0] * w[1] - u[1] * w[0]};
-                    turn += sb_dot(x, s.mAxis);
+                    turn += detail::MathUtils::Dot(x, s.mAxis);
                 }
                 sense = turn >= 0.0;
                 ++res.mNumCircleEdges;
@@ -1267,7 +1260,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                                            nodes[static_cast<std::size_t>(k)]) *
                                                        3];
                                 const double v[3] = {q[0] - p[0], q[1] - p[1], q[2] - p[2]};
-                                hm += sb_dot(v, p + 3);
+                                hm += detail::MathUtils::Dot(v, p + 3);
                                 ++count;
                             }
                         }
@@ -1314,7 +1307,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                         twice[1] += a[2] * b[0] - a[0] * b[2];
                         twice[2] += a[0] * b[1] - a[1] * b[0];
                     }
-                    const double area = sb_dot(twice, plane_n);
+                    const double area = detail::MathUtils::Dot(twice, plane_n);
                     if (area > best) {
                         best = area;
                         outer = li;
@@ -1404,7 +1397,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                         const double w[3] = {q[0] - c[0], q[1] - c[1], q[2] - c[2]};
                         const double cr[3] = {u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2],
                                               u[0] * w[1] - u[1] * w[0]};
-                        turn += sb_dot(cr, sg.mAxis);
+                        turn += detail::MathUtils::Dot(cr, sg.mAxis);
                     }
                     const double a0 = angle(pa);
                     double sweep = angle(pb) - a0;

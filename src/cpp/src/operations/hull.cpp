@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/subset.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "../detail/cdt2d.hpp"
+#include "../detail/geometry_utils.hpp"
 #include "../detail/predicates.hpp"
 
 namespace meshioplusplus {
@@ -215,14 +216,12 @@ private:
                 "meshio++: convex_hull: the points all coincide; they span no hull");
         const auto a = static_cast<std::int64_t>(lo), b = static_cast<std::int64_t>(hi);
         // The point farthest from the line (a, b) that is exactly off it.
-        const HullVec d{mP[hi][0] - mP[lo][0], mP[hi][1] - mP[lo][1], mP[hi][2] - mP[lo][2]};
+        const HullVec d = detail::MathUtils::Sub(mP[hi], mP[lo]);
         std::int64_t c = -1;
         double best = -1.0;
         for (std::size_t i = 0; i < n; ++i) {
-            const HullVec e{mP[i][0] - mP[lo][0], mP[i][1] - mP[lo][1], mP[i][2] - mP[lo][2]};
-            const HullVec x{d[1] * e[2] - d[2] * e[1], d[2] * e[0] - d[0] * e[2],
-                            d[0] * e[1] - d[1] * e[0]};
-            const double dist = x[0] * x[0] + x[1] * x[1] + x[2] * x[2];
+            const double dist = detail::MathUtils::NormSq(
+                detail::MathUtils::Cross(d, detail::MathUtils::Sub(mP[i], mP[lo])));
             if (dist > best && !Collinear(a, b, static_cast<std::int64_t>(i))) {
                 best = dist;
                 c = static_cast<std::int64_t>(i);
@@ -268,16 +267,12 @@ private:
         const double* a = At(start.mV[0]);
         const double* b = At(start.mV[1]);
         const double* c = At(start.mV[2]);
-        const HullVec u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-        const HullVec v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-        const HullVec nrm{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                          u[0] * v[1] - u[1] * v[0]};
+        const HullVec nrm = detail::GeometryUtils::TriangleNormal(a, b, c);
         std::int64_t eye = -1;
         double best = -std::numeric_limits<double>::infinity();
         for (const std::int64_t p : start.mOutside) {
             const double* q = At(p);
-            const double dist =
-                nrm[0] * (q[0] - a[0]) + nrm[1] * (q[1] - a[1]) + nrm[2] * (q[2] - a[2]);
+            const double dist = detail::MathUtils::Dot(nrm, detail::MathUtils::Sub(q, a));
             if (dist > best || (dist == best && p < eye)) {
                 best = dist;
                 eye = p;
@@ -543,12 +538,9 @@ ConvexHullResult convex_hull(const Mesh& rMesh, const ConvexHullOptions& rOption
         for (int k = 0; k < 3; ++k)
             pc[3 * t + static_cast<std::size_t>(k)] =
                 local.at(tris[t][static_cast<std::size_t>(k)]);
-        const HullVec u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-        const HullVec v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-        const HullVec x{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                        u[0] * v[1] - u[1] * v[0]};
-        result.mArea += 0.5 * std::sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]);
-        six_volume += x[0] * (a[0] - o[0]) + x[1] * (a[1] - o[1]) + x[2] * (a[2] - o[2]);
+        const HullVec x = detail::GeometryUtils::TriangleNormal(a, b, c);
+        result.mArea += 0.5 * detail::MathUtils::Norm(x);
+        six_volume += detail::MathUtils::Dot(x, detail::MathUtils::Sub(a, o));
     }
     result.mVolume = six_volume / 6.0;
     result.mNumVertices = static_cast<std::int64_t>(ids.size());

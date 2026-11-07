@@ -47,6 +47,7 @@
 #include "../detail/curved_quad.hpp"
 #include "../detail/curved_untangle.hpp"
 #include "../detail/edge_sampler.hpp"
+#include "../detail/geometry_utils.hpp"
 #include "../detail/json_value.hpp"
 #include "../detail/mesh_cad_reparam.hpp"
 #include "../detail/mesh_cad_size.hpp"
@@ -477,22 +478,7 @@ struct McadQuality {
 
 /// The angles of a triangle on the surface, in degrees.
 std::array<double, 3> mcad_angles(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
-    const Vec3* p[3] = {&rA, &rB, &rC};
-    std::array<double, 3> out{};
-    for (int k = 0; k < 3; ++k) {
-        const Vec3& o = *p[k];
-        const Vec3& q = *p[(k + 1) % 3];
-        const Vec3& r = *p[(k + 2) % 3];
-        const Vec3 a{q[0] - o[0], q[1] - o[1], q[2] - o[2]};
-        const Vec3 b{r[0] - o[0], r[1] - o[1], r[2] - o[2]};
-        const Vec3 c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
-                     a[0] * b[1] - a[1] * b[0]};
-        out[static_cast<std::size_t>(k)] =
-            std::atan2(std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]),
-                       a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) *
-            (180.0 / 3.14159265358979323846);
-    }
-    return out;
+    return detail::GeometryUtils::TriangleAnglesDeg(rA, rB, rC);
 }
 
 double mcad_min_angle(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
@@ -506,10 +492,7 @@ double mcad_ratio(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
     const double la = detail::vec3_norm(detail::vec3_sub(rB, rC));
     const double lb = detail::vec3_norm(detail::vec3_sub(rC, rA));
     const double lc = detail::vec3_norm(detail::vec3_sub(rA, rB));
-    const Vec3 u{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
-    const Vec3 v{rC[0] - rA[0], rC[1] - rA[1], rC[2] - rA[2]};
-    const Vec3 c{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
-    const double twice_area = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+    const double twice_area = detail::GeometryUtils::TriangleTwiceArea(rA, rB, rC);
     if (!(twice_area > 0.0))
         return std::numeric_limits<double>::infinity();
     return la * lb * lc / (2.0 * twice_area * std::min({la, lb, lc}));
@@ -2192,14 +2175,11 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         const Vec3& pa = pos(ids[0]);
         const Vec3& pb = pos(ids[1]);
         const Vec3& pc = pos(ids[2]);
-        const Vec3 e1{pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
-        const Vec3 e2{pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]};
-        const Vec3 nt{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
-                      e1[0] * e2[1] - e1[1] * e2[0]};
-        const double nt2 = nt[0] * nt[0] + nt[1] * nt[1] + nt[2] * nt[2];
+        const Vec3 nt = detail::GeometryUtils::TriangleNormal(pa, pb, pc);
+        const double nt2 = detail::MathUtils::NormSq(nt);
         const auto against = [&](const Vec3& ns) {
-            const double dot = nt[0] * ns[0] + nt[1] * ns[1] + nt[2] * ns[2];
-            return dot < -0.5 * std::sqrt(nt2 * (ns[0] * ns[0] + ns[1] * ns[1] + ns[2] * ns[2]));
+            return detail::MathUtils::Dot(nt, ns) <
+                   -0.5 * std::sqrt(nt2 * detail::MathUtils::NormSq(ns));
         };
         // The surface's normal at a vertex's point, once per vertex.
         const auto normal_at = [&](std::int64_t v) -> Vec3 {
@@ -2288,11 +2268,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 const Vec3& pa = pos(ids[0]);
                 const Vec3& pb = pos(ids[1]);
                 const Vec3& pc = pos(ids[2]);
-                const Vec3 e1{pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
-                const Vec3 e2{pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]};
-                const Vec3 n{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
-                             e1[0] * e2[1] - e1[1] * e2[0]};
-                const double area = 0.5 * std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                const Vec3 e1 = detail::vec3_sub(pb, pa);
+                const Vec3 n = detail::vec3_cross(e1, detail::vec3_sub(pc, pa));
+                const double area = 0.5 * detail::MathUtils::Norm(n);
                 // The field integrated over the triangle (Dunavant's 7-point
                 // rule), so a layer narrower than the triangle, which its
                 // centroid can miss (a size from a field's Hessian, 6.11),
@@ -3089,13 +3067,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             const Vec3& o = pos(tri[k]);
             const Vec3& p = pos(tri[(k + 1) % 3]);
             const Vec3& q = pos(tri[(k + 2) % 3]);
-            const Vec3 a{p[0] - o[0], p[1] - o[1], p[2] - o[2]};
-            const Vec3 b{q[0] - o[0], q[1] - o[1], q[2] - o[2]};
-            const Vec3 c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
-                         a[0] * b[1] - a[1] * b[0]};
-            const double ang = std::atan2(std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]),
-                                          a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) *
-                               (180.0 / 3.14159265358979323846);
+            const double ang =
+                detail::MathUtils::AngleDeg(detail::vec3_sub(p, o), detail::vec3_sub(q, o));
             min_angle = std::min(min_angle, ang);
             max_angle = std::max(max_angle, ang);
             const double e = detail::vec3_norm(detail::vec3_sub(o, p));
@@ -3144,9 +3117,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 detail::MeshCadSizeSample smp;
                 smp.mX = pos(id);
                 smp.mFace = r_rec.mFace;
-                Vec3 n{su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
-                       su[0] * sv[1] - su[1] * sv[0]};
-                const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                Vec3 n = detail::MathUtils::Cross(su, sv);
+                const double len = detail::MathUtils::Norm(n);
                 if (len > 0.0)
                     for (double& r_c : n)
                         r_c *= (rBrepFace.mSwappedNormal ? -1.0 : 1.0) / len;
@@ -4106,22 +4078,19 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 (one2 && o2 >= 0 && suppressed[static_cast<std::size_t>(o2)]))
                 continue;
             const Vec3& x = boundary[c];
-            const Vec3 a{x[0] - p[0], x[1] - p[1], x[2] - p[2]};
-            const Vec3 b{q[0] - x[0], q[1] - x[1], q[2] - x[2]};
             const double la = detail::vec3_norm(detail::vec3_sub(p, x)),
                          lb = detail::vec3_norm(detail::vec3_sub(x, q)),
                          chord = detail::vec3_norm(detail::vec3_sub(p, q));
-            const double cos_turn = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (la * lb);
+            const double cos_turn =
+                detail::MathUtils::Dot(detail::vec3_sub(x, p), detail::vec3_sub(q, x)) / (la * lb);
             if (!(la > 0.0 && lb > 0.0) || !(cos_turn > std::cos(30.0 * kMcadPi / 180.0)))
                 continue;
             const Vec3 mid{0.5 * (p[0] + q[0]), 0.5 * (p[1] + q[1]), 0.5 * (p[2] + q[2])};
             const double local = pSize ? pSize->At(mid) : h;
             // The corner's distance from the chord p-q.
-            const Vec3 pq{q[0] - p[0], q[1] - p[1], q[2] - p[2]};
-            const Vec3 px{x[0] - p[0], x[1] - p[1], x[2] - p[2]};
-            const Vec3 cr{pq[1] * px[2] - pq[2] * px[1], pq[2] * px[0] - pq[0] * px[2],
-                          pq[0] * px[1] - pq[1] * px[0]};
-            const double off = std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]) / chord;
+            const double off = detail::MathUtils::Norm(detail::MathUtils::Cross(
+                                   detail::vec3_sub(q, p), detail::vec3_sub(x, p))) /
+                               chord;
             if (!(chord <= 1.5 * local) || !(off <= 0.1 * chord))
                 continue;
             suppressed[c] = 1;
@@ -6716,11 +6685,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
             const double ab = detail::vec3_norm(detail::vec3_sub(a, b)),
                          bc = detail::vec3_norm(detail::vec3_sub(b, c)),
                          ca = detail::vec3_norm(detail::vec3_sub(c, a));
-            const Vec3 u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-            const Vec3 v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-            const Vec3 w{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                         u[0] * v[1] - u[1] * v[0]};
-            const double twice_area = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+            const double twice_area = detail::GeometryUtils::TriangleTwiceArea(a, b, c);
             if (!(twice_area > 0.0))
                 continue;
             const double k = 2.0 * twice_area / (ab * bc * ca);  // 1 / circumradius

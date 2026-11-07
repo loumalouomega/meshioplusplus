@@ -46,6 +46,7 @@
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "../detail/math_utils.hpp"
 #include "../detail/typed_view.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
@@ -326,34 +327,6 @@ bool grad_green_gauss(const GradCell& rCell, int Dim, std::size_t NumComp, doubl
 
 // --- least squares -----------------------------------------------------------
 
-/// Solves the symmetric 3x3 system `M g = b` in closed cofactor form.
-///
-/// The conditioning bound is transcribed from `decimate.cpp`'s optimal-placement
-/// solve, including the `scale * scale * scale` multiplication form: `std::pow`
-/// (and `np.power` in the twin) rounds differently and would break parity.
-bool grad_solve3(const double* pM, const double* pB, double* pOut) {
-    const double c00 = pM[4] * pM[8] - pM[5] * pM[5];
-    const double c01 = pM[2] * pM[5] - pM[1] * pM[8];
-    const double c02 = pM[1] * pM[5] - pM[2] * pM[4];
-    const double det = pM[0] * c00 + pM[1] * c01 + pM[2] * c02;
-    double scale = std::abs(pM[0]);
-    scale = std::max(scale, std::abs(pM[1]));
-    scale = std::max(scale, std::abs(pM[2]));
-    scale = std::max(scale, std::abs(pM[4]));
-    scale = std::max(scale, std::abs(pM[5]));
-    scale = std::max(scale, std::abs(pM[8]));
-    if (!(std::abs(det) > 1e-12 * (scale * scale * scale)))
-        return false;
-    const double c11 = pM[0] * pM[8] - pM[2] * pM[2];
-    const double c12 = pM[1] * pM[2] - pM[0] * pM[5];
-    const double c22 = pM[0] * pM[4] - pM[1] * pM[1];
-    const double inv = 1.0 / det;
-    pOut[0] = (c00 * pB[0] + c01 * pB[1] + c02 * pB[2]) * inv;
-    pOut[1] = (c01 * pB[0] + c11 * pB[1] + c12 * pB[2]) * inv;
-    pOut[2] = (c02 * pB[0] + c12 * pB[1] + c22 * pB[2]) * inv;
-    return true;
-}
-
 /// One cell's least-squares stencil: the neighbour offsets and value deltas,
 /// already recentred on this cell.
 struct GradStencil {
@@ -408,7 +381,8 @@ bool grad_least_squares(const GradStencil& rStencil, std::size_t NumComp, int Di
                     m[r * 3 + c] += s * r_nrm[r] * r_nrm[c];
         }
         for (std::size_t k = 0; k < NumComp; ++k)
-            if (!grad_solve3(m, b.data() + k * 3, pOut + k * 3))
+            if (!detail::MathUtils::SolveSymmetric3(m[0], m[1], m[2], m[4], m[5], m[8],
+                                                    b.data() + k * 3, pOut + k * 3))
                 return false;
         return true;
     }

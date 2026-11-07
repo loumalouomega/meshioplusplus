@@ -30,6 +30,7 @@
 
 // Project includes
 #include "../detail/layer_sweep.hpp"
+#include "../detail/math_utils.hpp"
 #include "../detail/predicates.hpp"
 #include "../detail/tri_bvh.hpp"
 #include "../detail/tri_tri.hpp"
@@ -58,11 +59,6 @@ constexpr double kBlMinJacobian = 1e-6;
 
 [[noreturn]] void bl_fail(const std::string& rWhy) {
     throw std::invalid_argument(std::string(kBoundaryLayerPrefix) + rWhy);
-}
-
-BlV3 bl_unit(const BlV3& rA) {
-    const double l = detail::vec3_norm(rA);
-    return l > 0.0 ? BlV3{rA[0] / l, rA[1] / l, rA[2] / l} : BlV3{0.0, 0.0, 0.0};
 }
 
 // Row I of a C-contiguous array, as bytes.
@@ -344,14 +340,14 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
             n = {n[0] + (a[1] - b[1]) * (a[2] + b[2]), n[1] + (a[2] - b[2]) * (a[0] + b[0]),
                  n[2] + (a[0] - b[0]) * (a[1] + b[1])};
         }
-        n = bl_unit(n);
+        n = detail::MathUtils::UnitByDivision(n);
         fn[f] = {sign * n[0], sign * n[1], sign * n[2]};
         for (int i = 0; i < k; ++i) {
             const std::int64_t p = faces[f][static_cast<std::size_t>(i)];
             const std::int64_t q = faces[f][static_cast<std::size_t>((i + 1) % k)];
             const std::int64_t r = faces[f][static_cast<std::size_t>((i + k - 1) % k)];
-            const BlV3 u = bl_unit(detail::vec3_sub(point(q), point(p)));
-            const BlV3 v = bl_unit(detail::vec3_sub(point(r), point(p)));
+            const BlV3 u = detail::MathUtils::UnitByDivision(detail::vec3_sub(point(q), point(p)));
+            const BlV3 v = detail::MathUtils::UnitByDivision(detail::vec3_sub(point(r), point(p)));
             const double angle = std::acos(std::clamp(detail::vec3_dot(u, v), -1.0, 1.0));
             around[static_cast<std::size_t>(p)].push_back({f, angle});
             nbrs[static_cast<std::size_t>(p)].push_back(q);
@@ -377,7 +373,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
             BlV3 m{0.0, 0.0, 0.0};
             for (const auto& [f, w] : r_a)
                 m = {m[0] + w * fn[f][0], m[1] + w * fn[f][1], m[2] + w * fn[f][2]};
-            BlV3 n = bl_unit(m);
+            BlV3 n = detail::MathUtils::UnitByDivision(m);
             const auto least = [&](const BlV3& rN, std::size_t& rWho) {
                 double lo = std::numeric_limits<double>::infinity();
                 for (const auto& [f, w] : r_a) {
@@ -395,7 +391,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
             double best_lo = least(n, who);
             for (int it = 0; it < 100 && r_a.size() > 1; ++it) {
                 const double eta = 1.0 / double(it + 2);
-                n = bl_unit(
+                n = detail::MathUtils::UnitByDivision(
                     {n[0] + eta * fn[who][0], n[1] + eta * fn[who][1], n[2] + eta * fn[who][2]});
                 const double lo = least(n, who);
                 if (lo > best_lo) {
@@ -438,7 +434,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
                     if (sigma[static_cast<std::size_t>(q)] > 0.0)
                         m = {m[0] + r_q[0], m[1] + r_q[1], m[2] + r_q[2]};
                 }
-                const BlV3 n = bl_unit(m);
+                const BlV3 n = detail::MathUtils::UnitByDivision(m);
                 const double lo = least_cos(P, n);
                 if (lo > 0.5 * seen[P] && lo > kBlVisible)
                     next[P] = n;

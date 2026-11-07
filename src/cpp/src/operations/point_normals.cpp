@@ -30,6 +30,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/point_normals.hpp"
+#include "../detail/bounding_box_utils.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/sym3_eigen.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -154,15 +155,9 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
         // an area estimated from the box (half its surface: a plane's area, a
         // sphere's within 5%). The cell size changes the search's speed,
         // never its answer.
-        PtnVec lo = p[0], hi = p[0];
-        for (const PtnVec& q : p)
-            for (std::size_t a = 0; a < 3; ++a) {
-                lo[a] = std::min(lo[a], q[a]);
-                hi[a] = std::max(hi[a], q[a]);
-            }
-        const PtnVec e{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-        const double area = e[0] * e[1] + e[1] * e[2] + e[2] * e[0];
-        const double extent = std::max({e[0], e[1], e[2]});
+        const detail::BoundingBox3 box = detail::BoundingBoxUtils::FromPoints(p);
+        const double area = detail::BoundingBoxUtils::HalfSurfaceArea(box);
+        const double extent = detail::BoundingBoxUtils::MaxExtent(box);
         if (area > 0.0)
             search.mCellSize =
                 std::max(std::sqrt(area / static_cast<double>(n) * static_cast<double>(k) * 0.5),
