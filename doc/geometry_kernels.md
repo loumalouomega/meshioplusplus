@@ -47,6 +47,24 @@ The third pass (November 2026) added the utility classes and moved onto them, wi
 
 The unit vectors without a zero guard, the boxes seeded with ±infinity and the Cramer-rule solves (`quality_solve3`, `remesh_solve_sym3`) round or behave differently and stay where they are. What remains is listed under roadmap 3.4.
 
+## What the binding pass shared
+
+The second duplication pass (November 2026, [roadmap §8](./roadmap.md#code-duplication)) gave the binding layers and a few operations their own helpers, each file-private and each a call in place of the block it replaced:
+
+| Where | Helper | Replaces |
+| --- | --- | --- |
+| `src/cpp/src/detail/data_plumbing.hpp` | `append_rows(a, rows, new, comps, fill)`: a copy of an array with rows appended, the new values written by the caller's `fill` through one `DoubleSink` commit | the point and point_data growth of `convert_cells`' simplexify and elevate, `refine` and `tet_to_poly` (each caller keeps its mean, midpoint or key average) |
+| `src/cpp/src/detail/decimate_shared.hpp` | `decim_emit_blocks<K>`, the kept cells per block and their cell maps; `decim_remap_regions` | the emission tails of `decimate` (first surviving child of `convert:parent_cell`, `FirstChild`) and `decimate_volume` (identity, `Direct`) |
+| `src/cpp/src/operations/primitives.cpp` | `prim_soup(map, radius, center)`, `prim_cell_type_is(shape, cell_type, alt, default, choices)` | 19 soup set-ups and 16 two-way cell-type checks |
+| `src/cpp/src/registry.cpp` | `RegistryRow` and `registry_rows()`: one row per format with its reader, writer, options reader and metadata reader | the four tables `registry_readers()`, `registry_writers()`, `registry_readers_ex()` and `registry_metadata_readers()` are built from |
+| `src/cpp/cli/main.cpp` | `CliVerb` and `kCliVerbs[]`: name, alias, usage block, handler | `print_usage`'s verb list and `cli_run_verb`'s if chain |
+| `bindings/c/c_api.cpp` | `capi_result_mesh`, `capi_result_take_mesh`, `capi_result_point_map`, `capi_result_num_cell_maps`, `capi_result_cell_map`; `capi_decimate_options`; `capi_indexed_reason`, `capi_copy_indexed_edges` | the bodies of 29 result accessors, the four decimate entry points' option fills, `mesh_cad_surface`'s seven indexed getters |
+| `bindings/python/_core.cpp` | `core_def_mesh_fn`, `core_def_parallel_xml`, `core_def_decimate`, `core_def_step_writer`, `core_def_finalizing_context`, `core_def_time_series_read`, `core_named_arrays` | the near-copy `m.def`s of the primitives, pvtu/pvtp, the decimate pair, the step writers, the finalizing contexts and the time-series readers |
+| `src/python/meshioplusplus/mcp/_server.py` | `_forward(target)`: a tool whose body only forwards its own arguments | 170 forwarding bodies (the tools that remap or render stay hand-written) |
+| `bindings/r/meshioplusplus/src/util.c` | `mio_r_report_list` (a named list whose `NULL` entries take the next of an array of doubles), `mio_r_wrap_handle`, `mio_r_handle` | 47 `PROTECT(Rf_ScalarReal(…))` report chains and the five handle types' wrap and check |
+
+The exported names, error messages, status codes and Python signatures are unchanged: the C++ and C API ones are pinned by the determinism digests, the gtest suite and byte diffs of the CLI help and completion scripts, the registry's key sets and the `_core` docstrings taken before the change; the MCP tool schemas by a diff of `list_tools()`.
+
 ## Kernels or a geometry hierarchy?
 
 Kratos models each element shape as a class: `Geometry<TPointType>` is the base, and `Triangle2D3`, `Tetrahedra3D4`, `Hexahedra3D8` and the rest derive from it. Each instance holds its points and answers `ShapeFunctionsValues`, `ShapeFunctionsLocalGradients`, `Jacobian`, `DeterminantOfJacobian`, `IntegrationPoints` and `ShapeFunctionsIntegrationPointsGradients`, with the shape-function values at the integration points computed once per geometry type and shared. Two designs are possible for meshio++.

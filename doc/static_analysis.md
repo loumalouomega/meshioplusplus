@@ -61,6 +61,8 @@ The November 2026 measurements, by pass of [roadmap 3.4](./roadmap.md#quality-of
 
 The shared-utilities pass of [roadmap §8](./roadmap.md#code-duplication) (November 2026) changed the measure as well as the code: the report now skips literal-table windows and the table-only files and scans the R binding's C sources. On the earlier C++ roots the table filter alone took 22,253 duplicated lines to 20,830, and the code changes to 19,725 (8.1% of 243,917); with the R sources, 21,699 of 251,295 (8.6%). Python went from 12,468 to 9,739 with the filter and to 8,962 of 135,752 (6.6%) with the code.
 
+The binding pass the same month took C++ to 20,554 of 250,625 (8.2%) and Python to 7,214 of 133,787 (5.4%): the MCP server's forwarding tools, the C API's result accessors, `_core.cpp`'s near-copy `m.def`s and the R binding's report lists became helper calls ([what it shared](./geometry_kernels.md#what-the-binding-pass-shared)). Two of its changes raise their file's count instead, `registry.cpp` (263 to 424) and `cli/main.cpp` (2,270 to 2,348): each replaced several lists of the same names with one table, whose rows the normalising detector matches against each other.
+
 What remains at the top is mostly structure the report cannot tell apart from copying: the explicit `py::arg` signatures of `bindings/python/_core.cpp`, the `extern "C"` entry points of `bindings/c/c_api.cpp`, the argument tables of the native CLI and the typed MCP tool signatures. The rest is listed in roadmap 3.4.8 to 3.4.12.
 
 ## Clang-Tidy
