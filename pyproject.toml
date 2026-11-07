@@ -172,6 +172,24 @@ wheel.license-files = [
 cmake.version = ">=3.15"
 cmake.build-type = "Release"
 
+# Keep the sdist under PyPI's 100 MB per-file limit: it ships what building
+# the extension needs, not the examples, docs, benchmarks or test data.
+sdist.exclude = [
+  "example",
+  "doc",
+  "benchmark",
+  "contrib",
+  "tools",
+  ".github",
+  "tests/python/meshes",
+  "tests/python/input",
+  "tests/fuzz",
+  "fortran_ghost",
+  "fortran_piece.vtkhdf",
+  "fortran_selective.vtu",
+  "imgui.ini",
+]
+
 # The version, written into the package at build time so `import
 # meshioplusplus` need not ask importlib.metadata (~22 ms; roadmap §3).
 [[tool.scikit-build.generate]]
