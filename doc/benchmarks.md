@@ -968,6 +968,19 @@ Roadmap 5.7.2 and 5.7.1. `detail/chunked_parse.hpp` cuts a run of numbers at bla
 
 SEQ takes none of the parallel paths. `read_medit`'s SEQ row moved within the noise of the benchmark process, not the reader: Cachegrind counts the same instructions for the read before and after (2.307 and 2.308 G at tier M, three runs), and five more interleaved rounds at tier L timed the new binary faster (0.12 against 0.15 s). The Gmsh 4.1 read is now mostly its `$Entities` and the mesh assembly; STL's is the weld.
 
+### Appended rows deflated in parallel
+
+Roadmap 5.8.1. `append_rows` (`detail/hdf5_util.cpp`), which a [VTKHDF time series](./vtkhdf_time_series.md) uses for every step's arrays, wrote through `H5Dwrite`, so HDF5's deflate filter compressed each step on one thread. The whole chunks of an append now go through the direct-chunk writer that whole-dataset writes already use: compressed in parallel with `compress2` at the dataset's level, the last one zero-padded as HDF5 pads it, and written in ascending order. Rows that finish the dataset's partly written last chunk still go through HDF5, which reads, extends and re-deflates that chunk. `H5Util.AppendedGzipChunksMatchHdf5sOwnFilter` grows one dataset through `append_rows` and a twin through plain `H5Dwrite` over seven appends (head-only, aligned, unaligned with a tail, one chunk), and requires every stored chunk to be the same bytes with the same filter mask. XDMF does not append: its series writes each step's datasets whole, which were already parallel.
+
+A series chunk is one step's rows, capped at 4 MiB, so the parallel path is only taken when one array of one step spans more than one chunk after its head. Ten steps of a hexahedral cube with a vector and a scalar point field, gzip 6, `VtkhdfTimeSeriesWriter.write_data` through the Python binding (OpenMP build, best of three):
+
+| Points | 1 thread | 4 threads |
+| ---: | ---: | ---: |
+| 226,981 | 3.32 s | 3.24 s |
+| 1,771,561 | 20.5 s | 8.0 s |
+
+One thread runs the same compression on the caller, which is the work the `H5Dwrite` path did; below about 8 MiB per array and step there is nothing to spread.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
