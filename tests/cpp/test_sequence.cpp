@@ -501,6 +501,74 @@ TEST(SequenceCapability, TheTransientWriterRejectsOptionsItCannotHonour) {
     EXPECT_NO_THROW(meshioplusplus::sequence_to_timeseries(in, ok));
 }
 
+TEST(SequenceCapability, EveryTransientWriterNamesItselfWhenItRefusesAnOption) {
+    // The messages are pinned per writer: the checks are one table now, and a
+    // row that drifts (a name, the encoding refusal, Exodus refusing an
+    // encoding before the other options) turns this red naming the format.
+    struct Row {
+        const char* mFormat;
+        const char* mName;
+        const char* mNoEncoding;  // nullptr: the writer takes an encoding
+    };
+    const Row rows[] = {
+        {"exodus", "Exodus", "Exodus"},
+        {"vtkhdf", "VTKHDF", "VTKHDF"},
+        {"pvd", "PVD", nullptr},
+        {"femap", "Femap", "Femap"},
+        {"frd", "CalculiX FRD", nullptr},
+        {"radioss_th", "Radioss time-history", "Radioss time-history"},
+        {"nastran_op2", "Nastran OP2", "Nastran OP2"},
+        {"nastran_h5", "Nastran HDF5", "Nastran HDF5"},
+        {"radioss_anim", "Radioss animation", "Radioss animation"},
+        {"xplt", "FEBio plot", "FEBio plot"},
+        {"ansys_rst", "Ansys results", "Ansys results"},
+        {"lsdyna_d3plot", "LS-DYNA d3plot", "LS-DYNA d3plot"},
+        {"openfoam", "OpenFOAM", nullptr},
+        {"vtx", "DOLFINx VTX", "DOLFINx VTX"},
+        {"szplt", "Tecplot SZL", "Tecplot SZL"},
+        {"marc_t19", "Marc post file", "Marc post-file"},
+        {"lsdyna_binout", "LS-DYNA binout", "LS-DYNA binout"},
+        {"abaqus_fil", "Abaqus results", nullptr},
+        {"xdmf", "XDMF", nullptr},
+    };
+    SeqTempDir dir;
+    SequenceInput in;
+    in.mPaths = seq_write_files(dir, "in_", 2);
+    const auto message = [&](const Row& rRow, bool Codec, bool Ascii) -> std::string {
+        SequenceOutput out;
+        out.mPath = dir / (std::string("o_") + rRow.mFormat + ".out");
+        out.mFormat = rRow.mFormat;
+        out.mOptions.mCodecSet = Codec;
+        if (Codec)
+            out.mOptions.mCodec = meshioplusplus::detail::VtkCodec::Zlib;
+        if (Ascii)
+            out.mOptions.mEncoding = meshioplusplus::WriteEncoding::Ascii;
+        try {
+            meshioplusplus::sequence_to_timeseries(in, out);
+        } catch (const meshioplusplus::WriteError& e) {
+            return e.what();
+        }
+        return "";
+    };
+    const std::string pre = "meshio++: sequence: the transient ";
+    for (const Row& r_row : rows) {
+        std::string why;
+        if (!meshioplusplus::sequence_write_supports_time(r_row.mFormat, why))
+            continue;  // not in this build
+        const std::string codec = pre + r_row.mName + " writer does not support Codec";
+        EXPECT_EQ(message(r_row, true, false), codec) << r_row.mFormat;
+        if (r_row.mNoEncoding) {
+            const std::string enc =
+                pre + r_row.mNoEncoding + " writer has no ASCII/binary variant to select";
+            EXPECT_EQ(message(r_row, false, true), enc) << r_row.mFormat;
+            // Both set: Exodus names the encoding first, every other the codec.
+            EXPECT_EQ(message(r_row, true, true),
+                      std::string(r_row.mFormat) == "exodus" ? enc : codec)
+                << r_row.mFormat;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mode inference.
 // ---------------------------------------------------------------------------
