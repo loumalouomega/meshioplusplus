@@ -121,7 +121,81 @@ TEST(LibraryLock, ExcludesOtherThreads) {
     EXPECT_TRUE(got.load());
 }
 
+// Roadmap 5.8.2: the parallel deflate and inflate give the lock up. Every level
+// the thread holds is released and taken back, and another thread gets in.
+TEST(LibraryLock, UnlockReleasesEveryLevelAndRestoresThem) {
+    using meshioplusplus::detail::library_lock_depth;
+    EXPECT_EQ(library_lock_depth(), 0);
+    {
+        const meshioplusplus::detail::LibraryUnlock none;  // holding nothing: a no-op
+        EXPECT_EQ(library_lock_depth(), 0);
+    }
+    meshioplusplus::detail::LibraryLock outer;
+    meshioplusplus::detail::LibraryLock inner;
+    EXPECT_EQ(library_lock_depth(), 2);
+    std::atomic<bool> got{false};
+    {
+        const meshioplusplus::detail::LibraryUnlock unlock;
+        EXPECT_EQ(library_lock_depth(), 0);
+        std::thread t([&] {
+            meshioplusplus::detail::LibraryLock lock;
+            got = true;
+        });
+        t.join();  // would deadlock if a level were still held
+    }
+    EXPECT_TRUE(got.load());
+    EXPECT_EQ(library_lock_depth(), 2);
+    // Re-taken: another thread waits again.
+    std::atomic<bool> got2{false};
+    std::thread t2([&] {
+        meshioplusplus::detail::LibraryLock lock;
+        got2 = true;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_FALSE(got2.load());
+    {
+        // Leave the scope's two levels by hand so t2 can finish before the
+        // guards above unwind.
+        const meshioplusplus::detail::LibraryUnlock unlock;
+        t2.join();
+    }
+    EXPECT_TRUE(got2.load());
+}
+
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
+
+// Large enough that the gzip datasets span several chunks, so the writes and
+// reads compress and inflate with the lock given up while other threads use
+// HDF5.
+TEST(LibraryLock, ConcurrentGzipVtkhdfRoundTripsWithTheLockGivenUp) {
+    EXPECT_EQ(0, run_threads(".vtkhdf", [](int I, const std::string& rPath) {
+                  const std::size_t n = 300000;  // point rows: 7 MB of float64
+                  mt::NDArray pts = mt::NDArray::Uninit(meshioplusplus::DType::Float64, {n, 3});
+                  mt::NDArray u = mt::NDArray::Uninit(meshioplusplus::DType::Float64, {n});
+                  for (std::size_t k = 0; k < n; ++k) {
+                      for (int d = 0; d < 3; ++d)
+                          pts.As<double>()[k * 3 + d] = static_cast<double>((k * (d + 3)) % 1000);
+                      u.As<double>()[k] = static_cast<double>(I) + static_cast<double>(k % 7);
+                  }
+                  mt::Mesh big;
+                  big.AssignPoints(std::move(pts));
+                  mt::NDArray conn = mt::NDArray::Uninit(meshioplusplus::DType::Int64, {1, 4});
+                  const std::int64_t row[4] = {0, 1, 2, 3};
+                  std::copy(row, row + 4, conn.As<std::int64_t>());
+                  big.AddCellBlock("tetra", std::move(conn));
+                  big.AddPointData("u", std::move(u));
+                  meshioplusplus::write_vtkhdf(rPath, big, 6);
+                  const mt::Mesh back = meshioplusplus::read_vtkhdf(rPath);
+                  if (back.NumPoints() != n)
+                      return false;
+                  const mt::NDArray& bu = back.PointData("u");
+                  for (std::size_t k = 0; k < n; k += 997)
+                      if (meshioplusplus::detail::read_double(bu, k) !=
+                          static_cast<double>(I) + static_cast<double>(k % 7))
+                          return false;
+                  return true;
+              }));
+}
 
 TEST(LibraryLock, ConcurrentVtkhdfRoundTrips) {
     EXPECT_EQ(0, run_threads(".vtkhdf", [](int I, const std::string& rPath) {

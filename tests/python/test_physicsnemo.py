@@ -142,6 +142,68 @@ def test_iter_samples_streams_and_filters_by_split(tmp_path):
     assert len(list(mpn.iter_samples(manifest))) == 4
 
 
+def test_iter_samples_edge_cache_is_bit_identical_and_hits(tmp_path):
+    # Roadmap 5.10.4: every case shares one topology, so the cache builds the
+    # edges once and every sample still equals its uncached twin.
+    manifest = _manifest(tmp_path)
+    cache = mpn.EdgeCache(4)
+    plain = list(mpn.iter_samples(manifest, fields=["T"]))
+    cached = list(mpn.iter_samples(manifest, fields=["T"], edge_cache=cache))
+    assert len(plain) == len(cached) == 4
+    for (_, _, a), (_, _, b) in zip(plain, cached):
+        assert a.arrays.keys() == b.arrays.keys()
+        for name in a.arrays:
+            np.testing.assert_array_equal(a.arrays[name], b.arrays[name])
+            assert a.arrays[name].dtype == b.arrays[name].dtype
+        assert a.schema == b.schema
+    assert (cache.misses, cache.hits, len(cache)) == (1, 3, 1)
+    # A sample's arrays are its own: editing one does not reach the cache.
+    cached[0][2].arrays["edge_index"][:] = -1
+    again = list(mpn.iter_samples(manifest, fields=["T"], edge_cache=cache))
+    np.testing.assert_array_equal(
+        again[0][2].arrays["edge_index"], plain[0][2].arrays["edge_index"]
+    )
+
+
+def test_edge_cache_keys_on_topology_and_options():
+    cache = mpn.EdgeCache(2)
+    m = _mesh()
+    a = mpn.graph_sample(m, edge_cache=cache)
+    # Moved points, same connectivity: a hit.
+    mpn.graph_sample(_mesh(5.0), edge_cache=cache)
+    assert (cache.misses, cache.hits) == (1, 1)
+    # Another connectivity, or another kind: misses.
+    flipped = Mesh(m.points, [("triangle", np.array([[0, 1, 3], [1, 2, 3]]))])
+    b = mpn.graph_sample(flipped, regions=False, edge_cache=cache)
+    assert cache.misses == 2
+    assert not np.array_equal(a.arrays["edge_index"], b.arrays["edge_index"])
+    mpn.graph_sample(m, undirected=False, edge_cache=cache)
+    assert cache.misses == 3 and len(cache) == 2  # bounded: the oldest went
+    # Position-dependent edges are never cached.
+    before = (cache.misses, cache.hits)
+    mpn.graph_sample(m, proximity={"radius": 2.0}, edge_cache=cache)
+    assert (cache.misses, cache.hits) == before
+    with pytest.raises(ValueError, match="positive"):
+        mpn.EdgeCache(0)
+
+
+def test_edge_cache_compares_the_whole_connectivity():
+    # The lookup key samples the connectivity; a block that differs only
+    # between the samples must still miss and get its own edges.
+    rng = np.random.default_rng(0)
+    points = rng.random((600, 3))
+    tri = rng.integers(0, 600, size=(2000, 3))
+    other = tri.copy()
+    other[0, 1] = (other[0, 1] + 1) % 600  # off the sample stride
+    cache = mpn.EdgeCache(4)
+    a = mpn.graph_sample(Mesh(points, [("triangle", tri)]), edge_cache=cache)
+    b = mpn.graph_sample(Mesh(points, [("triangle", other)]), edge_cache=cache)
+    assert (cache.misses, cache.hits) == (2, 0)
+    ref = mpn.graph_sample(Mesh(points, [("triangle", other)]))
+    np.testing.assert_array_equal(b.arrays["edge_index"], ref.arrays["edge_index"])
+    assert not np.array_equal(a.arrays["edge_index"], b.arrays["edge_index"])
+
+
 def test_field_stats_matches_direct_concatenation(tmp_path):
     manifest = _manifest(tmp_path)
     stats = mpn.field_stats(manifest, split="train", fields=["T", "v"])

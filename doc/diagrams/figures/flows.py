@@ -1061,10 +1061,9 @@ def roadmap_map():
             [
                 ("harness: missing rows", "M"),
                 ("wheel runtimes: CI probe", "S"),
-                ("text I/O: VTU number errors", "S"),
-                ("HDF5: appends, lock scope", "L"),
+                ("HDF5: lock scope", "L"),
                 ("WASM copies · worst-cell smoothing", "M"),
-                ("Python layers · sequences", "M"),
+                ("sequences: read-ahead, fields only", "M"),
             ],
             [(0, 1)],
         ),

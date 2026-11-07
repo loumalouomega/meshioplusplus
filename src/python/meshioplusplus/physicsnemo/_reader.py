@@ -11,6 +11,7 @@ import torch
 from physicsnemo.datapipes.readers.base import Reader
 
 from . import _flat_items, _read_sample, _split_kwargs
+from ._edge_cache import pop_edge_cache
 
 
 class MeshManifestReader(Reader):
@@ -27,7 +28,9 @@ class MeshManifestReader(Reader):
 
     def __init__(self, manifest, *, split=None, **kwargs):
         super().__init__()
-        graph_kwargs, read_kwargs = _split_kwargs(dict(kwargs))
+        kwargs = dict(kwargs)
+        self._edge_cache = pop_edge_cache(kwargs)
+        graph_kwargs, read_kwargs = _split_kwargs(kwargs)
         self._graph_kwargs = graph_kwargs
         offset = int(graph_kwargs.get("target_offset", 0))
         self._items = _flat_items(manifest, split, read_kwargs, offset)
@@ -37,7 +40,9 @@ class MeshManifestReader(Reader):
 
     def _load_sample(self, index):
         entry_id, series, step = self._items[index]
-        _, sample = _read_sample(series, step, self._graph_kwargs)
+        _, sample = _read_sample(
+            series, step, self._graph_kwargs, edge_cache=self._edge_cache
+        )
         return {name: torch.from_numpy(array) for name, array in sample.arrays.items()}
 
 

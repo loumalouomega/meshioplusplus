@@ -49470,15 +49470,51 @@ namespace detail {
 /// The process-wide mutex; prefer `LibraryLock`.
 std::recursive_mutex& library_mutex();
 
+/// How many `LibraryLock`s the calling thread holds (0 when none).
+int& library_lock_depth();
+
 /// RAII guard over `library_mutex()`.
 class LibraryLock {
 public:
-    LibraryLock() : mLock(library_mutex()) {}
+    LibraryLock() {
+        library_mutex().lock();
+        ++library_lock_depth();
+    }
+    ~LibraryLock() {
+        --library_lock_depth();
+        library_mutex().unlock();
+    }
     LibraryLock(const LibraryLock&) = delete;
     LibraryLock& operator=(const LibraryLock&) = delete;
+};
+
+/**
+ * @brief Gives the lock up for a stretch of pure computation (roadmap 5.8.2).
+ *
+ * Releases every level the calling thread holds and takes them all back when
+ * it goes out of scope, so another thread's HDF5 read or write runs while
+ * this one compresses or inflates. A no-op on a thread that holds no lock.
+ * Inside it, make **no** library call and touch no library handle: the
+ * invariant -- no two threads inside the libraries -- rests on that. Handles
+ * opened before it stay open and valid; only their use waits.
+ */
+class LibraryUnlock {
+public:
+    LibraryUnlock() : mDepth(library_lock_depth()) {
+        for (int i = 0; i < mDepth; ++i)
+            library_mutex().unlock();
+        library_lock_depth() = 0;
+    }
+    ~LibraryUnlock() {
+        for (int i = 0; i < mDepth; ++i)
+            library_mutex().lock();
+        library_lock_depth() = mDepth;
+    }
+    LibraryUnlock(const LibraryUnlock&) = delete;
+    LibraryUnlock& operator=(const LibraryUnlock&) = delete;
 
 private:
-    std::lock_guard<std::recursive_mutex> mLock;
+    int mDepth;
 };
 
 }  // namespace detail
@@ -87365,46 +87401,87 @@ hsize_t h5u_chunk_rows(const std::vector<hsize_t>& rDims, std::size_t ElemBytes)
 
 #ifdef MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE
 /**
- * @brief Write `rArr` into the chunked, deflate-filtered dataset `d` chunk by
- * chunk: compress every chunk in parallel exactly as HDF5's deflate filter
- * would (`compress2` at `Level`, the last chunk zero-padded to full size, as
- * the library pads it with the default fill value), then write them in
- * ascending order. Returns false, having written nothing, when the file type
- * is not the memory layout byte for byte.
+ * @brief The deflate level of `d` when its whole filter pipeline is deflate
+ * alone and its chunks hold whole rows of `rDims` (the layout every writer
+ * here creates), with the rows per chunk in `rChunkRows`; -1 otherwise.
  */
-bool h5u_write_deflate_chunks(hid_t d, const NDArray& rArr, const std::vector<hsize_t>& rDims,
-                              hsize_t ChunkRows, int Level) {
-    if (H5Tequal(file_type(rArr.Dtype()), native_type(rArr.Dtype())) <= 0)
+int h5u_deflate_only_level(hid_t d, const std::vector<hsize_t>& rDims, hsize_t& rChunkRows) {
+    if (rDims.empty())
+        return -1;
+    Hid dcpl(H5Dget_create_plist(d), H5Pclose);
+    if (!dcpl.Valid() || H5Pget_layout(dcpl) != H5D_CHUNKED || H5Pget_nfilters(dcpl) != 1)
+        return -1;
+    unsigned flags = 0;
+    unsigned cd_values[1] = {0};
+    std::size_t nelmts = 1;
+    unsigned filter_config = 0;
+    if (H5Pget_filter2(dcpl, 0, &flags, &nelmts, cd_values, 0, nullptr, &filter_config) !=
+        H5Z_FILTER_DEFLATE)
+        return -1;
+    std::vector<hsize_t> chunk(rDims.size(), 0);
+    if (H5Pget_chunk(dcpl, static_cast<int>(chunk.size()), chunk.data()) !=
+        static_cast<int>(chunk.size()))
+        return -1;
+    for (std::size_t i = 1; i < rDims.size(); ++i)
+        if (chunk[i] != rDims[i])
+            return -1;  // chunks that split a row: not this path's shape
+    if (chunk[0] == 0)
+        return -1;
+    rChunkRows = chunk[0];
+    // H5Pset_deflate stores the level as the one client value; none means 6.
+    return nelmts >= 1 ? static_cast<int>(cd_values[0]) : 6;
+}
+
+/**
+ * @brief Write `NRows` rows of `RowBytes` bytes each from `pSrc` into the
+ * chunked, deflate-filtered dataset `d` of rank `Rank`, from row `Row0` (a
+ * multiple of `ChunkRows`), chunk by chunk: compress every chunk in parallel
+ * exactly as HDF5's deflate filter would (`compress2` at `Level`, the last
+ * chunk zero-padded to full size, as the library pads it with the default
+ * fill value), then write them in ascending order. Returns false, having
+ * written nothing, when the file type of `Dt` is not its memory layout byte
+ * for byte.
+ */
+bool h5u_write_deflate_chunks(hid_t d, const void* pSrc, DType Dt, std::size_t RowBytes,
+                              hsize_t Row0, hsize_t NRows, std::size_t Rank, hsize_t ChunkRows,
+                              int Level) {
+    if (H5Tequal(file_type(Dt), native_type(Dt)) <= 0)
         return false;
-    const std::size_t row_bytes = rArr.Nbytes() / static_cast<std::size_t>(rDims[0]);
-    const std::size_t chunk_bytes = static_cast<std::size_t>(ChunkRows) * row_bytes;
-    const std::size_t nchunks = static_cast<std::size_t>((rDims[0] + ChunkRows - 1) / ChunkRows);
-    const auto* src = reinterpret_cast<const Bytef*>(rArr.Data());
+    const std::size_t total = static_cast<std::size_t>(NRows) * RowBytes;
+    const std::size_t chunk_bytes = static_cast<std::size_t>(ChunkRows) * RowBytes;
+    const std::size_t nchunks = static_cast<std::size_t>((NRows + ChunkRows - 1) / ChunkRows);
+    const auto* src = static_cast<const Bytef*>(pSrc);
     std::vector<std::vector<Bytef>> packed(nchunks);
     std::vector<int> status(nchunks, Z_OK);
-    parallel_for(
-        nchunks,
-        [&](std::size_t c) {
-            const std::size_t first = c * chunk_bytes;
-            const std::size_t have = std::min(chunk_bytes, rArr.Nbytes() - first);
-            std::vector<Bytef> padded;
-            const Bytef* in = src + first;
-            if (have < chunk_bytes) {
-                padded.assign(chunk_bytes, 0);
-                std::memcpy(padded.data(), in, have);
-                in = padded.data();
-            }
-            uLongf n = compressBound(static_cast<uLong>(chunk_bytes));
-            packed[c].resize(n);
-            status[c] = compress2(packed[c].data(), &n, in, static_cast<uLong>(chunk_bytes), Level);
-            packed[c].resize(n);
-        },
-        1);
-    std::vector<hsize_t> offset(rDims.size(), 0);
+    {
+        // No HDF5 call in here: another thread may use the library meanwhile
+        // (roadmap 5.8.2).
+        const detail::LibraryUnlock unlock;
+        parallel_for(
+            nchunks,
+            [&](std::size_t c) {
+                const std::size_t first = c * chunk_bytes;
+                const std::size_t have = std::min(chunk_bytes, total - first);
+                std::vector<Bytef> padded;
+                const Bytef* in = src + first;
+                if (have < chunk_bytes) {
+                    padded.assign(chunk_bytes, 0);
+                    std::memcpy(padded.data(), in, have);
+                    in = padded.data();
+                }
+                uLongf n = compressBound(static_cast<uLong>(chunk_bytes));
+                packed[c].resize(n);
+                status[c] =
+                    compress2(packed[c].data(), &n, in, static_cast<uLong>(chunk_bytes), Level);
+                packed[c].resize(n);
+            },
+            1);
+    }
+    std::vector<hsize_t> offset(Rank, 0);
     for (std::size_t c = 0; c < nchunks; ++c) {
         if (status[c] != Z_OK)
             throw WriteError("HDF5: zlib could not compress a chunk");
-        offset[0] = static_cast<hsize_t>(c) * ChunkRows;
+        offset[0] = Row0 + static_cast<hsize_t>(c) * ChunkRows;
         if (H5Dwrite_chunk(d, H5P_DEFAULT, 0, offset.data(), packed[c].size(), packed[c].data()) <
             0)
             throw WriteError("HDF5: failed writing a chunk");
@@ -87414,44 +87491,39 @@ bool h5u_write_deflate_chunks(hid_t d, const NDArray& rArr, const std::vector<hs
 }
 
 /**
- * @brief Read the gzip-compressed, row-chunked dataset `d` straight into
- * `rOut` with the chunks inflated in parallel (the I/O stays serial: HDF5 is
- * not thread-safe). Returns false, having read nothing, for any layout it does
- * not cover -- not chunked, a filter pipeline other than deflate alone, chunks
- * that split a row, one chunk only, a chunk never written, or a file type
- * that is not the memory layout -- so the caller falls back to `H5Dread`.
+ * @brief Read rows `[Row0, Row0 + Count)` of the gzip-compressed, row-chunked
+ * dataset `d` (of extent `rDims`) straight into `rOut` with the chunks
+ * inflated in parallel and the library lock given up while they inflate (the
+ * I/O stays serial and locked: HDF5 is not thread-safe). Returns false,
+ * having read nothing, for any layout it does not cover -- not chunked, a
+ * filter pipeline other than deflate alone, chunks that split a row, a window
+ * within one chunk, a chunk never written, or a file type that is not the
+ * memory layout -- so the caller falls back to `H5Dread`.
  */
 bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
-                             const std::vector<hsize_t>& rDims) {
-    if (rDims.empty() || rOut.Size() == 0 || H5Tequal(FileType, native_type(rOut.Dtype())) <= 0)
-        return false;
-    Hid dcpl(H5Dget_create_plist(d), H5Pclose);
-    if (!dcpl.Valid() || H5Pget_layout(dcpl) != H5D_CHUNKED || H5Pget_nfilters(dcpl) != 1)
-        return false;
-    unsigned flags = 0;
-    std::size_t nelmts = 0;
-    unsigned filter_config = 0;
-    if (H5Pget_filter2(dcpl, 0, &flags, &nelmts, nullptr, 0, nullptr, &filter_config) !=
-        H5Z_FILTER_DEFLATE)
+                             const std::vector<hsize_t>& rDims, hsize_t Row0, hsize_t Count) {
+    if (rDims.empty() || rOut.Size() == 0 || Count == 0 ||
+        H5Tequal(FileType, native_type(rOut.Dtype())) <= 0)
         return false;
     std::vector<hsize_t> chunk(rDims.size(), 0);
-    if (H5Pget_chunk(dcpl, static_cast<int>(chunk.size()), chunk.data()) !=
-        static_cast<int>(chunk.size()))
-        return false;
     for (std::size_t i = 1; i < rDims.size(); ++i)
-        if (chunk[i] != rDims[i])
-            return false;  // chunks that split a row: not this path's shape
-    if (chunk[0] == 0 || chunk[0] >= rDims[0])
+        chunk[i] = rDims[i];
+    if (h5u_deflate_only_level(d, rDims, chunk[0]) < 0)
+        return false;
+    const hsize_t chunk_rows = chunk[0];
+    const hsize_t c_first = Row0 / chunk_rows;
+    const hsize_t c_last = (Row0 + Count - 1) / chunk_rows;
+    if (c_last == c_first)
         return false;  // one chunk: nothing to spread over threads
 
-    const std::size_t row_bytes = rOut.Nbytes() / static_cast<std::size_t>(rDims[0]);
-    const std::size_t chunk_bytes = static_cast<std::size_t>(chunk[0]) * row_bytes;
-    const std::size_t nchunks = static_cast<std::size_t>((rDims[0] + chunk[0] - 1) / chunk[0]);
+    const std::size_t row_bytes = rOut.Nbytes() / static_cast<std::size_t>(Count);
+    const std::size_t chunk_bytes = static_cast<std::size_t>(chunk_rows) * row_bytes;
+    const std::size_t nchunks = static_cast<std::size_t>(c_last - c_first + 1);
     std::vector<std::vector<Bytef>> packed(nchunks);
     std::vector<std::uint32_t> masks(nchunks, 0);
     std::vector<hsize_t> offset(rDims.size(), 0);
     for (std::size_t c = 0; c < nchunks; ++c) {
-        offset[0] = static_cast<hsize_t>(c) * chunk[0];
+        offset[0] = (c_first + static_cast<hsize_t>(c)) * chunk_rows;
         hsize_t stored = 0;
         if (H5Dget_chunk_storage_size(d, offset.data(), &stored) < 0 || stored == 0)
             return false;  // unallocated: H5Dread supplies the fill value
@@ -87471,36 +87543,46 @@ bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
 
     auto* dst = reinterpret_cast<Bytef*>(rOut.Data());
     std::vector<std::uint8_t> ok(nchunks, 0);
-    parallel_for(
-        nchunks,
-        [&](std::size_t c) {
-            const std::size_t first = c * chunk_bytes;
-            const std::size_t want = std::min(chunk_bytes, rOut.Nbytes() - first);
-            if (masks[c] & 1u) {  // the filter was skipped: the chunk is stored raw
-                if (packed[c].size() >= want) {
-                    std::memcpy(dst + first, packed[c].data(), want);
-                    ok[c] = 1;
+    {
+        // No HDF5 call in here: another thread may use the library meanwhile
+        // (roadmap 5.8.2).
+        const detail::LibraryUnlock unlock;
+        parallel_for(
+            nchunks,
+            [&](std::size_t c) {
+                // The rows of this chunk inside the window, and where they go.
+                const hsize_t r0 = (c_first + static_cast<hsize_t>(c)) * chunk_rows;
+                const hsize_t lo = std::max(r0, Row0);
+                const hsize_t hi = std::min(r0 + chunk_rows, Row0 + Count);
+                const std::size_t src_off = static_cast<std::size_t>(lo - r0) * row_bytes;
+                const std::size_t dst_off = static_cast<std::size_t>(lo - Row0) * row_bytes;
+                const std::size_t want = static_cast<std::size_t>(hi - lo) * row_bytes;
+                if (masks[c] & 1u) {  // the filter was skipped: the chunk is stored raw
+                    if (packed[c].size() >= src_off + want) {
+                        std::memcpy(dst + dst_off, packed[c].data() + src_off, want);
+                        ok[c] = 1;
+                    }
+                    return;
                 }
-                return;
-            }
-            // The last chunk inflates to a whole chunk (HDF5 pads it); only
-            // its leading `want` bytes belong to the dataset.
-            std::vector<Bytef> tail;
-            Bytef* out = dst + first;
-            if (want < chunk_bytes) {
-                tail.resize(chunk_bytes);
-                out = tail.data();
-            }
-            uLongf n = static_cast<uLongf>(chunk_bytes);
-            const int rc =
-                uncompress(out, &n, packed[c].data(), static_cast<uLong>(packed[c].size()));
-            if (rc != Z_OK || n != chunk_bytes)
-                return;
-            if (!tail.empty())
-                std::memcpy(dst + first, tail.data(), want);
-            ok[c] = 1;
-        },
-        1);
+                // A chunk inflates whole (HDF5 pads the dataset's last one);
+                // only the window's rows of it are kept.
+                std::vector<Bytef> tail;
+                Bytef* out = dst + dst_off;
+                if (src_off != 0 || want < chunk_bytes) {
+                    tail.resize(chunk_bytes);
+                    out = tail.data();
+                }
+                uLongf n = static_cast<uLongf>(chunk_bytes);
+                const int rc =
+                    uncompress(out, &n, packed[c].data(), static_cast<uLong>(packed[c].size()));
+                if (rc != Z_OK || n != chunk_bytes)
+                    return;
+                if (!tail.empty())
+                    std::memcpy(dst + dst_off, tail.data() + src_off, want);
+                ok[c] = 1;
+            },
+            1);
+    }
     for (std::uint8_t k : ok)
         if (!k)
             throw ReadError("HDF5: a compressed chunk does not inflate to its declared size");
@@ -87764,7 +87846,7 @@ NDArray read_dataset(hid_t loc, const std::string& rName) {
                 throw ReadError("HDF5: failed reading dataset '" + rName + "'");
         } else {
 #ifdef MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE
-            if (h5u_read_deflate_chunks(d, dt, out, hdims))
+            if (!hdims.empty() && h5u_read_deflate_chunks(d, dt, out, hdims, 0, hdims[0]))
                 return out;
 #endif
             if (H5Dread(d, native_type(mdt), H5S_ALL, H5S_ALL, H5P_DEFAULT, out.Data()) < 0)
@@ -87797,7 +87879,9 @@ void write_dataset(hid_t loc, const std::string& rName, const NDArray& rArr, int
         throw WriteError("HDF5: could not create dataset '" + rName + "'");
 #ifdef MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE
     if (compress && chunk_rows < hdims[0] &&
-        h5u_write_deflate_chunks(d, rArr, hdims, chunk_rows, gzip_level))
+        h5u_write_deflate_chunks(d, rArr.Data(), rArr.Dtype(),
+                                 rArr.Nbytes() / static_cast<std::size_t>(hdims[0]), 0, hdims[0],
+                                 hdims.size(), chunk_rows, gzip_level))
         return;
 #endif
     if (rArr.Size() > 0) {
@@ -88005,6 +88089,11 @@ NDArray read_dataset_rows(hid_t loc, const std::string& rName, std::size_t Row0,
         0)
         throw ReadError("HDF5: could not select rows of dataset '" + rName + "'");
     Hid mem(H5Screate_simple(ndim, count.data(), nullptr), H5Sclose);
+#ifdef MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE
+    if (h5u_read_deflate_chunks(d, dt, out, dims, static_cast<hsize_t>(Row0),
+                                static_cast<hsize_t>(Count)))
+        return out;
+#endif
     if (H5Dread(d, native_type(mdt), mem, space, H5P_DEFAULT, out.Data()) < 0)
         throw ReadError("HDF5: failed reading rows of dataset '" + rName + "'");
     return out;
@@ -88079,17 +88168,46 @@ void append_rows(hid_t loc, const std::string& rName, const NDArray& rRows) {
     newdims[0] = dims[0] + n;
     if (H5Dset_extent(d, newdims.data()) < 0)
         throw WriteError("HDF5: could not extend dataset '" + rName + "'");
-    Hid fspace(H5Dget_space(d), H5Sclose);  // the extent changed: re-fetch
-    std::vector<hsize_t> start(static_cast<std::size_t>(ndim), 0);
-    std::vector<hsize_t> count(dims);
-    start[0] = dims[0];
-    count[0] = n;
-    if (H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start.data(), nullptr, count.data(), nullptr) <
-        0)
-        throw WriteError("HDF5: could not select rows of dataset '" + rName + "'");
-    Hid mem(H5Screate_simple(ndim, count.data(), nullptr), H5Sclose);
-    if (H5Dwrite(d, native_type(rRows.Dtype()), mem, fspace, H5P_DEFAULT, rRows.Data()) < 0)
-        throw WriteError("HDF5: failed appending to dataset '" + rName + "'");
+    // Rows [Row0, Row0 + Count) of rRows' bytes, through HDF5's own filter.
+    const std::size_t row_bytes = rRows.Nbytes() / n;
+    const auto write_rows = [&](hsize_t Row0, hsize_t Count, const void* pSrc) {
+        Hid fspace(H5Dget_space(d), H5Sclose);  // the extent changed: re-fetch
+        std::vector<hsize_t> start(static_cast<std::size_t>(ndim), 0);
+        std::vector<hsize_t> count(dims);
+        start[0] = Row0;
+        count[0] = Count;
+        if (H5Sselect_hyperslab(fspace, H5S_SELECT_SET, start.data(), nullptr, count.data(),
+                                nullptr) < 0)
+            throw WriteError("HDF5: could not select rows of dataset '" + rName + "'");
+        Hid mem(H5Screate_simple(ndim, count.data(), nullptr), H5Sclose);
+        if (H5Dwrite(d, native_type(rRows.Dtype()), mem, fspace, H5P_DEFAULT, pSrc) < 0)
+            throw WriteError("HDF5: failed appending to dataset '" + rName + "'");
+    };
+#ifdef MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE
+    // The whole chunks of a gzip dataset compressed in parallel (roadmap
+    // 5.8.1): the rows that finish the dataset's last, partly written chunk
+    // go through HDF5 (which reads, extends and re-deflates it); the rest
+    // start on a chunk boundary and take the direct-chunk path whole-dataset
+    // writes take, when they span more than one chunk.
+    hsize_t chunk_rows = 0;
+    const int level = h5u_deflate_only_level(d, newdims, chunk_rows);
+    if (level >= 0) {
+        const hsize_t aligned = (dims[0] + chunk_rows - 1) / chunk_rows * chunk_rows;
+        const hsize_t head = std::min<hsize_t>(static_cast<hsize_t>(n), aligned - dims[0]);
+        const hsize_t rest = static_cast<hsize_t>(n) - head;
+        if (rest > chunk_rows &&
+            H5Tequal(file_type(rRows.Dtype()), native_type(rRows.Dtype())) > 0) {
+            const auto* src = rRows.Data();
+            if (head > 0)
+                write_rows(dims[0], head, src);
+            if (h5u_write_deflate_chunks(d, src + static_cast<std::size_t>(head) * row_bytes,
+                                         rRows.Dtype(), row_bytes, aligned, rest,
+                                         static_cast<std::size_t>(ndim), chunk_rows, level))
+                return;
+        }
+    }
+#endif
+    write_rows(dims[0], static_cast<hsize_t>(n), rRows.Data());
 }
 
 std::size_t dataset_num_rows(hid_t loc, const std::string& rName) {
@@ -92352,6 +92470,11 @@ namespace detail {
 std::recursive_mutex& library_mutex() {
     static std::recursive_mutex sMutex;
     return sMutex;
+}
+
+int& library_lock_depth() {
+    thread_local int tDepth = 0;
+    return tDepth;
 }
 
 }  // namespace detail
@@ -112923,12 +113046,14 @@ std::size_t vtk_xml_header_bytes(const Mesh& rMesh) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/vtk_cells.cpp =====
 // ===== begin src/cpp/src/detail/vtk_xml.cpp =====
+#include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <type_traits>
@@ -113098,6 +113223,26 @@ void vtu_store(NDArray& rA, std::size_t i, double d, std::int64_t v) {
     }
 }
 
+namespace {
+
+/// A token of an ascii `DataArray` that no number parser takes (roadmap
+/// 5.7.2): the read fails naming it and its byte offset in the element's text,
+/// where it once cut the array short.
+[[noreturn]] void vtkxml_throw_malformed(const char* pText, const char* pAt, const char* pLast) {
+    const char* e = pAt;
+    while (e < pLast && !std::isspace(static_cast<unsigned char>(*e)))
+        ++e;
+    constexpr std::size_t kShown = 32;
+    const std::size_t len = static_cast<std::size_t>(e - pAt);
+    std::string token(pAt, std::min(len, kShown));
+    if (len > kShown)
+        token += "...";
+    throw ReadError("VTK XML: malformed number '" + token + "' at byte " +
+                    std::to_string(pAt - pText) + " of an ascii DataArray");
+}
+
+}  // namespace
+
 NDArray vtu_parse_ascii(const char* pText, DType dt) {
     const bool isflt = is_float_dtype(dt);
     std::vector<double> dv;
@@ -113107,7 +113252,7 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
     // A large array is parsed in parallel chunks straight into the array
     // (roadmap 5.7.2), each token by the parser the loop below uses; a token
     // that parser would not take whole sends the array to that loop, so the
-    // values -- and where a bad token cuts the array short -- are unchanged.
+    // values -- and the error a bad token raises -- are unchanged.
     if (static_cast<std::size_t>(last - p) >= (std::size_t{1} << 20) && parallel_workers() > 1) {
         const std::string_view text(p, static_cast<std::size_t>(last - p));
         const std::size_t total = count_tokens(text);
@@ -113168,7 +113313,7 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
             const char* fend = nullptr;
             double x = detail::parse_double(p, fend);
             if (fend == p)
-                break;
+                vtkxml_throw_malformed(pText, p, last);
             dv.push_back(x);
             endp = const_cast<char*>(fend);
         } else if (dt == DType::UInt64) {
@@ -113177,13 +113322,13 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
             std::uint64_t x = 0;
             endp = const_cast<char*>(vtkxml_parse_decimal(p, last, x));
             if (endp == p)
-                break;
+                vtkxml_throw_malformed(pText, p, last);
             iv.push_back(static_cast<std::int64_t>(x));
         } else {
             std::int64_t x = 0;
             endp = const_cast<char*>(vtkxml_parse_decimal(p, last, x));
             if (endp == p)
-                break;
+                vtkxml_throw_malformed(pText, p, last);
             iv.push_back(x);
         }
         p = endp;
@@ -206289,6 +206434,7 @@ Mesh vtkhdf_read_composite(hid_t G, const std::string& rKind, const ReadOptions&
                                                    static_cast<std::int64_t>(flat), rOpts);
                 for (auto& kv : root_fd.mFieldData)
                     leaf.mFieldData.emplace(kv.first, std::move(kv.second));
+                const detail::LibraryUnlock unlock;  // assembly only: see below
                 return vtkhdf_assemble(leaf, rOpts, {});
             }
             flat -= plan[i].mNumParts;
@@ -206305,6 +206451,10 @@ Mesh vtkhdf_read_composite(hid_t G, const std::string& rKind, const ReadOptions&
                                       ? blocks[i].mName
                                       : blocks[i].mName + "/piece_" + std::to_string(j));
     }
+    // The blocks are merged and the mesh assembled from the arrays read above with
+    // no library call, so the lock is given up for it (roadmap 5.8.2); the block
+    // handles still open close after it is taken back.
+    const detail::LibraryUnlock unlock;
     VtkhdfLeaf merged = vtkhdf_concat_leaves(leaves);
     for (auto& kv : root_fd.mFieldData)
         merged.mFieldData.emplace(kv.first, std::move(kv.second));
@@ -206834,6 +206984,10 @@ Mesh read_vtkhdf(const std::string& rPath, const ReadOptions& rOpts) {
     if (only < 0 && nparts > 1)
         for (std::size_t j = 0; j < nparts; ++j)
             names.push_back("piece_" + std::to_string(j));
+    // The mesh is assembled from the arrays read above with no library call, so the
+    // lock is given up for it (roadmap 5.8.2); `f` and `root` close after it is
+    // taken back.
+    const detail::LibraryUnlock unlock;
     return vtkhdf_assemble(leaf, rOpts, names);
 }
 
@@ -219638,15 +219792,17 @@ std::array<detail::Vec3, 4> cons_oriented_tet(const detail::Vec3 v[4]) {
 // new capping face. Works unmodified for the 2D triangle-triangle clip too
 // (called with pNewPts == nullptr there, since a planar 2D clip needs no
 // capping step).
-std::vector<detail::Vec3> cons_clip_ring(const std::vector<detail::Vec3>& rPoly,
-                                         const detail::Vec3& rPlanePoint,
-                                         const detail::Vec3& rPlaneNormal,
-                                         std::vector<detail::Vec3>* pNewPts, double EpsSide = 0.0) {
-    if (rPoly.empty())
-        return {};
-    const std::size_t n = rPoly.size();
-    std::vector<detail::Vec3> out;
-    out.reserve(n + 1);
+//
+// The ring `pPoly[0, n)` is clipped into `rOut` (cleared first, never aliasing
+// the input), so a caller reuses its buffers across clips.
+void cons_clip_ring(const detail::Vec3* pPoly, std::size_t n, const detail::Vec3& rPlanePoint,
+                    const detail::Vec3& rPlaneNormal, std::vector<detail::Vec3>& rOut,
+                    std::vector<detail::Vec3>* pNewPts, double EpsSide = 0.0) {
+    rOut.clear();
+    if (n == 0)
+        return;
+    const detail::Vec3* rPoly = pPoly;
+    std::vector<detail::Vec3>& out = rOut;
     auto s = [&](const detail::Vec3& p) {
         return detail::vec3_dot(detail::vec3_sub(p, rPlanePoint), rPlaneNormal);
     };
@@ -219678,7 +219834,6 @@ std::vector<detail::Vec3> cons_clip_ring(const std::vector<detail::Vec3>& rPoly,
         if (cur_in)
             out.push_back(cur);
     }
-    return out;
 }
 
 // Exact overlap area of two triangles, in the xy-plane (z ignored) -- the
@@ -219700,13 +219855,15 @@ double cons_clip_triangle_triangle_area(const detail::Vec3 tgtIn[3], const detai
     const std::array<detail::Vec3, 3> src = ccw(srcIn);
 
     std::vector<detail::Vec3> poly{tgt[0], tgt[1], tgt[2]};
+    std::vector<detail::Vec3> clipped;
     for (int e = 0; e < 3 && !poly.empty(); ++e) {
         const detail::Vec3& a = src[static_cast<std::size_t>(e)];
         const detail::Vec3& b = src[static_cast<std::size_t>((e + 1) % 3)];
         // Left of a->b (CCW inside) written as a plane test: s <= 0 iff
         // cross_z(b - a, p - a) >= 0.
         const detail::Vec3 normal{b[1] - a[1], a[0] - b[0], 0.0};
-        poly = cons_clip_ring(poly, a, normal, nullptr);
+        cons_clip_ring(poly.data(), poly.size(), a, normal, clipped, nullptr);
+        poly.swap(clipped);
     }
     if (poly.size() < 3)
         return 0.0;
@@ -219720,6 +219877,17 @@ double cons_clip_triangle_triangle_area(const detail::Vec3 tgtIn[3], const detai
 // clip's new boundary chord is capped with a fan-triangulated, angle-sorted
 // polygon -- never a general polyhedron-polyhedron clipper. See the header
 // doc comment for the full algorithm description.
+// The buffers of one thread's tetra-tetra clips.
+struct ConsClipScratch {
+    std::vector<std::array<detail::Vec3, 3>> mTris;
+    std::vector<std::array<detail::Vec3, 3>> mKept;
+    std::vector<detail::Vec3> mChord;
+    std::vector<detail::Vec3> mNewPts;
+    std::vector<detail::Vec3> mRing;
+    std::vector<detail::Vec3> mUniq;
+    std::vector<std::pair<double, std::size_t>> mOrder;
+};
+
 double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::Vec3 srcIn[4]) {
     // Recentre on the source tet's own corner average before any arithmetic
     // -- poly_measure's own numerical-stability lesson: this keeps the final
@@ -219754,8 +219922,18 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
     // valid for a positively-oriented tetra.
     static constexpr int kFaces[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
 
-    std::vector<std::array<detail::Vec3, 3>> tris;
-    tris.reserve(4);
+    // Scratch reused across the calls of a thread (the clip runs once per
+    // candidate pair): only the allocations go, every value is computed as
+    // before.
+    thread_local ConsClipScratch tScratch;
+    auto& tris = tScratch.mTris;
+    auto& kept = tScratch.mKept;
+    auto& chord = tScratch.mChord;
+    auto& new_pts = tScratch.mNewPts;
+    auto& ring = tScratch.mRing;
+    auto& uniq = tScratch.mUniq;
+    auto& order = tScratch.mOrder;
+    tris.clear();
     for (const auto& f : kFaces)
         tris.push_back({src[static_cast<std::size_t>(f[0])], src[static_cast<std::size_t>(f[1])],
                         src[static_cast<std::size_t>(f[2])]});
@@ -219780,18 +219958,17 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
             for (const detail::Vec3& p : t)
                 cuts = cuts || side(p) > eps_side;
 
-        std::vector<std::array<detail::Vec3, 3>> kept;
-        std::vector<detail::Vec3> chord;
+        kept.clear();
+        chord.clear();
         for (const auto& t : tris) {
-            std::vector<detail::Vec3> new_pts;
-            const std::vector<detail::Vec3> ring =
-                cons_clip_ring({t[0], t[1], t[2]}, p0, normal, &new_pts, eps_side);
+            new_pts.clear();
+            cons_clip_ring(t.data(), 3, p0, normal, ring, &new_pts, eps_side);
             for (const detail::Vec3& p : new_pts)
                 chord.push_back(p);
             for (std::size_t i = 1; i + 1 < ring.size(); ++i)
                 kept.push_back({ring[0], ring[i], ring[i + 1]});
         }
-        tris = std::move(kept);
+        tris.swap(kept);
         if (!cuts)
             continue;  // nothing removed: no hole, and capping would double a face
         // The hole's boundary also runs through every kept vertex that lies ON
@@ -219807,7 +219984,7 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
         // the dedup'd chord, angle-sorted around the cutting plane's own 2D
         // basis and fan-triangulated -- always valid, since the cap of a
         // convex polytope clipped by one more plane is itself convex.
-        std::vector<detail::Vec3> uniq;
+        uniq.clear();
         for (const detail::Vec3& p : chord) {
             bool dup = false;
             for (const detail::Vec3& q : uniq) {
@@ -219832,7 +220009,7 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
                 detail::vec3_sub(arbitrary, detail::vec3_scale(w, detail::vec3_dot(arbitrary, w))));
             const detail::Vec3 v = detail::vec3_cross(w, u);
 
-            std::vector<std::pair<double, std::size_t>> order(uniq.size());
+            order.resize(uniq.size());
             for (std::size_t i = 0; i < uniq.size(); ++i) {
                 const detail::Vec3 d = detail::vec3_sub(uniq[i], cc);
                 order[i] = {std::atan2(detail::vec3_dot(d, v), detail::vec3_dot(d, u)), i};
@@ -226066,6 +226243,33 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
     }
 
     // --- phase 8: the SERIAL greedy loop --------------------------------------
+    // Guard 6's "before" volume of a tet, kept until one of its corners moves:
+    // a commit moves only the survivor, so the survivor's tets are dropped
+    // from it. The same function of the same corners, so the same bits.
+    std::vector<double> before_volume(num_tets, 0.0);
+    std::vector<std::uint8_t> before_known(num_tets, 0);
+    const auto tet_volume_now = [&](std::int64_t t) {
+        const auto ut = static_cast<std::size_t>(t);
+        if (!before_known[ut]) {
+            before_volume[ut] = dv_tet_volume(xyz, tet_conn, t, -1, -1, nullptr);
+            before_known[ut] = 1;
+        }
+        return before_volume[ut];
+    };
+    // The vertex-link rings (decim_corner_ring over a vertex's tets), kept
+    // until the vertex's tets change: a commit changes them for the two
+    // endpoints, every corner of a tet that dies, and every corner of a tet
+    // that moves from `r` to `s` (all in the survivor's new ring).
+    std::vector<std::vector<std::int64_t>> ring_cache(n);
+    std::vector<std::uint8_t> ring_known(n, 0);
+    const auto ring_of = [&](std::int64_t v) -> const std::vector<std::int64_t>& {
+        const auto uv = static_cast<std::size_t>(v);
+        if (!ring_known[uv]) {
+            ring_cache[uv] = detail::decim_corner_ring<4>(vtets[uv], tet_conn, v);
+            ring_known[uv] = 1;
+        }
+        return ring_cache[uv];
+    };
     DecimateVolumeResult result;
     std::int64_t alive_tets = static_cast<std::int64_t>(num_tets);
     while (true) {
@@ -226102,10 +226306,8 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
         // Guard 2: the vertex-link condition, exact set equality.
         {
-            const std::vector<std::int64_t> link_a =
-                detail::decim_corner_ring<4>(vtets[static_cast<std::size_t>(a)], tet_conn, a);
-            const std::vector<std::int64_t> link_b =
-                detail::decim_corner_ring<4>(vtets[static_cast<std::size_t>(b)], tet_conn, b);
+            const std::vector<std::int64_t>& link_a = ring_of(a);
+            const std::vector<std::int64_t>& link_b = ring_of(b);
             std::vector<std::int64_t> link_ab;
             link_ab.reserve(shared.size() * 2);
             for (std::int64_t t : shared) {
@@ -226196,7 +226398,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
         for (std::int64_t t : vtets[static_cast<std::size_t>(a)]) {
             if (std::binary_search(shared.begin(), shared.end(), t))
                 continue;
-            const double before = dv_tet_volume(xyz, tet_conn, t, -1, -1, nullptr);
+            const double before = tet_volume_now(t);
             const double after = dv_tet_volume(xyz, tet_conn, t, a, b, placed.mX);
             if (dv_tet_inverts(before, after)) {
                 flips = true;
@@ -226207,7 +226409,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
             for (std::int64_t t : vtets[static_cast<std::size_t>(b)]) {
                 if (std::binary_search(shared.begin(), shared.end(), t))
                     continue;
-                const double before = dv_tet_volume(xyz, tet_conn, t, -1, -1, nullptr);
+                const double before = tet_volume_now(t);
                 const double after = dv_tet_volume(xyz, tet_conn, t, a, b, placed.mX);
                 if (dv_tet_inverts(before, after)) {
                     flips = true;
@@ -226225,9 +226427,17 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
         detail::decim_commit_blend(xyz, quads, float_data, placed.mX, s, r);
 
+        for (std::int64_t t : shared)
+            for (int k = 0; k < 4; ++k)
+                ring_known[static_cast<std::size_t>(
+                    tet_conn[static_cast<std::size_t>(t) * 4 + static_cast<std::size_t>(k)])] = 0;
+        ring_known[static_cast<std::size_t>(s)] = 0;
+        ring_known[static_cast<std::size_t>(r)] = 0;
         alive_tets -= static_cast<std::int64_t>(shared.size());
         result.mTetsRemoved += static_cast<std::int64_t>(shared.size());
         detail::decim_kill_and_migrate<4>(tet_conn, vtets, tet_alive, shared, s, r);
+        for (std::int64_t t : vtets[static_cast<std::size_t>(s)])
+            before_known[static_cast<std::size_t>(t)] = 0;
 
         // Kill the shared boundary faces, then migrate r's remaining alive
         // boundary faces onto s (decimate.cpp's own vfaces/face_alive commit
@@ -226244,8 +226454,9 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
             result.mMaxErrorApplied = std::max(result.mMaxErrorApplied, score);
 
         // Re-score the survivor's remaining edges via its updated link.
-        const std::vector<std::int64_t> link_s =
-            detail::decim_corner_ring<4>(vtets[static_cast<std::size_t>(s)], tet_conn, s);
+        const std::vector<std::int64_t>& link_s = ring_of(s);
+        for (std::int64_t w : link_s)
+            ring_known[static_cast<std::size_t>(w)] = 0;
         for (std::int64_t w : link_s) {
             if (pinned[static_cast<std::size_t>(s)] && pinned[static_cast<std::size_t>(w)])
                 continue;

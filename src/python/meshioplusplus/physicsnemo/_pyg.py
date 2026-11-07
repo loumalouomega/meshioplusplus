@@ -10,6 +10,7 @@ import torch
 from torch_geometric.data import Data
 
 from . import _flat_items, _read_sample, _split_kwargs
+from ._edge_cache import pop_edge_cache
 
 
 class MeshManifestDataset(torch.utils.data.Dataset):
@@ -41,7 +42,9 @@ class MeshManifestDataset(torch.utils.data.Dataset):
         epoch=0,
         **kwargs,
     ):
-        graph_kwargs, read_kwargs = _split_kwargs(dict(kwargs))
+        kwargs = dict(kwargs)
+        self._edge_cache = pop_edge_cache(kwargs)
+        graph_kwargs, read_kwargs = _split_kwargs(kwargs)
         self._graph_kwargs = graph_kwargs
         offset = int(graph_kwargs.get("target_offset", 0))
         self._items = _flat_items(manifest, split, read_kwargs, offset)
@@ -66,6 +69,7 @@ class MeshManifestDataset(torch.utils.data.Dataset):
             self._augmentation,
             self._epoch,
             index,
+            self._edge_cache,
         )
         if self._schema is None:
             self._schema = sample.schema

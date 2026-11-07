@@ -16,12 +16,14 @@
 //
 
 // System includes
+#include <algorithm>
 #include <cctype>
 #include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <type_traits>
@@ -201,6 +203,26 @@ void vtu_store(NDArray& rA, std::size_t i, double d, std::int64_t v) {
     }
 }
 
+namespace {
+
+/// A token of an ascii `DataArray` that no number parser takes (roadmap
+/// 5.7.2): the read fails naming it and its byte offset in the element's text,
+/// where it once cut the array short.
+[[noreturn]] void vtkxml_throw_malformed(const char* pText, const char* pAt, const char* pLast) {
+    const char* e = pAt;
+    while (e < pLast && !std::isspace(static_cast<unsigned char>(*e)))
+        ++e;
+    constexpr std::size_t kShown = 32;
+    const std::size_t len = static_cast<std::size_t>(e - pAt);
+    std::string token(pAt, std::min(len, kShown));
+    if (len > kShown)
+        token += "...";
+    throw ReadError("VTK XML: malformed number '" + token + "' at byte " +
+                    std::to_string(pAt - pText) + " of an ascii DataArray");
+}
+
+}  // namespace
+
 NDArray vtu_parse_ascii(const char* pText, DType dt) {
     const bool isflt = is_float_dtype(dt);
     std::vector<double> dv;
@@ -210,7 +232,7 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
     // A large array is parsed in parallel chunks straight into the array
     // (roadmap 5.7.2), each token by the parser the loop below uses; a token
     // that parser would not take whole sends the array to that loop, so the
-    // values -- and where a bad token cuts the array short -- are unchanged.
+    // values -- and the error a bad token raises -- are unchanged.
     if (static_cast<std::size_t>(last - p) >= (std::size_t{1} << 20) && parallel_workers() > 1) {
         const std::string_view text(p, static_cast<std::size_t>(last - p));
         const std::size_t total = count_tokens(text);
@@ -271,7 +293,7 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
             const char* fend = nullptr;
             double x = detail::parse_double(p, fend);
             if (fend == p)
-                break;
+                vtkxml_throw_malformed(pText, p, last);
             dv.push_back(x);
             endp = const_cast<char*>(fend);
         } else if (dt == DType::UInt64) {
@@ -280,13 +302,13 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
             std::uint64_t x = 0;
             endp = const_cast<char*>(vtkxml_parse_decimal(p, last, x));
             if (endp == p)
-                break;
+                vtkxml_throw_malformed(pText, p, last);
             iv.push_back(static_cast<std::int64_t>(x));
         } else {
             std::int64_t x = 0;
             endp = const_cast<char*>(vtkxml_parse_decimal(p, last, x));
             if (endp == p)
-                break;
+                vtkxml_throw_malformed(pText, p, last);
             iv.push_back(x);
         }
         p = endp;

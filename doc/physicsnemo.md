@@ -122,6 +122,19 @@ estats = mpn.edge_stats(manifest, split="train", proximity={"method": "radius", 
 
 All three walk a [`DatasetManifest`](./datasets) (or anything `DatasetManifest.load` accepts), resolve each entry through the sequence plan, and read one mesh at a time. The stats are per-component streaming moments in the `{field}_mean`/`{field}_std` key convention — write them with `json.dump` as `node_stats.json`/`edge_stats.json` and Gen-1 datapipes read them as-is; pass them to Gen-2's `Normalize` transform directly.
 
+#### Reusing the edges of an unchanged topology
+
+A time series whose mesh does not change between steps builds the same `edge_index` at every step. `edge_cache=N` on `iter_samples`, `make_dataset` and `make_reader` (or an `mpn.EdgeCache(N)` passed to them or to `graph_sample`, to share one) keeps the edge sets of the last `N` distinct topologies. An entry is found by the point count, each cell block's type, dtype and shape, a sample of its connectivity, `kind` and `undirected`, and is used only when the whole connectivity matches the copy it holds. It is off by default (roadmap 5.10.4).
+
+```python
+cache = mpn.EdgeCache(8)
+for entry_id, time, sample in mpn.iter_samples(manifest, fields=["T"], edge_cache=cache):
+    ...
+print(cache.hits, cache.misses)
+```
+
+Only the edge arrays and a copy of the connectivity are cached, never a mesh, so the streaming invariant still holds. Each sample gets its own copy, so editing a tensor does not change the cache, and a cached sample is bit-identical to one built without the cache. Edges from `proximity` and `world_edges` depend on positions and are always rebuilt, and a block with ragged or object-dtype connectivity is never cached. Each `DataLoader` worker process keeps its own cache. A warning `edge_index` gives about cell types with no edge topology is raised only on a cache miss. On the Kuhn cube of the operation benchmarks (OpenMP build, 4 threads, best of five), a cached `graph_sample` (`regions=False`, `edge_features=False`) takes 1.1 ms instead of 11.1 ms at 162,000 tetrahedra, and 6.4 ms instead of 52 ms at 750,000. The core's `edge_index` is already parallel, so most of what remains is the connectivity comparison and the copy of the edges.
+
 ### Framework objects: `make_dataset`, `make_reader`
 
 ```python

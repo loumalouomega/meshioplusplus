@@ -27,6 +27,7 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/operations/stats.hpp"
 
@@ -337,4 +338,61 @@ TEST(Vtu, PolyhedronReconstructionIsNotQuadraticInCellCount) {
                                 << "x as long (" << t_small << "s -> " << t_large
                                 << "s); linear is ~" << kLarge / kSmall
                                 << "x, so reconstruct_cells looks quadratic again";
+}
+
+namespace {
+// An ascii VTU of `N` points (one vertex cell) whose Points array holds
+// `rBad` in place of its value number `BadAt`; empty `rBad` keeps it valid.
+std::string vtu_ascii_points_file(std::size_t N, std::size_t BadAt, const std::string& rBad) {
+    std::string pts;
+    pts.reserve(N * 3 * 8);
+    for (std::size_t i = 0; i < 3 * N; ++i) {
+        if (!rBad.empty() && i == BadAt)
+            pts += rBad;
+        else
+            pts += std::to_string(i % 97) + ".25";
+        pts += ' ';
+    }
+    const std::string p = mt::temp_path("_malformed_" + std::to_string(N) + ".vtu");
+    std::ofstream out(p, std::ios::binary);
+    out << "<?xml version=\"1.0\"?>\n<VTKFile type=\"UnstructuredGrid\" version=\"1.0\">"
+        << "<UnstructuredGrid><Piece NumberOfPoints=\"" << N << "\" NumberOfCells=\"1\">"
+        << "<Points><DataArray type=\"Float64\" NumberOfComponents=\"3\" format=\"ascii\">" << pts
+        << "</DataArray></Points><Cells>"
+        << "<DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">0</DataArray>"
+        << "<DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">1</DataArray>"
+        << "<DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">1</DataArray>"
+        << "</Cells></Piece></UnstructuredGrid></VTKFile>\n";
+    return p;
+}
+
+void expect_malformed(const std::string& rPath, const std::string& rToken) {
+    try {
+        (void)meshioplusplus::read_vtu(rPath);
+        FAIL() << "a malformed number was read";
+    } catch (const meshioplusplus::ReadError& e) {
+        const std::string what = e.what();
+        EXPECT_NE(what.find("malformed number '" + rToken + "'"), std::string::npos) << what;
+        EXPECT_NE(what.find("at byte "), std::string::npos) << what;
+    }
+}
+}  // namespace
+
+// Roadmap 5.7.2: a number the parser does not take fails the read, naming the
+// token, where it once cut the array short (and the reader then failed, if at
+// all, on a count that no longer matched).
+TEST(Vtu, AsciiMalformedNumberIsAReadError) {
+    const std::string ok = vtu_ascii_points_file(4, 0, "");
+    EXPECT_EQ(meshioplusplus::read_vtu(ok).NumPoints(), 4u);
+    expect_malformed(vtu_ascii_points_file(4, 5, "1.5e+zz"), "e+zz");
+    expect_malformed(vtu_ascii_points_file(4, 7, "abc"), "abc");
+}
+
+// A large array goes through the parallel parser first; its refusal hands the
+// array to the serial loop, which raises the same error.
+TEST(Vtu, AsciiMalformedNumberInALargeArrayIsAReadError) {
+    const std::size_t n = 200000;  // 600,000 values, ~4 MB of text
+    const std::string ok = vtu_ascii_points_file(n, 0, "");
+    EXPECT_EQ(meshioplusplus::read_vtu(ok).NumPoints(), n);
+    expect_malformed(vtu_ascii_points_file(n, 3 * n - 10, "nope"), "nope");
 }

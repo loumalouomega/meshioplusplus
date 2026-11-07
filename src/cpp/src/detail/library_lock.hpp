@@ -46,15 +46,51 @@ namespace detail {
 /// The process-wide mutex; prefer `LibraryLock`.
 std::recursive_mutex& library_mutex();
 
+/// How many `LibraryLock`s the calling thread holds (0 when none).
+int& library_lock_depth();
+
 /// RAII guard over `library_mutex()`.
 class LibraryLock {
 public:
-    LibraryLock() : mLock(library_mutex()) {}
+    LibraryLock() {
+        library_mutex().lock();
+        ++library_lock_depth();
+    }
+    ~LibraryLock() {
+        --library_lock_depth();
+        library_mutex().unlock();
+    }
     LibraryLock(const LibraryLock&) = delete;
     LibraryLock& operator=(const LibraryLock&) = delete;
+};
+
+/**
+ * @brief Gives the lock up for a stretch of pure computation (roadmap 5.8.2).
+ *
+ * Releases every level the calling thread holds and takes them all back when
+ * it goes out of scope, so another thread's HDF5 read or write runs while
+ * this one compresses or inflates. A no-op on a thread that holds no lock.
+ * Inside it, make **no** library call and touch no library handle: the
+ * invariant -- no two threads inside the libraries -- rests on that. Handles
+ * opened before it stay open and valid; only their use waits.
+ */
+class LibraryUnlock {
+public:
+    LibraryUnlock() : mDepth(library_lock_depth()) {
+        for (int i = 0; i < mDepth; ++i)
+            library_mutex().unlock();
+        library_lock_depth() = 0;
+    }
+    ~LibraryUnlock() {
+        for (int i = 0; i < mDepth; ++i)
+            library_mutex().lock();
+        library_lock_depth() = mDepth;
+    }
+    LibraryUnlock(const LibraryUnlock&) = delete;
+    LibraryUnlock& operator=(const LibraryUnlock&) = delete;
 
 private:
-    std::lock_guard<std::recursive_mutex> mLock;
+    int mDepth;
 };
 
 }  // namespace detail

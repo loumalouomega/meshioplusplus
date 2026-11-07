@@ -58,11 +58,14 @@ agglomerate,10368,137626423
 region_adjacency,10368,45809598
 find_interface,10368,46807243
 find_interface_proximity,10368,52132057
+periodic,10368,383698
 split,10368,9644058
 undo_green,10368,15049763
 hessian,10368,121213855
 compute_normals,10368,3266728
 compute_curvature,10368,3391698
+decimate_volume,10368,8894142325
+conservative_interpolate,10368,3136315481
 find_intersections,10368,7178351
 tet_to_poly,10368,254844851
 poly_to_tet,10368,186591311

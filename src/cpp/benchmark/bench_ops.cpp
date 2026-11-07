@@ -87,6 +87,8 @@
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/operations/decimate_volume.hpp"
+#include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
@@ -114,6 +116,7 @@
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/partition.hpp"
+#include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/refine.hpp"
@@ -1001,6 +1004,39 @@ int main(int argc, char** argv) {
                 pD->Array(r.mSideB.mEntries);
             }
         });
+        // The cube's x = 0 and x = 1 faces as Point regions, matched by the
+        // unit translation (roadmap 5.1.2): (n+1)^2 node pairs.
+        const Mesh with_faces = [&] {
+            Mesh m = bench_ops_moved(volume, [](std::size_t, double*) {});
+            const std::size_t np = n + 1;
+            for (int side = 0; side < 2; ++side) {
+                mio::Region region;
+                region.mName = side == 0 ? "xmin" : "xmax";
+                region.mKind = mio::RegionKind::Point;
+                region.mDim = 0;
+                region.mTag = -1;
+                region.mEntries = NDArray::Uninit(DType::Int64, {np * np});
+                std::int64_t* e = region.mEntries.As<std::int64_t>();
+                const std::size_t i = side == 0 ? 0 : n;
+                for (std::size_t k = 0; k < np; ++k)
+                    for (std::size_t j = 0; j < np; ++j)
+                        e[k * np + j] = static_cast<std::int64_t>((k * np + j) * np + i);
+                m.AddRegion(std::move(region));
+            }
+            return m;
+        }();
+        row("periodic", [&](MeshDigest* pD) {
+            mio::PeriodicOptions o;
+            o.mTransform = mio::transform_translation(-1.0, 0.0, 0.0);
+            auto r = mio::match_periodic_nodes(with_faces, mio::RegionSelector{"xmax"},
+                                               mio::RegionSelector{"xmin"}, o);
+            if (pD) {
+                pD->Array(r.mSlave);
+                pD->Array(r.mMaster);
+                pD->U64(static_cast<std::uint64_t>(r.mNumFixed));
+                pD->Bytes(&r.mMaxResidual, sizeof r.mMaxResidual);
+            }
+        });
         row("split", [&](MeshDigest* pD) {
             auto r = mio::split(doubled, mio::SplitBy::Component);
             if (pD)
@@ -1028,9 +1064,27 @@ int main(int argc, char** argv) {
         row("compute_curvature",
             [&](MeshDigest* pD) { of(pD, mio::compute_curvature(surface).mMesh); });
         // Rows for operations that had none (roadmap 5.1.2). `decimate_volume`
-        // and `conservative_interpolate` have none yet: both grow far faster than
-        // the cell count (over 17 min and about 3 s at tier M and S), so a row
-        // here would stall the sweep.
+        // runs at tier S only: its greedy order grows one vertex's star to
+        // hundreds of tets, and every attempt on it walks the whole star, so
+        // it grows far faster than the cell count (10 s at 16,464 tets, over
+        // 17 min at tier M; benchmarks.md). `conservative_interpolate` grows
+        // linearly but costs about 65 us a target tet, so it stops at tier M.
+        if (tier == "S")
+            row("decimate_volume", [&](MeshDigest* pD) {
+                mio::DecimateVolumeOptions o;
+                o.mTargetRatio = 0.5;
+                auto r = mio::decimate_volume(volume, o);
+                of(pD, r.mMesh);
+                if (pD)
+                    pD->Array(r.mPointMap);
+            });
+        // The field of `with_field` carried onto the cube coarsened by half.
+        const BenchLazyMesh coarse_cube(
+            [&] { return bench_ops_tet_cube(std::max<std::size_t>(2, n / 2)); });
+        if (tier == "S" || tier == "M")
+            row("conservative_interpolate", [&](MeshDigest* pD) {
+                of(pD, mio::conservative_interpolate(with_field, coarse_cube));
+            });
         const BenchLazyMesh shifted([&] {
             return bench_ops_moved(surface, [](std::size_t, double* pP) {
                 pP[0] += 0.31;

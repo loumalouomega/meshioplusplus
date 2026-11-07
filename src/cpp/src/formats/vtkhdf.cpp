@@ -1101,6 +1101,7 @@ Mesh vtkhdf_read_composite(hid_t G, const std::string& rKind, const ReadOptions&
                                                    static_cast<std::int64_t>(flat), rOpts);
                 for (auto& kv : root_fd.mFieldData)
                     leaf.mFieldData.emplace(kv.first, std::move(kv.second));
+                const detail::LibraryUnlock unlock;  // assembly only: see below
                 return vtkhdf_assemble(leaf, rOpts, {});
             }
             flat -= plan[i].mNumParts;
@@ -1117,6 +1118,10 @@ Mesh vtkhdf_read_composite(hid_t G, const std::string& rKind, const ReadOptions&
                                       ? blocks[i].mName
                                       : blocks[i].mName + "/piece_" + std::to_string(j));
     }
+    // The blocks are merged and the mesh assembled from the arrays read above with
+    // no library call, so the lock is given up for it (roadmap 5.8.2); the block
+    // handles still open close after it is taken back.
+    const detail::LibraryUnlock unlock;
     VtkhdfLeaf merged = vtkhdf_concat_leaves(leaves);
     for (auto& kv : root_fd.mFieldData)
         merged.mFieldData.emplace(kv.first, std::move(kv.second));
@@ -1646,6 +1651,10 @@ Mesh read_vtkhdf(const std::string& rPath, const ReadOptions& rOpts) {
     if (only < 0 && nparts > 1)
         for (std::size_t j = 0; j < nparts; ++j)
             names.push_back("piece_" + std::to_string(j));
+    // The mesh is assembled from the arrays read above with no library call, so the
+    // lock is given up for it (roadmap 5.8.2); `f` and `root` close after it is
+    // taken back.
+    const detail::LibraryUnlock unlock;
     return vtkhdf_assemble(leaf, rOpts, names);
 }
 

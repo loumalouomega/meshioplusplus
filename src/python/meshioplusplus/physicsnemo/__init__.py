@@ -36,6 +36,7 @@ from .._point_budget import select_points
 from .._proximity import _graph_positions, edge_vectors, proximity_graph
 from .._tessellation import tessellate
 from ._augment import Augmentation
+from ._edge_cache import EdgeCache, pop_edge_cache
 from ._temporal import (
     Rollout,
     WindowSample,
@@ -63,6 +64,7 @@ __all__ = [
     "field_stats",
     "edge_stats",
     "Augmentation",
+    "EdgeCache",
     "WindowSample",
     "make_window",
     "window_samples",
@@ -175,7 +177,7 @@ def _edge_attributes(pos, ei, box_size=None):
     return edge_vectors(pos, ei, box_size=box_size)
 
 
-def _sample_edges(mesh, kind, undirected, proximity, world_edges):
+def _sample_edges(mesh, kind, undirected, proximity, world_edges, cache=None):
     """The edge sets of one sample: ``(edge_index, world_edge_index)``.
 
     The single owner of "which edges does this configuration mean", shared by
@@ -188,7 +190,16 @@ def _sample_edges(mesh, kind, undirected, proximity, world_edges):
     neighbourhood rule. ``world_edges`` **adds** a second set alongside them --
     contact between surfaces that are near but not connected.
     """
-    if proximity is None:
+    if proximity is None and world_edges is None and cache is not None:
+        # Mesh edges only depend on the topology (roadmap 5.10.4); proximity
+        # and world edges depend on positions and are always rebuilt.
+        ei = cache.edges(
+            mesh,
+            kind,
+            undirected,
+            lambda: edge_index(mesh, kind=kind, undirected=undirected),
+        )
+    elif proximity is None:
         ei = edge_index(mesh, kind=kind, undirected=undirected)
     else:
         ei = proximity_graph(mesh, kind=kind, undirected=undirected, **dict(proximity))
@@ -217,6 +228,7 @@ def graph_sample(
     float32=True,
     proximity=None,
     world_edges=None,
+    edge_cache=None,
 ):
     """One mesh as one GNN training sample.
 
@@ -253,6 +265,14 @@ def graph_sample(
     positions and no connectivity -- while ``world_edges`` **adds** a second
     set beside them.
 
+    ``edge_cache`` -- an :class:`EdgeCache`, or ``None`` (the default) --
+    reuses the ``edge_index`` of a topology already seen (the point count and
+    every block's connectivity, compared whole) instead of rebuilding it; the
+    iterators take ``edge_cache=N`` and build one of ``N`` entries. Edges
+    from ``proximity``/``world_edges`` depend on positions and are always
+    rebuilt. Only the edge arrays are cached, never a mesh, and a cached
+    sample is bit-identical to an uncached one.
+
     ``target_offset`` is pure metadata recorded in the schema -- this
     function sees two meshes, not a series, so the iteration layer
     (:func:`iter_samples`/`make_dataset`/`make_reader`) supplies both the
@@ -283,7 +303,9 @@ def graph_sample(
 
     pos = _positions(mesh, kind)
     fmx = feature_matrix(mesh, location, fields=fields, coords=False, regions=regions)
-    ei, world_ei = _sample_edges(mesh, kind, undirected, proximity, world_edges)
+    ei, world_ei = _sample_edges(
+        mesh, kind, undirected, proximity, world_edges, edge_cache
+    )
     box = None if proximity is None else proximity.get("box_size")
 
     arrays = {
@@ -402,7 +424,9 @@ def _flat_items(manifest, split, read_kwargs, offset=0):
     return items
 
 
-def _read_sample(series, step, graph_kwargs, augmentation=None, epoch=0, index=0):
+def _read_sample(
+    series, step, graph_kwargs, augmentation=None, epoch=0, index=0, edge_cache=None
+):
     """One (or two, when pairing) mesh reads -> ``(time, GraphSample)``.
 
     The single owner of the read-and-sample step, shared by
@@ -454,7 +478,9 @@ def _read_sample(series, step, graph_kwargs, augmentation=None, epoch=0, index=0
             target, _ = _tessellate_for_sample(
                 target, tess_opt, forward_kwargs.get("target_fields")
             )
-    return time, graph_sample(mesh, target_mesh=target, **forward_kwargs)
+    return time, graph_sample(
+        mesh, target_mesh=target, edge_cache=edge_cache, **forward_kwargs
+    )
 
 
 def _tessellate_for_sample(mesh, tess_opt, field_names):
@@ -490,14 +516,20 @@ def iter_samples(manifest, *, split=None, augmentation=None, epoch=0, **kwargs):
     :class:`~meshioplusplus.DatasetManifest` or anything its ``load``
     accepts. An :class:`Augmentation` draws one transform per sample from
     ``(seed, epoch, index)`` and replays it on a paired target.
+
+    ``edge_cache=N`` (off by default) keeps the edge sets of the last ``N``
+    distinct topologies, so a series whose mesh does not change rebuilds its
+    ``edge_index`` once rather than at every step; see :func:`graph_sample`.
     """
-    graph_kwargs, read_kwargs = _split_kwargs(dict(kwargs))
+    kwargs = dict(kwargs)
+    edge_cache = pop_edge_cache(kwargs)
+    graph_kwargs, read_kwargs = _split_kwargs(kwargs)
     offset = int(graph_kwargs.get("target_offset", 0))
     for index, (entry_id, series, step) in enumerate(
         _flat_items(manifest, split, read_kwargs, offset)
     ):
         time, sample = _read_sample(
-            series, step, graph_kwargs, augmentation, epoch, index
+            series, step, graph_kwargs, augmentation, epoch, index, edge_cache
         )
         yield entry_id, time, sample
 
@@ -1454,7 +1486,9 @@ def make_dataset(manifest, *, split=None, device=None, **kwargs):
     ``DataLoader``. Needs ``torch_geometric``; raises a named install error
     otherwise. ``device=`` moves each sample's tensors on access, and an
     ``augmentation=`` :class:`Augmentation` gives every epoch a fresh but
-    reproducible pose once the trainer calls the dataset's ``set_epoch``."""
+    reproducible pose once the trainer calls the dataset's ``set_epoch``.
+    ``edge_cache=N`` as in :func:`iter_samples` (one cache per worker
+    process)."""
     _require_framework(
         "make_dataset", "torch_geometric", "pip install torch_geometric", doc=_DOC
     )

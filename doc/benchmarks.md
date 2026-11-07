@@ -968,6 +968,76 @@ Roadmap 5.7.2 and 5.7.1. `detail/chunked_parse.hpp` cuts a run of numbers at bla
 
 SEQ takes none of the parallel paths. `read_medit`'s SEQ row moved within the noise of the benchmark process, not the reader: Cachegrind counts the same instructions for the read before and after (2.307 and 2.308 G at tier M, three runs), and five more interleaved rounds at tier L timed the new binary faster (0.12 against 0.15 s). The Gmsh 4.1 read is now mostly its `$Entities` and the mesh assembly; STL's is the weld.
 
+### Appended rows deflated in parallel
+
+Roadmap 5.8.1. `append_rows` (`detail/hdf5_util.cpp`), which a [VTKHDF time series](./vtkhdf_time_series.md) uses for every step's arrays, wrote through `H5Dwrite`, so HDF5's deflate filter compressed each step on one thread. The whole chunks of an append now go through the direct-chunk writer that whole-dataset writes already use: compressed in parallel with `compress2` at the dataset's level, the last one zero-padded as HDF5 pads it, and written in ascending order. Rows that finish the dataset's partly written last chunk still go through HDF5, which reads, extends and re-deflates that chunk. `H5Util.AppendedGzipChunksMatchHdf5sOwnFilter` grows one dataset through `append_rows` and a twin through plain `H5Dwrite` over seven appends (head-only, aligned, unaligned with a tail, one chunk), and requires every stored chunk to be the same bytes with the same filter mask. XDMF does not append: its series writes each step's datasets whole, which were already parallel.
+
+A series chunk is one step's rows, capped at 4 MiB, so the parallel path is only taken when one array of one step spans more than one chunk after its head. Ten steps of a hexahedral cube with a vector and a scalar point field, gzip 6, `VtkhdfTimeSeriesWriter.write_data` through the Python binding (OpenMP build, best of three):
+
+| Points | 1 thread | 4 threads |
+| ---: | ---: | ---: |
+| 226,981 | 3.32 s | 3.24 s |
+| 1,771,561 | 20.5 s | 8.0 s |
+
+One thread runs the same compression on the caller, which is the work the `H5Dwrite` path did; below about 8 MiB per array and step there is nothing to spread.
+
+### Link-time optimisation
+
+Roadmap 5.12.3. `-DMESHIOPLUSPLUS_ENABLE_LTO=ON` sets `INTERPROCEDURAL_OPTIMIZATION` for every target of the tree (GCC 13.3, `-flto=auto`). It stays **off by default**. A SEQ tree with it and one without (no HDF5, no OpenCASCADE, the instruction gate's configuration) were compared:
+
+- **Output**: every row of `meshioplusplus_bench_ops` (265 at tiers S and M) has the same digest in both.
+- **Size**: the native CLI's text goes from 23.1 to 15.9 MB and `meshioplusplus_bench_ops`' from 21.4 to 13.6 MB, about a third less. The full LTO build of both took 6.5 minutes on 4 cores.
+- **Speed**: mixed. Over the rows above 10 ms, two interleaved rounds, one thread, the geometric mean of LTO's time over the plain build's is 1.017 at tier S and 0.974 at tier M, and single rows move both ways by 20% to 60%. Cachegrind separates the real changes from the noise:
+
+| Row (tier S) | Instructions, plain | With LTO | Ratio |
+| --- | ---: | ---: | ---: |
+| `read_vtk_ascii` | 11.3 M | 15.9 M | 1.40 |
+| `mesh_cad_surface_untangle` | 269 M | 331 M | 1.23 |
+| `gradient` | 203 M | 231 M | 1.14 |
+| `read_ugrid` | 13.4 M | 14.5 M | 1.08 |
+| `smooth_volume` | 942 M | 965 M | 1.02 |
+| `split` | 9.64 M | 9.67 M | 1.00 |
+| `hausdorff` | 154 M | 152 M | 0.99 |
+| `decimate` | 43.2 M | 40.6 M | 0.94 |
+
+Cross-unit inlining changes which loops GCC unrolls and vectorises, and on this core it costs about as much as it saves. A default would also need the instruction-count baseline re-recorded under it, and every consumer of the installed C++ API to accept LTO objects. The option is there for a builder who wants the smaller binaries; the wheels and the release binaries do not set it.
+
+### Compression outside the library lock
+
+Roadmap 5.8.2, first step. The process-wide lock that serialises HDF5 and the other non-thread-safe libraries ([threads and the GIL](./architecture.md#threads-and-the-gil)) is held for a whole read or write, so the deflate of one file's datasets kept every other thread out of HDF5. `detail::LibraryUnlock` gives every level the calling thread holds back for a stretch that makes no library call, and takes them again after; the parallel compress of `h5u_write_deflate_chunks` (whole-dataset writes and appended rows) and the parallel inflate of `h5u_read_deflate_chunks` run inside one. The invariant, no two threads inside the libraries, is unchanged: the chunks are read and written under the lock, only zlib runs outside it. `LibraryLock.UnlockReleasesEveryLevelAndRestoresThem` and `LibraryLock.ConcurrentGzipVtkhdfRoundTripsWithTheLockGivenUp` (eight threads, multi-chunk gzip datasets) cover it.
+
+A 125,000-hexahedron box with a vector and a scalar point field written and read as gzip-6 VTKHDF through `_core.vtkhdf_write`/`vtkhdf_read`, k files at once from a `ThreadPoolExecutor`, `OMP_NUM_THREADS=1` as the architecture page recommends for a thread pool (best of three, OpenMP build, 4 cores):
+
+| Files at once | Write before | Write after | Read before | Read after |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 0.45 s | 0.42 s | 0.10 s | 0.09 s |
+| 2 | 0.87 s | 0.48 s | 0.18 s | 0.18 s |
+| 4 | 1.73 s | 0.61 s | 0.37 s | 0.37 s |
+
+Writes now overlap. Reads did not: a profile of one read showed half its instructions in HDF5's own inflate under `H5Dread`, reached through `read_dataset_rows`, the row windows the VTKHDF reader takes for its steps and pieces, which the parallel inflate did not cover. The second step extends `h5u_read_deflate_chunks` to any window of rows that spans more than one chunk (the window's chunks are read raw under the lock, inflated in parallel without it, and only the window's rows kept; `H5Util.RowWindowsOfAGzipDatasetMatchH5Dread` checks ten windows against `H5Dread`), and `read_vtkhdf` assembles its mesh from the arrays it has read with the lock given up. On the same files:
+
+| Read | Before | After |
+| --- | ---: | ---: |
+| 2 files at once, 1 thread each | 0.18 s | 0.13 s |
+| 4 files at once, 1 thread each | 0.37 s | 0.24 s |
+| 1 file, 4 threads | 102 ms | 67.5 ms |
+| 1 file, 1 thread | 97 ms | 95 ms |
+
+What still runs under the lock is the HDF5 calls themselves (opening the file, reading the raw chunks and the small offset tables) and, in the writers, the preparation of the arrays between them.
+
+### `decimate_volume` and `conservative_interpolate` rows
+
+Roadmap 5.1.2. The two operations had no row in `meshioplusplus_bench_ops` because they were too slow for the sweep. Both were profiled at tier S under Callgrind before the rows were added; each change below leaves the rows' digests unchanged on SEQ and THREADS at one and four threads (tiers S and M for `conservative_interpolate`, S for `decimate_volume`), and `decimate_volume`'s output is also byte-identical before and after on boxes of 6, 9, 12 and 14 cells a side.
+
+- **`decimate_volume`** spent 35% of its instructions on the inversion guard's "before" volumes and 30% rebuilding the link ring of each endpoint on every attempt. A tet's volume is now kept until one of its corners moves (a commit moves only the survivor), and a vertex's ring until its tets change (the endpoints, the corners of the tets that die and the survivor's new ring). Tier S goes from 1.48 to 0.86 s (SEQ).
+- **Why it still grows far faster than the cell count.** The greedy order collapses onto one survivor again and again: on a box of 16 cells a side (24,576 tetrahedra) one vertex ends with 696 tets around it against 24 in the input, and every attempt on it walks that whole star, with 234,410 rejected collapses for 12,290 tets removed. Box sides 12, 14, 16 took 1.5, 22.6 and 110 s before, 0.96 and 10.3 s (12, 14) after. Bounding the star (a valence cap, or a priority that penalises a growing star) would change which collapses happen; that is a behaviour change for its own entry, so the row runs at tier S only.
+- **`conservative_interpolate`** grows linearly (15.6x the cells, 13.9x the time from S to M) but allocated in every tetra-tetra clip: about a third of its instructions were `malloc` and `free`. The clip now reuses per-thread buffers, with every value computed as before. Tier S goes from 0.60 to 0.29 s and tier M from 12.2 to 5.75 s (SEQ; 1.6 s on four threads). The row runs at tiers S and M. A box-separation reject before the clip was tried and dropped: on these meshes nearly every candidate the grid returns has a box touching the target's, so it skipped almost nothing.
+
+| Row (tier S, SEQ) | Before | After | Instructions |
+| --- | ---: | ---: | ---: |
+| `decimate_volume` | 1.48 s | 0.86 s | 8.89 G |
+| `conservative_interpolate` | 0.60 s | 0.29 s | 3.14 G |
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
