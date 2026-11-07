@@ -638,52 +638,50 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         const NDArray& points_arr = rMesh.Points();
         const detail::DoubleView points(points_arr);
         const std::size_t dim = detail::cols(points_arr);
-        NDArray new_points = NDArray::Uninit(points_arr.Dtype(), {num_points_out, dim});
-        std::memcpy(new_points.Data(), points_arr.Data(), points_arr.Nbytes());
         // The appended rows only: indexed from `num_points`, stored by one
-        // Commit() instead of a dtype switch per coordinate.
-        detail::DoubleSink sink(new_points, num_points * dim, (num_points_out - num_points) * dim);
-        double* const new_xyz = sink.Data();
-        parallel_for_bw(new_entities.size(), [&](std::size_t i) {
-            const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
-            const std::size_t first = key[0] < 0 ? 2 : 0;
-            const double inv = 1.0 / static_cast<double>(4 - first);
-            for (std::size_t k = 0; k < dim; ++k) {
-                double sum = 0.0;
-                for (std::size_t c = first; c < 4; ++c)
-                    sum += points[static_cast<std::size_t>(key[c]) * dim + k];
-                new_xyz[i * dim + k] = sum * inv;
-            }
-        });
-        // Body centres: the mean of the parent's eight corners.
-        if (total_bodies > 0) {
-            std::size_t bi = 0;
-            for (const auto cb : rMesh.CellRange()) {
-                const RefineBlockDesc& d = descs[bi++];
-                if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
-                    continue;
-                const detail::Int64View conn(cb.Conn());
-                const std::size_t npc = cb.NodesPerCell();
-                const std::size_t ncorners = d.mNumCorners;
-                const double inv = 1.0 / static_cast<double>(ncorners);
-                parallel_for_bw(d.mNumCells, [&](std::size_t c) {
-                    const std::int64_t body = body_of_cell[d.mFirstCell + c];
-                    if (body < 0)
-                        return;
+        // commit instead of a dtype switch per coordinate.
+        out.AssignPoints(detail::append_rows(
+            points_arr, num_points, num_points_out - num_points, dim, [&](double* const new_xyz) {
+                parallel_for_bw(new_entities.size(), [&](std::size_t i) {
+                    const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
+                    const std::size_t first = key[0] < 0 ? 2 : 0;
+                    const double inv = 1.0 / static_cast<double>(4 - first);
                     for (std::size_t k = 0; k < dim; ++k) {
                         double sum = 0.0;
-                        for (std::size_t n = 0; n < ncorners; ++n) {
-                            const std::size_t p = static_cast<std::size_t>(conn[c * npc + n]);
-                            sum += points[p * dim + k];
-                        }
-                        new_xyz[(static_cast<std::size_t>(body) - num_points) * dim + k] =
-                            sum * inv;
+                        for (std::size_t c = first; c < 4; ++c)
+                            sum += points[static_cast<std::size_t>(key[c]) * dim + k];
+                        new_xyz[i * dim + k] = sum * inv;
                     }
                 });
-            }
-        }
-        sink.Commit();
-        out.AssignPoints(std::move(new_points));
+                // Body centres: the mean of the parent's eight corners.
+                if (total_bodies > 0) {
+                    std::size_t bi = 0;
+                    for (const auto cb : rMesh.CellRange()) {
+                        const RefineBlockDesc& d = descs[bi++];
+                        if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
+                            continue;
+                        const detail::Int64View conn(cb.Conn());
+                        const std::size_t npc = cb.NodesPerCell();
+                        const std::size_t ncorners = d.mNumCorners;
+                        const double inv = 1.0 / static_cast<double>(ncorners);
+                        parallel_for_bw(d.mNumCells, [&](std::size_t c) {
+                            const std::int64_t body = body_of_cell[d.mFirstCell + c];
+                            if (body < 0)
+                                return;
+                            for (std::size_t k = 0; k < dim; ++k) {
+                                double sum = 0.0;
+                                for (std::size_t n = 0; n < ncorners; ++n) {
+                                    const std::size_t p =
+                                        static_cast<std::size_t>(conn[c * npc + n]);
+                                    sum += points[p * dim + k];
+                                }
+                                new_xyz[(static_cast<std::size_t>(body) - num_points) * dim + k] =
+                                    sum * inv;
+                            }
+                        });
+                    }
+                }
+            }));
     }
 
     // --- phase 6: child counts, then connectivity ----------------------------
@@ -771,51 +769,50 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
         }
         const detail::DoubleView av(a);
         const std::size_t ncomp = num_points == 0 ? 0 : a.Size() / num_points;
-        std::vector<std::size_t> shape = a.Shape();
-        shape[0] = num_points_out;
-        NDArray b = NDArray::Uninit(a.Dtype(), std::move(shape));
-        std::memcpy(b.Data(), a.Data(), a.Nbytes());
-        detail::DoubleSink sink(b, num_points * ncomp, (num_points_out - num_points) * ncomp);
-        double* const new_vals = sink.Data();
-        parallel_for_bw(new_entities.size(), [&](std::size_t i) {
-            const RefineNodeKey& key = entities[static_cast<std::size_t>(new_entities[i])];
-            const std::size_t first = key[0] < 0 ? 2 : 0;
-            const double inv = 1.0 / static_cast<double>(4 - first);
-            for (std::size_t k = 0; k < ncomp; ++k) {
-                double sum = 0.0;
-                for (std::size_t c = first; c < 4; ++c)
-                    sum += av[static_cast<std::size_t>(key[c]) * ncomp + k];
-                new_vals[i * ncomp + k] = sum * inv;
-            }
-        });
-        if (total_bodies > 0) {
-            std::size_t bi = 0;
-            for (const auto cb : rMesh.CellRange()) {
-                const RefineBlockDesc& d = descs[bi++];
-                if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
-                    continue;
-                const detail::Int64View conn(cb.Conn());
-                const std::size_t npc = cb.NodesPerCell();
-                const std::size_t ncorners = d.mNumCorners;
-                const double inv = 1.0 / static_cast<double>(ncorners);
-                parallel_for_bw(d.mNumCells, [&](std::size_t c) {
-                    const std::int64_t body = body_of_cell[d.mFirstCell + c];
-                    if (body < 0)
-                        return;
-                    for (std::size_t k = 0; k < ncomp; ++k) {
-                        double sum = 0.0;
-                        for (std::size_t n = 0; n < ncorners; ++n) {
-                            const std::size_t p = static_cast<std::size_t>(conn[c * npc + n]);
-                            sum += av[p * ncomp + k];
+        out.AddPointData(
+            name,
+            detail::append_rows(
+                a, num_points, num_points_out - num_points, ncomp, [&](double* const new_vals) {
+                    parallel_for_bw(new_entities.size(), [&](std::size_t i) {
+                        const RefineNodeKey& key =
+                            entities[static_cast<std::size_t>(new_entities[i])];
+                        const std::size_t first = key[0] < 0 ? 2 : 0;
+                        const double inv = 1.0 / static_cast<double>(4 - first);
+                        for (std::size_t k = 0; k < ncomp; ++k) {
+                            double sum = 0.0;
+                            for (std::size_t c = first; c < 4; ++c)
+                                sum += av[static_cast<std::size_t>(key[c]) * ncomp + k];
+                            new_vals[i * ncomp + k] = sum * inv;
                         }
-                        new_vals[(static_cast<std::size_t>(body) - num_points) * ncomp + k] =
-                            sum * inv;
+                    });
+                    if (total_bodies > 0) {
+                        std::size_t bi = 0;
+                        for (const auto cb : rMesh.CellRange()) {
+                            const RefineBlockDesc& d = descs[bi++];
+                            if (d.mType != CellType::Hexahedron || d.mNumCells == 0)
+                                continue;
+                            const detail::Int64View conn(cb.Conn());
+                            const std::size_t npc = cb.NodesPerCell();
+                            const std::size_t ncorners = d.mNumCorners;
+                            const double inv = 1.0 / static_cast<double>(ncorners);
+                            parallel_for_bw(d.mNumCells, [&](std::size_t c) {
+                                const std::int64_t body = body_of_cell[d.mFirstCell + c];
+                                if (body < 0)
+                                    return;
+                                for (std::size_t k = 0; k < ncomp; ++k) {
+                                    double sum = 0.0;
+                                    for (std::size_t n = 0; n < ncorners; ++n) {
+                                        const std::size_t p =
+                                            static_cast<std::size_t>(conn[c * npc + n]);
+                                        sum += av[p * ncomp + k];
+                                    }
+                                    new_vals[(static_cast<std::size_t>(body) - num_points) * ncomp +
+                                             k] = sum * inv;
+                                }
+                            });
+                        }
                     }
-                });
-            }
-        }
-        sink.Commit();
-        out.AddPointData(name, std::move(b));
+                }));
     }
 
     // --- phase 8: cell_data gathered parent -> children ----------------------

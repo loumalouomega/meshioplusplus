@@ -43,6 +43,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/data_plumbing.hpp"
 #include "../detail/simplexify.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -888,25 +889,19 @@ TetToPolyResult tet_to_poly(const Mesh& rMesh, const TetToPolyOptions& rOptions)
     // Append the source-node mean of every new point to a per-point array.
     auto extend = [&](const NDArray& rA) {
         const std::size_t ncomp = num_points == 0 ? 0 : rA.Size() / num_points;
-        std::vector<std::size_t> shape = rA.Shape();
-        shape[0] = num_points + num_new;
-        NDArray b = NDArray::Uninit(rA.Dtype(), std::move(shape));
-        std::memcpy(b.Data(), rA.Data(), rA.Nbytes());
         const detail::DoubleView av(rA);
-        detail::DoubleSink sink(b, num_points * ncomp, num_new * ncomp);
-        double* const vals = sink.Data();
-        parallel_for(num_new, [&](std::size_t i) {
-            std::int64_t src[4];
-            const std::size_t count = sources(i, src);
-            for (std::size_t k = 0; k < ncomp; ++k) {
-                double sum = 0.0;
-                for (std::size_t j = 0; j < count; ++j)
-                    sum += av[static_cast<std::size_t>(src[j]) * ncomp + k];
-                vals[i * ncomp + k] = sum / static_cast<double>(count);
-            }
+        return detail::append_rows(rA, num_points, num_new, ncomp, [&](double* const vals) {
+            parallel_for(num_new, [&](std::size_t i) {
+                std::int64_t src[4];
+                const std::size_t count = sources(i, src);
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    double sum = 0.0;
+                    for (std::size_t j = 0; j < count; ++j)
+                        sum += av[static_cast<std::size_t>(src[j]) * ncomp + k];
+                    vals[i * ncomp + k] = sum / static_cast<double>(count);
+                }
+            });
         });
-        sink.Commit();
-        return b;
     };
 
     Mesh out;

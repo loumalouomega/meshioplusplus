@@ -21,7 +21,7 @@
  * @brief Row plumbing shared by the operations that rebuild a mesh from a
  * subset or a refinement of another: gathering the point table, compacting it
  * by a `used` mask, replicating parent cell rows to children, and copying the
- * geometry under new coordinates.
+ * geometry under new coordinates, and appending computed rows to a copy.
  *
  * A **core-private** header (the `slot_runs.hpp` precedent): it lives beside
  * the `.cpp` files, no installed header names it, and it adds nothing to the
@@ -45,6 +45,8 @@
 #include "meshioplusplus/detail/subset.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
+
+#include "typed_view.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -165,6 +167,28 @@ inline void clone_geometry_into(const Mesh& rMesh, NDArray Points, Mesh& rOut) {
     // keyed by id, not by entity index, so there is nothing to remap.
     for (std::size_t i = 0; i < rMesh.NumPropertySets(); ++i)
         rOut.AddPropertySet(rMesh.GetPropertySet(i));
+}
+
+/**
+ * @brief @p rA, whose first @p NumRows rows hold @p NumComp values each, with
+ * @p NumNew rows appended: the original bytes are copied, and @p rFill
+ * receives the appended values (`NumNew * NumComp` doubles, row-major) to
+ * write, stored once in @p rA's dtype by a DoubleSink commit.
+ *
+ * The rows' arithmetic stays in each caller's @p rFill (a mean, a midpoint, a
+ * key's average), so the values are unchanged.
+ */
+template <class TFill>
+NDArray append_rows(const NDArray& rA, std::size_t NumRows, std::size_t NumNew, std::size_t NumComp,
+                    TFill&& rFill) {
+    std::vector<std::size_t> shape = rA.Shape();
+    shape[0] = NumRows + NumNew;
+    NDArray b = NDArray::Uninit(rA.Dtype(), std::move(shape));
+    std::memcpy(b.Data(), rA.Data(), rA.Nbytes());
+    DoubleSink sink(b, NumRows * NumComp, NumNew * NumComp);
+    rFill(sink.Data());
+    sink.Commit();
+    return b;
 }
 
 }  // namespace detail
