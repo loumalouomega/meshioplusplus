@@ -22,23 +22,11 @@ static void mio_r_series_finalizer(SEXP x) {
 }
 
 static SEXP wrap_series(mio_xdmf_series *series) {
-    SEXP ptr = PROTECT(R_MakeExternalPtr(series, mio_r_series_tag, R_NilValue));
-    R_RegisterCFinalizerEx(ptr, mio_r_series_finalizer, TRUE);
-    SEXP cls = PROTECT(Rf_mkString("mio_xdmf_series"));
-    Rf_setAttrib(ptr, R_ClassSymbol, cls);
-    UNPROTECT(2); /* cls, ptr */
-    return ptr;
+    return mio_r_wrap_handle(series, mio_r_series_tag, mio_r_series_finalizer, "mio_xdmf_series");
 }
 
 static mio_xdmf_series *series_of(SEXP x) {
-    if (TYPEOF(x) != EXTPTRSXP || R_ExternalPtrTag(x) != mio_r_series_tag) {
-        Rf_error("expected a mio_xdmf_series object");
-    }
-    mio_xdmf_series *series = (mio_xdmf_series *)R_ExternalPtrAddr(x);
-    if (series == NULL) {
-        Rf_error("this mio_xdmf_series has already been released");
-    }
-    return series;
+    return (mio_xdmf_series *)mio_r_handle(x, mio_r_series_tag, "mio_xdmf_series");
 }
 
 SEXP R_mio_xdmf_series_create(SEXP path, SEXP data_format, SEXP gzip_level, SEXP mode,

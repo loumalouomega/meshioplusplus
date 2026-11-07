@@ -4,11 +4,7 @@
 static SEXP exodus_tag(void) { return Rf_install("mio_exodus_series_handle"); }
 
 static mio_exodus_series *exodus_of(SEXP x) {
-    if (TYPEOF(x) != EXTPTRSXP || R_ExternalPtrTag(x) != exodus_tag())
-        Rf_error("expected a mio_exodus_series object");
-    mio_exodus_series *s = (mio_exodus_series *)R_ExternalPtrAddr(x);
-    if (!s) Rf_error("this mio_exodus_series has already been released");
-    return s;
+    return (mio_exodus_series *)mio_r_handle(x, exodus_tag(), "mio_exodus_series");
 }
 
 static void exodus_finalizer(SEXP x) {
@@ -19,12 +15,7 @@ static void exodus_finalizer(SEXP x) {
 SEXP R_mio_exodus_series_create(SEXP path) {
     mio_exodus_series *s = mio_exodus_series_create(mio_r_string(path, "path"));
     if (!s) mio_r_fail("exodus_series");
-    SEXP ptr = PROTECT(R_MakeExternalPtr(s, exodus_tag(), R_NilValue));
-    R_RegisterCFinalizerEx(ptr, exodus_finalizer, TRUE);
-    SEXP cls = PROTECT(Rf_mkString("mio_exodus_series"));
-    Rf_setAttrib(ptr, R_ClassSymbol, cls);
-    UNPROTECT(2);
-    return ptr;
+    return mio_r_wrap_handle(s, exodus_tag(), exodus_finalizer, "mio_exodus_series");
 }
 
 SEXP R_mio_exodus_series_write_points_cells(SEXP series, SEXP mesh) {

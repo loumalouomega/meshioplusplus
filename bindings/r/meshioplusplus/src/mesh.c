@@ -377,17 +377,15 @@ SEXP R_mio_cell_block_info(SEXP mesh, SEXP block) {
     mio_r_check(
         mio_mesh_cell_block_info_ex(mio_r_mesh(mesh), mio_r_int64(block, "block"), &info),
         "cell_block_info");
-    SEXP a = PROTECT(Rf_ScalarReal((double)info.num_cells));
-    SEXP b = PROTECT(Rf_ScalarReal((double)info.nodes_per_cell));
     SEXP c = PROTECT(Rf_ScalarLogical(info.is_ragged != 0));
     SEXP d = PROTECT(Rf_ScalarLogical(info.is_polyhedron != 0));
-    SEXP e = PROTECT(Rf_ScalarReal((double)info.num_faces));
-    SEXP f = PROTECT(Rf_ScalarReal((double)info.num_nodes));
     const char *names[] = {"num_cells", "nodes_per_cell", "is_ragged",
                            "is_polyhedron", "num_faces", "num_nodes"};
-    SEXP values[] = {a, b, c, d, e, f};
-    SEXP out = PROTECT(mio_r_named_list(6, names, values));
-    UNPROTECT(7);
+    const SEXP values[] = {NULL, NULL, c, d, NULL, NULL};
+    const double numbers[] = {(double)info.num_cells, (double)info.nodes_per_cell,
+                              (double)info.num_faces, (double)info.num_nodes};
+    SEXP out = mio_r_report_list(6, names, values, numbers);
+    UNPROTECT(2);
     return out;
 }
 
@@ -1036,12 +1034,11 @@ SEXP R_mio_match_periodic_nodes(SEXP mesh, SEXP slave, SEXP master, SEXP matrix,
     const int64_t *up = mio_periodic_pairs_unmatched(pairs, &cnt);
     SEXP vu = PROTECT(mio_r_shift_map(up, cnt));
     mio_periodic_pairs_free(pairs);
-    SEXP vf = PROTECT(Rf_ScalarReal((double)nf));
-    SEXP vr = PROTECT(Rf_ScalarReal(res));
     const char *names[] = {"slave", "master", "unmatched", "num_fixed", "max_residual"};
-    SEXP values[] = {vs, vm, vu, vf, vr};
-    SEXP out = PROTECT(mio_r_named_list(5, names, values));
-    UNPROTECT(6);
+    const SEXP values[] = {vs, vm, vu, NULL, NULL};
+    const double numbers[] = {(double)nf, res};
+    SEXP out = mio_r_report_list(5, names, values, numbers);
+    UNPROTECT(3);
     return out;
 }
 
@@ -1067,12 +1064,7 @@ SEXP R_mio_write_graph(SEXP mesh, SEXP path, SEXP kind, SEXP format) {
                                 mio_r_string(path, "path"), mio_r_opt_string(format), &nv, &ne,
                                 &md),
                 "write_graph");
-    SEXP a = PROTECT(Rf_ScalarReal((double)nv));
-    SEXP b = PROTECT(Rf_ScalarReal((double)ne));
-    SEXP c = PROTECT(Rf_ScalarReal((double)md));
     const char *names[] = {"num_vertices", "num_edges", "max_degree"};
-    SEXP values[] = {a, b, c};
-    SEXP out = PROTECT(mio_r_named_list(3, names, values));
-    UNPROTECT(4);
-    return out;
+    const double numbers[] = {(double)nv, (double)ne, (double)md};
+    return mio_r_report_list(3, names, NULL, numbers);
 }

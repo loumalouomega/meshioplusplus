@@ -22,23 +22,11 @@ static void mio_r_sequence_finalizer(SEXP x) {
 }
 
 static SEXP wrap_sequence(mio_sequence *seq) {
-    SEXP ptr = PROTECT(R_MakeExternalPtr(seq, mio_r_sequence_tag, R_NilValue));
-    R_RegisterCFinalizerEx(ptr, mio_r_sequence_finalizer, TRUE);
-    SEXP cls = PROTECT(Rf_mkString("mio_sequence"));
-    Rf_setAttrib(ptr, R_ClassSymbol, cls);
-    UNPROTECT(2); /* cls, ptr */
-    return ptr;
+    return mio_r_wrap_handle(seq, mio_r_sequence_tag, mio_r_sequence_finalizer, "mio_sequence");
 }
 
 static mio_sequence *sequence_of(SEXP x) {
-    if (TYPEOF(x) != EXTPTRSXP || R_ExternalPtrTag(x) != mio_r_sequence_tag) {
-        Rf_error("expected a mio_sequence object");
-    }
-    mio_sequence *seq = (mio_sequence *)R_ExternalPtrAddr(x);
-    if (seq == NULL) {
-        Rf_error("this mio_sequence has already been released");
-    }
-    return seq;
+    return (mio_sequence *)mio_r_handle(x, mio_r_sequence_tag, "mio_sequence");
 }
 
 /* "auto"/"file"/"filename"/"index" -> the C enum. */

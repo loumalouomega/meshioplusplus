@@ -21,12 +21,7 @@ static void mio_r_info_finalizer(SEXP x) {
 }
 
 static SEXP wrap_info(mio_format_info *info) {
-    SEXP ptr = PROTECT(R_MakeExternalPtr(info, mio_r_info_tag, R_NilValue));
-    R_RegisterCFinalizerEx(ptr, mio_r_info_finalizer, TRUE);
-    SEXP cls = PROTECT(Rf_mkString("mio_format_info"));
-    Rf_setAttrib(ptr, R_ClassSymbol, cls);
-    UNPROTECT(2); /* cls, ptr */
-    return ptr;
+    return mio_r_wrap_handle(info, mio_r_info_tag, mio_r_info_finalizer, "mio_format_info");
 }
 
 /* NULL for an R NULL (no side channel); an error for anything else foreign. */
@@ -34,14 +29,7 @@ static const mio_format_info *info_of(SEXP x, int allow_null) {
     if (allow_null && x == R_NilValue) {
         return NULL;
     }
-    if (TYPEOF(x) != EXTPTRSXP || R_ExternalPtrTag(x) != mio_r_info_tag) {
-        Rf_error("expected a mio_format_info object");
-    }
-    const mio_format_info *info = (const mio_format_info *)R_ExternalPtrAddr(x);
-    if (info == NULL) {
-        Rf_error("this mio_format_info has already been released");
-    }
-    return info;
+    return (const mio_format_info *)mio_r_handle(x, mio_r_info_tag, "mio_format_info");
 }
 
 SEXP R_mio_read_with_info(SEXP path, SEXP format, SEXP lenient, SEXP deflection,
@@ -733,21 +721,17 @@ SEXP R_mio_project_to_cad(SEXP mesh, SEXP x, SEXP face_array, SEXP edge_array, S
         for (int64_t i = 0; i < n; ++i)
             REAL(outside)[i] = (double)buf[i] + 1.0;
     }
-    SEXP v1 = PROTECT(Rf_ScalarReal((double)report.num_projected));
-    SEXP v2 = PROTECT(Rf_ScalarReal((double)report.num_on_edges));
-    SEXP v3 = PROTECT(Rf_ScalarReal((double)report.num_corners));
-    SEXP v4 = PROTECT(Rf_ScalarReal((double)report.num_ambiguous));
-    SEXP v5 = PROTECT(Rf_ScalarReal((double)report.num_too_far));
-    SEXP v6 = PROTECT(Rf_ScalarReal((double)report.num_failed));
-    SEXP v7 = PROTECT(Rf_ScalarReal((double)report.num_outside_trim));
-    SEXP v8 = PROTECT(Rf_ScalarReal(report.max_move));
-    SEXP v9 = PROTECT(Rf_ScalarReal((double)report.num_on_curves));
     const char* names[] = {"mesh",          "num_projected", "num_on_edges", "num_on_curves",
                            "num_corners",   "num_ambiguous", "num_too_far",  "num_failed",
                            "num_outside_trim", "max_move",   "outside_trim"};
-    SEXP values[] = {mo, v1, v2, v9, v3, v4, v5, v6, v7, v8, outside};
-    SEXP res = PROTECT(mio_r_named_list(11, names, values));
-    UNPROTECT(12);
+    const SEXP values[] = {mo, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, outside};
+    const double numbers[] = {(double)report.num_projected, (double)report.num_on_edges,
+                              (double)report.num_on_curves, (double)report.num_corners,
+                              (double)report.num_ambiguous, (double)report.num_too_far,
+                              (double)report.num_failed, (double)report.num_outside_trim,
+                              report.max_move};
+    SEXP res = mio_r_report_list(11, names, values, numbers);
+    UNPROTECT(2);
     return res;
 }
 

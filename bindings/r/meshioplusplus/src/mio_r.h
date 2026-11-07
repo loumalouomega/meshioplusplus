@@ -37,6 +37,16 @@ extern SEXP mio_r_sequence_tag;
 /* A format side channel (format_info.c). */
 extern SEXP mio_r_info_tag;
 
+/* Wrap an owning handle in an external pointer of `tag` with S3 class `cls`
+ * and `finalizer` registered (run at the end of the session too). The returned
+ * SEXP is NOT protected. Every handle type of the binding is wrapped this way. */
+SEXP mio_r_wrap_handle(void *handle, SEXP tag, R_CFinalizer_t finalizer, const char *cls);
+
+/* The handle behind an external pointer of `tag`: an R error ("expected a
+ * <cls> object") for anything else, and another ("this <cls> has already been
+ * released") once its finalizer or free has run. */
+void *mio_r_handle(SEXP x, SEXP tag, const char *cls);
+
 /* Wrap an owning `mio_mesh*` in an external pointer with a registered
  * finalizer calling mio_mesh_free. The returned SEXP is NOT protected: a
  * caller that allocates again before returning it must PROTECT it first. */
@@ -109,5 +119,11 @@ SEXP mio_r_shift_map(const int64_t *data, int64_t n);
 
 /* A named list of `n` elements; `names` must have `n` entries. */
 SEXP mio_r_named_list(int n, const char **names, SEXP *values);
+
+/* A named list of `n` elements, the shape of an operation's report: entry i is
+ * values[i], or, where values[i] is NULL (or `values` itself is NULL), the next
+ * of `numbers` as a length-1 double. The non-NULL values must already be
+ * protected by the caller; the numbers need no PROTECT of their own. */
+SEXP mio_r_report_list(int n, const char **names, const SEXP *values, const double *numbers);
 
 #endif /* MESHIOPLUSPLUS_R_H */
