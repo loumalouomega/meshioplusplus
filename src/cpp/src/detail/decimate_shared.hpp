@@ -45,6 +45,33 @@
 namespace meshioplusplus {
 namespace detail {
 
+/// The resolved stopping criterion of either decimation. `mTarget` (a face
+/// or cell count) only means something when `mUseTarget` is set; a ratio is
+/// turned into a count (`decim_ratio_target`) once the count is known.
+struct DecimStop {
+    bool mUseTarget = false;
+    bool mUseMaxError = false;
+    std::int64_t mTarget = -1;
+    double mMaxError = -1.0;
+};
+
+/**
+ * @brief Exactly one of `target_ratio` (in (0, 1]), the absolute count and
+ * `max_error`, each negative when unset; std::invalid_argument otherwise.
+ * @param rPrefix Each message's start (`"meshio++: decimate: "`).
+ * @param pCountName The count's keyword (`target_faces`, `target_cells`).
+ */
+DecimStop decim_resolve_stop(double TargetRatio, std::int64_t TargetCount, double MaxError,
+                             const std::string& rPrefix, const char* pCountName);
+
+/// A `frozen` mask is empty or has one entry per point; std::invalid_argument otherwise.
+void decim_check_frozen(std::size_t FrozenSize, std::size_t NumPoints, const std::string& rPrefix);
+
+/// The count a ratio keeps of @p Count: `max(1, int64(Ratio * Count + 0.5))`,
+/// truncation rather than `llround`, whose tie rule the numpy twin cannot
+/// reproduce with `int(x + 0.5)`.
+std::int64_t decim_ratio_target(double Ratio, std::size_t Count);
+
 /// A Float64 working copy of a float-kind point_data array, blended in place
 /// at each collapse commit.
 struct DecimFloatData {
@@ -52,9 +79,6 @@ struct DecimFloatData {
     std::size_t mNumComponents = 0;
     std::vector<double> mValues;  // n * mNumComponents
 };
-
-/// A vector of Int64 as a 1-D NDArray.
-NDArray decim_int64_vector(const std::vector<std::int64_t>& rValues);
 
 /// Float64 working copies of `rMesh`'s float-kind point_data with `n` rows,
 /// in point-data name order.

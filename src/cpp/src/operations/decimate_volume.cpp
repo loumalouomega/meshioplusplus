@@ -48,6 +48,8 @@
 
 // Project includes (private, not installed)
 #include "../detail/decimate_shared.hpp"
+#include "../detail/surface_rings.hpp"
+#include "../detail/ndarray_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -69,38 +71,6 @@ using detail::Vec3;
 constexpr const char* kDvPrefix = "meshio++: decimate_volume: ";
 
 // --- validation --------------------------------------------------------------
-
-struct DvStop {
-    bool mUseTarget = false;
-    bool mUseMaxError = false;
-    std::int64_t mTargetCells = -1;
-    double mMaxError = -1.0;
-};
-
-DvStop dv_resolve_stop(const DecimateVolumeOptions& rOptions) {
-    const int num_set = (rOptions.mTargetRatio >= 0.0 ? 1 : 0) +
-                        (rOptions.mTargetCells >= 0 ? 1 : 0) + (rOptions.mMaxError >= 0.0 ? 1 : 0);
-    if (num_set != 1)
-        throw std::invalid_argument(
-            std::string(kDvPrefix) +
-            "exactly one of target_ratio, target_cells, max_error must be set; got " +
-            std::to_string(num_set));
-    DvStop stop;
-    if (rOptions.mTargetRatio >= 0.0) {
-        if (!(rOptions.mTargetRatio > 0.0 && rOptions.mTargetRatio <= 1.0))
-            throw std::invalid_argument(std::string(kDvPrefix) +
-                                        "target_ratio must lie in (0, 1]; got " +
-                                        std::to_string(rOptions.mTargetRatio));
-        stop.mUseTarget = true;  // filled in once T (tet count) is known
-    } else if (rOptions.mTargetCells >= 0) {
-        stop.mUseTarget = true;
-        stop.mTargetCells = rOptions.mTargetCells;
-    } else {
-        stop.mUseMaxError = true;
-        stop.mMaxError = rOptions.mMaxError;
-    }
-    return stop;
-}
 
 // Reject every construct outside the tet-only scope, by name, before any
 // other work.
@@ -209,13 +179,12 @@ using detail::DecimFloatData;
 }  // namespace
 
 DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOptions& rOptions) {
-    DvStop stop = dv_resolve_stop(rOptions);
+    detail::DecimStop stop =
+        detail::decim_resolve_stop(rOptions.mTargetRatio, rOptions.mTargetCells, rOptions.mMaxError,
+                                   kDvPrefix, "target_cells");
 
     const std::size_t n = rMesh.NumPoints();
-    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
-        throw std::invalid_argument(std::string(kDvPrefix) + "frozen mask has " +
-                                    std::to_string(rOptions.mFrozen.size()) +
-                                    " entries but the mesh has " + std::to_string(n) + " points");
+    detail::decim_check_frozen(rOptions.mFrozen.size(), n, kDvPrefix);
 
     dv_check_blocks(rMesh);
 
@@ -224,14 +193,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
     const std::size_t num_tets = static_cast<std::size_t>(detail::total_cells(bases));
 
     // --- phase 1: flat buffers (parallel fills) -------------------------------
-    std::vector<double> xyz(n * 3, 0.0);
-    {
-        const NDArray& points = rMesh.Points();
-        parallel_for_bw(n, [&](std::size_t i) {
-            for (std::size_t d = 0; d < dim && d < 3; ++d)
-                xyz[i * 3 + d] = detail::read_double(points, i * dim + d);
-        });
-    }
+    std::vector<double> xyz = detail::surface_xyz(rMesh);
 
     std::vector<std::int64_t> tet_conn(num_tets * 4);
     {
@@ -335,9 +297,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
     ctx.mPlacement = rOptions.mPlacement;
 
     if (stop.mUseTarget && rOptions.mTargetRatio >= 0.0)
-        stop.mTargetCells = std::max<std::int64_t>(
-            1,
-            static_cast<std::int64_t>(rOptions.mTargetRatio * static_cast<double>(num_tets) + 0.5));
+        stop.mTarget = detail::decim_ratio_target(rOptions.mTargetRatio, num_tets);
 
     // --- phase 6: unique tet edges (6 per tet, dedup by first occurrence) ----
     using DvEdgeKey = std::array<std::int64_t, 2>;
@@ -442,14 +402,14 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
     DecimateVolumeResult result;
     std::int64_t alive_tets = static_cast<std::int64_t>(num_tets);
     while (true) {
-        if (stop.mUseTarget && alive_tets <= stop.mTargetCells)
+        if (stop.mUseTarget && alive_tets <= stop.mTarget)
             break;
         if (heap.empty()) {
-            if (stop.mUseTarget && alive_tets > stop.mTargetCells)
+            if (stop.mUseTarget && alive_tets > stop.mTarget)
                 log::warn(
                     "decimate_volume: queue exhausted at {} tets before reaching the target of "
                     "{} (pinning and the validity guards left no collapsible edge)",
-                    alive_tets, stop.mTargetCells);
+                    alive_tets, stop.mTarget);
             break;
         }
         const DvHeapEntry top = heap.top();
@@ -671,7 +631,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
                 ++w;
             }
             out.AddCellBlock(cell_type_name(CellType::Tetra), std::move(block));
-            result.mCellMaps.push_back(detail::decim_int64_vector(cell_map));
+            result.mCellMaps.push_back(detail::NDArrayUtils::Int64Vector(cell_map));
             ++bi;
         }
     }

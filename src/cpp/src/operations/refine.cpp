@@ -73,6 +73,7 @@
 // Project includes (private, not installed)
 #include "../detail/data_plumbing.hpp"
 #include "../detail/slot_runs.hpp"
+#include "../detail/ndarray_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -174,14 +175,6 @@ NDArray refine_identity_map(std::size_t n) {
     std::int64_t* dst = a.As<std::int64_t>();
     for (std::size_t i = 0; i < n; ++i)
         dst[i] = static_cast<std::int64_t>(i);
-    return a;
-}
-
-// A vector of Int64 as a 1-D NDArray.
-NDArray refine_int64_vector(const std::vector<std::int64_t>& rValues) {
-    NDArray a = NDArray::Uninit(DType::Int64, {rValues.size()});
-    if (!rValues.empty())
-        std::memcpy(a.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
     return a;
 }
 
@@ -759,7 +752,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 }
             });
             out.AddCellBlock(cell_type_name(d.mType), std::move(out_conn));
-            cell_maps.push_back(refine_int64_vector(first_child));
+            cell_maps.push_back(detail::NDArrayUtils::Int64Vector(first_child));
         }
     }
 

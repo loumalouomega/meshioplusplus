@@ -56,6 +56,8 @@
 // Project includes (private, not installed)
 #include "../detail/decimate_shared.hpp"
 #include "../detail/slot_runs.hpp"
+#include "../detail/surface_rings.hpp"
+#include "../detail/ndarray_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -79,40 +81,7 @@ using detail::DecimPlaced;
 
 // --- validation --------------------------------------------------------------
 
-// The resolved stopping criterion. `mTargetFaces` is only meaningful when
-// `mUseTarget` is set (a ratio is turned into a face count once the
-// triangulated face count is known).
-struct DecimStop {
-    bool mUseTarget = false;
-    bool mUseMaxError = false;
-    std::int64_t mTargetFaces = -1;
-    double mMaxError = -1.0;
-};
-
-DecimStop decim_resolve_stop(const DecimateOptions& rOptions) {
-    const int num_set = (rOptions.mTargetRatio >= 0.0 ? 1 : 0) +
-                        (rOptions.mTargetFaces >= 0 ? 1 : 0) + (rOptions.mMaxError >= 0.0 ? 1 : 0);
-    if (num_set != 1)
-        throw std::invalid_argument(
-            "meshio++: decimate: exactly one of target_ratio, target_faces, max_error must be "
-            "set; got " +
-            std::to_string(num_set));
-    DecimStop stop;
-    if (rOptions.mTargetRatio >= 0.0) {
-        if (!(rOptions.mTargetRatio > 0.0 && rOptions.mTargetRatio <= 1.0))
-            throw std::invalid_argument(
-                "meshio++: decimate: target_ratio must lie in (0, 1]; got " +
-                std::to_string(rOptions.mTargetRatio));
-        stop.mUseTarget = true;  // the face count is filled in once F is known
-    } else if (rOptions.mTargetFaces >= 0) {
-        stop.mUseTarget = true;
-        stop.mTargetFaces = rOptions.mTargetFaces;
-    } else {
-        stop.mUseMaxError = true;
-        stop.mMaxError = rOptions.mMaxError;
-    }
-    return stop;
-}
+constexpr const char* kDecimPrefix = "meshio++: decimate: ";
 
 // Reject, by name, every construct outside the surface scope -- BEFORE the
 // simplexify call, whose own policy is to pass unsupported blocks through with
@@ -248,7 +217,6 @@ std::vector<DecimEdgeKey> decim_build_edges(const DecimFaces& rFaces,
 // A Float64 working copy of a float-kind point_data array, blended in place at
 // each collapse commit, and the rest of the commit/emission plumbing shared
 // with volume decimation: detail/decimate_shared.hpp.
-using detail::decim_int64_vector;
 using detail::DecimFloatData;
 
 }  // namespace
@@ -265,13 +233,12 @@ DecimatePlacement decimate_placement_from_name(const std::string& rName) {
 }
 
 DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
-    DecimStop stop = decim_resolve_stop(rOptions);
+    detail::DecimStop stop =
+        detail::decim_resolve_stop(rOptions.mTargetRatio, rOptions.mTargetFaces, rOptions.mMaxError,
+                                   kDecimPrefix, "target_faces");
 
     const std::size_t n = rMesh.NumPoints();
-    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
-        throw std::invalid_argument("meshio++: decimate: frozen mask has " +
-                                    std::to_string(rOptions.mFrozen.size()) +
-                                    " entries but the mesh has " + std::to_string(n) + " points");
+    detail::decim_check_frozen(rOptions.mFrozen.size(), n, kDecimPrefix);
 
     decim_check_blocks(rMesh);
 
@@ -285,14 +252,7 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     const std::size_t dim = simp.PointDim();
 
     // --- phase 1: flat buffers + incidence (parallel fills, serial dedups) ---
-    std::vector<double> xyz(n * 3, 0.0);
-    {
-        const NDArray& points = simp.Points();
-        parallel_for_bw(n, [&](std::size_t i) {
-            for (std::size_t d = 0; d < dim && d < 3; ++d)
-                xyz[i * 3 + d] = detail::read_double(points, i * dim + d);
-        });
-    }
+    std::vector<double> xyz = detail::surface_xyz(simp);
 
     DecimFaces faces = decim_build_faces(simp, n);
     const std::size_t num_faces = faces.mNumFaces;
@@ -340,13 +300,9 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     ctx.mpPinned = &pinned;
     ctx.mPlacement = rOptions.mPlacement;
 
-    // Resolve a ratio into a face target now that F is known. int64(x + 0.5)
-    // truncation, never llround, whose tie rule the numpy twin could not
-    // reproduce with int(x + 0.5).
+    // Resolve a ratio into a face target now that F is known.
     if (stop.mUseTarget && rOptions.mTargetRatio >= 0.0)
-        stop.mTargetFaces = std::max<std::int64_t>(
-            1, static_cast<std::int64_t>(rOptions.mTargetRatio * static_cast<double>(num_faces) +
-                                         0.5));
+        stop.mTarget = detail::decim_ratio_target(rOptions.mTargetRatio, num_faces);
 
     // --- phase 5: seed the queue (parallel scoring, serial pushes) -----------
     using DecimHeapEntry =
@@ -380,14 +336,14 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     std::int64_t alive_faces = static_cast<std::int64_t>(num_faces);
     std::vector<std::int64_t> merged;
     while (true) {
-        if (stop.mUseTarget && alive_faces <= stop.mTargetFaces)
+        if (stop.mUseTarget && alive_faces <= stop.mTarget)
             break;
         if (heap.empty()) {
-            if (stop.mUseTarget && alive_faces > stop.mTargetFaces)
+            if (stop.mUseTarget && alive_faces > stop.mTarget)
                 log::warn(
                     "decimate: queue exhausted at {} faces before reaching the target of {} "
                     "(pinning and the validity guards left no collapsible edge)",
-                    alive_faces, stop.mTargetFaces);
+                    alive_faces, stop.mTarget);
             break;
         }
         const DecimHeapEntry top = heap.top();
@@ -549,7 +505,7 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
                 ++w;
             }
             out.AddCellBlock(cell_type_name(CellType::Triangle), std::move(block));
-            result.mCellMaps.push_back(decim_int64_vector(cell_map));
+            result.mCellMaps.push_back(detail::NDArrayUtils::Int64Vector(cell_map));
             ++bi;
         }
     }

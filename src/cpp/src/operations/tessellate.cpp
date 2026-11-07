@@ -49,6 +49,7 @@
 #include "meshioplusplus/parallel.hpp"
 // Project includes (private, not installed)
 #include "../detail/typed_view.hpp"
+#include "../detail/ndarray_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -736,13 +737,6 @@ void ts_emit_block(Mesh& rOut, TsBlock& rBlock, const std::vector<std::int64_t>&
     }
 }
 
-NDArray ts_int64_array(const std::vector<std::int64_t>& rValues) {
-    NDArray out = NDArray::Uninit(DType::Int64, {rValues.size()});
-    if (!rValues.empty())
-        std::memcpy(out.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
-    return out;
-}
-
 bool ts_reserved_name(const std::string& rName) {
     return rName.rfind("tessellate:", 0) == 0;
 }
@@ -923,7 +917,7 @@ TessellateResult tessellate(const Mesh& rMesh, const TessellateOptions& rOptions
     emit_simplices("tetra", 4, tet_conn, tet_src, tet_sub);
 
     // Point data.
-    out.AddPointData(kTessellateSourcePointName, ts_int64_array(source_point));
+    out.AddPointData(kTessellateSourcePointName, detail::NDArrayUtils::Int64Vector(source_point));
     if (rOptions.mFields) {
         for (const std::string& name : rMesh.PointDataNames()) {
             if (ts_reserved_name(name))
@@ -966,8 +960,8 @@ TessellateResult tessellate(const Mesh& rMesh, const TessellateOptions& rOptions
     {
         std::vector<NDArray> src_blocks, sub_blocks;
         for (std::size_t b = 0; b < block_src.size(); ++b) {
-            src_blocks.push_back(ts_int64_array(block_src[b]));
-            sub_blocks.push_back(ts_int64_array(block_sub[b]));
+            src_blocks.push_back(detail::NDArrayUtils::Int64Vector(block_src[b]));
+            sub_blocks.push_back(detail::NDArrayUtils::Int64Vector(block_sub[b]));
         }
         if (!src_blocks.empty()) {
             out.AddCellData(kTessellateSourceCellName, std::move(src_blocks));
@@ -1057,7 +1051,7 @@ TessellateResult tessellate(const Mesh& rMesh, const TessellateOptions& rOptions
             if (reg.mKind == RegionKind::Cell && kept.size() != reg.NumEntries())
                 dropped.push_back(reg.mName + " (cell, entries on a tessellated cell)");
             out.AddRegion(meshioplusplus::Region(reg.mName, reg.mKind, reg.mDim, reg.mTag,
-                                                 ts_int64_array(kept)));
+                                                 detail::NDArrayUtils::Int64Vector(kept)));
         }
         if (!dropped.empty()) {
             std::string list;

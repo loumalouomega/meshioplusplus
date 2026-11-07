@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <cstring>
 #include <iterator>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 // Project includes
@@ -33,11 +35,39 @@
 namespace meshioplusplus {
 namespace detail {
 
-NDArray decim_int64_vector(const std::vector<std::int64_t>& rValues) {
-    NDArray a = NDArray::Uninit(DType::Int64, {rValues.size()});
-    if (!rValues.empty())
-        std::memcpy(a.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
-    return a;
+DecimStop decim_resolve_stop(double TargetRatio, std::int64_t TargetCount, double MaxError,
+                             const std::string& rPrefix, const char* pCountName) {
+    const int num_set =
+        (TargetRatio >= 0.0 ? 1 : 0) + (TargetCount >= 0 ? 1 : 0) + (MaxError >= 0.0 ? 1 : 0);
+    if (num_set != 1)
+        throw std::invalid_argument(rPrefix + "exactly one of target_ratio, " + pCountName +
+                                    ", max_error must be set; got " + std::to_string(num_set));
+    DecimStop stop;
+    if (TargetRatio >= 0.0) {
+        if (!(TargetRatio > 0.0 && TargetRatio <= 1.0))
+            throw std::invalid_argument(rPrefix + "target_ratio must lie in (0, 1]; got " +
+                                        std::to_string(TargetRatio));
+        stop.mUseTarget = true;  // the count is filled in once it is known
+    } else if (TargetCount >= 0) {
+        stop.mUseTarget = true;
+        stop.mTarget = TargetCount;
+    } else {
+        stop.mUseMaxError = true;
+        stop.mMaxError = MaxError;
+    }
+    return stop;
+}
+
+void decim_check_frozen(std::size_t FrozenSize, std::size_t NumPoints, const std::string& rPrefix) {
+    if (FrozenSize != 0 && FrozenSize != NumPoints)
+        throw std::invalid_argument(rPrefix + "frozen mask has " + std::to_string(FrozenSize) +
+                                    " entries but the mesh has " + std::to_string(NumPoints) +
+                                    " points");
+}
+
+std::int64_t decim_ratio_target(double Ratio, std::size_t Count) {
+    return std::max<std::int64_t>(
+        1, static_cast<std::int64_t>(Ratio * static_cast<double>(Count) + 0.5));
 }
 
 std::vector<DecimFloatData> decim_float_working_copies(const Mesh& rMesh, std::size_t n) {

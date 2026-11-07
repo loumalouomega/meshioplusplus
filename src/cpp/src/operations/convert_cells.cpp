@@ -56,6 +56,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/slot_runs.hpp"
+#include "../detail/ndarray_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -323,13 +324,6 @@ void ccells_visit_block_nodes(const CcellsOutBlock& rBlock, TFunc&& rFunc) {
 
 // --- shared data plumbing ----------------------------------------------------
 
-NDArray ccells_int64_vector(const std::vector<std::int64_t>& rValues) {
-    NDArray out = NDArray::Uninit(DType::Int64, {rValues.size()});
-    if (!rValues.empty())
-        std::memcpy(out.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
-    return out;
-}
-
 // Per-block identity cell maps (Linearize/Elevate: one child per parent).
 std::vector<NDArray> ccells_identity_cell_maps(const Mesh& rMesh) {
     std::vector<NDArray> maps;
@@ -454,7 +448,7 @@ ConvertCellsResult ccells_linearize(const Mesh& rMesh, bool RecordParentIds) {
 
     ConvertCellsResult res;
     res.mMesh = std::move(out);
-    res.mPointMap = ccells_int64_vector(remap);
+    res.mPointMap = detail::NDArrayUtils::Int64Vector(remap);
     res.mCellMaps = ccells_identity_cell_maps(rMesh);
     return res;
 }
@@ -805,7 +799,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds,
         std::vector<NDArray> blocks;
         blocks.reserve(nblocks);
         for (std::size_t b = 0; b < nblocks; ++b)
-            blocks.push_back(ccells_int64_vector(parent_of_child[b]));
+            blocks.push_back(detail::NDArrayUtils::Int64Vector(parent_of_child[b]));
         if (!blocks.empty())
             out.AddCellData("convert:parent_cell", std::move(blocks));
     }
@@ -816,7 +810,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds,
                                     : ccells_identity_point_map(rMesh.NumPoints());
     res.mCellMaps.reserve(nblocks);
     for (std::size_t b = 0; b < nblocks; ++b)
-        res.mCellMaps.push_back(ccells_int64_vector(first_child[b]));
+        res.mCellMaps.push_back(detail::NDArrayUtils::Int64Vector(first_child[b]));
     return res;
 }
 

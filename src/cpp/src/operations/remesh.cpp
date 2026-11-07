@@ -67,6 +67,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 #include "../detail/geometry_utils.hpp"
+#include "../detail/surface_rings.hpp"
 
 namespace meshioplusplus {
 
@@ -123,12 +124,7 @@ void remesh_check_blocks(const Mesh& rMesh) {
 RemeshSurface remesh_build_surface(const Mesh& rMesh) {
     RemeshSurface s;
     s.mNumPoints = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
-    s.mXyz.assign(s.mNumPoints * 3, 0.0);
-    const NDArray& points = rMesh.Points();
-    for (std::size_t i = 0; i < s.mNumPoints; ++i)
-        for (std::size_t d = 0; d < dim && d < 3; ++d)
-            s.mXyz[i * 3 + d] = detail::read_double(points, i * dim + d);
+    s.mXyz = detail::surface_xyz(rMesh);
 
     for (const auto cb : rMesh.CellRange()) {
         if (cell_type_from_name(cb.Type()) != CellType::Triangle)

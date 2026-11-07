@@ -48,6 +48,7 @@
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/vtk_common.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/ndarray_utils.hpp"
 #include "library_preflight.hpp"
 
 namespace meshioplusplus {
@@ -181,13 +182,6 @@ std::string vtkhdf_friendly_type(I64 VtkType) {
         default:
             return "VTK type " + std::to_string(VtkType);
     }
-}
-
-NDArray vtkhdf_i64_array(const I64Vec& rV) {
-    NDArray a = NDArray::Uninit(DType::Int64, {rV.size()});
-    if (!rV.empty())
-        std::memcpy(a.Data(), rV.data(), rV.size() * sizeof(I64));
-    return a;
 }
 
 /// Rows `rIdx` of `rA` (rank >= 1), as an owning array.
@@ -890,7 +884,8 @@ Mesh vtkhdf_assemble(VtkhdfLeaf& rLeaf, const ReadOptions& rOpts,
             // tag = the piece's position in the file, which a writer sorts by to restore
             // the order (the mesh stores regions sorted by name, so it cannot carry it).
             mesh.AddRegion(Region(rPieceNames[p], RegionKind::Cell, -1,
-                                  static_cast<std::int64_t>(p), vtkhdf_i64_array(entries[p])));
+                                  static_cast<std::int64_t>(p),
+                                  detail::NDArrayUtils::Int64Vector(entries[p])));
     }
     return mesh;
 }
@@ -1172,7 +1167,7 @@ void vtkhdf_put(hid_t Loc, const std::string& rName, const NDArray& rArr, int Gz
 }
 
 void vtkhdf_put_i64(hid_t Loc, const std::string& rName, const I64Vec& rV, int Gzip) {
-    vtkhdf_put(Loc, rName, vtkhdf_i64_array(rV), Gzip);
+    vtkhdf_put(Loc, rName, detail::NDArrayUtils::Int64Vector(rV), Gzip);
 }
 
 void vtkhdf_check_name(const std::string& rName, const char* pWhat) {

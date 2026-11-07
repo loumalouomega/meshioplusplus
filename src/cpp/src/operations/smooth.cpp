@@ -51,6 +51,7 @@
 // Project includes (private, not installed)
 #include "smooth_odt.hpp"
 #include "../detail/crease_edges.hpp"
+#include "../detail/facet_slots.hpp"
 #include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
@@ -615,9 +616,8 @@ std::vector<SmoothFacetDef> smooth_facets_for(CellType Type, bool FaceMode) {
 // as rings into `pRings` (face mode) or the boundary edges with their
 // directions into `pFacets` (edge mode), each when non-null.
 //
-// This is surface.cpp's phase-split idiom re-implemented locally with smooth_
-// prefixes, following the v7.6.0 partition precedent: surface.cpp's
-// anon-namespace machinery stays untouched. The keys are counted by the
+// This is surface.cpp's phase-split idiom, its slot bookkeeping shared with it
+// (detail/facet_slots.hpp) and its keys and marking its own. The keys are counted by the
 // sort-based table (detail/slot_runs.hpp), deterministic by construction; the
 // marking pass stays serial in stored order and must never become a
 // concurrent hash insert.
@@ -637,14 +637,7 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
             b.mBlock = this_block;
             b.mNumCells = cb.NumCells();
             b.mFirstFacet = total_facets;
-            b.mFaceStart.reserve(b.mNumCells + 1);
-            std::size_t at = 0;
-            b.mFaceStart.push_back(0);
-            for (std::size_t c = 0; c < b.mNumCells; ++c) {
-                at += cb.NumFaces(c);
-                b.mFaceStart.push_back(at);
-            }
-            total_facets += at;
+            total_facets += detail::FacetSlotUtils::BuildFaceStarts(cb, b.mNumCells, b.mFaceStart);
             blocks.push_back(std::move(b));
             continue;
         }
@@ -686,19 +679,10 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
             continue;
         }
         poly_blocks[bi].emplace(rMesh.Cells(b.mBlock));
-        b.mCellOfFace.resize(b.mFaceStart.back());
-        parallel_for(b.mNumCells, [&](std::size_t c) {
-            for (std::size_t f = b.mFaceStart[c]; f < b.mFaceStart[c + 1]; ++f)
-                b.mCellOfFace[f] = static_cast<std::uint32_t>(c);
-        });
+        detail::FacetSlotUtils::FillCellOfFace(b.mFaceStart, b.mNumCells, b.mCellOfFace);
     }
     const auto block_of = [&](std::size_t ri) -> std::size_t {
-        if (first_facets.size() == 1)
-            return 0;
-        return static_cast<std::size_t>(
-                   std::upper_bound(first_facets.begin(), first_facets.end(), ri) -
-                   first_facets.begin()) -
-               1;
+        return detail::FacetSlotUtils::SlotOwner(first_facets, ri);
     };
     const auto size_of = [&](std::size_t ri) -> std::size_t {
         const std::size_t bi = block_of(ri);
