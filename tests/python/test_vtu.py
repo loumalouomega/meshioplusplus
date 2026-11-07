@@ -288,6 +288,31 @@ def test_a_compressed_block_needs_zlib():
             _core.vtu_read(str(path))
 
 
+def _ascii_points_vtu(path, values):
+    path.write_text(
+        '<?xml version="1.0"?>\n<VTKFile type="UnstructuredGrid" version="1.0">'
+        f'<UnstructuredGrid><Piece NumberOfPoints="{len(values) // 3}" '
+        'NumberOfCells="1"><Points><DataArray type="Float64" '
+        f'NumberOfComponents="3" format="ascii">{" ".join(values)}</DataArray>'
+        '</Points><Cells><DataArray type="Int64" Name="connectivity" '
+        'format="ascii">0</DataArray><DataArray type="Int64" Name="offsets" '
+        'format="ascii">1</DataArray><DataArray type="UInt8" Name="types" '
+        'format="ascii">1</DataArray></Cells></Piece></UnstructuredGrid>'
+        "</VTKFile>\n"
+    )
+    return path
+
+
+@pytest.mark.parametrize("reader", [_core_vtu_read, _vtu.read], ids=["core", "python"])
+def test_a_malformed_ascii_number_is_a_read_error(reader, tmp_path):
+    # Roadmap 5.7.2: the core once cut the array short at a bad token.
+    good = [f"{i}.5" for i in range(12)]
+    assert len(reader(_ascii_points_vtu(tmp_path / "ok.vtu", good)).points) == 4
+    bad = good[:7] + ["abc"] + good[8:]
+    with pytest.raises(meshioplusplus.ReadError, match="malformed number"):
+        reader(_ascii_points_vtu(tmp_path / "bad.vtu", bad))
+
+
 @pytest.mark.parametrize("reader", [_core_vtu_read, _vtu.read], ids=["core", "python"])
 def test_two_pieces_with_polyhedra_merge(reader):
     mesh = reader(_QUIRKS / "two_pieces_polyhedron.vtu")

@@ -8,6 +8,7 @@ import base64
 import io
 import re
 import sys
+import warnings
 import zlib
 
 import numpy as np
@@ -889,7 +890,17 @@ class VtuReader:
                 # https://github.com/numpy/numpy/issues/18435
                 data = np.empty((0,), dtype=dtype)
             else:
-                data = np.fromstring(c.text, dtype=dtype, sep=" ")
+                # A token numpy cannot parse raises (numpy >= 2.x; older numpy
+                # warns and truncates, so the warning is made an error):
+                # the read fails, as the core's does (roadmap 5.7.2).
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error", DeprecationWarning)
+                        data = np.fromstring(c.text, dtype=dtype, sep=" ")
+                except (ValueError, DeprecationWarning) as exc:
+                    raise ReadError(
+                        f"VTK XML: malformed number in an ascii DataArray ({exc})"
+                    ) from exc
         elif fmt == "binary":
             reader = (
                 self.read_uncompressed_binary
