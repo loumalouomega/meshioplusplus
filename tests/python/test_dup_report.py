@@ -85,7 +85,7 @@ def _table(rows):
 
 
 def test_literal_tables_of_one_shape_do_not_match(tmp_path):
-    # Roadmap 8.1: once strings and numbers are normalised, two literal tables
+    # Roadmap §8: once strings and numbers are normalised, two literal tables
     # of the same shape look identical although no entry agrees.
     a = [(f"a{i}", i) for i in range(40)]
     b = [(f"b{i}", 100 + i) for i in range(40)]

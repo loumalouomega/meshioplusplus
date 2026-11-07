@@ -41403,6 +41403,105 @@ std::array<double, 6> tet_dihedral_angles(const Vec3& rA, const Vec3& rB, const 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/bcc_octree_tets.hpp =====
+// ===== begin src/cpp/src/detail/bounding_box_utils.hpp =====
+/**
+ * @file detail/bounding_box_utils.hpp
+ * @brief `BoundingBoxUtils`: axis-aligned boxes of point sets, the loop that
+ * operations used to write out by hand (doc/geometry_kernels.md, roadmap §8).
+ *
+ * A Kratos-style utility class (cf. `Kratos::BoundingBox`): a plain
+ * `BoundingBox3` value and static inline members. `FromPoints` starts from the
+ * first point and widens with `std::min(lo, q)` / `std::max(hi, q)`, the form
+ * the copies it replaced used: it keeps `lo` on a tie or a NaN coordinate, so
+ * it matches `if (q < lo) lo = q` too, but not a loop seeded with +-infinity
+ * (which differs on NaN and on an empty set) -- those stay as they are.
+ *
+ * A **core-private** header (not installed): no API or ABI surface.
+ */
+
+// System includes
+#include <algorithm>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// An axis-aligned box, `mMin` and `mMax` corners.
+struct BoundingBox3 {
+    Vec3 mMin{0.0, 0.0, 0.0};
+    Vec3 mMax{0.0, 0.0, 0.0};
+};
+
+/// Static axis-aligned bounding-box helpers.
+struct BoundingBoxUtils {
+    /// Widens `rBox` to hold `rQ`: `std::min(lo, q)`, `std::max(hi, q)` per axis.
+    static void Expand(BoundingBox3& rBox, const Vec3& rQ) {
+        for (std::size_t a = 0; a < 3; ++a) {
+            rBox.mMin[a] = std::min(rBox.mMin[a], rQ[a]);
+            rBox.mMax[a] = std::max(rBox.mMax[a], rQ[a]);
+        }
+    }
+
+    /**
+     * @brief The box of `rPoints`, seeded with the first point. An empty set
+     * gives the degenerate box at the origin.
+     */
+    static BoundingBox3 FromPoints(const std::vector<Vec3>& rPoints) {
+        BoundingBox3 box;
+        if (rPoints.empty())
+            return box;
+        box.mMin = rPoints[0];
+        box.mMax = rPoints[0];
+        for (const Vec3& r_q : rPoints)
+            Expand(box, r_q);
+        return box;
+    }
+
+    /**
+     * @brief The box of `N >= 1` coordinates supplied by `rCoord(i) -> Vec3`,
+     * written to the flat triples `pLo` and `pHi`: seeded with coordinate 0,
+     * then widened by `if (c < lo) lo = c` and `if (c > hi) hi = c` (the same
+     * as `Expand`'s `std::min`/`std::max`). For callers that gather coordinates
+     * on the fly (`interpolate`'s point, centroid and per-simplex boxes).
+     */
+    template <class TCoord>
+    static void FromCoords(std::size_t N, TCoord&& rCoord, double* pLo, double* pHi) {
+        const Vec3 first = rCoord(0);
+        for (int d = 0; d < 3; ++d)
+            pLo[d] = pHi[d] = first[d];
+        for (std::size_t i = 1; i < N; ++i) {
+            const Vec3 c = rCoord(i);
+            for (int d = 0; d < 3; ++d) {
+                if (c[d] < pLo[d])
+                    pLo[d] = c[d];
+                if (c[d] > pHi[d])
+                    pHi[d] = c[d];
+            }
+        }
+    }
+
+    /// `max - min` per axis.
+    static Vec3 Extent(const BoundingBox3& rBox) { return vec3_sub(rBox.mMax, rBox.mMin); }
+
+    /// The largest of the three extents.
+    static double MaxExtent(const BoundingBox3& rBox) {
+        const Vec3 e = Extent(rBox);
+        return std::max({e[0], e[1], e[2]});
+    }
+
+    /// Half the box's surface area, `ex ey + ey ez + ez ex`.
+    static double HalfSurfaceArea(const BoundingBox3& rBox) {
+        const Vec3 e = Extent(rBox);
+        return e[0] * e[1] + e[1] * e[2] + e[2] * e[0];
+    }
+
+    /// The diagonal's length, `|max - min|`.
+    static double Diagonal(const BoundingBox3& rBox) { return vec3_norm(Extent(rBox)); }
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/bounding_box_utils.hpp =====
 // ===== begin src/cpp/src/detail/patch_flatten.hpp =====
 /**
  * @file patch_flatten.hpp
@@ -43013,6 +43112,15 @@ private:
 
     Location Locate(const Vec2& rP);
     Location LocateBruteForce(const Vec2& rP) const;
+    /// The location in triangle @p Tri (corners @p rV) whose three edge
+    /// orientations are @p pO: inside, on the one zero edge, or on the vertex
+    /// two zero edges meet at.
+    static Location Classify(std::int64_t Tri, const double* pO,
+                             const std::array<std::int64_t, 3>& rV);
+    /// Whether edge @p E of triangle @p T is a flip candidate (alive,
+    /// unconstrained, with a neighbour): that neighbour @p rU and its vertex
+    /// @p rD opposite the edge.
+    bool FlipCandidate(std::int64_t T, int E, std::int64_t& rU, std::int64_t& rD) const;
     std::int64_t InsertAt(const Vec2& rP, const Location& rLoc, bool Inside);
     std::vector<std::int64_t> ReplaceCavity(const std::vector<std::int64_t>& rRemoved,
                                             const std::vector<Tri>& rNew, bool Inside);
@@ -44935,6 +45043,33 @@ inline void clone_geometry_into(const Mesh& rMesh, NDArray Points, Mesh& rOut) {
 namespace meshioplusplus {
 namespace detail {
 
+/// The resolved stopping criterion of either decimation. `mTarget` (a face
+/// or cell count) only means something when `mUseTarget` is set; a ratio is
+/// turned into a count (`decim_ratio_target`) once the count is known.
+struct DecimStop {
+    bool mUseTarget = false;
+    bool mUseMaxError = false;
+    std::int64_t mTarget = -1;
+    double mMaxError = -1.0;
+};
+
+/**
+ * @brief Exactly one of `target_ratio` (in (0, 1]), the absolute count and
+ * `max_error`, each negative when unset; std::invalid_argument otherwise.
+ * @param rPrefix Each message's start (`"meshio++: decimate: "`).
+ * @param pCountName The count's keyword (`target_faces`, `target_cells`).
+ */
+DecimStop decim_resolve_stop(double TargetRatio, std::int64_t TargetCount, double MaxError,
+                             const std::string& rPrefix, const char* pCountName);
+
+/// A `frozen` mask is empty or has one entry per point; std::invalid_argument otherwise.
+void decim_check_frozen(std::size_t FrozenSize, std::size_t NumPoints, const std::string& rPrefix);
+
+/// The count a ratio keeps of @p Count: `max(1, int64(Ratio * Count + 0.5))`,
+/// truncation rather than `llround`, whose tie rule the numpy twin cannot
+/// reproduce with `int(x + 0.5)`.
+std::int64_t decim_ratio_target(double Ratio, std::size_t Count);
+
 /// A Float64 working copy of a float-kind point_data array, blended in place
 /// at each collapse commit.
 struct DecimFloatData {
@@ -44942,9 +45077,6 @@ struct DecimFloatData {
     std::size_t mNumComponents = 0;
     std::vector<double> mValues;  // n * mNumComponents
 };
-
-/// A vector of Int64 as a 1-D NDArray.
-NDArray decim_int64_vector(const std::vector<std::int64_t>& rValues);
 
 /// Float64 working copies of `rMesh`'s float-kind point_data with `n` rows,
 /// in point-data name order.
@@ -45760,6 +45892,56 @@ inline std::string drawing_join_types(const std::vector<std::string>& rSkipped) 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/drawing.hpp =====
+// ===== begin src/cpp/src/detail/dtype_table.hpp =====
+/**
+ * @file detail/dtype_table.hpp
+ * @brief `DTypeUtils`: one value per `DType`, read from a table in enumerator
+ * order instead of a ten-case `switch` (roadmap §8).
+ *
+ * Every format that names element types (netCDF, HDF5, XDMF, VTK, PLY) mapped
+ * a `DType` with the same ten-case switch falling back to the `Float64` entry;
+ * each now lists its ten names once, in the order `DType` declares them, and
+ * `DTypeUtils::Pick` reads them. A static assertion pins that order.
+ *
+ * A **core-private** header (not installed): no API or ABI surface.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// Static per-`DType` table lookups.
+struct DTypeUtils {
+    /// How many `DType` enumerators there are.
+    static constexpr std::size_t kNumDTypes = 10;
+
+    /// A value per `DType`, in enumerator order: Float32, Float64, Int8, Int16,
+    /// Int32, Int64, UInt8, UInt16, UInt32, UInt64.
+    template <class TValue>
+    using Table = std::array<TValue, kNumDTypes>;
+
+    /// `rTable`'s entry for `Dt`; a value outside the enumeration (a corrupted
+    /// or future `DType`) reads the `Float64` entry, as the switches did.
+    template <class TValue>
+    static TValue Pick(DType Dt, const Table<TValue>& rTable) {
+        const auto i = static_cast<std::size_t>(Dt);
+        return i < kNumDTypes ? rTable[i] : rTable[static_cast<std::size_t>(DType::Float64)];
+    }
+};
+
+static_assert(static_cast<int>(DType::Float32) == 0 && static_cast<int>(DType::Float64) == 1 &&
+                  static_cast<int>(DType::Int8) == 2 && static_cast<int>(DType::Int16) == 3 &&
+                  static_cast<int>(DType::Int32) == 4 && static_cast<int>(DType::Int64) == 5 &&
+                  static_cast<int>(DType::UInt8) == 6 && static_cast<int>(DType::UInt16) == 7 &&
+                  static_cast<int>(DType::UInt32) == 8 && static_cast<int>(DType::UInt64) == 9,
+              "DTypeUtils tables list the DType enumerators in declaration order");
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/dtype_table.hpp =====
 // ===== begin src/cpp/src/detail/dual_graph.hpp =====
 /**
  * @file detail/dual_graph.hpp
@@ -47385,6 +47567,80 @@ SelectionSkin build_selection_skin(const Mesh& rMesh, const std::vector<std::uin
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/face_skin.hpp =====
+// ===== begin src/cpp/src/detail/facet_slots.hpp =====
+/**
+ * @file detail/facet_slots.hpp
+ * @brief `FacetSlotUtils`: the slot bookkeeping of the facet tables that
+ * `extract_surface`/`extract_skin` (`surface.cpp`) and `smooth`'s boundary
+ * pass (`smooth.cpp`) each built (roadmap §8).
+ *
+ * Both number every facet of every block they scan as one global slot range,
+ * block after block, then count each facet's key with `detail::group_facets`.
+ * A table block's slots are `cells x facets-per-cell`; a polyhedron block's
+ * are its cells' faces, laid out by a per-cell prefix sum (`mFaceStart`) and
+ * inverted by a per-slot owner (`mCellOfFace`). What each caller keys and
+ * keeps stays in its own `size_of`/`fill` lambdas, so the hot loop is the
+ * caller's; this header holds the shared plumbing around it.
+ *
+ * A **core-private** header (not installed): no API or ABI surface.
+ */
+
+// System includes
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// Static helpers for a global facet-slot numbering over several blocks.
+struct FacetSlotUtils {
+    /**
+     * @brief A polyhedron block's face-slot prefix sum: `rFaceStart[c]` is cell
+     * `c`'s first slot within the block, `rFaceStart[NumCells]` the block's
+     * slot count, which is returned. `rBlock.NumFaces(c)` gives each count.
+     */
+    template <class TCellView>
+    static std::size_t BuildFaceStarts(const TCellView& rBlock, std::size_t NumCells,
+                                       std::vector<std::size_t>& rFaceStart) {
+        rFaceStart.reserve(NumCells + 1);
+        std::size_t at = 0;
+        rFaceStart.push_back(0);
+        for (std::size_t c = 0; c < NumCells; ++c) {
+            at += rBlock.NumFaces(c);
+            rFaceStart.push_back(at);
+        }
+        return at;
+    }
+
+    /// The inverse of `BuildFaceStarts`: the owning cell of each face slot.
+    static void FillCellOfFace(const std::vector<std::size_t>& rFaceStart, std::size_t NumCells,
+                               std::vector<std::uint32_t>& rCellOfFace) {
+        rCellOfFace.resize(rFaceStart.back());
+        parallel_for(NumCells, [&](std::size_t c) {
+            for (std::size_t f = rFaceStart[c]; f < rFaceStart[c + 1]; ++f)
+                rCellOfFace[f] = static_cast<std::uint32_t>(c);
+        });
+    }
+
+    /**
+     * @brief The block holding global slot @p Slot, given each block's first
+     * slot in ascending order (one block needs no search).
+     */
+    static std::size_t SlotOwner(const std::vector<std::size_t>& rFirstSlots, std::size_t Slot) {
+        if (rFirstSlots.size() == 1)
+            return 0;
+        return static_cast<std::size_t>(
+                   std::upper_bound(rFirstSlots.begin(), rFirstSlots.end(), Slot) -
+                   rFirstSlots.begin()) -
+               1;
+    }
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/facet_slots.hpp =====
 // ===== begin src/cpp/src/detail/farthest_points.hpp =====
 /**
  * @file detail/farthest_points.hpp
@@ -48733,6 +48989,265 @@ FreeformAdaptiveResult freeform_adaptive_fit(const std::vector<PatchVec>& rPts,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/freeform_adaptive.hpp =====
+// ===== begin src/cpp/src/detail/math_utils.hpp =====
+/**
+ * @file detail/math_utils.hpp
+ * @brief `MathUtils`: the small vector and 3x3 algebra that operations used to
+ * write out by hand (doc/geometry_kernels.md, roadmap §8).
+ *
+ * A Kratos-style utility class (`Kratos::MathUtils`): static inline members, no
+ * state, called as `MathUtils::Cross(a, b)` in place of the copied block. The
+ * `Vec3` members forward to `detail/geometry.hpp`'s `vec3_*` kernels; the
+ * `const double*` overloads compute the same expressions in the same order, for
+ * call sites that hold flat coordinate buffers.
+ *
+ * Every member keeps the exact floating-point arithmetic of the copies it
+ * replaced, so a call site that switches to it produces the same bits (the core
+ * builds with `-ffp-contract=off`, so an inlined expression rounds as the
+ * hand-written one did). A copy whose arithmetic differs (a reciprocal where
+ * this divides, another guard, another determinant expansion) is not folded in.
+ *
+ * A **core-private** header (not installed), so it adds nothing to the API or
+ * the ABI.
+ */
+
+// System includes
+#include <algorithm>
+#include <cmath>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// Static vector and small-matrix helpers over `Vec3` and flat `double` triples.
+struct MathUtils {
+    /// pi, as the copies spelled it (`3.14159265358979323846`).
+    static constexpr double kPi = 3.14159265358979323846;
+
+    ///@name Vectors
+    ///@{
+
+    /// `a - b`.
+    static Vec3 Sub(const Vec3& rA, const Vec3& rB) { return vec3_sub(rA, rB); }
+
+    /// `a - b` of two flat triples.
+    static Vec3 Sub(const double* pA, const double* pB) {
+        return {pA[0] - pB[0], pA[1] - pB[1], pA[2] - pB[2]};
+    }
+
+    /// `a + b`.
+    static Vec3 Add(const Vec3& rA, const Vec3& rB) { return vec3_add(rA, rB); }
+
+    /// `s * a`.
+    static Vec3 Scale(const Vec3& rA, double S) { return vec3_scale(rA, S); }
+
+    /// `a . b`, summed left to right.
+    static double Dot(const Vec3& rA, const Vec3& rB) { return vec3_dot(rA, rB); }
+
+    /// `a . b` of two flat triples, summed left to right.
+    static double Dot(const double* pA, const double* pB) {
+        return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
+    }
+
+    /// `a . b` of a flat triple and a `Vec3`, summed left to right.
+    static double Dot(const double* pA, const Vec3& rB) {
+        return pA[0] * rB[0] + pA[1] * rB[1] + pA[2] * rB[2];
+    }
+
+    /// `a x b`.
+    static Vec3 Cross(const Vec3& rA, const Vec3& rB) { return vec3_cross(rA, rB); }
+
+    /// `a x b` of two flat triples.
+    static Vec3 Cross(const double* pA, const double* pB) {
+        return {pA[1] * pB[2] - pA[2] * pB[1], pA[2] * pB[0] - pA[0] * pB[2],
+                pA[0] * pB[1] - pA[1] * pB[0]};
+    }
+
+    /// `a x b` of two flat triples, written to `pOut` (which must not alias them).
+    static void Cross(const double* pA, const double* pB, double* pOut) {
+        pOut[0] = pA[1] * pB[2] - pA[2] * pB[1];
+        pOut[1] = pA[2] * pB[0] - pA[0] * pB[2];
+        pOut[2] = pA[0] * pB[1] - pA[1] * pB[0];
+    }
+
+    /// `|a|^2`.
+    static double NormSq(const Vec3& rA) { return vec3_norm_sq(rA); }
+
+    /// `|a|`.
+    static double Norm(const Vec3& rA) { return vec3_norm(rA); }
+
+    /// `|a - b|`.
+    static double Distance(const Vec3& rA, const Vec3& rB) { return vec3_norm(vec3_sub(rA, rB)); }
+
+    /// `|a - b|` of two flat triples.
+    static double Distance(const double* pA, const double* pB) { return vec3_norm(Sub(pA, pB)); }
+
+    /**
+     * @brief `a / |a|`, each component divided by the length, or the zero
+     * vector when `!(|a| > 0)` (a zero or NaN length).
+     *
+     * The division form, which `vec3_normalize`'s multiplication by the
+     * reciprocal does not match bit for bit; it is the form `quad_layout`,
+     * `feature_fit`, `cross_field`, `boundary_layer` and the external mesher's
+     * STL normals used.
+     */
+    static Vec3 UnitByDivision(const Vec3& rA) {
+        const double l = vec3_norm(rA);
+        if (!(l > 0.0))
+            return {0.0, 0.0, 0.0};
+        return {rA[0] / l, rA[1] / l, rA[2] / l};
+    }
+
+    /**
+     * @brief The angle between `a` and `b` in degrees, `atan2(|a x b|, a . b)`:
+     * well conditioned near 0 and 180 degrees, where `acos` of the normalised
+     * dot product is not.
+     */
+    static double AngleDeg(const Vec3& rA, const Vec3& rB) {
+        return std::atan2(vec3_norm(vec3_cross(rA, rB)), vec3_dot(rA, rB)) * (180.0 / kPi);
+    }
+
+    ///@}
+    ///@name Small matrices
+    ///@{
+
+    /**
+     * @brief Solves the symmetric 3x3 system `M x = b` in closed cofactor
+     * (adjugate) form.
+     *
+     * `M` is given by its upper triangle. The system counts as singular unless
+     * `|det M| > 1e-12 * s^3`, `s` the largest magnitude of the six entries
+     * (written `s * s * s`: `std::pow` rounds differently). On success writes
+     * `x` to `pOut` and returns `true`; otherwise leaves `pOut` alone and
+     * returns `false`. `decimate`'s optimal placement and `gradient`'s least
+     * squares share it; the arithmetic is theirs, operation for operation.
+     */
+    static bool SolveSymmetric3(double M00, double M01, double M02, double M11, double M12,
+                                double M22, const double* pB, double* pOut) {
+        const double c00 = M11 * M22 - M12 * M12;
+        const double c01 = M02 * M12 - M01 * M22;
+        const double c02 = M01 * M12 - M02 * M11;
+        const double det = M00 * c00 + M01 * c01 + M02 * c02;
+        double scale = std::abs(M00);
+        scale = std::max(scale, std::abs(M01));
+        scale = std::max(scale, std::abs(M02));
+        scale = std::max(scale, std::abs(M11));
+        scale = std::max(scale, std::abs(M12));
+        scale = std::max(scale, std::abs(M22));
+        if (!(std::abs(det) > 1e-12 * (scale * scale * scale)))
+            return false;
+        const double c11 = M00 * M22 - M02 * M02;
+        const double c12 = M01 * M02 - M00 * M12;
+        const double c22 = M00 * M11 - M01 * M01;
+        const double inv = 1.0 / det;
+        pOut[0] = (c00 * pB[0] + c01 * pB[1] + c02 * pB[2]) * inv;
+        pOut[1] = (c01 * pB[0] + c11 * pB[1] + c12 * pB[2]) * inv;
+        pOut[2] = (c02 * pB[0] + c12 * pB[1] + c22 * pB[2]) * inv;
+        return true;
+    }
+
+    ///@}
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/math_utils.hpp =====
+// ===== begin src/cpp/src/detail/geometry_utils.hpp =====
+/**
+ * @file detail/geometry_utils.hpp
+ * @brief `GeometryUtils`: per-triangle measures that operations used to write
+ * out by hand (doc/geometry_kernels.md, roadmap §8).
+ *
+ * A Kratos-style utility class (`Kratos::GeometryUtils`): static inline members
+ * over corners already gathered as `Vec3` or as flat `double` triples. Each
+ * keeps the arithmetic of the copies it replaced, operation for operation, so
+ * a call site produces the same bits (see `math_utils.hpp`). Volumes and
+ * scaled Jacobians stay in `fem_kernels.hpp`, polygon and polyhedron measures
+ * in `polyhedron.hpp`.
+ *
+ * A **core-private** header (not installed): no API or ABI surface.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// Static triangle measures.
+struct GeometryUtils {
+    ///@name Triangles in 3D
+    ///@{
+
+    /**
+     * @brief The unnormalised normal `(b - a) x (c - a)`: right-handed about
+     * the corner order, of length twice the triangle's area.
+     */
+    static Vec3 TriangleNormal(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
+        return vec3_cross(vec3_sub(rB, rA), vec3_sub(rC, rA));
+    }
+
+    /// `TriangleNormal` of corners held as flat triples.
+    static Vec3 TriangleNormal(const double* pA, const double* pB, const double* pC) {
+        return vec3_cross(MathUtils::Sub(pB, pA), MathUtils::Sub(pC, pA));
+    }
+
+    /// `|(b - a) x (c - a)|`, twice the triangle's area.
+    static double TriangleTwiceArea(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
+        return vec3_norm(TriangleNormal(rA, rB, rC));
+    }
+
+    /// `TriangleTwiceArea` of corners held as flat triples.
+    static double TriangleTwiceArea(const double* pA, const double* pB, const double* pC) {
+        return vec3_norm(TriangleNormal(pA, pB, pC));
+    }
+
+    /**
+     * @brief The triangle's three corner angles in degrees, corner `k` between
+     * its edges to corners `k + 1` and `k + 2` (`MathUtils::AngleDeg`).
+     */
+    static std::array<double, 3> TriangleAnglesDeg(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
+        const Vec3* p[3] = {&rA, &rB, &rC};
+        std::array<double, 3> out{};
+        for (std::size_t k = 0; k < 3; ++k) {
+            const Vec3& o = *p[k];
+            out[k] =
+                MathUtils::AngleDeg(vec3_sub(*p[(k + 1) % 3], o), vec3_sub(*p[(k + 2) % 3], o));
+        }
+        return out;
+    }
+
+    /// The triangle's area, `0.5 * |(b - a) x (c - a)|`.
+    static double TriangleArea(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
+        return 0.5 * TriangleTwiceArea(rA, rB, rC);
+    }
+
+    /// `TriangleArea` of corners held as flat triples.
+    static double TriangleArea(const double* pA, const double* pB, const double* pC) {
+        return 0.5 * TriangleTwiceArea(pA, pB, pC);
+    }
+
+    ///@}
+    ///@name Triangles in a parameter plane
+    ///@{
+
+    /**
+     * @brief Twice the signed area of the triangle `(u0, v0), (u1, v1),
+     * (u2, v2)`: `(u1 - u0)(v2 - v0) - (u2 - u0)(v1 - v0)`, positive when
+     * counter-clockwise. Plain floating point; `predicates.hpp`'s `orient2d`
+     * is the exact sign.
+     */
+    static double SignedTwiceArea2D(double U0, double V0, double U1, double V1, double U2,
+                                    double V2) {
+        return (U1 - U0) * (V2 - V0) - (U2 - U0) * (V1 - V0);
+    }
+
+    ///@}
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/geometry_utils.hpp =====
 // ===== begin src/cpp/src/detail/hex_dual_schemes.hpp =====
 /**
  * @file detail/hex_dual_schemes.hpp
@@ -50242,6 +50757,46 @@ std::string nastran_join(const std::set<std::string>& rNames);
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/nastran_write_common.hpp =====
+// ===== begin src/cpp/src/detail/ndarray_utils.hpp =====
+/**
+ * @file detail/ndarray_utils.hpp
+ * @brief `NDArrayUtils`: owning 1-D `NDArray`s built from `std::vector`s, the
+ * helper half a dozen operations and formats each wrote out (roadmap §8).
+ *
+ * A Kratos-style utility class of static inline members. A core-private
+ * header (not installed): no API or ABI surface.
+ */
+
+// System includes
+#include <cstdint>
+#include <cstring>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// Static constructors of owning `NDArray`s.
+struct NDArrayUtils {
+    /// @p rValues as an owning 1-D `Int64` array of the same length.
+    static NDArray Int64Vector(const std::vector<std::int64_t>& rValues) {
+        NDArray out = NDArray::Uninit(DType::Int64, {rValues.size()});
+        if (!rValues.empty())
+            std::memcpy(out.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
+        return out;
+    }
+
+    /// @p rValues as an owning 1-D `Float64` array of the same length.
+    static NDArray Float64Vector(const std::vector<double>& rValues) {
+        NDArray out = NDArray::Uninit(DType::Float64, {rValues.size()});
+        if (!rValues.empty())
+            std::memcpy(out.Data(), rValues.data(), rValues.size() * sizeof(double));
+        return out;
+    }
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/ndarray_utils.hpp =====
 // ===== begin src/cpp/src/detail/node_table.hpp =====
 /**
  * @file detail/node_table.hpp
@@ -55003,6 +55558,7 @@ inline std::string_view vtu_strip_view(const char* pS) {
 // System includes
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -55109,6 +55665,30 @@ inline std::size_t vtk_xml_lattice_preamble(std::ostream& rOs, const Mesh& rMesh
     return hsz;
 }
 
+/// The codec of the `(binary, zlib)` writer entry points: zlib or none.
+inline VtkCodec vtk_codec_from_zlib(bool Zlib) {
+    return Zlib ? VtkCodec::Zlib : VtkCodec::None;
+}
+
+/**
+ * @brief The start of every lattice writer (`.vti`, `.vtr`, `.vts`): the
+ * mesh's lattice into @p rSpec, the codec checked, the file opened.
+ * @throws WriteError @p pNotLattice when the mesh is not a lattice, and when
+ * the file cannot be opened.
+ */
+inline std::ofstream vtk_xml_open_lattice(const std::string& rPath, const Mesh& rMesh, bool Binary,
+                                          VtkCodec Codec, const char* pNotLattice,
+                                          LatticeSpec& rSpec) {
+    if (!lattice_from_mesh(rMesh, rSpec))
+        throw WriteError(pNotLattice);
+    if (Binary && Codec != VtkCodec::None)
+        vtk_codec_require_write(Codec);
+    auto os = make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+    return os;
+}
+
 /// A one-block lattice's `<PointData>` and `<CellData>` sections (each only
 /// when the mesh has such data).
 inline void vtk_xml_lattice_data(const VtkXmlEmitter& rEmit, const Mesh& rMesh) {
@@ -55157,6 +55737,26 @@ inline void vtk_xml_lattice_data(const VtkXmlEmitter& rEmit, const Mesh& rMesh) 
         }
         os << "</CellData>\n";
     }
+}
+
+/**
+ * @brief A whole `.vtr` or `.vts` file, whose grid element carries only the
+ * extent: open (`vtk_xml_open_lattice`), the preamble, the geometry section
+ * `rGeometry(emit, spec)` writes (`<Coordinates>`, `<Points>`), the data
+ * sections and the closing tags.
+ */
+template <class TGeometry>
+void vtk_xml_write_lattice(const std::string& rPath, const Mesh& rMesh, bool Binary, VtkCodec Codec,
+                           const char* pGrid, const char* pFormat, const char* pNotLattice,
+                           TGeometry&& rGeometry) {
+    LatticeSpec spec;
+    auto os = vtk_xml_open_lattice(rPath, rMesh, Binary, Codec, pNotLattice, spec);
+    const std::size_t hsz =
+        vtk_xml_lattice_preamble(os, rMesh, spec, pGrid, pFormat, Binary, Codec);
+    const VtkXmlEmitter emit{os, Binary, Codec, hsz};
+    rGeometry(emit, spec);
+    vtk_xml_lattice_data(emit, rMesh);
+    os << "</Piece>\n</" << pGrid << ">\n</VTKFile>\n";
 }
 
 }  // namespace detail
@@ -74371,27 +74971,32 @@ Cdt2d::Location Cdt2d::LocateBruteForce(const Vec2& rP) const {
         }
         if (!in)
             continue;
-        Location loc;
-        loc.mTri = static_cast<std::int64_t>(t);
-        int zeros = 0;
-        for (int e = 0; e < 3; ++e)
-            zeros += o[e] == 0.0;
-        if (zeros == 0) {
-            loc.mKind = 0;
-        } else if (zeros == 1) {
-            loc.mKind = 1;
-            for (int e = 0; e < 3; ++e)
-                if (o[e] == 0.0)
-                    loc.mIndex = e;
-        } else {
-            loc.mKind = 2;
-            for (int e = 0; e < 3; ++e)
-                if (o[e] != 0.0)
-                    loc.mVertex = r_t.mV[e];
-        }
-        return loc;
+        return Classify(static_cast<std::int64_t>(t), o, r_t.mV);
     }
     cdt2d_internal("point outside the super triangle");
+}
+
+Cdt2d::Location Cdt2d::Classify(std::int64_t Tri, const double* pO,
+                                const std::array<std::int64_t, 3>& rV) {
+    Location loc;
+    loc.mTri = Tri;
+    int zeros = 0;
+    for (int e = 0; e < 3; ++e)
+        zeros += pO[e] == 0.0;
+    if (zeros == 0) {
+        loc.mKind = 0;
+    } else if (zeros == 1) {
+        loc.mKind = 1;
+        for (int e = 0; e < 3; ++e)
+            if (pO[e] == 0.0)
+                loc.mIndex = e;
+    } else {
+        loc.mKind = 2;
+        for (int e = 0; e < 3; ++e)
+            if (pO[e] != 0.0)
+                loc.mVertex = rV[static_cast<std::size_t>(e)];
+    }
+    return loc;
 }
 
 Cdt2d::Location Cdt2d::Locate(const Vec2& rP) {
@@ -74426,25 +75031,7 @@ Cdt2d::Location Cdt2d::Locate(const Vec2& rP) {
         }
         if (moved)
             continue;
-        Location loc;
-        loc.mTri = t;
-        int zeros = 0;
-        for (int e = 0; e < 3; ++e)
-            zeros += o[e] == 0.0;
-        if (zeros == 0) {
-            loc.mKind = 0;
-        } else if (zeros == 1) {
-            loc.mKind = 1;
-            for (int e = 0; e < 3; ++e)
-                if (o[e] == 0.0)
-                    loc.mIndex = e;
-        } else {
-            loc.mKind = 2;
-            for (int e = 0; e < 3; ++e)
-                if (o[e] != 0.0)
-                    loc.mVertex = r_t.mV[e];
-        }
-        return loc;
+        return Classify(t, o, r_t.mV);
     }
     return LocateBruteForce(rP);
 }
@@ -74588,20 +75175,28 @@ void Cdt2d::Flip(std::int64_t T, int E) {
     mVertTri[static_cast<std::size_t>(c)] = u;
 }
 
+bool Cdt2d::FlipCandidate(std::int64_t T, int E, std::int64_t& rU, std::int64_t& rD) const {
+    const auto& r_t = mTris[static_cast<std::size_t>(T)];
+    if (!r_t.mAlive || r_t.mC[E])
+        return false;
+    rU = r_t.mN[E];
+    if (rU < 0)
+        return false;
+    const int f = NeighbourIndex(rU, T);
+    if (f < 0)
+        cdt2d_internal("broken adjacency while legalising");
+    rD = mTris[static_cast<std::size_t>(rU)].mV[f];
+    return true;
+}
+
 void Cdt2d::Legalize(std::vector<std::pair<std::int64_t, int>>& rStack) {
     while (!rStack.empty()) {
         const auto [t, e] = rStack.back();
         rStack.pop_back();
+        std::int64_t u = -1, d = -1;
+        if (!FlipCandidate(t, e, u, d))
+            continue;
         const auto& r_t = mTris[static_cast<std::size_t>(t)];
-        if (!r_t.mAlive || r_t.mC[e])
-            continue;
-        const std::int64_t u = r_t.mN[e];
-        if (u < 0)
-            continue;
-        const int f = NeighbourIndex(u, t);
-        if (f < 0)
-            cdt2d_internal("broken adjacency while legalising");
-        const std::int64_t d = mTris[static_cast<std::size_t>(u)].mV[f];
         if (FlipDue(r_t.mV[e], r_t.mV[cdt2d_next(e)], r_t.mV[cdt2d_prev(e)], d)) {
             Flip(t, e);
             rStack.emplace_back(t, 0);
@@ -75094,16 +75689,10 @@ bool Cdt2d::MoveVertex(std::int64_t V, const Vec2& rP, bool Legalize) {
             cdt2d_internal("flips after a move did not end");
         const auto [t, e] = stack.back();
         stack.pop_back();
+        std::int64_t u = -1, d = -1;
+        if (!FlipCandidate(t, e, u, d))
+            continue;
         const auto& r_t = mTris[static_cast<std::size_t>(t)];
-        if (!r_t.mAlive || r_t.mC[e])
-            continue;
-        const std::int64_t u = r_t.mN[e];
-        if (u < 0)
-            continue;
-        const int f = NeighbourIndex(u, t);
-        if (f < 0)
-            cdt2d_internal("broken adjacency while legalising");
-        const std::int64_t d = mTris[static_cast<std::size_t>(u)].mV[f];
         if (InCircle(r_t.mV[0], r_t.mV[1], r_t.mV[2], d) > 0.0) {
             Flip(t, e);
             for (int k = 0; k < 3; ++k) {
@@ -79170,11 +79759,6 @@ constexpr double kCfPi = 3.14159265358979323846;
 
 using CfComplex = std::complex<double>;
 
-PatchVec cf_unit(const PatchVec& rA) {
-    const double l = std::sqrt(vec3_dot(rA, rA));
-    return l > 0.0 ? PatchVec{rA[0] / l, rA[1] / l, rA[2] / l} : PatchVec{0.0, 0.0, 0.0};
-}
-
 // The angle of the 3-D vector `rD` in triangle F's frame.
 double cf_angle(const CrossField& rF, std::size_t F, const PatchVec& rD) {
     return std::atan2(vec3_dot(rD, rF.mE2[F]), vec3_dot(rD, rF.mE1[F]));
@@ -79223,8 +79807,8 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
         const PatchVec u = vec3_sub(rPts[rTris[f][1]], a), v = vec3_sub(rPts[rTris[f][2]], a);
         const PatchVec n = vec3_cross(u, v);
         area[f] = 0.5 * std::sqrt(vec3_dot(n, n));
-        out.mNormal[f] = cf_unit(n);
-        out.mE1[f] = cf_unit(u);
+        out.mNormal[f] = MathUtils::UnitByDivision(n);
+        out.mE1[f] = MathUtils::UnitByDivision(u);
         out.mE2[f] = vec3_cross(out.mNormal[f], out.mE1[f]);
     }
 
@@ -79281,7 +79865,7 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
                     std::max(-1.0, std::min(1.0, vec3_dot(out.mNormal[f], out.mNormal[g]))));
                 const PatchVec e = vec3_sub(rPts[b], rPts[a]);
                 const double len = std::sqrt(vec3_dot(e, e));
-                const PatchVec across = cf_unit(vec3_cross(out.mNormal[f], e));
+                const PatchVec across = MathUtils::UnitByDivision(vec3_cross(out.mNormal[f], e));
                 const double x = vec3_dot(across, out.mE1[f]), y = vec3_dot(across, out.mE2[f]);
                 t00 += beta * len * x * x;
                 t01 += beta * len * x * y;
@@ -79416,8 +80000,8 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
             const int iv = t[0] == v ? 0 : (t[1] == v ? 1 : 2);
             const std::size_t prev = t[static_cast<std::size_t>((iv + 2) % 3)];
             const std::size_t next = t[static_cast<std::size_t>((iv + 1) % 3)];
-            const PatchVec a = cf_unit(vec3_sub(rPts[next], rPts[v]));
-            const PatchVec b = cf_unit(vec3_sub(rPts[prev], rPts[v]));
+            const PatchVec a = MathUtils::UnitByDivision(vec3_sub(rPts[next], rPts[v]));
+            const PatchVec b = MathUtils::UnitByDivision(vec3_sub(rPts[prev], rPts[v]));
             angles += std::acos(std::max(-1.0, std::min(1.0, vec3_dot(a, b))));
             const auto& adj = edge_tris[cf_edge(v, prev)];
             if (adj.size() != 2)
@@ -80476,11 +81060,7 @@ std::vector<std::int64_t> patch_split_to_discs(const std::vector<PatchVec>& rPts
             const PatchVec& p = rPts[tri[0]];
             const PatchVec& q = rPts[tri[1]];
             const PatchVec& r = rPts[tri[2]];
-            const double u[3] = {q[0] - p[0], q[1] - p[1], q[2] - p[2]};
-            const double v[3] = {r[0] - p[0], r[1] - p[1], r[2] - p[2]};
-            const double c[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                                 u[0] * v[1] - u[1] * v[0]};
-            area[t] = 0.5 * std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+            area[t] = GeometryUtils::TriangleArea(p, q, r);
         }
         std::vector<std::size_t> order(rTris.size());
         for (std::size_t t = 0; t < order.size(); ++t)
@@ -80859,24 +81439,13 @@ bool decim_quadric_optimal_point(const double q[10], const double pFallback[3], 
     // bvec = (q3, q6, q8), via the cofactor (adjugate) form. On an exactly
     // planar patch A is singular by construction, so the fallback is the hot
     // path there -- expected, not a defect.
-    const double c00 = q[4] * q[7] - q[5] * q[5];
-    const double c01 = q[2] * q[5] - q[1] * q[7];
-    const double c02 = q[1] * q[5] - q[2] * q[4];
-    const double det = q[0] * c00 + q[1] * c01 + q[2] * c02;
-    double scale = std::abs(q[0]);
-    scale = std::max(scale, std::abs(q[1]));
-    scale = std::max(scale, std::abs(q[2]));
-    scale = std::max(scale, std::abs(q[4]));
-    scale = std::max(scale, std::abs(q[5]));
-    scale = std::max(scale, std::abs(q[7]));
-    if (std::abs(det) > 1e-12 * (scale * scale * scale)) {
-        const double c11 = q[0] * q[7] - q[2] * q[2];
-        const double c12 = q[1] * q[2] - q[0] * q[5];
-        const double c22 = q[0] * q[4] - q[1] * q[1];
-        const double inv = 1.0 / det;
-        pOut[0] = -(c00 * q[3] + c01 * q[6] + c02 * q[8]) * inv;
-        pOut[1] = -(c01 * q[3] + c11 * q[6] + c12 * q[8]) * inv;
-        pOut[2] = -(c02 * q[3] + c12 * q[6] + c22 * q[8]) * inv;
+    // The solve returns (adj A . bvec) / det; negating that product rounds as
+    // the copy's -(adj A . bvec) * inv did, zero signs included.
+    const double bvec[3] = {q[3], q[6], q[8]};
+    if (MathUtils::SolveSymmetric3(q[0], q[1], q[2], q[4], q[5], q[7], bvec, pOut)) {
+        pOut[0] = -pOut[0];
+        pOut[1] = -pOut[1];
+        pOut[2] = -pOut[2];
         return true;
     }
     pOut[0] = pFallback[0];
@@ -80954,6 +81523,8 @@ void decim_sorted_insert(std::vector<std::int64_t>& rVec, std::int64_t Value) {
 #include <algorithm>
 #include <cstring>
 #include <iterator>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 // Project includes
@@ -80963,11 +81534,39 @@ void decim_sorted_insert(std::vector<std::int64_t>& rVec, std::int64_t Value) {
 namespace meshioplusplus {
 namespace detail {
 
-NDArray decim_int64_vector(const std::vector<std::int64_t>& rValues) {
-    NDArray a = NDArray::Uninit(DType::Int64, {rValues.size()});
-    if (!rValues.empty())
-        std::memcpy(a.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
-    return a;
+DecimStop decim_resolve_stop(double TargetRatio, std::int64_t TargetCount, double MaxError,
+                             const std::string& rPrefix, const char* pCountName) {
+    const int num_set =
+        (TargetRatio >= 0.0 ? 1 : 0) + (TargetCount >= 0 ? 1 : 0) + (MaxError >= 0.0 ? 1 : 0);
+    if (num_set != 1)
+        throw std::invalid_argument(rPrefix + "exactly one of target_ratio, " + pCountName +
+                                    ", max_error must be set; got " + std::to_string(num_set));
+    DecimStop stop;
+    if (TargetRatio >= 0.0) {
+        if (!(TargetRatio > 0.0 && TargetRatio <= 1.0))
+            throw std::invalid_argument(rPrefix + "target_ratio must lie in (0, 1]; got " +
+                                        std::to_string(TargetRatio));
+        stop.mUseTarget = true;  // the count is filled in once it is known
+    } else if (TargetCount >= 0) {
+        stop.mUseTarget = true;
+        stop.mTarget = TargetCount;
+    } else {
+        stop.mUseMaxError = true;
+        stop.mMaxError = MaxError;
+    }
+    return stop;
+}
+
+void decim_check_frozen(std::size_t FrozenSize, std::size_t NumPoints, const std::string& rPrefix) {
+    if (FrozenSize != 0 && FrozenSize != NumPoints)
+        throw std::invalid_argument(rPrefix + "frozen mask has " + std::to_string(FrozenSize) +
+                                    " entries but the mesh has " + std::to_string(NumPoints) +
+                                    " points");
+}
+
+std::int64_t decim_ratio_target(double Ratio, std::size_t Count) {
+    return std::max<std::int64_t>(
+        1, static_cast<std::int64_t>(Ratio * static_cast<double>(Count) + 0.5));
 }
 
 std::vector<DecimFloatData> decim_float_working_copies(const Mesh& rMesh, std::size_t n) {
@@ -82575,17 +83174,8 @@ TetMeshRegionResult em_assemble(const TetMeshRegionRequest& rRequest,
                                 const std::vector<EmPoint>& rOut,
                                 const std::vector<std::array<std::int64_t, 4>>& rTets) {
     const std::size_t n_in = rRequest.mPoints.size();
-    EmPoint lo{}, hi{};
-    for (std::size_t k = 0; k < 3; ++k) {
-        lo[k] = hi[k] = n_in ? rRequest.mPoints[0][k] : 0.0;
-        for (const EmPoint& r_p : rRequest.mPoints) {
-            lo[k] = std::min(lo[k], r_p[k]);
-            hi[k] = std::max(hi[k], r_p[k]);
-        }
-    }
     const double diag =
-        std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
-                  (hi[2] - lo[2]) * (hi[2] - lo[2]));
+        detail::BoundingBoxUtils::Diagonal(detail::BoundingBoxUtils::FromPoints(rRequest.mPoints));
     const double tol = std::max(1e-9 * diag, 1e-300);
     const double cell = 4.0 * tol;
     struct KeyHash {
@@ -82739,11 +83329,8 @@ EmShells em_shells(const TetMeshRegionRequest& rRequest) {
             const EmPoint& a = rRequest.mPoints[static_cast<std::size_t>(r_t[0])];
             const EmPoint& b = rRequest.mPoints[static_cast<std::size_t>(r_t[1])];
             const EmPoint& c = rRequest.mPoints[static_cast<std::size_t>(r_t[2])];
-            const EmPoint u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-            const EmPoint v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-            const EmPoint n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                            u[0] * v[1] - u[1] * v[0]};
-            const double area = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            const EmPoint n = detail::GeometryUtils::TriangleNormal(a, b, c);
+            const double area = detail::MathUtils::Norm(n);
             if (area > best_area) {
                 best_area = area;
                 best = t;
@@ -82855,13 +83442,8 @@ TetMeshRegionResult em_gmsh(const std::string& rExe, const TetMeshRegionRequest&
                 const EmPoint& a = rRequest.mPoints[static_cast<std::size_t>(r_t[0])];
                 const EmPoint& b = rRequest.mPoints[static_cast<std::size_t>(r_t[1])];
                 const EmPoint& c = rRequest.mPoints[static_cast<std::size_t>(r_t[2])];
-                const EmPoint u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-                const EmPoint v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-                EmPoint n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                          u[0] * v[1] - u[1] * v[0]};
-                const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-                for (double& rC : n)
-                    rC = len > 0.0 ? rC / len : 0.0;
+                const EmPoint n = detail::MathUtils::UnitByDivision(
+                    detail::GeometryUtils::TriangleNormal(a, b, c));
                 stl << "facet normal " << em_num(n[0]) << " " << em_num(n[1]) << " " << em_num(n[2])
                     << "\n outer loop\n";
                 for (const EmPoint* p_v : {&a, &b, &c})
@@ -84282,11 +84864,6 @@ HelicoidFit helicoid_fit(const std::vector<PatchVec>& rPts, const std::vector<Pa
 
 namespace {
 
-PatchVec ff_unit(const PatchVec& rA) {
-    const double len = vec3_norm(rA);
-    return len > 0.0 ? PatchVec{rA[0] / len, rA[1] / len, rA[2] / len} : PatchVec{0.0, 0.0, 0.0};
-}
-
 std::size_t ff_law_size(bool Periodic, int Degree) {
     return Periodic ? static_cast<std::size_t>(2 * Degree + 1)
                     : static_cast<std::size_t>(Degree + 1);
@@ -84502,7 +85079,7 @@ PatchVec RollingBallFit::RailTangent(double T) const {
         const double f = t1 > t0 ? (U - t0) / (t1 - t0) : 0.0;
         return ff_axpy(mRail[s], f, vec3_sub(mRail[e], mRail[s]));
     };
-    return ff_unit(vec3_sub(at(b), at(a)));
+    return MathUtils::UnitByDivision(vec3_sub(at(b), at(a)));
 }
 
 RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
@@ -84791,7 +85368,7 @@ RollingBallSection rolling_ball_section(const RollingBallFit& rFit, const Closes
         ff_axpy(rFit.mCentres[nearest], 1.0, vec3_sub(on_rail, rFit.RailAt(rFit.mT[nearest])));
     // The section's plane goes through the rail point, so consecutive balls
     // advance along the spine as the rail does.
-    const PatchVec t = ff_unit(rTangent);
+    const PatchVec t = MathUtils::UnitByDivision(rTangent);
     c = ff_axpy(c, -vec3_dot(vec3_sub(c, on_rail), t), t);
     PatchVec f1{}, f2{};
     for (int it = 0; it < 60; ++it) {
@@ -85058,7 +85635,7 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
         origin = ff_axpy(centre, scale, vec3_cross(c, cbar));
     } else {
         origin = *pOrigin;
-        axis = ff_unit(*pAxis);
+        axis = MathUtils::UnitByDivision(*pAxis);
         if (!(vec3_norm(axis) > 0.0))
             return out;
         double num = 0.0, den = 0.0;
@@ -85114,9 +85691,9 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
     };
     auto screw_of = [&](const std::vector<double>& rP) {
         Screw s;
-        s.mA = ff_unit(ff_axpy(ff_axpy(axis, rP[0], e1), rP[1], e2));
+        s.mA = MathUtils::UnitByDivision(ff_axpy(ff_axpy(axis, rP[0], e1), rP[1], e2));
         s.mO = ff_axpy(ff_axpy(origin, rP[2], e1), rP[3], e2);
-        s.mE1 = ff_unit(ff_axpy(e1, -vec3_dot(e1, s.mA), s.mA));
+        s.mE1 = MathUtils::UnitByDivision(ff_axpy(e1, -vec3_dot(e1, s.mA), s.mA));
         s.mE2 = vec3_cross(s.mA, s.mE1);
         s.mK = rP[4];
         if (rP.size() > 5) {
@@ -85286,8 +85863,8 @@ PatchVec ff_line_tangent(const std::vector<PatchVec>& rLine, const std::vector<d
             b = a + h;
         }
     }
-    return ff_unit(vec3_sub(ff_line_at(rLine, rAt, Closed, Length, b),
-                            ff_line_at(rLine, rAt, Closed, Length, a)));
+    return MathUtils::UnitByDivision(vec3_sub(ff_line_at(rLine, rAt, Closed, Length, b),
+                                              ff_line_at(rLine, rAt, Closed, Length, a)));
 }
 
 // The arc length of a polyline's point nearest to rP.
@@ -85319,8 +85896,8 @@ bool ff_plane_cut(const std::vector<PatchVec>& rLine, bool Closed, double Length
         return false;
     std::vector<PatchVec> line = rLine;
     if (!Closed) {
-        const PatchVec d0 = ff_unit(vec3_sub(rLine[0], rLine[1]));
-        const PatchVec d1 = ff_unit(vec3_sub(rLine[n - 1], rLine[n - 2]));
+        const PatchVec d0 = MathUtils::UnitByDivision(vec3_sub(rLine[0], rLine[1]));
+        const PatchVec d1 = MathUtils::UnitByDivision(vec3_sub(rLine[n - 1], rLine[n - 2]));
         line.insert(line.begin(), ff_axpy(rLine[0], Length, d0));
         line.push_back(ff_axpy(rLine[n - 1], Length, d1));
     }
@@ -85474,7 +86051,7 @@ PatchVec SectionBlendFit::Normal(double T) const {
     if (mNormal1 && mNormal2 && mNormal1(r1, n1) && mNormal2(r1, n2)) {
         PatchVec e = vec3_cross(n1, n2);
         if (vec3_norm(e) > 0.1) {
-            e = ff_unit(e);
+            e = MathUtils::UnitByDivision(e);
             tan = vec3_dot(e, tan) < 0.0 ? PatchVec{-e[0], -e[1], -e[2]} : e;
         }
     }
@@ -85520,7 +86097,8 @@ bool SectionBlendFit::Section(double T, PatchVec& rR1, PatchVec& rR2, PatchVec& 
     PatchVec n1{}, n2{};
     if (!mNormal1 || !mNormal2 || !mNormal1(rR1, n1) || !mNormal2(rR2, n2))
         return false;
-    PatchVec d1 = ff_unit(vec3_cross(tan, n1)), d2 = ff_unit(vec3_cross(tan, n2));
+    PatchVec d1 = MathUtils::UnitByDivision(vec3_cross(tan, n1)),
+             d2 = MathUtils::UnitByDivision(vec3_cross(tan, n2));
     if (!(vec3_norm(d1) > 0.0) || !(vec3_norm(d2) > 0.0))
         return false;
     if (vec3_dot(d1, chord) < 0.0)
@@ -87301,55 +87879,16 @@ Hid create_group(hid_t loc, const std::string& rName) {
 }
 
 hid_t native_type(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return H5T_NATIVE_FLOAT;
-        case DType::Float64:
-            return H5T_NATIVE_DOUBLE;
-        case DType::Int8:
-            return H5T_NATIVE_INT8;
-        case DType::Int16:
-            return H5T_NATIVE_INT16;
-        case DType::Int32:
-            return H5T_NATIVE_INT32;
-        case DType::Int64:
-            return H5T_NATIVE_INT64;
-        case DType::UInt8:
-            return H5T_NATIVE_UINT8;
-        case DType::UInt16:
-            return H5T_NATIVE_UINT16;
-        case DType::UInt32:
-            return H5T_NATIVE_UINT32;
-        case DType::UInt64:
-            return H5T_NATIVE_UINT64;
-    }
-    return H5T_NATIVE_DOUBLE;
+    return detail::DTypeUtils::Pick<hid_t>(
+        dt, {H5T_NATIVE_FLOAT, H5T_NATIVE_DOUBLE, H5T_NATIVE_INT8, H5T_NATIVE_INT16,
+             H5T_NATIVE_INT32, H5T_NATIVE_INT64, H5T_NATIVE_UINT8, H5T_NATIVE_UINT16,
+             H5T_NATIVE_UINT32, H5T_NATIVE_UINT64});
 }
 
 hid_t file_type(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return H5T_IEEE_F32LE;
-        case DType::Float64:
-            return H5T_IEEE_F64LE;
-        case DType::Int8:
-            return H5T_STD_I8LE;
-        case DType::Int16:
-            return H5T_STD_I16LE;
-        case DType::Int32:
-            return H5T_STD_I32LE;
-        case DType::Int64:
-            return H5T_STD_I64LE;
-        case DType::UInt8:
-            return H5T_STD_U8LE;
-        case DType::UInt16:
-            return H5T_STD_U16LE;
-        case DType::UInt32:
-            return H5T_STD_U32LE;
-        case DType::UInt64:
-            return H5T_STD_U64LE;
-    }
-    return H5T_IEEE_F64LE;
+    return detail::DTypeUtils::Pick<hid_t>(
+        dt, {H5T_IEEE_F32LE, H5T_IEEE_F64LE, H5T_STD_I8LE, H5T_STD_I16LE, H5T_STD_I32LE,
+             H5T_STD_I64LE, H5T_STD_U8LE, H5T_STD_U16LE, H5T_STD_U32LE, H5T_STD_U64LE});
 }
 
 DType dtype_from_h5(hid_t type_id) {
@@ -93926,9 +94465,7 @@ std::uint64_t mb_edge_key(std::int64_t A, std::int64_t B) {
 /// The dropped axis of a triangle (its normal's largest component) and the
 /// sign that makes its own corners turn positively in that projection.
 std::pair<std::size_t, int> mb_axis(const MbVec& rA, const MbVec& rB, const MbVec& rC) {
-    const MbVec u{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
-    const MbVec v{rC[0] - rA[0], rC[1] - rA[1], rC[2] - rA[2]};
-    const MbVec n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+    const MbVec n = GeometryUtils::TriangleNormal(rA, rB, rC);
     std::size_t ax = 0;
     for (std::size_t k = 1; k < 3; ++k)
         if (std::fabs(n[k]) > std::fabs(n[ax]))
@@ -94453,10 +94990,7 @@ BooleanResult mesh_boolean_spike(const Mesh& rA, const Mesh& rB, BooleanOp Op) {
                 const MbVec& pa_ = rS.mP[static_cast<std::size_t>(tri[0])];
                 const MbVec& pb_ = rS.mP[static_cast<std::size_t>(tri[1])];
                 const MbVec& pc_ = rS.mP[static_cast<std::size_t>(tri[2])];
-                const MbVec e1{pb_[0] - pa_[0], pb_[1] - pa_[1], pb_[2] - pa_[2]};
-                const MbVec e2{pc_[0] - pa_[0], pc_[1] - pa_[1], pc_[2] - pa_[2]};
-                const MbVec nrm{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
-                                e1[0] * e2[1] - e1[1] * e2[0]};
+                const MbVec nrm = GeometryUtils::TriangleNormal(pa_, pb_, pc_);
                 if (rCut[t].mPoints.empty()) {
                     out.mT.push_back(corners);
                     out.mNormal.push_back(nrm);
@@ -94597,12 +95131,8 @@ BooleanResult mesh_boolean_spike(const Mesh& rA, const Mesh& rB, BooleanOp Op) {
             const MbVec& a = store[out[t][0]].mApprox;
             const MbVec& b = store[out[t][1]].mApprox;
             const MbVec& c = store[out[t][2]].mApprox;
-            const MbVec u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-            const MbVec v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-            const MbVec n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                          u[0] * v[1] - u[1] * v[0]};
-            const MbVec& rn = parent_normal[t];
-            if (n[0] * rn[0] + n[1] * rn[1] + n[2] * rn[2] <= 0.0)
+            const MbVec n = GeometryUtils::TriangleNormal(a, b, c);
+            if (MathUtils::Dot(n, parent_normal[t]) <= 0.0)
                 ++r_rep.mNumRoundingInverted;
         }
         result.mOk = true;
@@ -97351,6 +97881,46 @@ std::vector<std::size_t> pd_used(const std::vector<PatchTri>& rTris) {
     return v;
 }
 
+// V - E + F of the triangles: 1 for a disc, 0 for an annulus.
+long long pd_euler_characteristic(const std::vector<PatchTri>& rTris) {
+    std::set<std::pair<std::size_t, std::size_t>> edges;
+    for (const PatchTri& t : rTris)
+        for (int k = 0; k < 3; ++k) {
+            std::size_t a = t[static_cast<std::size_t>(k)],
+                        b = t[static_cast<std::size_t>((k + 1) % 3)];
+            if (a > b)
+                std::swap(a, b);
+            edges.insert({a, b});
+        }
+    const long long v = static_cast<long long>(pd_used(rTris).size());
+    const long long e = static_cast<long long>(edges.size());
+    const long long f = static_cast<long long>(rTris.size());
+    return v - e + f;
+}
+
+// Twice triangle T's signed area in the (u, v) plane.
+double pd_signed_area2(const std::vector<double>& rU, const std::vector<double>& rV,
+                       const PatchTri& rT) {
+    return GeometryUtils::SignedTwiceArea2D(rU[rT[0]], rV[rT[0]], rU[rT[1]], rV[rT[1]], rU[rT[2]],
+                                            rV[rT[2]]);
+}
+
+// The end of every disc map: keep the 3-D orientation (the majority of the
+// triangles counter-clockwise, flipping v otherwise), count the flips left
+// and mark the map made.
+void pd_orient_finish(const std::vector<PatchTri>& rTris, DiscParam& rOut) {
+    std::size_t pos = 0, neg = 0;
+    for (const PatchTri& t : rTris) {
+        const double s = pd_signed_area2(rOut.mU, rOut.mV, t);
+        (s >= 0.0 ? pos : neg) += 1;
+    }
+    if (neg > pos)
+        for (double& v : rOut.mV)
+            v = -v;
+    rOut.mNumFlips = param_flips(rTris, rOut.mU, rOut.mV);
+    rOut.mOk = true;
+}
+
 }  // namespace
 
 std::vector<std::vector<std::size_t>> param_boundary_loops(const std::vector<PatchTri>& rTris,
@@ -97402,27 +97972,14 @@ bool param_is_disc(const std::vector<PatchTri>& rTris) {
     const std::vector<std::vector<std::size_t>> loops = param_boundary_loops(rTris, ok);
     if (!ok || loops.size() != 1)
         return false;
-    std::set<std::pair<std::size_t, std::size_t>> edges;
-    for (const PatchTri& t : rTris)
-        for (int k = 0; k < 3; ++k) {
-            std::size_t a = t[static_cast<std::size_t>(k)],
-                        b = t[static_cast<std::size_t>((k + 1) % 3)];
-            if (a > b)
-                std::swap(a, b);
-            edges.insert({a, b});
-        }
-    const long long v = static_cast<long long>(pd_used(rTris).size());
-    const long long e = static_cast<long long>(edges.size());
-    const long long f = static_cast<long long>(rTris.size());
-    return v - e + f == 1;
+    return pd_euler_characteristic(rTris) == 1;
 }
 
 std::size_t param_flips(const std::vector<PatchTri>& rTris, const std::vector<double>& rU,
                         const std::vector<double>& rV) {
     std::size_t pos = 0, neg = 0, zero = 0;
     for (const PatchTri& t : rTris) {
-        const double a = (rU[t[1]] - rU[t[0]]) * (rV[t[2]] - rV[t[0]]) -
-                         (rU[t[2]] - rU[t[0]]) * (rV[t[1]] - rV[t[0]]);
+        const double a = pd_signed_area2(rU, rV, t);
         if (a > 0.0)
             ++pos;
         else if (a < 0.0)
@@ -97543,17 +98100,7 @@ DiscParam param_lscm(const std::vector<PatchVec>& rPts, const std::vector<PatchT
     out.mU[pb] = pin_u[1];
     out.mV[pb] = pin_v[1];
     // Keep the 3-D orientation: the majority of triangles counter-clockwise.
-    std::size_t pos = 0, neg = 0;
-    for (const PatchTri& t : rTris) {
-        const double s = (out.mU[t[1]] - out.mU[t[0]]) * (out.mV[t[2]] - out.mV[t[0]]) -
-                         (out.mU[t[2]] - out.mU[t[0]]) * (out.mV[t[1]] - out.mV[t[0]]);
-        (s >= 0.0 ? pos : neg) += 1;
-    }
-    if (neg > pos)
-        for (double& v : out.mV)
-            v = -v;
-    out.mNumFlips = param_flips(rTris, out.mU, out.mV);
-    out.mOk = true;
+    pd_orient_finish(rTris, out);
     return out;
 }
 
@@ -97653,17 +98200,7 @@ DiscParam param_mean_value(const std::vector<PatchVec>& rPts, const std::vector<
         return out;
     // The loop runs the way the triangles do, so they come out counter-
     // clockwise when the loop is: flip v otherwise.
-    std::size_t pos = 0, neg = 0;
-    for (const PatchTri& t : rTris) {
-        const double s = (out.mU[t[1]] - out.mU[t[0]]) * (out.mV[t[2]] - out.mV[t[0]]) -
-                         (out.mU[t[2]] - out.mU[t[0]]) * (out.mV[t[1]] - out.mV[t[0]]);
-        (s >= 0.0 ? pos : neg) += 1;
-    }
-    if (neg > pos)
-        for (double& v : out.mV)
-            v = -v;
-    out.mNumFlips = param_flips(rTris, out.mU, out.mV);
-    out.mOk = true;
+    pd_orient_finish(rTris, out);
     return out;
 }
 
@@ -97673,22 +98210,8 @@ DiscParam param_annulus(const std::vector<PatchVec>& rPts, const std::vector<Pat
     const std::vector<std::vector<std::size_t>> loops = param_boundary_loops(rTris, ok);
     if (!ok || loops.size() != 2)
         return out;
-    {
-        std::set<std::pair<std::size_t, std::size_t>> edges;
-        for (const PatchTri& t : rTris)
-            for (int k = 0; k < 3; ++k) {
-                std::size_t a = t[static_cast<std::size_t>(k)],
-                            b = t[static_cast<std::size_t>((k + 1) % 3)];
-                if (a > b)
-                    std::swap(a, b);
-                edges.insert({a, b});
-            }
-        const long long v = static_cast<long long>(pd_used(rTris).size());
-        const long long e = static_cast<long long>(edges.size());
-        const long long f = static_cast<long long>(rTris.size());
-        if (v - e + f != 0)
-            return out;
-    }
+    if (pd_euler_characteristic(rTris) != 0)
+        return out;
     const std::size_t n = rPts.size();
     std::array<std::vector<double>, 2> cum;
     for (std::size_t l = 0; l < 2; ++l) {
@@ -97748,18 +98271,8 @@ DiscParam param_annulus(const std::vector<PatchVec>& rPts, const std::vector<Pat
     }
     if (!pd_mean_value_interior(rPts, rTris, on_boundary, out))
         return out;
-    std::size_t pos = 0, neg = 0;
-    for (const PatchTri& t : rTris) {
-        const double s = (out.mU[t[1]] - out.mU[t[0]]) * (out.mV[t[2]] - out.mV[t[0]]) -
-                         (out.mU[t[2]] - out.mU[t[0]]) * (out.mV[t[1]] - out.mV[t[0]]);
-        (s >= 0.0 ? pos : neg) += 1;
-    }
-    if (neg > pos)
-        for (double& v : out.mV)
-            v = -v;
-    out.mNumFlips = param_flips(rTris, out.mU, out.mV);
     out.mMethod = 6;
-    out.mOk = true;
+    pd_orient_finish(rTris, out);
     return out;
 }
 
@@ -100734,18 +101247,8 @@ constexpr std::size_t kPcMaxJointSamples = 20000;
 // move the patch for it to be tried.
 constexpr double kPcReach = 2.0;
 
-double pc_dot(const double* pA, const double* pB) {
-    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
-}
-
-void pc_cross(const double* pA, const double* pB, double* pOut) {
-    pOut[0] = pA[1] * pB[2] - pA[2] * pB[1];
-    pOut[1] = pA[2] * pB[0] - pA[0] * pB[2];
-    pOut[2] = pA[0] * pB[1] - pA[1] * pB[0];
-}
-
 bool pc_normalize(double* pV) {
-    const double n = std::sqrt(pc_dot(pV, pV));
+    const double n = std::sqrt(detail::MathUtils::Dot(pV, pV));
     if (!(n > 0.0) || !std::isfinite(n))
         return false;
     for (int k = 0; k < 3; ++k)
@@ -100768,8 +101271,8 @@ void pc_canonical(double* pD) {
 // The sine of the angle between two unit directions, sign ignored.
 double pc_sin(const double* pA, const double* pB) {
     double c[3];
-    pc_cross(pA, pB, c);
-    return std::sqrt(pc_dot(c, c));
+    detail::MathUtils::Cross(pA, pB, c);
+    return std::sqrt(detail::MathUtils::Dot(c, c));
 }
 
 struct PcStats {
@@ -100837,7 +101340,7 @@ void pc_axis_point(const PcPatch& rPatch, double* pOut) {
     const double* d = rPatch.mParams + 3;
     const double v[3] = {rPatch.mCentroid[0] - x[0], rPatch.mCentroid[1] - x[1],
                          rPatch.mCentroid[2] - x[2]};
-    const double h = pc_dot(v, d);
+    const double h = detail::MathUtils::Dot(v, d);
     for (int k = 0; k < 3; ++k)
         pOut[k] = x[k] + h * d[k];
 }
@@ -100845,9 +101348,9 @@ void pc_axis_point(const PcPatch& rPatch, double* pOut) {
 // The distance from pP to the line through pX along the unit pD.
 double pc_line_distance(const double* pX, const double* pD, const double* pP) {
     const double v[3] = {pP[0] - pX[0], pP[1] - pX[1], pP[2] - pX[2]};
-    const double h = pc_dot(v, pD);
+    const double h = detail::MathUtils::Dot(v, pD);
     const double r[3] = {v[0] - h * pD[0], v[1] - h * pD[1], v[2] - h * pD[2]};
-    return std::sqrt(pc_dot(r, r));
+    return std::sqrt(detail::MathUtils::Dot(r, r));
 }
 
 // Whether a patch's primitive can take the axis (pX, pD): an axial one whose
@@ -100903,7 +101406,7 @@ void pc_member_build(const PcPatch& rPatch, const PcMember& rMember, const doubl
         case 3: {
             const double v[3] = {rPatch.mCentroid[0] - pP[0], rPatch.mCentroid[1] - pP[1],
                                  rPatch.mCentroid[2] - pP[2]};
-            const double h = pc_dot(v, pD);
+            const double h = detail::MathUtils::Dot(v, pD);
             pc_canonical(axis);
             for (int k = 0; k < 3; ++k) {
                 pOut[k] = pP[k] + h * pD[k];
@@ -100938,7 +101441,7 @@ void pc_member_build(const PcPatch& rPatch, const PcMember& rMember, const doubl
 void pc_member_start(const PcPatch& rPatch, const double* pP, const double* pD, double* pTheta) {
     const double* x = rPatch.mParams;
     const double v[3] = {x[0] - pP[0], x[1] - pP[1], x[2] - pP[2]};
-    const double h = pc_dot(v, pD);
+    const double h = detail::MathUtils::Dot(v, pD);
     switch (rPatch.mType) {
         case 2:
             pTheta[0] = h;
@@ -100978,7 +101481,7 @@ void pc_fit_group(const std::vector<PcPatch>& rPatches, const std::vector<std::s
         const double* a = p.mParams + 3;
         if (!seed)
             seed = a;
-        const double s = pc_dot(a, seed) < 0.0 ? -1.0 : 1.0;
+        const double s = detail::MathUtils::Dot(a, seed) < 0.0 ? -1.0 : 1.0;
         const double wi = static_cast<double>(p.NumPts());
         double x[3];
         pc_axis_point(p, x);
@@ -101004,7 +101507,7 @@ void pc_fit_group(const std::vector<PcPatch>& rPatches, const std::vector<std::s
         const PcPatch& p = rPatches[rRows[i]];
         PcMember& m = members[i];
         m.mRow = rRows[i];
-        m.mSign = (p.mType == 4 && pc_dot(p.mParams + 3, d0) < 0.0) ? -1.0 : 1.0;
+        m.mSign = (p.mType == 4 && detail::MathUtils::Dot(p.mParams + 3, d0) < 0.0) ? -1.0 : 1.0;
         m.mFirst = theta.size();
         const std::size_t np = pc_member_params(p.mType);
         double start[3] = {0.0, 0.0, 0.0};
@@ -101153,7 +101656,7 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         for (std::size_t k = 0; k < 3; ++k)
             p.mCentroid[k] /= static_cast<double>(v.size());
         const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-        p.mExtent = std::sqrt(pc_dot(ext, ext));
+        p.mExtent = std::sqrt(detail::MathUtils::Dot(ext, ext));
     }
     const double min_fraction = FitPrimitivesOptions().mMinInlierFraction;
     const auto keep = [&](PcPatch& rPatch, const double* pParams) {
@@ -101228,7 +101731,7 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         for (std::size_t i = 0; i < references.size() && !have; ++i) {
             const double* ref = references[i].data();
             if (pc_sin(n, ref) <= budget) {
-                const double s = pc_dot(n, ref) < 0.0 ? -1.0 : 1.0;
+                const double s = detail::MathUtils::Dot(n, ref) < 0.0 ? -1.0 : 1.0;
                 for (int k = 0; k < 3; ++k)
                     target[k] = s * ref[k];
                 have = true;
@@ -101238,7 +101741,7 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         if (!have) {
             std::vector<std::size_t> perp;
             for (std::size_t i = 0; i < references.size(); ++i)
-                if (std::fabs(pc_dot(n, references[i].data())) <= budget)
+                if (std::fabs(detail::MathUtils::Dot(n, references[i].data())) <= budget)
                     perp.push_back(i);
             if (!perp.empty()) {
                 const double* r1 = references[perp[0]].data();
@@ -101247,14 +101750,14 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
                     if (pc_sin(r1, references[perp[j]].data()) > 1e-6)
                         r2 = references[perp[j]].data();
                 if (r2) {
-                    pc_cross(r1, r2, target);
+                    detail::MathUtils::Cross(r1, r2, target);
                 } else {
-                    const double h = pc_dot(n, r1);
+                    const double h = detail::MathUtils::Dot(n, r1);
                     for (int k = 0; k < 3; ++k)
                         target[k] = n[k] - h * r1[k];
                 }
                 have = pc_normalize(target);
-                if (have && pc_dot(target, n) < 0.0)
+                if (have && detail::MathUtils::Dot(target, n) < 0.0)
                     for (int k = 0; k < 3; ++k)
                         target[k] = -target[k];
             }
@@ -101264,9 +101767,9 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
             // The offset refitted: the mean height of the points along it.
             double off = 0.0;
             for (std::size_t i = 0; i < p.NumPts(); ++i)
-                off += pc_dot(target, &p.mPts[i * 3]);
+                off += detail::MathUtils::Dot(target, &p.mPts[i * 3]);
             off /= static_cast<double>(p.NumPts());
-            const double h = off - pc_dot(target, p.mCentroid);
+            const double h = off - detail::MathUtils::Dot(target, p.mCentroid);
             double cand[kPrimitiveParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
             for (int k = 0; k < 3; ++k) {
                 cand[k] = p.mCentroid[k] + h * target[k];
@@ -101408,19 +101911,15 @@ namespace {
 
 constexpr double kPgPi = 3.14159265358979323846;
 
-double pg_dot(const double* pA, const double* pB) {
-    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
-}
-
 // The radial unit vector of pP about the axis (pX, pD), its height along the
 // axis and its distance from it; false on the axis.
 bool pg_radial(const double* pX, const double* pD, const double* pP, double* pR, double& rH,
                double& rRho) {
     const double v[3] = {pP[0] - pX[0], pP[1] - pX[1], pP[2] - pX[2]};
-    rH = pg_dot(v, pD);
+    rH = detail::MathUtils::Dot(v, pD);
     for (int k = 0; k < 3; ++k)
         pR[k] = v[k] - rH * pD[k];
-    rRho = std::sqrt(pg_dot(pR, pR));
+    rRho = std::sqrt(detail::MathUtils::Dot(pR, pR));
     if (!(rRho > 0.0))
         return false;
     for (int k = 0; k < 3; ++k)
@@ -101436,21 +101935,21 @@ double primitive_point_distance(std::int64_t Type, const double* pParams, const 
     const double v[3] = {pP[0] - x[0], pP[1] - x[1], pP[2] - x[2]};
     switch (Type) {
         case 1:
-            return std::fabs(pg_dot(v, d));
+            return std::fabs(detail::MathUtils::Dot(v, d));
         case 2:
-            return std::fabs(std::sqrt(pg_dot(v, v)) - pParams[6]);
+            return std::fabs(std::sqrt(detail::MathUtils::Dot(v, v)) - pParams[6]);
         case 3:
         case 4:
         case 5: {
-            const double h = pg_dot(v, d);
+            const double h = detail::MathUtils::Dot(v, d);
             const double r[3] = {v[0] - h * d[0], v[1] - h * d[1], v[2] - h * d[2]};
-            const double rho = std::sqrt(pg_dot(r, r));
+            const double rho = std::sqrt(detail::MathUtils::Dot(r, r));
             if (Type == 3)
                 return std::fabs(rho - pParams[6]);
             if (Type == 4) {
                 const double a = pParams[8] * kPgPi / 180.0;
                 if (h * std::cos(a) + rho * std::sin(a) < 0.0)
-                    return std::sqrt(pg_dot(v, v));  // behind the apex
+                    return std::sqrt(detail::MathUtils::Dot(v, v));  // behind the apex
                 return std::fabs(rho * std::cos(a) - h * std::sin(a));
             }
             const double radial = rho - pParams[6];
@@ -101469,14 +101968,14 @@ bool primitive_project(std::int64_t Type, const double* pParams, const double* p
     switch (Type) {
         case 1: {
             const double v[3] = {pP[0] - x[0], pP[1] - x[1], pP[2] - x[2]};
-            const double h = pg_dot(v, d);
+            const double h = detail::MathUtils::Dot(v, d);
             for (int k = 0; k < 3; ++k)
                 pOut[k] = pP[k] - h * d[k];
             return true;
         }
         case 2: {
             const double v[3] = {pP[0] - x[0], pP[1] - x[1], pP[2] - x[2]};
-            const double len = std::sqrt(pg_dot(v, v));
+            const double len = std::sqrt(detail::MathUtils::Dot(v, v));
             if (!(len > 0.0))
                 return false;
             for (int k = 0; k < 3; ++k)
@@ -101515,7 +102014,7 @@ bool primitive_project(std::int64_t Type, const double* pParams, const double* p
                 q[k] = x[k] + pParams[6] * r[k];
                 w[k] = pP[k] - q[k];
             }
-            const double len = std::sqrt(pg_dot(w, w));
+            const double len = std::sqrt(detail::MathUtils::Dot(w, w));
             if (!(len > 0.0))
                 return false;
             for (int k = 0; k < 3; ++k)
@@ -101537,7 +102036,7 @@ bool primitive_normal(std::int64_t Type, const double* pParams, const double* pP
             return true;
         case 2: {
             const double v[3] = {pP[0] - x[0], pP[1] - x[1], pP[2] - x[2]};
-            const double len = std::sqrt(pg_dot(v, v));
+            const double len = std::sqrt(detail::MathUtils::Dot(v, v));
             if (!(len > 0.0))
                 return false;
             for (int k = 0; k < 3; ++k)
@@ -101564,7 +102063,7 @@ bool primitive_normal(std::int64_t Type, const double* pParams, const double* pP
             double w[3];
             for (int k = 0; k < 3; ++k)
                 w[k] = pP[k] - (x[k] + pParams[6] * r[k]);
-            const double len = std::sqrt(pg_dot(w, w));
+            const double len = std::sqrt(detail::MathUtils::Dot(w, w));
             if (!(len > 0.0))
                 return false;
             for (int k = 0; k < 3; ++k)
@@ -102195,10 +102694,6 @@ constexpr std::size_t kQlNone = std::numeric_limits<std::size_t>::max();
 // About the triangles a cell of the layout needs for its patch to fit.
 constexpr std::size_t kQlStripTriangles = 48;
 
-PatchVec ql_unit(const PatchVec& rA) {
-    const double l = vec3_norm(rA);
-    return l > 0.0 ? PatchVec{rA[0] / l, rA[1] / l, rA[2] / l} : PatchVec{0.0, 0.0, 0.0};
-}
 // The angle between two vectors, in degrees.
 double ql_angle_deg(const PatchVec& rA, const PatchVec& rB) {
     const double la = vec3_norm(rA), lb = vec3_norm(rB);
@@ -102532,7 +103027,7 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
     bool ok = true;
     for (std::size_t i : pick) {
         std::vector<std::size_t> path{Sing, nbrs[i]};
-        PatchVec dir = ql_unit(vec3_sub(rS.mPts[nbrs[i]], rS.mPts[Sing]));
+        PatchVec dir = MathUtils::UnitByDivision(vec3_sub(rS.mPts[nbrs[i]], rS.mPts[Sing]));
         std::size_t v = nbrs[i];
         while (!rS.mMesh.mOnBoundary[v] && ok) {
             // On the piece's boundary?
@@ -102555,7 +103050,7 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
                 const PatchVec c{(rS.mPts[t[0]][0] + rS.mPts[t[1]][0] + rS.mPts[t[2]][0]) / 3.0,
                                  (rS.mPts[t[0]][1] + rS.mPts[t[1]][1] + rS.mPts[t[2]][1]) / 3.0,
                                  (rS.mPts[t[0]][2] + rS.mPts[t[1]][2] + rS.mPts[t[2]][2]) / 3.0};
-                const double s = vec3_dot(ql_unit(vec3_sub(c, rS.mPts[v])), dir);
+                const double s = vec3_dot(MathUtils::UnitByDivision(vec3_sub(c, rS.mPts[v])), dir);
                 if (s > fbest) {
                     fbest = s;
                     ft = f;
@@ -102578,7 +103073,8 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
                 for (std::size_t u : rS.mTris[f]) {
                     if (u == v || used[u])
                         continue;
-                    const double s = vec3_dot(ql_unit(vec3_sub(rS.mPts[u], rS.mPts[v])), branch);
+                    const double s = vec3_dot(
+                        MathUtils::UnitByDivision(vec3_sub(rS.mPts[u], rS.mPts[v])), branch);
                     if (s > nbest + 1e-12 || (std::abs(s - nbest) <= 1e-12 && u < next)) {
                         nbest = s;
                         next = u;
@@ -102588,7 +103084,7 @@ bool ql_separatrix_split(QlState& rS, const QlPiece& rPiece, std::size_t Sing, i
                 ok = false;
                 break;
             }
-            dir = ql_unit(vec3_sub(rS.mPts[next], rS.mPts[v]));
+            dir = MathUtils::UnitByDivision(vec3_sub(rS.mPts[next], rS.mPts[v]));
             used[next] = 1;
             path.push_back(next);
             v = next;
@@ -102668,7 +103164,7 @@ std::vector<double> ql_turns(const QlState& rS, const std::vector<std::size_t>& 
                 n[j] += c[j];
         }
         // In the tangent plane: the chords without their normal parts.
-        n = ql_unit(n);
+        n = MathUtils::UnitByDivision(n);
         const auto flat = [&](const PatchVec& rD) {
             const double h = vec3_dot(rD, n);
             return PatchVec{rD[0] - h * n[0], rD[1] - h * n[1], rD[2] - h * n[2]};
@@ -103305,8 +103801,9 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
     // 1. Features: creases and label changes are cuts.
     std::vector<PatchVec> normal(nt);
     for (std::size_t f = 0; f < nt; ++f)
-        normal[f] = ql_unit(vec3_cross(vec3_sub(rPts[rTris[f][1]], rPts[rTris[f][0]]),
-                                       vec3_sub(rPts[rTris[f][2]], rPts[rTris[f][0]])));
+        normal[f] =
+            MathUtils::UnitByDivision(vec3_cross(vec3_sub(rPts[rTris[f][1]], rPts[rTris[f][0]]),
+                                                 vec3_sub(rPts[rTris[f][2]], rPts[rTris[f][0]])));
     const bool labelled = rOptions.mLabels.size() == nt;
     std::vector<std::array<std::uint8_t, 3>> feature(nt, {0, 0, 0});
     CrossFieldOptions co;
@@ -106465,15 +106962,6 @@ constexpr const char* kSbPrefix = "meshio++: step: ";
 constexpr double kSbPi = 3.14159265358979323846;
 constexpr int kSbParams = kPrimitiveParams;
 
-double sb_dot(const double* pA, const double* pB) {
-    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
-}
-
-double sb_dist(const double* pA, const double* pB) {
-    const double d[3] = {pA[0] - pB[0], pA[1] - pB[1], pA[2] - pB[2]};
-    return std::sqrt(sb_dot(d, d));
-}
-
 // A unit direction perpendicular to unit pA: the axis least aligned with it,
 // made orthogonal.
 void sb_perpendicular(const double* pA, double* pOut) {
@@ -106483,10 +106971,10 @@ void sb_perpendicular(const double* pA, double* pOut) {
             k = j;
     double e[3] = {0.0, 0.0, 0.0};
     e[k] = 1.0;
-    const double h = sb_dot(e, pA);
+    const double h = detail::MathUtils::Dot(e, pA);
     for (int j = 0; j < 3; ++j)
         pOut[j] = e[j] - h * pA[j];
-    const double len = std::sqrt(sb_dot(pOut, pOut));
+    const double len = std::sqrt(detail::MathUtils::Dot(pOut, pOut));
     for (int j = 0; j < 3; ++j)
         pOut[j] /= len;
 }
@@ -106495,11 +106983,11 @@ void sb_perpendicular(const double* pA, double* pOut) {
 double sb_segment_distance(const double* pP, const double* pA, const double* pB) {
     const double ab[3] = {pB[0] - pA[0], pB[1] - pA[1], pB[2] - pA[2]};
     const double ap[3] = {pP[0] - pA[0], pP[1] - pA[1], pP[2] - pA[2]};
-    const double len2 = sb_dot(ab, ab);
-    double t = len2 > 0.0 ? sb_dot(ap, ab) / len2 : 0.0;
+    const double len2 = detail::MathUtils::Dot(ab, ab);
+    double t = len2 > 0.0 ? detail::MathUtils::Dot(ap, ab) / len2 : 0.0;
     t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
     const double q[3] = {pA[0] + t * ab[0], pA[1] + t * ab[1], pA[2] + t * ab[2]};
-    return sb_dist(pP, q);
+    return detail::MathUtils::Distance(pP, q);
 }
 
 std::uint64_t sb_key(std::int64_t U, std::int64_t V) {
@@ -106660,7 +107148,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 std::max(hi[k], xyz[static_cast<std::size_t>(v) * 3 + static_cast<std::size_t>(k)]);
         }
     const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-    const double diag = std::sqrt(sb_dot(ext, ext));
+    const double diag = std::sqrt(detail::MathUtils::Dot(ext, ext));
     const double eps = 1e-6 * diag;
 
     // The fit table and each facet's row.
@@ -106791,7 +107279,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             }
             double n[3];
             if (primitive_normal(row.mType, row.mParams, c, n))
-                agree[static_cast<std::size_t>(r)] += sb_dot(n, &normals[f * 3]);
+                agree[static_cast<std::size_t>(r)] += detail::MathUtils::Dot(n, &normals[f * 3]);
         }
         for (std::size_t r = 0; r < rows.size(); ++r) {
             const bool freeform = rows[r].mType == 6;
@@ -106846,7 +107334,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                     twice[1] += a[2] * e[0] - a[0] * e[2];
                     twice[2] += a[0] * e[1] - a[1] * e[0];
                 }
-                area[f] = 0.5 * std::sqrt(sb_dot(twice, twice));
+                area[f] = 0.5 * std::sqrt(detail::MathUtils::Dot(twice, twice));
             }
             std::vector<std::size_t> order(nf);
             std::iota(order.begin(), order.end(), std::size_t{0});
@@ -106873,7 +107361,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                         if (other < 0)
                             continue;
                         const std::size_t o = static_cast<std::size_t>(other);
-                        if (group[o] != -1 || sb_dot(&normals[o * 3], n0) <= 0.0)
+                        if (group[o] != -1 || detail::MathUtils::Dot(&normals[o * 3], n0) <= 0.0)
                             continue;
                         bool flat = true;
                         for (std::int64_t j = start[o]; j < start[o + 1] && flat; ++j) {
@@ -106881,7 +107369,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                 &xyz[static_cast<std::size_t>(nodes[static_cast<std::size_t>(j)]) *
                                      3];
                             const double d[3] = {p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]};
-                            flat = std::fabs(sb_dot(d, n0)) <= eps;
+                            flat = std::fabs(detail::MathUtils::Dot(d, n0)) <= eps;
                         }
                         if (!flat)
                             continue;
@@ -106961,7 +107449,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                         for (int j = 0; j < 3; ++j)
                             q[j] = out[j];
                 }
-            if (sb_dist(q, &xyz[v * 3]) <= tol)
+            if (detail::MathUtils::Distance(q, &xyz[v * 3]) <= tol)
                 for (int j = 0; j < 3; ++j)
                     pos[v * 3 + static_cast<std::size_t>(j)] = q[j];
         }
@@ -107091,8 +107579,9 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                     std::size_t far_index = 1;
                     double best = -1.0;
                     for (std::size_t i = 1; i < last; ++i) {
-                        const double d = sb_dist(&pos[static_cast<std::size_t>(vs[i]) * 3],
-                                                 &pos[static_cast<std::size_t>(vs[0]) * 3]);
+                        const double d =
+                            detail::MathUtils::Distance(&pos[static_cast<std::size_t>(vs[i]) * 3],
+                                                        &pos[static_cast<std::size_t>(vs[0]) * 3]);
                         if (d > best) {
                             best = d;
                             far_index = i;
@@ -107178,7 +107667,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 if (a.mType == 2 && b.mType == 2) {
                     double d[3] = {b.mParams[0] - a.mParams[0], b.mParams[1] - a.mParams[1],
                                    b.mParams[2] - a.mParams[2]};
-                    const double len = std::sqrt(sb_dot(d, d));
+                    const double len = std::sqrt(detail::MathUtils::Dot(d, d));
                     if (len > 0.0)
                         axes.push_back({a.mParams[0], a.mParams[1], a.mParams[2], d[0] / len,
                                         d[1] / len, d[2] / len});
@@ -107192,10 +107681,10 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 for (std::size_t i = 0; i < vs.size(); ++i) {
                     const double* p = &pos[static_cast<std::size_t>(vs[i]) * 3];
                     const double v[3] = {p[0] - x[0], p[1] - x[1], p[2] - x[2]};
-                    h[i] = sb_dot(v, d);
+                    h[i] = detail::MathUtils::Dot(v, d);
                     const double r[3] = {v[0] - h[i] * d[0], v[1] - h[i] * d[1],
                                          v[2] - h[i] * d[2]};
-                    rho[i] = std::sqrt(sb_dot(r, r));
+                    rho[i] = std::sqrt(detail::MathUtils::Dot(r, r));
                     hm += h[i];
                     rm += rho[i];
                 }
@@ -107468,7 +107957,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                         BsplineEval ev;
                         bspline_eval(bs, gu, gv, 0, ev);
                         const double d[3] = {ev.mS[0] - p[0], ev.mS[1] - p[1], ev.mS[2] - p[2]};
-                        const double dd = sb_dot(d, d);
+                        const double dd = detail::MathUtils::Dot(d, d);
                         if (dd < best) {
                             best = dd;
                             bu = gu;
@@ -107492,7 +107981,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 const PatchVec q =
                     bspline_curve_eval(rPiece, rPiece.T0() + f * (rPiece.T1() - rPiece.T0()));
                 const double d[3] = {ev.mS[0] - q[0], ev.mS[1] - q[1], ev.mS[2] - q[2]};
-                if (std::sqrt(sb_dot(d, d)) > 1e-3 * tol)
+                if (std::sqrt(detail::MathUtils::Dot(d, d)) > 1e-3 * tol)
                     return 0;
             }
             if (context_2d == 0)
@@ -107524,7 +108013,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 const double* pa = &pos[static_cast<std::size_t>(a) * 3];
                 const double* pb = &pos[static_cast<std::size_t>(b) * 3];
                 double d[3] = {pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
-                const double len = std::sqrt(sb_dot(d, d));
+                const double len = std::sqrt(detail::MathUtils::Dot(d, d));
                 if (!(len > 0.0))
                     throw WriteError(std::string(kSbPrefix) +
                                      "an edge has zero length (coincident "
@@ -107549,7 +108038,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                          q[2] - s.mCentre[2]};
                     const double x[3] = {u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2],
                                          u[0] * w[1] - u[1] * w[0]};
-                    turn += sb_dot(x, s.mAxis);
+                    turn += detail::MathUtils::Dot(x, s.mAxis);
                 }
                 sense = turn >= 0.0;
                 ++res.mNumCircleEdges;
@@ -107679,7 +108168,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                                            nodes[static_cast<std::size_t>(k)]) *
                                                        3];
                                 const double v[3] = {q[0] - p[0], q[1] - p[1], q[2] - p[2]};
-                                hm += sb_dot(v, p + 3);
+                                hm += detail::MathUtils::Dot(v, p + 3);
                                 ++count;
                             }
                         }
@@ -107726,7 +108215,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                         twice[1] += a[2] * b[0] - a[0] * b[2];
                         twice[2] += a[0] * b[1] - a[1] * b[0];
                     }
-                    const double area = sb_dot(twice, plane_n);
+                    const double area = detail::MathUtils::Dot(twice, plane_n);
                     if (area > best) {
                         best = area;
                         outer = li;
@@ -107816,7 +108305,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                         const double w[3] = {q[0] - c[0], q[1] - c[1], q[2] - c[2]};
                         const double cr[3] = {u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2],
                                               u[0] * w[1] - u[1] * w[0]};
-                        turn += sb_dot(cr, sg.mAxis);
+                        turn += detail::MathUtils::Dot(cr, sg.mAxis);
                     }
                     const double a0 = angle(pa);
                     double sweep = angle(pb) - a0;
@@ -108256,10 +108745,6 @@ namespace meshioplusplus {
 namespace detail {
 namespace {
 
-Vec3 sl_sub(const double* pA, const double* pB) {
-    return {pA[0] - pB[0], pA[1] - pB[1], pA[2] - pB[2]};
-}
-
 // How a cell of a given type name is cut into simplices, as corner indices into
 // its connectivity row; `Corners` is how many leading nodes it reads.
 struct SlCut {
@@ -108487,13 +108972,13 @@ public:
     double Measure(std::size_t Simplex) const {
         const SlSimplex& s = mrSoup.mSimplices[Simplex];
         if (mDim == 3) {
-            const Vec3 a = sl_sub(point(s.mNode[0]), point(s.mNode[3]));
-            const Vec3 b = sl_sub(point(s.mNode[1]), point(s.mNode[3]));
-            const Vec3 c = sl_sub(point(s.mNode[2]), point(s.mNode[3]));
+            const Vec3 a = detail::MathUtils::Sub(point(s.mNode[0]), point(s.mNode[3]));
+            const Vec3 b = detail::MathUtils::Sub(point(s.mNode[1]), point(s.mNode[3]));
+            const Vec3 c = detail::MathUtils::Sub(point(s.mNode[2]), point(s.mNode[3]));
             return std::fabs(vec3_dot(a, vec3_cross(b, c))) / 6.0;
         }
-        const Vec3 a = sl_sub(point(s.mNode[1]), point(s.mNode[0]));
-        const Vec3 b = sl_sub(point(s.mNode[2]), point(s.mNode[0]));
+        const Vec3 a = detail::MathUtils::Sub(point(s.mNode[1]), point(s.mNode[0]));
+        const Vec3 b = detail::MathUtils::Sub(point(s.mNode[2]), point(s.mNode[0]));
         const Vec3 n = vec3_cross(a, b);
         return 0.5 * std::sqrt(vec3_dot(n, n));
     }
@@ -108527,10 +109012,10 @@ private:
         constexpr double kEps = 1e-9;
         if (mDim == 3) {
             const double* d = point(s.mNode[3]);
-            const Vec3 a = sl_sub(point(s.mNode[0]), d);
-            const Vec3 b = sl_sub(point(s.mNode[1]), d);
-            const Vec3 c = sl_sub(point(s.mNode[2]), d);
-            const Vec3 p = sl_sub(pPoint, d);
+            const Vec3 a = detail::MathUtils::Sub(point(s.mNode[0]), d);
+            const Vec3 b = detail::MathUtils::Sub(point(s.mNode[1]), d);
+            const Vec3 c = detail::MathUtils::Sub(point(s.mNode[2]), d);
+            const Vec3 p = detail::MathUtils::Sub(pPoint, d);
             const double det = vec3_dot(a, vec3_cross(b, c));
             if (!(std::fabs(det) > 0.0))
                 return false;
@@ -108544,9 +109029,9 @@ private:
             return true;
         }
         const double* origin = point(s.mNode[0]);
-        const Vec3 u = sl_sub(point(s.mNode[1]), origin);
-        const Vec3 v = sl_sub(point(s.mNode[2]), origin);
-        const Vec3 w = sl_sub(pPoint, origin);
+        const Vec3 u = detail::MathUtils::Sub(point(s.mNode[1]), origin);
+        const Vec3 v = detail::MathUtils::Sub(point(s.mNode[2]), origin);
+        const Vec3 w = detail::MathUtils::Sub(pPoint, origin);
         const Vec3 n = vec3_cross(u, v);
         const double area2 = vec3_dot(n, n);
         if (!(area2 > 0.0))
@@ -110366,10 +110851,6 @@ namespace meshioplusplus::detail {
 
 namespace {
 
-double spj_dot(const double* pA, const double* pB) {
-    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
-}
-
 // Seeds per direction: (degree + 1) per span of nonzero length, 8 to 32.
 int spj_count(const NurbsPatch& rPatch, std::size_t D) {
     if (D >= rPatch.mKnots.size() || D >= rPatch.mDegrees.size())
@@ -110412,15 +110893,15 @@ double SurfaceProjector::Polish(const EdgeVec3& rP, std::array<double, 2>& rUv) 
         double s[3], su[3], sv[3], suu[3], suv[3], svv[3];
         pSurface->Eval2(rUv[0], rUv[1], s, su, sv, suu, suv, svv);
         const double r[3] = {s[0] - rP[0], s[1] - rP[1], s[2] - rP[2]};
-        const double g0 = spj_dot(r, su), g1 = spj_dot(r, sv);
-        double h00 = spj_dot(su, su) + spj_dot(r, suu);
-        double h01 = spj_dot(su, sv) + spj_dot(r, suv);
-        double h11 = spj_dot(sv, sv) + spj_dot(r, svv);
+        const double g0 = detail::MathUtils::Dot(r, su), g1 = detail::MathUtils::Dot(r, sv);
+        double h00 = detail::MathUtils::Dot(su, su) + detail::MathUtils::Dot(r, suu);
+        double h01 = detail::MathUtils::Dot(su, sv) + detail::MathUtils::Dot(r, suv);
+        double h11 = detail::MathUtils::Dot(sv, sv) + detail::MathUtils::Dot(r, svv);
         double det = h00 * h11 - h01 * h01;
         if (!(h00 > 0.0) || !(det > 0.0)) {
-            h00 = spj_dot(su, su);
-            h01 = spj_dot(su, sv);
-            h11 = spj_dot(sv, sv);
+            h00 = detail::MathUtils::Dot(su, su);
+            h01 = detail::MathUtils::Dot(su, sv);
+            h11 = detail::MathUtils::Dot(sv, sv);
             det = h00 * h11 - h01 * h01;
             if (!(det > 0.0))
                 break;
@@ -113101,29 +113582,9 @@ const char* vtkxml_parse_decimal(const char* pFirst, const char* pLast, TInt& rV
 }  // namespace
 
 const char* vtu_type_str(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return "Float32";
-        case DType::Float64:
-            return "Float64";
-        case DType::Int8:
-            return "Int8";
-        case DType::Int16:
-            return "Int16";
-        case DType::Int32:
-            return "Int32";
-        case DType::Int64:
-            return "Int64";
-        case DType::UInt8:
-            return "UInt8";
-        case DType::UInt16:
-            return "UInt16";
-        case DType::UInt32:
-            return "UInt32";
-        case DType::UInt64:
-            return "UInt64";
-    }
-    return "Float64";
+    return detail::DTypeUtils::Pick<const char*>(
+        dt, {"Float32", "Float64", "Int8", "Int16", "Int32", "Int64", "UInt8", "UInt16", "UInt32",
+             "UInt64"});
 }
 
 DType dtype_from_vtu(const std::string& rS) {
@@ -115591,6 +116052,8 @@ std::vector<std::int64_t> max_weight_matching(std::int64_t NumVertices,
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 #endif
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 namespace xdmfcommon {
 
@@ -115730,29 +116193,11 @@ std::vector<NDArray> split_raw_cell_data(const NDArray& rRaw,
 // ---- write-path helpers ----
 
 std::pair<const char*, const char*> numpy_to_xdmf_dtype(DType dt) {
-    switch (dt) {
-        case DType::Int8:
-            return {"Int", "1"};
-        case DType::Int16:
-            return {"Int", "2"};
-        case DType::Int32:
-            return {"Int", "4"};
-        case DType::Int64:
-            return {"Int", "8"};
-        case DType::UInt8:
-            return {"UInt", "1"};
-        case DType::UInt16:
-            return {"UInt", "2"};
-        case DType::UInt32:
-            return {"UInt", "4"};
-        case DType::UInt64:
-            return {"UInt", "8"};
-        case DType::Float32:
-            return {"Float", "4"};
-        case DType::Float64:
-            return {"Float", "8"};
-    }
-    return {"Float", "8"};
+    using Name = std::pair<const char*, const char*>;
+    return detail::DTypeUtils::Pick<Name>(
+        dt, {Name{"Float", "4"}, Name{"Float", "8"}, Name{"Int", "1"}, Name{"Int", "2"},
+             Name{"Int", "4"}, Name{"Int", "8"}, Name{"UInt", "1"}, Name{"UInt", "2"},
+             Name{"UInt", "4"}, Name{"UInt", "8"}});
 }
 
 std::string attribute_type(const std::vector<std::size_t>& rShape) {
@@ -132490,29 +132935,9 @@ NDArray exo_gather_columns(const NDArray& rIn, const std::vector<int>& rPerm) {
 }
 
 nc_type nc_type_of(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return NC_FLOAT;
-        case DType::Float64:
-            return NC_DOUBLE;
-        case DType::Int8:
-            return NC_BYTE;
-        case DType::Int16:
-            return NC_SHORT;
-        case DType::Int32:
-            return NC_INT;
-        case DType::Int64:
-            return NC_INT64;
-        case DType::UInt8:
-            return NC_UBYTE;
-        case DType::UInt16:
-            return NC_USHORT;
-        case DType::UInt32:
-            return NC_UINT;
-        case DType::UInt64:
-            return NC_UINT64;
-    }
-    return NC_DOUBLE;
+    return detail::DTypeUtils::Pick<nc_type>(
+        dt, {NC_FLOAT, NC_DOUBLE, NC_BYTE, NC_SHORT, NC_INT, NC_INT64, NC_UBYTE, NC_USHORT, NC_UINT,
+             NC_UINT64});
 }
 
 DType dtype_of(nc_type t) {
@@ -146556,6 +146981,56 @@ void write_physical_names(std::ostream& rOs, const Mesh& rMesh,
 
 // Writes the cell-data array named `rName` as one $ElementData-style section,
 // concatenated across cell blocks.
+/// The Gmsh element type of a meshio cell type, or a WriteError naming it.
+int gmsh_block_type(const std::unordered_map<std::string, int>& rM2g, const std::string& rType) {
+    const auto it = rM2g.find(rType);
+    if (it == rM2g.end())
+        throw WriteError("Gmsh writer: unsupported cell type " + rType);
+    return it->second;
+}
+
+/// The meshio corner written as a Gmsh element's node @p J (@p rPerm empty:
+/// the two orders agree).
+inline std::size_t gmsh_perm_src(const std::vector<int>& rPerm, std::size_t J) {
+    return rPerm.empty() ? J : static_cast<std::size_t>(rPerm[J]);
+}
+
+/// Every point_data array but `gmsh:dim_tags` as a `$NodeData` section, alike
+/// in the 2.2 and 4.1 writers: one-based node tags, `%.17g` values in ASCII,
+/// native int32 tags and float64 values in binary.
+void gmsh_write_node_data(std::ostream& os, const Mesh& rMesh, bool binary) {
+    for (const auto& name : rMesh.PointDataNames()) {
+        if (name == "gmsh:dim_tags")
+            continue;
+        const NDArray& d = rMesh.PointData(name);
+        std::size_t ncomp = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
+        std::size_t rows = d.Shape().empty() ? 0 : d.Shape()[0];
+        os << "$NodeData\n1\n\"" << name << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows << "\n";
+        const detail::DoubleView values(d);
+        char buf[32];
+        for (std::size_t r = 0; r < rows; ++r) {
+            if (binary) {
+                std::int32_t id = static_cast<std::int32_t>(r + 1);
+                os.write(reinterpret_cast<const char*>(&id), 4);
+                for (std::size_t c = 0; c < ncomp; ++c) {
+                    double v = values[r * ncomp + c];
+                    os.write(reinterpret_cast<const char*>(&v), 8);
+                }
+            } else {
+                os << (r + 1);
+                for (std::size_t c = 0; c < ncomp; ++c) {
+                    detail::snprintf_c(buf, sizeof(buf), " %.17g", values[r * ncomp + c]);
+                    os << buf;
+                }
+                os << '\n';
+            }
+        }
+        if (binary)
+            os << '\n';
+        os << "$EndNodeData\n";
+    }
+}
+
 void write_data(std::ostream& rOs, const char* pTag, const std::string& rName, const Mesh& rMesh,
                 bool binary) {
     // Concatenate blocks.
@@ -147034,10 +147509,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
     std::size_t consecutive = 0;
     for (std::size_t k = 0; k < nblocks; ++k) {
         const auto cb = rMesh.Cells(k);
-        auto it = m2g.find(cb.Type());
-        if (it == m2g.end())
-            throw WriteError("Gmsh writer: unsupported cell type " + cb.Type());
-        int gtype = it->second;
+        const int gtype = gmsh_block_type(m2g, cb.Type());
         const NDArray& conn = cb.Conn();
         std::size_t n = conn.Shape().size() >= 2 ? conn.Shape()[1] : 1;
         const std::vector<int>& perm = meshio_to_gmsh_perm(cb.Type());
@@ -147059,7 +147531,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
                 os.write(reinterpret_cast<const char*>(&t0), 4);
                 os.write(reinterpret_cast<const char*>(&t1), 4);
                 for (std::size_t j = 0; j < n; ++j) {
-                    std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
+                    const std::size_t src = gmsh_perm_src(perm, j);
                     std::int32_t node = static_cast<std::int32_t>(indices[r * n + src] + 1);
                     os.write(reinterpret_cast<const char*>(&node), 4);
                 }
@@ -147069,7 +147541,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
                 os << (consecutive + r + 1) << ' ' << gtype << " 2 " << physical[r] << ' '
                    << geometrical[r];
                 for (std::size_t j = 0; j < n; ++j) {
-                    std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
+                    const std::size_t src = gmsh_perm_src(perm, j);
                     os << ' ' << (indices[r * n + src] + 1);
                 }
                 os << '\n';
@@ -147082,37 +147554,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
     os << "$EndElements\n";
     gmsh_write_periodic(os, rInfo, binary, 22);
 
-    for (const auto& name : rMesh.PointDataNames()) {
-        if (name == "gmsh:dim_tags")
-            continue;
-        // Reusing write_data (cell-data-shaped) for point data is awkward; inline:
-        const NDArray& d = rMesh.PointData(name);
-        std::size_t ncomp = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
-        std::size_t rows = d.Shape().empty() ? 0 : d.Shape()[0];
-        os << "$NodeData\n1\n\"" << name << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows << "\n";
-        const detail::DoubleView values(d);
-        char buf[32];
-        for (std::size_t r = 0; r < rows; ++r) {
-            if (binary) {
-                std::int32_t id = static_cast<std::int32_t>(r + 1);
-                os.write(reinterpret_cast<const char*>(&id), 4);
-                for (std::size_t c = 0; c < ncomp; ++c) {
-                    double v = values[r * ncomp + c];
-                    os.write(reinterpret_cast<const char*>(&v), 8);
-                }
-            } else {
-                os << (r + 1);
-                for (std::size_t c = 0; c < ncomp; ++c) {
-                    detail::snprintf_c(buf, sizeof(buf), " %.17g", values[r * ncomp + c]);
-                    os << buf;
-                }
-                os << '\n';
-            }
-        }
-        if (binary)
-            os << '\n';
-        os << "$EndNodeData\n";
-    }
+    gmsh_write_node_data(os, rMesh, binary);
 
     for (const auto& name : rMesh.CellDataNames()) {
         if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags")
@@ -147412,10 +147854,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
     std::size_t tag0 = 1;
     for (std::size_t ci = 0; ci < rMesh.NumCellBlocks(); ++ci) {
         const auto cb = rMesh.Cells(ci);
-        auto it = m2g.find(cb.Type());
-        if (it == m2g.end())
-            throw WriteError("Gmsh writer: unsupported cell type " + cb.Type());
-        int gtype = it->second;
+        const int gtype = gmsh_block_type(m2g, cb.Type());
         int bdim = cell_dim(cb.Type());
         int entity_tag =
             (has_geometrical && ci < rMesh.CellDataNumBlocks("gmsh:geometrical") &&
@@ -147455,7 +147894,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
             for (std::size_t r = 0; r < count; ++r) {
                 os << (tag0 + r);
                 for (std::size_t j = 0; j < n; ++j) {
-                    std::size_t src = perm.empty() ? j : static_cast<std::size_t>(perm[j]);
+                    const std::size_t src = gmsh_perm_src(perm, j);
                     os << " " << (indices[r * n + src] + 1);
                 }
                 os << "\n";
@@ -147468,34 +147907,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
     os << "$EndElements\n";
     gmsh_write_periodic(os, rInfo, binary, 41);
 
-    for (const auto& name : rMesh.PointDataNames()) {
-        if (name == "gmsh:dim_tags")
-            continue;
-        const NDArray& d = rMesh.PointData(name);
-        std::size_t ncomp = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
-        std::size_t rows = d.Shape().empty() ? 0 : d.Shape()[0];
-        os << "$NodeData\n1\n\"" << name << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows << "\n";
-        const detail::DoubleView values(d);
-        char buf[32];
-        for (std::size_t r = 0; r < rows; ++r) {
-            if (binary) {
-                std::int32_t id = static_cast<std::int32_t>(r + 1);
-                os.write(reinterpret_cast<const char*>(&id), 4);
-                for (std::size_t c = 0; c < ncomp; ++c)
-                    put_f64(values[r * ncomp + c]);
-            } else {
-                os << (r + 1);
-                for (std::size_t c = 0; c < ncomp; ++c) {
-                    detail::snprintf_c(buf, sizeof(buf), " %.17g", values[r * ncomp + c]);
-                    os << buf;
-                }
-                os << '\n';
-            }
-        }
-        if (binary)
-            os << '\n';
-        os << "$EndNodeData\n";
-    }
+    gmsh_write_node_data(os, rMesh, binary);
 
     for (const auto& name : rMesh.CellDataNames()) {
         if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags")
@@ -148826,43 +149238,43 @@ LmFile lm_parse(const std::string& rText, bool Xdr) {
 
 using LmPoint = std::array<double, 3>;
 
-LmPoint lm_sub(const LmPoint& a, const LmPoint& b) {
-    return {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
-}
-LmPoint lm_cross(const LmPoint& a, const LmPoint& b) {
-    return {a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
-}
-
 // Whether `rQ` lies on the (flat) side whose corners are `rP`: on the segment
 // for two corners, else on the plane and inside the triangle or quad.
 bool lm_on_side(const std::vector<LmPoint>& rP, const LmPoint& rQ) {
     double scale = 0.0;
     for (std::size_t k = 0; k < rP.size(); ++k) {
-        const LmPoint d = lm_sub(rP[(k + 1) % rP.size()], rP[k]);
+        const LmPoint d = detail::MathUtils::Sub(rP[(k + 1) % rP.size()], rP[k]);
         scale = std::max(scale, std::sqrt(detail::vec3_dot(d, d)));
     }
     const double tol = 1e-6 * (scale > 0 ? scale : 1.0);
     if (rP.size() == 2) {
-        const LmPoint d = lm_sub(rP[1], rP[0]);
-        const LmPoint q = lm_sub(rQ, rP[0]);
+        const LmPoint d = detail::MathUtils::Sub(rP[1], rP[0]);
+        const LmPoint q = detail::MathUtils::Sub(rQ, rP[0]);
         const double len2 = detail::vec3_dot(d, d);
         if (len2 == 0.0)
             return false;
         const double t = detail::vec3_dot(q, d) / len2;
-        const LmPoint off = lm_cross(q, d);
+        const LmPoint off = detail::MathUtils::Cross(q, d);
         return t >= -1e-6 && t <= 1 + 1e-6 && std::sqrt(detail::vec3_dot(off, off) / len2) <= tol;
     }
     auto in_triangle = [&](const LmPoint& a, const LmPoint& b, const LmPoint& c) {
-        const LmPoint n = lm_cross(lm_sub(b, a), lm_sub(c, a));
+        const LmPoint n =
+            detail::MathUtils::Cross(detail::MathUtils::Sub(b, a), detail::MathUtils::Sub(c, a));
         const double n2 = detail::vec3_dot(n, n);
         if (n2 == 0.0)
             return false;
-        if (std::abs(detail::vec3_dot(lm_sub(rQ, a), n)) / std::sqrt(n2) > tol)
+        if (std::abs(detail::vec3_dot(detail::MathUtils::Sub(rQ, a), n)) / std::sqrt(n2) > tol)
             return false;
         const double eps = -1e-6 * n2;
-        return detail::vec3_dot(lm_cross(lm_sub(b, a), lm_sub(rQ, a)), n) >= eps &&
-               detail::vec3_dot(lm_cross(lm_sub(c, b), lm_sub(rQ, b)), n) >= eps &&
-               detail::vec3_dot(lm_cross(lm_sub(a, c), lm_sub(rQ, c)), n) >= eps;
+        return detail::vec3_dot(detail::MathUtils::Cross(detail::MathUtils::Sub(b, a),
+                                                         detail::MathUtils::Sub(rQ, a)),
+                                n) >= eps &&
+               detail::vec3_dot(detail::MathUtils::Cross(detail::MathUtils::Sub(c, b),
+                                                         detail::MathUtils::Sub(rQ, b)),
+                                n) >= eps &&
+               detail::vec3_dot(detail::MathUtils::Cross(detail::MathUtils::Sub(a, c),
+                                                         detail::MathUtils::Sub(rQ, c)),
+                                n) >= eps;
     };
     if (rP.size() == 3)
         return in_triangle(rP[0], rP[1], rP[2]);
@@ -163482,6 +163894,51 @@ std::vector<NDArray> medit_sol_fields(const MeditSolSection& rSection, int Dim) 
     return out;
 }
 
+/// The end of both mesh readers: the staged blocks added in order, each
+/// point's reference as `medit:ref`, and the id lists as regions.
+Mesh medit_finish_mesh(
+    Mesh&& rMesh, bool HavePoints, std::vector<MeditStagedBlock>& rBlocks,
+    const std::unordered_map<std::string, std::vector<int>>& rPerms,
+    const std::vector<std::int64_t>& rPointRef,
+    std::vector<std::pair<const MeditIdList*, std::vector<std::int64_t>>>& rIdLists) {
+    if (!HavePoints)
+        throw ReadError("Medit: expected Vertices");
+    medit_add_blocks(rMesh, rBlocks, rPerms);
+    NDArray pr(DType::Int64, {rPointRef.size()});
+    for (std::size_t i = 0; i < rPointRef.size(); ++i)
+        pr.As<std::int64_t>()[i] = rPointRef[i];
+    rMesh.AddPointData("medit:ref", std::move(pr));
+    for (auto& [list, ids] : rIdLists)
+        medit_add_id_list_region(rMesh, *list, std::move(ids));
+    return std::move(rMesh);
+}
+
+/// The ASCII keywords whose counted block meshio++ reads past: `n` rows of
+/// `mWidth` tokens (0: the mesh's dimension).
+struct MeditCountedSkip {
+    const char* mKeyword;
+    int mWidth;
+};
+
+constexpr MeditCountedSkip kMeditCountedSkips[] = {
+    {"Normals", 0},
+    {"NormalAtVertices", 2},
+    {"SubDomainFromMesh", 4},
+    {"VertexOnGeometricVertex", 2},
+    {"VertexOnGeometricEdge", 3},
+    {"EdgeOnGeometricEdge", 2},
+    {"TangentAtVertices", 1},
+    {"Tangents", 1},
+};
+
+/// The tokens per row of a counted keyword meshio++ skips, or -1.
+std::int64_t medit_counted_skip_width(std::string_view Keyword, std::int64_t Dim) {
+    for (const MeditCountedSkip& r_k : kMeditCountedSkips)
+        if (Keyword == r_k.mKeyword)
+            return r_k.mWidth == 0 ? Dim : r_k.mWidth;
+    return -1;
+}
+
 }  // namespace
 
 Mesh read_medit_ascii(const std::string& rPath) {
@@ -163596,29 +164053,11 @@ Mesh read_medit_ascii(const std::string& rPath) {
             for (std::int64_t& id : ids)
                 id = tok.next_int() - 1;
             id_lists.emplace_back(id_list, std::move(ids));
-        } else if (kw == "Normals") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n * dim; ++i)
-                tok.next();
-        } else if (kw == "NormalAtVertices") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n * 2; ++i)
-                tok.next();
-        } else if (kw == "SubDomainFromMesh") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n * 4; ++i)
-                tok.next();
-        } else if (kw == "VertexOnGeometricVertex") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n * 2; ++i)
-                tok.next();
-        } else if (kw == "VertexOnGeometricEdge") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n * 3; ++i)
-                tok.next();
-        } else if (kw == "EdgeOnGeometricEdge") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n * 2; ++i)
+        } else if (const std::int64_t width = medit_counted_skip_width(kw, dim); width >= 0) {
+            // A counted block meshio++ has no home for (`next_count` bounds n by the
+            // buffer, so n * width cannot overflow).
+            const std::int64_t n = tok.next_count();
+            for (std::int64_t i = 0; i < n * width; ++i)
                 tok.next();
         } else if (kw == "Identifier" || kw == "Geometry") {
             tok.skip_line();
@@ -163629,10 +164068,6 @@ Mesh read_medit_ascii(const std::string& rPath) {
                 "Medit: {} in a mesh file is skipped; keep the solution in a .sol beside the "
                 "mesh and read it with medit.read(path, sol=...)",
                 kw);
-        } else if (kw == "TangentAtVertices" || kw == "Tangents") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n; ++i)
-                tok.next();
         } else if (kw == "End") {
             break;
         } else {
@@ -163640,18 +164075,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
         }
     }
 
-    if (!have_points)
-        throw ReadError("Medit: expected Vertices");
-    medit_add_blocks(mesh, blocks, perms);
-
-    NDArray pr(DType::Int64, {point_ref.size()});
-    for (std::size_t i = 0; i < point_ref.size(); ++i)
-        pr.As<std::int64_t>()[i] = point_ref[i];
-    mesh.AddPointData("medit:ref", std::move(pr));
-
-    for (auto& [list, ids] : id_lists)
-        medit_add_id_list_region(mesh, *list, std::move(ids));
-    return mesh;
+    return medit_finish_mesh(std::move(mesh), have_points, blocks, perms, point_ref, id_lists);
 }
 
 void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
@@ -163838,6 +164262,77 @@ struct MeditBinCursor {
     }
 };
 
+/// A binary file's header: code (and byte order), version and the sizes it
+/// implies, the field code (3), and the dimension (2 or 3). The mesh and the
+/// solution readers word their errors apart (@p Solution).
+struct MeditBinHeader {
+    std::int64_t mVersion;
+    std::size_t mIsize;
+    std::size_t mFsize;
+    std::size_t mPsize;
+    std::int64_t mDim;
+};
+
+MeditBinHeader medit_bin_header(MeditBinCursor& rC, bool Solution) {
+    MeditBinHeader h{};
+    const std::int64_t code = rC.Int(4);
+    if (code == 16777216)
+        rC.mSwap = true;
+    else if (code != 1)
+        throw ReadError("Medit: invalid code");
+    h.mVersion = rC.Int(4);
+    if (h.mVersion < 1 || h.mVersion > 4)
+        throw ReadError("Medit: invalid version");
+    h.mIsize = h.mVersion == 4 ? 8 : 4;
+    h.mFsize = h.mVersion == 1 ? 4 : 8;
+    h.mPsize = h.mVersion >= 3 ? 8 : 4;
+    const std::int64_t field = rC.Int(4);
+    if (field != 3)
+        throw ReadError(Solution ? std::string("Medit: expected Dimension")
+                                 : "Medit: invalid dimension code : " + std::to_string(field) +
+                                       " it should be 3");
+    rC.Int(h.mPsize);
+    h.mDim = rC.Int(4);
+    if (h.mDim != 2 && h.mDim != 3)
+        throw ReadError(
+            (Solution ? "Medit: invalid solution dimension " : "Medit: invalid mesh dimension : ") +
+            std::to_string(h.mDim));
+    return h;
+}
+
+/// The next section's keyword, its next-section position and where its body
+/// starts, past the reserved codes; `false` at `GmfEnd` or the end of the file.
+bool medit_bin_next_section(MeditBinCursor& rC, std::size_t Psize, std::int64_t& rKw,
+                            std::int64_t& rNext, std::size_t& rStart) {
+    while (true) {
+        if (rC.Left() < 4) {
+            log::warn("Medit: end-of-file reached before GmfEnd keyword");
+            return false;
+        }
+        rKw = rC.Int(4);
+        if (rKw < 0 || rKw > kMbMaxCode)
+            throw ReadError("Medit: unsupported field " + std::to_string(rKw));
+        if (rKw == kMbEnd)
+            return false;
+        if (medit_is_reserved(static_cast<int>(rKw)))
+            continue;
+        rNext = rC.Int(Psize);
+        rStart = rC.mAt;
+        return true;
+    }
+}
+
+/// Skips a section meshio++ has no home for through its next-section position.
+void medit_bin_skip_section(MeditBinCursor& rC, std::int64_t Kw, std::int64_t Next,
+                            std::size_t SectionStart, std::size_t BufSize) {
+    if (Next <= static_cast<std::int64_t>(SectionStart) ||
+        static_cast<std::uint64_t>(Next) > BufSize)
+        throw ReadError("Medit: cannot skip keyword " + std::to_string(Kw) +
+                        ": its next-section position is outside the file");
+    log::warn("meshio++ doesn't know Medit keyword {}. Skipping.", Kw);
+    rC.mAt = static_cast<std::size_t>(Next);
+}
+
 void medit_put_int(std::string& rOut, std::int64_t V, std::size_t Width) {
     const auto u = static_cast<std::uint64_t>(V);
     for (std::size_t k = 0; k < Width; ++k)
@@ -163854,26 +164349,11 @@ Mesh read_medit_binary(const std::string& rPath) {
     const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
     const std::string_view buf = source.View();
     MeditBinCursor c{buf.data(), buf.size()};
-
-    const std::int64_t code = c.Int(4);
-    if (code == 16777216)
-        c.mSwap = true;
-    else if (code != 1)
-        throw ReadError("Medit: invalid code");
-    const std::int64_t version = c.Int(4);
-    if (version < 1 || version > 4)
-        throw ReadError("Medit: invalid version");
-    const std::size_t isize = version == 4 ? 8 : 4;
-    const std::size_t fsize = version == 1 ? 4 : 8;
-    const std::size_t psize = version >= 3 ? 8 : 4;
-    const std::int64_t field = c.Int(4);
-    if (field != 3)
-        throw ReadError("Medit: invalid dimension code : " + std::to_string(field) +
-                        " it should be 3");
-    c.Int(psize);
-    const std::int64_t dim = c.Int(4);
-    if (dim != 2 && dim != 3)
-        throw ReadError("Medit: invalid mesh dimension : " + std::to_string(dim));
+    const MeditBinHeader header = medit_bin_header(c, false);
+    const std::int64_t version = header.mVersion;
+    const std::size_t isize = header.mIsize;
+    const std::size_t fsize = header.mFsize;
+    const std::int64_t dim = header.mDim;
 
     Mesh mesh;
     bool have_points = false;
@@ -163883,21 +164363,9 @@ Mesh read_medit_binary(const std::string& rPath) {
     std::unordered_map<std::string, std::vector<int>> perms;
     const DType fdtype = version == 1 ? DType::Float32 : DType::Float64;
 
-    while (true) {
-        if (c.Left() < 4) {
-            log::warn("Medit: end-of-file reached before GmfEnd keyword");
-            break;
-        }
-        const std::int64_t kw = c.Int(4);
-        if (kw < 0 || kw > kMbMaxCode)
-            throw ReadError("Medit: unsupported field " + std::to_string(kw));
-        if (kw == kMbEnd)
-            break;
-        if (medit_is_reserved(static_cast<int>(kw)))
-            continue;
-        const std::int64_t next = c.Int(psize);
-        const std::size_t section_start = c.mAt;
-
+    std::int64_t kw = 0, next = 0;
+    std::size_t section_start = 0;
+    while (medit_bin_next_section(c, header.mPsize, kw, next, section_start)) {
         const MeditBinCell* cell = nullptr;
         for (const MeditBinCell& k : kMeditBinCells)
             if (k.mCode == kw)
@@ -163962,25 +164430,11 @@ Mesh read_medit_binary(const std::string& rPath) {
             id_lists.emplace_back(medit_id_list(idl->mKeyword), std::move(ids));
         } else {
             // A section meshio++ has no home for: skipped through the position of the next one.
-            if (next <= static_cast<std::int64_t>(section_start) ||
-                static_cast<std::uint64_t>(next) > buf.size())
-                throw ReadError("Medit: cannot skip keyword " + std::to_string(kw) +
-                                ": its next-section position is outside the file");
-            log::warn("meshio++ doesn't know Medit keyword {}. Skipping.", kw);
-            c.mAt = static_cast<std::size_t>(next);
+            medit_bin_skip_section(c, kw, next, section_start, buf.size());
         }
     }
 
-    if (!have_points)
-        throw ReadError("Medit: expected Vertices");
-    medit_add_blocks(mesh, blocks, perms);
-    NDArray pr(DType::Int64, {point_ref.size()});
-    for (std::size_t i = 0; i < point_ref.size(); ++i)
-        pr.As<std::int64_t>()[i] = point_ref[i];
-    mesh.AddPointData("medit:ref", std::move(pr));
-    for (auto& [list, ids] : id_lists)
-        medit_add_id_list_region(mesh, *list, std::move(ids));
-    return mesh;
+    return medit_finish_mesh(std::move(mesh), have_points, blocks, perms, point_ref, id_lists);
 }
 
 void write_medit_binary(const std::string& rPath, const Mesh& rMesh) {
@@ -164154,39 +164608,16 @@ MeditSolFile medit_sol_read_binary(const std::string& rPath) {
     const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
     const std::string_view buf = source.View();
     MeditBinCursor c{buf.data(), buf.size()};
-    const std::int64_t code = c.Int(4);
-    if (code == 16777216)
-        c.mSwap = true;
-    else if (code != 1)
-        throw ReadError("Medit: invalid code");
-    const std::int64_t version = c.Int(4);
-    if (version < 1 || version > 4)
-        throw ReadError("Medit: invalid version");
-    const std::size_t isize = version == 4 ? 8 : 4;
-    const std::size_t fsize = version == 1 ? 4 : 8;
-    const std::size_t psize = version >= 3 ? 8 : 4;
-    if (c.Int(4) != 3)
-        throw ReadError("Medit: expected Dimension");
-    c.Int(psize);
-    const std::int64_t dim = c.Int(4);
-    if (dim != 2 && dim != 3)
-        throw ReadError("Medit: invalid solution dimension " + std::to_string(dim));
+    const MeditBinHeader header = medit_bin_header(c, true);
+    const std::int64_t version = header.mVersion;
+    const std::size_t isize = header.mIsize;
+    const std::size_t fsize = header.mFsize;
+    const std::int64_t dim = header.mDim;
 
     std::vector<MeditSolSection> sections;
-    while (true) {
-        if (c.Left() < 4) {
-            log::warn("Medit: end-of-file reached before GmfEnd keyword");
-            break;
-        }
-        const std::int64_t kw = c.Int(4);
-        if (kw < 0 || kw > kMbMaxCode)
-            throw ReadError("Medit: unsupported field " + std::to_string(kw));
-        if (kw == kMbEnd)
-            break;
-        if (medit_is_reserved(static_cast<int>(kw)))
-            continue;
-        const std::int64_t next = c.Int(psize);
-        const std::size_t section_start = c.mAt;
+    std::int64_t kw = 0, next = 0;
+    std::size_t section_start = 0;
+    while (medit_bin_next_section(c, header.mPsize, kw, next, section_start)) {
         const MeditSolKeyword* sol = nullptr;
         for (const MeditSolKeyword& k : kMeditSolKeywords)
             if (k.mCode == kw)
@@ -164209,12 +164640,7 @@ MeditSolFile medit_sol_read_binary(const std::string& rPath) {
                 v = c.Real(fsize);
             sections.push_back(std::move(section));
         } else {
-            if (next <= static_cast<std::int64_t>(section_start) ||
-                static_cast<std::uint64_t>(next) > buf.size())
-                throw ReadError("Medit: cannot skip keyword " + std::to_string(kw) +
-                                ": its next-section position is outside the file");
-            log::warn("meshio++ doesn't know Medit keyword {}. Skipping.", kw);
-            c.mAt = static_cast<std::size_t>(next);
+            medit_bin_skip_section(c, kw, next, section_start, buf.size());
         }
     }
     return {static_cast<int>(dim), std::move(sections)};
@@ -188813,29 +189239,9 @@ DType ply_to_dtype(const std::string& rS) {
 }
 
 const char* dtype_to_ply(DType dt) {
-    switch (dt) {
-        case DType::Int8:
-            return "int8";
-        case DType::Int16:
-            return "int16";
-        case DType::Int32:
-            return "int32";
-        case DType::Int64:
-            return "int64";
-        case DType::UInt8:
-            return "uint8";
-        case DType::UInt16:
-            return "uint16";
-        case DType::UInt32:
-            return "uint32";
-        case DType::UInt64:
-            return "uint64";
-        case DType::Float32:
-            return "float";
-        case DType::Float64:
-            return "double";
-    }
-    return "double";
+    return detail::DTypeUtils::Pick<const char*>(
+        dt, {"float", "double", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32",
+             "uint64"});
 }
 
 std::string cell_type_from_count(std::size_t n) {
@@ -196079,22 +196485,24 @@ void svg_append_colorbar(std::ostream& rOs, const detail::FaceColors& rColors, d
         << "</text>";
 }
 
-// 3D rendering path: project the (already skin-extracted) surface mesh with
-// the orthographic camera and emit its faces back-to-front. Replicates the
-// flat path's bbox -> y-flip -> image_width scaling -> <path> emission, but
-// over the sorted projected faces.
-void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mesh& rDrawMesh,
-                    const std::string& rFloatFmt, const std::optional<std::string>& rStrokeWidth,
-                    const std::optional<double>& rImageWidth, const std::string& rFill,
-                    const std::string& rStroke, double azimuth, double elevation, double roll,
-                    const detail::ColorSpec& rColorSpec, const std::string& rNanColor) {
-    detail::ProjectedSurface ps = detail::project_surface(rDrawMesh, azimuth, elevation, roll);
-    const detail::FaceColors colors = detail::resolve_face_colors(
-        rColorSpec, rSourceMesh, rDrawMesh, detail::color_faces_from_projection(ps.mFaces));
-    std::vector<double>& x = ps.mX;
-    std::vector<double>& y = ps.mY;
-    const std::size_t num_points = x.size();
+/// The drawing's frame: the bounding box of the 2-D points, the y-flip into
+/// SVG's y-down screen space, the optional scaling to `image_width` and the
+/// stroke width (a hundredth of the width unless given). Flips and scales
+/// `rX`/`rY` in place; the flat and the projected writers share it.
+struct SvgFrame {
+    double mMinX = 0.0;
+    double mMinY = 0.0;
+    double mWidth = 0.0;
+    double mHeight = 0.0;
+    double mYFlip = 0.0;
+    double mScale = 1.0;
+    std::string mStrokeWidth;
+};
 
+SvgFrame svg_fit_frame(std::vector<double>& x, std::vector<double>& y,
+                       const std::optional<double>& rImageWidth,
+                       const std::optional<std::string>& rStrokeWidth) {
+    const std::size_t num_points = x.size();
     double min_x = 0.0, max_x = 0.0, min_y = 0.0, max_y = 0.0;
     if (num_points > 0) {
         min_x = max_x = x[0];
@@ -196107,7 +196515,7 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
         }
     }
 
-    // Flip y (projected math convention y-up -> SVG screen convention y-down).
+    // Flip y (mesh math convention y-up -> SVG screen convention y-down).
     const double y_flip = max_y + min_y;
     for (std::size_t i = 0; i < num_points; ++i)
         y[i] = max_y + min_y - y[i];
@@ -196137,6 +196545,29 @@ void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mes
         detail::snprintf_c(buf, sizeof(buf), "%g", width / 100.0);
         stroke_width = buf;
     }
+
+    return {min_x, min_y, width, height, y_flip, applied_scale, stroke_width};
+}
+
+// 3D rendering path: project the (already skin-extracted) surface mesh with
+// the orthographic camera and emit its faces back-to-front. Replicates the
+// flat path's bbox -> y-flip -> image_width scaling -> <path> emission, but
+// over the sorted projected faces.
+void svg_proj_write(const std::string& rPath, const Mesh& rSourceMesh, const Mesh& rDrawMesh,
+                    const std::string& rFloatFmt, const std::optional<std::string>& rStrokeWidth,
+                    const std::optional<double>& rImageWidth, const std::string& rFill,
+                    const std::string& rStroke, double azimuth, double elevation, double roll,
+                    const detail::ColorSpec& rColorSpec, const std::string& rNanColor) {
+    detail::ProjectedSurface ps = detail::project_surface(rDrawMesh, azimuth, elevation, roll);
+    const detail::FaceColors colors = detail::resolve_face_colors(
+        rColorSpec, rSourceMesh, rDrawMesh, detail::color_faces_from_projection(ps.mFaces));
+    std::vector<double>& x = ps.mX;
+    std::vector<double>& y = ps.mY;
+    const SvgFrame frame = svg_fit_frame(x, y, rImageWidth, rStrokeWidth);
+    const double min_x = frame.mMinX, min_y = frame.mMinY;
+    const double width = frame.mWidth, height = frame.mHeight;
+    const double y_flip = frame.mYFlip, applied_scale = frame.mScale;
+    const std::string& stroke_width = frame.mStrokeWidth;
 
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
@@ -196348,48 +196779,11 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
         y[i] = (1 < dim) ? point_values[i * dim + 1] : 0.0;
     }
 
-    double min_x = 0.0, max_x = 0.0, min_y = 0.0, max_y = 0.0;
-    if (num_points > 0) {
-        min_x = max_x = x[0];
-        min_y = max_y = y[0];
-        for (std::size_t i = 1; i < num_points; ++i) {
-            min_x = std::min(min_x, x[i]);
-            max_x = std::max(max_x, x[i]);
-            min_y = std::min(min_y, y[i]);
-            max_y = std::max(max_y, y[i]);
-        }
-    }
-
-    // Flip y (mesh math convention y-up -> SVG screen convention y-down).
-    const double y_flip = max_y + min_y;
-    for (std::size_t i = 0; i < num_points; ++i)
-        y[i] = max_y + min_y - y[i];
-
-    double width = max_x - min_x;
-    double height = max_y - min_y;
-
-    double applied_scale = 1.0;
-    if (rImageWidth.has_value() && width != 0.0) {
-        const double scaling_factor = *rImageWidth / width;
-        applied_scale = scaling_factor;
-        min_x *= scaling_factor;
-        min_y *= scaling_factor;
-        width *= scaling_factor;
-        height *= scaling_factor;
-        for (std::size_t i = 0; i < num_points; ++i) {
-            x[i] *= scaling_factor;
-            y[i] *= scaling_factor;
-        }
-    }
-
-    std::string stroke_width;
-    if (rStrokeWidth.has_value()) {
-        stroke_width = *rStrokeWidth;
-    } else {
-        char buf[64];
-        detail::snprintf_c(buf, sizeof(buf), "%g", width / 100.0);
-        stroke_width = buf;
-    }
+    const SvgFrame frame = svg_fit_frame(x, y, rImageWidth, rStrokeWidth);
+    const double min_x = frame.mMinX, min_y = frame.mMinY;
+    const double width = frame.mWidth, height = frame.mHeight;
+    const double y_flip = frame.mYFlip, applied_scale = frame.mScale;
+    const std::string& stroke_width = frame.mStrokeWidth;
 
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
@@ -204352,24 +204746,19 @@ std::string vti_num(double Value) {
 }  // namespace
 
 void write_vti(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
-    write_vti_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+    write_vti_codec(rPath, rMesh, binary, detail::vtk_codec_from_zlib(zlib));
 }
 
 void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                      detail::VtkCodec codec) {
     detail::LatticeSpec spec;
-    if (!detail::lattice_from_mesh(rMesh, spec))
-        throw WriteError(
-            "ImageData is a regular lattice, and this mesh is not one: it needs exactly one "
-            "hexahedron block whose points tile an axis-aligned box with uniform spacing. A "
-            "partial grid (voxelize's 'surface'/'inside' fill, or an octree) cannot be written "
-            "as .vti either -- write it as .vtu, which stores the cells explicitly.");
-    if (binary && codec != detail::VtkCodec::None)
-        detail::vtk_codec_require_write(codec);
-
-    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
-    if (!os)
-        throw WriteError("Could not open file for writing: " + rPath);
+    auto os = detail::vtk_xml_open_lattice(
+        rPath, rMesh, binary, codec,
+        "ImageData is a regular lattice, and this mesh is not one: it needs exactly one "
+        "hexahedron block whose points tile an axis-aligned box with uniform spacing. A "
+        "partial grid (voxelize's 'surface'/'inside' fill, or an octree) cannot be written "
+        "as .vti either -- write it as .vtu, which stores the cells explicitly.",
+        spec);
 
     const std::size_t hsz = detail::vtk_xml_size_header_bytes(rMesh, binary, codec);
     const detail::VtkXmlEmitter emit{os, binary, codec, hsz};
@@ -204424,29 +204813,9 @@ using detail::read_double;
 using detail::read_int;
 
 const char* vtk_dtype_str(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return "float";
-        case DType::Float64:
-            return "double";
-        case DType::Int8:
-            return "vtktypeint8";
-        case DType::Int16:
-            return "vtktypeint16";
-        case DType::Int32:
-            return "vtktypeint32";
-        case DType::Int64:
-            return "vtktypeint64";
-        case DType::UInt8:
-            return "vtktypeuint8";
-        case DType::UInt16:
-            return "vtktypeuint16";
-        case DType::UInt32:
-            return "vtktypeuint32";
-        case DType::UInt64:
-            return "vtktypeuint64";
-    }
-    return "double";
+    return detail::DTypeUtils::Pick<const char*>(
+        dt, {"float", "double", "vtktypeint8", "vtktypeint16", "vtktypeint32", "vtktypeint64",
+             "vtktypeuint8", "vtktypeuint16", "vtktypeuint32", "vtktypeuint64"});
 }
 
 // `n` integers, one per line (`ostream << v << '\n'`), formatted in parallel
@@ -205516,13 +205885,6 @@ std::string vtkhdf_friendly_type(I64 VtkType) {
     }
 }
 
-NDArray vtkhdf_i64_array(const I64Vec& rV) {
-    NDArray a = NDArray::Uninit(DType::Int64, {rV.size()});
-    if (!rV.empty())
-        std::memcpy(a.Data(), rV.data(), rV.size() * sizeof(I64));
-    return a;
-}
-
 /// Rows `rIdx` of `rA` (rank >= 1), as an owning array.
 NDArray vtkhdf_gather_rows(const NDArray& rA, const std::vector<std::size_t>& rIdx) {
     std::vector<std::size_t> shape = rA.Shape();
@@ -206223,7 +206585,8 @@ Mesh vtkhdf_assemble(VtkhdfLeaf& rLeaf, const ReadOptions& rOpts,
             // tag = the piece's position in the file, which a writer sorts by to restore
             // the order (the mesh stores regions sorted by name, so it cannot carry it).
             mesh.AddRegion(Region(rPieceNames[p], RegionKind::Cell, -1,
-                                  static_cast<std::int64_t>(p), vtkhdf_i64_array(entries[p])));
+                                  static_cast<std::int64_t>(p),
+                                  detail::NDArrayUtils::Int64Vector(entries[p])));
     }
     return mesh;
 }
@@ -206505,7 +206868,7 @@ void vtkhdf_put(hid_t Loc, const std::string& rName, const NDArray& rArr, int Gz
 }
 
 void vtkhdf_put_i64(hid_t Loc, const std::string& rName, const I64Vec& rV, int Gzip) {
-    vtkhdf_put(Loc, rName, vtkhdf_i64_array(rV), Gzip);
+    vtkhdf_put(Loc, rName, detail::NDArrayUtils::Int64Vector(rV), Gzip);
 }
 
 void vtkhdf_check_name(const std::string& rName, const char* pWhat) {
@@ -208090,53 +208453,40 @@ using detail::vtu_type_str;
 }  // namespace
 
 void write_vtr(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
-    write_vtr_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+    write_vtr_codec(rPath, rMesh, binary, detail::vtk_codec_from_zlib(zlib));
 }
 
 void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                      detail::VtkCodec codec) {
-    detail::LatticeSpec spec;
-    if (!detail::lattice_from_mesh(rMesh, spec))
-        throw WriteError(
-            "RectilinearGrid needs a UNIFORM dense lattice today: exactly one hexahedron "
-            "block whose points tile an axis-aligned box with uniform per-axis spacing. A "
-            "genuinely graded (non-uniform) mesh cannot be written as .vtr yet -- a "
-            "documented follow-up, see doc/roadmap.md -- and a partial grid (voxelize's "
-            "'surface'/'inside' fill, or an octree) cannot be written as .vtr either -- "
-            "write it as .vtu, which stores the cells explicitly.");
-    if (binary && codec != detail::VtkCodec::None)
-        detail::vtk_codec_require_write(codec);
-
-    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
-    if (!os)
-        throw WriteError("Could not open file for writing: " + rPath);
-
-    const std::size_t hsz =
-        detail::vtk_xml_lattice_preamble(os, rMesh, spec, "RectilinearGrid", "vtr", binary, codec);
-    const detail::VtkXmlEmitter emit{os, binary, codec, hsz};
-
-    os << "<Coordinates>\n";
-    const char* axis_names[3] = {"x_coordinates", "y_coordinates", "z_coordinates"};
-    for (std::size_t k = 0; k < 3; ++k) {
-        const std::int64_t n = spec.mDims[k] + 1;
-        std::vector<double> axis(static_cast<std::size_t>(n));
-        for (std::int64_t i = 0; i < n; ++i)
-            axis[static_cast<std::size_t>(i)] =
-                spec.mOrigin[k] + static_cast<double>(i) * spec.mSpacing[k];
-        emit.Header(vtu_type_str(DType::Float64), axis_names[k], 0);
-        if (binary)
-            emit.Bin(reinterpret_cast<const unsigned char*>(axis.data()),
-                     axis.size() * sizeof(double));
-        else
-            for (double v : axis)
-                os << v << "\n";
-        os << "</DataArray>\n";
-    }
-    os << "</Coordinates>\n";
-
-    detail::vtk_xml_lattice_data(emit, rMesh);
-
-    os << "</Piece>\n</RectilinearGrid>\n</VTKFile>\n";
+    detail::vtk_xml_write_lattice(
+        rPath, rMesh, binary, codec, "RectilinearGrid", "vtr",
+        "RectilinearGrid needs a UNIFORM dense lattice today: exactly one hexahedron "
+        "block whose points tile an axis-aligned box with uniform per-axis spacing. A "
+        "genuinely graded (non-uniform) mesh cannot be written as .vtr yet -- a "
+        "documented follow-up, see doc/roadmap.md -- and a partial grid (voxelize's "
+        "'surface'/'inside' fill, or an octree) cannot be written as .vtr either -- "
+        "write it as .vtu, which stores the cells explicitly.",
+        [&](const detail::VtkXmlEmitter& rEmit, const detail::LatticeSpec& rSpec) {
+            std::ostream& os = rEmit.mOs;
+            os << "<Coordinates>\n";
+            const char* axis_names[3] = {"x_coordinates", "y_coordinates", "z_coordinates"};
+            for (std::size_t k = 0; k < 3; ++k) {
+                const std::int64_t n = rSpec.mDims[k] + 1;
+                std::vector<double> axis(static_cast<std::size_t>(n));
+                for (std::int64_t i = 0; i < n; ++i)
+                    axis[static_cast<std::size_t>(i)] =
+                        rSpec.mOrigin[k] + static_cast<double>(i) * rSpec.mSpacing[k];
+                rEmit.Header(vtu_type_str(DType::Float64), axis_names[k], 0);
+                if (binary)
+                    rEmit.Bin(reinterpret_cast<const unsigned char*>(axis.data()),
+                              axis.size() * sizeof(double));
+                else
+                    for (double v : axis)
+                        os << v << "\n";
+                os << "</DataArray>\n";
+            }
+            os << "</Coordinates>\n";
+        });
 }
 
 Mesh read_vtr(const std::string& rPath, const ReadOptions& rOpts) {
@@ -208166,59 +208516,47 @@ using detail::vtu_type_str;
 }  // namespace
 
 void write_vts(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
-    write_vts_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+    write_vts_codec(rPath, rMesh, binary, detail::vtk_codec_from_zlib(zlib));
 }
 
 void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                      detail::VtkCodec codec) {
-    detail::LatticeSpec spec;
-    if (!detail::lattice_from_mesh(rMesh, spec))
-        throw WriteError(
-            "StructuredGrid is a lattice, and this mesh is not one: it needs exactly one "
-            "hexahedron block whose points tile an axis-aligned box with uniform spacing "
-            "(the writer recovers WholeExtent from it, then writes the mesh's own points "
-            "unchanged). A partial grid (voxelize's 'surface'/'inside' fill, or an octree) "
-            "cannot be written as .vts either -- write it as .vtu, which stores the cells "
-            "explicitly.");
-    if (binary && codec != detail::VtkCodec::None)
-        detail::vtk_codec_require_write(codec);
-
-    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
-    if (!os)
-        throw WriteError("Could not open file for writing: " + rPath);
-
-    const std::size_t hsz =
-        detail::vtk_xml_lattice_preamble(os, rMesh, spec, "StructuredGrid", "vts", binary, codec);
-    const detail::VtkXmlEmitter emit{os, binary, codec, hsz};
-
-    const NDArray& pts = rMesh.Points();
-    const std::size_t np = rMesh.NumPoints();
-    const std::size_t pdim = rMesh.PointDim();
-    os << "<Points>\n";
-    emit.Header(vtu_type_str(DType::Float64), "Points", 3);
-    if (binary) {
-        std::vector<double> buf(np * 3, 0.0);
-        detail::dispatch_dtype(pts.Dtype(), [&]<class T>() {
-            const T* src = pts.As<T>();
-            parallel_for_bw(np, [&](std::size_t r) {
-                for (std::size_t c = 0; c < pdim && c < 3; ++c)
-                    buf[r * 3 + c] = static_cast<double>(src[r * pdim + c]);
-            });
+    detail::vtk_xml_write_lattice(
+        rPath, rMesh, binary, codec, "StructuredGrid", "vts",
+        "StructuredGrid is a lattice, and this mesh is not one: it needs exactly one "
+        "hexahedron block whose points tile an axis-aligned box with uniform spacing "
+        "(the writer recovers WholeExtent from it, then writes the mesh's own points "
+        "unchanged). A partial grid (voxelize's 'surface'/'inside' fill, or an octree) "
+        "cannot be written as .vts either -- write it as .vtu, which stores the cells "
+        "explicitly.",
+        [&](const detail::VtkXmlEmitter& rEmit, const detail::LatticeSpec&) {
+            std::ostream& os = rEmit.mOs;
+            const NDArray& pts = rMesh.Points();
+            const std::size_t np = rMesh.NumPoints();
+            const std::size_t pdim = rMesh.PointDim();
+            os << "<Points>\n";
+            rEmit.Header(vtu_type_str(DType::Float64), "Points", 3);
+            if (binary) {
+                std::vector<double> buf(np * 3, 0.0);
+                detail::dispatch_dtype(pts.Dtype(), [&]<class T>() {
+                    const T* src = pts.As<T>();
+                    parallel_for_bw(np, [&](std::size_t r) {
+                        for (std::size_t c = 0; c < pdim && c < 3; ++c)
+                            buf[r * 3 + c] = static_cast<double>(src[r * pdim + c]);
+                    });
+                });
+                rEmit.Bin(reinterpret_cast<const unsigned char*>(buf.data()),
+                          buf.size() * sizeof(double));
+            } else {
+                const detail::DoubleView pts_values(pts);
+                for (std::size_t r = 0; r < np; ++r) {
+                    for (std::size_t c = 0; c < 3; ++c)
+                        os << (c ? " " : "") << (c < pdim ? pts_values[r * pdim + c] : 0.0);
+                    os << "\n";
+                }
+            }
+            os << "</DataArray>\n</Points>\n";
         });
-        emit.Bin(reinterpret_cast<const unsigned char*>(buf.data()), buf.size() * sizeof(double));
-    } else {
-        const detail::DoubleView pts_values(pts);
-        for (std::size_t r = 0; r < np; ++r) {
-            for (std::size_t c = 0; c < 3; ++c)
-                os << (c ? " " : "") << (c < pdim ? pts_values[r * pdim + c] : 0.0);
-            os << "\n";
-        }
-    }
-    os << "</DataArray>\n</Points>\n";
-
-    detail::vtk_xml_lattice_data(emit, rMesh);
-
-    os << "</Piece>\n</StructuredGrid>\n</VTKFile>\n";
 }
 
 Mesh read_vts(const std::string& rPath, const ReadOptions& rOpts) {
@@ -217756,11 +218094,6 @@ constexpr double kBlMinJacobian = 1e-6;
     throw std::invalid_argument(std::string(kBoundaryLayerPrefix) + rWhy);
 }
 
-BlV3 bl_unit(const BlV3& rA) {
-    const double l = detail::vec3_norm(rA);
-    return l > 0.0 ? BlV3{rA[0] / l, rA[1] / l, rA[2] / l} : BlV3{0.0, 0.0, 0.0};
-}
-
 // Row I of a C-contiguous array, as bytes.
 std::size_t bl_row_bytes(const NDArray& rA) {
     std::size_t r = dtype_size(rA.Dtype());
@@ -218040,14 +218373,14 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
             n = {n[0] + (a[1] - b[1]) * (a[2] + b[2]), n[1] + (a[2] - b[2]) * (a[0] + b[0]),
                  n[2] + (a[0] - b[0]) * (a[1] + b[1])};
         }
-        n = bl_unit(n);
+        n = detail::MathUtils::UnitByDivision(n);
         fn[f] = {sign * n[0], sign * n[1], sign * n[2]};
         for (int i = 0; i < k; ++i) {
             const std::int64_t p = faces[f][static_cast<std::size_t>(i)];
             const std::int64_t q = faces[f][static_cast<std::size_t>((i + 1) % k)];
             const std::int64_t r = faces[f][static_cast<std::size_t>((i + k - 1) % k)];
-            const BlV3 u = bl_unit(detail::vec3_sub(point(q), point(p)));
-            const BlV3 v = bl_unit(detail::vec3_sub(point(r), point(p)));
+            const BlV3 u = detail::MathUtils::UnitByDivision(detail::vec3_sub(point(q), point(p)));
+            const BlV3 v = detail::MathUtils::UnitByDivision(detail::vec3_sub(point(r), point(p)));
             const double angle = std::acos(std::clamp(detail::vec3_dot(u, v), -1.0, 1.0));
             around[static_cast<std::size_t>(p)].push_back({f, angle});
             nbrs[static_cast<std::size_t>(p)].push_back(q);
@@ -218073,7 +218406,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
             BlV3 m{0.0, 0.0, 0.0};
             for (const auto& [f, w] : r_a)
                 m = {m[0] + w * fn[f][0], m[1] + w * fn[f][1], m[2] + w * fn[f][2]};
-            BlV3 n = bl_unit(m);
+            BlV3 n = detail::MathUtils::UnitByDivision(m);
             const auto least = [&](const BlV3& rN, std::size_t& rWho) {
                 double lo = std::numeric_limits<double>::infinity();
                 for (const auto& [f, w] : r_a) {
@@ -218091,7 +218424,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
             double best_lo = least(n, who);
             for (int it = 0; it < 100 && r_a.size() > 1; ++it) {
                 const double eta = 1.0 / double(it + 2);
-                n = bl_unit(
+                n = detail::MathUtils::UnitByDivision(
                     {n[0] + eta * fn[who][0], n[1] + eta * fn[who][1], n[2] + eta * fn[who][2]});
                 const double lo = least(n, who);
                 if (lo > best_lo) {
@@ -218134,7 +218467,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
                     if (sigma[static_cast<std::size_t>(q)] > 0.0)
                         m = {m[0] + r_q[0], m[1] + r_q[1], m[2] + r_q[2]};
                 }
-                const BlV3 n = bl_unit(m);
+                const BlV3 n = detail::MathUtils::UnitByDivision(m);
                 const double lo = least_cos(P, n);
                 if (lo > 0.5 * seen[P] && lo > kBlVisible)
                     next[P] = n;
@@ -220689,13 +221022,6 @@ void ccells_visit_block_nodes(const CcellsOutBlock& rBlock, TFunc&& rFunc) {
 
 // --- shared data plumbing ----------------------------------------------------
 
-NDArray ccells_int64_vector(const std::vector<std::int64_t>& rValues) {
-    NDArray out = NDArray::Uninit(DType::Int64, {rValues.size()});
-    if (!rValues.empty())
-        std::memcpy(out.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
-    return out;
-}
-
 // Per-block identity cell maps (Linearize/Elevate: one child per parent).
 std::vector<NDArray> ccells_identity_cell_maps(const Mesh& rMesh) {
     std::vector<NDArray> maps;
@@ -220820,7 +221146,7 @@ ConvertCellsResult ccells_linearize(const Mesh& rMesh, bool RecordParentIds) {
 
     ConvertCellsResult res;
     res.mMesh = std::move(out);
-    res.mPointMap = ccells_int64_vector(remap);
+    res.mPointMap = detail::NDArrayUtils::Int64Vector(remap);
     res.mCellMaps = ccells_identity_cell_maps(rMesh);
     return res;
 }
@@ -221171,7 +221497,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds,
         std::vector<NDArray> blocks;
         blocks.reserve(nblocks);
         for (std::size_t b = 0; b < nblocks; ++b)
-            blocks.push_back(ccells_int64_vector(parent_of_child[b]));
+            blocks.push_back(detail::NDArrayUtils::Int64Vector(parent_of_child[b]));
         if (!blocks.empty())
             out.AddCellData("convert:parent_cell", std::move(blocks));
     }
@@ -221182,7 +221508,7 @@ ConvertCellsResult ccells_simplexify(const Mesh& rMesh, bool RecordParentIds,
                                     : ccells_identity_point_map(rMesh.NumPoints());
     res.mCellMaps.reserve(nblocks);
     for (std::size_t b = 0; b < nblocks; ++b)
-        res.mCellMaps.push_back(ccells_int64_vector(first_child[b]));
+        res.mCellMaps.push_back(detail::NDArrayUtils::Int64Vector(first_child[b]));
     return res;
 }
 
@@ -225355,40 +225681,7 @@ using detail::DecimPlaced;
 
 // --- validation --------------------------------------------------------------
 
-// The resolved stopping criterion. `mTargetFaces` is only meaningful when
-// `mUseTarget` is set (a ratio is turned into a face count once the
-// triangulated face count is known).
-struct DecimStop {
-    bool mUseTarget = false;
-    bool mUseMaxError = false;
-    std::int64_t mTargetFaces = -1;
-    double mMaxError = -1.0;
-};
-
-DecimStop decim_resolve_stop(const DecimateOptions& rOptions) {
-    const int num_set = (rOptions.mTargetRatio >= 0.0 ? 1 : 0) +
-                        (rOptions.mTargetFaces >= 0 ? 1 : 0) + (rOptions.mMaxError >= 0.0 ? 1 : 0);
-    if (num_set != 1)
-        throw std::invalid_argument(
-            "meshio++: decimate: exactly one of target_ratio, target_faces, max_error must be "
-            "set; got " +
-            std::to_string(num_set));
-    DecimStop stop;
-    if (rOptions.mTargetRatio >= 0.0) {
-        if (!(rOptions.mTargetRatio > 0.0 && rOptions.mTargetRatio <= 1.0))
-            throw std::invalid_argument(
-                "meshio++: decimate: target_ratio must lie in (0, 1]; got " +
-                std::to_string(rOptions.mTargetRatio));
-        stop.mUseTarget = true;  // the face count is filled in once F is known
-    } else if (rOptions.mTargetFaces >= 0) {
-        stop.mUseTarget = true;
-        stop.mTargetFaces = rOptions.mTargetFaces;
-    } else {
-        stop.mUseMaxError = true;
-        stop.mMaxError = rOptions.mMaxError;
-    }
-    return stop;
-}
+constexpr const char* kDecimPrefix = "meshio++: decimate: ";
 
 // Reject, by name, every construct outside the surface scope -- BEFORE the
 // simplexify call, whose own policy is to pass unsupported blocks through with
@@ -225524,7 +225817,6 @@ std::vector<DecimEdgeKey> decim_build_edges(const DecimFaces& rFaces,
 // A Float64 working copy of a float-kind point_data array, blended in place at
 // each collapse commit, and the rest of the commit/emission plumbing shared
 // with volume decimation: detail/decimate_shared.hpp.
-using detail::decim_int64_vector;
 using detail::DecimFloatData;
 
 }  // namespace
@@ -225541,13 +225833,12 @@ DecimatePlacement decimate_placement_from_name(const std::string& rName) {
 }
 
 DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
-    DecimStop stop = decim_resolve_stop(rOptions);
+    detail::DecimStop stop =
+        detail::decim_resolve_stop(rOptions.mTargetRatio, rOptions.mTargetFaces, rOptions.mMaxError,
+                                   kDecimPrefix, "target_faces");
 
     const std::size_t n = rMesh.NumPoints();
-    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
-        throw std::invalid_argument("meshio++: decimate: frozen mask has " +
-                                    std::to_string(rOptions.mFrozen.size()) +
-                                    " entries but the mesh has " + std::to_string(n) + " points");
+    detail::decim_check_frozen(rOptions.mFrozen.size(), n, kDecimPrefix);
 
     decim_check_blocks(rMesh);
 
@@ -225561,14 +225852,7 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     const std::size_t dim = simp.PointDim();
 
     // --- phase 1: flat buffers + incidence (parallel fills, serial dedups) ---
-    std::vector<double> xyz(n * 3, 0.0);
-    {
-        const NDArray& points = simp.Points();
-        parallel_for_bw(n, [&](std::size_t i) {
-            for (std::size_t d = 0; d < dim && d < 3; ++d)
-                xyz[i * 3 + d] = detail::read_double(points, i * dim + d);
-        });
-    }
+    std::vector<double> xyz = detail::surface_xyz(simp);
 
     DecimFaces faces = decim_build_faces(simp, n);
     const std::size_t num_faces = faces.mNumFaces;
@@ -225616,13 +225900,9 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     ctx.mpPinned = &pinned;
     ctx.mPlacement = rOptions.mPlacement;
 
-    // Resolve a ratio into a face target now that F is known. int64(x + 0.5)
-    // truncation, never llround, whose tie rule the numpy twin could not
-    // reproduce with int(x + 0.5).
+    // Resolve a ratio into a face target now that F is known.
     if (stop.mUseTarget && rOptions.mTargetRatio >= 0.0)
-        stop.mTargetFaces = std::max<std::int64_t>(
-            1, static_cast<std::int64_t>(rOptions.mTargetRatio * static_cast<double>(num_faces) +
-                                         0.5));
+        stop.mTarget = detail::decim_ratio_target(rOptions.mTargetRatio, num_faces);
 
     // --- phase 5: seed the queue (parallel scoring, serial pushes) -----------
     using DecimHeapEntry =
@@ -225656,14 +225936,14 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     std::int64_t alive_faces = static_cast<std::int64_t>(num_faces);
     std::vector<std::int64_t> merged;
     while (true) {
-        if (stop.mUseTarget && alive_faces <= stop.mTargetFaces)
+        if (stop.mUseTarget && alive_faces <= stop.mTarget)
             break;
         if (heap.empty()) {
-            if (stop.mUseTarget && alive_faces > stop.mTargetFaces)
+            if (stop.mUseTarget && alive_faces > stop.mTarget)
                 log::warn(
                     "decimate: queue exhausted at {} faces before reaching the target of {} "
                     "(pinning and the validity guards left no collapsible edge)",
-                    alive_faces, stop.mTargetFaces);
+                    alive_faces, stop.mTarget);
             break;
         }
         const DecimHeapEntry top = heap.top();
@@ -225825,7 +226105,7 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
                 ++w;
             }
             out.AddCellBlock(cell_type_name(CellType::Triangle), std::move(block));
-            result.mCellMaps.push_back(decim_int64_vector(cell_map));
+            result.mCellMaps.push_back(detail::NDArrayUtils::Int64Vector(cell_map));
             ++bi;
         }
     }
@@ -225900,38 +226180,6 @@ using detail::Vec3;
 constexpr const char* kDvPrefix = "meshio++: decimate_volume: ";
 
 // --- validation --------------------------------------------------------------
-
-struct DvStop {
-    bool mUseTarget = false;
-    bool mUseMaxError = false;
-    std::int64_t mTargetCells = -1;
-    double mMaxError = -1.0;
-};
-
-DvStop dv_resolve_stop(const DecimateVolumeOptions& rOptions) {
-    const int num_set = (rOptions.mTargetRatio >= 0.0 ? 1 : 0) +
-                        (rOptions.mTargetCells >= 0 ? 1 : 0) + (rOptions.mMaxError >= 0.0 ? 1 : 0);
-    if (num_set != 1)
-        throw std::invalid_argument(
-            std::string(kDvPrefix) +
-            "exactly one of target_ratio, target_cells, max_error must be set; got " +
-            std::to_string(num_set));
-    DvStop stop;
-    if (rOptions.mTargetRatio >= 0.0) {
-        if (!(rOptions.mTargetRatio > 0.0 && rOptions.mTargetRatio <= 1.0))
-            throw std::invalid_argument(std::string(kDvPrefix) +
-                                        "target_ratio must lie in (0, 1]; got " +
-                                        std::to_string(rOptions.mTargetRatio));
-        stop.mUseTarget = true;  // filled in once T (tet count) is known
-    } else if (rOptions.mTargetCells >= 0) {
-        stop.mUseTarget = true;
-        stop.mTargetCells = rOptions.mTargetCells;
-    } else {
-        stop.mUseMaxError = true;
-        stop.mMaxError = rOptions.mMaxError;
-    }
-    return stop;
-}
 
 // Reject every construct outside the tet-only scope, by name, before any
 // other work.
@@ -226040,13 +226288,12 @@ using detail::DecimFloatData;
 }  // namespace
 
 DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOptions& rOptions) {
-    DvStop stop = dv_resolve_stop(rOptions);
+    detail::DecimStop stop =
+        detail::decim_resolve_stop(rOptions.mTargetRatio, rOptions.mTargetCells, rOptions.mMaxError,
+                                   kDvPrefix, "target_cells");
 
     const std::size_t n = rMesh.NumPoints();
-    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
-        throw std::invalid_argument(std::string(kDvPrefix) + "frozen mask has " +
-                                    std::to_string(rOptions.mFrozen.size()) +
-                                    " entries but the mesh has " + std::to_string(n) + " points");
+    detail::decim_check_frozen(rOptions.mFrozen.size(), n, kDvPrefix);
 
     dv_check_blocks(rMesh);
 
@@ -226055,14 +226302,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
     const std::size_t num_tets = static_cast<std::size_t>(detail::total_cells(bases));
 
     // --- phase 1: flat buffers (parallel fills) -------------------------------
-    std::vector<double> xyz(n * 3, 0.0);
-    {
-        const NDArray& points = rMesh.Points();
-        parallel_for_bw(n, [&](std::size_t i) {
-            for (std::size_t d = 0; d < dim && d < 3; ++d)
-                xyz[i * 3 + d] = detail::read_double(points, i * dim + d);
-        });
-    }
+    std::vector<double> xyz = detail::surface_xyz(rMesh);
 
     std::vector<std::int64_t> tet_conn(num_tets * 4);
     {
@@ -226166,9 +226406,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
     ctx.mPlacement = rOptions.mPlacement;
 
     if (stop.mUseTarget && rOptions.mTargetRatio >= 0.0)
-        stop.mTargetCells = std::max<std::int64_t>(
-            1,
-            static_cast<std::int64_t>(rOptions.mTargetRatio * static_cast<double>(num_tets) + 0.5));
+        stop.mTarget = detail::decim_ratio_target(rOptions.mTargetRatio, num_tets);
 
     // --- phase 6: unique tet edges (6 per tet, dedup by first occurrence) ----
     using DvEdgeKey = std::array<std::int64_t, 2>;
@@ -226273,14 +226511,14 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
     DecimateVolumeResult result;
     std::int64_t alive_tets = static_cast<std::int64_t>(num_tets);
     while (true) {
-        if (stop.mUseTarget && alive_tets <= stop.mTargetCells)
+        if (stop.mUseTarget && alive_tets <= stop.mTarget)
             break;
         if (heap.empty()) {
-            if (stop.mUseTarget && alive_tets > stop.mTargetCells)
+            if (stop.mUseTarget && alive_tets > stop.mTarget)
                 log::warn(
                     "decimate_volume: queue exhausted at {} tets before reaching the target of "
                     "{} (pinning and the validity guards left no collapsible edge)",
-                    alive_tets, stop.mTargetCells);
+                    alive_tets, stop.mTarget);
             break;
         }
         const DvHeapEntry top = heap.top();
@@ -226502,7 +226740,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
                 ++w;
             }
             out.AddCellBlock(cell_type_name(CellType::Tetra), std::move(block));
-            result.mCellMaps.push_back(detail::decim_int64_vector(cell_map));
+            result.mCellMaps.push_back(detail::NDArrayUtils::Int64Vector(cell_map));
             ++bi;
         }
     }
@@ -228696,15 +228934,7 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 
     // Flat coordinates, padded to 3-D.
     const std::size_t n = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
-    std::vector<double> xyz(n * 3, 0.0);
-    {
-        const NDArray& pts = rMesh.Points();
-        parallel_for_bw(n, [&](std::size_t i) {
-            for (std::size_t d = 0; d < dim && d < 3; ++d)
-                xyz[i * 3 + d] = detail::read_double(pts, i * dim + d);
-        });
-    }
+    const std::vector<double> xyz = detail::surface_xyz(rMesh);
     const std::size_t nf = start.size() - 1;
     std::vector<double> normals(nf * 3);
     parallel_for(nf, [&](std::size_t f) {
@@ -230501,12 +230731,8 @@ struct FpFit {
     double mFraction = 0.0;
 };
 
-double fp_dot(const double* pA, const double* pB) {
-    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
-}
-
 void fp_normalize(double* pV) {
-    const double len = std::sqrt(fp_dot(pV, pV));
+    const double len = std::sqrt(detail::MathUtils::Dot(pV, pV));
     if (len > 0.0)
         for (int k = 0; k < 3; ++k)
             pV[k] /= len;
@@ -230623,12 +230849,12 @@ FpFit fp_plane(const FpPatch& rP, double Tol) {
     double nrm[3] = {v[0], v[1], v[2]};
     double total[3];
     fp_mean(rP.mNormals, total);
-    if (fp_dot(total, nrm) < 0.0)
+    if (detail::MathUtils::Dot(total, nrm) < 0.0)
         for (int k = 0; k < 3; ++k)
             nrm[k] = -nrm[k];
     std::vector<double> dist(n);
     for (std::size_t i = 0; i < n; ++i)
-        dist[i] = fp_dot(&rP.mPts[i * 3], nrm);
+        dist[i] = detail::MathUtils::Dot(&rP.mPts[i * 3], nrm);
     fp_stats(dist, Tol, fit);
     for (int k = 0; k < 3; ++k)
         fit.mParams[3 + k] = nrm[k];
@@ -230645,7 +230871,7 @@ FpFit fp_sphere(const FpPatch& rP, double Tol, int MaxIt) {
     for (std::size_t i = 0; i < n; ++i) {
         const double* p = &rP.mPts[i * 3];
         const double row[4] = {2.0 * p[0], 2.0 * p[1], 2.0 * p[2], 1.0};
-        const double rhs = fp_dot(p, p);
+        const double rhs = detail::MathUtils::Dot(p, p);
         for (int r = 0; r < 4; ++r) {
             for (int s = 0; s < 4; ++s)
                 a[static_cast<std::size_t>(r * 4 + s)] += row[r] * row[s];
@@ -230663,7 +230889,7 @@ FpFit fp_sphere(const FpPatch& rP, double Tol, int MaxIt) {
         for (std::size_t i = 0; i < n; ++i) {
             const double* p = &rP.mPts[i * 3];
             const double d[3] = {p[0] - rT[0], p[1] - rT[1], p[2] - rT[2]};
-            pOut[i] = std::sqrt(fp_dot(d, d)) - rT[3];
+            pOut[i] = std::sqrt(detail::MathUtils::Dot(d, d)) - rT[3];
         }
     };
     detail::lsq_levenberg_marquardt(theta, typical, n, resid, MaxIt);
@@ -230683,15 +230909,15 @@ FpFit fp_sphere(const FpPatch& rP, double Tol, int MaxIt) {
 // Distance of a point to the line through pPoint along unit pDir.
 double fp_line_distance(const double* pP, const double* pPoint, const double* pDir) {
     const double v[3] = {pP[0] - pPoint[0], pP[1] - pPoint[1], pP[2] - pPoint[2]};
-    const double h = fp_dot(v, pDir);
+    const double h = detail::MathUtils::Dot(v, pDir);
     const double r[3] = {v[0] - h * pDir[0], v[1] - h * pDir[1], v[2] - h * pDir[2]};
-    return std::sqrt(fp_dot(r, r));
+    return std::sqrt(detail::MathUtils::Dot(r, r));
 }
 
 // The axis point nearest the origin's projection: the foot of the origin
 // (the shifted centroid) on the line.
 void fp_foot_of_origin(const double* pPoint, const double* pDir, double* pOut) {
-    const double h = -fp_dot(pPoint, pDir);
+    const double h = -detail::MathUtils::Dot(pPoint, pDir);
     for (int k = 0; k < 3; ++k)
         pOut[k] = pPoint[k] + h * pDir[k];
 }
@@ -230746,7 +230972,7 @@ FpFit fp_cone(const FpPatch& rP, double Tol, int MaxIt) {
     for (std::size_t i = 0; i < n; ++i) {
         const double* p = &rP.mPts[i * 3];
         const double v[3] = {p[0] - point[0], p[1] - point[1], p[2] - point[2]};
-        const double h = fp_dot(v, dir);
+        const double h = detail::MathUtils::Dot(v, dir);
         const double rho = fp_line_distance(p, point, dir);
         sh += h;
         sr += rho;
@@ -230780,9 +231006,9 @@ FpFit fp_cone(const FpPatch& rP, double Tol, int MaxIt) {
         for (std::size_t i = 0; i < n; ++i) {
             const double* p = &rP.mPts[i * 3];
             const double v[3] = {p[0] - a[0], p[1] - a[1], p[2] - a[2]};
-            const double h = fp_dot(v, d);
+            const double h = detail::MathUtils::Dot(v, d);
             const double r[3] = {v[0] - h * d[0], v[1] - h * d[1], v[2] - h * d[2]};
-            pOut[i] = std::sqrt(fp_dot(r, r)) * ca - h * sa;
+            pOut[i] = std::sqrt(detail::MathUtils::Dot(r, r)) * ca - h * sa;
         }
     };
     detail::lsq_levenberg_marquardt(theta, typical, n, resid, MaxIt);
@@ -230821,7 +231047,7 @@ bool fp_torus_guess(const FpPatch& rP, double Minor, double* pCentre, double* pA
     std::vector<double> a(9, 0.0), b(3, 0.0);
     for (std::size_t f = 0; f < nf; ++f) {
         const double d[3] = {q[f * 3] - qm[0], q[f * 3 + 1] - qm[1], q[f * 3 + 2] - qm[2]};
-        const double u = fp_dot(d, e1), t = fp_dot(d, e2);
+        const double u = detail::MathUtils::Dot(d, e1), t = detail::MathUtils::Dot(d, e2);
         const double row[3] = {2.0 * u, 2.0 * t, 1.0};
         const double rhs = u * u + t * t;
         for (int r = 0; r < 3; ++r) {
@@ -230839,9 +231065,10 @@ bool fp_torus_guess(const FpPatch& rP, double Minor, double* pCentre, double* pA
     double score = 0.0;
     for (std::size_t f = 0; f < nf; ++f) {
         const double d[3] = {q[f * 3] - qm[0], q[f * 3 + 1] - qm[1], q[f * 3 + 2] - qm[2]};
-        const double u = fp_dot(d, e1) - b[0], t = fp_dot(d, e2) - b[1];
+        const double u = detail::MathUtils::Dot(d, e1) - b[0],
+                     t = detail::MathUtils::Dot(d, e2) - b[1];
         const double radial = std::sqrt(u * u + t * t) - rMajor;
-        const double off = fp_dot(d, axis);
+        const double off = detail::MathUtils::Dot(d, axis);
         score += radial * radial + off * off;
     }
     rScore = score;
@@ -230890,9 +231117,9 @@ FpFit fp_torus(const FpPatch& rP, double Tol, int MaxIt) {
         for (std::size_t i = 0; i < n; ++i) {
             const double* p = &rP.mPts[i * 3];
             const double v[3] = {p[0] - c[0], p[1] - c[1], p[2] - c[2]};
-            const double h = fp_dot(v, d);
+            const double h = detail::MathUtils::Dot(v, d);
             const double r[3] = {v[0] - h * d[0], v[1] - h * d[1], v[2] - h * d[2]};
-            const double radial = std::sqrt(fp_dot(r, r)) - rT[5];
+            const double radial = std::sqrt(detail::MathUtils::Dot(r, r)) - rT[5];
             pOut[i] = std::sqrt(radial * radial + h * h) - rT[6];
         }
     };
@@ -231044,7 +231271,7 @@ PrimitiveFit fit_primitive_samples(const std::vector<double>& rPts,
             v -= patch.mShift[k];
         }
     const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-    patch.mDiag = std::sqrt(fp_dot(ext, ext));
+    patch.mDiag = std::sqrt(detail::MathUtils::Dot(ext, ext));
     patch.mNormals = rNormals;
     patch.mCentres = rCentres;
     for (std::size_t f = 0; f < patch.mCentres.size() / 3; ++f)
@@ -231156,7 +231383,7 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
                     v -= patch.mShift[k];
                 }
             const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-            patch.mDiag = std::sqrt(fp_dot(ext, ext));
+            patch.mDiag = std::sqrt(detail::MathUtils::Dot(ext, ext));
         }
         for (std::size_t f : faces_of[r]) {
             const std::int64_t* ring = rings.mNodes.data() + rings.mStart[f];
@@ -231837,34 +232064,6 @@ bool grad_green_gauss(const GradCell& rCell, int Dim, std::size_t NumComp, doubl
 
 // --- least squares -----------------------------------------------------------
 
-/// Solves the symmetric 3x3 system `M g = b` in closed cofactor form.
-///
-/// The conditioning bound is transcribed from `decimate.cpp`'s optimal-placement
-/// solve, including the `scale * scale * scale` multiplication form: `std::pow`
-/// (and `np.power` in the twin) rounds differently and would break parity.
-bool grad_solve3(const double* pM, const double* pB, double* pOut) {
-    const double c00 = pM[4] * pM[8] - pM[5] * pM[5];
-    const double c01 = pM[2] * pM[5] - pM[1] * pM[8];
-    const double c02 = pM[1] * pM[5] - pM[2] * pM[4];
-    const double det = pM[0] * c00 + pM[1] * c01 + pM[2] * c02;
-    double scale = std::abs(pM[0]);
-    scale = std::max(scale, std::abs(pM[1]));
-    scale = std::max(scale, std::abs(pM[2]));
-    scale = std::max(scale, std::abs(pM[4]));
-    scale = std::max(scale, std::abs(pM[5]));
-    scale = std::max(scale, std::abs(pM[8]));
-    if (!(std::abs(det) > 1e-12 * (scale * scale * scale)))
-        return false;
-    const double c11 = pM[0] * pM[8] - pM[2] * pM[2];
-    const double c12 = pM[1] * pM[2] - pM[0] * pM[5];
-    const double c22 = pM[0] * pM[4] - pM[1] * pM[1];
-    const double inv = 1.0 / det;
-    pOut[0] = (c00 * pB[0] + c01 * pB[1] + c02 * pB[2]) * inv;
-    pOut[1] = (c01 * pB[0] + c11 * pB[1] + c12 * pB[2]) * inv;
-    pOut[2] = (c02 * pB[0] + c12 * pB[1] + c22 * pB[2]) * inv;
-    return true;
-}
-
 /// One cell's least-squares stencil: the neighbour offsets and value deltas,
 /// already recentred on this cell.
 struct GradStencil {
@@ -231919,7 +232118,8 @@ bool grad_least_squares(const GradStencil& rStencil, std::size_t NumComp, int Di
                     m[r * 3 + c] += s * r_nrm[r] * r_nrm[c];
         }
         for (std::size_t k = 0; k < NumComp; ++k)
-            if (!grad_solve3(m, b.data() + k * 3, pOut + k * 3))
+            if (!detail::MathUtils::SolveSymmetric3(m[0], m[1], m[2], m[4], m[5], m[8],
+                                                    b.data() + k * 3, pOut + k * 3))
                 return false;
         return true;
     }
@@ -232830,14 +233030,12 @@ private:
                 "meshio++: convex_hull: the points all coincide; they span no hull");
         const auto a = static_cast<std::int64_t>(lo), b = static_cast<std::int64_t>(hi);
         // The point farthest from the line (a, b) that is exactly off it.
-        const HullVec d{mP[hi][0] - mP[lo][0], mP[hi][1] - mP[lo][1], mP[hi][2] - mP[lo][2]};
+        const HullVec d = detail::MathUtils::Sub(mP[hi], mP[lo]);
         std::int64_t c = -1;
         double best = -1.0;
         for (std::size_t i = 0; i < n; ++i) {
-            const HullVec e{mP[i][0] - mP[lo][0], mP[i][1] - mP[lo][1], mP[i][2] - mP[lo][2]};
-            const HullVec x{d[1] * e[2] - d[2] * e[1], d[2] * e[0] - d[0] * e[2],
-                            d[0] * e[1] - d[1] * e[0]};
-            const double dist = x[0] * x[0] + x[1] * x[1] + x[2] * x[2];
+            const double dist = detail::MathUtils::NormSq(
+                detail::MathUtils::Cross(d, detail::MathUtils::Sub(mP[i], mP[lo])));
             if (dist > best && !Collinear(a, b, static_cast<std::int64_t>(i))) {
                 best = dist;
                 c = static_cast<std::int64_t>(i);
@@ -232883,16 +233081,12 @@ private:
         const double* a = At(start.mV[0]);
         const double* b = At(start.mV[1]);
         const double* c = At(start.mV[2]);
-        const HullVec u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-        const HullVec v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-        const HullVec nrm{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                          u[0] * v[1] - u[1] * v[0]};
+        const HullVec nrm = detail::GeometryUtils::TriangleNormal(a, b, c);
         std::int64_t eye = -1;
         double best = -std::numeric_limits<double>::infinity();
         for (const std::int64_t p : start.mOutside) {
             const double* q = At(p);
-            const double dist =
-                nrm[0] * (q[0] - a[0]) + nrm[1] * (q[1] - a[1]) + nrm[2] * (q[2] - a[2]);
+            const double dist = detail::MathUtils::Dot(nrm, detail::MathUtils::Sub(q, a));
             if (dist > best || (dist == best && p < eye)) {
                 best = dist;
                 eye = p;
@@ -233158,12 +233352,9 @@ ConvexHullResult convex_hull(const Mesh& rMesh, const ConvexHullOptions& rOption
         for (int k = 0; k < 3; ++k)
             pc[3 * t + static_cast<std::size_t>(k)] =
                 local.at(tris[t][static_cast<std::size_t>(k)]);
-        const HullVec u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-        const HullVec v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-        const HullVec x{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                        u[0] * v[1] - u[1] * v[0]};
-        result.mArea += 0.5 * std::sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]);
-        six_volume += x[0] * (a[0] - o[0]) + x[1] * (a[1] - o[1]) + x[2] * (a[2] - o[2]);
+        const HullVec x = detail::GeometryUtils::TriangleNormal(a, b, c);
+        result.mArea += 0.5 * detail::MathUtils::Norm(x);
+        six_volume += detail::MathUtils::Dot(x, detail::MathUtils::Sub(a, o));
     }
     result.mVolume = six_volume / 6.0;
     result.mNumVertices = static_cast<std::int64_t>(ids.size());
@@ -234143,18 +234334,6 @@ double ra_measure(const NDArray& rPoints, std::size_t Dim,
     return area;
 }
 
-NDArray ra_int_array(const std::vector<std::int64_t>& rValues) {
-    NDArray out = NDArray::Uninit(DType::Int64, {rValues.size()});
-    std::copy(rValues.begin(), rValues.end(), out.As<std::int64_t>());
-    return out;
-}
-
-NDArray ra_double_array(const std::vector<double>& rValues) {
-    NDArray out = NDArray::Uninit(DType::Float64, {rValues.size()});
-    std::copy(rValues.begin(), rValues.end(), out.As<double>());
-    return out;
-}
-
 std::vector<char> ra_region_mask(const Mesh& rMesh, const RegionSelector& rSelector,
                                  RegionKind Kind, const char* pOperation) {
     std::vector<char> mask(
@@ -234595,14 +234774,14 @@ Mesh if_make_facet_mesh(const Mesh& rMaster, const std::vector<IfOutputFacet>& r
             std::vector<NDArray> arrays;
             arrays.reserve(rValues.size());
             for (const auto& values : rValues)
-                arrays.push_back(ra_int_array(values));
+                arrays.push_back(detail::NDArrayUtils::Int64Vector(values));
             out.AddCellData(pName, std::move(arrays));
         };
         auto add_f64 = [&](const char* pName, const std::vector<std::vector<double>>& rValues) {
             std::vector<NDArray> arrays;
             arrays.reserve(rValues.size());
             for (const auto& values : rValues)
-                arrays.push_back(ra_double_array(values));
+                arrays.push_back(detail::NDArrayUtils::Float64Vector(values));
             out.AddCellData(pName, std::move(arrays));
         };
         add_i64("interface:parent_cell", parent_cells);
@@ -234873,7 +235052,7 @@ Mesh region_adjacency(const Mesh& rMesh, const std::vector<RegionSelector>& rReg
         std::vector<NDArray> arrays;
         arrays.reserve(rBlocks.size());
         for (const auto& block : rBlocks)
-            arrays.push_back(ra_int_array(block));
+            arrays.push_back(detail::NDArrayUtils::Int64Vector(block));
         out.AddCellData(rName, std::move(arrays));
     };
     add_int_data("interface:region_a", region_a_blocks);
@@ -234886,7 +235065,7 @@ Mesh region_adjacency(const Mesh& rMesh, const std::vector<RegionSelector>& rReg
     std::vector<NDArray> measures;
     measures.reserve(measure_blocks.size());
     for (const auto& block : measure_blocks)
-        measures.push_back(ra_double_array(block));
+        measures.push_back(detail::NDArrayUtils::Float64Vector(block));
     out.AddCellData("interface:measure", std::move(measures));
 
     for (auto& [name, cells] : output_regions) {
@@ -234895,7 +235074,7 @@ Mesh region_adjacency(const Mesh& rMesh, const std::vector<RegionSelector>& rReg
         region.mKind = RegionKind::Cell;
         region.mDim = -1;
         region.mTag = -1;
-        region.mEntries = ra_int_array(cells);
+        region.mEntries = detail::NDArrayUtils::Int64Vector(cells);
         out.AddRegion(std::move(region));
     }
     if (rMesh.NumRegions() > 0) {
@@ -235178,7 +235357,7 @@ NDArray if_f64_matrix(const std::vector<double>& rValues, std::size_t Rows, std:
 }
 
 NDArray if_i64_vector(const std::vector<std::int64_t>& rValues) {
-    return ra_int_array(rValues);
+    return detail::NDArrayUtils::Int64Vector(rValues);
 }
 
 }  // namespace
@@ -235260,7 +235439,7 @@ ContactPairsResult contact_pairs(const Mesh& rSlave, const RegionSelector& rSlav
     result.mMasterSubfacet = if_i64_vector(master_subfacets);
     result.mLocalCoordinates = if_f64_matrix(local, slave_ids.size(), 3);
     result.mClosestPoint = if_f64_matrix(closest, slave_ids.size(), 3);
-    result.mGap = ra_double_array(gaps);
+    result.mGap = detail::NDArrayUtils::Float64Vector(gaps);
     result.mNormal = if_f64_matrix(normals, slave_ids.size(), 3);
     result.mUnmatched = if_i64_vector(unmatched);
     return result;
@@ -235733,7 +235912,7 @@ SplitInterfaceResult split_interface(const Mesh& rMesh, const RegionSelector& rS
                 if (entries.count(duplicate_sources[copy].first))
                     entries.insert(static_cast<std::int64_t>(num_points + copy));
             std::vector<std::int64_t> flat(entries.begin(), entries.end());
-            region.mEntries = ra_int_array(flat);
+            region.mEntries = detail::NDArrayUtils::Int64Vector(flat);
         }
         out.AddRegion(std::move(region));
     }
@@ -235793,24 +235972,6 @@ double interp_cell_size(const double* pLo, const double* pHi, std::size_t n) {
     while (r * r * r < static_cast<std::int64_t>(n))
         ++r;
     return max_extent > 0.0 ? max_extent / static_cast<double>(r) : 1.0;
-}
-
-// Serial bbox over `n` coordinates supplied by `coord(i) -> Vec3` (min/max are
-// pure comparisons, so the order cannot matter). Callers guarantee n >= 1.
-template <class TCoord>
-void interp_bbox(std::size_t n, TCoord&& coord, double* pLo, double* pHi) {
-    const detail::Vec3 first = coord(0);
-    for (int d = 0; d < 3; ++d)
-        pLo[d] = pHi[d] = first[d];
-    for (std::size_t i = 1; i < n; ++i) {
-        const detail::Vec3 c = coord(i);
-        for (int d = 0; d < 3; ++d) {
-            if (c[d] < pLo[d])
-                pLo[d] = c[d];
-            if (c[d] > pHi[d])
-                pHi[d] = c[d];
-        }
-    }
 }
 
 // The point grid of `n` coordinates, id `i` for coordinate `i`: keys filled
@@ -236061,7 +236222,7 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             const std::size_t ns = rSource.NumPoints();
             auto scoord = [&](std::int64_t i) { return detail::read_point(spts, sdim, i); };
             double lo[3], hi[3];
-            interp_bbox(
+            detail::BoundingBoxUtils::FromCoords(
                 ns, [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); }, lo, hi);
             const detail::BucketTable grid = interp_point_grid(
                 interp_cell_size(lo, hi, ns), ns,
@@ -236124,7 +236285,7 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             auto scoord = [&](std::int64_t i) { return detail::read_point(spts, sdim, i); };
 
             double lo[3], hi[3];
-            interp_bbox(
+            detail::BoundingBoxUtils::FromCoords(
                 ns, [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); }, lo, hi);
             const double cell = interp_cell_size(lo, hi, nsimp);
 
@@ -236140,7 +236301,8 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             };
             parallel_for(nsimp, [&](std::size_t s) {
                 double blo[3], bhi[3];
-                interp_bbox(nv, [&](std::size_t k) { return scoord(sconn[s * nv + k]); }, blo, bhi);
+                detail::BoundingBoxUtils::FromCoords(
+                    nv, [&](std::size_t k) { return scoord(sconn[s * nv + k]); }, blo, bhi);
                 box_lo[s] = key_of(blo);
                 box_hi[s] = key_of(bhi);
             });
@@ -236249,7 +236411,7 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
                 return detail::Vec3{scent[3 * j], scent[3 * j + 1], scent[3 * j + 2]};
             };
             double lo[3], hi[3];
-            interp_bbox(
+            detail::BoundingBoxUtils::FromCoords(
                 src_total, [&](std::size_t i) { return ccoord(static_cast<std::int64_t>(i)); }, lo,
                 hi);
             const detail::BucketTable grid = interp_point_grid(
@@ -237754,22 +237916,7 @@ struct McadQuality {
 
 /// The angles of a triangle on the surface, in degrees.
 std::array<double, 3> mcad_angles(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
-    const Vec3* p[3] = {&rA, &rB, &rC};
-    std::array<double, 3> out{};
-    for (int k = 0; k < 3; ++k) {
-        const Vec3& o = *p[k];
-        const Vec3& q = *p[(k + 1) % 3];
-        const Vec3& r = *p[(k + 2) % 3];
-        const Vec3 a{q[0] - o[0], q[1] - o[1], q[2] - o[2]};
-        const Vec3 b{r[0] - o[0], r[1] - o[1], r[2] - o[2]};
-        const Vec3 c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
-                     a[0] * b[1] - a[1] * b[0]};
-        out[static_cast<std::size_t>(k)] =
-            std::atan2(std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]),
-                       a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) *
-            (180.0 / 3.14159265358979323846);
-    }
-    return out;
+    return detail::GeometryUtils::TriangleAnglesDeg(rA, rB, rC);
 }
 
 double mcad_min_angle(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
@@ -237783,10 +237930,7 @@ double mcad_ratio(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
     const double la = detail::vec3_norm(detail::vec3_sub(rB, rC));
     const double lb = detail::vec3_norm(detail::vec3_sub(rC, rA));
     const double lc = detail::vec3_norm(detail::vec3_sub(rA, rB));
-    const Vec3 u{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
-    const Vec3 v{rC[0] - rA[0], rC[1] - rA[1], rC[2] - rA[2]};
-    const Vec3 c{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
-    const double twice_area = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+    const double twice_area = detail::GeometryUtils::TriangleTwiceArea(rA, rB, rC);
     if (!(twice_area > 0.0))
         return std::numeric_limits<double>::infinity();
     return la * lb * lc / (2.0 * twice_area * std::min({la, lb, lc}));
@@ -239469,14 +239613,11 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         const Vec3& pa = pos(ids[0]);
         const Vec3& pb = pos(ids[1]);
         const Vec3& pc = pos(ids[2]);
-        const Vec3 e1{pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
-        const Vec3 e2{pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]};
-        const Vec3 nt{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
-                      e1[0] * e2[1] - e1[1] * e2[0]};
-        const double nt2 = nt[0] * nt[0] + nt[1] * nt[1] + nt[2] * nt[2];
+        const Vec3 nt = detail::GeometryUtils::TriangleNormal(pa, pb, pc);
+        const double nt2 = detail::MathUtils::NormSq(nt);
         const auto against = [&](const Vec3& ns) {
-            const double dot = nt[0] * ns[0] + nt[1] * ns[1] + nt[2] * ns[2];
-            return dot < -0.5 * std::sqrt(nt2 * (ns[0] * ns[0] + ns[1] * ns[1] + ns[2] * ns[2]));
+            return detail::MathUtils::Dot(nt, ns) <
+                   -0.5 * std::sqrt(nt2 * detail::MathUtils::NormSq(ns));
         };
         // The surface's normal at a vertex's point, once per vertex.
         const auto normal_at = [&](std::int64_t v) -> Vec3 {
@@ -239565,11 +239706,9 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 const Vec3& pa = pos(ids[0]);
                 const Vec3& pb = pos(ids[1]);
                 const Vec3& pc = pos(ids[2]);
-                const Vec3 e1{pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
-                const Vec3 e2{pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]};
-                const Vec3 n{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
-                             e1[0] * e2[1] - e1[1] * e2[0]};
-                const double area = 0.5 * std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                const Vec3 e1 = detail::vec3_sub(pb, pa);
+                const Vec3 n = detail::vec3_cross(e1, detail::vec3_sub(pc, pa));
+                const double area = 0.5 * detail::MathUtils::Norm(n);
                 // The field integrated over the triangle (Dunavant's 7-point
                 // rule), so a layer narrower than the triangle, which its
                 // centroid can miss (a size from a field's Hessian, 6.11),
@@ -240366,13 +240505,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
             const Vec3& o = pos(tri[k]);
             const Vec3& p = pos(tri[(k + 1) % 3]);
             const Vec3& q = pos(tri[(k + 2) % 3]);
-            const Vec3 a{p[0] - o[0], p[1] - o[1], p[2] - o[2]};
-            const Vec3 b{q[0] - o[0], q[1] - o[1], q[2] - o[2]};
-            const Vec3 c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
-                         a[0] * b[1] - a[1] * b[0]};
-            const double ang = std::atan2(std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]),
-                                          a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) *
-                               (180.0 / 3.14159265358979323846);
+            const double ang =
+                detail::MathUtils::AngleDeg(detail::vec3_sub(p, o), detail::vec3_sub(q, o));
             min_angle = std::min(min_angle, ang);
             max_angle = std::max(max_angle, ang);
             const double e = detail::vec3_norm(detail::vec3_sub(o, p));
@@ -240421,9 +240555,8 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
                 detail::MeshCadSizeSample smp;
                 smp.mX = pos(id);
                 smp.mFace = r_rec.mFace;
-                Vec3 n{su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
-                       su[0] * sv[1] - su[1] * sv[0]};
-                const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                Vec3 n = detail::MathUtils::Cross(su, sv);
+                const double len = detail::MathUtils::Norm(n);
                 if (len > 0.0)
                     for (double& r_c : n)
                         r_c *= (rBrepFace.mSwappedNormal ? -1.0 : 1.0) / len;
@@ -241383,22 +241516,19 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 (one2 && o2 >= 0 && suppressed[static_cast<std::size_t>(o2)]))
                 continue;
             const Vec3& x = boundary[c];
-            const Vec3 a{x[0] - p[0], x[1] - p[1], x[2] - p[2]};
-            const Vec3 b{q[0] - x[0], q[1] - x[1], q[2] - x[2]};
             const double la = detail::vec3_norm(detail::vec3_sub(p, x)),
                          lb = detail::vec3_norm(detail::vec3_sub(x, q)),
                          chord = detail::vec3_norm(detail::vec3_sub(p, q));
-            const double cos_turn = (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (la * lb);
+            const double cos_turn =
+                detail::MathUtils::Dot(detail::vec3_sub(x, p), detail::vec3_sub(q, x)) / (la * lb);
             if (!(la > 0.0 && lb > 0.0) || !(cos_turn > std::cos(30.0 * kMcadPi / 180.0)))
                 continue;
             const Vec3 mid{0.5 * (p[0] + q[0]), 0.5 * (p[1] + q[1]), 0.5 * (p[2] + q[2])};
             const double local = pSize ? pSize->At(mid) : h;
             // The corner's distance from the chord p-q.
-            const Vec3 pq{q[0] - p[0], q[1] - p[1], q[2] - p[2]};
-            const Vec3 px{x[0] - p[0], x[1] - p[1], x[2] - p[2]};
-            const Vec3 cr{pq[1] * px[2] - pq[2] * px[1], pq[2] * px[0] - pq[0] * px[2],
-                          pq[0] * px[1] - pq[1] * px[0]};
-            const double off = std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]) / chord;
+            const double off = detail::MathUtils::Norm(detail::MathUtils::Cross(
+                                   detail::vec3_sub(q, p), detail::vec3_sub(x, p))) /
+                               chord;
             if (!(chord <= 1.5 * local) || !(off <= 0.1 * chord))
                 continue;
             suppressed[c] = 1;
@@ -243993,11 +244123,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
             const double ab = detail::vec3_norm(detail::vec3_sub(a, b)),
                          bc = detail::vec3_norm(detail::vec3_sub(b, c)),
                          ca = detail::vec3_norm(detail::vec3_sub(c, a));
-            const Vec3 u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-            const Vec3 v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-            const Vec3 w{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                         u[0] * v[1] - u[1] * v[0]};
-            const double twice_area = std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]);
+            const double twice_area = detail::GeometryUtils::TriangleTwiceArea(a, b, c);
             if (!(twice_area > 0.0))
                 continue;
             const double k = 2.0 * twice_area / (ab * bc * ca);  // 1 / circumradius
@@ -258030,15 +258156,9 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
         // an area estimated from the box (half its surface: a plane's area, a
         // sphere's within 5%). The cell size changes the search's speed,
         // never its answer.
-        PtnVec lo = p[0], hi = p[0];
-        for (const PtnVec& q : p)
-            for (std::size_t a = 0; a < 3; ++a) {
-                lo[a] = std::min(lo[a], q[a]);
-                hi[a] = std::max(hi[a], q[a]);
-            }
-        const PtnVec e{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-        const double area = e[0] * e[1] + e[1] * e[2] + e[2] * e[0];
-        const double extent = std::max({e[0], e[1], e[2]});
+        const detail::BoundingBox3 box = detail::BoundingBoxUtils::FromPoints(p);
+        const double area = detail::BoundingBoxUtils::HalfSurfaceArea(box);
+        const double extent = detail::BoundingBoxUtils::MaxExtent(box);
         if (area > 0.0)
             search.mCellSize =
                 std::max(std::sqrt(area / static_cast<double>(n) * static_cast<double>(k) * 0.5),
@@ -262833,14 +262953,10 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
     if (m < 3)
         rcs_fail("needs at least three samples with a normal, not " + std::to_string(m));
 
-    RcsVec lo = pts[0], hi = pts[0];
-    for (const RcsVec& q : pts)
-        for (std::size_t a = 0; a < 3; ++a) {
-            lo[a] = std::min(lo[a], q[a]);
-            hi[a] = std::max(hi[a], q[a]);
-        }
-    const RcsVec ext{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-    const double extent = std::max({ext[0], ext[1], ext[2]});
+    const detail::BoundingBox3 box = detail::BoundingBoxUtils::FromPoints(pts);
+    const RcsVec& lo = box.mMin;
+    const RcsVec ext = detail::BoundingBoxUtils::Extent(box);
+    const double extent = detail::BoundingBoxUtils::MaxExtent(box);
     if (!(extent > 0.0))
         rcs_fail("the samples all coincide");
 
@@ -263282,14 +263398,6 @@ NDArray refine_identity_map(std::size_t n) {
     std::int64_t* dst = a.As<std::int64_t>();
     for (std::size_t i = 0; i < n; ++i)
         dst[i] = static_cast<std::int64_t>(i);
-    return a;
-}
-
-// A vector of Int64 as a 1-D NDArray.
-NDArray refine_int64_vector(const std::vector<std::int64_t>& rValues) {
-    NDArray a = NDArray::Uninit(DType::Int64, {rValues.size()});
-    if (!rValues.empty())
-        std::memcpy(a.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
     return a;
 }
 
@@ -263867,7 +263975,7 @@ RefineResult refine_once(const Mesh& rMesh, const std::vector<char>* pRedSeed,
                 }
             });
             out.AddCellBlock(cell_type_name(d.mType), std::move(out_conn));
-            cell_maps.push_back(refine_int64_vector(first_child));
+            cell_maps.push_back(detail::NDArrayUtils::Int64Vector(first_child));
         }
     }
 
@@ -264576,10 +264684,6 @@ struct RpProxy {
     double mMax = 0.0;
 };
 
-double rp_dot(const double* pA, const double* pB) {
-    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
-}
-
 // The distance of a point from the proxy and, when pN is given, the proxy's
 // unit normal there (false: no normal, the normal term is then zero).
 double rp_distance(const RpProxy& rP, const double* pX, double* pN, bool* pHasN) {
@@ -264594,7 +264698,8 @@ double rp_distance(const RpProxy& rP, const double* pX, double* pN, bool* pHasN)
         return d;
     }
     const double r[3] = {pX[0] - rP.mO[0], pX[1] - rP.mO[1], pX[2] - rP.mO[2]};
-    const double x = rp_dot(r, rP.mE1), y = rp_dot(r, rP.mE2), h = rp_dot(r, rP.mN);
+    const double x = detail::MathUtils::Dot(r, rP.mE1), y = detail::MathUtils::Dot(r, rP.mE2),
+                 h = detail::MathUtils::Dot(r, rP.mN);
     const double* q = rP.mQ;
     const double z = q[0] + q[1] * x + q[2] * y + q[3] * x * x + q[4] * x * y + q[5] * y * y;
     const double gx = q[1] + 2.0 * q[3] * x + q[4] * y, gy = q[2] + q[4] * x + 2.0 * q[5] * y;
@@ -264617,7 +264722,8 @@ double rp_cost(const RpSurface& rS, std::size_t F, const RpProxy& rP) {
     const double d = rp_distance(rP, &rS.mCentroid[F * 3], n, &has_n);
     double c = d * d / (rS.mTol * rS.mTol);
     if (has_n)
-        c += rS.mWeight * std::max(0.0, 1.0 - std::abs(rp_dot(n, &rS.mNormal[F * 3])));
+        c += rS.mWeight *
+             std::max(0.0, 1.0 - std::abs(detail::MathUtils::Dot(n, &rS.mNormal[F * 3])));
     return rS.mArea[F] * c;
 }
 
@@ -264710,7 +264816,7 @@ void rp_fit_quadric(const RpSurface& rS, const std::vector<std::int64_t>& rFaces
         for (int k = 0; k < 3; ++k)
             mean[k] += rS.mArea[static_cast<std::size_t>(f)] *
                        rS.mNormal[static_cast<std::size_t>(f) * 3 + static_cast<std::size_t>(k)];
-    if (rp_dot(mean, nrm) < 0.0)
+    if (detail::MathUtils::Dot(mean, nrm) < 0.0)
         for (double& x : nrm)
             x = -x;
     rP.mKind = RefineProxy::Freeform;
@@ -264728,9 +264834,9 @@ void rp_fit_quadric(const RpSurface& rS, const std::vector<std::int64_t>& rFaces
     std::vector<double> xs(n), ys(n), hs(n);
     for (std::size_t i = 0; i < n; ++i) {
         const double r[3] = {rPts[i * 3] - c[0], rPts[i * 3 + 1] - c[1], rPts[i * 3 + 2] - c[2]};
-        xs[i] = rp_dot(r, rP.mE1);
-        ys[i] = rp_dot(r, rP.mE2);
-        hs[i] = rp_dot(r, rP.mN);
+        xs[i] = detail::MathUtils::Dot(r, rP.mE1);
+        ys[i] = detail::MathUtils::Dot(r, rP.mE2);
+        hs[i] = detail::MathUtils::Dot(r, rP.mN);
         ext = std::max(ext, std::max(std::abs(xs[i]), std::abs(ys[i])));
     }
     if (!(ext > 0.0))
@@ -265097,7 +265203,7 @@ RefinePatchesResult refine_patches(const Mesh& rMesh, const RefinePatchesOptions
                 const bool zb = nb[0] == 0.0 && nb[1] == 0.0 && nb[2] == 0.0;
                 bool ok = true;
                 if (!za && !zb) {
-                    double dot = rp_dot(na, nb);
+                    double dot = detail::MathUtils::Dot(na, nb);
                     if (uses[b].mForward == uses[b + 1].mForward)
                         dot = -dot;
                     ok = !(dot < cos_feature);
@@ -265998,15 +266104,9 @@ public:
         }
         // A grid of about four points per cell over the cloud's surface
         // (half its box's surface area; a speed choice, never the answer).
-        RegVec lo = mPoints[0], hi = mPoints[0];
-        for (const RegVec& q : mPoints)
-            for (std::size_t a = 0; a < 3; ++a) {
-                lo[a] = std::min(lo[a], q[a]);
-                hi[a] = std::max(hi[a], q[a]);
-            }
-        const RegVec e{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-        const double area = e[0] * e[1] + e[1] * e[2] + e[2] * e[0];
-        const double extent = std::max({e[0], e[1], e[2]});
+        const detail::BoundingBox3 box = detail::BoundingBoxUtils::FromPoints(mPoints);
+        const double area = detail::BoundingBoxUtils::HalfSurfaceArea(box);
+        const double extent = detail::BoundingBoxUtils::MaxExtent(box);
         double cell = area > 0.0 ? std::sqrt(4.0 * area / static_cast<double>(n)) : extent;
         cell = std::max(cell, std::max(extent, 1.0) * 1e-9);
         mKnn = detail::PointKnn(mPoints, cell);
@@ -266203,15 +266303,10 @@ RegistrationResult register_rigid(const Mesh& rSource, const Mesh& rTarget,
                                             std::to_string(i) + " has a non-finite coordinate");
             src[i][k] = v;
         }
-    lo = hi = src[0];
-    for (const RegVec& p : src)
-        for (std::size_t a = 0; a < 3; ++a) {
-            lo[a] = std::min(lo[a], p[a]);
-            hi[a] = std::max(hi[a], p[a]);
-        }
-    const double extent =
-        std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
-                  (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    const detail::BoundingBox3 box = detail::BoundingBoxUtils::FromPoints(src);
+    lo = box.mMin;
+    hi = box.mMax;
+    const double extent = detail::BoundingBoxUtils::Diagonal(box);
     const std::array<double, 16>& m0 = rOptions.mInitial;
     for (const double v : m0)
         if (!std::isfinite(v))
@@ -266279,6 +266374,7 @@ RegistrationResult register_rigid(const Mesh& rSource, const Mesh& rTarget,
 
 // Project includes
 
+
 namespace meshioplusplus {
 
 namespace {
@@ -266334,12 +266430,7 @@ void remesh_check_blocks(const Mesh& rMesh) {
 RemeshSurface remesh_build_surface(const Mesh& rMesh) {
     RemeshSurface s;
     s.mNumPoints = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
-    s.mXyz.assign(s.mNumPoints * 3, 0.0);
-    const NDArray& points = rMesh.Points();
-    for (std::size_t i = 0; i < s.mNumPoints; ++i)
-        for (std::size_t d = 0; d < dim && d < 3; ++d)
-            s.mXyz[i * 3 + d] = detail::read_double(points, i * dim + d);
+    s.mXyz = detail::surface_xyz(rMesh);
 
     for (const auto cb : rMesh.CellRange()) {
         if (cell_type_from_name(cb.Type()) != CellType::Triangle)
@@ -266392,12 +266483,7 @@ void remesh_item_weights(const RemeshSurface& rS, const detail::DecimCsr& rVerte
         const double* v0 = rS.mXyz.data() + static_cast<std::size_t>(i0) * 3;
         const double* v1 = rS.mXyz.data() + static_cast<std::size_t>(i1) * 3;
         const double* v2 = rS.mXyz.data() + static_cast<std::size_t>(i2) * 3;
-
-        const double e0[3] = {v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]};
-        const double e1[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
-        const double c[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
-                             e0[0] * e1[1] - e0[1] * e1[0]};
-        face_area[f] = 0.5 * std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) / 3.0;
+        face_area[f] = detail::GeometryUtils::TriangleArea(v0, v1, v2) / 3.0;
     });
     parallel_for(rS.mNumPoints, [&](std::size_t i) {
         double a = 0.0;
@@ -269360,10 +269446,6 @@ void rnd_face_triangles(const std::vector<double>& rXyz, const std::int64_t* pRi
 // Camera
 // ---------------------------------------------------------------------------
 
-double rnd_dot(const double* pA, const std::array<double, 3>& rB) {
-    return pA[0] * rB[0] + pA[1] * rB[1] + pA[2] * rB[2];
-}
-
 // The Lambert intensity of a unit normal under a unit light direction. A zero
 // normal (a degenerate face, a NaN vertex normal) is lit fully rather than
 // darkened, since it has no side to turn away.
@@ -269372,7 +269454,7 @@ double rnd_lambert(const double* pNormal, const std::array<double, 3>& rLight,
     if (!(std::isfinite(pNormal[0]) && std::isfinite(pNormal[1]) && std::isfinite(pNormal[2])) ||
         (pNormal[0] == 0.0 && pNormal[1] == 0.0 && pNormal[2] == 0.0))
         return 1.0;
-    double d = rnd_dot(pNormal, rLight);
+    double d = detail::MathUtils::Dot(pNormal, rLight);
     if (rOpt.mTwoSided)
         d = std::fabs(d);
     else if (d < 0.0)
@@ -271063,14 +271145,14 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
         const double* p = &xyz[3 * i];
         if (perspective) {
             const double rel[3] = {p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]};
-            const double zc = -rnd_dot(rel, cam.mW);
-            sx[i] = focal * rnd_dot(rel, cam.mU) / zc;
-            sy[i] = focal * rnd_dot(rel, cam.mV) / zc;
+            const double zc = -detail::MathUtils::Dot(rel, cam.mW);
+            sx[i] = focal * detail::MathUtils::Dot(rel, cam.mU) / zc;
+            sy[i] = focal * detail::MathUtils::Dot(rel, cam.mV) / zc;
             sz[i] = 1.0 / zc;
         } else {
-            sx[i] = rnd_dot(p, cam.mU);
-            sy[i] = rnd_dot(p, cam.mV);
-            sz[i] = rnd_dot(p, cam.mW);
+            sx[i] = detail::MathUtils::Dot(p, cam.mU);
+            sy[i] = detail::MathUtils::Dot(p, cam.mV);
+            sz[i] = detail::MathUtils::Dot(p, cam.mW);
         }
     });
 
@@ -271105,9 +271187,9 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
             min_z = 1.0 / (fit_distance + r);
             max_z = 1.0 / (fit_distance - r);
         } else {
-            const double cx = rnd_dot(rPrep.mCentre.data(), cam.mU);
-            const double cy = rnd_dot(rPrep.mCentre.data(), cam.mV);
-            const double cz = rnd_dot(rPrep.mCentre.data(), cam.mW);
+            const double cx = detail::MathUtils::Dot(rPrep.mCentre.data(), cam.mU);
+            const double cy = detail::MathUtils::Dot(rPrep.mCentre.data(), cam.mV);
+            const double cz = detail::MathUtils::Dot(rPrep.mCentre.data(), cam.mW);
             min_x = cx - r;
             max_x = cx + r;
             min_y = cy - r;
@@ -276172,6 +276254,44 @@ std::string seq_resolve_data_format(const WriteOptions& rOptions) {
 #endif
 }
 
+/// A transient writer's display name, and the name its "no ASCII/binary variant"
+/// message gives it when `Encoding` has nowhere to go (`nullptr`: the writer takes an
+/// encoding). Formats not listed are XDMF's.
+struct SeqSeriesFormat {
+    const char* mFormat;
+    const char* mName;
+    const char* mNoEncoding;
+};
+
+inline constexpr SeqSeriesFormat kSeqSeriesFormats[] = {
+    {"exodus", "Exodus", "Exodus"},
+    {"vtkhdf", "VTKHDF", "VTKHDF"},
+    {"pvd", "PVD", nullptr},
+    {"femap", "Femap", "Femap"},
+    {"frd", "CalculiX FRD", nullptr},
+    {"radioss_th", "Radioss time-history", "Radioss time-history"},
+    {"nastran_op2", "Nastran OP2", "Nastran OP2"},
+    {"nastran_h5", "Nastran HDF5", "Nastran HDF5"},
+    {"radioss_anim", "Radioss animation", "Radioss animation"},
+    {"xplt", "FEBio plot", "FEBio plot"},
+    {"ansys_rst", "Ansys results", "Ansys results"},
+    {"lsdyna_d3plot", "LS-DYNA d3plot", "LS-DYNA d3plot"},
+    {"openfoam", "OpenFOAM", nullptr},
+    {"vtx", "DOLFINx VTX", "DOLFINx VTX"},
+    {"szplt", "Tecplot SZL", "Tecplot SZL"},
+    {"marc_t19", "Marc post file", "Marc post-file"},
+    {"lsdyna_binout", "LS-DYNA binout", "LS-DYNA binout"},
+    {"abaqus_fil", "Abaqus results", nullptr},
+};
+
+const SeqSeriesFormat& seq_series_format(const std::string& rFormat) {
+    for (const SeqSeriesFormat& r_f : kSeqSeriesFormats)
+        if (rFormat == r_f.mFormat)
+            return r_f;
+    static constexpr SeqSeriesFormat kXdmf{"xdmf", "XDMF", nullptr};
+    return kXdmf;
+}
+
 /// The transient writers bypass `registry_write_ex` (they drive a stateful writer
 /// class directly, not a `(path, mesh)` registry entry), so they must apply the
 /// write_options.hpp rule -- "an option the writer cannot honour is an error,
@@ -276179,90 +276299,26 @@ std::string seq_resolve_data_format(const WriteOptions& rOptions) {
 /// anywhere to go: XML vs HDF for XDMF, ASCII vs binary pieces for a `.pvd`;
 /// VTKHDF has no encoding variant at all.
 void seq_check_series_write_options(const std::string& rFormat, const WriteOptions& rOptions) {
-    if (rFormat == "exodus" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient Exodus writer has no ASCII/binary variant to "
-            "select");
-    const char* who = rFormat == "exodus"          ? "Exodus"
-                      : rFormat == "vtkhdf"        ? "VTKHDF"
-                      : rFormat == "pvd"           ? "PVD"
-                      : rFormat == "femap"         ? "Femap"
-                      : rFormat == "frd"           ? "CalculiX FRD"
-                      : rFormat == "radioss_th"    ? "Radioss time-history"
-                      : rFormat == "nastran_op2"   ? "Nastran OP2"
-                      : rFormat == "nastran_h5"    ? "Nastran HDF5"
-                      : rFormat == "radioss_anim"  ? "Radioss animation"
-                      : rFormat == "xplt"          ? "FEBio plot"
-                      : rFormat == "ansys_rst"     ? "Ansys results"
-                      : rFormat == "lsdyna_d3plot" ? "LS-DYNA d3plot"
-                      : rFormat == "openfoam"      ? "OpenFOAM"
-                      : rFormat == "vtx"           ? "DOLFINx VTX"
-                      : rFormat == "szplt"         ? "Tecplot SZL"
-                      : rFormat == "marc_t19"      ? "Marc post file"
-                      : rFormat == "lsdyna_binout" ? "LS-DYNA binout"
-                      : rFormat == "abaqus_fil"    ? "Abaqus results"
-                                                   : "XDMF";
+    const SeqSeriesFormat& r_f = seq_series_format(rFormat);
+    const auto refuse_encoding = [&]() {
+        if (r_f.mNoEncoding && rOptions.mEncoding != WriteEncoding::Default)
+            throw WriteError(std::string("meshio++: sequence: the transient ") + r_f.mNoEncoding +
+                             " writer has no ASCII/binary variant to select");
+    };
+    // Exodus refuses an encoding before the other options, the others after them.
+    if (rFormat == "exodus")
+        refuse_encoding();
+    const std::string who = r_f.mName;
     if (rOptions.mCodecSet)
-        throw WriteError(std::string("meshio++: sequence: the transient ") + who +
+        throw WriteError("meshio++: sequence: the transient " + who +
                          " writer does not support Codec");
     if (!rOptions.mFloatFormat.empty())
-        throw WriteError(std::string("meshio++: sequence: the transient ") + who +
+        throw WriteError("meshio++: sequence: the transient " + who +
                          " writer does not support FloatFormat");
     if (rOptions.mEncoding == WriteEncoding::RawAppended)
-        throw WriteError(std::string("meshio++: sequence: the transient ") + who +
+        throw WriteError("meshio++: sequence: the transient " + who +
                          " writer has no raw appended encoding (only vtu does)");
-    if (rFormat == "femap" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient Femap writer has no ASCII/binary variant to "
-            "select");
-    if (rFormat == "radioss_th" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient Radioss time-history writer has no ASCII/binary "
-            "variant to select");
-    if (rFormat == "nastran_op2" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient Nastran OP2 writer has no ASCII/binary variant "
-            "to select");
-    if (rFormat == "nastran_h5" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient Nastran HDF5 writer has no ASCII/binary variant "
-            "to select");
-    if (rFormat == "radioss_anim" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient Radioss animation writer has no ASCII/binary "
-            "variant to select");
-    if (rFormat == "marc_t19" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient Marc post-file writer has no ASCII/binary variant "
-            "to select");
-    if (rFormat == "szplt" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient Tecplot SZL writer has no ASCII/binary variant to "
-            "select");
-    if (rFormat == "vtx" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient DOLFINx VTX writer has no ASCII/binary variant to "
-            "select");
-    if (rFormat == "lsdyna_d3plot" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient LS-DYNA d3plot writer has no ASCII/binary variant "
-            "to select");
-    if (rFormat == "ansys_rst" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient Ansys results writer has no ASCII/binary variant to "
-            "select");
-    if (rFormat == "xplt" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient FEBio plot writer has no ASCII/binary variant to "
-            "select");
-    if (rFormat == "lsdyna_binout" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient LS-DYNA binout writer has no ASCII/binary "
-            "variant to select");
-    if (rFormat == "vtkhdf" && rOptions.mEncoding != WriteEncoding::Default)
-        throw WriteError(
-            "meshio++: sequence: the transient VTKHDF writer has no ASCII/binary variant to "
-            "select");
+    refuse_encoding();
 }
 
 /// One interface over the two stateful multi-step writers (XDMF, VTKHDF), so the two
@@ -276276,270 +276332,44 @@ public:
     virtual void Finalize() = 0;
 };
 
-class SeqXdmfSink final : public SeqSeriesSink {
-public:
-    SeqXdmfSink(const std::string& rPath, const std::string& rDataFormat)
-        : mWriter(rPath, rDataFormat) {}
-    void WritePointsCells(const Mesh& rMesh) override { mWriter.WritePointsCells(rMesh); }
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.WriteData(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    XdmfTimeSeriesWriter mWriter;
-};
-
-#ifdef MESHIOPLUSPLUS_HAS_NETCDF
-class SeqExodusSink final : public SeqSeriesSink {
-public:
-    explicit SeqExodusSink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh& rMesh) override { mWriter.WritePointsCells(rMesh); }
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.WriteData(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    ExodusTimeSeriesWriter mWriter;
-};
-#endif
-
-/// A `.pvd` stores geometry per step (each step is its own `.vtu`), so there is no
-/// static grid to write and `WritePointsCells` has nothing to do.
-class SeqPvdSink final : public SeqSeriesSink {
-public:
-    SeqPvdSink(const std::string& rPath, bool Binary, detail::VtkCodec Codec)
-        : mWriter(rPath, Binary, Codec) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    PvdSeriesWriter mWriter;
-};
-
-/// A Femap neutral file holds one mesh and an output set per step: its writer
-/// writes the mesh with the first step, so `WritePointsCells` has nothing to do.
-class SeqFemapSink final : public SeqSeriesSink {
-public:
-    explicit SeqFemapSink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    FemapSeriesWriter mWriter;
-};
-
-/// A CalculiX result file holds one mesh and an increment per step: its writer writes
-/// the mesh with the first step, so `WritePointsCells` has nothing to do.
-class SeqFrdSink final : public SeqSeriesSink {
-public:
-    SeqFrdSink(const std::string& rPath, const FrdWriteOptions& rOpts) : mWriter(rPath, rOpts) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    FrdSeriesWriter mWriter;
-};
-
-/// A time-history file holds the descriptions once and an output per step: the writer
-/// writes them with the first step, so `WritePointsCells` has nothing to do.
-class SeqRadiossThSink final : public SeqSeriesSink {
-public:
-    explicit SeqRadiossThSink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    RadiossThSeriesWriter mWriter;
-};
-
-/// An OP2 file holds the model once and a block per step in each result table: the writer
-/// keeps the steps and writes the file when it is finalized, so `WritePointsCells` has
-/// nothing to do.
-class SeqNastranOp2Sink final : public SeqSeriesSink {
-public:
-    explicit SeqNastranOp2Sink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    NastranOp2SeriesWriter mWriter;
-};
-
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-/// A Nastran HDF5 file holds the model once and a domain per step: the writer keeps the steps
-/// and writes the file when it is finalized, so `WritePointsCells` has nothing to do.
-class SeqNastranH5Sink final : public SeqSeriesSink {
-public:
-    explicit SeqNastranH5Sink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    NastranH5SeriesWriter mWriter;
-};
-#endif
-
-/// An Abaqus results file holds the model once and an increment per step: the writer keeps
-/// the steps and writes the file when it is finalized (`Encoding` binary writes the binary
-/// layout), so `WritePointsCells` has nothing to do.
-class SeqAbaqusFilSink final : public SeqSeriesSink {
-public:
-    SeqAbaqusFilSink(const std::string& rPath, bool Binary) : mWriter(rPath, Binary) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    AbaqusFilSeriesWriter mWriter;
-};
-
-/// An animation series is one file per step, written as it arrives, so
+/// One adapter for every transient writer: `TWriter` built in place from the
+/// constructor's arguments. A writer with a static grid (`kStaticGrid`: XDMF,
+/// Exodus, VTKHDF) takes the points and cells once (`WritePointsCells`) and each
+/// step's data after (`WriteData`); every other writer takes a whole mesh per step
+/// (`Write`) -- it writes the model with the first step, keeps the steps until it
+/// is finalized, or (`.pvd`, Radioss animation) writes a file per step -- so
 /// `WritePointsCells` has nothing to do.
-class SeqRadiossAnimSink final : public SeqSeriesSink {
+template <class TWriter, bool kStaticGrid>
+class SeqSink final : public SeqSeriesSink {
 public:
-    explicit SeqRadiossAnimSink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
+    template <class... TArgs>
+    explicit SeqSink(TArgs&&... rArgs) : mWriter(std::forward<TArgs>(rArgs)...) {}
+    void WritePointsCells(const Mesh& rMesh) override {
+        if constexpr (kStaticGrid)
+            mWriter.WritePointsCells(rMesh);
+    }
+    void WriteData(double Time, const Mesh& rMesh) override {
+        if constexpr (kStaticGrid)
+            mWriter.WriteData(Time, rMesh);
+        else
+            mWriter.Write(Time, rMesh);
+    }
     void Finalize() override { mWriter.Finalize(); }
 
 private:
-    RadiossAnimSeriesWriter mWriter;
+    TWriter mWriter;
 };
 
-/// A Marc post file holds the model once and an increment per step: the writer keeps the
-/// increments and writes the file when it is finalized, so `WritePointsCells` has nothing to do.
-class SeqMarcT19Sink final : public SeqSeriesSink {
-public:
-    explicit SeqMarcT19Sink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    MarcT19SeriesWriter mWriter;
-};
-
-#ifdef MESHIOPLUSPLUS_HAS_TECIO
-/// A SZL file takes a strand of zones per step, written as it arrives, so `WritePointsCells`
-/// has nothing to do.
-class SeqSzpltSink final : public SeqSeriesSink {
-public:
-    explicit SeqSzpltSink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    SzpltSeriesWriter mWriter;
-};
-#endif
-
-#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
-/// A VTX file takes a step per mesh, written as it arrives, so `WritePointsCells` has nothing
-/// to do.
-class SeqVtxSink final : public SeqSeriesSink {
-public:
-    explicit SeqVtxSink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    VtxSeriesWriter mWriter;
-};
-#endif
-
-/// A plot file holds the mesh once and a state per step: the writer keeps the states and
-/// writes the file when it is finalized, so `WritePointsCells` has nothing to do.
-class SeqXpltSink final : public SeqSeriesSink {
-public:
-    explicit SeqXpltSink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    XpltSeriesWriter mWriter;
-};
-
-/// A results file holds the model once and a result set per step, written when finalized.
-class SeqAnsysRstSink final : public SeqSeriesSink {
-public:
-    explicit SeqAnsysRstSink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    AnsysRstSeriesWriter mWriter;
-};
-
-/// A transient case: the polyMesh once and a time directory of fields per step, written as the
-/// steps arrive.
-class SeqOpenFoamSink final : public SeqSeriesSink {
-public:
-    SeqOpenFoamSink(const std::string& rPath, bool Binary)
-        : mWriter(rPath, {}, [&] {
-              OpenFoamWriteOptions o;
-              o.mBinary = Binary;
-              return o;
-          }()) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    OpenFoamSeriesWriter mWriter;
-};
-
-/// A d3plot family holds the geometry once and a state per step, written when finalized.
-class SeqLsdynaD3plotSink final : public SeqSeriesSink {
-public:
-    explicit SeqLsdynaD3plotSink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    LsdynaD3plotSeriesWriter mWriter;
-};
-
-/// A binout keeps every output's records and writes the file when it is finalized, so
-/// `WritePointsCells` has nothing to do.
-class SeqLsdynaBinoutSink final : public SeqSeriesSink {
-public:
-    explicit SeqLsdynaBinoutSink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh&) override {}
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.Write(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    LsdynaBinoutSeriesWriter mWriter;
-};
-
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-class SeqVtkhdfSink final : public SeqSeriesSink {
-public:
-    explicit SeqVtkhdfSink(const std::string& rPath) : mWriter(rPath) {}
-    void WritePointsCells(const Mesh& rMesh) override { mWriter.WritePointsCells(rMesh); }
-    void WriteData(double Time, const Mesh& rMesh) override { mWriter.WriteData(Time, rMesh); }
-    void Finalize() override { mWriter.Finalize(); }
-
-private:
-    VtkhdfTimeSeriesWriter mWriter;
-};
-#endif
+/// The adapter of a writer that takes a whole mesh per step.
+template <class TWriter>
+using SeqStepSink = SeqSink<TWriter, false>;
 
 std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
                                                     const std::string& rPath,
                                                     const WriteOptions& rOptions) {
     if (rFormat == "exodus") {
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
-        return std::make_unique<SeqExodusSink>(rPath);
+        return std::make_unique<SeqSink<ExodusTimeSeriesWriter, true>>(rPath);
 #else
         throw WriteError("meshio++: sequence: Exodus requires -DMESHIOPLUSPLUS_WITH_NETCDF=ON");
 #endif
@@ -276551,59 +276381,64 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
 #else
         const detail::VtkCodec codec = detail::VtkCodec::None;
 #endif
-        return std::make_unique<SeqPvdSink>(rPath, rOptions.mEncoding != WriteEncoding::Ascii,
-                                            codec);
+        return std::make_unique<SeqStepSink<PvdSeriesWriter>>(
+            rPath, rOptions.mEncoding != WriteEncoding::Ascii, codec);
     }
     if (rFormat == "femap")
-        return std::make_unique<SeqFemapSink>(rPath);
+        return std::make_unique<SeqStepSink<FemapSeriesWriter>>(rPath);
     if (rFormat == "frd") {
         FrdWriteOptions frd_opts;
         frd_opts.mBinary = rOptions.mEncoding == WriteEncoding::Binary;
-        return std::make_unique<SeqFrdSink>(rPath, frd_opts);
+        return std::make_unique<SeqStepSink<FrdSeriesWriter>>(rPath, frd_opts);
     }
     if (rFormat == "radioss_th")
-        return std::make_unique<SeqRadiossThSink>(rPath);
+        return std::make_unique<SeqStepSink<RadiossThSeriesWriter>>(rPath);
     if (rFormat == "nastran_op2")
-        return std::make_unique<SeqNastranOp2Sink>(rPath);
+        return std::make_unique<SeqStepSink<NastranOp2SeriesWriter>>(rPath);
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
     if (rFormat == "nastran_h5")
-        return std::make_unique<SeqNastranH5Sink>(rPath);
+        return std::make_unique<SeqStepSink<NastranH5SeriesWriter>>(rPath);
 #endif
     if (rFormat == "radioss_anim")
-        return std::make_unique<SeqRadiossAnimSink>(rPath);
+        return std::make_unique<SeqStepSink<RadiossAnimSeriesWriter>>(rPath);
     if (rFormat == "xplt")
-        return std::make_unique<SeqXpltSink>(rPath);
+        return std::make_unique<SeqStepSink<XpltSeriesWriter>>(rPath);
     if (rFormat == "ansys_rst")
-        return std::make_unique<SeqAnsysRstSink>(rPath);
+        return std::make_unique<SeqStepSink<AnsysRstSeriesWriter>>(rPath);
     if (rFormat == "lsdyna_d3plot")
-        return std::make_unique<SeqLsdynaD3plotSink>(rPath);
+        return std::make_unique<SeqStepSink<LsdynaD3plotSeriesWriter>>(rPath);
     if (rFormat == "openfoam")
-        return std::make_unique<SeqOpenFoamSink>(rPath, rOptions.mEncoding == WriteEncoding::Binary);
+        return std::make_unique<SeqStepSink<OpenFoamSeriesWriter>>(rPath, OpenFoamInfo{}, [&] {
+            OpenFoamWriteOptions o;
+            o.mBinary = rOptions.mEncoding == WriteEncoding::Binary;
+            return o;
+        }());
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
     if (rFormat == "vtx")
-        return std::make_unique<SeqVtxSink>(rPath);
+        return std::make_unique<SeqStepSink<VtxSeriesWriter>>(rPath);
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
     if (rFormat == "szplt")
-        return std::make_unique<SeqSzpltSink>(rPath);
+        return std::make_unique<SeqStepSink<SzpltSeriesWriter>>(rPath);
 #endif
     if (rFormat == "marc_t19")
-        return std::make_unique<SeqMarcT19Sink>(rPath);
+        return std::make_unique<SeqStepSink<MarcT19SeriesWriter>>(rPath);
     if (rFormat == "lsdyna_binout")
-        return std::make_unique<SeqLsdynaBinoutSink>(rPath);
+        return std::make_unique<SeqStepSink<LsdynaBinoutSeriesWriter>>(rPath);
     if (rFormat == "abaqus_fil")
-        return std::make_unique<SeqAbaqusFilSink>(rPath,
-                                                  rOptions.mEncoding == WriteEncoding::Binary);
+        return std::make_unique<SeqStepSink<AbaqusFilSeriesWriter>>(
+            rPath, rOptions.mEncoding == WriteEncoding::Binary);
     if (rFormat == "vtkhdf") {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
-        return std::make_unique<SeqVtkhdfSink>(rPath);
+        return std::make_unique<SeqSink<VtkhdfTimeSeriesWriter, true>>(rPath);
 #else
         throw WriteError(
             "meshio++: sequence: the VTKHDF writer requires an HDF5-enabled build "
             "(-DMESHIOPLUSPLUS_WITH_HDF5=ON)");
 #endif
     }
-    return std::make_unique<SeqXdmfSink>(rPath, seq_resolve_data_format(rOptions));
+    return std::make_unique<SeqSink<XdmfTimeSeriesWriter, true>>(rPath,
+                                                                 seq_resolve_data_format(rOptions));
 }
 
 }  // namespace
@@ -277935,9 +277770,8 @@ std::vector<SmoothFacetDef> smooth_facets_for(CellType Type, bool FaceMode) {
 // as rings into `pRings` (face mode) or the boundary edges with their
 // directions into `pFacets` (edge mode), each when non-null.
 //
-// This is surface.cpp's phase-split idiom re-implemented locally with smooth_
-// prefixes, following the v7.6.0 partition precedent: surface.cpp's
-// anon-namespace machinery stays untouched. The keys are counted by the
+// This is surface.cpp's phase-split idiom, its slot bookkeeping shared with it
+// (detail/facet_slots.hpp) and its keys and marking its own. The keys are counted by the
 // sort-based table (detail/slot_runs.hpp), deterministic by construction; the
 // marking pass stays serial in stored order and must never become a
 // concurrent hash insert.
@@ -277957,14 +277791,7 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
             b.mBlock = this_block;
             b.mNumCells = cb.NumCells();
             b.mFirstFacet = total_facets;
-            b.mFaceStart.reserve(b.mNumCells + 1);
-            std::size_t at = 0;
-            b.mFaceStart.push_back(0);
-            for (std::size_t c = 0; c < b.mNumCells; ++c) {
-                at += cb.NumFaces(c);
-                b.mFaceStart.push_back(at);
-            }
-            total_facets += at;
+            total_facets += detail::FacetSlotUtils::BuildFaceStarts(cb, b.mNumCells, b.mFaceStart);
             blocks.push_back(std::move(b));
             continue;
         }
@@ -278006,19 +277833,10 @@ void smooth_mark_boundary(const Mesh& rMesh, std::size_t n, bool FaceMode,
             continue;
         }
         poly_blocks[bi].emplace(rMesh.Cells(b.mBlock));
-        b.mCellOfFace.resize(b.mFaceStart.back());
-        parallel_for(b.mNumCells, [&](std::size_t c) {
-            for (std::size_t f = b.mFaceStart[c]; f < b.mFaceStart[c + 1]; ++f)
-                b.mCellOfFace[f] = static_cast<std::uint32_t>(c);
-        });
+        detail::FacetSlotUtils::FillCellOfFace(b.mFaceStart, b.mNumCells, b.mCellOfFace);
     }
     const auto block_of = [&](std::size_t ri) -> std::size_t {
-        if (first_facets.size() == 1)
-            return 0;
-        return static_cast<std::size_t>(
-                   std::upper_bound(first_facets.begin(), first_facets.end(), ri) -
-                   first_facets.begin()) -
-               1;
+        return detail::FacetSlotUtils::SlotOwner(first_facets, ri);
     };
     const auto size_of = [&](std::size_t ri) -> std::size_t {
         const std::size_t bi = block_of(ri);
@@ -280861,14 +280679,7 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
             d.mNumCells = cb.NumCells();
             d.mFirstFacet = total_facets;
             d.mGlobalCellBase = base;
-            d.mFaceStart.reserve(d.mNumCells + 1);
-            std::size_t at = 0;
-            d.mFaceStart.push_back(0);
-            for (std::size_t c = 0; c < d.mNumCells; ++c) {
-                at += cb.NumFaces(c);
-                d.mFaceStart.push_back(at);
-            }
-            total_facets += at;
+            total_facets += detail::FacetSlotUtils::BuildFaceStarts(cb, d.mNumCells, d.mFaceStart);
             descs.push_back(std::move(d));
             continue;
         }
@@ -280901,19 +280712,10 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
         if (!d.mPolyhedron)
             continue;
         poly_blocks[di].emplace(rMesh.Cells(d.mBlock));
-        d.mCellOfFace.resize(d.mFaceStart.back());
-        parallel_for(d.mNumCells, [&](std::size_t c) {
-            for (std::size_t f = d.mFaceStart[c]; f < d.mFaceStart[c + 1]; ++f)
-                d.mCellOfFace[f] = static_cast<std::uint32_t>(c);
-        });
+        detail::FacetSlotUtils::FillCellOfFace(d.mFaceStart, d.mNumCells, d.mCellOfFace);
     }
     const auto desc_of = [&](std::size_t ri) -> std::size_t {
-        if (first_facets.size() == 1)
-            return 0;
-        return static_cast<std::size_t>(
-                   std::upper_bound(first_facets.begin(), first_facets.end(), ri) -
-                   first_facets.begin()) -
-               1;
+        return detail::FacetSlotUtils::SlotOwner(first_facets, ri);
     };
     const auto size_of = [&](std::size_t ri) -> std::size_t {
         const SurfaceBlockDesc& d = descs[desc_of(ri)];
@@ -282151,13 +281953,6 @@ void ts_emit_block(Mesh& rOut, TsBlock& rBlock, const std::vector<std::int64_t>&
     }
 }
 
-NDArray ts_int64_array(const std::vector<std::int64_t>& rValues) {
-    NDArray out = NDArray::Uninit(DType::Int64, {rValues.size()});
-    if (!rValues.empty())
-        std::memcpy(out.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
-    return out;
-}
-
 bool ts_reserved_name(const std::string& rName) {
     return rName.rfind("tessellate:", 0) == 0;
 }
@@ -282338,7 +282133,7 @@ TessellateResult tessellate(const Mesh& rMesh, const TessellateOptions& rOptions
     emit_simplices("tetra", 4, tet_conn, tet_src, tet_sub);
 
     // Point data.
-    out.AddPointData(kTessellateSourcePointName, ts_int64_array(source_point));
+    out.AddPointData(kTessellateSourcePointName, detail::NDArrayUtils::Int64Vector(source_point));
     if (rOptions.mFields) {
         for (const std::string& name : rMesh.PointDataNames()) {
             if (ts_reserved_name(name))
@@ -282381,8 +282176,8 @@ TessellateResult tessellate(const Mesh& rMesh, const TessellateOptions& rOptions
     {
         std::vector<NDArray> src_blocks, sub_blocks;
         for (std::size_t b = 0; b < block_src.size(); ++b) {
-            src_blocks.push_back(ts_int64_array(block_src[b]));
-            sub_blocks.push_back(ts_int64_array(block_sub[b]));
+            src_blocks.push_back(detail::NDArrayUtils::Int64Vector(block_src[b]));
+            sub_blocks.push_back(detail::NDArrayUtils::Int64Vector(block_sub[b]));
         }
         if (!src_blocks.empty()) {
             out.AddCellData(kTessellateSourceCellName, std::move(src_blocks));
@@ -282472,7 +282267,7 @@ TessellateResult tessellate(const Mesh& rMesh, const TessellateOptions& rOptions
             if (reg.mKind == RegionKind::Cell && kept.size() != reg.NumEntries())
                 dropped.push_back(reg.mName + " (cell, entries on a tessellated cell)");
             out.AddRegion(meshioplusplus::Region(reg.mName, reg.mKind, reg.mDim, reg.mTag,
-                                                 ts_int64_array(kept)));
+                                                 detail::NDArrayUtils::Int64Vector(kept)));
         }
         if (!dropped.empty()) {
             std::string list;

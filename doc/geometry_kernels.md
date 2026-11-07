@@ -12,12 +12,18 @@ Many operations evaluate the same small formulas per cell: a tetrahedron's signe
 | `include/meshioplusplus/detail/polyhedron.hpp` | Polygon and polyhedron measures: `poly_measure`, `polygon_area_vector`, `polygon_centroid`, `cell_volume_from_corners`. |
 | `include/meshioplusplus/detail/cell_faces.hpp`, `cell_edges.hpp`, `cell_subdivision.hpp` | Topology tables per cell type: outward faces, edges, refinement edges and quad faces. |
 | `src/cpp/src/detail/predicates.hpp` | Exact `orient2d`, `orient3d`, `incircle`, `insphere`. |
+| `src/cpp/src/detail/math_utils.hpp` (private) | `MathUtils`: `Sub`, `Add`, `Scale`, `Dot`, `Cross`, `NormSq`, `Norm`, `Distance` over `Vec3` and flat `double` triples (the `Vec3` ones forward to `geometry.hpp`); `UnitByDivision`, the divide-by-length unit vector with a zero guard; `AngleDeg`, `atan2(‖a × b‖, a · b)` in degrees; `SolveSymmetric3`, the cofactor solve of a symmetric 3×3 system with the `1e-12 s³` singularity bound. |
+| `src/cpp/src/detail/geometry_utils.hpp` (private) | `GeometryUtils`: `TriangleNormal` (unnormalised, `(b − a) × (c − a)`), `TriangleTwiceArea`, `TriangleArea`, `TriangleAnglesDeg`, over `Vec3` and flat triples; `SignedTwiceArea2D` in a parameter plane. |
+| `src/cpp/src/detail/bounding_box_utils.hpp` (private) | `BoundingBox3` and `BoundingBoxUtils`: `FromPoints` (seeded with the first point), `FromCoords` (coordinates gathered on the fly), `Expand`, `Extent`, `MaxExtent`, `HalfSurfaceArea`, `Diagonal`. |
+| `src/cpp/src/detail/facet_slots.hpp` (private) | `FacetSlotUtils`: the global facet-slot numbering of `extract_surface` and `smooth`'s boundary pass (a polyhedron block's face prefix sum, its inverse, the block owning a slot). |
+| `src/cpp/src/detail/dtype_table.hpp`, `ndarray_utils.hpp` (private) | `DTypeUtils::Pick`, one value per `DType` from a table in enumerator order (the netCDF, HDF5, XDMF, VTK and PLY type names); `NDArrayUtils::Int64Vector` and `Float64Vector`, owning 1-D arrays from `std::vector`s. |
 
 The private headers carry no ABI cost, so a kernel starts there. It moves to an installed header only when an installed inline function needs it, and that move follows the [ABI policy](./abi.md).
 
 ## Rules
 
 - **Do not add a file-local copy.** Use the kernels above, and add the missing formula to them instead of to the operation.
+- **Utility classes, Kratos-style.** A group of related helpers is a class of static inline members (`MathUtils::Cross(a, b)`, `GeometryUtils::TriangleArea(a, b, c)`, `BoundingBoxUtils::FromPoints(points)`), as Kratos' `MathUtils` and `GeometryUtils` are: no state, called in place of the block it replaced. Each starts in a private header under `src/cpp/src/detail/`, included directly and by relative path from every `.cpp` that uses it (the amalgamation emits only the private headers a source names), and has its own unit test (`tests/cpp/test_*_utils.cpp`) pinning known values and bit equality with the expression it replaced.
 - **Keep the arithmetic.** A shared kernel replaces a copy only when it computes the same operations in the same order. `a·(b×c)` and a cofactor expansion of the same determinant are equal in exact arithmetic but round differently, and the operations' outputs are pinned bit for bit by the [determinism check](./benchmarks.md#determinism-check). A copy whose arithmetic differs stays until its own output is shown unchanged, or until a change in its results is intended and recorded.
 - **Keep deliberate copies.** A few copies say why they exist. `smooth_facefan_volume` is a flat-buffer variant of `quality`'s face-fan volume, kept out of a hot loop's allocation. `grad_ring_area_vector` is a recentred Newell sum, better conditioned than the plain one. Those comments stay with the code.
 - **Prove it.** Run `tools/bench_ops.sh` with `--hash` before and after the change, with `BASELINE` pointing at the first run. Run the [instruction-count gate](./benchmarks.md#instruction-count-gate) too: an inline kernel must cost what the copy cost.
@@ -32,7 +38,14 @@ These kernels replaced copies with identical arithmetic:
 - the centroid gather (`partition`, `interpolate`);
 - 70 file-local sub, dot, cross, norm, add, scale and distance helpers across 27 sources, now `geometry.hpp`'s.
 
-What remains is listed under roadmap 3.4.
+The third pass (November 2026) added the utility classes and moved onto them, with the same arithmetic:
+
+- the unnormalised triangle normal and its length (`external_mesher`, `mesh_boolean`, `hull`, `cut_graph`, `remesh` and seven sites of `mesh_cad`), and `mesh_cad`'s corner angles (`quality`'s `tri_area` lambda moved too and was put back: GCC compiled the rest of `quality` 1.8% longer, [roadmap 3.4.11](./roadmap.md#quality-of-implementation));
+- the first-point bounding boxes of `point_normals`, `registration`, `reconstruct_surface`, `external_mesher` and `interpolate`;
+- the symmetric 3×3 cofactor solve of `decimate`'s optimal placement and `gradient`'s least squares (`decimate` negates the solution rather than the right-hand side, which keeps the sign of a zero);
+- the division-form unit vectors (`ql_unit`, `ff_unit`, `cf_unit`, `bl_unit` and the external mesher's STL normals) and the `double*` dot, cross and difference helpers of ten sources.
+
+The unit vectors without a zero guard, the boxes seeded with ±infinity and the Cramer-rule solves (`quality_solve3`, `remesh_solve_sym3`) round or behave differently and stay where they are. What remains is listed under roadmap 3.4.
 
 ## Kernels or a geometry hierarchy?
 

@@ -42,7 +42,7 @@ SonarCloud reports no coverage: nothing runs under instrumentation in this workf
 
 ## Local duplication report
 
-SonarCloud reports on `master` only, so `tools/dup_report.py` gives the same kind of number on any checkout, before a change lands. It works like Sonar's copy-paste detector: every C++ and Python source is tokenised, identifiers, numbers and strings are normalised so a renamed copy still matches, and every window of 100 consecutive tokens is hashed; a window found in two places marks its lines as duplicated. A window made of literals and table punctuation (`{`, `}`, `[`, `]`, `(`, `)`, `,`, `:`, `;`, signs and dots), with at most one token in ten anything else, is skipped: it is a run of table rows, and two tables of one shape would otherwise match entry for entry although no entry agrees ([roadmap 8.1](./roadmap.md#code-duplication)). It excludes what `sonar-project.properties` excludes, including the table-only files of `sonar.cpd.exclusions`, and it scans the R binding's C sources (`bindings/r/meshioplusplus/src/*.c`) beside the C++ ones, as SonarCloud does, so the two measures agree on what counts.
+SonarCloud reports on `master` only, so `tools/dup_report.py` gives the same kind of number on any checkout, before a change lands. It works like Sonar's copy-paste detector: every C++ and Python source is tokenised, identifiers, numbers and strings are normalised so a renamed copy still matches, and every window of 100 consecutive tokens is hashed; a window found in two places marks its lines as duplicated. A window made of literals and table punctuation (`{`, `}`, `[`, `]`, `(`, `)`, `,`, `:`, `;`, signs and dots), with at most one token in ten anything else, is skipped: it is a run of table rows, and two tables of one shape would otherwise match entry for entry although no entry agrees ([roadmap §8](./roadmap.md#code-duplication)). It excludes what `sonar-project.properties` excludes, including the table-only files of `sonar.cpd.exclusions`, and it scans the R binding's C sources (`bindings/r/meshioplusplus/src/*.c`) beside the C++ ones, as SonarCloud does, so the two measures agree on what counts.
 
 ```sh
 tools/dup_report.py                      # density, top files and largest shared regions, C++ and Python
@@ -58,6 +58,8 @@ The November 2026 measurements, by pass of [roadmap 3.4](./roadmap.md#quality-of
 | --- | ---: | ---: | ---: |
 | C++ | 10.6% (26,097 of 245,231 lines) | 9.3% (22,739 of 243,556) | 9.1% (22,041 of 243,222) |
 | Python | 11.0% (15,038 of 137,250 lines) | 9.9% (13,481 of 136,357) | 9.2% (12,467 of 135,765) |
+
+The shared-utilities pass of [roadmap §8](./roadmap.md#code-duplication) (November 2026) changed the measure as well as the code: the report now skips literal-table windows and the table-only files and scans the R binding's C sources. On the earlier C++ roots the table filter alone took 22,253 duplicated lines to 20,830, and the code changes to 19,725 (8.1% of 243,917); with the R sources, 21,699 of 251,295 (8.6%). Python went from 12,468 to 9,739 with the filter and to 8,962 of 135,752 (6.6%) with the code.
 
 What remains at the top is mostly structure the report cannot tell apart from copying: the explicit `py::arg` signatures of `bindings/python/_core.cpp`, the `extern "C"` entry points of `bindings/c/c_api.cpp`, the argument tables of the native CLI and the typed MCP tool signatures. The rest is listed in roadmap 3.4.8 to 3.4.12.
 
