@@ -8,6 +8,13 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+- **A malformed number in a VTK XML ascii array is a `ReadError`** (roadmap 5.7.2, [VTU](doc/formats/vtu.md#quirks-limitations)): the C++ reader names the token and its byte offset where it used to cut the array short, and the Python reader turns NumPy's error (a warning on older NumPy) into a `ReadError`. VTU, VTP, VTS, VTR, VTI and PVTU share the reader.
+- **Appended VTKHDF rows are compressed in parallel** (roadmap 5.8.1): `append_rows` sends the whole chunks of a gzip dataset through the direct-chunk path whole-dataset writes already use, and only the rows that finish a partly written chunk go through HDF5's filter. The stored chunks are byte for byte the ones HDF5 writes. A series chunk is one step capped at 4 MiB, so the gain is on arrays above about 8 MiB per step.
+- **`edge_cache` for the PhysicsNeMo sample path** (roadmap 5.10.4, [PhysicsNeMo](doc/physicsnemo.md#reusing-the-edges-of-an-unchanged-topology)): `iter_samples`, `make_dataset` and `make_reader` take `edge_cache=N`, and `graph_sample` takes a `physicsnemo.EdgeCache`. The `edge_index` of a topology already seen is reused, and a cached sample is bit-identical to an uncached one. With an unchanged mesh, `graph_sample` takes 1.1 ms instead of 11.1 ms on 162,000 tetrahedra. Off by default.
+- **A `periodic` benchmark row** (roadmap 5.1.2): `match_periodic_nodes` on the cube's x = 0 and x = 1 faces, in `meshioplusplus_bench_ops` and the instruction-count baseline.
+
 ## v19.0.0 (2026-11-06)
 
 A major release: `mesh_cad_surface` accepts the model's own tolerances and meshes sliver faces with their neighbours by default, `octree_mesh` recovers more feature chains and repairs its tetrahedral output (degenerate, flat and inverted tetrahedra, with a report and options for it), `check_tetrahedra` is a new standalone check, and the roadmap's §5 performance work lands, which leaves every other output unchanged. **ABI 40 (Tier A and B):** rebuild native consumers; the C structs `mio_octree_mesh_opts` and `mio_octree_mesh_report` grew.
