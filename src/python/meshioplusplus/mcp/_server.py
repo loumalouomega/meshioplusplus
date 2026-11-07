@@ -12,6 +12,8 @@ come back as ``{"error", "error_type"}`` payloads the model can act on.
 from __future__ import annotations
 
 import argparse
+import functools
+import inspect
 import json
 import os
 from typing import Dict, List, Optional, Union
@@ -47,6 +49,32 @@ one file is cheap.
 # The one guard, shared with the HTTP front-end's dispatch: a tool failure is
 # a {"error", "error_type"} payload, never a traceback (or a 500).
 _guard = _tools.guard
+
+
+def _forward(target):
+    """Make a typed tool wrapper forward its arguments to ``target``, guarded.
+
+    The decorated function is the tool's declaration: its annotated signature
+    is what the SDK turns into the tool's input schema, and its docstring the
+    description, so both stay written out; only the body, ``return
+    _guard(target, a=a, b=b, ...)`` with every parameter by name, is generated
+    (roadmap 8.4.1). ``functools.wraps`` keeps the signature visible through
+    ``__wrapped__`` (mcp 2.x) and this module's globals for the string
+    annotations (mcp 1.x evaluates them against the wrapper's).
+    """
+
+    def decorate(fn):
+        signature = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def forward(*args, **kwargs):
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            return _guard(target, **bound.arguments)
+
+        return forward
+
+    return decorate
 
 
 def create_server(root: Optional[str] = None, host: Optional[str] = None) -> FastMCP:
@@ -90,23 +118,24 @@ def http_app(server: FastMCP):
 # --------------------------------------------------------------------------- #
 def _register_inspection(server: FastMCP) -> None:
     @server.tool()
+    @_forward(_tools.tool_formats)
     def formats() -> dict:
         """List every readable and writable mesh format and the extension map."""
-        return _guard(_tools.tool_formats)
 
     @server.tool()
+    @_forward(_tools.tool_sniff)
     def sniff(input_path: str) -> dict:
         """Identify a mesh file's format from its leading bytes (a directory: the
         files it holds) and its extension."""
-        return _guard(_tools.tool_sniff, input_path=input_path)
 
     @server.tool()
+    @_forward(_tools.tool_info)
     def info(input_path: str, file_format: Optional[str] = None) -> dict:
         """Fast file summary without loading heavy arrays: point/cell counts,
         cell blocks, data-array names, named regions, time steps, format."""
-        return _guard(_tools.tool_info, input_path=input_path, file_format=file_format)
 
     @server.tool()
+    @_forward(_tools.tool_stats)
     def stats(
         input_path: str,
         file_format: Optional[str] = None,
@@ -117,16 +146,9 @@ def _register_inspection(server: FastMCP) -> None:
         """Geometric statistics: bounding box, centroid, total area, signed and
         unsigned volume, per-type cell counts, inverted-cell count. ghosts is
         keep|drop for the halo of a .pvtu/.pvtp/.pvd."""
-        return _guard(
-            _tools.tool_stats,
-            input_path=input_path,
-            file_format=file_format,
-            time_step=time_step,
-            piece=piece,
-            ghosts=ghosts,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_quality)
     def quality(
         input_path: str,
         file_format: Optional[str] = None,
@@ -136,23 +158,15 @@ def _register_inspection(server: FastMCP) -> None:
         """Mesh-quality metrics (scaled jacobian, aspect ratio, skewness,
         angles, ...) as per-metric min/max/mean + histograms. Pass output_path
         to also write a mesh copy carrying quality:<metric> cell data."""
-        return _guard(
-            _tools.tool_quality,
-            input_path=input_path,
-            file_format=file_format,
-            output_path=output_path,
-            output_format=output_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_data_info)
     def data_info(input_path: str, file_format: Optional[str] = None) -> dict:
         """Describe every point/cell/field data array: dtype, shape, components,
         min/max/mean (whole-array and per component), NaN/Inf counts."""
-        return _guard(
-            _tools.tool_data_info, input_path=input_path, file_format=file_format
-        )
 
     @server.tool()
+    @_forward(_tools.tool_data_integrate)
     def data_integrate(
         input_path: str,
         file_format: Optional[str] = None,
@@ -161,29 +175,20 @@ def _register_inspection(server: FastMCP) -> None:
         """Cell-measure-weighted total/mean of cell_data arrays (whole mesh,
         and independently for every named Cell region) -- gradient's
         integration companion. arrays defaults to every cell_data array."""
-        return _guard(
-            _tools.tool_data_integrate,
-            input_path=input_path,
-            file_format=file_format,
-            arrays=arrays,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_regions)
     def regions(input_path: str, file_format: Optional[str] = None) -> dict:
         """List named regions (point/cell/side groups: gmsh physical groups,
         Exodus sets, Abaqus NSET/ELSET, ...) with kind, dim, tag and size."""
-        return _guard(
-            _tools.tool_regions, input_path=input_path, file_format=file_format
-        )
 
     @server.tool()
+    @_forward(_tools.tool_bandwidth)
     def bandwidth(input_path: str, file_format: Optional[str] = None) -> dict:
         """Node-numbering bandwidth (max node-index spread over any cell)."""
-        return _guard(
-            _tools.tool_bandwidth, input_path=input_path, file_format=file_format
-        )
 
     @server.tool()
+    @_forward(_tools.tool_data_preview)
     def data_preview(
         input_path: str,
         array: str,
@@ -194,17 +199,9 @@ def _register_inspection(server: FastMCP) -> None:
     ) -> dict:
         """Return a bounded window of one data array's values (location:
         point | cell | field; cell arrays are concatenated block-major)."""
-        return _guard(
-            _tools.tool_data_preview,
-            input_path=input_path,
-            array=array,
-            location=location,
-            offset=offset,
-            limit=limit,
-            file_format=file_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_diff)
     def diff(
         path_a: str,
         path_b: str,
@@ -217,17 +214,6 @@ def _register_inspection(server: FastMCP) -> None:
     ) -> dict:
         """Compare two mesh files. Returns a verdict (identical / equal within
         tolerance / different), an `equal` boolean, and per-section detail."""
-        return _guard(
-            _tools.tool_diff,
-            path_a=path_a,
-            path_b=path_b,
-            format_a=format_a,
-            format_b=format_b,
-            atol=atol,
-            rtol=rtol,
-            unordered=unordered,
-            max_reported=max_reported,
-        )
 
 
 # --------------------------------------------------------------------------- #
@@ -235,6 +221,7 @@ def _register_inspection(server: FastMCP) -> None:
 # --------------------------------------------------------------------------- #
 def _register_conversion(server: FastMCP) -> None:
     @server.tool()
+    @_forward(_tools.tool_med_multi)
     def med_multi(
         input_path: Optional[str] = None,
         output_path: Optional[str] = None,
@@ -249,18 +236,9 @@ def _register_conversion(server: FastMCP) -> None:
         optional mesh_names and med_version (default 4.1.0). Input paths and
         output paths obey the server's root sandbox. Ordinary MED nodal/element
         profiles expand with NaN fill; enhanced fields may use Python/h5py."""
-        return _guard(
-            _tools.tool_med_multi,
-            input_path=input_path,
-            output_path=output_path,
-            input_paths=input_paths,
-            mesh_name=mesh_name,
-            mesh_names=mesh_names,
-            output_format=output_format,
-            med_version=med_version,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_convert)
     def convert(
         input_path: str,
         output_path: str,
@@ -310,29 +288,9 @@ def _register_conversion(server: FastMCP) -> None:
         is read (ShapeFix_Shape, then sewing at sew_tolerance, a length; 0 is
         1e-5 of the bounding-box diagonal, and a positive value sews without
         heal)."""
-        return _guard(
-            _tools.tool_convert,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            points_only=points_only,
-            arrays=arrays,
-            time_step=time_step,
-            mode=mode,
-            compression=compression,
-            piece=piece,
-            ghosts=ghosts,
-            grid_functions=grid_functions,
-            write_grid_functions=write_grid_functions,
-            elmer_halo=elmer_halo,
-            patran_results=patran_results,
-            write_nurbs=write_nurbs,
-            heal=heal,
-            sew_tolerance=sew_tolerance,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_export_gltf)
     def export_gltf(
         input_path: str,
         output_path: str,
@@ -379,30 +337,9 @@ def _register_conversion(server: FastMCP) -> None:
         exactly reversible, and glTF files read back (any glTF 2.0 or GLB
         file is a valid input to every other tool). A valid glTF-Validator pass with zero
         errors and warnings is part of the test suite."""
-        return _guard(
-            _tools.tool_export_gltf,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            split_angle=split_angle,
-            normal_weight=normal_weight,
-            normals=normals,
-            fields=fields,
-            color_by=color_by,
-            component=component,
-            cmap=cmap,
-            vmin=vmin,
-            vmax=vmax,
-            nan_color=nan_color,
-            unlit=unlit,
-            up_axis=up_axis,
-            recenter=recenter,
-            scale=scale,
-            by_region=by_region,
-            container=container,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_pipeline)
     def pipeline(
         settings_path: str,
         input_path: Optional[str] = None,
@@ -420,12 +357,6 @@ def _register_conversion(server: FastMCP) -> None:
         input_path/output_path override the paths in the settings file; both
         the settings file and the paths inside it stay inside the sandbox
         root when one is configured."""
-        return _guard(
-            _tools.tool_pipeline,
-            settings_path=settings_path,
-            input_path=input_path,
-            output_path=output_path,
-        )
 
     @server.tool()
     def sequence(
@@ -462,6 +393,7 @@ def _register_conversion(server: FastMCP) -> None:
         )
 
     @server.tool()
+    @_forward(_tools.tool_resample_sequence)
     def resample_sequence(
         output_path: str,
         input_pattern: Optional[str] = None,
@@ -483,21 +415,9 @@ def _register_conversion(server: FastMCP) -> None:
         also blends the coordinates. A '{step}'/'{index}' output_path writes
         one file per target time, a plain path one series file. At most two
         source meshes are held at once. See doc/sequences.md."""
-        return _guard(
-            _tools.tool_resample_sequence,
-            output_path=output_path,
-            input_pattern=input_pattern,
-            input_paths=input_paths,
-            times=times,
-            times_from_pattern=times_from_pattern,
-            method=method,
-            clamp=clamp,
-            blend_points=blend_points,
-            time_from=time_from,
-            input_format=input_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_blend_steps)
     def blend_steps(
         path_a: str,
         path_b: str,
@@ -512,17 +432,6 @@ def _register_conversion(server: FastMCP) -> None:
         becomes (1 - weight) a + weight b, integer data comes from the nearer
         step, and points/cells stay a's unless blend_points. The steps must
         have the same point count and cell blocks. See doc/sequences.md."""
-        return _guard(
-            _tools.tool_blend_steps,
-            path_a=path_a,
-            path_b=path_b,
-            output_path=output_path,
-            weight=weight,
-            blend_points=blend_points,
-            format_a=format_a,
-            format_b=format_b,
-            output_format=output_format,
-        )
 
 
 # --------------------------------------------------------------------------- #
@@ -530,6 +439,7 @@ def _register_conversion(server: FastMCP) -> None:
 # --------------------------------------------------------------------------- #
 def _register_operations(server: FastMCP) -> None:
     @server.tool()
+    @_forward(_tools.tool_extract_surface)
     def extract_surface(
         input_path: str,
         output_path: str,
@@ -539,16 +449,9 @@ def _register_operations(server: FastMCP) -> None:
     ) -> dict:
         """Extract the boundary surface (3D volume -> boundary faces, 2D
         surface -> boundary edges)."""
-        return _guard(
-            _tools.tool_extract_surface,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            record_parent_ids=record_parent_ids,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_extract_skin)
     def extract_skin(
         input_path: str,
         output_path: str,
@@ -557,16 +460,9 @@ def _register_operations(server: FastMCP) -> None:
         linearize: bool = False,
     ) -> dict:
         """Extract the outer skin of a volume mesh (optionally linearized)."""
-        return _guard(
-            _tools.tool_extract_skin,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            linearize=linearize,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_reorder)
     def reorder(
         input_path: str,
         output_path: str,
@@ -576,16 +472,9 @@ def _register_operations(server: FastMCP) -> None:
     ) -> dict:
         """Renumber nodes and cells (method: rcm | morton | hilbert). The
         report includes the bandwidth before and after."""
-        return _guard(
-            _tools.tool_reorder,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            method=method,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_clean)
     def clean(
         input_path: str,
         output_path: str,
@@ -599,20 +488,9 @@ def _register_operations(server: FastMCP) -> None:
     ) -> dict:
         """Clean a mesh: optionally weld coincident points, then drop
         degenerate cells, duplicate cells and orphan points. Reports counts."""
-        return _guard(
-            _tools.tool_clean,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            weld=weld,
-            atol=atol,
-            remove_orphans=remove_orphans,
-            drop_degenerate=drop_degenerate,
-            drop_duplicate_cells=drop_duplicate_cells,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_crop)
     def crop(
         input_path: str,
         output_path: str,
@@ -636,21 +514,6 @@ def _register_operations(server: FastMCP) -> None:
         is already one per cell. Inside/outside a surface composes: run
         distance_to_surface with location='center', then crop on 'sdf:distance'
         < 0."""
-        return _guard(
-            _tools.tool_crop,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            bbox=bbox,
-            plane_origin=plane_origin,
-            plane_normal=plane_normal,
-            where_array=where_array,
-            where_compare=where_compare,
-            where_value=where_value,
-            mode=mode,
-            record_ids=record_ids,
-        )
 
     @server.tool(name="slice")
     def slice_mesh(
@@ -676,6 +539,7 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    @_forward(_tools.tool_isosurface)
     def isosurface(
         input_path: str,
         output_path: str,
@@ -688,19 +552,9 @@ def _register_operations(server: FastMCP) -> None:
     ) -> dict:
         """Contour a point_data scalar at one or more isovalues; the output
         carries iso:value / iso:index cell data per contour."""
-        return _guard(
-            _tools.tool_isosurface,
-            input_path=input_path,
-            output_path=output_path,
-            array=array,
-            isovalues=isovalues,
-            input_format=input_format,
-            output_format=output_format,
-            component=component,
-            record_parent_ids=record_parent_ids,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_grid)
     def grid(
         output_path: str,
         dims: List[int],
@@ -712,17 +566,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a regular hexahedron lattice of dims=(nx, ny, nz) cells. The
         only tool that reads no input mesh: it creates one. Useful as a background
         grid, a sampling domain, or a fixture that needs no file."""
-        return _guard(
-            _tools.tool_grid,
-            output_path=output_path,
-            dims=dims,
-            output_format=output_format,
-            origin=origin,
-            spacing=spacing,
-            max_cells=max_cells,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_rectangle)
     def rectangle(
         output_path: str,
         output_format: Optional[str] = None,
@@ -739,21 +585,9 @@ def _register_operations(server: FastMCP) -> None:
         z = origin[2]. split (triangles) is zigzag, up, down or center; order=2
         gives quad8/triangle6 cells. The mesh carries side regions xmin, xmax,
         ymin, ymax. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_rectangle,
-            output_path=output_path,
-            output_format=output_format,
-            dims=dims,
-            size=size,
-            origin=origin,
-            cell_type=cell_type,
-            split=split,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_box)
     def box(
         output_path: str,
         output_format: Optional[str] = None,
@@ -769,20 +603,9 @@ def _register_operations(server: FastMCP) -> None:
         (six Kuhn tetrahedra per cell) or wedges. order=2 gives hexahedron20,
         tetra10 or wedge15 cells. The mesh carries side regions xmin, xmax, ymin,
         ymax, zmin, zmax. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_box,
-            output_path=output_path,
-            output_format=output_format,
-            dims=dims,
-            size=size,
-            origin=origin,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_disk)
     def disk(
         output_path: str,
         output_format: Optional[str] = None,
@@ -797,20 +620,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a disk of quads (an n x n grid pushed onto the disk) or
         triangles (n rings, 6 n^2 triangles). order=2 curves the rim. The mesh
         carries a side region rim. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_disk,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            n=n,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_uv_sphere)
     def uv_sphere(
         output_path: str,
         output_format: Optional[str] = None,
@@ -827,21 +639,9 @@ def _register_operations(server: FastMCP) -> None:
         nv bands, oriented outward. cell_type is triangle, or quad with triangle
         caps. order=2 puts the mid-edge nodes on the sphere. Reads no input mesh:
         it creates one."""
-        return _guard(
-            _tools.tool_uv_sphere,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            nu=nu,
-            nv=nv,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_icosa_sphere)
     def icosa_sphere(
         output_path: str,
         output_format: Optional[str] = None,
@@ -856,19 +656,9 @@ def _register_operations(server: FastMCP) -> None:
         `subdivisions` times (20 * 4^subdivisions triangles), oriented outward.
         order=2 puts the mid-edge nodes on the sphere. Reads no input mesh: it
         creates one."""
-        return _guard(
-            _tools.tool_icosa_sphere,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            subdivisions=subdivisions,
-            center=center,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_cylinder)
     def cylinder(
         output_path: str,
         output_format: Optional[str] = None,
@@ -885,22 +675,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a solid cylinder along z: hexahedra (the disk grid, extruded)
         or wedges. order=2 curves the side. The mesh carries side regions side,
         top and bottom. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_cylinder,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            height=height,
-            nxy=nxy,
-            nz=nz,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_reference_triangle)
     def reference_triangle(
         output_path: str,
         output_format: Optional[str] = None,
@@ -915,19 +692,9 @@ def _register_operations(server: FastMCP) -> None:
         refined into n*n triangles in barycentric lattice order. The mesh carries
         side regions ymin, xmin and hypotenuse. Reads no input mesh: it creates
         one."""
-        return _guard(
-            _tools.tool_reference_triangle,
-            output_path=output_path,
-            output_format=output_format,
-            n=n,
-            size=size,
-            origin=origin,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_ngon)
     def ngon(
         output_path: str,
         output_format: Optional[str] = None,
@@ -942,20 +709,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a regular polygon of `sides` sides fanned from its centre
         (rings=1), or refined into `rings` rings of triangles. The mesh carries a
         side region rim. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_ngon,
-            output_path=output_path,
-            output_format=output_format,
-            sides=sides,
-            radius=radius,
-            rings=rings,
-            center=center,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_annulus)
     def annulus(
         output_path: str,
         output_format: Optional[str] = None,
@@ -975,23 +731,9 @@ def _register_operations(server: FastMCP) -> None:
         pair periodic links). order=2 curves the rims. The mesh carries side
         regions inner, outer and, for a sector, start and end. Reads no input
         mesh: it creates one."""
-        return _guard(
-            _tools.tool_annulus,
-            output_path=output_path,
-            output_format=output_format,
-            inner_radius=inner_radius,
-            outer_radius=outer_radius,
-            ntheta=ntheta,
-            nr=nr,
-            angle=angle,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_lshape)
     def lshape(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1008,20 +750,9 @@ def _register_operations(server: FastMCP) -> None:
         solution for refine and error estimation). The mesh carries side regions
         xmin, xmax, ymin, ymax, notch_x and notch_y. Reads no input mesh: it
         creates one."""
-        return _guard(
-            _tools.tool_lshape,
-            output_path=output_path,
-            output_format=output_format,
-            n=n,
-            size=size,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_plate_with_hole)
     def plate_with_hole(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1039,22 +770,9 @@ def _register_operations(server: FastMCP) -> None:
         `radius`, in four quad blocks (the stress-concentration benchmark).
         order=2 makes the hole circular. The mesh carries side regions hole, xmin,
         xmax, ymin and ymax. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_plate_with_hole,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            size=size,
-            nt=nt,
-            nr=nr,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_honeycomb)
     def honeycomb(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1067,17 +785,9 @@ def _register_operations(server: FastMCP) -> None:
         polygon block, a parametric fixture for the ragged polygon paths. The
         mesh carries a side region boundary. Reads no input mesh: it creates
         one."""
-        return _guard(
-            _tools.tool_honeycomb,
-            output_path=output_path,
-            output_format=output_format,
-            dims=dims,
-            edge=edge,
-            origin=origin,
-            max_cells=max_cells,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_line)
     def line(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1092,19 +802,9 @@ def _register_operations(server: FastMCP) -> None:
         the origin to (1, 0, 0)), a 1-D and beam-format fixture. The mesh
         carries point regions start and end. Reads no input mesh: it creates
         one."""
-        return _guard(
-            _tools.tool_line,
-            output_path=output_path,
-            output_format=output_format,
-            n=n,
-            start=start,
-            end=end,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_circle)
     def circle(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1118,19 +818,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a closed polyline of n line cells on a circle in the z =
         center[2] plane, the seam welded. order=2 puts the mid-edge nodes on the
         arc. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_circle,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            n=n,
-            center=center,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_helix)
     def helix(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1146,21 +836,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a helix (a spring) of n line cells around the z axis: turns
         turns rising pitch per turn. The mesh carries point regions start and
         end. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_helix,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            pitch=pitch,
-            turns=turns,
-            n=n,
-            center=center,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_sphere_points)
     def sphere_points(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1172,17 +850,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate n points on a sphere on a Fibonacci lattice, as vertex cells: a
         point-cloud fixture without poles or seams. Reads no input mesh: it
         creates one."""
-        return _guard(
-            _tools.tool_sphere_points,
-            output_path=output_path,
-            output_format=output_format,
-            n=n,
-            radius=radius,
-            center=center,
-            max_cells=max_cells,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_box_points)
     def box_points(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1195,18 +865,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate n points drawn uniformly in a box from splitmix64 seeded with
         seed, as vertex cells: the same cloud on every platform and binding.
         Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_box_points,
-            output_path=output_path,
-            output_format=output_format,
-            n=n,
-            size=size,
-            origin=origin,
-            seed=seed,
-            max_cells=max_cells,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_tetra_sphere)
     def tetra_sphere(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1220,19 +881,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a sphere surface from a regular tetrahedron split in four
         subdivisions times (4 * 4**subdivisions triangles), the most uneven
         seed: a mesh-quality probe. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_tetra_sphere,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            subdivisions=subdivisions,
-            center=center,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_octa_sphere)
     def octa_sphere(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1246,19 +897,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a sphere surface from a regular octahedron split in four
         subdivisions times (8 * 4**subdivisions triangles), with the six axis
         points exact. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_octa_sphere,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            subdivisions=subdivisions,
-            center=center,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_cube_sphere)
     def cube_sphere(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1273,20 +914,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a sphere surface from a cube's six faces of n x n quads (or
         triangles) pushed radially onto the sphere. Reads no input mesh: it
         creates one."""
-        return _guard(
-            _tools.tool_cube_sphere,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            n=n,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_geo_sphere)
     def geo_sphere(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1300,19 +930,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a geodesic sphere of frequency n: every icosahedron face cut
         into an n x n triangle lattice (20 n**2 triangles) on the sphere. Reads
         no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_geo_sphere,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            n=n,
-            center=center,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_torus)
     def torus(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1329,22 +949,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a torus around the z axis, periodic both ways and welded: genus
         one (Euler characteristic zero), with negative Gaussian curvature on the
         inner rim. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_torus,
-            output_path=output_path,
-            output_format=output_format,
-            major_radius=major_radius,
-            minor_radius=minor_radius,
-            nu=nu,
-            nv=nv,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_moebius)
     def moebius(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1363,23 +970,9 @@ def _register_operations(server: FastMCP) -> None:
         consistent orientation (the compute_normals inconsistent_pairs probe).
         The mesh carries a side region boundary. Reads no input mesh: it creates
         one."""
-        return _guard(
-            _tools.tool_moebius,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            width=width,
-            nu=nu,
-            nv=nv,
-            num_twists=num_twists,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_tube)
     def tube(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1396,22 +989,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate an open cylinder surface around the z axis, oriented outward.
         The mesh carries side regions bottom and top. Reads no input mesh: it
         creates one."""
-        return _guard(
-            _tools.tool_tube,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            height=height,
-            ntheta=ntheta,
-            nz=nz,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_cone)
     def cone(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1428,22 +1008,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a closed cone surface, the base disk at center and the apex
         height above it, the rim a sharp edge (a feature_edges probe). The mesh
         carries cell regions side and base. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_cone,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            height=height,
-            ntheta=ntheta,
-            nz=nz,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_capsule)
     def capsule(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1461,23 +1028,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a capsule: a cylinder of length height closed by two
         hemispheres, smooth where they meet. Reads no input mesh: it creates
         one."""
-        return _guard(
-            _tools.tool_capsule,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            height=height,
-            ntheta=ntheta,
-            nz=nz,
-            ncap=ncap,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_box_surface)
     def box_surface(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1492,20 +1045,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate the boundary of a box as a closed surface, each face a grid,
         oriented outward. The mesh carries cell regions xmin ... zmax, one per
         face. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_box_surface,
-            output_path=output_path,
-            output_format=output_format,
-            dims=dims,
-            size=size,
-            origin=origin,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_platonic)
     def platonic(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1517,17 +1059,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a platonic solid's surface with one cell per face: tetrahedron,
         octahedron or icosahedron (triangles), cube (quads) or dodecahedron (a
         polygon block of pentagons). Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_platonic,
-            output_path=output_path,
-            output_format=output_format,
-            name=name,
-            radius=radius,
-            center=center,
-            max_cells=max_cells,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_ball)
     def ball(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1543,20 +1077,9 @@ def _register_operations(server: FastMCP) -> None:
         butterfly, so no cell degenerates at the centre; n cells from the centre
         to the surface. The mesh carries a side region surface. Reads no input
         mesh: it creates one."""
-        return _guard(
-            _tools.tool_ball,
-            output_path=output_path,
-            output_format=output_format,
-            radius=radius,
-            n=n,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_spherical_shell)
     def spherical_shell(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1574,22 +1097,9 @@ def _register_operations(server: FastMCP) -> None:
         layers graded by ratio (each layer's thickness over the one inside it).
         The mesh carries side regions inner and outer. Reads no input mesh: it
         creates one."""
-        return _guard(
-            _tools.tool_spherical_shell,
-            output_path=output_path,
-            output_format=output_format,
-            inner_radius=inner_radius,
-            outer_radius=outer_radius,
-            n=n,
-            nr=nr,
-            ratio=ratio,
-            center=center,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_pipe)
     def pipe(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1608,24 +1118,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a thick-walled pipe of hexahedra around the z axis, nr layers
         through the wall graded by ratio. The mesh carries side regions inner,
         outer, bottom and top. Reads no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_pipe,
-            output_path=output_path,
-            output_format=output_format,
-            inner_radius=inner_radius,
-            outer_radius=outer_radius,
-            height=height,
-            ntheta=ntheta,
-            nr=nr,
-            nz=nz,
-            ratio=ratio,
-            center=center,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_fichera)
     def fichera(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1641,20 +1136,9 @@ def _register_operations(server: FastMCP) -> None:
         octant, the 3-D L-shape with a re-entrant vertex at the centre. The mesh
         carries side regions xmin ... zmax, notch_x, notch_y and notch_z. Reads
         no input mesh: it creates one."""
-        return _guard(
-            _tools.tool_fichera,
-            output_path=output_path,
-            output_format=output_format,
-            n=n,
-            size=size,
-            center=center,
-            cell_type=cell_type,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_solid_torus)
     def solid_torus(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1670,21 +1154,9 @@ def _register_operations(server: FastMCP) -> None:
         """Generate a solid torus of hexahedra: the squircle disk swept around the
         z axis and welded. The mesh carries a side region surface. Reads no
         input mesh: it creates one."""
-        return _guard(
-            _tools.tool_solid_torus,
-            output_path=output_path,
-            output_format=output_format,
-            major_radius=major_radius,
-            minor_radius=minor_radius,
-            n=n,
-            nu=nu,
-            center=center,
-            order=order,
-            max_cells=max_cells,
-            complete=complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_reference_cells)
     def reference_cells(
         output_path: str,
         output_format: Optional[str] = None,
@@ -1695,15 +1167,9 @@ def _register_operations(server: FastMCP) -> None:
         by side (every supported type when types is omitted). pairs=True gives two
         cells sharing a facet, for linear types. Reads no input mesh: it creates
         one."""
-        return _guard(
-            _tools.tool_reference_cells,
-            output_path=output_path,
-            output_format=output_format,
-            types=types,
-            pairs=pairs,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_octree_mesh)
     def octree_mesh(
         input_path: str,
         output_path: str,
@@ -1776,55 +1242,9 @@ def _register_operations(server: FastMCP) -> None:
         scaled Jacobian, histograms), feature recovery, the volume-fix counts
         (num_collapsed, num_caps_removed, num_split, num_slivers,
         num_untangled, num_reordered, num_overlaps), timings and warnings."""
-        return _guard(
-            _tools.tool_octree_mesh,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            output=output,
-            min_size=min_size,
-            max_size=max_size,
-            max_level=max_level,
-            bounds=bounds,
-            padding=padding,
-            padding_relative=padding_relative,
-            curvature_angle=curvature_angle,
-            feature_angle=feature_angle,
-            corner_angle=corner_angle,
-            feature_size=feature_size,
-            gap_cells=gap_cells,
-            gap_outside=gap_outside,
-            size_array=size_array,
-            surface_region=surface_region,
-            grading_layers=grading_layers,
-            skin_grading=skin_grading,
-            surface_size=surface_size,
-            winding_threshold=winding_threshold,
-            winding_beta=winding_beta,
-            conformity=conformity,
-            alpha_long=alpha_long,
-            alpha_short=alpha_short,
-            preserve_features=preserve_features,
-            fit_iterations=fit_iterations,
-            dihedral_floor_guard=dihedral_floor_guard,
-            fill=fill,
-            keep_outside=keep_outside,
-            attach_distance=attach_distance,
-            attach_quality=attach_quality,
-            pillow=pillow,
-            hex_grading=hex_grading,
-            untangle_iterations=untangle_iterations,
-            max_cells=max_cells,
-            max_tets=max_tets,
-            volume_fix=volume_fix,
-            zero_volume_factor=zero_volume_factor,
-            cap_flatness=cap_flatness,
-            crossing_margin=crossing_margin,
-            crossing_gap=crossing_gap,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_mesh_cad_surface)
     def mesh_cad_surface(
         input_path: str,
         output_path: str,
@@ -1953,50 +1373,9 @@ def _register_operations(server: FastMCP) -> None:
         num_leftover_triangles and min_quad_scaled_jacobian. heal (STEP/IGES)
         heals the shape before it is read (ShapeFix_Shape, then sewing at
         sew_tolerance; 0 is automatic, a positive value sews without heal)."""
-        return _guard(
-            _tools.tool_mesh_cad_surface,
-            input_path=input_path,
-            output_path=output_path,
-            target_size=target_size,
-            input_format=input_format,
-            output_format=output_format,
-            max_chordal_deviation=max_chordal_deviation,
-            min_points_per_edge=min_points_per_edge,
-            tolerance=tolerance,
-            record_face_ids=record_face_ids,
-            edges=edges,
-            match_unreferenced_trims=match_unreferenced_trims,
-            strict=strict,
-            max_points=max_points,
-            min_angle=min_angle,
-            smooth_iterations=smooth_iterations,
-            smooth_method=smooth_method,
-            order=order,
-            curvature_deviation=curvature_deviation,
-            cells_across_gaps=cells_across_gaps,
-            grading=grading,
-            pole_rings=pole_rings,
-            face_sizes=face_sizes,
-            edge_sizes=edge_sizes,
-            background_path=background_path,
-            background_array=background_array,
-            metric=metric,
-            virtual_edges=virtual_edges,
-            reparam_condition_number=reparam_condition_number,
-            model_tolerances=model_tolerances,
-            virtual_faces=virtual_faces,
-            lop_corners=lop_corners,
-            metric_background_path=metric_background_path,
-            metric_array=metric_array,
-            metric_error=metric_error,
-            untangle=untangle,
-            quads=quads,
-            quad_pairs=quad_pairs,
-            heal=heal,
-            sew_tolerance=sew_tolerance,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_octree)
     def octree(
         input_path: str,
         output_path: str,
@@ -2037,36 +1416,9 @@ def _register_operations(server: FastMCP) -> None:
         be 'surface' or 'inside') and reports num_snapped/num_refused;
         surface_level, curvature_threshold, feature_angle and size_array refine
         beyond the cut leaves; plane chooses the plane of a 2-D skin."""
-        return _guard(
-            _tools.tool_octree,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            root_cells=root_cells,
-            min_level=min_level,
-            max_level=max_level,
-            bounds=bounds,
-            padding=padding,
-            padding_relative=padding_relative,
-            dimension=dimension,
-            sample_distance=sample_distance,
-            balance=balance,
-            fill=fill,
-            attach_distance=attach_distance,
-            even_odd=even_odd,
-            max_cells=max_cells,
-            sign=sign,
-            transition=transition,
-            snap=snap,
-            surface_level=surface_level,
-            curvature_threshold=curvature_threshold,
-            feature_angle=feature_angle,
-            size_array=size_array,
-            plane=plane,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_voxelize)
     def voxelize(
         input_path: str,
         output_path: str,
@@ -2090,25 +1442,9 @@ def _register_operations(server: FastMCP) -> None:
         box, 'surface' keeps only cells a triangle passes through, and 'inside'
         keeps only cells whose centre is inside the surface. Reports the lattice
         origin/spacing/dims and how many cells were kept."""
-        return _guard(
-            _tools.tool_voxelize,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            resolution=resolution,
-            cell_size=cell_size,
-            bounds=bounds,
-            padding=padding,
-            padding_relative=padding_relative,
-            fill=fill,
-            attach_occupancy=attach_occupancy,
-            max_cells=max_cells,
-            sign=sign,
-            plane=plane,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_grid_sample)
     def grid_sample(
         input_path: str,
         output_path: str,
@@ -2131,24 +1467,9 @@ def _register_operations(server: FastMCP) -> None:
         Reports the channel names (a k-component array expands to name_0..name_k)
         and the coverage, the fraction of grid points inside the mesh - a low
         coverage means the grid is mostly fill and a model would learn it."""
-        return _guard(
-            _tools.tool_grid_sample,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            resolution=resolution,
-            cell_size=cell_size,
-            bounds=bounds,
-            padding=padding,
-            padding_relative=padding_relative,
-            fields=fields,
-            extrapolate=extrapolate,
-            fill_value=fill_value,
-            max_cells=max_cells,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_grid_scatter)
     def grid_scatter(
         grid_path: str,
         target_path: str,
@@ -2164,19 +1485,9 @@ def _register_operations(server: FastMCP) -> None:
         output back into something every format can hold. Consecutive
         name_0/name_1/name_2 channels rebuild one multi-component array.
         on_conflict is 'error', 'overwrite' or 'suffix'."""
-        return _guard(
-            _tools.tool_grid_scatter,
-            grid_path=grid_path,
-            target_path=target_path,
-            output_path=output_path,
-            grid_format=grid_format,
-            target_format=target_format,
-            output_format=output_format,
-            fields=fields,
-            on_conflict=on_conflict,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_grid_resample)
     def grid_resample(
         input_path: str,
         output_path: str,
@@ -2190,18 +1501,9 @@ def _register_operations(server: FastMCP) -> None:
         by trilinear interpolation. This is the baseline a superresolution model
         has to beat. Give exactly one of factor (an integer upscale) or
         resolution (nx, ny, nz cell counts)."""
-        return _guard(
-            _tools.tool_grid_resample,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            factor=factor,
-            resolution=resolution,
-            fields=fields,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_grid_power_spectrum)
     def grid_power_spectrum(
         input_path: str,
         field: str,
@@ -2214,15 +1516,9 @@ def _register_operations(server: FastMCP) -> None:
         isotropic grid (equal spacing on every axis) and reports power per
         wavenumber bin plus the mode count per bin. The power sums to
         mean(field**2) exactly."""
-        return _guard(
-            _tools.tool_grid_power_spectrum,
-            input_path=input_path,
-            field=field,
-            input_format=input_format,
-            max_bins=max_bins,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_subsample)
     def subsample(
         input_path: str,
         output_path: str,
@@ -2245,21 +1541,9 @@ def _register_operations(server: FastMCP) -> None:
         a box. The output keeps the selected points, their point_data and Point
         regions, and gets a vertex block so every format can hold it; cells and
         cell_data are dropped. record_ids attaches budget:original_point_id."""
-        return _guard(
-            _tools.tool_subsample,
-            input_path=input_path,
-            output_path=output_path,
-            count=count,
-            input_format=input_format,
-            output_format=output_format,
-            method=method,
-            seed=seed,
-            start=start,
-            bounds=bounds,
-            record_ids=record_ids,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_proximity_graph)
     def proximity_graph(
         input_path: str,
         output_path: str,
@@ -2282,20 +1566,9 @@ def _register_operations(server: FastMCP) -> None:
         box side is refused, the minimum image being ambiguous there. kind is
         'node' (mesh points) or 'cell' (cell centroids). The output is the graph
         as line cells over those positions, with a 'degree' point array."""
-        return _guard(
-            _tools.tool_proximity_graph,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            method=method,
-            radius=radius,
-            max_neighbors=max_neighbors,
-            box_size=box_size,
-            kind=kind,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_compute_sdf)
     def compute_sdf(
         input_path: str,
         output_path: str,
@@ -2324,28 +1597,9 @@ def _register_operations(server: FastMCP) -> None:
         1-irregular (it has hanging nodes). Reports the root dims, the finest
         spacing, the octree depth and the surface's watertightness. Write the
         result as .vti to keep the grid header; no other format carries it."""
-        return _guard(
-            _tools.tool_compute_sdf,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            structure=structure,
-            resolution=resolution,
-            cell_size=cell_size,
-            bounds=bounds,
-            padding=padding,
-            padding_relative=padding_relative,
-            root_resolution=root_resolution,
-            max_depth=max_depth,
-            band_cells=band_cells,
-            max_cells=max_cells,
-            sign=sign,
-            location=location,
-            band=band,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_distance_to_surface)
     def distance_to_surface(
         input_path: str,
         surface_path: str,
@@ -2363,22 +1617,9 @@ def _register_operations(server: FastMCP) -> None:
         cell centres (location='center') to a surface, as sdf:distance. Negative
         is inside. sign='winding-number' is robust to holes and inconsistent
         winding but costs O(triangles) per query."""
-        return _guard(
-            _tools.tool_distance_to_surface,
-            input_path=input_path,
-            surface_path=surface_path,
-            output_path=output_path,
-            input_format=input_format,
-            surface_format=surface_format,
-            output_format=output_format,
-            sign=sign,
-            location=location,
-            band=band,
-            record_inside=record_inside,
-            record_closest_cell=record_closest_cell,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_sample_distance)
     def sample_distance(
         input_path: str,
         points: List[List[float]],
@@ -2388,29 +1629,18 @@ def _register_operations(server: FastMCP) -> None:
     ) -> dict:
         """Signed distances from a list of [x, y, z] points to a surface, without
         writing a mesh. Negative is inside."""
-        return _guard(
-            _tools.tool_sample_distance,
-            input_path=input_path,
-            points=points,
-            input_format=input_format,
-            sign=sign,
-            band=band,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_surface_watertight_check)
     def surface_watertight_check(
         input_path: str, input_format: Optional[str] = None
     ) -> dict:
         """Report what is wrong with a surface, in numbers: boundary edges,
         non-manifold edges, inconsistently wound pairs and degenerate triangles.
         A signed distance is only meaningful where these are zero."""
-        return _guard(
-            _tools.tool_surface_watertight_check,
-            input_path=input_path,
-            input_format=input_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_gradient)
     def gradient(
         input_path: str,
         output_path: str,
@@ -2435,22 +1665,9 @@ def _register_operations(server: FastMCP) -> None:
         reported in num_skipped; least-squares cells with a degenerate
         neighbourhood fall back to Green-Gauss and are reported in
         num_fallback."""
-        return _guard(
-            _tools.tool_gradient,
-            input_path=input_path,
-            output_path=output_path,
-            array=array,
-            input_format=input_format,
-            output_format=output_format,
-            operator=operator,
-            method=method,
-            location=location,
-            output=output,
-            component=component,
-            overwrite=overwrite,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_hessian)
     def hessian(
         input_path: str,
         output_path: str,
@@ -2484,20 +1701,9 @@ def _register_operations(server: FastMCP) -> None:
         num_fallback. A curvature-driven refinement indicator needs no new
         tool: `norm(...)` in data_calc on the 9-component output is exactly
         its Frobenius norm, ready for refine's where selector."""
-        return _guard(
-            _tools.tool_hessian,
-            input_path=input_path,
-            output_path=output_path,
-            array=array,
-            input_format=input_format,
-            output_format=output_format,
-            method=method,
-            location=location,
-            output=output,
-            overwrite=overwrite,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_curvature)
     def curvature(
         input_path: str,
         output_path: str,
@@ -2535,22 +1741,9 @@ def _register_operations(server: FastMCP) -> None:
         so check quality.inconsistent_pairs before trusting a sign: a nonzero
         count means facets disagree about which side is out and H is
         sign-flipped in patches. This never repairs its input."""
-        return _guard(
-            _tools.tool_curvature,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            mean=mean,
-            gaussian=gaussian,
-            dual_area=dual_area,
-            include_boundary=include_boundary,
-            record_area=record_area,
-            record_principal=record_principal,
-            region=region,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_normals)
     def normals(
         input_path: str,
         output_path: str,
@@ -2586,21 +1779,9 @@ def _register_operations(server: FastMCP) -> None:
         edge; run repair first. Reports num_added_points, num_split_points,
         num_isolated / num_undefined (points whose normal is NaN) and
         num_degenerate."""
-        return _guard(
-            _tools.tool_normals,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            point_normals=point_normals,
-            cell_normals=cell_normals,
-            weight=weight,
-            split_angle=split_angle,
-            record_parent_ids=record_parent_ids,
-            region=region,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_check_quality)
     def check_quality(
         input_path: str,
         require: Optional[Union[str, List[str]]] = None,
@@ -2624,16 +1805,9 @@ def _register_operations(server: FastMCP) -> None:
         num_inverted, num_degenerate and one entry per check: name, metric,
         min, max, max_fraction, evaluated, violations, fraction, worst,
         worst_cell and passed."""
-        return _guard(
-            _tools.tool_check_quality,
-            input_path=input_path,
-            require=require,
-            max_inverted=max_inverted,
-            max_degenerate=max_degenerate,
-            file_format=file_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_check_conformity)
     def check_conformity(
         input_path: str,
         output_path: Optional[str] = None,
@@ -2655,16 +1829,9 @@ def _register_operations(server: FastMCP) -> None:
         that suits the mesh. tolerance is a fraction of the examined facets'
         bounding-box diagonal. Pass output_path to write the mesh with
         conformity:hanging point_data (1 hanging node, 2 T-junction)."""
-        return _guard(
-            _tools.tool_check_conformity,
-            input_path=input_path,
-            output_path=output_path,
-            file_format=file_format,
-            output_format=output_format,
-            tolerance=tolerance,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_check_tetrahedra)
     def check_tetrahedra(
         input_path: str,
         file_format: Optional[str] = None,
@@ -2678,14 +1845,9 @@ def _register_operations(server: FastMCP) -> None:
         side of it), min_volume, max_volume, valid and warnings. The tolerance is
         zero_volume_factor times the longest edge cubed plus the effect of six
         significant digits of written coordinates. The mesh is not changed."""
-        return _guard(
-            _tools.tool_check_tetrahedra,
-            input_path=input_path,
-            file_format=file_format,
-            zero_volume_factor=zero_volume_factor,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_find_intersections)
     def find_intersections(
         input_path: str,
         output_path: Optional[str] = None,
@@ -2712,21 +1874,9 @@ def _register_operations(server: FastMCP) -> None:
         volume mesh first. Pass output_path to write the mesh with the
         intersections:count cell data and segments_path for the intersection
         segments as a line mesh."""
-        return _guard(
-            _tools.tool_find_intersections,
-            input_path=input_path,
-            output_path=output_path,
-            file_format=file_format,
-            output_format=output_format,
-            other_path=other_path,
-            other_format=other_format,
-            segments_path=segments_path,
-            region=region,
-            region_other=region_other,
-            max_pairs=max_pairs,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_thickness)
     def thickness(
         input_path: str,
         output_path: Optional[str] = None,
@@ -2753,20 +1903,6 @@ def _register_operations(server: FastMCP) -> None:
         min_thickness also threshold and passed. Pass output_path to write the
         mesh with thickness:distance (NaN for a miss) and thickness:hit_cell
         cell data."""
-        return _guard(
-            _tools.tool_thickness,
-            input_path=input_path,
-            output_path=output_path,
-            file_format=file_format,
-            output_format=output_format,
-            other_path=other_path,
-            other_format=other_format,
-            direction=direction,
-            max_distance=max_distance,
-            min_thickness=min_thickness,
-            region=region,
-            region_other=region_other,
-        )
 
     @server.tool()
     def render_mesh(
@@ -2917,6 +2053,7 @@ def _register_operations(server: FastMCP) -> None:
         return report
 
     @server.tool()
+    @_forward(_tools.tool_feature_edges)
     def feature_edges(
         input_path: str,
         output_path: str,
@@ -2944,21 +2081,9 @@ def _register_operations(server: FastMCP) -> None:
         a named cell region. Reports num_edges written and num_feature /
         num_boundary / num_non_manifold / num_inconsistent over the whole
         surface. This is the crease test decimate and smooth pin nodes with."""
-        return _guard(
-            _tools.tool_feature_edges,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            feature_angle=feature_angle,
-            feature=feature,
-            boundary=boundary,
-            non_manifold=non_manifold,
-            inconsistent=inconsistent,
-            region=region,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_segment)
     def segment(
         input_path: str,
         output_path: str,
@@ -2993,23 +2118,9 @@ def _register_operations(server: FastMCP) -> None:
         primitives explain within tolerance (relative to the diagonal), so a
         fillet comes apart from the planes it is tangent to -- what a
         CAD-exported STL wants. Feed the output to fit_primitives."""
-        return _guard(
-            _tools.tool_segment,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            feature_angle=feature_angle,
-            normal_tolerance=normal_tolerance,
-            curvature_tolerance=curvature_tolerance,
-            min_patch_cells=min_patch_cells,
-            region=region,
-            prefix=prefix,
-            method=method,
-            tolerance=tolerance,
-        )
 
     @server.tool(name="select")
+    @_forward(_tools.tool_select)
     def select_region(
         input_path: str,
         output_path: str,
@@ -3058,35 +2169,9 @@ def _register_operations(server: FastMCP) -> None:
         'any' or 'centroid' says how a cell or side reduces its nodes for the
         box, plane and ball. Reports num_candidates, num_selected, num_grown
         (-1 without a seed) and num_components (-1 without that criterion)."""
-        return _guard(
-            _tools.tool_select,
-            input_path=input_path,
-            output_path=output_path,
-            name=name,
-            input_format=input_format,
-            output_format=output_format,
-            kind=kind,
-            bbox=bbox,
-            plane_origin=plane_origin,
-            plane_normal=plane_normal,
-            sphere_center=sphere_center,
-            sphere_radius=sphere_radius,
-            where_array=where_array,
-            where_compare=where_compare,
-            where_value=where_value,
-            quality_metric=quality_metric,
-            quality_compare=quality_compare,
-            quality_value=quality_value,
-            component=component,
-            seed=seed,
-            feature_angle=feature_angle,
-            normal_tolerance=normal_tolerance,
-            mode=mode,
-            boundary_only=boundary_only,
-            tag=tag,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_iga_refine)
     def iga_refine(
         input_path: str,
         output_path: str,
@@ -3117,22 +2202,9 @@ def _register_operations(server: FastMCP) -> None:
         (sample_subdivisions per knot span, 0 automatic). model picks "nurbs"
         or "brep" when the input carries both; trim_samples, edges and trim
         shape the B-rep sampling as in iga_sample."""
-        return _guard(
-            _tools.tool_iga_refine,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            subdivisions=subdivisions,
-            elevate=elevate,
-            sample_subdivisions=sample_subdivisions,
-            model=model,
-            trim_samples=trim_samples,
-            edges=edges,
-            trim=trim,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_iga_sample)
     def iga_sample(
         input_path: str,
         output_path: str,
@@ -3154,20 +2226,9 @@ def _register_operations(server: FastMCP) -> None:
         cell data; a B-rep is sampled as read_cad_json does (trim_samples per
         knot span for the clip, edges for the 3-D edge curves, trim=false to
         keep every cell)."""
-        return _guard(
-            _tools.tool_iga_sample,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            subdivisions=subdivisions,
-            model=model,
-            trim_samples=trim_samples,
-            edges=edges,
-            trim=trim,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_iga_evaluate)
     def iga_evaluate(
         input_path: str,
         params: List[List[float]],
@@ -3186,18 +2247,9 @@ def _register_operations(server: FastMCP) -> None:
         the first derivatives (N x d x space dimension) and, for a surface in
         3-D, the unit normals; a B-rep face also reports inside: whether each
         point lies within its trimming loops (trim_samples per knot span)."""
-        return _guard(
-            _tools.tool_iga_evaluate,
-            input_path=input_path,
-            params=params,
-            input_format=input_format,
-            patch=patch,
-            derivatives=derivatives,
-            model=model,
-            trim_samples=trim_samples,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_fit_primitives)
     def fit_primitives(
         input_path: str,
         output_path: str,
@@ -3225,21 +2277,9 @@ def _register_operations(server: FastMCP) -> None:
         fit:rms / fit:max and field data fit:patch_*; the report lists each
         patch's type, params (x, y, z, ax, ay, az, r1, r2, angle_deg, 0), rms,
         max and fraction, plus counts per type."""
-        return _guard(
-            _tools.tool_fit_primitives,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            patch_data=patch_data,
-            tolerance=tolerance,
-            relative=relative,
-            min_inlier_fraction=min_inlier_fraction,
-            types=types,
-            max_iterations=max_iterations,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_refine_patches)
     def refine_patches(
         input_path: str,
         output_path: str,
@@ -3288,29 +2328,9 @@ def _register_operations(server: FastMCP) -> None:
         initial_explained_area_fraction, hausdorff_max / hausdorff_rms,
         initial_energy / energy and stop (unchanged, small_gain,
         iteration_cap, energy_rose). Needs the compiled core."""
-        return _guard(
-            _tools.tool_refine_patches,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            segment_method=segment_method,
-            segment_tolerance=segment_tolerance,
-            feature_angle=feature_angle,
-            tolerance=tolerance,
-            relative=relative,
-            normal_weight=normal_weight,
-            epsilon=epsilon,
-            max_iterations=max_iterations,
-            min_patch_cells=min_patch_cells,
-            ransac_seed=ransac_seed,
-            types=types,
-            allow_split=allow_split,
-            allow_merge=allow_merge,
-            prefix=prefix,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_region_adjacency)
     def region_adjacency(
         input_path: str,
         output_path: str,
@@ -3321,16 +2341,9 @@ def _register_operations(server: FastMCP) -> None:
         """Write conforming facets shared by Cell regions, or by cell blocks
         when fewer than two Cell regions exist. Reports total facets/measure
         and writes parent-cell/facet ids with per-facet length or area."""
-        return _guard(
-            _tools.tool_region_adjacency,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            regions=regions,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_find_interface)
     def find_interface(
         input_path: str,
         output_path: str,
@@ -3349,24 +2362,9 @@ def _register_operations(server: FastMCP) -> None:
         """Write conforming or proximity-matched interface facets between
         two Cell regions. Optionally read part B from a second mesh file. The
         report includes side-region `(cell, facet)` pairs for each input."""
-        return _guard(
-            _tools.tool_find_interface,
-            input_path=input_path,
-            output_path=output_path,
-            region_a=region_a,
-            region_b=region_b,
-            input_format=input_format,
-            output_format=output_format,
-            mesh_b_path=mesh_b_path,
-            format_b=format_b,
-            mode=mode,
-            master=master,
-            gap_tolerance=gap_tolerance,
-            angle_tolerance=angle_tolerance,
-            overlap_tolerance=overlap_tolerance,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_contact_pairs)
     def contact_pairs(
         slave_path: str,
         slave_region: str,
@@ -3380,19 +2378,9 @@ def _register_operations(server: FastMCP) -> None:
         """Project every node of a Point region onto the closest facets of a
         Cell region; return source ids, fan-subfacet ordinals, local coordinates,
         signed gaps and master normals."""
-        return _guard(
-            _tools.tool_contact_pairs,
-            slave_path=slave_path,
-            slave_region=slave_region,
-            master_region=master_region,
-            master_path=master_path,
-            slave_format=slave_format,
-            master_format=master_format,
-            tolerance=tolerance,
-            require_complete=require_complete,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_split_interface)
     def split_interface(
         input_path: str,
         output_path: str,
@@ -3406,19 +2394,9 @@ def _register_operations(server: FastMCP) -> None:
         """Duplicate point fans along a Side region, optionally adding
         cohesive cells. `side_entries` can be the `(cell, facet)` list returned
         by `find_interface`; polyhedron inputs are rejected."""
-        return _guard(
-            _tools.tool_split_interface,
-            input_path=input_path,
-            output_path=output_path,
-            side_region=side_region,
-            side_entries=side_entries,
-            side_name=side_name,
-            input_format=input_format,
-            output_format=output_format,
-            add_cohesive=add_cohesive,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_hausdorff)
     def hausdorff(
         path_a: str,
         path_b: str,
@@ -3438,19 +2416,9 @@ def _register_operations(server: FastMCP) -> None:
         vertex and a lower bound otherwise. Reports distance, the one-sided
         a_to_b / b_to_a maxima with their means and RMS, the sample counts and
         the worst sample of each side; with max_distance, also passed."""
-        return _guard(
-            _tools.tool_hausdorff,
-            path_a=path_a,
-            path_b=path_b,
-            format_a=format_a,
-            format_b=format_b,
-            face_samples=face_samples,
-            region_a=region_a,
-            region_b=region_b,
-            max_distance=max_distance,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_edit_regions)
     def edit_regions(
         input_path: str,
         output_path: str,
@@ -3470,16 +2438,9 @@ def _register_operations(server: FastMCP) -> None:
         one region; side regions combine their (cell, facet) pairs, and an
         empty result is kept. A result that would overwrite an unrelated
         region is an error. Reports the resulting region list."""
-        return _guard(
-            _tools.tool_edit_regions,
-            input_path=input_path,
-            output_path=output_path,
-            edits=edits,
-            input_format=input_format,
-            output_format=output_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_graph)
     def graph(
         input_path: str,
         output_path: str,
@@ -3498,16 +2459,9 @@ def _register_operations(server: FastMCP) -> None:
         neighbours) or "scotch" (.grf, 0-based), inferred from the extension
         (.graph/.metis, .grf) when omitted. Reports output_path, kind, format,
         num_vertices, num_edges (undirected) and max_degree."""
-        return _guard(
-            _tools.tool_graph,
-            input_path=input_path,
-            output_path=output_path,
-            kind=kind,
-            input_format=input_format,
-            file_format=file_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_periodic)
     def periodic(
         input_path: str,
         slave: str,
@@ -3538,23 +2492,9 @@ def _register_operations(server: FastMCP) -> None:
         axis) are counted as num_fixed. Reports num_pairs, pairs
         ([slave, master], 0-based, ascending in the slave id), unmatched and
         max_residual; pairs_path also writes them as 'slave,master' CSV."""
-        return _guard(
-            _tools.tool_periodic,
-            input_path=input_path,
-            slave=slave,
-            master=master,
-            input_format=input_format,
-            translate=translate,
-            rotate_axis=rotate_axis,
-            rotate_degrees=rotate_degrees,
-            origin=origin,
-            matrix=matrix,
-            atol=atol,
-            require_complete=require_complete,
-            pairs_path=pairs_path,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_repair)
     def repair(
         input_path: str,
         output_path: str,
@@ -3596,22 +2536,9 @@ def _register_operations(server: FastMCP) -> None:
         oriented outward on its own. Point, Cell and Side regions survive (a
         split copy joins its source's; an edge a flip renumbers is found again
         by its nodes)."""
-        return _guard(
-            _tools.tool_repair,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            fix_orientation=fix_orientation,
-            orient_outward=orient_outward,
-            fill_holes=fill_holes,
-            split_non_manifold=split_non_manifold,
-            max_hole_edges=max_hole_edges,
-            weld_tolerance=weld_tolerance,
-            record_provenance=record_provenance,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_shrinkwrap)
     def shrinkwrap(
         input_path: str,
         target_path: str,
@@ -3651,22 +2578,6 @@ def _register_operations(server: FastMCP) -> None:
         equidistant faces won the tie-break. Connectivity, data, regions and
         property sets pass through verbatim, and the points keep their
         dtype."""
-        return _guard(
-            _tools.tool_shrinkwrap,
-            input_path=input_path,
-            target_path=target_path,
-            output_path=output_path,
-            input_format=input_format,
-            target_format=target_format,
-            output_format=output_format,
-            offset=offset,
-            max_distance=max_distance,
-            weights=weights,
-            target_region=target_region,
-            normal_weight=normal_weight,
-            record_distance=record_distance,
-            record_closest_cell=record_closest_cell,
-        )
 
     @server.tool()
     def convert_coordinates(
@@ -3708,6 +2619,7 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    @_forward(_tools.tool_prepare_metric)
     def prepare_metric(
         input_path: str,
         output_path: str,
@@ -3729,22 +2641,9 @@ def _register_operations(server: FastMCP) -> None:
         unit length, > 1). Writes point data `output` for adapt. Reports
         complexity_before/after (about the vertex count), num_graded,
         sweeps."""
-        return _guard(
-            _tools.tool_prepare_metric,
-            input_path=input_path,
-            output_path=output_path,
-            arrays=arrays,
-            output=output,
-            target_vertices=target_vertices,
-            norm=norm,
-            hmin=hmin,
-            hmax=hmax,
-            gradation=gradation,
-            input_format=input_format,
-            output_format=output_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_untangle)
     def untangle(
         input_path: str,
         output_path: str,
@@ -3764,20 +2663,9 @@ def _register_operations(server: FastMCP) -> None:
         `frozen` names a point_set or point-data mask of nodes to keep.
         Reports num_inverted_before/after, min_quality_before/after (least
         corner scaled Jacobian), sweeps, moves."""
-        return _guard(
-            _tools.tool_untangle,
-            input_path=input_path,
-            output_path=output_path,
-            fix_boundary=fix_boundary,
-            frozen=frozen,
-            rings=rings,
-            smooth=smooth,
-            max_sweeps=max_sweeps,
-            input_format=input_format,
-            output_format=output_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_morph)
     def morph(
         input_path: str,
         output_path: str,
@@ -3800,21 +2688,9 @@ def _register_operations(server: FastMCP) -> None:
         more `steps`. A result with inverted cells fails unless
         allow_inverted. Reports num_constrained, num_free, num_inverted,
         max_displacement, converged."""
-        return _guard(
-            _tools.tool_morph,
-            input_path=input_path,
-            output_path=output_path,
-            array=array,
-            fix_boundary=fix_boundary,
-            constrained=constrained,
-            stiffening=stiffening,
-            steps=steps,
-            allow_inverted=allow_inverted,
-            input_format=input_format,
-            output_format=output_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_laplacian_eigenmodes)
     def laplacian_eigenmodes(
         input_path: str,
         output_path: str,
@@ -3832,18 +2708,9 @@ def _register_operations(server: FastMCP) -> None:
         descriptor. Quads and polygons are refused naming convert_cells
         simplexify, volumes naming extract_surface. Reports eigenvalues,
         iterations, max_residual, converged."""
-        return _guard(
-            _tools.tool_laplacian_eigenmodes,
-            input_path=input_path,
-            output_path=output_path,
-            num_modes=num_modes,
-            tolerance=tolerance,
-            max_iterations=max_iterations,
-            input_format=input_format,
-            output_format=output_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_register_rigid)
     def register_rigid(
         source_path: str,
         target_path: str,
@@ -3866,20 +2733,6 @@ def _register_operations(server: FastMCP) -> None:
         (outliers). ICP finds the nearest optimum, so the two should start
         roughly aligned. With output_path the moved source is written too.
         Reports matrix, initial_rms, rms, iterations, num_pairs, converged."""
-        return _guard(
-            _tools.tool_register_rigid,
-            source_path=source_path,
-            target_path=target_path,
-            output_path=output_path,
-            method=method,
-            max_iterations=max_iterations,
-            tolerance=tolerance,
-            max_distance=max_distance,
-            rotate_data=rotate_data,
-            source_format=source_format,
-            target_format=target_format,
-            output_format=output_format,
-        )
 
     @server.tool()
     def estimate_normals(
@@ -3914,6 +2767,7 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    @_forward(_tools.tool_reconstruct_surface)
     def reconstruct_surface(
         input_path: str,
         output_path: str,
@@ -3940,23 +2794,9 @@ def _register_operations(server: FastMCP) -> None:
         Reports num_samples, spacing, cell_size, max_distance,
         num_lattice_points, num_undefined, num_triangles, num_components and
         estimated_normals."""
-        return _guard(
-            _tools.tool_reconstruct_surface,
-            input_path=input_path,
-            output_path=output_path,
-            normals=normals,
-            k=k,
-            cell_size=cell_size,
-            resolution=resolution,
-            max_distance=max_distance,
-            estimate_normals=estimate_normals,
-            normals_k=normals_k,
-            max_cells=max_cells,
-            input_format=input_format,
-            output_format=output_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_convex_hull)
     def convex_hull(
         input_path: str,
         output_path: str,
@@ -3972,16 +2812,9 @@ def _register_operations(server: FastMCP) -> None:
         point). Exact predicates, so coplanar points are handled without a
         tolerance. Reports dimension, num_vertices, num_facets, area (enclosed
         in 2-D, surface in 3-D), volume and perimeter."""
-        return _guard(
-            _tools.tool_convex_hull,
-            input_path=input_path,
-            output_path=output_path,
-            dimension=dimension,
-            input_format=input_format,
-            output_format=output_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_delaunay_2d)
     def delaunay_2d(
         input_path: str,
         output_path: str,
@@ -3993,15 +2826,9 @@ def _register_operations(server: FastMCP) -> None:
         z and point data). One counter-clockwise triangle block covering the
         convex hull; a point coinciding in x, y with an earlier one is left
         out. Reports num_triangles, num_duplicates and num_boundary."""
-        return _guard(
-            _tools.tool_delaunay_2d,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_geodesic_distance)
     def geodesic_distance(
         input_path: str,
         output_path: str,
@@ -4027,20 +2854,9 @@ def _register_operations(server: FastMCP) -> None:
         on a sphere at h = 0.03); a larger time_factor smooths it. Reports
         num_sources, num_unreached, num_degenerate, max_distance, time_step,
         heat_iterations, poisson_iterations and converged."""
-        return _guard(
-            _tools.tool_geodesic_distance,
-            input_path=input_path,
-            output_path=output_path,
-            sources=sources,
-            source_region=source_region,
-            input_format=input_format,
-            output_format=output_format,
-            time_factor=time_factor,
-            tolerance=tolerance,
-            max_iterations=max_iterations,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_parameterize)
     def parameterize(
         input_path: str,
         output_path: str,
@@ -4067,18 +2883,9 @@ def _register_operations(server: FastMCP) -> None:
         higher-order cell is refused naming the operation that makes triangles.
         Reports num_charts, num_flipped, stretch (1 keeps lengths),
         packing_efficiency and num_seam_points."""
-        return _guard(
-            _tools.tool_parameterize,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            padding=padding,
-            max_depth=max_depth,
-            max_stretch=max_stretch,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_sobolev_deform)
     def sobolev_deform(
         input_path: str,
         output_path: str,
@@ -4120,22 +2927,9 @@ def _register_operations(server: FastMCP) -> None:
         returned -- a partially smoothed field is still usable, and `residual`
         says how far it got. This is a pure coordinate move: connectivity,
         every data array, regions and property sets pass through."""
-        return _guard(
-            _tools.tool_sobolev_deform,
-            input_path=input_path,
-            output_path=output_path,
-            array=array,
-            length_scale=length_scale,
-            input_format=input_format,
-            output_format=output_format,
-            fixed_points_array=fixed_points_array,
-            fix_boundary=fix_boundary,
-            record_filtered=record_filtered,
-            max_iterations=max_iterations,
-            tolerance=tolerance,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_estimate_error)
     def estimate_error(
         input_path: str,
         output_path: str,
@@ -4165,22 +2959,9 @@ def _register_operations(server: FastMCP) -> None:
         Cells that cannot be evaluated read NaN in the indicator array and 0
         (never NaN) in the marking array, and are reported in num_skipped
         (excluded from global_error and from num_marked)."""
-        return _guard(
-            _tools.tool_estimate_error,
-            input_path=input_path,
-            output_path=output_path,
-            array=array,
-            input_format=input_format,
-            output_format=output_format,
-            method=method,
-            marking=marking,
-            marking_value=marking_value,
-            output=output,
-            marked=marked,
-            overwrite=overwrite,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_error_size)
     def error_size(
         input_path: str,
         output_path: str,
@@ -4208,22 +2989,9 @@ def _register_operations(server: FastMCP) -> None:
         background_array reads), so estimate_error -> error_size ->
         mesh_cad_surface(background_path=...) closes the adaptive loop.
         Reports num_cells, num_skipped, num_clamped, min_size and max_size."""
-        return _guard(
-            _tools.tool_error_size,
-            input_path=input_path,
-            output_path=output_path,
-            target_error=target_error,
-            input_format=input_format,
-            output_format=output_format,
-            error_array=error_array,
-            order=order,
-            min_size=min_size,
-            max_size=max_size,
-            output=output,
-            overwrite=overwrite,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_transform)
     def transform(
         input_path: str,
         output_path: str,
@@ -4241,22 +3009,9 @@ def _register_operations(server: FastMCP) -> None:
         (scalar or [sx,sy,sz]), rotate (axis + degrees), an explicit 4x4
         matrix, or a uniform unit-scale factor. rotate_vector_data also
         rotates 3-vector/9-tensor point data."""
-        return _guard(
-            _tools.tool_transform,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            translate=translate,
-            scale=scale,
-            rotate_axis=rotate_axis,
-            rotate_degrees=rotate_degrees,
-            matrix=matrix,
-            scale_units=scale_units,
-            rotate_vector_data=rotate_vector_data,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_convert_cells)
     def convert_cells(
         input_path: str,
         output_path: str,
@@ -4268,17 +3023,9 @@ def _register_operations(server: FastMCP) -> None:
         """Convert the element representation: linearize (drop higher-order
         nodes), simplexify (split into triangles/tets) or elevate (linear ->
         quadratic)."""
-        return _guard(
-            _tools.tool_convert_cells,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            mode=mode,
-            record_parent_ids=record_parent_ids,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_tessellate)
     def tessellate(
         input_path: str,
         output_path: str,
@@ -4300,19 +3047,9 @@ def _register_operations(server: FastMCP) -> None:
         (a synthetic point's source_point is -1); record_stencil also
         attaches tessellate:stencil/weights so the tessellation can be
         reconstructed (Tessellation.from_mesh) after a file round trip."""
-        return _guard(
-            _tools.tool_tessellate,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            levels=levels,
-            curved=curved,
-            fields=fields,
-            record_stencil=record_stencil,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_subdivide)
     def subdivide(
         input_path: str,
         output_path: str,
@@ -4324,16 +3061,9 @@ def _register_operations(server: FastMCP) -> None:
         polyhedral child per face, connected to a new interior point. No
         per-type template table is needed -- it handles tabulated types and
         existing polyhedron blocks uniformly. Automatically conforming."""
-        return _guard(
-            _tools.tool_subdivide,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            record_parent_ids=record_parent_ids,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_agglomerate)
     def agglomerate(
         input_path: str,
         output_path: str,
@@ -4353,19 +3083,9 @@ def _register_operations(server: FastMCP) -> None:
         degrees; min_sphericity (0 = off) refuses an absorption that would make
         a group less round than that. Reports num_faces_merged and
         num_rejected. See doc/agglomerate.md."""
-        return _guard(
-            _tools.tool_agglomerate,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            target_group_size=target_group_size,
-            merge_coplanar_faces=merge_coplanar_faces,
-            coplanar_angle=coplanar_angle,
-            min_sphericity=min_sphericity,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_tet_to_poly)
     def tet_to_poly(
         input_path: str,
         output_path: str,
@@ -4387,18 +3107,9 @@ def _register_operations(server: FastMCP) -> None:
         point_data_to_cell_data copies each vertex's point data onto its cells;
         record_vertex_ids adds dual:vertex. Reports num_new_points,
         num_boundary_faces and num_split_vertices. See doc/tet_poly.md."""
-        return _guard(
-            _tools.tool_tet_to_poly,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            feature_angle=feature_angle,
-            point_data_to_cell_data=point_data_to_cell_data,
-            record_vertex_ids=record_vertex_ids,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_poly_to_tet)
     def poly_to_tet(
         input_path: str,
         output_path: str,
@@ -4412,16 +3123,9 @@ def _register_operations(server: FastMCP) -> None:
         polyhedra use the volume-conserving corner-average fan; hexahedra,
         wedges and pyramids the fixed templates. Reports num_exact_tets and
         num_fanned_cells. See doc/tet_poly.md."""
-        return _guard(
-            _tools.tool_poly_to_tet,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            record_parent_ids=record_parent_ids,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_refine)
     def refine(
         input_path: str,
         output_path: str,
@@ -4450,23 +3154,9 @@ def _register_operations(server: FastMCP) -> None:
         persistent parent/child hierarchy a multigrid caller resolves across
         the sequence of meshes it keeps; also forces refine:entity to be
         attached even when the closure leaves no hanging node."""
-        return _guard(
-            _tools.tool_refine,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            levels=levels,
-            record_parent_ids=record_parent_ids,
-            cells=cells,
-            region=region,
-            where=where,
-            closure=closure,
-            record_levels=record_levels,
-            record_hierarchy=record_hierarchy,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_boundary_layer)
     def boundary_layer(
         input_path: str,
         output_path: str,
@@ -4500,23 +3190,6 @@ def _register_operations(server: FastMCP) -> None:
         num_collapsed, num_not_visible, num_fewer_layers,
         num_front_crossings, min_scaled_jacobian, min_thickness,
         max_thickness and cap_closed."""
-        return _guard(
-            _tools.tool_boundary_layer,
-            input_path=input_path,
-            output_path=output_path,
-            first_height=first_height,
-            input_format=input_format,
-            output_format=output_format,
-            num_layers=num_layers,
-            growth=growth,
-            reverse=reverse,
-            collision_fraction=collision_fraction,
-            smooth_iterations=smooth_iterations,
-            max_shrink=max_shrink,
-            collapse=collapse,
-            normal_smooth_iterations=normal_smooth_iterations,
-            front_check=front_check,
-        )
 
     @server.tool()
     def extrude(
@@ -4629,6 +3302,7 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    @_forward(_tools.tool_tetrahedralize)
     def tetrahedralize(
         input_path: str,
         output_path: str,
@@ -4661,22 +3335,9 @@ def _register_operations(server: FastMCP) -> None:
         boundary_preserved, hausdorff_to_surface, min_dihedral_deg,
         max_dihedral_deg, volume, backend, warnings, netgen_available and
         backends_available (every backend name besides auto)."""
-        return _guard(
-            _tools.tool_tetrahedralize,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            backend=backend,
-            max_size=max_size,
-            max_volume=max_volume,
-            grading=grading,
-            optimize_steps=optimize_steps,
-            max_cells=max_cells,
-            face_array=face_array,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_cut_level_set)
     def cut_level_set(
         input_path: str,
         output_path: str,
@@ -4706,23 +3367,9 @@ def _register_operations(server: FastMCP) -> None:
         Reports num_cells, num_cut_cells, num_uncut_cells, num_pieces,
         dimension, measure, selection, backend, warnings and
         cutcells_available."""
-        return _guard(
-            _tools.tool_cut_level_set,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            level_sets=level_sets,
-            planes=planes,
-            selection=selection,
-            include_uncut=include_uncut,
-            backend=backend,
-            degree=degree,
-            triangulate=triangulate,
-            record_parent_ids=record_parent_ids,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_cut_quadrature)
     def cut_quadrature(
         input_path: str,
         output_path: str,
@@ -4746,23 +3393,9 @@ def _register_operations(server: FastMCP) -> None:
         cell), quadrature:rule and quadrature:parent_cell. Reports num_rules,
         num_points, sum_weights, dimension, selection, backend, warnings and
         cutcells_available."""
-        return _guard(
-            _tools.tool_cut_quadrature,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            level_sets=level_sets,
-            planes=planes,
-            selection=selection,
-            order=order,
-            include_uncut=include_uncut,
-            backend=backend,
-            triangulate=triangulate,
-            record_parent_ids=record_parent_ids,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_remesh_quads)
     def remesh_quads(
         input_path: str,
         output_path: str,
@@ -4790,23 +3423,9 @@ def _register_operations(server: FastMCP) -> None:
         num_triangles, num_points, min_scaled_jacobian,
         mean_scaled_jacobian, hausdorff_to_surface (to the input), backend,
         warnings and backends_available."""
-        return _guard(
-            _tools.tool_remesh_quads,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            target_faces=target_faces,
-            backend=backend,
-            sharp=sharp,
-            boundary=boundary,
-            adaptive=adaptive,
-            dominant=dominant,
-            seed=seed,
-            max_cells=max_cells,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_project_to_cad)
     def project_to_cad(
         input_path: str,
         model_path: str,
@@ -4829,20 +3448,9 @@ def _register_operations(server: FastMCP) -> None:
         num_ambiguous, num_too_far, num_failed, num_outside_trim (projections
         outside their face's trims, kept, never clamped), max_move and
         outside_trim."""
-        return _guard(
-            _tools.tool_project_to_cad,
-            input_path=input_path,
-            model_path=model_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            face_array=face_array,
-            edge_array=edge_array,
-            max_distance=max_distance,
-            trim_samples=trim_samples,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_undo_green)
     def undo_green(
         coarse_path: str,
         fine_path: str,
@@ -4857,17 +3465,9 @@ def _register_operations(server: FastMCP) -> None:
         undoes refine's known quality-degradation issue with repeated
         selective passes over the same region. Reports
         num_groups_undone/num_cells_removed."""
-        return _guard(
-            _tools.tool_undo_green,
-            coarse_path=coarse_path,
-            fine_path=fine_path,
-            output_path=output_path,
-            coarse_format=coarse_format,
-            fine_format=fine_format,
-            output_format=output_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_decimate)
     def decimate(
         input_path: str,
         output_path: str,
@@ -4884,22 +3484,9 @@ def _register_operations(server: FastMCP) -> None:
         """Decimate a surface mesh by quadric edge collapse. Give exactly one
         stopping criterion: ratio (fraction of faces to KEEP), target_faces,
         or max_error. Reports faces/points removed and rejections."""
-        return _guard(
-            _tools.tool_decimate,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            ratio=ratio,
-            target_faces=target_faces,
-            max_error=max_error,
-            placement=placement,
-            preserve_boundary=preserve_boundary,
-            preserve_features=preserve_features,
-            feature_angle=feature_angle,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_decimate_volume)
     def decimate_volume(
         input_path: str,
         output_path: str,
@@ -4918,22 +3505,9 @@ def _register_operations(server: FastMCP) -> None:
         target_cells, or max_error. Boundary vertices participate by default
         (preserve_boundary=False, unlike surface decimate). Reports
         tets/points removed and rejections."""
-        return _guard(
-            _tools.tool_decimate_volume,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            ratio=ratio,
-            target_cells=target_cells,
-            max_error=max_error,
-            placement=placement,
-            preserve_boundary=preserve_boundary,
-            preserve_features=preserve_features,
-            feature_angle=feature_angle,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_adapt)
     def adapt(
         input_path: str,
         output_path: str,
@@ -4978,34 +3552,9 @@ def _register_operations(server: FastMCP) -> None:
         ("success" or "low_failure"), library, num_points_in/out,
         num_elements_in/out, quality (aspect ratio min/mean/max/histogram)
         and warnings."""
-        return _guard(
-            _tools.tool_adapt,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            hsiz=hsiz,
-            size=size,
-            metric=metric,
-            hmin=hmin,
-            hmax=hmax,
-            hausd=hausd,
-            hgrad=hgrad,
-            hgradreq=hgradreq,
-            angle_detection=angle_detection,
-            optim=optim,
-            noinsert=noinsert,
-            noswap=noswap,
-            nomove=nomove,
-            nosurf=nosurf,
-            nreg=nreg,
-            opnbdy=opnbdy,
-            frozen=frozen,
-            required=required,
-            local=local,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_discretize_levelset)
     def discretize_levelset(
         input_path: str,
         output_path: str,
@@ -5045,35 +3594,9 @@ def _register_operations(server: FastMCP) -> None:
         remove_small_components is MMG's rmc volume fraction. The other MMG
         parameters are adapt's. The input's side regions come back, its cell
         regions do not. Reports as adapt."""
-        return _guard(
-            _tools.tool_discretize_levelset,
-            input_path=input_path,
-            output_path=output_path,
-            level_set=level_set,
-            input_format=input_format,
-            output_format=output_format,
-            isovalue=isovalue,
-            materials=materials,
-            remove_small_components=remove_small_components,
-            hmin=hmin,
-            hmax=hmax,
-            hausd=hausd,
-            hgrad=hgrad,
-            hgradreq=hgradreq,
-            angle_detection=angle_detection,
-            optim=optim,
-            noinsert=noinsert,
-            noswap=noswap,
-            nomove=nomove,
-            nosurf=nosurf,
-            nreg=nreg,
-            opnbdy=opnbdy,
-            frozen=frozen,
-            required=required,
-            local=local,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_mesh_domain)
     def mesh_domain(
         input_path: str,
         output_path: str,
@@ -5109,34 +3632,9 @@ def _register_operations(server: FastMCP) -> None:
         cell regions also come back as side regions of the triangles. The
         other MMG parameters are adapt's. Reports as adapt plus
         num_subdomains and num_holes."""
-        return _guard(
-            _tools.tool_mesh_domain,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            hsiz=hsiz,
-            size=size,
-            holes=holes,
-            hmin=hmin,
-            hmax=hmax,
-            hausd=hausd,
-            hgrad=hgrad,
-            hgradreq=hgradreq,
-            angle_detection=angle_detection,
-            optim=optim,
-            noinsert=noinsert,
-            noswap=noswap,
-            nomove=nomove,
-            nosurf=nosurf,
-            nreg=nreg,
-            opnbdy=opnbdy,
-            frozen=frozen,
-            required=required,
-            local=local,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_move)
     def move(
         input_path: str,
         output_path: str,
@@ -5174,34 +3672,9 @@ def _register_operations(server: FastMCP) -> None:
         error_type NotImplementedError with mmg_available and
         mmg_elas_available. The other MMG parameters are adapt's. Reports as
         adapt."""
-        return _guard(
-            _tools.tool_move,
-            input_path=input_path,
-            output_path=output_path,
-            displacement=displacement,
-            moving=moving,
-            input_format=input_format,
-            output_format=output_format,
-            lagrangian=lagrangian,
-            hmin=hmin,
-            hmax=hmax,
-            hausd=hausd,
-            hgrad=hgrad,
-            hgradreq=hgradreq,
-            angle_detection=angle_detection,
-            optim=optim,
-            noinsert=noinsert,
-            noswap=noswap,
-            nomove=nomove,
-            nosurf=nosurf,
-            nreg=nreg,
-            opnbdy=opnbdy,
-            frozen=frozen,
-            required=required,
-            local=local,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_metric_from_hessian)
     def metric_from_hessian(
         input_path: str,
         output_path: str,
@@ -5219,18 +3692,6 @@ def _register_operations(server: FastMCP) -> None:
         eigenvalues clamped so the sizes lie in [hmin, hmax], written as
         point_data `output` (six components, three in 2-D, in the
         lower-triangle order of a Medit .sol). Needs no MMG."""
-        return _guard(
-            _tools.tool_metric_from_hessian,
-            input_path=input_path,
-            output_path=output_path,
-            hessian=hessian,
-            input_format=input_format,
-            output_format=output_format,
-            error=error,
-            hmin=hmin,
-            hmax=hmax,
-            output=output,
-        )
 
     @server.tool()
     def remesh(
@@ -5287,6 +3748,7 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    @_forward(_tools.tool_remesh_volume)
     def remesh_volume(
         input_path: str,
         output_path: str,
@@ -5310,24 +3772,9 @@ def _register_operations(server: FastMCP) -> None:
         default 0.35) trades boundary tet quality for a small, measured chance
         of non-manifold boundary edges (reported as num_non_manifold_edges);
         0 gives an exactly watertight but lower-quality boundary."""
-        return _guard(
-            _tools.tool_remesh_volume,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            resolution=resolution,
-            cell_size=cell_size,
-            bounds=bounds,
-            padding=padding,
-            padding_relative=padding_relative,
-            max_cells=max_cells,
-            max_tets=max_tets,
-            warp_fraction=warp_fraction,
-            watertight_check=watertight_check,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_optimize_volume)
     def optimize_volume(
         input_path: str,
         output_path: str,
@@ -5356,22 +3803,9 @@ def _register_operations(server: FastMCP) -> None:
         invariant, so point_data and named Point regions carry; cell_data and
         Cell/Side regions are dropped. With preserve_boundary the boundary
         surface is exactly preserved."""
-        return _guard(
-            _tools.tool_optimize_volume,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            max_iterations=max_iterations,
-            relocate=relocate,
-            flip=flip,
-            preserve_boundary=preserve_boundary,
-            min_improvement=min_improvement,
-            objective=objective,
-            max_ring_size=max_ring_size,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_smooth)
     def smooth(
         input_path: str,
         output_path: str,
@@ -5391,23 +3825,9 @@ def _register_operations(server: FastMCP) -> None:
         and C++-core-only with no pure-Python fallback). Pure coordinate move;
         boundary and feature nodes pinned by default. lambda_factor < 0 means
         the method's own default."""
-        return _guard(
-            _tools.tool_smooth,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            method=method,
-            iterations=iterations,
-            lambda_factor=lambda_factor,
-            mu=mu,
-            fix_boundary=fix_boundary,
-            preserve_features=preserve_features,
-            feature_angle=feature_angle,
-            guard_inversion=guard_inversion,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_merge)
     def merge(
         input_paths: List[str],
         output_path: str,
@@ -5420,19 +3840,9 @@ def _register_operations(server: FastMCP) -> None:
     ) -> dict:
         """Merge two or more mesh files into one; weld=true fuses coincident
         points within atol. data_policy: intersection | fill."""
-        return _guard(
-            _tools.tool_merge,
-            input_paths=input_paths,
-            output_path=output_path,
-            output_format=output_format,
-            weld=weld,
-            atol=atol,
-            source_tag=source_tag,
-            data_policy=data_policy,
-            drop_duplicate_cells=drop_duplicate_cells,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_split)
     def split(
         input_path: str,
         input_format: Optional[str] = None,
@@ -5444,17 +3854,9 @@ def _register_operations(server: FastMCP) -> None:
         """Split into submeshes (by: type | component | tag | region | regions;
         tag names an integer cell-data array). Writes one file per piece into
         output_dir (default: the input's directory) and returns their paths."""
-        return _guard(
-            _tools.tool_split,
-            input_path=input_path,
-            input_format=input_format,
-            by=by,
-            tag=tag,
-            output_dir=output_dir,
-            name_template=name_template,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_partition)
     def partition(
         input_path: str,
         nparts: int,
@@ -5474,23 +3876,9 @@ def _register_operations(server: FastMCP) -> None:
         name_template ending in .pvtu/.pvtp with no {part} writes one
         parallel index over every part instead (halo layers kept as
         vtkGhostType) and also returns its path as `index`."""
-        return _guard(
-            _tools.tool_partition,
-            input_path=input_path,
-            nparts=nparts,
-            input_format=input_format,
-            method=method,
-            imbalance=imbalance,
-            mode=mode,
-            seed=seed,
-            record_ids=record_ids,
-            ghost_layers=ghost_layers,
-            weights=weights,
-            output_dir=output_dir,
-            name_template=name_template,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_interpolate)
     def interpolate(
         source_path: str,
         target_path: str,
@@ -5507,22 +3895,9 @@ def _register_operations(server: FastMCP) -> None:
         """Sample the source mesh's data arrays onto the target mesh's
         geometry (method: nearest | barycentric); writes the target copy with
         the sampled arrays attached."""
-        return _guard(
-            _tools.tool_interpolate,
-            source_path=source_path,
-            target_path=target_path,
-            output_path=output_path,
-            source_format=source_format,
-            target_format=target_format,
-            output_format=output_format,
-            method=method,
-            arrays=arrays,
-            extrapolate=extrapolate,
-            default_value=default_value,
-            on_conflict=on_conflict,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_conservative_interpolate)
     def conservative_interpolate(
         source_path: str,
         target_path: str,
@@ -5537,18 +3912,6 @@ def _register_operations(server: FastMCP) -> None:
         """Mass-preservingly (overlap-measure weighted) sample the source
         mesh's data arrays onto the target mesh's geometry; unlike
         interpolate, conserves sum(value * measure) over the shared region."""
-        return _guard(
-            _tools.tool_conservative_interpolate,
-            source_path=source_path,
-            target_path=target_path,
-            output_path=output_path,
-            source_format=source_format,
-            target_format=target_format,
-            output_format=output_format,
-            arrays=arrays,
-            default_value=default_value,
-            on_conflict=on_conflict,
-        )
 
 
 # --------------------------------------------------------------------------- #
@@ -5556,6 +3919,7 @@ def _register_operations(server: FastMCP) -> None:
 # --------------------------------------------------------------------------- #
 def _register_data(server: FastMCP) -> None:
     @server.tool()
+    @_forward(_tools.tool_sets_data)
     def sets_data(
         input_path: str,
         output_path: str,
@@ -5573,21 +3937,9 @@ def _register_data(server: FastMCP) -> None:
         later overlaps win, uncovered rows are -1. data_to_sets requires key;
         sets_to_data can choose data_name, join_char and explicit set order.
         The converted sets or source field are removed; side regions survive."""
-        return _guard(
-            _tools.tool_sets_data,
-            input_path=input_path,
-            output_path=output_path,
-            direction=direction,
-            location=location,
-            key=key,
-            data_name=data_name,
-            join_char=join_char,
-            order=order,
-            input_format=input_format,
-            output_format=output_format,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_data_manage)
     def data_manage(
         input_path: str,
         output_path: str,
@@ -5601,19 +3953,9 @@ def _register_data(server: FastMCP) -> None:
         """Keep/drop/rename data arrays. keep/drop: [[location, name], ...];
         rename: [[location, old, new], ...] (location: point | cell | field).
         Applied keep -> drop -> rename."""
-        return _guard(
-            _tools.tool_data_manage,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            keep=keep,
-            drop=drop,
-            rename=rename,
-            ignore_missing=ignore_missing,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_data_convert)
     def data_convert(
         input_path: str,
         output_path: str,
@@ -5627,20 +3969,9 @@ def _register_data(server: FastMCP) -> None:
     ) -> dict:
         """Average data arrays between locations (direction: point_to_cell |
         cell_to_point; weighted uses cell measures for cell_to_point)."""
-        return _guard(
-            _tools.tool_data_convert,
-            input_path=input_path,
-            output_path=output_path,
-            direction=direction,
-            input_format=input_format,
-            output_format=output_format,
-            arrays=arrays,
-            weighted=weighted,
-            nan_policy=nan_policy,
-            nan_replacement=nan_replacement,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_data_calc)
     def data_calc(
         input_path: str,
         output_path: str,
@@ -5654,19 +3985,9 @@ def _register_data(server: FastMCP) -> None:
         """Evaluate an arithmetic expression over data arrays into a new array
         (operators + - * /, functions abs/sqrt/min/max/norm; back-tick-quote
         names with spaces, e.g. "speed = norm(velocity)")."""
-        return _guard(
-            _tools.tool_data_calc,
-            input_path=input_path,
-            output_path=output_path,
-            expression=expression,
-            input_format=input_format,
-            output_format=output_format,
-            location=location,
-            output_name=output_name,
-            overwrite=overwrite,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_data_condition)
     def data_condition(
         input_path: str,
         output_path: str,
@@ -5685,25 +4006,9 @@ def _register_data(server: FastMCP) -> None:
     ) -> dict:
         """Condition data values: clamp to [lo, hi], normalize into [lo, hi],
         or standardize (zero mean, unit std). scope: component | magnitude."""
-        return _guard(
-            _tools.tool_data_condition,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            operation=operation,
-            location=location,
-            arrays=arrays,
-            scope=scope,
-            lo=lo,
-            hi=hi,
-            nan_policy=nan_policy,
-            nan_replacement=nan_replacement,
-            suffix=suffix,
-            preserve_dtype=preserve_dtype,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_tensor_invariants)
     def tensor_invariants(
         input_path: str,
         output_path: str,
@@ -5719,19 +4024,6 @@ def _register_data(server: FastMCP) -> None:
         """von Mises / principal / hydrostatic / deviatoric of a symmetric
         (6-component) or general 3x3 (9-component) tensor array. outputs: any
         of mises | principal | hydrostatic | deviatoric (default: all four)."""
-        return _guard(
-            _tools.tool_tensor_invariants,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            output_format=output_format,
-            location=location,
-            arrays=arrays,
-            outputs=outputs,
-            prefix=prefix,
-            suffix=suffix,
-            overwrite=overwrite,
-        )
 
 
 # --------------------------------------------------------------------------- #
@@ -5739,6 +4031,7 @@ def _register_data(server: FastMCP) -> None:
 # --------------------------------------------------------------------------- #
 def _register_dataset(server: FastMCP) -> None:
     @server.tool()
+    @_forward(_tools.tool_dataset_add)
     def dataset_add(
         manifest_path: str,
         input_pattern: Optional[str] = None,
@@ -5775,34 +4068,9 @@ def _register_dataset(server: FastMCP) -> None:
         picture of the case: thumbnail (an existing PNG under the manifest's
         directory) or render_thumbnail=true, which draws the first step with
         the software rasterizer to thumbnails/<id>.png beside the manifest."""
-        return _guard(
-            _tools.tool_dataset_add,
-            manifest_path=manifest_path,
-            input_pattern=input_pattern,
-            input_paths=input_paths,
-            entry_id=entry_id,
-            input_format=input_format,
-            time_from=time_from,
-            times=times,
-            sort=sort,
-            target_pattern=target_pattern,
-            target_paths=target_paths,
-            target_format=target_format,
-            target_time_from=target_time_from,
-            target_times=target_times,
-            target_sort=target_sort,
-            split=split,
-            tags=tags,
-            group=group,
-            notes=notes,
-            metadata=metadata,
-            thumbnail=thumbnail,
-            render_thumbnail=render_thumbnail,
-            thumbnail_width=thumbnail_width,
-            thumbnail_height=thumbnail_height,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_dataset_list)
     def dataset_list(
         manifest_path: str,
         split: Optional[str] = None,
@@ -5813,16 +4081,9 @@ def _register_dataset(server: FastMCP) -> None:
         """List a dataset manifest's entries, optionally filtered by split /
         tags (must carry all) / group (path or descendant). resolve=true also
         expands each entry's file/step/time plan (no mesh is read)."""
-        return _guard(
-            _tools.tool_dataset_list,
-            manifest_path=manifest_path,
-            split=split,
-            tags=tags,
-            group=group,
-            resolve=resolve,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_dataset_update)
     def dataset_update(
         manifest_path: str,
         entry_ids: Optional[List[str]] = None,
@@ -5850,36 +4111,16 @@ def _register_dataset(server: FastMCP) -> None:
         the manifest's directory as one entry's picture ("none" clears it);
         render_thumbnail=true draws each selected entry's step
         thumbnail_step to thumbnails/<id>.png beside the manifest."""
-        return _guard(
-            _tools.tool_dataset_update,
-            manifest_path=manifest_path,
-            entry_ids=entry_ids,
-            all_entries=all_entries,
-            split=split,
-            assign_splits=assign_splits,
-            seed=seed,
-            by_group=by_group,
-            add_tags=add_tags,
-            remove_tags=remove_tags,
-            group=group,
-            notes=notes,
-            metadata=metadata,
-            drop_metadata=drop_metadata,
-            thumbnail=thumbnail,
-            render_thumbnail=render_thumbnail,
-            thumbnail_step=thumbnail_step,
-            thumbnail_width=thumbnail_width,
-            thumbnail_height=thumbnail_height,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_dataset_find)
     def dataset_find(root_dir: str = ".", max_depth: int = 2) -> dict:
         """Find dataset manifests: every *.json at most max_depth levels
         below root_dir that parses as a DatasetManifest, with its name,
         entry count, splits, modification time and SHA-256 content hash."""
-        return _guard(_tools.tool_dataset_find, root_dir=root_dir, max_depth=max_depth)
 
     @server.tool()
+    @_forward(_tools.tool_dataset_health)
     def dataset_health(
         manifest_path: str,
         split: Optional[str] = None,
@@ -5893,14 +4134,6 @@ def _register_dataset(server: FastMCP) -> None:
         Jacobian and arrays present; per manifest the split balance, totals,
         fields missing across entries and the bad entries. Reads one mesh at
         a time (step 0, or every step with all_steps)."""
-        return _guard(
-            _tools.tool_dataset_health,
-            manifest_path=manifest_path,
-            split=split,
-            entry_ids=entry_ids,
-            quality=quality,
-            all_steps=all_steps,
-        )
 
 
 # --------------------------------------------------------------------------- #
@@ -5908,6 +4141,7 @@ def _register_dataset(server: FastMCP) -> None:
 # --------------------------------------------------------------------------- #
 def _register_training(server: FastMCP) -> None:
     @server.tool()
+    @_forward(_tools.tool_train_defaults)
     def train_defaults(
         manifest_path: str,
         fields: Optional[List[str]] = None,
@@ -5916,14 +4150,9 @@ def _register_training(server: FastMCP) -> None:
         """What a training launch needs: the point/cell data arrays the
         manifest's first entry carries, its splits, whether the frameworks
         are installed, and a complete default training spec."""
-        return _guard(
-            _tools.tool_train_defaults,
-            manifest_path=manifest_path,
-            fields=fields,
-            target_fields=target_fields,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_train_start)
     def train_start(
         manifest_path: str,
         fields: List[str],
@@ -5989,113 +4218,51 @@ def _register_training(server: FastMCP) -> None:
         -- and each reads only its own hyperparameters. Needs
         nvidia-physicsnemo, plus torch_geometric for meshgraphnet (no pip
         extra); a missing framework is a named error."""
-        return _guard(
-            _tools.tool_train_start,
-            manifest_path=manifest_path,
-            fields=fields,
-            target_fields=target_fields,
-            train_split=train_split,
-            valid_split=valid_split,
-            epochs=epochs,
-            batch_size=batch_size,
-            learning_rate=learning_rate,
-            seed=seed,
-            model_name=model_name,
-            processor_size=processor_size,
-            hidden_dim=hidden_dim,
-            aggregation=aggregation,
-            scaling_factor=scaling_factor,
-            conv_layer_size=conv_layer_size,
-            resid_blocks=resid_blocks,
-            resolution=resolution,
-            cell_size=cell_size,
-            bounds=bounds,
-            padding=padding,
-            padding_relative=padding_relative,
-            extrapolate=extrapolate,
-            fill_value=fill_value,
-            squeeze=squeeze,
-            squeeze_index=squeeze_index,
-            latent_channels=latent_channels,
-            num_fno_layers=num_fno_layers,
-            num_fno_modes=num_fno_modes,
-            spectral_padding=spectral_padding,
-            patch_size=patch_size,
-            embed_dim=embed_dim,
-            depth=depth,
-            num_blocks=num_blocks,
-            parameters=parameters,
-            trunk=trunk,
-            trunk_count=trunk_count,
-            trunk_method=trunk_method,
-            trunk_seed=trunk_seed,
-            branch_layers=branch_layers,
-            branch_layer_size=branch_layer_size,
-            trunk_layers=trunk_layers,
-            trunk_layer_size=trunk_layer_size,
-            width=width,
-            regions=regions,
-            kind=kind,
-            undirected=undirected,
-            edge_features=edge_features,
-            float32=float32,
-            target_offset=target_offset,
-            target_delta=target_delta,
-            checkpoint_every=checkpoint_every,
-            device=device,
-            notes=notes,
-            tags=tags,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_train_status)
     def train_status(job_id: str) -> dict:
         """A training job's status (running/finished/failed/stopped), epoch
         progress, best validation loss, ETA and last metrics row."""
-        return _guard(_tools.tool_train_status, job_id=job_id)
 
     @server.tool()
+    @_forward(_tools.tool_train_list)
     def train_list(
         status: Optional[str] = None, manifest_path: Optional[str] = None
     ) -> dict:
         """Every training job (newest first) with its hyperparameters and
         final/best losses; optionally filtered by status or manifest."""
-        return _guard(
-            _tools.tool_train_list, status=status, manifest_path=manifest_path
-        )
 
     @server.tool()
+    @_forward(_tools.tool_train_stop)
     def train_stop(job_id: str, grace_seconds: float = 10.0) -> dict:
         """Stop a job: SIGTERM lets the trainer finish its epoch and write
         final.mdlus; SIGKILL after grace_seconds."""
-        return _guard(
-            _tools.tool_train_stop, job_id=job_id, grace_seconds=grace_seconds
-        )
 
     @server.tool()
+    @_forward(_tools.tool_train_log)
     def train_log(job_id: str, offset: int = 0, max_bytes: int = 65536) -> dict:
         """A window of a job's stdout/stderr from a byte offset; poll with
         next_offset to tail it."""
-        return _guard(
-            _tools.tool_train_log, job_id=job_id, offset=offset, max_bytes=max_bytes
-        )
 
     @server.tool()
+    @_forward(_tools.tool_train_metrics)
     def train_metrics(job_id: str, since_epoch: int = 0) -> dict:
         """A job's per-epoch metrics rows (train/valid loss, lr, timing)."""
-        return _guard(_tools.tool_train_metrics, job_id=job_id, since_epoch=since_epoch)
 
     @server.tool()
+    @_forward(_tools.tool_train_checkpoints)
     def train_checkpoints(job_id: str) -> dict:
         """A job's .mdlus checkpoints (periodic/best/final) with epoch,
         validation loss, size and which is marked best."""
-        return _guard(_tools.tool_train_checkpoints, job_id=job_id)
 
     @server.tool()
+    @_forward(_tools.tool_train_mark_best)
     def train_mark_best(job_id: str, checkpoint: str) -> dict:
         """Mark one of a job's checkpoints as best (copied to best.mdlus)."""
-        return _guard(_tools.tool_train_mark_best, job_id=job_id, checkpoint=checkpoint)
 
     @server.tool()
+    @_forward(_tools.tool_train_predict)
     def train_predict(
         manifest_path: str,
         job_id: Optional[str] = None,
@@ -6109,18 +4276,9 @@ def _register_training(server: FastMCP) -> None:
         checkpoint or an explicit .mdlus, writing <column>_pred /
         <column>_error data arrays into output_dir/<entry_id>.vtu; returns
         per-entry RMSE. Needs the frameworks."""
-        return _guard(
-            _tools.tool_train_predict,
-            manifest_path=manifest_path,
-            job_id=job_id,
-            checkpoint=checkpoint,
-            entry_ids=entry_ids,
-            split=split,
-            step=step,
-            output_dir=output_dir,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_guard_fit)
     def guard_fit(
         manifest_path: str,
         output_path: str,
@@ -6138,16 +4296,9 @@ def _register_training(server: FastMCP) -> None:
         a scaled part is a different part, and a model trained on brackets 10
         cm across has learnt physics at that scale. The threshold is margin
         times the worst training score."""
-        return _guard(
-            _tools.tool_guard_fit,
-            manifest_path=manifest_path,
-            output_path=output_path,
-            split=split,
-            margin=margin,
-            quality=quality,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_guard_check)
     def guard_check(
         input_path: str,
         guard_path: Optional[str] = None,
@@ -6160,15 +4311,9 @@ def _register_training(server: FastMCP) -> None:
         a model card carrying one) it adds the score, the threshold, a verdict
         of 'in' or 'out', and the top descriptors that put it there — so a flag
         is actionable rather than a bare number. Advisory: nothing is refused."""
-        return _guard(
-            _tools.tool_guard_check,
-            input_path=input_path,
-            guard_path=guard_path,
-            input_format=input_format,
-            top=top,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_predict_file)
     def predict_file(
         checkpoint: str,
         input_path: str,
@@ -6191,18 +4336,6 @@ def _register_training(server: FastMCP) -> None:
         keys it was trained on). A file carrying no truth predicts anyway,
         with rmse/max_error reported as null rather than measured against
         itself. Needs the frameworks."""
-        return _guard(
-            _tools.tool_predict_file,
-            checkpoint=checkpoint,
-            input_path=input_path,
-            output_path=output_path,
-            time_step=time_step,
-            target_path=target_path,
-            input_format=input_format,
-            output_format=output_format,
-            device=device,
-            parameters=parameters,
-        )
 
 
 # --------------------------------------------------------------------------- #
@@ -6210,6 +4343,7 @@ def _register_training(server: FastMCP) -> None:
 # --------------------------------------------------------------------------- #
 def _register_gated(server: FastMCP) -> None:
     @server.tool()
+    @_forward(_tools.tool_fit_cad)
     def fit_cad(
         input_path: str,
         output_path: str,
@@ -6358,65 +4492,9 @@ def _register_gated(server: FastMCP) -> None:
         parallel and perpendicular planes and nearly equal radii are made
         exact, each change kept only where its patch still passes its fit;
         adds num_constrained_primitives and num_constraint_groups."""
-        return _guard(
-            _tools.tool_fit_cad,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            mesh_output_path=mesh_output_path,
-            curvature_tolerance=curvature_tolerance,
-            min_patch_cells=min_patch_cells,
-            fit_tolerance=fit_tolerance,
-            tolerance=tolerance,
-            exact_edges=exact_edges,
-            types=types,
-            mesh_deflection=mesh_deflection,
-            max_demotion_rounds=max_demotion_rounds,
-            freeform=freeform,
-            freeform_degree=freeform_degree,
-            freeform_max_control=freeform_max_control,
-            cad_json_output_path=cad_json_output_path,
-            freeform_split=freeform_split,
-            fillets=fillets,
-            threads=threads,
-            segment_method=segment_method,
-            segment_tolerance=segment_tolerance,
-            merge_faces=merge_faces,
-            backend=backend,
-            refine_segmentation=refine_segmentation,
-            max_refine_iterations=max_refine_iterations,
-            refine_epsilon=refine_epsilon,
-            normal_weight=normal_weight,
-            allow_merge=allow_merge,
-            allow_split=allow_split,
-            ransac_seed=ransac_seed,
-            refine_tolerance=refine_tolerance,
-            relative_tolerance=relative_tolerance,
-            freeform_general=freeform_general,
-            freeform_tolerance=freeform_tolerance,
-            freeform_smoothing=freeform_smoothing,
-            max_freeform_poles=max_freeform_poles,
-            max_freeform_iterations=max_freeform_iterations,
-            max_freeform_splits=max_freeform_splits,
-            sew_tolerance=sew_tolerance,
-            extend_surfaces=extend_surfaces,
-            snap_junctions=snap_junctions,
-            face_deviation=face_deviation,
-            freeform_mode=freeform_mode,
-            freeform_parameterization=freeform_parameterization,
-            extraordinary_vertex=extraordinary_vertex,
-            local_refine=local_refine,
-            freeform_g1_tolerance_deg=freeform_g1_tolerance_deg,
-            freeform_max_control_points=freeform_max_control_points,
-            layout_target_patch_size=layout_target_patch_size,
-            layout_max_valence_deviation=layout_max_valence_deviation,
-            resegment_rounds=resegment_rounds,
-            layout_snap_to_features=layout_snap_to_features,
-            validate_by_surface_sampling=validate_by_surface_sampling,
-            constrain_primitives=constrain_primitives,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_data_export)
     def data_export(
         input_path: str,
         output_path: str,
@@ -6425,15 +4503,9 @@ def _register_gated(server: FastMCP) -> None:
     ) -> dict:
         """Export data arrays to a Parquet table (location: point | cell).
         Needs the [arrow] extra; a missing install returns a named error."""
-        return _guard(
-            _tools.tool_data_export,
-            input_path=input_path,
-            output_path=output_path,
-            input_format=input_format,
-            location=location,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_export_dataset)
     def export_dataset(
         input_pattern: Optional[str] = None,
         input_paths: Optional[List[str]] = None,
@@ -6448,18 +4520,9 @@ def _register_gated(server: FastMCP) -> None:
         [arrow] extra) or chunked zarr/hdf5 groups ([zarr] / h5py). Give
         exactly one of input_pattern (a glob) or input_paths; mesh_id: stem |
         index. Returns the dataset manifest."""
-        return _guard(
-            _tools.tool_export_dataset,
-            input_pattern=input_pattern,
-            input_paths=input_paths,
-            output_path=output_path,
-            input_format=input_format,
-            location=location,
-            dataset_format=dataset_format,
-            mesh_id=mesh_id,
-        )
 
     @server.tool()
+    @_forward(_tools.tool_export_cae)
     def export_cae(
         output_dir: str,
         input_pattern: Optional[str] = None,
@@ -6478,19 +4541,6 @@ def _register_gated(server: FastMCP) -> None:
         named field blocks and the case's global parameters. Give exactly one
         of input_pattern (a glob) or input_paths. Returns the files written
         and the keys of the first one."""
-        return _guard(
-            _tools.tool_export_cae,
-            output_dir=output_dir,
-            input_pattern=input_pattern,
-            input_paths=input_paths,
-            input_format=input_format,
-            surface_fields=surface_fields,
-            volume_fields=volume_fields,
-            global_params=global_params,
-            global_params_reference=global_params_reference,
-            global_params_order=global_params_order,
-            name_template=name_template,
-        )
 
     @server.tool()
     def screenshot(
