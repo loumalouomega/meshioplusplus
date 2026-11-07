@@ -471,44 +471,9 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
 
     // One triangle block per input block (1:1, possibly empty), plus the
     // per-input-block cell maps composed through the simplexify child map.
-    {
-        const bool has_parent = simp.HasCellData("convert:parent_cell") &&
-                                simp.CellDataNumBlocks("convert:parent_cell") == nblocks;
-        std::size_t bi = 0;
-        std::vector<std::size_t> in_cells;
-        for (const auto cb : rMesh.CellRange())
-            in_cells.push_back(cb.NumCells());
-        for (const auto cb : simp.CellRange()) {
-            const std::size_t nc = cb.NumCells();
-            const std::size_t base = static_cast<std::size_t>(faces.mBlockBase[bi]);
-            std::size_t alive_in_block = 0;
-            for (std::size_t c = 0; c < nc; ++c)
-                if (face_alive[base + c])
-                    ++alive_in_block;
-            NDArray block = NDArray::Uninit(DType::Int64, {alive_in_block, 3});
-            std::int64_t* dst = block.As<std::int64_t>();
-            const NDArray* p_parent =
-                has_parent ? &simp.CellData("convert:parent_cell", bi) : nullptr;
-            std::vector<std::int64_t> cell_map(bi < in_cells.size() ? in_cells[bi] : nc, -1);
-            std::size_t w = 0;
-            for (std::size_t c = 0; c < nc; ++c) {
-                if (!face_alive[base + c])
-                    continue;
-                for (std::size_t k = 0; k < 3; ++k)
-                    dst[w * 3 + k] =
-                        remap[static_cast<std::size_t>(faces.mCorners[(base + c) * 3 + k])];
-                const std::int64_t parent = p_parent != nullptr ? detail::read_int(*p_parent, c)
-                                                                : static_cast<std::int64_t>(c);
-                if (parent >= 0 && static_cast<std::size_t>(parent) < cell_map.size() &&
-                    cell_map[static_cast<std::size_t>(parent)] < 0)
-                    cell_map[static_cast<std::size_t>(parent)] = static_cast<std::int64_t>(w);
-                ++w;
-            }
-            out.AddCellBlock(cell_type_name(CellType::Triangle), std::move(block));
-            result.mCellMaps.push_back(detail::NDArrayUtils::Int64Vector(cell_map));
-            ++bi;
-        }
-    }
+    detail::decim_emit_blocks<3>(rMesh, simp, "convert:parent_cell", face_alive, faces.mCorners,
+                                 faces.mBlockBase, remap, CellType::Triangle, out,
+                                 result.mCellMaps);
 
     // cell_data: the surviving faces' own rows (simplexify already replicated a
     // parent's row to its triangles); convert:parent_cell is consumed above,
@@ -527,14 +492,8 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     // which the run scan steps over. A side edge moves to the triangle edge
     // joining its surviving nodes; one a collapse removed is lost, with a
     // warning. See detail/region_remap.hpp.
-    {
-        detail::RegionRemap rmap;
-        rmap.pPointMap = &result.mPointMap;
-        rmap.mCellMapKind = detail::CellMapKind::FirstChild;
-        rmap.pCellMaps = &result.mCellMaps;
-        rmap.mOpName = "decimate";
-        detail::remap_regions(rMesh, result.mMesh, rmap);
-    }
+    detail::decim_remap_regions(rMesh, result.mMesh, result.mPointMap, result.mCellMaps,
+                                detail::CellMapKind::FirstChild, "decimate");
 
     return result;
 }

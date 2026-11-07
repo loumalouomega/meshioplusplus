@@ -25,12 +25,14 @@
 
 // Project includes
 #include "meshioplusplus/detail/data_ops.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
 #include "crease_edges.hpp"
 #include "decimate_shared.hpp"
+#include "ndarray_utils.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -305,6 +307,76 @@ NDArray decim_point_map(const std::vector<std::int64_t>& rSuccessor,
         dst[i] = rRemap[static_cast<std::size_t>(v)];
     }
     return pm;
+}
+
+template <int K>
+void decim_emit_blocks(const Mesh& rIn, const Mesh& rSrc, const char* pParentName,
+                       const std::vector<std::uint8_t>& rAlive,
+                       const std::vector<std::int64_t>& rConn,
+                       const std::vector<std::int64_t>& rBases,
+                       const std::vector<std::int64_t>& rRemap, CellType Type, Mesh& rOut,
+                       std::vector<NDArray>& rCellMaps) {
+    constexpr std::size_t kCorners = K;
+    const std::size_t nblocks = rSrc.NumCellBlocks();
+    const bool has_parent = pParentName != nullptr && rSrc.HasCellData(pParentName) &&
+                            rSrc.CellDataNumBlocks(pParentName) == nblocks;
+    std::size_t bi = 0;
+    std::vector<std::size_t> in_cells;
+    for (const auto cb : rIn.CellRange())
+        in_cells.push_back(cb.NumCells());
+    for (const auto cb : rSrc.CellRange()) {
+        const std::size_t nc = cb.NumCells();
+        const std::size_t base = static_cast<std::size_t>(rBases[bi]);
+        std::size_t alive_in_block = 0;
+        for (std::size_t c = 0; c < nc; ++c)
+            if (rAlive[base + c])
+                ++alive_in_block;
+        NDArray block = NDArray::Uninit(DType::Int64, {alive_in_block, kCorners});
+        std::int64_t* dst = block.As<std::int64_t>();
+        const NDArray* p_parent = has_parent ? &rSrc.CellData(pParentName, bi) : nullptr;
+        std::vector<std::int64_t> cell_map(bi < in_cells.size() ? in_cells[bi] : nc, -1);
+        std::size_t w = 0;
+        for (std::size_t c = 0; c < nc; ++c) {
+            if (!rAlive[base + c])
+                continue;
+            for (std::size_t k = 0; k < kCorners; ++k)
+                dst[w * kCorners + k] =
+                    rRemap[static_cast<std::size_t>(rConn[(base + c) * kCorners + k])];
+            const std::int64_t parent =
+                p_parent != nullptr ? read_int(*p_parent, c) : static_cast<std::int64_t>(c);
+            if (parent >= 0 && static_cast<std::size_t>(parent) < cell_map.size() &&
+                cell_map[static_cast<std::size_t>(parent)] < 0)
+                cell_map[static_cast<std::size_t>(parent)] = static_cast<std::int64_t>(w);
+            ++w;
+        }
+        rOut.AddCellBlock(cell_type_name(Type), std::move(block));
+        rCellMaps.push_back(NDArrayUtils::Int64Vector(cell_map));
+        ++bi;
+    }
+}
+
+template void decim_emit_blocks<3>(const Mesh&, const Mesh&, const char*,
+                                   const std::vector<std::uint8_t>&,
+                                   const std::vector<std::int64_t>&,
+                                   const std::vector<std::int64_t>&,
+                                   const std::vector<std::int64_t>&, CellType, Mesh&,
+                                   std::vector<NDArray>&);
+template void decim_emit_blocks<4>(const Mesh&, const Mesh&, const char*,
+                                   const std::vector<std::uint8_t>&,
+                                   const std::vector<std::int64_t>&,
+                                   const std::vector<std::int64_t>&,
+                                   const std::vector<std::int64_t>&, CellType, Mesh&,
+                                   std::vector<NDArray>&);
+
+void decim_remap_regions(const Mesh& rIn, Mesh& rOut, const NDArray& rPointMap,
+                         const std::vector<NDArray>& rCellMaps, CellMapKind Kind,
+                         const char* pOpName) {
+    RegionRemap rmap;
+    rmap.pPointMap = &rPointMap;
+    rmap.mCellMapKind = Kind;
+    rmap.pCellMaps = &rCellMaps;
+    rmap.mOpName = pOpName;
+    remap_regions(rIn, rOut, rmap);
 }
 
 }  // namespace detail

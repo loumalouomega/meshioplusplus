@@ -38,7 +38,9 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/decimate_common.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
@@ -182,6 +184,29 @@ void decim_kill_and_migrate(std::vector<std::int64_t>& rConn,
     }
     rRows[static_cast<std::size_t>(r)].clear();
 }
+
+/// Emits one `K`-corner block of type `Type` per block of `rSrc` (1:1, possibly
+/// empty): the alive cells of the flat `rConn` in their original order, their
+/// corners renumbered through `rRemap`, and per block the cell map from
+/// `rIn`'s cells (input cell -> output row, -1 for a removed cell) into
+/// `rCellMaps`. `pParentName` names an int cell_data of `rSrc` mapping each of
+/// its cells to the `rIn` cell it came from (decimate's `convert:parent_cell`,
+/// which simplexify adds), whose first surviving child is its entry; nullptr
+/// (decimate_volume, which works on its input) is the identity.
+template <int K>
+void decim_emit_blocks(const Mesh& rIn, const Mesh& rSrc, const char* pParentName,
+                       const std::vector<std::uint8_t>& rAlive,
+                       const std::vector<std::int64_t>& rConn,
+                       const std::vector<std::int64_t>& rBases,
+                       const std::vector<std::int64_t>& rRemap, CellType Type, Mesh& rOut,
+                       std::vector<NDArray>& rCellMaps);
+
+/// Carries `rIn`'s named regions onto the decimated `rOut` through its point
+/// map and per-block cell maps (`FirstChild` for decimate, `Direct` for
+/// decimate_volume); see detail/region_remap.hpp.
+void decim_remap_regions(const Mesh& rIn, Mesh& rOut, const NDArray& rPointMap,
+                         const std::vector<NDArray>& rCellMaps, CellMapKind Kind,
+                         const char* pOpName);
 
 /// Marks in `rUsed` every corner of an alive cell of the flat `K`-per-cell
 /// `rConn`, numbers the used points ascending into `rRemap` (-1 elsewhere),
