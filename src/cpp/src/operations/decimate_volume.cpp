@@ -49,7 +49,6 @@
 // Project includes (private, not installed)
 #include "../detail/decimate_shared.hpp"
 #include "../detail/surface_rings.hpp"
-#include "../detail/ndarray_utils.hpp"
 
 namespace meshioplusplus {
 

@@ -24,6 +24,7 @@
 #include <utility>
 
 // Project includes
+#include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/detail/value_io.hpp"

@@ -40,7 +40,6 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
-#include <utility>
 #include <vector>
 
 // Project includes
@@ -57,7 +56,6 @@
 #include "../detail/decimate_shared.hpp"
 #include "../detail/slot_runs.hpp"
 #include "../detail/surface_rings.hpp"
-#include "../detail/ndarray_utils.hpp"
 
 namespace meshioplusplus {
 
