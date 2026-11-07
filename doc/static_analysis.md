@@ -1,21 +1,21 @@
 # Static analysis and code quality
 
-Three tools watch the quality of the code rather than its behaviour. SonarCloud measures duplication, maintainability issues and coverage of the `master` branch. Clang-Tidy gates include hygiene on every pull request and runs an advisory performance audit on request. The [roadmap](./roadmap.md#quality-of-implementation) turns their reports into cleaning work: SonarCloud's duplication ranking orders item 3.4, and item 3.5 widens Clang-Tidy beyond includes. The shared kernels that duplicated code should move to are described in [shared geometry and FEM kernels](./geometry_kernels.md).
+Three tools watch the quality of the code rather than its behaviour. SonarCloud measures duplication and maintainability issues (code smells, bugs, vulnerabilities) of the `master` branch; Codecov measures its coverage. Clang-Tidy gates include hygiene on every pull request and runs an advisory performance audit on request. The [roadmap](./roadmap.md#quality-of-implementation) turns their reports into cleaning work: SonarCloud's duplication ranking orders item 3.4, and item 3.5 widens Clang-Tidy beyond includes. The shared kernels that duplicated code should move to are described in [shared geometry and FEM kernels](./geometry_kernels.md).
 
 ## SonarCloud
 
-The analysis runs in the `coverage` job of `.github/workflows/ci.yml`, on pushes to `master` only, after the instrumented builds and the Codecov uploads. It never runs on a pull request or a release tag: like coverage, it is a baseline for the branch, not a gate on a review. The quality gate and the duplication density appear on [sonarcloud.io](https://sonarcloud.io/summary/new_code?id=loumalouomega_meshioplusplus) and as badges in the README.
+The analysis runs in its own workflow, `.github/workflows/sonarcloud.yml`, on every push to `master` and on demand (**Actions → sonarcloud → Run workflow**). It never runs on a pull request or a release tag: it is a baseline for the branch, not a gate on a review. It builds nothing and runs no tests, so a scan takes minutes rather than waiting on the hours-long instrumented `coverage` job of `ci.yml`, which a newer push to `master` used to cancel before its scan step was reached. A newer push waits for a running scan instead of cancelling it. The quality gate and the duplication density appear on [sonarcloud.io](https://sonarcloud.io/summary/new_code?id=loumalouomega_meshioplusplus) and as badges in the README.
 
 ### One-time setup
 
-The scan step is skipped, with a warning in the job log, until the repository is set up on SonarCloud:
+The scan is skipped, with a warning in the job log, until the repository is set up on SonarCloud:
 
 1. Sign in to [sonarcloud.io](https://sonarcloud.io) with GitHub, import the `loumalouomega` organization and analyse the `meshioplusplus` repository.
 2. In the project's **Administration → Analysis Method**, turn **Automatic Analysis** off. C and C++ are analysed only from CI, with the build's compilation database; automatic analysis would conflict with the CI scan.
 3. Create a token (**My Account → Security**) and add it as the `SONAR_TOKEN` repository secret on GitHub.
 4. Check that the organization and project key SonarCloud assigned match `sonar.organization` and `sonar.projectKey` in `sonar-project.properties` (`loumalouomega` and `loumalouomega_meshioplusplus`, SonarCloud's defaults for this repository); change the file if they differ.
 
-The next push to `master` then runs the scan. A failed scan (a SonarCloud outage, an expired token) does not fail the job.
+The next push to `master` then runs the scan. A failed scan (a SonarCloud outage, an expired token) does not fail the workflow.
 
 ### What is analysed
 
@@ -29,16 +29,16 @@ The next push to `master` then runs the scan. A failed scan (a SonarCloud outage
 
 Duplication is measured on library code only (`sonar.cpd.exclusions=tests/**`): tests repeat their setup on purpose.
 
-### Inputs from the coverage job
+### The compilation database
 
-The C/C++ analyzer needs the exact compile command of every translation unit. Both instrumented builds of the job export a compilation database (`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`): the GoogleTest and C API tree (`build-cpp-cov`) and the editable Python extension's tree (`build/<wheel_tag>`), which is the only one that compiles `bindings/python/_core.cpp`. A step merges them into `compile_commands.json`, keeps one command per source, and strips the `ccache` launcher. Sources neither build compiles (the other mesh backends' headers, OpenCASCADE-only paths when it is missing) are not analysed.
-
-Coverage reaches SonarCloud from the same files Codecov receives, so both services report one denominator. The Python report is pytest-cov's `coverage.xml`. The C++ report is the filtered lcov tracefile `cpp-coverage.info`, rewritten in Sonar's generic coverage format by `tools/lcov_to_sonar.py` (`cpp-coverage-sonar.xml`): SonarCloud does not read lcov for C++, and re-running gcov through another tool would measure a different set of files. The conversion keeps files under the repository root, sums the hits of a file captured from both builds, and counts a branch as covered when either build took it.
+The C/C++ analyzer needs the exact compile command of every translation unit. The workflow gets it from CMake's configure step alone (`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`), which is enough because no analysed source includes a header generated at build time. It configures two trees with HDF5, netCDF, zlib and OpenCASCADE on, mirroring the `coverage` job's two builds: the GoogleTest and C API tree, and the Python extension's tree, the only one that compiles `bindings/python/_core.cpp`. A step merges them into `compile_commands.json` and keeps one command per source. Sources neither tree compiles (the other mesh backends' headers) are not analysed.
 
 ```sh
-# Locally, after an instrumented build and an lcov capture:
-python tools/lcov_to_sonar.py cpp-coverage.info cpp-coverage-sonar.xml --root .
+# The same database locally, without building:
+cmake -S . -B build-sonar -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DMESHIOPLUSPLUS_BUILD_TESTS=ON -DMESHIOPLUSPLUS_BUILD_C_API=ON -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
 ```
+
+SonarCloud reports no coverage: nothing runs under instrumentation in this workflow. Coverage is Codecov's, uploaded by the `coverage` job.
 
 ## Local duplication report
 
