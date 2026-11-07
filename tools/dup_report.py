@@ -15,10 +15,14 @@ tokens is hashed. A window seen in two places marks its lines as duplicated.
 The report gives the duplicated-line density per language, the files with the
 most duplicated lines, and the largest regions shared by two files with their
 line ranges. Excluded: vendored code, the amalgamated single header and the
-generated tables (the list ``sonar-project.properties`` excludes). Windows
-repeated more than ``--max-occurrences`` times (long runs of identical table
-rows) are ignored. Standard library only; it reads files and writes nothing
-unless ``--json`` is given.
+generated tables (the list ``sonar-project.properties`` excludes), and the
+files that are tables alone (its ``sonar.cpd.exclusions``). Windows repeated
+more than ``--max-occurrences`` times (long runs of identical table rows) are
+ignored, and so is a window made only of literals and table punctuation: once
+strings and numbers are normalised, two literal tables of the same shape match
+although no entry agrees (roadmap 8.1). The R binding's C sources are scanned
+with the C++ ones, as SonarCloud scans them. Standard library only; it reads
+files and writes nothing unless ``--json`` is given.
 """
 
 import argparse
@@ -40,6 +44,7 @@ CPP_ROOTS = (
     "src/cpp/providers",
     "bindings/c",
     "bindings/python",
+    "bindings/r/meshioplusplus/src",
 )
 PY_ROOTS = ("src/python/meshioplusplus",)
 EXCLUDED_PARTS = ("third_party", "single_include", "node_modules")
@@ -50,6 +55,8 @@ EXCLUDED_FILES = {
     "_colormap.py",
     "_format_table.py",
     "_schema.py",
+    # Tables alone (sonar.cpd.exclusions): per-format node permutations.
+    "node_order.cpp",
 }
 
 _CPP_TOKEN = re.compile(
@@ -63,6 +70,21 @@ _CPP_KEYWORDS = frozenset(
     "public private protected void double int float bool char true false "
     "nullptr new delete std size_t int64_t uint8_t int32_t vector array".split()
 )
+
+
+# What a literal table is made of once strings and numbers are normalised: a
+# window holding almost nothing else is a run of table rows, not copied code
+# (roadmap 8.1). One token in ten may be something else, so the windows that
+# straddle a table's declaration (``const T kName[] = {``) go with its rows.
+_TABLE_TOKENS = frozenset(
+    ("N", "S", "{", "}", "[", "]", "(", ")", ",", ":", ";", "-", "+", ".")
+)
+
+
+def is_table_window(tokens):
+    """True when ``tokens`` is literals and table punctuation, bar one in ten."""
+    other = sum(1 for t in tokens if t not in _TABLE_TOKENS)
+    return other <= len(tokens) // 10
 
 
 def cpp_tokens(text):
@@ -139,7 +161,10 @@ def analyse(paths, tokenizer, window, max_occurrences, root):
     for name, seq in toks.items():
         norm = [t for t, _ in seq]
         for i in range(len(norm) - window + 1):
-            index[hash(tuple(norm[i : i + window]))].append((name, i))
+            win = tuple(norm[i : i + window])
+            if is_table_window(win):
+                continue
+            index[hash(win)].append((name, i))
     dup = collections.defaultdict(set)
     pairs = collections.defaultdict(list)
     for occ in index.values():
@@ -222,7 +247,7 @@ def report(lang, result, top, out):
 
 
 LANGS = {
-    "cpp": (CPP_ROOTS, (".cpp", ".hpp", ".h"), cpp_tokens),
+    "cpp": (CPP_ROOTS, (".cpp", ".hpp", ".h", ".c"), cpp_tokens),
     "python": (PY_ROOTS, (".py",), py_tokens),
 }
 

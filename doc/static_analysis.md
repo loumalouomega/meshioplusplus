@@ -27,7 +27,7 @@ The next push to `master` then runs the scan. A failed scan (a SonarCloud outage
 - `bindings/wasm` and `bindings/fortran`, which Codecov also ignores;
 - test fixtures (`tests/python/meshes`, `tests/python/input`, `tests/fuzz`).
 
-Duplication is measured on library code only (`sonar.cpd.exclusions=tests/**`): tests repeat their setup on purpose.
+Duplication is measured on library code only (`sonar.cpd.exclusions` lists `tests/**`): tests repeat their setup on purpose. The same property also lists the files that are literal tables alone (`src/cpp/src/detail/node_order.cpp`, the per-format node permutations): the detector normalises literals, so two tables of the same shape match although no entry agrees.
 
 ### The compilation database
 
@@ -42,7 +42,7 @@ SonarCloud reports no coverage: nothing runs under instrumentation in this workf
 
 ## Local duplication report
 
-SonarCloud reports on `master` only, so `tools/dup_report.py` gives the same kind of number on any checkout, before a change lands. It works like Sonar's copy-paste detector: every C++ and Python source is tokenised, identifiers, numbers and strings are normalised so a renamed copy still matches, and every window of 100 consecutive tokens is hashed; a window found in two places marks its lines as duplicated. It excludes what `sonar-project.properties` excludes, so the two measures agree on what counts.
+SonarCloud reports on `master` only, so `tools/dup_report.py` gives the same kind of number on any checkout, before a change lands. It works like Sonar's copy-paste detector: every C++ and Python source is tokenised, identifiers, numbers and strings are normalised so a renamed copy still matches, and every window of 100 consecutive tokens is hashed; a window found in two places marks its lines as duplicated. A window made of literals and table punctuation (`{`, `}`, `[`, `]`, `(`, `)`, `,`, `:`, `;`, signs and dots), with at most one token in ten anything else, is skipped: it is a run of table rows, and two tables of one shape would otherwise match entry for entry although no entry agrees ([roadmap 8.1](./roadmap.md#code-duplication)). It excludes what `sonar-project.properties` excludes, including the table-only files of `sonar.cpd.exclusions`, and it scans the R binding's C sources (`bindings/r/meshioplusplus/src/*.c`) beside the C++ ones, as SonarCloud does, so the two measures agree on what counts.
 
 ```sh
 tools/dup_report.py                      # density, top files and largest shared regions, C++ and Python
