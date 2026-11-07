@@ -1393,6 +1393,38 @@ TEST(H5Util, AppendedGzipChunksMatchHdf5sOwnFilter) {
     }
 }
 
+// Roadmap 5.8.2: a window of rows of a gzip dataset that spans several chunks
+// is inflated in parallel (with the library lock given up) instead of through
+// H5Dread; every window must read what H5Dread reads.
+TEST(H5Util, RowWindowsOfAGzipDatasetMatchH5Dread) {
+    H5utilTempFile f(".h5");
+    const std::size_t rows = 1000;
+    std::vector<double> all(rows * 3);
+    for (std::size_t i = 0; i < all.size(); ++i)
+        all[i] = std::cos(static_cast<double>(i)) * 1e2;
+    {
+        h5::Hid file = h5::create_file(f.mPath);
+        h5::create_appendable_dataset(file, "d", meshioplusplus::DType::Float64, {3},
+                                      /*ChunkRows=*/64, /*gzip_level=*/5);
+        meshioplusplus::NDArray a =
+            meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Float64, {rows, 3});
+        std::memcpy(a.Data(), all.data(), all.size() * sizeof(double));
+        h5::append_rows(file, "d", a);
+    }
+    h5::Hid file = h5::open_file_read(f.mPath);
+    const std::pair<std::size_t, std::size_t> windows[] = {
+        {0, rows}, {0, 64}, {0, 65},    {10, 50}, {10, 200},
+        {64, 128}, {63, 2}, {900, 100}, {999, 1}, {1, 998}};
+    for (const auto& [row0, count] : windows) {
+        const auto got = h5::read_dataset_rows(file, "d", row0, count);
+        ASSERT_EQ(got.Shape(), (std::vector<std::size_t>{count, 3})) << row0 << "+" << count;
+        EXPECT_EQ(std::memcmp(got.Data(), all.data() + row0 * 3, count * 3 * sizeof(double)), 0)
+            << row0 << "+" << count;
+    }
+    const auto whole = h5::read_dataset(file, "d");
+    EXPECT_EQ(std::memcmp(whole.Data(), all.data(), all.size() * sizeof(double)), 0);
+}
+
 namespace {
 // Writes "d" as one chunk of `n` elements of `elem` bytes with the deflate filter, and
 // the `payload` bytes as the chunk: deflated by zlib with the filter applied (`deflated`),

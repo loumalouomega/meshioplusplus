@@ -87491,33 +87491,39 @@ bool h5u_write_deflate_chunks(hid_t d, const void* pSrc, DType Dt, std::size_t R
 }
 
 /**
- * @brief Read the gzip-compressed, row-chunked dataset `d` straight into
- * `rOut` with the chunks inflated in parallel (the I/O stays serial: HDF5 is
- * not thread-safe). Returns false, having read nothing, for any layout it does
- * not cover -- not chunked, a filter pipeline other than deflate alone, chunks
- * that split a row, one chunk only, a chunk never written, or a file type
- * that is not the memory layout -- so the caller falls back to `H5Dread`.
+ * @brief Read rows `[Row0, Row0 + Count)` of the gzip-compressed, row-chunked
+ * dataset `d` (of extent `rDims`) straight into `rOut` with the chunks
+ * inflated in parallel and the library lock given up while they inflate (the
+ * I/O stays serial and locked: HDF5 is not thread-safe). Returns false,
+ * having read nothing, for any layout it does not cover -- not chunked, a
+ * filter pipeline other than deflate alone, chunks that split a row, a window
+ * within one chunk, a chunk never written, or a file type that is not the
+ * memory layout -- so the caller falls back to `H5Dread`.
  */
 bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
-                             const std::vector<hsize_t>& rDims) {
-    if (rDims.empty() || rOut.Size() == 0 || H5Tequal(FileType, native_type(rOut.Dtype())) <= 0)
+                             const std::vector<hsize_t>& rDims, hsize_t Row0, hsize_t Count) {
+    if (rDims.empty() || rOut.Size() == 0 || Count == 0 ||
+        H5Tequal(FileType, native_type(rOut.Dtype())) <= 0)
         return false;
     std::vector<hsize_t> chunk(rDims.size(), 0);
     for (std::size_t i = 1; i < rDims.size(); ++i)
         chunk[i] = rDims[i];
     if (h5u_deflate_only_level(d, rDims, chunk[0]) < 0)
         return false;
-    if (chunk[0] >= rDims[0])
+    const hsize_t chunk_rows = chunk[0];
+    const hsize_t c_first = Row0 / chunk_rows;
+    const hsize_t c_last = (Row0 + Count - 1) / chunk_rows;
+    if (c_last == c_first)
         return false;  // one chunk: nothing to spread over threads
 
-    const std::size_t row_bytes = rOut.Nbytes() / static_cast<std::size_t>(rDims[0]);
-    const std::size_t chunk_bytes = static_cast<std::size_t>(chunk[0]) * row_bytes;
-    const std::size_t nchunks = static_cast<std::size_t>((rDims[0] + chunk[0] - 1) / chunk[0]);
+    const std::size_t row_bytes = rOut.Nbytes() / static_cast<std::size_t>(Count);
+    const std::size_t chunk_bytes = static_cast<std::size_t>(chunk_rows) * row_bytes;
+    const std::size_t nchunks = static_cast<std::size_t>(c_last - c_first + 1);
     std::vector<std::vector<Bytef>> packed(nchunks);
     std::vector<std::uint32_t> masks(nchunks, 0);
     std::vector<hsize_t> offset(rDims.size(), 0);
     for (std::size_t c = 0; c < nchunks; ++c) {
-        offset[0] = static_cast<hsize_t>(c) * chunk[0];
+        offset[0] = (c_first + static_cast<hsize_t>(c)) * chunk_rows;
         hsize_t stored = 0;
         if (H5Dget_chunk_storage_size(d, offset.data(), &stored) < 0 || stored == 0)
             return false;  // unallocated: H5Dread supplies the fill value
@@ -87544,20 +87550,25 @@ bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
         parallel_for(
             nchunks,
             [&](std::size_t c) {
-                const std::size_t first = c * chunk_bytes;
-                const std::size_t want = std::min(chunk_bytes, rOut.Nbytes() - first);
+                // The rows of this chunk inside the window, and where they go.
+                const hsize_t r0 = (c_first + static_cast<hsize_t>(c)) * chunk_rows;
+                const hsize_t lo = std::max(r0, Row0);
+                const hsize_t hi = std::min(r0 + chunk_rows, Row0 + Count);
+                const std::size_t src_off = static_cast<std::size_t>(lo - r0) * row_bytes;
+                const std::size_t dst_off = static_cast<std::size_t>(lo - Row0) * row_bytes;
+                const std::size_t want = static_cast<std::size_t>(hi - lo) * row_bytes;
                 if (masks[c] & 1u) {  // the filter was skipped: the chunk is stored raw
-                    if (packed[c].size() >= want) {
-                        std::memcpy(dst + first, packed[c].data(), want);
+                    if (packed[c].size() >= src_off + want) {
+                        std::memcpy(dst + dst_off, packed[c].data() + src_off, want);
                         ok[c] = 1;
                     }
                     return;
                 }
-                // The last chunk inflates to a whole chunk (HDF5 pads it); only
-                // its leading `want` bytes belong to the dataset.
+                // A chunk inflates whole (HDF5 pads the dataset's last one);
+                // only the window's rows of it are kept.
                 std::vector<Bytef> tail;
-                Bytef* out = dst + first;
-                if (want < chunk_bytes) {
+                Bytef* out = dst + dst_off;
+                if (src_off != 0 || want < chunk_bytes) {
                     tail.resize(chunk_bytes);
                     out = tail.data();
                 }
@@ -87567,7 +87578,7 @@ bool h5u_read_deflate_chunks(hid_t d, hid_t FileType, NDArray& rOut,
                 if (rc != Z_OK || n != chunk_bytes)
                     return;
                 if (!tail.empty())
-                    std::memcpy(dst + first, tail.data(), want);
+                    std::memcpy(dst + dst_off, tail.data() + src_off, want);
                 ok[c] = 1;
             },
             1);
@@ -87835,7 +87846,7 @@ NDArray read_dataset(hid_t loc, const std::string& rName) {
                 throw ReadError("HDF5: failed reading dataset '" + rName + "'");
         } else {
 #ifdef MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE
-            if (h5u_read_deflate_chunks(d, dt, out, hdims))
+            if (!hdims.empty() && h5u_read_deflate_chunks(d, dt, out, hdims, 0, hdims[0]))
                 return out;
 #endif
             if (H5Dread(d, native_type(mdt), H5S_ALL, H5S_ALL, H5P_DEFAULT, out.Data()) < 0)
@@ -88078,6 +88089,11 @@ NDArray read_dataset_rows(hid_t loc, const std::string& rName, std::size_t Row0,
         0)
         throw ReadError("HDF5: could not select rows of dataset '" + rName + "'");
     Hid mem(H5Screate_simple(ndim, count.data(), nullptr), H5Sclose);
+#ifdef MESHIOPLUSPLUS_H5_PARALLEL_DEFLATE
+    if (h5u_read_deflate_chunks(d, dt, out, dims, static_cast<hsize_t>(Row0),
+                                static_cast<hsize_t>(Count)))
+        return out;
+#endif
     if (H5Dread(d, native_type(mdt), mem, space, H5P_DEFAULT, out.Data()) < 0)
         throw ReadError("HDF5: failed reading rows of dataset '" + rName + "'");
     return out;
@@ -206418,6 +206434,7 @@ Mesh vtkhdf_read_composite(hid_t G, const std::string& rKind, const ReadOptions&
                                                    static_cast<std::int64_t>(flat), rOpts);
                 for (auto& kv : root_fd.mFieldData)
                     leaf.mFieldData.emplace(kv.first, std::move(kv.second));
+                const detail::LibraryUnlock unlock;  // assembly only: see below
                 return vtkhdf_assemble(leaf, rOpts, {});
             }
             flat -= plan[i].mNumParts;
@@ -206434,6 +206451,10 @@ Mesh vtkhdf_read_composite(hid_t G, const std::string& rKind, const ReadOptions&
                                       ? blocks[i].mName
                                       : blocks[i].mName + "/piece_" + std::to_string(j));
     }
+    // The blocks are merged and the mesh assembled from the arrays read above with
+    // no library call, so the lock is given up for it (roadmap 5.8.2); the block
+    // handles still open close after it is taken back.
+    const detail::LibraryUnlock unlock;
     VtkhdfLeaf merged = vtkhdf_concat_leaves(leaves);
     for (auto& kv : root_fd.mFieldData)
         merged.mFieldData.emplace(kv.first, std::move(kv.second));
@@ -206963,6 +206984,10 @@ Mesh read_vtkhdf(const std::string& rPath, const ReadOptions& rOpts) {
     if (only < 0 && nparts > 1)
         for (std::size_t j = 0; j < nparts; ++j)
             names.push_back("piece_" + std::to_string(j));
+    // The mesh is assembled from the arrays read above with no library call, so the
+    // lock is given up for it (roadmap 5.8.2); `f` and `root` close after it is
+    // taken back.
+    const detail::LibraryUnlock unlock;
     return vtkhdf_assemble(leaf, rOpts, names);
 }
 

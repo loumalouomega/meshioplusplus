@@ -1014,7 +1014,16 @@ A 125,000-hexahedron box with a vector and a scalar point field written and read
 | 2 | 0.87 s | 0.48 s | 0.18 s | 0.18 s |
 | 4 | 1.73 s | 0.61 s | 0.37 s | 0.37 s |
 
-Writes now overlap; reads do not, since their time is the chunk reads and the mesh assembly, which still run under the lock. Moving the assembly out is the rest of the item.
+Writes now overlap. Reads did not: a profile of one read showed half its instructions in HDF5's own inflate under `H5Dread`, reached through `read_dataset_rows`, the row windows the VTKHDF reader takes for its steps and pieces, which the parallel inflate did not cover. The second step extends `h5u_read_deflate_chunks` to any window of rows that spans more than one chunk (the window's chunks are read raw under the lock, inflated in parallel without it, and only the window's rows kept; `H5Util.RowWindowsOfAGzipDatasetMatchH5Dread` checks ten windows against `H5Dread`), and `read_vtkhdf` assembles its mesh from the arrays it has read with the lock given up. On the same files:
+
+| Read | Before | After |
+| --- | ---: | ---: |
+| 2 files at once, 1 thread each | 0.18 s | 0.13 s |
+| 4 files at once, 1 thread each | 0.37 s | 0.24 s |
+| 1 file, 4 threads | 102 ms | 67.5 ms |
+| 1 file, 1 thread | 97 ms | 95 ms |
+
+What still runs under the lock is the HDF5 calls themselves (opening the file, reading the raw chunks and the small offset tables) and, in the writers, the preparation of the arrays between them.
 
 ### `decimate_volume` and `conservative_interpolate` rows
 
