@@ -160,9 +160,9 @@ inline VtkCodec vtk_codec_from_zlib(bool Zlib) {
  * @throws WriteError @p pNotLattice when the mesh is not a lattice, and when
  * the file cannot be opened.
  */
-inline std::ofstream vtk_xml_open_lattice(const std::string& rPath, const Mesh& rMesh, bool Binary,
-                                          VtkCodec Codec, const char* pNotLattice,
-                                          LatticeSpec& rSpec) {
+inline auto vtk_xml_open_lattice(const std::string& rPath, const Mesh& rMesh, bool Binary,
+                                 VtkCodec Codec, const char* pNotLattice,
+                                 LatticeSpec& rSpec) -> std::ofstream {
     if (!lattice_from_mesh(rMesh, rSpec))
         throw WriteError(pNotLattice);
     if (Binary && Codec != VtkCodec::None)
