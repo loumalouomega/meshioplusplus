@@ -104,6 +104,16 @@ const char *mio_r_dtype_name(mio_dtype dtype);
 typedef int64_t (*mio_r_str_getter)(void *ctx, char *buf, int64_t buflen);
 SEXP mio_r_getstring(mio_r_str_getter getter, void *ctx, const char *what);
 
+/* The same for a C API getter with no context, `int64_t f(char *buf, int64_t
+ * buflen)` -- the per-operation warnings functions (mio_thickness_warnings, ...). */
+typedef int64_t (*mio_r_buffer_getter)(char *buf, int64_t buflen);
+SEXP mio_r_getbuffer(mio_r_buffer_getter getter, const char *what);
+
+/* A character vector's elements as C strings (CHAR of each, so NA reads as
+ * "NA"), in a block R_alloc'd for this .Call; NULL when it is empty. *pN gets
+ * the length. */
+const char **mio_r_cstrings(SEXP s, R_xlen_t *pN);
+
 /* Convert `n` elements of a typed C buffer into caller-owned doubles, adding
  * `offset` to each (1.0 for the 1-based index shift). One pass, no temporary. */
 void mio_r_fill_real(double *dst, const void *data, mio_dtype dtype, R_xlen_t n, double offset);

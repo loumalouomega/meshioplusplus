@@ -184,6 +184,28 @@ SEXP mio_r_getstring(mio_r_str_getter getter, void *ctx, const char *what) {
     return Rf_mkString(buf);
 }
 
+/* mio_r_getbuffer's getter, carried through mio_r_getstring's context. */
+typedef struct {
+    mio_r_buffer_getter getter;
+} mio_r_buffer_ctx;
+
+static int64_t mio_r_buffer_adapter(void *ctx, char *buf, int64_t buflen) {
+    return ((const mio_r_buffer_ctx *)ctx)->getter(buf, buflen);
+}
+
+SEXP mio_r_getbuffer(mio_r_buffer_getter getter, const char *what) {
+    mio_r_buffer_ctx ctx = {getter};
+    return mio_r_getstring(mio_r_buffer_adapter, &ctx, what);
+}
+
+const char **mio_r_cstrings(SEXP s, R_xlen_t *pN) {
+    const R_xlen_t n = Rf_xlength(s);
+    const char **out = n > 0 ? (const char **)R_alloc((size_t)n, sizeof(char *)) : NULL;
+    for (R_xlen_t i = 0; i < n; ++i) out[i] = CHAR(STRING_ELT(s, i));
+    *pN = n;
+    return out;
+}
+
 /* R has no native 64-bit integer type, so every numeric array the C API hands
  * back -- including the int64 connectivity, region entries and index maps --
  * comes into R as `double`. That is exact to 2^53, far beyond any mesh this

@@ -514,11 +514,6 @@ SEXP R_mio_iga_sample(SEXP x, SEXP sample_subdivisions, SEXP trim_samples, SEXP 
 
 /* --- mesh generation from CAD (v17.13.0; doc/mesh_cad.md) ----------------- */
 
-static int64_t r_mesh_cad_warnings(void *ctx, char *buf, int64_t buflen) {
-    (void)ctx;
-    return mio_mesh_cad_surface_warnings(buf, buflen);
-}
-
 static int64_t r_mesh_cad_reason(void *ctx, char *buf, int64_t buflen) {
     return mio_mesh_cad_surface_face_reason(*(const int64_t *)ctx, buf, buflen);
 }
@@ -818,7 +813,7 @@ SEXP R_mio_mesh_cad_surface(
 
     /* Wrap the mesh first: once it has a finalizer nothing below can leak it. */
     SEXP mo = PROTECT(mio_r_wrap_mesh(out));
-    SEXP warnings = PROTECT(mio_r_getstring(r_mesh_cad_warnings, NULL, "mesh_cad_surface"));
+    SEXP warnings = PROTECT(mio_r_getbuffer(mio_mesh_cad_surface_warnings, "mesh_cad_surface"));
     static const char *statuses[] = {"ok",           "empty",           "open_loop",
                                      "self_intersecting", "degenerate", "projection_failed",
                                      "budget_exceeded", "unsupported",  "other"};
