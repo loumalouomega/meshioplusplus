@@ -46,6 +46,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -88,12 +89,7 @@ MESHIOPLUSPLUS_API void write_szplt(const std::string& rPath, const Mesh& rMesh)
 class MESHIOPLUSPLUS_API SzpltSeriesWriter {
 public:
     explicit SzpltSeriesWriter(const std::string& rPath);
-    ~SzpltSeriesWriter();
-
-    SzpltSeriesWriter(const SzpltSeriesWriter&) = delete;
-    SzpltSeriesWriter& operator=(const SzpltSeriesWriter&) = delete;
-    SzpltSeriesWriter(SzpltSeriesWriter&&) noexcept;
-    SzpltSeriesWriter& operator=(SzpltSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(SzpltSeriesWriter);
 
     /// Add one step. @throws WriteError on a mismatch with the first step or a TecIO failure.
     void Write(double Time, const Mesh& rMesh);

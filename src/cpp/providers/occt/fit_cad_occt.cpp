@@ -254,6 +254,61 @@ gp_Pnt fc_point(const std::vector<double>& rXyz, std::int64_t V) {
     return gp_Pnt(rXyz[i], rXyz[i + 1], rXyz[i + 2]);
 }
 
+// A full clamped knot vector as OpenCASCADE's distinct knots and their
+// multiplicities (1-based arrays).
+struct FcKnots {
+    explicit FcKnots(int N) : mKnots(1, N), mMults(1, N) {}
+    TColStd_Array1OfReal mKnots;
+    TColStd_Array1OfInteger mMults;
+};
+
+FcKnots fc_occt_knots(const std::vector<double>& rFull) {
+    std::vector<double> kv;
+    std::vector<int> mv;
+    for (double k : rFull) {
+        if (!kv.empty() && k == kv.back()) {
+            ++mv.back();
+        } else {
+            kv.push_back(k);
+            mv.push_back(1);
+        }
+    }
+    FcKnots out(static_cast<int>(kv.size()));
+    for (std::size_t i = 0; i < kv.size(); ++i) {
+        out.mKnots.SetValue(static_cast<int>(i) + 1, kv[i]);
+        out.mMults.SetValue(static_cast<int>(i) + 1, mv[i]);
+    }
+    return out;
+}
+
+// A detail::BsplineSurface as OpenCASCADE's, its full clamped knot vectors as
+// distinct knots and multiplicities.
+FcHandle<Geom_Surface> fc_occt_bspline(const detail::BsplineSurface& rS) {
+    TColgp_Array2OfPnt poles(1, static_cast<int>(rS.mNu), 1, static_cast<int>(rS.mNv));
+    for (std::size_t j = 0; j < rS.mNv; ++j)
+        for (std::size_t i = 0; i < rS.mNu; ++i) {
+            const double* p = &rS.mPoles[3 * (i + rS.mNu * j)];
+            poles.SetValue(static_cast<int>(i) + 1, static_cast<int>(j) + 1,
+                           gp_Pnt(p[0], p[1], p[2]));
+        }
+    const FcKnots u = fc_occt_knots(rS.mKnotsU);
+    const FcKnots v = fc_occt_knots(rS.mKnotsV);
+    return new Geom_BSplineSurface(poles, u.mKnots, v.mKnots, u.mMults, v.mMults, rS.mDegreeU,
+                                   rS.mDegreeV);
+}
+
+// A detail::BsplineCurve as OpenCASCADE's, likewise.
+FcHandle<Geom_Curve> fc_occt_bspline_curve(const detail::BsplineCurve& rC) {
+    const int n = static_cast<int>(rC.mPoles.size());
+    TColgp_Array1OfPnt poles(1, n);
+    for (int i = 0; i < n; ++i) {
+        const detail::PatchVec& q = rC.mPoles[static_cast<std::size_t>(i)];
+        poles.SetValue(i + 1, gp_Pnt(q[0], q[1], q[2]));
+    }
+    const FcKnots k = fc_occt_knots(rC.mKnots);
+    return new Geom_BSplineCurve(poles, k.mKnots, k.mMults, rC.mDegree);
+}
+
 std::uint64_t fc_edge_key(std::int64_t U, std::int64_t V) {
     const std::uint64_t lo = static_cast<std::uint64_t>(std::min(U, V));
     const std::uint64_t hi = static_cast<std::uint64_t>(std::max(U, V));
@@ -720,29 +775,6 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
             bedges.push_back(kv.first);
     }
     std::sort(bedges.begin(), bedges.end());
-    std::vector<std::vector<std::int64_t>> nbr(npts);
-    for (const auto& e : bedges) {
-        nbr[static_cast<std::size_t>(e.first)].push_back(e.second);
-        nbr[static_cast<std::size_t>(e.second)].push_back(e.first);
-    }
-    for (auto& n : nbr)
-        std::sort(n.begin(), n.end());
-    auto junction = [&](std::int64_t V) {
-        const std::size_t v = static_cast<std::size_t>(V);
-        return touches_facet[v] || vg_start[v + 1] - vg_start[v] >= 3 || nbr[v].size() != 2;
-    };
-    std::unordered_map<std::pair<std::int64_t, std::int64_t>, std::uint8_t, FcEdgeKeyHash> seen;
-    seen.reserve(bedges.size());
-    for (const auto& e : bedges)
-        seen.emplace(e, 0);
-    auto take = [&](std::int64_t U, std::int64_t V) -> bool {
-        auto it = seen.find({std::min(U, V), std::max(U, V)});
-        if (it == seen.end() || it->second)
-            return false;
-        it->second = 1;
-        return true;
-    };
-
     // Chains: from every junction along unvisited boundary edges, then the
     // closed loops no junction lies on. A chain that closes is split in two.
     std::vector<FcChain> chains;
@@ -760,41 +792,13 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
             chains.push_back(std::move(c));
         }
     };
-    auto walk = [&](std::int64_t Start, std::int64_t First, bool StopAtStart) {
-        std::vector<std::int64_t> verts{Start, First};
-        std::int64_t prev = Start, cur = First;
-        while (!(StopAtStart ? cur == Start : junction(cur))) {
-            std::int64_t next = -1;
-            for (std::int64_t n : nbr[static_cast<std::size_t>(cur)])
-                if (n != prev && take(cur, n)) {
-                    next = n;
-                    break;
-                }
-            if (next < 0) {
-                // Back to the start of a loop through its last edge.
-                if (StopAtStart && take(cur, Start)) {
-                    verts.push_back(Start);
-                }
-                break;
-            }
-            verts.push_back(next);
-            prev = cur;
-            cur = next;
-        }
-        return verts;
-    };
-    for (std::int64_t v = 0; v < static_cast<std::int64_t>(npts); ++v) {
-        if (nbr[static_cast<std::size_t>(v)].empty() || !junction(v))
-            continue;
-        for (std::int64_t n : nbr[static_cast<std::size_t>(v)])
-            if (take(v, n))
-                add_chain(walk(v, n, false));
-    }
-    for (const auto& e : bedges) {
-        if (!take(e.first, e.second))
-            continue;
-        add_chain(walk(e.first, e.second, true));
-    }
+    detail::step_boundary_chains(
+        npts, bedges,
+        [&](std::int64_t V, std::size_t NumNeighbours) {
+            const std::size_t v = static_cast<std::size_t>(V);
+            return touches_facet[v] || vg_start[v + 1] - vg_start[v] >= 3 || NumNeighbours != 2;
+        },
+        add_chain);
 
     // The groups either side of each chain, from the facets of its first edge.
     for (FcChain& c : chains) {
@@ -889,13 +893,7 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
 
     // The patch networks' shared curves, by the mesh edges they run along
     // (v17.12.0): the edge between two network patches is a piece of one.
-    std::unordered_map<std::uint64_t, std::pair<std::size_t, std::size_t>> curve_at;
-    if (pNetworkCurves != nullptr)
-        for (std::size_t k = 0; k < pNetworkCurves->size(); ++k) {
-            const detail::StepEdgeCurve& ec = (*pNetworkCurves)[k];
-            for (std::size_t i = 0; i + 1 < ec.mVerts.size(); ++i)
-                curve_at.emplace(fc_edge_key(ec.mVerts[i], ec.mVerts[i + 1]), std::make_pair(k, i));
-        }
+    const detail::StepCurveIndex curve_at(pNetworkCurves);
     const auto network_group = [&](std::int64_t G) {
         return pNetworkRow != nullptr && G >= 0 && G < np &&
                static_cast<std::size_t>(G) < pNetworkRow->size() &&
@@ -909,64 +907,23 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
         try {
             // Between two network patches along one shared curve: its exact
             // piece, which both patches' boundaries are.
-            if (!curve_at.empty() && c.mVerts.front() != c.mVerts.back() &&
-                network_group(c.mGroupFwd) && network_group(c.mGroupBwd)) {
-                bool one = true;
-                std::size_t curve = 0;
-                std::vector<double> ts;
-                for (std::size_t i = 0; i + 1 < c.mVerts.size() && one; ++i) {
-                    const auto it = curve_at.find(fc_edge_key(c.mVerts[i], c.mVerts[i + 1]));
-                    if (it == curve_at.end() || (i > 0 && it->second.first != curve)) {
-                        one = false;
-                        break;
-                    }
-                    curve = it->second.first;
-                    const detail::StepEdgeCurve& ec = (*pNetworkCurves)[curve];
-                    const std::size_t at = it->second.second;
-                    const bool fwd = ec.mVerts[at] == c.mVerts[i];
-                    if (i == 0)
-                        ts.push_back(ec.mParams[fwd ? at : at + 1]);
-                    ts.push_back(ec.mParams[fwd ? at + 1 : at]);
-                }
-                for (std::size_t i = 2; one && i < ts.size(); ++i)
-                    one = (ts[i] - ts[i - 1]) * (ts[1] - ts[0]) > 0.0;
-                if (one && ts.size() >= 2 && ts.front() != ts.back()) {
-                    const detail::BsplineCurve piece = detail::bspline_curve_segment(
-                        (*pNetworkCurves)[curve].mCurve, ts.front(), ts.back());
-                    const int n = static_cast<int>(piece.mPoles.size());
-                    TColgp_Array1OfPnt poles(1, n);
-                    for (int i = 0; i < n; ++i) {
-                        const detail::PatchVec& q = piece.mPoles[static_cast<std::size_t>(i)];
-                        poles.SetValue(i + 1, gp_Pnt(q[0], q[1], q[2]));
-                    }
-                    std::vector<double> kv;
-                    std::vector<int> mv;
-                    for (double k : piece.mKnots) {
-                        if (!kv.empty() && k == kv.back())
-                            ++mv.back();
-                        else {
-                            kv.push_back(k);
-                            mv.push_back(1);
-                        }
-                    }
-                    TColStd_Array1OfReal knots(1, static_cast<int>(kv.size()));
-                    TColStd_Array1OfInteger mults(1, static_cast<int>(kv.size()));
-                    for (std::size_t i = 0; i < kv.size(); ++i) {
-                        knots.SetValue(static_cast<int>(i) + 1, kv[i]);
-                        mults.SetValue(static_cast<int>(i) + 1, mv[i]);
-                    }
-                    const FcHandle<Geom_Curve> cv =
-                        new Geom_BSplineCurve(poles, knots, mults, piece.mDegree);
-                    fit_vertex(va, cv->Value(piece.T0()));
-                    fit_vertex(vb, cv->Value(piece.T1()));
-                    BRepBuilderAPI_MakeEdge me(cv, va, vb, piece.T0(), piece.T1());
-                    if (me.IsDone()) {
-                        c.mEdge = me.Edge();
-                        c.mFromStart = true;
-                        c.mOk = true;
-                        ++out.mNumExact;
-                        continue;
-                    }
+            std::size_t curve = 0;
+            double t0 = 0.0, t1 = 0.0;
+            if (!curve_at.Empty() && c.mVerts.front() != c.mVerts.back() &&
+                network_group(c.mGroupFwd) && network_group(c.mGroupBwd) &&
+                curve_at.ChainOnCurve(c.mVerts, curve, t0, t1)) {
+                const detail::BsplineCurve piece =
+                    detail::bspline_curve_segment((*pNetworkCurves)[curve].mCurve, t0, t1);
+                const FcHandle<Geom_Curve> cv = fc_occt_bspline_curve(piece);
+                fit_vertex(va, cv->Value(piece.T0()));
+                fit_vertex(vb, cv->Value(piece.T1()));
+                BRepBuilderAPI_MakeEdge me(cv, va, vb, piece.T0(), piece.T1());
+                if (me.IsDone()) {
+                    c.mEdge = me.Edge();
+                    c.mFromStart = true;
+                    c.mOk = true;
+                    ++out.mNumExact;
+                    continue;
                 }
             }
             if (!is_analytic(c.mGroupFwd) || !is_analytic(c.mGroupBwd)) {
@@ -1194,13 +1151,6 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
     // Around vertex V, after the boundary edge X -> V of group G (walked that
     // way by a facet of G): the vertex W of G's next boundary edge V -> W,
     // found by turning through G's facets around V. -1 when the fan breaks.
-    auto ring_next = [&](std::size_t F, std::int64_t V) -> std::int64_t {
-        const std::int64_t b = fc.mStart[F], n = fc.mStart[F + 1] - b;
-        for (std::int64_t k = 0; k < n; ++k)
-            if (fc.mNodes[static_cast<std::size_t>(b + k)] == V)
-                return fc.mNodes[static_cast<std::size_t>(b + (k + 1) % n)];
-        return -1;
-    };
     auto walker = [&](std::int64_t U, std::int64_t V) -> std::int64_t {  // the facet walking U -> V
         auto it = rSkin.mEdgeFacets.find({std::min(U, V), std::max(U, V)});
         if (it == rSkin.mEdgeFacets.end())
@@ -1208,17 +1158,7 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
         return U < V ? it->second[0] : it->second[1];
     };
     auto fan_next = [&](std::int64_t G, std::int64_t X, std::int64_t V) -> std::int64_t {
-        std::int64_t f = walker(X, V);
-        for (std::size_t guard = 0; f >= 0 && guard <= nf; ++guard) {
-            const std::int64_t w = ring_next(static_cast<std::size_t>(f), V);
-            if (w < 0)
-                return -1;
-            const std::int64_t across = walker(w, V);
-            if (across < 0 || group_of(static_cast<std::size_t>(across)) != G)
-                return w;
-            f = across;
-        }
-        return -1;
+        return detail::step_fan_next(fc.mStart, fc.mNodes, nf, walker, group_of, G, X, V);
     };
 
     // Wires and faces: each group's oriented chains, linked into loops.
@@ -1644,19 +1584,7 @@ struct FcTriangulation {
 
 FcTriangulation fc_triangulate(const std::vector<TopoDS_Face>& rFaces) {
     FcTriangulation out;
-    struct Key {
-        std::array<std::uint64_t, 3> mBits;
-        bool operator==(const Key& rO) const { return mBits == rO.mBits; }
-    };
-    struct KeyHash {
-        std::size_t operator()(const Key& rK) const {
-            std::uint64_t h = 1469598103934665603ull;
-            for (std::uint64_t b : rK.mBits)
-                h = (h ^ b) * 1099511628211ull;
-            return static_cast<std::size_t>(h);
-        }
-    };
-    std::unordered_map<Key, std::int64_t, KeyHash> id;
+    detail::OcctNodeIds id;
     for (std::size_t fi = 0; fi < rFaces.size(); ++fi) {
         const TopoDS_Face& face = rFaces[fi];
         TopLoc_Location loc;
@@ -1665,33 +1593,15 @@ FcTriangulation fc_triangulate(const std::vector<TopoDS_Face>& rFaces) {
             out.mComplete = false;
             continue;
         }
-        const gp_Trsf trsf = loc.Transformation();
-        std::vector<std::int64_t> local(static_cast<std::size_t>(tri->NbNodes()) + 1, -1);
-        for (int i = 1; i <= tri->NbNodes(); ++i) {
-            const gp_Pnt p = tri->Node(i).Transformed(trsf);
-            Key k;
-            const double c[3] = {p.X() + 0.0, p.Y() + 0.0, p.Z() + 0.0};
-            for (int j = 0; j < 3; ++j)
-                std::memcpy(&k.mBits[static_cast<std::size_t>(j)], &c[j], sizeof(double));
-            auto ins = id.emplace(k, static_cast<std::int64_t>(out.mXyz.size() / 3));
-            if (ins.second)
-                out.mXyz.insert(out.mXyz.end(), c, c + 3);
-            local[static_cast<std::size_t>(i)] = ins.first->second;
-        }
+        const std::vector<std::int64_t> local =
+            detail::occt_weld_nodes(*tri, loc.Transformation(), id, out.mXyz);
         const bool reversed = face.Orientation() == TopAbs_REVERSED;
-        for (int t = 1; t <= tri->NbTriangles(); ++t) {
-            int a = 0, b = 0, c = 0;
-            tri->Triangle(t).Get(a, b, c);
-            if (reversed)
-                std::swap(b, c);
-            const std::int64_t ia = local[static_cast<std::size_t>(a)];
-            const std::int64_t ib = local[static_cast<std::size_t>(b)];
-            const std::int64_t ic = local[static_cast<std::size_t>(c)];
-            if (ia == ib || ib == ic || ia == ic)
-                continue;
-            out.mTri.insert(out.mTri.end(), {ia, ib, ic});
-            out.mFace.push_back(static_cast<std::int64_t>(fi));
-        }
+        detail::occt_welded_triangles(
+            *tri, reversed, local,
+            [&](std::int64_t ia, std::int64_t ib, std::int64_t ic, int, int, int) {
+                out.mTri.insert(out.mTri.end(), {ia, ib, ic});
+                out.mFace.push_back(static_cast<std::int64_t>(fi));
+            });
     }
     return out;
 }
@@ -2111,44 +2021,6 @@ bool fc_surface_fits(const FcHandle<Geom_Surface>& rS, const std::vector<gp_Pnt>
     return true;
 }
 
-// A detail::BsplineSurface as OpenCASCADE's, its full clamped knot vectors as
-// distinct knots and multiplicities.
-FcHandle<Geom_Surface> fc_occt_bspline(const detail::BsplineSurface& rS) {
-    TColgp_Array2OfPnt poles(1, static_cast<int>(rS.mNu), 1, static_cast<int>(rS.mNv));
-    for (std::size_t j = 0; j < rS.mNv; ++j)
-        for (std::size_t i = 0; i < rS.mNu; ++i) {
-            const double* p = &rS.mPoles[3 * (i + rS.mNu * j)];
-            poles.SetValue(static_cast<int>(i) + 1, static_cast<int>(j) + 1,
-                           gp_Pnt(p[0], p[1], p[2]));
-        }
-    auto distinct = [](const std::vector<double>& rK, std::vector<double>& rKnots,
-                       std::vector<int>& rMults) {
-        for (double k : rK) {
-            if (!rKnots.empty() && k == rKnots.back()) {
-                ++rMults.back();
-            } else {
-                rKnots.push_back(k);
-                rMults.push_back(1);
-            }
-        }
-    };
-    std::vector<double> ku, kv;
-    std::vector<int> mu, mv;
-    distinct(rS.mKnotsU, ku, mu);
-    distinct(rS.mKnotsV, kv, mv);
-    TColStd_Array1OfReal uk(1, static_cast<int>(ku.size())), vk(1, static_cast<int>(kv.size()));
-    TColStd_Array1OfInteger um(1, static_cast<int>(mu.size())), vm(1, static_cast<int>(mv.size()));
-    for (std::size_t i = 0; i < ku.size(); ++i) {
-        uk.SetValue(static_cast<int>(i) + 1, ku[i]);
-        um.SetValue(static_cast<int>(i) + 1, mu[i]);
-    }
-    for (std::size_t i = 0; i < kv.size(); ++i) {
-        vk.SetValue(static_cast<int>(i) + 1, kv[i]);
-        vm.SetValue(static_cast<int>(i) + 1, mv[i]);
-    }
-    return new Geom_BSplineSurface(poles, uk, vk, um, vm, rS.mDegreeU, rS.mDegreeV);
-}
-
 // The adaptive freeform face (v17.12.0, outside the legacy mode): the
 // OpenCASCADE-free detail/freeform_adaptive fit (the parametrisation ladder,
 // the noise allowance, budgeted refinement and re-parametrisation rungs, and
@@ -2161,16 +2033,7 @@ FcHandle<Geom_Surface> fc_freeform_adaptive(const std::vector<gp_Pnt>& rPts,
     for (std::size_t i = 0; i < rPts.size(); ++i)
         pts[i] = {rPts[i].X(), rPts[i].Y(), rPts[i].Z()};
     const std::vector<detail::PatchTri> tris(rTris.begin(), rTris.end());
-    detail::FreeformAdaptiveOptions o;
-    o.mTolerance = Tol;
-    o.mFreeformTolerance = rOptions.mFreeformTolerance;
-    o.mSmoothing = rOptions.mFreeformSmoothing;
-    o.mMaxPoles = static_cast<std::size_t>(rOptions.mMaxFreeformPoles);
-    o.mMaxIterations = static_cast<int>(rOptions.mMaxFreeformIterations);
-    o.mMaxTotalPoles = static_cast<std::size_t>(rOptions.mFreeformMaxControlPoints);
-    o.mParameterization = static_cast<detail::ParamLadder>(rOptions.mFreeformParameterization);
-    o.mValidate = rOptions.mValidateBySurfaceSampling;
-    o.mThb = rOptions.mLocalRefine == FitCadLocalRefine::Thb;
+    const detail::FreeformAdaptiveOptions o = detail::native_adaptive_options(rOptions, Tol);
     const detail::FreeformAdaptiveResult fit = detail::freeform_adaptive_fit(pts, tris, o);
     rInfo.mParam = fit.mParam;
     rInfo.mIterations = fit.mIterations;
@@ -2246,42 +2109,7 @@ FcHandle<Geom_Surface> fc_freeform_general(const std::vector<gp_Pnt>& rPts,
             pInfo->mReason = static_cast<std::uint8_t>(FitCadDemotionReason::BudgetExceeded);
         return {};
     }
-    const detail::BsplineSurface& s = fit.mSurface;
-    TColgp_Array2OfPnt poles(1, static_cast<int>(s.mNu), 1, static_cast<int>(s.mNv));
-    for (std::size_t j = 0; j < s.mNv; ++j)
-        for (std::size_t i = 0; i < s.mNu; ++i) {
-            const double* p = &s.mPoles[3 * (i + s.mNu * j)];
-            poles.SetValue(static_cast<int>(i) + 1, static_cast<int>(j) + 1,
-                           gp_Pnt(p[0], p[1], p[2]));
-        }
-    // The full clamped knot vectors as distinct knots and multiplicities.
-    auto distinct = [](const std::vector<double>& rK, std::vector<double>& rKnots,
-                       std::vector<int>& rMults) {
-        for (double k : rK) {
-            if (!rKnots.empty() && k == rKnots.back()) {
-                ++rMults.back();
-            } else {
-                rKnots.push_back(k);
-                rMults.push_back(1);
-            }
-        }
-    };
-    std::vector<double> ku, kv;
-    std::vector<int> mu, mv;
-    distinct(s.mKnotsU, ku, mu);
-    distinct(s.mKnotsV, kv, mv);
-    TColStd_Array1OfReal uk(1, static_cast<int>(ku.size())), vk(1, static_cast<int>(kv.size()));
-    TColStd_Array1OfInteger um(1, static_cast<int>(mu.size())), vm(1, static_cast<int>(mv.size()));
-    for (std::size_t i = 0; i < ku.size(); ++i) {
-        uk.SetValue(static_cast<int>(i) + 1, ku[i]);
-        um.SetValue(static_cast<int>(i) + 1, mu[i]);
-    }
-    for (std::size_t i = 0; i < kv.size(); ++i) {
-        vk.SetValue(static_cast<int>(i) + 1, kv[i]);
-        vm.SetValue(static_cast<int>(i) + 1, mv[i]);
-    }
-    FcHandle<Geom_Surface> surf =
-        new Geom_BSplineSurface(poles, uk, vk, um, vm, s.mDegreeU, s.mDegreeV);
+    FcHandle<Geom_Surface> surf = fc_occt_bspline(fit.mSurface);
     // Through the cached projector: a projector per point samples the whole
     // surface each time.
     if (!fc_surface_fits(surf, rPts, rTris, Tol, false, true)) {
@@ -2291,7 +2119,7 @@ FcHandle<Geom_Surface> fc_freeform_general(const std::vector<gp_Pnt>& rPts,
         return {};
     }
     rRefinements = fit.mRefinements;
-    rPoles = s.NumPoles();
+    rPoles = fit.mSurface.NumPoles();
     return surf;
 }
 
@@ -2786,13 +2614,8 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
     // primitive for within the tolerance (a freeform or facets proxy) is
     // unexplained here too, even when `fit_primitives`, by its own measure,
     // accepts one (a torus's inner side for a saddle, say).
-    std::unordered_map<std::int64_t, std::int64_t> refine_proxy;
-    if (work.HasFieldData(kRefinePatchProxyName) && work.HasFieldData(kRefinePatchIdName)) {
-        const NDArray& kinds = work.FieldData(kRefinePatchProxyName);
-        const NDArray& labels = work.FieldData(kRefinePatchIdName);
-        for (std::size_t i = 0; i < std::min(kinds.Size(), labels.Size()); ++i)
-            refine_proxy.emplace(detail::read_int(labels, i), detail::read_int(kinds, i));
-    }
+    const std::unordered_map<std::int64_t, std::int64_t> refine_proxy =
+        detail::native_refine_proxy(work);
     std::unordered_map<std::int64_t, std::int64_t> row_of;
     skin.mPatches.resize(m);
     for (std::size_t r = 0; r < m; ++r) {
@@ -3656,25 +3479,15 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         if (facets_of[r].empty() || analytic[r] || (type >= 1 && type <= 5 && finite))
             continue;
         ++num_freeform_tried;
-        std::unordered_map<std::int64_t, std::size_t> local;
-        std::vector<gp_Pnt> pts;
+        // The patch as local triangles (polygons fanned), points renumbered.
+        std::vector<detail::PatchVec> flat_pts;
         std::vector<std::array<std::size_t, 3>> tris;
         std::vector<std::size_t> tri_facet;
-        auto vid = [&](std::int64_t V) {
-            auto ins = local.emplace(V, pts.size());
-            if (ins.second)
-                pts.push_back(fc_point(fc.mXyz, V));
-            return ins.first->second;
-        };
-        for (std::size_t f : facets_of[r]) {
-            const std::int64_t b = fc.mStart[f], n = fc.mStart[f + 1] - b;
-            const std::size_t a0 = vid(fc.mNodes[static_cast<std::size_t>(b)]);
-            for (std::int64_t k = 1; k + 1 < n; ++k) {
-                tris.push_back({a0, vid(fc.mNodes[static_cast<std::size_t>(b + k)]),
-                                vid(fc.mNodes[static_cast<std::size_t>(b + k + 1)])});
-                tri_facet.push_back(f);
-            }
-        }
+        detail::native_local_triangles(fc, facets_of[r], flat_pts, tris, tri_facet);
+        std::vector<gp_Pnt> pts;
+        pts.reserve(flat_pts.size());
+        for (const detail::PatchVec& q : flat_pts)
+            pts.emplace_back(q[0], q[1], q[2]);
         fc_row(row_info, r).mTried = true;
         try {
             FcRowInfo info;
@@ -3708,9 +3521,6 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                     // Halve it along its normals' spread and fit the halves;
                     // outside the legacy mode, a patch that is not a disc is
                     // first cut along its topology into discs.
-                    std::vector<detail::PatchVec> flat_pts(pts.size());
-                    for (std::size_t i = 0; i < pts.size(); ++i)
-                        flat_pts[i] = {pts[i].X(), pts[i].Y(), pts[i].Z()};
                     std::size_t num_pieces = 0;
                     std::vector<std::int64_t> piece;
                     const std::uint8_t cuts = r < early_cut.size() ? early_cut[r] : 0;
@@ -3720,16 +3530,9 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                         // `mResegmentRounds` times in its line: the
                         // re-segmentation rung); the pieces keep the halvings
                         // left.
-                        const auto cut = detail::native_resegment(fc, facets_of[r], 2, true);
-                        if (!cut.empty()) {
-                            std::unordered_map<std::size_t, std::int64_t> of_facet;
-                            for (std::size_t k = 0; k < cut.size(); ++k)
-                                for (std::size_t f : cut[k])
-                                    of_facet[f] = static_cast<std::int64_t>(k);
-                            piece.resize(tris.size());
-                            for (std::size_t tt = 0; tt < tris.size(); ++tt)
-                                piece[tt] = of_facet[tri_facet[tt]];
-                            num_pieces = cut.size();
+                        num_pieces =
+                            detail::native_resegment_pieces(fc, facets_of[r], tri_facet, piece);
+                        if (num_pieces > 0) {
                             cut_here = true;
                             ++result.mNumResegmented;
                         }
@@ -3791,9 +3594,6 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                 if (!rOptions.mFreeformSplit)
                     continue;
 
-                std::vector<detail::PatchVec> flat_pts(pts.size());
-                for (std::size_t i = 0; i < pts.size(); ++i)
-                    flat_pts[i] = {pts[i].X(), pts[i].Y(), pts[i].Z()};
                 // A patch that folds over both flattenings is split into
                 // pieces one of them parametrises; one that flattens, or a
                 // piece, but that no single B-spline follows within the
@@ -4373,7 +4173,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
 
     // The report.
     result.mValid = build.mValid;
-    result.mNumPatches = static_cast<std::int64_t>(num_input_patches);
+    result.mCounts.mNumPatches = static_cast<std::int64_t>(num_input_patches);
     result.mNumExactEdges = build.mNumExact;
     result.mNumApproxEdges = build.mNumApprox;
     result.mNumSnappedJunctions = build.mNumSnapped;
@@ -4381,7 +4181,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
     result.mClosed = fc_closed(build.mShape);
     for (std::size_t r = 0; r < m; ++r)
         if (skin.mPatches[r].mAccepted && !facets_of[r].empty() && !analytic[r])
-            ++result.mNumDemoted;
+            ++result.mCounts.mNumDemoted;
     for (TopExp_Explorer ex(build.mShape, TopAbs_SOLID); ex.More(); ex.Next())
         ++result.mNumSolids;
     GProp_GProps props;
@@ -4391,7 +4191,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         result.mSkinVolume += std::fabs(v);
     result.mVolumeRatio = result.mSkinVolume > 0.0 ? result.mVolume / result.mSkinVolume
                                                    : std::numeric_limits<double>::quiet_NaN();
-    result.mNumFaces = static_cast<std::int64_t>(build.mFaces.size());
+    result.mCounts.mNumFaces = static_cast<std::int64_t>(build.mFaces.size());
     std::vector<std::int64_t> face_type(build.mFaces.size(), 0),
         face_patch(build.mFaces.size(), -1);
     const std::int64_t mi = static_cast<std::int64_t>(m);
@@ -4409,19 +4209,19 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
             g >= 0 && g < mi ? feature[static_cast<std::size_t>(g)] : std::uint8_t(0);
         switch (face_type[i]) {
             case 1:
-                ++result.mNumPlane;
+                ++result.mCounts.mNumPlane;
                 break;
             case 2:
-                ++result.mNumSphere;
+                ++result.mCounts.mNumSphere;
                 break;
             case 3:
-                ++result.mNumCylinder;
+                ++result.mCounts.mNumCylinder;
                 break;
             case 4:
-                ++result.mNumCone;
+                ++result.mCounts.mNumCone;
                 break;
             case 5:
-                ++result.mNumTorus;
+                ++result.mCounts.mNumTorus;
                 break;
             case kFitCadBsplineType:
                 ++result.mNumBspline;
@@ -4457,7 +4257,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                 ++result.mNumChamfer;
                 break;
             default:
-                ++result.mNumFacetedFaces;
+                ++result.mCounts.mNumFacetedFaces;
                 break;
         }
     }
@@ -4554,8 +4354,8 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
 
     if (!result.mValid)
         log::warn("fit_cad: the solid does not pass OpenCASCADE's B-rep check");
-    if (result.mNumDemoted > 0)
-        log::info("fit_cad: {} fitted patch(es) demoted to facets", result.mNumDemoted);
+    if (result.mCounts.mNumDemoted > 0)
+        log::info("fit_cad: {} fitted patch(es) demoted to facets", result.mCounts.mNumDemoted);
     // The solid as NURBS, its faces in the order fit_cad:face numbers them.
     try {
         result.mBrep = detail::occt_nurbs(build.mShape).mInfo;
@@ -4586,15 +4386,15 @@ FitCadResult fc_occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     plain_options.mRefineSegmentation = false;
     FitCadResult plain = fc_occt_fit_cad_once(rMesh, "", plain_options, &plain_shape);
     const auto rank = [](const FitCadResult& rR) {
-        return std::make_tuple(rR.mValid ? 0 : 1, rR.mNumFacetedFaces, rR.mNumDemoted,
-                               rR.mNumFaces);
+        return std::make_tuple(rR.mValid ? 0 : 1, rR.mCounts.mNumFacetedFaces,
+                               rR.mCounts.mNumDemoted, rR.mCounts.mNumFaces);
     };
     const bool keep = rank(refined) <= rank(plain);
     log::info(
         "fit_cad: the refined patches build {} face(s), {} faceted; the patches as given "
         "{}, {} faceted: {} kept",
-        refined.mNumFaces, refined.mNumFacetedFaces, plain.mNumFaces, plain.mNumFacetedFaces,
-        keep ? "the refinement" : "the patches as given");
+        refined.mCounts.mNumFaces, refined.mCounts.mNumFacetedFaces, plain.mCounts.mNumFaces,
+        plain.mCounts.mNumFacetedFaces, keep ? "the refinement" : "the patches as given");
     if (!keep) {
         // The refinement's report stays, its per-patch data does not: it
         // describes patches the solid was not built from.

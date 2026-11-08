@@ -75,9 +75,14 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
+
+/// Whether a series starts fresh or continues an existing one (`SeriesMode`,
+/// `formats/time_series_common.hpp`).
+using XdmfSeriesMode = SeriesMode;
 
 /**
  * @brief Writes a transient XDMF3 series: one static grid, then one step at a
@@ -96,34 +101,30 @@ namespace meshioplusplus {
  *
  * Move-only (it owns an open heavy-data container and an unwritten XML
  * document); copying it would write the same file twice.
- */
-/**
- * @brief Whether a series starts fresh or continues an existing one.
  *
- * `Append` is what a restartable analysis needs: a run that was killed, hit a
- * node failure, or simply finished a stage leaves an `.xdmf` plus its heavy
- * data, and the next run must continue that temporal collection rather than
- * overwrite it.
+ * The destructor finalizes the series if it has not been finalized already.
  *
- * Appending to a path that does **not** exist yet is not an error -- it is
- * exactly `Truncate`. That is deliberate: a solver can then pass `Append`
- * unconditionally instead of having to probe the filesystem and branch.
+ * @warning Because that **writes** `rPath`, deleting the output while the
+ *          writer is still alive recreates it:
+ *          @code
+ *          {
+ *              XdmfTimeSeriesWriter w(path, "XML");
+ *              w.WritePointsCells(m);
+ *              w.WriteData(0.0, {u});
+ *              std::filesystem::remove(path);   // "clean up"
+ *          }   // <-- the destructor finalizes here, recreating path
+ *          @endcode
+ *          The second half is what makes this bite: with
+ *          `XdmfSeriesMode::Append` the *next* run then continues a series
+ *          you believed deleted, so the failure surfaces one run later as a
+ *          wrong step count rather than at the delete. Destroy the writer
+ *          before removing its output -- end the scope, or call `Finalize()`
+ *          explicitly and then delete.
  */
-enum class XdmfSeriesMode { Truncate, Append };
-
 class MESHIOPLUSPLUS_API XdmfTimeSeriesWriter {
 public:
-    /**
-     * @brief One solver array for the `NamedArray` `WriteData` overload.
-     *
-     * Values are row-major, `mNumComponents` per entity: `{n}` for a scalar
-     * field, `{n, 3}` for a vector, and so on.
-     */
-    struct NamedArray {
-        std::string mName;
-        std::size_t mNumComponents = 1;
-        std::vector<double> mValues;
-    };
+    /// One solver array for the `NamedArray` `WriteData` overload (`SeriesNamedArray`).
+    using NamedArray = SeriesNamedArray;
 
     /**
      * @brief Open a series for writing.
@@ -147,30 +148,8 @@ public:
                                   int GzipLevel = -1,
                                   XdmfSeriesMode Mode = XdmfSeriesMode::Truncate);
 
-    /**
-     * @brief Finalizes the series if it has not been finalized already.
-     *
-     * @warning Because this **writes** `rPath`, deleting the output while the
-     *          writer is still alive recreates it:
-     *          @code
-     *          {
-     *              XdmfTimeSeriesWriter w(path, "XML");
-     *              w.WritePointsCells(m);
-     *              w.WriteData(0.0, {u});
-     *              std::filesystem::remove(path);   // "clean up"
-     *          }   // <-- the destructor finalizes here, recreating path
-     *          @endcode
-     *          The second half is what makes this bite: with
-     *          `XdmfSeriesMode::Append` the *next* run then continues a series
-     *          you believed deleted, so the failure surfaces one run later as a
-     *          wrong step count rather than at the delete. Destroy the writer
-     *          before removing its output -- end the scope, or call `Finalize()`
-     *          explicitly and then delete.
-     */
-    ~XdmfTimeSeriesWriter();
-
-    XdmfTimeSeriesWriter(const XdmfTimeSeriesWriter&) = delete;
-    XdmfTimeSeriesWriter& operator=(const XdmfTimeSeriesWriter&) = delete;
+    // The destructor finalizes the series if it has not been finalized already
+    // (see the class comment: destroy the writer before removing its output).
     // Moving leaves the source empty. Its contract, so a moved-from writer is
     // diagnosable rather than undefined: the observers and the idempotent
     // operations (`SetAutoFlush`, `AutoFlush`, `NumSteps`, `Finalized`,
@@ -178,8 +157,7 @@ public:
     // while the three that cannot silently do nothing -- `WritePointsCells` and
     // both `WriteData` overloads -- throw `WriteError`, because a caller
     // writing a step must never be left believing it landed.
-    XdmfTimeSeriesWriter(XdmfTimeSeriesWriter&&) noexcept;
-    XdmfTimeSeriesWriter& operator=(XdmfTimeSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(XdmfTimeSeriesWriter);
 
     /**
      * @brief Write the static grid: the points and cell blocks every step shares.

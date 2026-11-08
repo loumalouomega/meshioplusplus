@@ -71,6 +71,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -140,12 +141,7 @@ class MESHIOPLUSPLUS_API NastranOp2SeriesWriter {
 public:
     /// @throws WriteError when @p rPath cannot be opened.
     explicit NastranOp2SeriesWriter(const std::string& rPath);
-    ~NastranOp2SeriesWriter();
-
-    NastranOp2SeriesWriter(const NastranOp2SeriesWriter&) = delete;
-    NastranOp2SeriesWriter& operator=(const NastranOp2SeriesWriter&) = delete;
-    NastranOp2SeriesWriter(NastranOp2SeriesWriter&&) noexcept;
-    NastranOp2SeriesWriter& operator=(NastranOp2SeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(NastranOp2SeriesWriter);
 
     /**
      * @brief Add one step.

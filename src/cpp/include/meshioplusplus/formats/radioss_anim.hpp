@@ -53,6 +53,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -106,12 +107,7 @@ class MESHIOPLUSPLUS_API RadiossAnimSeriesWriter {
 public:
     /// A path that is not an animation file name is a stem: `<path>A001`, ...
     explicit RadiossAnimSeriesWriter(const std::string& rPath);
-    ~RadiossAnimSeriesWriter();
-
-    RadiossAnimSeriesWriter(const RadiossAnimSeriesWriter&) = delete;
-    RadiossAnimSeriesWriter& operator=(const RadiossAnimSeriesWriter&) = delete;
-    RadiossAnimSeriesWriter(RadiossAnimSeriesWriter&&) noexcept;
-    RadiossAnimSeriesWriter& operator=(RadiossAnimSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(RadiossAnimSeriesWriter);
 
     /// Write the next file. @throws WriteError on a write failure.
     void Write(double Time, const Mesh& rMesh);

@@ -5472,15 +5472,15 @@ PYBIND11_MODULE(_core, m) {
             out["skin_volume"] = r.mSkinVolume;
             out["volume_ratio"] = r.mVolumeRatio;
             out["max_deviation"] = r.mMaxDeviation;
-            out["num_faces"] = r.mNumFaces;
-            out["num_plane"] = r.mNumPlane;
-            out["num_sphere"] = r.mNumSphere;
-            out["num_cylinder"] = r.mNumCylinder;
-            out["num_cone"] = r.mNumCone;
-            out["num_torus"] = r.mNumTorus;
-            out["num_faceted_faces"] = r.mNumFacetedFaces;
-            out["num_patches"] = r.mNumPatches;
-            out["num_demoted"] = r.mNumDemoted;
+            out["num_faces"] = r.mCounts.mNumFaces;
+            out["num_plane"] = r.mCounts.mNumPlane;
+            out["num_sphere"] = r.mCounts.mNumSphere;
+            out["num_cylinder"] = r.mCounts.mNumCylinder;
+            out["num_cone"] = r.mCounts.mNumCone;
+            out["num_torus"] = r.mCounts.mNumTorus;
+            out["num_faceted_faces"] = r.mCounts.mNumFacetedFaces;
+            out["num_patches"] = r.mCounts.mNumPatches;
+            out["num_demoted"] = r.mCounts.mNumDemoted;
             out["num_exact_edges"] = r.mNumExactEdges;
             out["num_approx_edges"] = r.mNumApproxEdges;
             out["num_solids"] = r.mNumSolids;
@@ -9247,9 +9247,13 @@ data. Usable as a context manager; ``__exit__`` finalizes.
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
             core_nogil([&] {
-                return meshioplusplus::write_svg(path, cpp, float_fmt, stroke_width, image_width,
-                                                 fill, stroke, azimuth, elevation, roll, color_by,
-                                                 component, cmap, vmin, vmax, nan_color, colorbar);
+                return meshioplusplus::write_svg(
+                    path, cpp,
+                    meshioplusplus::SvgWriteOptions{
+                        float_fmt, stroke_width, image_width, fill, stroke,
+                        meshioplusplus::DrawingView{azimuth, elevation, roll},
+                        meshioplusplus::DrawingColoring{color_by, component, cmap, vmin, vmax,
+                                                        nan_color, colorbar}});
             });
         },
         py::arg("path"), py::arg("mesh"), py::arg("float_fmt") = ".3f",
@@ -9276,8 +9280,12 @@ data. Usable as a context manager; ``__exit__`` finalizes.
             auto& cpp = cpp_in.mMesh;
             core_nogil([&] {
                 return meshioplusplus::write_tikz(
-                    path, cpp, float_fmt, standalone, line_width, fill, draw, scale, azimuth,
-                    elevation, roll, color_by, component, cmap, vmin, vmax, nan_color, colorbar);
+                    path, cpp,
+                    meshioplusplus::TikzWriteOptions{
+                        float_fmt, standalone, line_width, fill, draw, scale,
+                        meshioplusplus::DrawingView{azimuth, elevation, roll},
+                        meshioplusplus::DrawingColoring{color_by, component, cmap, vmin, vmax,
+                                                        nan_color, colorbar}});
             });
         },
         py::arg("path"), py::arg("mesh"), py::arg("float_fmt") = ".6f",

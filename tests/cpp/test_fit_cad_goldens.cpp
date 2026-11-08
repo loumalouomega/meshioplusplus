@@ -136,14 +136,30 @@ std::uint64_t fcg_report(const FitCadResult& rR) {
     fcg_bits(d, rR.mValid);
     for (double v : {rR.mTolerance, rR.mVolume, rR.mSkinVolume, rR.mVolumeRatio, rR.mMaxDeviation})
         fcg_bits(d, v);
-    for (std::int64_t v : {rR.mNumFaces,         rR.mNumPlane,          rR.mNumSphere,
-                           rR.mNumCylinder,      rR.mNumCone,           rR.mNumTorus,
-                           rR.mNumFacetedFaces,  rR.mNumPatches,        rR.mNumDemoted,
-                           rR.mNumExactEdges,    rR.mNumApproxEdges,    rR.mNumSolids,
-                           rR.mNumBspline,       rR.mNumSplitPatches,   rR.mNumFillet,
-                           rR.mNumHelical,       rR.mNumVariableFillet, rR.mNumBlend,
-                           rR.mNumRoundedThread, rR.mNumVertexBlend,    rR.mNumChamfer,
-                           rR.mNumConicBlend,    rR.mNumTaperedThread,  rR.mNumVariablePitchThread})
+    for (std::int64_t v : {rR.mCounts.mNumFaces,
+                           rR.mCounts.mNumPlane,
+                           rR.mCounts.mNumSphere,
+                           rR.mCounts.mNumCylinder,
+                           rR.mCounts.mNumCone,
+                           rR.mCounts.mNumTorus,
+                           rR.mCounts.mNumFacetedFaces,
+                           rR.mCounts.mNumPatches,
+                           rR.mCounts.mNumDemoted,
+                           rR.mNumExactEdges,
+                           rR.mNumApproxEdges,
+                           rR.mNumSolids,
+                           rR.mNumBspline,
+                           rR.mNumSplitPatches,
+                           rR.mNumFillet,
+                           rR.mNumHelical,
+                           rR.mNumVariableFillet,
+                           rR.mNumBlend,
+                           rR.mNumRoundedThread,
+                           rR.mNumVertexBlend,
+                           rR.mNumChamfer,
+                           rR.mNumConicBlend,
+                           rR.mNumTaperedThread,
+                           rR.mNumVariablePitchThread})
         fcg_bits(d, v);
     fcg_bits(d, static_cast<std::int32_t>(rR.mBackend));
     return d.Value();

@@ -164,7 +164,7 @@ TEST(FitCadModes, NativeDemotionHasAReason) {
     o.mTolerance = 1e-6;
     const FitCadResult r =
         fit_cad(fcfix::fitted(fcfix::jittered(analytic::capped_cylinder(), 1e-4)), "", o);
-    ASSERT_GT(r.mNumDemoted, 0);
+    ASSERT_GT(r.mCounts.mNumDemoted, 0);
     bool found = false;
     for (const FitCadFaceRecord& f : r.mFaces)
         if (f.mDemotionReason == FitCadDemotionReason::HausdorffExceeded) {
@@ -379,7 +379,7 @@ TEST(FitCadModes, NativeModesReturnTheSolidAsNurbs) {
         if (f.mName == "monkey_saddle_network")
             o.mTolerance = 2e-3 * fcfix::diagonal(f.mMesh);
         const FitCadResult r = fit_cad(f.mMesh, "", o);
-        ASSERT_EQ(static_cast<std::int64_t>(r.mBrep.mFaces.size()), r.mNumFaces) << f.mName;
+        ASSERT_EQ(static_cast<std::int64_t>(r.mBrep.mFaces.size()), r.mCounts.mNumFaces) << f.mName;
         ASSERT_EQ(r.mBrep.mPatches.size(), r.mBrep.mFaces.size()) << f.mName;
         // Every edge between two faces, or a seam of one, is used twice.
         for (const BrepEdge& e : r.mBrep.mEdges)
@@ -491,11 +491,11 @@ TEST(FitCadModes, ResegmentationCutsAMissedCrease) {
         EXPECT_GT(on.mNumResegmented, 0);
         EXPECT_GT(off.mFacetAreaFraction, 0.04);
         EXPECT_LT(on.mFacetAreaFraction, 0.01);
-        EXPECT_LT(on.mNumFaces, off.mNumFaces);
+        EXPECT_LT(on.mCounts.mNumFaces, off.mCounts.mNumFaces);
         EXPECT_TRUE(on.mValid);
         // And the same result again.
         const FitCadResult again = fit_cad(merged, "", o);
-        EXPECT_EQ(again.mNumFaces, on.mNumFaces);
+        EXPECT_EQ(again.mCounts.mNumFaces, on.mCounts.mNumFaces);
         EXPECT_EQ(again.mFacetAreaFraction, on.mFacetAreaFraction);
     }
 }
@@ -652,7 +652,7 @@ TEST(FitCadModes, OcctNetworkBuildsTheCage) {
             EXPECT_TRUE(r.mBrepChecked);
             EXPECT_LT(r.mFacetAreaFraction, legacy.mFacetAreaFraction);
             EXPECT_EQ(r.mFacetAreaFraction, 0.0);
-            EXPECT_EQ(r.mNumNetworkPatches, r.mNumFaces);
+            EXPECT_EQ(r.mNumNetworkPatches, r.mCounts.mNumFaces);
             EXPECT_EQ(r.mNumExtraordinaryVertices, 8);
             EXPECT_GT(r.mNumNetworkEdges, 0);
             for (const FitCadFaceRecord& rec : r.mFaces) {
@@ -681,7 +681,7 @@ TEST(FitCadModes, NativeNetworkStepReadsBack) {
     CadReadOptions ro;
     ro.mDeflection = 0.1 * tol;
     const Mesh back = read_step(path, info, ro);
-    EXPECT_EQ(static_cast<std::int64_t>(info.mFaces.size()), r.mNumFaces);
+    EXPECT_EQ(static_cast<std::int64_t>(info.mFaces.size()), r.mCounts.mNumFaces);
     std::int64_t cubic = 0;
     for (const BrepFace& f : info.mFaces) {
         const NurbsPatch& p = info.mPatches[static_cast<std::size_t>(f.mPatch)];

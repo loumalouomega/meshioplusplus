@@ -76,15 +76,12 @@
 // Project includes
 #include "meshioplusplus/abi_version.hpp"
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/detail/link_check.hpp"
 
-// Two levels, so MESHIOPLUSPLUS_ABI_VERSION expands to its number before ## and
-// # see it. Without the indirection the symbol would literally be
-// `abi_version_is_MESHIOPLUSPLUS_ABI_VERSION`.
-#define MESHIOPLUSPLUS_ABI_SYM_(n) abi_version_is_##n
-#define MESHIOPLUSPLUS_ABI_SYM(n) MESHIOPLUSPLUS_ABI_SYM_(n)
-
-#define MESHIOPLUSPLUS_ABI_STR_(n) #n
-#define MESHIOPLUSPLUS_ABI_STR(n) MESHIOPLUSPLUS_ABI_STR_(n)
+/// `abi_version_is_<n>`, with @p n expanded first (`detail/link_check.hpp`).
+#define MESHIOPLUSPLUS_ABI_SYM(n) MESHIOPLUSPLUS_PP_CAT(abi_version_is_, n)
+/// The string form of @p n, for the MSVC arm.
+#define MESHIOPLUSPLUS_ABI_STR(n) MESHIOPLUSPLUS_PP_STR(n)
 
 namespace meshioplusplus::detail {
 
@@ -97,20 +94,10 @@ MESHIOPLUSPLUS_API void MESHIOPLUSPLUS_ABI_SYM(MESHIOPLUSPLUS_ABI_VERSION)();
 
 #ifndef MESHIOPLUSPLUS_NO_ABI_VERSION_CHECK
 #if defined(__GNUC__) || defined(__clang__)
-/**
- * @brief Constant-initialized reference that forces the symbol above to resolve.
- *
- * `gnu::used` is **load-bearing, not decoration** -- do not "tidy" it away. This
- * is the lesson `detail/mesh_backend_check.hpp` paid for over a full release: an
- * `inline` variable has vague linkage and is emitted *lazily*, so with nothing
- * reading the pointer no relocation ever reaches the object file and the entire
- * guard is silently inert. That was the backend guard's state through v9.1.0.
- * Dropping `inline`/`const` does not fix it either -- a plain `static const`
- * initializer is still discarded at `-O2`. `nm -uC` on a consumer object file
- * must show this reference; CI asserts exactly that rather than trusting it.
- */
-[[maybe_unused, gnu::used]] inline void (*const abi_version_link_check)() =
-    &MESHIOPLUSPLUS_ABI_SYM(MESHIOPLUSPLUS_ABI_VERSION);
+/// Forces the symbol above to resolve (`MESHIOPLUSPLUS_LINK_CHECK_REF`: why
+/// `gnu::used` is load-bearing).
+MESHIOPLUSPLUS_LINK_CHECK_REF(abi_version_link_check,
+                              MESHIOPLUSPLUS_ABI_SYM(MESHIOPLUSPLUS_ABI_VERSION));
 #elif defined(_MSC_VER)
 // MSVC has no `used`, so the pointer above cannot be forced into the object.
 // detect_mismatch reaches the same failure at the same moment by a different

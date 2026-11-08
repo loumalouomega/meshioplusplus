@@ -42,6 +42,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -121,11 +122,7 @@ MESHIOPLUSPLUS_API void write_exodus(const std::string& rPath, const Mesh& rMesh
 class MESHIOPLUSPLUS_API ExodusTimeSeriesWriter {
 public:
     explicit ExodusTimeSeriesWriter(const std::string& rPath);
-    ~ExodusTimeSeriesWriter();
-    ExodusTimeSeriesWriter(const ExodusTimeSeriesWriter&) = delete;
-    ExodusTimeSeriesWriter& operator=(const ExodusTimeSeriesWriter&) = delete;
-    ExodusTimeSeriesWriter(ExodusTimeSeriesWriter&&) noexcept;
-    ExodusTimeSeriesWriter& operator=(ExodusTimeSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(ExodusTimeSeriesWriter);
     void WritePointsCells(const Mesh& rMesh);
     void WriteData(double Time, const Mesh& rMesh);
     void Flush();

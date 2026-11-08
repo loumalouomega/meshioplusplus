@@ -40,13 +40,20 @@
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
 
 // System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 // External includes (OpenCASCADE)
 #include <Message_Messenger.hxx>
+#include <Poly_Triangulation.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Trsf.hxx>
 
 // Project includes
 #include "meshioplusplus/brep.hpp"
@@ -138,6 +145,61 @@ private:
     struct Impl;
     Impl* mpImpl;
 };
+
+/// A tessellation node's welding key: the bits of its coordinates, `-0` read
+/// as `+0`, so nodes weld only where they coincide exactly.
+struct OcctNodeKey {
+    std::array<std::uint64_t, 3> mBits;
+    bool operator==(const OcctNodeKey& rO) const { return mBits == rO.mBits; }
+};
+
+/// FNV-1a over the key's three words. Buckets only: the map is looked up,
+/// never iterated, so the hash cannot reach the output.
+struct OcctNodeKeyHash {
+    std::size_t operator()(const OcctNodeKey& rK) const {
+        std::uint64_t h = 1469598103934665603ull;
+        for (std::uint64_t b : rK.mBits)
+            h = (h ^ b) * 1099511628211ull;
+        return static_cast<std::size_t>(h);
+    }
+};
+
+/// The welded id of every node met so far, across the faces of one tessellation.
+using OcctNodeIds = std::unordered_map<OcctNodeKey, std::int64_t, OcctNodeKeyHash>;
+
+/**
+ * @brief Welds the nodes of one face's triangulation into a shared point list:
+ * each node, moved by @p rTrsf, takes the id of an earlier node with exactly
+ * its coordinates, or the next new id, appending its `x y z` to @p rXyz (ids in
+ * first-seen order).
+ * @return The welded id of each node, indexed 1-based as the triangulation's
+ *         own (entry 0 unused).
+ */
+std::vector<std::int64_t> occt_weld_nodes(const Poly_Triangulation& rTri, const gp_Trsf& rTrsf,
+                                          OcctNodeIds& rIds, std::vector<double>& rXyz);
+
+/**
+ * @brief Visits the triangles of a welded triangulation, in its order, turned
+ * over when @p Reversed (the face is `TopAbs_REVERSED`), skipping those the
+ * weld collapsed: `rVisit(ia, ib, ic, a, b, c)`, the welded ids and the
+ * triangulation's own 1-based node numbers.
+ */
+template <class TVisit>
+void occt_welded_triangles(const Poly_Triangulation& rTri, bool Reversed,
+                           const std::vector<std::int64_t>& rLocal, TVisit&& rVisit) {
+    for (int t = 1; t <= rTri.NbTriangles(); ++t) {
+        int a = 0, b = 0, c = 0;
+        rTri.Triangle(t).Get(a, b, c);
+        if (Reversed)
+            std::swap(b, c);
+        const std::int64_t ia = rLocal[static_cast<std::size_t>(a)];
+        const std::int64_t ib = rLocal[static_cast<std::size_t>(b)];
+        const std::int64_t ic = rLocal[static_cast<std::size_t>(c)];
+        if (ia == ib || ib == ic || ia == ic)
+            continue;
+        rVisit(ia, ib, ic, a, b, c);
+    }
+}
 
 }  // namespace meshioplusplus::detail
 

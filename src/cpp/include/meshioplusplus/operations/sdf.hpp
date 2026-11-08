@@ -75,11 +75,9 @@
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "meshioplusplus/operations/sdf_names.hpp"
 
 namespace meshioplusplus {
-
-/// The Float64 signed distance array. Negative inside, by the usual convention.
-inline constexpr const char* kSdfDistanceName = "sdf:distance";
 
 /// The Int64 0/1 array marking values that were actually computed rather than
 /// clamped to the band limit. Attached whenever a band is in force, and

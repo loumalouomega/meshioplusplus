@@ -27,3 +27,11 @@ GENERATE_TREEVIEW       = YES
 SOURCE_BROWSER          = YES
 
 QUIET                   = YES
+
+# The series writers declare their special members through one macro
+# (formats/time_series_common.hpp); expand it so the reference lists them.
+MACRO_EXPANSION         = YES
+EXPAND_ONLY_PREDEF      = YES
+SEARCH_INCLUDES         = YES
+INCLUDE_PATH            = ../src/cpp/include
+EXPAND_AS_DEFINED       = MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS

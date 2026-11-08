@@ -74,6 +74,7 @@ export default defineConfig({
           { text: "Named regions", link: "/regions" },
           { text: "Polyhedra and ragged cells", link: "/polyhedra" },
           { text: "Shared geometry and FEM kernels", link: "/geometry_kernels" },
+          { text: "Common utilities", link: "/common_utilities" },
           { text: "C++ mesh backends", link: "/cpp_backends" },
         ],
       },

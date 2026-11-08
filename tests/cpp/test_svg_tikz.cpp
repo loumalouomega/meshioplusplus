@@ -65,6 +65,48 @@ mt::Mesh non_flat_mesh() {
     return mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 1}}, "triangle", {{0, 1, 2}});
 }
 
+// The writers take one options struct (ABI 42); these spell it positionally,
+// in the order of the former signatures, so each test names only what it sets.
+void svg_write(const std::string& rPath, const mt::Mesh& rMesh, const std::string& rFloatFmt,
+               const std::optional<std::string>& rStrokeWidth = std::nullopt,
+               const std::optional<double>& rImageWidth = 100.0,
+               const std::string& rFill = "#c8c5bd", const std::string& rStroke = "#000080",
+               double azimuth = 45.0, double elevation = 35.264389682754654, double roll = 0.0,
+               const std::string& rColorBy = "",
+               const std::optional<int>& rComponent = std::nullopt,
+               const std::string& rCmap = "viridis",
+               const std::optional<double>& rVMin = std::nullopt,
+               const std::optional<double>& rVMax = std::nullopt,
+               const std::string& rNanColor = "#808080", bool Colorbar = false) {
+    meshioplusplus::write_svg(
+        rPath, rMesh,
+        meshioplusplus::SvgWriteOptions{
+            rFloatFmt, rStrokeWidth, rImageWidth, rFill, rStroke,
+            meshioplusplus::DrawingView{azimuth, elevation, roll},
+            meshioplusplus::DrawingColoring{rColorBy, rComponent, rCmap, rVMin, rVMax, rNanColor,
+                                            Colorbar}});
+}
+
+void tikz_write(const std::string& rPath, const mt::Mesh& rMesh, const std::string& rFloatFmt,
+                bool Standalone = true, const std::optional<std::string>& rLineWidth = std::nullopt,
+                const std::string& rFill = "gray!30", const std::string& rDraw = "black",
+                const std::optional<double>& rScale = std::nullopt, double azimuth = 45.0,
+                double elevation = 35.264389682754654, double roll = 0.0,
+                const std::string& rColorBy = "",
+                const std::optional<int>& rComponent = std::nullopt,
+                const std::string& rCmap = "viridis",
+                const std::optional<double>& rVMin = std::nullopt,
+                const std::optional<double>& rVMax = std::nullopt,
+                const std::string& rNanColor = "gray", bool Colorbar = false) {
+    meshioplusplus::write_tikz(
+        rPath, rMesh,
+        meshioplusplus::TikzWriteOptions{
+            rFloatFmt, Standalone, rLineWidth, rFill, rDraw, rScale,
+            meshioplusplus::DrawingView{azimuth, elevation, roll},
+            meshioplusplus::DrawingColoring{rColorBy, rComponent, rCmap, rVMin, rVMax, rNanColor,
+                                            Colorbar}});
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- SVG --------
@@ -105,8 +147,7 @@ TEST(Svg, TriangleAndQuadPathsAreClosed) {
 
 TEST(Svg, StyleHonoursColours) {
     std::string path = mt::temp_path(".svg");
-    meshioplusplus::write_svg(path, mt::tri_mesh(), ".3f", std::nullopt, 100.0, "#ff0000",
-                              "#00ff00");
+    svg_write(path, mt::tri_mesh(), ".3f", std::nullopt, 100.0, "#ff0000", "#00ff00");
     std::string out = slurp(path);
     EXPECT_NE(out.find("fill: #ff0000"), std::string::npos);
     EXPECT_NE(out.find("stroke: #00ff00"), std::string::npos);
@@ -122,7 +163,7 @@ TEST(Svg, ImageWidthScalesCoordinates) {
 
     // image_width = nullopt -> no scaling; coordinates stay at unit scale.
     std::string raw = mt::temp_path(".svg");
-    meshioplusplus::write_svg(raw, mt::tri_mesh(), ".3f", std::nullopt, std::nullopt);
+    svg_write(raw, mt::tri_mesh(), ".3f", std::nullopt, std::nullopt);
     std::string out = slurp(raw);
     EXPECT_EQ(out.find("100.000"), std::string::npos);
     EXPECT_NE(out.find("1.000"), std::string::npos);
@@ -183,8 +224,8 @@ TEST(Svg, CameraAnglesChangeProjection) {
     std::string p1 = mt::temp_path(".svg");
     std::string p2 = mt::temp_path(".svg");
     meshioplusplus::write_svg(p1, mt::hex_mesh());
-    meshioplusplus::write_svg(p2, mt::hex_mesh(), ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
-                              /*azimuth=*/10.0, /*elevation=*/60.0);
+    svg_write(p2, mt::hex_mesh(), ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
+              /*azimuth=*/10.0, /*elevation=*/60.0);
     const std::string a = slurp(p1);
     const std::string b = slurp(p2);
     EXPECT_EQ(count_occurrences(a, "<path "), 6u);
@@ -212,7 +253,7 @@ TEST(Tikz, StandaloneDocumentByDefault) {
 
 TEST(Tikz, SnippetOmitsDocumentWrapper) {
     std::string path = mt::temp_path(".tikz");
-    meshioplusplus::write_tikz(path, mt::tri_mesh(), ".6f", /*Standalone=*/false);
+    tikz_write(path, mt::tri_mesh(), ".6f", /*Standalone=*/false);
     std::string out = slurp(path);
     EXPECT_EQ(out.find("\\documentclass"), std::string::npos);
     EXPECT_NE(out.find("\\begin{tikzpicture}"), std::string::npos);
@@ -243,8 +284,8 @@ TEST(Tikz, FilledFacesVersusOpenLines) {
 
 TEST(Tikz, OptionsAppearInOutput) {
     std::string path = mt::temp_path(".tikz");
-    meshioplusplus::write_tikz(path, mt::tri_mesh(), ".6f", /*Standalone=*/true, "0.4pt", "blue!20",
-                               "red", /*rScale=*/2.0);
+    tikz_write(path, mt::tri_mesh(), ".6f", /*Standalone=*/true, "0.4pt", "blue!20", "red",
+               /*rScale=*/2.0);
     std::string out = slurp(path);
     EXPECT_NE(out.find("fill=blue!20"), std::string::npos);
     EXPECT_NE(out.find("draw=red"), std::string::npos);
@@ -328,16 +369,15 @@ TEST(SvgTikzColor, GoldenFillVocabulary) {
     // Pins the exact colour spelling in each format. The TikZ braces matter:
     // without them the inner commas would split the option list.
     std::string svg_path = mt::temp_path(".svg");
-    meshioplusplus::write_svg(svg_path, two_tri_tagged(0.0, 1.0), ".3f", std::nullopt, 100.0,
-                              "#c8c5bd", "#000080", 45.0, 35.264389682754654, 0.0, "tag");
+    svg_write(svg_path, two_tri_tagged(0.0, 1.0), ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
+              45.0, 35.264389682754654, 0.0, "tag");
     const std::string svg_out = slurp(svg_path);
     EXPECT_NE(svg_out.find(std::string("fill=\"") + kViridisLoHex + "\""), std::string::npos);
     EXPECT_NE(svg_out.find(std::string("fill=\"") + kViridisHiHex + "\""), std::string::npos);
 
     std::string tikz_path = mt::temp_path(".tikz");
-    meshioplusplus::write_tikz(tikz_path, two_tri_tagged(0.0, 1.0), ".6f", true, std::nullopt,
-                               "gray!30", "black", std::nullopt, 45.0, 35.264389682754654, 0.0,
-                               "tag");
+    tikz_write(tikz_path, two_tri_tagged(0.0, 1.0), ".6f", true, std::nullopt, "gray!30", "black",
+               std::nullopt, 45.0, 35.264389682754654, 0.0, "tag");
     const std::string tikz_out = slurp(tikz_path);
     EXPECT_NE(tikz_out.find(std::string("fill=") + kViridisLoTikz + ", draw=black"),
               std::string::npos);
@@ -360,16 +400,14 @@ TEST(SvgTikzColor, ColorByUnsetIsUnchanged) {
             meshioplusplus::write_svg(plain, mt::data_mesh());
             // colorbar=true is deliberately passed: with no colouring there is
             // nothing to draw a bar for, so it must be ignored.
-            meshioplusplus::write_svg(explicit_defaults, mt::data_mesh(), ".3f", std::nullopt,
-                                      100.0, "#c8c5bd", "#000080", 45.0, 35.264389682754654, 0.0,
-                                      "", std::nullopt, "viridis", std::nullopt, std::nullopt,
-                                      "#808080", true);
+            svg_write(explicit_defaults, mt::data_mesh(), ".3f", std::nullopt, 100.0, "#c8c5bd",
+                      "#000080", 45.0, 35.264389682754654, 0.0, "", std::nullopt, "viridis",
+                      std::nullopt, std::nullopt, "#808080", true);
         } else {
             meshioplusplus::write_tikz(plain, mt::data_mesh());
-            meshioplusplus::write_tikz(explicit_defaults, mt::data_mesh(), ".6f", true,
-                                       std::nullopt, "gray!30", "black", std::nullopt, 45.0,
-                                       35.264389682754654, 0.0, "", std::nullopt, "viridis",
-                                       std::nullopt, std::nullopt, "gray", true);
+            tikz_write(explicit_defaults, mt::data_mesh(), ".6f", true, std::nullopt, "gray!30",
+                       "black", std::nullopt, 45.0, 35.264389682754654, 0.0, "", std::nullopt,
+                       "viridis", std::nullopt, std::nullopt, "gray", true);
         }
         EXPECT_EQ(slurp(plain), slurp(explicit_defaults));
         std::error_code ec;
@@ -382,9 +420,9 @@ TEST(SvgTikzColor, NonFiniteValuesUseNanColor) {
     // Every face is NaN, so every face takes nan_color and none is mapped.
     const double nan_v = std::nan("");
     std::string path = mt::temp_path(".svg");
-    meshioplusplus::write_svg(path, two_tri_tagged(nan_v, nan_v), ".3f", std::nullopt, 100.0,
-                              "#c8c5bd", "#000080", 45.0, 35.264389682754654, 0.0, "tag",
-                              std::nullopt, "viridis", std::nullopt, std::nullopt, "#123456");
+    svg_write(path, two_tri_tagged(nan_v, nan_v), ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
+              45.0, 35.264389682754654, 0.0, "tag", std::nullopt, "viridis", std::nullopt,
+              std::nullopt, "#123456");
     const std::string out = slurp(path);
     EXPECT_EQ(count_occurrences(out, "fill=\"#123456\""), 2u);
     EXPECT_EQ(out.find(kViridisLoHex), std::string::npos);
@@ -396,11 +434,11 @@ TEST(SvgTikzColor, ColorbarIsAppendOnly) {
     // The colorbar widens only the viewBox; every mesh <path> is untouched.
     std::string without = mt::temp_path(".svg");
     std::string with_bar = mt::temp_path(".svg");
-    meshioplusplus::write_svg(without, two_tri_tagged(0.0, 1.0), ".3f", std::nullopt, 100.0,
-                              "#c8c5bd", "#000080", 45.0, 35.264389682754654, 0.0, "tag");
-    meshioplusplus::write_svg(with_bar, two_tri_tagged(0.0, 1.0), ".3f", std::nullopt, 100.0,
-                              "#c8c5bd", "#000080", 45.0, 35.264389682754654, 0.0, "tag",
-                              std::nullopt, "viridis", std::nullopt, std::nullopt, "#808080", true);
+    svg_write(without, two_tri_tagged(0.0, 1.0), ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
+              45.0, 35.264389682754654, 0.0, "tag");
+    svg_write(with_bar, two_tri_tagged(0.0, 1.0), ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
+              45.0, 35.264389682754654, 0.0, "tag", std::nullopt, "viridis", std::nullopt,
+              std::nullopt, "#808080", true);
     const std::string a = slurp(without);
     const std::string b = slurp(with_bar);
     EXPECT_EQ(count_occurrences(a, "<rect "), 0u);
@@ -418,24 +456,20 @@ TEST(SvgTikzColor, ColorbarIsAppendOnly) {
 TEST(SvgTikzColor, InvalidOptionsThrow) {
     const std::string path = mt::temp_path(".svg");
     // Unknown array name.
-    EXPECT_THROW(
-        meshioplusplus::write_svg(path, mt::data_mesh(), ".3f", std::nullopt, 100.0, "#c8c5bd",
-                                  "#000080", 45.0, 35.264389682754654, 0.0, "nope"),
-        std::invalid_argument);
+    EXPECT_THROW(svg_write(path, mt::data_mesh(), ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
+                           45.0, 35.264389682754654, 0.0, "nope"),
+                 std::invalid_argument);
     // Unknown colormap.
-    EXPECT_THROW(meshioplusplus::write_svg(path, mt::data_mesh(), ".3f", std::nullopt, 100.0,
-                                           "#c8c5bd", "#000080", 45.0, 35.264389682754654, 0.0,
-                                           "mat", std::nullopt, "nope"),
+    EXPECT_THROW(svg_write(path, mt::data_mesh(), ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
+                           45.0, 35.264389682754654, 0.0, "mat", std::nullopt, "nope"),
                  std::invalid_argument);
     // Component past the end of a scalar array.
-    EXPECT_THROW(
-        meshioplusplus::write_svg(path, mt::data_mesh(), ".3f", std::nullopt, 100.0, "#c8c5bd",
-                                  "#000080", 45.0, 35.264389682754654, 0.0, "mat", 7),
-        std::invalid_argument);
+    EXPECT_THROW(svg_write(path, mt::data_mesh(), ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
+                           45.0, 35.264389682754654, 0.0, "mat", 7),
+                 std::invalid_argument);
     // vmin above vmax.
-    EXPECT_THROW(meshioplusplus::write_svg(path, mt::data_mesh(), ".3f", std::nullopt, 100.0,
-                                           "#c8c5bd", "#000080", 45.0, 35.264389682754654, 0.0,
-                                           "mat", std::nullopt, "viridis", 5.0, 1.0),
+    EXPECT_THROW(svg_write(path, mt::data_mesh(), ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
+                           45.0, 35.264389682754654, 0.0, "mat", std::nullopt, "viridis", 5.0, 1.0),
                  std::invalid_argument);
     std::error_code ec;
     std::filesystem::remove(path, ec);
@@ -465,8 +499,8 @@ TEST(SvgTikzColor, CellDataLandsOnTheOwningSkinFacet) {
     m.AddCellData("tag", std::move(tag));
 
     std::string path = mt::temp_path(".svg");
-    meshioplusplus::write_svg(path, m, ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080", 45.0,
-                              35.264389682754654, 0.0, "tag");
+    svg_write(path, m, ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080", 45.0, 35.264389682754654,
+              0.0, "tag");
     const std::string out = slurp(path);
     EXPECT_EQ(count_occurrences(out, "<path "), 10u);
     EXPECT_EQ(count_occurrences(out, std::string("fill=\"") + kViridisLoHex + "\""), 5u);
@@ -483,8 +517,8 @@ TEST(SvgTikzColor, PointDataAveragesOverCorners) {
     m.AddPointData("T", mt::data_array({0.0, 3.0, 6.0}));
 
     std::string path = mt::temp_path(".svg");
-    meshioplusplus::write_svg(path, m, ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080", 45.0,
-                              35.264389682754654, 0.0, "T", std::nullopt, "viridis", 0.0, 6.0);
+    svg_write(path, m, ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080", 45.0, 35.264389682754654,
+              0.0, "T", std::nullopt, "viridis", 0.0, 6.0);
     const std::string out = slurp(path);
     const meshioplusplus::detail::Rgb mid = meshioplusplus::detail::colormap_lookup(
         meshioplusplus::detail::colormap_table("viridis"), 0.5);
@@ -678,9 +712,9 @@ TEST(SvgRead, ProjectedDrawingComesBackFlat) {
 
 TEST(SvgRead, FillsComeBackAsRgbAndTheColorbarIsSkipped) {
     std::string path = mt::temp_path(".svg");
-    meshioplusplus::write_svg(path, two_tri_tagged(0.0, 1.0), ".3f", std::nullopt, 100.0, "#c8c5bd",
-                              "#000080", 45.0, 35.264389682754654, 0.0, "tag", std::nullopt,
-                              "viridis", std::nullopt, std::nullopt, "#808080", /*Colorbar=*/true);
+    svg_write(path, two_tri_tagged(0.0, 1.0), ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
+              45.0, 35.264389682754654, 0.0, "tag", std::nullopt, "viridis", std::nullopt,
+              std::nullopt, "#808080", /*Colorbar=*/true);
     const mt::Mesh out = meshioplusplus::read_svg(path);
     EXPECT_EQ(out.NumPoints(), 4u);  // the 32 swatches added no points
     ASSERT_EQ(out.NumCellBlocks(), 1u);
@@ -709,8 +743,8 @@ TEST(SvgRead, ACellWithoutAFillIsMinusOne) {
     tag.push_back(mt::data_array({1.0}));
     m.AddCellData("tag", std::move(tag));
     std::string path = mt::temp_path(".svg");
-    meshioplusplus::write_svg(path, m, ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080", 45.0,
-                              35.264389682754654, 0.0, "tag");
+    svg_write(path, m, ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080", 45.0, 35.264389682754654,
+              0.0, "tag");
     const mt::Mesh out = meshioplusplus::read_svg(path);
     ASSERT_EQ(out.NumCellBlocks(), 2u);
     ASSERT_TRUE(out.HasCellData("svg:fill"));
@@ -840,7 +874,7 @@ TEST(TikzRead, WritersMarkerNamesTheDrawing) {
     EXPECT_NE(out.find("\n% Drawing: planar\n\\documentclass{standalone}"), std::string::npos);
 
     std::string proj = mt::temp_path(".tikz");
-    meshioplusplus::write_tikz(proj, non_flat_mesh(), ".6f", false);
+    tikz_write(proj, non_flat_mesh(), ".6f", false);
     EXPECT_NE(slurp(proj).find("\n% Drawing: projected azimuth=45 elevation=35.264389682754654 "
                                "roll=0\n\\begin{tikzpicture}"),
               std::string::npos);
@@ -856,7 +890,7 @@ TEST(TikzRead, PlanarInputComesBackExactly) {
                                       "triangle", {{0, 1, 2}, {0, 2, 3}});
     for (bool standalone : {true, false}) {
         std::string path = mt::temp_path(".tikz");
-        meshioplusplus::write_tikz(path, in, ".17g", standalone);
+        tikz_write(path, in, ".17g", standalone);
         const mt::Mesh out = meshioplusplus::read_tikz(path);
         ASSERT_EQ(out.NumPoints(), 4u);
         for (std::size_t i = 0; i < 4; ++i) {
@@ -896,10 +930,10 @@ TEST(TikzRead, TypesLinesAndTheWeld) {
 
 TEST(TikzRead, FillsComeBackAsRgbAndTheColorbarIsSkipped) {
     std::string path = mt::temp_path(".tikz");
-    meshioplusplus::write_tikz(path, two_tri_tagged(0.0, 1.0), ".6f", true, std::nullopt, "gray!30",
-                               "black", std::nullopt, 45.0, 35.264389682754654, 0.0, "tag",
-                               std::nullopt, "viridis", std::nullopt, std::nullopt, "gray",
-                               /*Colorbar=*/true);
+    tikz_write(path, two_tri_tagged(0.0, 1.0), ".6f", true, std::nullopt, "gray!30", "black",
+               std::nullopt, 45.0, 35.264389682754654, 0.0, "tag", std::nullopt, "viridis",
+               std::nullopt, std::nullopt, "gray",
+               /*Colorbar=*/true);
     const mt::Mesh out = meshioplusplus::read_tikz(path);
     EXPECT_EQ(out.NumPoints(), 4u);
     ASSERT_EQ(out.NumCellBlocks(), 1u);

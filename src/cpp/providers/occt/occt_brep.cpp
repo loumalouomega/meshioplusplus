@@ -817,6 +817,23 @@ BrepInfo ob_brep_info(const TopoDS_Shape& rNurbs, double ApproxTol) {
 
 }  // namespace
 
+std::vector<std::int64_t> occt_weld_nodes(const Poly_Triangulation& rTri, const gp_Trsf& rTrsf,
+                                          OcctNodeIds& rIds, std::vector<double>& rXyz) {
+    std::vector<std::int64_t> local(static_cast<std::size_t>(rTri.NbNodes()) + 1, -1);
+    for (int i = 1; i <= rTri.NbNodes(); ++i) {
+        const gp_Pnt p = rTri.Node(i).Transformed(rTrsf);
+        const double c[3] = {p.X() + 0.0, p.Y() + 0.0, p.Z() + 0.0};
+        OcctNodeKey k;
+        for (int j = 0; j < 3; ++j)
+            std::memcpy(&k.mBits[static_cast<std::size_t>(j)], &c[j], sizeof(double));
+        auto ins = rIds.emplace(k, static_cast<std::int64_t>(rXyz.size() / 3));
+        if (ins.second)
+            rXyz.insert(rXyz.end(), c, c + 3);
+        local[static_cast<std::size_t>(i)] = ins.first->second;
+    }
+    return local;
+}
+
 Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double Deflection,
                      double Angular) {
     double deflection = Deflection;
@@ -838,19 +855,7 @@ Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double D
     for (std::size_t i = 0; i < rInfo.mFaces.size(); ++i)
         face_of_id.emplace(rInfo.mFaces[i].mId, i);
 
-    struct Key {
-        std::array<std::uint64_t, 3> mBits;
-        bool operator==(const Key& rO) const { return mBits == rO.mBits; }
-    };
-    struct KeyHash {
-        std::size_t operator()(const Key& rK) const {
-            std::uint64_t h = 1469598103934665603ull;
-            for (std::uint64_t b : rK.mBits)
-                h = (h ^ b) * 1099511628211ull;
-            return static_cast<std::size_t>(h);
-        }
-    };
-    std::unordered_map<Key, std::int64_t, KeyHash> id;
+    OcctNodeIds id;
     std::vector<double> xyz;
     std::vector<std::int64_t> tris, index, ids, span;
     for (int fi = 1; fi <= faces.Extent(); ++fi) {
@@ -863,43 +868,25 @@ Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double D
         const BrepFace* pFace = fit == face_of_id.end() ? nullptr : &rInfo.mFaces[fit->second];
         const NurbsPatch* pPatch =
             pFace ? &rInfo.mPatches[static_cast<std::size_t>(pFace->mPatch)] : nullptr;
-        const gp_Trsf trsf = loc.Transformation();
-        std::vector<std::int64_t> local(static_cast<std::size_t>(tri->NbNodes()) + 1, -1);
-        for (int i = 1; i <= tri->NbNodes(); ++i) {
-            const gp_Pnt p = tri->Node(i).Transformed(trsf);
-            const double c[3] = {p.X() + 0.0, p.Y() + 0.0, p.Z() + 0.0};
-            Key k;
-            for (int j = 0; j < 3; ++j)
-                std::memcpy(&k.mBits[static_cast<std::size_t>(j)], &c[j], sizeof(double));
-            auto ins = id.emplace(k, static_cast<std::int64_t>(xyz.size() / 3));
-            if (ins.second)
-                xyz.insert(xyz.end(), c, c + 3);
-            local[static_cast<std::size_t>(i)] = ins.first->second;
-        }
+        const std::vector<std::int64_t> local =
+            occt_weld_nodes(*tri, loc.Transformation(), id, xyz);
         const bool reversed = face.Orientation() == TopAbs_REVERSED;
-        for (int t = 1; t <= tri->NbTriangles(); ++t) {
-            int a = 0, b = 0, c = 0;
-            tri->Triangle(t).Get(a, b, c);
-            if (reversed)
-                std::swap(b, c);
-            const std::int64_t ia = local[static_cast<std::size_t>(a)];
-            const std::int64_t ib = local[static_cast<std::size_t>(b)];
-            const std::int64_t ic = local[static_cast<std::size_t>(c)];
-            if (ia == ib || ib == ic || ia == ic)
-                continue;
-            tris.insert(tris.end(), {ia, ib, ic});
-            index.push_back(pFace ? static_cast<std::int64_t>(fit->second) : -1);
-            ids.push_back(pFace ? pFace->mId : -1);
-            std::int64_t su = -1, sv = -1;
-            if (pPatch && tri->HasUVNodes()) {
-                const gp_Pnt2d uv0 = tri->UVNode(a), uv1 = tri->UVNode(b), uv2 = tri->UVNode(c);
-                const double u = (uv0.X() + uv1.X() + uv2.X()) / 3.0;
-                const double v = (uv0.Y() + uv1.Y() + uv2.Y()) / 3.0;
-                su = ob_span_ordinal(pPatch->mDegrees[0], pPatch->mKnots[0], u);
-                sv = ob_span_ordinal(pPatch->mDegrees[1], pPatch->mKnots[1], v);
-            }
-            span.insert(span.end(), {su, sv});
-        }
+        occt_welded_triangles(
+            *tri, reversed, local,
+            [&](std::int64_t ia, std::int64_t ib, std::int64_t ic, int a, int b, int c) {
+                tris.insert(tris.end(), {ia, ib, ic});
+                index.push_back(pFace ? static_cast<std::int64_t>(fit->second) : -1);
+                ids.push_back(pFace ? pFace->mId : -1);
+                std::int64_t su = -1, sv = -1;
+                if (pPatch && tri->HasUVNodes()) {
+                    const gp_Pnt2d uv0 = tri->UVNode(a), uv1 = tri->UVNode(b), uv2 = tri->UVNode(c);
+                    const double u = (uv0.X() + uv1.X() + uv2.X()) / 3.0;
+                    const double v = (uv0.Y() + uv1.Y() + uv2.Y()) / 3.0;
+                    su = ob_span_ordinal(pPatch->mDegrees[0], pPatch->mKnots[0], u);
+                    sv = ob_span_ordinal(pPatch->mDegrees[1], pPatch->mKnots[1], v);
+                }
+                span.insert(span.end(), {su, sv});
+            });
     }
     Mesh mesh;
     const std::size_t np = xyz.size() / 3, nt = tris.size() / 3;

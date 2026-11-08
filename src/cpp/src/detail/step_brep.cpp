@@ -219,13 +219,6 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             return -1;
         return U < V ? it->second[0] : it->second[1];
     };
-    auto ring_next = [&](std::size_t F, std::int64_t V) -> std::int64_t {
-        const std::int64_t b = start[F], n = start[F + 1] - b;
-        for (std::int64_t k = 0; k < n; ++k)
-            if (nodes[static_cast<std::size_t>(b + k)] == V)
-                return nodes[static_cast<std::size_t>(b + (k + 1) % n)];
-        return -1;
-    };
 
     double lo[3], hi[3];
     for (int k = 0; k < 3; ++k) {
@@ -305,7 +298,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 row.mFreeform = static_cast<std::int64_t>(i);
             }
     }
-    res.mNumPatches = static_cast<std::int64_t>(rows.size());
+    res.mCounts.mNumPatches = static_cast<std::int64_t>(rows.size());
     const std::size_t num_input_rows = rows.size();
     res.mRowLabel.resize(num_input_rows);
     res.mRowReason.assign(num_input_rows, 0);
@@ -382,7 +375,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                           (reversed[r] != 0)
                     : agree[r] >= 0.0;
             if (rows[r].mAccepted && present[r] && !rows[r].mAnalytic) {
-                ++res.mNumDemoted;
+                ++res.mCounts.mNumDemoted;
                 if (r < num_input_rows)
                     res.mRowReason[r] = 2;
             }
@@ -570,65 +563,22 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             bedges.emplace_back(u, v);
         }
         std::sort(bedges.begin(), bedges.end());
-        std::vector<std::vector<std::int64_t>> nbr(npts);
-        for (const auto& e : bedges) {
-            nbr[static_cast<std::size_t>(e.first)].push_back(e.second);
-            nbr[static_cast<std::size_t>(e.second)].push_back(e.first);
-        }
-        for (auto& n : nbr)
-            std::sort(n.begin(), n.end());
-        auto corner = [&](std::int64_t V) {
-            const std::size_t v = static_cast<std::size_t>(V);
-            return nbr[v].size() != 2 || groups_at[v].size() >= 3;
-        };
-        std::unordered_map<std::uint64_t, std::uint8_t> taken;
-        taken.reserve(bedges.size());
-        for (const auto& e : bedges)
-            taken.emplace(sb_key(e.first, e.second), 0);
-        auto take = [&](std::int64_t U, std::int64_t V) {
-            auto it = taken.find(sb_key(U, V));
-            if (it == taken.end() || it->second)
-                return false;
-            it->second = 1;
-            return true;
-        };
+        // Chains from corner to corner, then the closed loops no corner lies on.
         std::vector<SbChain> chains;
-        auto walk = [&](std::int64_t Start, std::int64_t First, bool Loop) {
-            SbChain c;
-            c.mVerts = {Start, First};
-            std::int64_t prev = Start, cur = First;
-            while (!(Loop ? cur == Start : corner(cur))) {
-                std::int64_t next = -1;
-                for (std::int64_t n : nbr[static_cast<std::size_t>(cur)])
-                    if (n != prev && take(cur, n)) {
-                        next = n;
-                        break;
-                    }
-                if (next < 0) {
-                    if (Loop && take(cur, Start))
-                        c.mVerts.push_back(Start);
-                    break;
-                }
-                c.mVerts.push_back(next);
-                prev = cur;
-                cur = next;
-            }
-            const std::int64_t f = walker(c.mVerts[0], c.mVerts[1]);
-            const std::int64_t g = walker(c.mVerts[1], c.mVerts[0]);
-            c.mFwd = group[static_cast<std::size_t>(f)];
-            c.mBwd = group[static_cast<std::size_t>(g)];
-            chains.push_back(std::move(c));
-        };
-        for (std::int64_t v = 0; v < static_cast<std::int64_t>(npts); ++v) {
-            if (nbr[static_cast<std::size_t>(v)].empty() || !corner(v))
-                continue;
-            for (std::int64_t n : nbr[static_cast<std::size_t>(v)])
-                if (take(v, n))
-                    walk(v, n, false);
-        }
-        for (const auto& e : bedges)
-            if (take(e.first, e.second))
-                walk(e.first, e.second, true);
+        step_boundary_chains(
+            npts, bedges,
+            [&](std::int64_t V, std::size_t NumNeighbours) {
+                return NumNeighbours != 2 || groups_at[static_cast<std::size_t>(V)].size() >= 3;
+            },
+            [&](std::vector<std::int64_t> Verts) {
+                SbChain c;
+                c.mVerts = std::move(Verts);
+                const std::int64_t f = walker(c.mVerts[0], c.mVerts[1]);
+                const std::int64_t g = walker(c.mVerts[1], c.mVerts[0]);
+                c.mFwd = group[static_cast<std::size_t>(f)];
+                c.mBwd = group[static_cast<std::size_t>(g)];
+                chains.push_back(std::move(c));
+            });
 
         // Segments: the EDGE_CURVEs each chain is cut into.
         auto planar_group = [&](std::int64_t G) {
@@ -636,13 +586,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
         };
         std::vector<SbSegment> segs;
         // The networks' shared curves, by the mesh edges they run along.
-        std::unordered_map<std::uint64_t, std::pair<std::size_t, std::size_t>> curve_at;
-        if (rOptions.mEdgeCurves != nullptr)
-            for (std::size_t k = 0; k < rOptions.mEdgeCurves->size(); ++k) {
-                const StepEdgeCurve& ec = (*rOptions.mEdgeCurves)[k];
-                for (std::size_t i = 0; i + 1 < ec.mVerts.size(); ++i)
-                    curve_at.emplace(sb_key(ec.mVerts[i], ec.mVerts[i + 1]), std::make_pair(k, i));
-            }
+        const StepCurveIndex curve_at(rOptions.mEdgeCurves);
         const auto network_group = [&](std::int64_t G) {
             if (!analytic_group(G))
                 return false;  // a coplanar group
@@ -697,36 +641,17 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             const auto freeform_group = [&](std::int64_t G) {
                 return analytic_group(G) && rows[static_cast<std::size_t>(G)].mType == 6;
             };
-            if (!curve_at.empty() && !closed &&
+            std::size_t curve = 0;
+            double t0 = 0.0, t1 = 0.0;
+            if (!curve_at.Empty() && !closed &&
                 ((network_group(c.mFwd) && freeform_group(c.mBwd)) ||
-                 (network_group(c.mBwd) && freeform_group(c.mFwd)))) {
-                bool one = true;
-                std::size_t curve = 0;
-                std::vector<double> ts;
-                for (std::size_t i = 0; i + 1 < vs.size() && one; ++i) {
-                    const auto it = curve_at.find(sb_key(vs[i], vs[i + 1]));
-                    if (it == curve_at.end() || (i > 0 && it->second.first != curve)) {
-                        one = false;
-                        break;
-                    }
-                    curve = it->second.first;
-                    const StepEdgeCurve& ec = (*rOptions.mEdgeCurves)[curve];
-                    const std::size_t at = it->second.second;
-                    // This mesh edge's two ends' parameters, in the chain's order.
-                    const bool fwd = ec.mVerts[at] == vs[i];
-                    if (i == 0)
-                        ts.push_back(ec.mParams[fwd ? at : at + 1]);
-                    ts.push_back(ec.mParams[fwd ? at + 1 : at]);
-                }
-                for (std::size_t i = 2; one && i < ts.size(); ++i)
-                    one = (ts[i] - ts[i - 1]) * (ts[1] - ts[0]) > 0.0;
-                if (one && ts.size() >= 2 && ts.front() != ts.back()) {
-                    const std::size_t k = add(0, last, 3);
-                    segs[k].mCurve = curve;
-                    segs[k].mT0 = ts.front();
-                    segs[k].mT1 = ts.back();
-                    continue;
-                }
+                 (network_group(c.mBwd) && freeform_group(c.mFwd))) &&
+                curve_at.ChainOnCurve(vs, curve, t0, t1)) {
+                const std::size_t k = add(0, last, 3);
+                segs[k].mCurve = curve;
+                segs[k].mT0 = t0;
+                segs[k].mT1 = t1;
+                continue;
             }
             const bool flat_side = !analytic_group(c.mFwd) || !analytic_group(c.mBwd);
             if (planar_group(c.mFwd) && planar_group(c.mBwd)) {
@@ -832,17 +757,8 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                                                                           e.first);
         }
         auto fan_next = [&](std::int64_t G, std::int64_t X, std::int64_t V) -> std::int64_t {
-            std::int64_t f = walker(X, V);
-            for (std::size_t guard = 0; f >= 0 && guard <= nf; ++guard) {
-                const std::int64_t w = ring_next(static_cast<std::size_t>(f), V);
-                if (w < 0)
-                    return -1;
-                const std::int64_t across = walker(w, V);
-                if (across < 0 || group[static_cast<std::size_t>(across)] != G)
-                    return w;
-                f = across;
-            }
-            return -1;
+            return step_fan_next(
+                start, nodes, nf, walker, [&](std::size_t F) { return group[F]; }, G, X, V);
         };
         // Per group, its loops as (segment, along) lists.
         std::map<std::int64_t, std::vector<std::vector<std::pair<std::size_t, bool>>>> loops;
@@ -924,7 +840,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             if (rows[static_cast<std::size_t>(g)].mTwin >= 0)
                 rows[static_cast<std::size_t>(rows[static_cast<std::size_t>(g)].mTwin)].mAnalytic =
                     false;
-            ++res.mNumDemoted;
+            ++res.mCounts.mNumDemoted;
             if (const std::int64_t ir = sb_input_row(g); ir >= 0)
                 res.mRowReason[static_cast<std::size_t>(ir)] = 3;
             retry = true;
@@ -949,7 +865,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                 row.mAnalytic = false;
                 if (row.mTwin >= 0)
                     rows[static_cast<std::size_t>(row.mTwin)].mAnalytic = false;
-                ++res.mNumDemoted;
+                ++res.mCounts.mNumDemoted;
                 if (const std::int64_t ir = sb_input_row(g); ir >= 0)
                     res.mRowReason[static_cast<std::size_t>(ir)] = 3;
             }
@@ -1332,29 +1248,29 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             const std::int64_t face =
                 st.Ent("ADVANCED_FACE('',(" + bounds + ")," + StepStream::Ref(surface) +
                        (same_sense ? ",.T.)" : ",.F.)"));
-            face_index.emplace(g, res.mNumFaces++);
+            face_index.emplace(g, res.mCounts.mNumFaces++);
             shell_faces[piece[f0]].push_back(face);
             if (!analytic) {
-                ++res.mNumFacetedFaces;
+                ++res.mCounts.mNumFacetedFaces;
             } else {
                 switch (row->mType) {
                     case 1:
-                        ++res.mNumPlane;
+                        ++res.mCounts.mNumPlane;
                         break;
                     case 2:
-                        ++res.mNumSphere;
+                        ++res.mCounts.mNumSphere;
                         break;
                     case 3:
-                        ++res.mNumCylinder;
+                        ++res.mCounts.mNumCylinder;
                         break;
                     case 4:
-                        ++res.mNumCone;
+                        ++res.mCounts.mNumCone;
                         break;
                     case 6:
                         ++res.mNumBspline;
                         break;
                     default:
-                        ++res.mNumTorus;
+                        ++res.mCounts.mNumTorus;
                         break;
                 }
             }

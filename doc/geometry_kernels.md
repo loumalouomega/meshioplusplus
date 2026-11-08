@@ -4,6 +4,8 @@ Many operations evaluate the same small formulas per cell: a tetrahedron's signe
 
 ## Where the shared code lives
 
+This page covers the geometry and FEM kernels and the binding helpers. Every other shared utility, from number parsing to row gathers, region remaps and the Python shims, is listed by role in [common utilities](./common_utilities.md).
+
 | Header | Contents |
 | --- | --- |
 | `include/meshioplusplus/detail/geometry.hpp` (installed) | `Vec3`, `vec3_sub`, `vec3_add`, `vec3_scale`, `vec3_dot`, `vec3_cross`, `vec3_norm_sq`, `vec3_norm`, `vec3_normalize`, `triple_product`, `det3`; `read_point`, `read_corner_coords`, `cell_corner_count`. |
@@ -76,6 +78,21 @@ Its second half added:
 | `src/python/meshioplusplus/_shims.py` | `plain_shims`, `vtk_xml_shims` | the read and write shims of 20 format packages |
 | `tools/pipeline_steps.json`, `tools/gen_pipeline_table.py` | the step tables of both pipeline engines, generated | `_pipeline.py`'s `_OP_TABLE` and `pipeline.cpp`'s `pipe_op_table()`, kept by hand |
 | `bindings/r/meshioplusplus/src/util.c`, `bindings/octave/meshioplusplus/src/util.c` | `mio_r_getbuffer`, `mio_r_cstrings`; `mio_o_getbuffer`, `mio_o_row3`, `mio_o_surface_quality`, `mio_o_ids_0based` | the per-operation getter adapters, three character-vector conversions, the Octave files' own copies |
+
+
+The installed-header pass (November 2026, ABI 42, [roadmap §8](./roadmap.md#code-duplication)) closed the last three items:
+
+| Where | Helper | Replaces |
+| --- | --- | --- |
+| `src/cpp/src/detail/subset_gather.hpp` | `subset_gather_points`, forced inline into `build_cell_subset` and `clean` | the points-and-point_data gather of `build_cell_subset` and `clean` ([roadmap 3.4.11](./roadmap.md#quality-of-implementation)); `build_cell_subset` compiles as it did with its own copy |
+| `src/cpp/src/detail/fit_cad_native.hpp` | `native_local_triangles`, `native_adaptive_options`, `native_resegment_pieces`, `native_refine_proxy` | the OpenCASCADE provider's copies of the native `fit_cad`'s local triangulation, adaptive-fit options, re-segmentation rung and refinement verdicts |
+| `src/cpp/src/detail/step_brep.hpp` | `step_boundary_chains`, `StepCurveIndex`, `step_ring_next`, `step_fan_next` | the boundary-chain walk, the network-curve lookup and the facet-fan turn of the native STEP writer and the OpenCASCADE provider |
+| `src/cpp/providers/occt/` | `fc_occt_knots`, `fc_occt_bspline_curve`; `occt_weld_nodes`, `occt_welded_triangles` (`occt_brep.hpp`) | two pole and knot builds and a third for curves; the node welding of `fc_triangulate` and `occt_tessellate` |
+| `detail/spatial_hash.hpp` | `grid_for_each_in_shell`, `grid_for_each_in_box` | the shell and box walks of `SpatialGrid` and `BucketTable` |
+| `detail/link_check.hpp` | `MESHIOPLUSPLUS_PP_CAT`, `MESHIOPLUSPLUS_PP_STR`, `MESHIOPLUSPLUS_LINK_CHECK_REF` | the paste, stringize and `gnu::used` reference of the ABI and backend sentinels |
+| `formats/time_series_common.hpp` | `SeriesMode`, `SeriesNamedArray`, `MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS` | the XDMF and VTKHDF series modes and raw arrays; the special members of 19 series writers |
+| `formats/drawing_options.hpp` | `DrawingView`, `DrawingColoring`, in `SvgWriteOptions` and `TikzWriteOptions` | the camera and colouring parameters `write_svg` and `write_tikz` spelled apart |
+| `brep.hpp`, `operations/sdf_names.hpp` | `BrepFaceCounts`; `kSdfDistanceName`, `kSdfClosestPointName` | the nine face counts of `FitCadResult` and `StepBrepResult`; the distance names `octree_mesh` and `compute_sdf` both spelled |
 
 The exported names, error messages, status codes and Python signatures are unchanged: the C++ and C API ones are pinned by the determinism digests, the gtest suite and byte diffs of the CLI help and completion scripts, the registry's key sets and the `_core` docstrings taken before the change; the MCP tool schemas by a diff of `list_tools()`.
 

@@ -71,6 +71,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -129,12 +130,7 @@ class MESHIOPLUSPLUS_API NastranH5SeriesWriter {
 public:
     /// @throws WriteError when @p rPath cannot be created.
     explicit NastranH5SeriesWriter(const std::string& rPath);
-    ~NastranH5SeriesWriter();
-
-    NastranH5SeriesWriter(const NastranH5SeriesWriter&) = delete;
-    NastranH5SeriesWriter& operator=(const NastranH5SeriesWriter&) = delete;
-    NastranH5SeriesWriter(NastranH5SeriesWriter&&) noexcept;
-    NastranH5SeriesWriter& operator=(NastranH5SeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(NastranH5SeriesWriter);
 
     /// Add one step. @throws WriteError when it differs from the first step's model or tables.
     void Write(double Time, const Mesh& rMesh);

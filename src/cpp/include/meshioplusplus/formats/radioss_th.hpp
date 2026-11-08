@@ -50,6 +50,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -128,12 +129,7 @@ class MESHIOPLUSPLUS_API RadiossThSeriesWriter {
 public:
     /// @throws WriteError when @p rPath cannot be opened.
     explicit RadiossThSeriesWriter(const std::string& rPath);
-    ~RadiossThSeriesWriter();
-
-    RadiossThSeriesWriter(const RadiossThSeriesWriter&) = delete;
-    RadiossThSeriesWriter& operator=(const RadiossThSeriesWriter&) = delete;
-    RadiossThSeriesWriter(RadiossThSeriesWriter&&) noexcept;
-    RadiossThSeriesWriter& operator=(RadiossThSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(RadiossThSeriesWriter);
 
     /**
      * @brief Write one output (the first also writes the descriptions).

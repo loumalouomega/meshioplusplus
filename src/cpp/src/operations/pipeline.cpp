@@ -1664,8 +1664,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             {"Native", cr.mBackend == FitCadBackend::Native ? 1.0 : 0.0},
             {"VolumeRatio", cr.mVolumeRatio},
             {"MaxDeviation", cr.mMaxDeviation},
-            {"NumFaces", static_cast<double>(cr.mNumFaces)},
-            {"NumFacetedFaces", static_cast<double>(cr.mNumFacetedFaces)},
+            {"NumFaces", static_cast<double>(cr.mCounts.mNumFaces)},
+            {"NumFacetedFaces", static_cast<double>(cr.mCounts.mNumFacetedFaces)},
             {"NumBspline", static_cast<double>(cr.mNumBspline)},
             {"NumSplitPatches", static_cast<double>(cr.mNumSplitPatches)},
             {"NumFillet", static_cast<double>(cr.mNumFillet)},
@@ -1678,7 +1678,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             {"NumConicBlend", static_cast<double>(cr.mNumConicBlend)},
             {"NumTaperedThread", static_cast<double>(cr.mNumTaperedThread)},
             {"NumVariablePitchThread", static_cast<double>(cr.mNumVariablePitchThread)},
-            {"NumDemoted", static_cast<double>(cr.mNumDemoted)},
+            {"NumDemoted", static_cast<double>(cr.mCounts.mNumDemoted)},
             {"Closed", cr.mClosed ? 1.0 : 0.0}};
         // Only a run that refined reports the refinement, so a report without
         // `RefineSegmentation` stays what it was before the option existed.
