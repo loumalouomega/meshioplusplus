@@ -44,3 +44,45 @@ runs:
           echo "$dir/upstream/emscripten"
         } >> "$GITHUB_PATH"
         emcc --version | head -1
+
+    # Emscripten's zlib port (-sUSE_ZLIB) downloads github.com's archive of a
+    # zlib tag, the same outage again. A tag archive is the tag's tree, so the
+    # port is seeded from a clone of it, refused unless it is the pinned commit,
+    # with the URL marker that tells Emscripten the port is already unpacked
+    # (tools/ports/__init__.py, fetch_port_artifact). A zlib version without a
+    # pinned commit is left to Emscripten's own download.
+    - name: Seed Emscripten's zlib port from a git clone
+      shell: bash
+      run: |
+        port_py="$EMSDK/upstream/emscripten/tools/ports/zlib.py"
+        version=$(sed -n "s/^VERSION = '\(.*\)'$/\1/p" "$port_py")
+        case "$version" in
+          1.3.2) commit=da607da739fa6047df13e66a2af6b8bec7c2a498 ;;
+          *) echo "::notice::no pinned commit for the zlib $version port; Emscripten downloads it"; exit 0 ;;
+        esac
+        url="https://github.com/madler/zlib/archive/refs/tags/v$version.tar.gz"
+        grep -qF 'https://github.com/madler/zlib/archive/refs/tags/v{VERSION}.tar.gz' "$port_py" || {
+          echo "::notice::the zlib port no longer fetches $url; Emscripten downloads it"; exit 0;
+        }
+        ports=$(em-config PORTS)
+        target="$ports/zlib/zlib-$version"
+        rm -rf "$ports/zlib"
+        attempt=1
+        until git -c advice.detachedHead=false clone --quiet --depth 1 --branch "v$version" \
+            https://github.com/madler/zlib.git "$target"; do
+          rm -rf "$target"
+          if [ "$attempt" -ge 3 ]; then
+            echo "::warning::cloning zlib failed; Emscripten will try its own download"
+            exit 0
+          fi
+          sleep $((attempt * 30))
+          attempt=$((attempt + 1))
+        done
+        got=$(git -C "$target" rev-parse HEAD)
+        if [ "$got" != "$commit" ]; then
+          echo "::error::zlib v$version is $got, expected $commit"
+          exit 1
+        fi
+        rm -rf "$target/.git"
+        echo "$url" > "$ports/zlib/.emscripten_url"
+        echo "zlib $version port seeded at $ports/zlib"
