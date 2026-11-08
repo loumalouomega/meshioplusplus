@@ -200,15 +200,14 @@ TEST(MeshApi, DataNamesStaySortedAfterLaterInserts) {
 }
 
 #if !defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE) && !defined(MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
-// The MESHIO name lists are kept current where the data changes (roadmap
-// 9.2.1), so concurrent readers of a const mesh only read them, and a direct
-// write to the public maps is followed by InvalidateNameCaches().
-TEST(MeshApi, MeshioNameListsFollowDirectWritesAfterInvalidate) {
+// The MESHIO names are sorted on each call (roadmap 9.2.1): concurrent readers
+// of a const mesh share no state, and a direct write to the public maps shows
+// at once, with or without the compatibility InvalidateNameCaches().
+TEST(MeshApi, MeshioNamesFollowDirectWritesAndConcurrentReads) {
     Mesh m = mt::tri_mesh();
     m.AddPointData("zeta", float64_array({1, 2, 3, 4}));
     m.mPointData.emplace("alpha", float64_array({4, 3, 2, 1}));
     m.mFieldData.emplace("mu", float64_array({7}));
-    m.InvalidateNameCaches();
     const Mesh& rConst = m;
     std::vector<std::vector<std::string>> seen(4);
     std::vector<std::thread> readers;

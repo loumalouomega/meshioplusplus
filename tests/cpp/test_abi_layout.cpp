@@ -783,8 +783,8 @@ MIO_ABI_LAYOUT(meshioplusplus::Mesh, 560, 8);
 #elif defined(MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
 MIO_ABI_LAYOUT(meshioplusplus::Mesh, 680, 8);
 #else
-// ABI 41: the name lists lose `mutable` and are kept current by the Add*
-// methods (roadmap §9.2.1); the layout, `mNamesDirty` included, is unchanged.
+// ABI 41: the memoized name lists are unused, the names sorted on each call
+// (roadmap §9.2.1); the members, `mNamesDirty` included, keep the layout.
 MIO_ABI_LAYOUT(meshioplusplus::Mesh, 392, 8);
 // A MESHIO cell block stores ragged cells as CSR since v16.16.0 (ABI 18) --
 // three flat vectors where two nested ones were -- and is pinned from then on:

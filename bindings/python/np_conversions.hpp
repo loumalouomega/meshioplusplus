@@ -575,10 +575,8 @@ inline meshioplusplus::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& rRefs,
 
     // The three loops above insert into the data maps directly rather than
     // through AddPointData/AddCellData/AddFieldData (this file is the uniform
-    // API's one sanctioned exception), so the sorted-name caches those
-    // accessors memoize have to be invalidated by hand -- see
-    // Mesh::InvalidateNameCaches() in backends/meshio_mesh.hpp.
-    m.InvalidateNameCaches();
+    // API's one sanctioned exception). The sorted names are computed on each
+    // call since ABI 41, so nothing has to be invalidated afterwards.
 
     py_regions_to_mesh(pymesh, m);
 

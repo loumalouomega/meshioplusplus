@@ -149,26 +149,17 @@ struct Mesh {
     std::unordered_map<std::string, NDArray> mFieldData;
 
     /**
-     * @brief Rebuild the sorted-name lists behind `PointDataNames()` and
-     * friends from the three maps.
+     * @brief Does nothing; kept so existing callers compile.
      *
-     * Unlike the NATIVE/KRATOS backends -- whose `detail::NamedItems` owns its
-     * storage -- this backend's three maps are PUBLIC struct members, because
+     * This backend's three maps are PUBLIC struct members, because
      * `bindings/python/np_conversions.hpp` inserts into them directly (the one
-     * sanctioned exception to the uniform-API rule). **Anything that writes
-     * those maps without going through AddPointData / AddCellData /
-     * AppendCellData / AddFieldData must call this.**
-     *
-     * The lists are kept current where the data changes, never filled from a
-     * `const` accessor, so a `const Mesh` may be read from several threads at
-     * once (mesh data model, "Threads"). For the same reason this is not
-     * `const`: it writes the lists.
+     * sanctioned exception to the uniform-API rule). Until ABI 41 the sorted
+     * names behind `PointDataNames()` and friends were memoized from a `const`
+     * accessor, and a direct write had to invalidate them; they are now sorted
+     * on each call, which holds no state, so a `const Mesh` may be read from
+     * several threads at once (mesh data model, "Threads").
      */
-    void InvalidateNameCaches() {
-        mPointNames = detail::sorted_keys(mPointData);
-        mCellNames = detail::sorted_keys(mCellData);
-        mFieldNames = detail::sorted_keys(mFieldData);
-    }
+    void InvalidateNameCaches() const {}
 
     // Named groups of points / cells / cell facets (region.hpp). Kept sorted by
     // Region::Key() with canonical (sorted, de-duplicated) entries, so region
@@ -302,37 +293,27 @@ struct Mesh {
     }
     /** @brief Inserts or replaces a named per-point data array. */
     void AddPointData(std::string name, NDArray data) {
-        const auto [it, added] = mPointData.insert_or_assign(std::move(name), std::move(data));
-        if (added)
-            detail::insert_sorted_name(mPointNames, it->first);
+        mPointData[std::move(name)] = std::move(data);
     }
     /** @brief Inserts or replaces a named per-cell data array list (one per block). */
     void AddCellData(std::string name, std::vector<NDArray> blocks) {
-        const auto [it, added] = mCellData.insert_or_assign(std::move(name), std::move(blocks));
-        if (added)
-            detail::insert_sorted_name(mCellNames, it->first);
+        mCellData[std::move(name)] = std::move(blocks);
     }
     /** @brief Appends one block's array to a named cell-data list (creating it if new). */
     void AppendCellData(const std::string& rName, NDArray block) {
-        const auto [it, added] = mCellData.try_emplace(rName);
-        if (added)
-            detail::insert_sorted_name(mCellNames, it->first);
-        it->second.push_back(std::move(block));
+        mCellData[rName].push_back(std::move(block));
     }
     /** @brief Inserts or replaces a named field-data array. */
     void AddFieldData(std::string name, NDArray data) {
-        const auto [it, added] = mFieldData.insert_or_assign(std::move(name), std::move(data));
-        if (added)
-            detail::insert_sorted_name(mFieldNames, it->first);
+        mFieldData[std::move(name)] = std::move(data);
     }
 
-    // The sorted name lists of the three maps, kept current by the Add*
-    // methods and InvalidateNameCaches() above, which are the only writers.
+    // Unused since ABI 41, when the sorted names stopped being memoized from a
+    // const accessor (InvalidateNameCaches() above); kept so the layout of
+    // `Mesh` does not move.
     std::vector<std::string> mPointNames;
     std::vector<std::string> mCellNames;
     std::vector<std::string> mFieldNames;
-    // Unused since the lists stopped being filled lazily (ABI 41); kept so the
-    // layout of `Mesh` does not move.
     bool mNamesDirty = false;
 
     // --- writer-side accessors ---
@@ -349,7 +330,7 @@ struct Mesh {
     detail::CellBlockRange<Mesh> CellRange() const { return detail::CellBlockRange<Mesh>(*this); }
 
     /** @brief Point-data names in sorted order (drives on-disk field order). */
-    std::vector<std::string> PointDataNames() const { return mPointNames; }
+    std::vector<std::string> PointDataNames() const { return detail::sorted_keys(mPointData); }
     /** @brief Number of named point-data arrays. */
     std::size_t NumPointData() const { return mPointData.size(); }
     /** @brief Whether a point-data array named @p rName exists. */
@@ -358,7 +339,7 @@ struct Mesh {
     const NDArray& PointData(const std::string& rName) const { return mPointData.at(rName); }
 
     /** @brief Cell-data names in sorted order (drives on-disk field order). */
-    std::vector<std::string> CellDataNames() const { return mCellNames; }
+    std::vector<std::string> CellDataNames() const { return detail::sorted_keys(mCellData); }
     /** @brief Number of named cell-data array lists. */
     std::size_t NumCellData() const { return mCellData.size(); }
     /** @brief Whether a cell-data list named @p rName exists. */
@@ -373,7 +354,7 @@ struct Mesh {
     }
 
     /** @brief Field-data names in sorted order (drives on-disk field order). */
-    std::vector<std::string> FieldDataNames() const { return mFieldNames; }
+    std::vector<std::string> FieldDataNames() const { return detail::sorted_keys(mFieldData); }
     /** @brief Number of named field-data arrays. */
     std::size_t NumFieldData() const { return mFieldData.size(); }
     /** @brief Whether a field-data array named @p rName exists. */

@@ -52,14 +52,5 @@ std::vector<typename Map::key_type> sorted_keys(const Map& rM) {
     return keys;
 }
 
-/**
- * @brief Inserts @p rName into the sorted list @p rNames at its place, the
- * order `sorted_keys` gives; the caller has checked that it is not there yet.
- */
-template <class Key>
-void insert_sorted_name(std::vector<Key>& rNames, const Key& rName) {
-    rNames.insert(std::lower_bound(rNames.begin(), rNames.end(), rName), rName);
-}
-
 }  // namespace detail
 }  // namespace meshioplusplus
