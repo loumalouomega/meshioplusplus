@@ -41208,6 +41208,19 @@ void register_occt();
 #define MIO_ALWAYS_INLINE inline
 #endif
 #endif
+
+/**
+ * `MIO_ALWAYS_INLINE_LAMBDA`, placed after a lambda's parameter list: the same
+ * for a lambda's call operator, for a loop body whose inlining into the
+ * `parallel_for` that runs it the gate showed a header change undid.
+ */
+#ifndef MIO_ALWAYS_INLINE_LAMBDA
+#if defined(__GNUC__) || defined(__clang__)
+#define MIO_ALWAYS_INLINE_LAMBDA __attribute__((always_inline))
+#else
+#define MIO_ALWAYS_INLINE_LAMBDA
+#endif
+#endif
 // ===== end src/cpp/src/detail/always_inline.hpp =====
 // ===== begin src/cpp/src/detail/linear_octree.hpp =====
 /**
@@ -237551,7 +237564,9 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
                 const NDArray& conn = cv.Conn();
                 const std::size_t start = con.start;
                 const std::size_t mesh = con.mesh;
-                parallel_for_bw(con.ncells, [&](std::size_t c) {
+                // Forced inline: ABI 41's header changes moved GCC's size-driven
+                // inlining so this body became a call per cell (merge +5.8%).
+                parallel_for_bw(con.ncells, [&](std::size_t c) MIO_ALWAYS_INLINE_LAMBDA {
                     const std::size_t p = start + c;
                     bb.source_ids[p] = static_cast<std::int64_t>(mesh);
                     for (std::size_t k = 0; k < npc; ++k)

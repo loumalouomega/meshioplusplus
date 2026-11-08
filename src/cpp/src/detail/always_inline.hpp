@@ -39,3 +39,16 @@
 #define MIO_ALWAYS_INLINE inline
 #endif
 #endif
+
+/**
+ * `MIO_ALWAYS_INLINE_LAMBDA`, placed after a lambda's parameter list: the same
+ * for a lambda's call operator, for a loop body whose inlining into the
+ * `parallel_for` that runs it the gate showed a header change undid.
+ */
+#ifndef MIO_ALWAYS_INLINE_LAMBDA
+#if defined(__GNUC__) || defined(__clang__)
+#define MIO_ALWAYS_INLINE_LAMBDA __attribute__((always_inline))
+#else
+#define MIO_ALWAYS_INLINE_LAMBDA
+#endif
+#endif
