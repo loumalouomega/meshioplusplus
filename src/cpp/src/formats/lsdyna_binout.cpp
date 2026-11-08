@@ -717,7 +717,7 @@ constexpr std::uint8_t kLbwInt8 = 1, kLbwInt32 = 3, kLbwFloat32 = 9, kLbwLink = 
 /// A double as the file's single precision, rounded like numpy's cast (an overflow is an
 /// infinity).
 float lbw_float(double V) {
-    if (V != V)
+    if (std::isnan(V))
         return std::numeric_limits<float>::quiet_NaN();
     if (std::fabs(V) >= 3.4028235677973366e38)
         return V < 0 ? -std::numeric_limits<float>::infinity()

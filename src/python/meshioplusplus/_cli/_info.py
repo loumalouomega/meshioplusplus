@@ -141,13 +141,13 @@ def info(args):
             emit_json(meta)
         else:
             _print_metadata(meta)
-        return 0
+        return
 
     # read mesh data
     mesh = read(args.infile, file_format=args.input_format)
     if args.json:
         emit_json(_mesh_summary(mesh))
-        return 0
+        return
     print(mesh)
 
     # check if the cell arrays are consistent with the points
@@ -165,5 +165,3 @@ def info(args):
             point_is_used[cells.data] = True
         if np.any(~point_is_used):
             warn("Some points are not part of any cell.")
-
-    return 0

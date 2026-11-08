@@ -414,7 +414,8 @@ struct XpltFile {
         }
         if (mVersion < 0x0030 || mVersion > 0x00FF) {
             char buf[16];
-            std::snprintf(buf, sizeof(buf), "0x%04x", mVersion);
+            // An integer printed as hex: no text from the file reaches the message.
+            std::snprintf(buf, sizeof(buf), "0x%04x", mVersion);  // NOSONAR(cppsecurity:S5145)
             xplt_fail(std::string("plot file version ") + buf +
                       " is not supported (FEBio 3 and 4 write 0x0030 and later)");
         }

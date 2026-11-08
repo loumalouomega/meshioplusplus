@@ -1,0 +1,101 @@
+name: Set up Emscripten
+description: >-
+  Installs and activates one Emscripten SDK version, as mymindstorm/setup-emsdk
+  did, from a shallow git clone of emsdk with retries. That action fetches
+  emsdk as a github.com archive (`emsdk update` downloads HEAD.zip), and
+  GitHub's archive and release downloads have gone down on their own for hours
+  while clones kept working (November 2026). The SDK itself comes from
+  storage.googleapis.com, as before. Exports what `emsdk_env.sh` sets: EMSDK,
+  EMSDK_NODE and the emsdk and emscripten directories on PATH.
+inputs:
+  version:
+    description: The SDK version to install and activate, e.g. 6.0.3.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install and activate emsdk ${{ inputs.version }}
+      shell: bash
+      env:
+        MIO_EMSDK_VERSION: ${{ inputs.version }}
+      run: |
+        dir="$RUNNER_TEMP/emsdk"
+        attempt=1
+        until git clone --quiet --depth 1 https://github.com/emscripten-core/emsdk.git "$dir"; do
+          rm -rf "$dir"
+          if [ "$attempt" -ge 3 ]; then
+            echo "::error::cloning emsdk failed after $attempt attempts"
+            exit 1
+          fi
+          echo "::warning::cloning emsdk failed (attempt $attempt); retrying"
+          sleep $((attempt * 30))
+          attempt=$((attempt + 1))
+        done
+        "$dir/emsdk" install "$MIO_EMSDK_VERSION"
+        "$dir/emsdk" activate "$MIO_EMSDK_VERSION"
+        # shellcheck disable=SC1091  # written by `emsdk activate` above
+        EMSDK_QUIET=1 . "$dir/emsdk_env.sh"
+        {
+          echo "EMSDK=$EMSDK"
+          echo "EMSDK_NODE=$EMSDK_NODE"
+        } >> "$GITHUB_ENV"
+        {
+          echo "$dir"
+          echo "$dir/upstream/emscripten"
+        } >> "$GITHUB_PATH"
+        emcc --version | head -1
+
+    # Emscripten's zlib and bzip2 ports (-sUSE_ZLIB, -sUSE_BZIP2) download
+    # github.com archives of a tag, the same outage again. An archive holds the
+    # tag's tree, so each port is seeded from a clone of the tag, refused
+    # unless it is the pinned commit, with the URL marker that tells Emscripten
+    # the port is already unpacked (tools/ports/__init__.py,
+    # fetch_port_artifact). A port whose version or URL has no pin here is left
+    # to Emscripten's own download.
+    - name: Seed Emscripten's zlib and bzip2 ports from git clones
+      shell: bash
+      run: |
+        ports=$(em-config PORTS)
+        # seed <port> <repo> <tag prefix> <URL pattern, {VERSION} literal> <version>=<commit>...
+        seed() {
+          local name=$1 repo=$2 tagpre=$3 pattern=$4 port_py version commit="" pin
+          shift 4
+          port_py="$EMSDK/upstream/emscripten/tools/ports/$name.py"
+          version=$(sed -n "s/^VERSION = '\(.*\)'$/\1/p" "$port_py")
+          for pin in "$@"; do
+            if [ "${pin%%=*}" = "$version" ]; then commit=${pin#*=}; fi
+          done
+          if [ -z "$commit" ]; then
+            echo "::notice::no pinned commit for the $name $version port; Emscripten downloads it"
+            return 0
+          fi
+          grep -qF "$pattern" "$port_py" || {
+            echo "::notice::the $name port no longer fetches $pattern; Emscripten downloads it"
+            return 0
+          }
+          local url=${pattern//\{VERSION\}/$version} target="$ports/$name/$name-$version" attempt=1
+          rm -rf "$ports/$name"
+          until git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$tagpre$version" \
+              "https://github.com/$repo.git" "$target"; do
+            rm -rf "$target"
+            if [ "$attempt" -ge 3 ]; then
+              echo "::warning::cloning $repo failed; Emscripten will try its own download"
+              return 0
+            fi
+            sleep $((attempt * 30))
+            attempt=$((attempt + 1))
+          done
+          local got
+          got=$(git -C "$target" rev-parse HEAD)
+          if [ "$got" != "$commit" ]; then
+            echo "::error::$repo $tagpre$version is $got, expected $commit"
+            return 1
+          fi
+          rm -rf "$target/.git"
+          echo "$url" > "$ports/$name/.emscripten_url"
+          echo "$name $version port seeded at $ports/$name"
+        }
+        seed zlib madler/zlib v 'https://github.com/madler/zlib/archive/refs/tags/v{VERSION}.tar.gz' \
+          1.3.2=da607da739fa6047df13e66a2af6b8bec7c2a498
+        seed bzip2 emscripten-ports/bzip2 '' 'https://github.com/emscripten-ports/bzip2/archive/{VERSION}.zip' \
+          1.0.6=60ce9dfe9a75f7ee92956aba8a83d1a37625bc1d

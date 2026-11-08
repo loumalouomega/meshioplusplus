@@ -43,7 +43,7 @@ jobs:
           paths: src/cpp/third_party/eigen
 
       - name: Set up Emscripten
-        uses: mymindstorm/setup-emsdk@v14
+        uses: ./.github/actions/setup-emsdk
         with:
           # Pinned to the version verified locally; bump deliberately. The key
           # of the dependency cache below includes this, since a static wasm
@@ -116,7 +116,7 @@ jobs:
           paths: src/cpp/third_party/eigen
 
       - name: Set up Emscripten
-        uses: mymindstorm/setup-emsdk@v14
+        uses: ./.github/actions/setup-emsdk
         with:
           version: "6.0.3"
 

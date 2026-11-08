@@ -536,6 +536,8 @@ std::vector<double> ql_turns(const QlState& rS, const std::vector<std::size_t>& 
 bool ql_split_ngon(QlState& rS, const QlPiece& rPiece, const std::vector<std::size_t>& rB,
                    const std::vector<std::size_t>& rC, std::vector<QlPiece>& rMore) {
     const std::size_t nb = rB.size();
+    if (nb == 0)
+        return false;
     std::vector<double> s(nb + 1, 0.0);
     for (std::size_t i = 0; i < nb; ++i)
         s[i + 1] = s[i] + vec3_norm(vec3_sub(rS.mPts[rB[(i + 1) % nb]], rS.mPts[rB[i]]));
@@ -1224,7 +1226,7 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
         st.mField = cross_field(rPts, rTris, co);
 
     // 2-3. Discs and singularities.
-    std::vector<QlPiece> final;
+    std::vector<QlPiece> pieces;
     const auto push_groups = [&](const QlPiece& rP, const std::vector<std::int64_t>& rLab) {
         for (auto& g : ql_groups(st.mMesh, rP.mTris, rLab)) {
             QlPiece np;
@@ -1282,7 +1284,7 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
                 }
             }
         }
-        final.push_back(std::move(p));
+        pieces.push_back(std::move(p));
     }
 
     // A piece under `mMinTriangles` (a sliver between creases or cuts) joins
@@ -1290,19 +1292,19 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
     for (bool changed = true; changed;) {
         changed = false;
         std::vector<std::int64_t> owner(nt, -1);
-        for (std::size_t i = 0; i < final.size(); ++i)
-            for (std::size_t f : final[i].mTris)
+        for (std::size_t i = 0; i < pieces.size(); ++i)
+            for (std::size_t f : pieces[i].mTris)
                 owner[f] = static_cast<std::int64_t>(i);
-        std::vector<std::size_t> order(final.size());
+        std::vector<std::size_t> order(pieces.size());
         std::iota(order.begin(), order.end(), std::size_t{0});
         std::stable_sort(order.begin(), order.end(), [&](std::size_t A, std::size_t B) {
-            return final[A].mTris.size() < final[B].mTris.size();
+            return pieces[A].mTris.size() < pieces[B].mTris.size();
         });
         for (std::size_t i : order) {
-            if (final[i].mTris.size() >= rOptions.mMinTriangles || final[i].mTris.empty())
+            if (pieces[i].mTris.size() >= rOptions.mMinTriangles || pieces[i].mTris.empty())
                 continue;
             std::map<std::int64_t, std::size_t> shared;
-            for (std::size_t f : final[i].mTris)
+            for (std::size_t f : pieces[i].mTris)
                 for (std::size_t k = 0; k < 3; ++k) {
                     const std::int64_t g = st.mMesh.mNbr[f][k];
                     if (g >= 0 &&
@@ -1316,22 +1318,22 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
                              [](const auto& rA, const auto& rB) { return rA.first > rB.first; });
             for (const auto& c : cand) {
                 const std::size_t j = static_cast<std::size_t>(c.second);
-                std::vector<std::size_t> merged = final[j].mTris;
-                merged.insert(merged.end(), final[i].mTris.begin(), final[i].mTris.end());
+                std::vector<std::size_t> merged = pieces[j].mTris;
+                merged.insert(merged.end(), pieces[i].mTris.begin(), pieces[i].mTris.end());
                 std::sort(merged.begin(), merged.end());
                 if (!patch_topology(ql_local(rTris, merged)).IsDisc())
                     continue;
-                final[j].mTris = std::move(merged);
-                final[i].mTris.clear();
+                pieces[j].mTris = std::move(merged);
+                pieces[i].mTris.clear();
                 changed = true;
                 break;
             }
             if (changed)
                 break;
         }
-        final.erase(std::remove_if(final.begin(), final.end(),
-                                   [](const QlPiece& rP) { return rP.mTris.empty(); }),
-                    final.end());
+        pieces.erase(std::remove_if(pieces.begin(), pieces.end(),
+                                    [](const QlPiece& rP) { return rP.mTris.empty(); }),
+                     pieces.end());
     }
 
     // Smooth the cuts: a triangle with two sides on the same neighbour (an
@@ -1339,8 +1341,8 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
     // moves to that neighbour, where both stay discs.
     {
         std::vector<std::int64_t> owner(nt, -1);
-        for (std::size_t i = 0; i < final.size(); ++i)
-            for (std::size_t f : final[i].mTris)
+        for (std::size_t i = 0; i < pieces.size(); ++i)
+            for (std::size_t f : pieces[i].mTris)
                 owner[f] = static_cast<std::int64_t>(i);
         const auto members = [&](std::int64_t I) {
             std::vector<std::size_t> m;
@@ -1383,18 +1385,18 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
             if (!changed)
                 break;
         }
-        for (std::size_t i = 0; i < final.size(); ++i)
-            final[i].mTris = members(static_cast<std::int64_t>(i));
-        final.erase(std::remove_if(final.begin(), final.end(),
-                                   [](const QlPiece& rP) { return rP.mTris.empty(); }),
-                    final.end());
+        for (std::size_t i = 0; i < pieces.size(); ++i)
+            pieces[i].mTris = members(static_cast<std::int64_t>(i));
+        pieces.erase(std::remove_if(pieces.begin(), pieces.end(),
+                                    [](const QlPiece& rP) { return rP.mTris.empty(); }),
+                     pieces.end());
     }
 
     // 4. Corners. Junctions: vertices three or more pieces (or the region's
     // boundary) meet at.
     std::vector<std::int64_t> label(nt, -1);
-    for (std::size_t i = 0; i < final.size(); ++i)
-        for (std::size_t f : final[i].mTris)
+    for (std::size_t i = 0; i < pieces.size(); ++i)
+        for (std::size_t f : pieces[i].mTris)
             label[f] = static_cast<std::int64_t>(i);
     std::vector<std::uint8_t> junction(st.mMesh.mNumPts, 0);
     for (std::size_t v = 0; v < st.mMesh.mNumPts; ++v) {
@@ -1407,12 +1409,12 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
         if (distinct + (st.mMesh.mOnBoundary[v] ? 1 : 0) >= 3)
             junction[v] = 1;
     }
-    for (const QlPiece& p : final)
+    for (const QlPiece& p : pieces)
         for (std::size_t v : p.mForced)
             st.mCorner[v] = 1;
     std::vector<QlQuad> done;
-    for (std::size_t i = 0; i < final.size(); ++i) {
-        const QlPiece p = final[i];  // `final` may grow below
+    for (std::size_t i = 0; i < pieces.size(); ++i) {
+        const QlPiece p = pieces[i];  // `pieces` may grow below
         ql_mark(st, p.mTris, 1);
         const std::vector<std::size_t> b = ql_boundary(st.mMesh, rTris, p.mTris, st.mIn);
         ql_mark(st, p.mTris, 0);
@@ -1429,7 +1431,7 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
             for (auto& m : more) {
                 for (std::size_t v : m.mForced)
                     junction[v] = 1;
-                final.push_back(std::move(m));
+                pieces.push_back(std::move(m));
             }
             continue;
         }

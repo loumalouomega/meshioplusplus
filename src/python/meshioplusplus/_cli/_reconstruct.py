@@ -57,7 +57,7 @@ def reconstruct_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json({"output": args.outfile, **report})
-        return 0
+        return
     text = (
         f"{report['num_triangles']} triangles in {report['num_components']} piece(s) "
         f"through {report['num_samples']} samples"
@@ -65,4 +65,3 @@ def reconstruct_cmd(args):
     if report["estimated_normals"]:
         text += " (normals estimated)"
     print(text)
-    return 0

@@ -60,7 +60,7 @@ def guard_check_cmd(args):
     report = guard.check(mesh, top=args.top)
     if args.json:
         emit_json(report)
-        return 0
+        return
     print(f"{args.infile}: {report['verdict']}")
     print(f"  score:          {report['score']:.6g}")
     print(f"  threshold:      {report['threshold']:.6g}")
@@ -71,4 +71,3 @@ def guard_check_cmd(args):
         )
     if report["missing"]:
         print(f"  not comparable: {', '.join(report['missing'])}")
-    return 0

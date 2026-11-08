@@ -1854,7 +1854,7 @@ namespace {
 constexpr std::size_t kMarctLabel = 24;
 
 std::string marct_e13(double X) {
-    if (X != X)
+    if (std::isnan(X))
         return std::string(kMarcW - 3, ' ') + "NaN";
     if (std::isinf(X))
         return X > 0 ? std::string(kMarcW - 3, ' ') + "inf" : std::string(kMarcW - 4, ' ') + "-inf";

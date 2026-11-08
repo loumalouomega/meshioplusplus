@@ -37,11 +37,10 @@ def untangle_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json({"output": args.outfile, **report})
-        return 0
+        return
     print(
         f"inverted cells {report['num_inverted_before']} -> "
         f"{report['num_inverted_after']}; least corner scaled Jacobian "
         f"{report['min_quality_before']:.4g} -> {report['min_quality_after']:.4g} "
         f"({report['sweeps']} sweep(s))"
     )
-    return 0

@@ -388,7 +388,9 @@ AdaptiveOctree octree_adaptive_build(const OctreeFrame& rFrame,
                 "max_cells (" +
                 std::to_string(MaxCells) + ") leaves; raise min_size or max_cells");
         std::vector<std::array<SzfLeaf, 8>> kids(active.size());
-        const std::int64_t half = std::int64_t{1} << (L - level - 1 >= 0 ? L - level - 1 : 0);
+        // mMaxLevel is capped at 19 (octree_mesh.cpp), so the clamp never bites;
+        // it states the shift's range where the analyzer cannot see the cap.
+        const std::int64_t half = std::int64_t{1} << std::clamp(L - level - 1, 0, 62);
         parallel_for(
             active.size(),
             [&](std::size_t i) {

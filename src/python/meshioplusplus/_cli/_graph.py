@@ -35,10 +35,9 @@ def graph_cmd(args):
     report = write_graph(args.outfile, mesh, args.kind, file_format=args.format)
     if args.json:
         emit_json({"output": args.outfile, "kind": args.kind, **report})
-        return 0
+        return
     print(
         f"{args.kind} graph -> {args.outfile} ({report['format']}): "
         f"{report['num_vertices']} vertices, {report['num_edges']} edges, "
         f"max degree {report['max_degree']}"
     )
-    return 0

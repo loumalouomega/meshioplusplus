@@ -30,6 +30,7 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
@@ -63,8 +64,12 @@ struct EmWorkDir {
     EmWorkDir& operator=(const EmWorkDir&) = delete;
     ~EmWorkDir() {
         const char* p_keep = std::getenv("MESHIOPLUSPLUS_KEEP_TEMP");
-        if (p_keep && *p_keep && std::string(p_keep) != "0") {
-            log::info("external mesher: kept '{}'", mPath);
+        if (p_keep && *p_keep && std::string_view(p_keep) != "0") {
+            try {
+                log::info("external mesher: kept '{}'", mPath);
+            } catch (...) {
+                // a destructor must not throw: formatting or the log sink failed
+            }
             return;
         }
         std::error_code ec;

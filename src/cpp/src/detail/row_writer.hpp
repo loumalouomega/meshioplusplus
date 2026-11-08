@@ -136,7 +136,7 @@ private:
             return false;
         const std::size_t prefix_len = static_cast<std::size_t>(pct - pFmt);
         const std::size_t number_len = static_cast<std::size_t>(r.ptr - buf);
-        const std::size_t suffix_len = std::strlen(suffix);
+        const std::size_t suffix_len = strnlen(suffix, sizeof buf);  // > 63 is refused below
         if (prefix_len + number_len + suffix_len > 63)
             return false;
         rOut.append(pFmt, prefix_len);

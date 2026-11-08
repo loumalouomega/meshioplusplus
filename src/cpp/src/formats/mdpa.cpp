@@ -1696,7 +1696,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
         if (type == CellType::Custom)
             throw WriteError("MDPA: geometry block of unknown cell type '" + r_geo.mType + "'");
         const std::size_t k = r_geo.mConn.Shape().size() == 2 ? r_geo.mConn.Shape()[1] : 0;
-        if (static_cast<int>(k) != cell_type_num_nodes(type))
+        if (k == 0 || static_cast<int>(k) != cell_type_num_nodes(type))
             throw WriteError("MDPA: geometry block '" + r_geo.mType + "' has " + std::to_string(k) +
                              " nodes per row");
         const std::size_t rows = r_geo.mConn.Size() / k;

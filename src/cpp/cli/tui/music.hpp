@@ -87,6 +87,7 @@ private:
     MusicPlayerSpec mSpec;
     std::string mPlayerPath;
     std::string mWavPath;
+    std::string mWavDir;  ///< the private directory holding mWavPath (POSIX), removed with it
     long mPid = 0;
     void* mProcess = nullptr;  ///< the Windows process handle
 };

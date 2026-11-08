@@ -655,8 +655,9 @@ class DatasetManifest:
             unit_list = [units[key] for key in sorted(units)]
         else:
             unit_list = [[entry_id] for entry_id in sorted(self._by_id)]
+        # A seeded, reproducible split: the generator is not for security.
         rng = random.Random(seed)
-        rng.shuffle(unit_list)
+        rng.shuffle(unit_list)  # NOSONAR(python:S2245): see above
 
         n = len(self._entries)
         names = list(fractions)

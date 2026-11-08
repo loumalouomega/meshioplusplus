@@ -54,6 +54,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -121,6 +122,35 @@ inline bool enabled(Level lvl) {
 }
 
 /**
+ * @brief @p msg with its control characters spelled out: `\n`, `\r`, and
+ * `\xHH` for the others below 0x20 and DEL (a tab is kept).
+ *
+ * A message often carries text a reader took from a file (a name, a token), so
+ * escaping keeps one call to one line: a crafted file cannot end the line and
+ * forge another, nor send terminal escape sequences (roadmap 9.4.4).
+ */
+inline std::string escape(std::string_view msg) {
+    constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(msg.size());
+    for (const char c : msg) {
+        const auto u = static_cast<unsigned char>(c);
+        if (c == '\n') {
+            out += "\\n";
+        } else if (c == '\r') {
+            out += "\\r";
+        } else if ((u < 0x20 && c != '\t') || u == 0x7f) {
+            out += "\\x";
+            out += kHex[u >> 4];
+            out += kHex[u & 0xf];
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+/**
  * @brief Formats and writes one log line to stderr.
  *
  * Strips any directory prefix from `loc.file_name()` (keeping just the
@@ -140,7 +170,7 @@ inline void write(Level lvl, std::string_view msg, const detail::source_location
     if (auto p = file.find_last_of("/\\"); p != std::string_view::npos)
         file.remove_prefix(p + 1);
     std::string line = detail::format_compat("meshio {} [{}:{}] {}\n", names[static_cast<int>(lvl)],
-                                             file, rLoc.line(), msg);
+                                             file, rLoc.line(), escape(msg));
 #if defined(__cpp_lib_syncbuf)
     std::osyncstream(std::cerr) << line;
 #else

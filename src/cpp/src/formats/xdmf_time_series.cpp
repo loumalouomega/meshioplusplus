@@ -255,8 +255,13 @@ XdmfTimeSeriesWriter::~XdmfTimeSeriesWriter() {
         Finalize();
     } catch (const std::exception& e) {
         // A destructor must not throw; an explicit Finalize() is how a caller
-        // gets to see this failure.
-        log::error("XDMF time series: could not finalize '{}': {}", mImpl->mPath, e.what());
+        // gets to see this failure. The report itself may throw (formatting,
+        // the log sink), so it is guarded too.
+        try {
+            log::error("XDMF time series: could not finalize '{}': {}", mImpl->mPath, e.what());
+        } catch (...) {
+        }
+    } catch (...) {
     }
     mImpl.reset();
 }

@@ -344,25 +344,32 @@ def _read_cell_group_binary(buf_or_line):
     return name, slot, data
 
 
+_GROUP_HEAD = re.compile(r"([A-Z]+) *['\"]([^'\"]*)['\"] *")
+_GROUP_WORD = re.compile(r"[A-Z]+")
+
+
 def _read_cell_group_ascii(buf_or_line, line: str):
     # a group line read
     # ```
     # ZGROUP 'group five' SLOT 5
     # ```
-    m = re.match(r"^([A-Z]+) *[\'\"](.*?)[\'\"] *([A-Z]+) *(.*?) *$", line)
-    if m is None:
+    # Two plain matches rather than one pattern with lazy groups beside the
+    # spaces around them, which backtracked on a long line.
+    m = _GROUP_HEAD.match(line)
+    k = None if m is None else _GROUP_WORD.match(line, m.end())
+    if k is None:
         raise ReadError(
             'Expected line of the form\n```\nZGROUP "group name" SLOT 5\n```\n '
             + f"but got \n```\n{line}\n```\n"
         )
     assert m.group(1) in {"ZGROUP", "FGROUP"}
-    assert m.group(3) == "SLOT"
+    assert k.group() == "SLOT"
     name = m.group(2)
     # The slot is the raw remainder of the line and may or may not be quoted
     # (`SLOT "Default"` and `SLOT 5` are both real). Strip a matching pair so
     # the ascii and binary readers -- the latter reads a length-prefixed
     # string, never quoted -- agree on the group key for the same mesh.
-    slot = _strip_quotes(m.group(4))
+    slot = _strip_quotes(line[k.end() :].rstrip("\r\n").strip(" "))
 
     i = buf_or_line.tell()
     line = buf_or_line.readline()

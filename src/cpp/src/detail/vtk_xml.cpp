@@ -209,7 +209,7 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
     std::vector<double> dv;
     std::vector<std::int64_t> iv;
     const char* p = pText ? pText : "";
-    const char* const last = p + std::strlen(p);
+    const char* const last = p + std::strlen(p);  // NOSONAR(cpp:S5813): pugixml text ends in NUL
     // A large array is parsed in parallel chunks straight into the array
     // (roadmap 5.7.2), each token by the parser the loop below uses; a token
     // that parser would not take whole sends the array to that loop, so the

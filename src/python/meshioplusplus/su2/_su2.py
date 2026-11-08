@@ -297,7 +297,7 @@ def _translate_cells(data, has_extra_column=False):
         i += su2_type_to_numnodes[data[i]] + entry_offset
 
     types = np.array(types)
-    bins = {u: np.where(types == u)[0] for u in np.unique(types)}
+    bins = {u: np.nonzero(types == u)[0] for u in np.unique(types)}
 
     # Deduct offsets from the cell types. This is much faster than manually
     # going through the data array. Slight disadvantage: This doesn't work for

@@ -1696,6 +1696,24 @@ jobs:
                --ignore-errors unused
           lcov --list cpp-coverage.info
 
+      # SonarCloud reads the same two reports (sonarcloud.yml): the Python XML
+      # as it is (repo-relative through pyproject's `relative_files`), the C++
+      # tracefile converted to SonarQube's generic coverage format, so both
+      # services share one denominator. The artifact is what a scan downloads.
+      - name: Convert C++ coverage for SonarCloud
+        if: steps.lfs.outputs.available != 'false'
+        run: python tools/lcov_to_sonar.py cpp-coverage.info cpp-coverage-sonar.xml --root "$PWD"
+      - name: Keep the coverage reports for SonarCloud
+        if: steps.lfs.outputs.available != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            coverage.xml
+            cpp-coverage-sonar.xml
+          retention-days: 14
+          if-no-files-found: warn
+
       # The uploads are skipped outright until CODECOV_TOKEN is configured, so a
       # repo without it still gets the tests + the lcov summary above rather than
       # a red build. Once the token exists a failed upload still does not fail
@@ -2044,7 +2062,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Emscripten
-        uses: mymindstorm/setup-emsdk@v14
+        uses: ./.github/actions/setup-emsdk
         with:
           version: "6.0.3"
 

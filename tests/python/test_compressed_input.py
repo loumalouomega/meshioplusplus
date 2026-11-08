@@ -147,7 +147,7 @@ def test_no_temporary_copies_are_left(cube):
         return {
             p
             for p in os.listdir(tempfile.gettempdir())
-            if p.startswith("meshioplusplus-")
+            if p.startswith(("meshioplusplus-", "meshioplusplus_decompress_"))
         }
 
     before = copies()

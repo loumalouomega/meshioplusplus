@@ -214,12 +214,13 @@ void BrepCurveEval::Eval(double T, double* pX, double* pD) const {
     // The net points into this object's own vectors, which a copy or move
     // does not carry: rebuild the pointers on the stack.
     IgaEvalNet net = mNet;
+    net.mDim = 1;  // a curve: one parameter, one span (as the constructor set)
     net.mKnots[0] = &mKnots;
     net.mValues = mValues.data();
     net.mWeights = mWeights.empty() ? nullptr : mWeights.data();
     const double t = std::clamp(T, mT0, mT1);
     const std::size_t span = nurbs_find_span(mDegree, mKnots, mCount, t);
-    double der[3];
+    double der[3] = {0.0, 0.0, 0.0};
     iga_eval_point(net, &span, &t, pD ? 1 : 0, pX, pD ? der : nullptr);
     if (pD)
         for (int k = 0; k < 3; ++k)
@@ -265,7 +266,7 @@ TrimTrace::TrimTrace(const BrepSurfaceEval* pSurface, BrepCurveEval Curve, bool 
 }
 
 EdgeVec2 TrimTrace::Uv(double T) const {
-    double x[3];
+    double x[3] = {0.0, 0.0, 0.0};
     mCurve.Eval(T, x, nullptr);
     return {x[0], x[1]};
 }

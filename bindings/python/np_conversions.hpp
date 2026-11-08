@@ -177,11 +177,11 @@ inline const py::object& cached_package_class(const char* pName) {
     static std::atomic<py::object*> sMesh{nullptr};
     static std::atomic<py::object*> sRegion{nullptr};
     std::atomic<py::object*>& slot = (pName[0] == 'M') ? sMesh : sRegion;
-    py::object* cached = slot.load(std::memory_order_acquire);
+    py::object* cached = slot.load();
     if (!cached) {
         auto* made = new py::object(py::module_::import("meshioplusplus").attr(pName));
         py::object* expected = nullptr;
-        if (slot.compare_exchange_strong(expected, made, std::memory_order_acq_rel))
+        if (slot.compare_exchange_strong(expected, made))
             cached = made;
         else {
             delete made;  // the GIL is held: this thread lost the race
@@ -199,12 +199,12 @@ inline const py::object& cached_ragged_class(bool Faces) {
     static std::atomic<py::object*> sRows{nullptr};
     static std::atomic<py::object*> sFaces{nullptr};
     std::atomic<py::object*>& slot = Faces ? sFaces : sRows;
-    py::object* cached = slot.load(std::memory_order_acquire);
+    py::object* cached = slot.load();
     if (!cached) {
         auto* made = new py::object(
             py::module_::import("meshioplusplus._ragged").attr(Faces ? "CsrFaces" : "CsrRows"));
         py::object* expected = nullptr;
-        if (slot.compare_exchange_strong(expected, made, std::memory_order_acq_rel))
+        if (slot.compare_exchange_strong(expected, made))
             cached = made;
         else {
             delete made;  // the GIL is held: this thread lost the race
@@ -575,10 +575,8 @@ inline meshioplusplus::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& rRefs,
 
     // The three loops above insert into the data maps directly rather than
     // through AddPointData/AddCellData/AddFieldData (this file is the uniform
-    // API's one sanctioned exception), so the sorted-name caches those
-    // accessors memoize have to be invalidated by hand -- see
-    // Mesh::InvalidateNameCaches() in backends/meshio_mesh.hpp.
-    m.InvalidateNameCaches();
+    // API's one sanctioned exception). The sorted names are computed on each
+    // call since ABI 41, so nothing has to be invalidated afterwards.
 
     py_regions_to_mesh(pymesh, m);
 

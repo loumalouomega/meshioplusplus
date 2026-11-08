@@ -9,10 +9,20 @@ name: sonarcloud
 # source includes a header generated at build time), and the Python analysis
 # needs nothing built, so a scan takes minutes.
 #
-# The price is coverage: no tests run here, so SonarCloud shows none. Codecov,
-# fed by the `coverage` job, remains the coverage report.
+# No tests run here. Coverage comes from the `coverage` job of ci.yml, which
+# keeps its two reports as the `coverage-reports` artifact (the Python XML, and
+# the C++ lcov tracefile converted by tools/lcov_to_sonar.py). Two scans use it:
+#   - the scan of a push (or a manual run) takes the newest artifact on master,
+#     which is the previous commit's while this commit's coverage job runs;
+#   - once ci.yml finishes on master (`workflow_run`), the same commit is
+#     scanned again with the coverage measured on it. A ci run that a newer push
+#     cancelled left no artifact, and that second scan is then skipped.
 on:
   push:
+    branches: [master]
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
     branches: [master]
   workflow_dispatch:
 
@@ -24,12 +34,15 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read  # the coverage artifact of a ci.yml run
 
 jobs:
   scan:
     name: SonarCloud scan
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # A ci run cancelled by a newer push measured nothing.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion != 'cancelled' }}
     # The `secrets` context is not allowed in step-level `if:`; hoist it.
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -41,20 +54,69 @@ jobs:
 
       # Full history: SonarCloud reads `git blame` to tell new code from old.
       # No Git LFS: fixtures are test data, which the analysis excludes.
+      # A workflow_run scan analyses the commit ci.yml measured.
       - uses: actions/checkout@v4
         if: ${{ env.SONAR_TOKEN != '' }}
         with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
           lfs: false
           fetch-depth: 0
+
+      # The ci.yml run whose coverage this scan reports: the one that triggered
+      # it, or the newest one on master that kept its reports.
+      - name: Find the coverage reports
+        id: coverage
+        if: ${{ env.SONAR_TOKEN != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRIGGER_RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          if [ -n "$TRIGGER_RUN" ]; then
+            query="actions/runs/$TRIGGER_RUN/artifacts?name=coverage-reports"
+          else
+            query="actions/artifacts?name=coverage-reports&per_page=20"
+          fi
+          run_id=$(gh api "repos/${{ github.repository }}/$query" --jq \
+            '[.artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == "master")] | .[0].workflow_run.id // empty')
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          if [ -n "$run_id" ]; then
+            echo "scan=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$TRIGGER_RUN" ]; then
+            # The push scan of this commit already ran; without coverage a
+            # second one would add nothing.
+            echo "::notice title=SonarCloud not rerun::ci run $TRIGGER_RUN kept no coverage reports"
+            echo "scan=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=No coverage::no coverage-reports artifact on master yet"
+            echo "scan=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Download the coverage reports
+        if: ${{ env.SONAR_TOKEN != '' && steps.coverage.outputs.run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-reports
+          run-id: ${{ steps.coverage.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: coverage-reports
+      # Only the reports that exist: a scan without one still runs.
+      - name: Coverage arguments
+        id: coverage_args
+        if: ${{ env.SONAR_TOKEN != '' && steps.coverage.outputs.scan == 'true' }}
+        run: |
+          args=""
+          [ -f coverage-reports/coverage.xml ] && args="$args -Dsonar.python.coverage.reportPaths=coverage-reports/coverage.xml"
+          [ -f coverage-reports/cpp-coverage-sonar.xml ] && args="$args -Dsonar.coverageReportPaths=coverage-reports/cpp-coverage-sonar.xml"
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+          echo "coverage arguments:${args:- none}"
       # Vendored Eigen and nlohmann/json are included by analysed sources.
       - name: Initialise submodules
-        if: ${{ env.SONAR_TOKEN != '' }}
+        if: ${{ env.SONAR_TOKEN != '' && steps.coverage.outputs.scan == 'true' }}
         uses: ./.github/actions/init-submodules
         with:
           paths: src/cpp/third_party/eigen src/cpp/third_party/json
 
       - uses: actions/setup-python@v5
-        if: ${{ env.SONAR_TOKEN != '' }}
+        if: ${{ env.SONAR_TOKEN != '' && steps.coverage.outputs.scan == 'true' }}
         with:
           python-version: "3.12"
 
@@ -62,7 +124,7 @@ jobs:
       # sees the HDF5, netCDF, zlib, TBB and OpenCASCADE code paths with their
       # headers resolved. See ci.yml for why packages.microsoft.com is removed.
       - name: Install native headers
-        if: ${{ env.SONAR_TOKEN != '' }}
+        if: ${{ env.SONAR_TOKEN != '' && steps.coverage.outputs.scan == 'true' }}
         run: |
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
@@ -77,7 +139,7 @@ jobs:
       # that compiles bindings/python/_core.cpp. A source both compile is
       # analysed once.
       - name: Generate the compilation database
-        if: ${{ env.SONAR_TOKEN != '' }}
+        if: ${{ env.SONAR_TOKEN != '' && steps.coverage.outputs.scan == 'true' }}
         run: |
           common=(-G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
                   -DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON
@@ -96,6 +158,8 @@ jobs:
       # A failed scan (a SonarCloud outage, an expired token) does not fail the
       # workflow: it is not a defect in the commit under analysis.
       - name: SonarCloud scan
-        if: ${{ env.SONAR_TOKEN != '' }}
+        if: ${{ env.SONAR_TOKEN != '' && steps.coverage.outputs.scan == 'true' }}
         continue-on-error: true
         uses: SonarSource/sonarqube-scan-action@v8
+        with:
+          args: ${{ steps.coverage_args.outputs.args }}

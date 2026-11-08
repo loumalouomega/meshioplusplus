@@ -56,7 +56,11 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$SCRIPT_DIR/deps-pins.sh"
 # The commits the netCDF and CGNS tags peel to. GitHub serves a tag's archive
 # from codeload.github.com, which some proxies refuse; the fetch then falls
-# back to a shallow git clone of the tag, verified against this commit.
+# back to a shallow git clone of the tag, verified against this commit. HDF5,
+# zstd and lz4 are release tarballs, served from GitHub's release storage, which
+# has gone down on its own while clones kept working (504s for hours,
+# November 2026); they fall back the same way, to a clone of the tag the
+# release was cut from (HDF5_COMMIT, ZSTD_COMMIT, LZ4_COMMIT).
 
 # The full artifact's libraries. OpenCASCADE's pin, source and toolkit list are
 # build/occt-recipe.sh's, shared with the native static build the wheels and
@@ -249,7 +253,8 @@ fetch_git() {
 # unpack_tag <archive-url> <file> <sha256> <git-url> <tag> <commit> <srcdir>:
 # the checksummed tag archive unpacked into $WORK_DIR, or, when the archive
 # cannot be downloaded, the commit-verified clone of the same tag copied there
-# (the two hold the same tree).
+# (the same tree for a tag archive; for a release tarball, the sources it was
+# cut from, which these CMake builds and patches take alike).
 unpack_tag() {
     if fetch "$1" "$2" "$3"; then
         tar -xzf "$DL_DIR/$2" -C "$WORK_DIR"
@@ -318,10 +323,11 @@ if [ "$WITH_HDF5" = "yes" ]; then
         echo "== HDF5 $HDF5_VERSION already installed, skipping (use --force to rebuild) =="
     else
         echo "== fetching HDF5 $HDF5_VERSION =="
-        fetch "https://github.com/HDFGroup/hdf5/releases/download/hdf5_$HDF5_VERSION/hdf5-$HDF5_VERSION.tar.gz" \
-              "hdf5-$HDF5_VERSION.tar.gz" "$HDF5_SHA256" || exit 1
         rm -rf "$WORK_DIR/hdf5-$HDF5_VERSION" "$WORK_DIR/build-hdf5"
-        tar -xzf "$DL_DIR/hdf5-$HDF5_VERSION.tar.gz" -C "$WORK_DIR"
+        unpack_tag "https://github.com/HDFGroup/hdf5/releases/download/hdf5_$HDF5_VERSION/hdf5-$HDF5_VERSION.tar.gz" \
+                   "hdf5-$HDF5_VERSION.tar.gz" "$HDF5_SHA256" \
+                   "https://github.com/HDFGroup/hdf5.git" "hdf5_$HDF5_VERSION" "$HDF5_COMMIT" \
+                   "hdf5-$HDF5_VERSION"
         apply_patches "hdf5-$HDF5_VERSION" "$WORK_DIR/hdf5-$HDF5_VERSION"
 
         echo "== configuring HDF5 =="
@@ -591,10 +597,11 @@ build_full_flavour() {  # build_full_flavour <seq|mt>
         echo "== zstd $ZSTD_VERSION ($flavour) already installed, skipping =="
     else
         echo "== zstd $ZSTD_VERSION ($flavour) =="
-        fetch "https://github.com/facebook/zstd/releases/download/v$ZSTD_VERSION/zstd-$ZSTD_VERSION.tar.gz" \
-              "zstd-$ZSTD_VERSION.tar.gz" "$ZSTD_SHA256" || exit 1
         rm -rf "$WORK_DIR/zstd-$ZSTD_VERSION" "$WORK_DIR/build-zstd-$flavour"
-        tar -xzf "$DL_DIR/zstd-$ZSTD_VERSION.tar.gz" -C "$WORK_DIR"
+        unpack_tag "https://github.com/facebook/zstd/releases/download/v$ZSTD_VERSION/zstd-$ZSTD_VERSION.tar.gz" \
+                   "zstd-$ZSTD_VERSION.tar.gz" "$ZSTD_SHA256" \
+                   "https://github.com/facebook/zstd.git" "v$ZSTD_VERSION" "$ZSTD_COMMIT" \
+                   "zstd-$ZSTD_VERSION"
         # The decoder and the one-shot encoder only: no programs, no worker
         # threads (the core compresses block by block), no legacy formats.
         CFLAGS="-Oz $pt" emcmake cmake -S "$WORK_DIR/zstd-$ZSTD_VERSION/build/cmake" \
@@ -615,10 +622,11 @@ build_full_flavour() {  # build_full_flavour <seq|mt>
         echo "== lz4 $LZ4_VERSION ($flavour) already installed, skipping =="
     else
         echo "== lz4 $LZ4_VERSION ($flavour) =="
-        fetch "https://github.com/lz4/lz4/releases/download/v$LZ4_VERSION/lz4-$LZ4_VERSION.tar.gz" \
-              "lz4-$LZ4_VERSION.tar.gz" "$LZ4_SHA256" || exit 1
         rm -rf "$WORK_DIR/lz4-$LZ4_VERSION" "$WORK_DIR/build-lz4-$flavour"
-        tar -xzf "$DL_DIR/lz4-$LZ4_VERSION.tar.gz" -C "$WORK_DIR"
+        unpack_tag "https://github.com/lz4/lz4/releases/download/v$LZ4_VERSION/lz4-$LZ4_VERSION.tar.gz" \
+                   "lz4-$LZ4_VERSION.tar.gz" "$LZ4_SHA256" \
+                   "https://github.com/lz4/lz4.git" "v$LZ4_VERSION" "$LZ4_COMMIT" \
+                   "lz4-$LZ4_VERSION"
         CFLAGS="-Oz $pt" emcmake cmake -S "$WORK_DIR/lz4-$LZ4_VERSION/build/cmake" \
             -B "$WORK_DIR/build-lz4-$flavour" \
             -DCMAKE_BUILD_TYPE=Release \

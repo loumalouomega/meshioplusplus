@@ -279,7 +279,8 @@ double fcn_tolerance(const Mesh& rMesh, const detail::ClosedFacets& rFc, double 
         const NDArray& types = rMesh.FieldData("fit:patch_type");
         const NDArray& tols = rMesh.FieldData("fit:patch_tolerance");
         const NDArray& params = rMesh.FieldData("fit:patch_params");
-        const std::size_t np = types.Size() > 0 ? params.Size() / types.Size() : 0;
+        const std::size_t ntypes = types.Size();
+        const std::size_t np = ntypes > 0 ? params.Size() / ntypes : 0;
         for (std::size_t r = 0; r < types.Size() && r < tols.Size(); ++r) {
             const std::int64_t t = detail::read_int(types, r);
             bool finite = true;

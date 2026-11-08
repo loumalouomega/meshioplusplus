@@ -513,12 +513,16 @@ class JobManager:
                 return path
             raise ValueError(f"{_ERR}no checkpoint '{checkpoint}' in job '{job_id}'")
         job = self._read_job(job_id)
+        # The job file is data on disk, so its recorded best is reduced to a
+        # name inside this job's checkpoint directory, as an explicit name is:
+        # an edited job file cannot point the server outside its runs directory.
+        best = job.get("best_checkpoint")
         for candidate in (
-            job.get("best_checkpoint"),
+            os.path.join(directory, os.path.basename(str(best))) if best else None,
             os.path.join(directory, BEST_CHECKPOINT),
             os.path.join(directory, "final.mdlus"),
         ):
-            if candidate and os.path.isfile(candidate):
+            if candidate and os.path.isfile(candidate):  # NOSONAR: confined above
                 return candidate
         raise ValueError(f"{_ERR}job '{job_id}' has no checkpoint yet")
 

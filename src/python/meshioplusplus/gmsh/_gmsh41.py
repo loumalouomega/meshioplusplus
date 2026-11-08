@@ -602,7 +602,7 @@ def _write_entities(fh, cells, tag_data, cell_sets, point_data, binary):
     # cell block.
     for dim, tag in node_dim_tags:
         # Find the matching cell block, if it exists
-        matching_cell_block = np.where(
+        matching_cell_block = np.nonzero(
             np.logical_and(cell_dim_tags[:, 0] == dim, cell_dim_tags[:, 1] == tag)
         )[0]
         if matching_cell_block.size > 1:
@@ -780,7 +780,7 @@ def _write_nodes(fh, points, cells, point_data, float_fmt, binary):
     for j in range(num_blocks):
         dim, tag = node_dim_tags[j]
 
-        node_tags = np.where(reverse_index_map == j)[0]
+        node_tags = np.nonzero(reverse_index_map == j)[0]
         num_points_this = node_tags.size
 
         if binary:

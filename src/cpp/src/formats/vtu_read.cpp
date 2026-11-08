@@ -244,7 +244,7 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
             const char* text = rDa.text().get();
             VtuByteSource src;
             src.mText = text;
-            src.mTextLen = std::strlen(text);
+            src.mTextLen = std::strlen(text);  // NOSONAR(cpp:S5813): pugixml text ends in NUL
             return vtu_array_from_bytes(
                 vtu_decode_sequential(src, rCtx.mCodec, rCtx.mHeaderSize, true), dt, true);
         }
@@ -384,7 +384,7 @@ VtuContext vtk_xml_read_context(const VtuSource& rSource, const char* pFormat) {
         if (*text != '_')
             throw ReadError(format + ": AppendedData does not start with '_'");
         ctx.mBase64 = text + 1;
-        ctx.mBase64Len = std::strlen(text + 1);
+        ctx.mBase64Len = std::strlen(text + 1);  // NOSONAR(cpp:S5813): pugixml text ends in NUL
     }
     return ctx;
 }

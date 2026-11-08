@@ -30,7 +30,7 @@ ELEMENT_MASS = (("i", 8), ("i", 8), ("r", 16), ("i", 8))
 IDS10 = tuple(("i", 10) for _ in range(8))
 SEGMENT = (("i", 10),) * 4 + (("r", 10),) * 4
 
-_EXPONENT_WITHOUT_LETTER = re.compile(r"^([+-]?(?:\d+\.?\d*|\.\d+))([+-]\d+)$")
+_EXPONENT_WITHOUT_LETTER = re.compile(r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+))([+-]\d+)$")
 
 
 def field_width(kind, width, mode):

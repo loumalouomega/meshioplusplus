@@ -40,6 +40,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/always_inline.hpp"
 #include "../detail/slot_runs.hpp"
 #include "../detail/transfer_names.hpp"
 #include "../detail/weld.hpp"
@@ -406,7 +407,9 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
                 const NDArray& conn = cv.Conn();
                 const std::size_t start = con.start;
                 const std::size_t mesh = con.mesh;
-                parallel_for_bw(con.ncells, [&](std::size_t c) {
+                // Forced inline: ABI 41's header changes moved GCC's size-driven
+                // inlining so this body became a call per cell (merge +5.8%).
+                parallel_for_bw(con.ncells, [&](std::size_t c) MIO_ALWAYS_INLINE_LAMBDA {
                     const std::size_t p = start + c;
                     bb.source_ids[p] = static_cast<std::int64_t>(mesh);
                     for (std::size_t k = 0; k < npc; ++k)

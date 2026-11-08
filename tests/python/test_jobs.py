@@ -179,6 +179,24 @@ def test_mark_best_and_resolve_checkpoint(manager, tmp_path):
         manager.resolve_checkpoint(job_id, "../etc/passwd")
 
 
+def test_resolve_checkpoint_keeps_a_recorded_best_inside_the_job(manager, tmp_path):
+    # job.json is data on disk: a best_checkpoint edited to point elsewhere is
+    # reduced to its name inside the job's checkpoint directory.
+    job_id = manager.start(_spec(tmp_path))["job_id"]
+    assert _wait(manager, job_id)["status"] == "finished", manager.log(job_id)["text"]
+    outside = tmp_path / "elsewhere.mdlus"
+    outside.write_bytes(b"not a checkpoint of this job")
+    job_file = os.path.join(manager.job_dir(job_id), JOB_FILE)
+    job = read_json(job_file)
+    job["best_checkpoint"] = str(outside)
+    write_json_atomic(job_file, job)
+    resolved = manager.resolve_checkpoint(job_id)
+    assert os.path.dirname(resolved) == os.path.join(
+        manager.job_dir(job_id), _jobs.CHECKPOINT_DIR
+    )
+    assert resolved != str(outside)
+
+
 def test_bad_ids_and_specs_are_named_errors(manager, tmp_path):
     with pytest.raises(ValueError, match="invalid job id"):
         manager.status("../x")

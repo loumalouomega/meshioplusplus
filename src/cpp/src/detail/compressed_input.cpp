@@ -19,13 +19,11 @@
 
 // System includes
 #include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <iterator>
-#include <random>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -46,6 +44,7 @@
 #include "meshioplusplus/detail/compressed_input.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/zlib_inflate.hpp"
+#include "subprocess.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
 namespace meshioplusplus {
@@ -400,27 +399,16 @@ DecompressedFile::DecompressedFile(const std::string& rPath, Compression Kind) {
     if (name.empty() || name == "." || name == "..")
         name = "decompressed";
 
-    // A fresh private directory: the decompressed file keeps its inner name,
-    // which some formats are recognised by (z88i1.txt, d3plot).
-    static std::atomic<unsigned> counter{0};
-    std::random_device rd;
-    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    std::error_code ec;
-    const std::filesystem::path tmp = std::filesystem::temp_directory_path(ec);
-    if (ec)
-        throw ReadError("meshio++: no temporary directory to decompress '" + rPath + "' into");
-    for (int attempt = 0; attempt < 16; ++attempt) {
-        const std::filesystem::path dir =
-            tmp / ("meshioplusplus-" + std::to_string(rd()) + "-" + std::to_string(stamp) + "-" +
-                   std::to_string(counter++));
-        if (std::filesystem::create_directory(dir, ec)) {
-            mDir = dir.string();
-            break;
-        }
-    }
-    if (mDir.empty())
+    // A fresh private directory (make_temp_dir: created exclusively, owner
+    // only): the decompressed file keeps its inner name, which some formats
+    // are recognised by (z88i1.txt, d3plot).
+    try {
+        mDir = make_temp_dir("decompress");
+    } catch (const std::runtime_error&) {
         throw ReadError("meshio++: could not create a temporary directory to decompress '" + rPath +
                         "' into");
+    }
+    std::error_code ec;
     mPath = (std::filesystem::path(mDir) / name).string();
     auto out = make_classic_ofstream(std::filesystem::path(mPath), std::ios::binary);
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));

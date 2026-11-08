@@ -246,7 +246,10 @@ inline double parse_double(const char* pFirst, const char*& rEnd) noexcept {
     // no real numeric literal exceeds.
     char buf[64];
     std::size_t n = 0;
-    const std::size_t dp_len = std::strlen(dp);
+    // Bounded by the buffer: a longer separator makes the copy below stop at once.
+    std::size_t dp_len = 0;
+    while (dp_len < sizeof(buf) && dp[dp_len] != '\0')
+        ++dp_len;
     const char* src = pFirst;
     while (*src != '\0' && n + dp_len < sizeof(buf)) {
         if (dp_len == 1 && *src == dp[0]) {
@@ -339,8 +342,8 @@ inline int vsnprintf_classic(char* pBuf, std::size_t cap, const char* pFmt, va_l
 #endif
     const int n = std::vsnprintf(pBuf, cap, pFmt, args);
     const char* dp = localeconv()->decimal_point;
-    if (n <= 0 || cap == 0 || dp == nullptr || std::strlen(dp) != 1)
-        return n;
+    if (n <= 0 || cap == 0 || dp == nullptr || dp[0] == '\0' || dp[1] != '\0')
+        return n;  // no separator to swap unless it is exactly one character
     const std::size_t written =
         static_cast<std::size_t>(n) < cap - 1 ? static_cast<std::size_t>(n) : cap - 1;
     for (std::size_t i = 0; i < written; ++i) {

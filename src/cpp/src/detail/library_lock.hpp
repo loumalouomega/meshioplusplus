@@ -27,7 +27,9 @@
  * HDF5, netCDF-4, CGNS, MED and ADIOS2 share one HDF5 (and TecIO and gidpost
  * keep global state), so a lock per library would still race; there is one.
  * It is recursive because entry points nest (a series writer calls the HDF5
- * helpers, a sequence reads through a format reader).
+ * helpers, a sequence reads through a format reader, `read_exodus(path, opts)`
+ * locks and calls the overload that locks again) and because the gid series
+ * callback runs caller code, which may read an HDF5 file, under the lock.
  *
  * Take a `LibraryLock` as the first statement of every public function that
  * can reach such a library, before any handle whose destructor calls into it,
@@ -43,8 +45,8 @@
 namespace meshioplusplus {
 namespace detail {
 
-/// The process-wide mutex; prefer `LibraryLock`.
-std::recursive_mutex& library_mutex();
+/// The process-wide mutex; prefer `LibraryLock`. Recursive: see above.
+std::recursive_mutex& library_mutex();  // NOSONAR(cpp:S8462): entry points nest
 
 /// How many `LibraryLock`s the calling thread holds (0 when none).
 int& library_lock_depth();

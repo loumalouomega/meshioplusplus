@@ -153,6 +153,8 @@ SelFacets sel_collect_facets(const Mesh& rMesh, int Dim) {
                 }
                 continue;
             }
+            if (pc == nullptr)
+                continue;  // a block with no connectivity has no facets
             const std::size_t npc = cb.NodesPerCell();
             const std::int64_t* row = pc + c * npc;
             std::int64_t buf[9];

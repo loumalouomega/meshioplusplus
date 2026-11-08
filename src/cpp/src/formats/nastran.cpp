@@ -246,8 +246,11 @@ struct NasCards {
     NasCards() = default;
     NasCards(const NasCards&) = delete;
     NasCards& operator=(const NasCards&) = delete;
-    NasCards(NasCards&&) = default;
-    NasCards& operator=(NasCards&&) = default;
+    // noexcept although std::deque's move constructor may allocate (libstdc++
+    // gives the moved-from deque an empty map): the move is the elided return
+    // of nas_cards in practice, and a failed allocation there ends the process.
+    NasCards(NasCards&&) noexcept = default;
+    NasCards& operator=(NasCards&&) noexcept = default;
 };
 
 NasCards nas_cards(const std::vector<std::string_view>& rLines) {

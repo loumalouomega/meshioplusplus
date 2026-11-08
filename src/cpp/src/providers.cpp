@@ -243,10 +243,13 @@ std::shared_ptr<const RemesherProvider> remesher() noexcept {
 namespace {
 
 /// The scan of MESHIOPLUSPLUS_PLUGIN_PATH runs once. Recursive, so that a plugin
-/// asking for a provider while it registers does not wait on itself; the flag
-/// makes that nested call return at once.
-std::recursive_mutex& plugin_scan_mutex() {
-    static std::recursive_mutex* const s_mutex = new std::recursive_mutex;
+/// asking for a provider while it registers (or from a static initialiser that
+/// dlopen runs) does not wait on itself; the flag makes that nested call return
+/// at once. Allocated and never freed, like providers_state(), so a provider
+/// query during static destruction still finds it.
+std::recursive_mutex& plugin_scan_mutex() {  // NOSONAR(cpp:S8462): see above
+    static std::recursive_mutex* const s_mutex =
+        new std::recursive_mutex;  // NOSONAR(cpp:S8462,cpp:S8474): see above
     return *s_mutex;
 }
 bool g_plugins_scan_started = false;        // guarded by the scan mutex
@@ -408,16 +411,17 @@ void register_builtin_providers() noexcept {
     // through it). Concurrent callers wait here until the scan is done, so none
     // sees a slot a plugin is about to fill; a nested call on the scanning
     // thread passes straight through.
-    if (g_plugins_scan_done.load(std::memory_order_acquire))
+    if (g_plugins_scan_done.load())
         return;
-    const std::lock_guard<std::recursive_mutex> scan_lock(plugin_scan_mutex());
+    const std::lock_guard<std::recursive_mutex> scan_lock(
+        plugin_scan_mutex());  // NOSONAR(cpp:S8462): re-entered by a plugin, see above
     if (g_plugins_scan_started)
         return;  // done meanwhile, or this thread's own plugin is asking
     g_plugins_scan_started = true;
     const char* p_paths = std::getenv("MESHIOPLUSPLUS_PLUGIN_PATH");
     if (p_paths && *p_paths)
         load_plugins(p_paths);
-    g_plugins_scan_done.store(true, std::memory_order_release);
+    g_plugins_scan_done.store(true);
 }
 
 }  // namespace meshioplusplus

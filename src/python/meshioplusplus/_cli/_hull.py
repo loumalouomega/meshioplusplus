@@ -35,13 +35,12 @@ def hull_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json({"output": args.outfile, **report})
-        return 0
+        return
     kind = "triangles" if report["dimension"] == 3 else "edges"
     print(
         f"{report['dimension']}-D hull: {report['num_vertices']} vertices, "
         f"{report['num_facets']} {kind}"
     )
-    return 0
 
 
 def delaunay_cmd(args):
@@ -50,9 +49,8 @@ def delaunay_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json({"output": args.outfile, **report})
-        return 0
+        return
     text = f"Delaunay triangulation: {report['num_triangles']} triangles"
     if report["num_duplicates"]:
         text += f", {report['num_duplicates']} duplicate point(s) left out"
     print(text)
-    return 0

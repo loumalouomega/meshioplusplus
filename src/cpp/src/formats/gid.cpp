@@ -648,14 +648,12 @@ void gid_write_cell_data(GiD_FILE fd, const Mesh& rMesh,
 }  // namespace
 
 bool gid_available(GidMode mode) {
-    if (mode == GidMode::Hdf5) {
 #ifdef MESHIOPLUSPLUS_HAS_GIDPOST_HDF5
-        return true;
+    constexpr bool kHdf5 = true;
 #else
-        return false;
+    constexpr bool kHdf5 = false;
 #endif
-    }
-    return true;
+    return kHdf5 || mode != GidMode::Hdf5;
 }
 
 std::string gid_build_option(GidMode mode) {

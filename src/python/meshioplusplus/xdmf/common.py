@@ -165,7 +165,7 @@ def translate_mixed_cells(data):
     types = np.array(types)
     offsets = np.array(offsets)
 
-    b = np.concatenate([[0], np.where(types[:-1] != types[1:])[0] + 1, [len(types)]])
+    b = np.concatenate([[0], np.nonzero(types[:-1] != types[1:])[0] + 1, [len(types)]])
     cells = []
     for start, end in zip(b[:-1], b[1:]):
         meshio_type = xdmf_idx_to_meshio_type[types[start]]

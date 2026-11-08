@@ -87,7 +87,9 @@ bool dynlib_available() noexcept {
 }
 
 void* dynlib_open(const std::string& rPath, std::string& rError) {
-    void* h = dlopen(rPath.c_str(), RTLD_NOW | RTLD_LOCAL);
+    // Loading the plugin a user configured (MESHIOPLUSPLUS_PLUGIN_PATH) is this
+    // function's purpose: the path is the caller's, by design (roadmap 9.4.1).
+    void* h = dlopen(rPath.c_str(), RTLD_NOW | RTLD_LOCAL);  // NOSONAR
     if (!h) {
         const char* p_msg = dlerror();
         rError = p_msg ? p_msg : "dlopen failed";

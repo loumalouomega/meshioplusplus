@@ -18,6 +18,8 @@ integration point when ``field_data["marc:layout:<name>"]`` says so.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from .._common import warn
@@ -39,7 +41,7 @@ _NODAL_IDS = {"Displacement": 1, "Reaction Force": 5}
 def _e13(x):
     """Fortran ``e13.6``: `` 0.123457E+01`` (NaN and infinities as text)."""
     x = float(x)
-    if x != x:
+    if math.isnan(x):
         return f"{'NaN':>{_W}}"
     if x in (float("inf"), float("-inf")):
         return f"{'inf' if x > 0 else '-inf':>{_W}}"

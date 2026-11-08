@@ -1518,8 +1518,11 @@ HexDualMesh hds_dual(const HdsPrimal& rM, const LinearOctree& rTree) {
                 }
             std::array<int, 8> seen{};
             for (std::size_t c = 0; c < 8 && ok; ++c) {
-                if (label[c] < 0 || label[c] > 7 || deg[c] != 3 ||
-                    seen[static_cast<std::size_t>(label[c])]++) {
+                if (label[c] < 0 || label[c] > 7 || deg[c] != 3) {
+                    ok = false;
+                    break;
+                }
+                if (seen[static_cast<std::size_t>(label[c])]++ != 0) {
                     ok = false;
                     break;
                 }

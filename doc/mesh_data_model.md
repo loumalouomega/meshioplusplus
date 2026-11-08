@@ -131,3 +131,9 @@ Only populated when reading Gmsh files that contain a `$Periodic` section. The v
 ```
 
 Roundtrips back into a Gmsh file correctly when passed through `meshioplusplus.gmsh.write`.
+
+## Threads
+
+A Python `Mesh` is a plain Python object: the binding converts it into a C++ mesh of its own for each call, so calls running in several threads never share one ([threads and the GIL](./architecture.md#threads-and-the-gil)). For C++ code that shares a `meshioplusplus::Mesh` between threads, the contract is that of a standard container: any number of threads may read a `const Mesh` at once, and a thread that changes it needs it to itself.
+
+With the default MESHIO backend that holds for every accessor, the sorted data names included: `PointDataNames()`, `CellDataNames()` and `FieldDataNames()` sort the names on each call and keep nothing, so a direct write to the public data maps shows at once (`InvalidateNameCaches()` is kept for existing callers and does nothing). The NATIVE and KRATOS backends build some caches on the first `const` call (the sorted names of `detail::NamedItems`, NATIVE's `GlobalConnectivity()`, KRATOS's `GetModelPart()`), so with them make that first call before the threads start. A C API handle is not thread-safe, though distinct handles may be used from distinct threads ([C API](./c_api.md)).

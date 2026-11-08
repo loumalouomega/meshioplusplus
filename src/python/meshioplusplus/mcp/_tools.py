@@ -35,6 +35,7 @@ from __future__ import annotations
 import copy
 import inspect
 import json
+import math
 import os
 import pathlib
 import re
@@ -312,7 +313,7 @@ def _sanitize(obj, max_array, preview, stats):
     if obj is None or isinstance(obj, (bool, int, str)):
         return obj
     if isinstance(obj, float):
-        if obj != obj or obj in (float("inf"), float("-inf")):
+        if not math.isfinite(obj):
             stats["replaced"] += 1
             return None
         return obj

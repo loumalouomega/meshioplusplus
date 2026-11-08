@@ -1135,9 +1135,23 @@ class SeriesWriter:
 
 _DAT_STEP_RE = re.compile(r"\s*S\s+T\s+E\s+P\s+(\d+)")
 _DAT_INCREMENT_RE = re.compile(r"\s*INCREMENT\s+(\d+)")
+# The tail of a section banner, searched for: the quantity is what precedes it.
+# Searching from the literal "(" keeps the match linear, where a lazy quantity
+# group overlapping the whitespace around it backtracked on a long line.
 _DAT_SECTION_RE = re.compile(
-    r"\s*(\S.*?)\s*\(([^)]*)\)\s+for set\s+(\S+)\s+and time\s+([-+0-9.EeDd]+)\s*$"
+    r"\(([^)]*)\)\s+for set\s+(\S+)\s+and time\s+([-+0-9.EeDd]+)\s*$"
 )
+
+
+def _dat_section(line):
+    """``(quantity, columns, set, time)`` of a section banner, else ``None``."""
+    m = _DAT_SECTION_RE.search(line)
+    if m is None:
+        return None
+    quantity = line[: m.start()].strip()
+    if not quantity:
+        return None
+    return (quantity,) + m.groups()
 
 
 def read_dat(filename):
@@ -1180,11 +1194,11 @@ def read_dat(filename):
             increment = _int(m.group(1), "an INCREMENT banner")
             i += 1
             continue
-        m = _DAT_SECTION_RE.match(line)
-        if not m:
+        section = _dat_section(line)
+        if section is None:
             i += 1
             continue
-        quantity, cols_text, set_name, time_text = m.groups()
+        quantity, cols_text, set_name, time_text = section
         cols = [c.strip() for c in cols_text.split(",")]
         kind = "element" if cols[:2] == ["elem", "integ.pnt."] else "node"
         components = cols[2:] if kind == "element" else cols

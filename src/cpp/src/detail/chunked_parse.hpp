@@ -146,9 +146,8 @@ std::size_t parse_tokens(std::string_view Text, std::size_t Begin, std::size_t C
                     return;
                 std::size_t index = first[c];
                 for_each_token(Text, cuts[c], cuts[c + 1], [&](std::size_t b, std::size_t e) {
-                    if (refused.load(std::memory_order_relaxed) ||
-                        !rParse(Text.substr(b, e - b), index)) {
-                        refused.store(true, std::memory_order_relaxed);
+                    if (refused.load() || !rParse(Text.substr(b, e - b), index)) {
+                        refused.store(true);
                         return false;
                     }
                     if (++index == Count) {

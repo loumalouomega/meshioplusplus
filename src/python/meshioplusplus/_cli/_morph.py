@@ -51,7 +51,7 @@ def morph_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json({"output": args.outfile, **report})
-        return 0
+        return
     text = (
         f"morphed: {report['num_constrained']} constrained, {report['num_free']} free "
         f"point(s); largest displacement {report['max_displacement']:.9g}"
@@ -59,4 +59,3 @@ def morph_cmd(args):
     if report["num_inverted"]:
         text += f"; {report['num_inverted']} inverted cell(s)"
     print(text)
-    return 0

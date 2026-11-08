@@ -878,7 +878,7 @@ constexpr std::int64_t frd_max_small = 99999;
 std::string frd_e12(double X) {
     char buf[48];
     detail::snprintf_c(buf, sizeof(buf), "%12.5E", X);
-    if (std::strlen(buf) > 12) {
+    if (strnlen(buf, sizeof(buf)) > 12) {
         if (std::fabs(X) >= 1.0)
             throw WriteError("CalculiX FRD: " + std::string(buf) + " does not fit an E12.5 field");
         detail::snprintf_c(buf, sizeof(buf), "%12.5E", 0.0);
@@ -940,7 +940,7 @@ std::string frd_time_text(double Value) {
     char buf[64];
     for (int decimals = 9; decimals >= 0; --decimals) {
         detail::snprintf_c(buf, sizeof(buf), "%12.*f", decimals, Value);
-        if (std::strlen(buf) == 12)
+        if (strnlen(buf, sizeof(buf)) == 12)
             return buf;
     }
     return frd_e12(Value);

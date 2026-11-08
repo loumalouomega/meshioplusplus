@@ -336,7 +336,8 @@ SurfaceDistanceResult distance_to_surface(const Mesh& rQuery, const Mesh& rSurfa
         for (const auto cb : result.mMesh.CellRange()) {
             const std::size_t ncells = cb.NumCells();
             NDArray b = NDArray::Uninit(rFlat.Dtype(), {ncells});
-            const std::size_t width = rFlat.Nbytes() / (rFlat.Size() == 0 ? 1 : rFlat.Size());
+            const std::size_t count = rFlat.Size();
+            const std::size_t width = rFlat.Nbytes() / (count == 0 ? 1 : count);
             std::memcpy(b.Data(), rFlat.Data() + base * width, ncells * width);
             blocks.push_back(std::move(b));
             base += ncells;

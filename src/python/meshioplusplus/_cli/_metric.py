@@ -42,9 +42,8 @@ def metric_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json({"output": args.outfile, **report})
-        return 0
+        return
     print(
         f"metric complexity {report['complexity_before']:.6g} -> "
         f"{report['complexity_after']:.6g}; {report['num_graded']} point(s) graded"
     )
-    return 0

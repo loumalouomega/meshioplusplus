@@ -102,7 +102,7 @@ def periodic_cmd(args):
                 "max_residual": report["max_residual"],
             }
         )
-        return 0
+        return
     print(f"periodic pairs {args.slave} -> {args.master}: {len(pairs)}")
     print(f"  unmatched slave nodes: {len(report['unmatched'])}")
     print(f"  fixed points:          {report['num_fixed']}")
@@ -112,4 +112,3 @@ def periodic_cmd(args):
             print(f"  {s} -> {m}")
         if len(pairs) > 20:
             print(f"  ... ({len(pairs) - 20} more; use --output or --json)")
-    return 0

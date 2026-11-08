@@ -156,16 +156,24 @@ bool MusicPlayer::Start(std::string& rMessage) {
         return false;
     }
     std::error_code ec;
-    mWavPath = (std::filesystem::temp_directory_path(ec) /
-                ("meshioplusplus_music_" + std::to_string(static_cast<long>(
+    const std::filesystem::path tmp =
+        std::filesystem::temp_directory_path(ec);  // NOSONAR(cpp:S5443): see below
 #ifdef _WIN32
-                                                             GetCurrentProcessId()
-#else
-                                                             getpid()
-#endif
-                                                                 )) +
-                 ".wav"))
+    // The temporary directory is the user's own on Windows.
+    mWavPath = (tmp / ("meshioplusplus_music_" +
+                       std::to_string(static_cast<long>(GetCurrentProcessId())) + ".wav"))
                    .string();
+#else
+    // A private directory (mkdtemp: exclusive, mode 0700), so another user
+    // cannot place a file or a link at the name the loop is written to.
+    std::string dir = (tmp / "meshioplusplus_music_XXXXXX").string();
+    if (mkdtemp(dir.data()) == nullptr) {
+        rMessage = "music: cannot create a temporary directory for the loop";
+        return false;
+    }
+    mWavDir = dir;
+    mWavPath = (std::filesystem::path(dir) / "loop.wav").string();
+#endif
     Regenerate();
     mStarted = true;
     if (!Launch()) {
@@ -222,6 +230,8 @@ void MusicPlayer::Stop() {
     if (!mWavPath.empty()) {
         std::error_code ec;
         std::filesystem::remove(mWavPath, ec);
+        if (!mWavDir.empty())
+            std::filesystem::remove(mWavDir, ec);
     }
 }
 
@@ -258,7 +268,9 @@ bool MusicPlayer::Launch() {
             dup2(null, STDOUT_FILENO);
             dup2(null, STDERR_FILENO);
         }
-        execv(mPlayerPath.c_str(), argv.data());
+        // The player music_find_player found: a fixed name searched on PATH
+        // (or the MESHIOPLUSPLUS_MUSIC_PLAYERS test hook), never a session file.
+        execv(mPlayerPath.c_str(), argv.data());  // NOSONAR(cppsecurity:S2076): see above
         _exit(127);
     }
     mPid = static_cast<long>(pid);
@@ -291,6 +303,8 @@ void MusicPlayer::Stop() {
     if (!mWavPath.empty()) {
         std::error_code ec;
         std::filesystem::remove(mWavPath, ec);
+        if (!mWavDir.empty())
+            std::filesystem::remove(mWavDir, ec);
     }
 }
 

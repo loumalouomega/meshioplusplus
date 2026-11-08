@@ -1195,7 +1195,7 @@ FilwItem filw_i(std::int64_t V) {
 }
 
 FilwItem filw_d(double V) {
-    if (V != V || std::isinf(V))
+    if (!std::isfinite(V))
         filw_fail("a value is not finite");
     if (V != 0.0 && !(std::fabs(V) >= 1e-99 && std::fabs(V) < 1e100))
         filw_fail("a value is outside the range a D22.15 item holds");
@@ -1769,7 +1769,7 @@ std::vector<double> filw_trim(const double* pValues, std::size_t N) {
     while (!v.empty() && v.back() != v.back())
         v.pop_back();
     for (double& x : v)
-        if (x != x)
+        if (std::isnan(x))
             x = 0.0;
     return v;
 }

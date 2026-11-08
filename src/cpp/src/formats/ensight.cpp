@@ -490,16 +490,16 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
                 joined += (i ? " " : "") + toks[i];
             info.mConstants.emplace_back(joined, detail::parse_double(toks.back()));
         } else if (section == "VARIABLE") {
-            static const char* kKinds[] = {
+            static constexpr std::string_view kKinds[] = {
                 "scalar per node:",         "vector per node:",        "tensor symm per node:",
                 "tensor asym per node:",    "scalar per element:",     "vector per element:",
                 "tensor symm per element:", "tensor asym per element:"};
-            for (const char* kind : kKinds) {
-                if (!ensight_starts_with(line, kind))
+            for (const std::string_view kind : kKinds) {
+                if (line.compare(0, kind.size(), kind) != 0)
                     continue;
-                const std::string kind_str(kind, std::strlen(kind) - 1);  // drop trailing ':'
+                const std::string kind_str(kind.substr(0, kind.size() - 1));  // drop trailing ':'
                 const std::vector<std::string> toks =
-                    ensight_tokens_after_leading_ints(line.substr(std::strlen(kind)));
+                    ensight_tokens_after_leading_ints(line.substr(kind.size()));
                 if (toks.size() < 2)
                     throw ReadError("EnSight: malformed '" + kind_str + "' line: " + line);
                 EnsightVariableEntry entry;

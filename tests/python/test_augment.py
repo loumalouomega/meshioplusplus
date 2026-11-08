@@ -56,7 +56,8 @@ def test_an_integer_cell_array_is_never_rotated():
 # --------------------------------------------------------------------------- #
 def test_a_draw_is_a_pure_function_of_seed_epoch_and_index():
     aug = Augmentation(rotation=True, scale=True, translation=True, seed=7)
-    assert aug.params(epoch=2, index=5) == aug.params(epoch=2, index=5)
+    first = aug.params(epoch=2, index=5)
+    assert aug.params(epoch=2, index=5) == first
     assert aug.params(epoch=2, index=5) != aug.params(epoch=3, index=5)
     assert aug.params(epoch=2, index=5) != aug.params(epoch=2, index=6)
     assert aug.params(epoch=2, index=5) != Augmentation(

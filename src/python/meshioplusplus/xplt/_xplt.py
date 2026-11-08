@@ -690,7 +690,7 @@ def _read_state(state, dictionary, mesh, file_conn, wanted, surfaces=(), edges=(
                         need = width if fmt == "region" else len(cells) * width
                         if len(values) < need:
                             continue
-                        for f, cell in enumerate(cells):
+                        for slot, cell in enumerate(cells):
                             if cell < 0:
                                 continue
                             landed = True
@@ -698,7 +698,7 @@ def _read_state(state, dictionary, mesh, file_conn, wanted, surfaces=(), edges=(
                             row = (
                                 values[:width]
                                 if fmt == "region"
-                                else values[f * width : (f + 1) * width]
+                                else values[slot * width : (slot + 1) * width]
                             )
                             blocks[bk][cell - bases[bk]] = row
                     # a variable on no surface (edge) of this mesh gives no array

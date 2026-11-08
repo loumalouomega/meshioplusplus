@@ -810,7 +810,10 @@ def main(argv=None):
         # verbs' names and help lines, which every parser registers.
         parser = _make_parser(only=_BY_NAME.get(name, _NO_VERB))
     args = parser.parse_args(argv)
-    return args.func(args)
+    # A handler that only reports returns None and errors leave by exception,
+    # so None is success; a check verb returns its own non-zero codes.
+    code = args.func(args)
+    return 0 if code is None else code
 
 
 def _get_version_text():

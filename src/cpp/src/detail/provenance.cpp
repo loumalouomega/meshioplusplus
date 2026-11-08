@@ -76,11 +76,11 @@ std::atomic<ProvenanceMode>& default_mode_storage() {
 }  // namespace
 
 ProvenanceMode default_provenance_mode() {
-    return default_mode_storage().load(std::memory_order_relaxed);
+    return default_mode_storage().load();
 }
 
 void set_default_provenance_mode(ProvenanceMode mode) {
-    default_mode_storage().store(mode, std::memory_order_relaxed);
+    default_mode_storage().store(mode);
 }
 
 void provenance_begin_write() {

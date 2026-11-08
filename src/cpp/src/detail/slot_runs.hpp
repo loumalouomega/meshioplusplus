@@ -358,7 +358,7 @@ bool group_facets_narrow(std::size_t NumSlots, std::size_t NumPoints, SizeOf& rS
         Key& rKey = keys[i];
         for (std::size_t j = 0; j < k; ++j) {
             if (ids[j] < 0 || static_cast<std::uint64_t>(ids[j]) >= NumPoints)
-                out_of_range.store(true, std::memory_order_relaxed);
+                out_of_range.store(true);
             rKey[j] = static_cast<std::uint32_t>(ids[j]);
         }
         for (std::size_t j = k; j < W; ++j)

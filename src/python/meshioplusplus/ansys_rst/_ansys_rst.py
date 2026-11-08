@@ -622,9 +622,7 @@ class _Model:
             for (name, is_nodes), ids in merged["components"].items()
         ]
         self.deck = merged
-        self.mesh, self.node_index, self.locs = _build(
-            merged, lenient, _LABEL, locations=True
-        )
+        self.mesh, self.node_index, self.locs = _build(merged, lenient, _LABEL)
         self.angles = np.array(merged["angles"], dtype=np.float64).reshape(-1, 3)
 
     def points_of(self, numbers):

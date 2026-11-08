@@ -1,3 +1,5 @@
+import math
+
 from .._helpers import read, write
 from .._quality import attach_quality, compute_quality
 from ._common import add_io_args
@@ -21,7 +23,7 @@ def add_args(parser):
 
 
 def _format(value: float) -> str:
-    return "  n/a " if value != value else f"{value:8.4f}"  # NaN check
+    return "  n/a " if math.isnan(value) else f"{value:8.4f}"
 
 
 def quality(args):
@@ -31,7 +33,7 @@ def quality(args):
         write(args.output, attach_quality(mesh))
     if args.json:
         emit_json({k: v for k, v in report.items() if k != "cell_arrays"})
-        return 0
+        return
 
     print(f"Mesh quality report for {args.infile}")
     print(
@@ -47,5 +49,3 @@ def quality(args):
             f"  {name:<24}{_format(s['min']):>10}{_format(s['mean']):>10}"
             f"{_format(s['max']):>10}{s['count']:>10}"
         )
-
-    return 0

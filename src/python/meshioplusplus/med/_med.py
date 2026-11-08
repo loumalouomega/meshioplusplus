@@ -3,6 +3,7 @@ I/O for MED/Salome, cf.
 <https://docs.salome-platform.org/latest/dev/MEDCoupling/developer/med-file.html>.
 """
 
+import itertools
 import re
 from collections import defaultdict
 
@@ -382,7 +383,7 @@ def read(filename):
     meshes = mesh_ensemble.keys()
     if len(meshes) != 1:
         raise ReadError(f"Must only contain exactly 1 mesh, found {len(meshes)}.")
-    mesh_name = list(meshes)[0]
+    mesh_name = next(iter(meshes))
     mesh = mesh_ensemble[mesh_name]
     mesh_description = (
         mesh.attrs.get("DES", b"").decode("latin-1").strip().rstrip("\x00")
@@ -403,7 +404,7 @@ def read(filename):
             raise ReadError(
                 f"Must only contain exactly 1 time-step, found {len(time_step)}."
             )
-        mesh = mesh[list(time_step)[0]]
+        mesh = mesh[next(iter(time_step))]
 
     # Initialize data
     point_data = {}
@@ -567,7 +568,7 @@ def _families_to_point_sets(point_tags, fam_array):
         mask = fam_array == fid
         if not np.any(mask):
             continue
-        indices = np.where(mask)[0]
+        indices = np.nonzero(mask)[0]
         for name in names:
             if name not in point_sets:
                 point_sets[name] = indices
@@ -600,7 +601,7 @@ def _families_to_cell_sets(cell_tags, fam_list, n_blocks):
             mask = fam_array == fid
             if not np.any(mask):
                 continue
-            indices = np.where(mask)[0].astype(np.int32)
+            indices = np.nonzero(mask)[0].astype(np.int32)
             for name in names:
                 existing = cell_sets[name][block_idx]
                 merged = np.unique(np.concatenate([existing, indices]))
@@ -798,7 +799,7 @@ def _write_mesh_step(med_mesh, mesh, profile, write_num=True):
         med_cells.attrs.create("CGS", 1)
         med_cells.attrs.create("PFL", np.bytes_(profile))
         if cell_type in ("polygon", "polygon2"):
-            all_polygons = sum(cells_list, [])
+            all_polygons = list(itertools.chain.from_iterable(cells_list))
             all_nodes = np.concatenate([c + 1 for c in all_polygons])
             lengths = [len(c) for c in all_polygons]
             inn = np.concatenate([[1], np.cumsum(lengths) + 1])

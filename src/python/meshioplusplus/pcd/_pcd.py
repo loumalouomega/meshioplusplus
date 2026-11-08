@@ -10,6 +10,7 @@ field-by-field (struct-of-arrays) block wrapped in an LZF stream
 block, exactly what ``subsample_points`` produces.
 """
 
+import math
 import struct
 
 import numpy as np
@@ -321,7 +322,7 @@ def _collect_fields(points, point_data, point_type):
 
 def _format_ascii_value(value, type_, size):
     if type_ == "F":
-        if value != value:
+        if math.isnan(value):
             return "nan"
         return format(float(value), ".9g" if size == 4 else ".17g")
     return str(int(value))

@@ -1719,22 +1719,21 @@ bool gid_result_dim_is_legal(GidResultType type, std::size_t k) {
 }
 
 bool gid_readable(GidMode mode) {
-    switch (mode) {
-        case GidMode::Hdf5:
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
-            return true;
+    constexpr bool kHdf5 = true;
 #else
-            return false;
+    constexpr bool kHdf5 = false;
 #endif
-        case GidMode::Binary:
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
-            return true;
+    constexpr bool kZlib = true;
 #else
-            return false;
+    constexpr bool kZlib = false;
 #endif
-        default:
-            return true;  // Ascii (and Auto, which resolves to it)
-    }
+    if (mode == GidMode::Hdf5)
+        return kHdf5;
+    if (mode == GidMode::Binary)
+        return kZlib;
+    return true;  // Ascii (and Auto, which resolves to it)
 }
 
 Mesh read_gid(const std::string& rPath, const ReadOptions& rOptions) {
