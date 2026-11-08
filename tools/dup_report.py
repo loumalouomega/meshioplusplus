@@ -54,6 +54,8 @@ EXCLUDED_FILES = {
     "colormap.hpp",
     "_colormap.py",
     "_format_table.py",
+    "_pipeline_table.py",
+    "pipeline_table.hpp",
     "_schema.py",
     # Tables alone (sonar.cpd.exclusions): per-format node permutations.
     "node_order.cpp",
