@@ -90,8 +90,18 @@ inline std::shared_ptr<const BufferAllocator>& buffer_allocator_storage() {
  * it followed `NDArray::AllocBytes` taking none of a shape's dimensions (a
  * scalar's one element) and reported every write past the first element of a
  * freshly built array as out of bounds (SonarCloud cpp:S3519, roadmap 9.1.3).
+ * `MESHIOPLUSPLUS_HEAP_ALLOC` tells the compiler what `::operator new` already
+ * told it: the buffer aliases nothing, so the loops filling a new array keep
+ * their code generation (the instruction-count gate measured the difference).
  */
-MESHIOPLUSPLUS_API void* ndarray_heap_alloc(std::size_t Bytes);
+#if defined(__GNUC__)
+#define MESHIOPLUSPLUS_HEAP_ALLOC __attribute__((malloc, returns_nonnull))
+#elif defined(_MSC_VER)
+#define MESHIOPLUSPLUS_HEAP_ALLOC __declspec(restrict)
+#else
+#define MESHIOPLUSPLUS_HEAP_ALLOC
+#endif
+MESHIOPLUSPLUS_API MESHIOPLUSPLUS_HEAP_ALLOC void* ndarray_heap_alloc(std::size_t Bytes);
 /** @brief Frees a buffer `ndarray_heap_alloc` returned. */
 MESHIOPLUSPLUS_API void ndarray_heap_free(void* pPtr) noexcept;
 

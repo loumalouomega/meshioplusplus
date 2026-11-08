@@ -54,7 +54,8 @@ template <class T>
 inline std::int64_t typed_view_int(T v) {
     if constexpr (std::is_floating_point_v<T>) {
         const double d = static_cast<double>(v);
-        if (std::isnan(d))
+        // NaN as `d == d` failing, as read_int spells it (value_io.hpp).
+        if (!(d == d))  // NOSONAR(cpp:S1764): the NaN test, see above
             return 0;
         if (d >= 9223372036854775807.0)
             return std::numeric_limits<std::int64_t>::max();

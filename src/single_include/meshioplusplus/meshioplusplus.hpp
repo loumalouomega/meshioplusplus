@@ -684,8 +684,18 @@ inline std::shared_ptr<const BufferAllocator>& buffer_allocator_storage() {
  * it followed `NDArray::AllocBytes` taking none of a shape's dimensions (a
  * scalar's one element) and reported every write past the first element of a
  * freshly built array as out of bounds (SonarCloud cpp:S3519, roadmap 9.1.3).
+ * `MESHIOPLUSPLUS_HEAP_ALLOC` tells the compiler what `::operator new` already
+ * told it: the buffer aliases nothing, so the loops filling a new array keep
+ * their code generation (the instruction-count gate measured the difference).
  */
-MESHIOPLUSPLUS_API void* ndarray_heap_alloc(std::size_t Bytes);
+#if defined(__GNUC__)
+#define MESHIOPLUSPLUS_HEAP_ALLOC __attribute__((malloc, returns_nonnull))
+#elif defined(_MSC_VER)
+#define MESHIOPLUSPLUS_HEAP_ALLOC __declspec(restrict)
+#else
+#define MESHIOPLUSPLUS_HEAP_ALLOC
+#endif
+MESHIOPLUSPLUS_API MESHIOPLUSPLUS_HEAP_ALLOC void* ndarray_heap_alloc(std::size_t Bytes);
 /** @brief Frees a buffer `ndarray_heap_alloc` returned. */
 MESHIOPLUSPLUS_API void ndarray_heap_free(void* pPtr) noexcept;
 
@@ -2186,7 +2196,9 @@ inline std::int64_t read_int(const NDArray& rA, std::size_t i) {
             // no conversion (the cast would be undefined), so they read as 0
             // and saturate, respectively.
             const double d = read_double(rA, i);
-            if (std::isnan(d))
+            // NaN as `d == d` failing, not std::isnan: GCC then stops inlining
+            // read_int into the hot gathers (split +8% instructions, measured).
+            if (!(d == d))  // NOSONAR(cpp:S1764): the NaN test, see above
                 return 0;
             if (d >= 9223372036854775807.0)
                 return std::numeric_limits<std::int64_t>::max();
@@ -44981,7 +44993,8 @@ template <class T>
 inline std::int64_t typed_view_int(T v) {
     if constexpr (std::is_floating_point_v<T>) {
         const double d = static_cast<double>(v);
-        if (std::isnan(d))
+        // NaN as `d == d` failing, as read_int spells it (value_io.hpp).
+        if (!(d == d))  // NOSONAR(cpp:S1764): the NaN test, see above
             return 0;
         if (d >= 9223372036854775807.0)
             return std::numeric_limits<std::int64_t>::max();
