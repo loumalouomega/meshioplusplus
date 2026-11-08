@@ -4,7 +4,7 @@ Three tools watch the quality of the code rather than its behaviour. SonarCloud 
 
 ## SonarCloud
 
-The analysis runs in its own workflow, `.github/workflows/sonarcloud.yml`, on every push to `master` and on demand (**Actions → sonarcloud → Run workflow**). It never runs on a pull request or a release tag: it is a baseline for the branch, not a gate on a review. It builds nothing and runs no tests, so a scan takes minutes rather than waiting on the hours-long instrumented `coverage` job of `ci.yml`, which a newer push to `master` used to cancel before its scan step was reached. A newer push waits for a running scan instead of cancelling it. The quality gate and the duplication density appear on [sonarcloud.io](https://sonarcloud.io/summary/new_code?id=loumalouomega_meshioplusplus) and as badges in the README.
+The analysis runs in its own workflow, `.github/workflows/sonarcloud.yml`, on every push to `master`, again when `ci.yml` finishes on `master` (to report that commit's coverage, below), and on demand (**Actions → sonarcloud → Run workflow**). It never runs on a pull request or a release tag: it is a baseline for the branch, not a gate on a review. It builds nothing and runs no tests, so a scan takes minutes rather than waiting on the hours-long instrumented `coverage` job of `ci.yml`, which a newer push to `master` used to cancel before its scan step was reached. A newer push waits for a running scan instead of cancelling it. The quality gate and the duplication density appear on [sonarcloud.io](https://sonarcloud.io/summary/new_code?id=loumalouomega_meshioplusplus) and as badges in the README.
 
 ### One-time setup
 
@@ -38,7 +38,28 @@ The C/C++ analyzer needs the exact compile command of every translation unit. Th
 cmake -S . -B build-sonar -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DMESHIOPLUSPLUS_BUILD_TESTS=ON -DMESHIOPLUSPLUS_BUILD_C_API=ON -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
 ```
 
-SonarCloud reports no coverage: nothing runs under instrumentation in this workflow. Coverage is Codecov's, uploaded by the `coverage` job.
+### Coverage
+
+Nothing runs under instrumentation in this workflow; the coverage SonarCloud shows is measured by the `coverage` job of `ci.yml`, the one Codecov reads. That job keeps its two reports as the `coverage-reports` artifact (14 days): `coverage.xml` from pytest-cov (repo-relative paths through `relative_files` in `pyproject.toml`) and `cpp-coverage-sonar.xml`, the filtered lcov tracefile converted by `tools/lcov_to_sonar.py` into SonarQube's generic coverage format, so Codecov and SonarCloud count the same lines. A scan passes whichever of the two it finds as `sonar.python.coverage.reportPaths` and `sonar.coverageReportPaths`:
+
+- the scan of a push, or a manual run, downloads the newest `coverage-reports` artifact on `master`, which belongs to an earlier commit while this one's `coverage` job is still running, so its coverage lags by up to one commit;
+- when `ci.yml` finishes on `master` (`workflow_run`), the same commit is scanned again with the reports that run measured; a run a newer push cancelled kept none, and that scan is skipped.
+
+The quality gate's *Coverage on New Code* condition is judged on the second scan. Without coverage it could never pass, which is what turned the gate red after the first analyses.
+
+```sh
+# The C++ conversion locally, from an lcov capture:
+tools/lcov_to_sonar.py cpp-coverage.info cpp-coverage-sonar.xml --root "$PWD"
+```
+
+### False positives
+
+A finding shown to be wrong is closed so the next scan does not report it again ([roadmap §9](./roadmap.md#sonarcloud-findings)), one of two ways:
+
+- **Inline**, on the reported line: `// NOSONAR(<rule>): <reason>` in C++, `# NOSONAR(<rule>): <reason>` in Python, `<!-- NOSONAR(<rule>): <reason> -->` in HTML, with a comment above when the reason needs more than a few words. SonarCloud skips every issue on a line that carries `NOSONAR`; the rule key in parentheses is for the reader. Prefer a code change that says the same thing (a guard the analyzer can follow, a local that holds a value it evaluated twice) wherever it leaves the behaviour unchanged.
+- **Once per rule**, in `sonar.issue.ignore.multicriteria` of `sonar-project.properties`, with a comment there giving the decision: when the pattern is the code's contract rather than one line's, or when an inline marker would not stay on the reported line (black reflows a long Python condition onto several).
+
+The decisions recorded per rule so far: the taint rules' path and file-content reports (`pythonsecurity:S2083`, `S6549`) in the library's top-level modules, which open what their caller names by design (the MCP server under `mcp/` is not covered and keeps its sandbox); the same in the trainer, which reads and writes the job directory the server laid out, and `S8707` on its `--spec`; and Python's floating-point equality (`python:S1244`), whose every report compares with an exact sentinel the Python reference must match the C++ core on bit for bit.
 
 ## Local duplication report
 
