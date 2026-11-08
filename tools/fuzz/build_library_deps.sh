@@ -19,20 +19,48 @@ if [ -f "$PREFIX/instrumentation.txt" ]; then
     }
     exit 0
 fi
+# fetch <archive> <sha256> <url>...: the first URL that serves the archive; the
+# checksum is checked whichever served it.
 fetch() {
-    local url=$1 archive=$2 hash=$3
+    local archive=$1 hash=$2 url
+    shift 2
     if [ ! -f "$WORK/$archive" ]; then
-        curl --fail --location --retry 3 "$url" -o "$WORK/$archive"
+        for url in "$@"; do
+            curl --fail --location --retry 3 "$url" -o "$WORK/$archive" && break
+            rm -f "$WORK/$archive"
+        done
+        [ -f "$WORK/$archive" ] || { echo "error: no URL served $archive" >&2; exit 1; }
     fi
     printf '%s  %s\n' "$hash" "$WORK/$archive" | sha256sum --check
     tar -xf "$WORK/$archive" -C "$WORK"
 }
-fetch https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz \
-    zlib-1.3.1.tar.gz 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23
-fetch https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.6/hdf5-1.14.6.tar.gz \
-    hdf5-1.14.6.tar.gz e4defbac30f50d64e1556374aa49e574417c9e72c6b1de7a4ff88c4b1bea6e9b
-fetch https://github.com/Unidata/netcdf-c/archive/refs/tags/v4.9.3.tar.gz \
-    netcdf-c-4.9.3.tar.gz 990f46d49525d6ab5dc4249f8684c6deeaf54de6fec63a187e9fb382cc0ffdff
+# fetch_tag <archive> <sha256> <url> <git-url> <tag> <commit> <dir>: the
+# checksummed archive, or, when no URL serves it, a shallow clone of <tag>
+# refused unless it is <commit> (the pins of build/deps-pins.sh). GitHub's
+# release storage has gone down on its own while clones kept working (504s
+# for hours, November 2026), and some proxies refuse codeload's tag archives.
+fetch_tag() {
+    if ! (fetch "$1" "$2" "$3"); then
+        echo "$1 unavailable, cloning $4 $5" >&2
+        rm -rf "${WORK:?}/$7"
+        git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$5" "$4" "$WORK/$7"
+        [ "$(git -C "$WORK/$7" rev-parse HEAD)" = "$6" ] || {
+            echo "error: $4 $5 is not the pinned commit $6" >&2; exit 1;
+        }
+    fi
+}
+# zlib has zlib.net's archive of the same tarball.
+fetch zlib-1.3.1.tar.gz 9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23 \
+    https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz \
+    https://zlib.net/fossils/zlib-1.3.1.tar.gz
+fetch_tag hdf5-1.14.6.tar.gz e4defbac30f50d64e1556374aa49e574417c9e72c6b1de7a4ff88c4b1bea6e9b \
+    https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.6/hdf5-1.14.6.tar.gz \
+    https://github.com/HDFGroup/hdf5.git hdf5_1.14.6 7bf340440909d468dbb3cf41f0ea0d87f5050cea \
+    hdf5-1.14.6
+fetch_tag netcdf-c-4.9.3.tar.gz 990f46d49525d6ab5dc4249f8684c6deeaf54de6fec63a187e9fb382cc0ffdff \
+    https://github.com/Unidata/netcdf-c/archive/refs/tags/v4.9.3.tar.gz \
+    https://github.com/Unidata/netcdf-c.git v4.9.3 3a6b1debf1557f07b606ce3653e44f0d711203be \
+    netcdf-c-4.9.3
 # Backported upstream maintenance fix for the bundled Unicode helper's
 # measuring pass (see tools/fuzz/patches/). Applied after every extract so
 # a reused work directory cannot keep an unpatched tree.
