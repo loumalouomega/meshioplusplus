@@ -1773,6 +1773,32 @@ meshioplusplus::MmgParameters py_mmg_parameters(const py::dict& rP, std::size_t 
     return p;
 }
 
+/// One quality metric's summary as `compute_quality` reports it: min, max,
+/// mean, count and the histogram's bins.
+py::dict core_metric_summary_dict(const meshioplusplus::QualityMetricSummary& rS) {
+    py::dict d;
+    d["min"] = rS.mMin;
+    d["max"] = rS.mMax;
+    d["mean"] = rS.mMean;
+    d["count"] = rS.mCount;
+    py::list hist;
+    for (std::int64_t h : rS.mHistogram)
+        hist.append(h);
+    d["histogram"] = hist;
+    return d;
+}
+
+/// A quality report's counts and per-metric summaries, into @p rOut.
+void core_quality_dict(py::dict& rOut, const meshioplusplus::QualityReport& rRep) {
+    rOut["num_cells"] = rRep.mNumCells;
+    rOut["num_inverted"] = rRep.mNumInverted;
+    rOut["num_degenerate"] = rRep.mNumDegenerate;
+    py::dict metrics;
+    for (const auto& entry : rRep.mMetrics)
+        metrics[py::str(entry.first)] = core_metric_summary_dict(entry.second);
+    rOut["metrics"] = metrics;
+}
+
 /// An MMG operation's report as a dict.
 py::dict py_mmg_report(const meshioplusplus::MmgReport& rR) {
     py::dict out;
@@ -1782,14 +1808,7 @@ py::dict py_mmg_report(const meshioplusplus::MmgReport& rR) {
     out["num_points_out"] = rR.mNumPointsOut;
     out["num_elements_in"] = rR.mNumElementsIn;
     out["num_elements_out"] = rR.mNumElementsOut;
-    py::dict q;
-    q["min"] = rR.mQuality.mMin;
-    q["max"] = rR.mQuality.mMax;
-    q["mean"] = rR.mQuality.mMean;
-    q["count"] = rR.mQuality.mCount;
-    q["histogram"] =
-        std::vector<std::int64_t>(rR.mQuality.mHistogram.begin(), rR.mQuality.mHistogram.end());
-    out["quality"] = q;
+    out["quality"] = core_metric_summary_dict(rR.mQuality);
     out["warnings"] = rR.mWarnings;
     return out;
 }
@@ -1846,6 +1865,25 @@ void core_frozen_flags(TFlags& rFrozen, const py::object& rIds, std::size_t num_
                                         std::to_string(id) + " is out of range");
         rFrozen[static_cast<std::size_t>(id)] = 1;
     }
+}
+
+/// Sets the distance options every distance-based binding takes, converting
+/// the names in the order the bindings always did (sign, weight, location when
+/// @p pLocation is given, watertight check), so the first bad name still names
+/// itself; the caller sets the band and the record flags it has.
+void core_distance_options(meshioplusplus::SurfaceDistanceOptions& rOptions,
+                           const std::string& rSign, const std::string& rWeight,
+                           const std::string* pLocation, const std::string& rWatertightCheck,
+                           const std::string& rSurfaceRegion, double GridCellSize,
+                           double MaxWindingWork) {
+    rOptions.mSign = meshioplusplus::sdf_sign_from_name(rSign);
+    rOptions.mWeight = meshioplusplus::sdf_weight_from_name(rWeight);
+    if (pLocation != nullptr)
+        rOptions.mLocation = meshioplusplus::sdf_location_from_name(*pLocation);
+    rOptions.mWatertightCheck = meshioplusplus::sdf_watertight_check_from_name(rWatertightCheck);
+    rOptions.mSurfaceRegion = rSurfaceRegion;
+    rOptions.mGridCellSize = GridCellSize;
+    rOptions.mMaxWindingWork = MaxWindingWork;
 }
 
 /// Sets a lattice's optional resolution, cell size and bounds, and its padding.
@@ -2313,24 +2351,7 @@ PYBIND11_MODULE(_core, m) {
             meshioplusplus::QualityReport rep =
                 core_nogil([&] { return meshioplusplus::compute_quality(cpp); });
             py::dict out;
-            out["num_cells"] = rep.mNumCells;
-            out["num_inverted"] = rep.mNumInverted;
-            out["num_degenerate"] = rep.mNumDegenerate;
-            py::dict metrics;
-            for (auto& entry : rep.mMetrics) {
-                const meshioplusplus::QualityMetricSummary& s = entry.second;
-                py::dict d;
-                d["min"] = s.mMin;
-                d["max"] = s.mMax;
-                d["mean"] = s.mMean;
-                d["count"] = s.mCount;
-                py::list hist;
-                for (std::int64_t h : s.mHistogram)
-                    hist.append(h);
-                d["histogram"] = hist;
-                metrics[py::str(entry.first)] = d;
-            }
-            out["metrics"] = metrics;
+            core_quality_dict(out, rep);
             py::dict cell_arrays;
             for (auto& entry : rep.mCellArrays) {
                 py::list lst;
@@ -4370,24 +4391,7 @@ PYBIND11_MODULE(_core, m) {
             out["num_slivers"] = r.mNumSlivers;
             out["num_untangled"] = r.mNumUntangled;
             py::dict quality;
-            quality["num_cells"] = r.mQuality.mNumCells;
-            quality["num_inverted"] = r.mQuality.mNumInverted;
-            quality["num_degenerate"] = r.mQuality.mNumDegenerate;
-            py::dict metrics;
-            for (const auto& entry : r.mQuality.mMetrics) {
-                const meshioplusplus::QualityMetricSummary& s = entry.second;
-                py::dict d;
-                d["min"] = s.mMin;
-                d["max"] = s.mMax;
-                d["mean"] = s.mMean;
-                d["count"] = s.mCount;
-                py::list hist;
-                for (std::int64_t h : s.mHistogram)
-                    hist.append(h);
-                d["histogram"] = hist;
-                metrics[py::str(entry.first)] = d;
-            }
-            quality["metrics"] = metrics;
+            core_quality_dict(quality, r.mQuality);
             out["quality"] = quality;
             py::list timings;
             for (const auto& t : r.mTimings)
@@ -4480,14 +4484,9 @@ PYBIND11_MODULE(_core, m) {
             [[maybe_unused]] auto& refs = surface_in.mRefs;
             auto& surface = surface_in.mMesh;
             meshioplusplus::SurfaceDistanceOptions options;
-            options.mSign = meshioplusplus::sdf_sign_from_name(sign);
-            options.mWeight = meshioplusplus::sdf_weight_from_name(weight);
+            core_distance_options(options, sign, weight, nullptr, watertight_check, surface_region,
+                                  grid_cell_size, max_winding_work);
             options.mBand = band;
-            options.mWatertightCheck =
-                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
-            options.mSurfaceRegion = surface_region;
-            options.mGridCellSize = grid_cell_size;
-            options.mMaxWindingWork = max_winding_work;
             meshioplusplus_py::PyMeshRefs qrefs;
             py::array contiguous = meshioplusplus_py::ensure_contiguous(points, qrefs);
             meshioplusplus::NDArray query = meshioplusplus_py::view_from_numpy(contiguous);
@@ -4512,17 +4511,11 @@ PYBIND11_MODULE(_core, m) {
             [[maybe_unused]] auto& srefs = surface_in.mRefs;
             auto& surface = surface_in.mMesh;
             meshioplusplus::SurfaceDistanceOptions options;
-            options.mSign = meshioplusplus::sdf_sign_from_name(sign);
-            options.mWeight = meshioplusplus::sdf_weight_from_name(weight);
-            options.mLocation = meshioplusplus::sdf_location_from_name(location);
+            core_distance_options(options, sign, weight, &location, watertight_check,
+                                  surface_region, grid_cell_size, max_winding_work);
             options.mBand = band;
             options.mRecordClosestCell = record_closest_cell;
             options.mRecordInside = record_inside;
-            options.mWatertightCheck =
-                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
-            options.mSurfaceRegion = surface_region;
-            options.mGridCellSize = grid_cell_size;
-            options.mMaxWindingWork = max_winding_work;
             meshioplusplus::SurfaceDistanceResult r = core_nogil(
                 [&] { return meshioplusplus::distance_to_surface(query, surface, options); });
             py::dict out;
@@ -4603,17 +4596,11 @@ PYBIND11_MODULE(_core, m) {
             options.mBandCells = band_cells;
             options.mRecordLevels = record_levels;
             options.mMaxCells = max_cells;
-            options.mDistance.mSign = meshioplusplus::sdf_sign_from_name(sign);
-            options.mDistance.mWeight = meshioplusplus::sdf_weight_from_name(weight);
-            options.mDistance.mLocation = meshioplusplus::sdf_location_from_name(location);
+            core_distance_options(options.mDistance, sign, weight, &location, watertight_check,
+                                  surface_region, grid_cell_size, max_winding_work);
             options.mDistance.mBand = band;
             options.mDistance.mRecordClosestCell = record_closest_cell;
             options.mDistance.mRecordInside = record_inside;
-            options.mDistance.mWatertightCheck =
-                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
-            options.mDistance.mSurfaceRegion = surface_region;
-            options.mDistance.mGridCellSize = grid_cell_size;
-            options.mDistance.mMaxWindingWork = max_winding_work;
             meshioplusplus::SdfResult r =
                 core_nogil([&] { return meshioplusplus::compute_sdf(surface, options); });
             py::dict out;
@@ -4657,13 +4644,8 @@ PYBIND11_MODULE(_core, m) {
             options.mMaxCells = max_cells;
             options.mMaxTets = max_tets;
             options.mWarpFraction = warp_fraction;
-            options.mDistance.mSign = meshioplusplus::sdf_sign_from_name(sign);
-            options.mDistance.mWeight = meshioplusplus::sdf_weight_from_name(weight);
-            options.mDistance.mWatertightCheck =
-                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
-            options.mDistance.mSurfaceRegion = surface_region;
-            options.mDistance.mGridCellSize = grid_cell_size;
-            options.mDistance.mMaxWindingWork = max_winding_work;
+            core_distance_options(options.mDistance, sign, weight, nullptr, watertight_check,
+                                  surface_region, grid_cell_size, max_winding_work);
             meshioplusplus::RemeshVolumeResult r =
                 core_nogil([&] { return meshioplusplus::remesh_volume(cpp, options); });
             py::dict out;
