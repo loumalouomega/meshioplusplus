@@ -1840,81 +1840,17 @@ constexpr Nh5wCard kNh5wCards[] = {
 };
 constexpr std::size_t kNh5wNumCards = sizeof(kNh5wCards) / sizeof(kNh5wCards[0]);
 
-std::size_t nh5w_card_index(std::string_view Name) {
-    for (std::size_t i = 0; i < kNh5wNumCards; ++i)
-        if (Name == kNh5wCards[i].mName)
-            return i;
-    return kNh5wNumCards;
-}
-
 /// The columns of a row's card fields: a CBAR's X1..X3, G0, PA, PB and W1A..W3B (12), a CELAS2's
 /// K, GE and S, a CDAMP2's B (the card's first columns).
 constexpr std::size_t kNh5wBarWidth = 12;
 
-struct Nh5wBlock {
-    std::size_t mIndex = 0;
-    std::size_t mCount = 0;
-    std::size_t mNodes = 0;
-    std::vector<std::int64_t> mConn;  // 0-based, mCount x mNodes
-    std::vector<std::int64_t> mEids;
-    std::vector<std::int64_t> mPids;
-    std::vector<std::size_t> mCards;
-    std::vector<std::int64_t> mComps;  // two per cell: a spring's or damper's components
-    std::vector<double> mBar;          // kNh5wBarWidth per cell
-};
+using Nh5wBlock = detail::NastranWriteBlock;
+using Nh5wRow = detail::NastranWriteRow;
 
-struct Nh5wRow {
-    std::int64_t mEid;
-    std::size_t mBlock;
-    std::size_t mRow;
-};
+using Nh5wValues = detail::NastranValues;
 
-std::int64_t nh5w_ptube_pid(const std::string& rName) {
-    static const std::string prefix = "PTUBE_";
-    if (rName.size() <= prefix.size() || rName.compare(0, prefix.size(), prefix) != 0)
-        return -1;
-    std::int64_t pid = 0;
-    for (std::size_t i = prefix.size(); i < rName.size(); ++i) {
-        if (rName[i] < '0' || rName[i] > '9' || pid > 100000000000000000)
-            return -1;
-        pid = pid * 10 + (rName[i] - '0');
-    }
-    return pid;
-}
-
-using Nh5wValues = std::map<std::pair<std::string, std::int64_t>, std::map<std::string, double>>;
-
-/// `{(card, id): {member: value}}` from the `nastran:<CARD>_<id>:<MEMBER>` field data; keys
-/// that name no card or member here are left alone.
 Nh5wValues nh5w_property_values(const Mesh& rMesh) {
-    Nh5wValues out;
-    for (const std::string& name : rMesh.FieldDataNames()) {
-        if (name.rfind("nastran:", 0) != 0)
-            continue;
-        const std::size_t colon = name.rfind(':');
-        const std::size_t under = name.rfind('_', colon);
-        if (colon <= 8 || under == std::string::npos || under < 8 || under + 1 >= colon)
-            continue;
-        const std::string card = name.substr(8, under - 8);
-        const std::string member = name.substr(colon + 1);
-        const std::string digits = name.substr(under + 1, colon - under - 1);
-        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 15)
-            continue;
-        for (const Nh5ValueCard& c : nh5_value_cards()) {
-            if (card != c.mCard)
-                continue;
-            for (const Nh5Member& m : c.mMembers)
-                if (member == m.mName) {
-                    const NDArray& a = rMesh.FieldData(name);
-                    if (a.Size() != 1)
-                        nh5w_fail("'" + name + "' must hold one value");
-                    out[{card, std::stoll(digits)}][member] =
-                        m.mInt ? static_cast<double>(detail::Int64View(a).Data()[0])
-                               : detail::DoubleView(a).Data()[0];
-                }
-        }
-    }
-    return out;
+    return detail::nastran_property_values(rMesh, nh5_value_cards(), "Nastran HDF5");
 }
 
 /// The PCOMP scalars the field data gives (`Z0`, `NSM`, `SB`, `FT`, `TREF`, `GE`), by id.
@@ -1945,39 +1881,7 @@ Nh5wValues nh5w_pcomp_values(const Mesh& rMesh) {
     return out;
 }
 
-using Nh5wArrays = std::map<std::int64_t, std::map<std::string, std::vector<double>>>;
-
-/// `nastran:PBEAM_<id>:<MEMBER>` field data by id, each member flattened.
-Nh5wArrays nh5w_beam_arrays(const Mesh& rMesh) {
-    const std::string prefix = "nastran:PBEAM_";
-    Nh5wArrays out;
-    for (const std::string& name : rMesh.FieldDataNames()) {
-        if (name.rfind(prefix, 0) != 0)
-            continue;
-        const std::size_t colon = name.find(':', prefix.size());
-        if (colon == std::string::npos || colon == prefix.size())
-            continue;
-        const std::string digits = name.substr(prefix.size(), colon - prefix.size());
-        const std::string member = name.substr(colon + 1);
-        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 15)
-            continue;
-        if (member.empty() ||
-            member.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != std::string::npos)
-            continue;
-        const NDArray& a = rMesh.FieldData(name);
-        std::vector<double> values(a.Size());
-        if (a.Dtype() == DType::Int64) {
-            const detail::Int64View view(a);
-            for (std::size_t i = 0; i < values.size(); ++i)
-                values[i] = static_cast<double>(view.Data()[i]);
-        } else {
-            const detail::DoubleView view(a);
-            std::copy(view.Data(), view.Data() + values.size(), values.begin());
-        }
-        out[std::stoll(digits)][member] = std::move(values);
-    }
-    return out;
-}
+using Nh5wArrays = detail::NastranArrays;
 
 /// The mesh as the file holds it: GRIDs, element cards and properties.
 class Nh5wModel {
@@ -1988,7 +1892,7 @@ public:
         for (auto& [key, members] : nh5w_pcomp_values(rMesh))
             mValues[key].insert(members.begin(), members.end());
         mPlies = detail::nastran_plies(rMesh, "Nastran HDF5");
-        mBeams = nh5w_beam_arrays(rMesh);
+        mBeams = detail::nastran_named_arrays(rMesh, "PBEAM");
         // MAT5, MAT8 and MAT9 values have no table here: their ids are MAT1s.
         for (const std::string& name : rMesh.FieldDataNames())
             for (const char* card : {"MAT5", "MAT8", "MAT9"}) {
@@ -2014,14 +1918,7 @@ public:
                 for (std::size_t k = 0; k < 3 && k < dim; ++k)
                     mPoints[3 * i + k] = view.Data()[i * dim + k];
         }
-        std::set<std::int64_t> ptube;
-        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
-            const std::int64_t pid = nh5w_ptube_pid(rMesh.Region(i).mName);
-            if (pid >= 0)
-                ptube.insert(pid);
-        }
-        const bool have_eid = rMesh.HasCellData("nastran:eid");
-        const bool have_pid = rMesh.HasCellData("nastran:pid");
+        const std::set<std::int64_t> ptube = detail::nastran_region_pids(rMesh, "PTUBE");
         const bool have_card = rMesh.HasCellData("nastran:card");
         std::int64_t sequential = 1;
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
@@ -2033,40 +1930,7 @@ public:
                 continue;
             }
             Nh5wBlock blk;
-            blk.mIndex = b;
-            blk.mCount = cb.NumCells();
-            blk.mNodes = cb.NodesPerCell();
-            if (blk.mCount > 0 && blk.mNodes != spec->mNodes)
-                nh5w_fail("a '" + cb.Type() + "' block needs " + std::to_string(spec->mNodes) +
-                          " nodes per cell");
-            const detail::Int64View conn(cb.Conn());
-            blk.mConn.assign(conn.Data(), conn.Data() + blk.mCount * blk.mNodes);
-            for (const std::int64_t node : blk.mConn)
-                if (node < 0 || static_cast<std::size_t>(node) >= mNpoints)
-                    nh5w_fail("a '" + cb.Type() +
-                              "' cell refers to a point the mesh does not have");
-            blk.mEids.resize(blk.mCount);
-            blk.mPids.resize(blk.mCount);
-            if (have_eid) {
-                const NDArray& a = rMesh.CellData("nastran:eid", b);
-                if (a.Size() != blk.mCount)
-                    nh5w_fail("'nastran:eid' must have one value per cell");
-                const detail::Int64View view(a);
-                blk.mEids.assign(view.Data(), view.Data() + blk.mCount);
-            } else {
-                for (std::size_t i = 0; i < blk.mCount; ++i)
-                    blk.mEids[i] = sequential + static_cast<std::int64_t>(i);
-            }
-            sequential += static_cast<std::int64_t>(blk.mCount);
-            if (have_pid) {
-                const NDArray& a = rMesh.CellData("nastran:pid", b);
-                if (a.Size() != blk.mCount)
-                    nh5w_fail("'nastran:pid' must have one value per cell");
-                const detail::Int64View view(a);
-                blk.mPids.assign(view.Data(), view.Data() + blk.mCount);
-            } else {
-                blk.mPids.assign(blk.mCount, spec->mPid);
-            }
+            detail::nastran_fill_block(rMesh, b, *spec, mNpoints, sequential, "Nastran HDF5", blk);
             std::vector<std::int64_t> codes;
             if (have_card) {
                 const NDArray& a = rMesh.CellData("nastran:card", b);
@@ -2088,33 +1952,34 @@ public:
                         mUnwritten.insert(detail::nastran_card_name(codes[i]));
                     } else if (!detail::nastran_block_holds(cb.Type(), name)) {
                         nh5w_fail("a '" + cb.Type() + "' block cannot hold " + name + " cards");
-                    } else if (nh5w_card_index(name) == kNh5wNumCards) {
+                    } else if (detail::nastran_card_index(kNh5wCards, name) == kNh5wNumCards) {
                         keep[i] = false;  // a card with no table here
                         mUnwritten.insert(name);
                     } else {
-                        blk.mCards[i] = nh5w_card_index(name);
+                        blk.mCards[i] = detail::nastran_card_index(kNh5wCards, name);
                     }
                 } else if (have_card && codes[i] == 31) {
                     // A quad is a CSHEAR; no other cell type holds one.
                     if (cb.Type() == "quad") {
-                        blk.mCards[i] = nh5w_card_index("CSHEAR");
+                        blk.mCards[i] = detail::nastran_card_index(kNh5wCards, "CSHEAR");
                     } else {
                         keep[i] = false;
                         mUnwritten.insert("CSHEAR");
                     }
                 } else if (spec->mCard != nullptr) {
-                    blk.mCards[i] = nh5w_card_index(spec->mCard);
+                    blk.mCards[i] = detail::nastran_card_index(kNh5wCards, spec->mCard);
                 } else {
                     const std::int64_t pid = blk.mPids[i];
-                    blk.mCards[i] = nh5w_card_index(pid <= 0                ? "CONROD"
-                                                    : ptube.count(pid) != 0 ? "CTUBE"
-                                                                            : "CROD");
+                    blk.mCards[i] =
+                        detail::nastran_card_index(kNh5wCards, pid <= 0                ? "CONROD"
+                                                               : ptube.count(pid) != 0 ? "CTUBE"
+                                                                                       : "CROD");
                 }
             }
-            const std::size_t cbar = nh5w_card_index("CBAR");
-            const std::size_t cbeam = nh5w_card_index("CBEAM");
-            const std::size_t celas2 = nh5w_card_index("CELAS2");
-            const std::size_t cdamp2 = nh5w_card_index("CDAMP2");
+            const std::size_t cbar = detail::nastran_card_index(kNh5wCards, "CBAR");
+            const std::size_t cbeam = detail::nastran_card_index(kNh5wCards, "CBEAM");
+            const std::size_t celas2 = detail::nastran_card_index(kNh5wCards, "CELAS2");
+            const std::size_t cdamp2 = detail::nastran_card_index(kNh5wCards, "CDAMP2");
             for (std::size_t i = 0; i < blk.mCount; ++i)
                 if (keep[i] && blk.mCards[i] == cbar && !rMesh.HasCellData("nastran:x") &&
                     !rMesh.HasCellData("nastran:g0"))
@@ -2134,36 +1999,14 @@ public:
                 kept += k ? 1 : 0;
             if (kept == 0)
                 continue;
-            // A spring's or damper's components: `nastran:c1` and `nastran:c2`, else 1 at each
-            // end. A vertex's second end is ground, so 0.
-            std::vector<std::int64_t> c1(blk.mCount, 1);
-            std::vector<std::int64_t> c2(blk.mCount, 1);
-            const auto read_component = [&](const char* pName, std::vector<std::int64_t>& rValues) {
-                if (!rMesh.HasCellData(pName))
-                    return;
-                const NDArray& a = rMesh.CellData(pName, b);
-                if (a.Size() != blk.mCount)
-                    nh5w_fail(std::string("'") + pName + "' must have one value per cell");
-                const detail::Int64View view(a);
-                rValues.assign(view.Data(), view.Data() + blk.mCount);
-            };
-            read_component("nastran:c1", c1);
-            read_component("nastran:c2", c2);
+            // A spring's or damper's components (mComps).
+            detail::nastran_read_components(rMesh, b, "Nastran HDF5", blk);
             // The card fields of each row, from the cell data of its own card only.
             blk.mBar.assign(blk.mCount * kNh5wBarWidth, 0.0);
             const auto read_field = [&](const char* pName, std::initializer_list<std::size_t> Cards,
                                         std::size_t Lo, std::size_t Width) {
-                if (!rMesh.HasCellData(pName))
-                    return;
-                const NDArray& a = rMesh.CellData(pName, b);
-                if (a.Size() != blk.mCount * Width)
-                    nh5w_fail(std::string("'") + pName + "' must have " + std::to_string(Width) +
-                              " value(s) per cell");
-                const detail::DoubleView view(a);
-                for (std::size_t i = 0; i < blk.mCount; ++i)
-                    if (std::find(Cards.begin(), Cards.end(), blk.mCards[i]) != Cards.end())
-                        for (std::size_t k = 0; k < Width; ++k)
-                            blk.mBar[i * kNh5wBarWidth + Lo + k] = view.Data()[i * Width + k];
+                detail::nastran_read_field(rMesh, b, pName, Cards, Lo, Width, kNh5wBarWidth,
+                                           "Nastran HDF5", blk);
             };
             read_field("nastran:x", {cbar, cbeam}, 0, 3);
             read_field("nastran:g0", {cbar, cbeam}, 3, 1);
@@ -2173,28 +2016,8 @@ public:
             read_field("nastran:ge", {celas2}, 1, 1);
             read_field("nastran:s", {celas2}, 2, 1);
             read_field("nastran:b", {cdamp2}, 0, 1);
-            blk.mComps.resize(2 * blk.mCount);
-            for (std::size_t i = 0; i < blk.mCount; ++i) {
-                blk.mComps[2 * i] = c1[i];
-                blk.mComps[2 * i + 1] = blk.mNodes == 1 ? 0 : c2[i];
-            }
-            if (kept < blk.mCount) {
-                const auto compact = [&keep](auto& rValues, std::size_t Stride) {
-                    std::size_t to = 0;
-                    for (std::size_t i = 0; i < keep.size(); ++i)
-                        if (keep[i])
-                            for (std::size_t s = 0; s < Stride; ++s)
-                                rValues[to++] = rValues[i * Stride + s];
-                    rValues.resize(to);
-                };
-                compact(blk.mConn, blk.mNodes);
-                compact(blk.mEids, 1);
-                compact(blk.mPids, 1);
-                compact(blk.mCards, 1);
-                compact(blk.mComps, 2);
-                compact(blk.mBar, kNh5wBarWidth);
-                blk.mCount = kept;
-            }
+            if (kept < blk.mCount)
+                detail::nastran_compact_block(keep, kept, kNh5wBarWidth, blk);
             mBlocks.push_back(std::move(blk));
         }
         for (const Nh5wBlock& blk : mBlocks)
@@ -2211,14 +2034,7 @@ public:
             if (std::adjacent_find(keyed.begin(), keyed.end()) != keyed.end())
                 nh5w_fail("element ids are not unique");
         }
-        mRows.resize(kNh5wNumCards);
-        for (std::size_t bi = 0; bi < mBlocks.size(); ++bi)
-            for (std::size_t r = 0; r < mBlocks[bi].mCount; ++r)
-                mRows[mBlocks[bi].mCards[r]].push_back({mBlocks[bi].mEids[r], bi, r});
-        for (auto& rows : mRows)
-            std::stable_sort(rows.begin(), rows.end(), [](const Nh5wRow& rA, const Nh5wRow& rB) {
-                return rA.mEid < rB.mEid;
-            });
+        mRows = detail::nastran_rows_by_card(mBlocks, kNh5wNumCards);
         for (const Nh5wBlock& blk : mBlocks)
             for (std::size_t r = 0; r < blk.mCount; ++r) {
                 const Nh5wProp prop = kNh5wCards[blk.mCards[r]].mProp;
