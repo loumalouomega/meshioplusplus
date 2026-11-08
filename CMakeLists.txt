@@ -195,9 +195,13 @@ option(MESHIOPLUSPLUS_ZLIB_STATIC
 if(MESHIOPLUSPLUS_WITH_ZLIB AND NOT EMSCRIPTEN)
   if(MESHIOPLUSPLUS_ZLIB_STATIC)
     include(FetchContent)
+    # Two URLs for one checksummed tarball, tried in order: GitHub's release
+    # storage has gone down on its own (504s for hours, November 2026), and
+    # zlib.net's archive keeps every release.
     FetchContent_Declare(
       meshioplusplus_zlib
       URL https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+          https://zlib.net/fossils/zlib-1.3.1.tar.gz
       URL_HASH SHA256=9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23)
     # zlib's own CMakeLists.txt always defines both `zlib` (shared) and
     # `zlibstatic` (static) with no option to skip the shared one -- only

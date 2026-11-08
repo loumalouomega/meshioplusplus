@@ -57,7 +57,11 @@ jobs:
           - name: fallback
             opts: "-o meshioplusplus/*:with_hdf5=False -o meshioplusplus/*:with_netcdf=False -o meshioplusplus/*:with_zlib=False -o meshioplusplus/*:with_occt=False"
           - name: full
-            opts: "-o meshioplusplus/*:with_hdf5=True -o meshioplusplus/*:with_netcdf=True -o meshioplusplus/*:with_zlib=True"
+            # netcdf's DAP client (remote OPeNDAP URLs) is off: meshio++ reads
+            # local files only, and DAP pulls in libcurl and OpenSSL, built
+            # from source here, whose tarball lives on GitHub's release
+            # storage alone (an outage of it failed this job for hours).
+            opts: "-o meshioplusplus/*:with_hdf5=True -o meshioplusplus/*:with_netcdf=True -o meshioplusplus/*:with_zlib=True -o netcdf/*:dap=False"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
