@@ -17,24 +17,9 @@
 
 /* --- local helpers ------------------------------------------------------- */
 
-/* A 1-based id vector ([] for none) as a 0-based int64 buffer (mxMalloc'd,
- * auto-freed); *n receives its length (0 for [] or empty). */
-static int64_t *oc_ids_0based(const mxArray *ids, int64_t *n, const char *what) {
-    *n = 0;
-    if (mio_o_is_null(ids) || mxGetNumberOfElements(ids) == 0) return NULL;
-    return mio_o_index_vector(ids, n, what);
-}
-
 /* The cellstr argument `a` ({} / [] for none) as a name array. */
 static const char **oc_names(const mxArray *a, int64_t *n, const char *what) {
     return (const char **)mio_o_names(a, n, what);
-}
-
-/* A 3-vector of coordinates as a 1 x 3 row: one point, one row. */
-static mxArray *oc_point_row(const double *v) {
-    mxArray *out = mio_o_matrix(1, 3);
-    memcpy(mxGetPr(out), v, 3 * sizeof(double));
-    return out;
 }
 
 /* Read a string through the C getter protocol WITHOUT raising (so the caller
@@ -119,12 +104,6 @@ static mxArray *O_mio_error_size(const mxArray **a) {
     return mio_o_struct(6, names, v);
 }
 
-/* mio_o_getstring adapter: the warnings of this thread's last check_conformity call. */
-static int64_t oc_check_conformity_warnings(void *ctx, char *buf, int64_t buflen) {
-    (void)ctx;
-    return mio_check_conformity_warnings(buf, buflen);
-}
-
 /* check_conformity (roadmap 3.2.1): hanging nodes, T-junctions, partly
  * overlapping and unwelded facets. Returns struct(mesh, dimension, ...,
  * interface_mode, warnings); the .m wrapper splits the warnings. */
@@ -141,7 +120,7 @@ static mxArray *O_mio_check_conformity(const mxArray **a) {
                            ? modes[report.interface_mode]
                            : "unknown";
     /* Read the warnings before wrapping: nothing native is live while it raises. */
-    mxArray *w = mio_o_getstring(oc_check_conformity_warnings, NULL, "check_conformity");
+    mxArray *w = mio_o_getbuffer(mio_check_conformity_warnings, "check_conformity");
     const char *names[] = {"mesh",
                            "dimension",
                            "num_hanging_nodes",
@@ -167,12 +146,6 @@ static mxArray *O_mio_check_conformity(const mxArray **a) {
     return mio_o_struct(11, names, v);
 }
 
-/* mio_o_getstring adapter: the warnings of this thread's last check_tetrahedra call. */
-static int64_t oc_check_tetrahedra_warnings(void *ctx, char *buf, int64_t buflen) {
-    (void)ctx;
-    return mio_check_tetrahedra_warnings(buf, buflen);
-}
-
 /* check_tetrahedra: inverted, degenerate and overlapping tetrahedra. The mesh is
  * not changed. Returns struct(num_tetrahedra, ..., valid, warnings); `zero_volume_factor`
  * [] keeps the C default and the .m wrapper splits the warnings. */
@@ -183,7 +156,7 @@ static mxArray *O_mio_check_tetrahedra(const mxArray **a) {
     mio_check_tetrahedra_report report;
     memset(&report, 0, sizeof(report));
     mio_o_check(mio_check_tetrahedra(mio_o_mesh(a[0]), &opts, &report), "check_tetrahedra");
-    mxArray *w = mio_o_getstring(oc_check_tetrahedra_warnings, NULL, "check_tetrahedra");
+    mxArray *w = mio_o_getbuffer(mio_check_tetrahedra_warnings, "check_tetrahedra");
     const char *names[] = {"num_tetrahedra", "num_inverted", "num_degenerate", "num_overlaps",
                            "min_volume",     "max_volume",   "valid",          "warnings"};
     mxArray *v[] = {mio_o_scalar((double)report.num_tetrahedra),
@@ -249,19 +222,6 @@ static mxArray *O_mio_boundary_layer(const mxArray **a) {
 
 /* mio_o_getstring adapters: the warnings of this thread's last extrude,
  * revolve and mirror calls. */
-static int64_t oc_extrude_warnings(void *ctx, char *buf, int64_t buflen) {
-    (void)ctx;
-    return mio_extrude_warnings(buf, buflen);
-}
-static int64_t oc_revolve_warnings(void *ctx, char *buf, int64_t buflen) {
-    (void)ctx;
-    return mio_revolve_warnings(buf, buflen);
-}
-static int64_t oc_mirror_warnings(void *ctx, char *buf, int64_t buflen) {
-    (void)ctx;
-    return mio_mirror_warnings(buf, buflen);
-}
-
 /* The struct an extrude or revolve call returns. */
 static mxArray *oc_sweep_struct(mio_mesh *out, const mio_sweep_report *report, mxArray *warnings) {
     const char *names[] = {"mesh",          "num_cells",      "num_hexahedra", "num_wedges",
@@ -301,7 +261,7 @@ static mxArray *O_mio_extrude(const mxArray **a) {
     mio_sweep_report report;
     mio_mesh *out = mio_extrude(mio_o_mesh(a[0]), &opts, &report);
     if (out == NULL) mio_o_fail("extrude");
-    mxArray *w = mio_o_getstring(oc_extrude_warnings, NULL, "extrude");
+    mxArray *w = mio_o_getbuffer(mio_extrude_warnings, "extrude");
     return oc_sweep_struct(out, &report, w);
 }
 
@@ -319,7 +279,7 @@ static mxArray *O_mio_revolve(const mxArray **a) {
     mio_sweep_report report;
     mio_mesh *out = mio_revolve(mio_o_mesh(a[0]), &opts, &report);
     if (out == NULL) mio_o_fail("revolve");
-    mxArray *w = mio_o_getstring(oc_revolve_warnings, NULL, "revolve");
+    mxArray *w = mio_o_getbuffer(mio_revolve_warnings, "revolve");
     return oc_sweep_struct(out, &report, w);
 }
 
@@ -337,7 +297,7 @@ static mxArray *O_mio_mirror(const mxArray **a) {
     mio_mirror_report report;
     mio_mesh *out = mio_mirror(mio_o_mesh(a[0]), &opts, &report);
     if (out == NULL) mio_o_fail("mirror");
-    mxArray *w = mio_o_getstring(oc_mirror_warnings, NULL, "mirror");
+    mxArray *w = mio_o_getbuffer(mio_mirror_warnings, "mirror");
     const char *names[] = {"mesh",              "num_flipped_cells", "num_points_on_plane",
                            "num_dropped_cells", "num_dropped_sides", "warnings"};
     mxArray *v[] = {mio_o_wrap_mesh(out),
@@ -347,15 +307,6 @@ static mxArray *O_mio_mirror(const mxArray **a) {
                     mio_o_scalar((double)report.num_dropped_sides),
                     w};
     return mio_o_struct(6, names, v);
-}
-
-static int64_t oc_find_intersections_warnings(void *ctx, char *buf, int64_t buflen) {
-    (void)ctx;
-    return mio_find_intersections_warnings(buf, buflen);
-}
-static int64_t oc_thickness_warnings(void *ctx, char *buf, int64_t buflen) {
-    (void)ctx;
-    return mio_thickness_warnings(buf, buflen);
 }
 
 /* find_intersections(mesh, other, region, region_other, segments, max_pairs).
@@ -387,7 +338,7 @@ static mxArray *O_mio_find_intersections(const mxArray **a) {
         if (segs != NULL) mio_mesh_free(segs);
         mio_o_fail("find_intersections take_mesh");
     }
-    mxArray *w = mio_o_getstring(oc_find_intersections_warnings, NULL, "find_intersections");
+    mxArray *w = mio_o_getbuffer(mio_find_intersections_warnings, "find_intersections");
     const char *names[] = {"mesh",          "other",       "segments",     "pairs",
                            "num_pairs",     "num_triangle_pairs",          "num_coplanar",
                            "num_segments",  "num_cells_a", "num_cells_b",  "truncated",
@@ -431,7 +382,7 @@ static mxArray *O_mio_thickness(const mxArray **a) {
     mio_thickness_report r;
     mio_mesh *out = mio_thickness(mio_o_mesh(a[0]), target, &opts, &r);
     if (out == NULL) mio_o_fail("thickness");
-    mxArray *w = mio_o_getstring(oc_thickness_warnings, NULL, "thickness");
+    mxArray *w = mio_o_getbuffer(mio_thickness_warnings, "thickness");
     const char *names[] = {"mesh",      "direction", "num_cells",    "num_hit",  "num_missed",
                            "num_below", "min",       "max",          "mean",     "min_cell",
                            "min_point", "max_distance", "warnings"};
@@ -445,7 +396,7 @@ static mxArray *O_mio_thickness(const mxArray **a) {
                     mio_o_scalar(r.max),
                     mio_o_scalar(r.mean),
                     mio_o_scalar(r.min_cell < 0 ? 0.0 : (double)(r.min_cell + 1)),
-                    oc_point_row(r.min_point),
+                    mio_o_row3(r.min_point),
                     mio_o_scalar(r.max_distance),
                     w};
     return mio_o_struct(13, names, v);
@@ -643,7 +594,7 @@ static void oc_mmg_params(mio_mmg_params *p, const mxArray *hmin, const mxArray 
     p->hgrad = mio_o_double(hgrad, "hgrad");
     p->angle_detection = mio_o_double(angle_detection, "angle_detection");
     int64_t n_frozen = 0;
-    p->frozen = oc_ids_0based(frozen, &n_frozen, "frozen");
+    p->frozen = mio_o_ids_0based(frozen, &n_frozen, "frozen");
     p->num_frozen = n_frozen;
     int64_t n_required = 0;
     const char **names = oc_names(required, &n_required, "required");
@@ -914,10 +865,10 @@ static mxArray *O_mio_stats(const mxArray **a) {
                            "unsigned_volume", "num_inverted"};
     mxArray *values[] = {mio_o_scalar((double)r.num_points),
                          mio_o_scalar((double)r.num_cells),
-                         oc_point_row(r.bbox_min),
-                         oc_point_row(r.bbox_max),
-                         oc_point_row(r.extent),
-                         oc_point_row(r.centroid),
+                         mio_o_row3(r.bbox_min),
+                         mio_o_row3(r.bbox_max),
+                         mio_o_row3(r.extent),
+                         mio_o_row3(r.centroid),
                          mio_o_scalar(r.total_area),
                          mio_o_scalar(r.signed_volume),
                          mio_o_scalar(r.unsigned_volume),
@@ -1262,7 +1213,7 @@ static mxArray *O_mio_refine(const mxArray **a) {
     /* Cell indices arrive as double (exact to 2^53) or any integer class;
      * either way they are 1-based on this side. */
     int64_t n_ids = 0;
-    int64_t *ids = oc_ids_0based(a[3], &n_ids, "cells");
+    int64_t *ids = mio_o_ids_0based(a[3], &n_ids, "cells");
     if (n_ids > 0) {
         opts.cells = ids;
         opts.num_cells = n_ids;
@@ -1330,7 +1281,7 @@ static mxArray *O_mio_decimate(const mxArray **a) {
     opts.preserve_features = mio_o_bool(a[6], "preserve_features");
     opts.feature_angle = mio_o_double(a[7], "feature_angle");
     int64_t n_frozen = 0;
-    opts.frozen = oc_ids_0based(a[8], &n_frozen, "frozen");
+    opts.frozen = mio_o_ids_0based(a[8], &n_frozen, "frozen");
     opts.num_frozen = n_frozen;
 
     mio_decimate_result *r = mio_decimate_ex(mio_o_mesh(a[0]), &opts);
@@ -1367,7 +1318,7 @@ static mxArray *O_mio_decimate_volume(const mxArray **a) {
     opts.preserve_features = mio_o_bool(a[6], "preserve_features");
     opts.feature_angle = mio_o_double(a[7], "feature_angle");
     int64_t n_frozen = 0;
-    opts.frozen = oc_ids_0based(a[8], &n_frozen, "frozen");
+    opts.frozen = mio_o_ids_0based(a[8], &n_frozen, "frozen");
     opts.num_frozen = n_frozen;
 
     mio_decimate_volume_result *r = mio_decimate_volume_ex(mio_o_mesh(a[0]), &opts);

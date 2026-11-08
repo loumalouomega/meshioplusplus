@@ -553,6 +553,43 @@ mxArray *mio_o_getstring(mio_o_str_getter getter, void *ctx, const char *what) {
     return out;
 }
 
+/* mio_o_getbuffer's getter, carried through mio_o_getstring's context. */
+typedef struct {
+    mio_o_buffer_getter getter;
+} mio_o_buffer_ctx;
+
+static int64_t mio_o_buffer_adapter(void *ctx, char *buf, int64_t buflen) {
+    return ((const mio_o_buffer_ctx *)ctx)->getter(buf, buflen);
+}
+
+mxArray *mio_o_getbuffer(mio_o_buffer_getter getter, const char *what) {
+    mio_o_buffer_ctx ctx = {getter};
+    return mio_o_getstring(mio_o_buffer_adapter, &ctx, what);
+}
+
+mxArray *mio_o_row3(const double *v) {
+    mxArray *out = mio_o_matrix(1, 3);
+    memcpy(mxGetPr(out), v, 3 * sizeof(double));
+    return out;
+}
+
+mxArray *mio_o_surface_quality(const mio_surface_quality *q) {
+    const char *names[] = {"boundary_edges", "non_manifold_edges", "inconsistent_pairs",
+                           "degenerate_triangles", "watertight"};
+    mxArray *values[] = {mio_o_scalar((double)q->boundary_edges),
+                         mio_o_scalar((double)q->non_manifold_edges),
+                         mio_o_scalar((double)q->inconsistent_pairs),
+                         mio_o_scalar((double)q->degenerate_triangles),
+                         mio_o_logical(q->watertight != 0)};
+    return mio_o_struct(5, names, values);
+}
+
+int64_t *mio_o_ids_0based(const mxArray *ids, int64_t *n, const char *what) {
+    *n = 0;
+    if (mio_o_is_null(ids) || mxGetNumberOfElements(ids) == 0) return NULL;
+    return mio_o_index_vector(ids, n, what);
+}
+
 void mio_o_fill_real(double *dst, const void *data, mio_dtype dtype, size_t n, double offset) {
     if (n == 0) return;
     if (dtype == MIO_FLOAT64 && offset == 0.0) {
