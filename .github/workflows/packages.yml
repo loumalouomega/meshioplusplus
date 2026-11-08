@@ -96,7 +96,49 @@ jobs:
         # configurations are not allowed in profiles".
         run: |
           printf 'core.sources:download_urls=["origin", "https://c3i.jfrog.io/artifactory/conan-center-backup-sources/"]\n' >> "$(conan config home)/global.conf"
+          printf 'core.sources:download_cache=%s\n' "$RUNNER_TEMP/conan-sources" >> "$(conan config home)/global.conf"
           cat "$(conan config home)/global.conf"
+      - name: Seed the Conan source cache from git clones (full)
+        # ConanCenter's hdf5 and netcdf recipes download github.com's archive
+        # of a tag, which 504ed for hours (November 2026) while clones kept
+        # working, and the backup mirror answers 401. GitHub builds a tag
+        # archive with `git archive` piped through `gzip -cn`, so the same
+        # command on a clone of the tag rebuilds the archive's exact bytes.
+        # Each archive is kept only if its SHA-256 is the recipe's
+        # (conandata.yml) and stored where Conan's download cache looks for that
+        # checksum (`<download_cache>/s/<sha256>`), so Conan uses it without a
+        # download. Conan does not re-hash a cached file, hence the check here.
+        # A seed that fails or no longer matches the resolved version is
+        # skipped, leaving Conan to download as usual.
+        if: matrix.name == 'full'
+        run: |
+          dir="$RUNNER_TEMP/conan-sources/s"
+          mkdir -p "$dir"
+          seed() {  # <owner/repo> <tag> <archive prefix> <sha256>
+            local clone="$RUNNER_TEMP/seed-clone" attempt=1
+            rm -rf "$clone"
+            until git clone --quiet --bare --depth 1 --branch "$2" "https://github.com/$1.git" "$clone"; do
+              rm -rf "$clone"
+              if [ "$attempt" -ge 3 ]; then
+                echo "::warning::cloning $1 failed; Conan downloads $2 itself"
+                return 0
+              fi
+              sleep $((attempt * 30))
+              attempt=$((attempt + 1))
+            done
+            git -C "$clone" -c tar.tar.gz.command="gzip -cn" archive --format=tar.gz \
+              --prefix="$3" "$2" > "$dir/$4.tmp"
+            rm -rf "$clone"
+            if [ "$(sha256sum "$dir/$4.tmp" | cut -d' ' -f1)" = "$4" ]; then
+              mv "$dir/$4.tmp" "$dir/$4"
+              echo "seeded $1 $2"
+            else
+              rm -f "$dir/$4.tmp"
+              echo "::warning::the archive of $1 $2 rebuilt from git does not match; Conan downloads it"
+            fi
+          }
+          seed HDFGroup/hdf5 hdf5-1_14_3 hdf5-hdf5-1_14_3/ df5ee33c74d5efb59738075ef96f4201588e1f1eeb233f047ac7fd1072dee1f6
+          seed Unidata/netcdf-c v4.8.1 netcdf-c-4.8.1/ bc018cc30d5da402622bf76462480664c6668b55eb16ba205a0dfb8647161dd0
       - name: conan create (${{ matrix.name }})
         # Retried in case of genuine transient network flakiness elsewhere in
         # the dependency chain; a build failure that is our own (a real
