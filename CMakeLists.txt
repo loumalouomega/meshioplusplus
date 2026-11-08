@@ -2030,10 +2030,14 @@ option(MESHIOPLUSPLUS_BUILD_TESTS "Build the C++ GoogleTest suite" OFF)
 if(MESHIOPLUSPLUS_BUILD_TESTS)
   include(CTest)
   include(FetchContent)
+  include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MioGithubArchive.cmake")
+  set(_mio_gtest_sha256 7b42b4d6ed48810c5362c265a17faebe90dc2373c885e5216439d37927f02926)
+  mio_github_archive(_mio_gtest_archive REPO google/googletest TAG v1.15.2
+                     PREFIX googletest-1.15.2/ SHA256 ${_mio_gtest_sha256})
   FetchContent_Declare(
     googletest
-    URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
-    URL_HASH SHA256=7b42b4d6ed48810c5362c265a17faebe90dc2373c885e5216439d37927f02926)
+    URL "${_mio_gtest_archive}"
+    URL_HASH SHA256=${_mio_gtest_sha256})
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
   # Keep `cmake --install` of a tests-enabled tree from installing gtest
   # next to the C API (relevant since MESHIOPLUSPLUS_BUILD_C_API).
