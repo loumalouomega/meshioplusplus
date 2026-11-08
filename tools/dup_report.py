@@ -76,8 +76,11 @@ _CPP_KEYWORDS = frozenset(
 # window holding almost nothing else is a run of table rows, not copied code
 # (roadmap §8). One token in ten may be something else, so the windows that
 # straddle a table's declaration (``const T kName[] = {``) go with its rows.
+# The boolean and null literals of both languages count as literals: an option
+# table's ``{"name", {}, true},`` rows are a table, not code.
 _TABLE_TOKENS = frozenset(
     ("N", "S", "{", "}", "[", "]", "(", ")", ",", ":", ";", "-", "+", ".")
+    + ("true", "false", "nullptr", "True", "False", "None")
 )
 
 

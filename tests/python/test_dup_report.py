@@ -113,6 +113,13 @@ def test_table_window_rule():
     assert dup_report.is_table_window(("I",) + ("S", ",") * 5)
     assert not dup_report.is_table_window(("{", "I", ",", "N", "}"))
     assert not dup_report.is_table_window(("return", "N", ";"))
+    # An option table's rows: booleans and null are literals too.
+    assert dup_report.is_table_window(
+        ("{", "S", ",", "{", "}", ",", "true", "}", ",") * 3
+    )
+    assert dup_report.is_table_window(
+        ("(", "S", ",", "None", ",", "False", ")", ",") * 3
+    )
 
 
 def test_code_beside_a_table_still_matches(tmp_path):
