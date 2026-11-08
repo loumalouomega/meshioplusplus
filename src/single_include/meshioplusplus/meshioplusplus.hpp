@@ -127,7 +127,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 40
+#define MESHIOPLUSPLUS_ABI_VERSION 41
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -571,6 +571,45 @@ inline const std::string& kratos_geometry_name(CellType type) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/backends/kratos_names.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/export.hpp =====
+/**
+ * @file export.hpp
+ * @brief `MESHIOPLUSPLUS_API`, the visibility/import-export attribute for the
+ * installable C++ library.
+ *
+ * The C++ core targets (`meshioplusplus::core`, `meshioplusplus::core_meshio`,
+ * `::core_native`, `::core_kratos`) are built with `CXX_VISIBILITY_PRESET hidden`
+ * and `VISIBILITY_INLINES_HIDDEN ON`, so nothing is exported unless it says so.
+ * Every entity **declared in a header and defined out of line** in
+ * `src/cpp/src/` therefore needs this attribute; templates, `inline`
+ * functions and anything else the consumer's own translation unit compiles do
+ * not (and must not) carry it.
+ *
+ * A missing annotation is a *link* error for a consumer of a shared build
+ * ("undefined symbol" / "unresolved external symbol"), never a silent runtime
+ * fault -- which is what makes the annotation set verifiable rather than merely
+ * asserted. Static builds resolve everything inside the archive and are
+ * unaffected either way.
+ *
+ * The macro mirrors `MIO_API` in the C header (`bindings/c/include/`):
+ * `MESHIOPLUSPLUS_CORE_SHARED` marks "this library is/was built shared" and is
+ * attached INTERFACE by CMake so consumers inherit it, while
+ * `MESHIOPLUSPLUS_CORE_BUILDING` is PRIVATE to the library's own compilation and
+ * is what flips dllexport to dllimport on Windows.
+ */
+
+#if defined(_WIN32) && defined(MESHIOPLUSPLUS_CORE_SHARED)
+#ifdef MESHIOPLUSPLUS_CORE_BUILDING
+#define MESHIOPLUSPLUS_API __declspec(dllexport)
+#else
+#define MESHIOPLUSPLUS_API __declspec(dllimport)
+#endif
+#elif defined(__GNUC__)
+#define MESHIOPLUSPLUS_API __attribute__((visibility("default")))
+#else
+#define MESHIOPLUSPLUS_API
+#endif
+// ===== end src/cpp/include/meshioplusplus/export.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/ndarray.hpp =====
 /**
  * @file ndarray.hpp
@@ -606,6 +645,8 @@ inline const std::string& kratos_geometry_name(CellType type) {
 #include <utility>
 #include <vector>
 
+// Project includes
+
 namespace meshioplusplus {
 
 /**
@@ -635,6 +676,19 @@ inline std::shared_ptr<const BufferAllocator>& buffer_allocator_storage() {
     static std::shared_ptr<const BufferAllocator> a;
     return a;
 }
+/**
+ * @brief The default heap of an owning buffer: `::operator new` and
+ * `::operator delete`, defined out of line in `ndarray.cpp`.
+ *
+ * Out of line so a static analyzer sees an allocation of unknown extent. Inlined,
+ * it followed `NDArray::AllocBytes` taking none of a shape's dimensions (a
+ * scalar's one element) and reported every write past the first element of a
+ * freshly built array as out of bounds (SonarCloud cpp:S3519, roadmap 9.1.3).
+ */
+MESHIOPLUSPLUS_API void* ndarray_heap_alloc(std::size_t Bytes);
+/** @brief Frees a buffer `ndarray_heap_alloc` returned. */
+MESHIOPLUSPLUS_API void ndarray_heap_free(void* pPtr) noexcept;
+
 /** @brief The currently installed hook (may be null = default heap). */
 inline std::shared_ptr<const BufferAllocator> current_buffer_allocator() {
     std::lock_guard<std::mutex> lk(buffer_allocator_mutex());
@@ -714,7 +768,7 @@ public:
             return;
         mAllocator = current_buffer_allocator();
         void* p = (mAllocator && mAllocator->alloc) ? mAllocator->alloc(n, mAllocator->pUser)
-                                                    : ::operator new(n);
+                                                    : ndarray_heap_alloc(n);
         if (p == nullptr)
             throw std::bad_alloc{};
         mPtr = static_cast<std::byte*>(p);
@@ -730,7 +784,7 @@ private:
             if (mAllocator && mAllocator->free)
                 mAllocator->free(mPtr, mSize, mAllocator->pUser);
             else
-                ::operator delete(mPtr);
+                ndarray_heap_free(mPtr);
         }
         mPtr = nullptr;
         mSize = 0;
@@ -2132,7 +2186,7 @@ inline std::int64_t read_int(const NDArray& rA, std::size_t i) {
             // no conversion (the cast would be undefined), so they read as 0
             // and saturate, respectively.
             const double d = read_double(rA, i);
-            if (!(d == d))
+            if (std::isnan(d))
                 return 0;
             if (d >= 9223372036854775807.0)
                 return std::numeric_limits<std::int64_t>::max();
@@ -2461,45 +2515,6 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/mesh_api.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/export.hpp =====
-/**
- * @file export.hpp
- * @brief `MESHIOPLUSPLUS_API`, the visibility/import-export attribute for the
- * installable C++ library.
- *
- * The C++ core targets (`meshioplusplus::core`, `meshioplusplus::core_meshio`,
- * `::core_native`, `::core_kratos`) are built with `CXX_VISIBILITY_PRESET hidden`
- * and `VISIBILITY_INLINES_HIDDEN ON`, so nothing is exported unless it says so.
- * Every entity **declared in a header and defined out of line** in
- * `src/cpp/src/` therefore needs this attribute; templates, `inline`
- * functions and anything else the consumer's own translation unit compiles do
- * not (and must not) carry it.
- *
- * A missing annotation is a *link* error for a consumer of a shared build
- * ("undefined symbol" / "unresolved external symbol"), never a silent runtime
- * fault -- which is what makes the annotation set verifiable rather than merely
- * asserted. Static builds resolve everything inside the archive and are
- * unaffected either way.
- *
- * The macro mirrors `MIO_API` in the C header (`bindings/c/include/`):
- * `MESHIOPLUSPLUS_CORE_SHARED` marks "this library is/was built shared" and is
- * attached INTERFACE by CMake so consumers inherit it, while
- * `MESHIOPLUSPLUS_CORE_BUILDING` is PRIVATE to the library's own compilation and
- * is what flips dllexport to dllimport on Windows.
- */
-
-#if defined(_WIN32) && defined(MESHIOPLUSPLUS_CORE_SHARED)
-#ifdef MESHIOPLUSPLUS_CORE_BUILDING
-#define MESHIOPLUSPLUS_API __declspec(dllexport)
-#else
-#define MESHIOPLUSPLUS_API __declspec(dllimport)
-#endif
-#elif defined(__GNUC__)
-#define MESHIOPLUSPLUS_API __attribute__((visibility("default")))
-#else
-#define MESHIOPLUSPLUS_API
-#endif
-// ===== end src/cpp/include/meshioplusplus/export.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/region.hpp =====
 /**
  * @file region.hpp
@@ -3371,6 +3386,7 @@ private:
 #include <cstdlib>
 #include <iostream>
 #include <mutex>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -3436,6 +3452,35 @@ inline bool enabled(Level lvl) {
 }
 
 /**
+ * @brief @p msg with its control characters spelled out: `\n`, `\r`, and
+ * `\xHH` for the others below 0x20 and DEL (a tab is kept).
+ *
+ * A message often carries text a reader took from a file (a name, a token), so
+ * escaping keeps one call to one line: a crafted file cannot end the line and
+ * forge another, nor send terminal escape sequences (roadmap 9.4.4).
+ */
+inline std::string escape(std::string_view msg) {
+    constexpr char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(msg.size());
+    for (const char c : msg) {
+        const auto u = static_cast<unsigned char>(c);
+        if (c == '\n') {
+            out += "\\n";
+        } else if (c == '\r') {
+            out += "\\r";
+        } else if ((u < 0x20 && c != '\t') || u == 0x7f) {
+            out += "\\x";
+            out += kHex[u >> 4];
+            out += kHex[u & 0xf];
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
+/**
  * @brief Formats and writes one log line to stderr.
  *
  * Strips any directory prefix from `loc.file_name()` (keeping just the
@@ -3455,7 +3500,7 @@ inline void write(Level lvl, std::string_view msg, const detail::source_location
     if (auto p = file.find_last_of("/\\"); p != std::string_view::npos)
         file.remove_prefix(p + 1);
     std::string line = detail::format_compat("meshio {} [{}:{}] {}\n", names[static_cast<int>(lvl)],
-                                             file, rLoc.line(), msg);
+                                             file, rLoc.line(), escape(msg));
 #if defined(__cpp_lib_syncbuf)
     std::osyncstream(std::cerr) << line;
 #else
@@ -4909,6 +4954,15 @@ std::vector<typename Map::key_type> sorted_keys(const Map& rM) {
     return keys;
 }
 
+/**
+ * @brief Inserts @p rName into the sorted list @p rNames at its place, the
+ * order `sorted_keys` gives; the caller has checked that it is not there yet.
+ */
+template <class Key>
+void insert_sorted_name(std::vector<Key>& rNames, const Key& rName) {
+    rNames.insert(std::lower_bound(rNames.begin(), rNames.end(), rName), rName);
+}
+
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/map_order.hpp =====
@@ -5040,17 +5094,26 @@ struct Mesh {
     std::unordered_map<std::string, NDArray> mFieldData;
 
     /**
-     * @brief Invalidate the sorted-name caches behind `PointDataNames()` and
-     * friends.
+     * @brief Rebuild the sorted-name lists behind `PointDataNames()` and
+     * friends from the three maps.
      *
      * Unlike the NATIVE/KRATOS backends -- whose `detail::NamedItems` owns its
-     * storage and can memoize safely -- this backend's three maps are PUBLIC
-     * struct members, because `bindings/python/np_conversions.hpp` inserts into
-     * them directly (the one sanctioned exception to the uniform-API rule).
-     * **Anything that writes those maps without going through AddPointData /
-     * AddCellData / AppendCellData / AddFieldData must call this.**
+     * storage -- this backend's three maps are PUBLIC struct members, because
+     * `bindings/python/np_conversions.hpp` inserts into them directly (the one
+     * sanctioned exception to the uniform-API rule). **Anything that writes
+     * those maps without going through AddPointData / AddCellData /
+     * AppendCellData / AddFieldData must call this.**
+     *
+     * The lists are kept current where the data changes, never filled from a
+     * `const` accessor, so a `const Mesh` may be read from several threads at
+     * once (mesh data model, "Threads"). For the same reason this is not
+     * `const`: it writes the lists.
      */
-    void InvalidateNameCaches() const { mNamesDirty = true; }
+    void InvalidateNameCaches() {
+        mPointNames = detail::sorted_keys(mPointData);
+        mCellNames = detail::sorted_keys(mCellData);
+        mFieldNames = detail::sorted_keys(mFieldData);
+    }
 
     // Named groups of points / cells / cell facets (region.hpp). Kept sorted by
     // Region::Key() with canonical (sorted, de-duplicated) entries, so region
@@ -5184,41 +5247,38 @@ struct Mesh {
     }
     /** @brief Inserts or replaces a named per-point data array. */
     void AddPointData(std::string name, NDArray data) {
-        mNamesDirty = true;
-        mPointData[std::move(name)] = std::move(data);
+        const auto [it, added] = mPointData.insert_or_assign(std::move(name), std::move(data));
+        if (added)
+            detail::insert_sorted_name(mPointNames, it->first);
     }
     /** @brief Inserts or replaces a named per-cell data array list (one per block). */
     void AddCellData(std::string name, std::vector<NDArray> blocks) {
-        mNamesDirty = true;
-        mCellData[std::move(name)] = std::move(blocks);
+        const auto [it, added] = mCellData.insert_or_assign(std::move(name), std::move(blocks));
+        if (added)
+            detail::insert_sorted_name(mCellNames, it->first);
     }
     /** @brief Appends one block's array to a named cell-data list (creating it if new). */
     void AppendCellData(const std::string& rName, NDArray block) {
-        mNamesDirty = true;
-        mCellData[rName].push_back(std::move(block));
+        const auto [it, added] = mCellData.try_emplace(rName);
+        if (added)
+            detail::insert_sorted_name(mCellNames, it->first);
+        it->second.push_back(std::move(block));
     }
     /** @brief Inserts or replaces a named field-data array. */
     void AddFieldData(std::string name, NDArray data) {
-        mNamesDirty = true;
-        mFieldData[std::move(name)] = std::move(data);
+        const auto [it, added] = mFieldData.insert_or_assign(std::move(name), std::move(data));
+        if (added)
+            detail::insert_sorted_name(mFieldNames, it->first);
     }
 
-    /** @brief Fills the sorted-name caches when `mNamesDirty`. */
-    void RefreshNameCaches() const {
-        if (!mNamesDirty)
-            return;
-        mPointNames = detail::sorted_keys(mPointData);
-        mCellNames = detail::sorted_keys(mCellData);
-        mFieldNames = detail::sorted_keys(mFieldData);
-        mNamesDirty = false;
-    }
-
-    // Memoized sorted name lists. `mutable` so a const accessor can fill them;
-    // see InvalidateNameCaches() above for the one discipline they require.
-    mutable std::vector<std::string> mPointNames;
-    mutable std::vector<std::string> mCellNames;
-    mutable std::vector<std::string> mFieldNames;
-    mutable bool mNamesDirty = true;
+    // The sorted name lists of the three maps, kept current by the Add*
+    // methods and InvalidateNameCaches() above, which are the only writers.
+    std::vector<std::string> mPointNames;
+    std::vector<std::string> mCellNames;
+    std::vector<std::string> mFieldNames;
+    // Unused since the lists stopped being filled lazily (ABI 41); kept so the
+    // layout of `Mesh` does not move.
+    bool mNamesDirty = false;
 
     // --- writer-side accessors ---
 
@@ -5234,10 +5294,7 @@ struct Mesh {
     detail::CellBlockRange<Mesh> CellRange() const { return detail::CellBlockRange<Mesh>(*this); }
 
     /** @brief Point-data names in sorted order (drives on-disk field order). */
-    std::vector<std::string> PointDataNames() const {
-        RefreshNameCaches();
-        return mPointNames;
-    }
+    std::vector<std::string> PointDataNames() const { return mPointNames; }
     /** @brief Number of named point-data arrays. */
     std::size_t NumPointData() const { return mPointData.size(); }
     /** @brief Whether a point-data array named @p rName exists. */
@@ -5246,10 +5303,7 @@ struct Mesh {
     const NDArray& PointData(const std::string& rName) const { return mPointData.at(rName); }
 
     /** @brief Cell-data names in sorted order (drives on-disk field order). */
-    std::vector<std::string> CellDataNames() const {
-        RefreshNameCaches();
-        return mCellNames;
-    }
+    std::vector<std::string> CellDataNames() const { return mCellNames; }
     /** @brief Number of named cell-data array lists. */
     std::size_t NumCellData() const { return mCellData.size(); }
     /** @brief Whether a cell-data list named @p rName exists. */
@@ -5264,10 +5318,7 @@ struct Mesh {
     }
 
     /** @brief Field-data names in sorted order (drives on-disk field order). */
-    std::vector<std::string> FieldDataNames() const {
-        RefreshNameCaches();
-        return mFieldNames;
-    }
+    std::vector<std::string> FieldDataNames() const { return mFieldNames; }
     /** @brief Number of named field-data arrays. */
     std::size_t NumFieldData() const { return mFieldData.size(); }
     /** @brief Whether a field-data array named @p rName exists. */
@@ -10063,7 +10114,10 @@ inline double parse_double(const char* pFirst, const char*& rEnd) noexcept {
     // no real numeric literal exceeds.
     char buf[64];
     std::size_t n = 0;
-    const std::size_t dp_len = std::strlen(dp);
+    // Bounded by the buffer: a longer separator makes the copy below stop at once.
+    std::size_t dp_len = 0;
+    while (dp_len < sizeof(buf) && dp[dp_len] != '\0')
+        ++dp_len;
     const char* src = pFirst;
     while (*src != '\0' && n + dp_len < sizeof(buf)) {
         if (dp_len == 1 && *src == dp[0]) {
@@ -10156,8 +10210,8 @@ inline int vsnprintf_classic(char* pBuf, std::size_t cap, const char* pFmt, va_l
 #endif
     const int n = std::vsnprintf(pBuf, cap, pFmt, args);
     const char* dp = localeconv()->decimal_point;
-    if (n <= 0 || cap == 0 || dp == nullptr || std::strlen(dp) != 1)
-        return n;
+    if (n <= 0 || cap == 0 || dp == nullptr || dp[0] == '\0' || dp[1] != '\0')
+        return n;  // no separator to swap unless it is exactly one character
     const std::size_t written =
         static_cast<std::size_t>(n) < cap - 1 ? static_cast<std::size_t>(n) : cap - 1;
     for (std::size_t i = 0; i < written; ++i) {
@@ -13001,7 +13055,7 @@ namespace meshioplusplus::detail {
  */
 [[noreturn]] inline void rethrow_as_read_error(const char* pFormat) {
     try {
-        throw;
+        throw;  // NOSONAR(cpp:S1039): called only from a catch (...) block, see above
     } catch (const ReadError&) {
         throw;
     } catch (const WriteError&) {
@@ -39938,7 +39992,7 @@ public:
         try {
             body();
         } catch (...) {
-            if (!mRaised.test_and_set(std::memory_order_acq_rel))
+            if (!mRaised.test_and_set())
                 mEptr = std::current_exception();
         }
     }
@@ -44160,9 +44214,8 @@ std::size_t parse_tokens(std::string_view Text, std::size_t Begin, std::size_t C
                     return;
                 std::size_t index = first[c];
                 for_each_token(Text, cuts[c], cuts[c + 1], [&](std::size_t b, std::size_t e) {
-                    if (refused.load(std::memory_order_relaxed) ||
-                        !rParse(Text.substr(b, e - b), index)) {
-                        refused.store(true, std::memory_order_relaxed);
+                    if (refused.load() || !rParse(Text.substr(b, e - b), index)) {
+                        refused.store(true);
                         return false;
                     }
                     if (++index == Count) {
@@ -44928,7 +44981,7 @@ template <class T>
 inline std::int64_t typed_view_int(T v) {
     if constexpr (std::is_floating_point_v<T>) {
         const double d = static_cast<double>(v);
-        if (!(d == d))
+        if (std::isnan(d))
             return 0;
         if (d >= 9223372036854775807.0)
             return std::numeric_limits<std::int64_t>::max();
@@ -47276,7 +47329,7 @@ bool group_facets_narrow(std::size_t NumSlots, std::size_t NumPoints, SizeOf& rS
         Key& rKey = keys[i];
         for (std::size_t j = 0; j < k; ++j) {
             if (ids[j] < 0 || static_cast<std::uint64_t>(ids[j]) >= NumPoints)
-                out_of_range.store(true, std::memory_order_relaxed);
+                out_of_range.store(true);
             rKey[j] = static_cast<std::uint32_t>(ids[j]);
         }
         for (std::size_t j = k; j < W; ++j)
@@ -50037,7 +50090,9 @@ double layer_cell_scaled_jacobian(const double* pX, const LayerSweepCell& rCell,
  * HDF5, netCDF-4, CGNS, MED and ADIOS2 share one HDF5 (and TecIO and gidpost
  * keep global state), so a lock per library would still race; there is one.
  * It is recursive because entry points nest (a series writer calls the HDF5
- * helpers, a sequence reads through a format reader).
+ * helpers, a sequence reads through a format reader, `read_exodus(path, opts)`
+ * locks and calls the overload that locks again) and because the gid series
+ * callback runs caller code, which may read an HDF5 file, under the lock.
  *
  * Take a `LibraryLock` as the first statement of every public function that
  * can reach such a library, before any handle whose destructor calls into it,
@@ -50053,8 +50108,8 @@ double layer_cell_scaled_jacobian(const double* pX, const LayerSweepCell& rCell,
 namespace meshioplusplus {
 namespace detail {
 
-/// The process-wide mutex; prefer `LibraryLock`.
-std::recursive_mutex& library_mutex();
+/// The process-wide mutex; prefer `LibraryLock`. Recursive: see above.
+std::recursive_mutex& library_mutex();  // NOSONAR(cpp:S8462): entry points nest
 
 /// How many `LibraryLock`s the calling thread holds (0 when none).
 int& library_lock_depth();
@@ -52416,7 +52471,7 @@ private:
             return false;
         const std::size_t prefix_len = static_cast<std::size_t>(pct - pFmt);
         const std::size_t number_len = static_cast<std::size_t>(r.ptr - buf);
-        const std::size_t suffix_len = std::strlen(suffix);
+        const std::size_t suffix_len = strnlen(suffix, sizeof buf);  // > 63 is refused below
         if (prefix_len + number_len + suffix_len > 63)
             return false;
         rOut.append(pFmt, prefix_len);
@@ -79460,13 +79515,11 @@ Rgb colormap_lookup(const std::uint8_t* pTable, double t) {
 // ===== end src/cpp/src/detail/colormap.cpp =====
 // ===== begin src/cpp/src/detail/compressed_input.cpp =====
 #include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <iterator>
-#include <random>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -79837,27 +79890,16 @@ DecompressedFile::DecompressedFile(const std::string& rPath, Compression Kind) {
     if (name.empty() || name == "." || name == "..")
         name = "decompressed";
 
-    // A fresh private directory: the decompressed file keeps its inner name,
-    // which some formats are recognised by (z88i1.txt, d3plot).
-    static std::atomic<unsigned> counter{0};
-    std::random_device rd;
-    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    std::error_code ec;
-    const std::filesystem::path tmp = std::filesystem::temp_directory_path(ec);
-    if (ec)
-        throw ReadError("meshio++: no temporary directory to decompress '" + rPath + "' into");
-    for (int attempt = 0; attempt < 16; ++attempt) {
-        const std::filesystem::path dir =
-            tmp / ("meshioplusplus-" + std::to_string(rd()) + "-" + std::to_string(stamp) + "-" +
-                   std::to_string(counter++));
-        if (std::filesystem::create_directory(dir, ec)) {
-            mDir = dir.string();
-            break;
-        }
-    }
-    if (mDir.empty())
+    // A fresh private directory (make_temp_dir: created exclusively, owner
+    // only): the decompressed file keeps its inner name, which some formats
+    // are recognised by (z88i1.txt, d3plot).
+    try {
+        mDir = make_temp_dir("decompress");
+    } catch (const std::runtime_error&) {
         throw ReadError("meshio++: could not create a temporary directory to decompress '" + rPath +
                         "' into");
+    }
+    std::error_code ec;
     mPath = (std::filesystem::path(mDir) / name).string();
     auto out = make_classic_ofstream(std::filesystem::path(mPath), std::ios::binary);
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
@@ -82881,7 +82923,9 @@ bool dynlib_available() noexcept {
 }
 
 void* dynlib_open(const std::string& rPath, std::string& rError) {
-    void* h = dlopen(rPath.c_str(), RTLD_NOW | RTLD_LOCAL);
+    // Loading the plugin a user configured (MESHIOPLUSPLUS_PLUGIN_PATH) is this
+    // function's purpose: the path is the caller's, by design (roadmap 9.4.1).
+    void* h = dlopen(rPath.c_str(), RTLD_NOW | RTLD_LOCAL);  // NOSONAR
     if (!h) {
         const char* p_msg = dlerror();
         rError = p_msg ? p_msg : "dlopen failed";
@@ -83111,12 +83155,13 @@ void BrepCurveEval::Eval(double T, double* pX, double* pD) const {
     // The net points into this object's own vectors, which a copy or move
     // does not carry: rebuild the pointers on the stack.
     IgaEvalNet net = mNet;
+    net.mDim = 1;  // a curve: one parameter, one span (as the constructor set)
     net.mKnots[0] = &mKnots;
     net.mValues = mValues.data();
     net.mWeights = mWeights.empty() ? nullptr : mWeights.data();
     const double t = std::clamp(T, mT0, mT1);
     const std::size_t span = nurbs_find_span(mDegree, mKnots, mCount, t);
-    double der[3];
+    double der[3] = {0.0, 0.0, 0.0};
     iga_eval_point(net, &span, &t, pD ? 1 : 0, pX, pD ? der : nullptr);
     if (pD)
         for (int k = 0; k < 3; ++k)
@@ -83162,7 +83207,7 @@ TrimTrace::TrimTrace(const BrepSurfaceEval* pSurface, BrepCurveEval Curve, bool 
 }
 
 EdgeVec2 TrimTrace::Uv(double T) const {
-    double x[3];
+    double x[3] = {0.0, 0.0, 0.0};
     mCurve.Eval(T, x, nullptr);
     return {x[0], x[1]};
 }
@@ -83636,6 +83681,7 @@ EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
@@ -83659,8 +83705,12 @@ struct EmWorkDir {
     EmWorkDir& operator=(const EmWorkDir&) = delete;
     ~EmWorkDir() {
         const char* p_keep = std::getenv("MESHIOPLUSPLUS_KEEP_TEMP");
-        if (p_keep && *p_keep && std::string(p_keep) != "0") {
-            log::info("external mesher: kept '{}'", mPath);
+        if (p_keep && *p_keep && std::string_view(p_keep) != "0") {
+            try {
+                log::info("external mesher: kept '{}'", mPath);
+            } catch (...) {
+                // a destructor must not throw: formatting or the log sink failed
+            }
             return;
         }
         std::error_code ec;
@@ -85042,13 +85092,13 @@ FarthestPoints farthest_point_order(const double* pXyz, std::size_t N, std::size
                     if (!Init) {
                         // np.minimum: a NaN on either side is the result.
                         const double cur = d2[k];
-                        v = (d < cur || d != d) ? d : cur;
+                        v = (d < cur || std::isnan(d)) ? d : cur;
                     }
                     d2[k] = v;
                     if (v > best) {
                         best = v;
                         at = k;
-                    } else if (v != v && first_nan == static_cast<std::size_t>(-1)) {
+                    } else if (std::isnan(v) && first_nan == static_cast<std::size_t>(-1)) {
                         first_nan = k;
                     }
                 }
@@ -91217,8 +91267,11 @@ HexDualMesh hds_dual(const HdsPrimal& rM, const LinearOctree& rTree) {
                 }
             std::array<int, 8> seen{};
             for (std::size_t c = 0; c < 8 && ok; ++c) {
-                if (label[c] < 0 || label[c] > 7 || deg[c] != 3 ||
-                    seen[static_cast<std::size_t>(label[c])]++) {
+                if (label[c] < 0 || label[c] > 7 || deg[c] != 3) {
+                    ok = false;
+                    break;
+                }
+                if (seen[static_cast<std::size_t>(label[c])]++ != 0) {
                     ok = false;
                     break;
                 }
@@ -93409,15 +93462,17 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
             return;
         // Rotate so the collapsed ones come first, in cyclic order.
         std::size_t s = 0;
+        // ncol (1 or 2 here) counted the collapsed corners, so the search
+        // stops within the three; the bound states it.
         if (ncol == 1) {
-            while (!is_collapsed(v[s], K))
+            while (s < 2 && !is_collapsed(v[s], K))
                 ++s;
             const std::int64_t x = v[s], y = v[(s + 1) % 3], z = v[(s + 2) % 3];
             cell.mNodes = {at(y, K - 1), at(y, K), at(z, K), at(z, K - 1),
                            at(x, K - 1), -1,       -1,       -1};
             out.mPyramids.push_back(cell);
         } else {
-            while (is_collapsed(v[s], K))
+            while (s < 2 && is_collapsed(v[s], K))
                 ++s;
             const std::int64_t z = v[s], x = v[(s + 1) % 3], y = v[(s + 2) % 3];
             cell.mNodes = {at(x, K - 1), at(y, K - 1), at(z, K - 1), at(z, K), -1, -1, -1, -1};
@@ -93542,8 +93597,11 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
 namespace meshioplusplus {
 namespace detail {
 
-std::recursive_mutex& library_mutex() {
-    static std::recursive_mutex sMutex;
+// Recursive because entry points nest (library_lock.hpp): read_exodus(path,
+// opts) locks and calls read_exodus(path, info, opts), which locks again, and
+// the gid series callback runs Python that may read an HDF5 file.
+std::recursive_mutex& library_mutex() {  // NOSONAR(cpp:S8462): see above
+    static std::recursive_mutex sMutex;  // NOSONAR(cpp:S8462): see above
     return sMutex;
 }
 
@@ -97725,7 +97783,9 @@ void nodeadj_visit(const Mesh& rMesh, std::size_t NumPoints, NodeAdjacencyKind K
                 ring(cb.Row(c), cb.RowSize(c));
             } else {
                 // A known edge table (all seven linear types); blocks without
-                // one were skipped wholesale above.
+                // one were skipped wholesale above, so p_edges is set here.
+                if (p_edges == nullptr)
+                    continue;
                 const NDArray& conn = cb.Conn();
                 const std::size_t row = c * cb.NodesPerCell();
                 for (const CellEdgePair& e : *p_edges)
@@ -98475,7 +98535,9 @@ AdaptiveOctree octree_adaptive_build(const OctreeFrame& rFrame,
                 "max_cells (" +
                 std::to_string(MaxCells) + ") leaves; raise min_size or max_cells");
         std::vector<std::array<SzfLeaf, 8>> kids(active.size());
-        const std::int64_t half = std::int64_t{1} << (L - level - 1 >= 0 ? L - level - 1 : 0);
+        // mMaxLevel is capped at 19 (octree_mesh.cpp), so the clamp never bites;
+        // it states the shift's range where the analyzer cannot see the cap.
+        const std::int64_t half = std::int64_t{1} << std::clamp(L - level - 1, 0, 62);
         parallel_for(
             active.size(),
             [&](std::size_t i) {
@@ -102969,11 +103031,11 @@ std::atomic<ProvenanceMode>& default_mode_storage() {
 }  // namespace
 
 ProvenanceMode default_provenance_mode() {
-    return default_mode_storage().load(std::memory_order_relaxed);
+    return default_mode_storage().load();
 }
 
 void set_default_provenance_mode(ProvenanceMode mode) {
-    default_mode_storage().store(mode, std::memory_order_relaxed);
+    default_mode_storage().store(mode);
 }
 
 void provenance_begin_write() {
@@ -103887,6 +103949,8 @@ std::vector<double> ql_turns(const QlState& rS, const std::vector<std::size_t>& 
 bool ql_split_ngon(QlState& rS, const QlPiece& rPiece, const std::vector<std::size_t>& rB,
                    const std::vector<std::size_t>& rC, std::vector<QlPiece>& rMore) {
     const std::size_t nb = rB.size();
+    if (nb == 0)
+        return false;
     std::vector<double> s(nb + 1, 0.0);
     for (std::size_t i = 0; i < nb; ++i)
         s[i + 1] = s[i] + vec3_norm(vec3_sub(rS.mPts[rB[(i + 1) % nb]], rS.mPts[rB[i]]));
@@ -104575,7 +104639,7 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
         st.mField = cross_field(rPts, rTris, co);
 
     // 2-3. Discs and singularities.
-    std::vector<QlPiece> final;
+    std::vector<QlPiece> pieces;
     const auto push_groups = [&](const QlPiece& rP, const std::vector<std::int64_t>& rLab) {
         for (auto& g : ql_groups(st.mMesh, rP.mTris, rLab)) {
             QlPiece np;
@@ -104633,7 +104697,7 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
                 }
             }
         }
-        final.push_back(std::move(p));
+        pieces.push_back(std::move(p));
     }
 
     // A piece under `mMinTriangles` (a sliver between creases or cuts) joins
@@ -104641,19 +104705,19 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
     for (bool changed = true; changed;) {
         changed = false;
         std::vector<std::int64_t> owner(nt, -1);
-        for (std::size_t i = 0; i < final.size(); ++i)
-            for (std::size_t f : final[i].mTris)
+        for (std::size_t i = 0; i < pieces.size(); ++i)
+            for (std::size_t f : pieces[i].mTris)
                 owner[f] = static_cast<std::int64_t>(i);
-        std::vector<std::size_t> order(final.size());
+        std::vector<std::size_t> order(pieces.size());
         std::iota(order.begin(), order.end(), std::size_t{0});
         std::stable_sort(order.begin(), order.end(), [&](std::size_t A, std::size_t B) {
-            return final[A].mTris.size() < final[B].mTris.size();
+            return pieces[A].mTris.size() < pieces[B].mTris.size();
         });
         for (std::size_t i : order) {
-            if (final[i].mTris.size() >= rOptions.mMinTriangles || final[i].mTris.empty())
+            if (pieces[i].mTris.size() >= rOptions.mMinTriangles || pieces[i].mTris.empty())
                 continue;
             std::map<std::int64_t, std::size_t> shared;
-            for (std::size_t f : final[i].mTris)
+            for (std::size_t f : pieces[i].mTris)
                 for (std::size_t k = 0; k < 3; ++k) {
                     const std::int64_t g = st.mMesh.mNbr[f][k];
                     if (g >= 0 &&
@@ -104667,22 +104731,22 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
                              [](const auto& rA, const auto& rB) { return rA.first > rB.first; });
             for (const auto& c : cand) {
                 const std::size_t j = static_cast<std::size_t>(c.second);
-                std::vector<std::size_t> merged = final[j].mTris;
-                merged.insert(merged.end(), final[i].mTris.begin(), final[i].mTris.end());
+                std::vector<std::size_t> merged = pieces[j].mTris;
+                merged.insert(merged.end(), pieces[i].mTris.begin(), pieces[i].mTris.end());
                 std::sort(merged.begin(), merged.end());
                 if (!patch_topology(ql_local(rTris, merged)).IsDisc())
                     continue;
-                final[j].mTris = std::move(merged);
-                final[i].mTris.clear();
+                pieces[j].mTris = std::move(merged);
+                pieces[i].mTris.clear();
                 changed = true;
                 break;
             }
             if (changed)
                 break;
         }
-        final.erase(std::remove_if(final.begin(), final.end(),
-                                   [](const QlPiece& rP) { return rP.mTris.empty(); }),
-                    final.end());
+        pieces.erase(std::remove_if(pieces.begin(), pieces.end(),
+                                    [](const QlPiece& rP) { return rP.mTris.empty(); }),
+                     pieces.end());
     }
 
     // Smooth the cuts: a triangle with two sides on the same neighbour (an
@@ -104690,8 +104754,8 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
     // moves to that neighbour, where both stay discs.
     {
         std::vector<std::int64_t> owner(nt, -1);
-        for (std::size_t i = 0; i < final.size(); ++i)
-            for (std::size_t f : final[i].mTris)
+        for (std::size_t i = 0; i < pieces.size(); ++i)
+            for (std::size_t f : pieces[i].mTris)
                 owner[f] = static_cast<std::int64_t>(i);
         const auto members = [&](std::int64_t I) {
             std::vector<std::size_t> m;
@@ -104734,18 +104798,18 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
             if (!changed)
                 break;
         }
-        for (std::size_t i = 0; i < final.size(); ++i)
-            final[i].mTris = members(static_cast<std::int64_t>(i));
-        final.erase(std::remove_if(final.begin(), final.end(),
-                                   [](const QlPiece& rP) { return rP.mTris.empty(); }),
-                    final.end());
+        for (std::size_t i = 0; i < pieces.size(); ++i)
+            pieces[i].mTris = members(static_cast<std::int64_t>(i));
+        pieces.erase(std::remove_if(pieces.begin(), pieces.end(),
+                                    [](const QlPiece& rP) { return rP.mTris.empty(); }),
+                     pieces.end());
     }
 
     // 4. Corners. Junctions: vertices three or more pieces (or the region's
     // boundary) meet at.
     std::vector<std::int64_t> label(nt, -1);
-    for (std::size_t i = 0; i < final.size(); ++i)
-        for (std::size_t f : final[i].mTris)
+    for (std::size_t i = 0; i < pieces.size(); ++i)
+        for (std::size_t f : pieces[i].mTris)
             label[f] = static_cast<std::int64_t>(i);
     std::vector<std::uint8_t> junction(st.mMesh.mNumPts, 0);
     for (std::size_t v = 0; v < st.mMesh.mNumPts; ++v) {
@@ -104758,12 +104822,12 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
         if (distinct + (st.mMesh.mOnBoundary[v] ? 1 : 0) >= 3)
             junction[v] = 1;
     }
-    for (const QlPiece& p : final)
+    for (const QlPiece& p : pieces)
         for (std::size_t v : p.mForced)
             st.mCorner[v] = 1;
     std::vector<QlQuad> done;
-    for (std::size_t i = 0; i < final.size(); ++i) {
-        const QlPiece p = final[i];  // `final` may grow below
+    for (std::size_t i = 0; i < pieces.size(); ++i) {
+        const QlPiece p = pieces[i];  // `pieces` may grow below
         ql_mark(st, p.mTris, 1);
         const std::vector<std::size_t> b = ql_boundary(st.mMesh, rTris, p.mTris, st.mIn);
         ql_mark(st, p.mTris, 0);
@@ -104780,7 +104844,7 @@ QuadLayout quad_layout(const std::vector<PatchVec>& rPts, const std::vector<Patc
             for (auto& m : more) {
                 for (std::size_t v : m.mForced)
                     junction[v] = 1;
-                final.push_back(std::move(m));
+                pieces.push_back(std::move(m));
             }
             continue;
         }
@@ -105514,7 +105578,7 @@ constexpr std::int64_t kRstHalf = kRstOne / 2;
 // A screen coordinate in fixed point, clamped so every edge-function product
 // fits in 64 bits (|coordinate| <= 2^26, differences <= 2^27, products <= 2^54).
 std::int64_t rst_fixed(double v) {
-    if (!(v == v))
+    if (std::isnan(v))
         v = 0.0;
     if (v > kRasterLimitPx)
         v = kRasterLimitPx;
@@ -105620,7 +105684,7 @@ void rst_prepare_seg(const RasterScene& rScene, const RasterLine& rLine, int Wid
     const RasterVertex& b = rScene.mVertices[static_cast<std::size_t>(rLine.mB)];
     // The same clamp as a triangle's corners, in pixels rather than fixed point.
     auto clamp = [](double v) {
-        if (!(v == v))
+        if (std::isnan(v))
             return 0.0;
         return std::min(std::max(v, -kRasterLimitPx), kRasterLimitPx);
     };
@@ -105765,7 +105829,7 @@ void rst_draw_seg(const RstSeg& rS, const RasterLine& rLine, const RasterScene& 
 void rst_draw_point(const RasterPoint& rPoint, const RasterScene& rScene, const RstTile& rTile,
                     RasterTarget& rOut) {
     const RasterVertex& v = rScene.mVertices[static_cast<std::size_t>(rPoint.mV)];
-    if (!(v.mX == v.mX) || !(v.mY == v.mY))
+    if (std::isnan(v.mX) || std::isnan(v.mY))
         return;
     const double r = rScene.mPointRadius;
     const double x = std::min(std::max(v.mX, -kRasterLimitPx), kRasterLimitPx);
@@ -105834,7 +105898,7 @@ RasterTarget rasterize(const RasterScene& rScene, int Width, int Height,
     const double r = rScene.mPointRadius;
     for (std::size_t i = 0; i < rScene.mPoints.size(); ++i) {
         const RasterVertex& v = rScene.mVertices[static_cast<std::size_t>(rScene.mPoints[i].mV)];
-        if (!(v.mX == v.mX) || !(v.mY == v.mY))
+        if (std::isnan(v.mX) || std::isnan(v.mY))
             continue;
         const double x = std::min(std::max(v.mX, -kRasterLimitPx), kRasterLimitPx);
         const double y = std::min(std::max(v.mY, -kRasterLimitPx), kRasterLimitPx);
@@ -109931,9 +109995,7 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
 // ===== begin src/cpp/src/detail/subprocess.cpp =====
 
 // System includes
-#include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <stdexcept>
@@ -109944,7 +110006,13 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
 #if defined(_WIN32)
 #define NOMINMAX
 #include <windows.h>
-#elif !defined(__EMSCRIPTEN__)
+
+#include <atomic>
+#include <chrono>
+#else
+#include <stdlib.h>  // mkdtemp
+#endif
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -110115,7 +110183,8 @@ int run_process(const std::vector<std::string>& rArgv, const std::string& rWorkD
         const int null = open("/dev/null", O_RDONLY);
         if (null >= 0)
             dup2(null, STDIN_FILENO);
-        const int log = open(rLogPath.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+        // 0600: the log is the caller's; nobody else needs to read it.
+        const int log = open(rLogPath.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
         if (log >= 0) {
             dup2(log, STDOUT_FILENO);
             dup2(log, STDERR_FILENO);
@@ -110140,9 +110209,20 @@ int run_process(const std::vector<std::string>& rArgv, const std::string& rWorkD
 #endif  // __EMSCRIPTEN__
 
 std::string make_temp_dir(const std::string& rTag) {
-    static std::atomic<unsigned long> s_counter{0};
     std::error_code ec;
-    const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+    // The directory is created exclusively and private below, so another user
+    // can neither place it first nor read what a run leaves in it.
+    const std::filesystem::path base =
+        std::filesystem::temp_directory_path(ec);  // NOSONAR(cpp:S5443): see above
+#if !defined(_WIN32)
+    // mkdtemp: an exclusive create with mode 0700.
+    std::string pattern = (base / ("meshioplusplus_" + rTag + "_XXXXXX")).string();
+    if (mkdtemp(pattern.data()) != nullptr)
+        return pattern;
+#else
+    // The temporary directory is the user's own on Windows; create_directory
+    // fails on an existing name, so the loop takes a fresh one.
+    static std::atomic<unsigned long> s_counter{0};
     const auto stamp = static_cast<unsigned long long>(
         std::chrono::steady_clock::now().time_since_epoch().count());
     for (int attempt = 0; attempt < 100; ++attempt) {
@@ -110152,6 +110232,7 @@ std::string make_temp_dir(const std::string& rTag) {
         if (std::filesystem::create_directory(dir, ec))
             return dir.string();
     }
+#endif
     throw std::runtime_error("meshio++: cannot create a temporary directory for " + rTag);
 }
 
@@ -113586,13 +113667,15 @@ bool ttr_enters_corner(const double* pV, const double* pA, const double* pC, con
 int ttr_plane_points(const double* const* pT, const double* pD, double (*pOut)[3]) {
     int n = 0;
     for (int i = 0; i < 3 && n < 3; ++i) {
+        // A corner in the plane and a crossing of the edge it starts are
+        // exclusive (the crossing needs a nonzero pD[i]), so each corner adds at
+        // most one point and n stays within the three slots.
+        const int j = (i + 1) % 3;
         if (pD[i] == 0.0) {
             for (int k = 0; k < 3; ++k)
                 pOut[n][k] = pT[i][k];
             ++n;
-        }
-        const int j = (i + 1) % 3;
-        if ((pD[i] > 0.0 && pD[j] < 0.0) || (pD[i] < 0.0 && pD[j] > 0.0)) {
+        } else if ((pD[i] > 0.0 && pD[j] < 0.0) || (pD[i] < 0.0 && pD[j] > 0.0)) {
             const double w = pD[i] / (pD[i] - pD[j]);
             for (int k = 0; k < 3; ++k)
                 pOut[n][k] = pT[i][k] + w * (pT[j][k] - pT[i][k]);
@@ -113719,6 +113802,10 @@ TriTriSegment tri_tri_segment(const double* pA, const double* pB, const double* 
     double p1[3][3], p2[3][3];
     const int n1 = ttr_plane_points(t1, d1, p1);
     const int n2 = ttr_plane_points(t2, d2, p2);
+    // Each triangle meets the other's plane once tri_tri_intersect holds and they
+    // are not coplanar, so both sets hold a point; the guard makes that explicit.
+    if (n1 == 0 || n2 == 0)
+        return out;
     // Both sets lie on the line the planes share: overlap their extents along it.
     const auto normal = [](const double* const* pT, double* pN) {
         const double u[3] = {pT[1][0] - pT[0][0], pT[1][1] - pT[0][1], pT[1][2] - pT[0][2]};
@@ -114413,7 +114500,7 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
     std::vector<double> dv;
     std::vector<std::int64_t> iv;
     const char* p = pText ? pText : "";
-    const char* const last = p + std::strlen(p);
+    const char* const last = p + std::strlen(p);  // NOSONAR(cpp:S5813): pugixml text ends in NUL
     // A large array is parsed in parallel chunks straight into the array
     // (roadmap 5.7.2), each token by the parser the loop below uses; a token
     // that parser would not take whole sends the array to that loop, so the
@@ -119128,7 +119215,7 @@ FilwItem filw_i(std::int64_t V) {
 }
 
 FilwItem filw_d(double V) {
-    if (V != V || std::isinf(V))
+    if (!std::isfinite(V))
         filw_fail("a value is not finite");
     if (V != 0.0 && !(std::fabs(V) >= 1e-99 && std::fabs(V) < 1e100))
         filw_fail("a value is outside the range a D22.15 item holds");
@@ -119702,7 +119789,7 @@ std::vector<double> filw_trim(const double* pValues, std::size_t N) {
     while (!v.empty() && v.back() != v.back())
         v.pop_back();
     for (double& x : v)
-        if (x != x)
+        if (std::isnan(x))
             x = 0.0;
     return v;
 }
@@ -124032,7 +124119,7 @@ double rstw_time_of(const Mesh& rMesh) {
     if (!rMesh.HasFieldData(kSequenceTimeKey))
         return 1.0;
     const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
-    return a.Size() == 0 ? 1.0 : detail::DoubleView(a).Data()[0];
+    return a.Size() == 0 ? 1.0 : detail::read_double(a, 0);
 }
 
 std::array<std::int64_t, 3> rstw_step_of(const Mesh& rMesh, std::size_t Index) {
@@ -124040,7 +124127,7 @@ std::array<std::int64_t, 3> rstw_step_of(const Mesh& rMesh, std::size_t Index) {
         if (!rMesh.HasFieldData(pName))
             return Default;
         const NDArray& a = rMesh.FieldData(pName);
-        return a.Size() == 0 ? Default : detail::Int64View(a).Data()[0];
+        return a.Size() == 0 ? Default : detail::read_int(a, 0);
     };
     return {get("ansys:load_step", 1), get("ansys:substep", static_cast<std::int64_t>(Index + 1)),
             get("ansys:cumulative", static_cast<std::int64_t>(Index + 1))};
@@ -126508,10 +126595,8 @@ h5::Hid cgns_create_group(hid_t loc, const std::string& rName) {
 // `total` bytes (NOT necessarily NUL-terminated -- CGNS text data like
 // ZoneType's "Unstructured" carries no terminator, only its declared length).
 NDArray cgns_padded_int8(const std::string& rS, std::size_t total) {
-    NDArray out(DType::Int8, {total});
-    std::int8_t* dst = out.As<std::int8_t>();
-    std::memset(dst, 0, total);
-    std::memcpy(dst, rS.data(), std::min(rS.size(), total));
+    NDArray out(DType::Int8, {total});  // zero-filled
+    std::memcpy(out.As<std::int8_t>(), rS.data(), std::min(rS.size(), total));
     return out;
 }
 
@@ -132292,16 +132377,16 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
                 joined += (i ? " " : "") + toks[i];
             info.mConstants.emplace_back(joined, detail::parse_double(toks.back()));
         } else if (section == "VARIABLE") {
-            static const char* kKinds[] = {
+            static constexpr std::string_view kKinds[] = {
                 "scalar per node:",         "vector per node:",        "tensor symm per node:",
                 "tensor asym per node:",    "scalar per element:",     "vector per element:",
                 "tensor symm per element:", "tensor asym per element:"};
-            for (const char* kind : kKinds) {
-                if (!ensight_starts_with(line, kind))
+            for (const std::string_view kind : kKinds) {
+                if (line.compare(0, kind.size(), kind) != 0)
                     continue;
-                const std::string kind_str(kind, std::strlen(kind) - 1);  // drop trailing ':'
+                const std::string kind_str(kind.substr(0, kind.size() - 1));  // drop trailing ':'
                 const std::vector<std::string> toks =
-                    ensight_tokens_after_leading_ints(line.substr(std::strlen(kind)));
+                    ensight_tokens_after_leading_ints(line.substr(kind.size()));
                 if (toks.size() < 2)
                     throw ReadError("EnSight: malformed '" + kind_str + "' line: " + line);
                 EnsightVariableEntry entry;
@@ -139653,7 +139738,7 @@ constexpr std::int64_t frd_max_small = 99999;
 std::string frd_e12(double X) {
     char buf[48];
     detail::snprintf_c(buf, sizeof(buf), "%12.5E", X);
-    if (std::strlen(buf) > 12) {
+    if (strnlen(buf, sizeof(buf)) > 12) {
         if (std::fabs(X) >= 1.0)
             throw WriteError("CalculiX FRD: " + std::string(buf) + " does not fit an E12.5 field");
         detail::snprintf_c(buf, sizeof(buf), "%12.5E", 0.0);
@@ -139715,7 +139800,7 @@ std::string frd_time_text(double Value) {
     char buf[64];
     for (int decimals = 9; decimals >= 0; --decimals) {
         detail::snprintf_c(buf, sizeof(buf), "%12.*f", decimals, Value);
-        if (std::strlen(buf) == 12)
+        if (strnlen(buf, sizeof(buf)) == 12)
             return buf;
     }
     return frd_e12(Value);
@@ -141057,14 +141142,12 @@ void gid_write_cell_data(GiD_FILE fd, const Mesh& rMesh,
 }  // namespace
 
 bool gid_available(GidMode mode) {
-    if (mode == GidMode::Hdf5) {
 #ifdef MESHIOPLUSPLUS_HAS_GIDPOST_HDF5
-        return true;
+    constexpr bool kHdf5 = true;
 #else
-        return false;
+    constexpr bool kHdf5 = false;
 #endif
-    }
-    return true;
+    return kHdf5 || mode != GidMode::Hdf5;
 }
 
 std::string gid_build_option(GidMode mode) {
@@ -143029,22 +143112,21 @@ bool gid_result_dim_is_legal(GidResultType type, std::size_t k) {
 }
 
 bool gid_readable(GidMode mode) {
-    switch (mode) {
-        case GidMode::Hdf5:
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
-            return true;
+    constexpr bool kHdf5 = true;
 #else
-            return false;
+    constexpr bool kHdf5 = false;
 #endif
-        case GidMode::Binary:
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
-            return true;
+    constexpr bool kZlib = true;
 #else
-            return false;
+    constexpr bool kZlib = false;
 #endif
-        default:
-            return true;  // Ascii (and Auto, which resolves to it)
-    }
+    if (mode == GidMode::Hdf5)
+        return kHdf5;
+    if (mode == GidMode::Binary)
+        return kZlib;
+    return true;  // Ascii (and Auto, which resolves to it)
 }
 
 Mesh read_gid(const std::string& rPath, const ReadOptions& rOptions) {
@@ -146247,15 +146329,18 @@ void read_nodes(GmshCursor& rCur, bool is_ascii, NDArray& rPoints,
     rPoints = NDArray(DType::Float64, {static_cast<std::size_t>(num), 3});
     rPointTags.resize(num);
     double* pp = rPoints.As<double>();
-    if (is_ascii &&
-        rCur.parallel_numbers(static_cast<std::size_t>(num) * 4, [&](std::size_t k, double x) {
-            const std::size_t i = k / 4;
-            if (k % 4 != 0) {
-                pp[i * 3 + k % 4 - 1] = x;
-                return true;
-            }
-            return GmshCursor::integer_of(x, rPointTags[i]);
-        })) {
+    bool parsed = false;
+    if (is_ascii)
+        parsed =
+            rCur.parallel_numbers(static_cast<std::size_t>(num) * 4, [&](std::size_t k, double x) {
+                const std::size_t i = k / 4;
+                if (k % 4 != 0) {
+                    pp[i * 3 + k % 4 - 1] = x;
+                    return true;
+                }
+                return GmshCursor::integer_of(x, rPointTags[i]);
+            });
+    if (parsed) {
         // parsed in parallel
     } else if (is_ascii) {
         for (std::int64_t i = 0; i < num; ++i) {
@@ -146361,7 +146446,9 @@ bool gmsh22_parallel_elements(GmshCursor& rCur, std::size_t Total, std::vector<E
             while (p < l.size() && !detail::text_is_blank(l[p]))
                 ++p;
             std::int64_t v = 0;
-            if (!gmsh22_int_token(l.substr(b, p - b), v) || !rFn(k++, v))
+            if (!gmsh22_int_token(l.substr(b, p - b), v))
+                return false;
+            if (!rFn(k++, v))
                 return false;
         }
     };
@@ -146377,7 +146464,7 @@ bool gmsh22_parallel_elements(GmshCursor& rCur, std::size_t Total, std::vector<E
     parallel_for(
         Total,
         [&](std::size_t e) {
-            if (refused.load(std::memory_order_relaxed))
+            if (refused.load())
                 return;
             std::int64_t v[3] = {0, 0, 0};
             std::size_t count = 0;
@@ -146388,17 +146475,17 @@ bool gmsh22_parallel_elements(GmshCursor& rCur, std::size_t Total, std::vector<E
                     return true;
                 }) ||
                 count < 3) {
-                refused.store(true, std::memory_order_relaxed);
+                refused.store(true);
                 return;
             }
             const auto it = g2m.find(static_cast<int>(v[1]));
             if (it == g2m.end() || v[2] < 0 || static_cast<std::uint64_t>(v[2]) > count) {
-                refused.store(true, std::memory_order_relaxed);
+                refused.store(true);
                 return;
             }
             const std::size_t n = static_cast<std::size_t>(nnpc.at(it->second));
             if (count < 3 + static_cast<std::size_t>(v[2]) + n) {
-                refused.store(true, std::memory_order_relaxed);
+                refused.store(true);
                 return;
             }
             heads[e] = {&it->second, static_cast<std::uint32_t>(n),
@@ -146794,20 +146881,28 @@ void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoi
             std::memcpy(pp + idx * 3, rCur.mBuf.data() + rCur.mPos, nbz * 3 * 8);
             rCur.mPos += nbz * 3 * 8;
         } else {
-            if (!is_ascii || !rCur.parallel_numbers(nbz, [&](std::size_t i, double x) {
+            // The chunked parse runs on ascii input only; the serial loop takes
+            // what it leaves (binary input, or a chunk it refused).
+            bool tags_parsed = false;
+            if (is_ascii)
+                tags_parsed = rCur.parallel_numbers(nbz, [&](std::size_t i, double x) {
                     std::int64_t tag = 0;
                     if (!GmshCursor::integer_of(x, tag))
                         return false;
                     rTags[idx + i] = tag - 1;
                     return true;
-                })) {
+                });
+            if (!tags_parsed) {
                 for (std::int64_t i = 0; i < nb; ++i)
                     rTags[idx + i] = rd_size() - 1;
             }
-            if (!is_ascii || !rCur.parallel_numbers(nbz * 3, [&](std::size_t i, double x) {
+            bool coords_parsed = false;
+            if (is_ascii)
+                coords_parsed = rCur.parallel_numbers(nbz * 3, [&](std::size_t i, double x) {
                     pp[idx * 3 + i] = x;
                     return true;
-                })) {
+                });
+            if (!coords_parsed) {
                 for (std::int64_t i = 0; i < nb; ++i) {
                     pp[(idx + i) * 3 + 0] = rd_dbl();
                     pp[(idx + i) * 3 + 1] = rd_dbl();
@@ -146902,6 +146997,7 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
                                   "element");
         blk.mConn = NDArray(DType::Int64, {nez, n});
         std::int64_t* dst = blk.mConn.As<std::int64_t>();
+        bool parsed = false;
         if (!is_ascii && data_size == 8 && !version40) {
             // Each element is [tag, node0..node(n-1)] u64, native-endian and
             // contiguous. Decode the nodes straight from the slurped buffer into
@@ -146918,27 +147014,28 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
                 }
             });
             rCur.mPos += nez * stride * 8;
-        } else if (is_ascii &&
-                   rCur.parallel_numbers(nez * (n + 1), [&](std::size_t k, double x) {
-                       // [tag, node0..node(n-1)] per element: the tag is read
-                       // as the serial loop reads it and dropped; a node tag
-                       // the serial loop would reject refuses the chunked parse.
-                       const std::size_t e = k / (n + 1), j = k % (n + 1);
-                       std::int64_t tag = 0;
-                       if (version40) {
-                           std::int32_t t32 = 0;
-                           if (!GmshCursor::integer_of(x, t32) || (j != 0 && t32 < 1))
-                               return false;
-                           tag = t32;
-                       } else if (!GmshCursor::integer_of(x, tag)) {
-                           return false;
-                       }
-                       if (j != 0)
-                           dst[e * n + j - 1] = tag - 1;
-                       return true;
-                   })) {
-            // parsed in parallel
-        } else {
+            parsed = true;
+        } else if (is_ascii) {
+            parsed = rCur.parallel_numbers(nez * (n + 1), [&](std::size_t k, double x) {
+                // [tag, node0..node(n-1)] per element: the tag is read as the
+                // serial loop reads it and dropped; a node tag the serial loop
+                // would reject refuses the chunked parse.
+                const std::size_t e = k / (n + 1), j = k % (n + 1);
+                std::int64_t tag = 0;
+                if (version40) {
+                    std::int32_t t32 = 0;
+                    if (!GmshCursor::integer_of(x, t32) || (j != 0 && t32 < 1))
+                        return false;
+                    tag = t32;
+                } else if (!GmshCursor::integer_of(x, tag)) {
+                    return false;
+                }
+                if (j != 0)
+                    dst[e * n + j - 1] = tag - 1;
+                return true;
+            });
+        }
+        if (!parsed) {
             if (version40 && !is_ascii)
                 rCur.need(nez * (n + 1) * 4);
             std::size_t p = 0;
@@ -153254,7 +153351,7 @@ constexpr std::uint8_t kLbwInt8 = 1, kLbwInt32 = 3, kLbwFloat32 = 9, kLbwLink = 
 /// A double as the file's single precision, rounded like numpy's cast (an overflow is an
 /// infinity).
 float lbw_float(double V) {
-    if (V != V)
+    if (std::isnan(V))
         return std::numeric_limits<float>::quiet_NaN();
     if (std::fabs(V) >= 3.4028235677973366e38)
         return V < 0 ? -std::numeric_limits<float>::infinity()
@@ -159418,7 +159515,7 @@ namespace {
 constexpr std::size_t kMarctLabel = 24;
 
 std::string marct_e13(double X) {
-    if (X != X)
+    if (std::isnan(X))
         return std::string(kMarcW - 3, ' ') + "NaN";
     if (std::isinf(X))
         return X > 0 ? std::string(kMarcW - 3, ' ') + "inf" : std::string(kMarcW - 4, ' ') + "-inf";
@@ -161606,7 +161703,7 @@ void write_mdpa(const std::string& rPath, const Mesh& rMesh, const MdpaInfo& rIn
         if (type == CellType::Custom)
             throw WriteError("MDPA: geometry block of unknown cell type '" + r_geo.mType + "'");
         const std::size_t k = r_geo.mConn.Shape().size() == 2 ? r_geo.mConn.Shape()[1] : 0;
-        if (static_cast<int>(k) != cell_type_num_nodes(type))
+        if (k == 0 || static_cast<int>(k) != cell_type_num_nodes(type))
             throw WriteError("MDPA: geometry block '" + r_geo.mType + "' has " + std::to_string(k) +
                              " nodes per row");
         const std::size_t rows = r_geo.mConn.Size() / k;
@@ -172336,8 +172433,11 @@ struct NasCards {
     NasCards() = default;
     NasCards(const NasCards&) = delete;
     NasCards& operator=(const NasCards&) = delete;
-    NasCards(NasCards&&) = default;
-    NasCards& operator=(NasCards&&) = default;
+    // noexcept although std::deque's move constructor may allocate (libstdc++
+    // gives the moved-from deque an empty map): the move is the elided return
+    // of nas_cards in practice, and a failed allocation there ends the process.
+    NasCards(NasCards&&) noexcept = default;
+    NasCards& operator=(NasCards&&) noexcept = default;
 };
 
 NasCards nas_cards(const std::vector<std::string_view>& rLines) {
@@ -177382,10 +177482,10 @@ Op2Grids op2_read_grids(const Op2Stream& rS, const std::vector<Op2Table>& rTable
 
 // The first record of mark `Mark` of the first table whose name starts with
 // `Prefix`, or nullptr.
-const Op2Record* op2_table_record(const std::vector<Op2Table>& rTables, const char* pPrefix,
+const Op2Record* op2_table_record(const std::vector<Op2Table>& rTables, std::string_view Prefix,
                                   std::int64_t Mark) {
     for (const Op2Table& t : rTables) {
-        if (t.mName.compare(0, std::strlen(pPrefix), pPrefix) != 0)
+        if (t.mName.compare(0, Prefix.size(), Prefix) != 0)
             continue;
         for (const auto& [mark, rec] : t.mRecords)
             if (mark == Mark)
@@ -178290,9 +178390,9 @@ std::map<std::int64_t, std::string> op2_read_properties(const Op2Stream& rS,
 
 // --- results -------------------------------------------------------------------------
 
-bool op2_starts(const std::string& rName, std::initializer_list<const char*> Prefixes) {
-    for (const char* p : Prefixes)
-        if (rName.compare(0, std::strlen(p), p) == 0)
+bool op2_starts(const std::string& rName, std::initializer_list<std::string_view> Prefixes) {
+    for (const std::string_view p : Prefixes)
+        if (rName.compare(0, p.size(), p) == 0)
             return true;
     return false;
 }
@@ -179650,7 +179750,7 @@ constexpr const char* kOp2wTapeId = "NASTRAN FORT TAPE ID CODE - ";
 /// A double as the file's single precision, rounded like numpy's cast (an
 /// overflow is an infinity).
 float op2w_float(double V) {
-    if (V != V)
+    if (std::isnan(V))
         return std::numeric_limits<float>::quiet_NaN();
     if (std::fabs(V) >= 3.4028235677973366e38)
         return V < 0 ? -std::numeric_limits<float>::infinity()
@@ -183451,10 +183551,10 @@ struct Patch {
  *
  * @return the value token, or "" when the key is absent.
  */
-std::string openfoam_dict_word(const std::string& rBlock, const char* pKey) {
-    const std::size_t klen = std::strlen(pKey);
+std::string openfoam_dict_word(const std::string& rBlock, std::string_view Key) {
+    const std::size_t klen = Key.size();
     std::size_t p = 0;
-    while ((p = rBlock.find(pKey, p)) != std::string::npos) {
+    while ((p = rBlock.find(Key, p)) != std::string::npos) {
         const bool left_ok = p == 0 || std::isspace(static_cast<unsigned char>(rBlock[p - 1])) ||
                              rBlock[p - 1] == ';';
         const std::size_t after = p + klen;
@@ -184441,10 +184541,13 @@ private:
                 continue;
             }
             ++mPos;
-            if (c == '(')
+            if (c == '(') {
                 ++depth;
-            else if (c == ')' && --depth == 0)
-                return;
+            } else if (c == ')') {
+                --depth;
+                if (depth == 0)
+                    return;
+            }
         }
         mFailed = true;
     }
@@ -186507,7 +186610,7 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
                     neighbour.push_back(cell_local[static_cast<std::size_t>(n)]);
                 face_addr.push_back(lf.mFlipped ? -(lf.mSerial + 1) : lf.mSerial + 1);
             }
-            f << (rOpts.mBinary ? ")\n" : ")\n");
+            f << ")\n";
         }
         foam_emit_label_list(poly / "owner", "owner", owner, rOpts);
         foam_emit_label_list(poly / "neighbour", "neighbour", neighbour, rOpts);
@@ -195706,6 +195809,7 @@ void detail::write_step_report(const std::string& rPath, const Mesh& rMesh,
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/step.cpp =====
 // ===== begin src/cpp/src/formats/stl.cpp =====
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -196023,9 +196127,8 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
     if (binary) {
         char header[80];
         std::memset(header, '\0', 80);
-        const std::string msg_str = detail::provenance_lines(detail::SlotTier::Bounded)[0];
-        const char* msg = msg_str.c_str();
-        std::memcpy(header, msg, std::strlen(msg));  // always well under 80 bytes
+        const std::string msg = detail::provenance_lines(detail::SlotTier::Bounded)[0];
+        std::memcpy(header, msg.data(), std::min(msg.size(), sizeof(header)));
         os.write(header, 80);
         std::uint32_t n = static_cast<std::uint32_t>(tris.size());
         os.write(reinterpret_cast<const char*>(&n), 4);
@@ -209607,7 +209710,7 @@ NDArray vtu_read_data_array(const pugi::xml_node& rDa, const VtuContext& rCtx,
             const char* text = rDa.text().get();
             VtuByteSource src;
             src.mText = text;
-            src.mTextLen = std::strlen(text);
+            src.mTextLen = std::strlen(text);  // NOSONAR(cpp:S5813): pugixml text ends in NUL
             return vtu_array_from_bytes(
                 vtu_decode_sequential(src, rCtx.mCodec, rCtx.mHeaderSize, true), dt, true);
         }
@@ -209747,7 +209850,7 @@ VtuContext vtk_xml_read_context(const VtuSource& rSource, const char* pFormat) {
         if (*text != '_')
             throw ReadError(format + ": AppendedData does not start with '_'");
         ctx.mBase64 = text + 1;
-        ctx.mBase64Len = std::strlen(text + 1);
+        ctx.mBase64Len = std::strlen(text + 1);  // NOSONAR(cpp:S5813): pugixml text ends in NUL
     }
     return ctx;
 }
@@ -212975,8 +213078,13 @@ XdmfTimeSeriesWriter::~XdmfTimeSeriesWriter() {
         Finalize();
     } catch (const std::exception& e) {
         // A destructor must not throw; an explicit Finalize() is how a caller
-        // gets to see this failure.
-        log::error("XDMF time series: could not finalize '{}': {}", mImpl->mPath, e.what());
+        // gets to see this failure. The report itself may throw (formatting,
+        // the log sink), so it is guarded too.
+        try {
+            log::error("XDMF time series: could not finalize '{}': {}", mImpl->mPath, e.what());
+        } catch (...) {
+        }
+    } catch (...) {
     }
     mImpl.reset();
 }
@@ -213561,7 +213669,8 @@ struct XpltFile {
         }
         if (mVersion < 0x0030 || mVersion > 0x00FF) {
             char buf[16];
-            std::snprintf(buf, sizeof(buf), "0x%04x", mVersion);
+            // An integer printed as hex: no text from the file reaches the message.
+            std::snprintf(buf, sizeof(buf), "0x%04x", mVersion);  // NOSONAR(cppsecurity:S5145)
             xplt_fail(std::string("plot file version ") + buf +
                       " is not supported (FEBio 3 and 4 write 0x0030 and later)");
         }
@@ -217319,6 +217428,26 @@ void MESHIOPLUSPLUS_BACKEND_SYM(MESHIOPLUSPLUS_ACTIVE_BACKEND)() {}
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/mesh_backend_check.cpp =====
+// ===== begin src/cpp/src/ndarray.cpp =====
+#include <cstddef>
+#include <new>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+void* ndarray_heap_alloc(std::size_t Bytes) {
+    return ::operator new(Bytes);
+}
+
+void ndarray_heap_free(void* pPtr) noexcept {
+    ::operator delete(pPtr);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/ndarray.cpp =====
 // ===== begin src/cpp/src/operations/adjacency.cpp =====
 #include <algorithm>
 #include <charconv>
@@ -229672,7 +229801,8 @@ double fcn_tolerance(const Mesh& rMesh, const detail::ClosedFacets& rFc, double 
         const NDArray& types = rMesh.FieldData("fit:patch_type");
         const NDArray& tols = rMesh.FieldData("fit:patch_tolerance");
         const NDArray& params = rMesh.FieldData("fit:patch_params");
-        const std::size_t np = types.Size() > 0 ? params.Size() / types.Size() : 0;
+        const std::size_t ntypes = types.Size();
+        const std::size_t np = ntypes > 0 ? params.Size() / ntypes : 0;
         for (std::size_t r = 0; r < types.Size() && r < tols.Size(); ++r) {
             const std::int64_t t = detail::read_int(types, r);
             bool finite = true;
@@ -245619,6 +245749,8 @@ double mph_simplex_measure(const std::vector<MphVec>& rXyz, const std::int64_t* 
 void mph_simplex_stiffness(const std::vector<MphVec>& rXyz, const std::int64_t* pNodes, int D,
                            double Measure, double Weight,
                            std::vector<detail::SparseTriplet>& rOut) {
+    if (D != 2 && D != 3)
+        return;  // triangles and tetrahedra only, which is all the caller passes
     const MphVec& p0 = rXyz[static_cast<std::size_t>(pNodes[0])];
     MphVec e[3];
     for (int k = 0; k < D; ++k)
@@ -246981,8 +247113,10 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
                                 const auto it = maps[static_cast<std::size_t>(lev)].find(oct_morton(
                                     (nx >> sh) << sh, (ny >> sh) << sh, (nzc >> sh) << sh));
                                 if (it != maps[static_cast<std::size_t>(lev)].end()) {
+                                    // Relaxed: an idempotent mark several threads may
+                                    // set, read only after parallel_for has joined.
                                     std::atomic_ref<char>(flag[it->second])
-                                        .store(1, std::memory_order_relaxed);
+                                        .store(1, std::memory_order_relaxed);  // NOSONAR(cpp:S8417)
                                     break;
                                 }
                             }
@@ -248738,6 +248872,9 @@ void octmh_uniform(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshR
         n[k] = frame.mRoots[k] << level;
         cells *= static_cast<double>(n[k]);
     }
+    if (n[0] <= 0 || n[1] <= 0 || n[2] <= 0)
+        throw std::invalid_argument(std::string(kOctreeMeshPrefix) +
+                                    "the hexahedral grid has no cells");
     if (rO.mMaxCells > 0 && cells > static_cast<double>(rO.mMaxCells))
         throw std::invalid_argument(
             std::string(kOctreeMeshPrefix) + "the hexahedral grid would have " +
@@ -269613,8 +269750,10 @@ struct RndPrepared {
     std::shared_ptr<const Mesh> mCapMesh;
     std::vector<std::int64_t> mCapIds;  ///< per cell of mCapMesh: the input cell
     std::vector<double> mCapValues;     ///< per cell of mCapMesh: its value (empty: fill colour)
-    mutable std::once_flag mCapOnce;
-    mutable std::shared_ptr<const detail::MarchingInput> mCapInput;
+    // Built on the first CapInput() call; std::call_once on mCapOnce is the
+    // synchronisation that orders the write of mCapInput before every read.
+    mutable std::once_flag mCapOnce;                                 // NOSONAR(cpp:S8379)
+    mutable std::shared_ptr<const detail::MarchingInput> mCapInput;  // NOSONAR(cpp:S8379)
     // The input's own 2-D faces when they close (every edge shared by two),
     // whose cut loops are filled: rings into mXyz's original points.
     std::vector<std::int64_t> mCapStart;
@@ -273925,7 +274064,8 @@ SurfaceDistanceResult distance_to_surface(const Mesh& rQuery, const Mesh& rSurfa
         for (const auto cb : result.mMesh.CellRange()) {
             const std::size_t ncells = cb.NumCells();
             NDArray b = NDArray::Uninit(rFlat.Dtype(), {ncells});
-            const std::size_t width = rFlat.Nbytes() / (rFlat.Size() == 0 ? 1 : rFlat.Size());
+            const std::size_t count = rFlat.Size();
+            const std::size_t width = rFlat.Nbytes() / (count == 0 ? 1 : count);
             std::memcpy(b.Data(), rFlat.Data() + base * width, ncells * width);
             blocks.push_back(std::move(b));
             base += ncells;
@@ -274905,6 +275045,8 @@ SelFacets sel_collect_facets(const Mesh& rMesh, int Dim) {
                 }
                 continue;
             }
+            if (pc == nullptr)
+                continue;  // a block with no connectivity has no facets
             const std::size_t npc = cb.NodesPerCell();
             const std::int64_t* row = pc + c * npc;
             std::int64_t buf[9];
@@ -276100,15 +276242,14 @@ std::string seq_resolve_write_format(const SequenceOutput& rOutput, std::size_t 
 /// otherwise") -- an HDF-format series is unreadable by a core with no
 /// HDF5 support, including the very core that would have just written it.
 std::string seq_resolve_data_format(const WriteOptions& rOptions) {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    constexpr bool kHdf5 = true;
+#else
+    constexpr bool kHdf5 = false;
+#endif
     if (rOptions.mEncoding == WriteEncoding::Ascii)
         return "XML";
-    if (rOptions.mEncoding == WriteEncoding::Binary)
-        return "HDF";
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-    return "HDF";
-#else
-    return "XML";
-#endif
+    return (rOptions.mEncoding == WriteEncoding::Binary || kHdf5) ? "HDF" : "XML";
 }
 
 /// A transient writer's display name, and the name its "no ASCII/binary variant"
@@ -280858,6 +280999,8 @@ namespace {
 /// off-diagonal terms for a 9-component input. Returns false (sym left
 /// untouched) when any source component is non-finite.
 bool tinv_read_symmetric(const NDArray& rArray, std::size_t Ncomp, std::size_t r, double* pSym) {
+    if (Ncomp != 6 && Ncomp != 9)
+        return false;  // the callers pass only these two widths
     double t[9];
     for (std::size_t k = 0; k < Ncomp; ++k)
         t[k] = detail::read_double(rArray, r * Ncomp + k);
@@ -286118,10 +286261,13 @@ std::shared_ptr<const RemesherProvider> remesher() noexcept {
 namespace {
 
 /// The scan of MESHIOPLUSPLUS_PLUGIN_PATH runs once. Recursive, so that a plugin
-/// asking for a provider while it registers does not wait on itself; the flag
-/// makes that nested call return at once.
-std::recursive_mutex& plugin_scan_mutex() {
-    static std::recursive_mutex* const s_mutex = new std::recursive_mutex;
+/// asking for a provider while it registers (or from a static initialiser that
+/// dlopen runs) does not wait on itself; the flag makes that nested call return
+/// at once. Allocated and never freed, like providers_state(), so a provider
+/// query during static destruction still finds it.
+std::recursive_mutex& plugin_scan_mutex() {  // NOSONAR(cpp:S8462): see above
+    static std::recursive_mutex* const s_mutex =
+        new std::recursive_mutex;  // NOSONAR(cpp:S8462,cpp:S8474): see above
     return *s_mutex;
 }
 bool g_plugins_scan_started = false;        // guarded by the scan mutex
@@ -286283,16 +286429,17 @@ void register_builtin_providers() noexcept {
     // through it). Concurrent callers wait here until the scan is done, so none
     // sees a slot a plugin is about to fill; a nested call on the scanning
     // thread passes straight through.
-    if (g_plugins_scan_done.load(std::memory_order_acquire))
+    if (g_plugins_scan_done.load())
         return;
-    const std::lock_guard<std::recursive_mutex> scan_lock(plugin_scan_mutex());
+    const std::lock_guard<std::recursive_mutex> scan_lock(
+        plugin_scan_mutex());  // NOSONAR(cpp:S8462): re-entered by a plugin, see above
     if (g_plugins_scan_started)
         return;  // done meanwhile, or this thread's own plugin is asking
     g_plugins_scan_started = true;
     const char* p_paths = std::getenv("MESHIOPLUSPLUS_PLUGIN_PATH");
     if (p_paths && *p_paths)
         load_plugins(p_paths);
-    g_plugins_scan_done.store(true, std::memory_order_release);
+    g_plugins_scan_done.store(true);
 }
 
 }  // namespace meshioplusplus

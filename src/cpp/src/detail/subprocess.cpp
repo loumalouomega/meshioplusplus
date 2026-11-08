@@ -19,9 +19,7 @@
 #include "subprocess.hpp"
 
 // System includes
-#include <atomic>
 #include <cerrno>
-#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <stdexcept>
@@ -33,7 +31,13 @@
 #if defined(_WIN32)
 #define NOMINMAX
 #include <windows.h>
-#elif !defined(__EMSCRIPTEN__)
+
+#include <atomic>
+#include <chrono>
+#else
+#include <stdlib.h>  // mkdtemp
+#endif
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -204,7 +208,8 @@ int run_process(const std::vector<std::string>& rArgv, const std::string& rWorkD
         const int null = open("/dev/null", O_RDONLY);
         if (null >= 0)
             dup2(null, STDIN_FILENO);
-        const int log = open(rLogPath.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+        // 0600: the log is the caller's; nobody else needs to read it.
+        const int log = open(rLogPath.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0600);
         if (log >= 0) {
             dup2(log, STDOUT_FILENO);
             dup2(log, STDERR_FILENO);
@@ -229,9 +234,20 @@ int run_process(const std::vector<std::string>& rArgv, const std::string& rWorkD
 #endif  // __EMSCRIPTEN__
 
 std::string make_temp_dir(const std::string& rTag) {
-    static std::atomic<unsigned long> s_counter{0};
     std::error_code ec;
-    const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+    // The directory is created exclusively and private below, so another user
+    // can neither place it first nor read what a run leaves in it.
+    const std::filesystem::path base =
+        std::filesystem::temp_directory_path(ec);  // NOSONAR(cpp:S5443): see above
+#if !defined(_WIN32)
+    // mkdtemp: an exclusive create with mode 0700.
+    std::string pattern = (base / ("meshioplusplus_" + rTag + "_XXXXXX")).string();
+    if (mkdtemp(pattern.data()) != nullptr)
+        return pattern;
+#else
+    // The temporary directory is the user's own on Windows; create_directory
+    // fails on an existing name, so the loop takes a fresh one.
+    static std::atomic<unsigned long> s_counter{0};
     const auto stamp = static_cast<unsigned long long>(
         std::chrono::steady_clock::now().time_since_epoch().count());
     for (int attempt = 0; attempt < 100; ++attempt) {
@@ -241,6 +257,7 @@ std::string make_temp_dir(const std::string& rTag) {
         if (std::filesystem::create_directory(dir, ec))
             return dir.string();
     }
+#endif
     throw std::runtime_error("meshio++: cannot create a temporary directory for " + rTag);
 }
 

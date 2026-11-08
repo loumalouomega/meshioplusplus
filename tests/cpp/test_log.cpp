@@ -49,6 +49,22 @@ private:
 // tests avoid asserting an absolute level; they check the internal consistency
 // of enabled()/threshold() and the exact line format produced by write().
 
+TEST(Log, EscapeKeepsOneCallToOneLine) {
+    // Text a reader logs from a file cannot end the line or drive the terminal.
+    EXPECT_EQ(log::escape("plain\ttext"), "plain\ttext");
+    EXPECT_EQ(log::escape("a\nmeshio error [x:1] forged"), "a\\nmeshio error [x:1] forged");
+    EXPECT_EQ(log::escape("cr\r"), "cr\\r");
+    EXPECT_EQ(log::escape(std::string("\x1b[2J\x7f\0", 6)), "\\x1b[2J\\x7f\\x00");
+}
+
+TEST(Log, WriteEscapesTheMessage) {
+    CerrCapture cap;
+    log::write(log::Level::Warn, "one\ntwo", detail::source_location::current());
+    const std::string out = cap.str();
+    EXPECT_NE(out.find("one\\ntwo"), std::string::npos) << out;
+    EXPECT_EQ(out.find('\n'), out.size() - 1) << out;
+}
+
 TEST(Log, LevelsAreOrdered) {
     EXPECT_LT(static_cast<int>(log::Level::Debug), static_cast<int>(log::Level::Info));
     EXPECT_LT(static_cast<int>(log::Level::Info), static_cast<int>(log::Level::Warn));

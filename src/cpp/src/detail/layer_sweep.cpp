@@ -162,15 +162,17 @@ LayerSweepResult layer_sweep(const LayerSweepInput& rIn) {
             return;
         // Rotate so the collapsed ones come first, in cyclic order.
         std::size_t s = 0;
+        // ncol (1 or 2 here) counted the collapsed corners, so the search
+        // stops within the three; the bound states it.
         if (ncol == 1) {
-            while (!is_collapsed(v[s], K))
+            while (s < 2 && !is_collapsed(v[s], K))
                 ++s;
             const std::int64_t x = v[s], y = v[(s + 1) % 3], z = v[(s + 2) % 3];
             cell.mNodes = {at(y, K - 1), at(y, K), at(z, K), at(z, K - 1),
                            at(x, K - 1), -1,       -1,       -1};
             out.mPyramids.push_back(cell);
         } else {
-            while (is_collapsed(v[s], K))
+            while (s < 2 && is_collapsed(v[s], K))
                 ++s;
             const std::int64_t z = v[s], x = v[(s + 1) % 3], y = v[(s + 2) % 3];
             cell.mNodes = {at(x, K - 1), at(y, K - 1), at(z, K - 1), at(z, K), -1, -1, -1, -1};

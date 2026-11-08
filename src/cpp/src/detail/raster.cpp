@@ -43,7 +43,7 @@ constexpr std::int64_t kRstHalf = kRstOne / 2;
 // A screen coordinate in fixed point, clamped so every edge-function product
 // fits in 64 bits (|coordinate| <= 2^26, differences <= 2^27, products <= 2^54).
 std::int64_t rst_fixed(double v) {
-    if (!(v == v))
+    if (std::isnan(v))
         v = 0.0;
     if (v > kRasterLimitPx)
         v = kRasterLimitPx;
@@ -149,7 +149,7 @@ void rst_prepare_seg(const RasterScene& rScene, const RasterLine& rLine, int Wid
     const RasterVertex& b = rScene.mVertices[static_cast<std::size_t>(rLine.mB)];
     // The same clamp as a triangle's corners, in pixels rather than fixed point.
     auto clamp = [](double v) {
-        if (!(v == v))
+        if (std::isnan(v))
             return 0.0;
         return std::min(std::max(v, -kRasterLimitPx), kRasterLimitPx);
     };
@@ -294,7 +294,7 @@ void rst_draw_seg(const RstSeg& rS, const RasterLine& rLine, const RasterScene& 
 void rst_draw_point(const RasterPoint& rPoint, const RasterScene& rScene, const RstTile& rTile,
                     RasterTarget& rOut) {
     const RasterVertex& v = rScene.mVertices[static_cast<std::size_t>(rPoint.mV)];
-    if (!(v.mX == v.mX) || !(v.mY == v.mY))
+    if (std::isnan(v.mX) || std::isnan(v.mY))
         return;
     const double r = rScene.mPointRadius;
     const double x = std::min(std::max(v.mX, -kRasterLimitPx), kRasterLimitPx);
@@ -363,7 +363,7 @@ RasterTarget rasterize(const RasterScene& rScene, int Width, int Height,
     const double r = rScene.mPointRadius;
     for (std::size_t i = 0; i < rScene.mPoints.size(); ++i) {
         const RasterVertex& v = rScene.mVertices[static_cast<std::size_t>(rScene.mPoints[i].mV)];
-        if (!(v.mX == v.mX) || !(v.mY == v.mY))
+        if (std::isnan(v.mX) || std::isnan(v.mY))
             continue;
         const double x = std::min(std::max(v.mX, -kRasterLimitPx), kRasterLimitPx);
         const double y = std::min(std::max(v.mY, -kRasterLimitPx), kRasterLimitPx);

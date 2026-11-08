@@ -183,6 +183,8 @@ double mph_simplex_measure(const std::vector<MphVec>& rXyz, const std::int64_t* 
 void mph_simplex_stiffness(const std::vector<MphVec>& rXyz, const std::int64_t* pNodes, int D,
                            double Measure, double Weight,
                            std::vector<detail::SparseTriplet>& rOut) {
+    if (D != 2 && D != 3)
+        return;  // triangles and tetrahedra only, which is all the caller passes
     const MphVec& p0 = rXyz[static_cast<std::size_t>(pNodes[0])];
     MphVec e[3];
     for (int k = 0; k < D; ++k)

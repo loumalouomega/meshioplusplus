@@ -256,6 +256,9 @@ void octmh_uniform(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, OctreeMeshR
         n[k] = frame.mRoots[k] << level;
         cells *= static_cast<double>(n[k]);
     }
+    if (n[0] <= 0 || n[1] <= 0 || n[2] <= 0)
+        throw std::invalid_argument(std::string(kOctreeMeshPrefix) +
+                                    "the hexahedral grid has no cells");
     if (rO.mMaxCells > 0 && cells > static_cast<double>(rO.mMaxCells))
         throw std::invalid_argument(
             std::string(kOctreeMeshPrefix) + "the hexahedral grid would have " +

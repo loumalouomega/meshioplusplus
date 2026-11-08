@@ -107,11 +107,13 @@ public:
                     unsigned v = 0;
                     for (int k = 0; k < 4; ++k) {
                         const char h = mrText[mAt++];
-                        v = v * 16 +
-                            static_cast<unsigned>(h >= '0' && h <= '9'   ? h - '0'
-                                                  : h >= 'a' && h <= 'f' ? h - 'a' + 10
-                                                  : h >= 'A' && h <= 'F' ? h - 'A' + 10
-                                                                         : (Fail("bad \\u escape"), 0));
+                        const int digit = h >= '0' && h <= '9'   ? h - '0'
+                                          : h >= 'a' && h <= 'f' ? h - 'a' + 10
+                                          : h >= 'A' && h <= 'F' ? h - 'A' + 10
+                                                                 : -1;
+                        if (digit < 0)
+                            Fail("bad \\u escape");
+                        v = v * 16 + static_cast<unsigned>(digit);
                     }
                     if (v > 0x7F)
                         Fail("only ASCII \\u escapes are supported");

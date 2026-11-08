@@ -569,15 +569,14 @@ std::string seq_resolve_write_format(const SequenceOutput& rOutput, std::size_t 
 /// otherwise") -- an HDF-format series is unreadable by a core with no
 /// HDF5 support, including the very core that would have just written it.
 std::string seq_resolve_data_format(const WriteOptions& rOptions) {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    constexpr bool kHdf5 = true;
+#else
+    constexpr bool kHdf5 = false;
+#endif
     if (rOptions.mEncoding == WriteEncoding::Ascii)
         return "XML";
-    if (rOptions.mEncoding == WriteEncoding::Binary)
-        return "HDF";
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-    return "HDF";
-#else
-    return "XML";
-#endif
+    return (rOptions.mEncoding == WriteEncoding::Binary || kHdf5) ? "HDF" : "XML";
 }
 
 /// A transient writer's display name, and the name its "no ASCII/binary variant"

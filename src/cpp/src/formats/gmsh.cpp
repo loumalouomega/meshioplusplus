@@ -660,15 +660,18 @@ void read_nodes(GmshCursor& rCur, bool is_ascii, NDArray& rPoints,
     rPoints = NDArray(DType::Float64, {static_cast<std::size_t>(num), 3});
     rPointTags.resize(num);
     double* pp = rPoints.As<double>();
-    if (is_ascii &&
-        rCur.parallel_numbers(static_cast<std::size_t>(num) * 4, [&](std::size_t k, double x) {
-            const std::size_t i = k / 4;
-            if (k % 4 != 0) {
-                pp[i * 3 + k % 4 - 1] = x;
-                return true;
-            }
-            return GmshCursor::integer_of(x, rPointTags[i]);
-        })) {
+    bool parsed = false;
+    if (is_ascii)
+        parsed =
+            rCur.parallel_numbers(static_cast<std::size_t>(num) * 4, [&](std::size_t k, double x) {
+                const std::size_t i = k / 4;
+                if (k % 4 != 0) {
+                    pp[i * 3 + k % 4 - 1] = x;
+                    return true;
+                }
+                return GmshCursor::integer_of(x, rPointTags[i]);
+            });
+    if (parsed) {
         // parsed in parallel
     } else if (is_ascii) {
         for (std::int64_t i = 0; i < num; ++i) {
@@ -774,7 +777,9 @@ bool gmsh22_parallel_elements(GmshCursor& rCur, std::size_t Total, std::vector<E
             while (p < l.size() && !detail::text_is_blank(l[p]))
                 ++p;
             std::int64_t v = 0;
-            if (!gmsh22_int_token(l.substr(b, p - b), v) || !rFn(k++, v))
+            if (!gmsh22_int_token(l.substr(b, p - b), v))
+                return false;
+            if (!rFn(k++, v))
                 return false;
         }
     };
@@ -790,7 +795,7 @@ bool gmsh22_parallel_elements(GmshCursor& rCur, std::size_t Total, std::vector<E
     parallel_for(
         Total,
         [&](std::size_t e) {
-            if (refused.load(std::memory_order_relaxed))
+            if (refused.load())
                 return;
             std::int64_t v[3] = {0, 0, 0};
             std::size_t count = 0;
@@ -801,17 +806,17 @@ bool gmsh22_parallel_elements(GmshCursor& rCur, std::size_t Total, std::vector<E
                     return true;
                 }) ||
                 count < 3) {
-                refused.store(true, std::memory_order_relaxed);
+                refused.store(true);
                 return;
             }
             const auto it = g2m.find(static_cast<int>(v[1]));
             if (it == g2m.end() || v[2] < 0 || static_cast<std::uint64_t>(v[2]) > count) {
-                refused.store(true, std::memory_order_relaxed);
+                refused.store(true);
                 return;
             }
             const std::size_t n = static_cast<std::size_t>(nnpc.at(it->second));
             if (count < 3 + static_cast<std::size_t>(v[2]) + n) {
-                refused.store(true, std::memory_order_relaxed);
+                refused.store(true);
                 return;
             }
             heads[e] = {&it->second, static_cast<std::uint32_t>(n),
@@ -1207,20 +1212,28 @@ void read_nodes_41(GmshCursor& rCur, bool is_ascii, int data_size, NDArray& rPoi
             std::memcpy(pp + idx * 3, rCur.mBuf.data() + rCur.mPos, nbz * 3 * 8);
             rCur.mPos += nbz * 3 * 8;
         } else {
-            if (!is_ascii || !rCur.parallel_numbers(nbz, [&](std::size_t i, double x) {
+            // The chunked parse runs on ascii input only; the serial loop takes
+            // what it leaves (binary input, or a chunk it refused).
+            bool tags_parsed = false;
+            if (is_ascii)
+                tags_parsed = rCur.parallel_numbers(nbz, [&](std::size_t i, double x) {
                     std::int64_t tag = 0;
                     if (!GmshCursor::integer_of(x, tag))
                         return false;
                     rTags[idx + i] = tag - 1;
                     return true;
-                })) {
+                });
+            if (!tags_parsed) {
                 for (std::int64_t i = 0; i < nb; ++i)
                     rTags[idx + i] = rd_size() - 1;
             }
-            if (!is_ascii || !rCur.parallel_numbers(nbz * 3, [&](std::size_t i, double x) {
+            bool coords_parsed = false;
+            if (is_ascii)
+                coords_parsed = rCur.parallel_numbers(nbz * 3, [&](std::size_t i, double x) {
                     pp[idx * 3 + i] = x;
                     return true;
-                })) {
+                });
+            if (!coords_parsed) {
                 for (std::int64_t i = 0; i < nb; ++i) {
                     pp[(idx + i) * 3 + 0] = rd_dbl();
                     pp[(idx + i) * 3 + 1] = rd_dbl();
@@ -1315,6 +1328,7 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
                                   "element");
         blk.mConn = NDArray(DType::Int64, {nez, n});
         std::int64_t* dst = blk.mConn.As<std::int64_t>();
+        bool parsed = false;
         if (!is_ascii && data_size == 8 && !version40) {
             // Each element is [tag, node0..node(n-1)] u64, native-endian and
             // contiguous. Decode the nodes straight from the slurped buffer into
@@ -1331,27 +1345,28 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
                 }
             });
             rCur.mPos += nez * stride * 8;
-        } else if (is_ascii &&
-                   rCur.parallel_numbers(nez * (n + 1), [&](std::size_t k, double x) {
-                       // [tag, node0..node(n-1)] per element: the tag is read
-                       // as the serial loop reads it and dropped; a node tag
-                       // the serial loop would reject refuses the chunked parse.
-                       const std::size_t e = k / (n + 1), j = k % (n + 1);
-                       std::int64_t tag = 0;
-                       if (version40) {
-                           std::int32_t t32 = 0;
-                           if (!GmshCursor::integer_of(x, t32) || (j != 0 && t32 < 1))
-                               return false;
-                           tag = t32;
-                       } else if (!GmshCursor::integer_of(x, tag)) {
-                           return false;
-                       }
-                       if (j != 0)
-                           dst[e * n + j - 1] = tag - 1;
-                       return true;
-                   })) {
-            // parsed in parallel
-        } else {
+            parsed = true;
+        } else if (is_ascii) {
+            parsed = rCur.parallel_numbers(nez * (n + 1), [&](std::size_t k, double x) {
+                // [tag, node0..node(n-1)] per element: the tag is read as the
+                // serial loop reads it and dropped; a node tag the serial loop
+                // would reject refuses the chunked parse.
+                const std::size_t e = k / (n + 1), j = k % (n + 1);
+                std::int64_t tag = 0;
+                if (version40) {
+                    std::int32_t t32 = 0;
+                    if (!GmshCursor::integer_of(x, t32) || (j != 0 && t32 < 1))
+                        return false;
+                    tag = t32;
+                } else if (!GmshCursor::integer_of(x, tag)) {
+                    return false;
+                }
+                if (j != 0)
+                    dst[e * n + j - 1] = tag - 1;
+                return true;
+            });
+        }
+        if (!parsed) {
             if (version40 && !is_ascii)
                 rCur.need(nez * (n + 1) * 4);
             std::size_t p = 0;

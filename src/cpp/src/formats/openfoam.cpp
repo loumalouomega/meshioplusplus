@@ -349,10 +349,10 @@ struct Patch {
  *
  * @return the value token, or "" when the key is absent.
  */
-std::string openfoam_dict_word(const std::string& rBlock, const char* pKey) {
-    const std::size_t klen = std::strlen(pKey);
+std::string openfoam_dict_word(const std::string& rBlock, std::string_view Key) {
+    const std::size_t klen = Key.size();
     std::size_t p = 0;
-    while ((p = rBlock.find(pKey, p)) != std::string::npos) {
+    while ((p = rBlock.find(Key, p)) != std::string::npos) {
         const bool left_ok = p == 0 || std::isspace(static_cast<unsigned char>(rBlock[p - 1])) ||
                              rBlock[p - 1] == ';';
         const std::size_t after = p + klen;
@@ -1339,10 +1339,13 @@ private:
                 continue;
             }
             ++mPos;
-            if (c == '(')
+            if (c == '(') {
                 ++depth;
-            else if (c == ')' && --depth == 0)
-                return;
+            } else if (c == ')') {
+                --depth;
+                if (depth == 0)
+                    return;
+            }
         }
         mFailed = true;
     }
@@ -3405,7 +3408,7 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
                     neighbour.push_back(cell_local[static_cast<std::size_t>(n)]);
                 face_addr.push_back(lf.mFlipped ? -(lf.mSerial + 1) : lf.mSerial + 1);
             }
-            f << (rOpts.mBinary ? ")\n" : ")\n");
+            f << ")\n";
         }
         foam_emit_label_list(poly / "owner", "owner", owner, rOpts);
         foam_emit_label_list(poly / "neighbour", "neighbour", neighbour, rOpts);

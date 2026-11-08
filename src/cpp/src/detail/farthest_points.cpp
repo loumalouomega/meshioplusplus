@@ -86,13 +86,13 @@ FarthestPoints farthest_point_order(const double* pXyz, std::size_t N, std::size
                     if (!Init) {
                         // np.minimum: a NaN on either side is the result.
                         const double cur = d2[k];
-                        v = (d < cur || d != d) ? d : cur;
+                        v = (d < cur || std::isnan(d)) ? d : cur;
                     }
                     d2[k] = v;
                     if (v > best) {
                         best = v;
                         at = k;
-                    } else if (v != v && first_nan == static_cast<std::size_t>(-1)) {
+                    } else if (std::isnan(v) && first_nan == static_cast<std::size_t>(-1)) {
                         first_nan = k;
                     }
                 }

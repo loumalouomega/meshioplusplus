@@ -50,6 +50,9 @@
 #include <utility>
 #include <vector>
 
+// Project includes
+#include "meshioplusplus/export.hpp"
+
 namespace meshioplusplus {
 
 /**
@@ -79,6 +82,19 @@ inline std::shared_ptr<const BufferAllocator>& buffer_allocator_storage() {
     static std::shared_ptr<const BufferAllocator> a;
     return a;
 }
+/**
+ * @brief The default heap of an owning buffer: `::operator new` and
+ * `::operator delete`, defined out of line in `ndarray.cpp`.
+ *
+ * Out of line so a static analyzer sees an allocation of unknown extent. Inlined,
+ * it followed `NDArray::AllocBytes` taking none of a shape's dimensions (a
+ * scalar's one element) and reported every write past the first element of a
+ * freshly built array as out of bounds (SonarCloud cpp:S3519, roadmap 9.1.3).
+ */
+MESHIOPLUSPLUS_API void* ndarray_heap_alloc(std::size_t Bytes);
+/** @brief Frees a buffer `ndarray_heap_alloc` returned. */
+MESHIOPLUSPLUS_API void ndarray_heap_free(void* pPtr) noexcept;
+
 /** @brief The currently installed hook (may be null = default heap). */
 inline std::shared_ptr<const BufferAllocator> current_buffer_allocator() {
     std::lock_guard<std::mutex> lk(buffer_allocator_mutex());
@@ -158,7 +174,7 @@ public:
             return;
         mAllocator = current_buffer_allocator();
         void* p = (mAllocator && mAllocator->alloc) ? mAllocator->alloc(n, mAllocator->pUser)
-                                                    : ::operator new(n);
+                                                    : ndarray_heap_alloc(n);
         if (p == nullptr)
             throw std::bad_alloc{};
         mPtr = static_cast<std::byte*>(p);
@@ -174,7 +190,7 @@ private:
             if (mAllocator && mAllocator->free)
                 mAllocator->free(mPtr, mSize, mAllocator->pUser);
             else
-                ::operator delete(mPtr);
+                ndarray_heap_free(mPtr);
         }
         mPtr = nullptr;
         mSize = 0;

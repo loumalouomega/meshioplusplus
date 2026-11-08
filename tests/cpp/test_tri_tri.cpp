@@ -17,6 +17,7 @@
 // Tests for the exact triangle-triangle kernel (roadmap 6.9.1).
 
 #include <array>
+#include <cmath>
 
 #include <gtest/gtest.h>
 
@@ -90,4 +91,28 @@ TEST(TriTri, SideBySideInOnePlaneAreApart) {
     const V e{0.49999999999999994, -0.061870000000000008, -0.061870000000000015};
     const V f{0.25, -0.061870000000000008, -0.061870000000000015};
     EXPECT_FALSE(meet(a, b, c, d, e, f));
+}
+
+// Corners in the other triangle's plane (roadmap 9.3.1): each corner adds at
+// most one point to its triangle's set, so the sets stay within three slots,
+// and a triangle that touches the other's plane at one corner only still has
+// a point for the segment's ends.
+TEST(TriTri, SegmentWithCornersInThePlanes) {
+    const V a{0, 0, 0}, b{1, 0, 0}, c{0, 1, 0};
+    // One corner on the first triangle, the others above it: a point.
+    const V d{0.2, 0.2, 0}, e{0.5, 0.2, 1}, f{0.2, 0.5, 1};
+    const mdt::TriTriSegment s =
+        mdt::tri_tri_segment(a.data(), b.data(), c.data(), d.data(), e.data(), f.data());
+    EXPECT_EQ(s.mKind, mdt::TriTriContact::Point);
+    EXPECT_DOUBLE_EQ(s.mP[0], 0.2);
+    EXPECT_DOUBLE_EQ(s.mP[1], 0.2);
+    EXPECT_DOUBLE_EQ(s.mP[2], 0.0);
+    // Two corners on the first triangle's plane and its edge crossing: a segment.
+    const V g{0.2, 0.2, 0}, h{0.6, 0.2, 0}, k{0.4, 0.3, 1};
+    const mdt::TriTriSegment t =
+        mdt::tri_tri_segment(a.data(), b.data(), c.data(), g.data(), h.data(), k.data());
+    EXPECT_EQ(t.mKind, mdt::TriTriContact::Segment);
+    EXPECT_DOUBLE_EQ(t.mP[2], 0.0);
+    EXPECT_DOUBLE_EQ(t.mQ[2], 0.0);
+    EXPECT_NEAR(std::abs(t.mQ[0] - t.mP[0]), 0.4, 1e-15);
 }

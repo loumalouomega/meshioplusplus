@@ -535,10 +535,10 @@ Op2Grids op2_read_grids(const Op2Stream& rS, const std::vector<Op2Table>& rTable
 
 // The first record of mark `Mark` of the first table whose name starts with
 // `Prefix`, or nullptr.
-const Op2Record* op2_table_record(const std::vector<Op2Table>& rTables, const char* pPrefix,
+const Op2Record* op2_table_record(const std::vector<Op2Table>& rTables, std::string_view Prefix,
                                   std::int64_t Mark) {
     for (const Op2Table& t : rTables) {
-        if (t.mName.compare(0, std::strlen(pPrefix), pPrefix) != 0)
+        if (t.mName.compare(0, Prefix.size(), Prefix) != 0)
             continue;
         for (const auto& [mark, rec] : t.mRecords)
             if (mark == Mark)
@@ -1443,9 +1443,9 @@ std::map<std::int64_t, std::string> op2_read_properties(const Op2Stream& rS,
 
 // --- results -------------------------------------------------------------------------
 
-bool op2_starts(const std::string& rName, std::initializer_list<const char*> Prefixes) {
-    for (const char* p : Prefixes)
-        if (rName.compare(0, std::strlen(p), p) == 0)
+bool op2_starts(const std::string& rName, std::initializer_list<std::string_view> Prefixes) {
+    for (const std::string_view p : Prefixes)
+        if (rName.compare(0, p.size(), p) == 0)
             return true;
     return false;
 }
@@ -2803,7 +2803,7 @@ constexpr const char* kOp2wTapeId = "NASTRAN FORT TAPE ID CODE - ";
 /// A double as the file's single precision, rounded like numpy's cast (an
 /// overflow is an infinity).
 float op2w_float(double V) {
-    if (V != V)
+    if (std::isnan(V))
         return std::numeric_limits<float>::quiet_NaN();
     if (std::fabs(V) >= 3.4028235677973366e38)
         return V < 0 ? -std::numeric_limits<float>::infinity()

@@ -35,6 +35,8 @@ export function initSidebar(onResize: () => void): { toggle(): void } {
     const setWidth = (width: number, persist = true) => {
         const w = clampSidebarWidth(width, window.innerWidth);
         workspace.style.setProperty('--sidebar-w', `${w}px`);
+        // The window-splitter pattern: the separator reports the width it holds.
+        sash.setAttribute('aria-valuenow', String(w));
         if (persist) {
             try {
                 localStorage.setItem(WIDTH_KEY, String(w));

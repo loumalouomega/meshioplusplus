@@ -302,7 +302,10 @@ template <class TFn, class TRet, class... TArgs>
 auto core_guard_read_impl(const char* pFormat, TFn fn, TRet (TFn::*)(TArgs...) const) {
     return [pFormat, fn = std::move(fn)](TArgs... args) -> TRet {
         try {
-            return fn(std::forward<TArgs>(args)...);
+            // TArgs are the lambda's declared parameter types: forward moves the
+            // by-value ones and passes the reference ones on as they were bound,
+            // which std::move would not.
+            return fn(std::forward<TArgs>(args)...);  // NOSONAR(cpp:S5417)
         } catch (const py::builtin_exception&) {
             throw;
         } catch (const py::error_already_set&) {

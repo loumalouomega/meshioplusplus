@@ -46,6 +46,8 @@ namespace {
 /// off-diagonal terms for a 9-component input. Returns false (sym left
 /// untouched) when any source component is non-finite.
 bool tinv_read_symmetric(const NDArray& rArray, std::size_t Ncomp, std::size_t r, double* pSym) {
+    if (Ncomp != 6 && Ncomp != 9)
+        return false;  // the callers pass only these two widths
     double t[9];
     for (std::size_t k = 0; k < Ncomp; ++k)
         t[k] = detail::read_double(rArray, r * Ncomp + k);

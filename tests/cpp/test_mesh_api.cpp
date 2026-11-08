@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 // External includes
@@ -197,6 +198,29 @@ TEST(MeshApi, DataNamesStaySortedAfterLaterInserts) {
     m.AppendCellData("area", float64_array({0.5, 0.5}));
     EXPECT_EQ(m.CellDataNames(), (std::vector<std::string>{"area", "tags"}));
 }
+
+#if !defined(MESHIOPLUSPLUS_MESH_BACKEND_NATIVE) && !defined(MESHIOPLUSPLUS_MESH_BACKEND_KRATOS)
+// The MESHIO name lists are kept current where the data changes (roadmap
+// 9.2.1), so concurrent readers of a const mesh only read them, and a direct
+// write to the public maps is followed by InvalidateNameCaches().
+TEST(MeshApi, MeshioNameListsFollowDirectWritesAfterInvalidate) {
+    Mesh m = mt::tri_mesh();
+    m.AddPointData("zeta", float64_array({1, 2, 3, 4}));
+    m.mPointData.emplace("alpha", float64_array({4, 3, 2, 1}));
+    m.mFieldData.emplace("mu", float64_array({7}));
+    m.InvalidateNameCaches();
+    const Mesh& rConst = m;
+    std::vector<std::vector<std::string>> seen(4);
+    std::vector<std::thread> readers;
+    for (std::size_t t = 0; t < seen.size(); ++t)
+        readers.emplace_back([&rConst, &seen, t]() { seen[t] = rConst.PointDataNames(); });
+    for (std::thread& r : readers)
+        r.join();
+    for (const auto& names : seen)
+        EXPECT_EQ(names, (std::vector<std::string>{"alpha", "zeta"}));
+    EXPECT_EQ(rConst.FieldDataNames(), (std::vector<std::string>{"mu"}));
+}
+#endif
 
 TEST(MeshApi, DataNamesAreSorted) {
     Mesh m = mt::tri_mesh();

@@ -2451,7 +2451,9 @@ void capi_mmg_report(const meshioplusplus::MmgReport& rR, mio_mmg_report* pOut) 
         return;
     *pOut = mio_mmg_report{};
     pOut->status = static_cast<int32_t>(rR.mStatus);
-    std::strncpy(pOut->library, rR.mLibrary.c_str(), sizeof(pOut->library) - 1);
+    // Bounded, and the zeroed struct keeps the last byte as the terminator.
+    std::memcpy(pOut->library, rR.mLibrary.data(),
+                std::min(rR.mLibrary.size(), sizeof(pOut->library) - 1));
     pOut->num_points_in = rR.mNumPointsIn;
     pOut->num_points_out = rR.mNumPointsOut;
     pOut->num_elements_in = rR.mNumElementsIn;
@@ -6614,13 +6616,15 @@ mio_mesh* mio_voxelize(const mio_mesh* mesh, const mio_voxel_opts* opts, int64_t
 mio_mesh* mio_octree(const mio_mesh* mesh, const mio_octree_opts* opts, mio_octree_report* report) {
     return capi_guarded_mesh([&]() -> mio_mesh* {
         capi_require(mesh, "meshio++: mesh is NULL");
+        // A local pointer, not the captured parameter, takes the defaults' address.
         mio_octree_opts defaults;
-        if (!opts) {
+        const mio_octree_opts* p_opts = opts;
+        if (!p_opts) {
             mio_octree_opts_init(&defaults);
-            opts = &defaults;
+            p_opts = &defaults;
         }
         meshioplusplus::OctreeResult r =
-            meshioplusplus::octree(mesh->mMesh, capi_octree_options(*opts));
+            meshioplusplus::octree(mesh->mMesh, capi_octree_options(*p_opts));
         if (report) {
             *report = mio_octree_report{};
             report->dimension = r.mDimension;
@@ -6643,13 +6647,15 @@ mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_opts* opts
         capi_octree_mesh_warnings().clear();
         capi_octree_mesh_extras() = CapiOctreeMeshExtras{};
         capi_require(mesh, "meshio++: mesh is NULL");
+        // A local pointer, not the captured parameter, takes the defaults' address.
         mio_octree_mesh_opts defaults;
-        if (!opts) {
+        const mio_octree_mesh_opts* p_opts = opts;
+        if (!p_opts) {
             mio_octree_mesh_opts_init(&defaults);
-            opts = &defaults;
+            p_opts = &defaults;
         }
         meshioplusplus::OctreeMeshResult r =
-            meshioplusplus::octree_mesh(mesh->mMesh, capi_octree_mesh_options(*opts));
+            meshioplusplus::octree_mesh(mesh->mMesh, capi_octree_mesh_options(*p_opts));
         std::string& warnings = capi_octree_mesh_warnings();
         for (const std::string& w : r.mWarnings) {
             if (!warnings.empty())
@@ -9328,9 +9334,11 @@ static_assert(static_cast<int>(meshioplusplus::TetrahedralizeBackend::Netgen) ==
 namespace {
 
 // A backend name kept for the library's lifetime, for the `const char*` the
-// report and mio_tet_mesher_name() hand out.
+// report and mio_tet_mesher_name() hand out. The set and its mutex are
+// allocated and never freed, so a pointer handed out stays valid, and a call
+// still works, during static destruction.
 const char* capi_tet_name(const std::string& rName) {
-    static std::mutex* const s_mutex = new std::mutex;
+    static std::mutex* const s_mutex = new std::mutex;  // NOSONAR(cpp:S8474): see above
     static std::set<std::string>* const s_names = new std::set<std::string>;
     const std::lock_guard<std::mutex> lock(*s_mutex);
     return s_names->insert(rName).first->c_str();

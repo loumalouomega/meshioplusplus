@@ -138,10 +138,8 @@ h5::Hid cgns_create_group(hid_t loc, const std::string& rName) {
 // `total` bytes (NOT necessarily NUL-terminated -- CGNS text data like
 // ZoneType's "Unstructured" carries no terminator, only its declared length).
 NDArray cgns_padded_int8(const std::string& rS, std::size_t total) {
-    NDArray out(DType::Int8, {total});
-    std::int8_t* dst = out.As<std::int8_t>();
-    std::memset(dst, 0, total);
-    std::memcpy(dst, rS.data(), std::min(rS.size(), total));
+    NDArray out(DType::Int8, {total});  // zero-filled
+    std::memcpy(out.As<std::int8_t>(), rS.data(), std::min(rS.size(), total));
     return out;
 }
 

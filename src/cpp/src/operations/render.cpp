@@ -916,8 +916,10 @@ struct RndPrepared {
     std::shared_ptr<const Mesh> mCapMesh;
     std::vector<std::int64_t> mCapIds;  ///< per cell of mCapMesh: the input cell
     std::vector<double> mCapValues;     ///< per cell of mCapMesh: its value (empty: fill colour)
-    mutable std::once_flag mCapOnce;
-    mutable std::shared_ptr<const detail::MarchingInput> mCapInput;
+    // Built on the first CapInput() call; std::call_once on mCapOnce is the
+    // synchronisation that orders the write of mCapInput before every read.
+    mutable std::once_flag mCapOnce;                                 // NOSONAR(cpp:S8379)
+    mutable std::shared_ptr<const detail::MarchingInput> mCapInput;  // NOSONAR(cpp:S8379)
     // The input's own 2-D faces when they close (every edge shared by two),
     // whose cut loops are filled: rings into mXyz's original points.
     std::vector<std::int64_t> mCapStart;

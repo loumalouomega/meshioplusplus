@@ -134,13 +134,15 @@ bool ttr_enters_corner(const double* pV, const double* pA, const double* pC, con
 int ttr_plane_points(const double* const* pT, const double* pD, double (*pOut)[3]) {
     int n = 0;
     for (int i = 0; i < 3 && n < 3; ++i) {
+        // A corner in the plane and a crossing of the edge it starts are
+        // exclusive (the crossing needs a nonzero pD[i]), so each corner adds at
+        // most one point and n stays within the three slots.
+        const int j = (i + 1) % 3;
         if (pD[i] == 0.0) {
             for (int k = 0; k < 3; ++k)
                 pOut[n][k] = pT[i][k];
             ++n;
-        }
-        const int j = (i + 1) % 3;
-        if ((pD[i] > 0.0 && pD[j] < 0.0) || (pD[i] < 0.0 && pD[j] > 0.0)) {
+        } else if ((pD[i] > 0.0 && pD[j] < 0.0) || (pD[i] < 0.0 && pD[j] > 0.0)) {
             const double w = pD[i] / (pD[i] - pD[j]);
             for (int k = 0; k < 3; ++k)
                 pOut[n][k] = pT[i][k] + w * (pT[j][k] - pT[i][k]);
@@ -267,6 +269,10 @@ TriTriSegment tri_tri_segment(const double* pA, const double* pB, const double* 
     double p1[3][3], p2[3][3];
     const int n1 = ttr_plane_points(t1, d1, p1);
     const int n2 = ttr_plane_points(t2, d2, p2);
+    // Each triangle meets the other's plane once tri_tri_intersect holds and they
+    // are not coplanar, so both sets hold a point; the guard makes that explicit.
+    if (n1 == 0 || n2 == 0)
+        return out;
     // Both sets lie on the line the planes share: overlap their extents along it.
     const auto normal = [](const double* const* pT, double* pN) {
         const double u[3] = {pT[1][0] - pT[0][0], pT[1][1] - pT[0][1], pT[1][2] - pT[0][2]};

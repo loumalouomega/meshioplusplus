@@ -488,8 +488,10 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
                                 const auto it = maps[static_cast<std::size_t>(lev)].find(oct_morton(
                                     (nx >> sh) << sh, (ny >> sh) << sh, (nzc >> sh) << sh));
                                 if (it != maps[static_cast<std::size_t>(lev)].end()) {
+                                    // Relaxed: an idempotent mark several threads may
+                                    // set, read only after parallel_for has joined.
                                     std::atomic_ref<char>(flag[it->second])
-                                        .store(1, std::memory_order_relaxed);
+                                        .store(1, std::memory_order_relaxed);  // NOSONAR(cpp:S8417)
                                     break;
                                 }
                             }

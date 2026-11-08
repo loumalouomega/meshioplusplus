@@ -244,7 +244,7 @@ public:
         try {
             body();
         } catch (...) {
-            if (!mRaised.test_and_set(std::memory_order_acq_rel))
+            if (!mRaised.test_and_set())
                 mEptr = std::current_exception();
         }
     }

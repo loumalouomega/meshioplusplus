@@ -52,7 +52,7 @@ namespace meshioplusplus::detail {
  */
 [[noreturn]] inline void rethrow_as_read_error(const char* pFormat) {
     try {
-        throw;
+        throw;  // NOSONAR(cpp:S1039): called only from a catch (...) block, see above
     } catch (const ReadError&) {
         throw;
     } catch (const WriteError&) {

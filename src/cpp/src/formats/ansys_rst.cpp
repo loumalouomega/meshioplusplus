@@ -2560,7 +2560,7 @@ double rstw_time_of(const Mesh& rMesh) {
     if (!rMesh.HasFieldData(kSequenceTimeKey))
         return 1.0;
     const NDArray& a = rMesh.FieldData(kSequenceTimeKey);
-    return a.Size() == 0 ? 1.0 : detail::DoubleView(a).Data()[0];
+    return a.Size() == 0 ? 1.0 : detail::read_double(a, 0);
 }
 
 std::array<std::int64_t, 3> rstw_step_of(const Mesh& rMesh, std::size_t Index) {
@@ -2568,7 +2568,7 @@ std::array<std::int64_t, 3> rstw_step_of(const Mesh& rMesh, std::size_t Index) {
         if (!rMesh.HasFieldData(pName))
             return Default;
         const NDArray& a = rMesh.FieldData(pName);
-        return a.Size() == 0 ? Default : detail::Int64View(a).Data()[0];
+        return a.Size() == 0 ? Default : detail::read_int(a, 0);
     };
     return {get("ansys:load_step", 1), get("ansys:substep", static_cast<std::int64_t>(Index + 1)),
             get("ansys:cumulative", static_cast<std::int64_t>(Index + 1))};

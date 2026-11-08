@@ -177,11 +177,11 @@ inline const py::object& cached_package_class(const char* pName) {
     static std::atomic<py::object*> sMesh{nullptr};
     static std::atomic<py::object*> sRegion{nullptr};
     std::atomic<py::object*>& slot = (pName[0] == 'M') ? sMesh : sRegion;
-    py::object* cached = slot.load(std::memory_order_acquire);
+    py::object* cached = slot.load();
     if (!cached) {
         auto* made = new py::object(py::module_::import("meshioplusplus").attr(pName));
         py::object* expected = nullptr;
-        if (slot.compare_exchange_strong(expected, made, std::memory_order_acq_rel))
+        if (slot.compare_exchange_strong(expected, made))
             cached = made;
         else {
             delete made;  // the GIL is held: this thread lost the race
@@ -199,12 +199,12 @@ inline const py::object& cached_ragged_class(bool Faces) {
     static std::atomic<py::object*> sRows{nullptr};
     static std::atomic<py::object*> sFaces{nullptr};
     std::atomic<py::object*>& slot = Faces ? sFaces : sRows;
-    py::object* cached = slot.load(std::memory_order_acquire);
+    py::object* cached = slot.load();
     if (!cached) {
         auto* made = new py::object(
             py::module_::import("meshioplusplus._ragged").attr(Faces ? "CsrFaces" : "CsrRows"));
         py::object* expected = nullptr;
-        if (slot.compare_exchange_strong(expected, made, std::memory_order_acq_rel))
+        if (slot.compare_exchange_strong(expected, made))
             cached = made;
         else {
             delete made;  // the GIL is held: this thread lost the race

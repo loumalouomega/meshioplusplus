@@ -54,7 +54,7 @@ template <class T>
 inline std::int64_t typed_view_int(T v) {
     if constexpr (std::is_floating_point_v<T>) {
         const double d = static_cast<double>(v);
-        if (!(d == d))
+        if (std::isnan(d))
             return 0;
         if (d >= 9223372036854775807.0)
             return std::numeric_limits<std::int64_t>::max();

@@ -122,7 +122,7 @@ inline std::int64_t read_int(const NDArray& rA, std::size_t i) {
             // no conversion (the cast would be undefined), so they read as 0
             // and saturate, respectively.
             const double d = read_double(rA, i);
-            if (!(d == d))
+            if (std::isnan(d))
                 return 0;
             if (d >= 9223372036854775807.0)
                 return std::numeric_limits<std::int64_t>::max();

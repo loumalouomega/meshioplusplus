@@ -159,7 +159,7 @@ std::size_t cmp_temp_dirs() {
     std::size_t n = 0;
     for (const auto& entry :
          std::filesystem::directory_iterator(std::filesystem::temp_directory_path()))
-        if (entry.path().filename().string().rfind("meshioplusplus-", 0) == 0)
+        if (entry.path().filename().string().rfind("meshioplusplus_decompress_", 0) == 0)
             ++n;
     return n;
 }

@@ -102,7 +102,9 @@ void nodeadj_visit(const Mesh& rMesh, std::size_t NumPoints, NodeAdjacencyKind K
                 ring(cb.Row(c), cb.RowSize(c));
             } else {
                 // A known edge table (all seven linear types); blocks without
-                // one were skipped wholesale above.
+                // one were skipped wholesale above, so p_edges is set here.
+                if (p_edges == nullptr)
+                    continue;
                 const NDArray& conn = cb.Conn();
                 const std::size_t row = c * cb.NodesPerCell();
                 for (const CellEdgePair& e : *p_edges)
