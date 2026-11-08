@@ -1,32 +1,15 @@
-from .. import _core
-from .._fallback import core_declined
-from .._files import is_buffer
+from .. import _core  # noqa: F401 (the shims look it up at call time)
 from .._helpers import register_format
-from ._dolfin import read as _py_read
-from ._dolfin import write as _py_write
+from .._shims import plain_shims
+from ._dolfin import read as _py_read  # noqa: F401
+from ._dolfin import write as _py_write  # noqa: F401
 
-
-def read(filename):
-    """Read a DOLFIN XML file (C++ core, Python fallback)."""
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.dolfin_read(str(filename))
-        except Exception as exc:
-            if not core_declined(exc, "dolfin", "read", filename):
-                raise
-    return _py_read(filename)
-
-
-def write(filename, mesh):
-    """Write a DOLFIN XML file (C++ core, Python fallback)."""
-    if not is_buffer(filename, "w"):
-        try:
-            _core.dolfin_write(str(filename), mesh)
-            return
-        except Exception as exc:
-            if not core_declined(exc, "dolfin", "write", filename):
-                raise
-    return _py_write(filename, mesh)
+read, write = plain_shims(
+    __name__,
+    "dolfin",
+    """Read a DOLFIN XML file (C++ core, Python fallback).""",
+    """Write a DOLFIN XML file (C++ core, Python fallback).""",
+)
 
 
 register_format("dolfin-xml", [".xml"], read, {"dolfin-xml": write})

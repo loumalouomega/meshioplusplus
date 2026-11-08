@@ -1,33 +1,18 @@
-from .. import _core
-from .._fallback import core_declined
-from .._files import is_buffer
+from .. import _core  # noqa: F401 (the shims look it up at call time)
 from .._helpers import register_format
-from .._vtk_codecs import CPP_CODECS, cpp_codec_ok
-from ._vtp import read as _py_read
-from ._vtp import write as _py_write
+from .._shims import vtk_xml_shims
+from ._vtp import read as _py_read  # noqa: F401
+from ._vtp import write as _py_write  # noqa: F401
 
-
-def read(filename, points_only=False, arrays=None):
+read, write = vtk_xml_shims(
+    __name__,
+    "vtp",
     """Read a VTP (VTK XML PolyData) file.
 
     Uses the C++ core for ascii and inline binary (uncompressed or zlib) files,
     falling back to the reference Python reader for anything it doesn't handle
     (lzma, appended data, triangle strips, multi-piece).
-    """
-    # points_only/arrays reach the C++ reader, which skips the unwanted
-    # <DataArray>/section bodies outright. The Python fallback below has no
-    # selective support, so _helpers.read trims its result instead -- same
-    # answer, just without the saving.
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.vtp_read(str(filename), points_only=points_only, arrays=arrays)
-        except Exception as exc:
-            if not core_declined(exc, "vtp", "read", filename):
-                raise
-    return _py_read(filename)
-
-
-def write(filename, mesh, binary=True, compression="zlib", header_type=None):
+    """,
     """Write a VTP (VTK XML PolyData) file.
 
     Uses the C++ core for the cases it supports (ASCII and binary, the latter
@@ -35,20 +20,8 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
     falls back to the reference Python writer. The fallback also catches any
     limitation hit by the C++ path (e.g. cell types PolyData cannot hold raise
     WriteError in both implementations).
-    """
-    # zstd/lz4 reach the C++ writer when this build has them; otherwise the
-    # Python reference path handles it (needing the `codecs` extra), so a
-    # request never silently degrades to a different codec.
-    if cpp_codec_ok(compression, header_type) and not is_buffer(filename, "w"):
-        try:
-            _core.vtp_write_codec(str(filename), mesh, binary, CPP_CODECS[compression])
-            return
-        except Exception as exc:
-            if not core_declined(exc, "vtp", "write", filename):
-                raise
-    return _py_write(
-        filename, mesh, binary=binary, compression=compression, header_type=header_type
-    )
+    """,
+)
 
 
 register_format("vtp", [".vtp"], read, {"vtp": write})

@@ -1,40 +1,23 @@
-from .. import _core
-from .._fallback import core_declined
-from .._files import is_buffer
+from .. import _core  # noqa: F401 (the shims look it up at call time)
 from .._helpers import register_format
-from ._mphtxt import read as _py_read
-from ._mphtxt import write as _py_write
+from .._shims import plain_shims
+from ._mphtxt import read as _py_read  # noqa: F401
+from ._mphtxt import write as _py_write  # noqa: F401
 
-
-def read(filename):
+read, write = plain_shims(
+    __name__,
+    "mphtxt",
     """Read a COMSOL text mesh (.mphtxt) file.
 
     Uses the C++ core for real file paths, the Python reference otherwise.
     Selections become ``mesh.regions``; entity indices ``cell_data["mphtxt:geom"]``.
-    """
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.mphtxt_read(str(filename))
-        except Exception as exc:
-            if not core_declined(exc, "mphtxt", "read", filename):
-                raise
-    return _py_read(filename)
-
-
-def write(filename, mesh):
+    """,
     """Write a COMSOL text mesh (.mphtxt) file (Mesh version 4).
 
     Uses the C++ core for real file paths, the Python reference otherwise. Cell
     regions that are unions of whole geometric entities become Selections.
-    """
-    if not is_buffer(filename, "w"):
-        try:
-            _core.mphtxt_write(str(filename), mesh)
-            return
-        except Exception as exc:
-            if not core_declined(exc, "mphtxt", "write", filename):
-                raise
-    return _py_write(filename, mesh)
+    """,
+)
 
 
 register_format("mphtxt", [".mphtxt"], read, {"mphtxt": write})

@@ -1,34 +1,17 @@
-from .. import _core
-from .._fallback import core_declined
-from .._files import is_buffer
+from .. import _core  # noqa: F401 (the shims look it up at call time)
 from .._helpers import register_format
-from ._triangle import read as _py_read
-from ._triangle import write as _py_write
+from .._shims import plain_shims
+from ._triangle import read as _py_read  # noqa: F401
+from ._triangle import write as _py_write  # noqa: F401
 
-
-def read(filename):
+read, write = plain_shims(
+    __name__,
+    "triangle",
     """Read Triangle files (.node/.ele pair or .poly; C++ core for real file
-    paths, Python fallback)."""
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.triangle_read(str(filename))
-        except Exception as exc:
-            if not core_declined(exc, "triangle", "read", filename):
-                raise
-    return _py_read(filename)
-
-
-def write(filename, mesh):
+    paths, Python fallback).""",
     """Write Triangle files (.node/.ele pair or .poly; C++ core for real file
-    paths, Python fallback)."""
-    if not is_buffer(filename, "w"):
-        try:
-            _core.triangle_write(str(filename), mesh)
-            return
-        except Exception as exc:
-            if not core_declined(exc, "triangle", "write", filename):
-                raise
-    return _py_write(filename, mesh)
+    paths, Python fallback).""",
+)
 
 
 # .node/.ele are also claimed by tetgen (registered first): the dispatcher

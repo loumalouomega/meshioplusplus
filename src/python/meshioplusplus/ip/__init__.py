@@ -1,32 +1,15 @@
-from .. import _core
-from .._fallback import core_declined
-from .._files import is_buffer
+from .. import _core  # noqa: F401 (the shims look it up at call time)
 from .._helpers import register_format
-from ._ip import read as _py_read
-from ._ip import write as _py_write
+from .._shims import plain_shims
+from ._ip import read as _py_read  # noqa: F401
+from ._ip import write as _py_write  # noqa: F401
 
-
-def read(filename):
-    """Read an ANSYS Fluent interpolation file (C++ core, Python fallback)."""
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.ip_read(str(filename))
-        except Exception as exc:
-            if not core_declined(exc, "ip", "read", filename):
-                raise
-    return _py_read(filename)
-
-
-def write(filename, mesh):
-    """Write an ANSYS Fluent (version 3) interpolation file (C++ core, Python fallback)."""
-    if not is_buffer(filename, "w"):
-        try:
-            _core.ip_write(str(filename), mesh)
-            return
-        except Exception as exc:
-            if not core_declined(exc, "ip", "write", filename):
-                raise
-    return _py_write(filename, mesh)
+read, write = plain_shims(
+    __name__,
+    "ip",
+    """Read an ANSYS Fluent interpolation file (C++ core, Python fallback).""",
+    """Write an ANSYS Fluent (version 3) interpolation file (C++ core, Python fallback).""",
+)
 
 
 register_format("ip", [".ip"], read, {"ip": write})
