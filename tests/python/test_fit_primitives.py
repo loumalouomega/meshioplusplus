@@ -155,6 +155,12 @@ def test_twin_matches_the_core(mesh):
         "fit:patch_rms",
         "fit:patch_max",
         "fit:patch_tolerance",
+        "fit:patch_form_error",
+        "fit:patch_diameter_min",
+        "fit:patch_diameter_max",
+        "fit:patch_length",
+        "fit:patch_arc",
+        "fit:patch_extent",
     ):
         np.testing.assert_allclose(
             core.field_data[key], twin.field_data[key], rtol=1e-6, atol=1e-9
@@ -190,3 +196,46 @@ def test_a_noisy_turned_part_recovers_every_type():
     assert abs(params[3][6] - 2.0) < 5e-3  # the wall's radius
     assert abs(params[5][6] - 1.5) < 5e-3 and abs(params[5][7] - 0.5) < 5e-3  # fillet
     assert abs(params[2][6] - 1.5) < 5e-2  # the shallow dome's radius
+
+
+def _half_cylinder(r=1.5, h=2.0, n=24, m=4):
+    pts = [
+        [r * np.cos(np.pi * k / n), r * np.sin(np.pi * k / n), h * i / m]
+        for i in range(m + 1)
+        for k in range(n + 1)
+    ]
+    quads = [
+        [
+            i * (n + 1) + k,
+            i * (n + 1) + k + 1,
+            (i + 1) * (n + 1) + k + 1,
+            (i + 1) * (n + 1) + k,
+        ]
+        for i in range(m)
+        for k in range(n)
+    ]
+    return mio.Mesh(np.array(pts, dtype=float), [("quad", np.array(quads))])
+
+
+@pytest.mark.parametrize("engine", ["core", "twin"])
+def test_form_error_and_extremes_of_a_half_cylinder(engine):
+    mesh = _half_cylinder()
+    if engine == "core":
+        if _core is None:
+            pytest.skip("needs the compiled core")
+        out = mio.fit_primitives(mesh, patch_data="")
+    else:
+        out, _ = fp._fit_primitives_py(mesh, dict(_DEFAULTS, patch_data=""))
+    fd = out.field_data
+    assert int(fd["fit:patch_type"][0]) == 3
+    assert fd["fit:patch_arc"][0] == pytest.approx(180.0, abs=1e-9)
+    assert fd["fit:patch_form_error"][0] == pytest.approx(0.0, abs=1e-9)
+    assert fd["fit:patch_length"][0] == pytest.approx(2.0, abs=1e-9)
+    assert fd["fit:patch_diameter_min"][0] == pytest.approx(3.0, abs=1e-9)
+    assert fd["fit:patch_diameter_max"][0] == pytest.approx(3.0, abs=1e-9)
+    assert np.isnan(fd["fit:patch_extent"][0]).all()
+
+
+def test_form_error_of_a_closed_cylinder_spans_the_circle():
+    out, _ = fp._fit_primitives_py(cylinder(1.0, 2.0), dict(_DEFAULTS, patch_data=""))
+    assert out.field_data["fit:patch_arc"][0] == 360.0

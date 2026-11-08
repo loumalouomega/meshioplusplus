@@ -462,6 +462,85 @@ def _primitive_distance(t, p, q):
     return abs(math.sqrt(radial * radial + h * h) - float(p[7]))
 
 
+def _signed_distance(t, p, pts):
+    """Signed distances of points to a fitted primitive (positive along its normal)."""
+    x = np.asarray(p[0:3], dtype=np.float64)
+    d = np.asarray(p[3:6], dtype=np.float64)
+    v = pts - x
+    if t == 1:
+        return v @ d
+    if t == 2:
+        return np.sqrt(np.einsum("ij,ij->i", v, v)) - float(p[6])
+    h = v @ d
+    r = v - h[:, None] * d
+    rho = np.sqrt(np.einsum("ij,ij->i", r, r))
+    if t == 3:
+        return rho - float(p[6])
+    if t == 4:
+        a = float(p[8]) * _PI / 180.0
+        return rho * math.cos(a) - h * math.sin(a)
+    radial = rho - float(p[6])
+    return np.sqrt(radial * radial + h * h) - float(p[7])
+
+
+_FORM_KEYS = ("form_error", "diameter_min", "diameter_max", "length", "arc")
+
+
+def form_metrics(t, p, pts):
+    """Form error and extremes of points under a primitive (``primitive_form_metrics``)."""
+    out = {k: math.nan for k in _FORM_KEYS}
+    out["extent"] = (math.nan, math.nan)
+    pts = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+    if not 1 <= t <= 5 or len(pts) == 0:
+        return out
+    s = _signed_distance(t, p, pts)
+    out["form_error"] = float(s.max() - s.min())
+    x = np.asarray(p[0:3], dtype=np.float64)
+    d = np.asarray(p[3:6], dtype=np.float64)
+    if t == 1:
+        mean = pts.sum(axis=0) / float(len(pts))
+        q = pts - mean
+        cov = q.T @ q
+        _w, vec = sym3_eigen(cov)
+        ext = []
+        for e in (2, 1):
+            proj = pts @ np.asarray(vec[e], dtype=np.float64)
+            ext.append(float(proj.max() - proj.min()))
+        out["extent"] = (ext[0], ext[1])
+        return out
+    if t == 2:
+        v = pts - x
+        r = np.sqrt(np.einsum("ij,ij->i", v, v))
+        out["diameter_min"] = 2.0 * float(r.min())
+        out["diameter_max"] = 2.0 * float(r.max())
+        return out
+    if t == 5:
+        return out
+    e1, e2 = frame(d)
+    v = pts - x
+    h = v @ d
+    r = v - h[:, None] * d
+    rho = np.sqrt(np.einsum("ij,ij->i", r, r))
+    out["length"] = float(h.max() - h.min())
+    if t == 3:
+        out["diameter_min"] = 2.0 * float(rho.min())
+        out["diameter_max"] = 2.0 * float(rho.max())
+    keep = rho > 0.0
+    ang = np.degrees(np.arctan2(r[keep] @ np.asarray(e2), r[keep] @ np.asarray(e1)))
+    ang = np.sort(np.where(ang < 0.0, ang + 360.0, ang))
+    uniq = []
+    for a in ang:
+        if not uniq or a - uniq[-1] > 1e-9:
+            uniq.append(float(a))
+    if len(uniq) >= 2:
+        gap = [uniq[i + 1] - uniq[i] for i in range(len(uniq) - 1)]
+        gap.append(uniq[0] + 360.0 - uniq[-1])
+        largest = max(gap)
+        median = sorted(gap)[len(gap) // 2]
+        out["arc"] = 360.0 if largest <= 2.0 * median else 360.0 - largest
+    return out
+
+
 def _centre_misfit(t, p, patch):
     """RMS distance of the facets' centres to a fitted primitive."""
     total = 0.0
@@ -476,7 +555,7 @@ def _fit_patch(patch, opts):
     params = np.full(10, np.nan)
     tol = opts["tolerance"] * patch["diag"] if opts["relative"] else opts["tolerance"]
     out = {"type": 0, "params": params, "rms": np.nan, "max": np.nan}
-    out.update(fraction=0.0, tol=tol)
+    out.update(fraction=0.0, tol=tol, form=form_metrics(0, params, patch["pts"]))
     if len(patch["pts"]) == 0 or not patch["diag"] > 0.0:
         return out
     max_it = min(opts["max_iterations"], 100000)
@@ -522,6 +601,7 @@ def _fit_patch(patch, opts):
             p = np.array(p, dtype=np.float64)
             p[0:3] += patch["shift"]
             out.update(type=best_t, params=p, rms=rms, max=mx, fraction=frac)
+            out["form"] = form_metrics(best_t, p, patch["pts"] + patch["shift"])
             return out
         if not have_best or rms < out["rms"]:
             have_best = True
@@ -632,6 +712,13 @@ def _fit_primitives_py(mesh, opts):
     out.field_data["fit:patch_tolerance"] = np.array(
         [o["tol"] for o in rows], dtype=np.float64
     )
+    for key in _FORM_KEYS:
+        out.field_data[f"fit:patch_{key}"] = np.array(
+            [o["form"][key] for o in rows], dtype=np.float64
+        )
+    out.field_data["fit:patch_extent"] = np.array(
+        [o["form"]["extent"] for o in rows], dtype=np.float64
+    ).reshape(-1, 2)
     counts = [int(np.count_nonzero(ptype == t)) for t in range(6)]
     report = {
         "num_patches": len(ids),
@@ -702,8 +789,12 @@ def fit_primitives(
         1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus), ``fit:rms`` and
         ``fit:max``, and per-patch field data ``fit:patch_id``,
         ``fit:patch_type``, ``fit:patch_params`` (``(m, 10)``),
-        ``fit:patch_rms``, ``fit:patch_max``, ``fit:patch_fraction`` and
-        ``fit:patch_tolerance``. With ``return_report``, ``(mesh, report)``.
+        ``fit:patch_rms``, ``fit:patch_max``, ``fit:patch_fraction``,
+        ``fit:patch_tolerance``, and the form error and extremes
+        ``fit:patch_form_error``, ``fit:patch_diameter_min``,
+        ``fit:patch_diameter_max``, ``fit:patch_length``, ``fit:patch_arc``
+        (degrees) and ``fit:patch_extent`` (``(m, 2)``), NaN where they do not
+        apply. With ``return_report``, ``(mesh, report)``.
     """
     opts = {
         "patch_data": str(patch_data),

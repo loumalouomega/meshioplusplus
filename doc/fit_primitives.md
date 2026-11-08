@@ -57,6 +57,11 @@ The input, unchanged, plus cell data `fit:type` (`int64`: -1 no patch, 0 none, 1
 | `fit:patch_rms`, `fit:patch_max` | `float64` | the accepted fit's residuals, or the best attempt's |
 | `fit:patch_fraction` | `float64` | the share of points within tolerance |
 | `fit:patch_tolerance` | `float64` | the absolute tolerance applied |
+| `fit:patch_form_error` | `float64` | the peak-to-peak form error: the largest positive minus the largest negative signed orthogonal distance of the patch's points (flatness, sphericity, cylindricity, under the least-squares reference) |
+| `fit:patch_diameter_min`, `fit:patch_diameter_max` | `float64` | sphere and cylinder: twice the smallest and the largest radial distance the points reach |
+| `fit:patch_length` | `float64` | cylinder and cone: the points' extent along the axis |
+| `fit:patch_arc` | `float64` | cylinder and cone: the arc span in degrees, 360 less the largest angular gap between the points about the axis |
+| `fit:patch_extent` | `float64`, `(m, 2)` | plane: the two in-plane principal extents, largest first |
 
 `fit:patch_params` holds `x, y, z, ax, ay, az, r1, r2, angle, 0`:
 
@@ -69,6 +74,10 @@ The input, unchanged, plus cell data `fit:type` (`int64`: -1 no patch, 0 none, 1
 | torus | the centre | the unit axis | the major radius | the minor radius | |
 
 Unused entries are 0. A cylinder's or torus's axis is signed so its largest-magnitude component is positive. Patches are fitted in parallel, each serially, so the output is byte-identical on every backend and thread count; the numpy twin follows the same steps and agrees within rounding (it sums in numpy's order).
+
+### Form error and extremes
+
+The last five columns are what a metrology report carries beside the fit. The signed distance is positive on the side the surface's normal points to (along a plane's normal, away from a sphere's centre or a cylinder's, cone's or torus's axis), so the form error is the width of the zone between two offsets of the least-squares surface that holds every point. The arc span counts angles within 1e-9 degrees as one (the rims of a tessellated cylinder share them) and reads 360 when the largest gap is at most twice the median gap, as on a closed tessellation, whose gaps are all alike; a half cylinder reads 180. A value that does not apply to the type, or to a patch of type none, is NaN. The MCP tool reports them per patch as `form_error`, `diameter_min`, `diameter_max`, `length`, `arc_deg` and `extent`.
 
 ## CLI
 

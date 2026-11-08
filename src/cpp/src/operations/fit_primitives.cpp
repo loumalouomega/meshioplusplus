@@ -490,6 +490,7 @@ struct FpOutcome {
     double mMax = std::numeric_limits<double>::quiet_NaN();
     double mFraction = 0.0;
     double mTol = 0.0;
+    detail::PrimitiveFormMetrics mForm{};
 };
 
 // How far the facets' centres lie from a fitted surface (the parameters in
@@ -741,6 +742,13 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
             }
         }
         outcome[r] = fp_fit_patch(patch, rOptions);
+        // Form error and extremes, in the world frame the parameters are in.
+        std::vector<double> world(patch.mPts);
+        for (std::size_t i = 0; i < verts.size(); ++i)
+            for (int k = 0; k < 3; ++k)
+                world[i * 3 + static_cast<std::size_t>(k)] += patch.mShift[k];
+        outcome[r].mForm = detail::primitive_form_metrics(outcome[r].mType, outcome[r].mParams,
+                                                          world.data(), verts.size());
     });
 
     FitPrimitivesResult result;
@@ -809,6 +817,22 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     NDArray pmax = NDArray::Uninit(DType::Float64, {m});
     NDArray pfrac = NDArray::Uninit(DType::Float64, {m});
     NDArray ptol = NDArray::Uninit(DType::Float64, {m});
+    NDArray pform = NDArray::Uninit(DType::Float64, {m});
+    NDArray pdmin = NDArray::Uninit(DType::Float64, {m});
+    NDArray pdmax = NDArray::Uninit(DType::Float64, {m});
+    NDArray plen = NDArray::Uninit(DType::Float64, {m});
+    NDArray parc = NDArray::Uninit(DType::Float64, {m});
+    NDArray pext = NDArray::Uninit(DType::Float64, {m, 2});
+    for (std::size_t r = 0; r < m; ++r) {
+        const detail::PrimitiveFormMetrics& f = outcome[r].mForm;
+        pform.As<double>()[r] = f.mFormError;
+        pdmin.As<double>()[r] = f.mDiameterMin;
+        pdmax.As<double>()[r] = f.mDiameterMax;
+        plen.As<double>()[r] = f.mLength;
+        parc.As<double>()[r] = f.mArcDeg;
+        pext.As<double>()[r * 2] = f.mExtent[0];
+        pext.As<double>()[r * 2 + 1] = f.mExtent[1];
+    }
     for (std::size_t r = 0; r < m; ++r) {
         pid.As<std::int64_t>()[r] = ids[r];
         ptype.As<std::int64_t>()[r] = outcome[r].mType;
@@ -826,6 +850,12 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     out.AddFieldData("fit:patch_max", std::move(pmax));
     out.AddFieldData("fit:patch_fraction", std::move(pfrac));
     out.AddFieldData("fit:patch_tolerance", std::move(ptol));
+    out.AddFieldData(kFitPatchFormErrorName, std::move(pform));
+    out.AddFieldData(kFitPatchDiameterMinName, std::move(pdmin));
+    out.AddFieldData(kFitPatchDiameterMaxName, std::move(pdmax));
+    out.AddFieldData(kFitPatchLengthName, std::move(plen));
+    out.AddFieldData(kFitPatchArcName, std::move(parc));
+    out.AddFieldData(kFitPatchExtentName, std::move(pext));
     return result;
 }
 

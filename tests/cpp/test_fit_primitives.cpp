@@ -223,3 +223,83 @@ TEST(FitPrimitives, ATwoRimBoreIsACylinderNotASphere) {
     // A real sphere band keeps its type.
     EXPECT_EQ(fit_whole(analytic::sphere_band(1.5)).mType, 2);
 }
+
+namespace {
+
+double fd_value(const Mesh& rMesh, const char* pName) {
+    return rMesh.FieldData(pName).As<double>()[0];
+}
+
+Mesh fp_fit_whole_mesh(const Mesh& rMesh, double Tol = 1e-3) {
+    FitPrimitivesOptions o;
+    o.mPatchData = "";
+    o.mTolerance = Tol;
+    return fit_primitives(rMesh, o).mMesh;
+}
+
+// Quads on the half cylinder x = R cos a, y = R sin a, a in [0, 180] degrees.
+Mesh half_cylinder(double R, double H, int N, int M) {
+    std::vector<std::vector<double>> pts;
+    for (int i = 0; i <= M; ++i)
+        for (int k = 0; k <= N; ++k) {
+            const double a = analytic::kPi * k / N;
+            pts.push_back({R * std::cos(a), R * std::sin(a), H * i / M});
+        }
+    std::vector<std::vector<std::int64_t>> quads;
+    for (int i = 0; i < M; ++i)
+        for (int k = 0; k < N; ++k) {
+            const std::int64_t a = i * (N + 1) + k, b = (i + 1) * (N + 1) + k;
+            quads.push_back({a, a + 1, b + 1, b});
+        }
+    return mt::make_mesh(pts, "quad", quads);
+}
+
+}  // namespace
+
+TEST(FitPrimitivesForm, HalfCylinderArcAndZeroFormError) {
+    const Mesh out = fp_fit_whole_mesh(half_cylinder(1.5, 2.0, 24, 4));
+    EXPECT_EQ(out.FieldData("fit:patch_type").As<std::int64_t>()[0], 3);
+    EXPECT_NEAR(fd_value(out, kFitPatchArcName), 180.0, 1e-9);
+    EXPECT_NEAR(fd_value(out, kFitPatchFormErrorName), 0.0, 1e-9);
+    EXPECT_NEAR(fd_value(out, kFitPatchLengthName), 2.0, 1e-9);
+    EXPECT_NEAR(fd_value(out, kFitPatchDiameterMinName), 3.0, 1e-9);
+    EXPECT_NEAR(fd_value(out, kFitPatchDiameterMaxName), 3.0, 1e-9);
+    EXPECT_TRUE(std::isnan(fd_value(out, kFitPatchExtentName)));
+}
+
+TEST(FitPrimitivesForm, ClosedCylinderSpansTheFullCircle) {
+    const Mesh out = fp_fit_whole_mesh(analytic::cylinder(1.0, 2.0, 6));
+    EXPECT_EQ(out.FieldData("fit:patch_type").As<std::int64_t>()[0], 3);
+    EXPECT_DOUBLE_EQ(fd_value(out, kFitPatchArcName), 360.0);
+}
+
+TEST(FitPrimitivesForm, SteppedCylinderReportsBothDiameters) {
+    std::vector<std::pair<double, double>> prof;
+    for (int i = 0; i <= 4; ++i)
+        prof.push_back({1.0, 0.25 * i});
+    for (int i = 4; i <= 8; ++i)
+        prof.push_back({1.002, 0.25 * i});
+    const Mesh out = fp_fit_whole_mesh(analytic::revolve(prof), 3e-3);
+    ASSERT_EQ(out.FieldData("fit:patch_type").As<std::int64_t>()[0], 3);
+    EXPECT_NEAR(fd_value(out, kFitPatchDiameterMinName), 2.0, 1e-6);
+    EXPECT_NEAR(fd_value(out, kFitPatchDiameterMaxName), 2.004, 1e-6);
+    EXPECT_GT(fd_value(out, kFitPatchFormErrorName), 0.0015);
+}
+
+TEST(FitPrimitivesForm, PlaneExtentsAreTheInPlaneSides) {
+    std::vector<std::vector<double>> pts;
+    for (int j = 0; j <= 2; ++j)
+        for (int i = 0; i <= 4; ++i)
+            pts.push_back({0.5 * i, 0.5 * j, 0.0});
+    std::vector<std::vector<std::int64_t>> quads;
+    for (int j = 0; j < 2; ++j)
+        for (int i = 0; i < 4; ++i)
+            quads.push_back({j * 5 + i, j * 5 + i + 1, (j + 1) * 5 + i + 1, (j + 1) * 5 + i});
+    const Mesh out = fp_fit_whole_mesh(mt::make_mesh(pts, "quad", quads));
+    ASSERT_EQ(out.FieldData("fit:patch_type").As<std::int64_t>()[0], 1);
+    const double* e = out.FieldData(kFitPatchExtentName).As<double>();
+    EXPECT_NEAR(e[0], 2.0, 1e-12);
+    EXPECT_NEAR(e[1], 1.0, 1e-12);
+    EXPECT_NEAR(fd_value(out, kFitPatchFormErrorName), 0.0, 1e-12);
+    EXPECT_TRUE(std::isnan(fd_value(out, kFitPatchArcName)));
+}

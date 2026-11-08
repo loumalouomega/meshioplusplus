@@ -66,7 +66,24 @@
  *  - `fit:patch_rms`, `fit:patch_max` (Float64): the accepted fit's residuals,
  *    or the best attempt's;
  *  - `fit:patch_fraction` (Float64): the share of points within tolerance;
- *  - `fit:patch_tolerance` (Float64): the absolute tolerance applied.
+ *  - `fit:patch_tolerance` (Float64): the absolute tolerance applied;
+ *  - `fit:patch_form_error` (Float64): the peak-to-peak form error, the largest
+ *    positive minus the largest negative signed orthogonal distance of the
+ *    patch's points (flatness, sphericity, cylindricity under the least-squares
+ *    reference);
+ *  - `fit:patch_diameter_min`, `fit:patch_diameter_max` (Float64): a sphere's
+ *    or cylinder's smallest and largest diameter the points reach (twice their
+ *    least and largest radial distance);
+ *  - `fit:patch_length` (Float64): a cylinder's or cone's axial length, the
+ *    points' extent along the axis;
+ *  - `fit:patch_arc` (Float64): a cylinder's or cone's arc span in degrees,
+ *    360 less the largest angular gap between the points about the axis (360
+ *    when that gap is at most twice the median one);
+ *  - `fit:patch_extent` (Float64, `(m, 2)`): a plane's two in-plane principal
+ *    extents, largest first.
+ *
+ * A value that does not apply to the patch's type (or a patch of type none) is
+ * NaN.
  *
  * Patches are fitted in parallel, each serially, so the output is
  * byte-identical on every backend and thread count. The numpy twin follows the
@@ -89,6 +106,19 @@ inline constexpr const char* kFitTypeName = "fit:type";
 inline constexpr const char* kFitRmsName = "fit:rms";
 /// Cell data (Float64): the largest distance of the cell's patch to its fit.
 inline constexpr const char* kFitMaxName = "fit:max";
+
+/// Field data (Float64): each patch's peak-to-peak form error.
+inline constexpr const char* kFitPatchFormErrorName = "fit:patch_form_error";
+/// Field data (Float64): a sphere's or cylinder's smallest diameter.
+inline constexpr const char* kFitPatchDiameterMinName = "fit:patch_diameter_min";
+/// Field data (Float64): a sphere's or cylinder's largest diameter.
+inline constexpr const char* kFitPatchDiameterMaxName = "fit:patch_diameter_max";
+/// Field data (Float64): a cylinder's or cone's axial length.
+inline constexpr const char* kFitPatchLengthName = "fit:patch_length";
+/// Field data (Float64): a cylinder's or cone's arc span in degrees.
+inline constexpr const char* kFitPatchArcName = "fit:patch_arc";
+/// Field data (Float64, `(m, 2)`): a plane's two in-plane extents.
+inline constexpr const char* kFitPatchExtentName = "fit:patch_extent";
 
 /// The values of `fit:type` and `fit:patch_type`.
 enum class FitPrimitiveType : std::int32_t {
