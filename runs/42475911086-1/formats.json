@@ -1,0 +1,786 @@
+{
+  "attempt": "1",
+  "environment": {
+    "arch": "x86_64",
+    "backend": "openmp",
+    "capabilities": {
+      "__has_adios2__": false,
+      "__has_bzip2__": false,
+      "__has_cgnslib__": false,
+      "__has_cutcells__": false,
+      "__has_gidpost__": true,
+      "__has_gidpost_hdf5__": true,
+      "__has_hdf5__": true,
+      "__has_json__": true,
+      "__has_kahip__": false,
+      "__has_lz4__": false,
+      "__has_lzma__": false,
+      "__has_netcdf__": true,
+      "__has_tecio__": false,
+      "__has_zlib__": true,
+      "__has_zstd__": false
+    },
+    "compiler": "c++ (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+    "cpu": "AMD EPYC 9V45 96-Core Processor",
+    "cpus": 4,
+    "image": "ubuntu26",
+    "libraries": {
+      "libhdf5-dev": "1.14.6+repack-2",
+      "libnetcdf-dev": "1:4.9.3-1build2",
+      "libtbb-dev": "unknown",
+      "zlib1g-dev": "1:1.3.dfsg+really1.3.1-1ubuntu3.2"
+    },
+    "mesh_backend": "meshio",
+    "os": "Linux",
+    "python": "3.12.16",
+    "python_libraries": {
+      "h5py": "3.16.0",
+      "netCDF4": "1.7.5.1.post1",
+      "numpy": "2.5.4"
+    },
+    "runner": "github-hosted",
+    "threads": "4"
+  },
+  "kind": "formats",
+  "parameters": {
+    "build_type": "Release",
+    "repeats": 3,
+    "sizes": "M"
+  },
+  "raw_csv_sha256": "b89fabcf9b723b6aded142fb0f7715df793dfc0edffe58530fe75bf8b0d62f77",
+  "rows": [
+    {
+      "bytes": "11266873",
+      "cells": "257250",
+      "format": "abaqus",
+      "input": "volume",
+      "read_s": "0.061555724999948325",
+      "size": "M",
+      "write_s": "0.051509062000036465"
+    },
+    {
+      "bytes": "20002030",
+      "cells": "257250",
+      "format": "abaqus_fil",
+      "input": "volume",
+      "read_s": "0.1269703609999624",
+      "size": "M",
+      "write_s": "0.19306346700000176"
+    },
+    {
+      "bytes": "11557104",
+      "cells": "257250",
+      "format": "ansys",
+      "input": "volume",
+      "read_s": "0.3621707830000105",
+      "size": "M",
+      "write_s": "0.1517409680000128"
+    },
+    {
+      "bytes": "43090629",
+      "cells": "257250",
+      "format": "ansysInp",
+      "input": "volume",
+      "read_s": "0.15511341399997036",
+      "size": "M",
+      "write_s": "0.1989289609999787"
+    },
+    {
+      "bytes": "23941848",
+      "cells": "257250",
+      "format": "ansys_rst",
+      "input": "volume",
+      "read_s": "0.0829570660000627",
+      "size": "M",
+      "write_s": "0.10294773999999052"
+    },
+    {
+      "bytes": "12106602",
+      "cells": "257250",
+      "format": "avsucd",
+      "input": "volume",
+      "read_s": "0.04173370099999829",
+      "size": "M",
+      "write_s": "0.10936223999999584"
+    },
+    {
+      "bytes": "913564",
+      "cells": "14700",
+      "format": "cae",
+      "input": "surface",
+      "read_s": "0.000522875000001477",
+      "size": "M",
+      "write_s": "0.002747100999954455"
+    },
+    {
+      "bytes": "899968",
+      "cells": "257250",
+      "format": "cgns",
+      "input": "volume",
+      "read_s": "0.013601556000025994",
+      "size": "M",
+      "write_s": "0.016203618999952596"
+    },
+    {
+      "bytes": "12459780",
+      "cells": "257250",
+      "format": "code_aster",
+      "input": "volume",
+      "read_s": "0.14193835399998989",
+      "size": "M",
+      "write_s": "0.07993980000003376"
+    },
+    {
+      "bytes": "2632814",
+      "cells": "46656",
+      "format": "dex",
+      "input": "points",
+      "read_s": "0.006334563999985221",
+      "size": "M",
+      "write_s": "0.030645456000002014"
+    },
+    {
+      "bytes": "25151960",
+      "cells": "257250",
+      "format": "dolfin-xml",
+      "input": "volume",
+      "read_s": "0.08878100399999767",
+      "size": "M",
+      "write_s": "0.19619879699996545"
+    },
+    {
+      "bytes": "12246659",
+      "cells": "257250",
+      "format": "elmer",
+      "input": "volume",
+      "read_s": "0.05832466899994415",
+      "size": "M",
+      "write_s": "0.05095354200000202"
+    },
+    {
+      "bytes": "4676656",
+      "cells": "257250",
+      "format": "ensight",
+      "input": "volume",
+      "read_s": "0.0009607560000404192",
+      "size": "M",
+      "write_s": "0.011236861999918801"
+    },
+    {
+      "bytes": "9373443",
+      "cells": "257250",
+      "format": "exodus",
+      "input": "volume",
+      "read_s": "0.03413733799993679",
+      "size": "M",
+      "write_s": "0.029216704999953436"
+    },
+    {
+      "bytes": "16945585",
+      "cells": "257250",
+      "format": "febio",
+      "input": "volume",
+      "read_s": "0.07169384799999534",
+      "size": "M",
+      "write_s": "0.05983716299999742"
+    },
+    {
+      "bytes": "43840007",
+      "cells": "257250",
+      "format": "femap",
+      "input": "volume",
+      "read_s": "0.188955506999946",
+      "size": "M",
+      "write_s": "0.26240884100002404"
+    },
+    {
+      "bytes": "12657536",
+      "cells": "257250",
+      "format": "flac3d",
+      "input": "volume",
+      "read_s": "0.048323873000072126",
+      "size": "M",
+      "write_s": "0.1199548509999886"
+    },
+    {
+      "bytes": "36227193",
+      "cells": "257250",
+      "format": "flux",
+      "input": "volume",
+      "read_s": "0.0691655499999797",
+      "size": "M",
+      "write_s": "0.3394871919999787"
+    },
+    {
+      "bytes": "21112256",
+      "cells": "257250",
+      "format": "frd",
+      "input": "volume",
+      "read_s": "0.027549968000016634",
+      "size": "M",
+      "write_s": "0.14578128400000878"
+    },
+    {
+      "bytes": "9776165",
+      "cells": "257250",
+      "format": "freefem",
+      "input": "volume",
+      "read_s": "0.0182504299999664",
+      "size": "M",
+      "write_s": "0.08852598600003603"
+    },
+    {
+      "bytes": "9396864",
+      "cells": "257250",
+      "format": "gid",
+      "input": "volume",
+      "read_s": "0.1067199360001041",
+      "size": "M",
+      "write_s": "0.12066181099999085"
+    },
+    {
+      "bytes": "364122",
+      "cells": "14700",
+      "format": "gltf",
+      "input": "surface",
+      "read_s": "0.00036259499995594524",
+      "size": "M",
+      "write_s": "0.004257171000062954"
+    },
+    {
+      "bytes": "11783178",
+      "cells": "257250",
+      "format": "gmsh",
+      "input": "volume",
+      "read_s": "0.001723461999972642",
+      "size": "M",
+      "write_s": "0.04005482100001245"
+    },
+    {
+      "bytes": "8509475",
+      "cells": "257250",
+      "format": "gmsh22",
+      "input": "volume",
+      "read_s": "0.00757137599998714",
+      "size": "M",
+      "write_s": "0.04622189499991691"
+    },
+    {
+      "bytes": "1103743",
+      "cells": "257250",
+      "format": "h5m",
+      "input": "volume",
+      "read_s": "0.02036855899996226",
+      "size": "M",
+      "write_s": "0.025941407999994226"
+    },
+    {
+      "bytes": "1024659",
+      "cells": "257250",
+      "format": "hmf",
+      "input": "volume",
+      "read_s": "0.01696050300006391",
+      "size": "M",
+      "write_s": "0.01951361299995824"
+    },
+    {
+      "bytes": "269252",
+      "cells": "14700",
+      "format": "ip",
+      "input": "surface",
+      "read_s": "0.0008553659999961383",
+      "size": "M",
+      "write_s": "0.003809228000022813"
+    },
+    {
+      "bytes": "10338111",
+      "cells": "257250",
+      "format": "libmesh",
+      "input": "volume",
+      "read_s": "0.07689798299998074",
+      "size": "M",
+      "write_s": "0.05637834699996347"
+    },
+    {
+      "bytes": "23496750",
+      "cells": "257250",
+      "format": "lsdyna",
+      "input": "volume",
+      "read_s": "0.14706772800002454",
+      "size": "M",
+      "write_s": "0.189136537999957"
+    },
+    {
+      "bytes": "118007",
+      "cells": "14700",
+      "format": "lsdyna_binout",
+      "input": "surface",
+      "read_s": "0.00015293000001292967",
+      "size": "M",
+      "write_s": "0.0003241970000544825"
+    },
+    {
+      "bytes": "11596800",
+      "cells": "257250",
+      "format": "lsdyna_d3plot",
+      "input": "volume",
+      "read_s": "0.0456518869999627",
+      "size": "M",
+      "write_s": "0.05959314300002916"
+    },
+    {
+      "bytes": "19005098",
+      "cells": "257250",
+      "format": "marc",
+      "input": "volume",
+      "read_s": "0.12611195299996325",
+      "size": "M",
+      "write_s": "0.41516223999997237"
+    },
+    {
+      "bytes": "27013601",
+      "cells": "257250",
+      "format": "marc_t19",
+      "input": "volume",
+      "read_s": "0.13037212499989437",
+      "size": "M",
+      "write_s": "0.15958210000007966"
+    },
+    {
+      "bytes": "12202607",
+      "cells": "257250",
+      "format": "mdpa",
+      "input": "volume",
+      "read_s": "0.9576631250000673",
+      "size": "M",
+      "write_s": "0.1658134950000658"
+    },
+    {
+      "bytes": "9356352",
+      "cells": "257250",
+      "format": "med",
+      "input": "volume",
+      "read_s": "0.0013963279999416045",
+      "size": "M",
+      "write_s": "0.023784309000006942"
+    },
+    {
+      "bytes": "9776225",
+      "cells": "257250",
+      "format": "medit",
+      "input": "volume",
+      "read_s": "0.01193329599993831",
+      "size": "M",
+      "write_s": "0.04521666099992672"
+    },
+    {
+      "bytes": "9633627",
+      "cells": "257250",
+      "format": "mfem",
+      "input": "volume",
+      "read_s": "0.16462297300006412",
+      "size": "M",
+      "write_s": "0.07213081399993371"
+    },
+    {
+      "bytes": "2",
+      "cells": "14700",
+      "format": "mff",
+      "input": "surface",
+      "read_s": "2.8763999921466166e-05",
+      "size": "M",
+      "write_s": "0.0002720890000773579"
+    },
+    {
+      "bytes": "16885867",
+      "cells": "257250",
+      "format": "mfm",
+      "input": "volume",
+      "read_s": "0.05731997300006242",
+      "size": "M",
+      "write_s": "0.1808050849999745"
+    },
+    {
+      "bytes": "6264880",
+      "cells": "257250",
+      "format": "mphbin",
+      "input": "volume",
+      "read_s": "0.0044895769999584445",
+      "size": "M",
+      "write_s": "0.021935299000006125"
+    },
+    {
+      "bytes": "9119486",
+      "cells": "257250",
+      "format": "mphtxt",
+      "input": "volume",
+      "read_s": "0.020868666000069425",
+      "size": "M",
+      "write_s": "0.0330874120000999"
+    },
+    {
+      "bytes": "19235616",
+      "cells": "257250",
+      "format": "nastran",
+      "input": "volume",
+      "read_s": "0.17081115400003455",
+      "size": "M",
+      "write_s": "0.391888439000013"
+    },
+    {
+      "bytes": "30125272",
+      "cells": "257250",
+      "format": "nastran_h5",
+      "input": "volume",
+      "read_s": "0.07029421900006128",
+      "size": "M",
+      "write_s": "0.12932216900003368"
+    },
+    {
+      "bytes": "13842556",
+      "cells": "257250",
+      "format": "nastran_op2",
+      "input": "volume",
+      "read_s": "0.08724158899997292",
+      "size": "M",
+      "write_s": "0.045738647000007404"
+    },
+    {
+      "bytes": "10197801",
+      "cells": "257250",
+      "format": "netgen",
+      "input": "volume",
+      "read_s": "0.0359193099999402",
+      "size": "M",
+      "write_s": "0.08600897699989218"
+    },
+    {
+      "bytes": "264628",
+      "cells": "14700",
+      "format": "neuroglancer",
+      "input": "surface",
+      "read_s": "5.234900004325027e-05",
+      "size": "M",
+      "write_s": "0.0004357850000360486"
+    },
+    {
+      "bytes": "558728",
+      "cells": "14700",
+      "format": "obj",
+      "input": "surface",
+      "read_s": "0.0012159770000153003",
+      "size": "M",
+      "write_s": "0.0028098230000068725"
+    },
+    {
+      "bytes": "544025",
+      "cells": "14700",
+      "format": "off",
+      "input": "surface",
+      "read_s": "0.0013517920000367667",
+      "size": "M",
+      "write_s": "0.0029123460000164414"
+    },
+    {
+      "bytes": "19831278",
+      "cells": "257250",
+      "format": "openfoam",
+      "input": "volume",
+      "read_s": "0.1333389949999173",
+      "size": "M",
+      "write_s": "0.24259233300006144"
+    },
+    {
+      "bytes": "53607579",
+      "cells": "257250",
+      "format": "patran",
+      "input": "volume",
+      "read_s": "0.24000335100004122",
+      "size": "M",
+      "write_s": "0.45748643999991145"
+    },
+    {
+      "bytes": "88581",
+      "cells": "14700",
+      "format": "pcd",
+      "input": "surface",
+      "read_s": "0.00014209400001163885",
+      "size": "M",
+      "write_s": "0.00044505799996841233"
+    },
+    {
+      "bytes": "10563219",
+      "cells": "257250",
+      "format": "permas",
+      "input": "volume",
+      "read_s": "0.04026294599998437",
+      "size": "M",
+      "write_s": "0.09593820800000685"
+    },
+    {
+      "bytes": "367765",
+      "cells": "14700",
+      "format": "ply",
+      "input": "surface",
+      "read_s": "0.0030566529999305203",
+      "size": "M",
+      "write_s": "0.001423965000071803"
+    },
+    {
+      "bytes": "8792548",
+      "cells": "257250",
+      "format": "pmsh",
+      "input": "volume",
+      "read_s": "0.00014539799997237424",
+      "size": "M",
+      "write_s": "0.0029939989999547834"
+    },
+    {
+      "bytes": "222",
+      "cells": "257250",
+      "format": "pvd",
+      "input": "volume",
+      "read_s": "0.009814376000008451",
+      "size": "M",
+      "write_s": "0.05816863100005776"
+    },
+    {
+      "bytes": "299",
+      "cells": "14700",
+      "format": "pvtp",
+      "input": "surface",
+      "read_s": "0.0008496740000509817",
+      "size": "M",
+      "write_s": "0.0050588149999839516"
+    },
+    {
+      "bytes": "323",
+      "cells": "257250",
+      "format": "pvtu",
+      "input": "volume",
+      "read_s": "0.014985189999947579",
+      "size": "M",
+      "write_s": "0.058393207000108305"
+    },
+    {
+      "bytes": "16432594",
+      "cells": "257250",
+      "format": "radioss",
+      "input": "volume",
+      "read_s": "0.23377640500007146",
+      "size": "M",
+      "write_s": "0.3663124959999777"
+    },
+    {
+      "bytes": "9329451",
+      "cells": "257250",
+      "format": "radioss_anim",
+      "input": "volume",
+      "read_s": "0.08762173999991774",
+      "size": "M",
+      "write_s": "0.043677745000081813"
+    },
+    {
+      "bytes": "224",
+      "cells": "14700",
+      "format": "radioss_th",
+      "input": "surface",
+      "read_s": "3.303000005416834e-05",
+      "size": "M",
+      "write_s": "0.00033664499994756625"
+    },
+    {
+      "bytes": "2932560",
+      "cells": "14700",
+      "format": "stl",
+      "input": "surface",
+      "read_s": "0.0036602799999627678",
+      "size": "M",
+      "write_s": "0.010053585000036946"
+    },
+    {
+      "bytes": "735084",
+      "cells": "14700",
+      "format": "stl_binary",
+      "input": "surface",
+      "read_s": "0.0007398019999982353",
+      "size": "M",
+      "write_s": "0.0017036399999597052"
+    },
+    {
+      "bytes": "9940077",
+      "cells": "257250",
+      "format": "su2",
+      "input": "volume",
+      "read_s": "0.020403576000035173",
+      "size": "M",
+      "write_s": "0.09171266599992123"
+    },
+    {
+      "bytes": "332",
+      "cells": "46656",
+      "format": "svg",
+      "input": "points",
+      "read_s": "4.68010000531649e-05",
+      "size": "M",
+      "write_s": "0.0002972870000803596"
+    },
+    {
+      "bytes": "8604742",
+      "cells": "257250",
+      "format": "tecplot",
+      "input": "volume",
+      "read_s": "0.05082920999996077",
+      "size": "M",
+      "write_s": "0.05972918200006916"
+    },
+    {
+      "bytes": "11126831",
+      "cells": "257250",
+      "format": "tetgen",
+      "input": "volume",
+      "read_s": "0.019618856999954914",
+      "size": "M",
+      "write_s": "0.0649583279999888"
+    },
+    {
+      "bytes": "213",
+      "cells": "46656",
+      "format": "tikz",
+      "input": "points",
+      "read_s": "5.735700005971012e-05",
+      "size": "M",
+      "write_s": "0.00029672499999833235"
+    },
+    {
+      "bytes": "8313001",
+      "cells": "257250",
+      "format": "ugrid",
+      "input": "volume",
+      "read_s": "0.013149056000088422",
+      "size": "M",
+      "write_s": "0.06925459299998238"
+    },
+    {
+      "bytes": "31698294",
+      "cells": "257250",
+      "format": "unv",
+      "input": "volume",
+      "read_s": "0.092116682999972",
+      "size": "M",
+      "write_s": "0.2795047390000036"
+    },
+    {
+      "bytes": "12438950",
+      "cells": "257250",
+      "format": "vtk",
+      "input": "volume",
+      "read_s": "0.0020525820000329986",
+      "size": "M",
+      "write_s": "0.045362006999994264"
+    },
+    {
+      "bytes": "7293894",
+      "cells": "257250",
+      "format": "vtk42",
+      "input": "volume",
+      "read_s": "0.004099656999983381",
+      "size": "M",
+      "write_s": "0.021272276999980022"
+    },
+    {
+      "bytes": "12438950",
+      "cells": "257250",
+      "format": "vtk51",
+      "input": "volume",
+      "read_s": "0.002002908000008574",
+      "size": "M",
+      "write_s": "0.04116512400003103"
+    },
+    {
+      "bytes": "1368327",
+      "cells": "257250",
+      "format": "vtkhdf",
+      "input": "volume",
+      "read_s": "0.025303162000000157",
+      "size": "M",
+      "write_s": "0.03131219600004442"
+    },
+    {
+      "bytes": "279",
+      "cells": "257250",
+      "format": "vtm",
+      "input": "volume",
+      "read_s": "0.04146076699998957",
+      "size": "M",
+      "write_s": "0.06006143299998712"
+    },
+    {
+      "bytes": "129603",
+      "cells": "14700",
+      "format": "vtp",
+      "input": "surface",
+      "read_s": "0.0007687940000096205",
+      "size": "M",
+      "write_s": "0.004519598000001679"
+    },
+    {
+      "bytes": "1800774",
+      "cells": "257250",
+      "format": "vtu",
+      "input": "volume",
+      "read_s": "0.009157923999964623",
+      "size": "M",
+      "write_s": "0.05598361800002749"
+    },
+    {
+      "bytes": "2523364",
+      "cells": "14700",
+      "format": "wkt",
+      "input": "surface",
+      "read_s": "0.013585583999997652",
+      "size": "M",
+      "write_s": "0.02268359699996836"
+    },
+    {
+      "bytes": "1017323",
+      "cells": "257250",
+      "format": "xdmf",
+      "input": "volume",
+      "read_s": "0.01671564399998715",
+      "size": "M",
+      "write_s": "0.019358434000082525"
+    },
+    {
+      "bytes": "7949840",
+      "cells": "257250",
+      "format": "xplt",
+      "input": "volume",
+      "read_s": "0.05251092299999982",
+      "size": "M",
+      "write_s": "0.0450437790000251"
+    },
+    {
+      "bytes": "300848",
+      "cells": "14700",
+      "format": "xyz",
+      "input": "surface",
+      "read_s": "0.0010336419999248392",
+      "size": "M",
+      "write_s": "0.003939966999951139"
+    },
+    {
+      "bytes": "14030908",
+      "cells": "257250",
+      "format": "z88",
+      "input": "volume",
+      "read_s": "0.11548182599995016",
+      "size": "M",
+      "write_s": "0.150323874000037"
+    }
+  ],
+  "run_id": "42475911086",
+  "schema": 1,
+  "sha": "8d6f10419c48d38e93086f84bb3d281458e08c2a",
+  "timestamp": "2026-11-08T11:52:16.691069+00:00"
+}
