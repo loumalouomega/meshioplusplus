@@ -1,0 +1,46 @@
+name: Set up Emscripten
+description: >-
+  Installs and activates one Emscripten SDK version, as mymindstorm/setup-emsdk
+  did, from a shallow git clone of emsdk with retries. That action fetches
+  emsdk as a github.com archive (`emsdk update` downloads HEAD.zip), and
+  GitHub's archive and release downloads have gone down on their own for hours
+  while clones kept working (November 2026). The SDK itself comes from
+  storage.googleapis.com, as before. Exports what `emsdk_env.sh` sets: EMSDK,
+  EMSDK_NODE and the emsdk and emscripten directories on PATH.
+inputs:
+  version:
+    description: The SDK version to install and activate, e.g. 6.0.3.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install and activate emsdk ${{ inputs.version }}
+      shell: bash
+      env:
+        MIO_EMSDK_VERSION: ${{ inputs.version }}
+      run: |
+        dir="$RUNNER_TEMP/emsdk"
+        attempt=1
+        until git clone --quiet --depth 1 https://github.com/emscripten-core/emsdk.git "$dir"; do
+          rm -rf "$dir"
+          if [ "$attempt" -ge 3 ]; then
+            echo "::error::cloning emsdk failed after $attempt attempts"
+            exit 1
+          fi
+          echo "::warning::cloning emsdk failed (attempt $attempt); retrying"
+          sleep $((attempt * 30))
+          attempt=$((attempt + 1))
+        done
+        "$dir/emsdk" install "$MIO_EMSDK_VERSION"
+        "$dir/emsdk" activate "$MIO_EMSDK_VERSION"
+        # shellcheck disable=SC1091  # written by `emsdk activate` above
+        EMSDK_QUIET=1 . "$dir/emsdk_env.sh"
+        {
+          echo "EMSDK=$EMSDK"
+          echo "EMSDK_NODE=$EMSDK_NODE"
+        } >> "$GITHUB_ENV"
+        {
+          echo "$dir"
+          echo "$dir/upstream/emscripten"
+        } >> "$GITHUB_PATH"
+        emcc --version | head -1

@@ -66,7 +66,7 @@ jobs:
       # is built. `npm ci` must follow it, because npm *copies* a `file:`
       # dependency rather than symlinking it.
       - name: Set up Emscripten
-        uses: mymindstorm/setup-emsdk@v14
+        uses: ./.github/actions/setup-emsdk
         with:
           version: "6.0.3"
       - name: Build the meshio++ WASM package
