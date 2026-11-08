@@ -153,7 +153,7 @@ class TimeSeriesReader:
 
                 if len(list(c)) != 1:
                     raise ReadError()
-                data_item = list(c)[0]
+                data_item = next(iter(c))
                 data = self._read_data_item(data_item)
 
                 if c.get("Center") == "Node":

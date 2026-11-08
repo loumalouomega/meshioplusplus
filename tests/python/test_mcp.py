@@ -648,9 +648,8 @@ def test_read_only_tools_share_the_cached_arrays_frozen(mesh_file):
 def test_read_only_tools_agree_on_a_hit(mesh_file):
     first = _dump(_tools.tool_stats(mesh_file))
     assert _dump(_tools.tool_stats(mesh_file)) == first
-    assert _dump(_tools.tool_data_info(mesh_file)) == _dump(
-        _tools.tool_data_info(mesh_file)
-    )
+    first_info = _dump(_tools.tool_data_info(mesh_file))
+    assert _dump(_tools.tool_data_info(mesh_file)) == first_info
 
 
 def test_a_changed_input_is_read_again(mesh_file, count_parses):

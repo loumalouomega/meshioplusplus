@@ -105,11 +105,11 @@ def info_cmd(args):
     arrays = data_info(mesh)
     if args.json:
         emit_json(arrays)
-        return 0
+        return
     print("<meshio++ data summary>")
     if not arrays:
         print("  (the mesh carries no data arrays)")
-        return 0
+        return
     header = (
         f"  {'location':<11} {'name':<20} {'dtype':<6} {'comp':>4} "
         f"{'entries':>8} {'min':>12} {'max':>12} {'mean':>12} {'nan':>5} {'inf':>5}"
@@ -125,7 +125,6 @@ def info_cmd(args):
         )
         if a["inconsistent_blocks"]:
             print(f"  {'':<11} {'':<20} (warning: cell blocks disagree in components)")
-    return 0
 
 
 # --- data rename / drop / keep --------------------------------------------
@@ -831,11 +830,11 @@ def integrate_cmd(args):
     report = data_integrate(mesh, arrays=args.arrays)
     if args.json:
         emit_json(report)
-        return 0
+        return
     print("<meshio++ field integration>")
     if not report:
         print("  (the mesh carries no cell_data arrays)")
-        return 0
+        return
     for arr in report:
         print(f"  {arr['name']} ({arr['num_components']} component(s))")
         for region in [arr["domain"]] + arr["regions"]:
@@ -846,7 +845,6 @@ def integrate_cmd(args):
                 f"    {label:<20} cells={region['num_cells']:<6} "
                 f"skipped={region['num_skipped']:<4} total=[{totals}] mean=[{means}]"
             )
-    return 0
 
 
 # --- data estimate-error ----------------------------------------------------

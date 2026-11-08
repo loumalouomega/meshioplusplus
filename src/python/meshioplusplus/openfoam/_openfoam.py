@@ -274,7 +274,7 @@ def _parse_points_ascii(lines: list[str]) -> np.ndarray:
     coords = []
     in_block = False
     n = None
-    num = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
+    num = re.compile(r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][-+]?\d+)?")
     for line in lines:
         s = line.strip()
         if not s:

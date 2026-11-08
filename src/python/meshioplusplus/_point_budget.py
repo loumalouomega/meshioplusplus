@@ -435,12 +435,13 @@ def select_points(
         )
     local = points[candidates]
 
-    # The first point, as a local index into the candidates.
+    # The first point, as a local index into the candidates. The generator is
+    # seeded for a reproducible sample, which is all it is for: not security.
     rng = random.Random(seed)
     first_local = None
     if method in ("farthest", "grid"):
         if start is None:
-            first_local = rng.randrange(m)
+            first_local = rng.randrange(m)  # NOSONAR(python:S2245): see above
         else:
             start = int(start)
             pos = int(np.searchsorted(candidates, start))
@@ -474,7 +475,9 @@ def select_points(
         schema["grid"] = spec.to_dict()
         schema["num_representatives"] = int(len(reps))
     else:
-        order = np.asarray(rng.sample(range(m), count), dtype=np.int64)
+        order = np.asarray(
+            rng.sample(range(m), count), dtype=np.int64  # NOSONAR(python:S2245)
+        )
     return PointBudget(candidates[order], method, count, schema)
 
 

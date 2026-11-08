@@ -125,7 +125,7 @@ def _soup(mesh):
             )
         rows = data if ragged else np.asarray(data)
         for c in range(len(rows)):
-            ids = [int(x) for x in (rows[c] if ragged else rows[c])]
+            ids = [int(x) for x in rows[c]]
             if len(ids) < 3:
                 continue
             for k in range(1, len(ids) - 1):

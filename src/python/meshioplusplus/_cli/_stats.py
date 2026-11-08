@@ -21,7 +21,7 @@ def stats_cmd(args):
 
     if args.json:
         emit_json(s)
-        return 0
+        return
 
     print("<meshio++ geometric stats>")
     print(f"  points:          {s['num_points']}")
@@ -37,4 +37,3 @@ def stats_cmd(args):
     print(f"  signed volume:   {s['signed_volume']:.6g}")
     print(f"  unsigned volume: {s['unsigned_volume']:.6g}")
     print(f"  inverted cells:  {s['num_inverted']}")
-    return 0

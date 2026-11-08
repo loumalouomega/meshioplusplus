@@ -275,7 +275,10 @@ class SeriesWriter:
         if blocks:
             geom = UsdGeom.Mesh.Define(self._stage, self._prim_path)
             counts, indices = _topology(blocks)
-            digest = hashlib.sha1(counts.tobytes() + indices.tobytes()).hexdigest()
+            # A content key for the topology, not a signature.
+            digest = hashlib.sha1(
+                counts.tobytes() + indices.tobytes(), usedforsecurity=False
+            ).hexdigest()
             prim = geom.GetPrim()
             if prim.GetCustomDataByKey(TOPOLOGY_KEY) != digest:
                 geom.GetFaceVertexCountsAttr().Set(Vt.IntArray.FromNumpy(counts), code)

@@ -184,7 +184,7 @@ def translate_cells(connectivity, types, cell_data_raw):
         idx0 = 1
 
         b = np.concatenate(
-            [[0], np.where(types[:-1] != types[1:])[0] + 1, [len(types)]]
+            [[0], np.nonzero(types[:-1] != types[1:])[0] + 1, [len(types)]]
         )
         for start, end in zip(b[:-1], b[1:]):
             if start == end:

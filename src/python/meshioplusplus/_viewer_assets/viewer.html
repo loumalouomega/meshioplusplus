@@ -1971,7 +1971,7 @@ Input: `+this.err.str)},c.prototype[Symbol.iterator]=function(){return this._ind
                 Z</label
               >
             </div>
-            <input type="range" id="op-section-position" min="0" max="100" value="50" />
+            <input type="range" id="op-section-position" min="0" max="100" value="50" aria-label="Section position" />
             <label class="check"
               ><input type="checkbox" id="op-section-flip" /> flip</label
             >
@@ -2105,7 +2105,7 @@ Input: `+this.err.str)},c.prototype[Symbol.iterator]=function(){return this._ind
             Writes the full mesh — not just the surface shown here.
           </p>
           <div class="row">
-            <select id="convert-format"></select>
+            <select id="convert-format" aria-label="Download format"></select>
             <button id="convert-download" type="button">Download</button>
           </div>
           <label class="check" id="convert-groups-row" hidden
@@ -2123,7 +2123,7 @@ Input: `+this.err.str)},c.prototype[Symbol.iterator]=function(){return this._ind
           · rendered with <a href="https://kitware.github.io/vtk-js/">vtk.js</a>
         </footer>
       </aside>
-      <div id="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
+      <div id="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-controls="panel" aria-valuemin="220" aria-valuemax="640" aria-valuenow="300" tabindex="0"></div><!-- NOSONAR(Web:S6845): a focusable window splitter, the WAI-ARIA separator pattern -->
 
       <main id="stage">
         <div id="render"></div>
@@ -2159,7 +2159,7 @@ Input: `+this.err.str)},c.prototype[Symbol.iterator]=function(){return this._ind
             <button type="button" id="tbl-csv" title="Save the table as CSV">CSV</button>
             <button type="button" id="tbl-close" title="Close the table" aria-label="Close the table">×</button>
           </div>
-          <div id="tbl-scroll" tabindex="0"><div id="tbl-head"></div><div id="tbl-body"><div id="tbl-rows"></div></div></div>
+          <div id="tbl-scroll" role="region" aria-label="Table rows" tabindex="0"><!-- NOSONAR(Web:S6845): a scrollable region takes focus so the keyboard can scroll it --><div id="tbl-head"></div><div id="tbl-body"><div id="tbl-rows"></div></div></div>
         </div>
         <div id="status" role="status"></div>
         <div id="pick-popover" hidden>

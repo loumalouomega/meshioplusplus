@@ -388,11 +388,11 @@ def _read_lines(lines, lenient=False):
     return _build(deck, lenient, "Ansys .cdb")[0]
 
 
-def _build(deck, lenient, label, locations=False):
+def _build(deck, lenient, label):
     """The mesh of a parsed deck (shared with the ``.rst`` reader): cells by
     element category, missing midsides created, ``ansys:*`` cell data and
-    component regions. Returns it with the node-number -> point-index map, and
-    with ``locations`` also a list parallel to ``deck["elements"]``: each
+    component regions. Returns it with the node-number -> point-index map and
+    a list parallel to ``deck["elements"]``: each
     element's ``(block, row, slots)`` -- ``slots[j]`` is the element node that
     became the cell's node ``j`` -- or ``None`` for an element with no cell."""
     coords = list(deck["coords"])
@@ -521,9 +521,7 @@ def _build(deck, lenient, label, locations=False):
     # C++ keeps one region per (kind, name): the last of two same-named ones wins.
     unique = {r.key: r for r in regions}
     mesh.regions = sorted(unique.values(), key=lambda r: r.key)
-    if locations:
-        return mesh, node_index, locs
-    return mesh, node_index
+    return mesh, node_index, locs
 
 
 # -- writing ---------------------------------------------------------------------

@@ -49,7 +49,7 @@ __all__ = ["read", "write"]
 
 _MAX_ID = 99999999
 _MAX_NAME = 12
-_EXPONENT_WITHOUT_LETTER = re.compile(r"^([+-]?(?:\d+\.?\d*|\.\d+))([+-]\d+)$")
+_EXPONENT_WITHOUT_LETTER = re.compile(r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+))([+-]\d+)$")
 
 # (shape code, node count) -> (meshio++ type, packet 21 entity code)
 _SHAPES = {

@@ -246,7 +246,7 @@ def list_cmd(args):
                 item["Resolved"] = entry.entries()
             payload.append(item)
         emit_json(payload)
-        return 0
+        return
 
     header = f"<meshio++ dataset> ({len(entries)}"
     if len(entries) != len(manifest):
@@ -256,7 +256,7 @@ def list_cmd(args):
         print(f"  name: {manifest.name}")
     if not entries:
         print("  No matching entries.")
-        return 0
+        return
     for entry in entries:
         bits = []
         if entry.split:
@@ -280,7 +280,6 @@ def list_cmd(args):
             f"{name or '(unassigned)'}={count}" for name, count in counts.items()
         )
         print(f"  splits: {summary}")
-    return 0
 
 
 # --- split -----------------------------------------------------------------

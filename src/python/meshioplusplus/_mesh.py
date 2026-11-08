@@ -507,7 +507,7 @@ class Mesh:
         # TODO there's probably a better way besides np.where, something from
         # np.unique or np.sort
         for name, tag in zip(names, tags):
-            self.cell_sets[name] = [np.where(d == tag)[0] for d in data]
+            self.cell_sets[name] = [np.nonzero(d == tag)[0] for d in data]
 
         # remove the cell data
         del self.cell_data[key]
@@ -538,7 +538,7 @@ class Mesh:
         # TODO there's probably a better way besides np.where, something from
         # np.unique or np.sort
         for name, tag in zip(names, tags):
-            self.point_sets[name] = np.where(data == tag)[0]
+            self.point_sets[name] = np.nonzero(data == tag)[0]
 
         # remove the cell data
         del self.point_data[key]

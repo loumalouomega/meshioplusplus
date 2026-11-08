@@ -15,6 +15,8 @@ The result is byte-identical to the core's.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from ._fallback import core_op_declined
@@ -183,7 +185,7 @@ def _segment_py(mesh, opts):
     if opts["curvature_tolerance"] > 0.0:
         curv = [0.0] * nf
         for e, (a, b) in enumerate(zip(pa, pb)):
-            if not smooth[e] or angle[e] != angle[e]:
+            if not smooth[e] or math.isnan(angle[e]):
                 continue
             d = centroid[a] - centroid[b]
             dist = float(np.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]))

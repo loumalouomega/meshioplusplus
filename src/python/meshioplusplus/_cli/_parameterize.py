@@ -48,10 +48,9 @@ def parameterize_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json({"output": args.outfile, **report})
-        return 0
+        return
     print(
         f"{report['num_charts']} chart(s), {report['num_flipped']} flipped "
         f"triangle(s), stretch {report['stretch']:.6g}, packing "
         f"{report['packing_efficiency']:.3g}, {report['num_seam_points']} seam point(s)"
     )
-    return 0

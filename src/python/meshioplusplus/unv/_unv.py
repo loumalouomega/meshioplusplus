@@ -258,7 +258,7 @@ _E13 = parse_fortran_format("(6E13.5)")
 _D25 = parse_fortran_format("(3D25.16)")
 _REC6 = parse_fortran_format("(I5,I10,I5,I10,1X,A10,I10,I4,1X,A10,I10,I4)")
 _INT_TEXT = re.compile(r"[+-]?[0-9]+\Z")
-_REAL_TEXT = re.compile(r"[0-9+\-.EeDd]*[0-9][0-9+\-.EeDd]*\Z")
+_REAL_TEXT = re.compile(r"[+\-.EeDd]*[0-9][0-9+\-.EeDd]*\Z")
 
 
 def _fixed_fields(line, layout):

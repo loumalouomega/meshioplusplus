@@ -62,7 +62,7 @@ def register_cmd(args):
         doc["matrix"] = [[float(v) for v in row] for row in matrix]
         doc.update(report)
         emit_json(doc)
-        return 0
+        return
     for row in matrix:
         print(" ".join(f"{v:14.9g}" for v in row))
     tail = "" if report["converged"] else ", not converged"
@@ -70,4 +70,3 @@ def register_cmd(args):
         f"rms {report['rms']:.9g} (from {report['initial_rms']:.9g}) after "
         f"{report['iterations']} iteration(s){tail}"
     )
-    return 0

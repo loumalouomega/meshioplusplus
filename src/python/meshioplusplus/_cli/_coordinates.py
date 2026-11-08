@@ -60,9 +60,8 @@ def coordinates_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json({"output": args.outfile, "system": args.system, **report})
-        return 0
+        return
     print(
         f"{args.system} components: {report['num_arrays']} array(s) rewritten, "
         f"{report['num_singular']} point(s) on the axis"
     )
-    return 0

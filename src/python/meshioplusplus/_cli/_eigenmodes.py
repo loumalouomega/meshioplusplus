@@ -30,8 +30,7 @@ def eigenmodes_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json({"output": args.outfile, **report})
-        return 0
+        return
     print("eigenvalues: " + " ".join(f"{v:.9g}" for v in report["eigenvalues"]))
     tail = "" if report["converged"] else ", not converged"
     print(f"{report['iterations']} iteration(s){tail}")
-    return 0

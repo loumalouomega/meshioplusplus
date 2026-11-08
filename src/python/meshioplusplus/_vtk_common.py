@@ -99,7 +99,7 @@ def vtk_cells_from_data(connectivity, offsets, types, cell_data_raw):
         return [], {}
 
     # identify cell blocks
-    breaks = np.where(types[:-1] != types[1:])[0] + 1
+    breaks = np.nonzero(types[:-1] != types[1:])[0] + 1
     # all cells with indices between start[k] and end[k] have the same type
     start_end = list(
         zip(
@@ -152,7 +152,7 @@ def vtk_cells_from_data(connectivity, offsets, types, cell_data_raw):
 
             # find where the cell blocks start and end
             b = np.diff(sizes)
-            c = np.concatenate([[0], np.where(b != 0)[0] + 1, [len(sizes)]])
+            c = np.concatenate([[0], np.nonzero(b != 0)[0] + 1, [len(sizes)]])
 
             # Loop over all cell sizes, find all cells with this size, and assign
             # connectivity

@@ -12,6 +12,7 @@ integers are colours). Anything still ambiguous is an error that asks for
 y z``) shares the extension and is refused by name.
 """
 
+import math
 import re
 
 import numpy as np
@@ -297,7 +298,7 @@ def write(filename, mesh, float_fmt=None):
         if value.dtype.kind in "iu":
             return str(int(value))
         v = float(value)
-        if v != v:
+        if math.isnan(v):
             return "nan"
         # 9 significant digits round-trip a float32; anything wider needs 17.
         return format(v, float_fmt or (".9g" if value.dtype.itemsize <= 4 else ".17g"))

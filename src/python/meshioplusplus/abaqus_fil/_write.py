@@ -11,7 +11,7 @@ A file is a list of records ``[key, items...]``: the model, then per increment a
 the same records.
 """
 
-import re
+import math
 import struct
 
 import numpy as np
@@ -91,7 +91,6 @@ _TYPES = {
     "hexahedron20": "C3D20R",
 }
 _SHELLS = {"triangle", "quad", "triangle6", "quad8", "quad9"}
-_NAME = re.compile(r"^(?P<base>.*?)(?P<rest>(?:@[^@]*)*)$")
 _BLOCK_WORDS = 512
 _CHUNK = 10  # node labels of a 1900 record, and of its 1990 continuations
 
@@ -109,7 +108,7 @@ def _I(value):  # noqa: N802
 
 def _D(value):  # noqa: N802
     value = float(value)
-    if value != value or abs(value) in (float("inf"),):
+    if not math.isfinite(value):
         _wfail("a value is not finite")
     if value != 0.0 and not 1e-99 <= abs(value) < 1e100:
         _wfail("a value is outside the range a D22.15 item holds")
@@ -391,14 +390,15 @@ class _Model:
 def _trim(values):
     """A record's values: trailing NaN dropped, an inner NaN written as 0."""
     values = [float(v) for v in values]
-    while values and values[-1] != values[-1]:
+    while values and math.isnan(values[-1]):
         values.pop()
-    return [0.0 if v != v else v for v in values]
+    return [0.0 if math.isnan(v) else v for v in values]
 
 
 def _split_name(name):
     """``(base, section point, rebar, collision suffix)`` of a cell array name."""
-    base, rest = _NAME.match(name).group("base", "rest")
+    base, at, rest = name.partition("@")
+    rest = at + rest
     section, rebar, collision = None, None, None
     for part in [p for p in rest.split("@") if p]:
         if part.startswith("sp") and part[2:].isdigit():
@@ -542,11 +542,11 @@ class _Increment:
                 _wfail(f"'{name}' must be one row or a matrix of rows")
             for row in np.atleast_2d(array):
                 values = list(row)
-                while values and values[-1] != values[-1]:
+                while values and math.isnan(values[-1]):
                     values.pop()
                 if not values:
                     continue
-                values = [0.0 if v != v else float(v) for v in values]
+                values = [0.0 if math.isnan(v) else float(v) for v in values]
                 if key == 304:
                     values = values[:7]
                     items = [_I(values[0]), *map(_D, values[1:])]

@@ -108,7 +108,7 @@ def read_buffer(f):
             # read point data
             line = _next_line(f)
             while line[:8] == "property":
-                m = re.match("property (.+) (.+)", line)
+                m = re.match("property +([^ ]+) +([^ ]+)", line)
                 assert m is not None
                 point_data_formats.append(m.groups()[0])
                 point_data_names.append(m.groups()[1])
@@ -124,11 +124,11 @@ def read_buffer(f):
             # read cell data
             while line[:8] == "property":
                 if line[:13] == "property list":
-                    m = re.match("property list (.+) (.+) (.+)", line)
+                    m = re.match("property list +([^ ]+) +([^ ]+) +([^ ]+)", line)
                     assert m is not None
                     cell_data_dtypes.append(tuple(m.groups()[:-1]))
                 else:
-                    m = re.match("property (.+) (.+)", line)
+                    m = re.match("property +([^ ]+) +([^ ]+)", line)
                     assert m is not None
                     cell_data_dtypes.append(m.groups()[0])
                 cell_data_names.append(m.groups()[-1])

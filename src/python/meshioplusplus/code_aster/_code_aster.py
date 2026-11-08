@@ -75,7 +75,7 @@ _SKIPPED = {
 }
 
 _KEYWORD = re.compile(r"[A-Z][A-Z0-9_]*\Z")
-_NUMBER = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eEdD][+-]?\d+)?\Z")
+_NUMBER = re.compile(r"[+-]?(\d+(?:\.\d*)?|\.\d+)([eEdD][+-]?\d+)?\Z")
 _SPLIT = re.compile(r"[ \t,]+")
 
 
