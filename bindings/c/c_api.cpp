@@ -691,6 +691,47 @@ int64_t capi_copy_indexed_edges(const std::vector<TEntry>& rLists, int64_t Index
     return static_cast<int64_t>(r_e.size());
 }
 
+// Moves a C++ result's mesh, point map and cell maps into a C handle (or a
+// partition piece) with the same three members.
+template <class THandle, class TResult>
+void capi_take_mesh_maps(THandle& rOut, TResult& rR) {
+    rOut.mMesh = mio_mesh{std::move(rR.mMesh)};
+    rOut.mPointMap = std::move(rR.mPointMap);
+    rOut.mCellMaps = std::move(rR.mCellMaps);
+}
+
+/// A C enum field checked against its last value and cast to the C++ enum, or
+/// "meshio++: <op>: unknown <what> <value>" when it is out of range.
+template <class TEnum, class TValue>
+TEnum capi_checked_enum(TValue Value, std::int64_t Max, const char* pOp, const char* pWhat) {
+    if (Value < 0 || Value > Max)
+        throw meshioplusplus::ReadError(std::string("meshio++: ") + pOp + ": unknown " + pWhat +
+                                        " " + std::to_string(Value));
+    return static_cast<TEnum>(Value);
+}
+
+/// A lattice's optional bounds and its padding, from a flat option struct.
+template <class TOptions, class TOpts>
+void capi_grid_bounds(TOptions& rOptions, const TOpts& rOpts) {
+    if (rOpts.bounds != nullptr)
+        rOptions.mBounds =
+            std::array<double, 6>{{rOpts.bounds[0], rOpts.bounds[1], rOpts.bounds[2],
+                                   rOpts.bounds[3], rOpts.bounds[4], rOpts.bounds[5]}};
+    rOptions.mPadding = rOpts.padding;
+    rOptions.mPaddingRelative = rOpts.padding_relative;
+}
+
+/// A lattice's optional resolution and cell size, then its bounds and padding.
+template <class TOptions, class TOpts>
+void capi_grid_extent(TOptions& rOptions, const TOpts& rOpts) {
+    if (rOpts.resolution != nullptr)
+        rOptions.mResolution = std::array<std::int64_t, 3>{
+            {rOpts.resolution[0], rOpts.resolution[1], rOpts.resolution[2]}};
+    if (rOpts.cell_size > 0.0)
+        rOptions.mCellSize = rOpts.cell_size;
+    capi_grid_bounds(rOptions, rOpts);
+}
+
 // Shared body of the three named-data setters (they differ only in the
 // leading-dimension check and the uniform-API call).
 template <class AddFn>
@@ -2982,9 +3023,7 @@ mio_convert_cells_result* mio_convert_cells(const mio_mesh* mesh, const char* mo
         options.mRecordParentIds = record_parent_ids != 0;
         meshioplusplus::ConvertCellsResult r = meshioplusplus::convert_cells(mesh->mMesh, options);
         auto* out = new mio_convert_cells_result{};
-        out->mMesh = mio_mesh{std::move(r.mMesh)};
-        out->mPointMap = std::move(r.mPointMap);
-        out->mCellMaps = std::move(r.mCellMaps);
+        capi_take_mesh_maps(*out, r);
         return out;
     });
 }
@@ -3209,9 +3248,7 @@ mio_convert_cells_result* mio_poly_to_tet(const mio_mesh* mesh, int record_paren
         if (num_fanned_cells)
             *num_fanned_cells = r.mNumFannedCells;
         auto* out = new mio_convert_cells_result{};
-        out->mMesh = mio_mesh{std::move(r.mMesh)};
-        out->mPointMap = std::move(r.mPointMap);
-        out->mCellMaps = std::move(r.mCellMaps);
+        capi_take_mesh_maps(*out, r);
         return out;
     });
 }
@@ -3263,14 +3300,10 @@ meshioplusplus::RefineOptions capi_refine_options(const mio_refine_opts& rOpts) 
     if (rOpts.predicate_array != nullptr)
         options.mPredicateArray = rOpts.predicate_array;
     options.mPredicateValue = rOpts.predicate_value;
-    if (rOpts.closure < 0 || rOpts.closure > MIO_REFINE_CLOSURE_BALANCED)
-        throw meshioplusplus::ReadError("meshio++: refine: unknown closure " +
-                                        std::to_string(rOpts.closure));
-    options.mClosure = static_cast<meshioplusplus::RefineClosure>(rOpts.closure);
-    if (rOpts.predicate_op < 0 || rOpts.predicate_op > MIO_REFINE_NE)
-        throw meshioplusplus::ReadError("meshio++: refine: unknown comparison " +
-                                        std::to_string(rOpts.predicate_op));
-    options.mPredicateOp = static_cast<meshioplusplus::RefineCompare>(rOpts.predicate_op);
+    options.mClosure = capi_checked_enum<meshioplusplus::RefineClosure>(
+        rOpts.closure, MIO_REFINE_CLOSURE_BALANCED, "refine", "closure");
+    options.mPredicateOp = capi_checked_enum<meshioplusplus::RefineCompare>(
+        rOpts.predicate_op, MIO_REFINE_NE, "refine", "comparison");
     return options;
 }
 
@@ -3279,9 +3312,7 @@ mio_refine_result* capi_refine(const mio_mesh* pMesh,
     capi_require(pMesh, "meshio++: mesh is NULL");
     meshioplusplus::RefineResult r = meshioplusplus::refine(pMesh->mMesh, rOptions);
     auto* out = new mio_refine_result{};
-    out->mMesh = mio_mesh{std::move(r.mMesh)};
-    out->mPointMap = std::move(r.mPointMap);
-    out->mCellMaps = std::move(r.mCellMaps);
+    capi_take_mesh_maps(*out, r);
     return out;
 }
 
@@ -3400,9 +3431,7 @@ mio_decimate_result* capi_decimate(const mio_mesh* pMesh,
     capi_require(pMesh, "meshio++: mesh is NULL");
     meshioplusplus::DecimateResult r = meshioplusplus::decimate(pMesh->mMesh, rOptions);
     auto* out = new mio_decimate_result{};
-    out->mMesh = mio_mesh{std::move(r.mMesh)};
-    out->mPointMap = std::move(r.mPointMap);
-    out->mCellMaps = std::move(r.mCellMaps);
+    capi_take_mesh_maps(*out, r);
     out->mFacesRemoved = r.mFacesRemoved;
     out->mPointsRemoved = r.mPointsRemoved;
     out->mCollapsesRejected = r.mCollapsesRejected;
@@ -3513,9 +3542,7 @@ mio_decimate_volume_result* capi_decimate_volume(
     meshioplusplus::DecimateVolumeResult r =
         meshioplusplus::decimate_volume(pMesh->mMesh, rOptions);
     auto* out = new mio_decimate_volume_result{};
-    out->mMesh = mio_mesh{std::move(r.mMesh)};
-    out->mPointMap = std::move(r.mPointMap);
-    out->mCellMaps = std::move(r.mCellMaps);
+    capi_take_mesh_maps(*out, r);
     out->mTetsRemoved = r.mTetsRemoved;
     out->mPointsRemoved = r.mPointsRemoved;
     out->mCollapsesRejected = r.mCollapsesRejected;
@@ -3658,9 +3685,7 @@ mio_partition_result* mio_partition(const mio_mesh* mesh, int nparts, const char
         out->mPieces.reserve(r.mPieces.size());
         for (meshioplusplus::PartitionPiece& p : r.mPieces) {
             mio_partition_result::Piece piece;
-            piece.mMesh = mio_mesh{std::move(p.mMesh)};
-            piece.mPointMap = std::move(p.mPointMap);
-            piece.mCellMaps = std::move(p.mCellMaps);
+            capi_take_mesh_maps(piece, p);
             out->mPieces.push_back(std::move(piece));
         }
         return out;
@@ -5756,23 +5781,14 @@ static_assert(sizeof(mio_surface_quality) == 72,
 /// Translate the flat option struct into the core's SurfaceDistanceOptions.
 meshioplusplus::SurfaceDistanceOptions capi_sdf_options(const mio_sdf_opts& rOpts) {
     meshioplusplus::SurfaceDistanceOptions options;
-    if (rOpts.sign < 0 || rOpts.sign > MIO_SDF_WINDING_NUMBER)
-        throw meshioplusplus::ReadError("meshio++: sdf: unknown sign " +
-                                        std::to_string(rOpts.sign));
-    options.mSign = static_cast<meshioplusplus::SdfSign>(rOpts.sign);
-    if (rOpts.weight < 0 || rOpts.weight > MIO_SDF_WEIGHT_AREA)
-        throw meshioplusplus::ReadError("meshio++: sdf: unknown weight " +
-                                        std::to_string(rOpts.weight));
-    options.mWeight = static_cast<meshioplusplus::SdfPseudonormalWeight>(rOpts.weight);
-    if (rOpts.location < 0 || rOpts.location > MIO_SDF_CENTER)
-        throw meshioplusplus::ReadError("meshio++: sdf: unknown location " +
-                                        std::to_string(rOpts.location));
-    options.mLocation = static_cast<meshioplusplus::SdfLocation>(rOpts.location);
-    if (rOpts.watertight_check < 0 || rOpts.watertight_check > MIO_SDF_WATERTIGHT_ERROR)
-        throw meshioplusplus::ReadError("meshio++: sdf: unknown watertight check " +
-                                        std::to_string(rOpts.watertight_check));
-    options.mWatertightCheck =
-        static_cast<meshioplusplus::SdfWatertightCheck>(rOpts.watertight_check);
+    options.mSign = capi_checked_enum<meshioplusplus::SdfSign>(rOpts.sign, MIO_SDF_WINDING_NUMBER,
+                                                               "sdf", "sign");
+    options.mWeight = capi_checked_enum<meshioplusplus::SdfPseudonormalWeight>(
+        rOpts.weight, MIO_SDF_WEIGHT_AREA, "sdf", "weight");
+    options.mLocation = capi_checked_enum<meshioplusplus::SdfLocation>(
+        rOpts.location, MIO_SDF_CENTER, "sdf", "location");
+    options.mWatertightCheck = capi_checked_enum<meshioplusplus::SdfWatertightCheck>(
+        rOpts.watertight_check, MIO_SDF_WATERTIGHT_ERROR, "sdf", "watertight check");
     options.mBand = rOpts.band;
     options.mRecordClosestCell = rOpts.record_closest_cell != 0;
     options.mRecordInside = rOpts.record_inside != 0;
@@ -5786,36 +5802,17 @@ meshioplusplus::SurfaceDistanceOptions capi_sdf_options(const mio_sdf_opts& rOpt
 /// Translate the flat option struct into the core's VoxelOptions.
 meshioplusplus::VoxelOptions capi_voxel_options(const mio_voxel_opts& rOpts) {
     meshioplusplus::VoxelOptions options;
-    if (rOpts.resolution != nullptr)
-        options.mResolution = std::array<std::int64_t, 3>{
-            {rOpts.resolution[0], rOpts.resolution[1], rOpts.resolution[2]}};
-    if (rOpts.cell_size > 0.0)
-        options.mCellSize = rOpts.cell_size;
-    if (rOpts.bounds != nullptr)
-        options.mBounds =
-            std::array<double, 6>{{rOpts.bounds[0], rOpts.bounds[1], rOpts.bounds[2],
-                                   rOpts.bounds[3], rOpts.bounds[4], rOpts.bounds[5]}};
-    options.mPadding = rOpts.padding;
-    options.mPaddingRelative = rOpts.padding_relative;
-    if (rOpts.fill < 0 || rOpts.fill > MIO_VOXEL_INSIDE)
-        throw meshioplusplus::ReadError("meshio++: voxelize: unknown fill " +
-                                        std::to_string(rOpts.fill));
-    options.mFill = static_cast<meshioplusplus::VoxelFill>(rOpts.fill);
+    capi_grid_extent(options, rOpts);
+    options.mFill = capi_checked_enum<meshioplusplus::VoxelFill>(rOpts.fill, MIO_VOXEL_INSIDE,
+                                                                 "voxelize", "fill");
     options.mAttachOccupancy = rOpts.attach_occupancy != 0;
     options.mMaxCells = rOpts.max_cells;
-    if (rOpts.sign < 0 || rOpts.sign > MIO_SDF_WINDING_NUMBER)
-        throw meshioplusplus::ReadError("meshio++: voxelize: unknown sign " +
-                                        std::to_string(rOpts.sign));
-    options.mDistance.mSign = static_cast<meshioplusplus::SdfSign>(rOpts.sign);
-    if (rOpts.watertight_check < 0 || rOpts.watertight_check > MIO_SDF_WATERTIGHT_ERROR)
-        throw meshioplusplus::ReadError("meshio++: voxelize: unknown watertight check " +
-                                        std::to_string(rOpts.watertight_check));
-    options.mDistance.mWatertightCheck =
-        static_cast<meshioplusplus::SdfWatertightCheck>(rOpts.watertight_check);
-    if (rOpts.plane < 0 || rOpts.plane > MIO_PLANE_YZ)
-        throw meshioplusplus::ReadError("meshio++: voxelize: unknown plane " +
-                                        std::to_string(rOpts.plane));
-    options.mPlane = static_cast<meshioplusplus::detail::PlanarPlane>(rOpts.plane);
+    options.mDistance.mSign = capi_checked_enum<meshioplusplus::SdfSign>(
+        rOpts.sign, MIO_SDF_WINDING_NUMBER, "voxelize", "sign");
+    options.mDistance.mWatertightCheck = capi_checked_enum<meshioplusplus::SdfWatertightCheck>(
+        rOpts.watertight_check, MIO_SDF_WATERTIGHT_ERROR, "voxelize", "watertight check");
+    options.mPlane = capi_checked_enum<meshioplusplus::detail::PlanarPlane>(
+        rOpts.plane, MIO_PLANE_YZ, "voxelize", "plane");
     return options;
 }
 
@@ -5825,72 +5822,48 @@ meshioplusplus::OctreeOptions capi_octree_options(const mio_octree_opts& rOpts) 
     if (rOpts.root_cells != nullptr)
         options.mRootCells = std::array<std::int64_t, 3>{
             {rOpts.root_cells[0], rOpts.root_cells[1], rOpts.root_cells[2]}};
-    if (rOpts.bounds != nullptr)
-        options.mBounds =
-            std::array<double, 6>{{rOpts.bounds[0], rOpts.bounds[1], rOpts.bounds[2],
-                                   rOpts.bounds[3], rOpts.bounds[4], rOpts.bounds[5]}};
-    options.mPadding = rOpts.padding;
-    options.mPaddingRelative = rOpts.padding_relative;
+    capi_grid_bounds(options, rOpts);
     options.mSampleDistance = rOpts.sample_distance;
     options.mMinLevel = rOpts.min_level;
     options.mMaxLevel = rOpts.max_level;
     options.mDimension = rOpts.dimension;
     options.mMaxCells = rOpts.max_cells;
-    if (rOpts.balance < 0 || rOpts.balance > MIO_OCTREE_BALANCE_FULL)
-        throw meshioplusplus::ReadError("meshio++: octree: unknown balance " +
-                                        std::to_string(rOpts.balance));
-    options.mBalance = static_cast<meshioplusplus::OctreeBalance>(rOpts.balance);
-    if (rOpts.fill < 0 || rOpts.fill > MIO_VOXEL_INSIDE)
-        throw meshioplusplus::ReadError("meshio++: octree: unknown fill " +
-                                        std::to_string(rOpts.fill));
-    options.mFill = static_cast<meshioplusplus::VoxelFill>(rOpts.fill);
+    options.mBalance = capi_checked_enum<meshioplusplus::OctreeBalance>(
+        rOpts.balance, MIO_OCTREE_BALANCE_FULL, "octree", "balance");
+    options.mFill = capi_checked_enum<meshioplusplus::VoxelFill>(rOpts.fill, MIO_VOXEL_INSIDE,
+                                                                 "octree", "fill");
     options.mAttachDistance = rOpts.attach_distance != 0;
     options.mEvenOdd = rOpts.even_odd != 0;
-    if (rOpts.sign < 0 || rOpts.sign > MIO_SDF_WINDING_NUMBER)
-        throw meshioplusplus::ReadError("meshio++: octree: unknown sign " +
-                                        std::to_string(rOpts.sign));
-    options.mDistance.mSign = static_cast<meshioplusplus::SdfSign>(rOpts.sign);
-    if (rOpts.watertight_check < 0 || rOpts.watertight_check > MIO_SDF_WATERTIGHT_ERROR)
-        throw meshioplusplus::ReadError("meshio++: octree: unknown watertight check " +
-                                        std::to_string(rOpts.watertight_check));
-    options.mDistance.mWatertightCheck =
-        static_cast<meshioplusplus::SdfWatertightCheck>(rOpts.watertight_check);
-    if (rOpts.transition < 0 || rOpts.transition > MIO_OCTREE_TEMPLATES)
-        throw meshioplusplus::ReadError("meshio++: octree: unknown transition " +
-                                        std::to_string(rOpts.transition));
-    options.mTransition = static_cast<meshioplusplus::OctreeTransition>(rOpts.transition);
+    options.mDistance.mSign = capi_checked_enum<meshioplusplus::SdfSign>(
+        rOpts.sign, MIO_SDF_WINDING_NUMBER, "octree", "sign");
+    options.mDistance.mWatertightCheck = capi_checked_enum<meshioplusplus::SdfWatertightCheck>(
+        rOpts.watertight_check, MIO_SDF_WATERTIGHT_ERROR, "octree", "watertight check");
+    options.mTransition = capi_checked_enum<meshioplusplus::OctreeTransition>(
+        rOpts.transition, MIO_OCTREE_TEMPLATES, "octree", "transition");
     options.mSnap = rOpts.snap != 0;
     options.mSurfaceLevel = rOpts.surface_level;
     options.mCurvatureThreshold = rOpts.curvature_threshold;
     options.mFeatureAngle = rOpts.feature_angle;
     if (rOpts.size_array != nullptr)
         options.mSizeArray = rOpts.size_array;
-    if (rOpts.plane < 0 || rOpts.plane > MIO_PLANE_YZ)
-        throw meshioplusplus::ReadError("meshio++: octree: unknown plane " +
-                                        std::to_string(rOpts.plane));
-    options.mPlane = static_cast<meshioplusplus::detail::PlanarPlane>(rOpts.plane);
+    options.mPlane = capi_checked_enum<meshioplusplus::detail::PlanarPlane>(
+        rOpts.plane, MIO_PLANE_YZ, "octree", "plane");
     return options;
 }
 
 /// Translate the flat option struct into the core's OctreeMeshOptions.
 meshioplusplus::OctreeMeshOptions capi_octree_mesh_options(const mio_octree_mesh_opts& rOpts) {
     meshioplusplus::OctreeMeshOptions options;
-    auto check = [](std::int32_t Value, std::int32_t Max, const char* pWhat) {
-        if (Value < 0 || Value > Max)
-            throw meshioplusplus::ReadError(std::string("meshio++: octree_mesh: unknown ") + pWhat +
-                                            " " + std::to_string(Value));
-        return Value;
-    };
-    options.mOutput = static_cast<meshioplusplus::OctreeMeshOutput>(
-        check(rOpts.output, MIO_OCTREE_MESH_HEX, "output"));
-    options.mConformity = static_cast<meshioplusplus::OctreeMeshConformity>(
-        check(rOpts.conformity, MIO_OCTREE_MESH_CLEAVING, "conformity"));
-    options.mSkinGrading = static_cast<meshioplusplus::OctreeMeshSkinGrading>(
-        check(rOpts.skin_grading, MIO_OCTREE_MESH_UNIFORM, "skin grading"));
-    options.mFill = static_cast<meshioplusplus::OctreeMeshFill>(
-        check(rOpts.fill, MIO_OCTREE_MESH_FILL_COVER, "fill"));
-    options.mHexGrading = static_cast<meshioplusplus::OctreeMeshHexGrading>(
-        check(rOpts.hex_grading, MIO_OCTREE_MESH_HEX_GRADED, "hex grading"));
+    options.mOutput = capi_checked_enum<meshioplusplus::OctreeMeshOutput>(
+        rOpts.output, MIO_OCTREE_MESH_HEX, "octree_mesh", "output");
+    options.mConformity = capi_checked_enum<meshioplusplus::OctreeMeshConformity>(
+        rOpts.conformity, MIO_OCTREE_MESH_CLEAVING, "octree_mesh", "conformity");
+    options.mSkinGrading = capi_checked_enum<meshioplusplus::OctreeMeshSkinGrading>(
+        rOpts.skin_grading, MIO_OCTREE_MESH_UNIFORM, "octree_mesh", "skin grading");
+    options.mFill = capi_checked_enum<meshioplusplus::OctreeMeshFill>(
+        rOpts.fill, MIO_OCTREE_MESH_FILL_COVER, "octree_mesh", "fill");
+    options.mHexGrading = capi_checked_enum<meshioplusplus::OctreeMeshHexGrading>(
+        rOpts.hex_grading, MIO_OCTREE_MESH_HEX_GRADED, "octree_mesh", "hex grading");
     if (rOpts.bounds != nullptr)
         options.mBounds =
             std::array<double, 6>{{rOpts.bounds[0], rOpts.bounds[1], rOpts.bounds[2],
@@ -5955,21 +5928,9 @@ CapiOctreeMeshExtras& capi_octree_mesh_extras() {
 /// Translate the flat option struct into the core's SdfOptions.
 meshioplusplus::SdfOptions capi_compute_sdf_options(const mio_compute_sdf_opts& rOpts) {
     meshioplusplus::SdfOptions options;
-    if (rOpts.structure < 0 || rOpts.structure > MIO_SDF_OCTREE)
-        throw meshioplusplus::ReadError("meshio++: sdf: unknown structure " +
-                                        std::to_string(rOpts.structure));
-    options.mStructure = static_cast<meshioplusplus::SdfStructure>(rOpts.structure);
-    if (rOpts.resolution != nullptr)
-        options.mResolution = std::array<std::int64_t, 3>{
-            {rOpts.resolution[0], rOpts.resolution[1], rOpts.resolution[2]}};
-    if (rOpts.cell_size > 0.0)
-        options.mCellSize = rOpts.cell_size;
-    if (rOpts.bounds != nullptr)
-        options.mBounds =
-            std::array<double, 6>{{rOpts.bounds[0], rOpts.bounds[1], rOpts.bounds[2],
-                                   rOpts.bounds[3], rOpts.bounds[4], rOpts.bounds[5]}};
-    options.mPadding = rOpts.padding;
-    options.mPaddingRelative = rOpts.padding_relative;
+    options.mStructure = capi_checked_enum<meshioplusplus::SdfStructure>(
+        rOpts.structure, MIO_SDF_OCTREE, "sdf", "structure");
+    capi_grid_extent(options, rOpts);
     options.mRootResolution = rOpts.root_resolution;
     options.mMaxDepth = rOpts.max_depth;
     options.mBandCells = rOpts.band_cells;
@@ -5983,17 +5944,7 @@ meshioplusplus::SdfOptions capi_compute_sdf_options(const mio_compute_sdf_opts& 
 meshioplusplus::RemeshVolumeOptions capi_remesh_volume_options(
     const mio_remesh_volume_opts& rOpts) {
     meshioplusplus::RemeshVolumeOptions options;
-    if (rOpts.resolution != nullptr)
-        options.mResolution = std::array<std::int64_t, 3>{
-            {rOpts.resolution[0], rOpts.resolution[1], rOpts.resolution[2]}};
-    if (rOpts.cell_size > 0.0)
-        options.mCellSize = rOpts.cell_size;
-    if (rOpts.bounds != nullptr)
-        options.mBounds =
-            std::array<double, 6>{{rOpts.bounds[0], rOpts.bounds[1], rOpts.bounds[2],
-                                   rOpts.bounds[3], rOpts.bounds[4], rOpts.bounds[5]}};
-    options.mPadding = rOpts.padding;
-    options.mPaddingRelative = rOpts.padding_relative;
+    capi_grid_extent(options, rOpts);
     // Verbatim, not gated on > 0: mMaxCells/mMaxTets <= 0 means "unlimited"
     // to the C++ checks themselves (sdf.cpp/remesh_volume.cpp's own
     // `> 0 && ...` guards), so passing it through unconditionally is what
