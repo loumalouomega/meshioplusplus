@@ -443,6 +443,37 @@ void cli_regions_json(meshioplusplus::cli::JsonOut& rJson, const std::string& rN
     rJson.EndObject();
 }
 
+// Sets @p rOut from value-option @p pName when it was given, parsed the way
+// the verb always parsed it (`stod_c`, `std::stoll`, `std::stoi`, or the text
+// itself); an absent option leaves @p rOut as it was.
+template <class T>
+void cli_opt_double(const cli_parsed& rP, const char* pName, T& rOut) {
+    if (has_opt(rP, pName))
+        rOut = meshioplusplus::detail::stod_c(opt_value(rP, pName));
+}
+template <class T>
+void cli_opt_int64(const cli_parsed& rP, const char* pName, T& rOut) {
+    if (has_opt(rP, pName))
+        rOut = std::stoll(opt_value(rP, pName));
+}
+template <class T>
+void cli_opt_int(const cli_parsed& rP, const char* pName, T& rOut) {
+    if (has_opt(rP, pName))
+        rOut = std::stoi(opt_value(rP, pName));
+}
+template <class T>
+void cli_opt_string(const cli_parsed& rP, const char* pName, T& rOut) {
+    if (has_opt(rP, pName))
+        rOut = opt_value(rP, pName);
+}
+
+// One "<prefix><warning>" line per warning on @p rOs.
+void cli_print_warnings(std::ostream& rOs, const char* pPrefix,
+                        const std::vector<std::string>& rWarnings) {
+    for (const std::string& w : rWarnings)
+        rOs << pPrefix << w << "\n";
+}
+
 void cli_names_json(meshioplusplus::cli::JsonOut& rJson, const char* pKey,
                     const std::vector<std::string>& rNames) {
     rJson.Key(pKey);
@@ -687,8 +718,7 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
     }
     // --time-step is not a narrowing option: no post-filter can recover a step
     // that was never read, so it goes to the reader or nowhere.
-    if (has_opt(p, "time-step"))
-        opts.mTimeStep = std::stoi(opt_value(p, "time-step"));
+    cli_opt_int(p, "time-step", opts.mTimeStep);
     // --piece keeps one partition / composite block of a partitioned file (VTKHDF)
     // instead of the merged mesh. Like --time-step it cannot be emulated after the
     // fact, so it goes to the reader or fails there.
@@ -821,8 +851,7 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
 
     if (target_fmt == "gltf" && (color || gltf_flags)) {
         meshioplusplus::GltfWriteOptions gltf;
-        if (has_opt(p, "split-angle"))
-            gltf.mSplitAngle = meshioplusplus::detail::stod_c(opt_value(p, "split-angle"));
+        cli_opt_double(p, "split-angle", gltf.mSplitAngle);
         if (has_opt(p, "up-axis"))
             gltf.mUpAxis = meshioplusplus::gltf_up_axis_from_name(opt_value(p, "up-axis"));
         if (color) {
@@ -831,8 +860,7 @@ int cmd_convert(const std::vector<std::string>& rArgs) {
             gltf.mCmap = cmap;
             gltf.mVMin = vmin;
             gltf.mVMax = vmax;
-            if (has_opt(p, "nan-color"))
-                gltf.mNanColor = opt_value(p, "nan-color");
+            cli_opt_string(p, "nan-color", gltf.mNanColor);
         }
         meshioplusplus::write_gltf(outfile, mesh, gltf);
     } else if (color) {
@@ -1585,10 +1613,8 @@ int cmd_check(const std::vector<std::string>& rArgs) {
             const auto t = meshioplusplus::parse_quality_thresholds(spec);
             options.mThresholds.insert(options.mThresholds.end(), t.begin(), t.end());
         }
-        if (has_opt(p, "max-inverted"))
-            options.mMaxInverted = std::stoll(opt_value(p, "max-inverted"));
-        if (has_opt(p, "max-degenerate"))
-            options.mMaxDegenerate = std::stoll(opt_value(p, "max-degenerate"));
+        cli_opt_int64(p, "max-inverted", options.mMaxInverted);
+        cli_opt_int64(p, "max-degenerate", options.mMaxDegenerate);
         Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
         r = meshioplusplus::check_quality(mesh, options);
     } catch (const std::exception& e) {
@@ -1615,8 +1641,7 @@ int cmd_check_conformity(const std::vector<std::string>& rArgs) {
             throw std::runtime_error("check-conformity requires INFILE and an optional OUTFILE");
         json = has_flag(p, "json");
         meshioplusplus::ConformityOptions options;
-        if (has_opt(p, "tolerance"))
-            options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+        cli_opt_double(p, "tolerance", options.mTolerance);
         options.mAttachFlags = p.positionals.size() == 2;
         Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
         r = meshioplusplus::check_conformity(mesh, options);
@@ -1638,11 +1663,7 @@ int cmd_check_conformity(const std::vector<std::string>& rArgs) {
         out.Field("num_non_manifold_facets", r.mNumNonManifoldFacets);
         out.Field("conforming", r.mConforming);
         out.Field("interface_mode", r.mInterfaceMode);
-        out.Key("warnings");
-        out.BeginArray();
-        for (const std::string& w : r.mWarnings)
-            out.String(w);
-        out.EndArray();
+        cli_names_json(out, "warnings", r.mWarnings);
         out.EndObject();
     } else {
         std::cout << (r.mConforming ? "conforming" : "NOT conforming") << " (" << r.mDimension
@@ -1654,8 +1675,7 @@ int cmd_check_conformity(const std::vector<std::string>& rArgs) {
         std::cout << "  boundary facets:     " << r.mNumBoundaryFacets << "\n";
         std::cout << "  non-manifold facets: " << r.mNumNonManifoldFacets << "\n";
         std::cout << "  interface mode:      " << r.mInterfaceMode << "\n";
-        for (const std::string& w : r.mWarnings)
-            std::cout << "  warning: " << w << "\n";
+        cli_print_warnings(std::cout, "  warning: ", r.mWarnings);
     }
     return r.mConforming ? 0 : 1;
 }
@@ -1672,9 +1692,7 @@ int cmd_check_tetrahedra(const std::vector<std::string>& rArgs) {
             throw std::runtime_error("check-tetrahedra requires INFILE");
         json = has_flag(p, "json");
         meshioplusplus::TetrahedraCheckOptions options;
-        if (has_opt(p, "zero-volume-factor"))
-            options.mZeroVolumeFactor =
-                meshioplusplus::detail::stod_c(opt_value(p, "zero-volume-factor"));
+        cli_opt_double(p, "zero-volume-factor", options.mZeroVolumeFactor);
         Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
         r = meshioplusplus::check_tetrahedra(mesh, options);
     } catch (const std::exception& e) {
@@ -1691,11 +1709,7 @@ int cmd_check_tetrahedra(const std::vector<std::string>& rArgs) {
         out.Field("min_volume", r.mMinVolume);
         out.Field("max_volume", r.mMaxVolume);
         out.Field("valid", r.mValid);
-        out.Key("warnings");
-        out.BeginArray();
-        for (const std::string& w : r.mWarnings)
-            out.String(w);
-        out.EndArray();
+        cli_names_json(out, "warnings", r.mWarnings);
         out.EndObject();
     } else {
         std::cout << (r.mValid ? "valid" : "NOT valid") << " (" << r.mNumTetrahedra
@@ -1708,8 +1722,7 @@ int cmd_check_tetrahedra(const std::vector<std::string>& rArgs) {
         std::cout << "  min volume:  " << volume << "\n";
         meshioplusplus::detail::snprintf_c(volume, sizeof(volume), "%.6g", r.mMaxVolume);
         std::cout << "  max volume:  " << volume << "\n";
-        for (const std::string& w : r.mWarnings)
-            std::cout << "  warning: " << w << "\n";
+        cli_print_warnings(std::cout, "  warning: ", r.mWarnings);
     }
     return r.mValid ? 0 : 1;
 }
@@ -1733,8 +1746,7 @@ int cmd_find_intersections(const std::vector<std::string>& rArgs) {
         meshioplusplus::FindIntersectionsOptions options;
         options.mRegion = opt_value(p, "region");
         options.mRegionB = opt_value(p, "region-other");
-        if (has_opt(p, "max-pairs"))
-            options.mMaxPairs = std::stoll(opt_value(p, "max-pairs"));
+        cli_opt_int64(p, "max-pairs", options.mMaxPairs);
         options.mAttachFlags = p.positionals.size() == 2;
         options.mSegments = has_opt(p, "segments");
         Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -1773,11 +1785,7 @@ int cmd_find_intersections(const std::vector<std::string>& rArgs) {
             out.EndArray();
         }
         out.EndArray();
-        out.Key("warnings");
-        out.BeginArray();
-        for (const std::string& w : r.mWarnings)
-            out.String(w);
-        out.EndArray();
+        cli_names_json(out, "warnings", r.mWarnings);
         out.EndObject();
     } else {
         if (r.mClean)
@@ -1786,8 +1794,7 @@ int cmd_find_intersections(const std::vector<std::string>& rArgs) {
             std::cout << r.mNumPairs << " intersecting cell pairs (" << r.mNumTrianglePairs
                       << " triangle pairs, " << r.mNumCoplanar << " coplanar), " << r.mNumSegments
                       << " segments\n";
-        for (const std::string& w : r.mWarnings)
-            std::cout << "  warning: " << w << "\n";
+        cli_print_warnings(std::cout, "  warning: ", r.mWarnings);
     }
     return r.mClean ? 0 : 1;
 }
@@ -1812,8 +1819,7 @@ int cmd_thickness(const std::vector<std::string>& rArgs) {
         o.mDirection = meshioplusplus::ThicknessDirection::Outward;
     else if (direction != "auto")
         throw std::runtime_error("thickness: --direction must be auto, inward or outward");
-    if (has_opt(p, "max-distance"))
-        o.mMaxDistance = meshioplusplus::detail::stod_c(opt_value(p, "max-distance"));
+    cli_opt_double(p, "max-distance", o.mMaxDistance);
     const bool has_min = has_opt(p, "min");
     if (has_min)
         o.mThreshold = meshioplusplus::detail::stod_c(opt_value(p, "min"));
@@ -1851,11 +1857,7 @@ int cmd_thickness(const std::vector<std::string>& rArgs) {
         for (double v : r.mMinPoint)
             json.Number(v);
         json.EndArray();
-        json.Key("warnings");
-        json.BeginArray();
-        for (const std::string& w : r.mWarnings)
-            json.String(w);
-        json.EndArray();
+        cli_names_json(json, "warnings", r.mWarnings);
         if (has_min) {
             json.Field("threshold", o.mThreshold);
             json.Field("passed", !failed);
@@ -1878,8 +1880,7 @@ int cmd_thickness(const std::vector<std::string>& rArgs) {
             std::cout << "  " << (failed ? "FAIL" : "pass") << ": " << r.mNumBelow
                       << " cells below " << lim << "\n";
         }
-        for (const std::string& w : r.mWarnings)
-            std::cout << "  warning: " << w << "\n";
+        cli_print_warnings(std::cout, "  warning: ", r.mWarnings);
     }
     return failed ? 1 : 0;
 }
@@ -1897,8 +1898,7 @@ int cmd_feature_edges(const std::vector<std::string>& rArgs) {
         throw std::runtime_error("feature-edges requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::FeatureEdgeOptions options;
-    if (has_opt(p, "angle"))
-        options.mFeatureAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "angle"));
+    cli_opt_double(p, "angle", options.mFeatureAngleDeg);
     options.mFeature = !has_flag(p, "no-feature");
     options.mBoundary = !has_flag(p, "no-boundary");
     options.mNonManifold = !has_flag(p, "no-non-manifold");
@@ -1952,23 +1952,15 @@ int cmd_segment(const std::vector<std::string>& rArgs) {
         throw std::runtime_error("segment requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::SegmentOptions options;
-    if (has_opt(p, "angle"))
-        options.mFeatureAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "angle"));
-    if (has_opt(p, "normal-tolerance"))
-        options.mNormalToleranceDeg =
-            meshioplusplus::detail::stod_c(opt_value(p, "normal-tolerance"));
-    if (has_opt(p, "curvature-tolerance"))
-        options.mCurvatureTolerance =
-            meshioplusplus::detail::stod_c(opt_value(p, "curvature-tolerance"));
-    if (has_opt(p, "min-patch-cells"))
-        options.mMinPatchCells = std::stoll(opt_value(p, "min-patch-cells"));
+    cli_opt_double(p, "angle", options.mFeatureAngleDeg);
+    cli_opt_double(p, "normal-tolerance", options.mNormalToleranceDeg);
+    cli_opt_double(p, "curvature-tolerance", options.mCurvatureTolerance);
+    cli_opt_int64(p, "min-patch-cells", options.mMinPatchCells);
     options.mRegion = opt_value(p, "region");
-    if (has_opt(p, "prefix"))
-        options.mPrefix = opt_value(p, "prefix");
+    cli_opt_string(p, "prefix", options.mPrefix);
     if (has_opt(p, "method"))
         options.mMethod = cli_segment_method(opt_value(p, "method"), "segment");
-    if (has_opt(p, "tolerance"))
-        options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    cli_opt_double(p, "tolerance", options.mTolerance);
     meshioplusplus::SegmentResult r = meshioplusplus::segment(mesh, options);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     if (has_flag(p, "json")) {
@@ -2031,16 +2023,11 @@ int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
         throw std::runtime_error("fit-primitives requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::FitPrimitivesOptions options;
-    if (has_opt(p, "patch-data"))
-        options.mPatchData = opt_value(p, "patch-data");
-    if (has_opt(p, "tolerance"))
-        options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    cli_opt_string(p, "patch-data", options.mPatchData);
+    cli_opt_double(p, "tolerance", options.mTolerance);
     options.mRelative = !has_flag(p, "absolute");
-    if (has_opt(p, "min-inlier-fraction"))
-        options.mMinInlierFraction =
-            meshioplusplus::detail::stod_c(opt_value(p, "min-inlier-fraction"));
-    if (has_opt(p, "max-iterations"))
-        options.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
+    cli_opt_double(p, "min-inlier-fraction", options.mMinInlierFraction);
+    cli_opt_int64(p, "max-iterations", options.mMaxIterations);
     if (has_opt(p, "types"))
         options.mTypes = cli_fit_types(opt_value(p, "types"), "fit-primitives");
     meshioplusplus::FitPrimitivesResult r = meshioplusplus::fit_primitives(mesh, options);
@@ -2289,22 +2276,16 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
                                  model.mFormat + "'");
     meshioplusplus::MeshCadSurfaceOptions o;
     o.mTargetSize = meshioplusplus::detail::stod_c(opt_value(p, "size"));
-    if (has_opt(p, "deflection"))
-        o.mMaxChordalDeviation = meshioplusplus::detail::stod_c(opt_value(p, "deflection"));
-    if (has_opt(p, "min-points-per-edge"))
-        o.mMinPointsPerEdge = std::stoll(opt_value(p, "min-points-per-edge"));
-    if (has_opt(p, "tolerance"))
-        o.mGeometricTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    cli_opt_double(p, "deflection", o.mMaxChordalDeviation);
+    cli_opt_int64(p, "min-points-per-edge", o.mMinPointsPerEdge);
+    cli_opt_double(p, "tolerance", o.mGeometricTolerance);
     o.mRecordFaceIds = !has_flag(p, "no-face-ids");
     o.mEdges = !has_flag(p, "no-edges");
     o.mMatchUnreferencedTrims = !has_flag(p, "no-match");
     o.mStrict = has_flag(p, "strict");
-    if (has_opt(p, "max-points"))
-        o.mMaxPoints = std::stoll(opt_value(p, "max-points"));
-    if (has_opt(p, "min-angle"))
-        o.mMinAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "min-angle"));
-    if (has_opt(p, "smooth"))
-        o.mSmoothIterations = std::stoll(opt_value(p, "smooth"));
+    cli_opt_int64(p, "max-points", o.mMaxPoints);
+    cli_opt_double(p, "min-angle", o.mMinAngleDeg);
+    cli_opt_int64(p, "smooth", o.mSmoothIterations);
     if (has_opt(p, "smooth-method")) {
         const std::string m = opt_value(p, "smooth-method");
         if (m == "laplacian")
@@ -2316,12 +2297,9 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
     }
     if (has_opt(p, "order"))
         o.mOrder = static_cast<std::int32_t>(std::stoi(opt_value(p, "order")));
-    if (has_opt(p, "curvature-deviation"))
-        o.mCurvatureDeviation = meshioplusplus::detail::stod_c(opt_value(p, "curvature-deviation"));
-    if (has_opt(p, "cells-across-gaps"))
-        o.mCellsAcrossGaps = meshioplusplus::detail::stod_c(opt_value(p, "cells-across-gaps"));
-    if (has_opt(p, "grading"))
-        o.mGrading = meshioplusplus::detail::stod_c(opt_value(p, "grading"));
+    cli_opt_double(p, "curvature-deviation", o.mCurvatureDeviation);
+    cli_opt_double(p, "cells-across-gaps", o.mCellsAcrossGaps);
+    cli_opt_double(p, "grading", o.mGrading);
     if (has_opt(p, "pole-rings"))
         o.mPoleRings = static_cast<std::int32_t>(std::stoi(opt_value(p, "pole-rings")));
     if (has_opt(p, "metric")) {
@@ -2366,14 +2344,10 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
         metric_background = read_mesh_cli(opt_value(p, "metric-background"), "");
         sources.pMetricBackground = &metric_background;
     }
-    if (has_opt(p, "metric-array"))
-        sources.mMetricArray = opt_value(p, "metric-array");
-    if (has_opt(p, "metric-error"))
-        sources.mMetricError = meshioplusplus::detail::stod_c(opt_value(p, "metric-error"));
+    cli_opt_string(p, "metric-array", sources.mMetricArray);
+    cli_opt_double(p, "metric-error", sources.mMetricError);
     // v17.20.0: the reparametrisation, model tolerances and virtual faces.
-    if (has_opt(p, "reparam-condition-number"))
-        o.mReparamConditionNumber =
-            meshioplusplus::detail::stod_c(opt_value(p, "reparam-condition-number"));
+    cli_opt_double(p, "reparam-condition-number", o.mReparamConditionNumber);
     meshioplusplus::MeshCadSurfaceExtras extras;
     // On by default since v19.0.0; `--model-tolerances`/`--virtual-faces`
     // are still accepted and change nothing.
@@ -2475,11 +2449,7 @@ int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
             json.EndObject();
         }
         json.EndArray();
-        json.Key("warnings");
-        json.BeginArray();
-        for (const std::string& w : r.mWarnings)
-            json.String(w);
-        json.EndArray();
+        cli_names_json(json, "warnings", r.mWarnings);
         json.Field("num_refinement_points", r.mNumRefinementPoints);
         json.Field("num_faces_below_bound", r.mNumFacesBelowBound);
         json.Field("num_smoothed", r.mNumSmoothed);
@@ -2765,27 +2735,20 @@ int cmd_refine_patches(const std::vector<std::string>& rArgs) {
         throw std::runtime_error("refine-patches requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::RefinePatchesOptions options;
-    if (has_opt(p, "tolerance"))
-        options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    cli_opt_double(p, "tolerance", options.mTolerance);
     options.mRelative = !has_flag(p, "absolute");
-    if (has_opt(p, "normal-weight"))
-        options.mNormalWeight = meshioplusplus::detail::stod_c(opt_value(p, "normal-weight"));
-    if (has_opt(p, "epsilon"))
-        options.mEpsilon = meshioplusplus::detail::stod_c(opt_value(p, "epsilon"));
-    if (has_opt(p, "feature-angle"))
-        options.mFeatureAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "feature-angle"));
-    if (has_opt(p, "max-iterations"))
-        options.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
-    if (has_opt(p, "min-patch-cells"))
-        options.mMinPatchCells = std::stoll(opt_value(p, "min-patch-cells"));
+    cli_opt_double(p, "normal-weight", options.mNormalWeight);
+    cli_opt_double(p, "epsilon", options.mEpsilon);
+    cli_opt_double(p, "feature-angle", options.mFeatureAngleDeg);
+    cli_opt_int64(p, "max-iterations", options.mMaxIterations);
+    cli_opt_int64(p, "min-patch-cells", options.mMinPatchCells);
     if (has_opt(p, "ransac-seed"))
         options.mRansacSeed = cli_ransac_seed(opt_value(p, "ransac-seed"), "refine-patches");
     if (has_opt(p, "types"))
         options.mTypes = cli_fit_types(opt_value(p, "types"), "refine-patches");
     options.mAllowSplit = !has_flag(p, "no-split");
     options.mAllowMerge = !has_flag(p, "no-merge");
-    if (has_opt(p, "prefix"))
-        options.mPrefix = opt_value(p, "prefix");
+    cli_opt_string(p, "prefix", options.mPrefix);
     // An unsegmented surface is segmented first, at the same feature angle.
     if (!mesh.HasCellData("segment:patch")) {
         meshioplusplus::SegmentOptions so;
@@ -2893,13 +2856,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         meshioplusplus::SegmentOptions so;
         so.mMethod = cli_segment_method(
             has_opt(p, "segment-method") ? opt_value(p, "segment-method") : "primitive", "to-cad");
-        if (has_opt(p, "segment-tolerance"))
-            so.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "segment-tolerance"));
-        if (has_opt(p, "curvature-tolerance"))
-            so.mCurvatureTolerance =
-                meshioplusplus::detail::stod_c(opt_value(p, "curvature-tolerance"));
-        if (has_opt(p, "min-patch-cells"))
-            so.mMinPatchCells = std::stoll(opt_value(p, "min-patch-cells"));
+        cli_opt_double(p, "segment-tolerance", so.mTolerance);
+        cli_opt_double(p, "curvature-tolerance", so.mCurvatureTolerance);
+        cli_opt_int64(p, "min-patch-cells", so.mMinPatchCells);
         mesh = meshioplusplus::segment(mesh, so).mMesh;
         if (so.mMethod == meshioplusplus::SegmentMethod::Primitive) {
             double lo[3] = {0.0, 0.0, 0.0}, hi[3] = {0.0, 0.0, 0.0};
@@ -2928,21 +2887,17 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         mesh = meshioplusplus::fit_primitives(mesh, fo).mMesh;
     }
     meshioplusplus::FitCadOptions options;
-    if (has_opt(p, "tolerance"))
-        options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    cli_opt_double(p, "tolerance", options.mTolerance);
     options.mExactEdges = !has_flag(p, "no-exact-edges");
     if (has_opt(p, "types"))
         options.mTypes = cli_fit_types(opt_value(p, "types"), "to-cad");
-    if (has_opt(p, "mesh-deflection"))
-        options.mMeshDeflection = meshioplusplus::detail::stod_c(opt_value(p, "mesh-deflection"));
-    if (has_opt(p, "max-demotion-rounds"))
-        options.mMaxDemotionRounds = std::stoll(opt_value(p, "max-demotion-rounds"));
+    cli_opt_double(p, "mesh-deflection", options.mMeshDeflection);
+    cli_opt_int64(p, "max-demotion-rounds", options.mMaxDemotionRounds);
     options.mFreeform = !has_flag(p, "no-freeform");
     if (has_opt(p, "freeform-degree"))
         options.mFreeformDegree =
             static_cast<std::int32_t>(std::stoi(opt_value(p, "freeform-degree")));
-    if (has_opt(p, "freeform-max-control"))
-        options.mFreeformMaxControl = std::stoll(opt_value(p, "freeform-max-control"));
+    cli_opt_int64(p, "freeform-max-control", options.mFreeformMaxControl);
     options.mFreeformSplit = !has_flag(p, "no-freeform-split");
     options.mFillets = !has_flag(p, "no-fillets");
     options.mThreads = !has_flag(p, "no-threads");
@@ -2959,35 +2914,21 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
             throw std::runtime_error("to-cad: the backend must be 'auto', 'occt' or 'native'");
     }
     options.mRefineSegmentation = has_flag(p, "refine");
-    if (has_opt(p, "max-refine-iterations"))
-        options.mRefine.mMaxIterations = std::stoll(opt_value(p, "max-refine-iterations"));
-    if (has_opt(p, "refine-epsilon"))
-        options.mRefine.mEpsilon = meshioplusplus::detail::stod_c(opt_value(p, "refine-epsilon"));
-    if (has_opt(p, "normal-weight"))
-        options.mRefine.mNormalWeight =
-            meshioplusplus::detail::stod_c(opt_value(p, "normal-weight"));
+    cli_opt_int64(p, "max-refine-iterations", options.mRefine.mMaxIterations);
+    cli_opt_double(p, "refine-epsilon", options.mRefine.mEpsilon);
+    cli_opt_double(p, "normal-weight", options.mRefine.mNormalWeight);
     options.mRefine.mAllowMerge = !has_flag(p, "no-refine-merge");
     options.mRefine.mAllowSplit = !has_flag(p, "no-refine-split");
     if (has_opt(p, "ransac-seed"))
         options.mRefine.mRansacSeed = cli_ransac_seed(opt_value(p, "ransac-seed"), "to-cad");
-    if (has_opt(p, "refine-tolerance"))
-        options.mRefine.mTolerance =
-            meshioplusplus::detail::stod_c(opt_value(p, "refine-tolerance"));
+    cli_opt_double(p, "refine-tolerance", options.mRefine.mTolerance);
     options.mFreeformGeneral = has_flag(p, "freeform-general");
-    if (has_opt(p, "freeform-tolerance"))
-        options.mFreeformTolerance =
-            meshioplusplus::detail::stod_c(opt_value(p, "freeform-tolerance"));
-    if (has_opt(p, "freeform-smoothing"))
-        options.mFreeformSmoothing =
-            meshioplusplus::detail::stod_c(opt_value(p, "freeform-smoothing"));
-    if (has_opt(p, "max-freeform-poles"))
-        options.mMaxFreeformPoles = std::stoll(opt_value(p, "max-freeform-poles"));
-    if (has_opt(p, "max-freeform-iterations"))
-        options.mMaxFreeformIterations = std::stoll(opt_value(p, "max-freeform-iterations"));
-    if (has_opt(p, "max-freeform-splits"))
-        options.mMaxFreeformSplits = std::stoll(opt_value(p, "max-freeform-splits"));
-    if (has_opt(p, "sew-tolerance"))
-        options.mSewTolerance = meshioplusplus::detail::stod_c(opt_value(p, "sew-tolerance"));
+    cli_opt_double(p, "freeform-tolerance", options.mFreeformTolerance);
+    cli_opt_double(p, "freeform-smoothing", options.mFreeformSmoothing);
+    cli_opt_int64(p, "max-freeform-poles", options.mMaxFreeformPoles);
+    cli_opt_int64(p, "max-freeform-iterations", options.mMaxFreeformIterations);
+    cli_opt_int64(p, "max-freeform-splits", options.mMaxFreeformSplits);
+    cli_opt_double(p, "sew-tolerance", options.mSewTolerance);
     options.mExtendSurfaces = has_flag(p, "extend-surfaces");
     options.mSnapJunctions = has_flag(p, "snap-junctions");
     options.mFaceDeviation = has_flag(p, "face-deviation");
@@ -3016,19 +2957,11 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
     if (has_opt(p, "local-refine"))
         options.mLocalRefine = static_cast<meshioplusplus::FitCadLocalRefine>(
             keyword("local-refine", {"knots", "thb"}));
-    if (has_opt(p, "g1-tolerance"))
-        options.mFreeformG1ToleranceDeg =
-            meshioplusplus::detail::stod_c(opt_value(p, "g1-tolerance"));
-    if (has_opt(p, "freeform-max-control-points"))
-        options.mFreeformMaxControlPoints = std::stoll(opt_value(p, "freeform-max-control-points"));
-    if (has_opt(p, "layout-target-patch-size"))
-        options.mLayoutTargetPatchSize =
-            meshioplusplus::detail::stod_c(opt_value(p, "layout-target-patch-size"));
-    if (has_opt(p, "layout-max-valence-deviation"))
-        options.mLayoutMaxValenceDeviation =
-            std::stoll(opt_value(p, "layout-max-valence-deviation"));
-    if (has_opt(p, "resegment-rounds"))
-        options.mResegmentRounds = std::stoll(opt_value(p, "resegment-rounds"));
+    cli_opt_double(p, "g1-tolerance", options.mFreeformG1ToleranceDeg);
+    cli_opt_int64(p, "freeform-max-control-points", options.mFreeformMaxControlPoints);
+    cli_opt_double(p, "layout-target-patch-size", options.mLayoutTargetPatchSize);
+    cli_opt_int64(p, "layout-max-valence-deviation", options.mLayoutMaxValenceDeviation);
+    cli_opt_int64(p, "resegment-rounds", options.mResegmentRounds);
     options.mLayoutSnapToFeatures = !has_flag(p, "no-layout-snap-to-features");
     options.mValidateBySurfaceSampling = !has_flag(p, "no-validate-by-surface-sampling");
     options.mConstrainPrimitives = has_flag(p, "constrain-primitives");
@@ -3316,13 +3249,9 @@ int cmd_find_interface(const std::vector<std::string>& rArgs) {
         options.mMaster = meshioplusplus::InterfaceMaster::B;
     else
         throw std::runtime_error("find-interface: --master must be a or b");
-    if (has_opt(p, "gap-tolerance"))
-        options.mGapTolerance = meshioplusplus::detail::stod_c(opt_value(p, "gap-tolerance"));
-    if (has_opt(p, "angle-tolerance"))
-        options.mAngleTolerance = meshioplusplus::detail::stod_c(opt_value(p, "angle-tolerance"));
-    if (has_opt(p, "overlap-tolerance"))
-        options.mOverlapTolerance =
-            meshioplusplus::detail::stod_c(opt_value(p, "overlap-tolerance"));
+    cli_opt_double(p, "gap-tolerance", options.mGapTolerance);
+    cli_opt_double(p, "angle-tolerance", options.mAngleTolerance);
+    cli_opt_double(p, "overlap-tolerance", options.mOverlapTolerance);
     auto result = mesh_b_path.empty()
                       ? meshioplusplus::find_interface(mesh_a, region_a, region_b, options)
                       : meshioplusplus::find_interface(mesh_a, region_a, mesh_b, region_b, options);
@@ -3449,8 +3378,7 @@ int cmd_contact_pairs(const std::vector<std::string>& rArgs) {
     master_region.mName = opt_value(p, "master-region");
     master_region.mKind = static_cast<std::int32_t>(meshioplusplus::RegionKind::Cell);
     meshioplusplus::ContactPairsOptions options;
-    if (has_opt(p, "tolerance"))
-        options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    cli_opt_double(p, "tolerance", options.mTolerance);
     options.mRequireComplete = has_flag(p, "require-complete");
     const auto result =
         meshioplusplus::contact_pairs(slave, slave_region, master, master_region, options);
@@ -3578,8 +3506,7 @@ int cmd_hausdorff(const std::vector<std::string>& rArgs) {
     meshioplusplus::HausdorffOptions options;
     options.mRegionA = opt_value(p, "region-a");
     options.mRegionB = opt_value(p, "region-b");
-    if (has_opt(p, "face-samples"))
-        options.mFaceSamples = std::stoll(opt_value(p, "face-samples"));
+    cli_opt_int64(p, "face-samples", options.mFaceSamples);
     const meshioplusplus::HausdorffResult r = meshioplusplus::hausdorff_distance(a, b, options);
     const bool has_max = has_opt(p, "max");
     const double limit = has_max ? meshioplusplus::detail::stod_c(opt_value(p, "max")) : 0.0;
@@ -3673,8 +3600,7 @@ int cmd_metric(const std::vector<std::string>& rArgs) {
             if (!name.empty())
                 o.mArrays.push_back(name);
     }
-    if (has_opt(p, "output"))
-        o.mOutput = opt_value(p, "output");
+    cli_opt_string(p, "output", o.mOutput);
     const auto number = [&](const char* pName, double& rOut) {
         if (has_opt(p, pName))
             rOut = meshioplusplus::detail::stod_c(opt_value(p, pName));
@@ -3684,8 +3610,7 @@ int cmd_metric(const std::vector<std::string>& rArgs) {
     number("hmin", o.mHmin);
     number("hmax", o.mHmax);
     number("gradation", o.mGradation);
-    if (has_opt(p, "max-sweeps"))
-        o.mMaxSweeps = std::stoll(opt_value(p, "max-sweeps"));
+    cli_opt_int64(p, "max-sweeps", o.mMaxSweeps);
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::PrepareMetricResult r = meshioplusplus::prepare_metric(mesh, o);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
@@ -3721,10 +3646,8 @@ int cmd_untangle(const std::vector<std::string>& rArgs) {
     meshioplusplus::UntangleOptions o;
     o.mFixBoundary = !has_flag(p, "no-fix-boundary");
     o.mSmooth = has_flag(p, "smooth");
-    if (has_opt(p, "rings"))
-        o.mRings = std::stoll(opt_value(p, "rings"));
-    if (has_opt(p, "max-sweeps"))
-        o.mMaxSweeps = std::stoll(opt_value(p, "max-sweeps"));
+    cli_opt_int64(p, "rings", o.mRings);
+    cli_opt_int64(p, "max-sweeps", o.mMaxSweeps);
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::UntangleResult r = meshioplusplus::untangle(mesh, o);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
@@ -3768,15 +3691,11 @@ int cmd_morph(const std::vector<std::string>& rArgs) {
     o.mArray = opt_value(p, "array");
     o.mFixBoundary = !has_flag(p, "no-fix-boundary");
     o.mConstrainedArray = opt_value(p, "constrained-array");
-    if (has_opt(p, "stiffening"))
-        o.mStiffening = meshioplusplus::detail::stod_c(opt_value(p, "stiffening"));
-    if (has_opt(p, "steps"))
-        o.mSteps = std::stoll(opt_value(p, "steps"));
+    cli_opt_double(p, "stiffening", o.mStiffening);
+    cli_opt_int64(p, "steps", o.mSteps);
     o.mAllowInverted = has_flag(p, "allow-inverted");
-    if (has_opt(p, "tolerance"))
-        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
-    if (has_opt(p, "max-iterations"))
-        o.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
+    cli_opt_double(p, "tolerance", o.mTolerance);
+    cli_opt_int64(p, "max-iterations", o.mMaxIterations);
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::MorphResult r = meshioplusplus::morph(mesh, o);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
@@ -3814,12 +3733,9 @@ int cmd_eigenmodes(const std::vector<std::string>& rArgs) {
     if (p.positionals.size() != 2)
         throw std::runtime_error("eigenmodes requires INFILE OUTFILE");
     meshioplusplus::EigenmodeOptions o;
-    if (has_opt(p, "num-modes"))
-        o.mNumModes = std::stoll(opt_value(p, "num-modes"));
-    if (has_opt(p, "tolerance"))
-        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
-    if (has_opt(p, "max-iterations"))
-        o.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
+    cli_opt_int64(p, "num-modes", o.mNumModes);
+    cli_opt_double(p, "tolerance", o.mTolerance);
+    cli_opt_int64(p, "max-iterations", o.mMaxIterations);
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::EigenmodeResult r = meshioplusplus::laplacian_eigenmodes(mesh, o);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
@@ -3871,12 +3787,9 @@ int cmd_register(const std::vector<std::string>& rArgs) {
     meshioplusplus::RegistrationOptions o;
     if (has_opt(p, "method"))
         o.mMethod = meshioplusplus::registration_method_from_name(opt_value(p, "method"));
-    if (has_opt(p, "max-iterations"))
-        o.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
-    if (has_opt(p, "tolerance"))
-        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
-    if (has_opt(p, "max-distance"))
-        o.mMaxDistance = meshioplusplus::detail::stod_c(opt_value(p, "max-distance"));
+    cli_opt_int64(p, "max-iterations", o.mMaxIterations);
+    cli_opt_double(p, "tolerance", o.mTolerance);
+    cli_opt_double(p, "max-distance", o.mMaxDistance);
     Mesh source = read_mesh_cli(p.positionals[0], opt_value(p, "input-format-source"));
     Mesh target = read_mesh_cli(p.positionals[1], opt_value(p, "input-format-target"));
     const meshioplusplus::RegistrationResult r = meshioplusplus::register_rigid(source, target, o);
@@ -3936,8 +3849,7 @@ int cmd_point_normals(const std::vector<std::string>& rArgs) {
     if (p.positionals.size() != 2)
         throw std::runtime_error("point-normals requires INFILE OUTFILE");
     meshioplusplus::PointNormalsOptions o;
-    if (has_opt(p, "k"))
-        o.mK = std::stoll(opt_value(p, "k"));
+    cli_opt_int64(p, "k", o.mK);
     if (has_opt(p, "orientation"))
         o.mOrientation = meshioplusplus::normal_orientation_from_name(opt_value(p, "orientation"));
     if (has_opt(p, "viewpoint")) {
@@ -3988,21 +3900,14 @@ int cmd_reconstruct(const std::vector<std::string>& rArgs) {
     if (p.positionals.size() != 2)
         throw std::runtime_error("reconstruct requires INFILE OUTFILE");
     meshioplusplus::ReconstructSurfaceOptions o;
-    if (has_opt(p, "normals"))
-        o.mNormalsName = opt_value(p, "normals");
-    if (has_opt(p, "k"))
-        o.mK = std::stoll(opt_value(p, "k"));
-    if (has_opt(p, "cell-size"))
-        o.mCellSize = meshioplusplus::detail::stod_c(opt_value(p, "cell-size"));
-    if (has_opt(p, "resolution"))
-        o.mResolution = std::stoll(opt_value(p, "resolution"));
-    if (has_opt(p, "max-distance"))
-        o.mMaxDistance = meshioplusplus::detail::stod_c(opt_value(p, "max-distance"));
+    cli_opt_string(p, "normals", o.mNormalsName);
+    cli_opt_int64(p, "k", o.mK);
+    cli_opt_double(p, "cell-size", o.mCellSize);
+    cli_opt_int64(p, "resolution", o.mResolution);
+    cli_opt_double(p, "max-distance", o.mMaxDistance);
     o.mEstimateNormals = !has_flag(p, "no-estimate");
-    if (has_opt(p, "normals-k"))
-        o.mNormalsK = std::stoll(opt_value(p, "normals-k"));
-    if (has_opt(p, "max-cells"))
-        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    cli_opt_int64(p, "normals-k", o.mNormalsK);
+    cli_opt_int64(p, "max-cells", o.mMaxCells);
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::ReconstructSurfaceResult r = meshioplusplus::reconstruct_surface(mesh, o);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
@@ -4178,12 +4083,9 @@ int cmd_geodesic(const std::vector<std::string>& rArgs) {
         }
     }
     o.mSourceRegion = opt_value(p, "source-region");
-    if (has_opt(p, "time-factor"))
-        o.mTimeFactor = meshioplusplus::detail::stod_c(opt_value(p, "time-factor"));
-    if (has_opt(p, "tolerance"))
-        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
-    if (has_opt(p, "max-iterations"))
-        o.mMaxIterations = std::stoll(opt_value(p, "max-iterations"));
+    cli_opt_double(p, "time-factor", o.mTimeFactor);
+    cli_opt_double(p, "tolerance", o.mTolerance);
+    cli_opt_int64(p, "max-iterations", o.mMaxIterations);
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::GeodesicResult r = meshioplusplus::geodesic_distance(mesh, o);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
@@ -4220,12 +4122,9 @@ int cmd_parameterize(const std::vector<std::string>& rArgs) {
     if (p.positionals.size() != 2)
         throw std::runtime_error("parameterize requires INFILE OUTFILE");
     meshioplusplus::ParameterizeOptions o;
-    if (has_opt(p, "padding"))
-        o.mPadding = meshioplusplus::detail::stod_c(opt_value(p, "padding"));
-    if (has_opt(p, "max-depth"))
-        o.mMaxDepth = std::stoll(opt_value(p, "max-depth"));
-    if (has_opt(p, "max-stretch"))
-        o.mMaxStretch = meshioplusplus::detail::stod_c(opt_value(p, "max-stretch"));
+    cli_opt_double(p, "padding", o.mPadding);
+    cli_opt_int64(p, "max-depth", o.mMaxDepth);
+    cli_opt_double(p, "max-stretch", o.mMaxStretch);
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::ParameterizeResult r = meshioplusplus::parameterize(mesh, o);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
@@ -4343,8 +4242,7 @@ int cmd_periodic(const std::vector<std::string>& rArgs) {
         }
         options.mTransform = xf;
     }
-    if (has_opt(p, "atol"))
-        options.mAtol = meshioplusplus::detail::stod_c(opt_value(p, "atol"));
+    cli_opt_double(p, "atol", options.mAtol);
     options.mRequireComplete = !has_flag(p, "allow-incomplete");
     meshioplusplus::RegionSelector slave;
     slave.mName = opt_value(p, "slave");
@@ -4421,10 +4319,8 @@ int cmd_repair(const std::vector<std::string>& rArgs) {
     options.mOrientOutward = !has_flag(p, "no-orient-outward");
     options.mFillHoles = !has_flag(p, "no-fill-holes");
     options.mSplitNonManifold = !has_flag(p, "no-split-non-manifold");
-    if (has_opt(p, "max-hole-edges"))
-        options.mMaxHoleEdges = std::stoll(opt_value(p, "max-hole-edges"));
-    if (has_opt(p, "weld-tolerance"))
-        options.mWeldTolerance = meshioplusplus::detail::stod_c(opt_value(p, "weld-tolerance"));
+    cli_opt_int64(p, "max-hole-edges", options.mMaxHoleEdges);
+    cli_opt_double(p, "weld-tolerance", options.mWeldTolerance);
     options.mRecordProvenance = has_flag(p, "record-provenance");
 
     meshioplusplus::RepairResult r = meshioplusplus::repair(mesh, options);
@@ -4475,10 +4371,8 @@ int cmd_shrinkwrap(const std::vector<std::string>& rArgs) {
     Mesh target = read_mesh_cli(p.positionals[1], opt_value(p, "target-format"));
 
     meshioplusplus::ShrinkwrapOptions options;
-    if (has_opt(p, "offset"))
-        options.mOffset = meshioplusplus::detail::stod_c(opt_value(p, "offset"));
-    if (has_opt(p, "max-distance"))
-        options.mMaxDistance = meshioplusplus::detail::stod_c(opt_value(p, "max-distance"));
+    cli_opt_double(p, "offset", options.mOffset);
+    cli_opt_double(p, "max-distance", options.mMaxDistance);
     options.mWeights = opt_value(p, "weights");
     options.mTargetRegion = opt_value(p, "target-region");
     const std::string weight = opt_value(p, "normal-weight");
@@ -4531,10 +4425,8 @@ int cmd_sobolev_deform(const std::vector<std::string>& rArgs) {
     options.mFixedPointsArray = opt_value(p, "fixed-points-array");
     options.mFixBoundary = has_flag(p, "fix-boundary");
     options.mRecordFiltered = has_flag(p, "record-filtered");
-    if (has_opt(p, "max-iterations"))
-        options.mMaxIterations = std::stoi(opt_value(p, "max-iterations"));
-    if (has_opt(p, "tolerance"))
-        options.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    cli_opt_int(p, "max-iterations", options.mMaxIterations);
+    cli_opt_double(p, "tolerance", options.mTolerance);
 
     meshioplusplus::SobolevResult r = meshioplusplus::sobolev_deform(mesh, options);
 
@@ -4577,6 +4469,21 @@ std::vector<double> parse_doubles(const std::string& rText) {
         start = comma + 1;
     }
     return out;
+}
+
+// `--bounds 'xlo,ylo,zlo,xhi,yhi,zhi'`, `--padding` and `--padding-relative`,
+// the lattice extent the grid verbs share; @p pVerb names the verb in the error.
+template <class TOptions>
+void cli_grid_bounds(const cli_parsed& rP, const char* pVerb, TOptions& rOptions) {
+    if (rP.values.count("bounds")) {
+        auto v = parse_doubles(opt_value(rP, "bounds"));
+        if (v.size() != 6)
+            throw std::runtime_error(std::string(pVerb) +
+                                     ": --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'");
+        rOptions.mBounds = std::array<double, 6>{{v[0], v[1], v[2], v[3], v[4], v[5]}};
+    }
+    cli_opt_double(rP, "padding", rOptions.mPadding);
+    cli_opt_double(rP, "padding-relative", rOptions.mPaddingRelative);
 }
 
 int cmd_transform(const std::vector<std::string>& rArgs) {
@@ -4685,8 +4592,7 @@ int cmd_clean(const std::vector<std::string>& rArgs) {
         opts.drop_degenerate = true;
         opts.drop_duplicate_cells = true;
     }
-    if (p.values.count("atol"))
-        opts.atol = meshioplusplus::detail::stod_c(opt_value(p, "atol"));
+    cli_opt_double(p, "atol", opts.atol);
 
     auto r = meshioplusplus::clean(mesh, opts);
     if (!has_flag(p, "quiet")) {
@@ -4816,8 +4722,7 @@ int cmd_select(const std::vector<std::string>& rArgs) {
     meshioplusplus::SelectOptions o;
     o.mName = opt_value(p, "name");
     o.mKind = meshioplusplus::region_kind_from_name(opt_value(p, "kind", "cell"));
-    if (has_opt(p, "tag"))
-        o.mTag = std::stoll(opt_value(p, "tag"));
+    cli_opt_int64(p, "tag", o.mTag);
     o.mMode = meshioplusplus::select_mode_from_name(opt_value(p, "mode", "all"));
     o.mBoundaryOnly = !has_flag(p, "all-facets");
     const auto numbers = [&](const char* pKey, std::size_t N) {
@@ -4867,10 +4772,8 @@ int cmd_select(const std::vector<std::string>& rArgs) {
         o.mSeed = true;
         o.mSeedPoint = {v[0], v[1], v[2]};
     }
-    if (has_opt(p, "feature-angle"))
-        o.mFeatureAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "feature-angle"));
-    if (has_opt(p, "normal-tolerance"))
-        o.mNormalToleranceDeg = meshioplusplus::detail::stod_c(opt_value(p, "normal-tolerance"));
+    cli_opt_double(p, "feature-angle", o.mFeatureAngleDeg);
+    cli_opt_double(p, "normal-tolerance", o.mNormalToleranceDeg);
     meshioplusplus::SelectResult r = meshioplusplus::select_region(mesh, o);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     if (has_flag(p, "json")) {
@@ -4959,23 +4862,13 @@ int cmd_voxelize(const std::vector<std::string>& rArgs) {
         options.mCellSize = meshioplusplus::detail::stod_c(opt_value(p, "cell-size"));
     }
     // Negatives need the --bounds= form (the parser rule shared with --bbox).
-    if (p.values.count("bounds")) {
-        auto v = parse_doubles(opt_value(p, "bounds"));
-        if (v.size() != 6)
-            throw std::runtime_error("voxelize: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'");
-        options.mBounds = std::array<double, 6>{{v[0], v[1], v[2], v[3], v[4], v[5]}};
-    }
-    if (p.values.count("padding"))
-        options.mPadding = meshioplusplus::detail::stod_c(opt_value(p, "padding"));
-    if (p.values.count("padding-relative"))
-        options.mPaddingRelative = meshioplusplus::detail::stod_c(opt_value(p, "padding-relative"));
+    cli_grid_bounds(p, "voxelize", options);
     options.mFill = meshioplusplus::voxel_fill_from_name(opt_value(p, "fill", "all"));
     options.mDistance.mSign =
         meshioplusplus::sdf_sign_from_name(opt_value(p, "sign", "pseudonormal"));
     options.mPlane = meshioplusplus::detail::planar_plane_from_name(opt_value(p, "plane", "auto"));
     options.mAttachOccupancy = has_flag(p, "attach-occupancy");
-    if (p.values.count("max-cells"))
-        options.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    cli_opt_int64(p, "max-cells", options.mMaxCells);
     // Only the inside fill depends on the surface being closed, so only it warns.
     options.mDistance.mWatertightCheck = options.mFill == meshioplusplus::VoxelFill::Inside
                                              ? meshioplusplus::SdfWatertightCheck::Warn
@@ -5353,43 +5246,25 @@ int cmd_octree(const std::vector<std::string>& rArgs) {
                                                           static_cast<std::int64_t>(v[1]),
                                                           static_cast<std::int64_t>(v[2])}};
     }
-    if (p.values.count("min-level"))
-        options.mMinLevel = std::stoll(opt_value(p, "min-level"));
-    if (p.values.count("max-level"))
-        options.mMaxLevel = std::stoll(opt_value(p, "max-level"));
+    cli_opt_int64(p, "min-level", options.mMinLevel);
+    cli_opt_int64(p, "max-level", options.mMaxLevel);
     // Negatives need the --bounds= form (the parser rule shared with --bbox).
-    if (p.values.count("bounds")) {
-        auto v = parse_doubles(opt_value(p, "bounds"));
-        if (v.size() != 6)
-            throw std::runtime_error("octree: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'");
-        options.mBounds = std::array<double, 6>{{v[0], v[1], v[2], v[3], v[4], v[5]}};
-    }
-    if (p.values.count("padding"))
-        options.mPadding = meshioplusplus::detail::stod_c(opt_value(p, "padding"));
-    if (p.values.count("padding-relative"))
-        options.mPaddingRelative = meshioplusplus::detail::stod_c(opt_value(p, "padding-relative"));
-    if (p.values.count("dimension"))
-        options.mDimension = std::stoll(opt_value(p, "dimension"));
-    if (p.values.count("sample-distance"))
-        options.mSampleDistance = meshioplusplus::detail::stod_c(opt_value(p, "sample-distance"));
+    cli_grid_bounds(p, "octree", options);
+    cli_opt_int64(p, "dimension", options.mDimension);
+    cli_opt_double(p, "sample-distance", options.mSampleDistance);
     options.mBalance = meshioplusplus::octree_balance_from_name(opt_value(p, "balance", "face"));
     options.mFill = meshioplusplus::voxel_fill_from_name(opt_value(p, "fill", "all"));
     options.mDistance.mSign =
         meshioplusplus::sdf_sign_from_name(opt_value(p, "sign", "pseudonormal"));
     options.mAttachDistance = has_flag(p, "attach-distance");
     options.mEvenOdd = has_flag(p, "even-odd");
-    if (p.values.count("max-cells"))
-        options.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    cli_opt_int64(p, "max-cells", options.mMaxCells);
     options.mTransition =
         meshioplusplus::octree_transition_from_name(opt_value(p, "transition", "hanging"));
     options.mSnap = has_flag(p, "snap");
-    if (p.values.count("surface-level"))
-        options.mSurfaceLevel = std::stoll(opt_value(p, "surface-level"));
-    if (p.values.count("curvature-threshold"))
-        options.mCurvatureThreshold =
-            meshioplusplus::detail::stod_c(opt_value(p, "curvature-threshold"));
-    if (p.values.count("feature-angle"))
-        options.mFeatureAngle = meshioplusplus::detail::stod_c(opt_value(p, "feature-angle"));
+    cli_opt_int64(p, "surface-level", options.mSurfaceLevel);
+    cli_opt_double(p, "curvature-threshold", options.mCurvatureThreshold);
+    cli_opt_double(p, "feature-angle", options.mFeatureAngle);
     options.mSizeArray = opt_value(p, "size-array", "");
     options.mPlane = meshioplusplus::detail::planar_plane_from_name(opt_value(p, "plane", "auto"));
     options.mDistance.mWatertightCheck = options.mFill == meshioplusplus::VoxelFill::Inside
@@ -5472,14 +5347,7 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
     o.mMaxSize = num("max-size", o.mMaxSize);
     o.mMaxLevel = integer("max-level", o.mMaxLevel);
     // Negatives need the --bounds= form (the parser rule shared with --bbox).
-    if (p.values.count("bounds")) {
-        auto v = parse_doubles(opt_value(p, "bounds"));
-        if (v.size() != 6)
-            throw std::runtime_error("octree-mesh: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'");
-        o.mBounds = std::array<double, 6>{{v[0], v[1], v[2], v[3], v[4], v[5]}};
-    }
-    o.mPadding = num("padding", o.mPadding);
-    o.mPaddingRelative = num("padding-relative", o.mPaddingRelative);
+    cli_grid_bounds(p, "octree-mesh", o);
     o.mCurvatureAngle = num("curvature-angle", o.mCurvatureAngle);
     o.mFeatureAngle = num("feature-angle", o.mFeatureAngle);
     o.mCornerAngle = num("corner-angle", o.mCornerAngle);
@@ -5606,11 +5474,7 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
         }
         json.EndObject();
         json.EndObject();
-        json.Key("warnings");
-        json.BeginArray();
-        for (const std::string& w : r.mWarnings)
-            json.String(w);
-        json.EndArray();
+        cli_names_json(json, "warnings", r.mWarnings);
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "octree mesh (" << mio::octree_mesh_output_name(r.mOutput) << ")\n";
@@ -5627,8 +5491,7 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
                       << " deg\n";
         }
         std::cout << "  min scaled Jacobian: " << r.mMinScaledJacobian << "\n";
-        for (const std::string& w : r.mWarnings)
-            std::cout << "  warning: " << w << "\n";
+        cli_print_warnings(std::cout, "  warning: ", r.mWarnings);
     }
     return 0;
 }
@@ -5667,33 +5530,18 @@ int cmd_sdf(const std::vector<std::string>& rArgs) {
                                                            static_cast<std::int64_t>(v[1]),
                                                            static_cast<std::int64_t>(v[2])}};
     }
-    if (p.values.count("cell-size"))
-        options.mCellSize = meshioplusplus::detail::stod_c(opt_value(p, "cell-size"));
+    cli_opt_double(p, "cell-size", options.mCellSize);
     // Negatives need the --bounds= form (the parser rule shared with --bbox).
-    if (p.values.count("bounds")) {
-        auto v = parse_doubles(opt_value(p, "bounds"));
-        if (v.size() != 6)
-            throw std::runtime_error("sdf: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'");
-        options.mBounds = std::array<double, 6>{{v[0], v[1], v[2], v[3], v[4], v[5]}};
-    }
-    if (p.values.count("padding"))
-        options.mPadding = meshioplusplus::detail::stod_c(opt_value(p, "padding"));
-    if (p.values.count("padding-relative"))
-        options.mPaddingRelative = meshioplusplus::detail::stod_c(opt_value(p, "padding-relative"));
-    if (p.values.count("root-resolution"))
-        options.mRootResolution = std::stoll(opt_value(p, "root-resolution"));
-    if (p.values.count("max-depth"))
-        options.mMaxDepth = std::stoll(opt_value(p, "max-depth"));
-    if (p.values.count("band-cells"))
-        options.mBandCells = meshioplusplus::detail::stod_c(opt_value(p, "band-cells"));
-    if (p.values.count("max-cells"))
-        options.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    cli_grid_bounds(p, "sdf", options);
+    cli_opt_int64(p, "root-resolution", options.mRootResolution);
+    cli_opt_int64(p, "max-depth", options.mMaxDepth);
+    cli_opt_double(p, "band-cells", options.mBandCells);
+    cli_opt_int64(p, "max-cells", options.mMaxCells);
     options.mDistance.mSign =
         meshioplusplus::sdf_sign_from_name(opt_value(p, "sign", "pseudonormal"));
     options.mDistance.mLocation =
         meshioplusplus::sdf_location_from_name(opt_value(p, "location", "corner"));
-    if (p.values.count("band"))
-        options.mDistance.mBand = meshioplusplus::detail::stod_c(opt_value(p, "band"));
+    cli_opt_double(p, "band", options.mDistance.mBand);
     options.mDistance.mWatertightCheck =
         meshioplusplus::sdf_watertight_check_from_name(opt_value(p, "watertight-check", "warn"));
 
@@ -5832,8 +5680,7 @@ int cmd_tessellate(const std::vector<std::string>& rArgs) {
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
 
     meshioplusplus::TessellateOptions options;
-    if (has_opt(p, "levels"))
-        options.mLevels = std::stoll(opt_value(p, "levels"));
+    cli_opt_int64(p, "levels", options.mLevels);
     options.mCurved = !has_flag(p, "no-curved");
     options.mFields = !has_flag(p, "no-fields");
     options.mRecordStencil = has_flag(p, "record-stencil");
@@ -5911,10 +5758,8 @@ int cmd_agglomerate(const std::vector<std::string>& rArgs) {
     options.mTargetGroupSize =
         static_cast<std::size_t>(std::stoull(opt_value(p, "target-group-size", "8")));
     options.mMergeCoplanarFaces = has_flag(p, "merge-coplanar-faces");
-    if (has_opt(p, "coplanar-angle"))
-        options.mCoplanarAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "coplanar-angle"));
-    if (has_opt(p, "min-sphericity"))
-        options.mMinSphericity = meshioplusplus::detail::stod_c(opt_value(p, "min-sphericity"));
+    cli_opt_double(p, "coplanar-angle", options.mCoplanarAngleDeg);
+    cli_opt_double(p, "min-sphericity", options.mMinSphericity);
 
     auto result = meshioplusplus::agglomerate(mesh, options);
     write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
@@ -5941,8 +5786,7 @@ int cmd_tet_to_poly(const std::vector<std::string>& rArgs) {
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
 
     meshioplusplus::TetToPolyOptions options;
-    if (has_opt(p, "feature-angle"))
-        options.mFeatureAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "feature-angle"));
+    cli_opt_double(p, "feature-angle", options.mFeatureAngleDeg);
     options.mPointDataToCellData = has_flag(p, "point-data-to-cell-data");
     options.mRecordVertexIds = has_flag(p, "record-vertex-ids");
 
@@ -6158,17 +6002,12 @@ int cmd_boundary_layer(const std::vector<std::string>& rArgs) {
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::BoundaryLayerOptions o;
     o.mFirstHeight = meshioplusplus::detail::stod_c(opt_value(p, "first-height"));
-    if (has_opt(p, "num-layers"))
-        o.mNumLayers = std::stoi(opt_value(p, "num-layers"));
-    if (has_opt(p, "growth"))
-        o.mGrowth = meshioplusplus::detail::stod_c(opt_value(p, "growth"));
+    cli_opt_int(p, "num-layers", o.mNumLayers);
+    cli_opt_double(p, "growth", o.mGrowth);
     o.mReverse = has_flag(p, "reverse");
-    if (has_opt(p, "collision-fraction"))
-        o.mCollisionFraction = meshioplusplus::detail::stod_c(opt_value(p, "collision-fraction"));
-    if (has_opt(p, "smooth"))
-        o.mSmoothIterations = std::stoi(opt_value(p, "smooth"));
-    if (has_opt(p, "max-shrink"))
-        o.mMaxShrink = std::stoi(opt_value(p, "max-shrink"));
+    cli_opt_double(p, "collision-fraction", o.mCollisionFraction);
+    cli_opt_int(p, "smooth", o.mSmoothIterations);
+    cli_opt_int(p, "max-shrink", o.mMaxShrink);
     if (has_opt(p, "collapse")) {
         const std::string c = opt_value(p, "collapse");
         if (c == "points")
@@ -6179,8 +6018,7 @@ int cmd_boundary_layer(const std::vector<std::string>& rArgs) {
             throw std::runtime_error("boundary-layer: --collapse must be points or layers, not '" +
                                      c + "'");
     }
-    if (has_opt(p, "normal-smooth"))
-        o.mNormalSmoothIterations = std::stoi(opt_value(p, "normal-smooth"));
+    cli_opt_int(p, "normal-smooth", o.mNormalSmoothIterations);
     o.mFrontCheck = !has_flag(p, "no-front-check");
     auto r = meshioplusplus::boundary_layer(mesh, o);
     if (has_flag(p, "json")) {
@@ -6200,11 +6038,7 @@ int cmd_boundary_layer(const std::vector<std::string>& rArgs) {
         json.Field("min_thickness", r.mMinThickness);
         json.Field("max_thickness", r.mMaxThickness);
         json.Field("cap_closed", r.mCapClosed);
-        json.Key("warnings");
-        json.BeginArray();
-        for (const std::string& w : r.mWarnings)
-            json.String(w);
-        json.EndArray();
+        cli_names_json(json, "warnings", r.mWarnings);
         json.EndObject();
         std::cout << "\n";
     } else if (!has_flag(p, "quiet")) {
@@ -6252,11 +6086,7 @@ void cli_sweep_report(const meshioplusplus::SweepResult& rR, const cli_parsed& r
         json.Field("min_scaled_jacobian", rR.mMinScaledJacobian);
         if (Revolve)
             json.Field("full", rR.mFull);
-        json.Key("warnings");
-        json.BeginArray();
-        for (const std::string& w : rR.mWarnings)
-            json.String(w);
-        json.EndArray();
+        cli_names_json(json, "warnings", rR.mWarnings);
         json.EndObject();
         std::cout << "\n";
     } else if (!has_flag(rP, "quiet")) {
@@ -6271,8 +6101,7 @@ void cli_sweep_report(const meshioplusplus::SweepResult& rR, const cli_parsed& r
             std::cout << ", " << rR.mNumOnAxis << " points on the axis"
                       << (rR.mFull ? ", a full turn" : "");
         std::cout << "; least scaled Jacobian " << sj << "\n";
-        for (const std::string& w : rR.mWarnings)
-            std::cerr << "warning: " << w << "\n";
+        cli_print_warnings(std::cerr, "warning: ", rR.mWarnings);
     }
 }
 
@@ -6290,15 +6119,12 @@ int cmd_extrude(const std::vector<std::string>& rArgs) {
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::ExtrudeOptions o;
     o.mDirection = cli_vec3(p, "direction", "extrude", o.mDirection);
-    if (has_opt(p, "num-layers"))
-        o.mNumLayers = std::stoi(opt_value(p, "num-layers"));
-    if (has_opt(p, "ratio"))
-        o.mRatio = meshioplusplus::detail::stod_c(opt_value(p, "ratio"));
+    cli_opt_int(p, "num-layers", o.mNumLayers);
+    cli_opt_double(p, "ratio", o.mRatio);
     if (has_opt(p, "offsets"))
         o.mOffsets = parse_doubles(opt_value(p, "offsets"));
     o.mRecordLayers = has_flag(p, "record-layers");
-    if (has_opt(p, "max-cells"))
-        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    cli_opt_int64(p, "max-cells", o.mMaxCells);
     auto r = meshioplusplus::extrude(mesh, o);
     cli_sweep_report(r, p, false);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
@@ -6321,15 +6147,11 @@ int cmd_revolve(const std::vector<std::string>& rArgs) {
     meshioplusplus::RevolveOptions o;
     o.mAxis = cli_vec3(p, "axis", "revolve", o.mAxis);
     o.mAxisPoint = cli_vec3(p, "axis-point", "revolve", o.mAxisPoint);
-    if (has_opt(p, "angle"))
-        o.mAngle = meshioplusplus::detail::stod_c(opt_value(p, "angle"));
-    if (has_opt(p, "num-layers"))
-        o.mNumLayers = std::stoi(opt_value(p, "num-layers"));
-    if (has_opt(p, "tolerance"))
-        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    cli_opt_double(p, "angle", o.mAngle);
+    cli_opt_int(p, "num-layers", o.mNumLayers);
+    cli_opt_double(p, "tolerance", o.mTolerance);
     o.mRecordLayers = has_flag(p, "record-layers");
-    if (has_opt(p, "max-cells"))
-        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    cli_opt_int64(p, "max-cells", o.mMaxCells);
     auto r = meshioplusplus::revolve(mesh, o);
     cli_sweep_report(r, p, true);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
@@ -6353,8 +6175,7 @@ int cmd_mirror(const std::vector<std::string>& rArgs) {
     o.mNormal = cli_vec3(p, "normal", "mirror", o.mNormal);
     o.mKeepOriginal = has_flag(p, "keep-original");
     o.mWeld = !has_flag(p, "no-weld");
-    if (has_opt(p, "tolerance"))
-        o.mTolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    cli_opt_double(p, "tolerance", o.mTolerance);
     o.mReflectVectorData = has_flag(p, "reflect-data");
     auto r = meshioplusplus::mirror(mesh, o);
     if (has_flag(p, "json")) {
@@ -6364,19 +6185,14 @@ int cmd_mirror(const std::vector<std::string>& rArgs) {
         json.Field("num_points_on_plane", r.mNumPointsOnPlane);
         json.Field("num_dropped_cells", r.mNumDroppedCells);
         json.Field("num_dropped_sides", r.mNumDroppedSides);
-        json.Key("warnings");
-        json.BeginArray();
-        for (const std::string& w : r.mWarnings)
-            json.String(w);
-        json.EndArray();
+        cli_names_json(json, "warnings", r.mWarnings);
         json.EndObject();
         std::cout << "\n";
     } else if (!has_flag(p, "quiet")) {
         std::cout << r.mNumFlippedCells << " cells reflected, " << r.mNumPointsOnPlane
                   << " points on the plane, " << r.mNumDroppedCells << " cells and "
                   << r.mNumDroppedSides << " side entries dropped\n";
-        for (const std::string& w : r.mWarnings)
-            std::cerr << "warning: " << w << "\n";
+        cli_print_warnings(std::cerr, "warning: ", r.mWarnings);
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
@@ -6411,18 +6227,12 @@ int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
         } else
             throw std::runtime_error("tetrahedralize: --backend needs a name");
     }
-    if (has_opt(p, "max-size"))
-        o.mMaxSize = meshioplusplus::detail::stod_c(opt_value(p, "max-size"));
-    if (has_opt(p, "max-volume"))
-        o.mMaxVolume = meshioplusplus::detail::stod_c(opt_value(p, "max-volume"));
-    if (has_opt(p, "grading"))
-        o.mGrading = meshioplusplus::detail::stod_c(opt_value(p, "grading"));
-    if (has_opt(p, "optimize-steps"))
-        o.mOptimizeSteps = std::stoi(opt_value(p, "optimize-steps"));
-    if (has_opt(p, "max-cells"))
-        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
-    if (has_opt(p, "face-array"))
-        o.mFaceArray = opt_value(p, "face-array");
+    cli_opt_double(p, "max-size", o.mMaxSize);
+    cli_opt_double(p, "max-volume", o.mMaxVolume);
+    cli_opt_double(p, "grading", o.mGrading);
+    cli_opt_int(p, "optimize-steps", o.mOptimizeSteps);
+    cli_opt_int64(p, "max-cells", o.mMaxCells);
+    cli_opt_string(p, "face-array", o.mFaceArray);
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     auto r = meshioplusplus::tetrahedralize(mesh, o);
     if (has_flag(p, "json")) {
@@ -6439,11 +6249,7 @@ int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
         json.Field("max_dihedral_deg", r.mMaxDihedralDeg);
         json.Field("volume", r.mVolume);
         json.Field("backend", r.mBackend);
-        json.Key("warnings");
-        json.BeginArray();
-        for (const std::string& w : r.mWarnings)
-            json.String(w);
-        json.EndArray();
+        cli_names_json(json, "warnings", r.mWarnings);
         json.EndObject();
         std::cout << "\n";
     } else if (!has_flag(p, "quiet")) {
@@ -6456,8 +6262,7 @@ int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
                   << d0 << " to " << d1 << " deg, volume " << vol << "; " << r.mBackend
                   << ", boundary " << (r.mBoundaryPreserved ? "preserved" : "NOT preserved") << " ("
                   << r.mNumBoundaryTriangles << " triangles)\n";
-        for (const std::string& w : r.mWarnings)
-            std::cout << "  warning: " << w << "\n";
+        cli_print_warnings(std::cout, "  warning: ", r.mWarnings);
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
@@ -6477,18 +6282,14 @@ int cmd_remesh_quads(const std::vector<std::string>& rArgs) {
     if (p.positionals.size() != 2)
         throw std::runtime_error("remesh-quads requires exactly INFILE and OUTFILE");
     meshioplusplus::RemeshQuadsOptions o;
-    if (has_opt(p, "faces"))
-        o.mTargetFaces = std::stoll(opt_value(p, "faces"));
-    if (has_opt(p, "backend"))
-        o.mBackend = opt_value(p, "backend");
+    cli_opt_int64(p, "faces", o.mTargetFaces);
+    cli_opt_string(p, "backend", o.mBackend);
     o.mSharp = has_flag(p, "sharp");
     o.mBoundary = !has_flag(p, "no-boundary");
     o.mAdaptive = has_flag(p, "adaptive");
     o.mDominant = has_flag(p, "dominant");
-    if (has_opt(p, "seed"))
-        o.mSeed = std::stoi(opt_value(p, "seed"));
-    if (has_opt(p, "max-cells"))
-        o.mMaxCells = std::stoll(opt_value(p, "max-cells"));
+    cli_opt_int(p, "seed", o.mSeed);
+    cli_opt_int64(p, "max-cells", o.mMaxCells);
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     auto r = meshioplusplus::remesh_quads(mesh, o);
     if (has_flag(p, "json")) {
@@ -6501,11 +6302,7 @@ int cmd_remesh_quads(const std::vector<std::string>& rArgs) {
         json.Field("mean_scaled_jacobian", r.mMeanScaledJacobian);
         json.Field("hausdorff_to_surface", r.mHausdorffToSurface);
         json.Field("backend", r.mBackend);
-        json.Key("warnings");
-        json.BeginArray();
-        for (const std::string& w : r.mWarnings)
-            json.String(w);
-        json.EndArray();
+        cli_names_json(json, "warnings", r.mWarnings);
         json.EndObject();
         std::cout << "\n";
     } else if (!has_flag(p, "quiet")) {
@@ -6516,8 +6313,7 @@ int cmd_remesh_quads(const std::vector<std::string>& rArgs) {
         std::cout << r.mNumQuads << " quads, " << r.mNumTriangles << " triangles, " << r.mNumPoints
                   << " points; scaled Jacobian " << j0 << " (mean " << j1 << "), " << h
                   << " from the surface; " << r.mBackend << "\n";
-        for (const std::string& w : r.mWarnings)
-            std::cout << "  warning: " << w << "\n";
+        cli_print_warnings(std::cout, "  warning: ", r.mWarnings);
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
@@ -6553,19 +6349,12 @@ int cmd_cut(const std::vector<std::string>& rArgs, bool Quadrature) {
     }
     o.mSelection = opt_value(p, "selection");
     o.mIncludeUncut = !has_flag(p, "cut-only");
-    if (has_opt(p, "backend"))
-        o.mBackend = opt_value(p, "backend");
-    if (has_opt(p, "degree"))
-        o.mDegree = std::stoi(opt_value(p, "degree"));
-    if (has_opt(p, "order"))
-        o.mOrder = std::stoi(opt_value(p, "order"));
+    cli_opt_string(p, "backend", o.mBackend);
+    cli_opt_int(p, "degree", o.mDegree);
+    cli_opt_int(p, "order", o.mOrder);
     o.mTriangulate = has_flag(p, "triangulate");
     o.mRecordParentIds = !has_flag(p, "no-parent-ids");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
-    const auto print_warnings = [](const std::vector<std::string>& rWarnings) {
-        for (const std::string& w : rWarnings)
-            std::cout << "  warning: " << w << "\n";
-    };
     if (Quadrature) {
         auto r = meshioplusplus::cut_quadrature(mesh, o);
         if (has_flag(p, "json")) {
@@ -6577,11 +6366,7 @@ int cmd_cut(const std::vector<std::string>& rArgs, bool Quadrature) {
             json.Field("dimension", static_cast<std::int64_t>(r.mDimension));
             json.Field("selection", r.mSelection);
             json.Field("backend", r.mBackend);
-            json.Key("warnings");
-            json.BeginArray();
-            for (const std::string& w : r.mWarnings)
-                json.String(w);
-            json.EndArray();
+            cli_names_json(json, "warnings", r.mWarnings);
             json.EndObject();
             std::cout << "\n";
         } else if (!has_flag(p, "quiet")) {
@@ -6590,7 +6375,7 @@ int cmd_cut(const std::vector<std::string>& rArgs, bool Quadrature) {
             std::cout << "'" << r.mSelection << "': " << r.mNumPoints << " points in "
                       << r.mNumRules << " rules, weights sum " << s << " (dimension "
                       << r.mDimension << "); " << r.mBackend << "\n";
-            print_warnings(r.mWarnings);
+            cli_print_warnings(std::cout, "  warning: ", r.mWarnings);
         }
         write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
         return 0;
@@ -6607,11 +6392,7 @@ int cmd_cut(const std::vector<std::string>& rArgs, bool Quadrature) {
         json.Field("measure", r.mMeasure);
         json.Field("selection", r.mSelection);
         json.Field("backend", r.mBackend);
-        json.Key("warnings");
-        json.BeginArray();
-        for (const std::string& w : r.mWarnings)
-            json.String(w);
-        json.EndArray();
+        cli_names_json(json, "warnings", r.mWarnings);
         json.EndObject();
         std::cout << "\n";
     } else if (!has_flag(p, "quiet")) {
@@ -6620,7 +6401,7 @@ int cmd_cut(const std::vector<std::string>& rArgs, bool Quadrature) {
         std::cout << "'" << r.mSelection << "': " << r.mNumPieces << " cells (" << r.mNumCutCells
                   << " of " << r.mNumCells << " cut), measure " << m << " (dimension "
                   << r.mDimension << "); " << r.mBackend << "\n";
-        print_warnings(r.mWarnings);
+        cli_print_warnings(std::cout, "  warning: ", r.mWarnings);
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;
@@ -6641,14 +6422,10 @@ int cmd_project_to_cad(const std::vector<std::string>& rArgs) {
         throw std::runtime_error("project-to-cad needs a B-rep (CAD JSON, STEP or IGES), not '" +
                                  model.mFormat + "'");
     meshioplusplus::ProjectToCadOptions o;
-    if (has_opt(p, "face-array"))
-        o.mFaceArray = opt_value(p, "face-array");
-    if (has_opt(p, "edge-array"))
-        o.mEdgeArray = opt_value(p, "edge-array");
-    if (has_opt(p, "max-distance"))
-        o.mMaxDistance = meshioplusplus::detail::stod_c(opt_value(p, "max-distance"));
-    if (has_opt(p, "trim-samples"))
-        o.mTrimSamples = std::stoi(opt_value(p, "trim-samples"));
+    cli_opt_string(p, "face-array", o.mFaceArray);
+    cli_opt_string(p, "edge-array", o.mEdgeArray);
+    cli_opt_double(p, "max-distance", o.mMaxDistance);
+    cli_opt_int(p, "trim-samples", o.mTrimSamples);
     auto r = meshioplusplus::project_to_cad(mesh, *model.mBrep, o);
     if (has_flag(p, "json")) {
         meshioplusplus::cli::JsonOut json(std::cout);
@@ -6667,11 +6444,7 @@ int cmd_project_to_cad(const std::vector<std::string>& rArgs) {
         for (const std::int64_t i : r.mOutsideTrim)
             json.Int(i);
         json.EndArray();
-        json.Key("warnings");
-        json.BeginArray();
-        for (const std::string& w : r.mWarnings)
-            json.String(w);
-        json.EndArray();
+        cli_names_json(json, "warnings", r.mWarnings);
         json.EndObject();
         std::cout << "\n";
     } else if (!has_flag(p, "quiet")) {
@@ -6702,43 +6475,51 @@ int cmd_undo_green(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
-int cmd_decimate(const std::vector<std::string>& rArgs) {
+// `decimate` and `decimate-volume`: the same options and summary, apart from
+// the count option and member (`--target-faces` / `--target-cells`), the
+// boundary flag (`--no-preserve-boundary`, negated, against
+// `--preserve-boundary`), the unit, the removed count's label and member, and
+// the operation.
+template <class TOptions, class TOp, class TRemoved>
+int cli_decimate(const std::vector<std::string>& rArgs, const char* pVerb, const char* pCountOpt,
+                 std::int64_t TOptions::*pCount, const char* pBoundaryFlag, bool BoundaryNegated,
+                 const char* pUnit, const char* pRemovedLabel, TOp&& rOp, TRemoved&& rRemoved) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
                                          {{"ratio", {}, true},
-                                          {"target-faces", {}, true},
+                                          {pCountOpt, {}, true},
                                           {"max-error", {}, true},
                                           {"placement", {}, true},
                                           {"feature-angle", {}, true},
-                                          {"no-preserve-boundary", {}, false},
+                                          {pBoundaryFlag, {}, false},
                                           {"no-preserve-features", {}, false},
                                           {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
-        throw std::runtime_error("decimate requires exactly INFILE and OUTFILE");
-    const int num_set = (has_opt(p, "ratio") ? 1 : 0) + (has_opt(p, "target-faces") ? 1 : 0) +
+        throw std::runtime_error(std::string(pVerb) + " requires exactly INFILE and OUTFILE");
+    const int num_set = (has_opt(p, "ratio") ? 1 : 0) + (has_opt(p, pCountOpt) ? 1 : 0) +
                         (has_opt(p, "max-error") ? 1 : 0);
     if (num_set != 1)
-        throw std::runtime_error(
-            "decimate: give exactly one of --ratio, --target-faces or --max-error");
+        throw std::runtime_error(std::string(pVerb) + ": give exactly one of --ratio, --" +
+                                 pCountOpt + " or --max-error");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
 
-    meshioplusplus::DecimateOptions options;
+    TOptions options;
     // Negative values are the "unset" sentinels the operation validates.
     options.mTargetRatio = meshioplusplus::detail::stod_c(opt_value(p, "ratio", "-1"));
-    options.mTargetFaces = std::stoll(opt_value(p, "target-faces", "-1"));
+    options.*pCount = std::stoll(opt_value(p, pCountOpt, "-1"));
     options.mMaxError = meshioplusplus::detail::stod_c(opt_value(p, "max-error", "-1"));
     options.mPlacement =
         meshioplusplus::decimate_placement_from_name(opt_value(p, "placement", "optimal"));
     options.mFeatureAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "feature-angle", "30"));
-    options.mPreserveBoundary = !has_flag(p, "no-preserve-boundary");
+    options.mPreserveBoundary = has_flag(p, pBoundaryFlag) != BoundaryNegated;
     options.mPreserveFeatures = !has_flag(p, "no-preserve-features");
 
-    auto r = meshioplusplus::decimate(mesh, options);
+    auto r = rOp(mesh, options);
     if (!has_flag(p, "quiet")) {
-        std::size_t faces_out = 0;
+        std::size_t cells_out = 0;
         for (const auto cb : r.mMesh.CellRange())
-            faces_out += cb.NumCells();
-        std::cout << "decimated to " << faces_out << " faces\n";
-        std::cout << "  faces removed:            " << r.mFacesRemoved << "\n";
+            cells_out += cb.NumCells();
+        std::cout << "decimated to " << cells_out << " " << pUnit << "\n";
+        std::cout << pRemovedLabel << rRemoved(r) << "\n";
         std::cout << "  points removed:           " << r.mPointsRemoved << "\n";
         std::cout << "  collapses rejected:       " << r.mCollapsesRejected << "\n";
         std::cout << "  max error applied:        " << r.mMaxErrorApplied << "\n";
@@ -6747,49 +6528,25 @@ int cmd_decimate(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_decimate(const std::vector<std::string>& rArgs) {
+    return cli_decimate(
+        rArgs, "decimate", "target-faces", &meshioplusplus::DecimateOptions::mTargetFaces,
+        "no-preserve-boundary", /*BoundaryNegated=*/true, "faces", "  faces removed:            ",
+        [](const Mesh& rMesh, const meshioplusplus::DecimateOptions& rOptions) {
+            return meshioplusplus::decimate(rMesh, rOptions);
+        },
+        [](const meshioplusplus::DecimateResult& rR) { return rR.mFacesRemoved; });
+}
 int cmd_decimate_volume(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
-                                         {{"ratio", {}, true},
-                                          {"target-cells", {}, true},
-                                          {"max-error", {}, true},
-                                          {"placement", {}, true},
-                                          {"feature-angle", {}, true},
-                                          {"preserve-boundary", {}, false},
-                                          {"no-preserve-features", {}, false},
-                                          {"quiet", {"-q"}, false}}}));
-    if (p.positionals.size() != 2)
-        throw std::runtime_error("decimate-volume requires exactly INFILE and OUTFILE");
-    const int num_set = (has_opt(p, "ratio") ? 1 : 0) + (has_opt(p, "target-cells") ? 1 : 0) +
-                        (has_opt(p, "max-error") ? 1 : 0);
-    if (num_set != 1)
-        throw std::runtime_error(
-            "decimate-volume: give exactly one of --ratio, --target-cells or --max-error");
-    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
-
-    meshioplusplus::DecimateVolumeOptions options;
-    options.mTargetRatio = meshioplusplus::detail::stod_c(opt_value(p, "ratio", "-1"));
-    options.mTargetCells = std::stoll(opt_value(p, "target-cells", "-1"));
-    options.mMaxError = meshioplusplus::detail::stod_c(opt_value(p, "max-error", "-1"));
-    options.mPlacement =
-        meshioplusplus::decimate_placement_from_name(opt_value(p, "placement", "optimal"));
-    options.mFeatureAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "feature-angle", "30"));
     // Unlike decimate, boundary vertices participate by default here.
-    options.mPreserveBoundary = has_flag(p, "preserve-boundary");
-    options.mPreserveFeatures = !has_flag(p, "no-preserve-features");
-
-    auto r = meshioplusplus::decimate_volume(mesh, options);
-    if (!has_flag(p, "quiet")) {
-        std::size_t tets_out = 0;
-        for (const auto cb : r.mMesh.CellRange())
-            tets_out += cb.NumCells();
-        std::cout << "decimated to " << tets_out << " tets\n";
-        std::cout << "  tets removed:             " << r.mTetsRemoved << "\n";
-        std::cout << "  points removed:           " << r.mPointsRemoved << "\n";
-        std::cout << "  collapses rejected:       " << r.mCollapsesRejected << "\n";
-        std::cout << "  max error applied:        " << r.mMaxErrorApplied << "\n";
-    }
-    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
-    return 0;
+    return cli_decimate(
+        rArgs, "decimate-volume", "target-cells",
+        &meshioplusplus::DecimateVolumeOptions::mTargetCells, "preserve-boundary",
+        /*BoundaryNegated=*/false, "tets", "  tets removed:             ",
+        [](const Mesh& rMesh, const meshioplusplus::DecimateVolumeOptions& rOptions) {
+            return meshioplusplus::decimate_volume(rMesh, rOptions);
+        },
+        [](const meshioplusplus::DecimateVolumeResult& rR) { return rR.mTetsRemoved; });
 }
 
 // The options every MMG subcommand takes (roadmap 3.2).
@@ -6819,16 +6576,12 @@ std::vector<cli_opt_spec> cli_mmg_options(std::vector<cli_opt_spec> Extra) {
 
 meshioplusplus::MmgParameters cli_mmg_parameters(const cli_parsed& rP, const Mesh& rMesh) {
     meshioplusplus::MmgParameters o;
-    const auto num = [&](const char* pName, double& rOut) {
-        if (has_opt(rP, pName))
-            rOut = meshioplusplus::detail::stod_c(opt_value(rP, pName));
-    };
-    num("hmin", o.mHmin);
-    num("hmax", o.mHmax);
-    num("hausd", o.mHausd);
-    num("hgrad", o.mHgrad);
-    num("hgradreq", o.mHgradreq);
-    num("angle-detection", o.mAngleDetection);
+    cli_opt_double(rP, "hmin", o.mHmin);
+    cli_opt_double(rP, "hmax", o.mHmax);
+    cli_opt_double(rP, "hausd", o.mHausd);
+    cli_opt_double(rP, "hgrad", o.mHgrad);
+    cli_opt_double(rP, "hgradreq", o.mHgradreq);
+    cli_opt_double(rP, "angle-detection", o.mAngleDetection);
     o.mOptim = has_flag(rP, "optim");
     o.mNoInsert = has_flag(rP, "noinsert");
     o.mNoSwap = has_flag(rP, "noswap");
@@ -6859,8 +6612,7 @@ void cli_mmg_summary(const char* pWhat, const meshioplusplus::MmgReport& rR) {
                                                                    : " (low failure)")
               << ": " << rR.mNumPointsIn << " -> " << rR.mNumPointsOut << " points, "
               << rR.mNumElementsIn << " -> " << rR.mNumElementsOut << " elements\n";
-    for (const std::string& w : rR.mWarnings)
-        std::cout << "  warning: " << w << "\n";
+    cli_print_warnings(std::cout, "  warning: ", rR.mWarnings);
 }
 
 int cmd_adapt(const std::vector<std::string>& rArgs) {
@@ -6874,8 +6626,7 @@ int cmd_adapt(const std::vector<std::string>& rArgs) {
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::AdaptOptions options;
     options.mParameters = cli_mmg_parameters(p, mesh);
-    if (has_opt(p, "hsiz"))
-        options.mHsiz = meshioplusplus::detail::stod_c(opt_value(p, "hsiz"));
+    cli_opt_double(p, "hsiz", options.mHsiz);
     options.mSize = opt_value(p, "size", "");
     options.mMetric = opt_value(p, "metric", "");
     auto r = meshioplusplus::adapt(mesh, options);
@@ -6901,8 +6652,7 @@ int cmd_discretize_levelset(const std::vector<std::string>& rArgs) {
     options.mParameters = cli_mmg_parameters(p, mesh);
     options.mLevelSet = opt_value(p, "level-set");
     options.mIsovalue = meshioplusplus::detail::stod_c(opt_value(p, "isovalue", "0"));
-    if (has_opt(p, "rmc"))
-        options.mRemoveSmallComponents = meshioplusplus::detail::stod_c(opt_value(p, "rmc"));
+    cli_opt_double(p, "rmc", options.mRemoveSmallComponents);
     for (const std::string& text : meshioplusplus::cli::opt_values(p, "material")) {
         const std::vector<double> v = parse_doubles(text);
         if (v.size() != 4)
@@ -6929,8 +6679,7 @@ int cmd_mesh_2d(const std::vector<std::string>& rArgs) {
     Mesh boundary = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::MeshDomainOptions options;
     options.mParameters = cli_mmg_parameters(p, boundary);
-    if (has_opt(p, "hsiz"))
-        options.mHsiz = meshioplusplus::detail::stod_c(opt_value(p, "hsiz"));
+    cli_opt_double(p, "hsiz", options.mHsiz);
     options.mSize = opt_value(p, "size", "");
     for (const std::string& text : meshioplusplus::cli::opt_values(p, "hole")) {
         const std::vector<double> v = parse_doubles(text);
@@ -7048,20 +6797,9 @@ int cmd_remesh_volume(const std::vector<std::string>& rArgs) {
         options.mCellSize = meshioplusplus::detail::stod_c(opt_value(p, "cell-size"));
     }
     // Negatives need the --bounds= form, voxelize's own parser rule.
-    if (p.values.count("bounds")) {
-        auto v = parse_doubles(opt_value(p, "bounds"));
-        if (v.size() != 6)
-            throw std::runtime_error("remesh-volume: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'");
-        options.mBounds = std::array<double, 6>{{v[0], v[1], v[2], v[3], v[4], v[5]}};
-    }
-    if (p.values.count("padding"))
-        options.mPadding = meshioplusplus::detail::stod_c(opt_value(p, "padding"));
-    if (p.values.count("padding-relative"))
-        options.mPaddingRelative = meshioplusplus::detail::stod_c(opt_value(p, "padding-relative"));
-    if (p.values.count("max-cells"))
-        options.mMaxCells = std::stoll(opt_value(p, "max-cells"));
-    if (p.values.count("max-tets"))
-        options.mMaxTets = std::stoll(opt_value(p, "max-tets"));
+    cli_grid_bounds(p, "remesh-volume", options);
+    cli_opt_int64(p, "max-cells", options.mMaxCells);
+    cli_opt_int64(p, "max-tets", options.mMaxTets);
     // A negative value is rejected by the operation itself, naming the
     // option; --warp-fraction=-0.1 form is needed for a caller to trigger it.
     options.mWarpFraction = meshioplusplus::detail::stod_c(opt_value(p, "warp-fraction", "0.35"));
@@ -7497,8 +7235,7 @@ int cmd_snapshot(const std::vector<std::string>& rArgs) {
     text.mDepth = cli_color_depth(opt_value(p, "color-depth", to_stdout ? "auto" : "truecolor"));
     text.mNotes = !has_flag(p, "no-notes");
     text.mTmuxPassthrough = has_flag(p, "tmux");
-    if (has_opt(p, "cell-aspect"))
-        text.mCellAspect = meshioplusplus::detail::stod_c(opt_value(p, "cell-aspect"));
+    cli_opt_double(p, "cell-aspect", text.mCellAspect);
     // Fit the terminal this goes to (one row kept for the prompt, one per note),
     // or 100 x 40 cells for a file or a pipe.
     meshioplusplus::cli::TerminalSize term;
@@ -7512,10 +7249,8 @@ int cmd_snapshot(const std::vector<std::string>& rArgs) {
         text.mCellAspect = static_cast<double>(term.mPixelHeight * term.mCols) /
                            static_cast<double>(term.mPixelWidth * term.mRows);
     }
-    if (has_opt(p, "cols"))
-        text.mCols = std::stoi(opt_value(p, "cols"));
-    if (has_opt(p, "rows"))
-        text.mRows = std::stoi(opt_value(p, "rows"));
+    cli_opt_int(p, "cols", text.mCols);
+    cli_opt_int(p, "rows", text.mRows);
     const bool graphics = text.mEncoding == meshioplusplus::TextEncoding::Kitty ||
                           text.mEncoding == meshioplusplus::TextEncoding::ITerm2 ||
                           text.mEncoding == meshioplusplus::TextEncoding::Sixel;
@@ -7526,14 +7261,10 @@ int cmd_snapshot(const std::vector<std::string>& rArgs) {
             "a cell encoding works without it");
 
     meshioplusplus::SnapshotOptions snap;
-    if (has_opt(p, "png-compress"))
-        snap.mPngCompress = std::stoi(opt_value(p, "png-compress"));
-    if (has_opt(p, "cast-frames"))
-        snap.mCastFrames = std::stoi(opt_value(p, "cast-frames"));
-    if (has_opt(p, "cast-fps"))
-        snap.mCastFps = meshioplusplus::detail::stod_c(opt_value(p, "cast-fps"));
-    if (has_opt(p, "cast-degrees"))
-        snap.mCastDegrees = meshioplusplus::detail::stod_c(opt_value(p, "cast-degrees"));
+    cli_opt_int(p, "png-compress", snap.mPngCompress);
+    cli_opt_int(p, "cast-frames", snap.mCastFrames);
+    cli_opt_double(p, "cast-fps", snap.mCastFps);
+    cli_opt_double(p, "cast-degrees", snap.mCastDegrees);
 
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     if (to_stdout) {
@@ -7623,17 +7354,14 @@ int cmd_tui(const std::vector<std::string>& rArgs) {
     } else if (has_opt(p, "follow-interval")) {
         throw std::runtime_error("--follow-interval requires --follow");
     }
-    if (has_opt(p, "settle"))
-        options.mFollowSettleMs = std::stoi(opt_value(p, "settle"));
-    if (has_opt(p, "fps"))
-        options.mPlayFps = meshioplusplus::detail::stod_c(opt_value(p, "fps"));
+    cli_opt_int(p, "settle", options.mFollowSettleMs);
+    cli_opt_double(p, "fps", options.mPlayFps);
     if (options.mDiff && !has_opt(p, "compare"))
         throw std::runtime_error("--diff requires --compare FILE");
 
     // The optional soundtrack (--music, --music-out) and the theme's beat.
     meshioplusplus::detail::SynthOptions synth;
-    if (has_opt(p, "tempo"))
-        synth.mTempo = meshioplusplus::detail::stod_c(opt_value(p, "tempo"));
+    cli_opt_double(p, "tempo", synth.mTempo);
     if (has_opt(p, "music-seed"))
         synth.mSeed = static_cast<std::uint32_t>(std::stoul(opt_value(p, "music-seed")));
     if (has_opt(p, "music-key"))
@@ -8242,8 +7970,7 @@ int cmd_data_gradient(const std::vector<std::string>& rArgs) {
     opts.mMethod = meshioplusplus::gradient_method_from_name(opt_value(p, "method", "green-gauss"));
     opts.mLocation = meshioplusplus::data_location_from_name(opt_value(p, "location", "cell"));
     opts.mOutputName = opt_value(p, "output");
-    if (has_opt(p, "component"))
-        opts.mComponent = std::stoi(opt_value(p, "component"));
+    cli_opt_int(p, "component", opts.mComponent);
     opts.mOverwrite = has_flag(p, "overwrite");
 
     meshioplusplus::GradientResult r = meshioplusplus::gradient(mesh, opts);
@@ -8421,8 +8148,7 @@ int cmd_data_estimate_error(const std::vector<std::string>& rArgs) {
     // The defaults here must stay string-identical to the Python CLI's.
     opts.mMethod = meshioplusplus::error_method_from_name(opt_value(p, "method", "zz"));
     opts.mMarking = meshioplusplus::error_marking_from_name(opt_value(p, "marking", "none"));
-    if (has_opt(p, "marking-value"))
-        opts.mMarkingValue = meshioplusplus::detail::stod_c(opt_value(p, "marking-value"));
+    cli_opt_double(p, "marking-value", opts.mMarkingValue);
     opts.mOutputName = opt_value(p, "output");
     opts.mMarkedName = opt_value(p, "marked");
     opts.mOverwrite = has_flag(p, "overwrite");
@@ -8471,12 +8197,9 @@ int cmd_data_error_size(const std::vector<std::string>& rArgs) {
     // The defaults here must stay string-identical to the Python CLI's.
     opts.mErrorArray = opt_value(p, "array", "error:zz");
     opts.mTargetError = meshioplusplus::detail::stod_c(opt_value(p, "target-error"));
-    if (has_opt(p, "order"))
-        opts.mOrder = meshioplusplus::detail::stod_c(opt_value(p, "order"));
-    if (has_opt(p, "min-size"))
-        opts.mMinSize = meshioplusplus::detail::stod_c(opt_value(p, "min-size"));
-    if (has_opt(p, "max-size"))
-        opts.mMaxSize = meshioplusplus::detail::stod_c(opt_value(p, "max-size"));
+    cli_opt_double(p, "order", opts.mOrder);
+    cli_opt_double(p, "min-size", opts.mMinSize);
+    cli_opt_double(p, "max-size", opts.mMaxSize);
     opts.mOutputName = opt_value(p, "output", meshioplusplus::kErrorSizeName);
     opts.mOverwrite = has_flag(p, "overwrite");
 
@@ -8534,16 +8257,13 @@ int cmd_pipeline(const std::vector<std::string>& rArgs) {
         pipeline.mInput.mPaths = {opt_value(p, "input")};
         pipeline.mInput.mPattern.clear();
     }
-    if (has_opt(p, "output"))
-        pipeline.mOutput.mPath = opt_value(p, "output");
+    cli_opt_string(p, "output", pipeline.mOutput.mPath);
     meshioplusplus::PipelineReport report;
     if (pipeline.mVersion == 2) {
         // Spatial v2 has one current mesh, not an implicit time/branch cross-product.
         auto spatial = meshioplusplus::parse_pipeline_file(p.positionals[0]);
-        if (has_opt(p, "input"))
-            spatial.mInput.mPath = opt_value(p, "input");
-        if (has_opt(p, "output"))
-            spatial.mOutput.mPath = opt_value(p, "output");
+        cli_opt_string(p, "input", spatial.mInput.mPath);
+        cli_opt_string(p, "output", spatial.mOutput.mPath);
         report = meshioplusplus::run_pipeline(spatial);
     } else {
         report = meshioplusplus::run_sequence_pipeline(pipeline);
@@ -8798,10 +8518,8 @@ int cmd_diff(const std::vector<std::string>& rArgs) {
     Mesh b = read_mesh_cli(p.positionals[1], opt_value(p, "input-format-b"));
 
     meshioplusplus::DiffOptions opts;
-    if (p.values.count("atol"))
-        opts.atol = meshioplusplus::detail::stod_c(opt_value(p, "atol"));
-    if (p.values.count("rtol"))
-        opts.rtol = meshioplusplus::detail::stod_c(opt_value(p, "rtol"));
+    cli_opt_double(p, "atol", opts.atol);
+    cli_opt_double(p, "rtol", opts.rtol);
     opts.unordered = has_flag(p, "unordered");
     auto report = meshioplusplus::diff(a, b, opts);
     if (has_flag(p, "json")) {
@@ -8907,8 +8625,7 @@ int cmd_merge(const std::vector<std::string>& rArgs) {
 
     meshioplusplus::MergeOptions opts;
     opts.weld = has_flag(p, "weld");
-    if (p.values.count("atol"))
-        opts.atol = meshioplusplus::detail::stod_c(opt_value(p, "atol"));
+    cli_opt_double(p, "atol", opts.atol);
     opts.source_tag = !has_flag(p, "no-source-tag");
     opts.drop_duplicate_cells = has_flag(p, "drop-duplicate-cells");
     std::string policy = opt_value(p, "data-policy", "intersection");
