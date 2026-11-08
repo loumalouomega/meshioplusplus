@@ -63,6 +63,8 @@ The shared-utilities pass of [roadmap §8](./roadmap.md#code-duplication) (Novem
 
 The binding pass the same month took C++ to 20,554 of 250,625 (8.2%) and Python to 7,214 of 133,787 (5.4%): the MCP server's forwarding tools, the C API's result accessors, `_core.cpp`'s near-copy `m.def`s and the R binding's report lists became helper calls ([what it shared](./geometry_kernels.md#what-the-binding-pass-shared)). Two of its changes raise their file's count instead, `registry.cpp` (263 to 424) and `cli/main.cpp` (2,270 to 2,348): each replaced several lists of the same names with one table, whose rows the normalising detector matches against each other.
 
+The third pass took C++ to 19,411 of 249,708 (7.8%) and Python to 6,500 of 132,440 (4.9%). The report also counts `true`, `false`, `nullptr`, `True`, `False` and `None` as table tokens since then, so an option table's `{"name", {}, true}` rows no longer match each other, and it skips the generated pipeline step tables (`_pipeline_table.py`, `pipeline_table.hpp`).
+
 What remains at the top is mostly structure the report cannot tell apart from copying: the explicit `py::arg` signatures of `bindings/python/_core.cpp`, the `extern "C"` entry points of `bindings/c/c_api.cpp`, the argument tables of the native CLI and the typed MCP tool signatures. The rest is listed in roadmap 3.4.8 to 3.4.12.
 
 ## Clang-Tidy

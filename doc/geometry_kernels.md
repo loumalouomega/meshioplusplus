@@ -63,6 +63,20 @@ The second duplication pass (November 2026, [roadmap §8](./roadmap.md#code-dupl
 | `src/python/meshioplusplus/mcp/_server.py` | `_forward(target)`: a tool whose body only forwards its own arguments | 170 forwarding bodies (the tools that remap or render stay hand-written) |
 | `bindings/r/meshioplusplus/src/util.c` | `mio_r_report_list` (a named list whose `NULL` entries take the next of an array of doubles), `mio_r_wrap_handle`, `mio_r_handle` | 47 `PROTECT(Rf_ScalarReal(…))` report chains and the five handle types' wrap and check |
 
+Its second half added:
+
+| Where | Helper | Replaces |
+| --- | --- | --- |
+| `src/cpp/src/detail/always_inline.hpp` | `MIO_ALWAYS_INLINE` | nothing by itself: it lets `stage_flat_or_polygon`/`emit_flat_or_polygon` serve `subdivide` and `ccells_finish_identity` end `convert_cells`' linearize and elevate without changing their callers' code generation ([roadmap 3.4.11](./roadmap.md#quality-of-implementation)) |
+| `src/cpp/src/detail/nastran_write_common.hpp` | `NastranWriteBlock`, `NastranWriteRow`, `nastran_card_index`, `nastran_property_values`, `nastran_named_arrays`, `nastran_fill_block`, `nastran_read_components`, `nastran_read_field`, `nastran_compact_block`, `nastran_rows_by_card` | the copies of the Nastran HDF5 and OP2 writers' model building |
+| `bindings/c/c_api.cpp` | `capi_take_mesh_maps`, `capi_grid_extent`, `capi_grid_bounds`, `capi_checked_enum` | the result moves of six operations, the lattice extents of four converters, 22 enum range checks |
+| `bindings/python/_core.cpp` | `core_distance_options`, `core_metric_summary_dict`, `core_quality_dict` | four distance-option fills, three quality report conversions |
+| `src/cpp/cli/main.cpp` | `cli_opt_double`, `cli_opt_int64`, `cli_opt_int`, `cli_opt_string`, `cli_print_warnings`, `cli_grid_bounds`, `cli_decimate` | 195 option reads, 27 warning loops and arrays, five lattice blocks, the decimate pair's bodies |
+| `src/python/meshioplusplus/mcp/_tools.py` | `_run_op(op, locals(), ...)` | the bodies of 54 tools that only forward their parameters |
+| `src/python/meshioplusplus/_shims.py` | `plain_shims`, `vtk_xml_shims` | the read and write shims of 20 format packages |
+| `tools/pipeline_steps.json`, `tools/gen_pipeline_table.py` | the step tables of both pipeline engines, generated | `_pipeline.py`'s `_OP_TABLE` and `pipeline.cpp`'s `pipe_op_table()`, kept by hand |
+| `bindings/r/meshioplusplus/src/util.c`, `bindings/octave/meshioplusplus/src/util.c` | `mio_r_getbuffer`, `mio_r_cstrings`; `mio_o_getbuffer`, `mio_o_row3`, `mio_o_surface_quality`, `mio_o_ids_0based` | the per-operation getter adapters, three character-vector conversions, the Octave files' own copies |
+
 The exported names, error messages, status codes and Python signatures are unchanged: the C++ and C API ones are pinned by the determinism digests, the gtest suite and byte diffs of the CLI help and completion scripts, the registry's key sets and the `_core` docstrings taken before the change; the MCP tool schemas by a diff of `list_tools()`.
 
 ## Kernels or a geometry hierarchy?
