@@ -27,7 +27,7 @@ The next push to `master` then runs the scan. A failed scan (a SonarCloud outage
 - `bindings/wasm` and `bindings/fortran`, which Codecov also ignores;
 - test fixtures (`tests/python/meshes`, `tests/python/input`, `tests/fuzz`).
 
-Duplication is measured on library code only (`sonar.cpd.exclusions=tests/**`): tests repeat their setup on purpose.
+Duplication is measured on library code only (`sonar.cpd.exclusions` lists `tests/**`): tests repeat their setup on purpose. The same property also lists the files that are literal tables alone (`src/cpp/src/detail/node_order.cpp`, the per-format node permutations): the detector normalises literals, so two tables of the same shape match although no entry agrees.
 
 ### The compilation database
 
@@ -42,7 +42,7 @@ SonarCloud reports no coverage: nothing runs under instrumentation in this workf
 
 ## Local duplication report
 
-SonarCloud reports on `master` only, so `tools/dup_report.py` gives the same kind of number on any checkout, before a change lands. It works like Sonar's copy-paste detector: every C++ and Python source is tokenised, identifiers, numbers and strings are normalised so a renamed copy still matches, and every window of 100 consecutive tokens is hashed; a window found in two places marks its lines as duplicated. It excludes what `sonar-project.properties` excludes, so the two measures agree on what counts.
+SonarCloud reports on `master` only, so `tools/dup_report.py` gives the same kind of number on any checkout, before a change lands. It works like Sonar's copy-paste detector: every C++ and Python source is tokenised, identifiers, numbers and strings are normalised so a renamed copy still matches, and every window of 100 consecutive tokens is hashed; a window found in two places marks its lines as duplicated. A window made of literals and table punctuation (`{`, `}`, `[`, `]`, `(`, `)`, `,`, `:`, `;`, signs and dots), with at most one token in ten anything else, is skipped: it is a run of table rows, and two tables of one shape would otherwise match entry for entry although no entry agrees ([roadmap §8](./roadmap.md#code-duplication)). It excludes what `sonar-project.properties` excludes, including the table-only files of `sonar.cpd.exclusions`, and it scans the R binding's C sources (`bindings/r/meshioplusplus/src/*.c`) beside the C++ ones, as SonarCloud does, so the two measures agree on what counts.
 
 ```sh
 tools/dup_report.py                      # density, top files and largest shared regions, C++ and Python
@@ -58,6 +58,12 @@ The November 2026 measurements, by pass of [roadmap 3.4](./roadmap.md#quality-of
 | --- | ---: | ---: | ---: |
 | C++ | 10.6% (26,097 of 245,231 lines) | 9.3% (22,739 of 243,556) | 9.1% (22,041 of 243,222) |
 | Python | 11.0% (15,038 of 137,250 lines) | 9.9% (13,481 of 136,357) | 9.2% (12,467 of 135,765) |
+
+The shared-utilities pass of [roadmap §8](./roadmap.md#code-duplication) (November 2026) changed the measure as well as the code: the report now skips literal-table windows and the table-only files and scans the R binding's C sources. On the earlier C++ roots the table filter alone took 22,253 duplicated lines to 20,830, and the code changes to 19,725 (8.1% of 243,917); with the R sources, 21,699 of 251,295 (8.6%). Python went from 12,468 to 9,739 with the filter and to 8,962 of 135,752 (6.6%) with the code.
+
+The binding pass the same month took C++ to 20,554 of 250,625 (8.2%) and Python to 7,214 of 133,787 (5.4%): the MCP server's forwarding tools, the C API's result accessors, `_core.cpp`'s near-copy `m.def`s and the R binding's report lists became helper calls ([what it shared](./geometry_kernels.md#what-the-binding-pass-shared)). Two of its changes raise their file's count instead, `registry.cpp` (263 to 424) and `cli/main.cpp` (2,270 to 2,348): each replaced several lists of the same names with one table, whose rows the normalising detector matches against each other.
+
+The third pass took C++ to 19,411 of 249,708 (7.8%) and Python to 6,500 of 132,440 (4.9%). The report also counts `true`, `false`, `nullptr`, `True`, `False` and `None` as table tokens since then, so an option table's `{"name", {}, true}` rows no longer match each other, and it skips the generated pipeline step tables (`_pipeline_table.py`, `pipeline_table.hpp`).
 
 What remains at the top is mostly structure the report cannot tell apart from copying: the explicit `py::arg` signatures of `bindings/python/_core.cpp`, the `extern "C"` entry points of `bindings/c/c_api.cpp`, the argument tables of the native CLI and the typed MCP tool signatures. The rest is listed in roadmap 3.4.8 to 3.4.12.
 

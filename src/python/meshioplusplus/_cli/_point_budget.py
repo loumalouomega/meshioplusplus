@@ -2,7 +2,7 @@
 
 from .._helpers import read, write
 from .._point_budget import _METHODS, subsample_points
-from ._common import add_io_args
+from ._common import add_io_args, parse_bounds
 
 
 def add_args(parser):
@@ -48,11 +48,7 @@ def add_args(parser):
 
 def subsample_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
-    bounds = None
-    if args.bounds is not None:
-        bounds = [float(x) for x in args.bounds.split(",")]
-        if len(bounds) != 6:
-            raise ValueError("subsample: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'")
+    bounds = parse_bounds(args.bounds, "subsample")
     start = None if args.start.lower() == "random" else int(args.start)
     out = subsample_points(
         mesh,

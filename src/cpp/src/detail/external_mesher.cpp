@@ -45,6 +45,8 @@
 #include "meshioplusplus/providers.hpp"
 
 // Project includes (private, not installed)
+#include "bounding_box_utils.hpp"
+#include "geometry_utils.hpp"
 #include "subprocess.hpp"
 
 namespace meshioplusplus {
@@ -112,17 +114,8 @@ TetMeshRegionResult em_assemble(const TetMeshRegionRequest& rRequest,
                                 const std::vector<EmPoint>& rOut,
                                 const std::vector<std::array<std::int64_t, 4>>& rTets) {
     const std::size_t n_in = rRequest.mPoints.size();
-    EmPoint lo{}, hi{};
-    for (std::size_t k = 0; k < 3; ++k) {
-        lo[k] = hi[k] = n_in ? rRequest.mPoints[0][k] : 0.0;
-        for (const EmPoint& r_p : rRequest.mPoints) {
-            lo[k] = std::min(lo[k], r_p[k]);
-            hi[k] = std::max(hi[k], r_p[k]);
-        }
-    }
     const double diag =
-        std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
-                  (hi[2] - lo[2]) * (hi[2] - lo[2]));
+        detail::BoundingBoxUtils::Diagonal(detail::BoundingBoxUtils::FromPoints(rRequest.mPoints));
     const double tol = std::max(1e-9 * diag, 1e-300);
     const double cell = 4.0 * tol;
     struct KeyHash {
@@ -276,11 +269,8 @@ EmShells em_shells(const TetMeshRegionRequest& rRequest) {
             const EmPoint& a = rRequest.mPoints[static_cast<std::size_t>(r_t[0])];
             const EmPoint& b = rRequest.mPoints[static_cast<std::size_t>(r_t[1])];
             const EmPoint& c = rRequest.mPoints[static_cast<std::size_t>(r_t[2])];
-            const EmPoint u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-            const EmPoint v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-            const EmPoint n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                            u[0] * v[1] - u[1] * v[0]};
-            const double area = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            const EmPoint n = detail::GeometryUtils::TriangleNormal(a, b, c);
+            const double area = detail::MathUtils::Norm(n);
             if (area > best_area) {
                 best_area = area;
                 best = t;
@@ -392,13 +382,8 @@ TetMeshRegionResult em_gmsh(const std::string& rExe, const TetMeshRegionRequest&
                 const EmPoint& a = rRequest.mPoints[static_cast<std::size_t>(r_t[0])];
                 const EmPoint& b = rRequest.mPoints[static_cast<std::size_t>(r_t[1])];
                 const EmPoint& c = rRequest.mPoints[static_cast<std::size_t>(r_t[2])];
-                const EmPoint u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-                const EmPoint v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-                EmPoint n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                          u[0] * v[1] - u[1] * v[0]};
-                const double len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-                for (double& rC : n)
-                    rC = len > 0.0 ? rC / len : 0.0;
+                const EmPoint n = detail::MathUtils::UnitByDivision(
+                    detail::GeometryUtils::TriangleNormal(a, b, c));
                 stl << "facet normal " << em_num(n[0]) << " " << em_num(n[1]) << " " << em_num(n[2])
                     << "\n outer loop\n";
                 for (const EmPoint* p_v : {&a, &b, &c})

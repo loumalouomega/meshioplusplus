@@ -38,6 +38,7 @@
 #include "primitive_constraints.hpp"
 #include "primitive_geom.hpp"
 #include "surface_rings.hpp"
+#include "math_utils.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -50,18 +51,8 @@ constexpr std::size_t kPcMaxJointSamples = 20000;
 // move the patch for it to be tried.
 constexpr double kPcReach = 2.0;
 
-double pc_dot(const double* pA, const double* pB) {
-    return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
-}
-
-void pc_cross(const double* pA, const double* pB, double* pOut) {
-    pOut[0] = pA[1] * pB[2] - pA[2] * pB[1];
-    pOut[1] = pA[2] * pB[0] - pA[0] * pB[2];
-    pOut[2] = pA[0] * pB[1] - pA[1] * pB[0];
-}
-
 bool pc_normalize(double* pV) {
-    const double n = std::sqrt(pc_dot(pV, pV));
+    const double n = std::sqrt(detail::MathUtils::Dot(pV, pV));
     if (!(n > 0.0) || !std::isfinite(n))
         return false;
     for (int k = 0; k < 3; ++k)
@@ -84,8 +75,8 @@ void pc_canonical(double* pD) {
 // The sine of the angle between two unit directions, sign ignored.
 double pc_sin(const double* pA, const double* pB) {
     double c[3];
-    pc_cross(pA, pB, c);
-    return std::sqrt(pc_dot(c, c));
+    detail::MathUtils::Cross(pA, pB, c);
+    return std::sqrt(detail::MathUtils::Dot(c, c));
 }
 
 struct PcStats {
@@ -153,7 +144,7 @@ void pc_axis_point(const PcPatch& rPatch, double* pOut) {
     const double* d = rPatch.mParams + 3;
     const double v[3] = {rPatch.mCentroid[0] - x[0], rPatch.mCentroid[1] - x[1],
                          rPatch.mCentroid[2] - x[2]};
-    const double h = pc_dot(v, d);
+    const double h = detail::MathUtils::Dot(v, d);
     for (int k = 0; k < 3; ++k)
         pOut[k] = x[k] + h * d[k];
 }
@@ -161,9 +152,9 @@ void pc_axis_point(const PcPatch& rPatch, double* pOut) {
 // The distance from pP to the line through pX along the unit pD.
 double pc_line_distance(const double* pX, const double* pD, const double* pP) {
     const double v[3] = {pP[0] - pX[0], pP[1] - pX[1], pP[2] - pX[2]};
-    const double h = pc_dot(v, pD);
+    const double h = detail::MathUtils::Dot(v, pD);
     const double r[3] = {v[0] - h * pD[0], v[1] - h * pD[1], v[2] - h * pD[2]};
-    return std::sqrt(pc_dot(r, r));
+    return std::sqrt(detail::MathUtils::Dot(r, r));
 }
 
 // Whether a patch's primitive can take the axis (pX, pD): an axial one whose
@@ -219,7 +210,7 @@ void pc_member_build(const PcPatch& rPatch, const PcMember& rMember, const doubl
         case 3: {
             const double v[3] = {rPatch.mCentroid[0] - pP[0], rPatch.mCentroid[1] - pP[1],
                                  rPatch.mCentroid[2] - pP[2]};
-            const double h = pc_dot(v, pD);
+            const double h = detail::MathUtils::Dot(v, pD);
             pc_canonical(axis);
             for (int k = 0; k < 3; ++k) {
                 pOut[k] = pP[k] + h * pD[k];
@@ -254,7 +245,7 @@ void pc_member_build(const PcPatch& rPatch, const PcMember& rMember, const doubl
 void pc_member_start(const PcPatch& rPatch, const double* pP, const double* pD, double* pTheta) {
     const double* x = rPatch.mParams;
     const double v[3] = {x[0] - pP[0], x[1] - pP[1], x[2] - pP[2]};
-    const double h = pc_dot(v, pD);
+    const double h = detail::MathUtils::Dot(v, pD);
     switch (rPatch.mType) {
         case 2:
             pTheta[0] = h;
@@ -294,7 +285,7 @@ void pc_fit_group(const std::vector<PcPatch>& rPatches, const std::vector<std::s
         const double* a = p.mParams + 3;
         if (!seed)
             seed = a;
-        const double s = pc_dot(a, seed) < 0.0 ? -1.0 : 1.0;
+        const double s = detail::MathUtils::Dot(a, seed) < 0.0 ? -1.0 : 1.0;
         const double wi = static_cast<double>(p.NumPts());
         double x[3];
         pc_axis_point(p, x);
@@ -320,7 +311,7 @@ void pc_fit_group(const std::vector<PcPatch>& rPatches, const std::vector<std::s
         const PcPatch& p = rPatches[rRows[i]];
         PcMember& m = members[i];
         m.mRow = rRows[i];
-        m.mSign = (p.mType == 4 && pc_dot(p.mParams + 3, d0) < 0.0) ? -1.0 : 1.0;
+        m.mSign = (p.mType == 4 && detail::MathUtils::Dot(p.mParams + 3, d0) < 0.0) ? -1.0 : 1.0;
         m.mFirst = theta.size();
         const std::size_t np = pc_member_params(p.mType);
         double start[3] = {0.0, 0.0, 0.0};
@@ -469,7 +460,7 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         for (std::size_t k = 0; k < 3; ++k)
             p.mCentroid[k] /= static_cast<double>(v.size());
         const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-        p.mExtent = std::sqrt(pc_dot(ext, ext));
+        p.mExtent = std::sqrt(detail::MathUtils::Dot(ext, ext));
     }
     const double min_fraction = FitPrimitivesOptions().mMinInlierFraction;
     const auto keep = [&](PcPatch& rPatch, const double* pParams) {
@@ -544,7 +535,7 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         for (std::size_t i = 0; i < references.size() && !have; ++i) {
             const double* ref = references[i].data();
             if (pc_sin(n, ref) <= budget) {
-                const double s = pc_dot(n, ref) < 0.0 ? -1.0 : 1.0;
+                const double s = detail::MathUtils::Dot(n, ref) < 0.0 ? -1.0 : 1.0;
                 for (int k = 0; k < 3; ++k)
                     target[k] = s * ref[k];
                 have = true;
@@ -554,7 +545,7 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         if (!have) {
             std::vector<std::size_t> perp;
             for (std::size_t i = 0; i < references.size(); ++i)
-                if (std::fabs(pc_dot(n, references[i].data())) <= budget)
+                if (std::fabs(detail::MathUtils::Dot(n, references[i].data())) <= budget)
                     perp.push_back(i);
             if (!perp.empty()) {
                 const double* r1 = references[perp[0]].data();
@@ -563,14 +554,14 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
                     if (pc_sin(r1, references[perp[j]].data()) > 1e-6)
                         r2 = references[perp[j]].data();
                 if (r2) {
-                    pc_cross(r1, r2, target);
+                    detail::MathUtils::Cross(r1, r2, target);
                 } else {
-                    const double h = pc_dot(n, r1);
+                    const double h = detail::MathUtils::Dot(n, r1);
                     for (int k = 0; k < 3; ++k)
                         target[k] = n[k] - h * r1[k];
                 }
                 have = pc_normalize(target);
-                if (have && pc_dot(target, n) < 0.0)
+                if (have && detail::MathUtils::Dot(target, n) < 0.0)
                     for (int k = 0; k < 3; ++k)
                         target[k] = -target[k];
             }
@@ -580,9 +571,9 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
             // The offset refitted: the mean height of the points along it.
             double off = 0.0;
             for (std::size_t i = 0; i < p.NumPts(); ++i)
-                off += pc_dot(target, &p.mPts[i * 3]);
+                off += detail::MathUtils::Dot(target, &p.mPts[i * 3]);
             off /= static_cast<double>(p.NumPts());
-            const double h = off - pc_dot(target, p.mCentroid);
+            const double h = off - detail::MathUtils::Dot(target, p.mCentroid);
             double cand[kPrimitiveParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
             for (int k = 0; k < 3; ++k) {
                 cand[k] = p.mCentroid[k] + h * target[k];

@@ -39,6 +39,7 @@
 
 // Project includes (private, not installed)
 #include "expansion.hpp"
+#include "geometry_utils.hpp"
 #include "mesh_boolean.hpp"
 #include "predicates.hpp"
 #include "tri_pairs.hpp"
@@ -249,9 +250,7 @@ std::uint64_t mb_edge_key(std::int64_t A, std::int64_t B) {
 /// The dropped axis of a triangle (its normal's largest component) and the
 /// sign that makes its own corners turn positively in that projection.
 std::pair<std::size_t, int> mb_axis(const MbVec& rA, const MbVec& rB, const MbVec& rC) {
-    const MbVec u{rB[0] - rA[0], rB[1] - rA[1], rB[2] - rA[2]};
-    const MbVec v{rC[0] - rA[0], rC[1] - rA[1], rC[2] - rA[2]};
-    const MbVec n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+    const MbVec n = GeometryUtils::TriangleNormal(rA, rB, rC);
     std::size_t ax = 0;
     for (std::size_t k = 1; k < 3; ++k)
         if (std::fabs(n[k]) > std::fabs(n[ax]))
@@ -776,10 +775,7 @@ BooleanResult mesh_boolean_spike(const Mesh& rA, const Mesh& rB, BooleanOp Op) {
                 const MbVec& pa_ = rS.mP[static_cast<std::size_t>(tri[0])];
                 const MbVec& pb_ = rS.mP[static_cast<std::size_t>(tri[1])];
                 const MbVec& pc_ = rS.mP[static_cast<std::size_t>(tri[2])];
-                const MbVec e1{pb_[0] - pa_[0], pb_[1] - pa_[1], pb_[2] - pa_[2]};
-                const MbVec e2{pc_[0] - pa_[0], pc_[1] - pa_[1], pc_[2] - pa_[2]};
-                const MbVec nrm{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
-                                e1[0] * e2[1] - e1[1] * e2[0]};
+                const MbVec nrm = GeometryUtils::TriangleNormal(pa_, pb_, pc_);
                 if (rCut[t].mPoints.empty()) {
                     out.mT.push_back(corners);
                     out.mNormal.push_back(nrm);
@@ -920,12 +916,8 @@ BooleanResult mesh_boolean_spike(const Mesh& rA, const Mesh& rB, BooleanOp Op) {
             const MbVec& a = store[out[t][0]].mApprox;
             const MbVec& b = store[out[t][1]].mApprox;
             const MbVec& c = store[out[t][2]].mApprox;
-            const MbVec u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-            const MbVec v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-            const MbVec n{u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                          u[0] * v[1] - u[1] * v[0]};
-            const MbVec& rn = parent_normal[t];
-            if (n[0] * rn[0] + n[1] * rn[1] + n[2] * rn[2] <= 0.0)
+            const MbVec n = GeometryUtils::TriangleNormal(a, b, c);
+            if (MathUtils::Dot(n, parent_normal[t]) <= 0.0)
                 ++r_rep.mNumRoundingInverted;
         }
         result.mOk = true;

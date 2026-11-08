@@ -647,6 +647,33 @@ def _result(output_path, mesh, **extra):
     return _json_safe(report)
 
 
+_IO_ARGS = ("input_path", "output_path", "input_format", "output_format")
+
+
+def _run_op(op, args, load=True, report=True, call=None, **extra):
+    """Run ``op`` for a tool whose body only forwards its own arguments.
+
+    ``args`` is the tool's ``locals()`` on entry, its parameters: ``op`` gets
+    every one but the input and output paths and formats by name, with
+    ``call``'s entries replacing or joining them. With ``load`` it is applied
+    to the input mesh; with ``report`` it is asked for its report, which
+    follows ``extra`` in the result after the stored output's summary.
+    """
+    kwargs = {k: v for k, v in args.items() if k not in _IO_ARGS}
+    if call:
+        kwargs.update(call)
+    if report:
+        kwargs["return_report"] = True
+    if load:
+        res = op(_load(args["input_path"], args["input_format"]), **kwargs)
+    else:
+        res = op(**kwargs)
+    out, rep = res if report else (res, {})
+    return _result(
+        _store(out, args["output_path"], args["output_format"]), out, **extra, **rep
+    )
+
+
 def _safe_key(key):
     return re.sub(r"[^\w.+-]", "_", str(key)) or "_"
 
@@ -1520,18 +1547,14 @@ def tool_extract_surface(
     record_parent_ids=False,
 ):
     """Extract the boundary surface (3D -> faces, 2D -> edges)."""
-    mesh = _load(input_path, input_format)
-    out = extract_surface(mesh, record_parent_ids=record_parent_ids)
-    return _result(_store(out, output_path, output_format), out)
+    return _run_op(extract_surface, locals(), report=False)
 
 
 def tool_extract_skin(
     input_path, output_path, input_format=None, output_format=None, linearize=False
 ):
     """Extract the outer skin of a volume mesh."""
-    mesh = _load(input_path, input_format)
-    out = extract_skin(mesh, linearize=linearize)
-    return _result(_store(out, output_path, output_format), out)
+    return _run_op(extract_skin, locals(), report=False)
 
 
 def tool_reorder(
@@ -1563,17 +1586,7 @@ def tool_clean(
     drop_duplicate_cells=True,
 ):
     """Weld/prune/de-duplicate a mesh; reports what was removed."""
-    mesh = _load(input_path, input_format)
-    out, report = clean(
-        mesh,
-        weld=weld,
-        atol=atol,
-        remove_orphans=remove_orphans,
-        drop_degenerate=drop_degenerate,
-        drop_duplicate_cells=drop_duplicate_cells,
-        return_report=True,
-    )
-    return _result(_store(out, output_path, output_format), out, **report)
+    return _run_op(clean, locals())
 
 
 def tool_crop(
@@ -1623,11 +1636,7 @@ def tool_slice(
     record_parent_ids=False,
 ):
     """Planar cross-section (one topological dimension below the input)."""
-    mesh = _load(input_path, input_format)
-    out = _slice_op(
-        mesh, origin=origin, normal=normal, record_parent_ids=record_parent_ids
-    )
-    return _result(_store(out, output_path, output_format), out)
+    return _run_op(_slice_op, locals(), report=False)
 
 
 def tool_isosurface(
@@ -1683,17 +1692,17 @@ def tool_rectangle(
     complete=False,
 ):
     """Generate a regular 2-D grid of quads or triangles; reads no input."""
-    out = rectangle(
-        dims=(1, 1) if dims is None else dims,
-        size=(1.0, 1.0) if size is None else size,
-        origin=(0.0, 0.0, 0.0) if origin is None else origin,
-        cell_type=cell_type,
-        split=split,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        rectangle,
+        locals(),
+        load=False,
+        report=False,
+        call={
+            "dims": (1, 1) if dims is None else dims,
+            "size": (1.0, 1.0) if size is None else size,
+            "origin": (0.0, 0.0, 0.0) if origin is None else origin,
+        },
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_box(
@@ -1708,16 +1717,17 @@ def tool_box(
     complete=False,
 ):
     """Generate a regular 3-D grid of hexahedra, tetrahedra or wedges; reads no input."""
-    out = box(
-        dims=(1, 1, 1) if dims is None else dims,
-        size=(1.0, 1.0, 1.0) if size is None else size,
-        origin=(0.0, 0.0, 0.0) if origin is None else origin,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        box,
+        locals(),
+        load=False,
+        report=False,
+        call={
+            "dims": (1, 1, 1) if dims is None else dims,
+            "size": (1.0, 1.0, 1.0) if size is None else size,
+            "origin": (0.0, 0.0, 0.0) if origin is None else origin,
+        },
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_disk(
@@ -1732,16 +1742,13 @@ def tool_disk(
     complete=False,
 ):
     """Generate a disk of quads or triangles; reads no input."""
-    out = disk(
-        radius=radius,
-        n=n,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        disk,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_uv_sphere(
@@ -1757,17 +1764,13 @@ def tool_uv_sphere(
     complete=False,
 ):
     """Generate a latitude/longitude sphere surface, oriented outward; reads no input."""
-    out = uv_sphere(
-        radius=radius,
-        nu=nu,
-        nv=nv,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        uv_sphere,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_icosa_sphere(
@@ -1781,15 +1784,13 @@ def tool_icosa_sphere(
     complete=False,
 ):
     """Generate an icosahedron-based sphere surface; reads no input."""
-    out = icosa_sphere(
-        radius=radius,
-        subdivisions=subdivisions,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        icosa_sphere,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_cylinder(
@@ -1806,18 +1807,13 @@ def tool_cylinder(
     complete=False,
 ):
     """Generate a solid cylinder along z with side/top/bottom regions; reads no input."""
-    out = cylinder(
-        radius=radius,
-        height=height,
-        nxy=nxy,
-        nz=nz,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        cylinder,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_reference_triangle(
@@ -1831,15 +1827,16 @@ def tool_reference_triangle(
     complete=False,
 ):
     """Generate the reference triangle refined into n*n triangles; reads no input."""
-    out = reference_triangle(
-        n=n,
-        size=(1.0, 1.0) if size is None else size,
-        origin=(0.0, 0.0, 0.0) if origin is None else origin,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        reference_triangle,
+        locals(),
+        load=False,
+        report=False,
+        call={
+            "size": (1.0, 1.0) if size is None else size,
+            "origin": (0.0, 0.0, 0.0) if origin is None else origin,
+        },
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_ngon(
@@ -1854,16 +1851,13 @@ def tool_ngon(
     complete=False,
 ):
     """Generate a regular polygon fanned from its centre; reads no input."""
-    out = ngon(
-        sides=sides,
-        radius=radius,
-        rings=rings,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        ngon,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_annulus(
@@ -1881,19 +1875,13 @@ def tool_annulus(
     complete=False,
 ):
     """Generate an annulus, or a sector of one with a seam pair; reads no input."""
-    out = annulus(
-        inner_radius=inner_radius,
-        outer_radius=outer_radius,
-        ntheta=ntheta,
-        nr=nr,
-        angle=angle,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        annulus,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_lshape(
@@ -1908,16 +1896,13 @@ def tool_lshape(
     complete=False,
 ):
     """Generate the L-shaped domain (a square minus a quadrant); reads no input."""
-    out = lshape(
-        n=n,
-        size=size,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        lshape,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_plate_with_hole(
@@ -1934,18 +1919,13 @@ def tool_plate_with_hole(
     complete=False,
 ):
     """Generate a square plate around a circular hole; reads no input."""
-    out = plate_with_hole(
-        radius=radius,
-        size=size,
-        nt=nt,
-        nr=nr,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        plate_with_hole,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_honeycomb(
@@ -1957,13 +1937,16 @@ def tool_honeycomb(
     max_cells=20000000,
 ):
     """Generate a tiling of hexagons as one polygon block; reads no input."""
-    out = honeycomb(
-        dims=(4, 4) if dims is None else dims,
-        edge=edge,
-        origin=(0.0, 0.0, 0.0) if origin is None else origin,
-        max_cells=max_cells,
+    return _run_op(
+        honeycomb,
+        locals(),
+        load=False,
+        report=False,
+        call={
+            "dims": (4, 4) if dims is None else dims,
+            "origin": (0.0, 0.0, 0.0) if origin is None else origin,
+        },
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_line(
@@ -1977,15 +1960,16 @@ def tool_line(
     complete=False,
 ):
     """Generate a straight segment of line cells; reads no input."""
-    out = line(
-        n=n,
-        start=(0.0, 0.0, 0.0) if start is None else start,
-        end=(1.0, 0.0, 0.0) if end is None else end,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        line,
+        locals(),
+        load=False,
+        report=False,
+        call={
+            "start": (0.0, 0.0, 0.0) if start is None else start,
+            "end": (1.0, 0.0, 0.0) if end is None else end,
+        },
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_circle(
@@ -1999,15 +1983,13 @@ def tool_circle(
     complete=False,
 ):
     """Generate a closed polyline on a circle; reads no input."""
-    out = circle(
-        radius=radius,
-        n=n,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        circle,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_helix(
@@ -2023,17 +2005,13 @@ def tool_helix(
     complete=False,
 ):
     """Generate a helix of line cells; reads no input."""
-    out = helix(
-        radius=radius,
-        pitch=pitch,
-        turns=turns,
-        n=n,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        helix,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_sphere_points(
@@ -2045,13 +2023,13 @@ def tool_sphere_points(
     max_cells=20000000,
 ):
     """Generate points on a sphere (a Fibonacci lattice); reads no input."""
-    out = sphere_points(
-        n=n,
-        radius=radius,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        max_cells=max_cells,
+    return _run_op(
+        sphere_points,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_box_points(
@@ -2064,14 +2042,16 @@ def tool_box_points(
     max_cells=20000000,
 ):
     """Generate seeded uniform points in a box; reads no input."""
-    out = box_points(
-        n=n,
-        size=(1.0, 1.0, 1.0) if size is None else size,
-        origin=(0.0, 0.0, 0.0) if origin is None else origin,
-        seed=seed,
-        max_cells=max_cells,
+    return _run_op(
+        box_points,
+        locals(),
+        load=False,
+        report=False,
+        call={
+            "size": (1.0, 1.0, 1.0) if size is None else size,
+            "origin": (0.0, 0.0, 0.0) if origin is None else origin,
+        },
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_tetra_sphere(
@@ -2085,15 +2065,13 @@ def tool_tetra_sphere(
     complete=False,
 ):
     """Generate a sphere surface from a subdivided tetrahedron; reads no input."""
-    out = tetra_sphere(
-        radius=radius,
-        subdivisions=subdivisions,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        tetra_sphere,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_octa_sphere(
@@ -2107,15 +2085,13 @@ def tool_octa_sphere(
     complete=False,
 ):
     """Generate a sphere surface from a subdivided octahedron; reads no input."""
-    out = octa_sphere(
-        radius=radius,
-        subdivisions=subdivisions,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        octa_sphere,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_cube_sphere(
@@ -2130,16 +2106,13 @@ def tool_cube_sphere(
     complete=False,
 ):
     """Generate a sphere surface from a cube's six gridded faces; reads no input."""
-    out = cube_sphere(
-        radius=radius,
-        n=n,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        cube_sphere,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_geo_sphere(
@@ -2153,15 +2126,13 @@ def tool_geo_sphere(
     complete=False,
 ):
     """Generate a geodesic sphere of any frequency; reads no input."""
-    out = geo_sphere(
-        radius=radius,
-        n=n,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        geo_sphere,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_torus(
@@ -2178,18 +2149,13 @@ def tool_torus(
     complete=False,
 ):
     """Generate a torus surface; reads no input."""
-    out = torus(
-        major_radius=major_radius,
-        minor_radius=minor_radius,
-        nu=nu,
-        nv=nv,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        torus,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_moebius(
@@ -2207,19 +2173,13 @@ def tool_moebius(
     complete=False,
 ):
     """Generate a Moebius band; reads no input."""
-    out = moebius(
-        radius=radius,
-        width=width,
-        nu=nu,
-        nv=nv,
-        num_twists=num_twists,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        moebius,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_tube(
@@ -2236,18 +2196,13 @@ def tool_tube(
     complete=False,
 ):
     """Generate an open cylinder surface; reads no input."""
-    out = tube(
-        radius=radius,
-        height=height,
-        ntheta=ntheta,
-        nz=nz,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        tube,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_cone(
@@ -2264,18 +2219,13 @@ def tool_cone(
     complete=False,
 ):
     """Generate a closed cone surface; reads no input."""
-    out = cone(
-        radius=radius,
-        height=height,
-        ntheta=ntheta,
-        nz=nz,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        cone,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_capsule(
@@ -2293,19 +2243,13 @@ def tool_capsule(
     complete=False,
 ):
     """Generate a capsule surface; reads no input."""
-    out = capsule(
-        radius=radius,
-        height=height,
-        ntheta=ntheta,
-        nz=nz,
-        ncap=ncap,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        capsule,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_box_surface(
@@ -2320,16 +2264,17 @@ def tool_box_surface(
     complete=False,
 ):
     """Generate the closed boundary surface of a box; reads no input."""
-    out = box_surface(
-        dims=(1, 1, 1) if dims is None else dims,
-        size=(1.0, 1.0, 1.0) if size is None else size,
-        origin=(0.0, 0.0, 0.0) if origin is None else origin,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        box_surface,
+        locals(),
+        load=False,
+        report=False,
+        call={
+            "dims": (1, 1, 1) if dims is None else dims,
+            "size": (1.0, 1.0, 1.0) if size is None else size,
+            "origin": (0.0, 0.0, 0.0) if origin is None else origin,
+        },
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_platonic(
@@ -2341,13 +2286,13 @@ def tool_platonic(
     max_cells=20000000,
 ):
     """Generate a platonic solid's surface, one cell per face; reads no input."""
-    out = platonic(
-        name=name,
-        radius=radius,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        max_cells=max_cells,
+    return _run_op(
+        platonic,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_ball(
@@ -2362,16 +2307,13 @@ def tool_ball(
     complete=False,
 ):
     """Generate a solid ball by the seven-block butterfly; reads no input."""
-    out = ball(
-        radius=radius,
-        n=n,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        ball,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_spherical_shell(
@@ -2388,18 +2330,13 @@ def tool_spherical_shell(
     complete=False,
 ):
     """Generate a thick spherical shell of hexahedra; reads no input."""
-    out = spherical_shell(
-        inner_radius=inner_radius,
-        outer_radius=outer_radius,
-        n=n,
-        nr=nr,
-        ratio=ratio,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        spherical_shell,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_pipe(
@@ -2418,20 +2355,13 @@ def tool_pipe(
     complete=False,
 ):
     """Generate a thick-walled pipe of hexahedra; reads no input."""
-    out = pipe(
-        inner_radius=inner_radius,
-        outer_radius=outer_radius,
-        height=height,
-        ntheta=ntheta,
-        nr=nr,
-        nz=nz,
-        ratio=ratio,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        pipe,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_fichera(
@@ -2446,16 +2376,13 @@ def tool_fichera(
     complete=False,
 ):
     """Generate the Fichera corner (a cube minus an octant); reads no input."""
-    out = fichera(
-        n=n,
-        size=size,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        cell_type=cell_type,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        fichera,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_solid_torus(
@@ -2471,23 +2398,18 @@ def tool_solid_torus(
     complete=False,
 ):
     """Generate a solid torus of hexahedra; reads no input."""
-    out = solid_torus(
-        major_radius=major_radius,
-        minor_radius=minor_radius,
-        n=n,
-        nu=nu,
-        center=(0.0, 0.0, 0.0) if center is None else center,
-        order=order,
-        max_cells=max_cells,
-        complete=complete,
+    return _run_op(
+        solid_torus,
+        locals(),
+        load=False,
+        report=False,
+        call={"center": (0.0, 0.0, 0.0) if center is None else center},
     )
-    return _result(_store(out, output_path, output_format), out)
 
 
 def tool_reference_cells(output_path, output_format=None, types=None, pairs=False):
     """Generate one cell of each requested type in reference coordinates; reads no input."""
-    out = reference_cells(types=types, pairs=pairs)
-    return _result(_store(out, output_path, output_format), out)
+    return _run_op(reference_cells, locals(), load=False, report=False)
 
 
 def tool_voxelize(
@@ -2507,23 +2429,7 @@ def tool_voxelize(
     plane="auto",
 ):
     """Build a regular grid around a mesh; optionally keep only its surface or interior."""
-    mesh = _load(input_path, input_format)
-    out, report = voxelize(
-        mesh,
-        resolution=resolution,
-        cell_size=cell_size,
-        bounds=bounds,
-        padding=padding,
-        padding_relative=padding_relative,
-        fill=fill,
-        attach_occupancy=attach_occupancy,
-        max_cells=max_cells,
-        sign=sign,
-        watertight_check="off",
-        plane=plane,
-        return_report=True,
-    )
-    return _result(_store(out, output_path, output_format), out, **report)
+    return _run_op(voxelize, locals(), call={"watertight_check": "off"})
 
 
 def tool_octree_mesh(
@@ -2573,52 +2479,7 @@ def tool_octree_mesh(
     crossing_gap=0.05,
 ):
     """Mesh the inside of a skin on a balanced octree (castellated, tet or hex)."""
-    mesh = _load(input_path, input_format)
-    out, report = octree_mesh(
-        mesh,
-        output=output,
-        min_size=min_size,
-        max_size=max_size,
-        max_level=max_level,
-        bounds=bounds,
-        padding=padding,
-        padding_relative=padding_relative,
-        curvature_angle=curvature_angle,
-        feature_angle=feature_angle,
-        corner_angle=corner_angle,
-        feature_size=feature_size,
-        gap_cells=gap_cells,
-        gap_outside=gap_outside,
-        size_array=size_array,
-        surface_region=surface_region,
-        grading_layers=grading_layers,
-        skin_grading=skin_grading,
-        surface_size=surface_size,
-        winding_threshold=winding_threshold,
-        winding_beta=winding_beta,
-        conformity=conformity,
-        alpha_long=alpha_long,
-        alpha_short=alpha_short,
-        preserve_features=preserve_features,
-        fit_iterations=fit_iterations,
-        dihedral_floor_guard=dihedral_floor_guard,
-        fill=fill,
-        keep_outside=keep_outside,
-        attach_distance=attach_distance,
-        attach_quality=attach_quality,
-        pillow=pillow,
-        hex_grading=hex_grading,
-        untangle_iterations=untangle_iterations,
-        max_cells=max_cells,
-        max_tets=max_tets,
-        volume_fix=volume_fix,
-        zero_volume_factor=zero_volume_factor,
-        cap_flatness=cap_flatness,
-        crossing_margin=crossing_margin,
-        crossing_gap=crossing_gap,
-        return_report=True,
-    )
-    return _result(_store(out, output_path, output_format), out, **report)
+    return _run_op(octree_mesh, locals())
 
 
 def tool_mesh_cad_surface(
@@ -2752,34 +2613,7 @@ def tool_octree(
     plane="auto",
 ):
     """Build an octree (quadtree) around a mesh skin, fine only where the skin is."""
-    mesh = _load(input_path, input_format)
-    out, report = octree(
-        mesh,
-        root_cells=root_cells,
-        min_level=min_level,
-        max_level=max_level,
-        bounds=bounds,
-        padding=padding,
-        padding_relative=padding_relative,
-        dimension=dimension,
-        sample_distance=sample_distance,
-        balance=balance,
-        fill=fill,
-        attach_distance=attach_distance,
-        even_odd=even_odd,
-        max_cells=max_cells,
-        sign=sign,
-        watertight_check="off",
-        return_report=True,
-        transition=transition,
-        snap=snap,
-        surface_level=surface_level,
-        curvature_threshold=curvature_threshold,
-        feature_angle=feature_angle,
-        size_array=size_array,
-        plane=plane,
-    )
-    return _result(_store(out, output_path, output_format), out, **report)
+    return _run_op(octree, locals(), call={"watertight_check": "off"})
 
 
 def _grid_spec_report(spec):
@@ -3517,18 +3351,7 @@ def tool_iga_refine(
     geometry, fields and a trimmed face's trimming loops do not change; the
     refined model is written (an MFEM NURBS mesh or CAD JSON keeps its patches,
     any other format gets the sampled cells)."""
-    mesh = _load(input_path, input_format)
-    out = iga_refine(
-        mesh,
-        subdivisions=subdivisions,
-        elevate=elevate,
-        sample_subdivisions=sample_subdivisions,
-        model=model,
-        trim_samples=trim_samples,
-        edges=edges,
-        trim=trim,
-    )
-    return _result(_store(out, output_path, output_format), out)
+    return _run_op(iga_refine, locals(), report=False)
 
 
 def tool_iga_sample(
@@ -3545,16 +3368,7 @@ def tool_iga_sample(
     """Sample a NURBS model (MFEM NURBS mesh, CAD JSON, STEP, IGES) into
     Lagrange cells, subdivisions cells per knot span and direction (0 is
     automatic), the exact rational geometry at each cell's lattice."""
-    mesh = _load(input_path, input_format)
-    out = iga_sample(
-        mesh,
-        subdivisions=subdivisions,
-        model=model,
-        trim_samples=trim_samples,
-        edges=edges,
-        trim=trim,
-    )
-    return _result(_store(out, output_path, output_format), out)
+    return _run_op(iga_sample, locals(), report=False)
 
 
 _IGA_MAX_POINTS = 10000
@@ -4659,9 +4473,7 @@ def tool_convert_cells(
     record_parent_ids=False,
 ):
     """Convert the element representation (linearize | simplexify | elevate)."""
-    mesh = _load(input_path, input_format)
-    out = convert_cells(mesh, mode=mode, record_parent_ids=record_parent_ids)
-    return _result(_store(out, output_path, output_format), out)
+    return _run_op(convert_cells, locals(), report=False)
 
 
 def tool_subdivide(
@@ -4672,9 +4484,7 @@ def tool_subdivide(
     record_parent_ids=False,
 ):
     """Polyhedrally refine: one polyhedral child per 3D cell face."""
-    mesh = _load(input_path, input_format)
-    out = subdivide(mesh, record_parent_ids=record_parent_ids)
-    return _result(_store(out, output_path, output_format), out)
+    return _run_op(subdivide, locals(), report=False)
 
 
 def tool_tessellate(
@@ -4803,19 +4613,7 @@ def tool_refine(
     record_hierarchy=False,
 ):
     """Subdivide cells into same-type children, all or a selected subset."""
-    mesh = _load(input_path, input_format)
-    out = refine(
-        mesh,
-        levels=levels,
-        record_parent_ids=record_parent_ids,
-        cells=cells,
-        region=region,
-        where=where,
-        closure=closure,
-        record_levels=record_levels,
-        record_hierarchy=record_hierarchy,
-    )
-    return _result(_store(out, output_path, output_format), out)
+    return _run_op(refine, locals(), report=False)
 
 
 def tool_decimate(
@@ -4832,19 +4630,7 @@ def tool_decimate(
     feature_angle=30.0,
 ):
     """Reduce a surface mesh's face count (exactly one stopping criterion)."""
-    mesh = _load(input_path, input_format)
-    out, report = decimate(
-        mesh,
-        ratio=ratio,
-        target_faces=target_faces,
-        max_error=max_error,
-        placement=placement,
-        preserve_boundary=preserve_boundary,
-        preserve_features=preserve_features,
-        feature_angle=feature_angle,
-        return_report=True,
-    )
-    return _result(_store(out, output_path, output_format), out, **report)
+    return _run_op(decimate, locals())
 
 
 def tool_decimate_volume(
@@ -4861,19 +4647,7 @@ def tool_decimate_volume(
     feature_angle=30.0,
 ):
     """Reduce a tet mesh's cell count (exactly one stopping criterion)."""
-    mesh = _load(input_path, input_format)
-    out, report = decimate_volume(
-        mesh,
-        ratio=ratio,
-        target_cells=target_cells,
-        max_error=max_error,
-        placement=placement,
-        preserve_boundary=preserve_boundary,
-        preserve_features=preserve_features,
-        feature_angle=feature_angle,
-        return_report=True,
-    )
-    return _result(_store(out, output_path, output_format), out, **report)
+    return _run_op(decimate_volume, locals())
 
 
 def _mmg_unavailable(op):
@@ -4920,33 +4694,7 @@ def tool_adapt(
     status, library, counts in and out and the aspect-ratio quality."""
     if not has_mmg():
         return _mmg_unavailable("adapt")
-    mesh = _load(input_path, input_format)
-    out, report = adapt(
-        mesh,
-        hsiz=hsiz,
-        size=size,
-        metric=metric,
-        hmin=hmin,
-        hmax=hmax,
-        hausd=hausd,
-        hgrad=hgrad,
-        hgradreq=hgradreq,
-        angle_detection=angle_detection,
-        optim=optim,
-        noinsert=noinsert,
-        noswap=noswap,
-        nomove=nomove,
-        nosurf=nosurf,
-        nreg=nreg,
-        opnbdy=opnbdy,
-        frozen=frozen,
-        required=required,
-        local=local,
-        return_report=True,
-    )
-    return _result(
-        _store(out, output_path, output_format), out, mmg_available=True, **report
-    )
+    return _run_op(adapt, locals(), mmg_available=True)
 
 
 def tool_discretize_levelset(
@@ -5222,21 +4970,7 @@ def tool_remesh_volume(
     The output has NO correspondence to the input -- point/cell data and
     named regions are dropped, field data is carried. Exactly one of
     `resolution`/`cell_size` must be given."""
-    mesh = _load(input_path, input_format)
-    out, report = remesh_volume(
-        mesh,
-        resolution=resolution,
-        cell_size=cell_size,
-        bounds=bounds,
-        padding=padding,
-        padding_relative=padding_relative,
-        max_cells=max_cells,
-        max_tets=max_tets,
-        warp_fraction=warp_fraction,
-        watertight_check=watertight_check,
-        return_report=True,
-    )
-    return _result(_store(out, output_path, output_format), out, **report)
+    return _run_op(remesh_volume, locals())
 
 
 def tool_optimize_volume(
@@ -5258,19 +4992,7 @@ def tool_optimize_volume(
     C++-core-only (no pure-Python fallback). The point set is invariant, so
     point data and named Point regions carry; cell data and Cell/Side regions
     are dropped (a flip has no cell correspondence)."""
-    mesh = _load(input_path, input_format)
-    out, report = optimize_volume(
-        mesh,
-        max_iterations=max_iterations,
-        relocate=relocate,
-        flip=flip,
-        preserve_boundary=preserve_boundary,
-        min_improvement=min_improvement,
-        return_report=True,
-        objective=objective,
-        max_ring_size=max_ring_size,
-    )
-    return _result(_store(out, output_path, output_format), out, **report)
+    return _run_op(optimize_volume, locals())
 
 
 def tool_smooth(
@@ -5547,18 +5269,7 @@ def tool_extrude(
     vector. Returns num_cells, num_hexahedra, num_wedges, num_pyramids,
     num_tetrahedra, num_quads, num_triangles, num_flipped,
     min_scaled_jacobian and warnings alongside the mesh summary."""
-    mesh = _load(input_path, input_format)
-    out, report = extrude(
-        mesh,
-        direction=direction,
-        num_layers=num_layers,
-        ratio=ratio,
-        offsets=offsets,
-        record_layers=record_layers,
-        max_cells=max_cells,
-        return_report=True,
-    )
-    return _result(_store(out, output_path, output_format), out, **report)
+    return _run_op(extrude, locals())
 
 
 def tool_revolve(
@@ -5577,19 +5288,7 @@ def tool_revolve(
     """Sweep a surface (or a curve) around an axis. Returns the extrude
     counts, num_on_axis, full, min_scaled_jacobian and warnings alongside the
     mesh summary."""
-    mesh = _load(input_path, input_format)
-    out, report = revolve(
-        mesh,
-        axis=axis,
-        axis_point=axis_point,
-        angle=angle,
-        num_layers=num_layers,
-        tolerance=tolerance,
-        record_layers=record_layers,
-        max_cells=max_cells,
-        return_report=True,
-    )
-    return _result(_store(out, output_path, output_format), out, **report)
+    return _run_op(revolve, locals())
 
 
 def tool_mirror(
@@ -5607,18 +5306,7 @@ def tool_mirror(
     """Reflect a mesh across a plane with every cell right side out. Returns
     num_flipped_cells, num_points_on_plane, num_dropped_cells,
     num_dropped_sides and warnings alongside the mesh summary."""
-    mesh = _load(input_path, input_format)
-    out, report = mirror(
-        mesh,
-        origin=origin,
-        normal=normal,
-        keep_original=keep_original,
-        weld=weld,
-        tolerance=tolerance,
-        reflect_vector_data=reflect_vector_data,
-        return_report=True,
-    )
-    return _result(_store(out, output_path, output_format), out, **report)
+    return _run_op(mirror, locals())
 
 
 def tool_tetrahedralize(

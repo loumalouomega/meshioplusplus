@@ -276,3 +276,15 @@ TEST(TextCursor, TokenParsesMatchTheCLibrary) {
             EXPECT_EQ(v, ll) << tok;
     }
 }
+
+TEST(TextCursor, TokenParsesSaturateAndWrapAsTheCLibrary) {
+    using meshioplusplus::detail::strtoll_token;
+    using meshioplusplus::detail::strtoull_token;
+    for (const char* text :
+         {"  12", "-12", "+0", "9223372036854775807", "9223372036854775808", "-9223372036854775808",
+          "-9223372036854775809", "99999999999999999999", " -5abc", "x", "", "-",
+          "18446744073709551615", "18446744073709551616", "-1"}) {
+        EXPECT_EQ(strtoll_token(text), std::strtoll(text, nullptr, 10)) << text;
+        EXPECT_EQ(strtoull_token(text), std::strtoull(text, nullptr, 10)) << text;
+    }
+}

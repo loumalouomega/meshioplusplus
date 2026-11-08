@@ -16,27 +16,33 @@ static void mio_r_mesh_finalizer(SEXP x) {
     }
 }
 
-SEXP mio_r_wrap_mesh(mio_mesh *mesh) {
-    SEXP ptr = PROTECT(R_MakeExternalPtr(mesh, mio_r_mesh_tag, R_NilValue));
+SEXP mio_r_wrap_handle(void *handle, SEXP tag, R_CFinalizer_t finalizer, const char *cls) {
+    SEXP ptr = PROTECT(R_MakeExternalPtr(handle, tag, R_NilValue));
     /* onexit = TRUE: run the finalizer at the end of the session too, not only
      * when the GC happens to collect. */
-    R_RegisterCFinalizerEx(ptr, mio_r_mesh_finalizer, TRUE);
-    SEXP cls = PROTECT(Rf_mkString("mio_mesh"));
-    Rf_setAttrib(ptr, R_ClassSymbol, cls);
-    UNPROTECT(2); /* cls, ptr */
+    R_RegisterCFinalizerEx(ptr, finalizer, TRUE);
+    SEXP cls_value = PROTECT(Rf_mkString(cls));
+    Rf_setAttrib(ptr, R_ClassSymbol, cls_value);
+    UNPROTECT(2); /* cls_value, ptr */
     return ptr;
 }
 
-mio_mesh *mio_r_mesh(SEXP x) {
-    if (TYPEOF(x) != EXTPTRSXP || R_ExternalPtrTag(x) != mio_r_mesh_tag) {
-        Rf_error("expected a mio_mesh object");
+void *mio_r_handle(SEXP x, SEXP tag, const char *cls) {
+    if (TYPEOF(x) != EXTPTRSXP || R_ExternalPtrTag(x) != tag) {
+        Rf_error("expected a %s object", cls);
     }
-    mio_mesh *mesh = (mio_mesh *)R_ExternalPtrAddr(x);
-    if (mesh == NULL) {
-        Rf_error("this mio_mesh has already been released");
+    void *handle = R_ExternalPtrAddr(x);
+    if (handle == NULL) {
+        Rf_error("this %s has already been released", cls);
     }
-    return mesh;
+    return handle;
 }
+
+SEXP mio_r_wrap_mesh(mio_mesh *mesh) {
+    return mio_r_wrap_handle(mesh, mio_r_mesh_tag, mio_r_mesh_finalizer, "mio_mesh");
+}
+
+mio_mesh *mio_r_mesh(SEXP x) { return (mio_mesh *)mio_r_handle(x, mio_r_mesh_tag, "mio_mesh"); }
 
 /* --- errors ------------------------------------------------------------- */
 
@@ -178,6 +184,28 @@ SEXP mio_r_getstring(mio_r_str_getter getter, void *ctx, const char *what) {
     return Rf_mkString(buf);
 }
 
+/* mio_r_getbuffer's getter, carried through mio_r_getstring's context. */
+typedef struct {
+    mio_r_buffer_getter getter;
+} mio_r_buffer_ctx;
+
+static int64_t mio_r_buffer_adapter(void *ctx, char *buf, int64_t buflen) {
+    return ((const mio_r_buffer_ctx *)ctx)->getter(buf, buflen);
+}
+
+SEXP mio_r_getbuffer(mio_r_buffer_getter getter, const char *what) {
+    mio_r_buffer_ctx ctx = {getter};
+    return mio_r_getstring(mio_r_buffer_adapter, &ctx, what);
+}
+
+const char **mio_r_cstrings(SEXP s, R_xlen_t *pN) {
+    const R_xlen_t n = Rf_xlength(s);
+    const char **out = n > 0 ? (const char **)R_alloc((size_t)n, sizeof(char *)) : NULL;
+    for (R_xlen_t i = 0; i < n; ++i) out[i] = CHAR(STRING_ELT(s, i));
+    *pN = n;
+    return out;
+}
+
 /* R has no native 64-bit integer type, so every numeric array the C API hands
  * back -- including the int64 connectivity, region entries and index maps --
  * comes into R as `double`. That is exact to 2^53, far beyond any mesh this
@@ -233,6 +261,23 @@ SEXP mio_r_named_list(int n, const char **names, SEXP *values) {
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, n));
     for (int i = 0; i < n; ++i) {
         SET_VECTOR_ELT(out, i, values[i]);
+        SET_STRING_ELT(nm, i, Rf_mkChar(names[i]));
+    }
+    Rf_setAttrib(out, R_NamesSymbol, nm);
+    UNPROTECT(2);
+    return out;
+}
+
+SEXP mio_r_report_list(int n, const char **names, const SEXP *values, const double *numbers) {
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+    SEXP nm = PROTECT(Rf_allocVector(STRSXP, n));
+    int next = 0;
+    for (int i = 0; i < n; ++i) {
+        if (values != NULL && values[i] != NULL) {
+            SET_VECTOR_ELT(out, i, values[i]);
+        } else {
+            SET_VECTOR_ELT(out, i, Rf_ScalarReal(numbers[next++]));
+        }
         SET_STRING_ELT(nm, i, Rf_mkChar(names[i]));
     }
     Rf_setAttrib(out, R_NamesSymbol, nm);

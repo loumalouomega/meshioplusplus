@@ -43,6 +43,7 @@
 #include "../detail/cell_region_mask.hpp"
 #include "../detail/crease_edges.hpp"
 #include "../detail/face_skin.hpp"
+#include "../detail/surface_rings.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -142,15 +143,7 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 
     // Flat coordinates, padded to 3-D.
     const std::size_t n = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
-    std::vector<double> xyz(n * 3, 0.0);
-    {
-        const NDArray& pts = rMesh.Points();
-        parallel_for_bw(n, [&](std::size_t i) {
-            for (std::size_t d = 0; d < dim && d < 3; ++d)
-                xyz[i * 3 + d] = detail::read_double(pts, i * dim + d);
-        });
-    }
+    const std::vector<double> xyz = detail::surface_xyz(rMesh);
     const std::size_t nf = start.size() - 1;
     std::vector<double> normals(nf * 3);
     parallel_for(nf, [&](std::size_t f) {

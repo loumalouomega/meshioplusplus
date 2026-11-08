@@ -1,32 +1,15 @@
-from .. import _core
-from .._fallback import core_declined
-from .._files import is_buffer
+from .. import _core  # noqa: F401 (the shims look it up at call time)
 from .._helpers import register_format
-from ._su2 import read as _py_read
-from ._su2 import write as _py_write
+from .._shims import plain_shims
+from ._su2 import read as _py_read  # noqa: F401
+from ._su2 import write as _py_write  # noqa: F401
 
-
-def read(filename):
-    """Read an SU2 mesh file (C++ core for real file paths, Python fallback)."""
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.su2_read(str(filename))
-        except Exception as exc:
-            if not core_declined(exc, "su2", "read", filename):
-                raise
-    return _py_read(filename)
-
-
-def write(filename, mesh):
-    """Write an SU2 mesh file (C++ core for real file paths, Python fallback)."""
-    if not is_buffer(filename, "w"):
-        try:
-            _core.su2_write(str(filename), mesh)
-            return
-        except Exception as exc:
-            if not core_declined(exc, "su2", "write", filename):
-                raise
-    return _py_write(filename, mesh)
+read, write = plain_shims(
+    __name__,
+    "su2",
+    """Read an SU2 mesh file (C++ core for real file paths, Python fallback).""",
+    """Write an SU2 mesh file (C++ core for real file paths, Python fallback).""",
+)
 
 
 register_format("su2", [".su2"], read, {"su2": write})

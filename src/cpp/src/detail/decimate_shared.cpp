@@ -19,25 +19,58 @@
 #include <algorithm>
 #include <cstring>
 #include <iterator>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 // Project includes
+#include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
 #include "crease_edges.hpp"
 #include "decimate_shared.hpp"
+#include "ndarray_utils.hpp"
 
 namespace meshioplusplus {
 namespace detail {
 
-NDArray decim_int64_vector(const std::vector<std::int64_t>& rValues) {
-    NDArray a = NDArray::Uninit(DType::Int64, {rValues.size()});
-    if (!rValues.empty())
-        std::memcpy(a.Data(), rValues.data(), rValues.size() * sizeof(std::int64_t));
-    return a;
+DecimStop decim_resolve_stop(double TargetRatio, std::int64_t TargetCount, double MaxError,
+                             const std::string& rPrefix, const char* pCountName) {
+    const int num_set =
+        (TargetRatio >= 0.0 ? 1 : 0) + (TargetCount >= 0 ? 1 : 0) + (MaxError >= 0.0 ? 1 : 0);
+    if (num_set != 1)
+        throw std::invalid_argument(rPrefix + "exactly one of target_ratio, " + pCountName +
+                                    ", max_error must be set; got " + std::to_string(num_set));
+    DecimStop stop;
+    if (TargetRatio >= 0.0) {
+        if (!(TargetRatio > 0.0 && TargetRatio <= 1.0))
+            throw std::invalid_argument(rPrefix + "target_ratio must lie in (0, 1]; got " +
+                                        std::to_string(TargetRatio));
+        stop.mUseTarget = true;  // the count is filled in once it is known
+    } else if (TargetCount >= 0) {
+        stop.mUseTarget = true;
+        stop.mTarget = TargetCount;
+    } else {
+        stop.mUseMaxError = true;
+        stop.mMaxError = MaxError;
+    }
+    return stop;
+}
+
+void decim_check_frozen(std::size_t FrozenSize, std::size_t NumPoints, const std::string& rPrefix) {
+    if (FrozenSize != 0 && FrozenSize != NumPoints)
+        throw std::invalid_argument(rPrefix + "frozen mask has " + std::to_string(FrozenSize) +
+                                    " entries but the mesh has " + std::to_string(NumPoints) +
+                                    " points");
+}
+
+std::int64_t decim_ratio_target(double Ratio, std::size_t Count) {
+    return std::max<std::int64_t>(
+        1, static_cast<std::int64_t>(Ratio * static_cast<double>(Count) + 0.5));
 }
 
 std::vector<DecimFloatData> decim_float_working_copies(const Mesh& rMesh, std::size_t n) {
@@ -275,6 +308,76 @@ NDArray decim_point_map(const std::vector<std::int64_t>& rSuccessor,
         dst[i] = rRemap[static_cast<std::size_t>(v)];
     }
     return pm;
+}
+
+template <int K>
+void decim_emit_blocks(const Mesh& rIn, const Mesh& rSrc, const char* pParentName,
+                       const std::vector<std::uint8_t>& rAlive,
+                       const std::vector<std::int64_t>& rConn,
+                       const std::vector<std::int64_t>& rBases,
+                       const std::vector<std::int64_t>& rRemap, CellType Type, Mesh& rOut,
+                       std::vector<NDArray>& rCellMaps) {
+    constexpr std::size_t kCorners = K;
+    const std::size_t nblocks = rSrc.NumCellBlocks();
+    const bool has_parent = pParentName != nullptr && rSrc.HasCellData(pParentName) &&
+                            rSrc.CellDataNumBlocks(pParentName) == nblocks;
+    std::size_t bi = 0;
+    std::vector<std::size_t> in_cells;
+    for (const auto cb : rIn.CellRange())
+        in_cells.push_back(cb.NumCells());
+    for (const auto cb : rSrc.CellRange()) {
+        const std::size_t nc = cb.NumCells();
+        const std::size_t base = static_cast<std::size_t>(rBases[bi]);
+        std::size_t alive_in_block = 0;
+        for (std::size_t c = 0; c < nc; ++c)
+            if (rAlive[base + c])
+                ++alive_in_block;
+        NDArray block = NDArray::Uninit(DType::Int64, {alive_in_block, kCorners});
+        std::int64_t* dst = block.As<std::int64_t>();
+        const NDArray* p_parent = has_parent ? &rSrc.CellData(pParentName, bi) : nullptr;
+        std::vector<std::int64_t> cell_map(bi < in_cells.size() ? in_cells[bi] : nc, -1);
+        std::size_t w = 0;
+        for (std::size_t c = 0; c < nc; ++c) {
+            if (!rAlive[base + c])
+                continue;
+            for (std::size_t k = 0; k < kCorners; ++k)
+                dst[w * kCorners + k] =
+                    rRemap[static_cast<std::size_t>(rConn[(base + c) * kCorners + k])];
+            const std::int64_t parent =
+                p_parent != nullptr ? read_int(*p_parent, c) : static_cast<std::int64_t>(c);
+            if (parent >= 0 && static_cast<std::size_t>(parent) < cell_map.size() &&
+                cell_map[static_cast<std::size_t>(parent)] < 0)
+                cell_map[static_cast<std::size_t>(parent)] = static_cast<std::int64_t>(w);
+            ++w;
+        }
+        rOut.AddCellBlock(cell_type_name(Type), std::move(block));
+        rCellMaps.push_back(NDArrayUtils::Int64Vector(cell_map));
+        ++bi;
+    }
+}
+
+template void decim_emit_blocks<3>(const Mesh&, const Mesh&, const char*,
+                                   const std::vector<std::uint8_t>&,
+                                   const std::vector<std::int64_t>&,
+                                   const std::vector<std::int64_t>&,
+                                   const std::vector<std::int64_t>&, CellType, Mesh&,
+                                   std::vector<NDArray>&);
+template void decim_emit_blocks<4>(const Mesh&, const Mesh&, const char*,
+                                   const std::vector<std::uint8_t>&,
+                                   const std::vector<std::int64_t>&,
+                                   const std::vector<std::int64_t>&,
+                                   const std::vector<std::int64_t>&, CellType, Mesh&,
+                                   std::vector<NDArray>&);
+
+void decim_remap_regions(const Mesh& rIn, Mesh& rOut, const NDArray& rPointMap,
+                         const std::vector<NDArray>& rCellMaps, CellMapKind Kind,
+                         const char* pOpName) {
+    RegionRemap rmap;
+    rmap.pPointMap = &rPointMap;
+    rmap.mCellMapKind = Kind;
+    rmap.pCellMaps = &rCellMaps;
+    rmap.mOpName = pOpName;
+    remap_regions(rIn, rOut, rmap);
 }
 
 }  // namespace detail

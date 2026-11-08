@@ -1,6 +1,6 @@
 from .._helpers import read, write
 from .._octree import octree
-from ._common import add_io_args
+from ._common import add_box_args, add_io_args, parse_bounds, parse_ints
 
 
 def add_args(parser):
@@ -22,22 +22,7 @@ def add_args(parser):
         default=4,
         help="never split beyond this level (at most 20)",
     )
-    parser.add_argument(
-        "--bounds",
-        type=str,
-        default=None,
-        help="'xlo,ylo,zlo,xhi,yhi,zhi'; the skin's bounding box by default "
-        "(negatives need --bounds=)",
-    )
-    parser.add_argument(
-        "--padding", type=float, default=0.0, help="grow the box by this on every side"
-    )
-    parser.add_argument(
-        "--padding-relative",
-        type=float,
-        default=0.0,
-        help="grow the box by this fraction of its diagonal on every side",
-    )
+    add_box_args(parser, bounds_of="skin's")
     parser.add_argument(
         "--dimension",
         type=int,
@@ -142,15 +127,9 @@ def add_args(parser):
 def octree_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
 
-    roots = [int(x) for x in args.root_cells.split(",")]
-    if len(roots) not in (1, 2, 3):
-        raise ValueError("octree: --root-cells expects 'nx,ny,nz'")
+    roots = parse_ints(args.root_cells, "octree", "--root-cells", counts=(1, 2, 3))
     roots = (roots * 3)[:3] if len(roots) == 1 else roots + [1] * (3 - len(roots))
-    bounds = None
-    if args.bounds is not None:
-        bounds = [float(x) for x in args.bounds.split(",")]
-        if len(bounds) != 6:
-            raise ValueError("octree: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'")
+    bounds = parse_bounds(args.bounds, "octree")
 
     out, report = octree(
         mesh,

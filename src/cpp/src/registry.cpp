@@ -29,6 +29,7 @@
 #include <string>
 #include <system_error>
 #include <unordered_map>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/registry.hpp"
@@ -190,55 +191,217 @@ std::map<std::string, ReadFn> registry_guard_readers(std::map<std::string, ReadF
 
 }  // namespace
 
-const std::map<std::string, ReadFn>& registry_readers() {
-    static const std::map<std::string, ReadFn> m = registry_guard_readers({
-        {"abaqus", meshioplusplus::read_abaqus},
-        {"abaqus_fil",
-         [](const std::string& path) { return meshioplusplus::read_abaqus_fil(path); }},
-        {"lsdyna", meshioplusplus::read_lsdyna},
+namespace {
+
+// Whether the VTK XML writers compress their arrays. The zlib codec follows
+// the build, exactly like the xdmf entry's heavy-data format: a hardcoded
+// zlib=true is a WriteError on a -DMESHIOPLUSPLUS_WITH_ZLIB=OFF build, and
+// "falls back to Python" holds for every binding with a Python shim, but not
+// for a caller reaching this table directly, e.g. WASM/C API/Fortran or the
+// sequence engine's per-step writes.
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+constexpr bool kRegistryZlib = true;
+#else
+constexpr bool kRegistryZlib = false;
+#endif
+
+/**
+ * @brief One format's entries in the registry: what reads it, what writes it,
+ * its options-aware reader and its metadata reader.
+ *
+ * An empty function means the format does not offer that entry (gmsh22 only
+ * writes, iges only reads, most formats have no options-aware reader).
+ * registry_readers(), registry_writers(), registry_readers_ex() and
+ * registry_metadata_readers() are built from these rows; the extension table,
+ * many extensions to one format, stays its own.
+ */
+struct RegistryRow {
+    const char* mName;
+    ReadFn mRead;
+    WriteFn mWrite;
+    ReadExFn mReadEx;
+    MetadataFn mMetadata;
+};
+
+const std::vector<RegistryRow>& registry_rows() {
+    static const std::vector<RegistryRow> rows = {
+        {.mName = "abaqus",
+         .mRead = meshioplusplus::read_abaqus,
+         .mWrite = meshioplusplus::write_abaqus},
+        {.mName = "abaqus_fil",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_abaqus_fil(path); },
+         .mWrite = [](const std::string& p,
+                      const Mesh& m) { meshioplusplus::write_abaqus_fil(p, m); },
+         // Abaqus .fil honours mTimeStep (its steps are the increments) and the
+         // narrowing options.
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_abaqus_fil(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_abaqus_fil_metadata},
+        {.mName = "lsdyna",
+         .mRead = meshioplusplus::read_lsdyna,
+         .mWrite = meshioplusplus::write_lsdyna},
         // The d3plot family's base file is named `d3plot`: resolve_format
         // matches the basename, sniff_format the control block.
-        {"lsdyna_d3plot",
-         [](const std::string& path) { return meshioplusplus::read_lsdyna_d3plot(path); }},
+        {.mName = "lsdyna_d3plot",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_lsdyna_d3plot(path); },
+         .mWrite = [](const std::string& rPath,
+                      const Mesh& rMesh) { meshioplusplus::write_lsdyna_d3plot(rPath, rMesh); },
+         // LS-DYNA d3plot honours mTimeStep (its steps are the family's states)
+         // and the narrowing options.
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_lsdyna_d3plot(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_lsdyna_d3plot_metadata},
         // LS-DYNA's binary output database: `binout`, found by name or header.
-        {"lsdyna_binout",
-         [](const std::string& path) { return meshioplusplus::read_lsdyna_binout(path); }},
-        {"code_aster", meshioplusplus::read_code_aster},
+        {.mName = "lsdyna_binout",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_lsdyna_binout(path); },
+         // No extension (`binout`): by name or explicit format only.
+         .mWrite = [](const std::string& p,
+                      const Mesh& m) { meshioplusplus::write_lsdyna_binout(p, m); },
+         // LS-DYNA binout honours mTimeStep (its steps are nodout's outputs)
+         // and the narrowing options.
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_lsdyna_binout(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_lsdyna_binout_metadata},
+        {.mName = "code_aster",
+         .mRead = meshioplusplus::read_code_aster,
+         .mWrite = meshioplusplus::write_code_aster},
         // A lambda: read_patran is overloaded (result files).
-        {"patran", [](const std::string& path) { return meshioplusplus::read_patran(path); }},
-        {"femap", [](const std::string& path) { return meshioplusplus::read_femap(path); }},
-        {"libmesh", meshioplusplus::read_libmesh},
-        {"radioss", meshioplusplus::read_radioss},
+        {.mName = "patran",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_patran(path); },
+         .mWrite = meshioplusplus::write_patran},
+        {.mName = "femap",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_femap(path); },
+         .mWrite = meshioplusplus::write_femap,
+         // Femap honours mTimeStep (its steps are the 450 output sets) and the
+         // data narrowing options.
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_femap(path, opts); },
+         .mMetadata = meshioplusplus::read_femap_metadata},
+        {.mName = "libmesh",
+         .mRead = meshioplusplus::read_libmesh,
+         .mWrite = meshioplusplus::write_libmesh},
+        {.mName = "radioss",
+         .mRead = meshioplusplus::read_radioss,
+         .mWrite = [](const std::string& p,
+                      const Mesh& m) { meshioplusplus::write_radioss(p, m); }},
         // Found by name (`<run>A001`...) or magic, never an extension.
-        {"radioss_anim", meshioplusplus::read_radioss_anim},
+        {.mName = "radioss_anim",
+         .mRead = meshioplusplus::read_radioss_anim,
+         .mWrite = meshioplusplus::write_radioss_anim,
+         .mMetadata = meshioplusplus::read_radioss_anim_metadata},
         // OpenRadioss time-history files: `<run>T01`, found by name or header.
-        {"radioss_th",
-         [](const std::string& path) { return meshioplusplus::read_radioss_th(path); }},
+        {.mName = "radioss_th",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_radioss_th(path); },
+         // No extension (`<run>T01`): by name or explicit format only.
+         .mWrite = meshioplusplus::write_radioss_th,
+         // Radioss time history honours mTimeStep (its steps are the outputs)
+         // and the narrowing options.
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_radioss_th(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_radioss_th_metadata},
         // A .dat file is Tecplot's unless it opens as a Marc deck (resolve_format).
-        {"marc", meshioplusplus::read_marc},
-        {"marc_t19", [](const std::string& path) { return meshioplusplus::read_marc_t19(path); }},
+        {.mName = "marc",
+         .mRead = meshioplusplus::read_marc,
+         // By name only: ".dat" writes Tecplot (resolve_write_format).
+         .mWrite = meshioplusplus::write_marc},
+        {.mName = "marc_t19",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_marc_t19(path); },
+         .mWrite = meshioplusplus::write_marc_t19,
+         // Marc .t19: mTimeStep picks the increment.
+         .mReadEx = meshioplusplus::read_marc_t19,
+         .mMetadata = meshioplusplus::read_marc_t19_metadata},
         // Fixed file names (z88i1.txt ...): resolve_format matches the basename.
-        {"z88", [](const std::string& path) { return meshioplusplus::read_z88(path); }},
+        {.mName = "z88",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_z88(path); },
+         .mWrite = [](const std::string& p, const Mesh& m) { meshioplusplus::write_z88(p, m); }},
         // A directory, not a file: no extension maps to it; sniff_format finds it.
-        {"elmer", [](const std::string& path) { return meshioplusplus::read_elmer(path); }},
-        {"febio", [](const std::string& path) { return meshioplusplus::read_febio(path); }},
-        {"xplt", [](const std::string& path) { return meshioplusplus::read_xplt(path); }},
-        {"ansys_rst", [](const std::string& path) { return meshioplusplus::read_ansys_rst(path); }},
-        {"ansys_rst_cyclic",
-         [](const std::string& path) { return meshioplusplus::read_ansys_rst_cyclic(path); }},
+        {.mName = "elmer",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_elmer(path); },
+         .mWrite = [](const std::string& p, const Mesh& m) { meshioplusplus::write_elmer(p, m); },
+         // Elmer honours mPiece/mPieceSet (one part of a partitioned mesh) and
+         // mLenient (skip element types with no meshio++ cell type).
+         .mReadEx = meshioplusplus::read_elmer},
+        {.mName = "febio",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_febio(path); },
+         .mWrite = meshioplusplus::write_febio,
+         // FEBio .feb honours mLenient (downgrade tet5/tet15 to tetra/tetra10).
+         .mReadEx = meshioplusplus::read_febio},
+        {.mName = "xplt",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_xplt(path); },
+         .mWrite = [](const std::string& rPath,
+                      const Mesh& rMesh) { meshioplusplus::write_xplt(rPath, rMesh); },
+         // FEBio .xplt honours mTimeStep (one state), the narrowing options and
+         // mLenient (downgrade tet5/tet15 domains).
+         .mReadEx = meshioplusplus::read_xplt,
+         .mMetadata = meshioplusplus::read_xplt_metadata},
+        {.mName = "ansys_rst",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_ansys_rst(path); },
+         .mWrite = meshioplusplus::write_ansys_rst,
+         // Ansys .rst/.rth: mTimeStep picks the result set, like .xplt.
+         .mReadEx = meshioplusplus::read_ansys_rst,
+         .mMetadata = meshioplusplus::read_ansys_rst_metadata},
+        {.mName = "ansys_rst_cyclic",
+         .mRead =
+             [](const std::string& path) { return meshioplusplus::read_ansys_rst_cyclic(path); },
+         // Its full-rotor reading (a static cyclic model): no extension, by name only.
+         .mReadEx = meshioplusplus::read_ansys_rst_cyclic,
+         .mMetadata = meshioplusplus::read_ansys_rst_cyclic_metadata},
         // Read-only, and a lambda for the same reason as ensight's: overloaded.
-        {"frd", [](const std::string& path) { return meshioplusplus::read_frd(path); }},
-        {"ansys", meshioplusplus::read_ansys},
-        {"avsucd", meshioplusplus::read_avsucd},
-        {"dolfin", meshioplusplus::read_dolfin},
+        {.mName = "frd",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_frd(path); },
+         .mWrite = [](const std::string& p, const Mesh& m) { meshioplusplus::write_frd(p, m); },
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); },
+         .mMetadata = meshioplusplus::read_frd_metadata},
+        {.mName = "ansys",
+         .mRead = meshioplusplus::read_ansys,
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
+        {.mName = "avsucd",
+         .mRead = meshioplusplus::read_avsucd,
+         .mWrite = meshioplusplus::write_avsucd},
+        {.mName = "dolfin",
+         .mRead = meshioplusplus::read_dolfin,
+         .mWrite = meshioplusplus::write_dolfin},
         // A lambda, not `&read_ensight`: the ReadOptions overload makes the
         // bare name ambiguous (the exodus/mdpa/med/cgns/tecplot story again).
-        {"ensight", [](const std::string& path) { return meshioplusplus::read_ensight(path); }},
-        {"flac3d", meshioplusplus::read_flac3d},
-        {"dex", meshioplusplus::read_dex},
-        {"flux", meshioplusplus::read_flux},
-        {"freefem", meshioplusplus::read_freefem},
-        // UNGUARDED, unlike gid's writer entry: gidpost is write-only, so
+        {.mName = "ensight",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_ensight(path); },
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_ensight(p, mm, /*binary=*/true); },
+         // EnSight honours mTimeStep AND the narrowing options -- a .case
+         // file's VARIABLE entries are only ever read here, never by the
+         // plain overload. IWYU pragma: keep
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_ensight(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_ensight_metadata},
+        {.mName = "flac3d",
+         .mRead = meshioplusplus::read_flac3d,
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_flac3d(p, mm, ".16e", /*binary=*/false);
+             }},
+        {.mName = "dex", .mRead = meshioplusplus::read_dex, .mWrite = meshioplusplus::write_dex},
+        {.mName = "flux", .mRead = meshioplusplus::read_flux, .mWrite = meshioplusplus::write_flux},
+        {.mName = "freefem",
+         .mRead = meshioplusplus::read_freefem,
+         .mWrite = meshioplusplus::write_freefem},
+        // Kratos CAD JSON: a lambda, read_cad_json is overloaded (BrepInfo).
+        {.mName = "cad_json",
+         .mRead = [](const std::string& p) { return meshioplusplus::read_cad_json(p); },
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_cad_json(p, mm); }},
+        // The reader is UNGUARDED, unlike the writer: gidpost is write-only, so
         // reading needs none of it. read_gid's real dependencies are per
         // flavour (ascii: none, binary: zlib, hdf5: HDF5), which makes `gid`
         // readable in strictly more build configurations than it is writable
@@ -246,383 +409,476 @@ const std::map<std::string, ReadFn>& registry_readers() {
         // cannot write GiD at all, yet read the ascii flavour fine. For the
         // same reason gid must NOT appear in registry_compiled_out(): there is
         // no missing dependency to name.
-        // Kratos CAD JSON: a lambda, read_cad_json is overloaded (BrepInfo).
-        {"cad_json", [](const std::string& p) { return meshioplusplus::read_cad_json(p); }},
-        {"gid", [](const std::string& p) { return meshioplusplus::read_gid(p); }},
+        {.mName = "gid",
+         .mRead = [](const std::string& p) { return meshioplusplus::read_gid(p); },
+         // gidpost itself has no read functions at all -- meshio++'s own
+         // read_gid (the mRead entry above) is a hand-rolled reader that
+         // does not depend on it, which is why gid is readable in strictly
+         // more build configurations than it is writable. GidMode::Auto
+         // infers the flavour (ascii/binary/hdf5) from the path's extension.
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gid(p, mm); },
+         .mReadEx = meshioplusplus::read_gid,
+         .mMetadata = meshioplusplus::read_gid_metadata},
         // IGES and STEP read through the optional OpenCASCADE backend
         // (roadmap 6.2.1); registered either way, so a build without it
         // throws Unsupported naming the flag instead of "unknown format".
-        {"iges", [](const std::string& p) { return meshioplusplus::read_iges(p); }},
-        {"gmsh", [](const std::string& path) { return meshioplusplus::read_gmsh(path); }},
-        {"ip", meshioplusplus::read_ip},
+        {.mName = "iges",
+         .mRead = [](const std::string& p) { return meshioplusplus::read_iges(p); }},
+        {.mName = "gmsh",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_gmsh(path); },
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_gmsh41(p, mm, /*binary=*/true); },
+         // A lambda, not `&read_gmsh`: the GmshInfo overload makes the bare name
+         // ambiguous (the exodus/mdpa story again). The info is dropped here, so
+         // the flat bindings see no `$Entities` bounding entities.
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_gmsh(path, opts); },
+         .mMetadata = meshioplusplus::read_gmsh_metadata},
+        {.mName = "ip", .mRead = meshioplusplus::read_ip, .mWrite = meshioplusplus::write_ip},
         // mdpa now has read overloads (ReadOptions / MdpaInfo), so the plain
         // function pointer no longer converts to ReadFn -- the hazard noted
-        // for unv/med below. The MdpaInfo is dropped here, like MedInfo.
-        {"mdpa", [](const std::string& path) { return meshioplusplus::read_mdpa(path); }},
-        {"medit", meshioplusplus::read_medit},
-        {"medit_sol", meshioplusplus::read_medit_sol},
+        // for unv/med. The MdpaInfo is dropped here, like MedInfo.
+        {.mName = "mdpa",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_mdpa(path); },
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mdpa(p, mm); },
+         // mdpa honours mLenient rather than the narrowing options -- the same
+         // "options-aware is several capabilities, not one" note as exodus. This
+         // entry is what makes `--lenient` reach the C API, Fortran, Julia, R,
+         // WASM and the native CLI with no per-binding code.
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_mdpa(path, opts); }},
+        {.mName = "medit",
+         .mRead = meshioplusplus::read_medit,
+         .mWrite = meshioplusplus::write_medit},
+        {.mName = "medit_sol",
+         .mRead = meshioplusplus::read_medit_sol,
+         .mWrite = meshioplusplus::write_medit_sol},
         // A lambda: read_mfem is overloaded (grid functions). `.mesh` stays
         // medit's extension; resolve_format hands MFEM files over by content.
-        {"mfem", [](const std::string& path) { return meshioplusplus::read_mfem(path); }},
-        {"mff", meshioplusplus::read_mff},
-        {"mfm", meshioplusplus::read_mfm},
-        {"mphbin", meshioplusplus::read_mphbin},
-        {"mphtxt", meshioplusplus::read_mphtxt},
-        {"nastran", meshioplusplus::read_nastran},
-        {"nastran_op2",
-         [](const std::string& path) { return meshioplusplus::read_nastran_op2(path); }},
-        {"netgen", meshioplusplus::read_netgen},
-        {"obj", meshioplusplus::read_obj},
-        {"off", meshioplusplus::read_off},
+        {.mName = "mfem",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_mfem(path); },
+         .mWrite = [](const std::string& path,
+                      const Mesh& mesh) { meshioplusplus::write_mfem(path, mesh); },
+         // MFEM honours mPiece/mPieceSet (one rank of a parallel mesh).
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_mfem(path, {}, opts);
+             }},
+        {.mName = "mff", .mRead = meshioplusplus::read_mff, .mWrite = meshioplusplus::write_mff},
+        {.mName = "mfm",
+         .mRead = meshioplusplus::read_mfm,
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_mfm(p, mm, ".16e"); }},
+        {.mName = "mphbin",
+         .mRead = meshioplusplus::read_mphbin,
+         .mWrite = meshioplusplus::write_mphbin},
+        {.mName = "mphtxt",
+         .mRead = meshioplusplus::read_mphtxt,
+         .mWrite = meshioplusplus::write_mphtxt},
+        {.mName = "nastran",
+         .mRead = meshioplusplus::read_nastran,
+         .mWrite = meshioplusplus::write_nastran},
+        {.mName = "nastran_op2",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_nastran_op2(path); },
+         .mWrite = meshioplusplus::write_nastran_op2,
+         // Nastran OP2 honours mTimeStep (its steps are the subcases, modes and
+         // times of its result tables) and the narrowing options.
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_nastran_op2(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_nastran_op2_metadata},
+        {.mName = "netgen",
+         .mRead = meshioplusplus::read_netgen,
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_netgen(p, mm, ".16e"); }},
+        {.mName = "obj", .mRead = meshioplusplus::read_obj, .mWrite = meshioplusplus::write_obj},
+        {.mName = "off", .mRead = meshioplusplus::read_off, .mWrite = meshioplusplus::write_off},
         // pcd/xyz take a trailing defaulted options struct, so the function pointers do
         // not convert to ReadFn -- wrapped like vtu/mdpa.
-        {"pcd", [](const std::string& path) { return meshioplusplus::read_pcd(path); }},
-        {"permas", meshioplusplus::read_permas},
-        {"ply", meshioplusplus::read_ply},
-        {"stl", meshioplusplus::read_stl},
-        {"step", [](const std::string& p) { return meshioplusplus::read_step(p); }},
-        {"su2", meshioplusplus::read_su2},
+        {.mName = "pcd",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_pcd(path); },
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_pcd(p, mm); }},
+        {.mName = "permas",
+         .mRead = meshioplusplus::read_permas,
+         .mWrite = meshioplusplus::write_permas},
+        {.mName = "ply",
+         .mRead = meshioplusplus::read_ply,
+         // ply/stl default to skin=true (matching the Python shims): a volume
+         // mesh writes its extracted boundary skin instead of dropping the
+         // volume cells.
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_ply(p, mm, /*binary=*/true, /*skin=*/true);
+             }},
+        {.mName = "stl",
+         .mRead = meshioplusplus::read_stl,
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
+             }},
+        {.mName = "step",
+         .mRead = [](const std::string& p) { return meshioplusplus::read_step(p); },
+         // STEP is read through the optional OpenCASCADE backend (roadmap
+         // §6.2.1) and written without it, one face per surface by default
+         // (StepFaces::Auto: coplanar facets merged, fitted patches analytic).
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_step(p, mm); }},
+        {.mName = "su2", .mRead = meshioplusplus::read_su2, .mWrite = meshioplusplus::write_su2},
         // 2-D drawings, read only as the structure meshio++ writes; both take a
         // trailing defaulted ReadOptions (strict=False is mLenient), so lambdas.
-        {"gltf", [](const std::string& path) { return meshioplusplus::read_gltf(path); }},
-        {"svg", [](const std::string& path) { return meshioplusplus::read_svg(path); }},
-        {"tikz", [](const std::string& path) { return meshioplusplus::read_tikz(path); }},
+        {.mName = "gltf",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_gltf(path); },
+         // svg/tikz are 2D-drawing formats (read only as the structure meshio++
+         // writes); the flat bindings emit them with the fixed default styling
+         // (per-call overrides are out of scope for v1, per registry.hpp).
+         // .glb/.gltf are told apart by the writer, so the flat bindings write the
+         // container the suffix names with the defaults.
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gltf(p, mm); },
+         // svg and tikz honour mLenient (strict=False: read a drawing that lacks the
+         // meshio++ marker) and the narrowing options (the fill array).
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_gltf(path, GltfReadOptions{}, opts);
+             }},
+        {.mName = "svg",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_svg(path); },
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_svg(p, mm); },
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_svg(path, opts); }},
+        {.mName = "tikz",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_tikz(path); },
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_tikz(p, mm); },
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_tikz(path, opts); }},
         // A lambda, not `&read_tecplot`: the ReadOptions overload makes the
         // bare name ambiguous (the exodus/mdpa/med/cgns story again).
-        {"tecplot",
-         [](const std::string& path) { return meshioplusplus::read_tecplot(path); }},
-        {"tetgen", meshioplusplus::read_tetgen},
-        {"triangle", meshioplusplus::read_triangle},
-        {"ugrid", meshioplusplus::read_ugrid},
-        {"unv", [](const std::string& path) { return meshioplusplus::read_unv(path); }},
-        {"vti", [](const std::string& path) { return meshioplusplus::read_vti(path); }},
-        {"vtk", meshioplusplus::read_vtk},
-        {"vts", [](const std::string& path) { return meshioplusplus::read_vts(path); }},
-        {"vtr", [](const std::string& path) { return meshioplusplus::read_vtr(path); }},
-        {"vtm", [](const std::string& path) { return meshioplusplus::read_vtm(path); }},
+        {.mName = "tecplot",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_tecplot(path); },
+         .mWrite = meshioplusplus::write_tecplot,
+         // Tecplot honours mTimeStep -- selects one zone of a transient
+         // (SOLUTIONTIME/STRANDID) file's timeline instead of always the
+         // first. IWYU pragma: keep
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_tecplot(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_tecplot_metadata},
+        {.mName = "tetgen",
+         .mRead = meshioplusplus::read_tetgen,
+         .mWrite = meshioplusplus::write_tetgen},
+        {.mName = "triangle",
+         .mRead = meshioplusplus::read_triangle,
+         .mWrite = meshioplusplus::write_triangle},
+        {.mName = "ugrid",
+         .mRead = meshioplusplus::read_ugrid,
+         .mWrite = meshioplusplus::write_ugrid},
+        {.mName = "unv",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_unv(path); },
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_unv(p, mm); },
+         // UNV honours mTimeStep (the steps of its 2414/55/56/58 results) and the
+         // narrowing options.
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_unv(path, opts); },
+         .mMetadata = meshioplusplus::read_unv_metadata},
+        {.mName = "vti",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vti(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vti(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_vti,
+         .mMetadata = meshioplusplus::read_vti_metadata},
+        {.mName = "vtk",
+         .mRead = meshioplusplus::read_vtk,
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true);
+             }},
+        {.mName = "vts",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vts(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vts(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_vts,
+         .mMetadata = meshioplusplus::read_vts_metadata},
+        {.mName = "vtr",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vtr(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vtr(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_vtr,
+         .mMetadata = meshioplusplus::read_vtr_metadata},
+        {.mName = "vtm",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vtm(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vtm(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_vtm,
+         .mMetadata = meshioplusplus::read_vtm_metadata},
         // The ParaView index formats take a trailing defaulted ReadOptions, so they
         // are wrapped like vtm above.
-        {"pvd", [](const std::string& path) { return meshioplusplus::read_pvd(path); }},
-        {"pvtu", [](const std::string& path) { return meshioplusplus::read_pvtu(path); }},
-        {"pvtp", [](const std::string& path) { return meshioplusplus::read_pvtp(path); }},
+        {.mName = "pvd",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_pvd(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_pvd(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_pvd,
+         .mMetadata = meshioplusplus::read_pvd_metadata},
+        {.mName = "pvtu",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_pvtu(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_pvtu(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_pvtu,
+         .mMetadata = meshioplusplus::read_pvtu_metadata},
+        {.mName = "pvtp",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_pvtp(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_pvtp(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_pvtp,
+         .mMetadata = meshioplusplus::read_pvtp_metadata},
         // vti/vtp/vtu take a trailing defaulted ReadOptions, so the function
-        // pointers no longer convert to ReadFn -- wrapped like unv/med below.
-        {"vtp", [](const std::string& path) { return meshioplusplus::read_vtp(path); }},
-        {"vtu", [](const std::string& path) { return meshioplusplus::read_vtu(path); }},
-        {"wkt", meshioplusplus::read_wkt},
-        {"xdmf", [](const std::string& path) { return meshioplusplus::read_xdmf(path); }},
-        {"neuroglancer", meshioplusplus::read_neuroglancer},
-        {"xyz", [](const std::string& path) { return meshioplusplus::read_xyz(path); }},
+        // pointers no longer convert to ReadFn -- wrapped like unv/med.
+        {.mName = "vtp",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vtp(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vtp(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_vtp,
+         .mMetadata = meshioplusplus::read_vtp_metadata},
+        {.mName = "vtu",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vtu(path); },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_vtu(p, mm, /*binary=*/true, kRegistryZlib);
+             },
+         .mReadEx = meshioplusplus::read_vtu,
+         .mMetadata = meshioplusplus::read_vtu_metadata},
+        {.mName = "wkt", .mRead = meshioplusplus::read_wkt, .mWrite = meshioplusplus::write_wkt},
+        {.mName = "xdmf",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_xdmf(path); },
+         // XDMF's heavy-data format follows the build: HDF companion file when
+         // HDF5 is available (the Python writer's default), inline XML text
+         // otherwise (the only always-available option; what WASM ships).
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+                 meshioplusplus::write_xdmf(p, mm, "HDF");
+#else
+                 meshioplusplus::write_xdmf(p, mm, "XML");
+#endif
+             },
+         .mReadEx = meshioplusplus::read_xdmf,
+         .mMetadata = meshioplusplus::read_xdmf_metadata},
+        {.mName = "neuroglancer",
+         .mRead = meshioplusplus::read_neuroglancer,
+         .mWrite = meshioplusplus::write_neuroglancer},
+        {.mName = "xyz",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_xyz(path); },
+         .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_xyz(p, mm); }},
         // Side-channel info (cell-tag family names) is not carried by the flat
         // bindings -- v1 limitation, see doc/wasm.md and doc/c_api.md. Ansys
         // components travel as regions since v16.3.0, so they survive here.
-        {"ansysinp",
-         [](const std::string& path) {
-             meshioplusplus::AnsysInfo info;
-             return meshioplusplus::read_ansysinp(path, info);
-         }},
-        {"openfoam",
-         [](const std::string& path) {
-             meshioplusplus::OpenFoamInfo info;
-             return meshioplusplus::read_openfoam(path, info);
-         }},
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-        // A lambda, not `&read_cgns`: the ReadOptions overload makes the bare
-        // name ambiguous (the exodus/mdpa/med story again).
-        {"cgns", [](const std::string& path) { return meshioplusplus::read_cgns(path); }},
-        {"h5m", meshioplusplus::read_h5m},
-        {"hmf", meshioplusplus::read_hmf},
-        // A lambda for the same overload reason as cgns above.
-        {"vtkhdf", [](const std::string& path) { return meshioplusplus::read_vtkhdf(path); }},
-        {"nastran_h5",
-         [](const std::string& path) { return meshioplusplus::read_nastran_h5(path); }},
-        {"med",
-         [](const std::string& path) {
-             // The family-id maps/link names/mesh metadata in MedInfo are
-             // still dropped here, but group *names* are not lost: read_med
-             // attaches them as named regions directly on the Mesh (see
-             // med_attach_point_regions/med_attach_cell_regions in med.cpp),
-             // so they reach WASM/C API/Fortran through this path too.
-             meshioplusplus::MedInfo info;
-             return meshioplusplus::read_med(path, info);
-         }},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_NETCDF
-        // Explicit lambda, not `&read_exodus`: the overload set now also holds
-        // the ExodusInfo form, and taking its address would be ambiguous. The
-        // provenance strings are dropped here, as MedInfo's are below.
-        {"exodus", [](const std::string& path) { return meshioplusplus::read_exodus(path); }},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
-        {"vtx", [](const std::string& path) { return meshioplusplus::read_vtx(path); }},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_TECIO
-        {"szplt", [](const std::string& path) { return meshioplusplus::read_szplt(path); }},
-#endif
-    });
-    return m;
-}
-
-const std::map<std::string, WriteFn>& registry_writers() {
-    static const std::map<std::string, WriteFn> m = {
-        {"abaqus", meshioplusplus::write_abaqus},
-        {"lsdyna", meshioplusplus::write_lsdyna},
-        {"code_aster", meshioplusplus::write_code_aster},
-        {"patran", meshioplusplus::write_patran},
-        {"femap", meshioplusplus::write_femap},
-        {"frd", [](const std::string& p, const Mesh& m) { meshioplusplus::write_frd(p, m); }},
-        {"libmesh", meshioplusplus::write_libmesh},
-        {"z88",
-         [](const std::string& p, const Mesh& m) { meshioplusplus::write_z88(p, m); }},
-        {"radioss",
-         [](const std::string& p, const Mesh& m) { meshioplusplus::write_radioss(p, m); }},
-        // No extension (`<run>T01`): by name or explicit format only.
-        {"radioss_th", meshioplusplus::write_radioss_th},
-        {"nastran_op2", meshioplusplus::write_nastran_op2},
-        // No extension (`binout`): by name or explicit format only.
-        {"lsdyna_binout",
-         [](const std::string& p, const Mesh& m) { meshioplusplus::write_lsdyna_binout(p, m); }},
-        {"abaqus_fil",
-         [](const std::string& p, const Mesh& m) { meshioplusplus::write_abaqus_fil(p, m); }},
-        // By name only: ".dat" writes Tecplot (resolve_write_format).
-        {"marc", meshioplusplus::write_marc},
-        {"marc_t19", meshioplusplus::write_marc_t19},
-        {"elmer",
-         [](const std::string& p, const Mesh& m) { meshioplusplus::write_elmer(p, m); }},
-        {"febio", meshioplusplus::write_febio},
-        {"ansys", [](const std::string& p,
-                     const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
-        {"avsucd", meshioplusplus::write_avsucd},
-        {"dolfin", meshioplusplus::write_dolfin},
-        {"ensight", [](const std::string& p,
-                       const Mesh& mm) { meshioplusplus::write_ensight(p, mm, /*binary=*/true); }},
-        {"flac3d",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::write_flac3d(p, mm, ".16e", /*binary=*/false);
-         }},
-        {"dex", meshioplusplus::write_dex},
-        {"flux", meshioplusplus::write_flux},
-        {"freefem", meshioplusplus::write_freefem},
-        // gidpost itself has no read functions at all -- meshio++'s own
-        // read_gid (registry_readers() above) is a hand-rolled reader that
-        // does not depend on it, which is why gid is readable in strictly
-        // more build configurations than it is writable. GidMode::Auto
-        // infers the flavour (ascii/binary/hdf5) from the path's extension.
-        {"gid", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gid(p, mm); }},
-        {"gmsh", [](const std::string& p,
-                    const Mesh& mm) { meshioplusplus::write_gmsh41(p, mm, /*binary=*/true); }},
+        {.mName = "ansysinp",
+         .mRead =
+             [](const std::string& path) {
+                 meshioplusplus::AnsysInfo info;
+                 return meshioplusplus::read_ansysinp(path, info);
+             },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::AnsysInfo info;  // no point_sets/cell_sets side channel in v1
+                 meshioplusplus::write_ansysinp(p, mm, info);
+             },
+         // Ansys .cdb honours mLenient (skip elements with no meshio++ cell type).
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 meshioplusplus::AnsysInfo info;
+                 return meshioplusplus::read_ansysinp(path, opts, info);
+             }},
+        {.mName = "openfoam",
+         .mRead =
+             [](const std::string& path) {
+                 meshioplusplus::OpenFoamInfo info;
+                 return meshioplusplus::read_openfoam(path, info);
+             },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 // No patch-name/type side channel here, so this yields a single
+                 // `defaultFaces` patch -- a valid, loadable case (see
+                 // write_openfoam). The flat bindings get that rather than an error.
+                 meshioplusplus::OpenFoamInfo info;
+                 meshioplusplus::write_openfoam(p, mm, info);
+             },
+         // OpenFOAM honours mTimeStep (selects a time-directory) AND
+         // mDataArrays (which fields to read) -- the OpenFoamInfo is dropped
+         // here exactly as the plain reader entry drops it. IWYU pragma: keep
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 meshioplusplus::OpenFoamInfo info;
+                 return meshioplusplus::read_openfoam(path, opts, info);
+             },
+         .mMetadata = meshioplusplus::read_openfoam_metadata},
         // Distinct from "gmsh" (4.1): 2.2 stores each element's physical tag
         // directly, so it is the version that round-trips named Cell region
         // MEMBERSHIP, not just names -- write_gmsh22 already synthesizes
         // gmsh:physical from Cell regions when the mesh has none of its own.
         // Was reachable only from Python (gmsh22_write) until this entry; the
         // flat bindings (WASM/C API/Fortran) had no way to select it at all.
-        {"cad_json",
-         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_cad_json(p, mm); }},
-        {"gmsh22", [](const std::string& p,
+        {.mName = "gmsh22",
+         .mWrite = [](const std::string& p,
                       const Mesh& mm) { meshioplusplus::write_gmsh22(p, mm, /*binary=*/true); }},
-        {"ip", meshioplusplus::write_ip},
-        {"mdpa", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mdpa(p, mm); }},
-        {"medit", meshioplusplus::write_medit},
-        {"medit_sol", meshioplusplus::write_medit_sol},
-        {"mfem",
-         [](const std::string& path, const Mesh& mesh) { meshioplusplus::write_mfem(path, mesh); }},
-        {"mff", meshioplusplus::write_mff},
-        {"mfm",
-         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_mfm(p, mm, ".16e"); }},
-        {"mphbin", meshioplusplus::write_mphbin},
-        {"mphtxt", meshioplusplus::write_mphtxt},
-        {"nastran", meshioplusplus::write_nastran},
-        {"netgen",
-         [](const std::string& p, const Mesh& mm) { meshioplusplus::write_netgen(p, mm, ".16e"); }},
-        {"obj", meshioplusplus::write_obj},
-        {"off", meshioplusplus::write_off},
-        {"pcd", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_pcd(p, mm); }},
-        {"permas", meshioplusplus::write_permas},
-        // ply/stl default to skin=true (matching the Python shims): a volume
-        // mesh writes its extracted boundary skin instead of dropping the
-        // volume cells.
-        {"ply",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::write_ply(p, mm, /*binary=*/true, /*skin=*/true);
-         }},
-        {"stl",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::write_stl(p, mm, /*binary=*/false, /*skin=*/true);
-         }},
-        // STEP is read through the optional OpenCASCADE backend (roadmap
-        // §6.2.1) and written without it, one face per surface by default
-        // (StepFaces::Auto: coplanar facets merged, fitted patches analytic).
-        {"step", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_step(p, mm); }},
-        {"su2", meshioplusplus::write_su2},
-        // svg/tikz are 2D-drawing formats (read only as the structure meshio++
-        // writes); the flat bindings emit them with the fixed default styling
-        // (per-call overrides are out of scope for v1, per registry.hpp).
-        // .glb/.gltf are told apart by the writer, so the flat bindings write the
-        // container the suffix names with the defaults.
-        {"gltf", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_gltf(p, mm); }},
-        {"svg", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_svg(p, mm); }},
-        {"tikz", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_tikz(p, mm); }},
-        {"tecplot", meshioplusplus::write_tecplot},
-        {"tetgen", meshioplusplus::write_tetgen},
-        {"triangle", meshioplusplus::write_triangle},
-        {"ugrid", meshioplusplus::write_ugrid},
-        {"unv", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_unv(p, mm); }},
-        {"vti",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_vti(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"vts",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_vts(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_vts(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"vtr",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_vtr(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_vtr(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"vtm",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_vtm(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"pvd",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_pvd(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_pvd(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"pvtu",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_pvtu(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_pvtu(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"pvtp",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_pvtp(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_pvtp(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"vtk",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::write_vtk(p, mm, /*binary=*/true, /*v51=*/true);
-         }},
-        // The zlib codec follows the build, exactly like the xdmf entry below:
-        // a hardcoded zlib=true is a WriteError on a -DMESHIOPLUSPLUS_WITH_ZLIB=OFF
-        // build (comment above already documented "falls back to Python" as
-        // the assumption -- true for every binding with a Python shim to fall
-        // back to, but not for a caller reaching this table directly, e.g.
-        // WASM/C API/Fortran or the sequence engine's per-step writes).
-        {"vtp",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_vtp(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_vtp(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"vtu",
-         [](const std::string& p, const Mesh& mm) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-             meshioplusplus::write_vtu(p, mm, /*binary=*/true, /*zlib=*/true);
-#else
-             meshioplusplus::write_vtu(p, mm, /*binary=*/true, /*zlib=*/false);
-#endif
-         }},
-        {"wkt", meshioplusplus::write_wkt},
-        // XDMF's heavy-data format follows the build: HDF companion file when
-        // HDF5 is available (the Python writer's default), inline XML text
-        // otherwise (the only always-available option; what WASM ships).
-        {"neuroglancer", meshioplusplus::write_neuroglancer},
-        {"xyz", [](const std::string& p, const Mesh& mm) { meshioplusplus::write_xyz(p, mm); }},
-        {"xdmf",
-         [](const std::string& p, const Mesh& mm) {
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
-             meshioplusplus::write_xdmf(p, mm, "HDF");
-#else
-             meshioplusplus::write_xdmf(p, mm, "XML");
-#endif
-         }},
-        {"ansysinp",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::AnsysInfo info;  // no point_sets/cell_sets side channel in v1
-             meshioplusplus::write_ansysinp(p, mm, info);
-         }},
-        {"openfoam",
-         [](const std::string& p, const Mesh& mm) {
-             // No patch-name/type side channel here, so this yields a single
-             // `defaultFaces` patch -- a valid, loadable case (see
-             // write_openfoam). The flat bindings get that rather than an error.
-             meshioplusplus::OpenFoamInfo info;
-             meshioplusplus::write_openfoam(p, mm, info);
-         }},
-        {"radioss_anim", meshioplusplus::write_radioss_anim},
-        {"xplt",
-         [](const std::string& rPath, const Mesh& rMesh) {
-             meshioplusplus::write_xplt(rPath, rMesh);
-         }},
-        {"ansys_rst", meshioplusplus::write_ansys_rst},
-        {"lsdyna_d3plot",
-         [](const std::string& rPath, const Mesh& rMesh) {
-             meshioplusplus::write_lsdyna_d3plot(rPath, rMesh);
-         }},
-#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
-        {"vtx", meshioplusplus::write_vtx},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_TECIO
-        {"szplt", meshioplusplus::write_szplt},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-        {"cgns", [](const std::string& p,
-                    const Mesh& mm) { meshioplusplus::write_cgns(p, mm, /*gzip_level=*/4); }},
-        {"h5m",
-         [](const std::string& p, const Mesh& mm) {
-             meshioplusplus::write_h5m(p, mm, /*add_global_ids=*/true, /*gzip_level=*/4);
-         }},
-        {"hmf", [](const std::string& p,
-                   const Mesh& mm) { meshioplusplus::write_hmf(p, mm, /*gzip_level=*/4); }},
-        {"nastran_h5", meshioplusplus::write_nastran_h5},
-        // UnstructuredGrid with the oldest covering version; PolyData and the
-        // composite types are reached through write_vtkhdf's `Type` argument.
-        {"vtkhdf", [](const std::string& p,
-                      const Mesh& mm) { meshioplusplus::write_vtkhdf(p, mm, /*gzip_level=*/4); }},
-        {"med",
-         [](const std::string& p, const Mesh& mm) {
-             // No point_tags/cell_tags to hand over here (they live in the
-             // dropped MedInfo), but write_med synthesizes them from any
-             // Point/Cell regions the mesh carries (see
-             // med_point_regions_to_tags/med_cell_regions_to_tags in
-             // med.cpp), so a mesh converted from e.g. Abaqus through this
-             // registry path still carries its named groups into the file.
-             meshioplusplus::MedInfo info;
-             meshioplusplus::write_med(p, mm, info);
-         }},
+        // A lambda, not `&read_cgns`: the ReadOptions overload makes the bare
+        // name ambiguous (the exodus/mdpa/med story again).
+        {.mName = "cgns",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_cgns(path); },
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_cgns(p, mm, /*gzip_level=*/4); },
+         // CGNS honours mTimeStep the same way exodus/med do -- selects one
+         // FlowSolution_t of a transient (BaseIterativeData_t/
+         // ZoneIterativeData_t) file. IWYU pragma: keep
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_cgns(path, opts); },
+         .mMetadata = meshioplusplus::read_cgns_metadata},
+        {.mName = "h5m",
+         .mRead = meshioplusplus::read_h5m,
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 meshioplusplus::write_h5m(p, mm, /*add_global_ids=*/true, /*gzip_level=*/4);
+             }},
+        {.mName = "hmf",
+         .mRead = meshioplusplus::read_hmf,
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_hmf(p, mm, /*gzip_level=*/4); }},
+        // A lambda for the same overload reason as cgns above.
+        {.mName = "vtkhdf",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vtkhdf(path); },
+         // UnstructuredGrid with the oldest covering version; PolyData and the
+         // composite types are reached through write_vtkhdf's `Type` argument.
+         .mWrite = [](const std::string& p,
+                      const Mesh& mm) { meshioplusplus::write_vtkhdf(p, mm, /*gzip_level=*/4); },
+         // VTKHDF honours mTimeStep (a step of a transient file), mPiece/mPieceSet
+         // (one partition or composite block instead of the merged mesh), mLenient
+         // (skip poly-vertex/poly-line/strip cells) and the narrowing options.
+         // IWYU pragma: keep
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_vtkhdf(path, opts); },
+         .mMetadata = meshioplusplus::read_vtkhdf_metadata},
+        {.mName = "nastran_h5",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_nastran_h5(path); },
+         .mWrite = meshioplusplus::write_nastran_h5,
+         // MSC Nastran HDF5 honours mTimeStep (one result domain) and the
+         // narrowing options, which skip the result tables not asked for.
+         // IWYU pragma: keep
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_nastran_h5(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_nastran_h5_metadata},
+        {.mName = "med",
+         .mRead =
+             [](const std::string& path) {
+                 // The family-id maps/link names/mesh metadata in MedInfo are
+                 // still dropped here, but group *names* are not lost: read_med
+                 // attaches them as named regions directly on the Mesh (see
+                 // med_attach_point_regions/med_attach_cell_regions in med.cpp),
+                 // so they reach WASM/C API/Fortran through this path too.
+                 meshioplusplus::MedInfo info;
+                 return meshioplusplus::read_med(path, info);
+             },
+         .mWrite =
+             [](const std::string& p, const Mesh& mm) {
+                 // No point_tags/cell_tags to hand over here (they live in the
+                 // dropped MedInfo), but write_med synthesizes them from any
+                 // Point/Cell regions the mesh carries (see
+                 // med_point_regions_to_tags/med_cell_regions_to_tags in
+                 // med.cpp), so a mesh converted from e.g. Abaqus through this
+                 // registry path still carries its named groups into the file.
+                 meshioplusplus::MedInfo info;
+                 meshioplusplus::write_med(p, mm, info);
+             },
+         // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
+         // instead of deferring the whole file to Python) and `mTimeStep`
+         // (select one step of a multi-step field) -- neither is a narrowing
+         // option, the same "options-aware is several capabilities, not one"
+         // note as exodus and mdpa. The `MedInfo` is dropped here exactly as
+         // the plain reader entry drops it, so the flat bindings get the mesh
+         // and its representable fields but not `mFieldUnits`/`mStepMeta`; that
+         // is a documented gap, not a silent loss, and it is strictly more than
+         // the hard failure they used to get. IWYU pragma: keep
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 meshioplusplus::MedInfo info;
+                 return meshioplusplus::read_med(path, info, opts);
+             },
+         .mMetadata = meshioplusplus::read_med_metadata},
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
-        {"exodus", meshioplusplus::write_exodus},
+        // Explicit lambda, not `&read_exodus`: the overload set now also holds
+        // the ExodusInfo form, and taking its address would be ambiguous. The
+        // provenance strings are dropped here, as MedInfo's are.
+        {.mName = "exodus",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_exodus(path); },
+         .mWrite = meshioplusplus::write_exodus,
+         // Exodus honours mTimeStep rather than the narrowing options -- being
+         // "options-aware" is not one capability but several, and a time series
+         // is the one this format has. IWYU pragma: keep
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_exodus(path, opts); },
+         .mMetadata = meshioplusplus::read_exodus_metadata},
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
+        {.mName = "vtx",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_vtx(path); },
+         .mWrite = meshioplusplus::write_vtx,
+         // VTX honours mTimeStep, mPointsOnly, mDataArrays and mGhosts.
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_vtx(path, opts); },
+         .mMetadata = meshioplusplus::read_vtx_metadata},
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_TECIO
+        {.mName = "szplt",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_szplt(path); },
+         .mWrite = meshioplusplus::write_szplt,
+         // .szplt honours mTimeStep (the distinct solution times), as tecplot.
+         .mReadEx = [](const std::string& path,
+                       const ReadOptions& opts) { return meshioplusplus::read_szplt(path, opts); },
+         .mMetadata = meshioplusplus::read_szplt_metadata},
 #endif
     };
+    return rows;
+}
+
+// The rows' entries of one kind, as the map type its accessor returns.
+template <class TMap, class TField>
+TMap registry_collect(TField RegistryRow::*pField) {
+    TMap out;
+    for (const RegistryRow& r_row : registry_rows())
+        if (r_row.*pField)
+            out.emplace(r_row.mName, r_row.*pField);
+    return out;
+}
+
+}  // namespace
+
+const std::map<std::string, ReadFn>& registry_readers() {
+    static const std::map<std::string, ReadFn> m = registry_guard_readers(
+        registry_collect<std::map<std::string, ReadFn>>(&RegistryRow::mRead));
+    return m;
+}
+
+const std::map<std::string, WriteFn>& registry_writers() {
+    static const std::map<std::string, WriteFn> m =
+        registry_collect<std::map<std::string, WriteFn>>(&RegistryRow::mWrite);
     return m;
 }
 
@@ -879,224 +1135,14 @@ std::string resolve_write_format(const std::string& rPath, const std::string& rF
 const std::unordered_map<std::string, ReadExFn>& registry_readers_ex() {
     // Sparse by design -- populated per format as native selective-read support
     // lands. An absent format falls back to a full read in registry_read().
-    static const std::unordered_map<std::string, ReadExFn> m = {
-#ifdef MESHIOPLUSPLUS_HAS_NETCDF
-        // Exodus honours mTimeStep rather than the narrowing options -- being
-        // "options-aware" is not one capability but several, and a time series
-        // is the one this format has. IWYU pragma: keep
-        {"exodus", [](const std::string& path,
-                      const ReadOptions& opts) { return meshioplusplus::read_exodus(path, opts); }},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
-        // VTX honours mTimeStep, mPointsOnly, mDataArrays and mGhosts.
-        {"vtx", [](const std::string& path,
-                   const ReadOptions& opts) { return meshioplusplus::read_vtx(path, opts); }},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_TECIO
-        // .szplt honours mTimeStep (the distinct solution times), as tecplot.
-        {"szplt", [](const std::string& path,
-                     const ReadOptions& opts) { return meshioplusplus::read_szplt(path, opts); }},
-#endif
-        // A lambda, not `&read_gmsh`: the GmshInfo overload makes the bare name
-        // ambiguous (the exodus/mdpa story again). The info is dropped here, so
-        // the flat bindings see no `$Entities` bounding entities.
-        {"gmsh", [](const std::string& path,
-                    const ReadOptions& opts) { return meshioplusplus::read_gmsh(path, opts); }},
-        // mdpa honours mLenient rather than the narrowing options -- the same
-        // "options-aware is several capabilities, not one" note as exodus. This
-        // entry is what makes `--lenient` reach the C API, Fortran, Julia, R,
-        // WASM and the native CLI with no per-binding code.
-        {"mdpa", [](const std::string& path,
-                    const ReadOptions& opts) { return meshioplusplus::read_mdpa(path, opts); }},
-        // Tecplot honours mTimeStep -- selects one zone of a transient
-        // (SOLUTIONTIME/STRANDID) file's timeline instead of always the
-        // first. IWYU pragma: keep
-        {"tecplot",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_tecplot(path, opts);
-         }},
-        // EnSight honours mTimeStep AND the narrowing options -- a .case
-        // file's VARIABLE entries are only ever read here, never by the
-        // plain overload. IWYU pragma: keep
-        {"ensight",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_ensight(path, opts);
-         }},
-        {"frd", [](const std::string& path,
-                   const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); }},
-        // svg and tikz honour mLenient (strict=False: read a drawing that lacks the
-        // meshio++ marker) and the narrowing options (the fill array).
-        {"gltf", [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_gltf(path, GltfReadOptions{}, opts);
-         }},
-        {"svg", [](const std::string& path,
-                   const ReadOptions& opts) { return meshioplusplus::read_svg(path, opts); }},
-        {"tikz", [](const std::string& path,
-                    const ReadOptions& opts) { return meshioplusplus::read_tikz(path, opts); }},
-        // Abaqus .fil honours mTimeStep (its steps are the increments) and the
-        // narrowing options.
-        {"abaqus_fil",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_abaqus_fil(path, opts);
-         }},
-        // Nastran OP2 honours mTimeStep (its steps are the subcases, modes and
-        // times of its result tables) and the narrowing options.
-        {"nastran_op2",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_nastran_op2(path, opts);
-         }},
-        // LS-DYNA d3plot honours mTimeStep (its steps are the family's states)
-        // and the narrowing options.
-        {"lsdyna_d3plot",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_lsdyna_d3plot(path, opts);
-         }},
-        // LS-DYNA binout honours mTimeStep (its steps are nodout's outputs)
-        // and the narrowing options.
-        {"lsdyna_binout",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_lsdyna_binout(path, opts);
-         }},
-        // Radioss time history honours mTimeStep (its steps are the outputs)
-        // and the narrowing options.
-        {"radioss_th",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_radioss_th(path, opts);
-         }},
-        // Femap honours mTimeStep (its steps are the 450 output sets) and the
-        // data narrowing options.
-        {"femap", [](const std::string& path,
-                     const ReadOptions& opts) { return meshioplusplus::read_femap(path, opts); }},
-        // Elmer honours mPiece/mPieceSet (one part of a partitioned mesh) and
-        // mLenient (skip element types with no meshio++ cell type).
-        {"elmer", meshioplusplus::read_elmer},
-        // MFEM honours mPiece/mPieceSet (one rank of a parallel mesh).
-        {"mfem", [](const std::string& path,
-                    const ReadOptions& opts) { return meshioplusplus::read_mfem(path, {}, opts); }},
-        // Ansys .cdb honours mLenient (skip elements with no meshio++ cell type).
-        {"ansysinp",
-         [](const std::string& path, const ReadOptions& opts) {
-             meshioplusplus::AnsysInfo info;
-             return meshioplusplus::read_ansysinp(path, opts, info);
-         }},
-        // FEBio .feb honours mLenient (downgrade tet5/tet15 to tetra/tetra10).
-        {"febio", meshioplusplus::read_febio},
-        // FEBio .xplt honours mTimeStep (one state), the narrowing options and
-        // mLenient (downgrade tet5/tet15 domains).
-        {"xplt", meshioplusplus::read_xplt},
-        // Ansys .rst/.rth: mTimeStep picks the result set, like .xplt.
-        {"ansys_rst", meshioplusplus::read_ansys_rst},
-        // Its full-rotor reading (a static cyclic model): no extension, by name only.
-        {"ansys_rst_cyclic", meshioplusplus::read_ansys_rst_cyclic},
-        // Marc .t19: mTimeStep picks the increment.
-        {"marc_t19", meshioplusplus::read_marc_t19},
-        // UNV honours mTimeStep (the steps of its 2414/55/56/58 results) and the
-        // narrowing options.
-        {"unv", [](const std::string& path,
-                   const ReadOptions& opts) { return meshioplusplus::read_unv(path, opts); }},
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-        // MED honours `mLenient` (skip/report the enhanced `CHA` constructs
-        // instead of deferring the whole file to Python) and `mTimeStep`
-        // (select one step of a multi-step field) -- neither is a narrowing
-        // option, the same "options-aware is several capabilities, not one"
-        // note as exodus and mdpa. The `MedInfo` is dropped here exactly as
-        // the plain reader entry drops it, so the flat bindings get the mesh
-        // and its representable fields but not `mFieldUnits`/`mStepMeta`; that
-        // is a documented gap, not a silent loss, and it is strictly more than
-        // the hard failure they used to get. IWYU pragma: keep
-        {"med",
-         [](const std::string& path, const ReadOptions& opts) {
-             meshioplusplus::MedInfo info;
-             return meshioplusplus::read_med(path, info, opts);
-         }},
-        // CGNS honours mTimeStep the same way exodus/med do -- selects one
-        // FlowSolution_t of a transient (BaseIterativeData_t/
-        // ZoneIterativeData_t) file. IWYU pragma: keep
-        {"cgns", [](const std::string& path,
-                    const ReadOptions& opts) { return meshioplusplus::read_cgns(path, opts); }},
-        // VTKHDF honours mTimeStep (a step of a transient file), mPiece/mPieceSet
-        // (one partition or composite block instead of the merged mesh), mLenient
-        // (skip poly-vertex/poly-line/strip cells) and the narrowing options.
-        // IWYU pragma: keep
-        {"vtkhdf", [](const std::string& path,
-                      const ReadOptions& opts) { return meshioplusplus::read_vtkhdf(path, opts); }},
-        // MSC Nastran HDF5 honours mTimeStep (one result domain) and the
-        // narrowing options, which skip the result tables not asked for.
-        // IWYU pragma: keep
-        {"nastran_h5",
-         [](const std::string& path, const ReadOptions& opts) {
-             return meshioplusplus::read_nastran_h5(path, opts);
-         }},
-#endif
-        // OpenFOAM honours mTimeStep (selects a time-directory) AND
-        // mDataArrays (which fields to read) -- the OpenFoamInfo is dropped
-        // here exactly as the plain reader entry drops it. IWYU pragma: keep
-        {"openfoam",
-         [](const std::string& path, const ReadOptions& opts) {
-             meshioplusplus::OpenFoamInfo info;
-             return meshioplusplus::read_openfoam(path, opts, info);
-         }},
-        {"gid", meshioplusplus::read_gid},
-        {"vti", meshioplusplus::read_vti},
-        {"vts", meshioplusplus::read_vts},
-        {"vtr", meshioplusplus::read_vtr},
-        {"vtm", meshioplusplus::read_vtm},
-        {"pvd", meshioplusplus::read_pvd},
-        {"pvtu", meshioplusplus::read_pvtu},
-        {"pvtp", meshioplusplus::read_pvtp},
-        {"vtp", meshioplusplus::read_vtp},
-        {"vtu", meshioplusplus::read_vtu},
-        {"xdmf", meshioplusplus::read_xdmf},
-    };
+    static const std::unordered_map<std::string, ReadExFn> m =
+        registry_collect<std::unordered_map<std::string, ReadExFn>>(&RegistryRow::mReadEx);
     return m;
 }
 
 const std::unordered_map<std::string, MetadataFn>& registry_metadata_readers() {
-    static const std::unordered_map<std::string, MetadataFn> m = {
-#ifdef MESHIOPLUSPLUS_HAS_NETCDF
-        {"exodus", meshioplusplus::read_exodus_metadata},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_ADIOS2
-        {"vtx", meshioplusplus::read_vtx_metadata},
-#endif
-#ifdef MESHIOPLUSPLUS_HAS_TECIO
-        {"szplt", meshioplusplus::read_szplt_metadata},
-#endif
-        {"gmsh", meshioplusplus::read_gmsh_metadata},
-        {"gid", meshioplusplus::read_gid_metadata},
-        {"tecplot", meshioplusplus::read_tecplot_metadata},
-        {"ensight", meshioplusplus::read_ensight_metadata},
-        {"frd", meshioplusplus::read_frd_metadata},
-        {"femap", meshioplusplus::read_femap_metadata},
-        {"abaqus_fil", meshioplusplus::read_abaqus_fil_metadata},
-        {"lsdyna_d3plot", meshioplusplus::read_lsdyna_d3plot_metadata},
-        {"lsdyna_binout", meshioplusplus::read_lsdyna_binout_metadata},
-        {"radioss_anim", meshioplusplus::read_radioss_anim_metadata},
-        {"radioss_th", meshioplusplus::read_radioss_th_metadata},
-        {"nastran_op2", meshioplusplus::read_nastran_op2_metadata},
-        {"xplt", meshioplusplus::read_xplt_metadata},
-        {"ansys_rst", meshioplusplus::read_ansys_rst_metadata},
-        {"ansys_rst_cyclic", meshioplusplus::read_ansys_rst_cyclic_metadata},
-        {"marc_t19", meshioplusplus::read_marc_t19_metadata},
-        {"unv", meshioplusplus::read_unv_metadata},
-        {"openfoam", meshioplusplus::read_openfoam_metadata},
-#ifdef MESHIOPLUSPLUS_HAS_HDF5
-        {"med", meshioplusplus::read_med_metadata},
-        {"cgns", meshioplusplus::read_cgns_metadata},
-        {"vtkhdf", meshioplusplus::read_vtkhdf_metadata},
-        {"nastran_h5", meshioplusplus::read_nastran_h5_metadata},
-#endif
-        {"vti", meshioplusplus::read_vti_metadata},
-        {"vts", meshioplusplus::read_vts_metadata},
-        {"vtr", meshioplusplus::read_vtr_metadata},
-        {"vtm", meshioplusplus::read_vtm_metadata},
-        {"pvd", meshioplusplus::read_pvd_metadata},
-        {"pvtu", meshioplusplus::read_pvtu_metadata},
-        {"pvtp", meshioplusplus::read_pvtp_metadata},
-        {"vtp", meshioplusplus::read_vtp_metadata},
-        {"vtu", meshioplusplus::read_vtu_metadata},
-        {"xdmf", meshioplusplus::read_xdmf_metadata},
-    };
+    static const std::unordered_map<std::string, MetadataFn> m =
+        registry_collect<std::unordered_map<std::string, MetadataFn>>(&RegistryRow::mMetadata);
     return m;
 }
 

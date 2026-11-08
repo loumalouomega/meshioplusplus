@@ -885,24 +885,20 @@ def rectangle(
         return _empty()
     per = 1 if cell_type == "quad" else (4 if split == "center" else 2)
     _budget(shape, int(dims[0]) * int(dims[1]) * per, max_cells)
-    try:
-        return _core_call(
-            "rectangle",
-            [int(d) for d in dims],
-            [float(v) for v in size],
-            [float(v) for v in origin],
-            cell_type,
-            split,
-            int(order),
-            int(max_cells),
-            bool(complete),
-        )
-    except Exception as exc:
-        if not core_op_declined(exc, "rectangle"):
-            raise
-        return _rectangle_py(
+    return _call(
+        "rectangle",
+        lambda: _rectangle_py(
             dims, size, origin, cell_type, split, order, bool(complete)
-        )
+        ),
+        [int(d) for d in dims],
+        [float(v) for v in size],
+        [float(v) for v in origin],
+        cell_type,
+        split,
+        int(order),
+        int(max_cells),
+        bool(complete),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1009,21 +1005,17 @@ def box(
         return _empty()
     per = {"hexahedron": 1, "tetra": 6, "wedge": 2}[cell_type]
     _budget(shape, int(dims[0]) * int(dims[1]) * int(dims[2]) * per, max_cells)
-    try:
-        return _core_call(
-            "box",
-            [int(d) for d in dims],
-            [float(v) for v in size],
-            [float(v) for v in origin],
-            cell_type,
-            int(order),
-            int(max_cells),
-            bool(complete),
-        )
-    except Exception as exc:
-        if not core_op_declined(exc, "box"):
-            raise
-        return _box_py(dims, size, origin, cell_type, order, bool(complete))
+    return _call(
+        "box",
+        lambda: _box_py(dims, size, origin, cell_type, order, bool(complete)),
+        [int(d) for d in dims],
+        [float(v) for v in size],
+        [float(v) for v in origin],
+        cell_type,
+        int(order),
+        int(max_cells),
+        bool(complete),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1153,21 +1145,19 @@ def disk(
     if n == 0:
         return _empty()
     _budget(shape, int(n) * int(n) * (6 if cell_type == "triangle" else 1), max_cells)
-    try:
-        return _core_call(
-            "disk",
-            float(radius),
-            int(n),
-            [float(v) for v in center],
-            cell_type,
-            int(order),
-            int(max_cells),
-            bool(complete),
-        )
-    except Exception as exc:
-        if not core_op_declined(exc, "disk"):
-            raise
-        return _disk_py(float(radius), int(n), center, cell_type, order, bool(complete))
+    return _call(
+        "disk",
+        lambda: _disk_py(
+            float(radius), int(n), center, cell_type, order, bool(complete)
+        ),
+        float(radius),
+        int(n),
+        [float(v) for v in center],
+        cell_type,
+        int(order),
+        int(max_cells),
+        bool(complete),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1271,24 +1261,20 @@ def uv_sphere(
         _fail(shape, f"nv must be at least 2, got {int(nv)}")
     cells = int(nu) * int(nv) if cell_type == "quad" else 2 * int(nu) * (int(nv) - 1)
     _budget(shape, cells, max_cells)
-    try:
-        return _core_call(
-            "uv_sphere",
-            float(radius),
-            int(nu),
-            int(nv),
-            [float(v) for v in center],
-            cell_type,
-            int(order),
-            int(max_cells),
-            bool(complete),
-        )
-    except Exception as exc:
-        if not core_op_declined(exc, "uv_sphere"):
-            raise
-        return _uv_sphere_py(
+    return _call(
+        "uv_sphere",
+        lambda: _uv_sphere_py(
             float(radius), int(nu), int(nv), center, cell_type, order, bool(complete)
-        )
+        ),
+        float(radius),
+        int(nu),
+        int(nv),
+        [float(v) for v in center],
+        cell_type,
+        int(order),
+        int(max_cells),
+        bool(complete),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1383,22 +1369,18 @@ def icosa_sphere(
         if cells > (1 << 62):
             break
     _budget(shape, cells, max_cells)
-    try:
-        return _core_call(
-            "icosa_sphere",
-            float(radius),
-            int(subdivisions),
-            [float(v) for v in center],
-            int(order),
-            int(max_cells),
-            bool(complete),
-        )
-    except Exception as exc:
-        if not core_op_declined(exc, "icosa_sphere"):
-            raise
-        return _icosa_sphere_py(
+    return _call(
+        "icosa_sphere",
+        lambda: _icosa_sphere_py(
             float(radius), int(subdivisions), center, order, bool(complete)
-        )
+        ),
+        float(radius),
+        int(subdivisions),
+        [float(v) for v in center],
+        int(order),
+        int(max_cells),
+        bool(complete),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1496,23 +1478,9 @@ def cylinder(
         int(nxy) * int(nxy) * int(nz) * (6 if cell_type == "wedge" else 1),
         max_cells,
     )
-    try:
-        return _core_call(
-            "cylinder",
-            float(radius),
-            float(height),
-            int(nxy),
-            int(nz),
-            [float(v) for v in center],
-            cell_type,
-            int(order),
-            int(max_cells),
-            bool(complete),
-        )
-    except Exception as exc:
-        if not core_op_declined(exc, "cylinder"):
-            raise
-        return _cylinder_py(
+    return _call(
+        "cylinder",
+        lambda: _cylinder_py(
             float(radius),
             float(height),
             int(nxy),
@@ -1521,7 +1489,17 @@ def cylinder(
             cell_type,
             order,
             bool(complete),
-        )
+        ),
+        float(radius),
+        float(height),
+        int(nxy),
+        int(nz),
+        [float(v) for v in center],
+        cell_type,
+        int(order),
+        int(max_cells),
+        bool(complete),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1637,20 +1615,16 @@ def reference_triangle(
     for k in range(2):
         _check_positive(shape, "size", float(size[k]))
     _budget(shape, int(n) * int(n), max_cells)
-    try:
-        return _core_call(
-            "reference_triangle",
-            int(n),
-            [float(v) for v in size],
-            [float(v) for v in origin],
-            int(order),
-            int(max_cells),
-            bool(complete),
-        )
-    except Exception as exc:
-        if not core_op_declined(exc, "reference_triangle"):
-            raise
-        return _reference_triangle_py(int(n), size, origin, order, bool(complete))
+    return _call(
+        "reference_triangle",
+        lambda: _reference_triangle_py(int(n), size, origin, order, bool(complete)),
+        int(n),
+        [float(v) for v in size],
+        [float(v) for v in origin],
+        int(order),
+        int(max_cells),
+        bool(complete),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1734,23 +1708,19 @@ def ngon(
         _fail(shape, f"sides must be at least 3, got {int(sides)}")
     _check_positive(shape, "radius", float(radius))
     _budget(shape, int(sides) * int(rings) * int(rings), max_cells)
-    try:
-        return _core_call(
-            "ngon",
-            int(sides),
-            float(radius),
-            int(rings),
-            [float(v) for v in center],
-            int(order),
-            int(max_cells),
-            bool(complete),
-        )
-    except Exception as exc:
-        if not core_op_declined(exc, "ngon"):
-            raise
-        return _ngon_py(
+    return _call(
+        "ngon",
+        lambda: _ngon_py(
             int(sides), float(radius), int(rings), center, order, bool(complete)
-        )
+        ),
+        int(sides),
+        float(radius),
+        int(rings),
+        [float(v) for v in center],
+        int(order),
+        int(max_cells),
+        bool(complete),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -1874,24 +1844,9 @@ def annulus(
         int(ntheta) * int(nr) * (2 if cell_type == "triangle" else 1),
         max_cells,
     )
-    try:
-        return _core_call(
-            "annulus",
-            inner_radius,
-            outer_radius,
-            int(ntheta),
-            int(nr),
-            angle,
-            [float(v) for v in center],
-            cell_type,
-            int(order),
-            int(max_cells),
-            bool(complete),
-        )
-    except Exception as exc:
-        if not core_op_declined(exc, "annulus"):
-            raise
-        return _annulus_py(
+    return _call(
+        "annulus",
+        lambda: _annulus_py(
             inner_radius,
             outer_radius,
             int(ntheta),
@@ -1901,7 +1856,18 @@ def annulus(
             cell_type,
             order,
             bool(complete),
-        )
+        ),
+        inner_radius,
+        outer_radius,
+        int(ntheta),
+        int(nr),
+        angle,
+        [float(v) for v in center],
+        cell_type,
+        int(order),
+        int(max_cells),
+        bool(complete),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -2013,21 +1979,19 @@ def lshape(
     _budget(
         shape, 3 * int(n) * int(n) * (2 if cell_type == "triangle" else 1), max_cells
     )
-    try:
-        return _core_call(
-            "lshape",
-            int(n),
-            float(size),
-            [float(v) for v in center],
-            cell_type,
-            int(order),
-            int(max_cells),
-            bool(complete),
-        )
-    except Exception as exc:
-        if not core_op_declined(exc, "lshape"):
-            raise
-        return _lshape_py(int(n), float(size), center, cell_type, order, bool(complete))
+    return _call(
+        "lshape",
+        lambda: _lshape_py(
+            int(n), float(size), center, cell_type, order, bool(complete)
+        ),
+        int(n),
+        float(size),
+        [float(v) for v in center],
+        cell_type,
+        int(order),
+        int(max_cells),
+        bool(complete),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -2144,25 +2108,21 @@ def plate_with_hole(
         4 * int(nt) * int(nr) * (2 if cell_type == "triangle" else 1),
         max_cells,
     )
-    try:
-        return _core_call(
-            "plate_with_hole",
-            radius,
-            size,
-            int(nt),
-            int(nr),
-            [float(v) for v in center],
-            cell_type,
-            int(order),
-            int(max_cells),
-            bool(complete),
-        )
-    except Exception as exc:
-        if not core_op_declined(exc, "plate_with_hole"):
-            raise
-        return _plate_py(
+    return _call(
+        "plate_with_hole",
+        lambda: _plate_py(
             radius, size, int(nt), int(nr), center, cell_type, order, bool(complete)
-        )
+        ),
+        radius,
+        size,
+        int(nt),
+        int(nr),
+        [float(v) for v in center],
+        cell_type,
+        int(order),
+        int(max_cells),
+        bool(complete),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -2250,18 +2210,14 @@ def honeycomb(
         return _empty()
     _check_positive(shape, "edge", float(edge))
     _budget(shape, int(dims[0]) * int(dims[1]), max_cells)
-    try:
-        return _core_call(
-            "honeycomb",
-            [int(v) for v in dims],
-            float(edge),
-            [float(v) for v in origin],
-            int(max_cells),
-        )
-    except Exception as exc:
-        if not core_op_declined(exc, "honeycomb"):
-            raise
-        return _honeycomb_py(dims, float(edge), origin)
+    return _call(
+        "honeycomb",
+        lambda: _honeycomb_py(dims, float(edge), origin),
+        [int(v) for v in dims],
+        float(edge),
+        [float(v) for v in origin],
+        int(max_cells),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -2443,12 +2399,12 @@ def reference_cells(types=None, pairs=False):
                 "pairs=True supports line, triangle, quad, tetra, hexahedron, wedge "
                 f"and pyramid, not '{name}'",
             )
-    try:
-        return _core_call("reference_cells", types, bool(pairs))
-    except Exception as exc:
-        if not core_op_declined(exc, "reference_cells"):
-            raise
-        return _reference_cells_py(types, bool(pairs))
+    return _call(
+        "reference_cells",
+        lambda: _reference_cells_py(types, bool(pairs)),
+        types,
+        bool(pairs),
+    )
 
 
 # --------------------------------------------------------------------------- #

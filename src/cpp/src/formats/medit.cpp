@@ -541,6 +541,51 @@ std::vector<NDArray> medit_sol_fields(const MeditSolSection& rSection, int Dim) 
     return out;
 }
 
+/// The end of both mesh readers: the staged blocks added in order, each
+/// point's reference as `medit:ref`, and the id lists as regions.
+Mesh medit_finish_mesh(
+    Mesh&& rMesh, bool HavePoints, std::vector<MeditStagedBlock>& rBlocks,
+    const std::unordered_map<std::string, std::vector<int>>& rPerms,
+    const std::vector<std::int64_t>& rPointRef,
+    std::vector<std::pair<const MeditIdList*, std::vector<std::int64_t>>>& rIdLists) {
+    if (!HavePoints)
+        throw ReadError("Medit: expected Vertices");
+    medit_add_blocks(rMesh, rBlocks, rPerms);
+    NDArray pr(DType::Int64, {rPointRef.size()});
+    for (std::size_t i = 0; i < rPointRef.size(); ++i)
+        pr.As<std::int64_t>()[i] = rPointRef[i];
+    rMesh.AddPointData("medit:ref", std::move(pr));
+    for (auto& [list, ids] : rIdLists)
+        medit_add_id_list_region(rMesh, *list, std::move(ids));
+    return std::move(rMesh);
+}
+
+/// The ASCII keywords whose counted block meshio++ reads past: `n` rows of
+/// `mWidth` tokens (0: the mesh's dimension).
+struct MeditCountedSkip {
+    const char* mKeyword;
+    int mWidth;
+};
+
+constexpr MeditCountedSkip kMeditCountedSkips[] = {
+    {"Normals", 0},
+    {"NormalAtVertices", 2},
+    {"SubDomainFromMesh", 4},
+    {"VertexOnGeometricVertex", 2},
+    {"VertexOnGeometricEdge", 3},
+    {"EdgeOnGeometricEdge", 2},
+    {"TangentAtVertices", 1},
+    {"Tangents", 1},
+};
+
+/// The tokens per row of a counted keyword meshio++ skips, or -1.
+std::int64_t medit_counted_skip_width(std::string_view Keyword, std::int64_t Dim) {
+    for (const MeditCountedSkip& r_k : kMeditCountedSkips)
+        if (Keyword == r_k.mKeyword)
+            return r_k.mWidth == 0 ? Dim : r_k.mWidth;
+    return -1;
+}
+
 }  // namespace
 
 Mesh read_medit_ascii(const std::string& rPath) {
@@ -655,29 +700,11 @@ Mesh read_medit_ascii(const std::string& rPath) {
             for (std::int64_t& id : ids)
                 id = tok.next_int() - 1;
             id_lists.emplace_back(id_list, std::move(ids));
-        } else if (kw == "Normals") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n * dim; ++i)
-                tok.next();
-        } else if (kw == "NormalAtVertices") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n * 2; ++i)
-                tok.next();
-        } else if (kw == "SubDomainFromMesh") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n * 4; ++i)
-                tok.next();
-        } else if (kw == "VertexOnGeometricVertex") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n * 2; ++i)
-                tok.next();
-        } else if (kw == "VertexOnGeometricEdge") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n * 3; ++i)
-                tok.next();
-        } else if (kw == "EdgeOnGeometricEdge") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n * 2; ++i)
+        } else if (const std::int64_t width = medit_counted_skip_width(kw, dim); width >= 0) {
+            // A counted block meshio++ has no home for (`next_count` bounds n by the
+            // buffer, so n * width cannot overflow).
+            const std::int64_t n = tok.next_count();
+            for (std::int64_t i = 0; i < n * width; ++i)
                 tok.next();
         } else if (kw == "Identifier" || kw == "Geometry") {
             tok.skip_line();
@@ -688,10 +715,6 @@ Mesh read_medit_ascii(const std::string& rPath) {
                 "Medit: {} in a mesh file is skipped; keep the solution in a .sol beside the "
                 "mesh and read it with medit.read(path, sol=...)",
                 kw);
-        } else if (kw == "TangentAtVertices" || kw == "Tangents") {
-            std::int64_t n = tok.next_count();
-            for (std::int64_t i = 0; i < n; ++i)
-                tok.next();
         } else if (kw == "End") {
             break;
         } else {
@@ -699,18 +722,7 @@ Mesh read_medit_ascii(const std::string& rPath) {
         }
     }
 
-    if (!have_points)
-        throw ReadError("Medit: expected Vertices");
-    medit_add_blocks(mesh, blocks, perms);
-
-    NDArray pr(DType::Int64, {point_ref.size()});
-    for (std::size_t i = 0; i < point_ref.size(); ++i)
-        pr.As<std::int64_t>()[i] = point_ref[i];
-    mesh.AddPointData("medit:ref", std::move(pr));
-
-    for (auto& [list, ids] : id_lists)
-        medit_add_id_list_region(mesh, *list, std::move(ids));
-    return mesh;
+    return medit_finish_mesh(std::move(mesh), have_points, blocks, perms, point_ref, id_lists);
 }
 
 void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
@@ -897,6 +909,77 @@ struct MeditBinCursor {
     }
 };
 
+/// A binary file's header: code (and byte order), version and the sizes it
+/// implies, the field code (3), and the dimension (2 or 3). The mesh and the
+/// solution readers word their errors apart (@p Solution).
+struct MeditBinHeader {
+    std::int64_t mVersion;
+    std::size_t mIsize;
+    std::size_t mFsize;
+    std::size_t mPsize;
+    std::int64_t mDim;
+};
+
+MeditBinHeader medit_bin_header(MeditBinCursor& rC, bool Solution) {
+    MeditBinHeader h{};
+    const std::int64_t code = rC.Int(4);
+    if (code == 16777216)
+        rC.mSwap = true;
+    else if (code != 1)
+        throw ReadError("Medit: invalid code");
+    h.mVersion = rC.Int(4);
+    if (h.mVersion < 1 || h.mVersion > 4)
+        throw ReadError("Medit: invalid version");
+    h.mIsize = h.mVersion == 4 ? 8 : 4;
+    h.mFsize = h.mVersion == 1 ? 4 : 8;
+    h.mPsize = h.mVersion >= 3 ? 8 : 4;
+    const std::int64_t field = rC.Int(4);
+    if (field != 3)
+        throw ReadError(Solution ? std::string("Medit: expected Dimension")
+                                 : "Medit: invalid dimension code : " + std::to_string(field) +
+                                       " it should be 3");
+    rC.Int(h.mPsize);
+    h.mDim = rC.Int(4);
+    if (h.mDim != 2 && h.mDim != 3)
+        throw ReadError(
+            (Solution ? "Medit: invalid solution dimension " : "Medit: invalid mesh dimension : ") +
+            std::to_string(h.mDim));
+    return h;
+}
+
+/// The next section's keyword, its next-section position and where its body
+/// starts, past the reserved codes; `false` at `GmfEnd` or the end of the file.
+bool medit_bin_next_section(MeditBinCursor& rC, std::size_t Psize, std::int64_t& rKw,
+                            std::int64_t& rNext, std::size_t& rStart) {
+    while (true) {
+        if (rC.Left() < 4) {
+            log::warn("Medit: end-of-file reached before GmfEnd keyword");
+            return false;
+        }
+        rKw = rC.Int(4);
+        if (rKw < 0 || rKw > kMbMaxCode)
+            throw ReadError("Medit: unsupported field " + std::to_string(rKw));
+        if (rKw == kMbEnd)
+            return false;
+        if (medit_is_reserved(static_cast<int>(rKw)))
+            continue;
+        rNext = rC.Int(Psize);
+        rStart = rC.mAt;
+        return true;
+    }
+}
+
+/// Skips a section meshio++ has no home for through its next-section position.
+void medit_bin_skip_section(MeditBinCursor& rC, std::int64_t Kw, std::int64_t Next,
+                            std::size_t SectionStart, std::size_t BufSize) {
+    if (Next <= static_cast<std::int64_t>(SectionStart) ||
+        static_cast<std::uint64_t>(Next) > BufSize)
+        throw ReadError("Medit: cannot skip keyword " + std::to_string(Kw) +
+                        ": its next-section position is outside the file");
+    log::warn("meshio++ doesn't know Medit keyword {}. Skipping.", Kw);
+    rC.mAt = static_cast<std::size_t>(Next);
+}
+
 void medit_put_int(std::string& rOut, std::int64_t V, std::size_t Width) {
     const auto u = static_cast<std::uint64_t>(V);
     for (std::size_t k = 0; k < Width; ++k)
@@ -913,26 +996,11 @@ Mesh read_medit_binary(const std::string& rPath) {
     const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
     const std::string_view buf = source.View();
     MeditBinCursor c{buf.data(), buf.size()};
-
-    const std::int64_t code = c.Int(4);
-    if (code == 16777216)
-        c.mSwap = true;
-    else if (code != 1)
-        throw ReadError("Medit: invalid code");
-    const std::int64_t version = c.Int(4);
-    if (version < 1 || version > 4)
-        throw ReadError("Medit: invalid version");
-    const std::size_t isize = version == 4 ? 8 : 4;
-    const std::size_t fsize = version == 1 ? 4 : 8;
-    const std::size_t psize = version >= 3 ? 8 : 4;
-    const std::int64_t field = c.Int(4);
-    if (field != 3)
-        throw ReadError("Medit: invalid dimension code : " + std::to_string(field) +
-                        " it should be 3");
-    c.Int(psize);
-    const std::int64_t dim = c.Int(4);
-    if (dim != 2 && dim != 3)
-        throw ReadError("Medit: invalid mesh dimension : " + std::to_string(dim));
+    const MeditBinHeader header = medit_bin_header(c, false);
+    const std::int64_t version = header.mVersion;
+    const std::size_t isize = header.mIsize;
+    const std::size_t fsize = header.mFsize;
+    const std::int64_t dim = header.mDim;
 
     Mesh mesh;
     bool have_points = false;
@@ -942,21 +1010,9 @@ Mesh read_medit_binary(const std::string& rPath) {
     std::unordered_map<std::string, std::vector<int>> perms;
     const DType fdtype = version == 1 ? DType::Float32 : DType::Float64;
 
-    while (true) {
-        if (c.Left() < 4) {
-            log::warn("Medit: end-of-file reached before GmfEnd keyword");
-            break;
-        }
-        const std::int64_t kw = c.Int(4);
-        if (kw < 0 || kw > kMbMaxCode)
-            throw ReadError("Medit: unsupported field " + std::to_string(kw));
-        if (kw == kMbEnd)
-            break;
-        if (medit_is_reserved(static_cast<int>(kw)))
-            continue;
-        const std::int64_t next = c.Int(psize);
-        const std::size_t section_start = c.mAt;
-
+    std::int64_t kw = 0, next = 0;
+    std::size_t section_start = 0;
+    while (medit_bin_next_section(c, header.mPsize, kw, next, section_start)) {
         const MeditBinCell* cell = nullptr;
         for (const MeditBinCell& k : kMeditBinCells)
             if (k.mCode == kw)
@@ -1021,25 +1077,11 @@ Mesh read_medit_binary(const std::string& rPath) {
             id_lists.emplace_back(medit_id_list(idl->mKeyword), std::move(ids));
         } else {
             // A section meshio++ has no home for: skipped through the position of the next one.
-            if (next <= static_cast<std::int64_t>(section_start) ||
-                static_cast<std::uint64_t>(next) > buf.size())
-                throw ReadError("Medit: cannot skip keyword " + std::to_string(kw) +
-                                ": its next-section position is outside the file");
-            log::warn("meshio++ doesn't know Medit keyword {}. Skipping.", kw);
-            c.mAt = static_cast<std::size_t>(next);
+            medit_bin_skip_section(c, kw, next, section_start, buf.size());
         }
     }
 
-    if (!have_points)
-        throw ReadError("Medit: expected Vertices");
-    medit_add_blocks(mesh, blocks, perms);
-    NDArray pr(DType::Int64, {point_ref.size()});
-    for (std::size_t i = 0; i < point_ref.size(); ++i)
-        pr.As<std::int64_t>()[i] = point_ref[i];
-    mesh.AddPointData("medit:ref", std::move(pr));
-    for (auto& [list, ids] : id_lists)
-        medit_add_id_list_region(mesh, *list, std::move(ids));
-    return mesh;
+    return medit_finish_mesh(std::move(mesh), have_points, blocks, perms, point_ref, id_lists);
 }
 
 void write_medit_binary(const std::string& rPath, const Mesh& rMesh) {
@@ -1213,39 +1255,16 @@ MeditSolFile medit_sol_read_binary(const std::string& rPath) {
     const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
     const std::string_view buf = source.View();
     MeditBinCursor c{buf.data(), buf.size()};
-    const std::int64_t code = c.Int(4);
-    if (code == 16777216)
-        c.mSwap = true;
-    else if (code != 1)
-        throw ReadError("Medit: invalid code");
-    const std::int64_t version = c.Int(4);
-    if (version < 1 || version > 4)
-        throw ReadError("Medit: invalid version");
-    const std::size_t isize = version == 4 ? 8 : 4;
-    const std::size_t fsize = version == 1 ? 4 : 8;
-    const std::size_t psize = version >= 3 ? 8 : 4;
-    if (c.Int(4) != 3)
-        throw ReadError("Medit: expected Dimension");
-    c.Int(psize);
-    const std::int64_t dim = c.Int(4);
-    if (dim != 2 && dim != 3)
-        throw ReadError("Medit: invalid solution dimension " + std::to_string(dim));
+    const MeditBinHeader header = medit_bin_header(c, true);
+    const std::int64_t version = header.mVersion;
+    const std::size_t isize = header.mIsize;
+    const std::size_t fsize = header.mFsize;
+    const std::int64_t dim = header.mDim;
 
     std::vector<MeditSolSection> sections;
-    while (true) {
-        if (c.Left() < 4) {
-            log::warn("Medit: end-of-file reached before GmfEnd keyword");
-            break;
-        }
-        const std::int64_t kw = c.Int(4);
-        if (kw < 0 || kw > kMbMaxCode)
-            throw ReadError("Medit: unsupported field " + std::to_string(kw));
-        if (kw == kMbEnd)
-            break;
-        if (medit_is_reserved(static_cast<int>(kw)))
-            continue;
-        const std::int64_t next = c.Int(psize);
-        const std::size_t section_start = c.mAt;
+    std::int64_t kw = 0, next = 0;
+    std::size_t section_start = 0;
+    while (medit_bin_next_section(c, header.mPsize, kw, next, section_start)) {
         const MeditSolKeyword* sol = nullptr;
         for (const MeditSolKeyword& k : kMeditSolKeywords)
             if (k.mCode == kw)
@@ -1268,12 +1287,7 @@ MeditSolFile medit_sol_read_binary(const std::string& rPath) {
                 v = c.Real(fsize);
             sections.push_back(std::move(section));
         } else {
-            if (next <= static_cast<std::int64_t>(section_start) ||
-                static_cast<std::uint64_t>(next) > buf.size())
-                throw ReadError("Medit: cannot skip keyword " + std::to_string(kw) +
-                                ": its next-section position is outside the file");
-            log::warn("meshio++ doesn't know Medit keyword {}. Skipping.", kw);
-            c.mAt = static_cast<std::size_t>(next);
+            medit_bin_skip_section(c, kw, next, section_start, buf.size());
         }
     }
     return {static_cast<int>(dim), std::move(sections)};

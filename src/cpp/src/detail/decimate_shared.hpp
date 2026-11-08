@@ -38,12 +38,41 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/decimate_common.hpp"
+#include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
 namespace meshioplusplus {
 namespace detail {
+
+/// The resolved stopping criterion of either decimation. `mTarget` (a face
+/// or cell count) only means something when `mUseTarget` is set; a ratio is
+/// turned into a count (`decim_ratio_target`) once the count is known.
+struct DecimStop {
+    bool mUseTarget = false;
+    bool mUseMaxError = false;
+    std::int64_t mTarget = -1;
+    double mMaxError = -1.0;
+};
+
+/**
+ * @brief Exactly one of `target_ratio` (in (0, 1]), the absolute count and
+ * `max_error`, each negative when unset; std::invalid_argument otherwise.
+ * @param rPrefix Each message's start (`"meshio++: decimate: "`).
+ * @param pCountName The count's keyword (`target_faces`, `target_cells`).
+ */
+DecimStop decim_resolve_stop(double TargetRatio, std::int64_t TargetCount, double MaxError,
+                             const std::string& rPrefix, const char* pCountName);
+
+/// A `frozen` mask is empty or has one entry per point; std::invalid_argument otherwise.
+void decim_check_frozen(std::size_t FrozenSize, std::size_t NumPoints, const std::string& rPrefix);
+
+/// The count a ratio keeps of @p Count: `max(1, int64(Ratio * Count + 0.5))`,
+/// truncation rather than `llround`, whose tie rule the numpy twin cannot
+/// reproduce with `int(x + 0.5)`.
+std::int64_t decim_ratio_target(double Ratio, std::size_t Count);
 
 /// A Float64 working copy of a float-kind point_data array, blended in place
 /// at each collapse commit.
@@ -52,9 +81,6 @@ struct DecimFloatData {
     std::size_t mNumComponents = 0;
     std::vector<double> mValues;  // n * mNumComponents
 };
-
-/// A vector of Int64 as a 1-D NDArray.
-NDArray decim_int64_vector(const std::vector<std::int64_t>& rValues);
 
 /// Float64 working copies of `rMesh`'s float-kind point_data with `n` rows,
 /// in point-data name order.
@@ -158,6 +184,29 @@ void decim_kill_and_migrate(std::vector<std::int64_t>& rConn,
     }
     rRows[static_cast<std::size_t>(r)].clear();
 }
+
+/// Emits one `K`-corner block of type `Type` per block of `rSrc` (1:1, possibly
+/// empty): the alive cells of the flat `rConn` in their original order, their
+/// corners renumbered through `rRemap`, and per block the cell map from
+/// `rIn`'s cells (input cell -> output row, -1 for a removed cell) into
+/// `rCellMaps`. `pParentName` names an int cell_data of `rSrc` mapping each of
+/// its cells to the `rIn` cell it came from (decimate's `convert:parent_cell`,
+/// which simplexify adds), whose first surviving child is its entry; nullptr
+/// (decimate_volume, which works on its input) is the identity.
+template <int K>
+void decim_emit_blocks(const Mesh& rIn, const Mesh& rSrc, const char* pParentName,
+                       const std::vector<std::uint8_t>& rAlive,
+                       const std::vector<std::int64_t>& rConn,
+                       const std::vector<std::int64_t>& rBases,
+                       const std::vector<std::int64_t>& rRemap, CellType Type, Mesh& rOut,
+                       std::vector<NDArray>& rCellMaps);
+
+/// Carries `rIn`'s named regions onto the decimated `rOut` through its point
+/// map and per-block cell maps (`FirstChild` for decimate, `Direct` for
+/// decimate_volume); see detail/region_remap.hpp.
+void decim_remap_regions(const Mesh& rIn, Mesh& rOut, const NDArray& rPointMap,
+                         const std::vector<NDArray>& rCellMaps, CellMapKind Kind,
+                         const char* pOpName);
 
 /// Marks in `rUsed` every corner of an alive cell of the flat `K`-per-cell
 /// `rConn`, numbers the used points ascending into `rRemap` (-1 elsewhere),

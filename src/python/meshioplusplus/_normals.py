@@ -146,35 +146,13 @@ def soup(mesh, region=""):
 
 def _quality(verts, corners):
     """``soup_quality``: the four edge defect counts and the verdict."""
+    from ._sdf import soup_quality
+
     degenerate = 0
     if len(verts):
         n = _cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
         degenerate = int(np.count_nonzero(~(_dot(n, n) > 0.0)))
-    counts = {}
-    for tri in verts:
-        for e in range(3):
-            u, w = int(tri[e]), int(tri[(e + 1) % 3])
-            key = (u, w) if u < w else (w, u)
-            used, forward = counts.get(key, (0, 0))
-            counts[key] = (used + 1, forward + (1 if u < w else 0))
-    boundary = non_manifold = inconsistent = 0
-    for used, forward in counts.values():
-        if used == 1:
-            boundary += 1
-        elif used > 2:
-            non_manifold += 1
-        elif used == 2 and forward != 1:
-            inconsistent += 1
-    return {
-        "boundary_edges": boundary,
-        "non_manifold_edges": non_manifold,
-        "inconsistent_pairs": inconsistent,
-        "degenerate_triangles": degenerate,
-        "watertight": boundary == 0
-        and non_manifold == 0
-        and inconsistent == 0
-        and degenerate == 0,
-    }
+    return soup_quality(verts, degenerate)
 
 
 # --------------------------------------------------------------------------- #

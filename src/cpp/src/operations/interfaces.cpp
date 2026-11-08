@@ -36,6 +36,7 @@
 
 #include "../detail/bucket_build.hpp"
 #include "../detail/slot_runs.hpp"
+#include "../detail/ndarray_utils.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -264,18 +265,6 @@ double ra_measure(const NDArray& rPoints, std::size_t Dim,
         area += 0.5 * std::sqrt(x * x + y * y + z * z);
     }
     return area;
-}
-
-NDArray ra_int_array(const std::vector<std::int64_t>& rValues) {
-    NDArray out = NDArray::Uninit(DType::Int64, {rValues.size()});
-    std::copy(rValues.begin(), rValues.end(), out.As<std::int64_t>());
-    return out;
-}
-
-NDArray ra_double_array(const std::vector<double>& rValues) {
-    NDArray out = NDArray::Uninit(DType::Float64, {rValues.size()});
-    std::copy(rValues.begin(), rValues.end(), out.As<double>());
-    return out;
 }
 
 std::vector<char> ra_region_mask(const Mesh& rMesh, const RegionSelector& rSelector,
@@ -718,14 +707,14 @@ Mesh if_make_facet_mesh(const Mesh& rMaster, const std::vector<IfOutputFacet>& r
             std::vector<NDArray> arrays;
             arrays.reserve(rValues.size());
             for (const auto& values : rValues)
-                arrays.push_back(ra_int_array(values));
+                arrays.push_back(detail::NDArrayUtils::Int64Vector(values));
             out.AddCellData(pName, std::move(arrays));
         };
         auto add_f64 = [&](const char* pName, const std::vector<std::vector<double>>& rValues) {
             std::vector<NDArray> arrays;
             arrays.reserve(rValues.size());
             for (const auto& values : rValues)
-                arrays.push_back(ra_double_array(values));
+                arrays.push_back(detail::NDArrayUtils::Float64Vector(values));
             out.AddCellData(pName, std::move(arrays));
         };
         add_i64("interface:parent_cell", parent_cells);
@@ -996,7 +985,7 @@ Mesh region_adjacency(const Mesh& rMesh, const std::vector<RegionSelector>& rReg
         std::vector<NDArray> arrays;
         arrays.reserve(rBlocks.size());
         for (const auto& block : rBlocks)
-            arrays.push_back(ra_int_array(block));
+            arrays.push_back(detail::NDArrayUtils::Int64Vector(block));
         out.AddCellData(rName, std::move(arrays));
     };
     add_int_data("interface:region_a", region_a_blocks);
@@ -1009,7 +998,7 @@ Mesh region_adjacency(const Mesh& rMesh, const std::vector<RegionSelector>& rReg
     std::vector<NDArray> measures;
     measures.reserve(measure_blocks.size());
     for (const auto& block : measure_blocks)
-        measures.push_back(ra_double_array(block));
+        measures.push_back(detail::NDArrayUtils::Float64Vector(block));
     out.AddCellData("interface:measure", std::move(measures));
 
     for (auto& [name, cells] : output_regions) {
@@ -1018,7 +1007,7 @@ Mesh region_adjacency(const Mesh& rMesh, const std::vector<RegionSelector>& rReg
         region.mKind = RegionKind::Cell;
         region.mDim = -1;
         region.mTag = -1;
-        region.mEntries = ra_int_array(cells);
+        region.mEntries = detail::NDArrayUtils::Int64Vector(cells);
         out.AddRegion(std::move(region));
     }
     if (rMesh.NumRegions() > 0) {
@@ -1301,7 +1290,7 @@ NDArray if_f64_matrix(const std::vector<double>& rValues, std::size_t Rows, std:
 }
 
 NDArray if_i64_vector(const std::vector<std::int64_t>& rValues) {
-    return ra_int_array(rValues);
+    return detail::NDArrayUtils::Int64Vector(rValues);
 }
 
 }  // namespace
@@ -1383,7 +1372,7 @@ ContactPairsResult contact_pairs(const Mesh& rSlave, const RegionSelector& rSlav
     result.mMasterSubfacet = if_i64_vector(master_subfacets);
     result.mLocalCoordinates = if_f64_matrix(local, slave_ids.size(), 3);
     result.mClosestPoint = if_f64_matrix(closest, slave_ids.size(), 3);
-    result.mGap = ra_double_array(gaps);
+    result.mGap = detail::NDArrayUtils::Float64Vector(gaps);
     result.mNormal = if_f64_matrix(normals, slave_ids.size(), 3);
     result.mUnmatched = if_i64_vector(unmatched);
     return result;
@@ -1856,7 +1845,7 @@ SplitInterfaceResult split_interface(const Mesh& rMesh, const RegionSelector& rS
                 if (entries.count(duplicate_sources[copy].first))
                     entries.insert(static_cast<std::int64_t>(num_points + copy));
             std::vector<std::int64_t> flat(entries.begin(), entries.end());
-            region.mEntries = ra_int_array(flat);
+            region.mEntries = detail::NDArrayUtils::Int64Vector(flat);
         }
         out.AddRegion(std::move(region));
     }

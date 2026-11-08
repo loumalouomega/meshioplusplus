@@ -423,6 +423,15 @@ private:
 
     Location Locate(const Vec2& rP);
     Location LocateBruteForce(const Vec2& rP) const;
+    /// The location in triangle @p Tri (corners @p rV) whose three edge
+    /// orientations are @p pO: inside, on the one zero edge, or on the vertex
+    /// two zero edges meet at.
+    static Location Classify(std::int64_t Tri, const double* pO,
+                             const std::array<std::int64_t, 3>& rV);
+    /// Whether edge @p E of triangle @p T is a flip candidate (alive,
+    /// unconstrained, with a neighbour): that neighbour @p rU and its vertex
+    /// @p rD opposite the edge.
+    bool FlipCandidate(std::int64_t T, int E, std::int64_t& rU, std::int64_t& rD) const;
     std::int64_t InsertAt(const Vec2& rP, const Location& rLoc, bool Inside);
     std::vector<std::int64_t> ReplaceCavity(const std::vector<std::int64_t>& rRemoved,
                                             const std::vector<Tri>& rNew, bool Inside);

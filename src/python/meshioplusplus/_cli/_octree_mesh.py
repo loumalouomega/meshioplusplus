@@ -7,7 +7,7 @@ from .._octree_mesh import (
     SKIN_GRADINGS,
     octree_mesh,
 )
-from ._common import add_io_args
+from ._common import add_box_args, add_io_args, parse_bounds
 from ._json import emit_json
 
 
@@ -40,22 +40,7 @@ def add_args(parser):
         default=-1,
         help="cap on the finest level (-1: from the sizes)",
     )
-    parser.add_argument(
-        "--bounds",
-        type=str,
-        default=None,
-        help="'xlo,ylo,zlo,xhi,yhi,zhi'; the padded bounding box by default "
-        "(negatives need --bounds=)",
-    )
-    parser.add_argument(
-        "--padding", type=float, default=0.0, help="grow the box by this on every side"
-    )
-    parser.add_argument(
-        "--padding-relative",
-        type=float,
-        default=0.1,
-        help="grow the box by this fraction of its diagonal on every side",
-    )
+    add_box_args(parser, bounds_of="padded", padding_relative=0.1)
     parser.add_argument(
         "--curvature-angle",
         type=float,
@@ -247,11 +232,7 @@ def add_args(parser):
 
 def octree_mesh_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
-    bounds = None
-    if args.bounds is not None:
-        bounds = [float(x) for x in args.bounds.split(",")]
-        if len(bounds) != 6:
-            raise ValueError("octree-mesh: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'")
+    bounds = parse_bounds(args.bounds, "octree-mesh")
 
     out, report = octree_mesh(
         mesh,

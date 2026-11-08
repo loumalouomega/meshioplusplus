@@ -1,0 +1,957 @@
+{
+  "about": "Every pipeline step, its keys, and the kind and default of each key both engines read the same way. tools/gen_pipeline_table.py writes the two step tables from it; tests/python/test_pipeline_spec.py holds the Python and C++ step parsing to it (roadmap §8).",
+  "steps": [
+    {"op": "Quality", "keys": []},
+    {"op": "Clean", "keys": [
+      {"name": "Weld", "kind": "flag", "default": false},
+      {"name": "Atol", "kind": "number", "default": 1e-08},
+      {"name": "RemoveOrphans", "kind": "flag", "default": true},
+      {"name": "DropDegenerate", "kind": "flag", "default": true},
+      {"name": "DropDuplicateCells", "kind": "flag", "default": true}
+    ]},
+    {"op": "Smooth", "keys": [
+      {"name": "Method", "kind": "text", "default": "taubin"},
+      {"name": "Iterations", "kind": "number", "default": 10},
+      {"name": "Lambda", "kind": "number", "default": -1.0},
+      {"name": "Mu", "kind": "number", "default": -0.34},
+      {"name": "FixBoundary", "kind": "flag", "default": true},
+      {"name": "PreserveFeatures", "kind": "flag", "default": true},
+      {"name": "FeatureAngle", "kind": "number", "default": 30.0},
+      {"name": "GuardInversion", "kind": "flag", "default": true}
+    ]},
+    {"op": "Refine", "keys": [
+      {"name": "Levels", "kind": "number", "default": 1},
+      {"name": "Cells"},
+      {"name": "Region", "kind": "text", "default": ""},
+      {"name": "Array", "kind": "text", "default": ""},
+      {"name": "Compare", "kind": "text", "default": "<"},
+      {"name": "Value", "kind": "number", "default": 0.0},
+      {"name": "Closure", "kind": "text", "default": "redgreen", "cpp_default": ""},
+      {"name": "RecordLevels", "kind": "flag", "default": false},
+      {"name": "RecordHierarchy", "kind": "flag", "default": false}
+    ]},
+    {"op": "Decimate", "keys": [
+      {"name": "Ratio", "kind": "number", "default": -1.0},
+      {"name": "TargetFaces", "kind": "number", "default": -1.0},
+      {"name": "MaxError", "kind": "number", "default": -1.0},
+      {"name": "Placement", "kind": "text", "default": "optimal"},
+      {"name": "PreserveBoundary", "kind": "flag", "default": true},
+      {"name": "PreserveFeatures", "kind": "flag", "default": true},
+      {"name": "FeatureAngle", "kind": "number", "default": 30.0}
+    ]},
+    {"op": "DecimateVolume", "keys": [
+      {"name": "Ratio", "kind": "number", "default": -1.0},
+      {"name": "TargetCells", "kind": "number", "default": -1.0},
+      {"name": "MaxError", "kind": "number", "default": -1.0},
+      {"name": "Placement", "kind": "text", "default": "optimal"},
+      {"name": "PreserveBoundary", "kind": "flag", "default": false},
+      {"name": "PreserveFeatures", "kind": "flag", "default": true},
+      {"name": "FeatureAngle", "kind": "number", "default": 30.0}
+    ]},
+    {"op": "Partition", "keys": [
+      {"name": "Nparts", "kind": "number", "default": 2},
+      {"name": "Method", "kind": "text", "default": "auto"},
+      {"name": "Imbalance", "kind": "number", "default": 0.03},
+      {"name": "Mode", "kind": "text", "default": "eco", "cpp_default": ""},
+      {"name": "Seed", "kind": "number", "default": 0},
+      {"name": "WeightsKey", "kind": "text", "default": ""}
+    ]},
+    {"op": "Slice", "keys": [
+      {"name": "Point"},
+      {"name": "Normal"},
+      {"name": "RecordParentIds", "kind": "flag", "default": false}
+    ]},
+    {"op": "Section", "keys": [
+      {"name": "Point"},
+      {"name": "Normal"},
+      {"name": "RecordParentIds", "kind": "flag", "default": false}
+    ]},
+    {"op": "Gradient", "keys": [
+      {"name": "Array", "kind": "text", "default": ""},
+      {"name": "Operator", "kind": "text", "default": "gradient", "cpp_default": ""},
+      {"name": "Method", "kind": "text", "default": "green-gauss", "cpp_default": ""},
+      {"name": "Location", "kind": "text", "default": "cell"},
+      {"name": "Output", "kind": "text", "default": ""},
+      {"name": "Component", "kind": "number", "default": -1.0}
+    ]},
+    {"op": "Hessian", "keys": [
+      {"name": "Array", "kind": "text", "default": ""},
+      {"name": "Method", "kind": "text", "default": "green-gauss", "cpp_default": ""},
+      {"name": "Location", "kind": "text", "default": "cell"},
+      {"name": "Output", "kind": "text", "default": ""}
+    ]},
+    {"op": "Curvature", "keys": [
+      {"name": "Mean", "kind": "flag", "default": true},
+      {"name": "Gaussian", "kind": "flag", "default": true},
+      {"name": "DualArea", "kind": "text", "default": "mixed-voronoi"},
+      {"name": "IncludeBoundary", "kind": "flag", "default": false},
+      {"name": "RecordArea", "kind": "flag", "default": false},
+      {"name": "RecordPrincipal", "kind": "flag", "default": false},
+      {"name": "Region", "kind": "text", "default": ""}
+    ]},
+    {"op": "Normals", "keys": [
+      {"name": "PointNormals", "kind": "flag", "default": true},
+      {"name": "CellNormals", "kind": "flag", "default": false},
+      {"name": "Weight", "kind": "text", "default": "angle"},
+      {"name": "SplitAngle", "kind": "number", "default": 30.0},
+      {"name": "RecordParentIds", "kind": "flag", "default": false},
+      {"name": "Region", "kind": "text", "default": ""}
+    ]},
+    {"op": "FeatureEdges", "keys": [
+      {"name": "FeatureAngle", "kind": "number", "default": 30.0},
+      {"name": "Feature", "kind": "flag", "default": true},
+      {"name": "Boundary", "kind": "flag", "default": true},
+      {"name": "NonManifold", "kind": "flag", "default": true},
+      {"name": "Inconsistent", "kind": "flag", "default": true},
+      {"name": "Region", "kind": "text", "default": ""}
+    ]},
+    {"op": "Segment", "keys": [
+      {"name": "FeatureAngle", "kind": "number", "default": 30.0},
+      {"name": "NormalTolerance", "kind": "number", "default": 0.0},
+      {"name": "CurvatureTolerance", "kind": "number", "default": 0.0},
+      {"name": "MinPatchCells", "kind": "number", "default": 1.0},
+      {"name": "Region", "kind": "text", "default": ""},
+      {"name": "Prefix", "kind": "text", "default": "patch"},
+      {"name": "Method", "kind": "text", "default": "angle"},
+      {"name": "Tolerance", "kind": "number", "default": 0.001}
+    ]},
+    {"op": "Select", "keys": [
+      {"name": "Name", "kind": "text", "default": ""},
+      {"name": "Kind", "kind": "text", "default": "cell"},
+      {"name": "Tag", "kind": "number", "default": -1.0},
+      {"name": "Mode", "kind": "text", "default": "all"},
+      {"name": "BoundaryOnly", "kind": "flag", "default": true},
+      {"name": "Bbox"},
+      {"name": "Point"},
+      {"name": "Normal"},
+      {"name": "Center"},
+      {"name": "Radius", "kind": "number", "default": 0.0},
+      {"name": "Where", "kind": "text", "default": ""},
+      {"name": "Compare", "kind": "text", "default": "<"},
+      {"name": "Value", "kind": "number", "default": 0.0},
+      {"name": "Quality", "kind": "text", "default": ""},
+      {"name": "QualityCompare", "kind": "text", "default": "<"},
+      {"name": "QualityValue", "kind": "number", "default": 0.0},
+      {"name": "Component", "kind": "number", "default": -1.0},
+      {"name": "Seed"},
+      {"name": "FeatureAngle", "kind": "number", "default": 30.0},
+      {"name": "NormalTolerance", "kind": "number", "default": 0.0}
+    ]},
+    {"op": "FitPrimitives", "keys": [
+      {"name": "PatchData", "kind": "text", "default": "segment:patch"},
+      {"name": "Tolerance", "kind": "number", "default": 0.001},
+      {"name": "Relative", "kind": "flag", "default": true},
+      {"name": "MinInlierFraction", "kind": "number", "default": 0.9},
+      {"name": "Types"},
+      {"name": "MaxIterations", "kind": "number", "default": 50.0}
+    ]},
+    {"op": "FitCad", "keys": [
+      {"name": "Path", "kind": "text", "default": ""},
+      {"name": "Tolerance", "kind": "number", "default": 0.0},
+      {"name": "ExactEdges", "kind": "flag", "default": true},
+      {"name": "Types"},
+      {"name": "MeshDeflection", "kind": "number", "default": 0.0},
+      {"name": "MaxDemotionRounds", "kind": "number", "default": 8.0},
+      {"name": "Freeform", "kind": "flag", "default": true},
+      {"name": "FreeformDegree", "kind": "number", "default": 3.0},
+      {"name": "FreeformMaxControl", "kind": "number", "default": 64.0},
+      {"name": "FreeformSplit", "kind": "flag", "default": true},
+      {"name": "Fillets", "kind": "flag", "default": true},
+      {"name": "Threads", "kind": "flag", "default": true},
+      {"name": "MergeFaces", "kind": "flag", "default": true},
+      {"name": "Backend", "kind": "text", "default": "auto"},
+      {"name": "RefineSegmentation", "kind": "flag", "default": false},
+      {"name": "MaxRefineIterations", "kind": "number", "default": 10.0},
+      {"name": "RefineEpsilon", "kind": "number", "default": 0.001},
+      {"name": "NormalWeight", "kind": "number", "default": 1.0},
+      {"name": "AllowMerge", "kind": "flag", "default": true},
+      {"name": "AllowSplit", "kind": "flag", "default": true},
+      {"name": "RansacSeed"},
+      {"name": "RefineTolerance", "kind": "number", "default": 0.001},
+      {"name": "RelativeTolerance", "kind": "flag", "default": true},
+      {"name": "FreeformGeneral", "kind": "flag", "default": false},
+      {"name": "FreeformTolerance", "kind": "number", "default": 0.0},
+      {"name": "FreeformSmoothing", "kind": "number", "default": 1e-12},
+      {"name": "MaxFreeformPoles", "kind": "number", "default": 40.0},
+      {"name": "MaxFreeformIterations", "kind": "number", "default": 30.0},
+      {"name": "MaxFreeformSplits", "kind": "number", "default": 2.0},
+      {"name": "SewTolerance", "kind": "number", "default": 0.0},
+      {"name": "ExtendSurfaces", "kind": "flag", "default": false},
+      {"name": "SnapJunctions", "kind": "flag", "default": false},
+      {"name": "FaceDeviation", "kind": "flag", "default": false},
+      {"name": "FreeformMode", "kind": "text", "default": "legacy"},
+      {"name": "FreeformParameterization", "kind": "text", "default": "auto"},
+      {"name": "ExtraordinaryVertex", "kind": "text", "default": "g1x"},
+      {"name": "LocalRefine", "kind": "text", "default": "knots"},
+      {"name": "FreeformG1ToleranceDeg", "kind": "number", "default": 1.0},
+      {"name": "FreeformMaxControlPoints", "kind": "number", "default": 400.0},
+      {"name": "LayoutTargetPatchSize", "kind": "number", "default": 0.1},
+      {"name": "LayoutMaxValenceDeviation", "kind": "number", "default": 2.0},
+      {"name": "ResegmentRounds", "kind": "number", "default": 2.0},
+      {"name": "LayoutSnapToFeatures", "kind": "flag", "default": true},
+      {"name": "ValidateBySurfaceSampling", "kind": "flag", "default": true},
+      {"name": "ConstrainPrimitives", "kind": "flag", "default": false}
+    ]},
+    {"op": "RefinePatches", "keys": [
+      {"name": "Tolerance", "kind": "number", "default": 0.001},
+      {"name": "Relative", "kind": "flag", "default": true},
+      {"name": "NormalWeight", "kind": "number", "default": 1.0},
+      {"name": "Epsilon", "kind": "number", "default": 0.001},
+      {"name": "FeatureAngle", "kind": "number", "default": 30.0},
+      {"name": "MaxIterations", "kind": "number", "default": 10.0},
+      {"name": "MinPatchCells", "kind": "number", "default": 3.0},
+      {"name": "RansacSeed"},
+      {"name": "Types"},
+      {"name": "AllowSplit", "kind": "flag", "default": true},
+      {"name": "AllowMerge", "kind": "flag", "default": true},
+      {"name": "Prefix", "kind": "text", "default": "patch"}
+    ]},
+    {"op": "EditRegions", "keys": [
+      {"name": "Edit", "kind": "text", "default": ""},
+      {"name": "Inputs"},
+      {"name": "Output", "kind": "text", "default": ""},
+      {"name": "Kind", "kind": "text", "default": ""},
+      {"name": "Dim", "kind": "number", "default": -1},
+      {"name": "Tag", "kind": "number", "default": -1},
+      {"name": "KeepInputs", "kind": "flag", "default": true}
+    ]},
+    {"op": "RegionAdjacency", "keys": [
+      {"name": "Regions"}
+    ]},
+    {"op": "FindInterface", "keys": [
+      {"name": "RegionA", "kind": "text", "default": ""},
+      {"name": "RegionB", "kind": "text", "default": ""},
+      {"name": "Mode", "kind": "text", "default": "conforming"},
+      {"name": "Master", "kind": "text", "default": "a"},
+      {"name": "GapTolerance", "kind": "number", "default": 0.0},
+      {"name": "AngleTolerance", "kind": "number", "default": 30.0},
+      {"name": "OverlapTolerance", "kind": "number", "default": 0.0}
+    ]},
+    {"op": "SplitInterface", "keys": [
+      {"name": "Region", "kind": "text", "default": ""},
+      {"name": "AddCohesive", "kind": "flag", "default": false}
+    ]},
+    {"op": "QualityGate", "keys": [
+      {"name": "Require"},
+      {"name": "MaxInverted", "kind": "number", "default": 0},
+      {"name": "MaxDegenerate", "kind": "number", "default": 0}
+    ]},
+    {"op": "CheckConformity", "keys": [
+      {"name": "Tolerance", "kind": "number", "default": 1e-09},
+      {"name": "Require", "kind": "flag", "default": true},
+      {"name": "AttachFlags", "kind": "flag", "default": false}
+    ]},
+    {"op": "CheckTetrahedra", "keys": [
+      {"name": "ZeroVolumeFactor", "kind": "number", "default": 1e-06},
+      {"name": "Require", "kind": "flag", "default": true}
+    ]},
+    {"op": "FindIntersections", "keys": [
+      {"name": "Other", "kind": "text", "default": ""},
+      {"name": "Region", "kind": "text", "default": ""},
+      {"name": "RegionOther", "kind": "text", "default": ""},
+      {"name": "Require", "kind": "flag", "default": true},
+      {"name": "AttachFlags", "kind": "flag", "default": false}
+    ]},
+    {"op": "Thickness", "keys": [
+      {"name": "Other", "kind": "text", "default": ""},
+      {"name": "Direction", "kind": "text", "default": "auto"},
+      {"name": "MaxDistance", "kind": "number", "default": 0.0},
+      {"name": "Min", "kind": "number", "default": 0.0},
+      {"name": "Region", "kind": "text", "default": ""},
+      {"name": "RegionOther", "kind": "text", "default": ""},
+      {"name": "Require", "kind": "flag", "default": true}
+    ]},
+    {"op": "Snapshot", "keys": [
+      {"name": "Path", "kind": "text", "default": ""},
+      {"name": "Width"},
+      {"name": "Height"},
+      {"name": "Supersample"},
+      {"name": "Cols"},
+      {"name": "Rows"},
+      {"name": "Encoding"},
+      {"name": "ColorDepth"},
+      {"name": "PngCompress", "kind": "number", "default": 0.0},
+      {"name": "View"},
+      {"name": "Azimuth"},
+      {"name": "Elevation"},
+      {"name": "Roll"},
+      {"name": "Perspective"},
+      {"name": "Fov"},
+      {"name": "Zoom"},
+      {"name": "Shading"},
+      {"name": "Edges"},
+      {"name": "FeatureAngle"},
+      {"name": "Background"},
+      {"name": "FillColor"},
+      {"name": "ColorBy"},
+      {"name": "Component"},
+      {"name": "Cmap"},
+      {"name": "VMin"},
+      {"name": "VMax"},
+      {"name": "Colorbar"},
+      {"name": "Axes"},
+      {"name": "ScaleBar"},
+      {"name": "Reduce"},
+      {"name": "Expr"},
+      {"name": "ClipLow"},
+      {"name": "ClipHigh"},
+      {"name": "Symmetric"},
+      {"name": "Scale"},
+      {"name": "ScaleThreshold"},
+      {"name": "Categorical"},
+      {"name": "ColorRegions"},
+      {"name": "CategoryEdges"},
+      {"name": "Isolines"},
+      {"name": "IsoLevels"},
+      {"name": "Vectors"},
+      {"name": "VectorCount"},
+      {"name": "Warp"},
+      {"name": "WarpScale"},
+      {"name": "WarpOutline"},
+      {"name": "Diagnostic"},
+      {"name": "QualityMetric"},
+      {"name": "Cutaway"},
+      {"name": "CutawayTint"},
+      {"name": "Streamlines"},
+      {"name": "StreamSeeds"},
+      {"name": "StreamLength"},
+      {"name": "StreamColor"},
+      {"name": "Theme"},
+      {"name": "Scanlines"},
+      {"name": "Bloom"},
+      {"name": "Fringe"},
+      {"name": "GridFloor"}
+    ]},
+    {"op": "Repair", "keys": [
+      {"name": "FixOrientation", "kind": "flag", "default": true},
+      {"name": "OrientOutward", "kind": "flag", "default": true},
+      {"name": "FillHoles", "kind": "flag", "default": true},
+      {"name": "SplitNonManifold", "kind": "flag", "default": true},
+      {"name": "MaxHoleEdges", "kind": "number", "default": 10},
+      {"name": "WeldTolerance", "kind": "number", "default": 0.0},
+      {"name": "RecordProvenance", "kind": "flag", "default": false}
+    ]},
+    {"op": "SobolevDeform", "keys": [
+      {"name": "Array", "kind": "text", "default": ""},
+      {"name": "LengthScale", "kind": "number", "default": 0.0},
+      {"name": "FixedPointsArray", "kind": "text", "default": ""},
+      {"name": "FixBoundary", "kind": "flag", "default": false},
+      {"name": "RecordFiltered", "kind": "flag", "default": false},
+      {"name": "MaxIterations", "kind": "number", "default": 128},
+      {"name": "Tolerance", "kind": "number", "default": 1e-10}
+    ]},
+    {"op": "ConvexHull", "keys": [
+      {"name": "Dimension", "kind": "number", "default": 0.0}
+    ]},
+    {"op": "Delaunay2D", "keys": []},
+    {"op": "EstimateNormals", "keys": [
+      {"name": "K", "kind": "number", "default": 16.0},
+      {"name": "Orientation", "kind": "text", "default": "consistent"},
+      {"name": "Viewpoint"},
+      {"name": "RecordVariation", "kind": "flag", "default": false}
+    ]},
+    {"op": "ReconstructSurface", "keys": [
+      {"name": "Normals", "kind": "text", "default": "normals"},
+      {"name": "K"},
+      {"name": "CellSize", "kind": "number", "default": 0.0},
+      {"name": "Resolution"},
+      {"name": "MaxDistance", "kind": "number", "default": 0.0},
+      {"name": "EstimateNormals", "kind": "flag", "default": true},
+      {"name": "NormalsK"},
+      {"name": "MaxCells"}
+    ]},
+    {"op": "LaplacianEigenmodes", "keys": [
+      {"name": "NumModes", "kind": "number", "default": 10.0},
+      {"name": "Tolerance", "kind": "number", "default": 1e-08},
+      {"name": "MaxIterations", "kind": "number", "default": 0.0}
+    ]},
+    {"op": "Untangle", "keys": [
+      {"name": "FixBoundary", "kind": "flag", "default": true},
+      {"name": "Rings", "kind": "number", "default": 2.0},
+      {"name": "Smooth", "kind": "flag", "default": false},
+      {"name": "MaxSweeps", "kind": "number", "default": 100.0}
+    ]},
+    {"op": "PrepareMetric", "keys": [
+      {"name": "Arrays"},
+      {"name": "Output", "kind": "text", "default": "metric"},
+      {"name": "TargetVertices", "kind": "number", "default": 0.0},
+      {"name": "Norm", "kind": "number", "default": 2.0},
+      {"name": "Hmin", "kind": "number", "default": 0.0},
+      {"name": "Hmax", "kind": "number", "default": 0.0},
+      {"name": "Gradation", "kind": "number", "default": 0.0},
+      {"name": "MaxSweeps", "kind": "number", "default": 100.0}
+    ]},
+    {"op": "Morph", "keys": [
+      {"name": "Array", "kind": "text", "default": ""},
+      {"name": "FixBoundary", "kind": "flag", "default": true},
+      {"name": "ConstrainedArray", "kind": "text", "default": ""},
+      {"name": "Stiffening", "kind": "number", "default": 1.0},
+      {"name": "Steps", "kind": "number", "default": 1.0},
+      {"name": "AllowInverted", "kind": "flag", "default": false},
+      {"name": "Tolerance", "kind": "number", "default": 1e-10},
+      {"name": "MaxIterations", "kind": "number", "default": 0.0}
+    ]},
+    {"op": "RegisterRigid", "keys": [
+      {"name": "Target", "kind": "text", "default": ""},
+      {"name": "Method", "kind": "text", "default": "point_to_point"},
+      {"name": "MaxIterations", "kind": "number", "default": 50.0},
+      {"name": "Tolerance", "kind": "number", "default": 1e-10},
+      {"name": "MaxDistance", "kind": "number", "default": 0.0},
+      {"name": "RotateData", "kind": "flag", "default": false}
+    ]},
+    {"op": "ConvertCoordinates", "keys": [
+      {"name": "System", "kind": "text", "default": "cylindrical"},
+      {"name": "Axis"},
+      {"name": "Origin"},
+      {"name": "Reference"},
+      {"name": "Arrays"},
+      {"name": "Inverse", "kind": "flag", "default": false},
+      {"name": "RecordCoordinates", "kind": "flag", "default": true}
+    ]},
+    {"op": "GeodesicDistance", "keys": [
+      {"name": "Sources"},
+      {"name": "SourceRegion", "kind": "text", "default": ""},
+      {"name": "TimeFactor", "kind": "number", "default": 1.0},
+      {"name": "Tolerance", "kind": "number", "default": 1e-10},
+      {"name": "MaxIterations", "kind": "number", "default": 0}
+    ]},
+    {"op": "Parameterize", "keys": [
+      {"name": "Padding", "kind": "number", "default": 0.02},
+      {"name": "MaxDepth", "kind": "number", "default": 8},
+      {"name": "MaxStretch", "kind": "number", "default": 2.0}
+    ]},
+    {"op": "EstimateError", "keys": [
+      {"name": "Array", "kind": "text", "default": ""},
+      {"name": "Method", "kind": "text", "default": "zz", "cpp_default": ""},
+      {"name": "Marking", "kind": "text", "default": "none", "cpp_default": ""},
+      {"name": "MarkingValue", "kind": "number", "default": 0.0},
+      {"name": "Output", "kind": "text", "default": ""},
+      {"name": "Marked", "kind": "text", "default": ""}
+    ]},
+    {"op": "ErrorSize", "keys": [
+      {"name": "Array", "kind": "text", "default": "error:zz"},
+      {"name": "TargetError", "kind": "number", "default": 0.0},
+      {"name": "Order", "kind": "number", "default": 1.0},
+      {"name": "MinSize", "kind": "number", "default": 0.0},
+      {"name": "MaxSize", "kind": "number", "default": 0.0},
+      {"name": "Output", "kind": "text", "default": "size"}
+    ]},
+    {"op": "Adapt", "keys": [
+      {"name": "Hsiz", "kind": "number", "default": -1.0},
+      {"name": "Size", "kind": "text", "default": ""},
+      {"name": "Metric", "kind": "text", "default": ""},
+      {"name": "Hmin"},
+      {"name": "Hmax"},
+      {"name": "Hausd"},
+      {"name": "Hgrad"},
+      {"name": "Hgradreq"},
+      {"name": "AngleDetection"},
+      {"name": "Optim"},
+      {"name": "NoInsert"},
+      {"name": "NoSwap"},
+      {"name": "NoMove"},
+      {"name": "NoSurf"},
+      {"name": "Nreg"},
+      {"name": "Opnbdy"},
+      {"name": "Frozen"},
+      {"name": "Required"}
+    ]},
+    {"op": "DiscretizeLevelset", "keys": [
+      {"name": "LevelSet", "kind": "text", "default": ""},
+      {"name": "Isovalue", "kind": "number", "default": 0.0},
+      {"name": "RemoveSmallComponents", "kind": "number", "default": -1.0},
+      {"name": "Materials"},
+      {"name": "Hmin"},
+      {"name": "Hmax"},
+      {"name": "Hausd"},
+      {"name": "Hgrad"},
+      {"name": "Hgradreq"},
+      {"name": "AngleDetection"},
+      {"name": "Optim"},
+      {"name": "NoInsert"},
+      {"name": "NoSwap"},
+      {"name": "NoMove"},
+      {"name": "NoSurf"},
+      {"name": "Nreg"},
+      {"name": "Opnbdy"},
+      {"name": "Frozen"},
+      {"name": "Required"}
+    ]},
+    {"op": "MeshDomain", "keys": [
+      {"name": "Hsiz", "kind": "number", "default": -1.0},
+      {"name": "Size", "kind": "text", "default": ""},
+      {"name": "Holes"},
+      {"name": "Hmin"},
+      {"name": "Hmax"},
+      {"name": "Hausd"},
+      {"name": "Hgrad"},
+      {"name": "Hgradreq"},
+      {"name": "AngleDetection"},
+      {"name": "Optim"},
+      {"name": "NoInsert"},
+      {"name": "NoSwap"},
+      {"name": "NoMove"},
+      {"name": "NoSurf"},
+      {"name": "Nreg"},
+      {"name": "Opnbdy"},
+      {"name": "Frozen"},
+      {"name": "Required"}
+    ]},
+    {"op": "Move", "keys": [
+      {"name": "Displacement", "kind": "text", "default": ""},
+      {"name": "Moving"},
+      {"name": "Lagrangian", "kind": "number", "default": 1.0},
+      {"name": "Hmin"},
+      {"name": "Hmax"},
+      {"name": "Hausd"},
+      {"name": "Hgrad"},
+      {"name": "Hgradreq"},
+      {"name": "AngleDetection"},
+      {"name": "Optim"},
+      {"name": "NoInsert"},
+      {"name": "NoSwap"},
+      {"name": "NoMove"},
+      {"name": "NoSurf"},
+      {"name": "Nreg"},
+      {"name": "Opnbdy"},
+      {"name": "Frozen"},
+      {"name": "Required"}
+    ]},
+    {"op": "Remesh", "keys": [
+      {"name": "NumClusters", "kind": "number", "default": 0},
+      {"name": "Subdivide", "kind": "number", "default": -1},
+      {"name": "SubsampleRatio", "kind": "number", "default": 10.0},
+      {"name": "MaxSubdivide", "kind": "number", "default": 4},
+      {"name": "MaxIterations", "kind": "number", "default": 100},
+      {"name": "MaxRepairPasses", "kind": "number", "default": 10},
+      {"name": "Metric", "kind": "text", "default": "isotropic"},
+      {"name": "Gradation", "kind": "number", "default": 0.0},
+      {"name": "PreserveBoundary", "kind": "flag", "default": true},
+      {"name": "MaxAnisotropy", "kind": "number", "default": 4.0}
+    ]},
+    {"op": "RemeshVolume", "keys": [
+      {"name": "Resolution"},
+      {"name": "CellSize", "kind": "number", "default": 0.0},
+      {"name": "Bounds"},
+      {"name": "Padding", "kind": "number", "default": 0.0},
+      {"name": "PaddingRelative", "kind": "number", "default": 0.1},
+      {"name": "MaxCells", "kind": "number", "default": 20000000.0},
+      {"name": "MaxTets", "kind": "number", "default": 20000000.0},
+      {"name": "WarpFraction", "kind": "number", "default": 0.35},
+      {"name": "Sign", "kind": "text", "default": "pseudonormal"},
+      {"name": "WatertightCheck", "kind": "text", "default": "warn"}
+    ]},
+    {"op": "OptimizeVolume", "keys": [
+      {"name": "MaxIterations", "kind": "number", "default": 10.0},
+      {"name": "Relocate", "kind": "flag", "default": true},
+      {"name": "Flip", "kind": "flag", "default": true},
+      {"name": "PreserveBoundary", "kind": "flag", "default": true},
+      {"name": "MinImprovement", "kind": "number", "default": 1e-06},
+      {"name": "Objective", "kind": "text", "default": "worst"},
+      {"name": "MaxRingSize", "kind": "number", "default": 7.0}
+    ]},
+    {"op": "Isosurface", "keys": [
+      {"name": "Array", "kind": "text", "default": ""},
+      {"name": "Isovalue", "kind": "number", "default": 0.0},
+      {"name": "Isovalues"},
+      {"name": "Component", "kind": "number", "default": -1.0},
+      {"name": "RecordParentIds", "kind": "flag", "default": false}
+    ]},
+    {"op": "Voxelize", "keys": [
+      {"name": "Resolution"},
+      {"name": "CellSize", "kind": "number", "default": 0.0},
+      {"name": "Bounds"},
+      {"name": "Padding", "kind": "number", "default": 0.0},
+      {"name": "PaddingRelative", "kind": "number", "default": 0.0},
+      {"name": "Fill", "kind": "text", "default": "all"},
+      {"name": "AttachOccupancy", "kind": "flag", "default": false},
+      {"name": "MaxCells", "kind": "number", "default": 20000000.0},
+      {"name": "Sign", "kind": "text", "default": "pseudonormal"},
+      {"name": "Plane", "kind": "text", "default": "auto"}
+    ]},
+    {"op": "Generate", "keys": [
+      {"name": "Shape", "kind": "text", "default": ""},
+      {"name": "Dims"},
+      {"name": "Size"},
+      {"name": "Origin"},
+      {"name": "Center"},
+      {"name": "Radius"},
+      {"name": "Height", "kind": "number", "default": 1.0},
+      {"name": "N"},
+      {"name": "Nu"},
+      {"name": "Nv"},
+      {"name": "Nxy"},
+      {"name": "Nz"},
+      {"name": "Subdivisions"},
+      {"name": "Sides"},
+      {"name": "Rings"},
+      {"name": "InnerRadius", "kind": "number", "default": 0.5},
+      {"name": "OuterRadius", "kind": "number", "default": 1.0},
+      {"name": "Ntheta"},
+      {"name": "Nr"},
+      {"name": "Nt"},
+      {"name": "Angle", "kind": "number", "default": 6.283185307179586},
+      {"name": "Edge", "kind": "number", "default": 1.0},
+      {"name": "CellType"},
+      {"name": "Split", "kind": "text", "default": "zigzag"},
+      {"name": "Order", "kind": "number", "default": 1.0},
+      {"name": "MaxCells", "kind": "number", "default": 20000000.0},
+      {"name": "Types"},
+      {"name": "Pairs", "kind": "flag", "default": false},
+      {"name": "Complete", "kind": "flag", "default": false},
+      {"name": "Start"},
+      {"name": "End"},
+      {"name": "Pitch", "kind": "number", "default": 1.0},
+      {"name": "Turns", "kind": "number", "default": 2.0},
+      {"name": "Seed", "kind": "number", "default": 0.0},
+      {"name": "MajorRadius", "kind": "number", "default": 1.0},
+      {"name": "MinorRadius", "kind": "number", "default": 0.25},
+      {"name": "Width", "kind": "number", "default": 0.5},
+      {"name": "NumTwists"},
+      {"name": "Ncap"},
+      {"name": "Ratio", "kind": "number", "default": 1.0},
+      {"name": "Name", "kind": "text", "default": "icosahedron"}
+    ]},
+    {"op": "OctreeMesh", "keys": [
+      {"name": "Output", "kind": "text", "default": "tet"},
+      {"name": "MinSize", "kind": "number", "default": 0.0},
+      {"name": "MaxSize", "kind": "number", "default": 0.0},
+      {"name": "MaxLevel", "kind": "number", "default": -1.0},
+      {"name": "Bounds"},
+      {"name": "Padding", "kind": "number", "default": 0.0},
+      {"name": "PaddingRelative", "kind": "number", "default": 0.1},
+      {"name": "CurvatureAngle", "kind": "number", "default": 15.0},
+      {"name": "FeatureAngle", "kind": "number", "default": 30.0},
+      {"name": "CornerAngle", "kind": "number", "default": 30.0},
+      {"name": "FeatureSize", "kind": "number", "default": 0.0},
+      {"name": "GapCells", "kind": "number", "default": 2.0},
+      {"name": "GapOutside", "kind": "flag", "default": false},
+      {"name": "SizeArray", "kind": "text", "default": ""},
+      {"name": "SurfaceRegion", "kind": "text", "default": ""},
+      {"name": "GradingLayers", "kind": "number", "default": 1.0},
+      {"name": "SkinGrading", "kind": "text", "default": "graded"},
+      {"name": "SurfaceSize", "kind": "number", "default": 0.0},
+      {"name": "WindingThreshold", "kind": "number", "default": 0.5},
+      {"name": "WindingBeta", "kind": "number", "default": 2.0},
+      {"name": "Conformity", "kind": "text", "default": "stuffing"},
+      {"name": "AlphaLong", "kind": "number", "default": 0.24799},
+      {"name": "AlphaShort", "kind": "number", "default": 0.40173},
+      {"name": "PreserveFeatures", "kind": "flag", "default": true},
+      {"name": "FitIterations", "kind": "number", "default": 5.0},
+      {"name": "DihedralFloorGuard", "kind": "flag", "default": true},
+      {"name": "Fill", "kind": "text", "default": "inside"},
+      {"name": "KeepOutside", "kind": "flag", "default": false},
+      {"name": "AttachDistance", "kind": "flag", "default": true},
+      {"name": "AttachQuality", "kind": "flag", "default": false},
+      {"name": "Pillow", "kind": "flag", "default": true},
+      {"name": "HexGrading", "kind": "text", "default": "uniform"},
+      {"name": "UntangleIterations", "kind": "number", "default": 50.0},
+      {"name": "MaxCells", "kind": "number", "default": 20000000.0},
+      {"name": "MaxTets", "kind": "number", "default": 100000000.0},
+      {"name": "VolumeFix", "kind": "flag", "default": true},
+      {"name": "ZeroVolumeFactor", "kind": "number", "default": 1e-06},
+      {"name": "CapFlatness", "kind": "number", "default": 0.01},
+      {"name": "CrossingMargin", "kind": "number", "default": 0.01},
+      {"name": "CrossingGap", "kind": "number", "default": 0.05}
+    ]},
+    {"op": "Octree", "keys": [
+      {"name": "RootCells"},
+      {"name": "MinLevel", "kind": "number", "default": 0.0},
+      {"name": "MaxLevel", "kind": "number", "default": 4.0},
+      {"name": "Bounds"},
+      {"name": "Padding", "kind": "number", "default": 0.0},
+      {"name": "PaddingRelative", "kind": "number", "default": 0.0},
+      {"name": "Dimension", "kind": "number", "default": 0.0},
+      {"name": "SampleDistance", "kind": "number", "default": 0.0},
+      {"name": "Balance", "kind": "text", "default": "face"},
+      {"name": "Fill", "kind": "text", "default": "all"},
+      {"name": "AttachDistance", "kind": "flag", "default": false},
+      {"name": "EvenOdd", "kind": "flag", "default": false},
+      {"name": "MaxCells", "kind": "number", "default": 20000000.0},
+      {"name": "Sign", "kind": "text", "default": "pseudonormal"},
+      {"name": "Transition", "kind": "text", "default": "hanging"},
+      {"name": "Snap", "kind": "flag", "default": false},
+      {"name": "SurfaceLevel", "kind": "number", "default": -1.0},
+      {"name": "CurvatureThreshold", "kind": "number", "default": 0.0},
+      {"name": "FeatureAngle", "kind": "number", "default": 0.0},
+      {"name": "SizeArray", "kind": "text", "default": ""},
+      {"name": "Plane", "kind": "text", "default": "auto"}
+    ]},
+    {"op": "ComputeSdf", "keys": [
+      {"name": "Structure", "kind": "text", "default": "voxel"},
+      {"name": "Resolution"},
+      {"name": "CellSize", "kind": "number", "default": 0.0},
+      {"name": "Bounds"},
+      {"name": "Padding", "kind": "number", "default": 0.0},
+      {"name": "PaddingRelative", "kind": "number", "default": 0.1},
+      {"name": "RootResolution", "kind": "number", "default": 8.0},
+      {"name": "MaxDepth", "kind": "number", "default": 4.0},
+      {"name": "BandCells", "kind": "number", "default": 1.0},
+      {"name": "RecordLevels", "kind": "flag", "default": true},
+      {"name": "MaxCells", "kind": "number", "default": 20000000.0},
+      {"name": "Sign", "kind": "text", "default": "pseudonormal"},
+      {"name": "Location", "kind": "text", "default": "corner"},
+      {"name": "Band", "kind": "number", "default": 0.0}
+    ]},
+    {"op": "Transform", "keys": [
+      {"name": "Translate"},
+      {"name": "Scale"},
+      {"name": "RotateAxis"},
+      {"name": "RotateDegrees"},
+      {"name": "Matrix"},
+      {"name": "ScaleUnits"},
+      {"name": "RotateData"}
+    ]},
+    {"op": "ConvertCells", "keys": [
+      {"name": "Mode", "kind": "text", "default": "linearize", "cpp_default": ""},
+      {"name": "RecordParentIds", "kind": "flag", "default": false}
+    ]},
+    {"op": "Subdivide", "keys": [
+      {"name": "RecordParentIds", "kind": "flag", "default": false}
+    ]},
+    {"op": "Tessellate", "keys": [
+      {"name": "Levels", "kind": "number", "default": 2.0},
+      {"name": "Curved", "kind": "flag", "default": true},
+      {"name": "Fields", "kind": "flag", "default": true},
+      {"name": "RecordStencil", "kind": "flag", "default": false}
+    ]},
+    {"op": "Agglomerate", "keys": [
+      {"name": "TargetGroupSize", "kind": "number", "default": 8.0},
+      {"name": "MergeCoplanarFaces", "kind": "flag", "default": false},
+      {"name": "CoplanarAngle", "kind": "number", "default": 1.0},
+      {"name": "MinSphericity", "kind": "number", "default": 0.0}
+    ]},
+    {"op": "TetToPoly", "keys": [
+      {"name": "FeatureAngle", "kind": "number", "default": 1.0},
+      {"name": "PointDataToCellData", "kind": "flag", "default": false},
+      {"name": "RecordVertexIds", "kind": "flag", "default": false}
+    ]},
+    {"op": "PolyToTet", "keys": [
+      {"name": "RecordParentIds", "kind": "flag", "default": false}
+    ]},
+    {"op": "Crop", "keys": [
+      {"name": "Bbox"},
+      {"name": "Point"},
+      {"name": "Normal"},
+      {"name": "Where", "kind": "text", "default": ""},
+      {"name": "Compare", "kind": "text", "default": "<"},
+      {"name": "Value", "kind": "number", "default": 0.0},
+      {"name": "Mode", "kind": "text", "default": "all"},
+      {"name": "RecordIds", "kind": "flag", "default": false}
+    ]},
+    {"op": "ExtractSurface", "keys": [
+      {"name": "RecordParentIds", "kind": "flag", "default": false}
+    ]},
+    {"op": "ExtractSkin", "keys": [
+      {"name": "Linearize", "kind": "flag", "default": false}
+    ]},
+    {"op": "Reorder", "keys": [
+      {"name": "Method", "kind": "text", "default": "rcm", "cpp_default": ""}
+    ]},
+    {"op": "DataDrop", "keys": [
+      {"name": "Point"},
+      {"name": "Cell"},
+      {"name": "Field"},
+      {"name": "IgnoreMissing"}
+    ]},
+    {"op": "DataKeep", "keys": [
+      {"name": "Point"},
+      {"name": "Cell"},
+      {"name": "Field"}
+    ]},
+    {"op": "DataRename", "keys": [
+      {"name": "Point"},
+      {"name": "Cell"},
+      {"name": "Field"}
+    ]},
+    {"op": "SetsToData", "keys": [
+      {"name": "Location", "kind": "text", "default": "cell"},
+      {"name": "Name", "kind": "text", "default": ""},
+      {"name": "Join", "kind": "text", "default": "-"},
+      {"name": "Order"}
+    ]},
+    {"op": "DataToSets", "keys": [
+      {"name": "Location", "kind": "text", "default": "cell"},
+      {"name": "Key", "kind": "text", "default": ""}
+    ]},
+    {"op": "DataCalc", "keys": [
+      {"name": "Expr", "kind": "text", "default": ""},
+      {"name": "Location", "kind": "text", "default": "point"},
+      {"name": "Overwrite", "kind": "flag", "default": false}
+    ]},
+    {"op": "DataCondition", "keys": [
+      {"name": "Mode", "kind": "text", "default": "clamp", "cpp_default": ""},
+      {"name": "Location", "kind": "text", "default": "point"},
+      {"name": "Names"},
+      {"name": "Scope", "kind": "text", "default": "component", "cpp_default": ""},
+      {"name": "Lo", "kind": "number", "default": 0.0},
+      {"name": "Hi", "kind": "number", "default": 1.0},
+      {"name": "NanPolicy", "kind": "text", "default": "ignore", "cpp_default": ""},
+      {"name": "NanReplacement", "kind": "number", "default": 0.0},
+      {"name": "Suffix", "kind": "text", "default": ""}
+    ]},
+    {"op": "TensorInvariants", "keys": [
+      {"name": "Location", "kind": "text", "default": "point"},
+      {"name": "Names"},
+      {"name": "Outputs", "kind": "text", "default": ""},
+      {"name": "Prefix", "kind": "text", "default": ""},
+      {"name": "Suffix", "kind": "text", "default": ""},
+      {"name": "Overwrite", "kind": "flag", "default": true}
+    ]},
+    {"op": "ToCell", "keys": [
+      {"name": "Names"}
+    ]},
+    {"op": "ToPoint", "keys": [
+      {"name": "Names"},
+      {"name": "Weight", "kind": "text", "default": "uniform", "cpp_default": ""}
+    ]},
+    {"op": "MeshCadSurface", "note": "The model steps (roadmap 6.1.1): they act on the CAD model the Input read carries beside its mesh (see PipeModel below).", "keys": [
+      {"name": "TargetSize", "kind": "number", "default": 0.0},
+      {"name": "MaxChordalDeviation"},
+      {"name": "MinPointsPerEdge"},
+      {"name": "Tolerance"},
+      {"name": "RecordFaceIds"},
+      {"name": "Edges"},
+      {"name": "MatchUnreferencedTrims"},
+      {"name": "Strict"},
+      {"name": "MaxPoints"},
+      {"name": "MinAngle"},
+      {"name": "SmoothIterations"},
+      {"name": "SmoothMethod", "kind": "text", "default": "laplacian"},
+      {"name": "Order"},
+      {"name": "CurvatureDeviation"},
+      {"name": "CellsAcrossGaps"},
+      {"name": "Grading"},
+      {"name": "PoleRings"},
+      {"name": "FaceSizes"},
+      {"name": "EdgeSizes"},
+      {"name": "Background", "kind": "text", "default": ""},
+      {"name": "BackgroundArray", "kind": "text", "default": "size"},
+      {"name": "Metric", "kind": "text", "default": "mean"},
+      {"name": "VirtualEdges", "kind": "flag", "default": false},
+      {"name": "ReparamConditionNumber"},
+      {"name": "ModelTolerances", "kind": "flag", "default": true},
+      {"name": "VirtualFaces", "kind": "flag", "default": true},
+      {"name": "LopCorners", "kind": "flag", "default": false},
+      {"name": "MetricBackground", "kind": "text", "default": ""},
+      {"name": "MetricArray", "kind": "text", "default": ""},
+      {"name": "MetricError", "kind": "number", "default": 0.0},
+      {"name": "Untangle", "kind": "flag", "default": false},
+      {"name": "Quads", "kind": "text", "default": "none"},
+      {"name": "QuadPairs", "kind": "text", "default": "matching"}
+    ]},
+    {"op": "IgaSample", "keys": [
+      {"name": "Subdivisions"},
+      {"name": "TrimSamples"},
+      {"name": "Trim"},
+      {"name": "Edges"}
+    ]},
+    {"op": "IgaRefine", "keys": [
+      {"name": "Subdivisions"},
+      {"name": "Elevate"},
+      {"name": "SampleSubdivisions"},
+      {"name": "TrimSamples"},
+      {"name": "Trim"},
+      {"name": "Edges"}
+    ]},
+    {"op": "ProjectToCad", "note": "Back onto the CAD (roadmap 6.10.1): the B-rep at `Model`, or the one a CAD Input carries when no step has changed the mesh since.", "keys": [
+      {"name": "Model", "kind": "text", "default": ""},
+      {"name": "FaceArray"},
+      {"name": "EdgeArray"},
+      {"name": "MaxDistance"},
+      {"name": "TrimSamples"}
+    ]},
+    {"op": "BoundaryLayer", "note": "Prismatic layers grown from the surface (roadmap 6.9).", "keys": [
+      {"name": "FirstHeight", "kind": "number", "default": 0.0},
+      {"name": "NumLayers", "kind": "number", "default": 3},
+      {"name": "Growth", "kind": "number", "default": 1.2},
+      {"name": "Reverse", "kind": "flag", "default": false},
+      {"name": "CollisionFraction", "kind": "number", "default": 0.45},
+      {"name": "SmoothIterations", "kind": "number", "default": 5},
+      {"name": "MaxShrink", "kind": "number", "default": 6},
+      {"name": "Collapse", "kind": "text", "default": "points"},
+      {"name": "NormalSmoothIterations", "kind": "number", "default": 0},
+      {"name": "FrontCheck", "kind": "flag", "default": true}
+    ]},
+    {"op": "Extrude", "note": "Sweeps (roadmap 3.1.2, 3.1.3) and the reflection (3.2.5).", "keys": [
+      {"name": "Direction"},
+      {"name": "NumLayers", "kind": "number", "default": 1},
+      {"name": "Ratio", "kind": "number", "default": 1.0},
+      {"name": "Offsets"},
+      {"name": "RecordLayers", "kind": "flag", "default": false},
+      {"name": "MaxCells", "kind": "number", "default": 20000000}
+    ]},
+    {"op": "Revolve", "keys": [
+      {"name": "Axis"},
+      {"name": "AxisPoint"},
+      {"name": "Angle", "kind": "number", "default": 360.0},
+      {"name": "NumLayers", "kind": "number", "default": 16},
+      {"name": "Tolerance", "kind": "number", "default": 1e-09},
+      {"name": "RecordLayers", "kind": "flag", "default": false},
+      {"name": "MaxCells", "kind": "number", "default": 20000000}
+    ]},
+    {"op": "Mirror", "keys": [
+      {"name": "Point"},
+      {"name": "Normal"},
+      {"name": "KeepOriginal", "kind": "flag", "default": false},
+      {"name": "Weld", "kind": "flag", "default": true},
+      {"name": "Tolerance", "kind": "number", "default": 1e-09},
+      {"name": "ReflectData", "kind": "flag", "default": false}
+    ]},
+    {"op": "Tetrahedralize", "note": "Tetrahedra filling the closed triangle surface (roadmap 6.7).", "keys": [
+      {"name": "Backend", "kind": "text", "default": "auto"},
+      {"name": "MaxSize"},
+      {"name": "MaxVolume"},
+      {"name": "Grading"},
+      {"name": "OptimizeSteps"},
+      {"name": "MaxCells"},
+      {"name": "FaceArray"}
+    ]},
+    {"op": "RemeshQuads", "keys": [
+      {"name": "TargetFaces"},
+      {"name": "Backend", "kind": "text", "default": "auto"},
+      {"name": "Sharp"},
+      {"name": "Boundary"},
+      {"name": "Adaptive"},
+      {"name": "Dominant"},
+      {"name": "Seed"},
+      {"name": "MaxCells"}
+    ]},
+    {"op": "CutLevelSet", "note": "The part level sets select, through CutCells (doc/cut.md).", "keys": [
+      {"name": "LevelSets"},
+      {"name": "Planes"},
+      {"name": "Selection", "kind": "text", "default": ""},
+      {"name": "IncludeUncut"},
+      {"name": "Backend", "kind": "text", "default": "auto"},
+      {"name": "Degree"},
+      {"name": "Triangulate"},
+      {"name": "RecordParentIds"}
+    ]}
+  ],
+  "v2_steps": [
+    {"op": "Merge", "keys": [
+      {"name": "Inputs"},
+      {"name": "Weld", "kind": "flag", "default": false},
+      {"name": "Atol", "kind": "number", "default": 1e-08},
+      {"name": "SourceTag", "kind": "flag", "default": true},
+      {"name": "DataPolicy", "kind": "text", "default": "intersection"},
+      {"name": "DropDuplicateCells", "kind": "flag", "default": false}
+    ]},
+    {"op": "Interpolate", "keys": [
+      {"name": "Inputs"},
+      {"name": "Method", "kind": "text", "default": "nearest"},
+      {"name": "Arrays"},
+      {"name": "Extrapolate", "kind": "flag", "default": false},
+      {"name": "DefaultValue", "kind": "number", "default": 0.0},
+      {"name": "OnConflict", "kind": "text", "default": "error"}
+    ]},
+    {"op": "UndoGreen", "keys": [
+      {"name": "Inputs"}
+    ]},
+    {"op": "Split", "keys": [
+      {"name": "By"},
+      {"name": "Tag"}
+    ]}
+  ],
+  "v2_extra_keys": {"Partition": ["RecordIds", "GhostLayers"]}
+}

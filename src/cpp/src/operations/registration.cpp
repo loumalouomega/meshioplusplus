@@ -28,6 +28,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/registration.hpp"
+#include "../detail/bounding_box_utils.hpp"
 #include "../detail/jacobi_eigen.hpp"
 #include "../detail/point_knn.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
@@ -166,15 +167,9 @@ public:
         }
         // A grid of about four points per cell over the cloud's surface
         // (half its box's surface area; a speed choice, never the answer).
-        RegVec lo = mPoints[0], hi = mPoints[0];
-        for (const RegVec& q : mPoints)
-            for (std::size_t a = 0; a < 3; ++a) {
-                lo[a] = std::min(lo[a], q[a]);
-                hi[a] = std::max(hi[a], q[a]);
-            }
-        const RegVec e{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-        const double area = e[0] * e[1] + e[1] * e[2] + e[2] * e[0];
-        const double extent = std::max({e[0], e[1], e[2]});
+        const detail::BoundingBox3 box = detail::BoundingBoxUtils::FromPoints(mPoints);
+        const double area = detail::BoundingBoxUtils::HalfSurfaceArea(box);
+        const double extent = detail::BoundingBoxUtils::MaxExtent(box);
         double cell = area > 0.0 ? std::sqrt(4.0 * area / static_cast<double>(n)) : extent;
         cell = std::max(cell, std::max(extent, 1.0) * 1e-9);
         mKnn = detail::PointKnn(mPoints, cell);
@@ -371,15 +366,10 @@ RegistrationResult register_rigid(const Mesh& rSource, const Mesh& rTarget,
                                             std::to_string(i) + " has a non-finite coordinate");
             src[i][k] = v;
         }
-    lo = hi = src[0];
-    for (const RegVec& p : src)
-        for (std::size_t a = 0; a < 3; ++a) {
-            lo[a] = std::min(lo[a], p[a]);
-            hi[a] = std::max(hi[a], p[a]);
-        }
-    const double extent =
-        std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
-                  (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    const detail::BoundingBox3 box = detail::BoundingBoxUtils::FromPoints(src);
+    lo = box.mMin;
+    hi = box.mMax;
+    const double extent = detail::BoundingBoxUtils::Diagonal(box);
     const std::array<double, 16>& m0 = rOptions.mInitial;
     for (const double v : m0)
         if (!std::isfinite(v))

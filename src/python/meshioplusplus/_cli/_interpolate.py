@@ -1,27 +1,16 @@
-from .._helpers import _reader_names, _writer_names, read, write
+from .._helpers import write
 from .._interpolate import interpolate
+from ._common import (
+    add_on_conflict_arg,
+    add_transfer_io_args,
+    add_transfer_quiet_arg,
+    read_source_target,
+    split_csv,
+)
 
 
 def add_args(parser):
-    parser.add_argument("source", type=str, help="mesh file whose data is sampled")
-    parser.add_argument("target", type=str, help="mesh file receiving the samples")
-    parser.add_argument("outfile", type=str, help="interpolated mesh to be written to")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format (both source and target)",
-        default=None,
-    )
-    parser.add_argument(
-        "--output-format",
-        "-o",
-        type=str,
-        choices=_writer_names(),
-        help="output file format",
-        default=None,
-    )
+    add_transfer_io_args(parser, "interpolated mesh to be written to")
     parser.add_argument(
         "--method",
         type=str,
@@ -62,30 +51,13 @@ def add_args(parser):
             "(default: 0)"
         ),
     )
-    parser.add_argument(
-        "--on-conflict",
-        type=str,
-        choices=["error", "overwrite", "suffix"],
-        default="error",
-        help=(
-            "what to do when a transferred name already exists on the target: "
-            "error (default), overwrite, or suffix (writes to NAME_interp)"
-        ),
-    )
-    parser.add_argument(
-        "--quiet",
-        "-q",
-        action="store_true",
-        help="do not print the transfer summary",
-    )
+    add_on_conflict_arg(parser)
+    add_transfer_quiet_arg(parser)
 
 
 def interpolate_cmd(args):
-    source = read(args.source, file_format=args.input_format)
-    target = read(args.target, file_format=args.input_format)
-    arrays = None
-    if args.arrays is not None:
-        arrays = [a.strip() for a in args.arrays.split(",") if a.strip()]
+    source, target = read_source_target(args)
+    arrays = None if args.arrays is None else split_csv(args.arrays)
     out = interpolate(
         source,
         target,

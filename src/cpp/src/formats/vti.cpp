@@ -31,9 +31,7 @@
 #include "meshioplusplus/formats/vti.hpp"
 #include "meshioplusplus/detail/grid_lattice.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
-#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
-#include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/region_field_data.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/vtk_xml_write.hpp"
@@ -56,24 +54,19 @@ std::string vti_num(double Value) {
 }  // namespace
 
 void write_vti(const std::string& rPath, const Mesh& rMesh, bool binary, bool zlib) {
-    write_vti_codec(rPath, rMesh, binary, zlib ? detail::VtkCodec::Zlib : detail::VtkCodec::None);
+    write_vti_codec(rPath, rMesh, binary, detail::vtk_codec_from_zlib(zlib));
 }
 
 void write_vti_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                      detail::VtkCodec codec) {
     detail::LatticeSpec spec;
-    if (!detail::lattice_from_mesh(rMesh, spec))
-        throw WriteError(
-            "ImageData is a regular lattice, and this mesh is not one: it needs exactly one "
-            "hexahedron block whose points tile an axis-aligned box with uniform spacing. A "
-            "partial grid (voxelize's 'surface'/'inside' fill, or an octree) cannot be written "
-            "as .vti either -- write it as .vtu, which stores the cells explicitly.");
-    if (binary && codec != detail::VtkCodec::None)
-        detail::vtk_codec_require_write(codec);
-
-    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
-    if (!os)
-        throw WriteError("Could not open file for writing: " + rPath);
+    auto os = detail::vtk_xml_open_lattice(
+        rPath, rMesh, binary, codec,
+        "ImageData is a regular lattice, and this mesh is not one: it needs exactly one "
+        "hexahedron block whose points tile an axis-aligned box with uniform spacing. A "
+        "partial grid (voxelize's 'surface'/'inside' fill, or an octree) cannot be written "
+        "as .vti either -- write it as .vtu, which stores the cells explicitly.",
+        spec);
 
     const std::size_t hsz = detail::vtk_xml_size_header_bytes(rMesh, binary, codec);
     const detail::VtkXmlEmitter emit{os, binary, codec, hsz};

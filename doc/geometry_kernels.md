@@ -12,12 +12,18 @@ Many operations evaluate the same small formulas per cell: a tetrahedron's signe
 | `include/meshioplusplus/detail/polyhedron.hpp` | Polygon and polyhedron measures: `poly_measure`, `polygon_area_vector`, `polygon_centroid`, `cell_volume_from_corners`. |
 | `include/meshioplusplus/detail/cell_faces.hpp`, `cell_edges.hpp`, `cell_subdivision.hpp` | Topology tables per cell type: outward faces, edges, refinement edges and quad faces. |
 | `src/cpp/src/detail/predicates.hpp` | Exact `orient2d`, `orient3d`, `incircle`, `insphere`. |
+| `src/cpp/src/detail/math_utils.hpp` (private) | `MathUtils`: `Sub`, `Add`, `Scale`, `Dot`, `Cross`, `NormSq`, `Norm`, `Distance` over `Vec3` and flat `double` triples (the `Vec3` ones forward to `geometry.hpp`); `UnitByDivision`, the divide-by-length unit vector with a zero guard; `AngleDeg`, `atan2(‖a × b‖, a · b)` in degrees; `SolveSymmetric3`, the cofactor solve of a symmetric 3×3 system with the `1e-12 s³` singularity bound. |
+| `src/cpp/src/detail/geometry_utils.hpp` (private) | `GeometryUtils`: `TriangleNormal` (unnormalised, `(b − a) × (c − a)`), `TriangleTwiceArea`, `TriangleArea`, `TriangleAnglesDeg`, over `Vec3` and flat triples; `SignedTwiceArea2D` in a parameter plane. |
+| `src/cpp/src/detail/bounding_box_utils.hpp` (private) | `BoundingBox3` and `BoundingBoxUtils`: `FromPoints` (seeded with the first point), `FromCoords` (coordinates gathered on the fly), `Expand`, `Extent`, `MaxExtent`, `HalfSurfaceArea`, `Diagonal`. |
+| `src/cpp/src/detail/facet_slots.hpp` (private) | `FacetSlotUtils`: the global facet-slot numbering of `extract_surface` and `smooth`'s boundary pass (a polyhedron block's face prefix sum, its inverse, the block owning a slot). |
+| `src/cpp/src/detail/dtype_table.hpp`, `ndarray_utils.hpp` (private) | `DTypeUtils::Pick`, one value per `DType` from a table in enumerator order (the netCDF, HDF5, XDMF, VTK and PLY type names); `NDArrayUtils::Int64Vector` and `Float64Vector`, owning 1-D arrays from `std::vector`s. |
 
 The private headers carry no ABI cost, so a kernel starts there. It moves to an installed header only when an installed inline function needs it, and that move follows the [ABI policy](./abi.md).
 
 ## Rules
 
 - **Do not add a file-local copy.** Use the kernels above, and add the missing formula to them instead of to the operation.
+- **Utility classes, Kratos-style.** A group of related helpers is a class of static inline members (`MathUtils::Cross(a, b)`, `GeometryUtils::TriangleArea(a, b, c)`, `BoundingBoxUtils::FromPoints(points)`), as Kratos' `MathUtils` and `GeometryUtils` are: no state, called in place of the block it replaced. Each starts in a private header under `src/cpp/src/detail/`, included directly and by relative path from every `.cpp` that uses it (the amalgamation emits only the private headers a source names), and has its own unit test (`tests/cpp/test_*_utils.cpp`) pinning known values and bit equality with the expression it replaced.
 - **Keep the arithmetic.** A shared kernel replaces a copy only when it computes the same operations in the same order. `a·(b×c)` and a cofactor expansion of the same determinant are equal in exact arithmetic but round differently, and the operations' outputs are pinned bit for bit by the [determinism check](./benchmarks.md#determinism-check). A copy whose arithmetic differs stays until its own output is shown unchanged, or until a change in its results is intended and recorded.
 - **Keep deliberate copies.** A few copies say why they exist. `smooth_facefan_volume` is a flat-buffer variant of `quality`'s face-fan volume, kept out of a hot loop's allocation. `grad_ring_area_vector` is a recentred Newell sum, better conditioned than the plain one. Those comments stay with the code.
 - **Prove it.** Run `tools/bench_ops.sh` with `--hash` before and after the change, with `BASELINE` pointing at the first run. Run the [instruction-count gate](./benchmarks.md#instruction-count-gate) too: an inline kernel must cost what the copy cost.
@@ -32,7 +38,46 @@ These kernels replaced copies with identical arithmetic:
 - the centroid gather (`partition`, `interpolate`);
 - 70 file-local sub, dot, cross, norm, add, scale and distance helpers across 27 sources, now `geometry.hpp`'s.
 
-What remains is listed under roadmap 3.4.
+The third pass (November 2026) added the utility classes and moved onto them, with the same arithmetic:
+
+- the unnormalised triangle normal and its length (`external_mesher`, `mesh_boolean`, `hull`, `cut_graph`, `remesh` and seven sites of `mesh_cad`), and `mesh_cad`'s corner angles (`quality`'s `tri_area` lambda moved too and was put back: GCC compiled the rest of `quality` 1.8% longer, [roadmap 3.4.11](./roadmap.md#quality-of-implementation));
+- the first-point bounding boxes of `point_normals`, `registration`, `reconstruct_surface`, `external_mesher` and `interpolate`;
+- the symmetric 3×3 cofactor solve of `decimate`'s optimal placement and `gradient`'s least squares (`decimate` negates the solution rather than the right-hand side, which keeps the sign of a zero);
+- the division-form unit vectors (`ql_unit`, `ff_unit`, `cf_unit`, `bl_unit` and the external mesher's STL normals) and the `double*` dot, cross and difference helpers of ten sources.
+
+The unit vectors without a zero guard, the boxes seeded with ±infinity and the Cramer-rule solves (`quality_solve3`, `remesh_solve_sym3`) round or behave differently and stay where they are. What remains is listed under roadmap 3.4.
+
+## What the binding pass shared
+
+The second duplication pass (November 2026, [roadmap §8](./roadmap.md#code-duplication)) gave the binding layers and a few operations their own helpers, each file-private and each a call in place of the block it replaced:
+
+| Where | Helper | Replaces |
+| --- | --- | --- |
+| `src/cpp/src/detail/data_plumbing.hpp` | `append_rows(a, rows, new, comps, fill)`: a copy of an array with rows appended, the new values written by the caller's `fill` through one `DoubleSink` commit | the point and point_data growth of `convert_cells`' simplexify and elevate, `refine` and `tet_to_poly` (each caller keeps its mean, midpoint or key average) |
+| `src/cpp/src/detail/decimate_shared.hpp` | `decim_emit_blocks<K>`, the kept cells per block and their cell maps; `decim_remap_regions` | the emission tails of `decimate` (first surviving child of `convert:parent_cell`, `FirstChild`) and `decimate_volume` (identity, `Direct`) |
+| `src/cpp/src/operations/primitives.cpp` | `prim_soup(map, radius, center)`, `prim_cell_type_is(shape, cell_type, alt, default, choices)` | 19 soup set-ups and 16 two-way cell-type checks |
+| `src/cpp/src/registry.cpp` | `RegistryRow` and `registry_rows()`: one row per format with its reader, writer, options reader and metadata reader | the four tables `registry_readers()`, `registry_writers()`, `registry_readers_ex()` and `registry_metadata_readers()` are built from |
+| `src/cpp/cli/main.cpp` | `CliVerb` and `kCliVerbs[]`: name, alias, usage block, handler | `print_usage`'s verb list and `cli_run_verb`'s if chain |
+| `bindings/c/c_api.cpp` | `capi_result_mesh`, `capi_result_take_mesh`, `capi_result_point_map`, `capi_result_num_cell_maps`, `capi_result_cell_map`; `capi_decimate_options`; `capi_indexed_reason`, `capi_copy_indexed_edges` | the bodies of 29 result accessors, the four decimate entry points' option fills, `mesh_cad_surface`'s seven indexed getters |
+| `bindings/python/_core.cpp` | `core_def_mesh_fn`, `core_def_parallel_xml`, `core_def_decimate`, `core_def_step_writer`, `core_def_finalizing_context`, `core_def_time_series_read`, `core_named_arrays` | the near-copy `m.def`s of the primitives, pvtu/pvtp, the decimate pair, the step writers, the finalizing contexts and the time-series readers |
+| `src/python/meshioplusplus/mcp/_server.py` | `_forward(target)`: a tool whose body only forwards its own arguments | 170 forwarding bodies (the tools that remap or render stay hand-written) |
+| `bindings/r/meshioplusplus/src/util.c` | `mio_r_report_list` (a named list whose `NULL` entries take the next of an array of doubles), `mio_r_wrap_handle`, `mio_r_handle` | 47 `PROTECT(Rf_ScalarReal(…))` report chains and the five handle types' wrap and check |
+
+Its second half added:
+
+| Where | Helper | Replaces |
+| --- | --- | --- |
+| `src/cpp/src/detail/always_inline.hpp` | `MIO_ALWAYS_INLINE` | nothing by itself: it lets `stage_flat_or_polygon`/`emit_flat_or_polygon` serve `subdivide` and `ccells_finish_identity` end `convert_cells`' linearize and elevate without changing their callers' code generation ([roadmap 3.4.11](./roadmap.md#quality-of-implementation)) |
+| `src/cpp/src/detail/nastran_write_common.hpp` | `NastranWriteBlock`, `NastranWriteRow`, `nastran_card_index`, `nastran_property_values`, `nastran_named_arrays`, `nastran_fill_block`, `nastran_read_components`, `nastran_read_field`, `nastran_compact_block`, `nastran_rows_by_card` | the copies of the Nastran HDF5 and OP2 writers' model building |
+| `bindings/c/c_api.cpp` | `capi_take_mesh_maps`, `capi_grid_extent`, `capi_grid_bounds`, `capi_checked_enum` | the result moves of six operations, the lattice extents of four converters, 22 enum range checks |
+| `bindings/python/_core.cpp` | `core_distance_options`, `core_metric_summary_dict`, `core_quality_dict` | four distance-option fills, three quality report conversions |
+| `src/cpp/cli/main.cpp` | `cli_opt_double`, `cli_opt_int64`, `cli_opt_int`, `cli_opt_string`, `cli_print_warnings`, `cli_grid_bounds`, `cli_decimate` | 195 option reads, 27 warning loops and arrays, five lattice blocks, the decimate pair's bodies |
+| `src/python/meshioplusplus/mcp/_tools.py` | `_run_op(op, locals(), ...)` | the bodies of 54 tools that only forward their parameters |
+| `src/python/meshioplusplus/_shims.py` | `plain_shims`, `vtk_xml_shims` | the read and write shims of 20 format packages |
+| `tools/pipeline_steps.json`, `tools/gen_pipeline_table.py` | the step tables of both pipeline engines, generated | `_pipeline.py`'s `_OP_TABLE` and `pipeline.cpp`'s `pipe_op_table()`, kept by hand |
+| `bindings/r/meshioplusplus/src/util.c`, `bindings/octave/meshioplusplus/src/util.c` | `mio_r_getbuffer`, `mio_r_cstrings`; `mio_o_getbuffer`, `mio_o_row3`, `mio_o_surface_quality`, `mio_o_ids_0based` | the per-operation getter adapters, three character-vector conversions, the Octave files' own copies |
+
+The exported names, error messages, status codes and Python signatures are unchanged: the C++ and C API ones are pinned by the determinism digests, the gtest suite and byte diffs of the CLI help and completion scripts, the registry's key sets and the `_core` docstrings taken before the change; the MCP tool schemas by a diff of `list_tools()`.
 
 ## Kernels or a geometry hierarchy?
 

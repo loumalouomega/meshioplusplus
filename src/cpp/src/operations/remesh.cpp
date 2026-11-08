@@ -66,6 +66,9 @@
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+#include "../detail/geometry_utils.hpp"
+#include "../detail/surface_rings.hpp"
+
 namespace meshioplusplus {
 
 namespace {
@@ -121,12 +124,7 @@ void remesh_check_blocks(const Mesh& rMesh) {
 RemeshSurface remesh_build_surface(const Mesh& rMesh) {
     RemeshSurface s;
     s.mNumPoints = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
-    s.mXyz.assign(s.mNumPoints * 3, 0.0);
-    const NDArray& points = rMesh.Points();
-    for (std::size_t i = 0; i < s.mNumPoints; ++i)
-        for (std::size_t d = 0; d < dim && d < 3; ++d)
-            s.mXyz[i * 3 + d] = detail::read_double(points, i * dim + d);
+    s.mXyz = detail::surface_xyz(rMesh);
 
     for (const auto cb : rMesh.CellRange()) {
         if (cell_type_from_name(cb.Type()) != CellType::Triangle)
@@ -179,12 +177,7 @@ void remesh_item_weights(const RemeshSurface& rS, const detail::DecimCsr& rVerte
         const double* v0 = rS.mXyz.data() + static_cast<std::size_t>(i0) * 3;
         const double* v1 = rS.mXyz.data() + static_cast<std::size_t>(i1) * 3;
         const double* v2 = rS.mXyz.data() + static_cast<std::size_t>(i2) * 3;
-
-        const double e0[3] = {v1[0] - v0[0], v1[1] - v0[1], v1[2] - v0[2]};
-        const double e1[3] = {v2[0] - v0[0], v2[1] - v0[1], v2[2] - v0[2]};
-        const double c[3] = {e0[1] * e1[2] - e0[2] * e1[1], e0[2] * e1[0] - e0[0] * e1[2],
-                             e0[0] * e1[1] - e0[1] * e1[0]};
-        face_area[f] = 0.5 * std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) / 3.0;
+        face_area[f] = detail::GeometryUtils::TriangleArea(v0, v1, v2) / 3.0;
     });
     parallel_for(rS.mNumPoints, [&](std::size_t i) {
         double a = 0.0;

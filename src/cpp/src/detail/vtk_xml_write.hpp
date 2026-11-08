@@ -30,6 +30,7 @@
 // System includes
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -42,6 +43,7 @@
 #include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "region_field_data.hpp"
 #include "row_writer.hpp"
@@ -147,6 +149,30 @@ inline std::size_t vtk_xml_lattice_preamble(std::ostream& rOs, const Mesh& rMesh
     return hsz;
 }
 
+/// The codec of the `(binary, zlib)` writer entry points: zlib or none.
+inline VtkCodec vtk_codec_from_zlib(bool Zlib) {
+    return Zlib ? VtkCodec::Zlib : VtkCodec::None;
+}
+
+/**
+ * @brief The start of every lattice writer (`.vti`, `.vtr`, `.vts`): the
+ * mesh's lattice into @p rSpec, the codec checked, the file opened.
+ * @throws WriteError @p pNotLattice when the mesh is not a lattice, and when
+ * the file cannot be opened.
+ */
+inline auto vtk_xml_open_lattice(const std::string& rPath, const Mesh& rMesh, bool Binary,
+                                 VtkCodec Codec, const char* pNotLattice,
+                                 LatticeSpec& rSpec) -> std::ofstream {
+    if (!lattice_from_mesh(rMesh, rSpec))
+        throw WriteError(pNotLattice);
+    if (Binary && Codec != VtkCodec::None)
+        vtk_codec_require_write(Codec);
+    auto os = make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+    return os;
+}
+
 /// A one-block lattice's `<PointData>` and `<CellData>` sections (each only
 /// when the mesh has such data).
 inline void vtk_xml_lattice_data(const VtkXmlEmitter& rEmit, const Mesh& rMesh) {
@@ -195,6 +221,26 @@ inline void vtk_xml_lattice_data(const VtkXmlEmitter& rEmit, const Mesh& rMesh) 
         }
         os << "</CellData>\n";
     }
+}
+
+/**
+ * @brief A whole `.vtr` or `.vts` file, whose grid element carries only the
+ * extent: open (`vtk_xml_open_lattice`), the preamble, the geometry section
+ * `rGeometry(emit, spec)` writes (`<Coordinates>`, `<Points>`), the data
+ * sections and the closing tags.
+ */
+template <class TGeometry>
+void vtk_xml_write_lattice(const std::string& rPath, const Mesh& rMesh, bool Binary, VtkCodec Codec,
+                           const char* pGrid, const char* pFormat, const char* pNotLattice,
+                           TGeometry&& rGeometry) {
+    LatticeSpec spec;
+    auto os = vtk_xml_open_lattice(rPath, rMesh, Binary, Codec, pNotLattice, spec);
+    const std::size_t hsz =
+        vtk_xml_lattice_preamble(os, rMesh, spec, pGrid, pFormat, Binary, Codec);
+    const VtkXmlEmitter emit{os, Binary, Codec, hsz};
+    rGeometry(emit, spec);
+    vtk_xml_lattice_data(emit, rMesh);
+    os << "</Piece>\n</" << pGrid << ">\n</VTKFile>\n";
 }
 
 }  // namespace detail

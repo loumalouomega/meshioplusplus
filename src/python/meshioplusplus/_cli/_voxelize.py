@@ -1,6 +1,6 @@
 from .._helpers import read, write
 from .._voxelize import voxelize
-from ._common import add_io_args
+from ._common import add_box_args, add_io_args, parse_bounds, parse_ints
 
 
 def add_args(parser):
@@ -18,22 +18,7 @@ def add_args(parser):
         default=None,
         help="cubic cell size (exactly one of --resolution/--cell-size)",
     )
-    parser.add_argument(
-        "--bounds",
-        type=str,
-        default=None,
-        help="'xlo,ylo,zlo,xhi,yhi,zhi'; the mesh's bounding box by default "
-        "(negatives need --bounds=)",
-    )
-    parser.add_argument(
-        "--padding", type=float, default=0.0, help="grow the box by this on every side"
-    )
-    parser.add_argument(
-        "--padding-relative",
-        type=float,
-        default=0.0,
-        help="grow the box by this fraction of its diagonal on every side",
-    )
+    add_box_args(parser)
     parser.add_argument(
         "--fill",
         type=str,
@@ -75,16 +60,14 @@ def add_args(parser):
 def voxelize_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
 
-    resolution = None
-    if args.resolution is not None:
-        resolution = [int(x) for x in args.resolution.split(",")]
-        if len(resolution) not in (2, 3):
-            raise ValueError("voxelize: --resolution expects 'nx,ny,nz' (or 'nx,ny')")
-    bounds = None
-    if args.bounds is not None:
-        bounds = [float(x) for x in args.bounds.split(",")]
-        if len(bounds) != 6:
-            raise ValueError("voxelize: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'")
+    resolution = parse_ints(
+        args.resolution,
+        "voxelize",
+        "--resolution",
+        counts=(2, 3),
+        form="'nx,ny,nz' (or 'nx,ny')",
+    )
+    bounds = parse_bounds(args.bounds, "voxelize")
 
     out, report = voxelize(
         mesh,

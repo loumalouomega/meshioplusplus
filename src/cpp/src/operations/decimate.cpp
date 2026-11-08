@@ -40,7 +40,6 @@
 #include <stdexcept>
 #include <string>
 #include <tuple>
-#include <utility>
 #include <vector>
 
 // Project includes
@@ -56,6 +55,7 @@
 // Project includes (private, not installed)
 #include "../detail/decimate_shared.hpp"
 #include "../detail/slot_runs.hpp"
+#include "../detail/surface_rings.hpp"
 
 namespace meshioplusplus {
 
@@ -79,40 +79,7 @@ using detail::DecimPlaced;
 
 // --- validation --------------------------------------------------------------
 
-// The resolved stopping criterion. `mTargetFaces` is only meaningful when
-// `mUseTarget` is set (a ratio is turned into a face count once the
-// triangulated face count is known).
-struct DecimStop {
-    bool mUseTarget = false;
-    bool mUseMaxError = false;
-    std::int64_t mTargetFaces = -1;
-    double mMaxError = -1.0;
-};
-
-DecimStop decim_resolve_stop(const DecimateOptions& rOptions) {
-    const int num_set = (rOptions.mTargetRatio >= 0.0 ? 1 : 0) +
-                        (rOptions.mTargetFaces >= 0 ? 1 : 0) + (rOptions.mMaxError >= 0.0 ? 1 : 0);
-    if (num_set != 1)
-        throw std::invalid_argument(
-            "meshio++: decimate: exactly one of target_ratio, target_faces, max_error must be "
-            "set; got " +
-            std::to_string(num_set));
-    DecimStop stop;
-    if (rOptions.mTargetRatio >= 0.0) {
-        if (!(rOptions.mTargetRatio > 0.0 && rOptions.mTargetRatio <= 1.0))
-            throw std::invalid_argument(
-                "meshio++: decimate: target_ratio must lie in (0, 1]; got " +
-                std::to_string(rOptions.mTargetRatio));
-        stop.mUseTarget = true;  // the face count is filled in once F is known
-    } else if (rOptions.mTargetFaces >= 0) {
-        stop.mUseTarget = true;
-        stop.mTargetFaces = rOptions.mTargetFaces;
-    } else {
-        stop.mUseMaxError = true;
-        stop.mMaxError = rOptions.mMaxError;
-    }
-    return stop;
-}
+constexpr const char* kDecimPrefix = "meshio++: decimate: ";
 
 // Reject, by name, every construct outside the surface scope -- BEFORE the
 // simplexify call, whose own policy is to pass unsupported blocks through with
@@ -248,7 +215,6 @@ std::vector<DecimEdgeKey> decim_build_edges(const DecimFaces& rFaces,
 // A Float64 working copy of a float-kind point_data array, blended in place at
 // each collapse commit, and the rest of the commit/emission plumbing shared
 // with volume decimation: detail/decimate_shared.hpp.
-using detail::decim_int64_vector;
 using detail::DecimFloatData;
 
 }  // namespace
@@ -265,13 +231,12 @@ DecimatePlacement decimate_placement_from_name(const std::string& rName) {
 }
 
 DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
-    DecimStop stop = decim_resolve_stop(rOptions);
+    detail::DecimStop stop =
+        detail::decim_resolve_stop(rOptions.mTargetRatio, rOptions.mTargetFaces, rOptions.mMaxError,
+                                   kDecimPrefix, "target_faces");
 
     const std::size_t n = rMesh.NumPoints();
-    if (!rOptions.mFrozen.empty() && rOptions.mFrozen.size() != n)
-        throw std::invalid_argument("meshio++: decimate: frozen mask has " +
-                                    std::to_string(rOptions.mFrozen.size()) +
-                                    " entries but the mesh has " + std::to_string(n) + " points");
+    detail::decim_check_frozen(rOptions.mFrozen.size(), n, kDecimPrefix);
 
     decim_check_blocks(rMesh);
 
@@ -285,14 +250,7 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     const std::size_t dim = simp.PointDim();
 
     // --- phase 1: flat buffers + incidence (parallel fills, serial dedups) ---
-    std::vector<double> xyz(n * 3, 0.0);
-    {
-        const NDArray& points = simp.Points();
-        parallel_for_bw(n, [&](std::size_t i) {
-            for (std::size_t d = 0; d < dim && d < 3; ++d)
-                xyz[i * 3 + d] = detail::read_double(points, i * dim + d);
-        });
-    }
+    std::vector<double> xyz = detail::surface_xyz(simp);
 
     DecimFaces faces = decim_build_faces(simp, n);
     const std::size_t num_faces = faces.mNumFaces;
@@ -340,13 +298,9 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     ctx.mpPinned = &pinned;
     ctx.mPlacement = rOptions.mPlacement;
 
-    // Resolve a ratio into a face target now that F is known. int64(x + 0.5)
-    // truncation, never llround, whose tie rule the numpy twin could not
-    // reproduce with int(x + 0.5).
+    // Resolve a ratio into a face target now that F is known.
     if (stop.mUseTarget && rOptions.mTargetRatio >= 0.0)
-        stop.mTargetFaces = std::max<std::int64_t>(
-            1, static_cast<std::int64_t>(rOptions.mTargetRatio * static_cast<double>(num_faces) +
-                                         0.5));
+        stop.mTarget = detail::decim_ratio_target(rOptions.mTargetRatio, num_faces);
 
     // --- phase 5: seed the queue (parallel scoring, serial pushes) -----------
     using DecimHeapEntry =
@@ -380,14 +334,14 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     std::int64_t alive_faces = static_cast<std::int64_t>(num_faces);
     std::vector<std::int64_t> merged;
     while (true) {
-        if (stop.mUseTarget && alive_faces <= stop.mTargetFaces)
+        if (stop.mUseTarget && alive_faces <= stop.mTarget)
             break;
         if (heap.empty()) {
-            if (stop.mUseTarget && alive_faces > stop.mTargetFaces)
+            if (stop.mUseTarget && alive_faces > stop.mTarget)
                 log::warn(
                     "decimate: queue exhausted at {} faces before reaching the target of {} "
                     "(pinning and the validity guards left no collapsible edge)",
-                    alive_faces, stop.mTargetFaces);
+                    alive_faces, stop.mTarget);
             break;
         }
         const DecimHeapEntry top = heap.top();
@@ -515,44 +469,9 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
 
     // One triangle block per input block (1:1, possibly empty), plus the
     // per-input-block cell maps composed through the simplexify child map.
-    {
-        const bool has_parent = simp.HasCellData("convert:parent_cell") &&
-                                simp.CellDataNumBlocks("convert:parent_cell") == nblocks;
-        std::size_t bi = 0;
-        std::vector<std::size_t> in_cells;
-        for (const auto cb : rMesh.CellRange())
-            in_cells.push_back(cb.NumCells());
-        for (const auto cb : simp.CellRange()) {
-            const std::size_t nc = cb.NumCells();
-            const std::size_t base = static_cast<std::size_t>(faces.mBlockBase[bi]);
-            std::size_t alive_in_block = 0;
-            for (std::size_t c = 0; c < nc; ++c)
-                if (face_alive[base + c])
-                    ++alive_in_block;
-            NDArray block = NDArray::Uninit(DType::Int64, {alive_in_block, 3});
-            std::int64_t* dst = block.As<std::int64_t>();
-            const NDArray* p_parent =
-                has_parent ? &simp.CellData("convert:parent_cell", bi) : nullptr;
-            std::vector<std::int64_t> cell_map(bi < in_cells.size() ? in_cells[bi] : nc, -1);
-            std::size_t w = 0;
-            for (std::size_t c = 0; c < nc; ++c) {
-                if (!face_alive[base + c])
-                    continue;
-                for (std::size_t k = 0; k < 3; ++k)
-                    dst[w * 3 + k] =
-                        remap[static_cast<std::size_t>(faces.mCorners[(base + c) * 3 + k])];
-                const std::int64_t parent = p_parent != nullptr ? detail::read_int(*p_parent, c)
-                                                                : static_cast<std::int64_t>(c);
-                if (parent >= 0 && static_cast<std::size_t>(parent) < cell_map.size() &&
-                    cell_map[static_cast<std::size_t>(parent)] < 0)
-                    cell_map[static_cast<std::size_t>(parent)] = static_cast<std::int64_t>(w);
-                ++w;
-            }
-            out.AddCellBlock(cell_type_name(CellType::Triangle), std::move(block));
-            result.mCellMaps.push_back(decim_int64_vector(cell_map));
-            ++bi;
-        }
-    }
+    detail::decim_emit_blocks<3>(rMesh, simp, "convert:parent_cell", face_alive, faces.mCorners,
+                                 faces.mBlockBase, remap, CellType::Triangle, out,
+                                 result.mCellMaps);
 
     // cell_data: the surviving faces' own rows (simplexify already replicated a
     // parent's row to its triangles); convert:parent_cell is consumed above,
@@ -571,14 +490,8 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
     // which the run scan steps over. A side edge moves to the triangle edge
     // joining its surviving nodes; one a collapse removed is lost, with a
     // warning. See detail/region_remap.hpp.
-    {
-        detail::RegionRemap rmap;
-        rmap.pPointMap = &result.mPointMap;
-        rmap.mCellMapKind = detail::CellMapKind::FirstChild;
-        rmap.pCellMaps = &result.mCellMaps;
-        rmap.mOpName = "decimate";
-        detail::remap_regions(rMesh, result.mMesh, rmap);
-    }
+    detail::decim_remap_regions(rMesh, result.mMesh, result.mPointMap, result.mCellMaps,
+                                detail::CellMapKind::FirstChild, "decimate");
 
     return result;
 }

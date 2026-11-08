@@ -22,24 +22,6 @@
 
 /* --- local helpers ------------------------------------------------------- */
 
-/* The surface quality summary several reports carry, as a 1x1 struct. (R's
- * quality_list, defined further down its ops.c.) */
-static mxArray *oc_quality(const mio_surface_quality *q) {
-    const char *names[] = {"boundary_edges", "non_manifold_edges", "inconsistent_pairs",
-                           "degenerate_triangles", "watertight"};
-    mxArray *values[] = {mio_o_scalar((double)q->boundary_edges),
-                         mio_o_scalar((double)q->non_manifold_edges),
-                         mio_o_scalar((double)q->inconsistent_pairs),
-                         mio_o_scalar((double)q->degenerate_triangles),
-                         mio_o_logical(q->watertight != 0)};
-    return mio_o_struct(5, names, values);
-}
-
-/* A { mesh, counters... } report: `values[0]` is the wrapped mesh. */
-static mxArray *oc_report(int n, const char **names, mxArray **values) {
-    return mio_o_struct(n, names, values);
-}
-
 /* Exactly `n` numbers into `out`, raising `msg` (R's own wording) otherwise. */
 static void oc_vec_exact(const mxArray *a, double *out, size_t n, const char *what,
                          const char *msg) {
@@ -47,15 +29,6 @@ static void oc_vec_exact(const mxArray *a, double *out, size_t n, const char *wh
         mio_o_error(what, "%s", msg);
     }
     mio_o_vecn(a, out, n, what);
-}
-
-/* An optional vector of 1-based ids ([] or empty for none) -> a 0-based
- * mxMalloc'd int64 array, NULL when empty; *n receives its length. MEX frees
- * the buffer when the call returns -- the R_alloc lifetime. */
-static const int64_t *oc_ids_0based(const mxArray *ids, int64_t *n, const char *what) {
-    *n = 0;
-    if (mio_o_is_null(ids) || mxIsEmpty(ids)) return NULL;
-    return mio_o_index_vector(ids, n, what);
 }
 
 /* --- surface / skin / quality -------------------------------------------- */
@@ -124,7 +97,7 @@ static mxArray *O_mio_clean(const mxArray **a) {
     mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)welded),
                          mio_o_scalar((double)orphan), mio_o_scalar((double)degen),
                          mio_o_scalar((double)dup)};
-    return oc_report(5, names, values);
+    return mio_o_struct(5, names, values);
 }
 
 /* smooth(mesh, method, iterations, lambda, mu, fix_boundary, preserve_features,
@@ -146,7 +119,7 @@ static mxArray *O_mio_smooth(const mxArray **a) {
     /* 1-based point ids, [] for none; shifted to 0-based across the C ABI, as
      * every index array in this binding. An out-of-range id raises by name in
      * the core. */
-    opts.frozen = oc_ids_0based(a[9], &n_frozen, "frozen");
+    opts.frozen = mio_o_ids_0based(a[9], &n_frozen, "frozen");
     opts.num_frozen = n_frozen;
 
     mio_mesh *out = mio_smooth_ex(mio_o_mesh(a[0]), &opts, &moved, &disp, &skipped);
@@ -155,7 +128,7 @@ static mxArray *O_mio_smooth(const mxArray **a) {
                            "num_skipped_inversion"};
     mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)moved), mio_o_scalar(disp),
                          mio_o_scalar((double)skipped)};
-    return oc_report(4, names, values);
+    return mio_o_struct(4, names, values);
 }
 
 /* optimize_volume(mesh, max_iterations, relocate, flip, preserve_boundary,
@@ -206,7 +179,7 @@ static mxArray *O_mio_optimize_volume(const mxArray **a) {
                          mio_o_scalar((double)rep.num_worst_smoothed),
                          mio_o_scalar(rep.min_dihedral_before),
                          mio_o_scalar(rep.min_dihedral_after)};
-    return oc_report(13, names, values);
+    return mio_o_struct(13, names, values);
 }
 
 /* --- subsetting ---------------------------------------------------------- */
@@ -277,7 +250,7 @@ static mxArray *O_mio_gradient(const mxArray **a) {
     const char *names[] = {"mesh", "num_skipped", "num_fallback"};
     mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)skipped),
                          mio_o_scalar((double)fallback)};
-    return oc_report(3, names, values);
+    return mio_o_struct(3, names, values);
 }
 
 /* hessian(mesh, array, method, location, output, overwrite) */
@@ -291,7 +264,7 @@ static mxArray *O_mio_hessian(const mxArray **a) {
     const char *names[] = {"mesh", "num_skipped", "num_fallback"};
     mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)skipped),
                          mio_o_scalar((double)fallback)};
-    return oc_report(3, names, values);
+    return mio_o_struct(3, names, values);
 }
 
 /* estimate_error(mesh, array, method, marking, marking_value, output, marked,
@@ -308,7 +281,7 @@ static mxArray *O_mio_estimate_error(const mxArray **a) {
     const char *names[] = {"mesh", "global_error", "num_skipped", "num_marked"};
     mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar(global_error),
                          mio_o_scalar((double)skipped), mio_o_scalar((double)nmarked)};
-    return oc_report(4, names, values);
+    return mio_o_struct(4, names, values);
 }
 
 /* Goes through mio_remesh_ex/mio_remesh_opts rather than the flat mio_remesh
@@ -345,7 +318,7 @@ static mxArray *O_mio_remesh(const mxArray **a) {
                          mio_o_scalar((double)report.subdivide_applied),
                          mio_o_scalar((double)report.num_isolated_clusters),
                          mio_o_scalar((double)report.num_non_manifold_vertices)};
-    return oc_report(6, names, values);
+    return mio_o_struct(6, names, values);
 }
 
 /* compute_curvature(mesh, mean, gaussian, dual_area, include_boundary,
@@ -375,12 +348,12 @@ static mxArray *O_mio_compute_curvature(const mxArray **a) {
     if (out == NULL) mio_o_fail("curvature");
     const char *names[] = {"mesh", "quality", "num_boundary", "num_isolated",
                            "num_degenerate", "total_angle_defect"};
-    mxArray *values[] = {mio_o_wrap_mesh(out), oc_quality(&report.quality),
+    mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_surface_quality(&report.quality),
                          mio_o_scalar((double)report.num_boundary),
                          mio_o_scalar((double)report.num_isolated),
                          mio_o_scalar((double)report.num_degenerate),
                          mio_o_scalar(report.total_angle_defect)};
-    return oc_report(6, names, values);
+    return mio_o_struct(6, names, values);
 }
 
 /* compute_normals(mesh, point_normals, cell_normals, weight, split_angle,
@@ -411,13 +384,13 @@ static mxArray *O_mio_compute_normals(const mxArray **a) {
     if (out == NULL) mio_o_fail("normals");
     const char *names[] = {"mesh", "quality", "num_isolated", "num_undefined",
                            "num_degenerate", "num_split_points", "num_added_points"};
-    mxArray *values[] = {mio_o_wrap_mesh(out), oc_quality(&report.quality),
+    mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_surface_quality(&report.quality),
                          mio_o_scalar((double)report.num_isolated),
                          mio_o_scalar((double)report.num_undefined),
                          mio_o_scalar((double)report.num_degenerate),
                          mio_o_scalar((double)report.num_split_points),
                          mio_o_scalar((double)report.num_added_points)};
-    return oc_report(7, names, values);
+    return mio_o_struct(7, names, values);
 }
 
 /* feature_edges(mesh, feature_angle, feature, boundary, non_manifold,
@@ -442,7 +415,7 @@ static mxArray *O_mio_feature_edges(const mxArray **a) {
                          mio_o_scalar((double)report.num_boundary),
                          mio_o_scalar((double)report.num_non_manifold),
                          mio_o_scalar((double)report.num_inconsistent)};
-    return oc_report(5, names, values);
+    return mio_o_struct(5, names, values);
 }
 
 /* segment(mesh, feature_angle, normal_tolerance, curvature_tolerance,
@@ -477,7 +450,7 @@ static mxArray *O_mio_segment(const mxArray **a) {
                          mio_o_scalar((double)report.num_merged),
                          mio_o_scalar((double)report.num_feature_edges),
                          mio_o_scalar((double)report.num_boundary_edges)};
-    return oc_report(5, names, values);
+    return mio_o_struct(5, names, values);
 }
 
 /* fit_primitives(mesh, patch_data, tolerance, relative, min_inlier_fraction,
@@ -507,7 +480,7 @@ static mxArray *O_mio_fit_primitives(const mxArray **a) {
                          mio_o_scalar((double)report.num_cone),
                          mio_o_scalar((double)report.num_torus),
                          mio_o_scalar((double)report.num_unfitted)};
-    return oc_report(8, names, values);
+    return mio_o_struct(8, names, values);
 }
 
 static mxArray *O_mio_has_occt(const mxArray **a) {
@@ -597,7 +570,7 @@ static mxArray *O_mio_refine_patches(const mxArray **a) {
                          mio_o_scalar(report.initial_energy),
                          mio_o_scalar(report.energy),
                          mio_o_str(oc_refine_stop_name(report.stop))};
-    return oc_report(17, names, values);
+    return mio_o_struct(17, names, values);
 }
 
 /* The 0-based position of a keyword option in a NULL-terminated list. */
@@ -830,7 +803,7 @@ static mxArray *O_mio_fit_cad(const mxArray **a) {
         mio_o_scalar((double)report_ex3.num_face_records),
         mio_o_scalar((double)report_ex3.num_constrained_primitives),
         mio_o_scalar((double)report_ex3.num_constraint_groups)};
-    return oc_report(62, names, values);
+    return mio_o_struct(62, names, values);
 }
 
 /* --- interfaces between regions ------------------------------------------ */
@@ -933,7 +906,7 @@ static mxArray *O_mio_find_interface(const mxArray **a) {
                          mio_o_scalar((double)unmatched_b),
                          side_a_value,
                          side_b_value};
-    return oc_report(8, names, values);
+    return mio_o_struct(8, names, values);
 }
 
 /* contact_pairs(slave_mesh, slave_points, master_mesh, master_cells,
@@ -978,7 +951,7 @@ static mxArray *O_mio_contact_pairs(const mxArray **a) {
                            "master_subfacet", "local_coordinates", "closest_point",
                            "gap",           "normal",      "unmatched"};
     mxArray *values[] = {vs, vmc, vmf, vms, vlc, vcp, vg, vn, vu};
-    return oc_report(9, names, values);
+    return mio_o_struct(9, names, values);
 }
 
 /* split_interface(mesh, side, add_cohesive) */
@@ -996,7 +969,7 @@ static mxArray *O_mio_split_interface(const mxArray **a) {
     const char *names[] = {"mesh", "num_duplicated_points", "num_cohesive_cells"};
     mxArray *values[] = {mio_o_wrap_mesh(out_mesh), mio_o_scalar((double)duplicated),
                          mio_o_scalar((double)cohesive)};
-    return oc_report(3, names, values);
+    return mio_o_struct(3, names, values);
 }
 
 /* --- quality gate, distances and repair ---------------------------------- */
@@ -1017,15 +990,7 @@ static mxArray *O_mio_check_quality(const mxArray **a) {
                          mio_o_scalar((double)r.num_failed), mio_o_scalar((double)r.num_cells),
                          mio_o_scalar((double)r.num_inverted),
                          mio_o_scalar((double)r.num_degenerate), mio_o_str(buf)};
-    return oc_report(7, names, values);
-}
-
-/* A point as a 1 x 3 row (rows are entities). */
-static mxArray *oc_point_row(const double *p) {
-    mxArray *out = mio_o_matrix(1, 3);
-    double *dst = mxGetPr(out);
-    for (int k = 0; k < 3; ++k) dst[k] = p[k];
-    return out;
+    return mio_o_struct(7, names, values);
 }
 
 /* hausdorff_distance(a, b, face_samples, region_a, region_b) */
@@ -1051,9 +1016,9 @@ static mxArray *O_mio_hausdorff_distance(const mxArray **a) {
                          mio_o_scalar(r.rms_b_to_a),
                          mio_o_scalar((double)r.num_samples_a),
                          mio_o_scalar((double)r.num_samples_b),
-                         oc_point_row(r.worst_point_a),
-                         oc_point_row(r.worst_point_b)};
-    return oc_report(11, names, values);
+                         mio_o_row3(r.worst_point_a),
+                         mio_o_row3(r.worst_point_b)};
+    return mio_o_struct(11, names, values);
 }
 
 /* repair(mesh, fix_orientation, orient_outward, fill_holes, split_non_manifold,
@@ -1096,10 +1061,10 @@ static mxArray *O_mio_repair(const mxArray **a) {
                            "points_welded"};
     mxArray *values[15];
     values[0] = mio_o_wrap_mesh(out);
-    values[1] = oc_quality(&report.quality_before);
-    values[2] = oc_quality(&report.quality_after);
+    values[1] = mio_o_surface_quality(&report.quality_before);
+    values[2] = mio_o_surface_quality(&report.quality_after);
     for (int k = 0; k < 12; ++k) values[3 + k] = mio_o_scalar((double)counters[k]);
-    return oc_report(15, names, values);
+    return mio_o_struct(15, names, values);
 }
 
 /* shrinkwrap(mesh, target, offset, max_distance, weights, target_region,
@@ -1130,12 +1095,12 @@ static mxArray *O_mio_shrinkwrap(const mxArray **a) {
     const char *names[] = {"mesh",       "quality",     "num_projected",
                            "num_missed", "num_skipped", "max_displacement"};
     mxArray *values[] = {mio_o_wrap_mesh(out),
-                         oc_quality(&report.quality),
+                         mio_o_surface_quality(&report.quality),
                          mio_o_scalar((double)report.num_projected),
                          mio_o_scalar((double)report.num_missed),
                          mio_o_scalar((double)report.num_skipped),
                          mio_o_scalar(report.max_displacement)};
-    return oc_report(6, names, values);
+    return mio_o_struct(6, names, values);
 }
 
 /* sobolev_deform(mesh, array, length_scale, fixed_points_array, fix_boundary,
@@ -1164,7 +1129,7 @@ static mxArray *O_mio_sobolev_deform(const mxArray **a) {
                          mio_o_scalar((double)report.num_fixed),
                          mio_o_scalar((double)report.num_isolated),
                          mio_o_scalar(report.max_displacement)};
-    return oc_report(7, names, values);
+    return mio_o_struct(7, names, values);
 }
 
 /* --- metrics, untangling, morphing, spectra ------------------------------ */
@@ -1190,7 +1155,7 @@ static mxArray *O_mio_prepare_metric(const mxArray **a) {
     const char *keys[] = {"mesh", "complexity_before", "complexity_after", "num_graded"};
     mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar(rep.complexity_before),
                          mio_o_scalar(rep.complexity_after), mio_o_scalar((double)rep.num_graded)};
-    return oc_report(4, keys, values);
+    return mio_o_struct(4, keys, values);
 }
 
 /* untangle(mesh, fix_boundary, rings, smooth, max_sweeps) */
@@ -1212,7 +1177,7 @@ static mxArray *O_mio_untangle(const mxArray **a) {
                          mio_o_scalar(rep.min_quality_before),
                          mio_o_scalar(rep.min_quality_after),
                          mio_o_scalar((double)rep.sweeps)};
-    return oc_report(6, keys, values);
+    return mio_o_struct(6, keys, values);
 }
 
 /* morph(mesh, array, fix_boundary, constrained_array, stiffening, steps,
@@ -1237,7 +1202,7 @@ static mxArray *O_mio_morph(const mxArray **a) {
                          mio_o_scalar((double)rep.num_inverted),
                          mio_o_scalar(rep.max_displacement),
                          mio_o_logical(rep.converged != 0)};
-    return oc_report(6, keys, values);
+    return mio_o_struct(6, keys, values);
 }
 
 /* laplacian_eigenmodes(mesh, num_modes, tolerance, max_iterations) */
@@ -1253,7 +1218,7 @@ static mxArray *O_mio_laplacian_eigenmodes(const mxArray **a) {
     const char *keys[] = {"mesh", "iterations", "max_residual", "converged"};
     mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)rep.iterations),
                          mio_o_scalar(rep.max_residual), mio_o_logical(rep.converged != 0)};
-    return oc_report(4, keys, values);
+    return mio_o_struct(4, keys, values);
 }
 
 /* --- registration, point clouds, hulls ----------------------------------- */
@@ -1293,7 +1258,7 @@ static mxArray *O_mio_register_rigid(const mxArray **a) {
                          mio_o_scalar((double)rep.iterations),
                          mio_o_scalar((double)rep.num_pairs),
                          mio_o_logical(rep.converged != 0)};
-    return oc_report(6, keys, values);
+    return mio_o_struct(6, keys, values);
 }
 
 /* estimate_normals(mesh, k, orientation, viewpoint, record_variation) */
@@ -1319,7 +1284,7 @@ static mxArray *O_mio_estimate_normals(const mxArray **a) {
     if (out == NULL) mio_o_fail("estimate_normals");
     const char *keys[] = {"mesh", "num_degenerate", "num_components"};
     mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)nd), mio_o_scalar((double)nc)};
-    return oc_report(3, keys, values);
+    return mio_o_struct(3, keys, values);
 }
 
 /* reconstruct_surface(mesh, normals, k, cell_size, resolution, max_distance,
@@ -1352,7 +1317,7 @@ static mxArray *O_mio_reconstruct_surface(const mxArray **a) {
                          mio_o_scalar((double)rep.num_triangles),
                          mio_o_scalar((double)rep.num_components),
                          mio_o_logical(rep.estimated_normals != 0)};
-    return oc_report(10, keys, values);
+    return mio_o_struct(10, keys, values);
 }
 
 /* convex_hull(mesh, dimension) */
@@ -1371,7 +1336,7 @@ static mxArray *O_mio_convex_hull(const mxArray **a) {
                          mio_o_scalar(rep.area),
                          mio_o_scalar(rep.volume),
                          mio_o_scalar(rep.perimeter)};
-    return oc_report(7, keys, values);
+    return mio_o_struct(7, keys, values);
 }
 
 static mxArray *O_mio_delaunay_2d(const mxArray **a) {
@@ -1381,7 +1346,7 @@ static mxArray *O_mio_delaunay_2d(const mxArray **a) {
     const char *keys[] = {"mesh", "num_triangles", "num_duplicates", "num_boundary"};
     mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)nt), mio_o_scalar((double)nd),
                          mio_o_scalar((double)nb)};
-    return oc_report(4, keys, values);
+    return mio_o_struct(4, keys, values);
 }
 
 /* convert_coordinates(mesh, system, axis, origin, reference, arrays, inverse,
@@ -1411,7 +1376,7 @@ static mxArray *O_mio_convert_coordinates(const mxArray **a) {
     if (out == NULL) mio_o_fail("convert_coordinates");
     const char *keys[] = {"mesh", "num_arrays", "num_singular"};
     mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)na), mio_o_scalar((double)ns)};
-    return oc_report(3, keys, values);
+    return mio_o_struct(3, keys, values);
 }
 
 /* geodesic_distance(mesh, sources, source_region, time_factor, tolerance,
@@ -1421,7 +1386,7 @@ static mxArray *O_mio_geodesic_distance(const mxArray **a) {
     mio_geodesic_report report;
     mio_geodesic_opts_init(&opts);
     int64_t n = 0;
-    opts.sources = oc_ids_0based(a[1], &n, "sources"); /* 1-based here */
+    opts.sources = mio_o_ids_0based(a[1], &n, "sources"); /* 1-based here */
     opts.num_sources = n;
     opts.source_region = mio_o_opt_string(a[2]);
     opts.time_factor = mio_o_double(a[3], "time_factor");
@@ -1437,7 +1402,7 @@ static mxArray *O_mio_geodesic_distance(const mxArray **a) {
                          mio_o_scalar(report.max_distance),
                          mio_o_scalar(report.time_step),
                          mio_o_logical(report.converged != 0)};
-    return oc_report(6, names, values);
+    return mio_o_struct(6, names, values);
 }
 
 /* parameterize(mesh, padding, max_depth, max_stretch) */
@@ -1458,7 +1423,7 @@ static mxArray *O_mio_parameterize(const mxArray **a) {
                          mio_o_scalar(report.stretch),
                          mio_o_scalar(report.packing_efficiency),
                          mio_o_scalar((double)report.num_seam_points)};
-    return oc_report(6, names, values);
+    return mio_o_struct(6, names, values);
 }
 
 /* --- table --------------------------------------------------------------- */

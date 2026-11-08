@@ -10,9 +10,11 @@ from functools import reduce
 
 import numpy as np
 
+from .. import _provenance
+from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh
-from .._vtk_common import Info
+from .._vtk_common import Info, meshio_to_vtk_type
 
 # supported vtk dataset types
 vtk_dataset_types = [
@@ -380,3 +382,214 @@ def _skip_meta(f):
         if not line:
             # end of metadata is a blank line
             break
+
+
+# -- sections and writer pieces both versions share -------------------------------
+
+
+def read_common_section(f, info, read_points, dataset_sep):
+    """Read every section but ``CELLS``, whose layout differs by version.
+
+    Returns ``False`` for a section left to the caller. ``read_points`` is the
+    version's point reader (its dtype table bound); ``dataset_sep`` joins the
+    supported dataset names in the unsupported-dataset message, which the two
+    versions word apart (``"', '"`` in 4.2, ``", "`` in 5.1).
+    """
+    if info.section == "METADATA":
+        _skip_meta(f)
+
+    elif info.section == "DATASET":
+        info.active = "DATASET"
+        info.dataset["type"] = info.split[1].upper()
+        if info.dataset["type"] not in vtk_dataset_types:
+            legal = dataset_sep.join(vtk_dataset_types)
+            raise ReadError(
+                f"Only VTK '{legal}' supported (not {info.dataset['type']})."
+            )
+
+    elif info.section == "POINTS":
+        info.active = "POINTS"
+        info.num_points = int(info.split[1])
+        data_type = info.split[2].lower()
+        info.points = read_points(f, data_type, info.is_ascii, info.num_points)
+
+    elif info.section == "CELL_TYPES":
+        info.active = "CELL_TYPES"
+        info.num_items = int(info.split[1])
+        info.types = _read_cell_types(f, info.is_ascii, info.num_items)
+
+    elif info.section == "POINT_DATA":
+        info.active = "POINT_DATA"
+        info.num_items = int(info.split[1])
+
+    elif info.section == "CELL_DATA":
+        info.active = "CELL_DATA"
+        info.num_items = int(info.split[1])
+
+    elif info.section == "LOOKUP_TABLE":
+        info.num_items = int(info.split[2])
+        np.fromfile(f, count=info.num_items * 4, sep=" ", dtype=float)
+        # rgba = data.reshape((info.num_items, 4))
+
+    elif info.section == "COLOR_SCALARS":
+        nValues = int(info.split[2])
+        # re-use num_items from active POINT/CELL_DATA
+        num_items = info.num_items
+        dtype = np.ubyte
+        if info.is_ascii:
+            dtype = float
+        np.fromfile(f, count=num_items * nValues, dtype=dtype)
+
+    else:
+        return False
+    return True
+
+
+def check_mesh(info):
+    """Check an unstructured grid's sections, or build a structured one's cells.
+
+    Structured datasets get points (where the file has none) and the counted
+    legacy cell layout, ``(n, p0, p1, ...)`` per cell.
+    """
+    if info.dataset["type"] == "UNSTRUCTURED_GRID":
+        if info.connectivity is None:
+            raise ReadError("Required section CELLS not found.")
+        if info.types is None:
+            raise ReadError("Required section CELL_TYPES not found.")
+    elif info.dataset["type"] == "STRUCTURED_POINTS":
+        dim = info.dataset["DIMENSIONS"]
+        ori = info.dataset["ORIGIN"]
+        spa = (
+            info.dataset["SPACING"]
+            if "SPACING" in info.dataset
+            else info.dataset["ASPECT_RATIO"]
+        )
+        axis = [
+            np.linspace(ori[i], ori[i] + (dim[i] - 1.0) * spa[i], dim[i])
+            for i in range(3)
+        ]
+        info.points = _generate_points(axis)
+        info.connectivity, info.types = _generate_cells(dim=info.dataset["DIMENSIONS"])
+    elif info.dataset["type"] == "RECTILINEAR_GRID":
+        axis = [
+            info.dataset["X_COORDINATES"],
+            info.dataset["Y_COORDINATES"],
+            info.dataset["Z_COORDINATES"],
+        ]
+        info.points = _generate_points(axis)
+        info.connectivity, info.types = _generate_cells(dim=info.dataset["DIMENSIONS"])
+    elif info.dataset["type"] == "STRUCTURED_GRID":
+        info.connectivity, info.types = _generate_cells(dim=info.dataset["DIMENSIONS"])
+
+
+def read_int_data(f, is_ascii, num_items, dtype=np.dtype("int32"), message=None):
+    """``num_items`` integers, big-endian when binary (then a newline follows).
+
+    A binary block not followed by its newline raises ``ReadError(message)``
+    (a bare ``ReadError()`` when ``message`` is ``None``).
+    """
+    if is_ascii:
+        c = np.fromfile(f, count=num_items, sep=" ", dtype=dtype)
+    else:
+        dtype = dtype.newbyteorder(">")
+        c = np.fromfile(f, count=num_items, dtype=dtype)
+        line = f.readline().decode()
+        if line != "\n":
+            raise ReadError() if message is None else ReadError(message)
+    return c
+
+
+def _pad_3d(array):
+    return np.pad(array, ((0, 0), (0, 1)), "constant")
+
+
+def pad_2d_to_3d(mesh, binary):
+    """The points to write, with 2-D points and vectors given a zero third component.
+
+    2-D ``point_data`` and ``cell_data`` vectors are padded in place on ``mesh``,
+    each with a warning, and an ASCII write warns that it is for debugging.
+    """
+    if mesh.points.shape[1] == 2:
+        warn(
+            "VTK requires 3D points, but 2D points given. "
+            "Appending 0 third component."
+        )
+        points = _pad_3d(mesh.points)
+    else:
+        points = mesh.points
+
+    if mesh.point_data:
+        for name, values in mesh.point_data.items():
+            if len(values.shape) == 2 and values.shape[1] == 2:
+                warn(
+                    "VTK requires 3D vectors, but 2D vectors given. "
+                    f"Appending 0 third component to {name}."
+                )
+                mesh.point_data[name] = _pad_3d(values)
+
+    for name, data in mesh.cell_data.items():
+        for k, values in enumerate(data):
+            if len(values.shape) == 2 and values.shape[1] == 2:
+                warn(
+                    "VTK requires 3D vectors, but 2D vectors given. "
+                    f"Appending 0 third component to {name}."
+                )
+                data[k] = _pad_3d(data[k])
+
+    if not binary:
+        warn("VTK ASCII files are only meant for debugging.")
+    return points
+
+
+def write_points(f, points, binary, numpy_to_vtk_dtype):
+    """The ``POINTS`` section; binary data is big-endian, as the format requires."""
+    dtype = numpy_to_vtk_dtype[points.dtype.name]
+    f.write(f"POINTS {len(points)} {dtype}\n".encode())
+    if binary:
+        # <https://vtk.org/Wiki/VTK/Writing_VTK_files_using_python#.22legacy.22>
+        points.astype(points.dtype.newbyteorder(">")).tofile(f, sep="")
+    else:
+        points.tofile(f, sep=" ")
+    f.write(b"\n")
+
+
+def write_cell_types(f, cells, binary):
+    """The ``CELL_TYPES`` section, one VTK type per cell (big-endian int32)."""
+    total_num_cells = sum(len(c.data) for c in cells)
+    f.write(f"CELL_TYPES {total_num_cells}\n".encode())
+    if binary:
+        for c in cells:
+            vtk_type = meshio_to_vtk_type[c.type]
+            np.full(len(c.data), vtk_type, dtype=np.dtype(">i4")).tofile(f, sep="")
+        f.write(b"\n")
+    else:
+        for c in cells:
+            vtk_type = meshio_to_vtk_type[c.type]
+            np.full(len(c.data), vtk_type).tofile(f, sep="\n")
+            f.write(b"\n")
+
+
+def write_unstructured(
+    f, version, mesh, points, binary, write_cells, numpy_to_vtk_dtype
+):
+    """One ``UNSTRUCTURED_GRID`` file: header, points, cells and both data sections.
+
+    ``write_cells(f, cells, binary)`` is the version's own ``CELLS`` writer.
+    """
+    f.write(f"# vtk DataFile Version {version}\n".encode())
+    f.write(f"{_provenance.lines(_provenance.SlotTier.SINGLE_LINE)[0]}\n".encode())
+    f.write(("BINARY\n" if binary else "ASCII\n").encode())
+    f.write(b"DATASET UNSTRUCTURED_GRID\n")
+
+    write_points(f, points, binary, numpy_to_vtk_dtype)
+    write_cells(f, mesh.cells, binary)
+
+    if mesh.point_data:
+        num_points = mesh.points.shape[0]
+        f.write(f"POINT_DATA {num_points}\n".encode())
+        write_field_data(f, mesh.point_data, binary, numpy_to_vtk_dtype)
+
+    if mesh.cell_data:
+        total_num_cells = sum(len(c.data) for c in mesh.cells)
+        f.write(f"CELL_DATA {total_num_cells}\n".encode())
+        write_field_data(f, mesh.cell_data, binary, numpy_to_vtk_dtype)

@@ -397,25 +397,6 @@ static void od_fill_sdf_opts(mio_sdf_opts *o, const mxArray *sign, int location,
     o->watertight_check = (int32_t)mio_o_int(watertight_check, "watertight_check");
 }
 
-static mxArray *od_quality_struct(const mio_surface_quality *q) {
-    const char *names[] = {"boundary_edges", "non_manifold_edges", "inconsistent_pairs",
-                           "degenerate_triangles", "watertight"};
-    mxArray *values[] = {mio_o_scalar((double)q->boundary_edges),
-                         mio_o_scalar((double)q->non_manifold_edges),
-                         mio_o_scalar((double)q->inconsistent_pairs),
-                         mio_o_scalar((double)q->degenerate_triangles),
-                         mio_o_logical(q->watertight != 0)};
-    return mio_o_struct(5, names, values);
-}
-
-/* A length-3 coordinate result (origin, spacing, dims) is a 1 x 3 row, the
- * shape of one point -- the convention every port shares. */
-static mxArray *od_row3(const double *v) {
-    mxArray *out = mio_o_matrix(1, 3);
-    memcpy(mxGetPr(out), v, 3 * sizeof(double));
-    return out;
-}
-
 static mxArray *od_row3_i64(const int64_t *v) {
     mxArray *out = mio_o_matrix(1, 3);
     for (int i = 0; i < 3; ++i) mxGetPr(out)[i] = (double)v[i];
@@ -573,8 +554,8 @@ static mxArray *O_mio_voxelize(const mxArray **a) {
     if (out == NULL) mio_o_fail("voxelize");
 
     const char *names[] = {"mesh", "dims", "origin", "spacing", "num_occupied"};
-    mxArray *values[] = {mio_o_wrap_mesh(out), od_row3_i64(cdims), od_row3(origin),
-                         od_row3(spacing), mio_o_scalar((double)occupied)};
+    mxArray *values[] = {mio_o_wrap_mesh(out), od_row3_i64(cdims), mio_o_row3(origin),
+                         mio_o_row3(spacing), mio_o_scalar((double)occupied)};
     return mio_o_struct(5, names, values);
 }
 
@@ -629,22 +610,11 @@ static mxArray *O_mio_octree(const mxArray **a) {
                          mio_o_scalar((double)report.num_leaves),
                          mio_o_scalar((double)report.num_hanging),
                          mio_o_scalar((double)report.finest_level),
-                         od_row3(report.origin),
+                         mio_o_row3(report.origin),
                          mio_o_scalar(report.root_size),
                          mio_o_scalar((double)report.num_snapped),
                          mio_o_scalar((double)report.num_refused)};
     return mio_o_struct(9, names, values);
-}
-
-/* mio_o_getstring adapter: the warnings of this thread's last octree_mesh call. */
-static int64_t od_octree_mesh_stage_names(void *ctx, char *buf, int64_t buflen) {
-    (void)ctx;
-    return mio_octree_mesh_stage_names(buf, buflen);
-}
-
-static int64_t od_octree_mesh_warnings(void *ctx, char *buf, int64_t buflen) {
-    (void)ctx;
-    return mio_octree_mesh_warnings(buf, buflen);
 }
 
 /* Every option is [] for "keep mio_octree_mesh_opts_init's default", so the
@@ -729,8 +699,8 @@ static mxArray *O_mio_octree_mesh(const mxArray **a) {
     /* Wrap the mesh first: once it is a handle object nothing below can leak
      * it. */
     mxArray *mo = mio_o_wrap_mesh(out);
-    mxArray *warnings = mio_o_getstring(od_octree_mesh_warnings, NULL, "octree_mesh");
-    mxArray *stages = mio_o_getstring(od_octree_mesh_stage_names, NULL, "octree_mesh");
+    mxArray *warnings = mio_o_getbuffer(mio_octree_mesh_warnings, "octree_mesh");
+    mxArray *stages = mio_o_getbuffer(mio_octree_mesh_stage_names, "octree_mesh");
     static const char *outputs[] = {"castellated", "tet", "hex"};
     const char *output_name =
         (report.output >= 0 && report.output <= 2) ? outputs[report.output] : "unknown";
@@ -749,7 +719,7 @@ static mxArray *O_mio_octree_mesh(const mxArray **a) {
     OD_SET("mesh", mo);
     OD_SET("output", mio_o_str(output_name));
     OD_SET("guarantee_applies", mio_o_logical(report.guarantee_applies != 0));
-    OD_SET("origin", od_row3(report.origin));
+    OD_SET("origin", mio_o_row3(report.origin));
     OD_NUM(root_size);
     OD_SET("root_cells", od_row3_i64(report.root_cells));
     OD_NUM(max_level);
@@ -869,9 +839,9 @@ static mxArray *O_mio_compute_sdf(const mxArray **a) {
     const char *names[] = {"mesh",      "dims",       "origin", "spacing",
                            "max_depth", "num_banded", "quality"};
     mxArray *values[] = {mio_o_wrap_mesh(out),         od_row3_i64(cdims),
-                         od_row3(origin),           od_row3(spacing),
+                         mio_o_row3(origin),           mio_o_row3(spacing),
                          mio_o_scalar((double)depth),  mio_o_scalar((double)banded),
-                         od_quality_struct(&q)};
+                         mio_o_surface_quality(&q)};
     return mio_o_struct(7, names, values);
 }
 
@@ -918,7 +888,7 @@ static mxArray *O_mio_remesh_volume(const mxArray **a) {
                          mio_o_scalar((double)report.num_vertices_warped),
                          mio_o_scalar((double)report.num_tets_rejected),
                          mio_o_scalar((double)report.num_non_manifold_edges),
-                         od_quality_struct(&report.input_quality)};
+                         mio_o_surface_quality(&report.input_quality)};
     return mio_o_struct(6, names, values);
 }
 
@@ -926,7 +896,7 @@ static mxArray *O_mio_surface_watertight_check(const mxArray **a) {
     mio_surface_quality q;
     memset(&q, 0, sizeof(q));
     mio_o_check(mio_surface_watertight_check(mio_o_mesh(a[0]), &q), "surface_watertight_check");
-    return od_quality_struct(&q);
+    return mio_o_surface_quality(&q);
 }
 
 /* sample_distance(mesh, points, sign, band, watertight_check) -- `points` is
@@ -966,7 +936,7 @@ static mxArray *O_mio_distance_to_surface(const mxArray **a) {
 
     const char *names[] = {"mesh", "num_banded", "quality"};
     mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)banded),
-                         od_quality_struct(&q)};
+                         mio_o_surface_quality(&q)};
     return mio_o_struct(3, names, values);
 }
 

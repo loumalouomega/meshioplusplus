@@ -60,6 +60,7 @@
 #include "../detail/raster.hpp"
 #include "../detail/render_field.hpp"
 #include "../detail/streamlines.hpp"
+#include "../detail/math_utils.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -605,10 +606,6 @@ void rnd_face_triangles(const std::vector<double>& rXyz, const std::int64_t* pRi
 // Camera
 // ---------------------------------------------------------------------------
 
-double rnd_dot(const double* pA, const std::array<double, 3>& rB) {
-    return pA[0] * rB[0] + pA[1] * rB[1] + pA[2] * rB[2];
-}
-
 // The Lambert intensity of a unit normal under a unit light direction. A zero
 // normal (a degenerate face, a NaN vertex normal) is lit fully rather than
 // darkened, since it has no side to turn away.
@@ -617,7 +614,7 @@ double rnd_lambert(const double* pNormal, const std::array<double, 3>& rLight,
     if (!(std::isfinite(pNormal[0]) && std::isfinite(pNormal[1]) && std::isfinite(pNormal[2])) ||
         (pNormal[0] == 0.0 && pNormal[1] == 0.0 && pNormal[2] == 0.0))
         return 1.0;
-    double d = rnd_dot(pNormal, rLight);
+    double d = detail::MathUtils::Dot(pNormal, rLight);
     if (rOpt.mTwoSided)
         d = std::fabs(d);
     else if (d < 0.0)
@@ -2308,14 +2305,14 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
         const double* p = &xyz[3 * i];
         if (perspective) {
             const double rel[3] = {p[0] - eye[0], p[1] - eye[1], p[2] - eye[2]};
-            const double zc = -rnd_dot(rel, cam.mW);
-            sx[i] = focal * rnd_dot(rel, cam.mU) / zc;
-            sy[i] = focal * rnd_dot(rel, cam.mV) / zc;
+            const double zc = -detail::MathUtils::Dot(rel, cam.mW);
+            sx[i] = focal * detail::MathUtils::Dot(rel, cam.mU) / zc;
+            sy[i] = focal * detail::MathUtils::Dot(rel, cam.mV) / zc;
             sz[i] = 1.0 / zc;
         } else {
-            sx[i] = rnd_dot(p, cam.mU);
-            sy[i] = rnd_dot(p, cam.mV);
-            sz[i] = rnd_dot(p, cam.mW);
+            sx[i] = detail::MathUtils::Dot(p, cam.mU);
+            sy[i] = detail::MathUtils::Dot(p, cam.mV);
+            sz[i] = detail::MathUtils::Dot(p, cam.mW);
         }
     });
 
@@ -2350,9 +2347,9 @@ Frame rnd_draw(const RndPrepared& rPrep, const RenderOptions& rCamera, bool Fixe
             min_z = 1.0 / (fit_distance + r);
             max_z = 1.0 / (fit_distance - r);
         } else {
-            const double cx = rnd_dot(rPrep.mCentre.data(), cam.mU);
-            const double cy = rnd_dot(rPrep.mCentre.data(), cam.mV);
-            const double cz = rnd_dot(rPrep.mCentre.data(), cam.mW);
+            const double cx = detail::MathUtils::Dot(rPrep.mCentre.data(), cam.mU);
+            const double cy = detail::MathUtils::Dot(rPrep.mCentre.data(), cam.mV);
+            const double cz = detail::MathUtils::Dot(rPrep.mCentre.data(), cam.mW);
             min_x = cx - r;
             max_x = cx + r;
             min_y = cy - r;

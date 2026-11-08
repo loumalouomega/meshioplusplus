@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <utility>
 
@@ -55,10 +56,6 @@ constexpr NastranTypeSpec kNastranWriteTypes[] = {
     {"pyramid", "CPYRAM", 5, 2},   {"pyramid13", "CPYRAM", 13, 2}, {"wedge", "CPENTA", 6, 2},
     {"wedge15", "CPENTA", 15, 2},  {"hexahedron", "CHEXA", 8, 2},  {"hexahedron20", "CHEXA", 20, 2},
 };
-
-[[noreturn]] void nastran_write_fail(const char* pWho, const std::string& rMessage) {
-    throw WriteError(std::string(pWho) + ": " + rMessage);
-}
 
 }  // namespace
 
@@ -133,6 +130,177 @@ std::string nastran_join(const std::set<std::string>& rNames) {
     for (const std::string& n : rNames)
         out += (out.empty() ? "" : ", ") + n;
     return out;
+}
+
+void nastran_write_fail(const char* pWho, const std::string& rMessage) {
+    throw WriteError(std::string(pWho) + ": " + rMessage);
+}
+
+std::int64_t nastran_ptype_pid(const std::string& rName, const std::string& rPtype) {
+    if (rName.size() <= rPtype.size() + 1 || rName.compare(0, rPtype.size(), rPtype) != 0 ||
+        rName[rPtype.size()] != '_')
+        return -1;
+    std::int64_t pid = 0;
+    for (std::size_t i = rPtype.size() + 1; i < rName.size(); ++i) {
+        if (rName[i] < '0' || rName[i] > '9' || pid > 100000000000000000)
+            return -1;
+        pid = pid * 10 + (rName[i] - '0');
+    }
+    return pid;
+}
+
+std::vector<double> nastran_as_doubles(const NDArray& rA) {
+    std::vector<double> out(rA.Size());
+    if (rA.Dtype() == DType::Int64) {
+        const Int64View view(rA);
+        for (std::size_t i = 0; i < out.size(); ++i)
+            out[i] = static_cast<double>(view.Data()[i]);
+    } else {
+        const DoubleView view(rA);
+        std::copy(view.Data(), view.Data() + out.size(), out.begin());
+    }
+    return out;
+}
+
+NastranArrays nastran_named_arrays(const Mesh& rMesh, const std::string& rCard) {
+    const std::string kPrefix = "nastran:" + rCard + "_";
+    NastranArrays out;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        if (name.rfind(kPrefix, 0) != 0)
+            continue;
+        const std::size_t colon = name.find(':', kPrefix.size());
+        if (colon == std::string::npos || colon == kPrefix.size())
+            continue;
+        const std::string digits = name.substr(kPrefix.size(), colon - kPrefix.size());
+        const std::string member = name.substr(colon + 1);
+        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 15)
+            continue;
+        if (member.empty() ||
+            member.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != std::string::npos)
+            continue;
+        out[std::stoll(digits)][member] = nastran_as_doubles(rMesh.FieldData(name));
+    }
+    return out;
+}
+
+std::set<std::int64_t> nastran_region_pids(const Mesh& rMesh, const std::string& rPtype) {
+    std::set<std::int64_t> out;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const std::int64_t pid = nastran_ptype_pid(rMesh.Region(i).mName, rPtype);
+        if (pid >= 0)
+            out.insert(pid);
+    }
+    return out;
+}
+
+void nastran_fill_block(const Mesh& rMesh, std::size_t B, const NastranTypeSpec& rSpec,
+                        std::size_t NumPoints, std::int64_t& rSequential, const char* pWho,
+                        NastranWriteBlock& rBlk) {
+    const auto cb = rMesh.Cells(B);
+    rBlk.mIndex = B;
+    rBlk.mCount = cb.NumCells();
+    rBlk.mNodes = cb.NodesPerCell();
+    if (rBlk.mCount > 0 && rBlk.mNodes != rSpec.mNodes)
+        nastran_write_fail(pWho, "a '" + cb.Type() + "' block needs " +
+                                     std::to_string(rSpec.mNodes) + " nodes per cell");
+    const Int64View conn(cb.Conn());
+    rBlk.mConn.assign(conn.Data(), conn.Data() + rBlk.mCount * rBlk.mNodes);
+    for (const std::int64_t node : rBlk.mConn)
+        if (node < 0 || static_cast<std::size_t>(node) >= NumPoints)
+            nastran_write_fail(
+                pWho, "a '" + cb.Type() + "' cell refers to a point the mesh does not have");
+    rBlk.mEids.resize(rBlk.mCount);
+    rBlk.mPids.resize(rBlk.mCount);
+    if (rMesh.HasCellData("nastran:eid")) {
+        const NDArray& a = rMesh.CellData("nastran:eid", B);
+        if (a.Size() != rBlk.mCount)
+            nastran_write_fail(pWho, "'nastran:eid' must have one value per cell");
+        const Int64View view(a);
+        rBlk.mEids.assign(view.Data(), view.Data() + rBlk.mCount);
+    } else {
+        for (std::size_t i = 0; i < rBlk.mCount; ++i)
+            rBlk.mEids[i] = rSequential + static_cast<std::int64_t>(i);
+    }
+    rSequential += static_cast<std::int64_t>(rBlk.mCount);
+    if (rMesh.HasCellData("nastran:pid")) {
+        const NDArray& a = rMesh.CellData("nastran:pid", B);
+        if (a.Size() != rBlk.mCount)
+            nastran_write_fail(pWho, "'nastran:pid' must have one value per cell");
+        const Int64View view(a);
+        rBlk.mPids.assign(view.Data(), view.Data() + rBlk.mCount);
+    } else {
+        rBlk.mPids.assign(rBlk.mCount, rSpec.mPid);
+    }
+}
+
+void nastran_read_components(const Mesh& rMesh, std::size_t B, const char* pWho,
+                             NastranWriteBlock& rBlk) {
+    std::vector<std::int64_t> c1(rBlk.mCount, 1);
+    std::vector<std::int64_t> c2(rBlk.mCount, 1);
+    const auto read_component = [&](const char* pName, std::vector<std::int64_t>& rValues) {
+        if (!rMesh.HasCellData(pName))
+            return;
+        const NDArray& a = rMesh.CellData(pName, B);
+        if (a.Size() != rBlk.mCount)
+            nastran_write_fail(pWho, std::string("'") + pName + "' must have one value per cell");
+        const Int64View view(a);
+        rValues.assign(view.Data(), view.Data() + rBlk.mCount);
+    };
+    read_component("nastran:c1", c1);
+    read_component("nastran:c2", c2);
+    rBlk.mComps.resize(2 * rBlk.mCount);
+    for (std::size_t i = 0; i < rBlk.mCount; ++i) {
+        rBlk.mComps[2 * i] = c1[i];
+        rBlk.mComps[2 * i + 1] = rBlk.mNodes == 1 ? 0 : c2[i];
+    }
+}
+
+void nastran_read_field(const Mesh& rMesh, std::size_t B, const char* pName,
+                        std::initializer_list<std::size_t> Cards, std::size_t Lo, std::size_t Width,
+                        std::size_t BarWidth, const char* pWho, NastranWriteBlock& rBlk) {
+    if (!rMesh.HasCellData(pName))
+        return;
+    const NDArray& a = rMesh.CellData(pName, B);
+    if (a.Size() != rBlk.mCount * Width)
+        nastran_write_fail(pWho, std::string("'") + pName + "' must have " + std::to_string(Width) +
+                                     " value(s) per cell");
+    const DoubleView view(a);
+    for (std::size_t i = 0; i < rBlk.mCount; ++i)
+        if (std::find(Cards.begin(), Cards.end(), rBlk.mCards[i]) != Cards.end())
+            for (std::size_t k = 0; k < Width; ++k)
+                rBlk.mBar[i * BarWidth + Lo + k] = view.Data()[i * Width + k];
+}
+
+void nastran_compact_block(const std::vector<bool>& rKeep, std::size_t Kept, std::size_t BarWidth,
+                           NastranWriteBlock& rBlk) {
+    const auto compact = [&rKeep](auto& rValues, std::size_t Stride) {
+        std::size_t to = 0;
+        for (std::size_t i = 0; i < rKeep.size(); ++i)
+            if (rKeep[i])
+                for (std::size_t s = 0; s < Stride; ++s)
+                    rValues[to++] = rValues[i * Stride + s];
+        rValues.resize(to);
+    };
+    compact(rBlk.mConn, rBlk.mNodes);
+    compact(rBlk.mEids, 1);
+    compact(rBlk.mPids, 1);
+    compact(rBlk.mCards, 1);
+    compact(rBlk.mComps, 2);
+    compact(rBlk.mBar, BarWidth);
+    rBlk.mCount = Kept;
+}
+
+std::vector<std::vector<NastranWriteRow>> nastran_rows_by_card(
+    const std::vector<NastranWriteBlock>& rBlocks, std::size_t NumCards) {
+    std::vector<std::vector<NastranWriteRow>> rows(NumCards);
+    for (std::size_t bi = 0; bi < rBlocks.size(); ++bi)
+        for (std::size_t r = 0; r < rBlocks[bi].mCount; ++r)
+            rows[rBlocks[bi].mCards[r]].push_back({rBlocks[bi].mEids[r], bi, r});
+    for (auto& card_rows : rows)
+        std::stable_sort(
+            card_rows.begin(), card_rows.end(),
+            [](const NastranWriteRow& rA, const NastranWriteRow& rB) { return rA.mEid < rB.mEid; });
+    return rows;
 }
 
 }  // namespace detail

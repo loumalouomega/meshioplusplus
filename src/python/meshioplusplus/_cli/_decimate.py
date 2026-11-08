@@ -1,67 +1,34 @@
 from .._decimate import decimate
 from .._helpers import read, write
-from ._common import add_io_args
+from ._common import add_decimate_args, decimate_summary
+
+_HELP = {
+    "in": "surface mesh file to be read from",
+    "ratio": "fraction of the (triangulated) faces to KEEP, in (0, 1]",
+    "count": "absolute face count to stop at (within one collapse)",
+    "max_error": "collapse only while the cheapest quadric error is at most this",
+    "placement": (
+        "where the surviving vertex goes: the quadric minimizer (midpoint "
+        "when ill-conditioned), the edge midpoint, or the cheaper endpoint "
+        "(default: optimal)"
+    ),
+    "features": "allow feature vertices (sharp corners/creases) to collapse",
+    "angle": "degrees between face normals above which a vertex is a feature "
+    "(default: 30)",
+}
+
+_BOUNDARY = (
+    ("--no-preserve-boundary",),
+    {
+        "dest": "preserve_boundary",
+        "action": "store_false",
+        "help": "allow boundary vertices to collapse (the outline may change)",
+    },
+)
 
 
 def add_args(parser):
-    add_io_args(
-        parser,
-        "decimated mesh to be written to",
-        in_help="surface mesh file to be read from",
-    )
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument(
-        "--ratio",
-        type=float,
-        default=None,
-        help="fraction of the (triangulated) faces to KEEP, in (0, 1]",
-    )
-    group.add_argument(
-        "--target-faces",
-        type=int,
-        default=None,
-        help="absolute face count to stop at (within one collapse)",
-    )
-    group.add_argument(
-        "--max-error",
-        type=float,
-        default=None,
-        help="collapse only while the cheapest quadric error is at most this",
-    )
-    parser.add_argument(
-        "--placement",
-        choices=["optimal", "midpoint", "endpoint"],
-        default="optimal",
-        help=(
-            "where the surviving vertex goes: the quadric minimizer (midpoint "
-            "when ill-conditioned), the edge midpoint, or the cheaper endpoint "
-            "(default: optimal)"
-        ),
-    )
-    parser.add_argument(
-        "--no-preserve-boundary",
-        dest="preserve_boundary",
-        action="store_false",
-        help="allow boundary vertices to collapse (the outline may change)",
-    )
-    parser.add_argument(
-        "--no-preserve-features",
-        dest="preserve_features",
-        action="store_false",
-        help="allow feature vertices (sharp corners/creases) to collapse",
-    )
-    parser.add_argument(
-        "--feature-angle",
-        type=float,
-        default=30.0,
-        help="degrees between face normals above which a vertex is a feature "
-        "(default: 30)",
-    )
-    parser.add_argument(
-        "--quiet",
-        action="store_true",
-        help="do not print the collapse summary",
-    )
+    add_decimate_args(parser, "faces", _HELP, _BOUNDARY)
 
 
 def decimate_cmd(args):
@@ -78,13 +45,6 @@ def decimate_cmd(args):
         return_report=True,
     )
     if not args.quiet:
-        faces_out = sum(len(cb.data) for cb in out.cells)
-        print(
-            f"decimated to {faces_out} faces "
-            f"({report['faces_removed']} removed, "
-            f"{report['points_removed']} points removed, "
-            f"{report['collapses_rejected']} collapses rejected, "
-            f"max error {report['max_error_applied']:.6g})"
-        )
+        print(decimate_summary(out, report, "faces", "faces_removed"))
     write(args.outfile, out, file_format=args.output_format)
     return 0

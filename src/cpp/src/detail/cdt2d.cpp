@@ -279,27 +279,32 @@ Cdt2d::Location Cdt2d::LocateBruteForce(const Vec2& rP) const {
         }
         if (!in)
             continue;
-        Location loc;
-        loc.mTri = static_cast<std::int64_t>(t);
-        int zeros = 0;
-        for (int e = 0; e < 3; ++e)
-            zeros += o[e] == 0.0;
-        if (zeros == 0) {
-            loc.mKind = 0;
-        } else if (zeros == 1) {
-            loc.mKind = 1;
-            for (int e = 0; e < 3; ++e)
-                if (o[e] == 0.0)
-                    loc.mIndex = e;
-        } else {
-            loc.mKind = 2;
-            for (int e = 0; e < 3; ++e)
-                if (o[e] != 0.0)
-                    loc.mVertex = r_t.mV[e];
-        }
-        return loc;
+        return Classify(static_cast<std::int64_t>(t), o, r_t.mV);
     }
     cdt2d_internal("point outside the super triangle");
+}
+
+Cdt2d::Location Cdt2d::Classify(std::int64_t Tri, const double* pO,
+                                const std::array<std::int64_t, 3>& rV) {
+    Location loc;
+    loc.mTri = Tri;
+    int zeros = 0;
+    for (int e = 0; e < 3; ++e)
+        zeros += pO[e] == 0.0;
+    if (zeros == 0) {
+        loc.mKind = 0;
+    } else if (zeros == 1) {
+        loc.mKind = 1;
+        for (int e = 0; e < 3; ++e)
+            if (pO[e] == 0.0)
+                loc.mIndex = e;
+    } else {
+        loc.mKind = 2;
+        for (int e = 0; e < 3; ++e)
+            if (pO[e] != 0.0)
+                loc.mVertex = rV[static_cast<std::size_t>(e)];
+    }
+    return loc;
 }
 
 Cdt2d::Location Cdt2d::Locate(const Vec2& rP) {
@@ -334,25 +339,7 @@ Cdt2d::Location Cdt2d::Locate(const Vec2& rP) {
         }
         if (moved)
             continue;
-        Location loc;
-        loc.mTri = t;
-        int zeros = 0;
-        for (int e = 0; e < 3; ++e)
-            zeros += o[e] == 0.0;
-        if (zeros == 0) {
-            loc.mKind = 0;
-        } else if (zeros == 1) {
-            loc.mKind = 1;
-            for (int e = 0; e < 3; ++e)
-                if (o[e] == 0.0)
-                    loc.mIndex = e;
-        } else {
-            loc.mKind = 2;
-            for (int e = 0; e < 3; ++e)
-                if (o[e] != 0.0)
-                    loc.mVertex = r_t.mV[e];
-        }
-        return loc;
+        return Classify(t, o, r_t.mV);
     }
     return LocateBruteForce(rP);
 }
@@ -496,20 +483,28 @@ void Cdt2d::Flip(std::int64_t T, int E) {
     mVertTri[static_cast<std::size_t>(c)] = u;
 }
 
+bool Cdt2d::FlipCandidate(std::int64_t T, int E, std::int64_t& rU, std::int64_t& rD) const {
+    const auto& r_t = mTris[static_cast<std::size_t>(T)];
+    if (!r_t.mAlive || r_t.mC[E])
+        return false;
+    rU = r_t.mN[E];
+    if (rU < 0)
+        return false;
+    const int f = NeighbourIndex(rU, T);
+    if (f < 0)
+        cdt2d_internal("broken adjacency while legalising");
+    rD = mTris[static_cast<std::size_t>(rU)].mV[f];
+    return true;
+}
+
 void Cdt2d::Legalize(std::vector<std::pair<std::int64_t, int>>& rStack) {
     while (!rStack.empty()) {
         const auto [t, e] = rStack.back();
         rStack.pop_back();
+        std::int64_t u = -1, d = -1;
+        if (!FlipCandidate(t, e, u, d))
+            continue;
         const auto& r_t = mTris[static_cast<std::size_t>(t)];
-        if (!r_t.mAlive || r_t.mC[e])
-            continue;
-        const std::int64_t u = r_t.mN[e];
-        if (u < 0)
-            continue;
-        const int f = NeighbourIndex(u, t);
-        if (f < 0)
-            cdt2d_internal("broken adjacency while legalising");
-        const std::int64_t d = mTris[static_cast<std::size_t>(u)].mV[f];
         if (FlipDue(r_t.mV[e], r_t.mV[cdt2d_next(e)], r_t.mV[cdt2d_prev(e)], d)) {
             Flip(t, e);
             rStack.emplace_back(t, 0);
@@ -1002,16 +997,10 @@ bool Cdt2d::MoveVertex(std::int64_t V, const Vec2& rP, bool Legalize) {
             cdt2d_internal("flips after a move did not end");
         const auto [t, e] = stack.back();
         stack.pop_back();
+        std::int64_t u = -1, d = -1;
+        if (!FlipCandidate(t, e, u, d))
+            continue;
         const auto& r_t = mTris[static_cast<std::size_t>(t)];
-        if (!r_t.mAlive || r_t.mC[e])
-            continue;
-        const std::int64_t u = r_t.mN[e];
-        if (u < 0)
-            continue;
-        const int f = NeighbourIndex(u, t);
-        if (f < 0)
-            cdt2d_internal("broken adjacency while legalising");
-        const std::int64_t d = mTris[static_cast<std::size_t>(u)].mV[f];
         if (InCircle(r_t.mV[0], r_t.mV[1], r_t.mV[2], d) > 0.0) {
             Flip(t, e);
             for (int k = 0; k < 3; ++k) {

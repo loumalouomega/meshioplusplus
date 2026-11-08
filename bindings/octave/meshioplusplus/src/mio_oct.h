@@ -200,6 +200,23 @@ mxArray *mio_o_getstring(mio_o_str_getter getter, void *ctx, const char *what);
 /* The same, into a mxMalloc'd C string. */
 char *mio_o_getcstring(mio_o_str_getter getter, void *ctx, const char *what);
 
+/* mio_o_getstring for a C API getter with no context, `int64_t f(char *buf,
+ * int64_t buflen)` -- the per-operation warnings functions. */
+typedef int64_t (*mio_o_buffer_getter)(char *buf, int64_t buflen);
+mxArray *mio_o_getbuffer(mio_o_buffer_getter getter, const char *what);
+
+/* A 3-vector (a point, an origin, a spacing) as a 1 x 3 row: rows are entities. */
+mxArray *mio_o_row3(const double *v);
+
+/* The surface quality summary several reports carry, as a 1x1 struct (R's
+ * quality_list). */
+mxArray *mio_o_surface_quality(const mio_surface_quality *q);
+
+/* An optional vector of 1-based ids ([] or empty for none) as a 0-based
+ * mxMalloc'd int64 array, NULL when empty; *n receives its length. MEX frees
+ * the buffer when the call returns -- the R_alloc lifetime. */
+int64_t *mio_o_ids_0based(const mxArray *ids, int64_t *n, const char *what);
+
 /* Convert `n` elements of a typed C buffer into doubles, adding `offset`. */
 void mio_o_fill_real(double *dst, const void *data, mio_dtype dtype, size_t n, double offset);
 

@@ -40,6 +40,7 @@
 #include "../detail/row_writer.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/vtk_hex_order.hpp"
+#include "../detail/dtype_table.hpp"
 
 namespace meshioplusplus {
 
@@ -52,29 +53,9 @@ using detail::read_double;
 using detail::read_int;
 
 const char* vtk_dtype_str(DType dt) {
-    switch (dt) {
-        case DType::Float32:
-            return "float";
-        case DType::Float64:
-            return "double";
-        case DType::Int8:
-            return "vtktypeint8";
-        case DType::Int16:
-            return "vtktypeint16";
-        case DType::Int32:
-            return "vtktypeint32";
-        case DType::Int64:
-            return "vtktypeint64";
-        case DType::UInt8:
-            return "vtktypeuint8";
-        case DType::UInt16:
-            return "vtktypeuint16";
-        case DType::UInt32:
-            return "vtktypeuint32";
-        case DType::UInt64:
-            return "vtktypeuint64";
-    }
-    return "double";
+    return detail::DTypeUtils::Pick<const char*>(
+        dt, {"float", "double", "vtktypeint8", "vtktypeint16", "vtktypeint32", "vtktypeint64",
+             "vtktypeuint8", "vtktypeuint16", "vtktypeuint32", "vtktypeuint64"});
 }
 
 // `n` integers, one per line (`ostream << v << '\n'`), formatted in parallel

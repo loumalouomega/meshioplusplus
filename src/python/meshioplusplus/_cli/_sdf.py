@@ -1,6 +1,6 @@
 from .._helpers import read, write
 from .._sdf import compute_sdf
-from ._common import add_io_args
+from ._common import add_box_args, add_io_args, parse_bounds, parse_ints
 
 
 def add_args(parser):
@@ -26,23 +26,15 @@ def add_args(parser):
         default=None,
         help="cubic cell size (voxel only)",
     )
-    parser.add_argument(
-        "--bounds",
-        type=str,
-        default=None,
-        help="'xlo,ylo,zlo,xhi,yhi,zhi'; the surface's bounding box by default "
-        "(negatives need --bounds=)",
-    )
-    parser.add_argument(
-        "--padding", type=float, default=0.0, help="grow the box by this on every side"
-    )
-    parser.add_argument(
-        "--padding-relative",
-        type=float,
-        default=0.1,
-        help="grow the box by this fraction of its diagonal on every side; the "
-        "default is non-zero because a field that stops at the surface is not "
-        "much use",
+    add_box_args(
+        parser,
+        bounds_of="surface's",
+        padding_relative=0.1,
+        padding_relative_help=(
+            "grow the box by this fraction of its diagonal on every side; the "
+            "default is non-zero because a field that stops at the surface is not "
+            "much use"
+        ),
     )
     parser.add_argument(
         "--root-resolution",
@@ -104,16 +96,8 @@ def add_args(parser):
 def sdf_cmd(args):
     surface = read(args.infile, file_format=args.input_format)
 
-    resolution = None
-    if args.resolution is not None:
-        resolution = [int(x) for x in args.resolution.split(",")]
-        if len(resolution) != 3:
-            raise ValueError("sdf: --resolution expects 'nx,ny,nz'")
-    bounds = None
-    if args.bounds is not None:
-        bounds = [float(x) for x in args.bounds.split(",")]
-        if len(bounds) != 6:
-            raise ValueError("sdf: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'")
+    resolution = parse_ints(args.resolution, "sdf", "--resolution")
+    bounds = parse_bounds(args.bounds, "sdf")
 
     out, report = compute_sdf(
         surface,

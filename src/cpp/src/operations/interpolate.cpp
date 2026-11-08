@@ -45,6 +45,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/bounding_box_utils.hpp"
 #include "../detail/bucket_build.hpp"
 #include "../detail/cell_centroids.hpp"
 #include "../detail/transfer_names.hpp"
@@ -78,24 +79,6 @@ double interp_cell_size(const double* pLo, const double* pHi, std::size_t n) {
     while (r * r * r < static_cast<std::int64_t>(n))
         ++r;
     return max_extent > 0.0 ? max_extent / static_cast<double>(r) : 1.0;
-}
-
-// Serial bbox over `n` coordinates supplied by `coord(i) -> Vec3` (min/max are
-// pure comparisons, so the order cannot matter). Callers guarantee n >= 1.
-template <class TCoord>
-void interp_bbox(std::size_t n, TCoord&& coord, double* pLo, double* pHi) {
-    const detail::Vec3 first = coord(0);
-    for (int d = 0; d < 3; ++d)
-        pLo[d] = pHi[d] = first[d];
-    for (std::size_t i = 1; i < n; ++i) {
-        const detail::Vec3 c = coord(i);
-        for (int d = 0; d < 3; ++d) {
-            if (c[d] < pLo[d])
-                pLo[d] = c[d];
-            if (c[d] > pHi[d])
-                pHi[d] = c[d];
-        }
-    }
 }
 
 // The point grid of `n` coordinates, id `i` for coordinate `i`: keys filled
@@ -346,7 +329,7 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             const std::size_t ns = rSource.NumPoints();
             auto scoord = [&](std::int64_t i) { return detail::read_point(spts, sdim, i); };
             double lo[3], hi[3];
-            interp_bbox(
+            detail::BoundingBoxUtils::FromCoords(
                 ns, [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); }, lo, hi);
             const detail::BucketTable grid = interp_point_grid(
                 interp_cell_size(lo, hi, ns), ns,
@@ -409,7 +392,7 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             auto scoord = [&](std::int64_t i) { return detail::read_point(spts, sdim, i); };
 
             double lo[3], hi[3];
-            interp_bbox(
+            detail::BoundingBoxUtils::FromCoords(
                 ns, [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); }, lo, hi);
             const double cell = interp_cell_size(lo, hi, nsimp);
 
@@ -425,7 +408,8 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             };
             parallel_for(nsimp, [&](std::size_t s) {
                 double blo[3], bhi[3];
-                interp_bbox(nv, [&](std::size_t k) { return scoord(sconn[s * nv + k]); }, blo, bhi);
+                detail::BoundingBoxUtils::FromCoords(
+                    nv, [&](std::size_t k) { return scoord(sconn[s * nv + k]); }, blo, bhi);
                 box_lo[s] = key_of(blo);
                 box_hi[s] = key_of(bhi);
             });
@@ -534,7 +518,7 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
                 return detail::Vec3{scent[3 * j], scent[3 * j + 1], scent[3 * j + 2]};
             };
             double lo[3], hi[3];
-            interp_bbox(
+            detail::BoundingBoxUtils::FromCoords(
                 src_total, [&](std::size_t i) { return ccoord(static_cast<std::int64_t>(i)); }, lo,
                 hi);
             const detail::BucketTable grid = interp_point_grid(

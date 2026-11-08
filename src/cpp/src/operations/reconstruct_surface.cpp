@@ -34,6 +34,7 @@
 // Project includes
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "../detail/point_knn.hpp"
+#include "../detail/bounding_box_utils.hpp"
 #include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/detail/marching.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -173,14 +174,10 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
     if (m < 3)
         rcs_fail("needs at least three samples with a normal, not " + std::to_string(m));
 
-    RcsVec lo = pts[0], hi = pts[0];
-    for (const RcsVec& q : pts)
-        for (std::size_t a = 0; a < 3; ++a) {
-            lo[a] = std::min(lo[a], q[a]);
-            hi[a] = std::max(hi[a], q[a]);
-        }
-    const RcsVec ext{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
-    const double extent = std::max({ext[0], ext[1], ext[2]});
+    const detail::BoundingBox3 box = detail::BoundingBoxUtils::FromPoints(pts);
+    const RcsVec& lo = box.mMin;
+    const RcsVec ext = detail::BoundingBoxUtils::Extent(box);
+    const double extent = detail::BoundingBoxUtils::MaxExtent(box);
     if (!(extent > 0.0))
         rcs_fail("the samples all coincide");
 

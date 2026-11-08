@@ -26,6 +26,7 @@
 
 // Project includes
 #include "cut_graph.hpp"
+#include "geometry_utils.hpp"
 #include "param_disc.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 
@@ -285,11 +286,7 @@ std::vector<std::int64_t> patch_split_to_discs(const std::vector<PatchVec>& rPts
             const PatchVec& p = rPts[tri[0]];
             const PatchVec& q = rPts[tri[1]];
             const PatchVec& r = rPts[tri[2]];
-            const double u[3] = {q[0] - p[0], q[1] - p[1], q[2] - p[2]};
-            const double v[3] = {r[0] - p[0], r[1] - p[1], r[2] - p[2]};
-            const double c[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
-                                 u[0] * v[1] - u[1] * v[0]};
-            area[t] = 0.5 * std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
+            area[t] = GeometryUtils::TriangleArea(p, q, r);
         }
         std::vector<std::size_t> order(rTris.size());
         for (std::size_t t = 0; t < order.size(); ++t)

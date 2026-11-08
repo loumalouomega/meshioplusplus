@@ -37,14 +37,11 @@
 
 // Project includes (private, not installed)
 #include "streamlines.hpp"
+#include "math_utils.hpp"
 
 namespace meshioplusplus {
 namespace detail {
 namespace {
-
-Vec3 sl_sub(const double* pA, const double* pB) {
-    return {pA[0] - pB[0], pA[1] - pB[1], pA[2] - pB[2]};
-}
 
 // How a cell of a given type name is cut into simplices, as corner indices into
 // its connectivity row; `Corners` is how many leading nodes it reads.
@@ -273,13 +270,13 @@ public:
     double Measure(std::size_t Simplex) const {
         const SlSimplex& s = mrSoup.mSimplices[Simplex];
         if (mDim == 3) {
-            const Vec3 a = sl_sub(point(s.mNode[0]), point(s.mNode[3]));
-            const Vec3 b = sl_sub(point(s.mNode[1]), point(s.mNode[3]));
-            const Vec3 c = sl_sub(point(s.mNode[2]), point(s.mNode[3]));
+            const Vec3 a = detail::MathUtils::Sub(point(s.mNode[0]), point(s.mNode[3]));
+            const Vec3 b = detail::MathUtils::Sub(point(s.mNode[1]), point(s.mNode[3]));
+            const Vec3 c = detail::MathUtils::Sub(point(s.mNode[2]), point(s.mNode[3]));
             return std::fabs(vec3_dot(a, vec3_cross(b, c))) / 6.0;
         }
-        const Vec3 a = sl_sub(point(s.mNode[1]), point(s.mNode[0]));
-        const Vec3 b = sl_sub(point(s.mNode[2]), point(s.mNode[0]));
+        const Vec3 a = detail::MathUtils::Sub(point(s.mNode[1]), point(s.mNode[0]));
+        const Vec3 b = detail::MathUtils::Sub(point(s.mNode[2]), point(s.mNode[0]));
         const Vec3 n = vec3_cross(a, b);
         return 0.5 * std::sqrt(vec3_dot(n, n));
     }
@@ -313,10 +310,10 @@ private:
         constexpr double kEps = 1e-9;
         if (mDim == 3) {
             const double* d = point(s.mNode[3]);
-            const Vec3 a = sl_sub(point(s.mNode[0]), d);
-            const Vec3 b = sl_sub(point(s.mNode[1]), d);
-            const Vec3 c = sl_sub(point(s.mNode[2]), d);
-            const Vec3 p = sl_sub(pPoint, d);
+            const Vec3 a = detail::MathUtils::Sub(point(s.mNode[0]), d);
+            const Vec3 b = detail::MathUtils::Sub(point(s.mNode[1]), d);
+            const Vec3 c = detail::MathUtils::Sub(point(s.mNode[2]), d);
+            const Vec3 p = detail::MathUtils::Sub(pPoint, d);
             const double det = vec3_dot(a, vec3_cross(b, c));
             if (!(std::fabs(det) > 0.0))
                 return false;
@@ -330,9 +327,9 @@ private:
             return true;
         }
         const double* origin = point(s.mNode[0]);
-        const Vec3 u = sl_sub(point(s.mNode[1]), origin);
-        const Vec3 v = sl_sub(point(s.mNode[2]), origin);
-        const Vec3 w = sl_sub(pPoint, origin);
+        const Vec3 u = detail::MathUtils::Sub(point(s.mNode[1]), origin);
+        const Vec3 v = detail::MathUtils::Sub(point(s.mNode[2]), origin);
+        const Vec3 w = detail::MathUtils::Sub(pPoint, origin);
         const Vec3 n = vec3_cross(u, v);
         const double area2 = vec3_dot(n, n);
         if (!(area2 > 0.0))

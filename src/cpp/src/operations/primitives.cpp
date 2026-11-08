@@ -123,6 +123,16 @@ struct PrimSoup {
     }
 };
 
+// An empty soup mapped by @p Map with radius @p Radius about @p rCenter.
+PrimSoup prim_soup(PrimMap Map, double Radius,
+                   const std::array<double, 3>& rCenter = {{0.0, 0.0, 0.0}}) {
+    PrimSoup soup;
+    soup.mMap = Map;
+    soup.mRadius = Radius;
+    soup.mCenter = rCenter;
+    return soup;
+}
+
 struct PrimRegionSpec {
     const char* mName;
     std::uint16_t mBit;
@@ -134,8 +144,8 @@ struct PrimRegionSpec {
 
 void prim_check_count(const char* pShape, const char* pWhat, std::int64_t Value) {
     if (Value < 0)
-        prim_fail(pShape, std::string(pWhat) + " must not be negative, got " +
-                              std::to_string(Value));
+        prim_fail(pShape,
+                  std::string(pWhat) + " must not be negative, got " + std::to_string(Value));
 }
 
 void prim_check_positive(const char* pShape, const char* pWhat, double Value) {
@@ -155,6 +165,16 @@ void prim_check_order(const char* pShape, int Order) {
                                   const char* pChoices) {
     prim_fail(pShape, std::string("unknown ") + pWhat + " '" + rGot +
                           "' (expected one of: " + pChoices + ")");
+}
+
+// The cell type a primitive with two choices builds: true for @p pAlt, false
+// for @p pDefault, and a throw naming @p pChoices for anything else.
+bool prim_cell_type_is(const char* pShape, const std::string& rCellType, const char* pAlt,
+                       const char* pDefault, const char* pChoices) {
+    const bool alt = rCellType == pAlt;
+    if (!alt && rCellType != pDefault)
+        prim_bad_choice(pShape, "cell_type", rCellType, pChoices);
+    return alt;
 }
 
 // Saturating product: the budget check must not wrap on an absurd request.
@@ -977,7 +997,8 @@ std::int64_t prim_add_polar_layer(PrimSoup& rSoup, std::int64_t N, double Z,
     for (std::int64_t k = 1; k <= N; ++k)
         for (std::int64_t m = 0; m < 6 * k; ++m) {
             const double rho = static_cast<double>(k) / static_cast<double>(N);
-            const double ang = (2.0 * kPrimPi * static_cast<double>(m)) / static_cast<double>(6 * k);
+            const double ang =
+                (2.0 * kPrimPi * static_cast<double>(m)) / static_cast<double>(6 * k);
             rSoup.AddNode(rho, ang, Z, static_cast<std::uint16_t>(LayerMask | (k == N ? 4 : 0)));
         }
     return first;
@@ -999,7 +1020,9 @@ void prim_polar_triangles(std::int64_t N, std::int64_t Base, Emit&& rEmit,
     for (std::int64_t k = 1; k <= N; ++k)
         for (std::int64_t s = 0; s < Sectors; ++s) {
             auto outer = [&](std::int64_t t) { return ring(k, s * k + t); };
-            auto inner = [&](std::int64_t t) { return k == 1 ? Base : ring(k - 1, s * (k - 1) + t); };
+            auto inner = [&](std::int64_t t) {
+                return k == 1 ? Base : ring(k - 1, s * (k - 1) + t);
+            };
             for (std::int64_t t = 0; t < k; ++t) {
                 rEmit(inner(t), outer(t), outer(t + 1));
                 if (t < k - 1)
@@ -1024,9 +1047,7 @@ Mesh rectangle(const std::array<std::int64_t, 2>& rDims, const std::array<double
             prim_check_positive(shape, "size", rSize[k]);
     }
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (rSplit != "zigzag" && rSplit != "up" && rSplit != "down" && rSplit != "center")
         prim_bad_choice(shape, "split", rSplit, "zigzag, up, down, center");
     const std::int64_t nx = rDims[0], ny = rDims[1];
@@ -1057,10 +1078,11 @@ Mesh rectangle(const std::array<std::int64_t, 2>& rDims, const std::array<double
     if (center)
         for (std::int64_t j = 0; j < ny; ++j)
             for (std::int64_t i = 0; i < nx; ++i)
-                soup.AddNode(
-                    rOrigin[0] + (lx * static_cast<double>(2 * i + 1)) / static_cast<double>(2 * nx),
-                    rOrigin[1] + (ly * static_cast<double>(2 * j + 1)) / static_cast<double>(2 * ny),
-                    rOrigin[2], 0);
+                soup.AddNode(rOrigin[0] + (lx * static_cast<double>(2 * i + 1)) /
+                                              static_cast<double>(2 * nx),
+                             rOrigin[1] + (ly * static_cast<double>(2 * j + 1)) /
+                                              static_cast<double>(2 * ny),
+                             rOrigin[2], 0);
 
     PrimBlock& blk = soup.Block(tri ? CellType::Triangle : CellType::Quad, tri ? 3 : 4);
     blk.mConn.reserve(static_cast<std::size_t>(nx * ny * per_cell) * blk.mWidth);
@@ -1144,7 +1166,8 @@ Mesh box(const std::array<std::int64_t, 3>& rDims, const std::array<double, 3>& 
     const CellType type = rCellType == "hexahedron" ? CellType::Hexahedron
                           : rCellType == "tetra"    ? CellType::Tetra
                                                     : CellType::Wedge;
-    PrimBlock& blk = soup.Block(type, type == CellType::Hexahedron ? 8 : (type == CellType::Tetra ? 4 : 6));
+    PrimBlock& blk =
+        soup.Block(type, type == CellType::Hexahedron ? 8 : (type == CellType::Tetra ? 4 : 6));
     for (std::int64_t k = 0; k < nz; ++k)
         for (std::int64_t j = 0; j < ny; ++j)
             for (std::int64_t i = 0; i < nx; ++i) {
@@ -1175,9 +1198,7 @@ Mesh disk(double Radius, std::int64_t N, const std::array<double, 3>& rCenter,
     prim_check_positive(shape, "radius", Radius);
     prim_check_count(shape, "n", N);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (N == 0)
         return prim_empty();
     prim_check_budget(shape, prim_mul(prim_mul(N, N), tri ? 6 : 1), MaxCells);
@@ -1218,27 +1239,22 @@ Mesh uv_sphere(double Radius, std::int64_t Nu, std::int64_t Nv,
     prim_check_count(shape, "nu", Nu);
     prim_check_count(shape, "nv", Nv);
     prim_check_order(shape, Order);
-    const bool quad = rCellType == "quad";
-    if (!quad && rCellType != "triangle")
-        prim_bad_choice(shape, "cell_type", rCellType, "triangle, quad");
+    const bool quad = prim_cell_type_is(shape, rCellType, "quad", "triangle", "triangle, quad");
     if (Nu == 0 || Nv == 0)
         return prim_empty();
     if (Nu < 3)
         prim_fail(shape, "nu must be at least 3, got " + std::to_string(Nu));
     if (Nv < 2)
         prim_fail(shape, "nv must be at least 2, got " + std::to_string(Nv));
-    prim_check_budget(shape,
-                      quad ? prim_mul(Nu, Nv) : prim_mul(prim_mul(2, Nu), Nv - 1), MaxCells);
+    prim_check_budget(shape, quad ? prim_mul(Nu, Nv) : prim_mul(prim_mul(2, Nu), Nv - 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Sphere;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Sphere, Radius, rCenter);
     soup.AddNode(0.0, 0.0, 0.0, kPrimDegenerate);
     for (std::int64_t j = 1; j < Nv; ++j)
         for (std::int64_t i = 0; i < Nu; ++i)
             soup.AddNode((kPrimPi * static_cast<double>(j)) / static_cast<double>(Nv),
-                         (2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(Nu), 0.0, 0);
+                         (2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(Nu), 0.0,
+                         0);
     const std::int64_t south = soup.AddNode(kPrimPi, 0.0, 0.0, kPrimDegenerate);
     auto ring = [&](std::int64_t j, std::int64_t i) { return 1 + (j - 1) * Nu + (i % Nu); };
 
@@ -1284,22 +1300,19 @@ Mesh icosa_sphere(double Radius, std::int64_t Subdivisions, const std::array<dou
         cells = prim_mul(cells, 4);
     prim_check_budget(shape, cells, MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Unit;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Unit, Radius, rCenter);
     const double t = (1.0 + std::sqrt(5.0)) / 2.0;
     const double len = std::sqrt(1.0 + t * t);
     const double one = 1.0 / len, tau = t / len;
-    const double verts[12][3] = {{-one, tau, 0}, {one, tau, 0},   {-one, -tau, 0}, {one, -tau, 0},
-                                 {0, -one, tau}, {0, one, tau},   {0, -one, -tau}, {0, one, -tau},
-                                 {tau, 0, -one}, {tau, 0, one},   {-tau, 0, -one}, {-tau, 0, one}};
+    const double verts[12][3] = {{-one, tau, 0}, {one, tau, 0}, {-one, -tau, 0}, {one, -tau, 0},
+                                 {0, -one, tau}, {0, one, tau}, {0, -one, -tau}, {0, one, -tau},
+                                 {tau, 0, -one}, {tau, 0, one}, {-tau, 0, -one}, {-tau, 0, one}};
     for (const auto& v : verts)
         soup.AddNode(v[0], v[1], v[2], 0);
     static const std::int64_t kFaces[20][3] = {
-        {0, 11, 5}, {0, 5, 1},  {0, 1, 7},  {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4},
+        {0, 11, 5},  {0, 5, 1},  {0, 1, 7},  {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4},
         {11, 10, 2}, {10, 7, 6}, {7, 1, 8},  {3, 9, 4},  {3, 4, 2},   {3, 2, 6}, {3, 6, 8},
-        {3, 8, 9},  {4, 9, 5},  {2, 4, 11}, {6, 2, 10}, {8, 6, 7},   {9, 8, 1}};
+        {3, 8, 9},   {4, 9, 5},  {2, 4, 11}, {6, 2, 10}, {8, 6, 7},   {9, 8, 1}};
     std::vector<std::int64_t> faces;
     for (const auto& f : kFaces)
         faces.insert(faces.end(), {f[0], f[1], f[2]});
@@ -1359,17 +1372,13 @@ Mesh cylinder(double Radius, double Height, std::int64_t Nxy, std::int64_t Nz,
     prim_check_count(shape, "nxy", Nxy);
     prim_check_count(shape, "nz", Nz);
     prim_check_order(shape, Order);
-    const bool wedge = rCellType == "wedge";
-    if (!wedge && rCellType != "hexahedron")
-        prim_bad_choice(shape, "cell_type", rCellType, "hexahedron, wedge");
+    const bool wedge =
+        prim_cell_type_is(shape, rCellType, "wedge", "hexahedron", "hexahedron, wedge");
     if (Nxy == 0 || Nz == 0)
         return prim_empty();
     prim_check_budget(shape, prim_mul(prim_mul(prim_mul(Nxy, Nxy), Nz), wedge ? 6 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = wedge ? PrimMap::Polar : PrimMap::Squircle;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(wedge ? PrimMap::Polar : PrimMap::Squircle, Radius, rCenter);
     // Bits: 1 top, 2 bottom, 4 side (the rim of the disk).
     std::int64_t layer_nodes = 0;
     for (std::int64_t k = 0; k <= Nz; ++k) {
@@ -1505,9 +1514,7 @@ Mesh annulus(double InnerRadius, double OuterRadius, std::int64_t Ntheta, std::i
     prim_check_count(shape, "ntheta", Ntheta);
     prim_check_count(shape, "nr", Nr);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Ntheta == 0 || Nr == 0)
         return prim_empty();
     prim_check_positive(shape, "inner_radius", InnerRadius);
@@ -1526,10 +1533,7 @@ Mesh annulus(double InnerRadius, double OuterRadius, std::int64_t Ntheta, std::i
                              std::to_string(Angle) + " over " + std::to_string(Ntheta) + " cells");
     prim_check_budget(shape, prim_mul(prim_mul(Ntheta, Nr), tri ? 2 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Polar;
-    soup.mRadius = 1.0;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Polar, 1.0, rCenter);
     const std::int64_t np = full ? Ntheta : Ntheta + 1;
     for (std::int64_t k = 0; k <= Nr; ++k) {
         const double rho =
@@ -1573,9 +1577,7 @@ Mesh lshape(std::int64_t N, double Size, const std::array<double, 3>& rCenter,
     constexpr const char* shape = "lshape";
     prim_check_count(shape, "n", N);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (N == 0)
         return prim_empty();
     prim_check_positive(shape, "size", Size);
@@ -1634,9 +1636,7 @@ Mesh plate_with_hole(double Radius, double Size, std::int64_t Nt, std::int64_t N
     prim_check_count(shape, "nt", Nt);
     prim_check_count(shape, "nr", Nr);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Nt == 0 || Nr == 0)
         return prim_empty();
     prim_check_positive(shape, "radius", Radius);
@@ -1647,10 +1647,7 @@ Mesh plate_with_hole(double Radius, double Size, std::int64_t Nt, std::int64_t N
     const std::int64_t m = prim_mul(4, Nt);
     prim_check_budget(shape, prim_mul(prim_mul(m, Nr), tri ? 2 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Plate;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Plate, Radius, rCenter);
     soup.mHalf = Size / 2.0;
     soup.mPeriod = static_cast<double>(m);
     soup.mNt = static_cast<double>(Nt);
@@ -1768,15 +1765,15 @@ struct PrimRefCell {
 
 const std::vector<std::string>& prim_all_reference_types() {
     static const std::vector<std::string> kAll = {
-        "vertex", "line",  "triangle", "quad",         "tetra",    "hexahedron",
-        "wedge",  "pyramid", "line3",   "triangle6",   "quad8",    "tetra10",
+        "vertex",       "line",    "triangle",  "quad",      "tetra", "hexahedron",
+        "wedge",        "pyramid", "line3",     "triangle6", "quad8", "tetra10",
         "hexahedron20", "wedge15", "pyramid13", "polyhedron"};
     return kAll;
 }
 
 const std::vector<std::string>& prim_pair_reference_types() {
-    static const std::vector<std::string> kPairs = {"line", "triangle", "quad", "tetra",
-                                                    "hexahedron", "wedge", "pyramid"};
+    static const std::vector<std::string> kPairs = {"line",       "triangle", "quad",   "tetra",
+                                                    "hexahedron", "wedge",    "pyramid"};
     return kPairs;
 }
 
@@ -1878,8 +1875,10 @@ Mesh reference_cells(const std::vector<std::string>& rTypes, bool Pairs) {
         if (Pairs) {
             const auto& ok = prim_pair_reference_types();
             if (std::find(ok.begin(), ok.end(), types[i]) == ok.end())
-                prim_fail(shape, "pairs=True supports line, triangle, quad, tetra, hexahedron, "
-                                 "wedge and pyramid, not '" + types[i] + "'");
+                prim_fail(shape,
+                          "pairs=True supports line, triangle, quad, tetra, hexahedron, "
+                          "wedge and pyramid, not '" +
+                              types[i] + "'");
         }
     }
 
@@ -1907,8 +1906,8 @@ Mesh reference_cells(const std::vector<std::string>& rTypes, bool Pairs) {
         } else {
             // A quadratic name maps back to its linear base.
             static const std::pair<const char*, const char*> kBase[] = {
-                {"line3", "line"},     {"triangle6", "triangle"}, {"quad8", "quad"},
-                {"tetra10", "tetra"},  {"hexahedron20", "hexahedron"}, {"wedge15", "wedge"},
+                {"line3", "line"},       {"triangle6", "triangle"},      {"quad8", "quad"},
+                {"tetra10", "tetra"},    {"hexahedron20", "hexahedron"}, {"wedge15", "wedge"},
                 {"pyramid13", "pyramid"}};
             const char* base = nullptr;
             for (const auto& kv : kBase)
@@ -2004,10 +2003,7 @@ Mesh circle(double Radius, std::int64_t N, const std::array<double, 3>& rCenter,
         prim_fail(shape, "n must be at least 3, got " + std::to_string(N));
     prim_check_budget(shape, N, MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Polar;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Polar, Radius, rCenter);
     for (std::int64_t i = 0; i < N; ++i)
         soup.AddNode(1.0, (2.0 * kPrimPi * static_cast<double>(i)) / static_cast<double>(N), 0.0,
                      0);
@@ -2033,10 +2029,7 @@ Mesh helix(double Radius, double Pitch, double Turns, std::int64_t N,
                              std::to_string(N) + " and turns " + std::to_string(Turns));
     prim_check_budget(shape, N, MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Polar;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Polar, Radius, rCenter);
     for (std::int64_t i = 0; i <= N; ++i)
         soup.AddNode(1.0, (2.0 * kPrimPi * Turns * static_cast<double>(i)) / static_cast<double>(N),
                      (Pitch * Turns * static_cast<double>(i)) / static_cast<double>(N), 0);
@@ -2138,10 +2131,7 @@ Mesh prim_seeded_sphere(const char* pShape, const double (&rVerts)[NV][3],
     for (std::int64_t s = 0; s < Subdivisions; ++s)
         cells = prim_mul(cells, 4);
     prim_check_budget(pShape, cells, MaxCells);
-    PrimSoup soup;
-    soup.mMap = PrimMap::Unit;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Unit, Radius, rCenter);
     for (const auto& v : rVerts)
         soup.AddNode(v[0], v[1], v[2], 0);
     std::vector<std::int64_t> faces;
@@ -2255,18 +2245,13 @@ Mesh cube_sphere(double Radius, std::int64_t N, const std::array<double, 3>& rCe
     prim_check_positive(shape, "radius", Radius);
     prim_check_count(shape, "n", N);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (N == 0)
         return prim_empty();
     const PrimCubeLattice lat{N, N, N};
     prim_check_budget(shape, prim_mul(lat.NumFaces(), tri ? 2 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Project;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Project, Radius, rCenter);
     const double n = static_cast<double>(N);
     prim_cube_nodes(lat, [&](std::int64_t I, std::int64_t J, std::int64_t K) {
         soup.AddNode(static_cast<double>(2 * I - N) / n, static_cast<double>(2 * J - N) / n,
@@ -2289,9 +2274,7 @@ Mesh box_surface(const std::array<std::int64_t, 3>& rDims, const std::array<doub
             prim_check_positive(shape, "size", rSize[k]);
     }
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (rDims[0] == 0 || rDims[1] == 0 || rDims[2] == 0)
         return prim_empty();
     const PrimCubeLattice lat{rDims[0], rDims[1], rDims[2]};
@@ -2329,10 +2312,7 @@ Mesh geo_sphere(double Radius, std::int64_t N, const std::array<double, 3>& rCen
         return prim_empty();
     prim_check_budget(shape, prim_mul(20, prim_mul(N, N)), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Project;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Project, Radius, rCenter);
     const double t = (1.0 + std::sqrt(5.0)) / 2.0;
     const double len = std::sqrt(1.0 + t * t);
     const double one = 1.0 / len, tau = t / len;
@@ -2430,9 +2410,7 @@ Mesh torus(double MajorRadius, double MinorRadius, std::int64_t Nu, std::int64_t
     prim_check_count(shape, "nu", Nu);
     prim_check_count(shape, "nv", Nv);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Nu == 0 || Nv == 0)
         return prim_empty();
     if (Nu < 3 || Nv < 3)
@@ -2440,9 +2418,7 @@ Mesh torus(double MajorRadius, double MinorRadius, std::int64_t Nu, std::int64_t
                              std::to_string(Nv));
     prim_check_budget(shape, prim_mul(prim_mul(Nu, Nv), tri ? 2 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Torus;
-    soup.mRadius = MajorRadius;
+    PrimSoup soup = prim_soup(PrimMap::Torus, MajorRadius);
     soup.mRadius2 = MinorRadius;
     soup.mCenter = rCenter;
     for (std::int64_t i = 0; i < Nu; ++i)
@@ -2472,18 +2448,14 @@ Mesh moebius(double Radius, double Width, std::int64_t Nu, std::int64_t Nv, std:
     prim_check_count(shape, "nv", Nv);
     prim_check_count(shape, "num_twists", NumTwists);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Nu == 0 || Nv == 0)
         return prim_empty();
     if (Nu < 3)
         prim_fail(shape, "nu must be at least 3, got " + std::to_string(Nu));
     prim_check_budget(shape, prim_mul(prim_mul(Nu, Nv), tri ? 2 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Moebius;
-    soup.mRadius = Radius;
+    PrimSoup soup = prim_soup(PrimMap::Moebius, Radius);
     soup.mHalf = Width / 2.0;
     soup.mTwists = NumTwists;
     soup.mCenter = rCenter;
@@ -2522,19 +2494,14 @@ Mesh tube(double Radius, double Height, std::int64_t Ntheta, std::int64_t Nz,
     prim_check_count(shape, "ntheta", Ntheta);
     prim_check_count(shape, "nz", Nz);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Ntheta == 0 || Nz == 0)
         return prim_empty();
     if (Ntheta < 3)
         prim_fail(shape, "ntheta must be at least 3, got " + std::to_string(Ntheta));
     prim_check_budget(shape, prim_mul(prim_mul(Ntheta, Nz), tri ? 2 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Polar;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Polar, Radius, rCenter);
     for (std::int64_t k = 0; k <= Nz; ++k) {
         const double z = (Height * static_cast<double>(2 * k - Nz)) / static_cast<double>(2 * Nz);
         const std::uint16_t mask = (k == 0 ? 1 : 0) | (k == Nz ? 2 : 0);
@@ -2612,9 +2579,7 @@ Mesh cone(double Radius, double Height, std::int64_t Ntheta, std::int64_t Nz,
     prim_check_count(shape, "ntheta", Ntheta);
     prim_check_count(shape, "nz", Nz);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Ntheta == 0 || Nz == 0)
         return prim_empty();
     if (Ntheta < 3)
@@ -2622,10 +2587,7 @@ Mesh cone(double Radius, double Height, std::int64_t Ntheta, std::int64_t Nz,
     const std::int64_t rings = 2 * Nz - 1;
     prim_check_budget(shape, prim_ring_cell_count(rings, Ntheta, tri), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Polar;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Polar, Radius, rCenter);
     soup.AddNode(0.0, 0.0, Height, kPrimDegenerate);
     for (std::int64_t r = 1; r <= rings; ++r) {
         // Down the slant to the rim (r = Nz), then in across the base.
@@ -2657,9 +2619,7 @@ Mesh capsule(double Radius, double Height, std::int64_t Ntheta, std::int64_t Nz,
     prim_check_count(shape, "nz", Nz);
     prim_check_count(shape, "ncap", Ncap);
     prim_check_order(shape, Order);
-    const bool tri = rCellType == "triangle";
-    if (!tri && rCellType != "quad")
-        prim_bad_choice(shape, "cell_type", rCellType, "quad, triangle");
+    const bool tri = prim_cell_type_is(shape, rCellType, "triangle", "quad", "quad, triangle");
     if (Ntheta == 0 || Nz == 0 || Ncap == 0)
         return prim_empty();
     if (Ntheta < 3)
@@ -2667,9 +2627,7 @@ Mesh capsule(double Radius, double Height, std::int64_t Ntheta, std::int64_t Nz,
     const std::int64_t rings = 2 * Ncap + Nz - 1;
     prim_check_budget(shape, prim_ring_cell_count(rings, Ntheta, tri), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Capsule;
-    soup.mRadius = Radius;
+    PrimSoup soup = prim_soup(PrimMap::Capsule, Radius);
     soup.mHalf = Height / 2.0;
     soup.mCenter = rCenter;
     const double side = (2.0 * soup.mHalf) / Radius;
@@ -2805,18 +2763,14 @@ Mesh ball(double Radius, std::int64_t N, const std::array<double, 3>& rCenter,
     prim_check_positive(shape, "radius", Radius);
     prim_check_count(shape, "n", N);
     prim_check_order(shape, Order);
-    const bool tet = rCellType == "tetra";
-    if (!tet && rCellType != "hexahedron")
-        prim_bad_choice(shape, "cell_type", rCellType, "hexahedron, tetra");
+    const bool tet =
+        prim_cell_type_is(shape, rCellType, "tetra", "hexahedron", "hexahedron, tetra");
     if (N == 0)
         return prim_empty();
     const std::int64_t m = 2 * N;
     prim_check_budget(shape, prim_mul(prim_mul(prim_mul(m, m), m), tet ? 6 : 1), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Ball;
-    soup.mRadius = Radius;
-    soup.mCenter = rCenter;
+    PrimSoup soup = prim_soup(PrimMap::Ball, Radius, rCenter);
     const double n = static_cast<double>(N);
     for (std::int64_t k = 0; k <= m; ++k)
         for (std::int64_t j = 0; j <= m; ++j)
@@ -2853,9 +2807,7 @@ Mesh spherical_shell(double InnerRadius, double OuterRadius, std::int64_t N, std
     const PrimCubeLattice lat{N, N, N};
     prim_check_budget(shape, prim_mul(lat.NumFaces(), Nr), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Shell;
-    soup.mRadius = InnerRadius;
+    PrimSoup soup = prim_soup(PrimMap::Shell, InnerRadius);
     soup.mRadius2 = OuterRadius;
     soup.mRatio = Ratio;
     soup.mLayers = static_cast<double>(Nr);
@@ -2901,9 +2853,7 @@ Mesh pipe(double InnerRadius, double OuterRadius, double Height, std::int64_t Nt
         prim_fail(shape, "ntheta must be at least 3, got " + std::to_string(Ntheta));
     prim_check_budget(shape, prim_mul(prim_mul(Ntheta, Nr), Nz), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::Graded;
-    soup.mRadius = InnerRadius;
+    PrimSoup soup = prim_soup(PrimMap::Graded, InnerRadius);
     soup.mRadius2 = OuterRadius;
     soup.mRatio = Ratio;
     soup.mLayers = static_cast<double>(Nr);
@@ -2938,9 +2888,8 @@ Mesh fichera(std::int64_t N, double Size, const std::array<double, 3>& rCenter,
     constexpr const char* shape = "fichera";
     prim_check_count(shape, "n", N);
     prim_check_order(shape, Order);
-    const bool tet = rCellType == "tetra";
-    if (!tet && rCellType != "hexahedron")
-        prim_bad_choice(shape, "cell_type", rCellType, "hexahedron, tetra");
+    const bool tet =
+        prim_cell_type_is(shape, rCellType, "tetra", "hexahedron", "hexahedron, tetra");
     if (N == 0)
         return prim_empty();
     prim_check_positive(shape, "size", Size);
@@ -3032,9 +2981,7 @@ Mesh solid_torus(double MajorRadius, double MinorRadius, std::int64_t N, std::in
         prim_fail(shape, "nu must be at least 3, got " + std::to_string(Nu));
     prim_check_budget(shape, prim_mul(prim_mul(N, N), Nu), MaxCells);
 
-    PrimSoup soup;
-    soup.mMap = PrimMap::SolidTorus;
-    soup.mRadius = MajorRadius;
+    PrimSoup soup = prim_soup(PrimMap::SolidTorus, MajorRadius);
     soup.mRadius2 = MinorRadius;
     soup.mCenter = rCenter;
     const std::int64_t p = N + 1, layer = p * p;

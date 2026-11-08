@@ -46,10 +46,10 @@ from .._data_manage import data_drop, data_keep, data_rename
 from .._error import estimate_error
 from .._error_size import error_size
 from .._gradient import gradient
-from .._helpers import _reader_names, _writer_names, read, write
+from .._helpers import _reader_names, read, write
 from .._hessian import hessian
 from .._tensor_invariants import tensor_invariants
-from ._common import add_io_args
+from ._common import add_io_args, split_csv
 from ._json import emit_json
 
 _LOCATION_FLAGS = ("point", "cell", "field")
@@ -57,33 +57,7 @@ _LOCATION_FLAGS = ("point", "cell", "field")
 
 def _add_io_args(parser, with_output=True):
     """The shared ``INFILE [OUTFILE]`` + format-override arguments."""
-    parser.add_argument("infile", type=str, help="mesh file to be read from")
-    if with_output:
-        parser.add_argument("outfile", type=str, help="mesh file to be written to")
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
-    if with_output:
-        parser.add_argument(
-            "--output-format",
-            "-o",
-            type=str,
-            choices=_writer_names(),
-            help="output file format",
-            default=None,
-        )
-
-
-def _split_names(value):
-    """``"a,b"`` -> ``["a", "b"]``, ignoring empty entries."""
-    if not value:
-        return []
-    return [part for part in (p.strip() for p in value.split(",")) if part]
+    add_io_args(parser, "mesh file to be written to" if with_output else None)
 
 
 def _split_rename(value):
@@ -204,7 +178,7 @@ def add_drop_args(parser):
 def drop_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
     for loc in _LOCATION_FLAGS:
-        names = _split_names(getattr(args, loc))
+        names = split_csv(getattr(args, loc))
         if names:
             mesh = data_drop(mesh, loc, names, ignore_missing=args.ignore_missing)
             print(f"dropped {loc}_data: {', '.join(names)}")
@@ -238,7 +212,7 @@ def keep_cmd(args):
         # an empty list means "keep nothing there".
         if value is None:
             continue
-        names = _split_names(value)
+        names = split_csv(value)
         mesh = data_keep(mesh, loc, names, ignore_missing=args.ignore_missing)
         print(f"kept {loc}_data: {', '.join(names) if names else '(nothing)'}")
     write(args.outfile, mesh, file_format=args.output_format)
@@ -267,7 +241,7 @@ def add_to_cell_args(parser):
 
 def to_cell_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
-    keys = _split_names(args.keys)
+    keys = split_csv(args.keys)
     out = point_data_to_cell_data(mesh, keys=keys, suffix=args.target_suffix)
     moved = keys if keys else sorted(mesh.point_data.keys())
     print(f"averaged {len(moved)} point_data array(s) onto the cells")
@@ -299,7 +273,7 @@ def add_to_point_args(parser):
 
 def to_point_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
-    keys = _split_names(args.keys)
+    keys = split_csv(args.keys)
     out = cell_data_to_point_data(
         mesh, keys=keys, weighted=args.weighted, suffix=args.target_suffix
     )
@@ -392,7 +366,7 @@ def _selected_locations(args):
     for loc in _LOCATION_FLAGS:
         value = getattr(args, loc)
         if value is not None:
-            out.append((loc, _split_names(value)))
+            out.append((loc, split_csv(value)))
     return out
 
 
@@ -448,7 +422,7 @@ def add_normalize_args(parser):
 
 def normalize_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
-    parts = _split_names(args.to)
+    parts = split_csv(args.to)
     if not args.zero_mean and len(parts) != 2:
         raise ValueError(f"data normalize: --to expects LO,HI, got '{args.to}'")
     lo, hi = (0.0, 1.0) if args.zero_mean else (float(parts[0]), float(parts[1]))
@@ -683,11 +657,11 @@ def export_cae_cmd(args):
         file_format=args.input_format,
         # `or None` throughout: an omitted flag means "every numeric array",
         # which is not the same request as an explicit empty list.
-        surface_fields=_split_names(args.surface_fields) or None,
-        volume_fields=_split_names(args.volume_fields) or None,
+        surface_fields=split_csv(args.surface_fields) or None,
+        volume_fields=split_csv(args.volume_fields) or None,
         global_params=params or None,
         global_params_reference=references or None,
-        global_params_order=_split_names(args.global_order) or None,
+        global_params_order=split_csv(args.global_order) or None,
     )
     if not args.quiet:
         print(f"wrote {len(written)} case(s) to {args.outdir}")
@@ -1100,8 +1074,8 @@ def invariants_cmd(args):
             "data invariants requires exactly one of --point NAMES or --cell NAMES"
         )
     location = "point" if args.point is not None else "cell"
-    names = _split_names(args.point if args.point is not None else args.cell)
-    outputs = _split_names(args.outputs) if args.outputs else None
+    names = split_csv(args.point if args.point is not None else args.cell)
+    outputs = split_csv(args.outputs) if args.outputs else None
     mesh = tensor_invariants(
         mesh,
         location=location,

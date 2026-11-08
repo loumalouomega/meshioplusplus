@@ -15,34 +15,8 @@ from .._grid_transfer import (
     sample_grid,
     scatter_grid,
 )
-from .._helpers import _reader_names, _writer_names, read, write
-
-
-def _fmt_args(parser, output=True):
-    parser.add_argument(
-        "--input-format",
-        "-i",
-        type=str,
-        choices=_reader_names(),
-        help="input file format",
-        default=None,
-    )
-    if output:
-        parser.add_argument(
-            "--output-format",
-            "-o",
-            type=str,
-            choices=_writer_names(),
-            help="output file format",
-            default=None,
-        )
-
-
-def _triple(text, flag, verb):
-    values = [int(x) for x in text.split(",")]
-    if len(values) != 3:
-        raise ValueError(f"{verb}: {flag} expects 'nx,ny,nz'")
-    return values
+from .._helpers import _writer_names, read, write
+from ._common import add_box_args, add_io_args, parse_bounds, parse_ints
 
 
 def _report_spec(spec):
@@ -56,9 +30,7 @@ def _report_spec(spec):
 # grid-sample                                                                 #
 # --------------------------------------------------------------------------- #
 def add_sample_args(parser):
-    parser.add_argument("infile", type=str, help="mesh file to be read from")
-    parser.add_argument("outfile", type=str, help="grid to be written to (.vti)")
-    _fmt_args(parser)
+    add_io_args(parser, "grid to be written to (.vti)")
     parser.add_argument(
         "--resolution",
         type=str,
@@ -71,22 +43,13 @@ def add_sample_args(parser):
         default=None,
         help="cubic cell size (exactly one of --resolution/--cell-size)",
     )
-    parser.add_argument(
-        "--bounds",
-        type=str,
-        default=None,
-        help="'xlo,ylo,zlo,xhi,yhi,zhi'; the mesh's bounding box by default. "
-        "For a coarse/fine pair take the box from the FINE mesh, so every fine "
-        "node is inside the coarse grid (negatives need --bounds=)",
-    )
-    parser.add_argument(
-        "--padding", type=float, default=0.0, help="grow the box by this on every side"
-    )
-    parser.add_argument(
-        "--padding-relative",
-        type=float,
-        default=0.0,
-        help="grow the box by this fraction of its diagonal on every side",
+    add_box_args(
+        parser,
+        bounds_help=(
+            "'xlo,ylo,zlo,xhi,yhi,zhi'; the mesh's bounding box by default. "
+            "For a coarse/fine pair take the box from the FINE mesh, so every fine "
+            "node is inside the coarse grid (negatives need --bounds=)"
+        ),
     )
     parser.add_argument(
         "--fields",
@@ -119,16 +82,8 @@ def add_sample_args(parser):
 
 def grid_sample_cmd(args):
     mesh = read(args.infile, file_format=args.input_format)
-    resolution = (
-        None
-        if args.resolution is None
-        else _triple(args.resolution, "--resolution", "grid-sample")
-    )
-    bounds = None
-    if args.bounds is not None:
-        bounds = [float(x) for x in args.bounds.split(",")]
-        if len(bounds) != 6:
-            raise ValueError("grid-sample: --bounds expects 'xlo,ylo,zlo,xhi,yhi,zhi'")
+    resolution = parse_ints(args.resolution, "grid-sample", "--resolution")
+    bounds = parse_bounds(args.bounds, "grid-sample")
     fields = None if args.fields is None else args.fields.split(",")
 
     spec = GridSpec.from_mesh(
@@ -216,9 +171,7 @@ def grid_scatter_cmd(args):
 # grid-resample                                                               #
 # --------------------------------------------------------------------------- #
 def add_resample_args(parser):
-    parser.add_argument("infile", type=str, help="grid to read (.vti)")
-    parser.add_argument("outfile", type=str, help="grid to be written to (.vti)")
-    _fmt_args(parser)
+    add_io_args(parser, "grid to be written to (.vti)", in_help="grid to read (.vti)")
     parser.add_argument(
         "--factor",
         type=int,
@@ -253,7 +206,8 @@ def grid_resample_cmd(args):
         target = array.spec.upscale(args.factor)
     else:
         dims = np.asarray(
-            _triple(args.resolution, "--resolution", "grid-resample"), dtype=np.int64
+            parse_ints(args.resolution, "grid-resample", "--resolution"),
+            dtype=np.int64,
         )
         lo, hi = array.spec.bounds
         target = GridSpec(origin=lo, spacing=(hi - lo) / dims.astype(float), dims=dims)
@@ -272,8 +226,7 @@ def grid_resample_cmd(args):
 # grid-spectrum                                                               #
 # --------------------------------------------------------------------------- #
 def add_spectrum_args(parser):
-    parser.add_argument("infile", type=str, help="grid to read (.vti)")
-    _fmt_args(parser, output=False)
+    add_io_args(parser, in_help="grid to read (.vti)")
     parser.add_argument("--field", type=str, required=True, help="point_data name")
     parser.add_argument(
         "--max-bins", type=int, default=0, help="print at most this many bins (0 = all)"

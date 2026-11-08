@@ -44,6 +44,17 @@ def _calls_core(node):
     )
 
 
+def _built_by_factory(stmt):
+    """``read, write = plain_shims(...)`` / ``vtk_xml_shims(...)`` (``_shims.py``)."""
+    return (
+        isinstance(stmt, ast.Assign)
+        and isinstance(stmt.value, ast.Call)
+        and isinstance(stmt.value.func, ast.Name)
+        and stmt.value.func.id in ("plain_shims", "vtk_xml_shims")
+        and ast.unparse(stmt.targets[0]) == "(read, write)"
+    )
+
+
 def _discover():
     """(package, "read"|"write", extra kwargs) for every shim that wraps a `_core` call."""
     found = []
@@ -51,6 +62,14 @@ def _discover():
         if init.parent.name in _SKIP_DIRS:
             continue
         for fn in ast.parse(init.read_text(encoding="utf-8")).body:
+            if _built_by_factory(fn):
+                # The factory's shims look `_core` and the twins up on the
+                # package at call time, so they are driven like the rest.
+                found += [
+                    (init.parent.name, "read", {}),
+                    (init.parent.name, "write", {}),
+                ]
+                continue
             if not (isinstance(fn, ast.FunctionDef) and fn.name in ("read", "write")):
                 continue
             if any(

@@ -982,6 +982,152 @@ void core_def_vtk_xml(py::module_& rM, const char* pFormat, bool allow_ragged,
     core_def_read_options(rM, (name + "_read").c_str(), pFormat, read_fn);
 }
 
+/// Binds `pName(args...)` to a function that builds a mesh from plain
+/// arguments (the primitives): `fn(args...)` with the GIL released, the result
+/// converted. The parameter types are `fn`'s, so the Python signature follows
+/// them; `extra` is the `py::arg` list.
+template <class... TArgs, class... TExtra>
+void core_def_mesh_fn(py::module_& rM, const char* pName, meshioplusplus::Mesh (*fn)(TArgs...),
+                      const TExtra&... extra) {
+    rM.def(
+        pName,
+        [fn](TArgs... args) {
+            return meshioplusplus_py::mesh_to_py(core_nogil([&] { return fn(args...); }));
+        },
+        extra...);
+}
+
+/// Adds a step-by-step series writer's `write(time, mesh)`, `num_steps()` and
+/// `finalize()` -- the interface every `<Format>SeriesWriter` that takes a whole
+/// mesh per step shares -- and returns the class, so its other methods chain on.
+template <class TWriter>
+py::class_<TWriter> core_def_step_writer(py::class_<TWriter> cls) {
+    cls.def(
+           "write",
+           [](TWriter& rSelf, double time, py::object pymesh) {
+               meshioplusplus_py::PyMeshRefs refs;
+               rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
+           },
+           py::arg("time"), py::arg("mesh"))
+        .def("num_steps", &TWriter::NumSteps)
+        .def("finalize", &TWriter::Finalize);
+    return cls;
+}
+
+/// Binds a transient format's `<fmt>_read(path, points_only, arrays, time_step)`
+/// and `<fmt>_time_values(path)`. `pFormat` must be a string literal:
+/// `guard_read` keeps it.
+template <class TRead, class TTimes>
+void core_def_time_series_read(py::module_& rM, const char* pFormat, TRead read_fn,
+                               TTimes times_fn) {
+    const std::string name(pFormat);
+    rM.def((name + "_read").c_str(),
+           guard_read(pFormat,
+                      [read_fn](const std::string& path, bool points_only, py::object arrays,
+                                int time_step) {
+                          return meshioplusplus_py::mesh_to_py(core_nogil(
+                              [&, opts = core_read_options(points_only, arrays, time_step)] {
+                                  return read_fn(path, opts);
+                              }));
+                      }),
+           py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+           py::arg("time_step") = 0);
+    rM.def((name + "_time_values").c_str(), [times_fn](const std::string& path) {
+        return core_nogil([&] { return times_fn(path); });
+    });
+}
+
+/// Adds `__enter__` and an `__exit__` that finalizes unconditionally, the
+/// context-manager protocol of the multi-step writers (`ExodusTimeSeriesWriter`,
+/// `XdmfTimeSeriesWriter`, `VtkhdfTimeSeriesWriter`). Returning False never
+/// suppresses the body's exception; if Finalize() also fails, Python chains
+/// the two. Returns the class so its definition ends here.
+template <class TClass>
+TClass core_def_finalizing_context(TClass cls) {
+    using TWriter = typename TClass::type;
+    cls.def("__enter__", [](py::object self) { return self; })
+        .def("__exit__",
+             [](TWriter& rSelf, const py::object&, const py::object&, const py::object&) {
+                 core_nogil([&] { return rSelf.Finalize(); });
+                 return false;
+             });
+    return cls;
+}
+
+/// A `name -> array` dict as a writer's `NamedArray`s, in dict order: float64
+/// values, the components in the trailing dimension (the rule the rest of the
+/// repo uses for a multi-component array).
+template <class TNamedArray>
+std::vector<TNamedArray> core_named_arrays(const py::dict& rSrc) {
+    std::vector<TNamedArray> out;
+    for (const auto& r_item : rSrc) {
+        auto arr = py::array_t<double, py::array::c_style | py::array::forcecast>(
+            py::reinterpret_borrow<py::object>(r_item.second));
+        TNamedArray a;
+        a.mName = py::cast<std::string>(r_item.first);
+        a.mNumComponents =
+            arr.ndim() >= 2 ? static_cast<std::size_t>(arr.shape(arr.ndim() - 1)) : 1u;
+        a.mValues.assign(arr.data(), arr.data() + arr.size());
+        out.push_back(std::move(a));
+    }
+    return out;
+}
+
+/// Binds a partitioned VTK XML format's `<fmt>_write_codec(path, mesh, binary,
+/// codec, part_key)`, `<fmt>_write_pieces_codec(path, pieces, binary, codec)` and
+/// `<fmt>_read(path, points_only, arrays, piece, ghosts)`, in that order: the
+/// `.pvtu` and `.pvtp` bindings, which differ only in the functions bound.
+/// `pFormat` must be a string literal: `guard_read` keeps it.
+template <class TWriteCodec, class TWritePieces, class TRead>
+void core_def_parallel_xml(py::module_& rM, const char* pFormat, TWriteCodec write_codec_fn,
+                           TWritePieces write_pieces_fn, TRead read_fn) {
+    const std::string name(pFormat);
+    rM.def((name + "_write_codec").c_str(),
+           [write_codec_fn](const std::string& path, py::object pymesh, bool binary,
+                            const std::string& codec, const std::string& part_key) {
+               auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+               [[maybe_unused]] auto& refs = cpp_in.mRefs;
+               auto& cpp = cpp_in.mMesh;
+               core_nogil([&] {
+                   return write_codec_fn(path, cpp, binary, core_codec_from_name(codec), part_key);
+               });
+           },
+           py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib",
+           py::arg("part_key") = meshioplusplus::kPvtuPartKey);
+
+    rM.def((name + "_write_pieces_codec").c_str(),
+           [write_pieces_fn](const std::string& path, py::list pieces, bool binary,
+                             const std::string& codec) {
+               meshioplusplus_py::PyMeshRefs refs;
+               std::vector<meshioplusplus::Mesh> meshes;
+               meshes.reserve(pieces.size());
+               for (py::handle piece : pieces)
+                   meshes.push_back(meshioplusplus_py::py_to_mesh(piece, refs,
+                                                                  /*lenient_field_data=*/false,
+                                                                  /*allow_ragged=*/true));
+               std::vector<const meshioplusplus::Mesh*> ptrs;
+               ptrs.reserve(meshes.size());
+               for (const meshioplusplus::Mesh& piece : meshes)
+                   ptrs.push_back(&piece);
+               core_nogil([&] {
+                   return write_pieces_fn(path, ptrs, binary, core_codec_from_name(codec));
+               });
+           },
+           py::arg("path"), py::arg("pieces"), py::arg("binary") = true, py::arg("codec") = "zlib");
+
+    rM.def(
+        (name + "_read").c_str(),
+        guard_read(pFormat,
+                   [read_fn](const std::string& path, bool points_only, py::object arrays,
+                             py::object piece, const std::string& ghosts) {
+                       return meshioplusplus_py::mesh_to_py(core_nogil(
+                           [&, opts = core_read_options(points_only, arrays, 0, piece, false,
+                                                        ghosts)] { return read_fn(path, opts); }));
+                   }),
+        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
+        py::arg("piece") = py::none(), py::arg("ghosts") = "keep");
+}
+
 /** @brief `MeshMetadata` -> the dict shape the Python layer exposes. */
 py::dict core_metadata_to_py(const meshioplusplus::MeshMetadata& rMeta) {
     py::list blocks;
@@ -1627,6 +1773,32 @@ meshioplusplus::MmgParameters py_mmg_parameters(const py::dict& rP, std::size_t 
     return p;
 }
 
+/// One quality metric's summary as `compute_quality` reports it: min, max,
+/// mean, count and the histogram's bins.
+py::dict core_metric_summary_dict(const meshioplusplus::QualityMetricSummary& rS) {
+    py::dict d;
+    d["min"] = rS.mMin;
+    d["max"] = rS.mMax;
+    d["mean"] = rS.mMean;
+    d["count"] = rS.mCount;
+    py::list hist;
+    for (std::int64_t h : rS.mHistogram)
+        hist.append(h);
+    d["histogram"] = hist;
+    return d;
+}
+
+/// A quality report's counts and per-metric summaries, into @p rOut.
+void core_quality_dict(py::dict& rOut, const meshioplusplus::QualityReport& rRep) {
+    rOut["num_cells"] = rRep.mNumCells;
+    rOut["num_inverted"] = rRep.mNumInverted;
+    rOut["num_degenerate"] = rRep.mNumDegenerate;
+    py::dict metrics;
+    for (const auto& entry : rRep.mMetrics)
+        metrics[py::str(entry.first)] = core_metric_summary_dict(entry.second);
+    rOut["metrics"] = metrics;
+}
+
 /// An MMG operation's report as a dict.
 py::dict py_mmg_report(const meshioplusplus::MmgReport& rR) {
     py::dict out;
@@ -1636,14 +1808,7 @@ py::dict py_mmg_report(const meshioplusplus::MmgReport& rR) {
     out["num_points_out"] = rR.mNumPointsOut;
     out["num_elements_in"] = rR.mNumElementsIn;
     out["num_elements_out"] = rR.mNumElementsOut;
-    py::dict q;
-    q["min"] = rR.mQuality.mMin;
-    q["max"] = rR.mQuality.mMax;
-    q["mean"] = rR.mQuality.mMean;
-    q["count"] = rR.mQuality.mCount;
-    q["histogram"] =
-        std::vector<std::int64_t>(rR.mQuality.mHistogram.begin(), rR.mQuality.mHistogram.end());
-    out["quality"] = q;
+    out["quality"] = core_metric_summary_dict(rR.mQuality);
     out["warnings"] = rR.mWarnings;
     return out;
 }
@@ -1702,6 +1867,25 @@ void core_frozen_flags(TFlags& rFrozen, const py::object& rIds, std::size_t num_
     }
 }
 
+/// Sets the distance options every distance-based binding takes, converting
+/// the names in the order the bindings always did (sign, weight, location when
+/// @p pLocation is given, watertight check), so the first bad name still names
+/// itself; the caller sets the band and the record flags it has.
+void core_distance_options(meshioplusplus::SurfaceDistanceOptions& rOptions,
+                           const std::string& rSign, const std::string& rWeight,
+                           const std::string* pLocation, const std::string& rWatertightCheck,
+                           const std::string& rSurfaceRegion, double GridCellSize,
+                           double MaxWindingWork) {
+    rOptions.mSign = meshioplusplus::sdf_sign_from_name(rSign);
+    rOptions.mWeight = meshioplusplus::sdf_weight_from_name(rWeight);
+    if (pLocation != nullptr)
+        rOptions.mLocation = meshioplusplus::sdf_location_from_name(*pLocation);
+    rOptions.mWatertightCheck = meshioplusplus::sdf_watertight_check_from_name(rWatertightCheck);
+    rOptions.mSurfaceRegion = rSurfaceRegion;
+    rOptions.mGridCellSize = GridCellSize;
+    rOptions.mMaxWindingWork = MaxWindingWork;
+}
+
 /// Sets a lattice's optional resolution, cell size and bounds, and its padding.
 template <class TOptions>
 void core_grid_extent(TOptions& rOptions, const py::object& rResolution,
@@ -1715,6 +1899,50 @@ void core_grid_extent(TOptions& rOptions, const py::object& rResolution,
         rOptions.mBounds = rBounds.cast<std::array<double, 6>>();
     rOptions.mPadding = padding;
     rOptions.mPaddingRelative = padding_relative;
+}
+
+/**
+ * @brief Binds `decimate` or `decimate_volume`: `(mesh, target_ratio,
+ * <pCountKey>, max_error, placement, preserve_boundary, preserve_features,
+ * feature_angle, frozen)` to a dict of the mesh, its maps, `<pRemovedKey>`,
+ * `points_removed`, `collapses_rejected` and `max_error_applied`. The two
+ * differ in the count's name and member, `preserve_boundary`'s default, the
+ * operation and the removed count (`rRemoved(result)`).
+ */
+template <class TOptions, class TOp, class TRemoved>
+void core_def_decimate(py::module_& rM, const char* pName, const char* pCountKey,
+                       std::int64_t TOptions::*pCount, const char* pRemovedKey,
+                       bool PreserveBoundary, TOp op, TRemoved rRemoved) {
+    rM.def(
+        pName,
+        [pName, pCount, pRemovedKey, op, rRemoved](
+            py::object pymesh, double target_ratio, std::int64_t target_count, double max_error,
+            const std::string& placement, bool preserve_boundary, bool preserve_features,
+            double feature_angle, py::object frozen) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            TOptions options;
+            options.mTargetRatio = target_ratio;
+            options.*pCount = target_count;
+            options.mMaxError = max_error;
+            options.mPlacement = meshioplusplus::decimate_placement_from_name(placement);
+            options.mPreserveBoundary = preserve_boundary;
+            options.mPreserveFeatures = preserve_features;
+            options.mFeatureAngleDeg = feature_angle;
+            core_frozen_flags(options.mFrozen, frozen, cpp.NumPoints(), pName);
+            auto r = core_nogil([&] { return op(cpp, options); });
+            py::dict out = core_mesh_maps_dict(r);
+            out[pRemovedKey] = rRemoved(r);
+            out["points_removed"] = r.mPointsRemoved;
+            out["collapses_rejected"] = r.mCollapsesRejected;
+            out["max_error_applied"] = r.mMaxErrorApplied;
+            return out;
+        },
+        py::arg("mesh"), py::arg("target_ratio") = -1.0, py::arg(pCountKey) = -1,
+        py::arg("max_error") = -1.0, py::arg("placement") = "optimal",
+        py::arg("preserve_boundary") = PreserveBoundary, py::arg("preserve_features") = true,
+        py::arg("feature_angle") = 30.0, py::arg("frozen") = py::none());
 }
 
 }  // namespace
@@ -2040,103 +2268,10 @@ PYBIND11_MODULE(_core, m) {
     // plus one .vtu/.vtp piece per part. allow_ragged=true like vtm -- a piece is a
     // standalone file that may hold jagged blocks. `write_pieces_codec` takes the
     // list `partition` returns; `ghosts` is "keep" or "drop".
-    m.def(
-        "pvtu_write_codec",
-        [](const std::string& path, py::object pymesh, bool binary, const std::string& codec,
-           const std::string& part_key) {
-            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
-            [[maybe_unused]] auto& refs = cpp_in.mRefs;
-            auto& cpp = cpp_in.mMesh;
-            core_nogil([&] {
-                return meshioplusplus::write_pvtu_codec(path, cpp, binary,
-                                                        core_codec_from_name(codec), part_key);
-            });
-        },
-        py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib",
-        py::arg("part_key") = meshioplusplus::kPvtuPartKey);
-
-    m.def(
-        "pvtu_write_pieces_codec",
-        [](const std::string& path, py::list pieces, bool binary, const std::string& codec) {
-            meshioplusplus_py::PyMeshRefs refs;
-            std::vector<meshioplusplus::Mesh> meshes;
-            meshes.reserve(pieces.size());
-            for (py::handle piece : pieces)
-                meshes.push_back(meshioplusplus_py::py_to_mesh(piece, refs,
-                                                               /*lenient_field_data=*/false,
-                                                               /*allow_ragged=*/true));
-            std::vector<const meshioplusplus::Mesh*> ptrs;
-            ptrs.reserve(meshes.size());
-            for (const meshioplusplus::Mesh& piece : meshes)
-                ptrs.push_back(&piece);
-            core_nogil([&] {
-                return meshioplusplus::write_pvtu_pieces_codec(path, ptrs, binary,
-                                                               core_codec_from_name(codec));
-            });
-        },
-        py::arg("path"), py::arg("pieces"), py::arg("binary") = true, py::arg("codec") = "zlib");
-
-    m.def("pvtu_read",
-          guard_read(
-              "pvtu",
-              [](const std::string& path, bool points_only, py::object arrays, py::object piece,
-                 const std::string& ghosts) {
-                  return meshioplusplus_py::mesh_to_py(core_nogil(
-                      [&, opts = core_read_options(points_only, arrays, 0, piece, false, ghosts)] {
-                          return meshioplusplus::read_pvtu(path, opts);
-                      }));
-              }),
-          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-          py::arg("piece") = py::none(), py::arg("ghosts") = "keep");
-
-    m.def(
-        "pvtp_write_codec",
-        [](const std::string& path, py::object pymesh, bool binary, const std::string& codec,
-           const std::string& part_key) {
-            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
-            [[maybe_unused]] auto& refs = cpp_in.mRefs;
-            auto& cpp = cpp_in.mMesh;
-            core_nogil([&] {
-                return meshioplusplus::write_pvtp_codec(path, cpp, binary,
-                                                        core_codec_from_name(codec), part_key);
-            });
-        },
-        py::arg("path"), py::arg("mesh"), py::arg("binary") = true, py::arg("codec") = "zlib",
-        py::arg("part_key") = meshioplusplus::kPvtuPartKey);
-
-    m.def(
-        "pvtp_write_pieces_codec",
-        [](const std::string& path, py::list pieces, bool binary, const std::string& codec) {
-            meshioplusplus_py::PyMeshRefs refs;
-            std::vector<meshioplusplus::Mesh> meshes;
-            meshes.reserve(pieces.size());
-            for (py::handle piece : pieces)
-                meshes.push_back(meshioplusplus_py::py_to_mesh(piece, refs,
-                                                               /*lenient_field_data=*/false,
-                                                               /*allow_ragged=*/true));
-            std::vector<const meshioplusplus::Mesh*> ptrs;
-            ptrs.reserve(meshes.size());
-            for (const meshioplusplus::Mesh& piece : meshes)
-                ptrs.push_back(&piece);
-            core_nogil([&] {
-                return meshioplusplus::write_pvtp_pieces_codec(path, ptrs, binary,
-                                                               core_codec_from_name(codec));
-            });
-        },
-        py::arg("path"), py::arg("pieces"), py::arg("binary") = true, py::arg("codec") = "zlib");
-
-    m.def("pvtp_read",
-          guard_read(
-              "pvtp",
-              [](const std::string& path, bool points_only, py::object arrays, py::object piece,
-                 const std::string& ghosts) {
-                  return meshioplusplus_py::mesh_to_py(core_nogil(
-                      [&, opts = core_read_options(points_only, arrays, 0, piece, false, ghosts)] {
-                          return meshioplusplus::read_pvtp(path, opts);
-                      }));
-              }),
-          py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-          py::arg("piece") = py::none(), py::arg("ghosts") = "keep");
+    core_def_parallel_xml(m, "pvtu", &meshioplusplus::write_pvtu_codec,
+                          &meshioplusplus::write_pvtu_pieces_codec, &meshioplusplus::read_pvtu);
+    core_def_parallel_xml(m, "pvtp", &meshioplusplus::write_pvtp_codec,
+                          &meshioplusplus::write_pvtp_pieces_codec, &meshioplusplus::read_pvtp);
 
     // ParaView collection (.pvd): one .vtu per step. `time_step` selects the step
     // (the distinct `timestep=` values), `piece` one part of it.
@@ -2216,24 +2351,7 @@ PYBIND11_MODULE(_core, m) {
             meshioplusplus::QualityReport rep =
                 core_nogil([&] { return meshioplusplus::compute_quality(cpp); });
             py::dict out;
-            out["num_cells"] = rep.mNumCells;
-            out["num_inverted"] = rep.mNumInverted;
-            out["num_degenerate"] = rep.mNumDegenerate;
-            py::dict metrics;
-            for (auto& entry : rep.mMetrics) {
-                const meshioplusplus::QualityMetricSummary& s = entry.second;
-                py::dict d;
-                d["min"] = s.mMin;
-                d["max"] = s.mMax;
-                d["mean"] = s.mMean;
-                d["count"] = s.mCount;
-                py::list hist;
-                for (std::int64_t h : s.mHistogram)
-                    hist.append(h);
-                d["histogram"] = hist;
-                metrics[py::str(entry.first)] = d;
-            }
-            out["metrics"] = metrics;
+            core_quality_dict(out, rep);
             py::dict cell_arrays;
             for (auto& entry : rep.mCellArrays) {
                 py::list lst;
@@ -2832,72 +2950,26 @@ PYBIND11_MODULE(_core, m) {
     // Quadric-error-metric surface decimation. Returns a dict {mesh, point_map,
     // cell_maps, faces_removed, points_removed, collapses_rejected,
     // max_error_applied}. See operations/decimate.hpp.
-    m.def(
-        "decimate",
-        [](py::object pymesh, double target_ratio, std::int64_t target_faces, double max_error,
-           const std::string& placement, bool preserve_boundary, bool preserve_features,
-           double feature_angle, py::object frozen) {
-            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
-            [[maybe_unused]] auto& refs = cpp_in.mRefs;
-            auto& cpp = cpp_in.mMesh;
-            meshioplusplus::DecimateOptions options;
-            options.mTargetRatio = target_ratio;
-            options.mTargetFaces = target_faces;
-            options.mMaxError = max_error;
-            options.mPlacement = meshioplusplus::decimate_placement_from_name(placement);
-            options.mPreserveBoundary = preserve_boundary;
-            options.mPreserveFeatures = preserve_features;
-            options.mFeatureAngleDeg = feature_angle;
-            core_frozen_flags(options.mFrozen, frozen, cpp.NumPoints(), "decimate");
-            meshioplusplus::DecimateResult r =
-                core_nogil([&] { return meshioplusplus::decimate(cpp, options); });
-            py::dict out = core_mesh_maps_dict(r);
-            out["faces_removed"] = r.mFacesRemoved;
-            out["points_removed"] = r.mPointsRemoved;
-            out["collapses_rejected"] = r.mCollapsesRejected;
-            out["max_error_applied"] = r.mMaxErrorApplied;
-            return out;
+    core_def_decimate<meshioplusplus::DecimateOptions>(
+        m, "decimate", "target_faces", &meshioplusplus::DecimateOptions::mTargetFaces,
+        "faces_removed", /*PreserveBoundary=*/true,
+        [](const meshioplusplus::Mesh& rIn, const meshioplusplus::DecimateOptions& rOpts) {
+            return meshioplusplus::decimate(rIn, rOpts);
         },
-        py::arg("mesh"), py::arg("target_ratio") = -1.0, py::arg("target_faces") = -1,
-        py::arg("max_error") = -1.0, py::arg("placement") = "optimal",
-        py::arg("preserve_boundary") = true, py::arg("preserve_features") = true,
-        py::arg("feature_angle") = 30.0, py::arg("frozen") = py::none());
+        [](const meshioplusplus::DecimateResult& rR) { return rR.mFacesRemoved; });
 
     // Quadric-error-metric tet-edge collapse volume decimation. Returns a dict
     // {mesh, point_map, cell_maps, tets_removed, points_removed,
     // collapses_rejected, max_error_applied}. See operations/decimate_volume.hpp.
     // A separate operation from `decimate` -- boundary vertices participate by
     // default (`preserve_boundary` defaults False here, unlike `decimate`'s True).
-    m.def(
-        "decimate_volume",
-        [](py::object pymesh, double target_ratio, std::int64_t target_cells, double max_error,
-           const std::string& placement, bool preserve_boundary, bool preserve_features,
-           double feature_angle, py::object frozen) {
-            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
-            [[maybe_unused]] auto& refs = cpp_in.mRefs;
-            auto& cpp = cpp_in.mMesh;
-            meshioplusplus::DecimateVolumeOptions options;
-            options.mTargetRatio = target_ratio;
-            options.mTargetCells = target_cells;
-            options.mMaxError = max_error;
-            options.mPlacement = meshioplusplus::decimate_placement_from_name(placement);
-            options.mPreserveBoundary = preserve_boundary;
-            options.mPreserveFeatures = preserve_features;
-            options.mFeatureAngleDeg = feature_angle;
-            core_frozen_flags(options.mFrozen, frozen, cpp.NumPoints(), "decimate_volume");
-            meshioplusplus::DecimateVolumeResult r =
-                core_nogil([&] { return meshioplusplus::decimate_volume(cpp, options); });
-            py::dict out = core_mesh_maps_dict(r);
-            out["tets_removed"] = r.mTetsRemoved;
-            out["points_removed"] = r.mPointsRemoved;
-            out["collapses_rejected"] = r.mCollapsesRejected;
-            out["max_error_applied"] = r.mMaxErrorApplied;
-            return out;
+    core_def_decimate<meshioplusplus::DecimateVolumeOptions>(
+        m, "decimate_volume", "target_cells", &meshioplusplus::DecimateVolumeOptions::mTargetCells,
+        "tets_removed", /*PreserveBoundary=*/false,
+        [](const meshioplusplus::Mesh& rIn, const meshioplusplus::DecimateVolumeOptions& rOpts) {
+            return meshioplusplus::decimate_volume(rIn, rOpts);
         },
-        py::arg("mesh"), py::arg("target_ratio") = -1.0, py::arg("target_cells") = -1,
-        py::arg("max_error") = -1.0, py::arg("placement") = "optimal",
-        py::arg("preserve_boundary") = false, py::arg("preserve_features") = true,
-        py::arg("feature_angle") = 30.0, py::arg("frozen") = py::none());
+        [](const meshioplusplus::DecimateVolumeResult& rR) { return rR.mTetsRemoved; });
 
     // Laplacian / Taubin smoothing. Returns a dict with the smoothed mesh and
     // the run summary. A coordinates-only change. See operations/smooth.hpp.
@@ -3037,433 +3109,290 @@ PYBIND11_MODULE(_core, m) {
     // Regular grids. `grid` builds a lattice from nothing -- the library's first
     // mesh *generator* -- and `voxelize` builds one around a mesh, optionally
     // keeping only the cells its surface passes through or encloses.
-    m.def(
-        "grid",
-        [](const std::array<std::int64_t, 3>& dims, const std::array<double, 3>& origin,
-           const std::array<double, 3>& spacing, std::int64_t max_cells) {
-            return meshioplusplus_py::mesh_to_py(
-                core_nogil([&] { return meshioplusplus::grid(dims, origin, spacing, max_cells); }));
-        },
-        py::arg("dims"), py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}},
-        py::arg("spacing") = std::array<double, 3>{{1.0, 1.0, 1.0}},
-        py::arg("max_cells") = 20000000);
+    core_def_mesh_fn(m, "grid",
+                     static_cast<meshioplusplus::Mesh (*)(
+                         const std::array<std::int64_t, 3>&, const std::array<double, 3>&,
+                         const std::array<double, 3>&, std::int64_t)>(&meshioplusplus::grid),
+                     py::arg("dims"), py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+                     py::arg("spacing") = std::array<double, 3>{{1.0, 1.0, 1.0}},
+                     py::arg("max_cells") = 20000000);
 
     // Parametric generators (operations/primitives.hpp): `grid`'s siblings.
-    m.def(
-        "rectangle",
-        [](const std::array<std::int64_t, 2>& dims, const std::array<double, 2>& size,
-           const std::array<double, 3>& origin, const std::string& cell_type,
-           const std::string& split, int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::rectangle(dims, size, origin, cell_type, split, order,
-                                                 max_cells, complete);
-            }));
-        },
-        py::arg("dims") = std::array<std::int64_t, 2>{{1, 1}},
-        py::arg("size") = std::array<double, 2>{{1.0, 1.0}},
-        py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
-        py::arg("split") = "zigzag", py::arg("order") = 1, py::arg("max_cells") = 20000000,
-        py::arg("complete") = false);
-    m.def(
-        "box",
-        [](const std::array<std::int64_t, 3>& dims, const std::array<double, 3>& size,
-           const std::array<double, 3>& origin, const std::string& cell_type, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::box(dims, size, origin, cell_type, order, max_cells,
-                                           complete);
-            }));
-        },
+    core_def_mesh_fn(m, "rectangle",
+                     static_cast<meshioplusplus::Mesh (*)(
+                         const std::array<std::int64_t, 2>&, const std::array<double, 2>&,
+                         const std::array<double, 3>&, const std::string&, const std::string&, int,
+                         std::int64_t, bool)>(&meshioplusplus::rectangle),
+                     py::arg("dims") = std::array<std::int64_t, 2>{{1, 1}},
+                     py::arg("size") = std::array<double, 2>{{1.0, 1.0}},
+                     py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+                     py::arg("cell_type") = "quad", py::arg("split") = "zigzag",
+                     py::arg("order") = 1, py::arg("max_cells") = 20000000,
+                     py::arg("complete") = false);
+    core_def_mesh_fn(
+        m, "box",
+        static_cast<meshioplusplus::Mesh (*)(
+            const std::array<std::int64_t, 3>&, const std::array<double, 3>&,
+            const std::array<double, 3>&, const std::string&, int, std::int64_t, bool)>(
+            &meshioplusplus::box),
         py::arg("dims") = std::array<std::int64_t, 3>{{1, 1, 1}},
         py::arg("size") = std::array<double, 3>{{1.0, 1.0, 1.0}},
         py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}},
         py::arg("cell_type") = "hexahedron", py::arg("order") = 1, py::arg("max_cells") = 20000000,
         py::arg("complete") = false);
-    m.def(
-        "disk",
-        [](double radius, std::int64_t n, const std::array<double, 3>& center,
-           const std::string& cell_type, int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::disk(radius, n, center, cell_type, order, max_cells,
-                                            complete);
-            }));
-        },
+    core_def_mesh_fn(
+        m, "disk",
+        static_cast<meshioplusplus::Mesh (*)(double, std::int64_t, const std::array<double, 3>&,
+                                             const std::string&, int, std::int64_t, bool)>(
+            &meshioplusplus::disk),
         py::arg("radius") = 1.0, py::arg("n") = 8,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
         py::arg("order") = 1, py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "uv_sphere",
-        [](double radius, std::int64_t nu, std::int64_t nv, const std::array<double, 3>& center,
-           const std::string& cell_type, int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::uv_sphere(radius, nu, nv, center, cell_type, order,
-                                                 max_cells, complete);
-            }));
-        },
-        py::arg("radius") = 1.0, py::arg("nu") = 16, py::arg("nv") = 8,
-        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
-        py::arg("cell_type") = "triangle", py::arg("order") = 1, py::arg("max_cells") = 20000000,
-        py::arg("complete") = false);
-    m.def(
-        "icosa_sphere",
-        [](double radius, std::int64_t subdivisions, const std::array<double, 3>& center, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::icosa_sphere(radius, subdivisions, center, order, max_cells,
-                                                    complete);
-            }));
-        },
+    core_def_mesh_fn(m, "uv_sphere",
+                     static_cast<meshioplusplus::Mesh (*)(
+                         double, std::int64_t, std::int64_t, const std::array<double, 3>&,
+                         const std::string&, int, std::int64_t, bool)>(&meshioplusplus::uv_sphere),
+                     py::arg("radius") = 1.0, py::arg("nu") = 16, py::arg("nv") = 8,
+                     py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+                     py::arg("cell_type") = "triangle", py::arg("order") = 1,
+                     py::arg("max_cells") = 20000000, py::arg("complete") = false);
+    core_def_mesh_fn(
+        m, "icosa_sphere",
+        static_cast<meshioplusplus::Mesh (*)(double, std::int64_t, const std::array<double, 3>&,
+                                             int, std::int64_t, bool)>(
+            &meshioplusplus::icosa_sphere),
         py::arg("radius") = 1.0, py::arg("subdivisions") = 2,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
         py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "cylinder",
-        [](double radius, double height, std::int64_t nxy, std::int64_t nz,
-           const std::array<double, 3>& center, const std::string& cell_type, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::cylinder(radius, height, nxy, nz, center, cell_type, order,
-                                                max_cells, complete);
-            }));
-        },
-        py::arg("radius") = 1.0, py::arg("height") = 1.0, py::arg("nxy") = 8, py::arg("nz") = 8,
-        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
-        py::arg("cell_type") = "hexahedron", py::arg("order") = 1, py::arg("max_cells") = 20000000,
-        py::arg("complete") = false);
-    m.def(
-        "reference_triangle",
-        [](std::int64_t n, const std::array<double, 2>& size, const std::array<double, 3>& origin,
-           int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::reference_triangle(n, size, origin, order, max_cells,
-                                                          complete);
-            }));
-        },
-        py::arg("n") = 4, py::arg("size") = std::array<double, 2>{{1.0, 1.0}},
-        py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
-        py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "ngon",
-        [](std::int64_t sides, double radius, std::int64_t rings,
-           const std::array<double, 3>& center, int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::ngon(sides, radius, rings, center, order, max_cells,
-                                            complete);
-            }));
-        },
-        py::arg("sides") = 6, py::arg("radius") = 1.0, py::arg("rings") = 1,
-        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
-        py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "annulus",
-        [](double inner_radius, double outer_radius, std::int64_t ntheta, std::int64_t nr,
-           double angle, const std::array<double, 3>& center, const std::string& cell_type,
-           int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::annulus(inner_radius, outer_radius, ntheta, nr, angle,
-                                               center, cell_type, order, max_cells, complete);
-            }));
-        },
+    core_def_mesh_fn(m, "cylinder",
+                     static_cast<meshioplusplus::Mesh (*)(
+                         double, double, std::int64_t, std::int64_t, const std::array<double, 3>&,
+                         const std::string&, int, std::int64_t, bool)>(&meshioplusplus::cylinder),
+                     py::arg("radius") = 1.0, py::arg("height") = 1.0, py::arg("nxy") = 8,
+                     py::arg("nz") = 8, py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+                     py::arg("cell_type") = "hexahedron", py::arg("order") = 1,
+                     py::arg("max_cells") = 20000000, py::arg("complete") = false);
+    core_def_mesh_fn(m, "reference_triangle",
+                     static_cast<meshioplusplus::Mesh (*)(
+                         std::int64_t, const std::array<double, 2>&, const std::array<double, 3>&,
+                         int, std::int64_t, bool)>(&meshioplusplus::reference_triangle),
+                     py::arg("n") = 4, py::arg("size") = std::array<double, 2>{{1.0, 1.0}},
+                     py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+                     py::arg("order") = 1, py::arg("max_cells") = 20000000,
+                     py::arg("complete") = false);
+    core_def_mesh_fn(m, "ngon",
+                     static_cast<meshioplusplus::Mesh (*)(
+                         std::int64_t, double, std::int64_t, const std::array<double, 3>&, int,
+                         std::int64_t, bool)>(&meshioplusplus::ngon),
+                     py::arg("sides") = 6, py::arg("radius") = 1.0, py::arg("rings") = 1,
+                     py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+                     py::arg("order") = 1, py::arg("max_cells") = 20000000,
+                     py::arg("complete") = false);
+    core_def_mesh_fn(
+        m, "annulus",
+        static_cast<meshioplusplus::Mesh (*)(double, double, std::int64_t, std::int64_t, double,
+                                             const std::array<double, 3>&, const std::string&, int,
+                                             std::int64_t, bool)>(&meshioplusplus::annulus),
         py::arg("inner_radius") = 0.5, py::arg("outer_radius") = 1.0, py::arg("ntheta") = 16,
         py::arg("nr") = 4, py::arg("angle") = 6.283185307179586,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
         py::arg("order") = 1, py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "lshape",
-        [](std::int64_t n, double size, const std::array<double, 3>& center,
-           const std::string& cell_type, int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::lshape(n, size, center, cell_type, order, max_cells,
-                                              complete);
-            }));
-        },
+    core_def_mesh_fn(
+        m, "lshape",
+        static_cast<meshioplusplus::Mesh (*)(std::int64_t, double, const std::array<double, 3>&,
+                                             const std::string&, int, std::int64_t, bool)>(
+            &meshioplusplus::lshape),
         py::arg("n") = 4, py::arg("size") = 2.0,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
         py::arg("order") = 1, py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "plate_with_hole",
-        [](double radius, double size, std::int64_t nt, std::int64_t nr,
-           const std::array<double, 3>& center, const std::string& cell_type, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::plate_with_hole(radius, size, nt, nr, center, cell_type,
-                                                       order, max_cells, complete);
-            }));
-        },
+    core_def_mesh_fn(
+        m, "plate_with_hole",
+        static_cast<meshioplusplus::Mesh (*)(double, double, std::int64_t, std::int64_t,
+                                             const std::array<double, 3>&, const std::string&, int,
+                                             std::int64_t, bool)>(&meshioplusplus::plate_with_hole),
         py::arg("radius") = 0.25, py::arg("size") = 1.0, py::arg("nt") = 8, py::arg("nr") = 4,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
         py::arg("order") = 1, py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "honeycomb",
-        [](const std::array<std::int64_t, 2>& dims, double edge,
-           const std::array<double, 3>& origin, std::int64_t max_cells) {
-            return meshioplusplus_py::mesh_to_py(core_nogil(
-                [&] { return meshioplusplus::honeycomb(dims, edge, origin, max_cells); }));
-        },
+    core_def_mesh_fn(
+        m, "honeycomb",
+        static_cast<meshioplusplus::Mesh (*)(const std::array<std::int64_t, 2>&, double,
+                                             const std::array<double, 3>&, std::int64_t)>(
+            &meshioplusplus::honeycomb),
         py::arg("dims") = std::array<std::int64_t, 2>{{4, 4}}, py::arg("edge") = 1.0,
         py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}},
         py::arg("max_cells") = 20000000);
-    m.def(
-        "reference_cells",
-        [](const std::vector<std::string>& types, bool pairs) {
-            return meshioplusplus_py::mesh_to_py(
-                core_nogil([&] { return meshioplusplus::reference_cells(types, pairs); }));
-        },
-        py::arg("types") = std::vector<std::string>{}, py::arg("pairs") = false);
-    m.def(
-        "line",
-        [](std::int64_t n, const std::array<double, 3>& start, const std::array<double, 3>& end,
-           int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil(
-                [&] { return meshioplusplus::line(n, start, end, order, max_cells, complete); }));
-        },
-        py::arg("n") = 8, py::arg("start") = std::array<double, 3>{{0.0, 0.0, 0.0}},
-        py::arg("end") = std::array<double, 3>{{1.0, 0.0, 0.0}}, py::arg("order") = 1,
-        py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "circle",
-        [](double radius, std::int64_t n, const std::array<double, 3>& center, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::circle(radius, n, center, order, max_cells, complete);
-            }));
-        },
+    core_def_mesh_fn(m, "reference_cells",
+                     static_cast<meshioplusplus::Mesh (*)(const std::vector<std::string>&, bool)>(
+                         &meshioplusplus::reference_cells),
+                     py::arg("types") = std::vector<std::string>{}, py::arg("pairs") = false);
+    core_def_mesh_fn(m, "line",
+                     static_cast<meshioplusplus::Mesh (*)(
+                         std::int64_t, const std::array<double, 3>&, const std::array<double, 3>&,
+                         int, std::int64_t, bool)>(&meshioplusplus::line),
+                     py::arg("n") = 8, py::arg("start") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+                     py::arg("end") = std::array<double, 3>{{1.0, 0.0, 0.0}}, py::arg("order") = 1,
+                     py::arg("max_cells") = 20000000, py::arg("complete") = false);
+    core_def_mesh_fn(
+        m, "circle",
+        static_cast<meshioplusplus::Mesh (*)(double, std::int64_t, const std::array<double, 3>&,
+                                             int, std::int64_t, bool)>(&meshioplusplus::circle),
         py::arg("radius") = 1.0, py::arg("n") = 16,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
         py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "helix",
-        [](double radius, double pitch, double turns, std::int64_t n,
-           const std::array<double, 3>& center, int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::helix(radius, pitch, turns, n, center, order, max_cells,
-                                             complete);
-            }));
-        },
-        py::arg("radius") = 1.0, py::arg("pitch") = 1.0, py::arg("turns") = 2.0, py::arg("n") = 32,
-        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
-        py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "sphere_points",
-        [](std::int64_t n, double radius, const std::array<double, 3>& center,
-           std::int64_t max_cells) {
-            return meshioplusplus_py::mesh_to_py(core_nogil(
-                [&] { return meshioplusplus::sphere_points(n, radius, center, max_cells); }));
-        },
+    core_def_mesh_fn(m, "helix",
+                     static_cast<meshioplusplus::Mesh (*)(
+                         double, double, double, std::int64_t, const std::array<double, 3>&, int,
+                         std::int64_t, bool)>(&meshioplusplus::helix),
+                     py::arg("radius") = 1.0, py::arg("pitch") = 1.0, py::arg("turns") = 2.0,
+                     py::arg("n") = 32, py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+                     py::arg("order") = 1, py::arg("max_cells") = 20000000,
+                     py::arg("complete") = false);
+    core_def_mesh_fn(
+        m, "sphere_points",
+        static_cast<meshioplusplus::Mesh (*)(std::int64_t, double, const std::array<double, 3>&,
+                                             std::int64_t)>(&meshioplusplus::sphere_points),
         py::arg("n") = 100, py::arg("radius") = 1.0,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
         py::arg("max_cells") = 20000000);
-    m.def(
-        "box_points",
-        [](std::int64_t n, const std::array<double, 3>& size, const std::array<double, 3>& origin,
-           std::uint64_t seed, std::int64_t max_cells) {
-            return meshioplusplus_py::mesh_to_py(core_nogil(
-                [&] { return meshioplusplus::box_points(n, size, origin, seed, max_cells); }));
-        },
-        py::arg("n") = 100, py::arg("size") = std::array<double, 3>{{1.0, 1.0, 1.0}},
-        py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("seed") = 0,
-        py::arg("max_cells") = 20000000);
-    m.def(
-        "tetra_sphere",
-        [](double radius, std::int64_t subdivisions, const std::array<double, 3>& center, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::tetra_sphere(radius, subdivisions, center, order, max_cells,
-                                                    complete);
-            }));
-        },
+    core_def_mesh_fn(m, "box_points",
+                     static_cast<meshioplusplus::Mesh (*)(
+                         std::int64_t, const std::array<double, 3>&, const std::array<double, 3>&,
+                         std::uint64_t, std::int64_t)>(&meshioplusplus::box_points),
+                     py::arg("n") = 100, py::arg("size") = std::array<double, 3>{{1.0, 1.0, 1.0}},
+                     py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+                     py::arg("seed") = 0, py::arg("max_cells") = 20000000);
+    core_def_mesh_fn(
+        m, "tetra_sphere",
+        static_cast<meshioplusplus::Mesh (*)(double, std::int64_t, const std::array<double, 3>&,
+                                             int, std::int64_t, bool)>(
+            &meshioplusplus::tetra_sphere),
         py::arg("radius") = 1.0, py::arg("subdivisions") = 3,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
         py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "octa_sphere",
-        [](double radius, std::int64_t subdivisions, const std::array<double, 3>& center, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::octa_sphere(radius, subdivisions, center, order, max_cells,
-                                                   complete);
-            }));
-        },
+    core_def_mesh_fn(
+        m, "octa_sphere",
+        static_cast<meshioplusplus::Mesh (*)(double, std::int64_t, const std::array<double, 3>&,
+                                             int, std::int64_t, bool)>(
+            &meshioplusplus::octa_sphere),
         py::arg("radius") = 1.0, py::arg("subdivisions") = 2,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
         py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "cube_sphere",
-        [](double radius, std::int64_t n, const std::array<double, 3>& center,
-           const std::string& cell_type, int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::cube_sphere(radius, n, center, cell_type, order, max_cells,
-                                                   complete);
-            }));
-        },
+    core_def_mesh_fn(
+        m, "cube_sphere",
+        static_cast<meshioplusplus::Mesh (*)(double, std::int64_t, const std::array<double, 3>&,
+                                             const std::string&, int, std::int64_t, bool)>(
+            &meshioplusplus::cube_sphere),
         py::arg("radius") = 1.0, py::arg("n") = 4,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
         py::arg("order") = 1, py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "geo_sphere",
-        [](double radius, std::int64_t n, const std::array<double, 3>& center, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::geo_sphere(radius, n, center, order, max_cells, complete);
-            }));
-        },
+    core_def_mesh_fn(
+        m, "geo_sphere",
+        static_cast<meshioplusplus::Mesh (*)(double, std::int64_t, const std::array<double, 3>&,
+                                             int, std::int64_t, bool)>(&meshioplusplus::geo_sphere),
         py::arg("radius") = 1.0, py::arg("n") = 4,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
         py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "torus",
-        [](double major_radius, double minor_radius, std::int64_t nu, std::int64_t nv,
-           const std::array<double, 3>& center, const std::string& cell_type, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::torus(major_radius, minor_radius, nu, nv, center, cell_type,
-                                             order, max_cells, complete);
-            }));
-        },
+    core_def_mesh_fn(
+        m, "torus",
+        static_cast<meshioplusplus::Mesh (*)(double, double, std::int64_t, std::int64_t,
+                                             const std::array<double, 3>&, const std::string&, int,
+                                             std::int64_t, bool)>(&meshioplusplus::torus),
         py::arg("major_radius") = 1.0, py::arg("minor_radius") = 0.25, py::arg("nu") = 32,
         py::arg("nv") = 16, py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
         py::arg("cell_type") = "quad", py::arg("order") = 1, py::arg("max_cells") = 20000000,
         py::arg("complete") = false);
-    m.def(
-        "moebius",
-        [](double radius, double width, std::int64_t nu, std::int64_t nv, std::int64_t num_twists,
-           const std::array<double, 3>& center, const std::string& cell_type, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::moebius(radius, width, nu, nv, num_twists, center, cell_type,
-                                               order, max_cells, complete);
-            }));
-        },
+    core_def_mesh_fn(
+        m, "moebius",
+        static_cast<meshioplusplus::Mesh (*)(
+            double, double, std::int64_t, std::int64_t, std::int64_t, const std::array<double, 3>&,
+            const std::string&, int, std::int64_t, bool)>(&meshioplusplus::moebius),
         py::arg("radius") = 1.0, py::arg("width") = 0.5, py::arg("nu") = 32, py::arg("nv") = 4,
         py::arg("num_twists") = 1, py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
         py::arg("cell_type") = "quad", py::arg("order") = 1, py::arg("max_cells") = 20000000,
         py::arg("complete") = false);
-    m.def(
-        "tube",
-        [](double radius, double height, std::int64_t ntheta, std::int64_t nz,
-           const std::array<double, 3>& center, const std::string& cell_type, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::tube(radius, height, ntheta, nz, center, cell_type, order,
-                                            max_cells, complete);
-            }));
-        },
-        py::arg("radius") = 1.0, py::arg("height") = 1.0, py::arg("ntheta") = 16, py::arg("nz") = 4,
-        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
-        py::arg("order") = 1, py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "cone",
-        [](double radius, double height, std::int64_t ntheta, std::int64_t nz,
-           const std::array<double, 3>& center, const std::string& cell_type, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::cone(radius, height, ntheta, nz, center, cell_type, order,
-                                            max_cells, complete);
-            }));
-        },
-        py::arg("radius") = 1.0, py::arg("height") = 1.0, py::arg("ntheta") = 16, py::arg("nz") = 4,
-        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
-        py::arg("order") = 1, py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "capsule",
-        [](double radius, double height, std::int64_t ntheta, std::int64_t nz, std::int64_t ncap,
-           const std::array<double, 3>& center, const std::string& cell_type, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::capsule(radius, height, ntheta, nz, ncap, center, cell_type,
-                                               order, max_cells, complete);
-            }));
-        },
+    core_def_mesh_fn(m, "tube",
+                     static_cast<meshioplusplus::Mesh (*)(
+                         double, double, std::int64_t, std::int64_t, const std::array<double, 3>&,
+                         const std::string&, int, std::int64_t, bool)>(&meshioplusplus::tube),
+                     py::arg("radius") = 1.0, py::arg("height") = 1.0, py::arg("ntheta") = 16,
+                     py::arg("nz") = 4, py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+                     py::arg("cell_type") = "quad", py::arg("order") = 1,
+                     py::arg("max_cells") = 20000000, py::arg("complete") = false);
+    core_def_mesh_fn(m, "cone",
+                     static_cast<meshioplusplus::Mesh (*)(
+                         double, double, std::int64_t, std::int64_t, const std::array<double, 3>&,
+                         const std::string&, int, std::int64_t, bool)>(&meshioplusplus::cone),
+                     py::arg("radius") = 1.0, py::arg("height") = 1.0, py::arg("ntheta") = 16,
+                     py::arg("nz") = 4, py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+                     py::arg("cell_type") = "quad", py::arg("order") = 1,
+                     py::arg("max_cells") = 20000000, py::arg("complete") = false);
+    core_def_mesh_fn(
+        m, "capsule",
+        static_cast<meshioplusplus::Mesh (*)(
+            double, double, std::int64_t, std::int64_t, std::int64_t, const std::array<double, 3>&,
+            const std::string&, int, std::int64_t, bool)>(&meshioplusplus::capsule),
         py::arg("radius") = 0.5, py::arg("height") = 1.0, py::arg("ntheta") = 16, py::arg("nz") = 4,
         py::arg("ncap") = 4, py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
         py::arg("cell_type") = "quad", py::arg("order") = 1, py::arg("max_cells") = 20000000,
         py::arg("complete") = false);
-    m.def(
-        "box_surface",
-        [](const std::array<std::int64_t, 3>& dims, const std::array<double, 3>& size,
-           const std::array<double, 3>& origin, const std::string& cell_type, int order,
-           std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::box_surface(dims, size, origin, cell_type, order, max_cells,
-                                                   complete);
-            }));
-        },
+    core_def_mesh_fn(
+        m, "box_surface",
+        static_cast<meshioplusplus::Mesh (*)(
+            const std::array<std::int64_t, 3>&, const std::array<double, 3>&,
+            const std::array<double, 3>&, const std::string&, int, std::int64_t, bool)>(
+            &meshioplusplus::box_surface),
         py::arg("dims") = std::array<std::int64_t, 3>{{1, 1, 1}},
         py::arg("size") = std::array<double, 3>{{1.0, 1.0, 1.0}},
         py::arg("origin") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("cell_type") = "quad",
         py::arg("order") = 1, py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "platonic",
-        [](const std::string& name, double radius, const std::array<double, 3>& center,
-           std::int64_t max_cells) {
-            return meshioplusplus_py::mesh_to_py(core_nogil(
-                [&] { return meshioplusplus::platonic(name, radius, center, max_cells); }));
-        },
-        py::arg("name") = "icosahedron", py::arg("radius") = 1.0,
-        py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
-        py::arg("max_cells") = 20000000);
-    m.def(
-        "ball",
-        [](double radius, std::int64_t n, const std::array<double, 3>& center,
-           const std::string& cell_type, int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::ball(radius, n, center, cell_type, order, max_cells,
-                                            complete);
-            }));
-        },
+    core_def_mesh_fn(m, "platonic",
+                     static_cast<meshioplusplus::Mesh (*)(
+                         const std::string&, double, const std::array<double, 3>&, std::int64_t)>(
+                         &meshioplusplus::platonic),
+                     py::arg("name") = "icosahedron", py::arg("radius") = 1.0,
+                     py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
+                     py::arg("max_cells") = 20000000);
+    core_def_mesh_fn(
+        m, "ball",
+        static_cast<meshioplusplus::Mesh (*)(double, std::int64_t, const std::array<double, 3>&,
+                                             const std::string&, int, std::int64_t, bool)>(
+            &meshioplusplus::ball),
         py::arg("radius") = 1.0, py::arg("n") = 4,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
         py::arg("cell_type") = "hexahedron", py::arg("order") = 1, py::arg("max_cells") = 20000000,
         py::arg("complete") = false);
-    m.def(
-        "spherical_shell",
-        [](double inner_radius, double outer_radius, std::int64_t n, std::int64_t nr, double ratio,
-           const std::array<double, 3>& center, int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::spherical_shell(inner_radius, outer_radius, n, nr, ratio,
-                                                       center, order, max_cells, complete);
-            }));
-        },
+    core_def_mesh_fn(
+        m, "spherical_shell",
+        static_cast<meshioplusplus::Mesh (*)(double, double, std::int64_t, std::int64_t, double,
+                                             const std::array<double, 3>&, int, std::int64_t,
+                                             bool)>(&meshioplusplus::spherical_shell),
         py::arg("inner_radius") = 0.5, py::arg("outer_radius") = 1.0, py::arg("n") = 4,
         py::arg("nr") = 2, py::arg("ratio") = 1.0,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
         py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "pipe",
-        [](double inner_radius, double outer_radius, double height, std::int64_t ntheta,
-           std::int64_t nr, std::int64_t nz, double ratio, const std::array<double, 3>& center,
-           int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::pipe(inner_radius, outer_radius, height, ntheta, nr, nz,
-                                            ratio, center, order, max_cells, complete);
-            }));
-        },
+    core_def_mesh_fn(
+        m, "pipe",
+        static_cast<meshioplusplus::Mesh (*)(double, double, double, std::int64_t, std::int64_t,
+                                             std::int64_t, double, const std::array<double, 3>&,
+                                             int, std::int64_t, bool)>(&meshioplusplus::pipe),
         py::arg("inner_radius") = 0.5, py::arg("outer_radius") = 1.0, py::arg("height") = 1.0,
         py::arg("ntheta") = 16, py::arg("nr") = 2, py::arg("nz") = 4, py::arg("ratio") = 1.0,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}}, py::arg("order") = 1,
         py::arg("max_cells") = 20000000, py::arg("complete") = false);
-    m.def(
-        "fichera",
-        [](std::int64_t n, double size, const std::array<double, 3>& center,
-           const std::string& cell_type, int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::fichera(n, size, center, cell_type, order, max_cells,
-                                               complete);
-            }));
-        },
+    core_def_mesh_fn(
+        m, "fichera",
+        static_cast<meshioplusplus::Mesh (*)(std::int64_t, double, const std::array<double, 3>&,
+                                             const std::string&, int, std::int64_t, bool)>(
+            &meshioplusplus::fichera),
         py::arg("n") = 2, py::arg("size") = 2.0,
         py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
         py::arg("cell_type") = "hexahedron", py::arg("order") = 1, py::arg("max_cells") = 20000000,
         py::arg("complete") = false);
-    m.def(
-        "solid_torus",
-        [](double major_radius, double minor_radius, std::int64_t n, std::int64_t nu,
-           const std::array<double, 3>& center, int order, std::int64_t max_cells, bool complete) {
-            return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                return meshioplusplus::solid_torus(major_radius, minor_radius, n, nu, center, order,
-                                                   max_cells, complete);
-            }));
-        },
+    core_def_mesh_fn(
+        m, "solid_torus",
+        static_cast<meshioplusplus::Mesh (*)(double, double, std::int64_t, std::int64_t,
+                                             const std::array<double, 3>&, int, std::int64_t,
+                                             bool)>(&meshioplusplus::solid_torus),
         py::arg("major_radius") = 1.0, py::arg("minor_radius") = 0.25, py::arg("n") = 4,
         py::arg("nu") = 32, py::arg("center") = std::array<double, 3>{{0.0, 0.0, 0.0}},
         py::arg("order") = 1, py::arg("max_cells") = 20000000, py::arg("complete") = false);
@@ -3967,72 +3896,67 @@ PYBIND11_MODULE(_core, m) {
                 o.mRecordParentIds = record_parent_ids;
                 return o;
             };
-        m.def(
-            "cut_level_set",
-            [cut_options](
-                py::object pymesh, const std::vector<std::string>& level_sets,
-                const std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>& planes,
-                const std::string& selection, bool include_uncut, const std::string& backend,
-                std::int32_t degree, bool triangulate, bool record_parent_ids) {
-                auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
-                [[maybe_unused]] auto& refs = mesh_in.mRefs;
-                auto& mesh = mesh_in.mMesh;
-                const meshioplusplus::CutOptions o =
-                    cut_options(level_sets, planes, selection, include_uncut, backend, degree,
-                                triangulate, 2, record_parent_ids);
-                meshioplusplus::CutLevelSetResult r =
-                    core_nogil([&] { return meshioplusplus::cut_level_set(mesh, o); });
-                py::dict out;
-                out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
-                out["num_cells"] = r.mNumCells;
-                out["num_cut_cells"] = r.mNumCutCells;
-                out["num_uncut_cells"] = r.mNumUncutCells;
-                out["num_pieces"] = r.mNumPieces;
-                out["dimension"] = r.mDimension;
-                out["measure"] = r.mMeasure;
-                out["selection"] = r.mSelection;
-                out["backend"] = r.mBackend;
-                out["warnings"] = r.mWarnings;
-                return out;
-            },
-            py::arg("mesh"), py::arg("level_sets") = std::vector<std::string>{},
-            py::arg("planes") =
-                std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>{},
-            py::arg("selection") = "", py::arg("include_uncut") = true, py::arg("backend") = "auto",
-            py::arg("degree") = 2, py::arg("triangulate") = false,
-            py::arg("record_parent_ids") = true);
-        m.def(
-            "cut_quadrature",
-            [cut_options](
-                py::object pymesh, const std::vector<std::string>& level_sets,
-                const std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>& planes,
-                const std::string& selection, bool include_uncut, const std::string& backend,
-                std::int32_t order, bool triangulate, bool record_parent_ids) {
-                auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
-                [[maybe_unused]] auto& refs = mesh_in.mRefs;
-                auto& mesh = mesh_in.mMesh;
-                const meshioplusplus::CutOptions o =
-                    cut_options(level_sets, planes, selection, include_uncut, backend, 2,
-                                triangulate, order, record_parent_ids);
-                meshioplusplus::CutQuadratureResult r =
-                    core_nogil([&] { return meshioplusplus::cut_quadrature(mesh, o); });
-                py::dict out;
-                out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
-                out["num_rules"] = r.mNumRules;
-                out["num_points"] = r.mNumPoints;
-                out["sum_weights"] = r.mSumWeights;
-                out["dimension"] = r.mDimension;
-                out["selection"] = r.mSelection;
-                out["backend"] = r.mBackend;
-                out["warnings"] = r.mWarnings;
-                return out;
-            },
-            py::arg("mesh"), py::arg("level_sets") = std::vector<std::string>{},
-            py::arg("planes") =
-                std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>{},
-            py::arg("selection") = "", py::arg("include_uncut") = true, py::arg("backend") = "auto",
-            py::arg("order") = 2, py::arg("triangulate") = false,
-            py::arg("record_parent_ids") = true);
+        // The two share a signature but for the rule: `degree` (the level set's
+        // polynomial degree) for cut_level_set, `order` (the quadrature order)
+        // for cut_quadrature; the other is fixed at 2.
+        const auto def_cut = [&m, cut_options](const char* pName, const char* pRuleKey,
+                                               bool RuleIsDegree, auto run) {
+            m.def(
+                pName,
+                [cut_options, RuleIsDegree, run](
+                    py::object pymesh, const std::vector<std::string>& level_sets,
+                    const std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>&
+                        planes,
+                    const std::string& selection, bool include_uncut, const std::string& backend,
+                    std::int32_t rule, bool triangulate, bool record_parent_ids) {
+                    auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+                    [[maybe_unused]] auto& refs = mesh_in.mRefs;
+                    auto& mesh = mesh_in.mMesh;
+                    const meshioplusplus::CutOptions o =
+                        cut_options(level_sets, planes, selection, include_uncut, backend,
+                                    RuleIsDegree ? rule : 2, triangulate, RuleIsDegree ? 2 : rule,
+                                    record_parent_ids);
+                    return run(mesh, o);
+                },
+                py::arg("mesh"), py::arg("level_sets") = std::vector<std::string>{},
+                py::arg("planes") =
+                    std::vector<std::pair<std::array<double, 3>, std::array<double, 3>>>{},
+                py::arg("selection") = "", py::arg("include_uncut") = true,
+                py::arg("backend") = "auto", py::arg(pRuleKey) = 2, py::arg("triangulate") = false,
+                py::arg("record_parent_ids") = true);
+        };
+        def_cut("cut_level_set", "degree", /*RuleIsDegree=*/true,
+                [](const meshioplusplus::Mesh& rMesh, const meshioplusplus::CutOptions& rO) {
+                    meshioplusplus::CutLevelSetResult r =
+                        core_nogil([&] { return meshioplusplus::cut_level_set(rMesh, rO); });
+                    py::dict out;
+                    out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+                    out["num_cells"] = r.mNumCells;
+                    out["num_cut_cells"] = r.mNumCutCells;
+                    out["num_uncut_cells"] = r.mNumUncutCells;
+                    out["num_pieces"] = r.mNumPieces;
+                    out["dimension"] = r.mDimension;
+                    out["measure"] = r.mMeasure;
+                    out["selection"] = r.mSelection;
+                    out["backend"] = r.mBackend;
+                    out["warnings"] = r.mWarnings;
+                    return out;
+                });
+        def_cut("cut_quadrature", "order", /*RuleIsDegree=*/false,
+                [](const meshioplusplus::Mesh& rMesh, const meshioplusplus::CutOptions& rO) {
+                    meshioplusplus::CutQuadratureResult r =
+                        core_nogil([&] { return meshioplusplus::cut_quadrature(rMesh, rO); });
+                    py::dict out;
+                    out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+                    out["num_rules"] = r.mNumRules;
+                    out["num_points"] = r.mNumPoints;
+                    out["sum_weights"] = r.mSumWeights;
+                    out["dimension"] = r.mDimension;
+                    out["selection"] = r.mSelection;
+                    out["backend"] = r.mBackend;
+                    out["warnings"] = r.mWarnings;
+                    return out;
+                });
     }
 
     // Projection back onto the CAD (roadmap 6.10.1): every point of a mesh
@@ -4467,24 +4391,7 @@ PYBIND11_MODULE(_core, m) {
             out["num_slivers"] = r.mNumSlivers;
             out["num_untangled"] = r.mNumUntangled;
             py::dict quality;
-            quality["num_cells"] = r.mQuality.mNumCells;
-            quality["num_inverted"] = r.mQuality.mNumInverted;
-            quality["num_degenerate"] = r.mQuality.mNumDegenerate;
-            py::dict metrics;
-            for (const auto& entry : r.mQuality.mMetrics) {
-                const meshioplusplus::QualityMetricSummary& s = entry.second;
-                py::dict d;
-                d["min"] = s.mMin;
-                d["max"] = s.mMax;
-                d["mean"] = s.mMean;
-                d["count"] = s.mCount;
-                py::list hist;
-                for (std::int64_t h : s.mHistogram)
-                    hist.append(h);
-                d["histogram"] = hist;
-                metrics[py::str(entry.first)] = d;
-            }
-            quality["metrics"] = metrics;
+            core_quality_dict(quality, r.mQuality);
             out["quality"] = quality;
             py::list timings;
             for (const auto& t : r.mTimings)
@@ -4577,14 +4484,9 @@ PYBIND11_MODULE(_core, m) {
             [[maybe_unused]] auto& refs = surface_in.mRefs;
             auto& surface = surface_in.mMesh;
             meshioplusplus::SurfaceDistanceOptions options;
-            options.mSign = meshioplusplus::sdf_sign_from_name(sign);
-            options.mWeight = meshioplusplus::sdf_weight_from_name(weight);
+            core_distance_options(options, sign, weight, nullptr, watertight_check, surface_region,
+                                  grid_cell_size, max_winding_work);
             options.mBand = band;
-            options.mWatertightCheck =
-                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
-            options.mSurfaceRegion = surface_region;
-            options.mGridCellSize = grid_cell_size;
-            options.mMaxWindingWork = max_winding_work;
             meshioplusplus_py::PyMeshRefs qrefs;
             py::array contiguous = meshioplusplus_py::ensure_contiguous(points, qrefs);
             meshioplusplus::NDArray query = meshioplusplus_py::view_from_numpy(contiguous);
@@ -4609,17 +4511,11 @@ PYBIND11_MODULE(_core, m) {
             [[maybe_unused]] auto& srefs = surface_in.mRefs;
             auto& surface = surface_in.mMesh;
             meshioplusplus::SurfaceDistanceOptions options;
-            options.mSign = meshioplusplus::sdf_sign_from_name(sign);
-            options.mWeight = meshioplusplus::sdf_weight_from_name(weight);
-            options.mLocation = meshioplusplus::sdf_location_from_name(location);
+            core_distance_options(options, sign, weight, &location, watertight_check,
+                                  surface_region, grid_cell_size, max_winding_work);
             options.mBand = band;
             options.mRecordClosestCell = record_closest_cell;
             options.mRecordInside = record_inside;
-            options.mWatertightCheck =
-                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
-            options.mSurfaceRegion = surface_region;
-            options.mGridCellSize = grid_cell_size;
-            options.mMaxWindingWork = max_winding_work;
             meshioplusplus::SurfaceDistanceResult r = core_nogil(
                 [&] { return meshioplusplus::distance_to_surface(query, surface, options); });
             py::dict out;
@@ -4700,17 +4596,11 @@ PYBIND11_MODULE(_core, m) {
             options.mBandCells = band_cells;
             options.mRecordLevels = record_levels;
             options.mMaxCells = max_cells;
-            options.mDistance.mSign = meshioplusplus::sdf_sign_from_name(sign);
-            options.mDistance.mWeight = meshioplusplus::sdf_weight_from_name(weight);
-            options.mDistance.mLocation = meshioplusplus::sdf_location_from_name(location);
+            core_distance_options(options.mDistance, sign, weight, &location, watertight_check,
+                                  surface_region, grid_cell_size, max_winding_work);
             options.mDistance.mBand = band;
             options.mDistance.mRecordClosestCell = record_closest_cell;
             options.mDistance.mRecordInside = record_inside;
-            options.mDistance.mWatertightCheck =
-                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
-            options.mDistance.mSurfaceRegion = surface_region;
-            options.mDistance.mGridCellSize = grid_cell_size;
-            options.mDistance.mMaxWindingWork = max_winding_work;
             meshioplusplus::SdfResult r =
                 core_nogil([&] { return meshioplusplus::compute_sdf(surface, options); });
             py::dict out;
@@ -4754,13 +4644,8 @@ PYBIND11_MODULE(_core, m) {
             options.mMaxCells = max_cells;
             options.mMaxTets = max_tets;
             options.mWarpFraction = warp_fraction;
-            options.mDistance.mSign = meshioplusplus::sdf_sign_from_name(sign);
-            options.mDistance.mWeight = meshioplusplus::sdf_weight_from_name(weight);
-            options.mDistance.mWatertightCheck =
-                meshioplusplus::sdf_watertight_check_from_name(watertight_check);
-            options.mDistance.mSurfaceRegion = surface_region;
-            options.mDistance.mGridCellSize = grid_cell_size;
-            options.mDistance.mMaxWindingWork = max_winding_work;
+            core_distance_options(options.mDistance, sign, weight, nullptr, watertight_check,
+                                  surface_region, grid_cell_size, max_winding_work);
             meshioplusplus::RemeshVolumeResult r =
                 core_nogil([&] { return meshioplusplus::remesh_volume(cpp, options); });
             py::dict out;
@@ -8020,69 +7905,28 @@ PYBIND11_MODULE(_core, m) {
     });
     // A time series in one neutral file (v16.17.0): the core half of
     // `meshioplusplus.femap.SeriesWriter`.
-    py::class_<meshioplusplus::FemapSeriesWriter>(m, "FemapSeriesWriter")
-        .def(py::init<const std::string&>(), py::arg("path"))
-        .def(
-            "write",
-            [](meshioplusplus::FemapSeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::FemapSeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::FemapSeriesWriter::Finalize);
+    core_def_step_writer(py::class_<meshioplusplus::FemapSeriesWriter>(m, "FemapSeriesWriter")
+                             .def(py::init<const std::string&>(), py::arg("path")));
 
     // A time series in one CalculiX result file (v16.39.0): the core half of
     // `meshioplusplus.frd.SeriesWriter`.
-    py::class_<meshioplusplus::FrdSeriesWriter>(m, "FrdSeriesWriter")
-        .def(py::init([](const std::string& path, bool long_ids, bool binary) {
-                 meshioplusplus::FrdWriteOptions opts;
-                 opts.mLongIds = long_ids;
-                 opts.mBinary = binary;
-                 return std::make_unique<meshioplusplus::FrdSeriesWriter>(path, opts);
-             }),
-             py::arg("path"), py::arg("long_ids") = true, py::arg("binary") = false)
-        .def(
-            "write",
-            [](meshioplusplus::FrdSeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::FrdSeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::FrdSeriesWriter::Finalize);
+    core_def_step_writer(
+        py::class_<meshioplusplus::FrdSeriesWriter>(m, "FrdSeriesWriter")
+            .def(py::init([](const std::string& path, bool long_ids, bool binary) {
+                     meshioplusplus::FrdWriteOptions opts;
+                     opts.mLongIds = long_ids;
+                     opts.mBinary = binary;
+                     return std::make_unique<meshioplusplus::FrdSeriesWriter>(path, opts);
+                 }),
+                 py::arg("path"), py::arg("long_ids") = true, py::arg("binary") = false));
 
     // Abaqus results file (.fil) reader.
-    m.def(
-        "abaqus_fil_read",
-        guard_read("abaqus_fil",
-                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-                       return meshioplusplus_py::mesh_to_py(core_nogil(
-                           [&, opts = core_read_options(points_only, arrays, time_step)] {
-                               return meshioplusplus::read_abaqus_fil(path, opts);
-                           }));
-                   }),
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0);
-    m.def("abaqus_fil_time_values", [](const std::string& path) {
-        return core_nogil([&] { return meshioplusplus::abaqus_fil_time_values(path); });
-    });
+    core_def_time_series_read(m, "abaqus_fil", &meshioplusplus::read_abaqus_fil,
+                              &meshioplusplus::abaqus_fil_time_values);
 
     // Nastran OP2 result file reader.
-    m.def(
-        "nastran_op2_read",
-        guard_read("nastran_op2",
-                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-                       return meshioplusplus_py::mesh_to_py(core_nogil(
-                           [&, opts = core_read_options(points_only, arrays, time_step)] {
-                               return meshioplusplus::read_nastran_op2(path, opts);
-                           }));
-                   }),
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0);
-    m.def("nastran_op2_time_values", [](const std::string& path) {
-        return core_nogil([&] { return meshioplusplus::nastran_op2_time_values(path); });
-    });
+    core_def_time_series_read(m, "nastran_op2", &meshioplusplus::read_nastran_op2,
+                              &meshioplusplus::nastran_op2_time_values);
     // Nastran OP2 writer, and the step-by-step series writer behind
     // `meshioplusplus.nastran_op2.SeriesWriter`.
     core_def_write(m, "nastran_op2_write", &meshioplusplus::write_nastran_op2);
@@ -8090,29 +7934,13 @@ PYBIND11_MODULE(_core, m) {
     // Nastran HDF5 writer, and the step-by-step series writer behind
     // `meshioplusplus.nastran_h5.SeriesWriter`.
     core_def_write(m, "nastran_h5_write", &meshioplusplus::write_nastran_h5);
-    py::class_<meshioplusplus::NastranH5SeriesWriter>(m, "NastranH5SeriesWriter")
-        .def(py::init<const std::string&>(), py::arg("path"))
-        .def(
-            "write",
-            [](meshioplusplus::NastranH5SeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::NastranH5SeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::NastranH5SeriesWriter::Finalize);
+    core_def_step_writer(
+        py::class_<meshioplusplus::NastranH5SeriesWriter>(m, "NastranH5SeriesWriter")
+            .def(py::init<const std::string&>(), py::arg("path")));
 #endif
-    py::class_<meshioplusplus::NastranOp2SeriesWriter>(m, "NastranOp2SeriesWriter")
-        .def(py::init<const std::string&>(), py::arg("path"))
-        .def(
-            "write",
-            [](meshioplusplus::NastranOp2SeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::NastranOp2SeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::NastranOp2SeriesWriter::Finalize);
+    core_def_step_writer(
+        py::class_<meshioplusplus::NastranOp2SeriesWriter>(m, "NastranOp2SeriesWriter")
+            .def(py::init<const std::string&>(), py::arg("path")));
 
     // Abaqus results-file writer, and the increment-by-increment series writer behind
     // `meshioplusplus.abaqus_fil.SeriesWriter`.
@@ -8131,25 +7959,18 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"), py::arg("mesh"), py::arg("binary") = false, py::arg("big_endian") = false,
         py::arg("marker_size") = 4);
-    py::class_<meshioplusplus::AbaqusFilSeriesWriter>(m, "AbaqusFilSeriesWriter")
-        .def(py::init([](const std::string& path, bool binary, bool big_endian, int marker_size) {
-                 meshioplusplus::AbaqusFilWriteOptions options;
-                 options.mBinary = binary;
-                 options.mBigEndian = big_endian;
-                 options.mMarkerSize = marker_size;
-                 return std::make_unique<meshioplusplus::AbaqusFilSeriesWriter>(path, options);
-             }),
-             py::arg("path"), py::arg("binary") = false, py::arg("big_endian") = false,
-             py::arg("marker_size") = 4)
-        .def(
-            "write",
-            [](meshioplusplus::AbaqusFilSeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::AbaqusFilSeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::AbaqusFilSeriesWriter::Finalize);
+    core_def_step_writer(
+        py::class_<meshioplusplus::AbaqusFilSeriesWriter>(m, "AbaqusFilSeriesWriter")
+            .def(py::init([](const std::string& path, bool binary, bool big_endian,
+                             int marker_size) {
+                     meshioplusplus::AbaqusFilWriteOptions options;
+                     options.mBinary = binary;
+                     options.mBigEndian = big_endian;
+                     options.mMarkerSize = marker_size;
+                     return std::make_unique<meshioplusplus::AbaqusFilSeriesWriter>(path, options);
+                 }),
+                 py::arg("path"), py::arg("binary") = false, py::arg("big_endian") = false,
+                 py::arg("marker_size") = 4));
 
     // LS-DYNA binout writer, and the step-by-step series writer behind
     // `meshioplusplus.lsdyna_binout.SeriesWriter`.
@@ -8168,58 +7989,27 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"), py::arg("mesh"), py::arg("split_size") = 0, py::arg("word_size") = 8,
         py::arg("big_endian") = false);
-    py::class_<meshioplusplus::LsdynaBinoutSeriesWriter>(m, "LsdynaBinoutSeriesWriter")
-        .def(py::init([](const std::string& path, std::size_t split_size, int word_size,
-                         bool big_endian) {
-                 meshioplusplus::LsdynaBinoutWriteOptions options;
-                 options.mSplitSize = split_size;
-                 options.mWordSize = word_size;
-                 options.mBigEndian = big_endian;
-                 return std::make_unique<meshioplusplus::LsdynaBinoutSeriesWriter>(path, options);
-             }),
-             py::arg("path"), py::arg("split_size") = 0, py::arg("word_size") = 8,
-             py::arg("big_endian") = false)
-        .def(
-            "write",
-            [](meshioplusplus::LsdynaBinoutSeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::LsdynaBinoutSeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::LsdynaBinoutSeriesWriter::Finalize);
+    core_def_step_writer(
+        py::class_<meshioplusplus::LsdynaBinoutSeriesWriter>(m, "LsdynaBinoutSeriesWriter")
+            .def(py::init([](const std::string& path, std::size_t split_size, int word_size,
+                             bool big_endian) {
+                     meshioplusplus::LsdynaBinoutWriteOptions options;
+                     options.mSplitSize = split_size;
+                     options.mWordSize = word_size;
+                     options.mBigEndian = big_endian;
+                     return std::make_unique<meshioplusplus::LsdynaBinoutSeriesWriter>(path,
+                                                                                       options);
+                 }),
+                 py::arg("path"), py::arg("split_size") = 0, py::arg("word_size") = 8,
+                 py::arg("big_endian") = false));
 
     // LS-DYNA d3plot state database reader.
-    m.def(
-        "lsdyna_d3plot_read",
-        guard_read("lsdyna_d3plot",
-                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-                       return meshioplusplus_py::mesh_to_py(core_nogil(
-                           [&, opts = core_read_options(points_only, arrays, time_step)] {
-                               return meshioplusplus::read_lsdyna_d3plot(path, opts);
-                           }));
-                   }),
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0);
-    m.def("lsdyna_d3plot_time_values", [](const std::string& path) {
-        return core_nogil([&] { return meshioplusplus::lsdyna_d3plot_time_values(path); });
-    });
+    core_def_time_series_read(m, "lsdyna_d3plot", &meshioplusplus::read_lsdyna_d3plot,
+                              &meshioplusplus::lsdyna_d3plot_time_values);
 
     // LS-DYNA binout (LSDA) reader.
-    m.def(
-        "lsdyna_binout_read",
-        guard_read("lsdyna_binout",
-                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-                       return meshioplusplus_py::mesh_to_py(core_nogil(
-                           [&, opts = core_read_options(points_only, arrays, time_step)] {
-                               return meshioplusplus::read_lsdyna_binout(path, opts);
-                           }));
-                   }),
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0);
-    m.def("lsdyna_binout_time_values", [](const std::string& path) {
-        return core_nogil([&] { return meshioplusplus::lsdyna_binout_time_values(path); });
-    });
+    core_def_time_series_read(m, "lsdyna_binout", &meshioplusplus::read_lsdyna_binout,
+                              &meshioplusplus::lsdyna_binout_time_values);
 
     // libMesh .xda/.xdr reader.
     core_def_read(m, "libmesh_read", "libmesh", &meshioplusplus::read_libmesh);
@@ -8246,17 +8036,8 @@ PYBIND11_MODULE(_core, m) {
             });
         },
         py::arg("path"), py::arg("mesh"));
-    py::class_<meshioplusplus::MarcT19SeriesWriter>(m, "MarcT19SeriesWriter")
-        .def(py::init<const std::string&>(), py::arg("path"))
-        .def(
-            "write",
-            [](meshioplusplus::MarcT19SeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::MarcT19SeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::MarcT19SeriesWriter::Finalize);
+    core_def_step_writer(py::class_<meshioplusplus::MarcT19SeriesWriter>(m, "MarcT19SeriesWriter")
+                             .def(py::init<const std::string&>(), py::arg("path")));
     m.def(
         "marc_t19_read",
         guard_read("marc_t19",
@@ -8284,34 +8065,14 @@ PYBIND11_MODULE(_core, m) {
         py::arg("path"), py::arg("mesh"), py::arg("stubs") = false);
     // OpenRadioss animation file (A001...) reader.
     // OpenRadioss time-history (T01) reader.
-    m.def(
-        "radioss_th_read",
-        guard_read("radioss_th",
-                   [](const std::string& path, bool points_only, py::object arrays, int time_step) {
-                       return meshioplusplus_py::mesh_to_py(core_nogil(
-                           [&, opts = core_read_options(points_only, arrays, time_step)] {
-                               return meshioplusplus::read_radioss_th(path, opts);
-                           }));
-                   }),
-        py::arg("path"), py::arg("points_only") = false, py::arg("arrays") = py::none(),
-        py::arg("time_step") = 0);
-    m.def("radioss_th_time_values", [](const std::string& path) {
-        return core_nogil([&] { return meshioplusplus::radioss_th_time_values(path); });
-    });
+    core_def_time_series_read(m, "radioss_th", &meshioplusplus::read_radioss_th,
+                              &meshioplusplus::radioss_th_time_values);
     // OpenRadioss time-history (T01) writer, and the output-by-output series writer
     // behind `meshioplusplus.radioss_th.SeriesWriter`.
     core_def_write(m, "radioss_th_write", &meshioplusplus::write_radioss_th);
-    py::class_<meshioplusplus::RadiossThSeriesWriter>(m, "RadiossThSeriesWriter")
-        .def(py::init<const std::string&>(), py::arg("path"))
-        .def(
-            "write",
-            [](meshioplusplus::RadiossThSeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::RadiossThSeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::RadiossThSeriesWriter::Finalize);
+    core_def_step_writer(
+        py::class_<meshioplusplus::RadiossThSeriesWriter>(m, "RadiossThSeriesWriter")
+            .def(py::init<const std::string&>(), py::arg("path")));
 
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
     // DOLFINx VTX (.bp directory) reader; ADIOS2 builds only.
@@ -8331,26 +8092,18 @@ PYBIND11_MODULE(_core, m) {
         return core_nogil([&] { return meshioplusplus::vtx_time_values(path); });
     });
     core_def_write(m, "vtx_write", &meshioplusplus::write_vtx);
-    py::class_<meshioplusplus::VtxSeriesWriter>(m, "VtxSeriesWriter")
-        .def(py::init([](const std::string& path, const std::string& mesh_policy) {
-                 if (mesh_policy != "update" && mesh_policy != "reuse")
-                     throw py::value_error(
-                         "meshio++: mesh_policy must be 'update' or 'reuse', got '" + mesh_policy +
-                         "'");
-                 return std::make_unique<meshioplusplus::VtxSeriesWriter>(
-                     path, mesh_policy == "reuse" ? meshioplusplus::VtxMeshPolicy::Reuse
-                                                  : meshioplusplus::VtxMeshPolicy::Update);
-             }),
-             py::arg("path"), py::arg("mesh_policy") = "update")
-        .def(
-            "write",
-            [](meshioplusplus::VtxSeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::VtxSeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::VtxSeriesWriter::Finalize);
+    core_def_step_writer(
+        py::class_<meshioplusplus::VtxSeriesWriter>(m, "VtxSeriesWriter")
+            .def(py::init([](const std::string& path, const std::string& mesh_policy) {
+                     if (mesh_policy != "update" && mesh_policy != "reuse")
+                         throw py::value_error(
+                             "meshio++: mesh_policy must be 'update' or 'reuse', got '" +
+                             mesh_policy + "'");
+                     return std::make_unique<meshioplusplus::VtxSeriesWriter>(
+                         path, mesh_policy == "reuse" ? meshioplusplus::VtxMeshPolicy::Reuse
+                                                      : meshioplusplus::VtxMeshPolicy::Update);
+                 }),
+                 py::arg("path"), py::arg("mesh_policy") = "update"));
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
     // Tecplot .szplt through a user-installed TecIO; TecIO builds only.
@@ -8368,17 +8121,8 @@ PYBIND11_MODULE(_core, m) {
         return core_nogil([&] { return meshioplusplus::szplt_time_values(path); });
     });
     core_def_write(m, "szplt_write", &meshioplusplus::write_szplt);
-    py::class_<meshioplusplus::SzpltSeriesWriter>(m, "SzpltSeriesWriter")
-        .def(py::init<const std::string&>(), py::arg("path"))
-        .def(
-            "write",
-            [](meshioplusplus::SzpltSeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::SzpltSeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::SzpltSeriesWriter::Finalize);
+    core_def_step_writer(py::class_<meshioplusplus::SzpltSeriesWriter>(m, "SzpltSeriesWriter")
+                             .def(py::init<const std::string&>(), py::arg("path")));
 #endif
 
     m.def(
@@ -8391,31 +8135,14 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("path"), py::arg("mesh"), py::arg("max_file_bytes") = std::size_t{1} << 30,
         py::arg("double") = false);
-    py::class_<meshioplusplus::LsdynaD3plotSeriesWriter>(m, "LsdynaD3plotSeriesWriter")
-        .def(py::init<const std::string&, std::size_t, bool>(), py::arg("path"),
-             py::arg("max_file_bytes") = std::size_t{1} << 30, py::arg("double") = false)
-        .def(
-            "write",
-            [](meshioplusplus::LsdynaD3plotSeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::LsdynaD3plotSeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::LsdynaD3plotSeriesWriter::Finalize);
+    core_def_step_writer(
+        py::class_<meshioplusplus::LsdynaD3plotSeriesWriter>(m, "LsdynaD3plotSeriesWriter")
+            .def(py::init<const std::string&, std::size_t, bool>(), py::arg("path"),
+                 py::arg("max_file_bytes") = std::size_t{1} << 30, py::arg("double") = false));
 
     core_def_write(m, "ansys_rst_write", &meshioplusplus::write_ansys_rst);
-    py::class_<meshioplusplus::AnsysRstSeriesWriter>(m, "AnsysRstSeriesWriter")
-        .def(py::init<const std::string&>(), py::arg("path"))
-        .def(
-            "write",
-            [](meshioplusplus::AnsysRstSeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::AnsysRstSeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::AnsysRstSeriesWriter::Finalize);
+    core_def_step_writer(py::class_<meshioplusplus::AnsysRstSeriesWriter>(m, "AnsysRstSeriesWriter")
+                             .def(py::init<const std::string&>(), py::arg("path")));
 
     m.def(
         "xplt_write",
@@ -8428,34 +8155,18 @@ PYBIND11_MODULE(_core, m) {
             });
         },
         py::arg("path"), py::arg("mesh"), py::arg("compress") = false);
-    py::class_<meshioplusplus::XpltSeriesWriter>(m, "XpltSeriesWriter")
-        .def(py::init([](const std::string& path, bool compress) {
-                 meshioplusplus::XpltWriteOptions options;
-                 options.mCompress = compress;
-                 return std::make_unique<meshioplusplus::XpltSeriesWriter>(path, options);
-             }),
-             py::arg("path"), py::arg("compress") = false)
-        .def(
-            "write",
-            [](meshioplusplus::XpltSeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::XpltSeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::XpltSeriesWriter::Finalize);
+    core_def_step_writer(py::class_<meshioplusplus::XpltSeriesWriter>(m, "XpltSeriesWriter")
+                             .def(py::init([](const std::string& path, bool compress) {
+                                      meshioplusplus::XpltWriteOptions options;
+                                      options.mCompress = compress;
+                                      return std::make_unique<meshioplusplus::XpltSeriesWriter>(
+                                          path, options);
+                                  }),
+                                  py::arg("path"), py::arg("compress") = false));
     core_def_write(m, "radioss_anim_write", &meshioplusplus::write_radioss_anim);
-    py::class_<meshioplusplus::RadiossAnimSeriesWriter>(m, "RadiossAnimSeriesWriter")
-        .def(py::init<const std::string&>(), py::arg("path"))
-        .def(
-            "write",
-            [](meshioplusplus::RadiossAnimSeriesWriter& rSelf, double time, py::object pymesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                rSelf.Write(time, meshioplusplus_py::py_to_mesh(pymesh, refs));
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("num_steps", &meshioplusplus::RadiossAnimSeriesWriter::NumSteps)
-        .def("finalize", &meshioplusplus::RadiossAnimSeriesWriter::Finalize);
+    core_def_step_writer(
+        py::class_<meshioplusplus::RadiossAnimSeriesWriter>(m, "RadiossAnimSeriesWriter")
+            .def(py::init<const std::string&>(), py::arg("path")));
     core_def_read(m, "radioss_anim_read", "radioss_anim", &meshioplusplus::read_radioss_anim);
 
     // Z88 structure file (z88i1.txt) reader / writer, with its results.
@@ -8750,51 +8461,49 @@ PYBIND11_MODULE(_core, m) {
     // constructor, which the translator above turns into a clean
     // `meshioplusplus.WriteError` rather than a missing symbol or a crash.
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
-    py::class_<meshioplusplus::ExodusTimeSeriesWriter,
-               CoreNogilPtr<meshioplusplus::ExodusTimeSeriesWriter>>(m, "ExodusTimeSeriesWriter")
-        .def(py::init([](const std::string& rPath) {
-                 return core_nogil([&] {
-                     return CoreNogilPtr<meshioplusplus::ExodusTimeSeriesWriter>(
-                         new meshioplusplus::ExodusTimeSeriesWriter(rPath));
-                 });
-             }),
-             py::arg("path"))
-        .def(
-            "write_points_cells",
-            [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, py::object mesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
-                core_nogil([&] { return rSelf.WritePointsCells(cpp); });
-            },
-            py::arg("mesh"))
-        .def(
-            "write_data",
-            [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, double time, py::object mesh) {
-                meshioplusplus_py::PyMeshRefs refs;
-                auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
-                core_nogil([&] { return rSelf.WriteData(time, cpp); });
-            },
-            py::arg("time"), py::arg("mesh"))
-        .def("flush",
-             [](meshioplusplus::ExodusTimeSeriesWriter& rSelf) {
-                 core_nogil([&] { return rSelf.Flush(); });
-             })
-        .def("finalize",
-             [](meshioplusplus::ExodusTimeSeriesWriter& rSelf) {
-                 core_nogil([&] { return rSelf.Finalize(); });
-             })
-        .def_property_readonly("num_steps", &meshioplusplus::ExodusTimeSeriesWriter::NumSteps)
-        .def_property_readonly("finalized", &meshioplusplus::ExodusTimeSeriesWriter::Finalized)
-        .def("__enter__", [](py::object self) { return self; })
-        .def("__exit__", [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, const py::object&,
-                            const py::object&, const py::object&) {
-            core_nogil([&] { return rSelf.Finalize(); });
-            return false;
-        });
+    core_def_finalizing_context(
+        py::class_<meshioplusplus::ExodusTimeSeriesWriter,
+                   CoreNogilPtr<meshioplusplus::ExodusTimeSeriesWriter>>(m,
+                                                                         "ExodusTimeSeriesWriter")
+            .def(py::init([](const std::string& rPath) {
+                     return core_nogil([&] {
+                         return CoreNogilPtr<meshioplusplus::ExodusTimeSeriesWriter>(
+                             new meshioplusplus::ExodusTimeSeriesWriter(rPath));
+                     });
+                 }),
+                 py::arg("path"))
+            .def(
+                "write_points_cells",
+                [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, py::object mesh) {
+                    meshioplusplus_py::PyMeshRefs refs;
+                    auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
+                    core_nogil([&] { return rSelf.WritePointsCells(cpp); });
+                },
+                py::arg("mesh"))
+            .def(
+                "write_data",
+                [](meshioplusplus::ExodusTimeSeriesWriter& rSelf, double time, py::object mesh) {
+                    meshioplusplus_py::PyMeshRefs refs;
+                    auto cpp = meshioplusplus_py::py_to_mesh(mesh, refs);
+                    core_nogil([&] { return rSelf.WriteData(time, cpp); });
+                },
+                py::arg("time"), py::arg("mesh"))
+            .def("flush",
+                 [](meshioplusplus::ExodusTimeSeriesWriter& rSelf) {
+                     core_nogil([&] { return rSelf.Flush(); });
+                 })
+            .def("finalize",
+                 [](meshioplusplus::ExodusTimeSeriesWriter& rSelf) {
+                     core_nogil([&] { return rSelf.Finalize(); });
+                 })
+            .def_property_readonly("num_steps", &meshioplusplus::ExodusTimeSeriesWriter::NumSteps)
+            .def_property_readonly("finalized",
+                                   &meshioplusplus::ExodusTimeSeriesWriter::Finalized));
 #endif
-    py::class_<meshioplusplus::XdmfTimeSeriesWriter,
-               CoreNogilPtr<meshioplusplus::XdmfTimeSeriesWriter>>(m, "XdmfTimeSeriesWriter",
-                                                                   R"doc(
+    core_def_finalizing_context(
+        py::class_<meshioplusplus::XdmfTimeSeriesWriter,
+                   CoreNogilPtr<meshioplusplus::XdmfTimeSeriesWriter>>(m, "XdmfTimeSeriesWriter",
+                                                                       R"doc(
 Transient XDMF3 writer: one static grid plus one <Grid> per time step.
 
 The C++ core's writer, reachable explicitly. It is *not* what
@@ -8811,111 +8520,89 @@ finalizes.
 ...     for k in range(3):
 ...         w.write_data(k * 0.5, mesh)
 )doc")
-        .def(py::init([](const std::string& rPath, const std::string& rDataFormat, int gzip_level,
-                         const std::string& rMode) {
-                 if (rMode != "truncate" && rMode != "append")
-                     throw std::invalid_argument("mode must be 'truncate' or 'append', got '" +
-                                                 rMode + "'");
-                 return core_nogil([&] {
-                     return CoreNogilPtr<meshioplusplus::XdmfTimeSeriesWriter>(
-                         new meshioplusplus::XdmfTimeSeriesWriter(
-                             rPath, rDataFormat, gzip_level,
-                             rMode == "append" ? meshioplusplus::XdmfSeriesMode::Append
-                                               : meshioplusplus::XdmfSeriesMode::Truncate));
-                 });
-             }),
-             py::arg("path"), py::arg("data_format") = "HDF", py::arg("gzip_level") = -1,
-             py::arg("mode") = "truncate")
-        .def(
-            "write_points_cells",
-            [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, py::object pymesh) {
-                auto cpp_in = core_mesh_in(pymesh);
-                [[maybe_unused]] auto& refs = cpp_in.mRefs;
-                auto& cpp = cpp_in.mMesh;
-                core_nogil([&] { return rSelf.WritePointsCells(cpp); });
-            },
-            py::arg("mesh"), "Write the static grid (points + cells). Once, before write_data.")
-        .def(
-            "write_data",
-            [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, double time, py::object pymesh) {
-                auto cpp_in = core_mesh_in(pymesh);
-                [[maybe_unused]] auto& refs = cpp_in.mRefs;
-                auto& cpp = cpp_in.mMesh;
-                core_nogil([&] { return rSelf.WriteData(time, cpp); });
-            },
-            py::arg("time"), py::arg("mesh"),
-            "Append one step's point_data/cell_data at simulation time `time`.")
-        .def(
-            "write_data_arrays",
-            [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, double time, const py::dict& rPointData,
-               const py::dict& rCellData) {
-                const auto convert = [](const py::dict& rSrc) {
-                    std::vector<meshioplusplus::XdmfTimeSeriesWriter::NamedArray> out;
-                    for (const auto& r_item : rSrc) {
-                        auto arr = py::array_t<double, py::array::c_style | py::array::forcecast>(
-                            py::reinterpret_borrow<py::object>(r_item.second));
-                        meshioplusplus::XdmfTimeSeriesWriter::NamedArray a;
-                        a.mName = py::cast<std::string>(r_item.first);
-                        // Components are the trailing dimension, the same rule
-                        // the rest of the repo uses for a multi-component array.
-                        a.mNumComponents = arr.ndim() >= 2
-                                               ? static_cast<std::size_t>(arr.shape(arr.ndim() - 1))
-                                               : 1u;
-                        a.mValues.assign(arr.data(), arr.data() + arr.size());
-                        out.push_back(std::move(a));
-                    }
-                    return out;
-                };
-                const auto point_data = convert(rPointData);
-                const auto cell_data = convert(rCellData);
-                core_nogil([&] { return rSelf.WriteData(time, point_data, cell_data); });
-            },
-            py::arg("time"), py::arg("point_data"), py::arg("cell_data") = py::dict(),
-            "Append one step from name -> array dicts, with no Mesh in between -- "
-            "the granularity a solver has once write_points_cells has fixed the "
-            "geometry. Arrays are emitted in dict order.")
-        .def(
-            "flush",
-            [](meshioplusplus::XdmfTimeSeriesWriter& rSelf) {
-                core_nogil([&] { return rSelf.Flush(); });
-            },
-            "Write the .xdmf as it currently stands without finalizing, so a run "
-            "that is killed or still going leaves a readable file covering every "
-            "flushed step. Safe to call repeatedly.")
-        .def_property(
-            "auto_flush",
-            [](const meshioplusplus::XdmfTimeSeriesWriter& rSelf) { return rSelf.AutoFlush(); },
-            [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, bool enable) {
-                rSelf.SetAutoFlush(enable);
-            },
-            "Flush after every write_data (default False). Off by default because "
-            "a flush re-serializes the whole document, making per-step flushing "
-            "quadratic in the step count.")
-        .def(
-            "finalize",
-            [](meshioplusplus::XdmfTimeSeriesWriter& rSelf) {
-                core_nogil([&] { return rSelf.Finalize(); });
-            },
-            "Write the .xdmf light data and close the heavy-data container. "
-            "Idempotent; the destructor would do this too, but only an explicit "
-            "call can raise on failure.")
-        .def_property_readonly(
-            "num_steps",
-            [](const meshioplusplus::XdmfTimeSeriesWriter& rSelf) { return rSelf.NumSteps(); },
-            "How many steps have been written so far.")
-        .def_property_readonly(
-            "finalized",
-            [](const meshioplusplus::XdmfTimeSeriesWriter& rSelf) { return rSelf.Finalized(); },
-            "Whether finalize() has already run.")
-        .def("__enter__", [](py::object self) { return self; })
-        // Finalizes unconditionally, mirroring the Python writer's __exit__
-        // (which always writes the XML). Returning False never suppresses the
-        // body's exception; if Finalize() also fails, Python chains the two.
-        .def("__exit__", [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, const py::object&,
-                            const py::object&, const py::object&) {
-            core_nogil([&] { return rSelf.Finalize(); });
-            return false;
-        });
+            .def(py::init([](const std::string& rPath, const std::string& rDataFormat,
+                             int gzip_level, const std::string& rMode) {
+                     if (rMode != "truncate" && rMode != "append")
+                         throw std::invalid_argument("mode must be 'truncate' or 'append', got '" +
+                                                     rMode + "'");
+                     return core_nogil([&] {
+                         return CoreNogilPtr<meshioplusplus::XdmfTimeSeriesWriter>(
+                             new meshioplusplus::XdmfTimeSeriesWriter(
+                                 rPath, rDataFormat, gzip_level,
+                                 rMode == "append" ? meshioplusplus::XdmfSeriesMode::Append
+                                                   : meshioplusplus::XdmfSeriesMode::Truncate));
+                     });
+                 }),
+                 py::arg("path"), py::arg("data_format") = "HDF", py::arg("gzip_level") = -1,
+                 py::arg("mode") = "truncate")
+            .def(
+                "write_points_cells",
+                [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, py::object pymesh) {
+                    auto cpp_in = core_mesh_in(pymesh);
+                    [[maybe_unused]] auto& refs = cpp_in.mRefs;
+                    auto& cpp = cpp_in.mMesh;
+                    core_nogil([&] { return rSelf.WritePointsCells(cpp); });
+                },
+                py::arg("mesh"), "Write the static grid (points + cells). Once, before write_data.")
+            .def(
+                "write_data",
+                [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, double time, py::object pymesh) {
+                    auto cpp_in = core_mesh_in(pymesh);
+                    [[maybe_unused]] auto& refs = cpp_in.mRefs;
+                    auto& cpp = cpp_in.mMesh;
+                    core_nogil([&] { return rSelf.WriteData(time, cpp); });
+                },
+                py::arg("time"), py::arg("mesh"),
+                "Append one step's point_data/cell_data at simulation time `time`.")
+            .def(
+                "write_data_arrays",
+                [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, double time,
+                   const py::dict& rPointData, const py::dict& rCellData) {
+                    const auto point_data =
+                        core_named_arrays<meshioplusplus::XdmfTimeSeriesWriter::NamedArray>(
+                            rPointData);
+                    const auto cell_data =
+                        core_named_arrays<meshioplusplus::XdmfTimeSeriesWriter::NamedArray>(
+                            rCellData);
+                    core_nogil([&] { return rSelf.WriteData(time, point_data, cell_data); });
+                },
+                py::arg("time"), py::arg("point_data"), py::arg("cell_data") = py::dict(),
+                "Append one step from name -> array dicts, with no Mesh in between -- "
+                "the granularity a solver has once write_points_cells has fixed the "
+                "geometry. Arrays are emitted in dict order.")
+            .def(
+                "flush",
+                [](meshioplusplus::XdmfTimeSeriesWriter& rSelf) {
+                    core_nogil([&] { return rSelf.Flush(); });
+                },
+                "Write the .xdmf as it currently stands without finalizing, so a run "
+                "that is killed or still going leaves a readable file covering every "
+                "flushed step. Safe to call repeatedly.")
+            .def_property(
+                "auto_flush",
+                [](const meshioplusplus::XdmfTimeSeriesWriter& rSelf) { return rSelf.AutoFlush(); },
+                [](meshioplusplus::XdmfTimeSeriesWriter& rSelf, bool enable) {
+                    rSelf.SetAutoFlush(enable);
+                },
+                "Flush after every write_data (default False). Off by default because "
+                "a flush re-serializes the whole document, making per-step flushing "
+                "quadratic in the step count.")
+            .def(
+                "finalize",
+                [](meshioplusplus::XdmfTimeSeriesWriter& rSelf) {
+                    core_nogil([&] { return rSelf.Finalize(); });
+                },
+                "Write the .xdmf light data and close the heavy-data container. "
+                "Idempotent; the destructor would do this too, but only an explicit "
+                "call can raise on failure.")
+            .def_property_readonly(
+                "num_steps",
+                [](const meshioplusplus::XdmfTimeSeriesWriter& rSelf) { return rSelf.NumSteps(); },
+                "How many steps have been written so far.")
+            .def_property_readonly(
+                "finalized",
+                [](const meshioplusplus::XdmfTimeSeriesWriter& rSelf) { return rSelf.Finalized(); },
+                "Whether finalize() has already run."));
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
     // CGNS writer / reader (.cgns).
@@ -9020,9 +8707,11 @@ finalizes.
     // `meshioplusplus.vtkhdf.TimeSeriesWriter`, whose documented API takes raw
     // arrays where this one takes a whole Mesh). Unlike XDMF's, every step lands in
     // the file as it is written, so `auto_flush` defaults to True.
-    py::class_<meshioplusplus::VtkhdfTimeSeriesWriter,
-               CoreNogilPtr<meshioplusplus::VtkhdfTimeSeriesWriter>>(m, "VtkhdfTimeSeriesWriter",
-                                                                     R"doc(
+    core_def_finalizing_context(
+        py::class_<meshioplusplus::VtkhdfTimeSeriesWriter,
+                   CoreNogilPtr<meshioplusplus::VtkhdfTimeSeriesWriter>>(m,
+                                                                         "VtkhdfTimeSeriesWriter",
+                                                                         R"doc(
 Transient VTKHDF writer: one static grid, then one step at a time.
 
 The C++ core's writer, reachable explicitly. Both methods take a whole ``Mesh``:
@@ -9034,99 +8723,88 @@ data. Usable as a context manager; ``__exit__`` finalizes.
 ...     for k in range(3):
 ...         w.write_data(k * 0.5, mesh)
 )doc")
-        .def(py::init([](const std::string& rPath, int gzip_level, const std::string& rMode) {
-                 if (rMode != "truncate" && rMode != "append")
-                     throw std::invalid_argument("mode must be 'truncate' or 'append', got '" +
-                                                 rMode + "'");
-                 return core_nogil([&] {
-                     return CoreNogilPtr<meshioplusplus::VtkhdfTimeSeriesWriter>(
-                         new meshioplusplus::VtkhdfTimeSeriesWriter(
-                             rPath, gzip_level,
-                             rMode == "append" ? meshioplusplus::VtkhdfSeriesMode::Append
-                                               : meshioplusplus::VtkhdfSeriesMode::Truncate));
-                 });
-             }),
-             py::arg("path"), py::arg("gzip_level") = -1, py::arg("mode") = "truncate")
-        .def(
-            "write_points_cells",
-            [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, py::object pymesh) {
-                auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
-                [[maybe_unused]] auto& refs = cpp_in.mRefs;
-                auto& cpp = cpp_in.mMesh;
-                core_nogil([&] { return rSelf.WritePointsCells(cpp); });
-            },
-            py::arg("mesh"), "Write the static grid (points + cells). Once, before write_data.")
-        .def(
-            "write_data",
-            [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, double time, py::object pymesh) {
-                auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
-                [[maybe_unused]] auto& refs = cpp_in.mRefs;
-                auto& cpp = cpp_in.mMesh;
-                core_nogil([&] { return rSelf.WriteData(time, cpp); });
-            },
-            py::arg("time"), py::arg("mesh"),
-            "Append one step's point_data/cell_data/field_data at simulation time `time`.")
-        .def(
-            "write_data_arrays",
-            [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, double time,
-               const py::dict& rPointData, const py::dict& rCellData) {
-                const auto convert = [](const py::dict& rSrc) {
-                    std::vector<meshioplusplus::VtkhdfTimeSeriesWriter::NamedArray> out;
-                    for (const auto& r_item : rSrc) {
-                        auto arr = py::array_t<double, py::array::c_style | py::array::forcecast>(
-                            py::reinterpret_borrow<py::object>(r_item.second));
-                        meshioplusplus::VtkhdfTimeSeriesWriter::NamedArray a;
-                        a.mName = py::cast<std::string>(r_item.first);
-                        a.mNumComponents = arr.ndim() >= 2
-                                               ? static_cast<std::size_t>(arr.shape(arr.ndim() - 1))
-                                               : 1u;
-                        a.mValues.assign(arr.data(), arr.data() + arr.size());
-                        out.push_back(std::move(a));
-                    }
-                    return out;
-                };
-                const auto point_data = convert(rPointData);
-                const auto cell_data = convert(rCellData);
-                core_nogil([&] { return rSelf.WriteData(time, point_data, cell_data); });
-            },
-            py::arg("time"), py::arg("point_data"), py::arg("cell_data") = py::dict(),
-            "Append one step from name -> array dicts, with no Mesh in between. Arrays "
-            "are written in dict order.")
-        .def(
-            "flush",
-            [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) {
-                core_nogil([&] { return rSelf.Flush(); });
-            },
-            "H5Fflush: everything written so far is durable. Cheap.")
-        .def_property(
-            "auto_flush",
-            [](const meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) { return rSelf.AutoFlush(); },
-            [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, bool enable) {
-                rSelf.SetAutoFlush(enable);
-            },
-            "Flush after every write_data (default True: a flush here is cheap, and a "
-            "run that is killed leaves a file ParaView opens).")
-        .def(
-            "finalize",
-            [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) {
-                core_nogil([&] { return rSelf.Finalize(); });
-            },
-            "Flush and close the file. Idempotent; the destructor would do this too, but "
-            "only an explicit call can raise on failure.")
-        .def_property_readonly(
-            "num_steps",
-            [](const meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) { return rSelf.NumSteps(); },
-            "How many steps have been written so far.")
-        .def_property_readonly(
-            "finalized",
-            [](const meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) { return rSelf.Finalized(); },
-            "Whether finalize() has already run.")
-        .def("__enter__", [](py::object self) { return self; })
-        .def("__exit__", [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, const py::object&,
-                            const py::object&, const py::object&) {
-            core_nogil([&] { return rSelf.Finalize(); });
-            return false;
-        });
+            .def(py::init([](const std::string& rPath, int gzip_level, const std::string& rMode) {
+                     if (rMode != "truncate" && rMode != "append")
+                         throw std::invalid_argument("mode must be 'truncate' or 'append', got '" +
+                                                     rMode + "'");
+                     return core_nogil([&] {
+                         return CoreNogilPtr<meshioplusplus::VtkhdfTimeSeriesWriter>(
+                             new meshioplusplus::VtkhdfTimeSeriesWriter(
+                                 rPath, gzip_level,
+                                 rMode == "append" ? meshioplusplus::VtkhdfSeriesMode::Append
+                                                   : meshioplusplus::VtkhdfSeriesMode::Truncate));
+                     });
+                 }),
+                 py::arg("path"), py::arg("gzip_level") = -1, py::arg("mode") = "truncate")
+            .def(
+                "write_points_cells",
+                [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, py::object pymesh) {
+                    auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+                    [[maybe_unused]] auto& refs = cpp_in.mRefs;
+                    auto& cpp = cpp_in.mMesh;
+                    core_nogil([&] { return rSelf.WritePointsCells(cpp); });
+                },
+                py::arg("mesh"), "Write the static grid (points + cells). Once, before write_data.")
+            .def(
+                "write_data",
+                [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, double time, py::object pymesh) {
+                    auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+                    [[maybe_unused]] auto& refs = cpp_in.mRefs;
+                    auto& cpp = cpp_in.mMesh;
+                    core_nogil([&] { return rSelf.WriteData(time, cpp); });
+                },
+                py::arg("time"), py::arg("mesh"),
+                "Append one step's point_data/cell_data/field_data at simulation time `time`.")
+            .def(
+                "write_data_arrays",
+                [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, double time,
+                   const py::dict& rPointData, const py::dict& rCellData) {
+                    const auto point_data =
+                        core_named_arrays<meshioplusplus::VtkhdfTimeSeriesWriter::NamedArray>(
+                            rPointData);
+                    const auto cell_data =
+                        core_named_arrays<meshioplusplus::VtkhdfTimeSeriesWriter::NamedArray>(
+                            rCellData);
+                    core_nogil([&] { return rSelf.WriteData(time, point_data, cell_data); });
+                },
+                py::arg("time"), py::arg("point_data"), py::arg("cell_data") = py::dict(),
+                "Append one step from name -> array dicts, with no Mesh in between. Arrays "
+                "are written in dict order.")
+            .def(
+                "flush",
+                [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) {
+                    core_nogil([&] { return rSelf.Flush(); });
+                },
+                "H5Fflush: everything written so far is durable. Cheap.")
+            .def_property(
+                "auto_flush",
+                [](const meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) {
+                    return rSelf.AutoFlush();
+                },
+                [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf, bool enable) {
+                    rSelf.SetAutoFlush(enable);
+                },
+                "Flush after every write_data (default True: a flush here is cheap, and a "
+                "run that is killed leaves a file ParaView opens).")
+            .def(
+                "finalize",
+                [](meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) {
+                    core_nogil([&] { return rSelf.Finalize(); });
+                },
+                "Flush and close the file. Idempotent; the destructor would do this too, but "
+                "only an explicit call can raise on failure.")
+            .def_property_readonly(
+                "num_steps",
+                [](const meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) {
+                    return rSelf.NumSteps();
+                },
+                "How many steps have been written so far.")
+            .def_property_readonly(
+                "finalized",
+                [](const meshioplusplus::VtkhdfTimeSeriesWriter& rSelf) {
+                    return rSelf.Finalized();
+                },
+                "Whether finalize() has already run."));
 
     // MED/Salome writer / reader (.med). point_tags/cell_tags are custom Mesh
     // attributes and med:nom is a list of string-lists, so they travel outside

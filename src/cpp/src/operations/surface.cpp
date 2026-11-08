@@ -44,10 +44,10 @@
 #include "meshioplusplus/detail/polyhedron.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
-#include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
 #include "../detail/data_plumbing.hpp"
+#include "../detail/facet_slots.hpp"
 #include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
@@ -244,14 +244,7 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
             d.mNumCells = cb.NumCells();
             d.mFirstFacet = total_facets;
             d.mGlobalCellBase = base;
-            d.mFaceStart.reserve(d.mNumCells + 1);
-            std::size_t at = 0;
-            d.mFaceStart.push_back(0);
-            for (std::size_t c = 0; c < d.mNumCells; ++c) {
-                at += cb.NumFaces(c);
-                d.mFaceStart.push_back(at);
-            }
-            total_facets += at;
+            total_facets += detail::FacetSlotUtils::BuildFaceStarts(cb, d.mNumCells, d.mFaceStart);
             descs.push_back(std::move(d));
             continue;
         }
@@ -284,19 +277,10 @@ Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, bool linearize, bool
         if (!d.mPolyhedron)
             continue;
         poly_blocks[di].emplace(rMesh.Cells(d.mBlock));
-        d.mCellOfFace.resize(d.mFaceStart.back());
-        parallel_for(d.mNumCells, [&](std::size_t c) {
-            for (std::size_t f = d.mFaceStart[c]; f < d.mFaceStart[c + 1]; ++f)
-                d.mCellOfFace[f] = static_cast<std::uint32_t>(c);
-        });
+        detail::FacetSlotUtils::FillCellOfFace(d.mFaceStart, d.mNumCells, d.mCellOfFace);
     }
     const auto desc_of = [&](std::size_t ri) -> std::size_t {
-        if (first_facets.size() == 1)
-            return 0;
-        return static_cast<std::size_t>(
-                   std::upper_bound(first_facets.begin(), first_facets.end(), ri) -
-                   first_facets.begin()) -
-               1;
+        return detail::FacetSlotUtils::SlotOwner(first_facets, ri);
     };
     const auto size_of = [&](std::size_t ri) -> std::size_t {
         const SurfaceBlockDesc& d = descs[desc_of(ri)];
