@@ -384,13 +384,16 @@ std::vector<std::string> svgr_split_lines(std::string_view Text) {
 
 }  // namespace
 
-void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt,
-               const std::optional<std::string>& rStrokeWidth,
-               const std::optional<double>& rImageWidth, const std::string& rFill,
-               const std::string& rStroke, double azimuth, double elevation, double roll,
-               const std::string& rColorBy, const std::optional<int>& rComponent,
-               const std::string& rCmap, const std::optional<double>& rVMin,
-               const std::optional<double>& rVMax, const std::string& rNanColor, bool Colorbar) {
+void write_svg(const std::string& rPath, const Mesh& rMesh, const SvgWriteOptions& rOptions) {
+    const std::string& rFloatFmt = rOptions.mFloatFmt;
+    const std::optional<std::string>& rStrokeWidth = rOptions.mStrokeWidth;
+    const std::optional<double>& rImageWidth = rOptions.mImageWidth;
+    const std::string& rFill = rOptions.mFill;
+    const std::string& rStroke = rOptions.mStroke;
+    const double azimuth = rOptions.mView.mAzimuth;
+    const double elevation = rOptions.mView.mElevation;
+    const double roll = rOptions.mView.mRoll;
+    const std::string& rNanColor = rOptions.mColoring.mNanColor;
     const NDArray& points = rMesh.Points();
     const std::size_t num_points = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
@@ -398,8 +401,7 @@ void write_svg(const std::string& rPath, const Mesh& rMesh, const std::string& r
     // A genuinely non-flat 3D mesh takes the projected-rendering path (skin
     // extraction for volume cells + orthographic camera); a flat one (every
     // z ~ 0) keeps the classic 2D path below, byte-identical to before.
-    const detail::ColorSpec spec =
-        detail::drawing_color_spec(rColorBy, rComponent, rCmap, rVMin, rVMax, Colorbar);
+    const detail::ColorSpec spec = detail::drawing_color_spec(rOptions.mColoring);
 
     const detail::DoubleView point_values(points);
     if (detail::drawing_write_projected(rMesh, point_values, spec, [&](const Mesh& rProjected) {

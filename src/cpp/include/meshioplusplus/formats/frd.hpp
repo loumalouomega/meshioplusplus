@@ -69,6 +69,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -159,12 +160,7 @@ public:
     explicit FrdSeriesWriter(const std::string& rPath, bool LongIds = true);
     /// The layout of @p rOpts, ASCII or binary.
     FrdSeriesWriter(const std::string& rPath, const FrdWriteOptions& rOpts);
-    ~FrdSeriesWriter();
-
-    FrdSeriesWriter(const FrdSeriesWriter&) = delete;
-    FrdSeriesWriter& operator=(const FrdSeriesWriter&) = delete;
-    FrdSeriesWriter(FrdSeriesWriter&&) noexcept;
-    FrdSeriesWriter& operator=(FrdSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(FrdSeriesWriter);
 
     /**
      * @brief Write one step (the first also writes the mesh).

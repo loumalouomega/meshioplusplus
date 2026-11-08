@@ -57,6 +57,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -126,12 +127,7 @@ public:
     explicit XpltSeriesWriter(const std::string& rPath);
     /// @throws WriteError when @p rPath cannot be opened.
     XpltSeriesWriter(const std::string& rPath, const XpltWriteOptions& rOptions);
-    ~XpltSeriesWriter();
-
-    XpltSeriesWriter(const XpltSeriesWriter&) = delete;
-    XpltSeriesWriter& operator=(const XpltSeriesWriter&) = delete;
-    XpltSeriesWriter(XpltSeriesWriter&&) noexcept;
-    XpltSeriesWriter& operator=(XpltSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(XpltSeriesWriter);
 
     /// Add one step. @throws WriteError when its points, cells or variables differ
     /// from the first step's, or on a moved-from writer.

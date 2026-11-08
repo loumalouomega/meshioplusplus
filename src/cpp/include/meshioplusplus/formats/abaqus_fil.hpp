@@ -67,6 +67,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -159,12 +160,7 @@ public:
 
     /// As above, with the binary layout's byte order and marker size.
     AbaqusFilSeriesWriter(const std::string& rPath, const AbaqusFilWriteOptions& rOptions);
-    ~AbaqusFilSeriesWriter();
-
-    AbaqusFilSeriesWriter(const AbaqusFilSeriesWriter&) = delete;
-    AbaqusFilSeriesWriter& operator=(const AbaqusFilSeriesWriter&) = delete;
-    AbaqusFilSeriesWriter(AbaqusFilSeriesWriter&&) noexcept;
-    AbaqusFilSeriesWriter& operator=(AbaqusFilSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(AbaqusFilSeriesWriter);
 
     /// Add one step. @throws WriteError as above, or on a moved-from writer.
     void Write(double Time, const Mesh& rMesh);

@@ -57,7 +57,7 @@ using fcfix::saddle_box;
 // trimming curve, sampled over its active range, inside its face's surface
 // parameter range: a consumer evaluates the surface there.
 void expect_brep_consistent(const FitCadResult& rR) {
-    ASSERT_EQ(rR.mBrep.mFaces.size(), static_cast<std::size_t>(rR.mNumFaces));
+    ASSERT_EQ(rR.mBrep.mFaces.size(), static_cast<std::size_t>(rR.mCounts.mNumFaces));
     for (const BrepFace& f : rR.mBrep.mFaces) {
         EXPECT_TRUE(f.mTrimmed) << "face " << f.mId;
         const NurbsPatch& patch = rR.mBrep.mPatches.at(static_cast<std::size_t>(f.mPatch));
@@ -117,11 +117,11 @@ TEST(FitCad, NativeBackendWritesAnalyticFaces) {
     EXPECT_EQ(r.mBackend, FitCadBackend::Native);
     EXPECT_TRUE(r.mValid);
     EXPECT_EQ(r.mNumSolids, 1);
-    EXPECT_EQ(r.mNumFaces, 8);
-    EXPECT_EQ(r.mNumPlane, 6);
-    EXPECT_EQ(r.mNumCylinder, 2);
-    EXPECT_EQ(r.mNumFacetedFaces, 0);
-    EXPECT_EQ(r.mNumDemoted, 0);
+    EXPECT_EQ(r.mCounts.mNumFaces, 8);
+    EXPECT_EQ(r.mCounts.mNumPlane, 6);
+    EXPECT_EQ(r.mCounts.mNumCylinder, 2);
+    EXPECT_EQ(r.mCounts.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mCounts.mNumDemoted, 0);
     EXPECT_TRUE(std::isnan(r.mVolume));
     EXPECT_GT(r.mSkinVolume, 0.0);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
@@ -171,8 +171,9 @@ TEST(FitCad, NativeBackendRefines) {
     EXPECT_GT(after.mNumRefineSplits, 0);
     EXPECT_GT(after.mExplainedAreaFraction, after.mInitialExplainedAreaFraction);
     EXPECT_NEAR(after.mExplainedAreaFraction, 1.0, 1e-12);
-    EXPECT_GT(after.mNumPlane + after.mNumCylinder, before.mNumPlane + before.mNumCylinder);
-    EXPECT_EQ(after.mNumCylinder, 2);
+    EXPECT_GT(after.mCounts.mNumPlane + after.mCounts.mNumCylinder,
+              before.mCounts.mNumPlane + before.mCounts.mNumCylinder);
+    EXPECT_EQ(after.mCounts.mNumCylinder, 2);
     EXPECT_TRUE(after.mValid);
     EXPECT_TRUE(after.mMesh.HasFieldData(kRefinePatchProxyName));
     EXPECT_FALSE(before.mMesh.HasFieldData(kRefinePatchProxyName));
@@ -184,9 +185,9 @@ TEST(FitCad, NativeBackendLeavesTypesOutAsPolygons) {
     o.mTypes = 1u << 1;  // planes only: the bore and the fillet become polygons
     const FitCadResult r = fit_cad(analytic::filleted_plate(), "", o);
     EXPECT_TRUE(r.mValid);
-    EXPECT_EQ(r.mNumPlane, 6);
-    EXPECT_EQ(r.mNumCylinder, 0);
-    EXPECT_GT(r.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mCounts.mNumPlane, 6);
+    EXPECT_EQ(r.mCounts.mNumCylinder, 0);
+    EXPECT_GT(r.mCounts.mNumFacetedFaces, 0);
 }
 
 TEST(FitCad, NativeBackendReportsAClosedSolid) {
@@ -266,11 +267,11 @@ TEST(FitCad, FilletedPlateIsEightExactFaces) {
     const FitCadResult r = fit_cad(analytic::filleted_plate());
     EXPECT_EQ(r.mBackend, FitCadBackend::Occt);
     EXPECT_TRUE(r.mValid);
-    EXPECT_EQ(r.mNumFaces, 8);
-    EXPECT_EQ(r.mNumPlane, 6);
-    EXPECT_EQ(r.mNumCylinder, 2);
-    EXPECT_EQ(r.mNumFacetedFaces, 0);
-    EXPECT_EQ(r.mNumDemoted, 0);
+    EXPECT_EQ(r.mCounts.mNumFaces, 8);
+    EXPECT_EQ(r.mCounts.mNumPlane, 6);
+    EXPECT_EQ(r.mCounts.mNumCylinder, 2);
+    EXPECT_EQ(r.mCounts.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mCounts.mNumDemoted, 0);
     // The exact solid: the plate less the fillet's corner and the bore.
     const double rc = 0.8, rb = 0.6;
     const double exact = (16.0 - (rc * rc - analytic::kPi * rc * rc / 4.0) - analytic::kPi * rb * rb) * 0.5;
@@ -284,21 +285,21 @@ TEST(FitCad, FacetsLeftOutMergeIntoCoplanarFaces) {
     o.mTypes = 0;
     const FitCadResult r = fit_cad(fitted(analytic::box_skin(3)), "", o);
     EXPECT_TRUE(r.mValid);
-    EXPECT_EQ(r.mNumFaces, 6);
-    EXPECT_EQ(r.mNumFacetedFaces, 6);
+    EXPECT_EQ(r.mCounts.mNumFaces, 6);
+    EXPECT_EQ(r.mCounts.mNumFacetedFaces, 6);
     EXPECT_NEAR(r.mVolume, 1.0, 1e-9);
     o.mMergeFaces = false;
-    EXPECT_EQ(fit_cad(fitted(analytic::box_skin(3)), "", o).mNumFaces, 6);
+    EXPECT_EQ(fit_cad(fitted(analytic::box_skin(3)), "", o).mCounts.mNumFaces, 6);
 }
 
 TEST(FitCad, BoxIsSixExactPlanes) {
     const FitCadResult r = fit_cad(fitted(analytic::box_skin(3)));
     EXPECT_TRUE(r.mValid);
     EXPECT_EQ(r.mNumSolids, 1);
-    EXPECT_EQ(r.mNumFaces, 6);
-    EXPECT_EQ(r.mNumPlane, 6);
-    EXPECT_EQ(r.mNumFacetedFaces, 0);
-    EXPECT_EQ(r.mNumDemoted, 0);
+    EXPECT_EQ(r.mCounts.mNumFaces, 6);
+    EXPECT_EQ(r.mCounts.mNumPlane, 6);
+    EXPECT_EQ(r.mCounts.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mCounts.mNumDemoted, 0);
     EXPECT_EQ(r.mNumExactEdges, 12);
     EXPECT_EQ(r.mNumApproxEdges, 0);
     EXPECT_NEAR(r.mVolume, 1.0, 1e-9);
@@ -317,10 +318,10 @@ TEST(FitCad, CappedCylinderGetsASeamedWall) {
     EXPECT_TRUE(r.mValid);
     EXPECT_EQ(r.mNumExactEdges, 4);  // two circles, each closed boundary in two arcs
     EXPECT_EQ(r.mNumApproxEdges, 0);
-    EXPECT_EQ(r.mNumPlane, 2);
-    EXPECT_EQ(r.mNumCylinder, 1);
-    EXPECT_EQ(r.mNumFacetedFaces, 0);
-    EXPECT_EQ(r.mNumDemoted, 0);
+    EXPECT_EQ(r.mCounts.mNumPlane, 2);
+    EXPECT_EQ(r.mCounts.mNumCylinder, 1);
+    EXPECT_EQ(r.mCounts.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mCounts.mNumDemoted, 0);
     // The exact cylinder holds the polygon's volume within the chord error.
     EXPECT_NEAR(r.mVolume, analytic::kPi * 2.0, 0.02);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 0.01);
@@ -343,12 +344,12 @@ TEST(FitCad, TurnedPartKeepsEveryPrimitive) {
                                                       }());
     const FitCadResult r = fit_cad(fit);
     EXPECT_TRUE(r.mValid);
-    EXPECT_EQ(r.mNumDemoted, 0);
-    EXPECT_EQ(r.mNumPlane, counts.mNumPlane);
-    EXPECT_EQ(r.mNumCylinder, counts.mNumCylinder);
-    EXPECT_EQ(r.mNumCone, counts.mNumCone);
-    EXPECT_EQ(r.mNumSphere, counts.mNumSphere);
-    EXPECT_EQ(r.mNumTorus, counts.mNumTorus);
+    EXPECT_EQ(r.mCounts.mNumDemoted, 0);
+    EXPECT_EQ(r.mCounts.mNumPlane, counts.mNumPlane);
+    EXPECT_EQ(r.mCounts.mNumCylinder, counts.mNumCylinder);
+    EXPECT_EQ(r.mCounts.mNumCone, counts.mNumCone);
+    EXPECT_EQ(r.mCounts.mNumSphere, counts.mNumSphere);
+    EXPECT_EQ(r.mCounts.mNumTorus, counts.mNumTorus);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 0.01);
     // A cone whose converted surface would stop short of its trims.
@@ -358,8 +359,8 @@ TEST(FitCad, TurnedPartKeepsEveryPrimitive) {
 TEST(FitCad, ClosedTorusAndSphereAreNaturalFaces) {
     const FitCadResult t = fit_cad(fitted(analytic::torus()));
     EXPECT_TRUE(t.mValid);
-    EXPECT_EQ(t.mNumTorus, 1);
-    EXPECT_EQ(t.mNumFaces, 1);
+    EXPECT_EQ(t.mCounts.mNumTorus, 1);
+    EXPECT_EQ(t.mCounts.mNumFaces, 1);
     EXPECT_NEAR(t.mVolumeRatio, 1.0, 0.02);
 
     std::vector<std::pair<double, double> > prof;
@@ -369,8 +370,8 @@ TEST(FitCad, ClosedTorusAndSphereAreNaturalFaces) {
     }
     const FitCadResult s = fit_cad(fitted(analytic::closed_revolve(prof, -1.0, 1.0)));
     EXPECT_TRUE(s.mValid);
-    EXPECT_EQ(s.mNumSphere, 1);
-    EXPECT_EQ(s.mNumFaces, 1);
+    EXPECT_EQ(s.mCounts.mNumSphere, 1);
+    EXPECT_EQ(s.mCounts.mNumFaces, 1);
     EXPECT_NEAR(s.mVolumeRatio, 1.0, 0.03);
 }
 
@@ -379,9 +380,9 @@ TEST(FitCad, UnexplainedPatchComesBackFacetedWithoutFreeform) {
     o.mFreeform = false;
     const FitCadResult r = fit_cad(fitted(saddle_box(6)), "", o);
     EXPECT_TRUE(r.mValid);
-    EXPECT_GT(r.mNumFacetedFaces, 0);
+    EXPECT_GT(r.mCounts.mNumFacetedFaces, 0);
     EXPECT_EQ(r.mNumBspline, 0);
-    EXPECT_EQ(r.mNumPlane, 5);
+    EXPECT_EQ(r.mCounts.mNumPlane, 5);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-9);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
 }
@@ -391,9 +392,9 @@ TEST(FitCad, UnexplainedPatchBecomesAFreeformFace) {
     const FitCadResult r = fit_cad(fitted(saddle_box(24)));
     EXPECT_TRUE(r.mValid);
     EXPECT_EQ(r.mNumBspline, 1);
-    EXPECT_EQ(r.mNumPlane, 5);
-    EXPECT_EQ(r.mNumFacetedFaces, 0);
-    EXPECT_EQ(r.mNumFaces, 6);
+    EXPECT_EQ(r.mCounts.mNumPlane, 5);
+    EXPECT_EQ(r.mCounts.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mCounts.mNumFaces, 6);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-3);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
     // The solid comes back as NURBS too, its faces numbered as fit_cad:face.
@@ -416,8 +417,8 @@ TEST(FitCad, CurledPatchSplitsIntoFreeformFaces) {
     EXPECT_TRUE(r.mValid);
     EXPECT_GE(r.mNumSplitPatches, 2);
     EXPECT_EQ(r.mNumBspline, r.mNumSplitPatches);
-    EXPECT_EQ(r.mNumPlane, 2);
-    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mCounts.mNumPlane, 2);
+    EXPECT_EQ(r.mCounts.mNumFacetedFaces, 0);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
     // The pieces carry new patch labels, after the largest existing one.
@@ -440,7 +441,7 @@ TEST(FitCad, CurledPatchStaysFacetedWithoutSplitting) {
     EXPECT_TRUE(r.mValid);
     EXPECT_EQ(r.mNumSplitPatches, 0);
     EXPECT_EQ(r.mNumBspline, 0);
-    EXPECT_GT(r.mNumFacetedFaces, 0);
+    EXPECT_GT(r.mCounts.mNumFacetedFaces, 0);
 }
 
 TEST(FitCad, InclinedBossFilletIsARollingBallFace) {
@@ -451,11 +452,11 @@ TEST(FitCad, InclinedBossFilletIsARollingBallFace) {
     EXPECT_EQ(r.mNumFillet, 1);
     EXPECT_EQ(r.mNumVariableFillet, 0);
     EXPECT_EQ(r.mNumBlend, 0);
-    EXPECT_GE(r.mNumCylinder, 1);  // the boss wall (the short rim may fit a sphere)
+    EXPECT_GE(r.mCounts.mNumCylinder, 1);  // the boss wall (the short rim may fit a sphere)
     // OpenCASCADE 7.9's NURBS conversion throws on the trimmed cylinder: the
     // side channel is then approximated in each face's own parameters.
     expect_brep_consistent(r);
-    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mCounts.mNumFacetedFaces, 0);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
     bool any_fillet_type = false;
@@ -480,7 +481,7 @@ TEST(FitCad, ThreadFlanksAreHelicalFaces) {
     EXPECT_TRUE(r.mValid);
     EXPECT_EQ(r.mNumHelical, 2);
     EXPECT_EQ(r.mNumRoundedThread, 0);
-    EXPECT_EQ(r.mNumCylinder, 2);
+    EXPECT_EQ(r.mCounts.mNumCylinder, 2);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
     // The root and crest are cylinders wound several turns round.
@@ -504,8 +505,8 @@ TEST(FitCad, FilletOfVaryingRadiusIsOneFace) {
     EXPECT_EQ(r.mNumFillet, 1);
     EXPECT_EQ(r.mNumVariableFillet, 1);
     EXPECT_EQ(r.mNumBlend, 0);
-    EXPECT_EQ(r.mNumPlane, 6);
-    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mCounts.mNumPlane, 6);
+    EXPECT_EQ(r.mCounts.mNumFacetedFaces, 0);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
     FitCadOptions o;
@@ -525,7 +526,7 @@ TEST(FitCad, BlendBetweenTwoFreeformFacesIsOneFace) {
     EXPECT_EQ(r.mNumFillet, 1);
     EXPECT_EQ(r.mNumBlend, 1);
     EXPECT_EQ(r.mNumBspline, 2);
-    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mCounts.mNumFacetedFaces, 0);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
     FitCadOptions o;
@@ -544,7 +545,7 @@ TEST(FitCad, RoundedThreadWithNoCylinderIsHelical) {
     EXPECT_TRUE(r.mValid);
     EXPECT_EQ(r.mNumHelical, 4);
     EXPECT_EQ(r.mNumRoundedThread, 2);
-    EXPECT_EQ(r.mNumCylinder, 0);
+    EXPECT_EQ(r.mCounts.mNumCylinder, 0);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-2);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
     expect_brep_consistent(r);
@@ -561,7 +562,7 @@ TEST(FitCad, TaperedThreadFlanksAreHelicalFaces) {
     EXPECT_EQ(r.mNumHelical, 2);
     EXPECT_EQ(r.mNumTaperedThread, 2);
     EXPECT_EQ(r.mNumVariablePitchThread, 0);
-    EXPECT_EQ(r.mNumCone, 2);
+    EXPECT_EQ(r.mCounts.mNumCone, 2);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
 }
 
@@ -571,8 +572,8 @@ TEST(FitCad, ThreadOfVaryingPitchIsHelical) {
     EXPECT_EQ(r.mNumHelical, 2);
     EXPECT_EQ(r.mNumVariablePitchThread, 2);
     EXPECT_EQ(r.mNumTaperedThread, 0);
-    EXPECT_EQ(r.mNumCylinder, 2);
-    EXPECT_EQ(r.mNumDemoted, 0);
+    EXPECT_EQ(r.mCounts.mNumCylinder, 2);
+    EXPECT_EQ(r.mCounts.mNumDemoted, 0);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
     FitCadOptions o;
     o.mThreads = false;
@@ -598,9 +599,9 @@ TEST(FitCad, ChamferOfVaryingWidthIsOneFace) {
         const FitCadResult r = fit_cad(fit);
         EXPECT_TRUE(r.mValid);
         EXPECT_EQ(r.mNumChamfer, 1);
-        EXPECT_EQ(r.mNumPlane, 6);
-        EXPECT_EQ(r.mNumFacetedFaces, 0);
-        EXPECT_EQ(r.mNumFaces, 7);
+        EXPECT_EQ(r.mCounts.mNumPlane, 6);
+        EXPECT_EQ(r.mCounts.mNumFacetedFaces, 0);
+        EXPECT_EQ(r.mCounts.mNumFaces, 7);
         EXPECT_NEAR(r.mVolumeRatio, 1.0, 1e-3);
         EXPECT_LE(r.mMaxDeviation, r.mTolerance);
         expect_brep_consistent(r);
@@ -618,8 +619,8 @@ TEST(FitCad, ConicBlendIsAFilletFace) {
     EXPECT_EQ(r.mNumFillet, 1);
     EXPECT_EQ(r.mNumConicBlend, 1);
     EXPECT_EQ(r.mNumChamfer, 0);
-    EXPECT_EQ(r.mNumPlane, 6);
-    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mCounts.mNumPlane, 6);
+    EXPECT_EQ(r.mCounts.mNumFacetedFaces, 0);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
     expect_brep_consistent(r);
 }
@@ -629,18 +630,18 @@ TEST(FitCad, RoundedBoxCornersAreVertexBlends) {
     // each corner a vertex blend tangent to the three meeting there.
     const FitCadResult r = fit_cad(fit_primitives(analytic::rounded_box()).mMesh);
     EXPECT_TRUE(r.mValid);
-    EXPECT_EQ(r.mNumPlane, 6);
+    EXPECT_EQ(r.mCounts.mNumPlane, 6);
     EXPECT_EQ(r.mNumConicBlend, 12);
     EXPECT_EQ(r.mNumVertexBlend, 8);
-    EXPECT_EQ(r.mNumFaces, 26);
-    EXPECT_EQ(r.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mCounts.mNumFaces, 26);
+    EXPECT_EQ(r.mCounts.mNumFacetedFaces, 0);
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
     expect_brep_consistent(r);
     // Unscaled, the blends are cylinders and the corners spheres.
     const FitCadResult u = fit_cad(fit_primitives(analytic::rounded_box(0.3, 1.0, 1.0, 1.0)).mMesh);
     EXPECT_EQ(u.mNumVertexBlend, 0);
-    EXPECT_EQ(u.mNumSphere, 8);
-    EXPECT_EQ(u.mNumCylinder, 12);
+    EXPECT_EQ(u.mCounts.mNumSphere, 8);
+    EXPECT_EQ(u.mCounts.mNumCylinder, 12);
     FitCadOptions o;
     o.mFillets = false;
     const FitCadResult off = fit_cad(fit_primitives(analytic::rounded_box()).mMesh, "", o);
@@ -653,10 +654,10 @@ TEST(FitCad, TypesMaskFacetsTheRest) {
     o.mTypes = 1u << static_cast<unsigned>(FitPrimitiveType::Plane);
     const FitCadResult r = fit_cad(fitted(analytic::capped_cylinder()), "", o);
     EXPECT_TRUE(r.mValid);
-    EXPECT_EQ(r.mNumPlane, 2);
-    EXPECT_EQ(r.mNumCylinder, 0);
-    EXPECT_GT(r.mNumFacetedFaces, 0);
-    EXPECT_EQ(r.mNumDemoted, 0);  // left out by the mask, not demoted
+    EXPECT_EQ(r.mCounts.mNumPlane, 2);
+    EXPECT_EQ(r.mCounts.mNumCylinder, 0);
+    EXPECT_GT(r.mCounts.mNumFacetedFaces, 0);
+    EXPECT_EQ(r.mCounts.mNumDemoted, 0);  // left out by the mask, not demoted
 }
 
 TEST(FitCad, ApproximateEdgesStillClose) {
@@ -666,13 +667,13 @@ TEST(FitCad, ApproximateEdgesStillClose) {
     EXPECT_TRUE(r.mValid);
     EXPECT_EQ(r.mNumExactEdges, 0);
     EXPECT_GT(r.mNumApproxEdges, 0);
-    EXPECT_EQ(r.mNumCylinder, 1);
+    EXPECT_EQ(r.mCounts.mNumCylinder, 1);
 }
 
 TEST(FitCad, RunsSegmentAndFitWhenMissing) {
     const FitCadResult r = fit_cad(analytic::box_skin(2));
     EXPECT_TRUE(r.mValid);
-    EXPECT_EQ(r.mNumPlane, 6);
+    EXPECT_EQ(r.mCounts.mNumPlane, 6);
 }
 
 // The same with OpenCASCADE: the turned part segmented by angles alone keeps
@@ -688,11 +689,12 @@ TEST(FitCad, RefinementExplainsTangentJunctions) {
     EXPECT_TRUE(after.mRefined);
     EXPECT_NEAR(after.mExplainedAreaFraction, 1.0, 1e-12);
     const auto analytic_faces = [](const FitCadResult& rR) {
-        return rR.mNumPlane + rR.mNumSphere + rR.mNumCylinder + rR.mNumCone + rR.mNumTorus;
+        return rR.mCounts.mNumPlane + rR.mCounts.mNumSphere + rR.mCounts.mNumCylinder +
+               rR.mCounts.mNumCone + rR.mCounts.mNumTorus;
     };
     EXPECT_GT(analytic_faces(after), analytic_faces(before));
-    EXPECT_EQ(after.mNumFacetedFaces, 0);
-    EXPECT_EQ(after.mNumDemoted, 0);
+    EXPECT_EQ(after.mCounts.mNumFacetedFaces, 0);
+    EXPECT_EQ(after.mCounts.mNumDemoted, 0);
     EXPECT_NEAR(after.mVolumeRatio, 1.0, 1e-2);
     EXPECT_LE(after.mMaxDeviation, after.mTolerance);
 }
@@ -706,15 +708,15 @@ TEST(FitCad, GeneralFreeformFitsWhatTheGridCannot) {
     o.mFreeformMaxControl = 4;
     const FitCadResult before = fit_cad(skin, "", o);
     EXPECT_EQ(before.mNumBspline, 0);
-    EXPECT_GT(before.mNumFacetedFaces, 0);
+    EXPECT_GT(before.mCounts.mNumFacetedFaces, 0);
     EXPECT_EQ(before.mNumFreeformGeneral, 0);
     o.mFreeformGeneral = true;
     const FitCadResult after = fit_cad(skin, "", o);
     EXPECT_TRUE(after.mValid);
     EXPECT_EQ(after.mNumFreeformGeneral, 1);
     EXPECT_EQ(after.mNumBspline, 1);
-    EXPECT_EQ(after.mNumPlane, 5);
-    EXPECT_EQ(after.mNumFacetedFaces, 0);
+    EXPECT_EQ(after.mCounts.mNumPlane, 5);
+    EXPECT_EQ(after.mCounts.mNumFacetedFaces, 0);
     EXPECT_GT(after.mAvgFreeformPoles, 0.0);
     EXPECT_NEAR(after.mVolumeRatio, 1.0, 1e-3);
     EXPECT_LE(after.mMaxDeviation, after.mTolerance);
@@ -748,7 +750,7 @@ TEST(FitCad, GeneralFreeformKeepsEverySolidValid) {
             // Starved, the grid fit leaves the wavy wall's halves faceted; the
             // general fit makes them two B-spline faces.
             EXPECT_EQ(r.mNumFreeformGeneral, 2);
-            EXPECT_EQ(r.mNumFacetedFaces, 0);
+            EXPECT_EQ(r.mCounts.mNumFacetedFaces, 0);
         }
     }
 }
@@ -799,8 +801,10 @@ TEST(FitCad, NoisyTurnedPartStaysWithinTolerance) {
     EXPECT_LE(r.mMaxDeviation, r.mTolerance);
     EXPECT_NEAR(r.mVolumeRatio, 1.0, 0.01);
     // Every fitted patch is kept; the facets are a sliver no primitive explains.
-    EXPECT_EQ(r.mNumDemoted, 0);
-    EXPECT_EQ(r.mNumPlane + r.mNumCylinder + r.mNumCone + r.mNumSphere + r.mNumTorus, 6);
+    EXPECT_EQ(r.mCounts.mNumDemoted, 0);
+    EXPECT_EQ(r.mCounts.mNumPlane + r.mCounts.mNumCylinder + r.mCounts.mNumCone +
+                  r.mCounts.mNumSphere + r.mCounts.mNumTorus,
+              6);
 }
 
 TEST(FitCad, RefusesOpenSkinsAndBadOptions) {
@@ -835,11 +839,11 @@ TEST(FitCad, RefinementVerdictOverridesALooserPrimitive) {
         const FitCadResult r = fit_cad(fitted(saddle_box(24)), "", o);
         EXPECT_TRUE(r.mValid);
         EXPECT_TRUE(r.mRefined);
-        EXPECT_EQ(r.mNumPlane, 5);
-        EXPECT_EQ(r.mNumTorus, 0);
-        EXPECT_EQ(r.mNumDemoted, 0);
+        EXPECT_EQ(r.mCounts.mNumPlane, 5);
+        EXPECT_EQ(r.mCounts.mNumTorus, 0);
+        EXPECT_EQ(r.mCounts.mNumDemoted, 0);
         if (b == FitCadBackend::Occt) {
-            EXPECT_EQ(r.mNumFaces, 6);
+            EXPECT_EQ(r.mCounts.mNumFaces, 6);
             EXPECT_EQ(r.mNumBspline, 1);
         }
     }
@@ -1029,10 +1033,10 @@ TEST(FitCad, ConstrainedPrimitivesInBothBackends) {
         o.mConstrainPrimitives = true;
         const FitCadResult on = fit_cad(skin, "", o);
         EXPECT_TRUE(on.mValid);
-        EXPECT_EQ(on.mNumDemoted, 0);
+        EXPECT_EQ(on.mCounts.mNumDemoted, 0);
         EXPECT_EQ(on.mNumConstrainedPrimitives, 6);
         EXPECT_GE(on.mNumConstraintGroups, 2);
-        EXPECT_EQ(on.mNumFaces, off.mNumFaces);
+        EXPECT_EQ(on.mCounts.mNumFaces, off.mCounts.mNumFaces);
         EXPECT_LE(on.mMaxDeviation, on.mTolerance);
         if (b == FitCadBackend::Occt)
             EXPECT_NEAR(on.mVolumeRatio, 1.0, 0.01);
@@ -1048,9 +1052,9 @@ TEST(FitCad, FaceHausdorffBoundsGlobal) {
     const NDArray& h = r.mMesh.FieldData(kFitCadFaceHausdorffName);
     const NDArray& rms = r.mMesh.FieldData(kFitCadFaceRmsName);
     ASSERT_EQ(h.Shape().size(), 2u);
-    EXPECT_EQ(h.Shape()[0], static_cast<std::size_t>(r.mNumFaces));
+    EXPECT_EQ(h.Shape()[0], static_cast<std::size_t>(r.mCounts.mNumFaces));
     EXPECT_EQ(h.Shape()[1], 2u);
-    EXPECT_EQ(rms.Size(), static_cast<std::size_t>(r.mNumFaces));
+    EXPECT_EQ(rms.Size(), static_cast<std::size_t>(r.mCounts.mNumFaces));
     double worst = 0.0;
     for (std::size_t i = 0; i < h.Size(); ++i)
         worst = std::max(worst, h.As<double>()[i]);
@@ -1062,7 +1066,7 @@ TEST(FitCad, FaceHausdorffBoundsGlobal) {
     EXPECT_LE(r.mHausdorffMax, r.mTolerance);
     // The measure does not touch the solid.
     const FitCadResult plain = fit_cad(fitted(analytic::turned_part()));
-    EXPECT_EQ(plain.mNumFaces, r.mNumFaces);
+    EXPECT_EQ(plain.mCounts.mNumFaces, r.mCounts.mNumFaces);
     EXPECT_EQ(plain.mMaxDeviation, r.mMaxDeviation);
 }
 
@@ -1083,7 +1087,7 @@ TEST(FitCad, ExtendedSurfacesLeaveFoundEdgesAlone) {
         EXPECT_TRUE(r.mValid);
         EXPECT_TRUE(r.mClosed);
         EXPECT_EQ(r.mNumExtendedEdges, 0);
-        EXPECT_EQ(r.mNumFaces, plain.mNumFaces);
+        EXPECT_EQ(r.mCounts.mNumFaces, plain.mCounts.mNumFaces);
         EXPECT_EQ(r.mNumExactEdges, plain.mNumExactEdges);
         EXPECT_EQ(r.mVolume, plain.mVolume);
     }

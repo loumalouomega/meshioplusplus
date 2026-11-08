@@ -459,19 +459,9 @@ struct FitCadResult {
     double mVolumeRatio = 0.0;
     /// The symmetric Hausdorff distance between the skin and the re-meshed solid.
     double mMaxDeviation = 0.0;
-    /// B-rep faces in all, and by type.
-    std::int64_t mNumFaces = 0;
-    std::int64_t mNumPlane = 0;
-    std::int64_t mNumSphere = 0;
-    std::int64_t mNumCylinder = 0;
-    std::int64_t mNumCone = 0;
-    std::int64_t mNumTorus = 0;
-    /// Planar facet faces.
-    std::int64_t mNumFacetedFaces = 0;
-    /// Patches in the skin.
-    std::int64_t mNumPatches = 0;
-    /// Accepted patches demoted to facets by the checks: the features dropped.
-    std::int64_t mNumDemoted = 0;
+    /// B-rep faces in all and by type, the skin's patches and the demoted ones
+    /// (before ABI 42, nine members of this struct, at the same offsets).
+    BrepFaceCounts mCounts;
     /// Edges between analytic faces built as exact intersections, and as B-splines.
     std::int64_t mNumExactEdges = 0;
     std::int64_t mNumApproxEdges = 0;

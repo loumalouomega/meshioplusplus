@@ -54,6 +54,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -121,12 +122,7 @@ MESHIOPLUSPLUS_API void write_marc_t19(const std::string& rPath, const Mesh& rMe
 class MESHIOPLUSPLUS_API MarcT19SeriesWriter {
 public:
     explicit MarcT19SeriesWriter(const std::string& rPath);
-    ~MarcT19SeriesWriter();
-
-    MarcT19SeriesWriter(const MarcT19SeriesWriter&) = delete;
-    MarcT19SeriesWriter& operator=(const MarcT19SeriesWriter&) = delete;
-    MarcT19SeriesWriter(MarcT19SeriesWriter&&) noexcept;
-    MarcT19SeriesWriter& operator=(MarcT19SeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(MarcT19SeriesWriter);
 
     /// Add one increment. @throws WriteError on a mismatch with the first one.
     void Write(double Time, const Mesh& rMesh);

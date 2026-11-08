@@ -51,6 +51,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -167,12 +168,7 @@ public:
 
     /// As above, with the word size and byte order of `LsdynaBinoutWriteOptions`.
     LsdynaBinoutSeriesWriter(const std::string& rPath, const LsdynaBinoutWriteOptions& rOptions);
-    ~LsdynaBinoutSeriesWriter();
-
-    LsdynaBinoutSeriesWriter(const LsdynaBinoutSeriesWriter&) = delete;
-    LsdynaBinoutSeriesWriter& operator=(const LsdynaBinoutSeriesWriter&) = delete;
-    LsdynaBinoutSeriesWriter(LsdynaBinoutSeriesWriter&&) noexcept;
-    LsdynaBinoutSeriesWriter& operator=(LsdynaBinoutSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(LsdynaBinoutSeriesWriter);
 
     /// Add one step. @throws WriteError as above, or on a moved-from writer.
     void Write(double Time, const Mesh& rMesh);

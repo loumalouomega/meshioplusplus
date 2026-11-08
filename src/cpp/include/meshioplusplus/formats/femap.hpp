@@ -49,6 +49,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -118,12 +119,7 @@ class MESHIOPLUSPLUS_API FemapSeriesWriter {
 public:
     /// @throws WriteError when @p rPath cannot be opened.
     explicit FemapSeriesWriter(const std::string& rPath);
-    ~FemapSeriesWriter();
-
-    FemapSeriesWriter(const FemapSeriesWriter&) = delete;
-    FemapSeriesWriter& operator=(const FemapSeriesWriter&) = delete;
-    FemapSeriesWriter(FemapSeriesWriter&&) noexcept;
-    FemapSeriesWriter& operator=(FemapSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(FemapSeriesWriter);
 
     /**
      * @brief Write one step (the first also writes the mesh).

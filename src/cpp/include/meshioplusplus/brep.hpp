@@ -165,6 +165,27 @@ struct MESHIOPLUSPLUS_API Brep {
 };
 
 /**
+ * @brief A B-rep's faces in all and by type, as `fit_cad` reports them
+ * (`FitCadResult::mCounts`) and the native STEP writer returns them: one
+ * spelling for both. Since ABI 42.
+ */
+struct BrepFaceCounts {
+    /// B-rep faces in all, and by type.
+    std::int64_t mNumFaces = 0;
+    std::int64_t mNumPlane = 0;
+    std::int64_t mNumSphere = 0;
+    std::int64_t mNumCylinder = 0;
+    std::int64_t mNumCone = 0;
+    std::int64_t mNumTorus = 0;
+    /// Planar facet faces (coplanar groups of skin facets).
+    std::int64_t mNumFacetedFaces = 0;
+    /// Patches in the skin (rows of the fit table).
+    std::int64_t mNumPatches = 0;
+    /// Accepted patches demoted to facets by the checks: the features dropped.
+    std::int64_t mNumDemoted = 0;
+};
+
+/**
  * @brief The B-rep a sampled mesh came from. Empty (`mFaces`, `mEdges` and
  * `mVertices` empty) for a mesh that has none.
  *

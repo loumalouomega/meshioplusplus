@@ -67,13 +67,14 @@
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/quality.hpp"
+#include "meshioplusplus/operations/sdf_names.hpp"
 
 namespace meshioplusplus {
 
-/// Point data: the signed distance to the skin (negative inside).
-inline constexpr const char* kOctreeMeshDistanceName = "sdf:distance";
-/// Point data (3 components): the nearest point on the skin.
-inline constexpr const char* kOctreeMeshClosestPointName = "sdf:closest_point";
+/// Point data: the signed distance to the skin (negative inside); `compute_sdf`'s name.
+inline constexpr const char* kOctreeMeshDistanceName = kSdfDistanceName;
+/// Point data (3 components): the nearest point on the skin; `compute_sdf`'s name.
+inline constexpr const char* kOctreeMeshClosestPointName = kSdfClosestPointName;
 /// Cell data (Int64): the lattice shape class of a tetrahedron (1-6), 0 for a
 /// cell the stuffing or the optimiser created.
 inline constexpr const char* kOctreeMeshShapeName = "octree_mesh:shape";

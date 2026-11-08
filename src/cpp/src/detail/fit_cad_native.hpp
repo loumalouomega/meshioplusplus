@@ -29,10 +29,12 @@
 // System includes
 #include <cstddef>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 // Project includes
 #include "closed_facets.hpp"
+#include "freeform_adaptive.hpp"
 #include "patch_flatten.hpp"
 #include "patch_network.hpp"
 #include "primitive_constraints.hpp"
@@ -91,6 +93,33 @@ MESHIOPLUSPLUS_API std::vector<FcnRegionNetwork> native_networks(
 MESHIOPLUSPLUS_API std::vector<std::vector<std::size_t>> native_resegment(
     const ClosedFacets& rFc, const std::vector<std::size_t>& rFacets, std::size_t K,
     bool OnlyAcrossCreases = false);
+
+/// Facets as local triangles (polygons fanned), points renumbered in the order
+/// they are first used; with @p pGlobal, each local point's skin point.
+MESHIOPLUSPLUS_API void native_local_triangles(const ClosedFacets& rFc,
+                                               const std::vector<std::size_t>& rFacets,
+                                               std::vector<PatchVec>& rPts,
+                                               std::vector<PatchTri>& rTris,
+                                               std::vector<std::size_t>& rTriFacet,
+                                               std::vector<std::int64_t>* pGlobal = nullptr);
+
+/// The adaptive freeform fit's options, from `fit_cad`'s and the tolerance @p Tol.
+MESHIOPLUSPLUS_API FreeformAdaptiveOptions native_adaptive_options(const FitCadOptions& rOptions,
+                                                                   double Tol);
+
+/// The re-segmentation rung: a patch's facets cut in two along its sharp edges
+/// (`native_resegment(..., 2, true)`), as one piece per triangle of the local
+/// triangulation (@p rTriFacet) in @p rPiece. Returns the number of pieces, 0
+/// (leaving @p rPiece alone) when the patch has no such cut.
+MESHIOPLUSPLUS_API std::size_t native_resegment_pieces(const ClosedFacets& rFc,
+                                                       const std::vector<std::size_t>& rFacets,
+                                                       const std::vector<std::size_t>& rTriFacet,
+                                                       std::vector<std::int64_t>& rPiece);
+
+/// The refinement's verdict per patch label (`refine_patches:proxy` by
+/// `refine_patches:patch_id`), empty when @p rWork carries neither.
+MESHIOPLUSPLUS_API std::unordered_map<std::int64_t, std::int64_t> native_refine_proxy(
+    const Mesh& rWork);
 
 /// The OpenCASCADE backend (providers/occt/fit_cad_occt.cpp).
 FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,

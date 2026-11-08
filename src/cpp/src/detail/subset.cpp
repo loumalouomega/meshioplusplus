@@ -24,6 +24,8 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+#include "subset_gather.hpp"
+
 namespace meshioplusplus {
 namespace detail {
 
@@ -55,8 +57,6 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
                                bool drop_empty_blocks, const std::string& rOpName) {
     SubsetResult res;
     const std::size_t n = rMesh.NumPoints();
-    const std::size_t dim = rMesh.PointDim();
-    const NDArray& points = rMesh.Points();
 
     // 1) mark used points across all kept cells. Serial: parallel iterations
     // would store the same value 1 to shared slots — benign in practice but a
@@ -98,32 +98,9 @@ SubsetResult build_cell_subset(const Mesh& rMesh,
 
     Mesh& out = res.mMesh;
 
-    // 3) points.
-    {
-        NDArray newpts = NDArray::Uninit(points.Dtype(), {point_src.size(), dim});
-        if (!point_src.empty() && dim > 0) {
-            const std::size_t rb = dim * dtype_size(points.Dtype());
-            const std::byte* s = points.Data();
-            std::byte* d = newpts.Data();
-            parallel_for_bw(point_src.size(), [&](std::size_t j) {
-                std::memcpy(d + j * rb, s + static_cast<std::size_t>(point_src[j]) * rb, rb);
-            });
-        }
-        out.AssignPoints(std::move(newpts));
-    }
+    // 3) points and 4) point_data (gathered by point_src when full-length).
+    subset_gather_points(rMesh, point_src, out);
 
-    // 4) point_data (gather by point_src when full-length).
-    for (const std::string& name : rMesh.PointDataNames()) {
-        const NDArray& a = rMesh.PointData(name);
-        const std::size_t rows = a.Shape().empty() ? 0 : a.Shape()[0];
-        if (rows == n)
-            out.AddPointData(name, subset_gather_rows(a, point_src));
-        else {
-            NDArray c = a;
-            c.MakeOwned();
-            out.AddPointData(name, std::move(c));
-        }
-    }
     if (!rPointIdName.empty()) {
         NDArray ids = NDArray::Uninit(DType::Int64, {point_src.size()});
         std::memcpy(ids.As<std::int64_t>(), point_src.data(),

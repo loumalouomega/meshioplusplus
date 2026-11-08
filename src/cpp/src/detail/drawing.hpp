@@ -66,6 +66,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/formats/drawing_options.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/surface.hpp"
@@ -478,17 +479,14 @@ inline double drawing_number_value(std::string_view Token, const char* pFormat) 
 }
 
 /// A drawing writer's colouring options gathered into one `ColorSpec`.
-inline ColorSpec drawing_color_spec(const std::string& rColorBy,
-                                    const std::optional<int>& rComponent, const std::string& rCmap,
-                                    const std::optional<double>& rVMin,
-                                    const std::optional<double>& rVMax, bool Colorbar) {
+inline ColorSpec drawing_color_spec(const DrawingColoring& rColoring) {
     ColorSpec spec;
-    spec.mColorBy = rColorBy;
-    spec.mComponent = rComponent;
-    spec.mCmap = rCmap;
-    spec.mVMin = rVMin;
-    spec.mVMax = rVMax;
-    spec.mColorbar = Colorbar;
+    spec.mColorBy = rColoring.mColorBy;
+    spec.mComponent = rColoring.mComponent;
+    spec.mCmap = rColoring.mCmap;
+    spec.mVMin = rColoring.mVMin;
+    spec.mVMax = rColoring.mVMax;
+    spec.mColorbar = rColoring.mColorbar;
     return spec;
 }
 

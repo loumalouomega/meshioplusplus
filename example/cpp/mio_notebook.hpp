@@ -55,8 +55,17 @@ inline SvgImage render(const meshioplusplus::Mesh& rMesh, const std::string& rCo
                         double azimuth = 45.0, double elevation = 35.264389682754654,
                         double imageWidth = 900.0) {
     std::string path = next_temp_path(".svg");
-    meshioplusplus::write_svg(path, rMesh, ".3f", std::nullopt, imageWidth, "#c8c5bd", "#1f4e79", azimuth,
-                               elevation, 0.0, rColorBy, std::nullopt, rCmap, vmin, vmax, "#808080", colorbar);
+    meshioplusplus::SvgWriteOptions opts;
+    opts.mImageWidth = imageWidth;
+    opts.mStroke = "#1f4e79";
+    opts.mView.mAzimuth = azimuth;
+    opts.mView.mElevation = elevation;
+    opts.mColoring.mColorBy = rColorBy;
+    opts.mColoring.mCmap = rCmap;
+    opts.mColoring.mVMin = vmin;
+    opts.mColoring.mVMax = vmax;
+    opts.mColoring.mColorbar = colorbar;
+    meshioplusplus::write_svg(path, rMesh, opts);
     return SvgImage{read_text_file(path)};
 }
 

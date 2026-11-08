@@ -82,6 +82,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -155,12 +156,7 @@ public:
     explicit LsdynaD3plotSeriesWriter(const std::string& rPath,
                                       std::size_t MaxFileBytes = std::size_t{1} << 30,
                                       bool DoublePrecision = false);
-    ~LsdynaD3plotSeriesWriter();
-
-    LsdynaD3plotSeriesWriter(const LsdynaD3plotSeriesWriter&) = delete;
-    LsdynaD3plotSeriesWriter& operator=(const LsdynaD3plotSeriesWriter&) = delete;
-    LsdynaD3plotSeriesWriter(LsdynaD3plotSeriesWriter&&) noexcept;
-    LsdynaD3plotSeriesWriter& operator=(LsdynaD3plotSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(LsdynaD3plotSeriesWriter);
 
     /// Add one state. @throws WriteError on a mismatch with the first one.
     void Write(double Time, const Mesh& rMesh);

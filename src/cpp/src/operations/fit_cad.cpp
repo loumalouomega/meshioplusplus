@@ -330,6 +330,33 @@ void fcn_local_triangles(const detail::ClosedFacets& rFc, const std::vector<std:
     }
 }
 
+// The adaptive freeform fit's options, from `fit_cad`'s.
+detail::FreeformAdaptiveOptions fcn_adaptive_options(const FitCadOptions& rOptions, double Tol) {
+    detail::FreeformAdaptiveOptions o;
+    o.mTolerance = Tol;
+    o.mFreeformTolerance = rOptions.mFreeformTolerance;
+    o.mSmoothing = rOptions.mFreeformSmoothing;
+    o.mMaxPoles = static_cast<std::size_t>(rOptions.mMaxFreeformPoles);
+    o.mMaxIterations = static_cast<int>(rOptions.mMaxFreeformIterations);
+    o.mMaxTotalPoles = static_cast<std::size_t>(rOptions.mFreeformMaxControlPoints);
+    o.mParameterization = static_cast<detail::ParamLadder>(rOptions.mFreeformParameterization);
+    o.mValidate = rOptions.mValidateBySurfaceSampling;
+    o.mThb = rOptions.mLocalRefine == FitCadLocalRefine::Thb;
+    return o;
+}
+
+// The refinement's verdict per patch label, empty without one.
+std::unordered_map<std::int64_t, std::int64_t> fcn_refine_proxy(const Mesh& rWork) {
+    std::unordered_map<std::int64_t, std::int64_t> proxy_of;
+    if (rWork.HasFieldData(kRefinePatchProxyName) && rWork.HasFieldData(kRefinePatchIdName)) {
+        const NDArray& kinds = rWork.FieldData(kRefinePatchProxyName);
+        const NDArray& labels = rWork.FieldData(kRefinePatchIdName);
+        for (std::size_t i = 0; i < std::min(kinds.Size(), labels.Size()); ++i)
+            proxy_of.emplace(detail::read_int(labels, i), detail::read_int(kinds, i));
+    }
+    return proxy_of;
+}
+
 // A face's sense: its surface normal against the facets', area-weighted;
 // `rU`, `rV` the local points' parameters on it.
 bool fcn_sense(const detail::ClosedFacets& rFc, const detail::BsplineSurface& rS,
@@ -773,6 +800,25 @@ std::vector<std::vector<std::size_t>> fcn_resegment(const detail::ClosedFacets& 
     return pieces(std::move(label), K);
 }
 
+// The re-segmentation rung: the facets cut in two along their sharp edges, as
+// one piece per local triangle; 0 pieces (and `rPiece` untouched) without a cut.
+std::size_t fcn_resegment_pieces(const detail::ClosedFacets& rFc,
+                                 const std::vector<std::size_t>& rFacets,
+                                 const std::vector<std::size_t>& rTriFacet,
+                                 std::vector<std::int64_t>& rPiece) {
+    const auto cut = fcn_resegment(rFc, rFacets, 2, true);
+    if (cut.empty())
+        return 0;
+    std::unordered_map<std::size_t, std::int64_t> of_facet;
+    for (std::size_t k = 0; k < cut.size(); ++k)
+        for (std::size_t f : cut[k])
+            of_facet[f] = static_cast<std::int64_t>(k);
+    rPiece.resize(rTriFacet.size());
+    for (std::size_t t = 0; t < rTriFacet.size(); ++t)
+        rPiece[t] = of_facet[rTriFacet[t]];
+    return cut.size();
+}
+
 // The adaptive freeform pass of the native backend: every patch the fit table
 // leaves unexplained (type 0, or a refinement's freeform or facets verdict)
 // fitted by detail/freeform_adaptive; a patch that is not a disc cut into
@@ -895,16 +941,7 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
                 work.push_back({label, it->second, 0, 0});
         }
     }
-    detail::FreeformAdaptiveOptions o;
-    o.mTolerance = Tol;
-    o.mFreeformTolerance = rOptions.mFreeformTolerance;
-    o.mSmoothing = rOptions.mFreeformSmoothing;
-    o.mMaxPoles = static_cast<std::size_t>(rOptions.mMaxFreeformPoles);
-    o.mMaxIterations = static_cast<int>(rOptions.mMaxFreeformIterations);
-    o.mMaxTotalPoles = static_cast<std::size_t>(rOptions.mFreeformMaxControlPoints);
-    o.mParameterization = static_cast<detail::ParamLadder>(rOptions.mFreeformParameterization);
-    o.mValidate = rOptions.mValidateBySurfaceSampling;
-    o.mThb = rOptions.mLocalRefine == FitCadLocalRefine::Thb;
+    const detail::FreeformAdaptiveOptions o = fcn_adaptive_options(rOptions, Tol);
     // The work list from `From` on: each item a face, or cut into pieces that
     // join the list's end, or facets with its reason.
     const auto run = [&](std::size_t From) {
@@ -951,16 +988,8 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
                 // `mResegmentRounds` times in its line): the re-segmentation
                 // rung, where the segmentation left a crease. Its pieces keep
                 // the halvings left.
-                const auto cut = fcn_resegment(rFc, item.mFacets, 2, true);
-                if (!cut.empty()) {
-                    std::unordered_map<std::size_t, std::int64_t> of_facet;
-                    for (std::size_t k = 0; k < cut.size(); ++k)
-                        for (std::size_t f : cut[k])
-                            of_facet[f] = static_cast<std::int64_t>(k);
-                    piece.resize(tris.size());
-                    for (std::size_t t = 0; t < tris.size(); ++t)
-                        piece[t] = of_facet[tri_facet[t]];
-                    num = cut.size();
+                num = fcn_resegment_pieces(rFc, item.mFacets, tri_facet, piece);
+                if (num > 0) {
                     cut_here = true;
                     ++out.mNumResegmented;
                 }
@@ -1168,13 +1197,7 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     FcnFreeform freeform;
     if (rOptions.mFreeformMode != FitCadFreeformMode::Legacy && work.HasFieldData("fit:patch_id") &&
         work.HasFieldData("fit:patch_type")) {
-        std::unordered_map<std::int64_t, std::int64_t> proxy_of;
-        if (work.HasFieldData(kRefinePatchProxyName) && work.HasFieldData(kRefinePatchIdName)) {
-            const NDArray& kinds = work.FieldData(kRefinePatchProxyName);
-            const NDArray& labels = work.FieldData(kRefinePatchIdName);
-            for (std::size_t i = 0; i < std::min(kinds.Size(), labels.Size()); ++i)
-                proxy_of.emplace(detail::read_int(labels, i), detail::read_int(kinds, i));
-        }
+        const std::unordered_map<std::int64_t, std::int64_t> proxy_of = fcn_refine_proxy(work);
         const NDArray& ids = work.FieldData("fit:patch_id");
         const NDArray& types = work.FieldData("fit:patch_type");
         std::vector<std::int64_t> candidates;
@@ -1219,12 +1242,7 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     result.mVolume = std::numeric_limits<double>::quiet_NaN();
     result.mVolumeRatio = std::numeric_limits<double>::quiet_NaN();
     result.mMaxDeviation = brep.mMaxDeviation;
-    result.mNumFaces = brep.mNumFaces;
-    result.mNumPlane = brep.mNumPlane;
-    result.mNumSphere = brep.mNumSphere;
-    result.mNumCylinder = brep.mNumCylinder;
-    result.mNumCone = brep.mNumCone;
-    result.mNumTorus = brep.mNumTorus;
+    result.mCounts = brep.mCounts;
     result.mNumBspline = brep.mNumBspline;
     result.mNumFreeformAdaptive = brep.mNumBspline;
     result.mNumNetworkEdges = freeform.mNumNetworkEdges;
@@ -1232,9 +1250,6 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     result.mMaxG1AngleDeg = freeform.mMaxG1AngleDeg;
     result.mNumSplitPatches = freeform.mNumSplit;
     result.mNumResegmented = freeform.mNumResegmented;
-    result.mNumFacetedFaces = brep.mNumFacetedFaces;
-    result.mNumPatches = brep.mNumPatches;
-    result.mNumDemoted = brep.mNumDemoted;
     result.mNumExactEdges = brep.mNumLineEdges + brep.mNumCircleEdges;
     result.mNumApproxEdges = brep.mNumSplineEdges;
     result.mNumSolids = brep.mNumSolids;
@@ -1354,8 +1369,9 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     }
     if (rOptions.mFreeformMode != FitCadFreeformMode::Legacy)
         result.mMesh.AddFieldData(kFitCadFaceTableName, fcn_face_table(result.mFaces));
-    if (result.mNumDemoted > 0)
-        log::info("fit_cad: {} fitted patch(es) written as coplanar facets", result.mNumDemoted);
+    if (result.mCounts.mNumDemoted > 0)
+        log::info("fit_cad: {} fitted patch(es) written as coplanar facets",
+                  result.mCounts.mNumDemoted);
     fcn_report_refined(refined, work, result);
     return result;
 }
@@ -1391,6 +1407,28 @@ std::vector<FcnRegionNetwork> native_networks(const ClosedFacets& rFc,
                                               const std::vector<std::vector<std::size_t>>& rItems,
                                               const FitCadOptions& rOptions, double Tol) {
     return fcn_networks(rFc, rItems, rOptions, Tol);
+}
+
+void native_local_triangles(const ClosedFacets& rFc, const std::vector<std::size_t>& rFacets,
+                            std::vector<PatchVec>& rPts, std::vector<PatchTri>& rTris,
+                            std::vector<std::size_t>& rTriFacet,
+                            std::vector<std::int64_t>* pGlobal) {
+    fcn_local_triangles(rFc, rFacets, rPts, rTris, rTriFacet, pGlobal);
+}
+
+FreeformAdaptiveOptions native_adaptive_options(const FitCadOptions& rOptions, double Tol) {
+    return fcn_adaptive_options(rOptions, Tol);
+}
+
+std::size_t native_resegment_pieces(const ClosedFacets& rFc,
+                                    const std::vector<std::size_t>& rFacets,
+                                    const std::vector<std::size_t>& rTriFacet,
+                                    std::vector<std::int64_t>& rPiece) {
+    return fcn_resegment_pieces(rFc, rFacets, rTriFacet, rPiece);
+}
+
+std::unordered_map<std::int64_t, std::int64_t> native_refine_proxy(const Mesh& rWork) {
+    return fcn_refine_proxy(rWork);
 }
 
 std::vector<std::vector<std::size_t>> native_resegment(const ClosedFacets& rFc,
@@ -1514,16 +1552,18 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     FitCadOptions plain = rOptions;
     plain.mConstrainPrimitives = false;
     const FitCadResult off = fit_cad_build(rMesh, "", plain);
-    const bool keep_on = !(off.mValid && (!on.mValid || off.mNumDemoted < on.mNumDemoted));
+    const bool keep_on =
+        !(off.mValid && (!on.mValid || off.mCounts.mNumDemoted < on.mCounts.mNumDemoted));
     if (keep_on)
         return on;
     if (!on.mValid)
         log::warn("fit_cad: the constrained primitives give a solid that is not valid; the "
                   "unconstrained solid is returned");
     else
-        log::warn("fit_cad: the constrained primitives demote {} patch(es) against {} for the "
-                  "unconstrained solid; the unconstrained solid is returned",
-                  on.mNumDemoted, off.mNumDemoted);
+        log::warn(
+            "fit_cad: the constrained primitives demote {} patch(es) against {} for the "
+            "unconstrained solid; the unconstrained solid is returned",
+            on.mCounts.mNumDemoted, off.mCounts.mNumDemoted);
     FitCadResult out = fit_cad_build(rMesh, rStepPath, plain);
     out.mNumConstrainedPrimitives = 0;
     out.mNumConstraintGroups = 0;

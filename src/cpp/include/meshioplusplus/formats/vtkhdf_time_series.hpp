@@ -65,17 +65,14 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 
 namespace meshioplusplus {
 
-/**
- * @brief Whether a series starts fresh or continues an existing one.
- *
- * Appending to a path that does **not** exist yet is not an error -- it is exactly
- * `Truncate`, so a solver can pass `Append` unconditionally.
- */
-enum class VtkhdfSeriesMode { Truncate, Append };
+/// Whether a series starts fresh or continues an existing one (`SeriesMode`,
+/// `formats/time_series_common.hpp`).
+using VtkhdfSeriesMode = SeriesMode;
 
 /**
  * @brief Writes a transient VTKHDF `UnstructuredGrid`: one static grid, then one
@@ -97,12 +94,8 @@ enum class VtkhdfSeriesMode { Truncate, Append };
  */
 class MESHIOPLUSPLUS_API VtkhdfTimeSeriesWriter {
 public:
-    /** @brief One solver array for the `NamedArray` `WriteData` overload; row-major. */
-    struct NamedArray {
-        std::string mName;
-        std::size_t mNumComponents = 1;
-        std::vector<double> mValues;
-    };
+    /// One solver array for the `NamedArray` `WriteData` overload (`SeriesNamedArray`).
+    using NamedArray = SeriesNamedArray;
 
     /**
      * @brief Open a series for writing.
@@ -119,18 +112,10 @@ public:
     explicit VtkhdfTimeSeriesWriter(const std::string& rPath, int GzipLevel = -1,
                                     VtkhdfSeriesMode Mode = VtkhdfSeriesMode::Truncate);
 
-    /**
-     * @brief Finalizes the series if it has not been finalized already.
-     *
-     * @warning This closes the file. Delete the output only after the writer is gone
-     *          (or after `Finalize()`), never while it is alive.
-     */
-    ~VtkhdfTimeSeriesWriter();
-
-    VtkhdfTimeSeriesWriter(const VtkhdfTimeSeriesWriter&) = delete;
-    VtkhdfTimeSeriesWriter& operator=(const VtkhdfTimeSeriesWriter&) = delete;
-    VtkhdfTimeSeriesWriter(VtkhdfTimeSeriesWriter&&) noexcept;
-    VtkhdfTimeSeriesWriter& operator=(VtkhdfTimeSeriesWriter&&) noexcept;
+    // The destructor finalizes the series if it has not been finalized already.
+    // It closes the file: delete the output only after the writer is gone (or
+    // after `Finalize()`), never while it is alive.
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(VtkhdfTimeSeriesWriter);
 
     /**
      * @brief Write the static grid: the points and cells every step shares.

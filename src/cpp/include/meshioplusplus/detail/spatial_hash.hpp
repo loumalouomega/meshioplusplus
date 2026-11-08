@@ -60,6 +60,7 @@
  */
 
 // System includes
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -92,6 +93,64 @@ struct GridKeyHash {
 /// Quantize one coordinate to its bucket index (`floor(coord / cell)`).
 inline std::int64_t grid_quantize(double coord, double cell) {
     return static_cast<std::int64_t>(std::floor(coord / cell));
+}
+
+/**
+ * @brief Visits the cells at Chebyshev radius exactly @p r around @p rCenter
+ * (r = 0 is the centre cell alone), clamped to the occupied-key box
+ * `[rLo, rHi]`, calling `rVisit(GridKey)` for each in ascending dz -> dy -> dx
+ * order. The walk `SpatialGrid::ForEachInShell` and
+ * `BucketTable::ForEachInShell` share: each passes the lookup of its own
+ * storage as @p rVisit. Enumerates only the shell (never the full cube).
+ */
+template <class TVisit>
+inline void grid_for_each_in_shell(const GridKey& rLo, const GridKey& rHi, const GridKey& rCenter,
+                                   std::int64_t r, TVisit&& rVisit) {
+    const std::int64_t zl = std::max(-r, rLo.z - rCenter.z);
+    const std::int64_t zh = std::min(r, rHi.z - rCenter.z);
+    const std::int64_t yl = std::max(-r, rLo.y - rCenter.y);
+    const std::int64_t yh = std::min(r, rHi.y - rCenter.y);
+    const std::int64_t xl = std::max(-r, rLo.x - rCenter.x);
+    const std::int64_t xh = std::min(r, rHi.x - rCenter.x);
+    if (zl > zh || yl > yh || xl > xh)
+        return;
+    auto visit = [&](std::int64_t dx, std::int64_t dy, std::int64_t dz) {
+        rVisit(GridKey{rCenter.x + dx, rCenter.y + dy, rCenter.z + dz});
+    };
+    if (r == 0) {
+        visit(0, 0, 0);
+        return;
+    }
+    for (std::int64_t dz = zl; dz <= zh; ++dz) {
+        if (dz == -r || dz == r) {
+            for (std::int64_t dy = yl; dy <= yh; ++dy)
+                for (std::int64_t dx = xl; dx <= xh; ++dx)
+                    visit(dx, dy, dz);
+        } else {
+            for (std::int64_t dy = yl; dy <= yh; ++dy) {
+                if (dy == -r || dy == r) {
+                    for (std::int64_t dx = xl; dx <= xh; ++dx)
+                        visit(dx, dy, dz);
+                } else {
+                    if (xl == -r)
+                        visit(-r, dy, dz);
+                    if (xh == r)
+                        visit(r, dy, dz);
+                }
+            }
+        }
+    }
+}
+
+/// Visits every key of the inclusive box `[rLo, rHi]`, calling `rVisit(GridKey)`
+/// for each in ascending z -> y -> x order (the box walk of `SpatialGrid` and
+/// `BucketTable`, and the order `SpatialGrid::InsertBox` inserts in).
+template <class TVisit>
+inline void grid_for_each_in_box(const GridKey& rLo, const GridKey& rHi, TVisit&& rVisit) {
+    for (std::int64_t z = rLo.z; z <= rHi.z; ++z)
+        for (std::int64_t y = rLo.y; y <= rHi.y; ++y)
+            for (std::int64_t x = rLo.x; x <= rHi.x; ++x)
+                rVisit(GridKey{x, y, z});
 }
 
 /// The bucket grid: cell key -> ids in insertion order. Callers insert ids in
@@ -179,43 +238,11 @@ public:
     void ForEachInShell(const GridKey& rCenter, std::int64_t r, F&& fn) const {
         if (!mCovered)
             return;
-        const std::int64_t zl = std::max(-r, mLo.z - rCenter.z);
-        const std::int64_t zh = std::min(r, mHi.z - rCenter.z);
-        const std::int64_t yl = std::max(-r, mLo.y - rCenter.y);
-        const std::int64_t yh = std::min(r, mHi.y - rCenter.y);
-        const std::int64_t xl = std::max(-r, mLo.x - rCenter.x);
-        const std::int64_t xh = std::min(r, mHi.x - rCenter.x);
-        if (zl > zh || yl > yh || xl > xh)
-            return;
-        auto visit = [&](std::int64_t dx, std::int64_t dy, std::int64_t dz) {
-            const std::vector<std::int64_t>* p_ids =
-                Find(GridKey{rCenter.x + dx, rCenter.y + dy, rCenter.z + dz});
+        grid_for_each_in_shell(mLo, mHi, rCenter, r, [&](const GridKey& rKey) {
+            const std::vector<std::int64_t>* p_ids = Find(rKey);
             if (p_ids != nullptr)
                 fn(*p_ids);
-        };
-        if (r == 0) {
-            visit(0, 0, 0);
-            return;
-        }
-        for (std::int64_t dz = zl; dz <= zh; ++dz) {
-            if (dz == -r || dz == r) {
-                for (std::int64_t dy = yl; dy <= yh; ++dy)
-                    for (std::int64_t dx = xl; dx <= xh; ++dx)
-                        visit(dx, dy, dz);
-            } else {
-                for (std::int64_t dy = yl; dy <= yh; ++dy) {
-                    if (dy == -r || dy == r) {
-                        for (std::int64_t dx = xl; dx <= xh; ++dx)
-                            visit(dx, dy, dz);
-                    } else {
-                        if (xl == -r)
-                            visit(-r, dy, dz);
-                        if (xh == r)
-                            visit(r, dy, dz);
-                    }
-                }
-            }
-        }
+        });
     }
 
     /// Visits every non-empty cell in the inclusive key box `[rLo, rHi]`,
@@ -227,13 +254,11 @@ public:
     /// deduplicate (see the file doc comment).
     template <class F>
     void ForEachInBox(const GridKey& rLo, const GridKey& rHi, F&& fn) const {
-        for (std::int64_t z = rLo.z; z <= rHi.z; ++z)
-            for (std::int64_t y = rLo.y; y <= rHi.y; ++y)
-                for (std::int64_t x = rLo.x; x <= rHi.x; ++x) {
-                    const std::vector<std::int64_t>* p_ids = Find(GridKey{x, y, z});
-                    if (p_ids != nullptr)
-                        fn(*p_ids);
-                }
+        grid_for_each_in_box(rLo, rHi, [&](const GridKey& rKey) {
+            const std::vector<std::int64_t>* p_ids = Find(rKey);
+            if (p_ids != nullptr)
+                fn(*p_ids);
+        });
     }
 
     bool Empty() const { return mCells.empty(); }

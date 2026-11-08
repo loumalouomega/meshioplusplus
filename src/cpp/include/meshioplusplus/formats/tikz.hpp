@@ -43,63 +43,44 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/drawing_options.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
 namespace meshioplusplus {
 
+/// Options of `write_tikz`. Since ABI 42 (before, positional parameters).
+struct TikzWriteOptions {
+    /// printf-style float format for coordinates without the leading '%'
+    std::string mFloatFmt = ".6f";
+    /// wrap the picture in a compilable `\documentclass{standalone}` document;
+    /// otherwise emit only the `tikzpicture` environment
+    bool mStandalone = true;
+    /// TikZ line width (e.g. `"0.4pt"`); `std::nullopt` uses TikZ's default
+    std::optional<std::string> mLineWidth;
+    std::string mFill = "gray!30";  ///< xcolor fill spec for the filled faces
+    std::string mDraw = "black";    ///< xcolor spec for the edge stroke
+    /// optional `\begin{tikzpicture}[scale=...]` factor; `std::nullopt` emits no
+    /// scale key
+    std::optional<double> mScale;
+    DrawingView mView;  ///< the camera, for 3D input
+    /// colouring by data; `mNanColor` is an xcolor spec
+    DrawingColoring mColoring{{},           std::nullopt, "viridis", std::nullopt,
+                              std::nullopt, "gray",       false};
+};
+
 /**
  * @brief Write a mesh's `line`/`triangle`/`quad` cells as a TikZ figure.
  *
- * @param rPath       filesystem path to write
- * @param rMesh       the mesh to write (only line/triangle/quad contribute)
- * @param rFloatFmt   printf-style float format for coordinates without the
- *                    leading '%' (e.g. `".6f"`)
- * @param Standalone  when true, wrap the picture in a compilable
- *                    `\documentclass{standalone}` document; otherwise emit only
- *                    the `tikzpicture` environment
- * @param rLineWidth  TikZ line width (e.g. `"0.4pt"`); `std::nullopt` uses TikZ's
- *                    default
- * @param rFill       xcolor fill spec for the filled faces
- * @param rDraw       xcolor spec for the edge stroke
- * @param rScale      optional `\begin{tikzpicture}[scale=...]` factor;
- *                    `std::nullopt` emits no scale key
- * @param azimuth     camera azimuth in degrees (3D input only)
- * @param elevation   camera elevation in degrees (3D input only); the default
- *                    pair (45, atan(1/sqrt(2))) is the classic CAD isometric
- *                    view
- * @param roll        in-screen camera roll in degrees (3D input only)
- * @param rColorBy    name of a `point_data` or `cell_data` array to colour the
- *                    faces by; empty (the default) keeps the flat `rFill` and
- *                    leaves the output byte-identical to previous releases.
- *                    Point data colours a face by the mean of its corner
- *                    values, cell data by its owning cell's value -- found
- *                    through `"surface:parent_cell"` for a projected volume
- *                    mesh, whose skin is extracted with provenance in that case
- * @param rComponent  component of a multi-component array; `std::nullopt` uses
- *                    the row magnitude
- * @param rCmap       built-in colormap name (see `detail/colormap.hpp`)
- * @param rVMin       low end of the mapped range; `std::nullopt` uses the
- *                    smallest finite value among the *drawn* faces
- * @param rVMax       high end of the mapped range; `std::nullopt` likewise
- * @param rNanColor   xcolor spec for faces whose value is NaN or infinite
- * @param Colorbar    when true, append a gradient bar with min/max labels to
- *                    the right of the figure
+ * @param rPath    filesystem path to write
+ * @param rMesh    the mesh to write (only line/triangle/quad contribute)
+ * @param rOptions the figure's style, camera and colouring (`TikzWriteOptions`)
  * @throws WriteError on an unopenable output path
  * @throws std::invalid_argument for an unknown array name or colormap, an
  *         out-of-range component, or `vmin > vmax`
  */
-MESHIOPLUSPLUS_API void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt = ".6f",
-                bool Standalone = true, const std::optional<std::string>& rLineWidth = std::nullopt,
-                const std::string& rFill = "gray!30", const std::string& rDraw = "black",
-                const std::optional<double>& rScale = std::nullopt, double azimuth = 45.0,
-                double elevation = 35.264389682754654, double roll = 0.0,
-                const std::string& rColorBy = "",
-                const std::optional<int>& rComponent = std::nullopt,
-                const std::string& rCmap = "viridis",
-                const std::optional<double>& rVMin = std::nullopt,
-                const std::optional<double>& rVMax = std::nullopt,
-                const std::string& rNanColor = "gray", bool Colorbar = false);
+MESHIOPLUSPLUS_API void write_tikz(const std::string& rPath, const Mesh& rMesh,
+                                   const TikzWriteOptions& rOptions = {});
 
 /**
  * @brief Read a TikZ figure written by `write_tikz` back as a planar mesh.

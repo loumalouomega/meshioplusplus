@@ -313,14 +313,17 @@ bool write_colored_variant(const std::string& rPath, const Mesh& rMesh, const st
                            const std::optional<double>& rVMax, const std::string& rNanColor,
                            bool colorbar) {
     if (rFormat == "svg") {
-        meshioplusplus::write_svg(rPath, rMesh, ".3f", std::nullopt, 100.0, "#c8c5bd", "#000080",
-                                  45.0, 35.264389682754654, 0.0, rColorBy, rComponent, rCmap, rVMin,
-                                  rVMax, rNanColor.empty() ? "#808080" : rNanColor, colorbar);
+        meshioplusplus::SvgWriteOptions opts;
+        opts.mColoring = {rColorBy, rComponent, rCmap,
+                          rVMin,    rVMax,      rNanColor.empty() ? "#808080" : rNanColor,
+                          colorbar};
+        meshioplusplus::write_svg(rPath, rMesh, opts);
     } else if (rFormat == "tikz") {
-        meshioplusplus::write_tikz(rPath, rMesh, ".6f", true, std::nullopt, "gray!30", "black",
-                                   std::nullopt, 45.0, 35.264389682754654, 0.0, rColorBy,
-                                   rComponent, rCmap, rVMin, rVMax,
-                                   rNanColor.empty() ? "gray" : rNanColor, colorbar);
+        meshioplusplus::TikzWriteOptions opts;
+        opts.mColoring = {rColorBy, rComponent, rCmap,
+                          rVMin,    rVMax,      rNanColor.empty() ? "gray" : rNanColor,
+                          colorbar};
+        meshioplusplus::write_tikz(rPath, rMesh, opts);
     } else {
         return false;
     }
@@ -2984,15 +2987,15 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         json.Field("skin_volume", r.mSkinVolume);
         json.Field("volume_ratio", r.mVolumeRatio);
         json.Field("max_deviation", r.mMaxDeviation);
-        json.Field("num_faces", r.mNumFaces);
-        json.Field("num_plane", r.mNumPlane);
-        json.Field("num_sphere", r.mNumSphere);
-        json.Field("num_cylinder", r.mNumCylinder);
-        json.Field("num_cone", r.mNumCone);
-        json.Field("num_torus", r.mNumTorus);
-        json.Field("num_faceted_faces", r.mNumFacetedFaces);
-        json.Field("num_patches", r.mNumPatches);
-        json.Field("num_demoted", r.mNumDemoted);
+        json.Field("num_faces", r.mCounts.mNumFaces);
+        json.Field("num_plane", r.mCounts.mNumPlane);
+        json.Field("num_sphere", r.mCounts.mNumSphere);
+        json.Field("num_cylinder", r.mCounts.mNumCylinder);
+        json.Field("num_cone", r.mCounts.mNumCone);
+        json.Field("num_torus", r.mCounts.mNumTorus);
+        json.Field("num_faceted_faces", r.mCounts.mNumFacetedFaces);
+        json.Field("num_patches", r.mCounts.mNumPatches);
+        json.Field("num_demoted", r.mCounts.mNumDemoted);
         json.Field("num_exact_edges", r.mNumExactEdges);
         json.Field("num_approx_edges", r.mNumApproxEdges);
         json.Field("num_solids", r.mNumSolids);
@@ -3086,14 +3089,14 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         }
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
-        std::cout << "to-cad (" << engine << "): " << r.mNumFaces << " face(s) in " << r.mNumSolids
-                  << " solid(s), " << (r.mValid ? "valid" : "NOT valid") << ", "
+        std::cout << "to-cad (" << engine << "): " << r.mCounts.mNumFaces << " face(s) in "
+                  << r.mNumSolids << " solid(s), " << (r.mValid ? "valid" : "NOT valid") << ", "
                   << (r.mClosed ? "closed" : "NOT closed") << "\n";
-        std::cout << "  plane:     " << r.mNumPlane << "\n";
-        std::cout << "  sphere:    " << r.mNumSphere << "\n";
-        std::cout << "  cylinder:  " << r.mNumCylinder << "\n";
-        std::cout << "  cone:      " << r.mNumCone << "\n";
-        std::cout << "  torus:     " << r.mNumTorus << "\n";
+        std::cout << "  plane:     " << r.mCounts.mNumPlane << "\n";
+        std::cout << "  sphere:    " << r.mCounts.mNumSphere << "\n";
+        std::cout << "  cylinder:  " << r.mCounts.mNumCylinder << "\n";
+        std::cout << "  cone:      " << r.mCounts.mNumCone << "\n";
+        std::cout << "  torus:     " << r.mCounts.mNumTorus << "\n";
         std::cout << "  bspline:   " << r.mNumBspline;
         if (r.mNumSplitPatches > 0)
             std::cout << " (" << r.mNumSplitPatches << " split piece(s))";
@@ -3114,8 +3117,8 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         std::cout << "\n";
         std::cout << "  chamfer:   " << r.mNumChamfer << "\n";
         std::cout << "  vertex:    " << r.mNumVertexBlend << " vertex blend(s)\n";
-        std::cout << "  facets:    " << r.mNumFacetedFaces << "\n";
-        std::cout << "  demoted:   " << r.mNumDemoted << " patch(es)\n";
+        std::cout << "  facets:    " << r.mCounts.mNumFacetedFaces << "\n";
+        std::cout << "  demoted:   " << r.mCounts.mNumDemoted << " patch(es)\n";
         if (r.mRefined)
             std::cout << "  refined: " << r.mNumRefineSplits << " split(s), " << r.mNumRefineMerges
                       << " merge(s) in " << r.mRefineIterations << " iteration(s); explained area "

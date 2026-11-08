@@ -59,6 +59,7 @@
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/formats/pvtu.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -81,12 +82,7 @@ public:
      */
     explicit PvdSeriesWriter(const std::string& rPath, bool binary = true,
                              detail::VtkCodec codec = detail::VtkCodec::Zlib);
-    ~PvdSeriesWriter();
-
-    PvdSeriesWriter(const PvdSeriesWriter&) = delete;
-    PvdSeriesWriter& operator=(const PvdSeriesWriter&) = delete;
-    PvdSeriesWriter(PvdSeriesWriter&&) noexcept;
-    PvdSeriesWriter& operator=(PvdSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(PvdSeriesWriter);
 
     /**
      * @brief Write one step: its piece file, then the index listing every step so far.

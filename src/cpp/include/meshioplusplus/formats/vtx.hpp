@@ -65,6 +65,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -123,12 +124,7 @@ class MESHIOPLUSPLUS_API VtxSeriesWriter {
 public:
     explicit VtxSeriesWriter(const std::string& rPath);
     VtxSeriesWriter(const std::string& rPath, VtxMeshPolicy Policy);
-    ~VtxSeriesWriter();
-
-    VtxSeriesWriter(const VtxSeriesWriter&) = delete;
-    VtxSeriesWriter& operator=(const VtxSeriesWriter&) = delete;
-    VtxSeriesWriter(VtxSeriesWriter&&) noexcept;
-    VtxSeriesWriter& operator=(VtxSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(VtxSeriesWriter);
 
     /// Add one step. @throws WriteError on a mismatch with the first step or a failure.
     void Write(double Time, const Mesh& rMesh);

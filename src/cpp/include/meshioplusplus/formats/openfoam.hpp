@@ -65,6 +65,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -367,12 +368,7 @@ public:
     explicit OpenFoamSeriesWriter(const std::string& rPath, const OpenFoamInfo& rInfo = {},
                                   const OpenFoamWriteOptions& rOptions = {},
                                   const std::string& rRegion = {});
-    ~OpenFoamSeriesWriter();
-
-    OpenFoamSeriesWriter(const OpenFoamSeriesWriter&) = delete;
-    OpenFoamSeriesWriter& operator=(const OpenFoamSeriesWriter&) = delete;
-    OpenFoamSeriesWriter(OpenFoamSeriesWriter&&) noexcept;
-    OpenFoamSeriesWriter& operator=(OpenFoamSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(OpenFoamSeriesWriter);
 
     /// Write one step now. @throws WriteError on a mismatch with the first step, or a repeated
     /// time.

@@ -534,19 +534,22 @@ private:
 
 }  // namespace
 
-void write_tikz(const std::string& rPath, const Mesh& rMesh, const std::string& rFloatFmt,
-                bool Standalone, const std::optional<std::string>& rLineWidth,
-                const std::string& rFill, const std::string& rDraw,
-                const std::optional<double>& rScale, double azimuth, double elevation, double roll,
-                const std::string& rColorBy, const std::optional<int>& rComponent,
-                const std::string& rCmap, const std::optional<double>& rVMin,
-                const std::optional<double>& rVMax, const std::string& rNanColor, bool Colorbar) {
+void write_tikz(const std::string& rPath, const Mesh& rMesh, const TikzWriteOptions& rOptions) {
+    const std::string& rFloatFmt = rOptions.mFloatFmt;
+    const bool Standalone = rOptions.mStandalone;
+    const std::optional<std::string>& rLineWidth = rOptions.mLineWidth;
+    const std::string& rFill = rOptions.mFill;
+    const std::string& rDraw = rOptions.mDraw;
+    const std::optional<double>& rScale = rOptions.mScale;
+    const double azimuth = rOptions.mView.mAzimuth;
+    const double elevation = rOptions.mView.mElevation;
+    const double roll = rOptions.mView.mRoll;
+    const std::string& rNanColor = rOptions.mColoring.mNanColor;
     const NDArray& points = rMesh.Points();
     const std::size_t num_points = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
 
-    const detail::ColorSpec spec =
-        detail::drawing_color_spec(rColorBy, rComponent, rCmap, rVMin, rVMax, Colorbar);
+    const detail::ColorSpec spec = detail::drawing_color_spec(rOptions.mColoring);
 
     // A genuinely non-flat 3D mesh takes the projected-rendering path (skin
     // extraction for volume cells + orthographic camera); a flat one (every

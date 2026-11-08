@@ -93,6 +93,9 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/xyz.hpp"
+#include "meshioplusplus/formats/svg.hpp"
+#include "meshioplusplus/formats/tikz.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/operations/check_tetrahedra.hpp"
 #include "meshioplusplus/operations/extrude.hpp"
@@ -267,6 +270,17 @@ MIO_ABI_LAYOUT(meshioplusplus::BrepEdge, 416, 8);
 MIO_ABI_LAYOUT(meshioplusplus::BrepVertex, 96, 8);
 MIO_ABI_LAYOUT(meshioplusplus::Brep, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::BrepInfo, 152, 8);
+// ABI 42 (roadmap 8.3): the face counts `FitCadResult` and the native STEP
+// writer share, nine `int64_t`s, embedded where the nine members were.
+MIO_ABI_LAYOUT(meshioplusplus::BrepFaceCounts, 72, 8);
+// ABI 42 (roadmap 8.3): `write_svg` and `write_tikz` take one options struct
+// each, their camera and colouring the shared `DrawingView`/`DrawingColoring`.
+MIO_ABI_LAYOUT(meshioplusplus::DrawingView, 24, 8);
+MIO_ABI_LAYOUT(meshioplusplus::DrawingColoring, 144, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SvgWriteOptions, 320, 8);
+MIO_ABI_LAYOUT(meshioplusplus::TikzWriteOptions, 328, 8);
+// ABI 42 (roadmap 8.3): the raw array of the XDMF and VTKHDF series writers.
+MIO_ABI_LAYOUT(meshioplusplus::SeriesNamedArray, 64, 8);
 // ABI 38 (roadmap 7.7.1): `mHeal` and `mSewTolerance` appended, 16 -> 32 bytes.
 MIO_ABI_LAYOUT(meshioplusplus::CadReadOptions, 32, 8);
 // v18.0.0 (roadmap 4.7): the CAD kernel a provider registers. Two `std::string`s
@@ -829,6 +843,12 @@ TEST(AbiLayout, SnapshotIsPinnedOnTheReferenceConfiguration) {
     report<meshioplusplus::BrepVertex>("BrepVertex");
     report<meshioplusplus::Brep>("Brep");
     report<meshioplusplus::BrepInfo>("BrepInfo");
+    report<meshioplusplus::BrepFaceCounts>("BrepFaceCounts");
+    report<meshioplusplus::DrawingView>("DrawingView");
+    report<meshioplusplus::DrawingColoring>("DrawingColoring");
+    report<meshioplusplus::SvgWriteOptions>("SvgWriteOptions");
+    report<meshioplusplus::TikzWriteOptions>("TikzWriteOptions");
+    report<meshioplusplus::SeriesNamedArray>("SeriesNamedArray");
     report<meshioplusplus::CadReadOptions>("CadReadOptions");
     report<meshioplusplus::TetrahedralizeOptions>("TetrahedralizeOptions");
     report<meshioplusplus::CutOptions>("CutOptions");

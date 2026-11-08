@@ -25,7 +25,7 @@ quality,10368,27517766
 quality_ragged,10368,85459665
 data_average,10368,3758706
 data_average_ragged,10368,15334104
-interpolate_cells,10368,92104953
+interpolate_cells,10368,89626846
 partition_ragged,10368,80037240
 adjacency_cell,10368,25490860
 adjacency_cell_ragged,10368,26496920

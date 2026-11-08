@@ -42,6 +42,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/slot_runs.hpp"
+#include "../detail/subset_gather.hpp"
 #include "../detail/weld.hpp"
 
 namespace meshioplusplus {
@@ -435,29 +436,7 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
 
     // --- emit points + point_data ------------------------------------------
     Mesh& out = res.mMesh;
-    {
-        NDArray newpts = NDArray::Uninit(points.Dtype(), {static_cast<std::size_t>(P), dim});
-        if (P > 0 && dim > 0) {
-            const std::size_t rb = dim * dtype_size(points.Dtype());
-            const std::byte* s = points.Data();
-            std::byte* d = newpts.Data();
-            parallel_for_bw(point_src.size(), [&](std::size_t j) {
-                std::memcpy(d + j * rb, s + static_cast<std::size_t>(point_src[j]) * rb, rb);
-            });
-        }
-        out.AssignPoints(std::move(newpts));
-    }
-    for (const std::string& name : rMesh.PointDataNames()) {
-        const NDArray& a = rMesh.PointData(name);
-        const std::size_t rows = a.Shape().empty() ? 0 : a.Shape()[0];
-        if (rows == n)
-            out.AddPointData(name, detail::subset_gather_rows(a, point_src));
-        else {
-            NDArray c = a;
-            c.MakeOwned();
-            out.AddPointData(name, std::move(c));
-        }
-    }
+    detail::subset_gather_points(rMesh, point_src, out);
 
     // --- emit cells (remap rep-space -> final point index) ------------------
     res.mCellMaps.clear();

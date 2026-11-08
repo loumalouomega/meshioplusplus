@@ -63,6 +63,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -132,12 +133,7 @@ MESHIOPLUSPLUS_API void write_ansys_rst(const std::string& rPath, const Mesh& rM
 class MESHIOPLUSPLUS_API AnsysRstSeriesWriter {
 public:
     explicit AnsysRstSeriesWriter(const std::string& rPath);
-    ~AnsysRstSeriesWriter();
-
-    AnsysRstSeriesWriter(const AnsysRstSeriesWriter&) = delete;
-    AnsysRstSeriesWriter& operator=(const AnsysRstSeriesWriter&) = delete;
-    AnsysRstSeriesWriter(AnsysRstSeriesWriter&&) noexcept;
-    AnsysRstSeriesWriter& operator=(AnsysRstSeriesWriter&&) noexcept;
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(AnsysRstSeriesWriter);
 
     /// Add one result set. @throws WriteError on a mismatch with the first one.
     void Write(double Time, const Mesh& rMesh);

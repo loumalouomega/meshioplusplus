@@ -60,6 +60,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -129,15 +131,9 @@ struct StepBrepResult {
     double mMaxDeviation = 0.0;  ///< the largest distance of a point from its face's surface
     double mVolume = 0.0;        ///< the skin's enclosed volume
     bool mValid = false;         ///< every face's loops closed, every edge used twice
-    std::int64_t mNumFaces = 0;
-    std::int64_t mNumPlane = 0;
-    std::int64_t mNumSphere = 0;
-    std::int64_t mNumCylinder = 0;
-    std::int64_t mNumCone = 0;
-    std::int64_t mNumTorus = 0;
-    std::int64_t mNumFacetedFaces = 0;  ///< coplanar-group faces
-    std::int64_t mNumPatches = 0;       ///< rows of the fit table
-    std::int64_t mNumDemoted = 0;       ///< accepted patches written as coplanar groups
+    /// the faces by type, the fit table's rows and the accepted patches written
+    /// as coplanar groups (`mNumDemoted`)
+    BrepFaceCounts mCounts;
     std::int64_t mNumSolids = 0;
     std::int64_t mNumLineEdges = 0;
     std::int64_t mNumCircleEdges = 0;
@@ -223,6 +219,197 @@ std::size_t step_piece_volumes(std::size_t nf, Find&& FindRoot,
         }
     }
     return npieces;
+}
+
+/// A hash of an undirected mesh edge `(lo, hi)`. Buckets only: the maps it
+/// serves are looked up, never iterated, so it cannot reach any output.
+struct StepEdgeHash {
+    std::size_t operator()(const std::pair<std::int64_t, std::int64_t>& rKey) const {
+        const std::uint64_t lo = static_cast<std::uint64_t>(rKey.first);
+        const std::uint64_t hi = static_cast<std::uint64_t>(rKey.second);
+        return static_cast<std::size_t>(((hi << 32) ^ lo ^ (hi >> 32)) * 0x9E3779B97F4A7C15ull);
+    }
+};
+
+/// The undirected key of the mesh edge `U`-`V`.
+inline std::pair<std::int64_t, std::int64_t> step_edge(std::int64_t U, std::int64_t V) {
+    return {std::min(U, V), std::max(U, V)};
+}
+
+/**
+ * @brief The chains of boundary edges between face groups, as the kernel-free
+ * writer and the OpenCASCADE backend both cut them: from every junction (in
+ * ascending point order) along the unvisited edges, each chain ending at the
+ * next junction, then the closed loops no junction lies on (from their lowest
+ * edge).
+ *
+ * @param NumPoints the skin's point count.
+ * @param rEdges the boundary edges, distinct `(lo, hi)` pairs, sorted ascending.
+ * @param rJunction `rJunction(V, NumNeighbours)`: whether point `V`, with that
+ *        many boundary neighbours, ends a chain.
+ * @param rChain `rChain(std::vector<std::int64_t> Verts)`, called once per
+ *        chain in walking order; a loop's `Verts` ends where it starts.
+ */
+template <class TJunction, class TChain>
+void step_boundary_chains(std::size_t NumPoints,
+                          const std::vector<std::pair<std::int64_t, std::int64_t>>& rEdges,
+                          TJunction&& rJunction, TChain&& rChain) {
+    std::vector<std::vector<std::int64_t>> nbr(NumPoints);
+    for (const auto& e : rEdges) {
+        nbr[static_cast<std::size_t>(e.first)].push_back(e.second);
+        nbr[static_cast<std::size_t>(e.second)].push_back(e.first);
+    }
+    for (auto& n : nbr)
+        std::sort(n.begin(), n.end());
+    auto junction = [&](std::int64_t V) {
+        return rJunction(V, nbr[static_cast<std::size_t>(V)].size());
+    };
+    std::unordered_map<std::pair<std::int64_t, std::int64_t>, std::uint8_t, StepEdgeHash> taken;
+    taken.reserve(rEdges.size());
+    for (const auto& e : rEdges)
+        taken.emplace(e, 0);
+    auto take = [&](std::int64_t U, std::int64_t V) {
+        auto it = taken.find(step_edge(U, V));
+        if (it == taken.end() || it->second)
+            return false;
+        it->second = 1;
+        return true;
+    };
+    auto walk = [&](std::int64_t Start, std::int64_t First, bool Loop) {
+        std::vector<std::int64_t> verts{Start, First};
+        std::int64_t prev = Start, cur = First;
+        while (!(Loop ? cur == Start : junction(cur))) {
+            std::int64_t next = -1;
+            for (std::int64_t n : nbr[static_cast<std::size_t>(cur)])
+                if (n != prev && take(cur, n)) {
+                    next = n;
+                    break;
+                }
+            if (next < 0) {
+                // Back to the start of a loop through its last edge.
+                if (Loop && take(cur, Start))
+                    verts.push_back(Start);
+                break;
+            }
+            verts.push_back(next);
+            prev = cur;
+            cur = next;
+        }
+        return verts;
+    };
+    for (std::int64_t v = 0; v < static_cast<std::int64_t>(NumPoints); ++v) {
+        if (nbr[static_cast<std::size_t>(v)].empty() || !junction(v))
+            continue;
+        for (std::int64_t n : nbr[static_cast<std::size_t>(v)])
+            if (take(v, n))
+                rChain(walk(v, n, false));
+    }
+    for (const auto& e : rEdges)
+        if (take(e.first, e.second))
+            rChain(walk(e.first, e.second, true));
+}
+
+/**
+ * @brief The patch networks' shared curves (`StepEdgeCurve`), indexed by the
+ * mesh edges they run along: which curve, and where on it, a chain of mesh
+ * edges follows.
+ */
+class StepCurveIndex {
+public:
+    /// The index of @p pCurves (none when null).
+    explicit StepCurveIndex(const std::vector<StepEdgeCurve>* pCurves) : mpCurves(pCurves) {
+        if (pCurves == nullptr)
+            return;
+        for (std::size_t k = 0; k < pCurves->size(); ++k) {
+            const StepEdgeCurve& ec = (*pCurves)[k];
+            for (std::size_t i = 0; i + 1 < ec.mVerts.size(); ++i)
+                mAt.emplace(step_edge(ec.mVerts[i], ec.mVerts[i + 1]), std::make_pair(k, i));
+        }
+    }
+
+    /// Whether no curve runs along any mesh edge.
+    bool Empty() const { return mAt.empty(); }
+
+    /**
+     * @brief Whether every edge of the chain @p rVs lies on one curve, with the
+     * parameters strictly monotone along the chain and its two ends apart;
+     * then @p rCurve is that curve and `[rT0, rT1]` the chain's piece of it, in
+     * the chain's order.
+     */
+    bool ChainOnCurve(const std::vector<std::int64_t>& rVs, std::size_t& rCurve, double& rT0,
+                      double& rT1) const {
+        bool one = true;
+        std::size_t curve = 0;
+        std::vector<double> ts;
+        for (std::size_t i = 0; i + 1 < rVs.size() && one; ++i) {
+            const auto it = mAt.find(step_edge(rVs[i], rVs[i + 1]));
+            if (it == mAt.end() || (i > 0 && it->second.first != curve)) {
+                one = false;
+                break;
+            }
+            curve = it->second.first;
+            const StepEdgeCurve& ec = (*mpCurves)[curve];
+            const std::size_t at = it->second.second;
+            // This mesh edge's two ends' parameters, in the chain's order.
+            const bool fwd = ec.mVerts[at] == rVs[i];
+            if (i == 0)
+                ts.push_back(ec.mParams[fwd ? at : at + 1]);
+            ts.push_back(ec.mParams[fwd ? at + 1 : at]);
+        }
+        for (std::size_t i = 2; one && i < ts.size(); ++i)
+            one = (ts[i] - ts[i - 1]) * (ts[1] - ts[0]) > 0.0;
+        if (!(one && ts.size() >= 2 && ts.front() != ts.back()))
+            return false;
+        rCurve = curve;
+        rT0 = ts.front();
+        rT1 = ts.back();
+        return true;
+    }
+
+private:
+    const std::vector<StepEdgeCurve>* mpCurves;
+    std::unordered_map<std::pair<std::int64_t, std::int64_t>, std::pair<std::size_t, std::size_t>,
+                       StepEdgeHash>
+        mAt;
+};
+
+/// The point after @p V in facet @p F's ring (CSR rows @p rStart, @p rNodes), or
+/// -1 when @p V is not on it.
+inline std::int64_t step_ring_next(const std::vector<std::int64_t>& rStart,
+                                   const std::vector<std::int64_t>& rNodes, std::size_t F,
+                                   std::int64_t V) {
+    const std::int64_t b = rStart[F], n = rStart[F + 1] - b;
+    for (std::int64_t k = 0; k < n; ++k)
+        if (rNodes[static_cast<std::size_t>(b + k)] == V)
+            return rNodes[static_cast<std::size_t>(b + (k + 1) % n)];
+    return -1;
+}
+
+/**
+ * @brief Around point @p V, after the boundary edge @p X -> @p V of group @p G
+ * (walked that way by a facet of G): the point W of G's next boundary edge
+ * V -> W, found by turning through G's facets around V; -1 when the fan breaks.
+ *
+ * @param rWalker `rWalker(U, V)`: the facet walking the edge U -> V, or -1.
+ * @param rGroupOf `rGroupOf(F)`: facet F's group.
+ * @param nf the facet count, which bounds the turn.
+ */
+template <class TWalker, class TGroupOf>
+std::int64_t step_fan_next(const std::vector<std::int64_t>& rStart,
+                           const std::vector<std::int64_t>& rNodes, std::size_t nf,
+                           TWalker&& rWalker, TGroupOf&& rGroupOf, std::int64_t G, std::int64_t X,
+                           std::int64_t V) {
+    std::int64_t f = rWalker(X, V);
+    for (std::size_t guard = 0; f >= 0 && guard <= nf; ++guard) {
+        const std::int64_t w = step_ring_next(rStart, rNodes, static_cast<std::size_t>(f), V);
+        if (w < 0)
+            return -1;
+        const std::int64_t across = rWalker(w, V);
+        if (across < 0 || rGroupOf(static_cast<std::size_t>(across)) != G)
+            return w;
+        f = across;
+    }
+    return -1;
 }
 
 }  // namespace detail

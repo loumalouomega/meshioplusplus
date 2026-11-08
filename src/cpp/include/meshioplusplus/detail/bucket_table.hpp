@@ -131,56 +131,22 @@ public:
     void ForEachInShell(const GridKey& rCenter, std::int64_t r, F&& fn) const {
         if (mKeys.empty())
             return;
-        const std::int64_t zl = std::max(-r, mLo.z - rCenter.z);
-        const std::int64_t zh = std::min(r, mHi.z - rCenter.z);
-        const std::int64_t yl = std::max(-r, mLo.y - rCenter.y);
-        const std::int64_t yh = std::min(r, mHi.y - rCenter.y);
-        const std::int64_t xl = std::max(-r, mLo.x - rCenter.x);
-        const std::int64_t xh = std::min(r, mHi.x - rCenter.x);
-        if (zl > zh || yl > yh || xl > xh)
-            return;
-        auto visit = [&](std::int64_t dx, std::int64_t dy, std::int64_t dz) {
-            const std::size_t b =
-                FindBucket(GridKey{rCenter.x + dx, rCenter.y + dy, rCenter.z + dz});
+        grid_for_each_in_shell(mLo, mHi, rCenter, r, [&](const GridKey& rKey) {
+            const std::size_t b = FindBucket(rKey);
             if (b != kNone)
                 fn(Bucket(b));
-        };
-        if (r == 0) {
-            visit(0, 0, 0);
-            return;
-        }
-        for (std::int64_t dz = zl; dz <= zh; ++dz) {
-            if (dz == -r || dz == r) {
-                for (std::int64_t dy = yl; dy <= yh; ++dy)
-                    for (std::int64_t dx = xl; dx <= xh; ++dx)
-                        visit(dx, dy, dz);
-            } else {
-                for (std::int64_t dy = yl; dy <= yh; ++dy) {
-                    if (dy == -r || dy == r) {
-                        for (std::int64_t dx = xl; dx <= xh; ++dx)
-                            visit(dx, dy, dz);
-                    } else {
-                        if (xl == -r)
-                            visit(-r, dy, dz);
-                        if (xh == r)
-                            visit(r, dy, dz);
-                    }
-                }
-            }
-        }
+        });
     }
 
     /// Visits every non-empty cell in the inclusive key box `[rLo, rHi]`,
     /// calling `fn(BucketView)` for each, in ascending z -> y -> x order.
     template <class F>
     void ForEachInBox(const GridKey& rLo, const GridKey& rHi, F&& fn) const {
-        for (std::int64_t z = rLo.z; z <= rHi.z; ++z)
-            for (std::int64_t y = rLo.y; y <= rHi.y; ++y)
-                for (std::int64_t x = rLo.x; x <= rHi.x; ++x) {
-                    const std::size_t b = FindBucket(GridKey{x, y, z});
-                    if (b != kNone)
-                        fn(Bucket(b));
-                }
+        grid_for_each_in_box(rLo, rHi, [&](const GridKey& rKey) {
+            const std::size_t b = FindBucket(rKey);
+            if (b != kNone)
+                fn(Bucket(b));
+        });
     }
 
 private:
