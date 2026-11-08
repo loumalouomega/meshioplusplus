@@ -50,7 +50,10 @@ def parse_lcov(lines):
 def relative_to(path, root):
     """``path`` relative to ``root`` with ``/`` separators, or ``None`` outside it."""
     full = os.path.normpath(path if os.path.isabs(path) else os.path.join(root, path))
-    rel = os.path.relpath(full, root)
+    try:
+        rel = os.path.relpath(full, root)
+    except ValueError:  # Windows: another drive, so outside the root
+        return None
     if rel == os.pardir or rel.startswith(os.pardir + os.sep):
         return None
     return rel.replace(os.sep, "/")
