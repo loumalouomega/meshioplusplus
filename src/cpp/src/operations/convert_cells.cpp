@@ -50,6 +50,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/always_inline.hpp"
 #include "../detail/data_plumbing.hpp"
 #include "../detail/simplexify.hpp"
 #include "../detail/typed_view.hpp"
@@ -370,6 +371,39 @@ void ccells_copy_field_data(const Mesh& rIn, Mesh& rOut) {
 
 // --- mode: linearize ---------------------------------------------------------
 
+/// The common end of linearize and elevate, whose output cells are their
+/// input cells one for one: the cell and field data, the identity
+/// `convert:parent_cell` when @p RecordParentIds, @p PointMap and the identity
+/// cell maps. Forced inline so each caller compiles as it did with its own copy
+/// (roadmap 3.4.11).
+MIO_ALWAYS_INLINE ConvertCellsResult ccells_finish_identity(const Mesh& rMesh, Mesh&& rOut,
+                                                            bool RecordParentIds,
+                                                            std::size_t NumBlocks,
+                                                            NDArray PointMap) {
+    ccells_copy_cell_data(rMesh, rOut);
+    ccells_copy_field_data(rMesh, rOut);
+
+    if (RecordParentIds) {
+        std::vector<NDArray> blocks;
+        blocks.reserve(NumBlocks);
+        for (const auto cb : rMesh.CellRange()) {
+            NDArray a = NDArray::Uninit(DType::Int64, {cb.NumCells(), 1});
+            std::int64_t* dst = a.As<std::int64_t>();
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                dst[c] = static_cast<std::int64_t>(c);
+            blocks.push_back(std::move(a));
+        }
+        if (!blocks.empty())
+            rOut.AddCellData("convert:parent_cell", std::move(blocks));
+    }
+
+    ConvertCellsResult res;
+    res.mMesh = std::move(rOut);
+    res.mPointMap = std::move(PointMap);
+    res.mCellMaps = ccells_identity_cell_maps(rMesh);
+    return res;
+}
+
 ConvertCellsResult ccells_linearize(const Mesh& rMesh, bool RecordParentIds) {
     const std::size_t nblocks = rMesh.NumCellBlocks();
     std::vector<CcellsOutBlock> staged;
@@ -429,28 +463,8 @@ ConvertCellsResult ccells_linearize(const Mesh& rMesh, bool RecordParentIds) {
     // are copied verbatim (they are not per-point data).
     detail::compact_point_data_by_mask(rMesh, used, num_used, true, out);
 
-    ccells_copy_cell_data(rMesh, out);
-    ccells_copy_field_data(rMesh, out);
-
-    if (RecordParentIds) {
-        std::vector<NDArray> blocks;
-        blocks.reserve(nblocks);
-        for (const auto cb : rMesh.CellRange()) {
-            NDArray a = NDArray::Uninit(DType::Int64, {cb.NumCells(), 1});
-            std::int64_t* dst = a.As<std::int64_t>();
-            for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                dst[c] = static_cast<std::int64_t>(c);
-            blocks.push_back(std::move(a));
-        }
-        if (!blocks.empty())
-            out.AddCellData("convert:parent_cell", std::move(blocks));
-    }
-
-    ConvertCellsResult res;
-    res.mMesh = std::move(out);
-    res.mPointMap = detail::NDArrayUtils::Int64Vector(remap);
-    res.mCellMaps = ccells_identity_cell_maps(rMesh);
-    return res;
+    return ccells_finish_identity(rMesh, std::move(out), RecordParentIds, nblocks,
+                                  detail::NDArrayUtils::Int64Vector(remap));
 }
 
 // --- mode: simplexify --------------------------------------------------------
@@ -952,28 +966,8 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
                       }));
     }
 
-    ccells_copy_cell_data(rMesh, out);
-    ccells_copy_field_data(rMesh, out);
-
-    if (RecordParentIds) {
-        std::vector<NDArray> blocks;
-        blocks.reserve(nblocks);
-        for (const auto cb : rMesh.CellRange()) {
-            NDArray a = NDArray::Uninit(DType::Int64, {cb.NumCells(), 1});
-            std::int64_t* dst = a.As<std::int64_t>();
-            for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                dst[c] = static_cast<std::int64_t>(c);
-            blocks.push_back(std::move(a));
-        }
-        if (!blocks.empty())
-            out.AddCellData("convert:parent_cell", std::move(blocks));
-    }
-
-    ConvertCellsResult res;
-    res.mMesh = std::move(out);
-    res.mPointMap = ccells_identity_point_map(num_points);
-    res.mCellMaps = ccells_identity_cell_maps(rMesh);
-    return res;
+    return ccells_finish_identity(rMesh, std::move(out), RecordParentIds, nblocks,
+                                  ccells_identity_point_map(num_points));
 }
 
 }  // namespace

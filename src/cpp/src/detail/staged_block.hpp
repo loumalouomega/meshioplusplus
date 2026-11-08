@@ -38,6 +38,8 @@
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
+#include "always_inline.hpp"
+
 namespace meshioplusplus {
 namespace detail {
 
@@ -46,7 +48,7 @@ namespace detail {
 /// connectivity in `mConn` with `mNodesPerCell`. The caller handles
 /// polyhedron blocks itself, since each staging struct holds them its own way.
 template <class TBlock>
-void stage_flat_or_polygon(const Mesh::CellView& rBlock, TBlock& rOut) {
+MIO_ALWAYS_INLINE void stage_flat_or_polygon(const Mesh::CellView& rBlock, TBlock& rOut) {
     if (rBlock.IsRagged()) {
         rOut.mIsRagged = true;
         rOut.mPolygonRows.resize(rBlock.NumCells());
@@ -69,7 +71,7 @@ void stage_flat_or_polygon(const Mesh::CellView& rBlock, TBlock& rOut) {
 /// to @p rOut: `mPolygonRows` as a polygon block when `mIsRagged`, otherwise
 /// `mConn` as an (n, mNodesPerCell) Int64 block. Moves the rows out.
 template <class TBlock>
-void emit_flat_or_polygon(Mesh& rOut, TBlock& rBlock) {
+MIO_ALWAYS_INLINE void emit_flat_or_polygon(Mesh& rOut, TBlock& rBlock) {
     if (rBlock.mIsRagged) {
         rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mPolygonRows));
     } else {
