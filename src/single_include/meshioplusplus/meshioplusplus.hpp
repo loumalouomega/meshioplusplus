@@ -41146,6 +41146,31 @@ void register_occt();
 
 }  // namespace meshioplusplus::providers
 // ===== end src/cpp/providers/occt/occt_provider.hpp =====
+// ===== begin src/cpp/src/detail/always_inline.hpp =====
+/**
+ * @file detail/always_inline.hpp
+ * @brief `MIO_ALWAYS_INLINE`: an inline function the compiler must inline.
+ *
+ * A **core-private** header. A shared helper that replaced a copy can still
+ * change how the compiler inlines the rest of its caller (roadmap 3.4.11: a
+ * share measured 2-4% more instructions on its rows). Forcing the helper
+ * inline puts its body back into each caller before the size-driven inlining
+ * decisions run, so the caller compiles as it did with the copy. Use it only
+ * on a helper that replaced a copy, and keep it only where the
+ * [instruction-count gate](../../../../doc/benchmarks.md#instruction-count-gate)
+ * shows it is needed.
+ */
+
+#ifndef MIO_ALWAYS_INLINE
+#if defined(_MSC_VER)
+#define MIO_ALWAYS_INLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+#define MIO_ALWAYS_INLINE inline __attribute__((always_inline))
+#else
+#define MIO_ALWAYS_INLINE inline
+#endif
+#endif
+// ===== end src/cpp/src/detail/always_inline.hpp =====
 // ===== begin src/cpp/src/detail/linear_octree.hpp =====
 /**
  * @file detail/linear_octree.hpp
@@ -50699,20 +50724,26 @@ void mmg_check_index_range(std::size_t Count, bool Int64, const char* pWhat, con
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <map>
 #include <set>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 // Project includes
+
 
 namespace meshioplusplus {
 namespace detail {
 
 /// The card a line or vertex takes from its `nastran:card` number, or nullptr when the
 /// writers hold no cell type for it.
+/// Throws a `WriteError` "<pWho>: <message>".
+[[noreturn]] void nastran_write_fail(const char* pWho, const std::string& rMessage);
+
 inline const char* nastran_line_card(std::int64_t Code) {
     switch (Code) {
         case 30:
@@ -50799,6 +50830,122 @@ NastranPlies nastran_plies(const Mesh& rMesh, const char* pWho);
 
 /// The names joined with ", ", in the set's order.
 std::string nastran_join(const std::set<std::string>& rNames);
+
+/// The id in "<PTYPE>_<digits>" when the name starts with @p rPtype and "_",
+/// else -1 (a region naming a property, e.g. `PTUBE_7`).
+std::int64_t nastran_ptype_pid(const std::string& rName, const std::string& rPtype);
+
+/// Where @p Name sits in a writer's card table, or `N` when it is not there.
+template <class TCard, std::size_t N>
+std::size_t nastran_card_index(const TCard (&rCards)[N], std::string_view Name) {
+    for (std::size_t i = 0; i < N; ++i)
+        if (Name == rCards[i].mName)
+            return i;
+    return N;
+}
+
+/// The mesh block (and cells) behind one element row, as both writers build it.
+struct NastranWriteBlock {
+    std::size_t mIndex = 0;  // the mesh's block
+    std::size_t mCount = 0;
+    std::size_t mNodes = 0;
+    std::vector<std::int64_t> mConn;  // 0-based, mCount x mNodes
+    std::vector<std::int64_t> mEids;
+    std::vector<std::int64_t> mPids;
+    std::vector<std::size_t> mCards;   // card index per cell
+    std::vector<std::int64_t> mComps;  // two per cell: a spring's or damper's components
+    std::vector<double> mBar;          // the writer's bar width per cell: a CBAR's fields, a
+                                       // CELAS2's K, GE and S, a CDAMP2's B, a CONM1's terms
+};
+
+/// One element row: its id and the block and cell it comes from.
+struct NastranWriteRow {
+    std::int64_t mEid;
+    std::size_t mBlock;  // into the writer's blocks
+    std::size_t mRow;
+};
+
+/// `{(card, id): {member: value}}`.
+using NastranValues = std::map<std::pair<std::string, std::int64_t>, std::map<std::string, double>>;
+
+/// `{(card, id): {member: value}}` from the `nastran:<CARD>_<id>:<MEMBER>` field
+/// data, for the cards and members of @p rCards (each with `mCard` and
+/// `mMembers`, a member with `mName` and `mInt`); keys that name no card or
+/// member there are left alone. A key holding more than one value throws a
+/// `WriteError` prefixed with @p pWho and ": ".
+template <class TCards>
+NastranValues nastran_property_values(const Mesh& rMesh, const TCards& rCards, const char* pWho) {
+    NastranValues out;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        if (name.rfind("nastran:", 0) != 0)
+            continue;
+        const std::size_t colon = name.rfind(':');
+        const std::size_t under = name.rfind('_', colon);
+        if (colon <= 8 || under == std::string::npos || under < 8 || under + 1 >= colon)
+            continue;
+        const std::string card = name.substr(8, under - 8);
+        const std::string member = name.substr(colon + 1);
+        const std::string digits = name.substr(under + 1, colon - under - 1);
+        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 15)
+            continue;
+        for (const auto& c : rCards) {
+            if (card != c.mCard)
+                continue;
+            for (const auto& m : c.mMembers)
+                if (member == m.mName) {
+                    const NDArray& a = rMesh.FieldData(name);
+                    if (a.Size() != 1)
+                        nastran_write_fail(pWho, "'" + name + "' must hold one value");
+                    out[{card, std::stoll(digits)}][member] =
+                        m.mInt ? static_cast<double>(Int64View(a).Data()[0])
+                               : DoubleView(a).Data()[0];
+                }
+        }
+    }
+    return out;
+}
+
+/// `nastran:<CARD>_<id>:<MEMBER>` field data of one card (PBEAM, PBUSH, ...), by id,
+/// each member's values as doubles.
+using NastranArrays = std::map<std::int64_t, std::map<std::string, std::vector<double>>>;
+
+/// An int64 or double array's values as doubles.
+std::vector<double> nastran_as_doubles(const NDArray& rA);
+
+NastranArrays nastran_named_arrays(const Mesh& rMesh, const std::string& rCard);
+
+/// A spring's or damper's components into @p rBlk's `mComps`, two per cell:
+/// `nastran:c1` and `nastran:c2` of mesh block @p B, else 1 at each end; a
+/// vertex's second end is ground, so 0.
+void nastran_read_components(const Mesh& rMesh, std::size_t B, const char* pWho,
+                             NastranWriteBlock& rBlk);
+
+/// Cell data @p pName of mesh block @p B, @p Width values per cell, into columns
+/// @p Lo.. of the rows of @p rBlk's `mBar` (@p BarWidth per cell) whose card is
+/// one of @p Cards: a row takes only its own card's fields.
+void nastran_read_field(const Mesh& rMesh, std::size_t B, const char* pName,
+                        std::initializer_list<std::size_t> Cards, std::size_t Lo, std::size_t Width,
+                        std::size_t BarWidth, const char* pWho, NastranWriteBlock& rBlk);
+
+/// Drops the cells of @p rBlk whose @p rKeep flag is clear (@p Kept remain).
+void nastran_compact_block(const std::vector<bool>& rKeep, std::size_t Kept, std::size_t BarWidth,
+                           NastranWriteBlock& rBlk);
+
+/// Each card's rows (@p NumCards of them), by element id; equal ids keep block order.
+std::vector<std::vector<NastranWriteRow>> nastran_rows_by_card(
+    const std::vector<NastranWriteBlock>& rBlocks, std::size_t NumCards);
+
+/// The ids of the regions named "<rPtype>_<id>" (the PTUBE properties).
+std::set<std::int64_t> nastran_region_pids(const Mesh& rMesh, const std::string& rPtype);
+
+/// Fills @p rBlk from mesh block @p B, which @p rSpec writes: its count and nodes
+/// per cell, the 0-based connectivity checked against @p NumPoints,
+/// `nastran:eid` (or ids from @p rSequential on, which advances past the block
+/// either way) and `nastran:pid` (or the spec's default). Throws a `WriteError`
+/// prefixed with @p pWho and ": ".
+void nastran_fill_block(const Mesh& rMesh, std::size_t B, const NastranTypeSpec& rSpec,
+                        std::size_t NumPoints, std::int64_t& rSequential, const char* pWho,
+                        NastranWriteBlock& rBlk);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -52543,6 +52690,7 @@ SparseSolveReport csr_bicgstab(const SparseCsr& rA, const double* pB, double* pX
 
 // Project includes
 
+
 namespace meshioplusplus {
 namespace detail {
 
@@ -52551,7 +52699,7 @@ namespace detail {
 /// connectivity in `mConn` with `mNodesPerCell`. The caller handles
 /// polyhedron blocks itself, since each staging struct holds them its own way.
 template <class TBlock>
-void stage_flat_or_polygon(const Mesh::CellView& rBlock, TBlock& rOut) {
+MIO_ALWAYS_INLINE void stage_flat_or_polygon(const Mesh::CellView& rBlock, TBlock& rOut) {
     if (rBlock.IsRagged()) {
         rOut.mIsRagged = true;
         rOut.mPolygonRows.resize(rBlock.NumCells());
@@ -52574,7 +52722,7 @@ void stage_flat_or_polygon(const Mesh::CellView& rBlock, TBlock& rOut) {
 /// to @p rOut: `mPolygonRows` as a polygon block when `mIsRagged`, otherwise
 /// `mConn` as an (n, mNodesPerCell) Int64 block. Moves the rows out.
 template <class TBlock>
-void emit_flat_or_polygon(Mesh& rOut, TBlock& rBlock) {
+MIO_ALWAYS_INLINE void emit_flat_or_polygon(Mesh& rOut, TBlock& rBlock) {
     if (rBlock.mIsRagged) {
         rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mPolygonRows));
     } else {
@@ -58182,6 +58330,278 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOp
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/octree_mesh_internal.hpp =====
+// ===== begin src/cpp/src/operations/pipeline_table.hpp =====
+/**
+ * @file operations/pipeline_table.hpp
+ * @brief The pipeline step tables (roadmap §8): every step's keys, in order.
+ *
+ * A **core-private** header, included by pipeline.cpp only. The Python
+ * engine's twin is `_pipeline_table.py`, generated from the same spec.
+ */
+
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+struct PipeOpSpec {
+    const char* mName;
+    std::vector<const char*> mKeys;
+};
+
+/// Every step a version 1 or 2 file has, with its keys.
+inline const std::vector<PipeOpSpec>& pipe_op_table() {
+    // clang-format off
+    static const std::vector<PipeOpSpec> table = {
+        {"Quality", {}},
+        {"Clean", {"Weld", "Atol", "RemoveOrphans", "DropDegenerate", "DropDuplicateCells"}},
+        {"Smooth",
+         {"Method", "Iterations", "Lambda", "Mu", "FixBoundary", "PreserveFeatures", "FeatureAngle",
+          "GuardInversion"}},
+        {"Refine",
+         {"Levels", "Cells", "Region", "Array", "Compare", "Value", "Closure", "RecordLevels",
+          "RecordHierarchy"}},
+        {"Decimate",
+         {"Ratio", "TargetFaces", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
+          "FeatureAngle"}},
+        {"DecimateVolume",
+         {"Ratio", "TargetCells", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
+          "FeatureAngle"}},
+        {"Partition", {"Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"}},
+        {"Slice", {"Point", "Normal", "RecordParentIds"}},
+        {"Section", {"Point", "Normal", "RecordParentIds"}},
+        {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
+        {"Hessian", {"Array", "Method", "Location", "Output"}},
+        {"Curvature",
+         {"Mean", "Gaussian", "DualArea", "IncludeBoundary", "RecordArea", "RecordPrincipal",
+          "Region"}},
+        {"Normals",
+         {"PointNormals", "CellNormals", "Weight", "SplitAngle", "RecordParentIds", "Region"}},
+        {"FeatureEdges",
+         {"FeatureAngle", "Feature", "Boundary", "NonManifold", "Inconsistent", "Region"}},
+        {"Segment",
+         {"FeatureAngle", "NormalTolerance", "CurvatureTolerance", "MinPatchCells", "Region",
+          "Prefix", "Method", "Tolerance"}},
+        {"Select",
+         {"Name", "Kind", "Tag", "Mode", "BoundaryOnly", "Bbox", "Point", "Normal", "Center",
+          "Radius", "Where", "Compare", "Value", "Quality", "QualityCompare", "QualityValue",
+          "Component", "Seed", "FeatureAngle", "NormalTolerance"}},
+        {"FitPrimitives",
+         {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
+        {"FitCad",
+         {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
+          "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets", "Threads",
+          "MergeFaces", "Backend", "RefineSegmentation", "MaxRefineIterations", "RefineEpsilon",
+          "NormalWeight", "AllowMerge", "AllowSplit", "RansacSeed", "RefineTolerance",
+          "RelativeTolerance", "FreeformGeneral", "FreeformTolerance", "FreeformSmoothing",
+          "MaxFreeformPoles", "MaxFreeformIterations", "MaxFreeformSplits", "SewTolerance",
+          "ExtendSurfaces", "SnapJunctions", "FaceDeviation", "FreeformMode",
+          "FreeformParameterization", "ExtraordinaryVertex", "LocalRefine",
+          "FreeformG1ToleranceDeg", "FreeformMaxControlPoints", "LayoutTargetPatchSize",
+          "LayoutMaxValenceDeviation", "ResegmentRounds", "LayoutSnapToFeatures",
+          "ValidateBySurfaceSampling", "ConstrainPrimitives"}},
+        {"RefinePatches",
+         {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
+          "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
+        {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
+        {"RegionAdjacency", {"Regions"}},
+        {"FindInterface",
+         {"RegionA", "RegionB", "Mode", "Master", "GapTolerance", "AngleTolerance",
+          "OverlapTolerance"}},
+        {"SplitInterface", {"Region", "AddCohesive"}},
+        {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
+        {"CheckConformity", {"Tolerance", "Require", "AttachFlags"}},
+        {"CheckTetrahedra", {"ZeroVolumeFactor", "Require"}},
+        {"FindIntersections", {"Other", "Region", "RegionOther", "Require", "AttachFlags"}},
+        {"Thickness",
+         {"Other", "Direction", "MaxDistance", "Min", "Region", "RegionOther", "Require"}},
+        {"Snapshot",
+         {"Path", "Width", "Height", "Supersample", "Cols", "Rows", "Encoding", "ColorDepth",
+          "PngCompress", "View", "Azimuth", "Elevation", "Roll", "Perspective", "Fov", "Zoom",
+          "Shading", "Edges", "FeatureAngle", "Background", "FillColor", "ColorBy", "Component",
+          "Cmap", "VMin", "VMax", "Colorbar", "Axes", "ScaleBar", "Reduce", "Expr", "ClipLow",
+          "ClipHigh", "Symmetric", "Scale", "ScaleThreshold", "Categorical", "ColorRegions",
+          "CategoryEdges", "Isolines", "IsoLevels", "Vectors", "VectorCount", "Warp", "WarpScale",
+          "WarpOutline", "Diagnostic", "QualityMetric", "Cutaway", "CutawayTint", "Streamlines",
+          "StreamSeeds", "StreamLength", "StreamColor", "Theme", "Scanlines", "Bloom", "Fringe",
+          "GridFloor"}},
+        {"Repair",
+         {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
+          "WeldTolerance", "RecordProvenance"}},
+        {"SobolevDeform",
+         {"Array", "LengthScale", "FixedPointsArray", "FixBoundary", "RecordFiltered",
+          "MaxIterations", "Tolerance"}},
+        {"ConvexHull", {"Dimension"}},
+        {"Delaunay2D", {}},
+        {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
+        {"ReconstructSurface",
+         {"Normals", "K", "CellSize", "Resolution", "MaxDistance", "EstimateNormals", "NormalsK",
+          "MaxCells"}},
+        {"LaplacianEigenmodes", {"NumModes", "Tolerance", "MaxIterations"}},
+        {"Untangle", {"FixBoundary", "Rings", "Smooth", "MaxSweeps"}},
+        {"PrepareMetric",
+         {"Arrays", "Output", "TargetVertices", "Norm", "Hmin", "Hmax", "Gradation", "MaxSweeps"}},
+        {"Morph",
+         {"Array", "FixBoundary", "ConstrainedArray", "Stiffening", "Steps", "AllowInverted",
+          "Tolerance", "MaxIterations"}},
+        {"RegisterRigid",
+         {"Target", "Method", "MaxIterations", "Tolerance", "MaxDistance", "RotateData"}},
+        {"ConvertCoordinates",
+         {"System", "Axis", "Origin", "Reference", "Arrays", "Inverse", "RecordCoordinates"}},
+        {"GeodesicDistance",
+         {"Sources", "SourceRegion", "TimeFactor", "Tolerance", "MaxIterations"}},
+        {"Parameterize", {"Padding", "MaxDepth", "MaxStretch"}},
+        {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
+        {"ErrorSize", {"Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"}},
+        {"Adapt",
+         {"Hsiz", "Size", "Metric", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq", "AngleDetection",
+          "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy", "Frozen",
+          "Required"}},
+        {"DiscretizeLevelset",
+         {"LevelSet", "Isovalue", "RemoveSmallComponents", "Materials", "Hmin", "Hmax", "Hausd",
+          "Hgrad", "Hgradreq", "AngleDetection", "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf",
+          "Nreg", "Opnbdy", "Frozen", "Required"}},
+        {"MeshDomain",
+         {"Hsiz", "Size", "Holes", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq", "AngleDetection",
+          "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy", "Frozen",
+          "Required"}},
+        {"Move",
+         {"Displacement", "Moving", "Lagrangian", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq",
+          "AngleDetection", "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy",
+          "Frozen", "Required"}},
+        {"Remesh",
+         {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
+          "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
+        {"RemeshVolume",
+         {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "MaxCells", "MaxTets",
+          "WarpFraction", "Sign", "WatertightCheck"}},
+        {"OptimizeVolume",
+         {"MaxIterations", "Relocate", "Flip", "PreserveBoundary", "MinImprovement", "Objective",
+          "MaxRingSize"}},
+        {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
+        {"Voxelize",
+         {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
+          "AttachOccupancy", "MaxCells", "Sign", "Plane"}},
+        {"Generate",
+         {"Shape", "Dims", "Size", "Origin", "Center", "Radius", "Height", "N", "Nu", "Nv", "Nxy",
+          "Nz", "Subdivisions", "Sides", "Rings", "InnerRadius", "OuterRadius", "Ntheta", "Nr",
+          "Nt", "Angle", "Edge", "CellType", "Split", "Order", "MaxCells", "Types", "Pairs",
+          "Complete", "Start", "End", "Pitch", "Turns", "Seed", "MajorRadius", "MinorRadius",
+          "Width", "NumTwists", "Ncap", "Ratio", "Name"}},
+        {"OctreeMesh",
+         {"Output", "MinSize", "MaxSize", "MaxLevel", "Bounds", "Padding", "PaddingRelative",
+          "CurvatureAngle", "FeatureAngle", "CornerAngle", "FeatureSize", "GapCells", "GapOutside",
+          "SizeArray", "SurfaceRegion", "GradingLayers", "SkinGrading", "SurfaceSize",
+          "WindingThreshold", "WindingBeta", "Conformity", "AlphaLong", "AlphaShort",
+          "PreserveFeatures", "FitIterations", "DihedralFloorGuard", "Fill", "KeepOutside",
+          "AttachDistance", "AttachQuality", "Pillow", "HexGrading", "UntangleIterations",
+          "MaxCells", "MaxTets", "VolumeFix", "ZeroVolumeFactor", "CapFlatness", "CrossingMargin",
+          "CrossingGap"}},
+        {"Octree",
+         {"RootCells", "MinLevel", "MaxLevel", "Bounds", "Padding", "PaddingRelative", "Dimension",
+          "SampleDistance", "Balance", "Fill", "AttachDistance", "EvenOdd", "MaxCells", "Sign",
+          "Transition", "Snap", "SurfaceLevel", "CurvatureThreshold", "FeatureAngle", "SizeArray",
+          "Plane"}},
+        {"ComputeSdf",
+         {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
+          "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
+          "Band"}},
+        {"Transform",
+         {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix", "ScaleUnits",
+          "RotateData"}},
+        {"ConvertCells", {"Mode", "RecordParentIds"}},
+        {"Subdivide", {"RecordParentIds"}},
+        {"Tessellate", {"Levels", "Curved", "Fields", "RecordStencil"}},
+        {"Agglomerate",
+         {"TargetGroupSize", "MergeCoplanarFaces", "CoplanarAngle", "MinSphericity"}},
+        {"TetToPoly", {"FeatureAngle", "PointDataToCellData", "RecordVertexIds"}},
+        {"PolyToTet", {"RecordParentIds"}},
+        {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
+        {"ExtractSurface", {"RecordParentIds"}},
+        {"ExtractSkin", {"Linearize"}},
+        {"Reorder", {"Method"}},
+        {"DataDrop", {"Point", "Cell", "Field", "IgnoreMissing"}},
+        {"DataKeep", {"Point", "Cell", "Field"}},
+        {"DataRename", {"Point", "Cell", "Field"}},
+        {"SetsToData", {"Location", "Name", "Join", "Order"}},
+        {"DataToSets", {"Location", "Key"}},
+        {"DataCalc", {"Expr", "Location", "Overwrite"}},
+        {"DataCondition",
+         {"Mode", "Location", "Names", "Scope", "Lo", "Hi", "NanPolicy", "NanReplacement",
+          "Suffix"}},
+        {"TensorInvariants", {"Location", "Names", "Outputs", "Prefix", "Suffix", "Overwrite"}},
+        {"ToCell", {"Names"}},
+        {"ToPoint", {"Names", "Weight"}},
+        // The model steps (roadmap 6.1.1): they act on the CAD model the Input read carries beside
+        // its mesh (see PipeModel below).
+        {"MeshCadSurface",
+         {"TargetSize", "MaxChordalDeviation", "MinPointsPerEdge", "Tolerance", "RecordFaceIds",
+          "Edges", "MatchUnreferencedTrims", "Strict", "MaxPoints", "MinAngle", "SmoothIterations",
+          "SmoothMethod", "Order", "CurvatureDeviation", "CellsAcrossGaps", "Grading", "PoleRings",
+          "FaceSizes", "EdgeSizes", "Background", "BackgroundArray", "Metric", "VirtualEdges",
+          "ReparamConditionNumber", "ModelTolerances", "VirtualFaces", "LopCorners",
+          "MetricBackground", "MetricArray", "MetricError", "Untangle", "Quads", "QuadPairs"}},
+        {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
+        {"IgaRefine",
+         {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
+        // Back onto the CAD (roadmap 6.10.1): the B-rep at `Model`, or the one a CAD Input carries
+        // when no step has changed the mesh since.
+        {"ProjectToCad", {"Model", "FaceArray", "EdgeArray", "MaxDistance", "TrimSamples"}},
+        // Prismatic layers grown from the surface (roadmap 6.9).
+        {"BoundaryLayer",
+         {"FirstHeight", "NumLayers", "Growth", "Reverse", "CollisionFraction", "SmoothIterations",
+          "MaxShrink", "Collapse", "NormalSmoothIterations", "FrontCheck"}},
+        // Sweeps (roadmap 3.1.2, 3.1.3) and the reflection (3.2.5).
+        {"Extrude", {"Direction", "NumLayers", "Ratio", "Offsets", "RecordLayers", "MaxCells"}},
+        {"Revolve",
+         {"Axis", "AxisPoint", "Angle", "NumLayers", "Tolerance", "RecordLayers", "MaxCells"}},
+        {"Mirror", {"Point", "Normal", "KeepOriginal", "Weld", "Tolerance", "ReflectData"}},
+        // Tetrahedra filling the closed triangle surface (roadmap 6.7).
+        {"Tetrahedralize",
+         {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},
+        {"RemeshQuads",
+         {"TargetFaces", "Backend", "Sharp", "Boundary", "Adaptive", "Dominant", "Seed",
+          "MaxCells"}},
+        // The part level sets select, through CutCells (doc/cut.md).
+        {"CutLevelSet",
+         {"LevelSets", "Planes", "Selection", "IncludeUncut", "Backend", "Degree", "Triangulate",
+          "RecordParentIds"}},
+    };
+    // clang-format on
+    return table;
+}
+
+/// The steps only a version 2 file has.
+inline const std::vector<PipeOpSpec>& pipe_v2_steps() {
+    // clang-format off
+    static const std::vector<PipeOpSpec> table = {
+        {"Merge", {"Inputs", "Weld", "Atol", "SourceTag", "DataPolicy", "DropDuplicateCells"}},
+        {"Interpolate",
+         {"Inputs", "Method", "Arrays", "Extrapolate", "DefaultValue", "OnConflict"}},
+        {"UndoGreen", {"Inputs"}},
+        {"Split", {"By", "Tag"}},
+    };
+    // clang-format on
+    return table;
+}
+
+/// The keys a version 2 file adds to a step.
+using PipeExtraKeys = std::vector<std::pair<std::string, std::vector<std::string>>>;
+
+inline const PipeExtraKeys& pipe_v2_extra_keys() {
+    // clang-format off
+    static const PipeExtraKeys table = {
+        {"Partition", {"RecordIds", "GhostLayers"}},
+    };
+    // clang-format on
+    return table;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/pipeline_table.hpp =====
 // ===== begin src/cpp/src/operations/smooth_odt.hpp =====
 /**
  * @file operations/smooth_odt.hpp
@@ -96940,6 +97360,7 @@ bool nastran_rotate_to_basic(const NastranCoordSystems& rSystems, std::int64_t C
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 #include <string>
 #include <utility>
 
@@ -96972,10 +97393,6 @@ constexpr NastranTypeSpec kNastranWriteTypes[] = {
     {"pyramid", "CPYRAM", 5, 2},   {"pyramid13", "CPYRAM", 13, 2}, {"wedge", "CPENTA", 6, 2},
     {"wedge15", "CPENTA", 15, 2},  {"hexahedron", "CHEXA", 8, 2},  {"hexahedron20", "CHEXA", 20, 2},
 };
-
-[[noreturn]] void nastran_write_fail(const char* pWho, const std::string& rMessage) {
-    throw WriteError(std::string(pWho) + ": " + rMessage);
-}
 
 }  // namespace
 
@@ -97050,6 +97467,177 @@ std::string nastran_join(const std::set<std::string>& rNames) {
     for (const std::string& n : rNames)
         out += (out.empty() ? "" : ", ") + n;
     return out;
+}
+
+void nastran_write_fail(const char* pWho, const std::string& rMessage) {
+    throw WriteError(std::string(pWho) + ": " + rMessage);
+}
+
+std::int64_t nastran_ptype_pid(const std::string& rName, const std::string& rPtype) {
+    if (rName.size() <= rPtype.size() + 1 || rName.compare(0, rPtype.size(), rPtype) != 0 ||
+        rName[rPtype.size()] != '_')
+        return -1;
+    std::int64_t pid = 0;
+    for (std::size_t i = rPtype.size() + 1; i < rName.size(); ++i) {
+        if (rName[i] < '0' || rName[i] > '9' || pid > 100000000000000000)
+            return -1;
+        pid = pid * 10 + (rName[i] - '0');
+    }
+    return pid;
+}
+
+std::vector<double> nastran_as_doubles(const NDArray& rA) {
+    std::vector<double> out(rA.Size());
+    if (rA.Dtype() == DType::Int64) {
+        const Int64View view(rA);
+        for (std::size_t i = 0; i < out.size(); ++i)
+            out[i] = static_cast<double>(view.Data()[i]);
+    } else {
+        const DoubleView view(rA);
+        std::copy(view.Data(), view.Data() + out.size(), out.begin());
+    }
+    return out;
+}
+
+NastranArrays nastran_named_arrays(const Mesh& rMesh, const std::string& rCard) {
+    const std::string kPrefix = "nastran:" + rCard + "_";
+    NastranArrays out;
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        if (name.rfind(kPrefix, 0) != 0)
+            continue;
+        const std::size_t colon = name.find(':', kPrefix.size());
+        if (colon == std::string::npos || colon == kPrefix.size())
+            continue;
+        const std::string digits = name.substr(kPrefix.size(), colon - kPrefix.size());
+        const std::string member = name.substr(colon + 1);
+        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 15)
+            continue;
+        if (member.empty() ||
+            member.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != std::string::npos)
+            continue;
+        out[std::stoll(digits)][member] = nastran_as_doubles(rMesh.FieldData(name));
+    }
+    return out;
+}
+
+std::set<std::int64_t> nastran_region_pids(const Mesh& rMesh, const std::string& rPtype) {
+    std::set<std::int64_t> out;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const std::int64_t pid = nastran_ptype_pid(rMesh.Region(i).mName, rPtype);
+        if (pid >= 0)
+            out.insert(pid);
+    }
+    return out;
+}
+
+void nastran_fill_block(const Mesh& rMesh, std::size_t B, const NastranTypeSpec& rSpec,
+                        std::size_t NumPoints, std::int64_t& rSequential, const char* pWho,
+                        NastranWriteBlock& rBlk) {
+    const auto cb = rMesh.Cells(B);
+    rBlk.mIndex = B;
+    rBlk.mCount = cb.NumCells();
+    rBlk.mNodes = cb.NodesPerCell();
+    if (rBlk.mCount > 0 && rBlk.mNodes != rSpec.mNodes)
+        nastran_write_fail(pWho, "a '" + cb.Type() + "' block needs " +
+                                     std::to_string(rSpec.mNodes) + " nodes per cell");
+    const Int64View conn(cb.Conn());
+    rBlk.mConn.assign(conn.Data(), conn.Data() + rBlk.mCount * rBlk.mNodes);
+    for (const std::int64_t node : rBlk.mConn)
+        if (node < 0 || static_cast<std::size_t>(node) >= NumPoints)
+            nastran_write_fail(
+                pWho, "a '" + cb.Type() + "' cell refers to a point the mesh does not have");
+    rBlk.mEids.resize(rBlk.mCount);
+    rBlk.mPids.resize(rBlk.mCount);
+    if (rMesh.HasCellData("nastran:eid")) {
+        const NDArray& a = rMesh.CellData("nastran:eid", B);
+        if (a.Size() != rBlk.mCount)
+            nastran_write_fail(pWho, "'nastran:eid' must have one value per cell");
+        const Int64View view(a);
+        rBlk.mEids.assign(view.Data(), view.Data() + rBlk.mCount);
+    } else {
+        for (std::size_t i = 0; i < rBlk.mCount; ++i)
+            rBlk.mEids[i] = rSequential + static_cast<std::int64_t>(i);
+    }
+    rSequential += static_cast<std::int64_t>(rBlk.mCount);
+    if (rMesh.HasCellData("nastran:pid")) {
+        const NDArray& a = rMesh.CellData("nastran:pid", B);
+        if (a.Size() != rBlk.mCount)
+            nastran_write_fail(pWho, "'nastran:pid' must have one value per cell");
+        const Int64View view(a);
+        rBlk.mPids.assign(view.Data(), view.Data() + rBlk.mCount);
+    } else {
+        rBlk.mPids.assign(rBlk.mCount, rSpec.mPid);
+    }
+}
+
+void nastran_read_components(const Mesh& rMesh, std::size_t B, const char* pWho,
+                             NastranWriteBlock& rBlk) {
+    std::vector<std::int64_t> c1(rBlk.mCount, 1);
+    std::vector<std::int64_t> c2(rBlk.mCount, 1);
+    const auto read_component = [&](const char* pName, std::vector<std::int64_t>& rValues) {
+        if (!rMesh.HasCellData(pName))
+            return;
+        const NDArray& a = rMesh.CellData(pName, B);
+        if (a.Size() != rBlk.mCount)
+            nastran_write_fail(pWho, std::string("'") + pName + "' must have one value per cell");
+        const Int64View view(a);
+        rValues.assign(view.Data(), view.Data() + rBlk.mCount);
+    };
+    read_component("nastran:c1", c1);
+    read_component("nastran:c2", c2);
+    rBlk.mComps.resize(2 * rBlk.mCount);
+    for (std::size_t i = 0; i < rBlk.mCount; ++i) {
+        rBlk.mComps[2 * i] = c1[i];
+        rBlk.mComps[2 * i + 1] = rBlk.mNodes == 1 ? 0 : c2[i];
+    }
+}
+
+void nastran_read_field(const Mesh& rMesh, std::size_t B, const char* pName,
+                        std::initializer_list<std::size_t> Cards, std::size_t Lo, std::size_t Width,
+                        std::size_t BarWidth, const char* pWho, NastranWriteBlock& rBlk) {
+    if (!rMesh.HasCellData(pName))
+        return;
+    const NDArray& a = rMesh.CellData(pName, B);
+    if (a.Size() != rBlk.mCount * Width)
+        nastran_write_fail(pWho, std::string("'") + pName + "' must have " + std::to_string(Width) +
+                                     " value(s) per cell");
+    const DoubleView view(a);
+    for (std::size_t i = 0; i < rBlk.mCount; ++i)
+        if (std::find(Cards.begin(), Cards.end(), rBlk.mCards[i]) != Cards.end())
+            for (std::size_t k = 0; k < Width; ++k)
+                rBlk.mBar[i * BarWidth + Lo + k] = view.Data()[i * Width + k];
+}
+
+void nastran_compact_block(const std::vector<bool>& rKeep, std::size_t Kept, std::size_t BarWidth,
+                           NastranWriteBlock& rBlk) {
+    const auto compact = [&rKeep](auto& rValues, std::size_t Stride) {
+        std::size_t to = 0;
+        for (std::size_t i = 0; i < rKeep.size(); ++i)
+            if (rKeep[i])
+                for (std::size_t s = 0; s < Stride; ++s)
+                    rValues[to++] = rValues[i * Stride + s];
+        rValues.resize(to);
+    };
+    compact(rBlk.mConn, rBlk.mNodes);
+    compact(rBlk.mEids, 1);
+    compact(rBlk.mPids, 1);
+    compact(rBlk.mCards, 1);
+    compact(rBlk.mComps, 2);
+    compact(rBlk.mBar, BarWidth);
+    rBlk.mCount = Kept;
+}
+
+std::vector<std::vector<NastranWriteRow>> nastran_rows_by_card(
+    const std::vector<NastranWriteBlock>& rBlocks, std::size_t NumCards) {
+    std::vector<std::vector<NastranWriteRow>> rows(NumCards);
+    for (std::size_t bi = 0; bi < rBlocks.size(); ++bi)
+        for (std::size_t r = 0; r < rBlocks[bi].mCount; ++r)
+            rows[rBlocks[bi].mCards[r]].push_back({rBlocks[bi].mEids[r], bi, r});
+    for (auto& card_rows : rows)
+        std::stable_sort(
+            card_rows.begin(), card_rows.end(),
+            [](const NastranWriteRow& rA, const NastranWriteRow& rB) { return rA.mEid < rB.mEid; });
+    return rows;
 }
 
 }  // namespace detail
@@ -174297,81 +174885,17 @@ constexpr Nh5wCard kNh5wCards[] = {
 };
 constexpr std::size_t kNh5wNumCards = sizeof(kNh5wCards) / sizeof(kNh5wCards[0]);
 
-std::size_t nh5w_card_index(std::string_view Name) {
-    for (std::size_t i = 0; i < kNh5wNumCards; ++i)
-        if (Name == kNh5wCards[i].mName)
-            return i;
-    return kNh5wNumCards;
-}
-
 /// The columns of a row's card fields: a CBAR's X1..X3, G0, PA, PB and W1A..W3B (12), a CELAS2's
 /// K, GE and S, a CDAMP2's B (the card's first columns).
 constexpr std::size_t kNh5wBarWidth = 12;
 
-struct Nh5wBlock {
-    std::size_t mIndex = 0;
-    std::size_t mCount = 0;
-    std::size_t mNodes = 0;
-    std::vector<std::int64_t> mConn;  // 0-based, mCount x mNodes
-    std::vector<std::int64_t> mEids;
-    std::vector<std::int64_t> mPids;
-    std::vector<std::size_t> mCards;
-    std::vector<std::int64_t> mComps;  // two per cell: a spring's or damper's components
-    std::vector<double> mBar;          // kNh5wBarWidth per cell
-};
+using Nh5wBlock = detail::NastranWriteBlock;
+using Nh5wRow = detail::NastranWriteRow;
 
-struct Nh5wRow {
-    std::int64_t mEid;
-    std::size_t mBlock;
-    std::size_t mRow;
-};
+using Nh5wValues = detail::NastranValues;
 
-std::int64_t nh5w_ptube_pid(const std::string& rName) {
-    static const std::string prefix = "PTUBE_";
-    if (rName.size() <= prefix.size() || rName.compare(0, prefix.size(), prefix) != 0)
-        return -1;
-    std::int64_t pid = 0;
-    for (std::size_t i = prefix.size(); i < rName.size(); ++i) {
-        if (rName[i] < '0' || rName[i] > '9' || pid > 100000000000000000)
-            return -1;
-        pid = pid * 10 + (rName[i] - '0');
-    }
-    return pid;
-}
-
-using Nh5wValues = std::map<std::pair<std::string, std::int64_t>, std::map<std::string, double>>;
-
-/// `{(card, id): {member: value}}` from the `nastran:<CARD>_<id>:<MEMBER>` field data; keys
-/// that name no card or member here are left alone.
 Nh5wValues nh5w_property_values(const Mesh& rMesh) {
-    Nh5wValues out;
-    for (const std::string& name : rMesh.FieldDataNames()) {
-        if (name.rfind("nastran:", 0) != 0)
-            continue;
-        const std::size_t colon = name.rfind(':');
-        const std::size_t under = name.rfind('_', colon);
-        if (colon <= 8 || under == std::string::npos || under < 8 || under + 1 >= colon)
-            continue;
-        const std::string card = name.substr(8, under - 8);
-        const std::string member = name.substr(colon + 1);
-        const std::string digits = name.substr(under + 1, colon - under - 1);
-        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 15)
-            continue;
-        for (const Nh5ValueCard& c : nh5_value_cards()) {
-            if (card != c.mCard)
-                continue;
-            for (const Nh5Member& m : c.mMembers)
-                if (member == m.mName) {
-                    const NDArray& a = rMesh.FieldData(name);
-                    if (a.Size() != 1)
-                        nh5w_fail("'" + name + "' must hold one value");
-                    out[{card, std::stoll(digits)}][member] =
-                        m.mInt ? static_cast<double>(detail::Int64View(a).Data()[0])
-                               : detail::DoubleView(a).Data()[0];
-                }
-        }
-    }
-    return out;
+    return detail::nastran_property_values(rMesh, nh5_value_cards(), "Nastran HDF5");
 }
 
 /// The PCOMP scalars the field data gives (`Z0`, `NSM`, `SB`, `FT`, `TREF`, `GE`), by id.
@@ -174402,39 +174926,7 @@ Nh5wValues nh5w_pcomp_values(const Mesh& rMesh) {
     return out;
 }
 
-using Nh5wArrays = std::map<std::int64_t, std::map<std::string, std::vector<double>>>;
-
-/// `nastran:PBEAM_<id>:<MEMBER>` field data by id, each member flattened.
-Nh5wArrays nh5w_beam_arrays(const Mesh& rMesh) {
-    const std::string prefix = "nastran:PBEAM_";
-    Nh5wArrays out;
-    for (const std::string& name : rMesh.FieldDataNames()) {
-        if (name.rfind(prefix, 0) != 0)
-            continue;
-        const std::size_t colon = name.find(':', prefix.size());
-        if (colon == std::string::npos || colon == prefix.size())
-            continue;
-        const std::string digits = name.substr(prefix.size(), colon - prefix.size());
-        const std::string member = name.substr(colon + 1);
-        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 15)
-            continue;
-        if (member.empty() ||
-            member.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != std::string::npos)
-            continue;
-        const NDArray& a = rMesh.FieldData(name);
-        std::vector<double> values(a.Size());
-        if (a.Dtype() == DType::Int64) {
-            const detail::Int64View view(a);
-            for (std::size_t i = 0; i < values.size(); ++i)
-                values[i] = static_cast<double>(view.Data()[i]);
-        } else {
-            const detail::DoubleView view(a);
-            std::copy(view.Data(), view.Data() + values.size(), values.begin());
-        }
-        out[std::stoll(digits)][member] = std::move(values);
-    }
-    return out;
-}
+using Nh5wArrays = detail::NastranArrays;
 
 /// The mesh as the file holds it: GRIDs, element cards and properties.
 class Nh5wModel {
@@ -174445,7 +174937,7 @@ public:
         for (auto& [key, members] : nh5w_pcomp_values(rMesh))
             mValues[key].insert(members.begin(), members.end());
         mPlies = detail::nastran_plies(rMesh, "Nastran HDF5");
-        mBeams = nh5w_beam_arrays(rMesh);
+        mBeams = detail::nastran_named_arrays(rMesh, "PBEAM");
         // MAT5, MAT8 and MAT9 values have no table here: their ids are MAT1s.
         for (const std::string& name : rMesh.FieldDataNames())
             for (const char* card : {"MAT5", "MAT8", "MAT9"}) {
@@ -174471,14 +174963,7 @@ public:
                 for (std::size_t k = 0; k < 3 && k < dim; ++k)
                     mPoints[3 * i + k] = view.Data()[i * dim + k];
         }
-        std::set<std::int64_t> ptube;
-        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
-            const std::int64_t pid = nh5w_ptube_pid(rMesh.Region(i).mName);
-            if (pid >= 0)
-                ptube.insert(pid);
-        }
-        const bool have_eid = rMesh.HasCellData("nastran:eid");
-        const bool have_pid = rMesh.HasCellData("nastran:pid");
+        const std::set<std::int64_t> ptube = detail::nastran_region_pids(rMesh, "PTUBE");
         const bool have_card = rMesh.HasCellData("nastran:card");
         std::int64_t sequential = 1;
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
@@ -174490,40 +174975,7 @@ public:
                 continue;
             }
             Nh5wBlock blk;
-            blk.mIndex = b;
-            blk.mCount = cb.NumCells();
-            blk.mNodes = cb.NodesPerCell();
-            if (blk.mCount > 0 && blk.mNodes != spec->mNodes)
-                nh5w_fail("a '" + cb.Type() + "' block needs " + std::to_string(spec->mNodes) +
-                          " nodes per cell");
-            const detail::Int64View conn(cb.Conn());
-            blk.mConn.assign(conn.Data(), conn.Data() + blk.mCount * blk.mNodes);
-            for (const std::int64_t node : blk.mConn)
-                if (node < 0 || static_cast<std::size_t>(node) >= mNpoints)
-                    nh5w_fail("a '" + cb.Type() +
-                              "' cell refers to a point the mesh does not have");
-            blk.mEids.resize(blk.mCount);
-            blk.mPids.resize(blk.mCount);
-            if (have_eid) {
-                const NDArray& a = rMesh.CellData("nastran:eid", b);
-                if (a.Size() != blk.mCount)
-                    nh5w_fail("'nastran:eid' must have one value per cell");
-                const detail::Int64View view(a);
-                blk.mEids.assign(view.Data(), view.Data() + blk.mCount);
-            } else {
-                for (std::size_t i = 0; i < blk.mCount; ++i)
-                    blk.mEids[i] = sequential + static_cast<std::int64_t>(i);
-            }
-            sequential += static_cast<std::int64_t>(blk.mCount);
-            if (have_pid) {
-                const NDArray& a = rMesh.CellData("nastran:pid", b);
-                if (a.Size() != blk.mCount)
-                    nh5w_fail("'nastran:pid' must have one value per cell");
-                const detail::Int64View view(a);
-                blk.mPids.assign(view.Data(), view.Data() + blk.mCount);
-            } else {
-                blk.mPids.assign(blk.mCount, spec->mPid);
-            }
+            detail::nastran_fill_block(rMesh, b, *spec, mNpoints, sequential, "Nastran HDF5", blk);
             std::vector<std::int64_t> codes;
             if (have_card) {
                 const NDArray& a = rMesh.CellData("nastran:card", b);
@@ -174545,33 +174997,34 @@ public:
                         mUnwritten.insert(detail::nastran_card_name(codes[i]));
                     } else if (!detail::nastran_block_holds(cb.Type(), name)) {
                         nh5w_fail("a '" + cb.Type() + "' block cannot hold " + name + " cards");
-                    } else if (nh5w_card_index(name) == kNh5wNumCards) {
+                    } else if (detail::nastran_card_index(kNh5wCards, name) == kNh5wNumCards) {
                         keep[i] = false;  // a card with no table here
                         mUnwritten.insert(name);
                     } else {
-                        blk.mCards[i] = nh5w_card_index(name);
+                        blk.mCards[i] = detail::nastran_card_index(kNh5wCards, name);
                     }
                 } else if (have_card && codes[i] == 31) {
                     // A quad is a CSHEAR; no other cell type holds one.
                     if (cb.Type() == "quad") {
-                        blk.mCards[i] = nh5w_card_index("CSHEAR");
+                        blk.mCards[i] = detail::nastran_card_index(kNh5wCards, "CSHEAR");
                     } else {
                         keep[i] = false;
                         mUnwritten.insert("CSHEAR");
                     }
                 } else if (spec->mCard != nullptr) {
-                    blk.mCards[i] = nh5w_card_index(spec->mCard);
+                    blk.mCards[i] = detail::nastran_card_index(kNh5wCards, spec->mCard);
                 } else {
                     const std::int64_t pid = blk.mPids[i];
-                    blk.mCards[i] = nh5w_card_index(pid <= 0                ? "CONROD"
-                                                    : ptube.count(pid) != 0 ? "CTUBE"
-                                                                            : "CROD");
+                    blk.mCards[i] =
+                        detail::nastran_card_index(kNh5wCards, pid <= 0                ? "CONROD"
+                                                               : ptube.count(pid) != 0 ? "CTUBE"
+                                                                                       : "CROD");
                 }
             }
-            const std::size_t cbar = nh5w_card_index("CBAR");
-            const std::size_t cbeam = nh5w_card_index("CBEAM");
-            const std::size_t celas2 = nh5w_card_index("CELAS2");
-            const std::size_t cdamp2 = nh5w_card_index("CDAMP2");
+            const std::size_t cbar = detail::nastran_card_index(kNh5wCards, "CBAR");
+            const std::size_t cbeam = detail::nastran_card_index(kNh5wCards, "CBEAM");
+            const std::size_t celas2 = detail::nastran_card_index(kNh5wCards, "CELAS2");
+            const std::size_t cdamp2 = detail::nastran_card_index(kNh5wCards, "CDAMP2");
             for (std::size_t i = 0; i < blk.mCount; ++i)
                 if (keep[i] && blk.mCards[i] == cbar && !rMesh.HasCellData("nastran:x") &&
                     !rMesh.HasCellData("nastran:g0"))
@@ -174591,36 +175044,14 @@ public:
                 kept += k ? 1 : 0;
             if (kept == 0)
                 continue;
-            // A spring's or damper's components: `nastran:c1` and `nastran:c2`, else 1 at each
-            // end. A vertex's second end is ground, so 0.
-            std::vector<std::int64_t> c1(blk.mCount, 1);
-            std::vector<std::int64_t> c2(blk.mCount, 1);
-            const auto read_component = [&](const char* pName, std::vector<std::int64_t>& rValues) {
-                if (!rMesh.HasCellData(pName))
-                    return;
-                const NDArray& a = rMesh.CellData(pName, b);
-                if (a.Size() != blk.mCount)
-                    nh5w_fail(std::string("'") + pName + "' must have one value per cell");
-                const detail::Int64View view(a);
-                rValues.assign(view.Data(), view.Data() + blk.mCount);
-            };
-            read_component("nastran:c1", c1);
-            read_component("nastran:c2", c2);
+            // A spring's or damper's components (mComps).
+            detail::nastran_read_components(rMesh, b, "Nastran HDF5", blk);
             // The card fields of each row, from the cell data of its own card only.
             blk.mBar.assign(blk.mCount * kNh5wBarWidth, 0.0);
             const auto read_field = [&](const char* pName, std::initializer_list<std::size_t> Cards,
                                         std::size_t Lo, std::size_t Width) {
-                if (!rMesh.HasCellData(pName))
-                    return;
-                const NDArray& a = rMesh.CellData(pName, b);
-                if (a.Size() != blk.mCount * Width)
-                    nh5w_fail(std::string("'") + pName + "' must have " + std::to_string(Width) +
-                              " value(s) per cell");
-                const detail::DoubleView view(a);
-                for (std::size_t i = 0; i < blk.mCount; ++i)
-                    if (std::find(Cards.begin(), Cards.end(), blk.mCards[i]) != Cards.end())
-                        for (std::size_t k = 0; k < Width; ++k)
-                            blk.mBar[i * kNh5wBarWidth + Lo + k] = view.Data()[i * Width + k];
+                detail::nastran_read_field(rMesh, b, pName, Cards, Lo, Width, kNh5wBarWidth,
+                                           "Nastran HDF5", blk);
             };
             read_field("nastran:x", {cbar, cbeam}, 0, 3);
             read_field("nastran:g0", {cbar, cbeam}, 3, 1);
@@ -174630,28 +175061,8 @@ public:
             read_field("nastran:ge", {celas2}, 1, 1);
             read_field("nastran:s", {celas2}, 2, 1);
             read_field("nastran:b", {cdamp2}, 0, 1);
-            blk.mComps.resize(2 * blk.mCount);
-            for (std::size_t i = 0; i < blk.mCount; ++i) {
-                blk.mComps[2 * i] = c1[i];
-                blk.mComps[2 * i + 1] = blk.mNodes == 1 ? 0 : c2[i];
-            }
-            if (kept < blk.mCount) {
-                const auto compact = [&keep](auto& rValues, std::size_t Stride) {
-                    std::size_t to = 0;
-                    for (std::size_t i = 0; i < keep.size(); ++i)
-                        if (keep[i])
-                            for (std::size_t s = 0; s < Stride; ++s)
-                                rValues[to++] = rValues[i * Stride + s];
-                    rValues.resize(to);
-                };
-                compact(blk.mConn, blk.mNodes);
-                compact(blk.mEids, 1);
-                compact(blk.mPids, 1);
-                compact(blk.mCards, 1);
-                compact(blk.mComps, 2);
-                compact(blk.mBar, kNh5wBarWidth);
-                blk.mCount = kept;
-            }
+            if (kept < blk.mCount)
+                detail::nastran_compact_block(keep, kept, kNh5wBarWidth, blk);
             mBlocks.push_back(std::move(blk));
         }
         for (const Nh5wBlock& blk : mBlocks)
@@ -174668,14 +175079,7 @@ public:
             if (std::adjacent_find(keyed.begin(), keyed.end()) != keyed.end())
                 nh5w_fail("element ids are not unique");
         }
-        mRows.resize(kNh5wNumCards);
-        for (std::size_t bi = 0; bi < mBlocks.size(); ++bi)
-            for (std::size_t r = 0; r < mBlocks[bi].mCount; ++r)
-                mRows[mBlocks[bi].mCards[r]].push_back({mBlocks[bi].mEids[r], bi, r});
-        for (auto& rows : mRows)
-            std::stable_sort(rows.begin(), rows.end(), [](const Nh5wRow& rA, const Nh5wRow& rB) {
-                return rA.mEid < rB.mEid;
-            });
+        mRows = detail::nastran_rows_by_card(mBlocks, kNh5wNumCards);
         for (const Nh5wBlock& blk : mBlocks)
             for (std::size_t r = 0; r < blk.mCount; ++r) {
                 const Nh5wProp prop = kNh5wCards[blk.mCards[r]].mProp;
@@ -179420,121 +179824,20 @@ constexpr Op2wCard kOp2wCards[] = {
 };
 constexpr std::size_t kOp2wNumCards = sizeof(kOp2wCards) / sizeof(kOp2wCards[0]);
 
-std::size_t op2w_card_index(std::string_view Name) {
-    for (std::size_t i = 0; i < kOp2wNumCards; ++i)
-        if (Name == kOp2wCards[i].mName)
-            return i;
-    return kOp2wNumCards;
-}
-
 /// The columns of a row's card fields: a CONM1's 21 mass terms are the widest.
 constexpr std::size_t kOp2wBarWidth = 21;
 
-/// The mesh block (and cells) behind one element row.
-struct Op2wBlock {
-    std::size_t mIndex = 0;  // the mesh's block
-    std::size_t mCount = 0;
-    std::size_t mNodes = 0;
-    std::vector<std::int64_t> mConn;  // 0-based, mCount x mNodes
-    std::vector<std::int64_t> mEids;
-    std::vector<std::int64_t> mPids;
-    std::vector<std::size_t> mCards;   // card index per cell
-    std::vector<std::int64_t> mComps;  // two per cell: a spring's or damper's components
-    std::vector<double> mBar;          // twelve per cell: a CBAR's fields, a CELAS2's K, GE
-                                       // and S, or a CDAMP2's B (the card's first columns)
-};
+using Op2wBlock = detail::NastranWriteBlock;
+using Op2wRow = detail::NastranWriteRow;
 
-struct Op2wRow {
-    std::int64_t mEid;
-    std::size_t mBlock;  // into Op2wModel::mBlocks
-    std::size_t mRow;
-};
+using Op2wValues = detail::NastranValues;
 
-/// The digits of "<PTYPE>_<digits>" when the prefix is @p rPtype, else -1.
-std::int64_t op2w_ptype_pid(const std::string& rName, const std::string& rPtype) {
-    if (rName.size() <= rPtype.size() + 1 || rName.compare(0, rPtype.size(), rPtype) != 0 ||
-        rName[rPtype.size()] != '_')
-        return -1;
-    std::int64_t pid = 0;
-    for (std::size_t i = rPtype.size() + 1; i < rName.size(); ++i) {
-        if (rName[i] < '0' || rName[i] > '9' || pid > 100000000000000000)
-            return -1;
-        pid = pid * 10 + (rName[i] - '0');
-    }
-    return pid;
-}
-
-using Op2wValues = std::map<std::pair<std::string, std::int64_t>, std::map<std::string, double>>;
-
-/// `{(card, id): {member: value}}` from the `nastran:<CARD>_<id>:<MEMBER>` field data; keys
-/// that name no card or member here are left alone.
 Op2wValues op2w_property_values(const Mesh& rMesh) {
-    Op2wValues out;
-    for (const std::string& name : rMesh.FieldDataNames()) {
-        if (name.rfind("nastran:", 0) != 0)
-            continue;
-        const std::size_t colon = name.rfind(':');
-        const std::size_t under = name.rfind('_', colon);
-        if (colon <= 8 || under == std::string::npos || under < 8 || under + 1 >= colon)
-            continue;
-        const std::string card = name.substr(8, under - 8);
-        const std::string member = name.substr(colon + 1);
-        const std::string digits = name.substr(under + 1, colon - under - 1);
-        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 15)
-            continue;
-        for (const Op2wValueCard& c : op2w_value_cards()) {
-            if (card != c.mCard)
-                continue;
-            for (const Op2wValueMember& m : c.mMembers)
-                if (member == m.mName) {
-                    const NDArray& a = rMesh.FieldData(name);
-                    if (a.Size() != 1)
-                        op2w_fail("'" + name + "' must hold one value");
-                    out[{card, std::stoll(digits)}][member] =
-                        m.mInt ? static_cast<double>(detail::Int64View(a).Data()[0])
-                               : detail::DoubleView(a).Data()[0];
-                }
-        }
-    }
-    return out;
+    return detail::nastran_property_values(rMesh, op2w_value_cards(), kOp2Who.c_str());
 }
 
 /// `nastran:<CARD>_<id>:<MEMBER>` field data of the PBEAM or PBUSH records, as values per member.
-using Op2wArrays = std::map<std::int64_t, std::map<std::string, std::vector<double>>>;
-
-std::vector<double> op2w_as_doubles(const NDArray& rA) {
-    std::vector<double> out(rA.Size());
-    if (rA.Dtype() == DType::Int64) {
-        const detail::Int64View view(rA);
-        for (std::size_t i = 0; i < out.size(); ++i)
-            out[i] = static_cast<double>(view.Data()[i]);
-    } else {
-        const detail::DoubleView view(rA);
-        std::copy(view.Data(), view.Data() + out.size(), out.begin());
-    }
-    return out;
-}
-
-Op2wArrays op2w_named_arrays(const Mesh& rMesh, const std::string& rCard) {
-    const std::string kPrefix = "nastran:" + rCard + "_";
-    Op2wArrays out;
-    for (const std::string& name : rMesh.FieldDataNames()) {
-        if (name.rfind(kPrefix, 0) != 0)
-            continue;
-        const std::size_t colon = name.find(':', kPrefix.size());
-        if (colon == std::string::npos || colon == kPrefix.size())
-            continue;
-        const std::string digits = name.substr(kPrefix.size(), colon - kPrefix.size());
-        const std::string member = name.substr(colon + 1);
-        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 15)
-            continue;
-        if (member.empty() ||
-            member.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != std::string::npos)
-            continue;
-        out[std::stoll(digits)][member] = op2w_as_doubles(rMesh.FieldData(name));
-    }
-    return out;
-}
+using Op2wArrays = detail::NastranArrays;
 
 /// A PBEAM's scalar (MID, NSEG or CCF) from the beams' field data, or @p Default.
 double op2w_array_scalar(const Op2wArrays& rArrays, std::int64_t Pid, const char* pMember,
@@ -179962,11 +180265,11 @@ public:
         mSignature = detail::nastran_signature(rMesh);
         mValues = op2w_property_values(rMesh);
         mPlies = detail::nastran_plies(rMesh, kOp2Who.c_str());
-        mArrays = op2w_named_arrays(rMesh, "PBEAM");
-        mBushes = op2w_named_arrays(rMesh, "PBUSH");
-        mPbarl = op2w_named_arrays(rMesh, "PBARL");
-        mPbeaml = op2w_named_arrays(rMesh, "PBEAML");
-        mPcompg = op2w_named_arrays(rMesh, "PCOMPG");
+        mArrays = detail::nastran_named_arrays(rMesh, "PBEAM");
+        mBushes = detail::nastran_named_arrays(rMesh, "PBUSH");
+        mPbarl = detail::nastran_named_arrays(rMesh, "PBARL");
+        mPbeaml = detail::nastran_named_arrays(rMesh, "PBEAML");
+        mPcompg = detail::nastran_named_arrays(rMesh, "PCOMPG");
         mNpoints = rMesh.NumPoints();
         mNodeIds = detail::nastran_node_ids(rMesh, mNpoints, kOp2Who.c_str());
         {
@@ -179981,14 +180284,7 @@ public:
         op2w_local_points(rMesh, mNpoints, mPoints, mCp, mCd, mCords, mLocal);
         for (std::size_t k = 0; k < mCords.size(); ++k)
             mCordAt[mCords[k].mCid] = k;
-        std::set<std::int64_t> ptube;
-        for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
-            const std::int64_t pid = op2w_ptype_pid(rMesh.Region(i).mName, "PTUBE");
-            if (pid >= 0)
-                ptube.insert(pid);
-        }
-        const bool have_eid = rMesh.HasCellData("nastran:eid");
-        const bool have_pid = rMesh.HasCellData("nastran:pid");
+        const std::set<std::int64_t> ptube = detail::nastran_region_pids(rMesh, "PTUBE");
         const bool have_card = rMesh.HasCellData("nastran:card");
         std::int64_t sequential = 1;
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
@@ -180000,40 +180296,7 @@ public:
                 continue;
             }
             Op2wBlock blk;
-            blk.mIndex = b;
-            blk.mCount = cb.NumCells();
-            blk.mNodes = cb.NodesPerCell();
-            if (blk.mCount > 0 && blk.mNodes != spec->mNodes)
-                op2w_fail("a '" + cb.Type() + "' block needs " + std::to_string(spec->mNodes) +
-                          " nodes per cell");
-            const detail::Int64View conn(cb.Conn());
-            blk.mConn.assign(conn.Data(), conn.Data() + blk.mCount * blk.mNodes);
-            for (const std::int64_t node : blk.mConn)
-                if (node < 0 || static_cast<std::size_t>(node) >= mNpoints)
-                    op2w_fail("a '" + cb.Type() +
-                              "' cell refers to a point the mesh does not have");
-            blk.mEids.resize(blk.mCount);
-            blk.mPids.resize(blk.mCount);
-            if (have_eid) {
-                const NDArray& a = rMesh.CellData("nastran:eid", b);
-                if (a.Size() != blk.mCount)
-                    op2w_fail("'nastran:eid' must have one value per cell");
-                const detail::Int64View view(a);
-                blk.mEids.assign(view.Data(), view.Data() + blk.mCount);
-            } else {
-                for (std::size_t i = 0; i < blk.mCount; ++i)
-                    blk.mEids[i] = sequential + static_cast<std::int64_t>(i);
-            }
-            sequential += static_cast<std::int64_t>(blk.mCount);
-            if (have_pid) {
-                const NDArray& a = rMesh.CellData("nastran:pid", b);
-                if (a.Size() != blk.mCount)
-                    op2w_fail("'nastran:pid' must have one value per cell");
-                const detail::Int64View view(a);
-                blk.mPids.assign(view.Data(), view.Data() + blk.mCount);
-            } else {
-                blk.mPids.assign(blk.mCount, spec->mPid);
-            }
+            detail::nastran_fill_block(rMesh, b, *spec, mNpoints, sequential, kOp2Who.c_str(), blk);
             blk.mCards.resize(blk.mCount);
             // A line or vertex takes the card its `nastran:card` number names; a card the
             // writer does not write yet leaves its elements out.
@@ -180056,49 +180319,50 @@ public:
                     } else if (!detail::nastran_block_holds(cb.Type(), name)) {
                         op2w_fail("a '" + cb.Type() + "' block cannot hold " + name + " cards");
                     } else {
-                        blk.mCards[i] = op2w_card_index(name);
+                        blk.mCards[i] = detail::nastran_card_index(kOp2wCards, name);
                     }
                 } else if (have_card && codes[i] == 31) {
                     // A quad is a CSHEAR; no other cell type holds one.
                     if (cb.Type() == "quad") {
-                        blk.mCards[i] = op2w_card_index("CSHEAR");
+                        blk.mCards[i] = detail::nastran_card_index(kOp2wCards, "CSHEAR");
                     } else {
                         keep[i] = false;
                         mUnwritten.insert("CSHEAR");
                     }
                 } else if (spec->mCard != nullptr) {
-                    blk.mCards[i] = op2w_card_index(spec->mCard);
+                    blk.mCards[i] = detail::nastran_card_index(kOp2wCards, spec->mCard);
                 } else {
                     const std::int64_t pid = blk.mPids[i];
-                    blk.mCards[i] = op2w_card_index(pid <= 0                ? "CONROD"
-                                                    : ptube.count(pid) != 0 ? "CTUBE"
-                                                                            : "CROD");
+                    blk.mCards[i] =
+                        detail::nastran_card_index(kOp2wCards, pid <= 0                ? "CONROD"
+                                                               : ptube.count(pid) != 0 ? "CTUBE"
+                                                                                       : "CROD");
                 }
             }
-            const std::size_t cbar = op2w_card_index("CBAR");
+            const std::size_t cbar = detail::nastran_card_index(kOp2wCards, "CBAR");
             for (std::size_t i = 0; i < blk.mCount; ++i)
                 if (keep[i] && blk.mCards[i] == cbar && !rMesh.HasCellData("nastran:x") &&
                     !rMesh.HasCellData("nastran:g0"))
                     op2w_fail("a CBAR needs its orientation: nastran:x, or nastran:g0 for a G0");
-            const std::size_t cbeam = op2w_card_index("CBEAM");
+            const std::size_t cbeam = detail::nastran_card_index(kOp2wCards, "CBEAM");
             for (std::size_t i = 0; i < blk.mCount; ++i)
                 if (keep[i] && blk.mCards[i] == cbeam && !rMesh.HasCellData("nastran:x") &&
                     !rMesh.HasCellData("nastran:g0"))
                     op2w_fail("a CBEAM needs its orientation: nastran:x, or nastran:g0 for a G0");
-            const std::size_t cbush = op2w_card_index("CBUSH");
+            const std::size_t cbush = detail::nastran_card_index(kOp2wCards, "CBUSH");
             for (std::size_t i = 0; i < blk.mCount; ++i)
                 if (keep[i] && blk.mCards[i] == cbush && !rMesh.HasCellData("nastran:x") &&
                     !rMesh.HasCellData("nastran:g0"))
                     op2w_fail("a CBUSH needs its orientation: nastran:x, or nastran:g0 for a G0");
-            const std::size_t cgap = op2w_card_index("CGAP");
+            const std::size_t cgap = detail::nastran_card_index(kOp2wCards, "CGAP");
             for (std::size_t i = 0; i < blk.mCount; ++i)
                 if (keep[i] && blk.mCards[i] == cgap && !rMesh.HasCellData("nastran:x") &&
                     !rMesh.HasCellData("nastran:g0"))
                     op2w_fail("a CGAP needs its orientation: nastran:x, or nastran:g0 for a G0");
-            const std::size_t celas2 = op2w_card_index("CELAS2");
-            const std::size_t cdamp2 = op2w_card_index("CDAMP2");
-            const std::size_t cmass2 = op2w_card_index("CMASS2");
-            const std::size_t conm1 = op2w_card_index("CONM1");
+            const std::size_t celas2 = detail::nastran_card_index(kOp2wCards, "CELAS2");
+            const std::size_t cdamp2 = detail::nastran_card_index(kOp2wCards, "CDAMP2");
+            const std::size_t cmass2 = detail::nastran_card_index(kOp2wCards, "CMASS2");
+            const std::size_t conm1 = detail::nastran_card_index(kOp2wCards, "CONM1");
             for (std::size_t i = 0; i < blk.mCount; ++i) {
                 if (keep[i] && blk.mCards[i] == celas2 && !rMesh.HasCellData("nastran:k"))
                     op2w_fail("a CELAS2 needs its value: nastran:k");
@@ -180114,38 +180378,16 @@ public:
                 kept += k ? 1 : 0;
             if (kept == 0)
                 continue;
-            // A spring's or damper's components: `nastran:c1` and `nastran:c2`, else 1 at
-            // each end. A vertex's second end is ground, so 0.
-            std::vector<std::int64_t> c1(blk.mCount, 1);
-            std::vector<std::int64_t> c2(blk.mCount, 1);
-            auto read_component = [&](const char* pName, std::vector<std::int64_t>& rValues) {
-                if (!rMesh.HasCellData(pName))
-                    return;
-                const NDArray& a = rMesh.CellData(pName, b);
-                if (a.Size() != blk.mCount)
-                    op2w_fail(std::string("'") + pName + "' must have one value per cell");
-                const detail::Int64View view(a);
-                rValues.assign(view.Data(), view.Data() + blk.mCount);
-            };
-            read_component("nastran:c1", c1);
-            read_component("nastran:c2", c2);
+            // A spring's or damper's components (mComps).
+            detail::nastran_read_components(rMesh, b, kOp2Who.c_str(), blk);
             // The card fields of each row, from the cell data of its own card only: a CBAR's
             // X1..X3, G0, PA and PB, W1A..W3A and W1B..W3B; a CELAS2's K, GE and S; a CDAMP2's B.
             // A CELAS2's K and a CDAMP2's B share column 0, so a row takes only its own card's.
             blk.mBar.assign(blk.mCount * kOp2wBarWidth, 0.0);
             const auto read_field = [&](const char* pName, std::initializer_list<std::size_t> Cards,
                                         std::size_t Lo, std::size_t Width) {
-                if (!rMesh.HasCellData(pName))
-                    return;
-                const NDArray& a = rMesh.CellData(pName, b);
-                if (a.Size() != blk.mCount * Width)
-                    op2w_fail(std::string("'") + pName + "' must have " + std::to_string(Width) +
-                              " value(s) per cell");
-                const detail::DoubleView view(a);
-                for (std::size_t i = 0; i < blk.mCount; ++i)
-                    if (std::find(Cards.begin(), Cards.end(), blk.mCards[i]) != Cards.end())
-                        for (std::size_t k = 0; k < Width; ++k)
-                            blk.mBar[i * kOp2wBarWidth + Lo + k] = view.Data()[i * Width + k];
+                detail::nastran_read_field(rMesh, b, pName, Cards, Lo, Width, kOp2wBarWidth,
+                                           kOp2Who.c_str(), blk);
             };
             // A CBAR and a CBEAM share the orientation, G0, pin and offset fields.
             read_field("nastran:x", {cbar, cbeam, cbush, cgap}, 0, 3);
@@ -180158,28 +180400,8 @@ public:
             read_field("nastran:b", {cdamp2}, 0, 1);
             read_field("nastran:m", {cmass2}, 0, 1);
             read_field("nastran:conm1", {conm1}, 0, 21);
-            blk.mComps.resize(2 * blk.mCount);
-            for (std::size_t i = 0; i < blk.mCount; ++i) {
-                blk.mComps[2 * i] = c1[i];
-                blk.mComps[2 * i + 1] = blk.mNodes == 1 ? 0 : c2[i];
-            }
-            if (kept < blk.mCount) {
-                auto compact = [&keep](auto& rValues, std::size_t Stride) {
-                    std::size_t to = 0;
-                    for (std::size_t i = 0; i < keep.size(); ++i)
-                        if (keep[i])
-                            for (std::size_t s = 0; s < Stride; ++s)
-                                rValues[to++] = rValues[i * Stride + s];
-                    rValues.resize(to);
-                };
-                compact(blk.mConn, blk.mNodes);
-                compact(blk.mEids, 1);
-                compact(blk.mPids, 1);
-                compact(blk.mCards, 1);
-                compact(blk.mComps, 2);
-                compact(blk.mBar, kOp2wBarWidth);
-                blk.mCount = kept;
-            }
+            if (kept < blk.mCount)
+                detail::nastran_compact_block(keep, kept, kOp2wBarWidth, blk);
             mBlocks.push_back(std::move(blk));
         }
         std::vector<std::int64_t> every;
@@ -180193,14 +180415,7 @@ public:
         if (std::adjacent_find(every.begin(), every.end()) != every.end())
             op2w_fail("element ids are not unique");
         // Cards in name order, each one's rows by element id.
-        mRows.resize(kOp2wNumCards);
-        for (std::size_t bi = 0; bi < mBlocks.size(); ++bi)
-            for (std::size_t r = 0; r < mBlocks[bi].mCount; ++r)
-                mRows[mBlocks[bi].mCards[r]].push_back({mBlocks[bi].mEids[r], bi, r});
-        for (auto& rows : mRows)
-            std::stable_sort(rows.begin(), rows.end(), [](const Op2wRow& rA, const Op2wRow& rB) {
-                return rA.mEid < rB.mEid;
-            });
+        mRows = detail::nastran_rows_by_card(mBlocks, kOp2wNumCards);
         // Property ids by family.
         for (const Op2wBlock& blk : mBlocks)
             for (std::size_t r = 0; r < blk.mCount; ++r) {
@@ -180674,12 +180889,12 @@ private:
     detail::NastranSignature mSignature;
     std::size_t mNpoints = 0;
     std::vector<double> mPoints;
-    std::vector<std::int64_t> mCp;       // each point's coordinate system (0: basic)
-    std::vector<std::int64_t> mCd;       // the system each point's results are in (0: basic)
+    std::vector<std::int64_t> mCp;  // each point's coordinate system (0: basic)
+    std::vector<std::int64_t> mCd;  // the system each point's results are in (0: basic)
     std::map<std::int64_t, std::size_t> mCordAt;  // a system's id -> its place in mCords
-    std::vector<double> mLocal;          // each point's coordinates in that system
-    std::vector<Op2wCord> mCords;        // the systems the CPs name, by id
-    std::vector<std::int64_t> mNodeIds;  // the GRID id of each point
+    std::vector<double> mLocal;                   // each point's coordinates in that system
+    std::vector<Op2wCord> mCords;                 // the systems the CPs name, by id
+    std::vector<std::int64_t> mNodeIds;           // the GRID id of each point
     std::vector<Op2wBlock> mBlocks;
     std::vector<std::vector<Op2wRow>> mRows;
     std::set<std::int64_t> mProps[17];
@@ -180995,7 +181210,7 @@ bool op2w_card_table(const Mesh& rMesh, const Op2wModel& rModel, const Op2wHeade
                      Op2wStep& rStep, std::set<std::string>& rTaken, const Op2wResultGroup& rGroup,
                      const char* pCard, std::int32_t Etype, bool Strict, const std::string& rSuffix,
                      bool Complex, bool Random) {
-    const std::size_t card = op2w_card_index(pCard);
+    const std::size_t card = detail::nastran_card_index(kOp2wCards, pCard);
     const std::vector<Op2wRow>& rows = rModel.Rows(card);
     if (rows.empty())
         return false;
@@ -221184,6 +221399,39 @@ void ccells_copy_field_data(const Mesh& rIn, Mesh& rOut) {
 
 // --- mode: linearize ---------------------------------------------------------
 
+/// The common end of linearize and elevate, whose output cells are their
+/// input cells one for one: the cell and field data, the identity
+/// `convert:parent_cell` when @p RecordParentIds, @p PointMap and the identity
+/// cell maps. Forced inline so each caller compiles as it did with its own copy
+/// (roadmap 3.4.11).
+MIO_ALWAYS_INLINE ConvertCellsResult ccells_finish_identity(const Mesh& rMesh, Mesh&& rOut,
+                                                            bool RecordParentIds,
+                                                            std::size_t NumBlocks,
+                                                            NDArray PointMap) {
+    ccells_copy_cell_data(rMesh, rOut);
+    ccells_copy_field_data(rMesh, rOut);
+
+    if (RecordParentIds) {
+        std::vector<NDArray> blocks;
+        blocks.reserve(NumBlocks);
+        for (const auto cb : rMesh.CellRange()) {
+            NDArray a = NDArray::Uninit(DType::Int64, {cb.NumCells(), 1});
+            std::int64_t* dst = a.As<std::int64_t>();
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                dst[c] = static_cast<std::int64_t>(c);
+            blocks.push_back(std::move(a));
+        }
+        if (!blocks.empty())
+            rOut.AddCellData("convert:parent_cell", std::move(blocks));
+    }
+
+    ConvertCellsResult res;
+    res.mMesh = std::move(rOut);
+    res.mPointMap = std::move(PointMap);
+    res.mCellMaps = ccells_identity_cell_maps(rMesh);
+    return res;
+}
+
 ConvertCellsResult ccells_linearize(const Mesh& rMesh, bool RecordParentIds) {
     const std::size_t nblocks = rMesh.NumCellBlocks();
     std::vector<CcellsOutBlock> staged;
@@ -221243,28 +221491,8 @@ ConvertCellsResult ccells_linearize(const Mesh& rMesh, bool RecordParentIds) {
     // are copied verbatim (they are not per-point data).
     detail::compact_point_data_by_mask(rMesh, used, num_used, true, out);
 
-    ccells_copy_cell_data(rMesh, out);
-    ccells_copy_field_data(rMesh, out);
-
-    if (RecordParentIds) {
-        std::vector<NDArray> blocks;
-        blocks.reserve(nblocks);
-        for (const auto cb : rMesh.CellRange()) {
-            NDArray a = NDArray::Uninit(DType::Int64, {cb.NumCells(), 1});
-            std::int64_t* dst = a.As<std::int64_t>();
-            for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                dst[c] = static_cast<std::int64_t>(c);
-            blocks.push_back(std::move(a));
-        }
-        if (!blocks.empty())
-            out.AddCellData("convert:parent_cell", std::move(blocks));
-    }
-
-    ConvertCellsResult res;
-    res.mMesh = std::move(out);
-    res.mPointMap = detail::NDArrayUtils::Int64Vector(remap);
-    res.mCellMaps = ccells_identity_cell_maps(rMesh);
-    return res;
+    return ccells_finish_identity(rMesh, std::move(out), RecordParentIds, nblocks,
+                                  detail::NDArrayUtils::Int64Vector(remap));
 }
 
 // --- mode: simplexify --------------------------------------------------------
@@ -221766,28 +221994,8 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
                       }));
     }
 
-    ccells_copy_cell_data(rMesh, out);
-    ccells_copy_field_data(rMesh, out);
-
-    if (RecordParentIds) {
-        std::vector<NDArray> blocks;
-        blocks.reserve(nblocks);
-        for (const auto cb : rMesh.CellRange()) {
-            NDArray a = NDArray::Uninit(DType::Int64, {cb.NumCells(), 1});
-            std::int64_t* dst = a.As<std::int64_t>();
-            for (std::size_t c = 0; c < cb.NumCells(); ++c)
-                dst[c] = static_cast<std::int64_t>(c);
-            blocks.push_back(std::move(a));
-        }
-        if (!blocks.empty())
-            out.AddCellData("convert:parent_cell", std::move(blocks));
-    }
-
-    ConvertCellsResult res;
-    res.mMesh = std::move(out);
-    res.mPointMap = ccells_identity_point_map(num_points);
-    res.mCellMaps = ccells_identity_cell_maps(rMesh);
-    return res;
+    return ccells_finish_identity(rMesh, std::move(out), RecordParentIds, nblocks,
+                                  ccells_identity_point_map(num_points));
 }
 
 }  // namespace
@@ -253890,6 +254098,7 @@ PeriodicPairs match_periodic_nodes(const Mesh& rMesh, const RegionSelector& rSla
 
 // Project includes
 
+
 namespace meshioplusplus {
 
 namespace {
@@ -254088,329 +254297,9 @@ std::size_t pipe_total_cells(const Mesh& rMesh) {
 // and rely on validation to reject the unknown ones.
 // --------------------------------------------------------------------------
 
-struct PipeOpSpec {
-    const char* mName;
-    std::vector<const char*> mKeys;
-};
-
-const std::vector<PipeOpSpec>& pipe_op_table() {
-    static const std::vector<PipeOpSpec> table = {
-        {"Quality", {}},
-        {"Clean", {"Weld", "Atol", "RemoveOrphans", "DropDegenerate", "DropDuplicateCells"}},
-        {"Smooth",
-         {"Method", "Iterations", "Lambda", "Mu", "FixBoundary", "PreserveFeatures", "FeatureAngle",
-          "GuardInversion"}},
-        {"Refine",
-         {"Levels", "Cells", "Region", "Array", "Compare", "Value", "Closure", "RecordLevels",
-          "RecordHierarchy"}},
-        {"Decimate",
-         {"Ratio", "TargetFaces", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
-          "FeatureAngle"}},
-        {"DecimateVolume",
-         {"Ratio", "TargetCells", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
-          "FeatureAngle"}},
-        {"Partition", {"Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"}},
-        {"Slice", {"Point", "Normal", "RecordParentIds"}},
-        {"Section", {"Point", "Normal", "RecordParentIds"}},  // alias of Slice
-        {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
-        {"Hessian", {"Array", "Method", "Location", "Output"}},
-        {"Curvature",
-         {"Mean", "Gaussian", "DualArea", "IncludeBoundary", "RecordArea", "RecordPrincipal",
-          "Region"}},
-        {"Normals",
-         {"PointNormals", "CellNormals", "Weight", "SplitAngle", "RecordParentIds", "Region"}},
-        {"FeatureEdges",
-         {"FeatureAngle", "Feature", "Boundary", "NonManifold", "Inconsistent", "Region"}},
-        {"Segment",
-         {"FeatureAngle", "NormalTolerance", "CurvatureTolerance", "MinPatchCells", "Region",
-          "Prefix", "Method", "Tolerance"}},
-        {"Select", {"Name",         "Kind",      "Tag",    "Mode",         "BoundaryOnly",
-                    "Bbox",         "Point",     "Normal", "Center",       "Radius",
-                    "Where",        "Compare",   "Value",  "Quality",      "QualityCompare",
-                    "QualityValue", "Component", "Seed",   "FeatureAngle", "NormalTolerance"}},
-        {"FitPrimitives",
-         {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
-        {"FitCad",
-         {"Path",
-          "Tolerance",
-          "ExactEdges",
-          "Types",
-          "MeshDeflection",
-          "MaxDemotionRounds",
-          "Freeform",
-          "FreeformDegree",
-          "FreeformMaxControl",
-          "FreeformSplit",
-          "Fillets",
-          "Threads",
-          "MergeFaces",
-          "Backend",
-          "RefineSegmentation",
-          "MaxRefineIterations",
-          "RefineEpsilon",
-          "NormalWeight",
-          "AllowMerge",
-          "AllowSplit",
-          "RansacSeed",
-          "RefineTolerance",
-          "RelativeTolerance",
-          "FreeformGeneral",
-          "FreeformTolerance",
-          "FreeformSmoothing",
-          "MaxFreeformPoles",
-          "MaxFreeformIterations",
-          "MaxFreeformSplits",
-          "SewTolerance",
-          "ExtendSurfaces",
-          "SnapJunctions",
-          "FaceDeviation",
-          "FreeformMode",
-          "FreeformParameterization",
-          "ExtraordinaryVertex",
-          "LocalRefine",
-          "FreeformG1ToleranceDeg",
-          "FreeformMaxControlPoints",
-          "LayoutTargetPatchSize",
-          "LayoutMaxValenceDeviation",
-          "ResegmentRounds",
-          "LayoutSnapToFeatures",
-          "ValidateBySurfaceSampling",
-          "ConstrainPrimitives"}},
-        {"RefinePatches",
-         {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
-          "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
-        {"EditRegions", {"Edit", "Inputs", "Output", "Kind", "Dim", "Tag", "KeepInputs"}},
-        {"RegionAdjacency", {"Regions"}},
-        {"FindInterface",
-         {"RegionA", "RegionB", "Mode", "Master", "GapTolerance", "AngleTolerance",
-          "OverlapTolerance"}},
-        {"SplitInterface", {"Region", "AddCohesive"}},
-        {"QualityGate", {"Require", "MaxInverted", "MaxDegenerate"}},
-        {"CheckConformity", {"Tolerance", "Require", "AttachFlags"}},
-        {"CheckTetrahedra", {"ZeroVolumeFactor", "Require"}},
-        {"FindIntersections", {"Other", "Region", "RegionOther", "Require", "AttachFlags"}},
-        {"Thickness",
-         {"Other", "Direction", "MaxDistance", "Min", "Region", "RegionOther", "Require"}},
-        {"Snapshot",
-         {"Path",           "Width",       "Height",        "Supersample",   "Cols",
-          "Rows",           "Encoding",    "ColorDepth",    "PngCompress",   "View",
-          "Azimuth",        "Elevation",   "Roll",          "Perspective",   "Fov",
-          "Zoom",           "Shading",     "Edges",         "FeatureAngle",  "Background",
-          "FillColor",      "ColorBy",     "Component",     "Cmap",          "VMin",
-          "VMax",           "Colorbar",    "Axes",          "ScaleBar",      "Reduce",
-          "Expr",           "ClipLow",     "ClipHigh",      "Symmetric",     "Scale",
-          "ScaleThreshold", "Categorical", "ColorRegions",  "CategoryEdges", "Isolines",
-          "IsoLevels",      "Vectors",     "VectorCount",   "Warp",          "WarpScale",
-          "WarpOutline",    "Diagnostic",  "QualityMetric", "Cutaway",       "CutawayTint",
-          "Streamlines",    "StreamSeeds", "StreamLength",  "StreamColor",   "Theme",
-          "Scanlines",      "Bloom",       "Fringe",        "GridFloor"}},
-        {"Repair",
-         {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
-          "WeldTolerance", "RecordProvenance"}},
-        {"SobolevDeform",
-         {"Array", "LengthScale", "FixedPointsArray", "FixBoundary", "RecordFiltered",
-          "MaxIterations", "Tolerance"}},
-        {"ConvexHull", {"Dimension"}},
-        {"Delaunay2D", {}},
-        {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
-        {"ReconstructSurface",
-         {"Normals", "K", "CellSize", "Resolution", "MaxDistance", "EstimateNormals", "NormalsK",
-          "MaxCells"}},
-        {"LaplacianEigenmodes", {"NumModes", "Tolerance", "MaxIterations"}},
-        {"Untangle", {"FixBoundary", "Rings", "Smooth", "MaxSweeps"}},
-        {"PrepareMetric",
-         {"Arrays", "Output", "TargetVertices", "Norm", "Hmin", "Hmax", "Gradation", "MaxSweeps"}},
-        {"Morph",
-         {"Array", "FixBoundary", "ConstrainedArray", "Stiffening", "Steps", "AllowInverted",
-          "Tolerance", "MaxIterations"}},
-        {"RegisterRigid",
-         {"Target", "Method", "MaxIterations", "Tolerance", "MaxDistance", "RotateData"}},
-        {"ConvertCoordinates",
-         {"System", "Axis", "Origin", "Reference", "Arrays", "Inverse", "RecordCoordinates"}},
-        {"GeodesicDistance",
-         {"Sources", "SourceRegion", "TimeFactor", "Tolerance", "MaxIterations"}},
-        {"Parameterize", {"Padding", "MaxDepth", "MaxStretch"}},
-        {"EstimateError", {"Array", "Method", "Marking", "MarkingValue", "Output", "Marked"}},
-        {"ErrorSize", {"Array", "TargetError", "Order", "MinSize", "MaxSize", "Output"}},
-        {"Adapt",
-         {"Hsiz", "Size", "Metric", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq", "AngleDetection",
-          "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy", "Frozen",
-          "Required"}},
-        {"DiscretizeLevelset",
-         {"LevelSet", "Isovalue", "RemoveSmallComponents", "Materials", "Hmin", "Hmax", "Hausd",
-          "Hgrad", "Hgradreq", "AngleDetection", "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf",
-          "Nreg", "Opnbdy", "Frozen", "Required"}},
-        {"MeshDomain",
-         {"Hsiz", "Size", "Holes", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq", "AngleDetection",
-          "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy", "Frozen",
-          "Required"}},
-        {"Move",
-         {"Displacement", "Moving", "Lagrangian", "Hmin", "Hmax", "Hausd", "Hgrad", "Hgradreq",
-          "AngleDetection", "Optim", "NoInsert", "NoSwap", "NoMove", "NoSurf", "Nreg", "Opnbdy",
-          "Frozen", "Required"}},
-        {"Remesh",
-         {"NumClusters", "Subdivide", "SubsampleRatio", "MaxSubdivide", "MaxIterations",
-          "MaxRepairPasses", "Metric", "Gradation", "PreserveBoundary", "MaxAnisotropy"}},
-        {"RemeshVolume",
-         {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "MaxCells", "MaxTets",
-          "WarpFraction", "Sign", "WatertightCheck"}},
-        {"OptimizeVolume",
-         {"MaxIterations", "Relocate", "Flip", "PreserveBoundary", "MinImprovement", "Objective",
-          "MaxRingSize"}},
-        {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
-        {"Voxelize",
-         {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
-          "AttachOccupancy", "MaxCells", "Sign", "Plane"}},
-        {"Generate",
-         {"Shape",        "Dims",      "Size",  "Origin",      "Center",      "Radius",
-          "Height",       "N",         "Nu",    "Nv",          "Nxy",         "Nz",
-          "Subdivisions", "Sides",     "Rings", "InnerRadius", "OuterRadius", "Ntheta",
-          "Nr",           "Nt",        "Angle", "Edge",        "CellType",    "Split",
-          "Order",        "MaxCells",  "Types", "Pairs",       "Complete",    "Start",
-          "End",          "Pitch",     "Turns", "Seed",        "MajorRadius", "MinorRadius",
-          "Width",        "NumTwists", "Ncap",  "Ratio",       "Name"}},
-        {"Octree", {"RootCells",    "MinLevel",       "MaxLevel",
-                    "Bounds",       "Padding",        "PaddingRelative",
-                    "Dimension",    "SampleDistance", "Balance",
-                    "Fill",         "AttachDistance", "EvenOdd",
-                    "MaxCells",     "Sign",           "Transition",
-                    "Snap",         "SurfaceLevel",   "CurvatureThreshold",
-                    "FeatureAngle", "SizeArray",      "Plane"}},
-        {"OctreeMesh",
-         {"Output",
-          "MinSize",
-          "MaxSize",
-          "MaxLevel",
-          "Bounds",
-          "Padding",
-          "PaddingRelative",
-          "CurvatureAngle",
-          "FeatureAngle",
-          "CornerAngle",
-          "FeatureSize",
-          "GapCells",
-          "GapOutside",
-          "SizeArray",
-          "SurfaceRegion",
-          "GradingLayers",
-          "SkinGrading",
-          "SurfaceSize",
-          "WindingThreshold",
-          "WindingBeta",
-          "Conformity",
-          "AlphaLong",
-          "AlphaShort",
-          "PreserveFeatures",
-          "FitIterations",
-          "DihedralFloorGuard",
-          "Fill",
-          "KeepOutside",
-          "AttachDistance",
-          "AttachQuality",
-          "Pillow",
-          "HexGrading",
-          "UntangleIterations",
-          "MaxCells",
-          "MaxTets",
-          "VolumeFix",
-          "ZeroVolumeFactor",
-          "CapFlatness",
-          "CrossingMargin",
-          "CrossingGap"}},
-        {"ComputeSdf",
-         {"Structure", "Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative",
-          "RootResolution", "MaxDepth", "BandCells", "RecordLevels", "MaxCells", "Sign", "Location",
-          "Band"}},
-        {"Transform",
-         {"Translate", "Scale", "RotateAxis", "RotateDegrees", "Matrix", "ScaleUnits",
-          "RotateData"}},
-        {"ConvertCells", {"Mode", "RecordParentIds"}},
-        {"Subdivide", {"RecordParentIds"}},
-        {"Tessellate", {"Levels", "Curved", "Fields", "RecordStencil"}},
-        {"Agglomerate",
-         {"TargetGroupSize", "MergeCoplanarFaces", "CoplanarAngle", "MinSphericity"}},
-        {"TetToPoly", {"FeatureAngle", "PointDataToCellData", "RecordVertexIds"}},
-        {"PolyToTet", {"RecordParentIds"}},
-        {"Crop", {"Bbox", "Point", "Normal", "Where", "Compare", "Value", "Mode", "RecordIds"}},
-        {"ExtractSurface", {"RecordParentIds"}},
-        {"ExtractSkin", {"Linearize"}},
-        {"Reorder", {"Method"}},
-        {"DataDrop", {"Point", "Cell", "Field", "IgnoreMissing"}},
-        {"DataKeep", {"Point", "Cell", "Field"}},
-        {"DataRename", {"Point", "Cell", "Field"}},
-        {"SetsToData", {"Location", "Name", "Join", "Order"}},
-        {"DataToSets", {"Location", "Key"}},
-        {"DataCalc", {"Expr", "Location", "Overwrite"}},
-        {"DataCondition",
-         {"Mode", "Location", "Names", "Scope", "Lo", "Hi", "NanPolicy", "NanReplacement",
-          "Suffix"}},
-        {"TensorInvariants", {"Location", "Names", "Outputs", "Prefix", "Suffix", "Overwrite"}},
-        {"ToCell", {"Names"}},
-        {"ToPoint", {"Names", "Weight"}},
-        // The model steps (roadmap 6.1.1): they act on the CAD model the
-        // Input read carries beside its mesh (see PipeModel below).
-        {"MeshCadSurface",
-         {"TargetSize",
-          "MaxChordalDeviation",
-          "MinPointsPerEdge",
-          "Tolerance",
-          "RecordFaceIds",
-          "Edges",
-          "MatchUnreferencedTrims",
-          "Strict",
-          "MaxPoints",
-          "MinAngle",
-          "SmoothIterations",
-          "SmoothMethod",
-          "Order",
-          "CurvatureDeviation",
-          "CellsAcrossGaps",
-          "Grading",
-          "PoleRings",
-          "FaceSizes",
-          "EdgeSizes",
-          "Background",
-          "BackgroundArray",
-          "Metric",
-          "VirtualEdges",
-          "ReparamConditionNumber",
-          "ModelTolerances",
-          "VirtualFaces",
-          "LopCorners",
-          "MetricBackground",
-          "MetricArray",
-          "MetricError",
-          "Untangle",
-          "Quads",
-          "QuadPairs"}},
-        {"IgaSample", {"Subdivisions", "TrimSamples", "Trim", "Edges"}},
-        // Back onto the CAD (roadmap 6.10.1): the B-rep at `Model`, or the
-        // one a CAD Input carries when no step has changed the mesh since.
-        {"ProjectToCad", {"Model", "FaceArray", "EdgeArray", "MaxDistance", "TrimSamples"}},
-        // Prismatic layers grown from the surface (roadmap 6.9).
-        {"BoundaryLayer",
-         {"FirstHeight", "NumLayers", "Growth", "Reverse", "CollisionFraction", "SmoothIterations",
-          "MaxShrink", "Collapse", "NormalSmoothIterations", "FrontCheck"}},
-        // Sweeps (roadmap 3.1.2, 3.1.3) and the reflection (3.2.5).
-        {"Extrude", {"Direction", "NumLayers", "Ratio", "Offsets", "RecordLayers", "MaxCells"}},
-        {"Revolve",
-         {"Axis", "AxisPoint", "Angle", "NumLayers", "Tolerance", "RecordLayers", "MaxCells"}},
-        {"Mirror", {"Point", "Normal", "KeepOriginal", "Weld", "Tolerance", "ReflectData"}},
-        // Tetrahedra filling the closed triangle surface (roadmap 6.7).
-        {"Tetrahedralize",
-         {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},
-        {"RemeshQuads",
-         {"TargetFaces", "Backend", "Sharp", "Boundary", "Adaptive", "Dominant", "Seed",
-          "MaxCells"}},
-        // The part level sets select, through CutCells (doc/cut.md).
-        {"CutLevelSet",
-         {"LevelSets", "Planes", "Selection", "IncludeUncut", "Backend", "Degree", "Triangulate",
-          "RecordParentIds"}},
-        {"IgaRefine",
-         {"Subdivisions", "Elevate", "SampleSubdivisions", "TrimSamples", "Trim", "Edges"}},
-    };
-    return table;
-}
+// The step table is generated with the Python engine's (pipeline_table.hpp).
+using detail::pipe_op_table;
+using detail::PipeOpSpec;
 
 const PipeOpSpec* pipe_find_op(const std::string& rOp) {
     for (const auto& spec : pipe_op_table())
@@ -257208,17 +257097,13 @@ Mesh run_pipeline_steps(Mesh mesh, const std::vector<PipelineStep>& rSteps,
 
 std::vector<std::pair<std::string, std::vector<std::string>>> pipeline_v2_op_table() {
     auto table = pipeline_op_table();
-    table.push_back(
-        {"Merge", {"Inputs", "Weld", "Atol", "SourceTag", "DataPolicy", "DropDuplicateCells"}});
-    table.push_back({"Interpolate",
-                     {"Inputs", "Method", "Arrays", "Extrapolate", "DefaultValue", "OnConflict"}});
-    table.push_back({"UndoGreen", {"Inputs"}});
-    table.push_back({"Split", {"By", "Tag"}});
-    for (auto& [op, keys] : table)
-        if (op == "Partition") {
-            keys.push_back("RecordIds");
-            keys.push_back("GhostLayers");
-        }
+    for (const PipeOpSpec& r_spec : detail::pipe_v2_steps())
+        table.push_back(
+            {r_spec.mName, std::vector<std::string>(r_spec.mKeys.begin(), r_spec.mKeys.end())});
+    for (const auto& [extra_op, extra_keys] : detail::pipe_v2_extra_keys())
+        for (auto& [op, keys] : table)
+            if (op == extra_op)
+                keys.insert(keys.end(), extra_keys.begin(), extra_keys.end());
     return table;
 }
 
@@ -280163,47 +280048,21 @@ struct SubOutBlock {
 
 /// Stage an input block unchanged -- the pass-through case, a polygon block or
 /// a rectangular one (a polyhedron block is always eligible, so it never gets
-/// here). The same body as detail::stage_flat_or_polygon (staged_block.hpp),
-/// kept here on purpose: using the shared template changed how GCC inlined the
-/// rest of subdivide.cpp (tier S `subdivide_ragged` +2.2%); roadmap 3.4.11.
+/// here).
 SubOutBlock sub_stage_passthrough(const Mesh::CellView& rBlock) {
     SubOutBlock out;
     out.mType = std::string(rBlock.Type());
-    if (rBlock.IsRagged()) {
-        out.mIsRagged = true;
-        out.mPolygonRows.resize(rBlock.NumCells());
-        for (std::size_t c = 0; c < rBlock.NumCells(); ++c) {
-            const std::int64_t* row = rBlock.Row(c);
-            out.mPolygonRows[c].assign(row, row + rBlock.RowSize(c));
-        }
-    } else {
-        const NDArray& conn = rBlock.Conn();
-        const std::size_t npc = rBlock.NodesPerCell();
-        out.mNodesPerCell = npc;
-        out.mConn.resize(rBlock.NumCells() * npc);
-        for (std::size_t c = 0; c < rBlock.NumCells(); ++c)
-            for (std::size_t k = 0; k < npc; ++k)
-                out.mConn[c * npc + k] = detail::read_int(conn, c * npc + k);
-    }
+    detail::stage_flat_or_polygon(rBlock, out);
     return out;
 }
 
 /// Add a staged block to `rOut`.
 void sub_emit_block(Mesh& rOut, SubOutBlock& rBlock) {
-    if (rBlock.mIsPolyhedron) {
+    if (rBlock.mIsPolyhedron)
         rOut.AddPolyhedronBlock(rBlock.mType, std::move(rBlock.mFlat),
                                 std::move(rBlock.mRowOffsets), std::move(rBlock.mFaceOffsets));
-    } else if (rBlock.mIsRagged) {
-        rOut.AddPolygonBlock(rBlock.mType, std::move(rBlock.mPolygonRows));
-    } else {
-        const std::size_t npc = rBlock.mNodesPerCell;
-        const std::size_t ncells = npc == 0 ? 0 : rBlock.mConn.size() / npc;
-        NDArray conn = NDArray::Uninit(DType::Int64, {ncells, npc});
-        std::int64_t* dst = conn.As<std::int64_t>();
-        for (std::size_t i = 0; i < rBlock.mConn.size(); ++i)
-            dst[i] = rBlock.mConn[i];
-        rOut.AddCellBlock(rBlock.mType, std::move(conn));
-    }
+    else
+        detail::emit_flat_or_polygon(rOut, rBlock);
 }
 
 /// Whether a block can be polyhedrally subdivided: a 3D type with a
