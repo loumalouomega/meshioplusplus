@@ -53,7 +53,7 @@ def test_holes_offsets_and_the_prism():
 
 def test_both_pipeline_engines_agree(tmp_path):
     src = tmp_path / "in.vtu"
-    mp.write(src, mp.icosa_sphere(1.0, 2))
+    mp.write(src, mp.icosa_sphere(1.0, 2), compression=None)
     step = {"Op": "Silhouette", "Normal": [0, 1, 1], "Clearance": 0.05}
     settings = {
         "Version": 1,
@@ -93,7 +93,7 @@ def test_the_mcp_tool(tmp_path):
     from meshioplusplus.mcp import _tools
 
     src = tmp_path / "s.vtu"
-    mp.write(src, mp.icosa_sphere(1.0, 2))
+    mp.write(src, mp.icosa_sphere(1.0, 2), compression=None)
     rep = _tools.tool_silhouette(
         str(src), output_path=str(tmp_path / "o.vtu"), clearance=0.1
     )

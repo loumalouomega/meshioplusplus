@@ -111,7 +111,7 @@ def test_constrain_primitives_forbid_and_report():
 
 def test_both_pipeline_engines(tmp_path):
     src = tmp_path / "bent.vtu"
-    mp.write(src, bent_box())
+    mp.write(src, bent_box(), compression=None)
     settings = {
         "Version": 1,
         "Input": {"Path": str(src)},
@@ -142,7 +142,7 @@ def test_the_mcp_tools(tmp_path):
     from meshioplusplus.mcp import _tools
 
     src = tmp_path / "bent.vtu"
-    mp.write(src, bent_box())
+    mp.write(src, bent_box(), compression=None)
     rep = _tools.tool_fit_cad_iterate(
         str(src), str(tmp_path / "solid.vtu"), backend="native"
     )

@@ -106,7 +106,7 @@ def test_clip_a_sphere_and_cap_it():
 def test_both_pipeline_engines(tmp_path):
     mesh, _ = sphere_with_crumbs(2)
     src = tmp_path / "scan.vtu"
-    mp.write(src, mesh)
+    mp.write(src, mesh, compression=None)
     settings = {
         "Version": 1,
         "Input": {"Path": str(src)},
@@ -131,7 +131,7 @@ def test_the_mcp_tools(tmp_path):
 
     mesh, _ = sphere_with_crumbs(2)
     src = tmp_path / "scan.vtu"
-    mp.write(src, mesh)
+    mp.write(src, mesh, compression=None)
     rep = _tools.tool_remove_islands(str(src), str(tmp_path / "a.vtu"))
     assert rep["num_removed"] == 2
     rep = _tools.tool_flip_normals(str(tmp_path / "a.vtu"), str(tmp_path / "b.vtu"))
@@ -211,7 +211,7 @@ def test_thicken_a_hemisphere_and_hollow_a_cube():
 
 def test_offset_pipeline_engines_agree(tmp_path):
     src = tmp_path / "cube.vtu"
-    mp.write(src, quad_cube())
+    mp.write(src, quad_cube(), compression=None)
     settings = {
         "Version": 1,
         "Input": {"Path": str(src)},
@@ -236,7 +236,7 @@ def test_offset_mcp_tools(tmp_path):
     from meshioplusplus.mcp import _tools
 
     src = tmp_path / "cube.vtu"
-    mp.write(src, quad_cube())
+    mp.write(src, quad_cube(), compression=None)
     assert _tools.tool_offset_surface(str(src), str(tmp_path / "o.vtu"), 0.1)[
         "max_move"
     ] == pytest.approx(0.1 * np.sqrt(3.0))
@@ -267,7 +267,7 @@ def test_decimate_max_deviation_holds_on_the_coverage():
 
 def test_decimate_bounds_in_both_pipeline_engines(tmp_path):
     src = tmp_path / "s.vtu"
-    mp.write(src, mp.icosa_sphere(1.0, 3))
+    mp.write(src, mp.icosa_sphere(1.0, 3), compression=None)
     settings = {
         "Version": 1,
         "Input": {"Path": str(src)},
@@ -313,7 +313,7 @@ def test_repair_fill_styles_close_a_sphere(style):
 
 def test_repair_fill_style_in_both_pipeline_engines(tmp_path):
     src = tmp_path / "h.vtu"
-    mp.write(src, holed_sphere(3))
+    mp.write(src, holed_sphere(3), compression=None)
     settings = {
         "Version": 1,
         "Input": {"Path": str(src)},

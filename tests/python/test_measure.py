@@ -129,7 +129,7 @@ def test_deviation_against_an_element():
 
 def test_both_pipeline_engines(tmp_path):
     src = tmp_path / "block.vtu"
-    mp.write(src, block(tilt_deg=0.05))
+    mp.write(src, block(tilt_deg=0.05), compression=None)
     spec = tmp_path / "spec.json"
     spec.write_text(json.dumps(SPEC))
     ops = [
@@ -159,7 +159,7 @@ def test_the_mcp_tools(tmp_path):
     from meshioplusplus.mcp import _tools
 
     src = tmp_path / "block.vtu"
-    mp.write(src, block())
+    mp.write(src, block(), compression=None)
     rep = _tools.tool_measure(str(src), SPEC, output_path=str(tmp_path / "m.vtu"))
     assert rep["num_fail"] == 0
     al = _tools.tool_align_datums(
