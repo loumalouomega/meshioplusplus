@@ -85,6 +85,7 @@
 #include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
+#include "meshioplusplus/operations/measure.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -2765,6 +2766,14 @@ std::string& capi_step_elements_warnings() {
     thread_local std::string last;
     return last;
 }
+struct CapiMeasureLast {
+    std::string mReport;
+    std::string mWarnings;
+};
+CapiMeasureLast& capi_measure_last() {
+    thread_local CapiMeasureLast last;
+    return last;
+}
 
 }  // namespace
 
@@ -2915,6 +2924,74 @@ int64_t mio_silhouette_warnings(char* buf, int64_t buflen) {
         if (buflen < 0)
             throw std::invalid_argument("meshio++: negative warnings buffer length");
         return copy_string(capi_silhouette_warnings(), buf, buflen);
+    });
+}
+
+static_assert(sizeof(mio_measure_report) == 80, "mio_measure_report layout");
+
+mio_mesh* mio_measure(const mio_mesh* mesh, const char* spec_json, mio_measure_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_measure_last() = CapiMeasureLast{};
+        capi_require(mesh, "meshio++: measure: mesh is NULL");
+        capi_require(spec_json, "meshio++: measure: spec_json is NULL");
+        meshioplusplus::MeasureResult r = meshioplusplus::measure(mesh->mMesh, spec_json);
+        CapiMeasureLast& last = capi_measure_last();
+        last.mReport = r.mReportJson;
+        for (const std::string& w : r.mWarnings)
+            last.mWarnings += (last.mWarnings.empty() ? "" : "\n") + w;
+        if (report) {
+            *report = mio_measure_report{};
+            report->num_elements = static_cast<int64_t>(r.mElements.size());
+            report->num_dimensions = static_cast<int64_t>(r.mDimensions.size());
+            report->num_tolerances = static_cast<int64_t>(r.mTolerances.size());
+            report->num_fail = r.mNumFail;
+            report->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_measure_report_json(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative report buffer length");
+        return copy_string(capi_measure_last().mReport, buf, buflen);
+    });
+}
+
+int64_t mio_measure_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_measure_last().mWarnings, buf, buflen);
+    });
+}
+
+mio_mesh* mio_align_datums(const mio_mesh* mesh, const char* primary, const char* secondary,
+                           const char* origin, double matrix[16]) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: align_datums: mesh is NULL");
+        capi_require(primary, "meshio++: align_datums: primary is NULL");
+        capi_require(secondary, "meshio++: align_datums: secondary is NULL");
+        meshioplusplus::AlignDatumsResult r = meshioplusplus::align_datums(
+            mesh->mMesh, primary, secondary, origin ? std::string(origin) : std::string());
+        if (matrix)
+            std::copy(r.mMatrix.begin(), r.mMatrix.end(), matrix);
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_status mio_measure_element_primitive(const mio_mesh* mesh, const char* name, int32_t* type,
+                                         double params[10]) {
+    return guarded([&]() -> mio_status {
+        if (!mesh || !name || !type || !params)
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: measure_element_primitive: an argument is NULL");
+        const auto [t, p] = meshioplusplus::measure_element_primitive(
+            meshioplusplus::measure_element(mesh->mMesh, name));
+        *type = static_cast<int32_t>(t);
+        std::copy(p.begin(), p.end(), params);
+        return MIO_OK;
     });
 }
 

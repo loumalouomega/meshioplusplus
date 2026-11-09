@@ -194,6 +194,7 @@ export default defineConfig({
               { text: "Slicing / cross-sections", link: "/slice" },
               { text: "Lines, arcs and circles from sections", link: "/fit_curves" },
               { text: "Silhouette outlines", link: "/silhouette" },
+              { text: "Measuring: elements and GD&T", link: "/measure" },
               { text: "Isosurfaces / contours", link: "/isosurface" },
               { text: "Level-set cutting (CutCells)", link: "/cut" },
               { text: "Regular grids / voxelize", link: "/voxelize" },

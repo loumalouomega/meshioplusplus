@@ -1401,6 +1401,54 @@ mio_slice <- function(mesh, origin, normal, record_parent_ids = FALSE, chain = F
 #' @param record_parent_ids Attach `slice:parent_cell`.
 #' @return A `mio_mesh`.
 #' @export
+#' Elements, dimensions and GD&T tolerances
+#'
+#' Measure a mesh by a JSON spec (roadmap 7.2): elements fitted from regions,
+#' seeds or patches, constructed or literal; dimensions and tolerances. See
+#' `doc/measure.md`.
+#'
+#' @param mesh The scanned surface.
+#' @param spec The spec as JSON text, or the path of a JSON file.
+#' @return A list: `mesh` (with its element table), `num_elements`,
+#'   `num_dimensions`, `num_tolerances`, `num_fail`, `report_json` and
+#'   `warnings`.
+#' @export
+mio_measure <- function(mesh, spec) {
+  if (!grepl("^\\s*\\{", spec) && file.exists(spec)) {
+    spec <- paste(readLines(spec, warn = FALSE), collapse = "\n")
+  }
+  res <- .Call(R_mio_measure, mesh, as.character(spec))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' The 3-2-1 datum alignment of a measured mesh
+#'
+#' `primary` sets Z, `secondary` X, `origin` (a point-like element or a third
+#' plane) the origin (roadmap 7.3.4).
+#'
+#' @param mesh A mesh carrying an element table (`mio_measure()`).
+#' @param primary,secondary Element names.
+#' @param origin An element name, or `NULL` for the primary's point.
+#' @return A list: `mesh` and the 4 x 4 `matrix`.
+#' @export
+mio_align_datums <- function(mesh, primary, secondary, origin = NULL) {
+  .Call(R_mio_align_datums, mesh, as.character(primary), as.character(secondary), origin)
+}
+
+#' A measured element as a fitted primitive
+#'
+#' The element `name` as a primitive type (1 plane, 2 sphere, 3 cylinder, 4
+#' cone) and ten parameters, a deviation reference (roadmap 7.4.2).
+#'
+#' @param mesh A mesh carrying an element table.
+#' @param name The element's name.
+#' @return A list: `type` and `params`.
+#' @export
+mio_measure_element_primitive <- function(mesh, name) {
+  .Call(R_mio_measure_element_primitive, mesh, as.character(name))
+}
+
 #' Fitted primitives as STEP elements
 #'
 #' Write the fitted primitives of a mesh (`mio_segment()`, then

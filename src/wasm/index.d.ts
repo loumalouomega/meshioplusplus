@@ -3067,6 +3067,36 @@ export interface MeshioPlusPlusModule {
   ): Mesh;
 
   /**
+   * Measure a mesh by a spec (an object or its JSON text): elements fitted
+   * from regions, seeds or patches, constructed or literal; dimensions and
+   * GD&T tolerances (roadmap 7.2, doc/measure.md). `report` is the parsed
+   * JSON report; the mesh carries its element table.
+   * @throws {Error} on a malformed spec or an element that cannot be built.
+   */
+  measure(
+    mesh: Mesh,
+    spec: object | string,
+  ): { mesh: Mesh; report: any; numFail: number; warnings: string[] };
+
+  /**
+   * The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4): `primary`
+   * sets Z, `secondary` X, `origin` (a point-like element or a third plane)
+   * the origin. `matrix` is the row-major 4 x 4.
+   */
+  alignDatums(
+    mesh: Mesh,
+    primary: string,
+    secondary: string,
+    origin?: string,
+  ): { mesh: Mesh; matrix: Float64Array };
+
+  /**
+   * A measured element as a fitted primitive's type (1 plane, 2 sphere, 3
+   * cylinder, 4 cone) and ten parameters, a deviation reference (roadmap 7.4.2).
+   */
+  measureElementPrimitive(mesh: Mesh, name: string): { type: number; params: Float64Array };
+
+  /**
    * Write the fitted primitives of `mesh` (`segment`, then `fitPrimitives`)
    * to a STEP file in the virtual file system as exact geometry: bounded
    * planes, balls, lidded cylinders, frusta and tori (roadmap 7.6.5).

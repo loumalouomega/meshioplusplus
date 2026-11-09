@@ -545,6 +545,46 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    @_forward(_tools.tool_measure)
+    def measure(
+        input_path: str,
+        spec: Union[dict, str],
+        output_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Measure a scan by a spec (a dict, its JSON text, or a JSON file's
+        path): elements fitted ("fit": plane, sphere, cylinder, cone or auto,
+        on a cell "region", from "seeds" [[x, y, z]], or a segment "patch"),
+        constructed ("construct": intersection, axis, centre, apex,
+        mid_plane, projection, plane_through; "of": [names]) or literal
+        ("point"); dimensions (distance, angle between two elements, with
+        nominal and tolerance) and tolerances (flatness, cylindricity,
+        sphericity, circularity, parallelism, perpendicularity, angularity
+        with basic_angle, coaxiality, concentricity; feature, datum, limit),
+        and the form criterion. Reports elements, dimensions, tolerances
+        (each value and pass), num_fail and warnings; output_path writes the
+        mesh with its element table (measure:table) and measure:<name>
+        regions."""
+
+    @server.tool()
+    @_forward(_tools.tool_align_datums)
+    def align_datums(
+        input_path: str,
+        output_path: str,
+        primary: str,
+        secondary: str,
+        origin: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """The 3-2-1 datum alignment of a measured mesh (measure): the
+        primary element (a plane, or an axis) sets Z, the secondary X, and
+        origin (a point-like element, or a third plane meeting the other two)
+        the origin. Writes the moved mesh, its element table with it, and
+        reports the 4x4 matrix transform applies."""
+
+    @server.tool()
     @_forward(_tools.tool_write_step_elements)
     def write_step_elements(
         input_path: str,
@@ -2023,6 +2063,7 @@ def _register_operations(server: FastMCP) -> None:
         max_normal_angle: float = 90.0,
         reference_region: str = "",
         register: bool = False,
+        element: Optional[str] = None,
     ) -> dict:
         """Signed deviation of every point of a scan (input_path) from a
         reference surface (reference_path): positive outside it (excess
@@ -2040,7 +2081,9 @@ def _register_operations(server: FastMCP) -> None:
         register registers the scan to the reference first (an automatic
         start, point-to-plane ICP, adaptive trimming): the written scan is
         then the registered one, and the report adds registered, matrix and
-        registration_rms."""
+        registration_rms. element measures against an element of the
+        reference's element table (measure) instead: a plane, sphere,
+        cylinder or cone."""
 
     @server.tool()
     @_forward(_tools.tool_deviation_regions)

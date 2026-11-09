@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `deviation`, `deviation-regions`, `exaggerate`, `colorize`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `reconstruct`, `fit-curves`, `silhouette`, `step-elements`, `register`, `register-landmarks`, `auto-align`, `symmetry-plane`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `deviation`, `deviation-regions`, `exaggerate`, `colorize`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `reconstruct`, `fit-curves`, `silhouette`, `step-elements`, `measure`, `align-datums`, `register`, `register-landmarks`, `auto-align`, `symmetry-plane`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -160,6 +160,8 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `fit-curves` | `pieces` (`type`, `start`, `end`, `centre`, `radius`, `sweep`, `residual`, `num_points`, `chain`, `frame`), `frames` (4 rows of 4 each), `num_lines`, `num_arcs`, `num_circles`, `max_residual`, `tolerance`, `warnings` |
 | `silhouette` | `num_loops`, `num_outer`, `num_holes`, `num_triangles`, `area`, `perimeter`, `min_height`, `max_height`, `warnings` |
 | `step-elements` | `num_planes`, `num_spheres`, `num_cylinders`, `num_cones`, `num_tori`, `num_skipped`, `warnings` |
+| `measure` | the report: `elements`, `dimensions`, `tolerances` (each `value`, `nominal`, `tolerance`, `deviation`, `pass`), `num_fail`, `warnings`; exit status 1 when a check fails |
+| `align-datums` | `matrix` (4 rows of 4) |
 | `register-landmarks` | `output` (with `--mesh` and `--output`), `matrix` (4 rows of 4), `residuals`, `rms` |
 | `auto-align` | `matrix` (4 rows of 4), `mode`, `primary`, `secondary`, `share`, `face_share`, `axis_share`, `opening_area`, `warnings` |
 | `symmetry-plane` | `origin`, `normal`, `rms`, `share`, `tolerance`, `candidate_rms`, `chosen_candidate`, `warnings` |
@@ -332,6 +334,7 @@ meshioplusplus deviation [options] SCAN REFERENCE [OUTFILE]
 | Option | Short | Description |
 |--------|-------|-------------|
 | `--patch ID` | | Measure against this patch label's fitted primitive of `REFERENCE`, a mesh `fit-primitives` wrote |
+| `--element NAME` | | Measure against this element of the reference's element table (`measure`; roadmap 7.4.2) |
 | `--tolerance T` | | Report the share of points within `+-T` |
 | `--min-share S` | | With `--tolerance`, exit **1** when the share within it is below `S` |
 | `--bins N` | | Histogram bins (default 20) |
@@ -679,6 +682,8 @@ meshioplusplus slice [options] INFILE OUTFILE
 `meshioplusplus silhouette IN [OUT] [--normal x,y,z] [--clearance D] [--round-angle DEG] [--arc-segments N] [--extrude] [--region NAME] [--merge-tolerance T] [--json]` (both CLIs) writes the outline of a part along a direction, holes included, as a chained line mesh `fit-curves` reads, offset by a clearance (negative shrinks it) or, with `--extrude`, as the closed surface of the prism over it ([silhouette](/silhouette)).
 
 `meshioplusplus step-elements IN OUT [--patches 1,2] [--segments N] [--json]` (both CLIs) writes the primitives `fit-primitives` fitted as exact STEP planes, balls, lidded cylinders, frusta and tori ([STEP elements](/formats/step#elements)).
+
+`meshioplusplus measure IN SPEC.json [OUT] [--json]` (both CLIs) measures a scan by a spec: elements, dimensions and GD&T tolerances, a table with PASS and FAIL, exit status 1 when a check fails; `meshioplusplus align-datums IN OUT --primary A --secondary B [--origin C] [--json]` lays a measured mesh on its datums ([measure](/measure)).
 
 `meshioplusplus sections IN OUT --offsets=a,b,... [--direction x,y,z] [--min-length L] [--record-parent-ids]` (both CLIs) slices a surface at the planes `n . x = offsets[k]` and merges the chained sections, with `section:offset` cell data.
 

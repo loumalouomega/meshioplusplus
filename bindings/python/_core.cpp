@@ -174,6 +174,7 @@
 #include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
+#include "meshioplusplus/operations/measure.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -3095,6 +3096,50 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("origin"), py::arg("normal"), py::arg("record_parent_ids") = false,
         py::arg("chain") = false, py::arg("min_length") = 0.0);
+
+    // Elements, dimensions and GD&T (roadmap 7.2) and datum alignment (7.3.4).
+    m.def(
+        "measure",
+        [](py::object pymesh, const std::string& spec) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::MeasureResult r =
+                core_nogil([&] { return meshioplusplus::measure(mesh, spec); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["report"] = r.mReportJson;
+            out["table"] = r.mTableJson;
+            out["num_fail"] = r.mNumFail;
+            return out;
+        },
+        py::arg("mesh"), py::arg("spec"));
+    m.def(
+        "align_datums",
+        [](py::object pymesh, const std::string& primary, const std::string& secondary,
+           const std::string& origin) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::AlignDatumsResult r = core_nogil(
+                [&] { return meshioplusplus::align_datums(mesh, primary, secondary, origin); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["matrix"] = std::vector<double>(r.mMatrix.begin(), r.mMatrix.end());
+            return out;
+        },
+        py::arg("mesh"), py::arg("primary"), py::arg("secondary"), py::arg("origin") = "");
+    m.def(
+        "measure_element_primitive",
+        [](py::object pymesh, const std::string& name) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            const auto [type, params] = meshioplusplus::measure_element_primitive(
+                meshioplusplus::measure_element(mesh, name));
+            return py::make_tuple(type, std::vector<double>(params.begin(), params.end()));
+        },
+        py::arg("mesh"), py::arg("name"));
 
     // The outline of a part along a direction (roadmap 7.6.3).
     m.def(

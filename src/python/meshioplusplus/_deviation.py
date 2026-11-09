@@ -113,6 +113,7 @@ def deviation(
     reference,
     *,
     patch=None,
+    element: str | None = None,
     tolerance: float = 0.0,
     bins: int = 20,
     range=None,  # noqa: A002 - the documented keyword
@@ -130,6 +131,9 @@ def deviation(
         ``patch``, a mesh ``fit_primitives`` wrote.
     :param patch: measure against this patch label's fitted primitive of the
         ``reference`` mesh (``fit:patch_params``) instead of its surface.
+    :param element: measure against this element of the ``reference`` mesh's
+        element table (``measure``; a plane, sphere, cylinder or cone), roadmap
+        7.4.2. The reference is often the scan itself, measured.
     :param tolerance: report the share within ``+-tolerance`` (when positive).
     :param bins: histogram bins.
     :param range: ``(lo, hi)`` of the histogram; ``None`` takes ``+-max|d|``.
@@ -164,7 +168,12 @@ def deviation(
         attach=bool(attach),
         register=bool(register),
     )
-    if _is_mesh(reference) and patch is None:
+    if element is not None:
+        t, p = _core.measure_element_primitive(reference, str(element))
+        res = _core.deviation(
+            scan, None, primitive_type=int(t), primitive_params=list(p), **kwargs
+        )
+    elif _is_mesh(reference) and patch is None:
         res = _core.deviation(scan, reference, **kwargs)
     else:
         t, p = primitive_reference(reference, patch)

@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -90,6 +91,7 @@
 #include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
+#include "meshioplusplus/operations/measure.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -1417,6 +1419,40 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                 "the section is empty; the plane misses the mesh -- move or flip it");
         return section;
     }
+    if (op == "Measure") {
+        std::string spec = pipe_text(rStep, "Spec", "");
+        const std::size_t first = spec.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos)
+            throw std::invalid_argument("meshio++: pipeline: Measure needs a Spec");
+        // Inline JSON starts with an opening brace (0x7B); anything else is a path.
+        if (spec[first] != 0x7B) {
+            auto in = detail::make_classic_ifstream(spec);
+            if (!in)
+                throw std::invalid_argument("meshio++: pipeline: Measure: cannot open '" + spec +
+                                            "'");
+            spec.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        MeasureResult mr = measure(mesh, spec);
+        for (const std::string& w : mr.mWarnings)
+            rReport.mWarnings.push_back("measure: " + w);
+        if (pipe_flag(rStep, "Require", false) && mr.mNumFail > 0)
+            throw std::runtime_error(
+                "meshio++: pipeline: Measure failed: " + std::to_string(mr.mNumFail) +
+                " dimension(s) or tolerance(s) outside their limits");
+        pipe_push_step(rReport, rStep,
+                       {{"NumElements", static_cast<double>(mr.mElements.size())},
+                        {"NumDimensions", static_cast<double>(mr.mDimensions.size())},
+                        {"NumTolerances", static_cast<double>(mr.mTolerances.size())},
+                        {"NumFail", static_cast<double>(mr.mNumFail)}});
+        return std::move(mr.mMesh);
+    }
+    if (op == "AlignDatums") {
+        AlignDatumsResult ar =
+            align_datums(mesh, pipe_text(rStep, "Primary", ""), pipe_text(rStep, "Secondary", ""),
+                         pipe_text(rStep, "Origin", ""));
+        pipe_push_step(rReport, rStep, {});
+        return std::move(ar.mMesh);
+    }
     if (op == "Silhouette") {
         SilhouetteOptions opts;
         if (pipe_find(rStep, "Normal"))
@@ -2028,12 +2064,18 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mReferenceRegion = pipe_text(rStep, "ReferenceRegion", "");
         opts.mRegister = pipe_flag(rStep, "Register", false);
         const std::string ref_path = pipe_text(rStep, "Reference", "");
-        if (ref_path.empty())
+        const std::string element = pipe_text(rStep, "Element", "");
+        if (ref_path.empty() && element.empty())
             throw std::invalid_argument("meshio++: pipeline: Deviation needs a Reference");
-        const Mesh ref = pipe_read_extra(ref_path);
+        // An element of the Reference's table, or of the mesh's own (roadmap 7.4.2).
+        const Mesh ref = ref_path.empty() ? Mesh() : pipe_read_extra(ref_path);
         const double patch = pipe_number(rStep, "Patch", -1.0);
         DeviationResult dr;
-        if (patch >= 0.0) {
+        if (!element.empty()) {
+            const auto [type, params] =
+                measure_element_primitive(measure_element(ref_path.empty() ? mesh : ref, element));
+            dr = deviation_to_primitive(mesh, type, params, opts);
+        } else if (patch >= 0.0) {
             if (!ref.HasFieldData("fit:patch_params") || !ref.HasFieldData("fit:patch_id"))
                 throw std::invalid_argument(
                     "meshio++: pipeline: Deviation: the Reference carries no fit:patch_params");

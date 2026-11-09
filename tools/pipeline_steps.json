@@ -299,9 +299,19 @@
       {"name": "TwoSided", "kind": "flag", "default": false},
       {"name": "MaxNormalDeviation", "kind": "number", "default": 90.0}
     ]},
+    {"op": "Measure", "note": "Elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).", "keys": [
+      {"name": "Spec", "kind": "text", "default": ""},
+      {"name": "Require", "kind": "flag", "default": false}
+    ]},
+    {"op": "AlignDatums", "note": "The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4).", "keys": [
+      {"name": "Primary", "kind": "text", "default": ""},
+      {"name": "Secondary", "kind": "text", "default": ""},
+      {"name": "Origin", "kind": "text", "default": ""}
+    ]},
     {"op": "Deviation", "keys": [
       {"name": "Reference", "kind": "text", "default": ""},
       {"name": "Patch", "kind": "number", "default": -1.0},
+      {"name": "Element", "kind": "text", "default": ""},
       {"name": "Tolerance", "kind": "number", "default": 0.0},
       {"name": "MinShare", "kind": "number", "default": 0.0},
       {"name": "Require", "kind": "flag", "default": true},

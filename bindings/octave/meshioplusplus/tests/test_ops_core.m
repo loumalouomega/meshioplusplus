@@ -394,6 +394,16 @@ function t_feature_segment()
     el = mio.write_step_elements(step_path, fp.mesh, 'patches', 0);
     expect_equal(el.num_planes, 1);
     expect_error(@() mio.write_step_elements(step_path, fp.mesh, 'patches', 99), 'patch');
+    ms = mio.measure(m, ['{"elements": [' ...
+        '{"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},' ...
+        '{"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],' ...
+        '"tolerances": [{"type": "perpendicularity", "feature": "B", "datum": "A", "limit": 1e-9}]}']);
+    expect_equal(ms.num_elements, 2);
+    expect_equal(ms.num_fail, 0);
+    al = mio.align_datums(ms.mesh, 'A', 'B');
+    expect_equal(size(al.matrix), [4 4]);
+    el = mio.measure_element_primitive(ms.mesh, 'A');
+    expect_equal(el.type, 1);
     delete(step_path);
     fp2 = mio.fit_primitives(sg.mesh, 'types', 'plane');
     expect_equal(fp2.num_plane, 6);

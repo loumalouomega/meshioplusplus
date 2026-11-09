@@ -333,6 +333,61 @@ function slice(m::Mesh, origin::AbstractVector{<:Real}, normal::AbstractVector{<
 end
 
 """
+    measure(m, spec::AbstractString)
+        -> (; mesh, num_elements, num_dimensions, num_tolerances, num_fail, report_json, warnings)
+
+Measure `m` by the JSON spec `spec` (roadmap 7.2): elements fitted from regions,
+seeds or patches, constructed or literal; dimensions and GD&T tolerances. The
+mesh comes back with its element table; `report_json` is the full report. See
+`doc/measure.md`.
+"""
+function measure(m::Mesh, spec::AbstractString)
+    rep = Ref{_CMeasureReport}()
+    ptr = ccall(_sym(:mio_measure), Ptr{Cvoid}, (Ptr{Cvoid}, Cstring, Ref{_CMeasureReport}),
+                _handle(m), String(spec), rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    report = _getstring((buf, n) -> ccall(_sym(:mio_measure_report_json), Int64,
+                                          (Ptr{UInt8}, Int64), buf, n))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_measure_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    (mesh=out, num_elements=Int(r.num_elements), num_dimensions=Int(r.num_dimensions),
+     num_tolerances=Int(r.num_tolerances), num_fail=Int(r.num_fail), report_json=report,
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    align_datums(m, primary, secondary; origin="") -> (; mesh, matrix)
+
+The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4): `primary` sets
+Z, `secondary` X, `origin` (a point-like element or a third plane) the origin.
+`matrix` is the 4 x 4 `transform` applies.
+"""
+function align_datums(m::Mesh, primary::AbstractString, secondary::AbstractString;
+                      origin::AbstractString="")
+    mat = zeros(Cdouble, 16)
+    ptr = ccall(_sym(:mio_align_datums), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Cstring, Cstring, Ptr{Cdouble}), _handle(m),
+                String(primary), String(secondary), String(origin), mat)
+    out = Mesh(_check_ptr(ptr))
+    (mesh=out, matrix=[mat[4 * (a - 1) + b] for a in 1:4, b in 1:4])
+end
+
+"""
+    measure_element_primitive(m, name) -> (; type, params)
+
+The element `name` of a measured mesh as a fitted primitive (1 plane, 2 sphere,
+3 cylinder, 4 cone) and its ten parameters, a deviation reference (roadmap 7.4.2).
+"""
+function measure_element_primitive(m::Mesh, name::AbstractString)
+    t = Ref{Int32}(0)
+    p = zeros(Cdouble, 10)
+    _check(ccall(_sym(:mio_measure_element_primitive), Cint,
+                 (Ptr{Cvoid}, Cstring, Ref{Int32}, Ptr{Cdouble}), _handle(m), String(name), t, p))
+    (type=Int(t[]), params=p)
+end
+
+"""
     write_step_elements(path, m; patches=Int64[], segments=64)
         -> (; num_planes, num_spheres, num_cylinders, num_cones, num_tori, num_skipped, warnings)
 

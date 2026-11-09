@@ -226,6 +226,53 @@ static mxArray *O_mio_slice(const mxArray **a) {
     return mio_o_wrap_mesh(out);
 }
 
+/* measure(mesh, spec) (roadmap 7.2): the report as its JSON text. */
+static mxArray *O_mio_measure(const mxArray **a) {
+    mio_measure_report r;
+    mio_mesh *out = mio_measure(mio_o_mesh(a[0]), mio_o_string(a[1], "spec"), &r);
+    if (out == NULL) mio_o_fail("measure");
+    mxArray *js = mio_o_getbuffer(mio_measure_report_json, "measure");
+    mxArray *w = mio_o_getbuffer(mio_measure_warnings, "measure");
+    const char *keys[] = {"mesh",     "num_elements", "num_dimensions", "num_tolerances",
+                          "num_fail", "report_json",  "warnings"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mio_o_scalar((double)r.num_elements),
+                         mio_o_scalar((double)r.num_dimensions),
+                         mio_o_scalar((double)r.num_tolerances),
+                         mio_o_scalar((double)r.num_fail),
+                         js,
+                         w};
+    return mio_o_struct(7, keys, values);
+}
+
+/* align_datums(mesh, primary, secondary, origin) (roadmap 7.3.4). */
+static mxArray *O_mio_align_datums(const mxArray **a) {
+    double m[16];
+    mio_mesh *out = mio_align_datums(mio_o_mesh(a[0]), mio_o_string(a[1], "primary"),
+                                     mio_o_string(a[2], "secondary"), mio_o_opt_string(a[3]), m);
+    if (out == NULL) mio_o_fail("align_datums");
+    mxArray *mat = mio_o_matrix(4, 4);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) mxGetPr(mat)[i + 4 * j] = m[4 * i + j];
+    const char *keys[] = {"mesh", "matrix"};
+    mxArray *values[] = {mio_o_wrap_mesh(out), mat};
+    return mio_o_struct(2, keys, values);
+}
+
+/* measure_element_primitive(mesh, name) (roadmap 7.4.2). */
+static mxArray *O_mio_measure_element_primitive(const mxArray **a) {
+    int32_t type = 0;
+    double p[10];
+    mio_o_check(mio_measure_element_primitive(mio_o_mesh(a[0]), mio_o_string(a[1], "name"),
+                                              &type, p),
+                "measure_element_primitive");
+    mxArray *params = mio_o_matrix(1, 10);
+    for (int k = 0; k < 10; ++k) mxGetPr(params)[k] = p[k];
+    const char *keys[] = {"type", "params"};
+    mxArray *values[] = {mio_o_scalar((double)type), params};
+    return mio_o_struct(2, keys, values);
+}
+
 /* write_step_elements(path, mesh, patches, segments) (roadmap 7.6.5): patches
  * a numeric vector of labels (empty: every fitted patch). */
 static mxArray *O_mio_write_step_elements(const mxArray **a) {
@@ -1695,6 +1742,9 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_fit_curves, 6),
     MIO_O_ENTRY(mio_silhouette, 8),
     MIO_O_ENTRY(mio_write_step_elements, 4),
+    MIO_O_ENTRY(mio_measure, 2),
+    MIO_O_ENTRY(mio_align_datums, 4),
+    MIO_O_ENTRY(mio_measure_element_primitive, 2),
     MIO_O_ENTRY(mio_isosurface, 5),
     MIO_O_ENTRY(mio_gradient, 8),
     MIO_O_ENTRY(mio_hessian, 6),

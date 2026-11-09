@@ -202,6 +202,7 @@ if TYPE_CHECKING:
     )
     from ._interpolate import interpolate
     from ._isosurface import isosurface
+    from ._measure import align_datums, measure, measure_table
     from ._merge import merge
     from ._mesh_cad import mesh_cad_surface, triangulate_polygon_2d
     from ._metric import prepare_metric
@@ -564,6 +565,9 @@ _LAZY_ATTRS = {
     "sections": "_slice",
     "fit_curves": "_fit_curves",
     "silhouette": "_silhouette",
+    "measure": "_measure",
+    "measure_table": "_measure",
+    "align_datums": "_measure",
     "write_step_elements": "_step_elements",
     "smooth": "_smooth",
     "sniff_format": "_sniff",
@@ -750,6 +754,9 @@ __all__ = [
     "fit_curves",
     "silhouette",
     "write_step_elements",
+    "measure",
+    "measure_table",
+    "align_datums",
     "isosurface",
     "transform",
     "clean",

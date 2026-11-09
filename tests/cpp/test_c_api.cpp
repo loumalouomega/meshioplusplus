@@ -8887,3 +8887,45 @@ TEST(CApi, CheckTetrahedraReportsInvertedDegenerateAndOverlapping) {
     EXPECT_NE(mio_check_tetrahedra(nullptr, nullptr, &report), MIO_OK);
     mio_mesh_free(mesh);
 }
+
+TEST(CApi, MeasureAlignAndAnElementReference) {
+    // Roadmap 7.2, 7.3.4, 7.4.2 on the unit box's skin, elements from seeds.
+    mio_mesh* box = mio_box(nullptr);
+    ASSERT_NE(box, nullptr);
+    mio_mesh* skin = mio_extract_skin(box, 0);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    const char* spec = R"({"elements": [
+        {"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},
+        {"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]},
+        {"name": "C", "fit": "plane", "seeds": [[0.5, 0.0, 0.5]]},
+        {"name": "T", "fit": "plane", "seeds": [[0.5, 0.5, 1.0]]}],
+      "dimensions": [{"name": "h", "type": "distance", "between": ["A", "T"],
+                      "nominal": 1, "tolerance": 1e-9}],
+      "tolerances": [{"name": "p", "type": "perpendicularity", "feature": "B",
+                      "datum": "A", "limit": 1e-9}]})";
+    mio_measure_report rep;
+    mio_mesh* measured = mio_measure(skin, spec, &rep);
+    ASSERT_NE(measured, nullptr) << mio_last_error();
+    EXPECT_EQ(rep.num_elements, 4);
+    EXPECT_EQ(rep.num_fail, 0);
+    const int64_t n = mio_measure_report_json(nullptr, 0);
+    EXPECT_GT(n, 0);
+    std::string json(static_cast<std::size_t>(n), '\0');
+    mio_measure_report_json(json.data(), n + 1);
+    EXPECT_NE(json.find("perpendicularity"), std::string::npos);
+    double matrix[16];
+    mio_mesh* aligned = mio_align_datums(measured, "A", "B", "C", matrix);
+    ASSERT_NE(aligned, nullptr) << mio_last_error();
+    EXPECT_NEAR(matrix[15], 1.0, 0.0);
+    int32_t type = 0;
+    double params[10];
+    ASSERT_EQ(mio_measure_element_primitive(measured, "T", &type, params), MIO_OK);
+    EXPECT_EQ(type, 1);
+    EXPECT_NE(mio_measure_element_primitive(measured, "nope", &type, params), MIO_OK);
+    EXPECT_EQ(mio_measure(skin, "not json", &rep), nullptr);
+    EXPECT_EQ(mio_align_datums(measured, "A", "T", nullptr, matrix), nullptr);  // parallel
+    mio_mesh_free(aligned);
+    mio_mesh_free(measured);
+    mio_mesh_free(skin);
+    mio_mesh_free(box);
+}

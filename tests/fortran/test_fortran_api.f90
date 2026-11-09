@@ -3070,6 +3070,30 @@ contains
                                          patches=[99_int64], stat=ierr)
             call check(ierr /= 0, 'write_step_elements refuses an unknown patch')
         end block
+        block
+            type(mio_mesh) :: measured, aligned
+            type(mio_measure_report) :: mrep
+            character(:), allocatable :: mjson
+            real(real64) :: mat(4, 4), prm(10)
+            integer :: ptype
+            measured = mio_measure(sq, '{"elements": [' // &
+                '{"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},' // &
+                '{"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],' // &
+                '"tolerances": [{"type": "perpendicularity", "feature": "B", "datum": "A",' // &
+                ' "limit": 1e-9}]}', report=mrep, report_json=mjson, stat=ierr)
+            call check(ierr == 0 .and. mrep%num_elements == 2_int64 .and. &
+                       mrep%num_fail == 0_int64 .and. index(mjson, 'perpendicularity') > 0, &
+                       'measure fits two planes and checks a tolerance')
+            if (ierr == 0) then
+                aligned = mio_align_datums(measured, 'A', 'B', matrix=mat, stat=ierr)
+                call check(ierr == 0 .and. abs(mat(4, 4) - 1.0_real64) < 1e-15_real64, &
+                           'align_datums aligns on two planes')
+                if (ierr == 0) call aligned%free()
+                call mio_measure_element_primitive(measured, 'A', ptype, prm, stat=ierr)
+                call check(ierr == 0 .and. ptype == 1, 'an element is a plane primitive')
+                call measured%free()
+            end if
+        end block
         call fitted%free()
         ! Roadmap 7.1.1: a seed on the top face fits it alone.
         block

@@ -304,9 +304,21 @@ OP_TABLE = {
         "TwoSided",
         "MaxNormalDeviation",
     ),
+    # Elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).
+    "Measure": (
+        "Spec",
+        "Require",
+    ),
+    # The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4).
+    "AlignDatums": (
+        "Primary",
+        "Secondary",
+        "Origin",
+    ),
     "Deviation": (
         "Reference",
         "Patch",
+        "Element",
         "Tolerance",
         "MinShare",
         "Require",

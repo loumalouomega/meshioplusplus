@@ -44,12 +44,9 @@ from collections import OrderedDict
 
 import numpy as np
 
+from .. import GeometryGuard, GridArray, GridSpec, adapt, agglomerate
+from .. import align_datums as _align_datums_op
 from .. import (
-    GeometryGuard,
-    GridArray,
-    GridSpec,
-    adapt,
-    agglomerate,
     annulus,
     attach_quality,
     auto_align,
@@ -138,6 +135,9 @@ from .. import (
     line,
     lshape,
     match_periodic_nodes,
+)
+from .. import measure as _measure_op
+from .. import (
     merge,
     mesh_cad_surface,
     mesh_domain,
@@ -903,6 +903,7 @@ def tool_deviation(
     max_normal_angle=90.0,
     reference_region="",
     register=False,
+    element=None,
 ):
     """Signed deviation of every point of a scan from a reference surface
     (or, with ``patch``, from that patch's fitted primitive in a mesh
@@ -920,6 +921,7 @@ def tool_deviation(
         scan,
         reference,
         patch=patch,
+        element=element,
         tolerance=tolerance,
         bins=bins,
         range=rng,
@@ -1802,6 +1804,39 @@ def tool_slice(
 ):
     """Planar cross-section (one topological dimension below the input)."""
     return _run_op(_slice_op, locals(), report=False)
+
+
+def tool_measure(
+    input_path, spec, output_path=None, input_format=None, output_format=None
+):
+    """Elements, dimensions and GD&T tolerances of a scan by a spec."""
+    if isinstance(spec, str) and not spec.lstrip().startswith("{"):
+        spec = str(_resolve(spec, must_exist=True))
+    out, report = _measure_op(_load(input_path, input_format), spec)
+    if output_path:
+        report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_align_datums(
+    input_path,
+    output_path,
+    primary,
+    secondary,
+    origin=None,
+    input_format=None,
+    output_format=None,
+):
+    """The 3-2-1 datum alignment of a measured mesh."""
+    out, matrix = _align_datums_op(
+        _load(input_path, input_format), primary, secondary, origin
+    )
+    return _json_safe(
+        {
+            "matrix": matrix.tolist(),
+            "output_path": _store(out, output_path, output_format),
+        }
+    )
 
 
 def tool_write_step_elements(
@@ -7339,6 +7374,14 @@ TOOL_REGISTRY = OrderedDict(
         ("crop", {"fn": tool_crop, "wraps": ("crop",), "gated": None}),
         ("slice", {"fn": tool_slice, "wraps": ("slice",), "gated": None}),
         ("sections", {"fn": tool_sections, "wraps": ("sections",), "gated": None}),
+        (
+            "measure",
+            {"fn": tool_measure, "wraps": ("measure", "measure_table"), "gated": None},
+        ),
+        (
+            "align_datums",
+            {"fn": tool_align_datums, "wraps": ("align_datums",), "gated": None},
+        ),
         (
             "write_step_elements",
             {

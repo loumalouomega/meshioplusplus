@@ -140,6 +140,7 @@
 #include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
+#include "meshioplusplus/operations/measure.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -3993,6 +3994,50 @@ val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool r
         options.mChain = Chain;
         options.mMinLength = MinLength;
         return mesh_to_val(meshioplusplus::slice(val_to_mesh(rMeshObj), options));
+    });
+}
+
+/**
+ * @brief Elements, dimensions and GD&T (roadmap 7.2) by a JSON spec (text).
+ * Returns `{mesh, report, numFail, warnings}`, `report` the JSON text.
+ */
+val measure_js(const val& rMeshObj, const std::string& rSpec) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::MeasureResult r = meshioplusplus::measure(val_to_mesh(rMeshObj), rSpec);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("report", r.mReportJson);
+        out.set("numFail", static_cast<double>(r.mNumFail));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/// The 3-2-1 datum alignment (roadmap 7.3.4): `{mesh, matrix}` (row-major 16).
+val align_datums_js(const val& rMeshObj, const std::string& rPrimary, const std::string& rSecondary,
+                    const std::string& rOrigin) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::AlignDatumsResult r =
+            meshioplusplus::align_datums(val_to_mesh(rMeshObj), rPrimary, rSecondary, rOrigin);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("matrix", float64_array_from(r.mMatrix.data(), 16));
+        return out;
+    });
+}
+
+/// A measured element as a fitted primitive (roadmap 7.4.2): `{type, params}`.
+val measure_element_primitive_js(const val& rMeshObj, const std::string& rName) {
+    return with_js_errors([&]() -> val {
+        const auto [type, params] = meshioplusplus::measure_element_primitive(
+            meshioplusplus::measure_element(val_to_mesh(rMeshObj), rName));
+        val out = val::object();
+        out.set("type", static_cast<double>(type));
+        out.set("params", float64_array_from(params.data(), 10));
+        return out;
     });
 }
 
@@ -10485,6 +10530,9 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("fitCurves", &fit_curves_js);
     emscripten::function("silhouette", &silhouette_js);
     emscripten::function("writeStepElements", &write_step_elements_js);
+    emscripten::function("measure", &measure_js);
+    emscripten::function("alignDatums", &align_datums_js);
+    emscripten::function("measureElementPrimitive", &measure_element_primitive_js);
     emscripten::function("isosurface", &isosurface_js);
     emscripten::function("grid", &grid_js);
     emscripten::function("rectangle", &rectangle_js);

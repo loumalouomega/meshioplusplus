@@ -149,6 +149,7 @@
 #include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
+#include "meshioplusplus/operations/measure.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -1980,6 +1981,7 @@ int cmd_deviation(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
                                          {{"reference-format", {}, true},
                                           {"patch", {}, true},
+                                          {"element", {}, true},
                                           {"tolerance", {}, true},
                                           {"min-share", {}, true},
                                           {"bins", {}, true},
@@ -2013,7 +2015,11 @@ int cmd_deviation(const std::vector<std::string>& rArgs) {
     Mesh scan = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     Mesh ref = read_mesh_cli(p.positionals[1], opt_value(p, "reference-format"));
     meshioplusplus::DeviationResult r;
-    if (has_opt(p, "patch")) {
+    if (has_opt(p, "element")) {
+        const auto [type, params] = meshioplusplus::measure_element_primitive(
+            meshioplusplus::measure_element(ref, opt_value(p, "element")));
+        r = meshioplusplus::deviation_to_primitive(scan, type, params, o);
+    } else if (has_opt(p, "patch")) {
         std::int64_t patch = 0, type = 0;
         cli_opt_int64(p, "patch", patch);
         std::array<double, 10> params{};
@@ -5419,6 +5425,82 @@ int cmd_slice(const std::vector<std::string>& rArgs) {
     Mesh out = meshioplusplus::slice(mesh, options);
 
     write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
+    return 0;
+}
+
+// measure: elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).
+int cmd_measure(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(), {{"json", {}, false}}}));
+    if (p.positionals.size() < 2 || p.positionals.size() > 3)
+        throw std::runtime_error("measure requires INFILE SPEC.json and an optional OUTFILE");
+    auto in = meshioplusplus::detail::make_classic_ifstream(p.positionals[1]);
+    if (!in)
+        throw std::runtime_error("measure: cannot open the spec '" + p.positionals[1] + "'");
+    const std::string spec((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    meshioplusplus::MeasureResult r = meshioplusplus::measure(
+        read_mesh_cli(p.positionals[0], opt_value(p, "input-format")), spec);
+    if (p.positionals.size() == 3)
+        write_mesh_cli(p.positionals[2], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        std::cout << r.mReportJson << "\n";
+        return r.mNumFail > 0 ? 1 : 0;
+    }
+    char line[512];
+    for (const meshioplusplus::MeasureElement& e : r.mElements) {
+        meshioplusplus::detail::snprintf_c(line, sizeof(line), "element %-12s (%.9g, %.9g, %.9g)",
+                                           e.mName.c_str(), e.mPoint[0], e.mPoint[1], e.mPoint[2]);
+        std::cout << line << " " << e.mSource << "\n";
+    }
+    for (const auto* p_list : {&r.mDimensions, &r.mTolerances})
+        for (const meshioplusplus::MeasureCheck& c : *p_list) {
+            meshioplusplus::detail::snprintf_c(line, sizeof(line), "%-16s %-16s %.9g",
+                                               c.mName.c_str(), c.mType.c_str(), c.mValue);
+            std::cout << line;
+            if (c.mHasTolerance)
+                std::cout << (c.mPass ? "  PASS" : "  FAIL");
+            std::cout << "\n";
+        }
+    for (const std::string& w : r.mWarnings)
+        std::cout << "warning: " << w << "\n";
+    return r.mNumFail > 0 ? 1 : 0;
+}
+
+// align-datums: the 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4).
+int cmd_align_datums(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"primary", {}, true},
+                                          {"secondary", {}, true},
+                                          {"origin", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 2 || !has_opt(p, "primary") || !has_opt(p, "secondary"))
+        throw std::runtime_error(
+            "align-datums requires INFILE OUTFILE --primary NAME --secondary NAME");
+    meshioplusplus::AlignDatumsResult r = meshioplusplus::align_datums(
+        read_mesh_cli(p.positionals[0], opt_value(p, "input-format")), opt_value(p, "primary"),
+        opt_value(p, "secondary"), opt_value(p, "origin"));
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Key("matrix");
+        json.BeginArray();
+        for (int row = 0; row < 4; ++row) {
+            json.BeginArray();
+            for (int col = 0; col < 4; ++col)
+                json.Number(r.mMatrix[static_cast<std::size_t>(4 * row + col)]);
+            json.EndArray();
+        }
+        json.EndArray();
+        json.EndObject();
+        return 0;
+    }
+    char line[256];
+    for (int row = 0; row < 4; ++row) {
+        meshioplusplus::detail::snprintf_c(line, sizeof(line), "%.17g %.17g %.17g %.17g\n",
+                                           r.mMatrix[4 * row], r.mMatrix[4 * row + 1],
+                                           r.mMatrix[4 * row + 2], r.mMatrix[4 * row + 3]);
+        std::cout << line;
+    }
     return 0;
 }
 
@@ -9712,6 +9794,11 @@ const CliVerb kCliVerbs[] = {
     {"slice", nullptr,
      "  slice                   Planar cross-section (volume->surface, surface->lines)\n",
      &cmd_slice},
+    {"measure", nullptr,
+     "  measure                 Elements, dimensions and GD&T tolerances by a JSON spec\n",
+     &cmd_measure},
+    {"align-datums", nullptr,
+     "  align-datums            The 3-2-1 datum alignment of a measured mesh\n", &cmd_align_datums},
     {"step-elements", nullptr,
      "  step-elements           Fitted primitives as exact STEP planes, balls, cylinders, cones, "
      "tori\n",

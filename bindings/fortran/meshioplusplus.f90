@@ -81,6 +81,7 @@ module meshioplusplus
     public :: mio_fit_curves, mio_fit_curves_report, mio_fit_curves_piece, mio_sketch_piece
     public :: mio_silhouette, mio_silhouette_report
     public :: mio_write_step_elements, mio_step_elements_report
+    public :: mio_measure, mio_measure_report, mio_align_datums, mio_measure_element_primitive
     public :: mio_deviation_regions, mio_deviation_regions_report, mio_deviation_region_info
     public :: mio_deviation_region
     public :: mio_exaggerate, mio_exaggerate_report, mio_colorize, mio_colorize_report
@@ -1641,6 +1642,16 @@ module meshioplusplus
         real(c_double) :: max_height = 0.0_c_double
         integer(c_int64_t) :: num_warnings = 0
         integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_measure_report` (80 bytes): what `mio_measure` found (roadmap 7.2).
+    type, bind(c) :: mio_measure_report
+        integer(c_int64_t) :: num_elements = 0
+        integer(c_int64_t) :: num_dimensions = 0
+        integer(c_int64_t) :: num_tolerances = 0
+        integer(c_int64_t) :: num_fail = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(5) = 0
     end type
 
     !> `mio_step_elements_report` (88 bytes): what `mio_write_step_elements` wrote.
@@ -4318,6 +4329,41 @@ module meshioplusplus
             type(mio_silhouette_opts_t), intent(in) :: opts
             type(mio_silhouette_report), intent(out) :: report
             type(c_ptr) :: out
+        end function
+
+        function c_mio_measure(h, spec, report) bind(c, name="mio_measure") result(out)
+            import :: c_ptr, c_char, mio_measure_report
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: spec
+            type(mio_measure_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_measure_report_json(buf, buflen) bind(c, name="mio_measure_report_json") &
+                result(n)
+            import :: c_char, c_int64_t
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_align_datums(h, primary, secondary, origin, matrix) &
+                bind(c, name="mio_align_datums") result(out)
+            import :: c_ptr, c_char, c_double
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: primary, secondary, origin
+            real(c_double), intent(out) :: matrix(16)
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_measure_element_primitive(h, name, type, params) &
+                bind(c, name="mio_measure_element_primitive") result(s)
+            import :: c_ptr, c_char, c_int, c_int32_t, c_double
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: name
+            integer(c_int32_t), intent(out) :: type
+            real(c_double), intent(out) :: params(10)
+            integer(c_int) :: s
         end function
 
         function c_mio_write_step_elements(path, h, patches, n, segments, report) &
@@ -8780,6 +8826,98 @@ contains
         if (present(report)) report = rep
         call clear_status(stat, errmsg)
     end function
+
+    !> Measure `mesh` by the JSON spec `spec` (roadmap 7.2; doc/measure.md):
+    !> elements, dimensions and GD&T tolerances. `report_json` receives the
+    !> JSON report.
+    function mio_measure(mesh, spec, report, report_json, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: spec
+        type(mio_measure_report), intent(out), optional :: report
+        character(:), allocatable, intent(out), optional :: report_json
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_measure_report) :: rep
+        character(c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+        if (c_sizeof(rep) /= 80_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: measure layout mismatch'
+            error stop 1
+        end if
+        out%handle = c_mio_measure(mesh%handle, c_str(spec), rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('measure', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        if (present(report_json)) then
+            report_json = ''
+            allocate (buf(1))
+            n = c_mio_measure_report_json(buf, 0_c_int64_t)
+            if (n > 0) then
+                deallocate (buf)
+                allocate (buf(int(n) + 1))
+                n = c_mio_measure_report_json(buf, n + 1)
+                if (n > 0) report_json = from_c_buf(buf, int(n))
+            end if
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4); `matrix`
+    !> receives the 4 x 4 (row i, column j as matrix(i, j)).
+    function mio_align_datums(mesh, primary, secondary, origin, matrix, stat, errmsg) &
+            result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: primary, secondary
+        character(*), intent(in), optional :: origin
+        real(real64), intent(out), optional :: matrix(4, 4)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        real(c_double) :: m(16)
+        integer :: i, j
+        if (present(origin)) then
+            out%handle = c_mio_align_datums(mesh%handle, c_str(primary), c_str(secondary), &
+                                            c_str(origin), m)
+        else
+            out%handle = c_mio_align_datums(mesh%handle, c_str(primary), c_str(secondary), &
+                                            c_str(''), m)
+        end if
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('align_datums', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(matrix)) then
+            do i = 1, 4
+                do j = 1, 4
+                    matrix(i, j) = real(m(4 * (i - 1) + j), real64)
+                end do
+            end do
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The element `name` of a measured mesh as a fitted primitive's type and
+    !> ten parameters, for a deviation reference (roadmap 7.4.2).
+    subroutine mio_measure_element_primitive(mesh, name, type, params, stat, errmsg)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: name
+        integer, intent(out) :: type
+        real(real64), intent(out) :: params(10)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int32_t) :: t
+        real(c_double) :: p(10)
+        if (c_mio_measure_element_primitive(mesh%handle, c_str(name), t, p) /= 0) then
+            call handle_failure('measure_element_primitive', mio_error_message(), stat, errmsg)
+            return
+        end if
+        type = int(t)
+        params = real(p, real64)
+        call clear_status(stat, errmsg)
+    end subroutine
 
     !> Write the fitted primitives of `mesh` (`mio_segment`, then
     !> `mio_fit_primitives`) to a STEP file as exact geometry: bounded planes,

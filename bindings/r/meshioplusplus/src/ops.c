@@ -231,6 +231,59 @@ SEXP R_mio_slice(SEXP mesh, SEXP origin, SEXP normal, SEXP record_parent_ids, SE
     return mio_r_wrap_mesh(out);
 }
 
+/* measure(mesh, spec) (roadmap 7.2): the report as its JSON text. */
+SEXP R_mio_measure(SEXP mesh, SEXP spec) {
+    mio_measure_report r;
+    mio_mesh *out = mio_measure(mio_r_mesh(mesh), mio_r_string(spec, "spec"), &r);
+    if (out == NULL) mio_r_fail("measure");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP js = PROTECT(mio_r_getbuffer(mio_measure_report_json, "measure"));
+    SEXP w = PROTECT(mio_r_getbuffer(mio_measure_warnings, "measure"));
+    const char *names[] = {"mesh",     "num_elements", "num_dimensions", "num_tolerances",
+                           "num_fail", "report_json",  "warnings"};
+    const SEXP values[] = {mo, NULL, NULL, NULL, NULL, js, w};
+    const double numbers[] = {(double)r.num_elements, (double)r.num_dimensions,
+                              (double)r.num_tolerances, (double)r.num_fail};
+    SEXP res = mio_r_report_list(7, names, values, numbers);
+    UNPROTECT(3);
+    return res;
+}
+
+/* align_datums(mesh, primary, secondary, origin) (roadmap 7.3.4). */
+SEXP R_mio_align_datums(SEXP mesh, SEXP primary, SEXP secondary, SEXP origin) {
+    double m[16];
+    mio_mesh *out = mio_align_datums(mio_r_mesh(mesh), mio_r_string(primary, "primary"),
+                                     mio_r_string(secondary, "secondary"),
+                                     mio_r_opt_string(origin), m);
+    if (out == NULL) mio_r_fail("align_datums");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP mat = PROTECT(Rf_allocMatrix(REALSXP, 4, 4));
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) REAL(mat)[i + 4 * j] = m[4 * i + j];
+    const char *names[] = {"mesh", "matrix"};
+    SEXP values[] = {mo, mat};
+    SEXP res = mio_r_named_list(2, names, values);
+    UNPROTECT(2);
+    return res;
+}
+
+/* measure_element_primitive(mesh, name) (roadmap 7.4.2). */
+SEXP R_mio_measure_element_primitive(SEXP mesh, SEXP name) {
+    int32_t type = 0;
+    double p[10];
+    mio_r_check(mio_measure_element_primitive(mio_r_mesh(mesh), mio_r_string(name, "name"),
+                                              &type, p),
+                "measure_element_primitive");
+    SEXP t = PROTECT(Rf_ScalarReal((double)type));
+    SEXP params = PROTECT(Rf_allocVector(REALSXP, 10));
+    for (int k = 0; k < 10; ++k) REAL(params)[k] = p[k];
+    const char *names[] = {"type", "params"};
+    SEXP values[] = {t, params};
+    SEXP res = mio_r_named_list(2, names, values);
+    UNPROTECT(2);
+    return res;
+}
+
 /* write_step_elements(path, mesh, patches, segments) (roadmap 7.6.5); patches
  * a numeric vector of labels (empty: every fitted patch). */
 SEXP R_mio_write_step_elements(SEXP path, SEXP mesh, SEXP patches, SEXP segments) {

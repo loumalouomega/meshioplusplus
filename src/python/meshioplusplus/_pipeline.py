@@ -1804,19 +1804,47 @@ def _apply_step(mesh, step, steps, warnings):
         entry["Mean"] = float(rep["mean"])
         entry["P2"] = float(rep["p2"])
         entry["P95"] = float(rep["p95"])
+    elif op == "Measure":
+        from ._measure import measure
+
+        spec = _text(step, "Spec", "")
+        if not spec.strip():
+            raise ValueError("meshio++: pipeline: Measure needs a Spec")
+        mesh, rep = measure(mesh, spec)
+        warnings.extend(f"measure: {w}" for w in rep["warnings"])
+        if _flag(step, "Require", False) and rep["num_fail"] > 0:
+            raise RuntimeError(
+                f"meshio++: pipeline: Measure failed: {rep['num_fail']} dimension(s) or "
+                "tolerance(s) outside their limits"
+            )
+        entry["NumElements"] = float(len(rep["elements"]))
+        entry["NumDimensions"] = float(len(rep["dimensions"]))
+        entry["NumTolerances"] = float(len(rep["tolerances"]))
+        entry["NumFail"] = float(rep["num_fail"])
+    elif op == "AlignDatums":
+        from ._measure import align_datums
+
+        mesh, _ = align_datums(
+            mesh,
+            _text(step, "Primary", ""),
+            _text(step, "Secondary", ""),
+            _text(step, "Origin", "") or None,
+        )
     elif op == "Deviation":
         # deviation:distance flows on; with Tolerance and MinShare, a share
         # within tolerance below MinShare stops the pipeline unless Require is
         # false.
         ref_path = _text(step, "Reference", "")
-        if not ref_path:
+        element = _text(step, "Element", "")
+        if not ref_path and not element:
             raise ValueError("meshio++: pipeline: Deviation needs a Reference")
         patch = _number(step, "Patch", -1.0)
         tol = _number(step, "Tolerance", 0.0)
         mesh, rep = deviation(
             mesh,
-            read(ref_path),
+            read(ref_path) if ref_path else mesh,
             patch=int(patch) if patch >= 0.0 else None,
+            element=element or None,
             tolerance=tol,
             bins=int(_number(step, "Bins", 20.0)),
             max_normal_angle=_number(step, "MaxNormalAngle", 90.0),

@@ -17,6 +17,10 @@ mp.write("deviation.vtu", measured)  # deviation:distance per point
 # Against a fitted cylinder: patch 3 of a mesh fit_primitives wrote.
 fitted = mp.fit_primitives(mp.segment(scan))
 _, bore = mp.deviation(scan, fitted, patch=3, return_report=True)
+
+# Against an element of a measured mesh's table (roadmap 7.4.2; doc/measure.md).
+measured, _ = mp.measure(scan, "inspection.json")
+_, face = mp.deviation(measured, measured, element="A", return_report=True)
 ```
 
 ## The distance

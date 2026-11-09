@@ -98,9 +98,13 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Thickness",
          {"Other", "Direction", "MaxDistance", "Min", "Region", "RegionOther", "Require", "Method",
           "ConeAngle", "ConeRays", "TwoSided", "MaxNormalDeviation"}},
+        // Elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).
+        {"Measure", {"Spec", "Require"}},
+        // The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4).
+        {"AlignDatums", {"Primary", "Secondary", "Origin"}},
         {"Deviation",
-         {"Reference", "Patch", "Tolerance", "MinShare", "Require", "Bins", "MaxNormalAngle",
-          "ReferenceRegion", "Register"}},
+         {"Reference", "Patch", "Element", "Tolerance", "MinShare", "Require", "Bins",
+          "MaxNormalAngle", "ReferenceRegion", "Register"}},
         {"DeviationRegions", {"Tolerance", "Field", "Prefix", "MinArea"}},
         {"Exaggerate", {"Field", "Scale", "Clamp", "SmoothFraction"}},
         {"Colorize",

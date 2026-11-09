@@ -2122,6 +2122,16 @@ struct _CSilhouetteReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_measure_report` (roadmap 7.2)."""
+struct _CMeasureReport
+    num_elements::Int64
+    num_dimensions::Int64
+    num_tolerances::Int64
+    num_fail::Int64
+    num_warnings::Int64
+    reserved::NTuple{5,Int64}
+end
+
 """Mirror of C `mio_step_elements_report` (roadmap 7.6.5)."""
 struct _CStepElementsReport
     num_planes::Int64
@@ -2673,6 +2683,7 @@ function _check_abi_layout()
      sizeof(_CSilhouetteReport) == 104) ||
         error("meshio++: mio_silhouette layout mismatch")
     sizeof(_CStepElementsReport) == 88 || error("meshio++: mio_step_elements_report layout mismatch")
+    sizeof(_CMeasureReport) == 80 || error("meshio++: mio_measure_report layout mismatch")
     sizeof(_CSymmetryPlaneOpts) == 112 ||
         error("meshio++: mio_symmetry_plane_opts layout mismatch ($(sizeof(_CSymmetryPlaneOpts)) bytes)")
     sizeof(_CSymmetryPlaneReport) == 128 ||

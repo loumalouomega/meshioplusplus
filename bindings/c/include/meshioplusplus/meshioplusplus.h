@@ -1426,6 +1426,45 @@ MIO_API mio_mesh* mio_silhouette(const mio_mesh* mesh, const mio_silhouette_opts
 /** The warnings of this thread's last mio_silhouette call; string rule 5. */
 MIO_API int64_t mio_silhouette_warnings(char* buf, int64_t buflen);
 
+/** What mio_measure found (roadmap 7.2). 80 bytes. */
+typedef struct mio_measure_report {
+    int64_t num_elements;
+    int64_t num_dimensions;
+    int64_t num_tolerances;
+    int64_t num_fail;     /**< dimensions and tolerances outside their limits */
+    int64_t num_warnings;
+    int64_t reserved[5];
+} mio_measure_report;
+
+/**
+ * Measure a mesh by a JSON spec: elements (fitted, constructed or literal),
+ * dimensions and GD&T tolerances (roadmap 7.2; doc/measure.md). Returns the
+ * input with the element table (measure:table field data) and each fitted
+ * element's cells as the region measure:<name> (free with mio_mesh_free), or
+ * NULL. `report` may be NULL.
+ */
+MIO_API mio_mesh* mio_measure(const mio_mesh* mesh, const char* spec_json,
+                              mio_measure_report* report);
+/** The JSON report of this thread's last mio_measure call; string rule 5. */
+MIO_API int64_t mio_measure_report_json(char* buf, int64_t buflen);
+/** The warnings of that call; string rule 5. */
+MIO_API int64_t mio_measure_warnings(char* buf, int64_t buflen);
+/**
+ * The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4): `primary` sets
+ * Z, `secondary` X, and `origin` (NULL or "": the primary's point) a point-like
+ * element or a third plane. `matrix` (may be NULL) receives the row-major 4x4.
+ */
+MIO_API mio_mesh* mio_align_datums(const mio_mesh* mesh, const char* primary,
+                                   const char* secondary, const char* origin,
+                                   double matrix[16]);
+/**
+ * The element `name` of a measured mesh as a fitted primitive's type (1 plane,
+ * 2 sphere, 3 cylinder, 4 cone) and ten parameters, the reference
+ * mio_deviation_primitive takes (roadmap 7.4.2).
+ */
+MIO_API mio_status mio_measure_element_primitive(const mio_mesh* mesh, const char* name,
+                                                 int32_t* type, double params[10]);
+
 /** What mio_write_step_elements wrote. 88 bytes. */
 typedef struct mio_step_elements_report {
     int64_t num_planes;    /**< bounded faces */

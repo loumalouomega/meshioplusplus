@@ -1608,6 +1608,19 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_true(file.exists(step_path))
   expect_equal(mio_write_step_elements(step_path, fp$mesh, patches = 0)$num_planes, 1)
   expect_error(mio_write_step_elements(step_path, fp$mesh, patches = 99), "patch")
+  ms <- mio_measure(m, '{"elements": [
+    {"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},
+    {"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],
+    "tolerances": [{"type": "perpendicularity", "feature": "B", "datum": "A", "limit": 1e-9}]}')
+  expect_equal(ms$num_elements, 2)
+  expect_equal(ms$num_fail, 0)
+  expect_match(ms$report_json, "perpendicularity")
+  al <- mio_align_datums(ms$mesh, "A", "B")
+  expect_equal(dim(al$matrix), c(4L, 4L))
+  mio_release(al$mesh)
+  expect_equal(mio_measure_element_primitive(ms$mesh, "A")$type, 1)
+  expect_error(mio_measure_element_primitive(ms$mesh, "nope"), "nope")
+  mio_release(ms$mesh)
   expect_error(mio_segment(m, feature_angle = 200))
   expect_error(mio_fit_primitives(m))
   expect_error(mio_fit_primitives(sg$mesh, types = "blob"))

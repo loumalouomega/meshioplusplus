@@ -5704,6 +5704,17 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.equal(el.numPlanes, 6);
     assert.ok(m.FS.readFile('/elements.step', { encoding: 'utf8' }).includes('SHELL_BASED_SURFACE_MODEL'));
     assert.throws(() => m.writeStepElements('/elements.step', fp.mesh, { patches: [99] }), /patch/);
+    const ms = m.measure(cubeSurface, {
+        elements: [
+            { name: 'A', fit: 'plane', seeds: [[0.5, 0.5, 0.0]] },
+            { name: 'B', fit: 'plane', seeds: [[1.0, 0.5, 0.5]] },
+        ],
+        tolerances: [{ type: 'perpendicularity', feature: 'B', datum: 'A', limit: 1e-9 }],
+    });
+    assert.equal(ms.numFail, 0);
+    assert.equal(ms.report.elements.length, 2);
+    assert.equal(m.alignDatums(ms.mesh, 'A', 'B').matrix.length, 16);
+    assert.equal(m.measureElementPrimitive(ms.mesh, 'A').type, 1);
     assert.throws(() => m.segment(cubeSurface, 200));
     assert.throws(() => m.fitPrimitives(sg.mesh, 'segment:patch', 1e-3, true, 0.9, ['blob']));
     const seeded = m.fitPrimitives(sg.mesh, 'segment:patch', 1e-3, true, 0.9, ['plane'], 50,

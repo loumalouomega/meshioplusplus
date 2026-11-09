@@ -51,6 +51,13 @@ def add_args(parser):
         help="measure against the reference's fitted primitive of this patch label",
     )
     parser.add_argument(
+        "--element",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="measure against this element of the reference's element table (measure)",
+    )
+    parser.add_argument(
         "--tolerance",
         type=float,
         default=0.0,
@@ -110,6 +117,7 @@ def deviation_cmd(args):
         scan,
         reference,
         patch=args.patch,
+        element=args.element,
         tolerance=args.tolerance,
         bins=args.bins,
         range=rng,

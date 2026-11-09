@@ -375,6 +375,19 @@ _VERBS = (
         "Planar cross-section of a mesh (volume -> surface, surface -> lines)",
     ),
     _Verb(
+        "measure",
+        "_measure",
+        "measure_cmd",
+        "Elements, dimensions and GD&T tolerances by a JSON spec",
+    ),
+    _Verb(
+        "align-datums",
+        "_measure",
+        "align_datums_cmd",
+        "The 3-2-1 datum alignment of a measured mesh",
+        add_args="add_align_args",
+    ),
+    _Verb(
         "step-elements",
         "_step_elements",
         "step_elements_cmd",

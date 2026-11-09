@@ -2006,6 +2006,16 @@ end
     @test el.num_planes == 6 && isfile(step_path)
     @test write_step_elements(step_path, fit.mesh; patches=[0]).num_planes == 1
     @test_throws MeshioError write_step_elements(step_path, fit.mesh; patches=[99])
+    ms = measure(cube, """{"elements": [
+        {"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},
+        {"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],
+      "tolerances": [{"type": "perpendicularity", "feature": "B", "datum": "A", "limit": 1e-9}]}""")
+    @test ms.num_elements == 2 && ms.num_fail == 0 && occursin("perpendicularity", ms.report_json)
+    al = align_datums(ms.mesh, "A", "B")
+    @test size(al.matrix) == (4, 4) && al.matrix[4, 4] == 1.0
+    close(al.mesh)
+    @test measure_element_primitive(ms.mesh, "A").type == 1
+    close(ms.mesh)
     close(fit.mesh)
     # refine_patches (v17.11.0): six planes are already one patch each.
     ref = refine_patches(seg.mesh)

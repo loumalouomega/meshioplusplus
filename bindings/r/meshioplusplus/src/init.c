@@ -96,6 +96,9 @@ extern SEXP R_mio_sections(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_fit_curves(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_silhouette(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_write_step_elements(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_measure(SEXP, SEXP);
+extern SEXP R_mio_align_datums(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_measure_element_primitive(SEXP, SEXP);
 extern SEXP R_mio_isosurface(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_gradient(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_hessian(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -366,6 +369,9 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_fit_curves, 6),
                                               CALLDEF(R_mio_silhouette, 8),
                                               CALLDEF(R_mio_write_step_elements, 4),
+                                              CALLDEF(R_mio_measure, 2),
+                                              CALLDEF(R_mio_align_datums, 4),
+                                              CALLDEF(R_mio_measure_element_primitive, 2),
                                               CALLDEF(R_mio_isosurface, 5),
                                               CALLDEF(R_mio_gradient, 8),
                                               CALLDEF(R_mio_hessian, 6),
