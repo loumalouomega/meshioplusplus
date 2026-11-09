@@ -77,7 +77,7 @@ module meshioplusplus
     public :: mio_thickness, mio_thickness_report
     public :: mio_deviation, mio_deviation_primitive, mio_deviation_report
     public :: mio_register_landmarks, mio_find_symmetry_plane, mio_symmetry_plane_report
-    public :: mio_auto_align, mio_auto_align_report
+    public :: mio_auto_align, mio_auto_align_report, mio_sections
     public :: mio_deviation_regions, mio_deviation_regions_report, mio_deviation_region_info
     public :: mio_deviation_region
     public :: mio_exaggerate, mio_exaggerate_report, mio_colorize, mio_colorize_report
@@ -3565,6 +3565,27 @@ module meshioplusplus
             import :: c_ptr, c_int, c_double
             type(c_ptr), value :: h
             real(c_double), intent(in) :: origin(*), normal(*)
+            integer(c_int), value :: record_parent_ids
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_slice_ex(h, origin, normal, record_parent_ids, chain, min_length) &
+                bind(c, name="mio_slice_ex") result(r)
+            import :: c_ptr, c_int, c_double
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: origin(*), normal(*)
+            integer(c_int), value :: record_parent_ids, chain
+            real(c_double), value :: min_length
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_sections(h, direction, offsets, n_offsets, min_length, &
+                                record_parent_ids) bind(c, name="mio_sections") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_double
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: direction(*), offsets(*)
+            integer(c_int64_t), value :: n_offsets
+            real(c_double), value :: min_length
             integer(c_int), value :: record_parent_ids
             type(c_ptr) :: r
         end function
@@ -8536,22 +8557,66 @@ contains
     !> input is simplexified first (marching tetrahedra); shared cut points are
     !> deduped so the section is watertight. `record_parent_ids` (default
     !> .false.) attaches a slice:parent_cell cell_data array.
-    function mesh_slice(self, origin, normal, record_parent_ids, stat, errmsg) result(out)
+    !> `chain` (roadmap 7.6.1) walks a surface's line section into polylines
+    !> with section:chain and section:closed cell data, dropping chains shorter
+    !> than `min_length`.
+    function mesh_slice(self, origin, normal, record_parent_ids, stat, errmsg, chain, &
+                        min_length) result(out)
         class(mio_mesh), intent(in) :: self
         real(real64), intent(in) :: origin(3), normal(3)
         logical, intent(in), optional :: record_parent_ids
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: chain
+        real(real64), intent(in), optional :: min_length
         type(mio_mesh) :: out
-        integer(c_int) :: crec
+        integer(c_int) :: crec, cchain
+        real(c_double) :: cmin
         crec = 0
         if (present(record_parent_ids)) then
             if (record_parent_ids) crec = 1
         end if
-        out%handle = c_mio_slice(self%handle, real(origin, c_double), &
-                                 real(normal, c_double), crec)
+        cchain = 0
+        if (present(chain)) then
+            if (chain) cchain = 1
+        end if
+        cmin = 0.0_c_double
+        if (present(min_length)) cmin = real(min_length, c_double)
+        out%handle = c_mio_slice_ex(self%handle, real(origin, c_double), &
+                                    real(normal, c_double), crec, cchain, cmin)
         if (.not. c_associated(out%handle)) then
             call handle_failure('slice', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Chained sections of a surface at parallel planes `n . x = offsets(k)`
+    !> (`n` the unit `direction`), merged into one line mesh with section:offset,
+    !> section:chain and section:closed cell data (roadmap 7.6.1).
+    function mio_sections(mesh, direction, offsets, min_length, record_parent_ids, stat, &
+                          errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in) :: direction(3), offsets(:)
+        real(real64), intent(in), optional :: min_length
+        logical, intent(in), optional :: record_parent_ids
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        real(c_double) :: offs(max(1, size(offsets))), cmin
+        integer(c_int) :: crec
+        offs = 0.0_c_double
+        if (size(offsets) > 0) offs(1:size(offsets)) = real(offsets, c_double)
+        cmin = 0.0_c_double
+        if (present(min_length)) cmin = real(min_length, c_double)
+        crec = 0
+        if (present(record_parent_ids)) then
+            if (record_parent_ids) crec = 1
+        end if
+        out%handle = c_mio_sections(mesh%handle, real(direction, c_double), offs, &
+                                    int(size(offsets), c_int64_t), cmin, crec)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('sections', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

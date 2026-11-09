@@ -3979,7 +3979,8 @@ val crop_plane_js(const val& rMeshObj, const val& rPoint, const val& rNormal,
  * input). Returns a new mesh one dimension below the cut cells: a triangle/quad
  * surface for a volume mesh, a line mesh for a 2D surface mesh.
  */
-val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool recordParentIds) {
+val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool recordParentIds,
+             bool Chain, double MinLength) {
     return with_js_errors([&]() -> val {
         meshioplusplus::SliceOptions options;
         for (unsigned i = 0; i < 3; ++i) {
@@ -3987,7 +3988,26 @@ val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool r
             options.mNormal[i] = rNormal[i].as<double>();
         }
         options.mRecordParentIds = recordParentIds;
+        options.mChain = Chain;
+        options.mMinLength = MinLength;
         return mesh_to_val(meshioplusplus::slice(val_to_mesh(rMeshObj), options));
+    });
+}
+
+/**
+ * @brief Chained sections at parallel planes (roadmap 7.6.1): `direction`,
+ * `offsets`, `minLength`, `recordParentIds`.
+ */
+val sections_js(const val& rMeshObj, const val& rDirection, const val& rOffsets, double MinLength,
+                bool recordParentIds) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SectionsOptions o;
+        for (unsigned i = 0; i < 3; ++i)
+            o.mDirection[i] = rDirection[i].as<double>();
+        o.mOffsets = emscripten::vecFromJSArray<double>(rOffsets);
+        o.mMinLength = MinLength;
+        o.mRecordParentIds = recordParentIds;
+        return mesh_to_val(meshioplusplus::sections(val_to_mesh(rMeshObj), o));
     });
 }
 
@@ -10313,6 +10333,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("conservativeInterpolate", &conservative_interpolate_js);
     emscripten::function("undoGreen", &undo_green_js);
     emscripten::function("slice", &slice_js);
+    emscripten::function("sections", &sections_js);
     emscripten::function("isosurface", &isosurface_js);
     emscripten::function("grid", &grid_js);
     emscripten::function("rectangle", &rectangle_js);

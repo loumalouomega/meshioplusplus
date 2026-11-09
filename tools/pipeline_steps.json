@@ -59,12 +59,22 @@
     {"op": "Slice", "keys": [
       {"name": "Point"},
       {"name": "Normal"},
+      {"name": "RecordParentIds", "kind": "flag", "default": false},
+      {"name": "Chain", "kind": "flag", "default": false},
+      {"name": "MinLength", "kind": "number", "default": 0.0}
+    ]},
+    {"op": "Sections", "note": "Chained line sections of a surface at parallel planes (roadmap 7.6.1).", "keys": [
+      {"name": "Direction"},
+      {"name": "Offsets"},
+      {"name": "MinLength", "kind": "number", "default": 0.0},
       {"name": "RecordParentIds", "kind": "flag", "default": false}
     ]},
     {"op": "Section", "keys": [
       {"name": "Point"},
       {"name": "Normal"},
-      {"name": "RecordParentIds", "kind": "flag", "default": false}
+      {"name": "RecordParentIds", "kind": "flag", "default": false},
+      {"name": "Chain", "kind": "flag", "default": false},
+      {"name": "MinLength", "kind": "number", "default": 0.0}
     ]},
     {"op": "Gradient", "keys": [
       {"name": "Array", "kind": "text", "default": ""},

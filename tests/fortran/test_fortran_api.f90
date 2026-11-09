@@ -2586,6 +2586,15 @@ contains
             if (ierr == 0) call thick%free()
             thick = mio_thickness(sa, method='laser', stat=ierr)
             call check(ierr /= 0, 'thickness refuses an unknown method')
+            ! Chained sections (roadmap 7.6.1).
+            thick = sa%slice([0.0_real64, 0.0_real64, 0.1_real64], &
+                             [0.0_real64, 0.0_real64, 1.0_real64], chain=.true., stat=ierr)
+            call check(ierr == 0, 'a chained slice of the sphere')
+            if (ierr == 0) call thick%free()
+            thick = mio_sections(sa, [0.0_real64, 0.0_real64, 1.0_real64], &
+                                 [-0.5_real64, 0.5_real64], stat=ierr)
+            call check(ierr == 0, 'sections of the sphere')
+            if (ierr == 0) call thick%free()
             call sb%free()
             call sa%free()
         end block

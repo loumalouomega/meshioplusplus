@@ -3057,7 +3057,28 @@ export interface MeshioPlusPlusModule {
    * line mesh. Crossing points on shared edges are deduped so the section is
    * watertight; each section cell inherits its parent's cell_data.
    */
-  slice(mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean): Mesh;
+  slice(
+    mesh: Mesh,
+    origin: number[],
+    normal: number[],
+    recordParentIds?: boolean,
+    /** `chain` walks a surface's line section into polylines (roadmap 7.6.1). */
+    options?: { chain?: boolean; minLength?: number },
+  ): Mesh;
+
+  /**
+   * Chained sections of a surface at the parallel planes `n . x = offsets[k]`
+   * (`n` the unit `direction`), merged into one line mesh with the
+   * `section:offset`, `section:chain` and `section:closed` cell data (roadmap
+   * 7.6.1).
+   * @throws {Error} on a zero direction, no offsets or a volume mesh.
+   */
+  sections(
+    mesh: Mesh,
+    direction: number[],
+    offsets: ArrayLike<number>,
+    options?: { minLength?: number; recordParentIds?: boolean },
+  ): Mesh;
 
   /**
    * Isosurfaces / contours: the level set of a scalar `point_data` field, one

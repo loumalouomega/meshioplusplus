@@ -601,6 +601,10 @@ function t_intersections()
     expect_equal(ts.method, 'cone');
     assert(ts.p2 <= ts.p95);
     expect_error(@() mio.thickness(a, 'method', 'laser'), 'method');
+    ch = mio.slice(a, [0 0 0.1], [0 0 1], 'chain', true);
+    assert(mio.num_points(ch) > 0);
+    ss = mio.sections(a, [0 0 1], [-0.5 0.5]);
+    assert(mio.num_points(ss) > 0);
 end
 
 function t_capabilities()

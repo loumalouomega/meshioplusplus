@@ -1303,12 +1303,30 @@ def _apply_step(mesh, step, steps, warnings):
             origin=_vec3(step, "Point"),
             normal=_vec3(step, "Normal"),
             record_parent_ids=_flag(step, "RecordParentIds", False),
+            chain=_flag(step, "Chain", False),
+            min_length=_number(step, "MinLength", 0.0),
         )
         entry["SectionFaces"] = float(_total_cells(mesh))
         if _total_cells(mesh) == 0:
             warnings.append(
                 "the section is empty; the plane misses the mesh -- move or flip it"
             )
+    elif op == "Sections":
+        from ._slice import sections
+
+        offsets = _dvec(step, "Offsets")
+        if not offsets:
+            raise _err(op, "needs Offsets, the planes' distances")
+        mesh = sections(
+            mesh,
+            _vec3(step, "Direction") if "Direction" in step else (0.0, 0.0, 1.0),
+            offsets,
+            min_length=_number(step, "MinLength", 0.0),
+            record_parent_ids=_flag(step, "RecordParentIds", False),
+        )
+        entry["SectionCells"] = float(_total_cells(mesh))
+        if _total_cells(mesh) == 0:
+            warnings.append("the sections are empty; no plane meets the surface")
     elif op == "Gradient":
         component = int(_number(step, "Component", -1.0))
         mesh, report = gradient(

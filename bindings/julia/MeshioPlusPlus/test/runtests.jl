@@ -2535,6 +2535,12 @@ end # testset
     @test ts.method == "sphere" && ts.p2 <= ts.p95
     close(ts.mesh)
     @test_throws ArgumentError thickness(a; method="laser")
+    ch = slice(a, [0.0, 0.0, 0.1], [0.0, 0.0, 1.0]; chain=true)
+    @test num_points(ch) > 0
+    close(ch)
+    ss = sections(a, [0.0, 0.0, 1.0], [-0.5, 0.5])
+    @test num_points(ss) > 0
+    close(ss)
 end
 
 @testset "operations: deviation" begin

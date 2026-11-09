@@ -8553,6 +8553,26 @@ TEST(CApi, MoveTranslatesAFaceOrNamesWhatIsMissing) {
     mio_mesh_free(box);
 }
 
+TEST(CApi, ChainedSliceAndSections) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = 3;
+    mio_mesh* s = mio_icosa_sphere(&g);
+    ASSERT_NE(s, nullptr) << mio_last_error();
+    const double o[3] = {0.0, 0.0, 0.1}, n[3] = {0.0, 0.0, 1.0};
+    mio_mesh* loop = mio_slice_ex(s, o, n, 0, 1, 0.0);
+    ASSERT_NE(loop, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_cell_data_num_blocks(loop, "section:chain"), 1);
+    mio_mesh_free(loop);
+    const double offs[3] = {-0.5, 0.0, 0.5};
+    mio_mesh* all = mio_sections(s, n, offs, 3, 0.0, 0);
+    ASSERT_NE(all, nullptr) << mio_last_error();
+    EXPECT_GE(mio_mesh_cell_data_num_blocks(all, "section:offset"), 1);
+    mio_mesh_free(all);
+    EXPECT_EQ(mio_sections(s, n, offs, 0, 0.0, 0), nullptr);
+    mio_mesh_free(s);
+}
+
 TEST(CApi, FindIntersectionsAndThickness) {
     mio_gen_opts g;
     mio_gen_opts_init(&g);

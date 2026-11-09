@@ -219,13 +219,28 @@ SEXP R_mio_crop_plane(SEXP mesh, SEXP point, SEXP normal, SEXP mode, SEXP record
     return mio_r_wrap_mesh(out);
 }
 
-SEXP R_mio_slice(SEXP mesh, SEXP origin, SEXP normal, SEXP record_parent_ids) {
+SEXP R_mio_slice(SEXP mesh, SEXP origin, SEXP normal, SEXP record_parent_ids, SEXP chain,
+                 SEXP min_length) {
     double o[3], n[3];
     mio_r_vec3(origin, o, "origin");
     mio_r_vec3(normal, n, "normal");
-    mio_mesh *out = mio_slice(mio_r_mesh(mesh), o, n,
-                              mio_r_bool(record_parent_ids, "record_parent_ids"));
+    mio_mesh *out = mio_slice_ex(mio_r_mesh(mesh), o, n,
+                                 mio_r_bool(record_parent_ids, "record_parent_ids"),
+                                 mio_r_bool(chain, "chain"), mio_r_double(min_length, "min_length"));
     if (out == NULL) mio_r_fail("slice");
+    return mio_r_wrap_mesh(out);
+}
+
+SEXP R_mio_sections(SEXP mesh, SEXP direction, SEXP offsets, SEXP min_length,
+                    SEXP record_parent_ids) {
+    double d[3];
+    mio_r_vec3(direction, d, "direction");
+    SEXP v = PROTECT(Rf_coerceVector(offsets, REALSXP));
+    mio_mesh *out = mio_sections(mio_r_mesh(mesh), d, REAL(v), (int64_t)Rf_xlength(v),
+                                 mio_r_double(min_length, "min_length"),
+                                 mio_r_bool(record_parent_ids, "record_parent_ids"));
+    UNPROTECT(1);
+    if (out == NULL) mio_r_fail("sections");
     return mio_r_wrap_mesh(out);
 }
 

@@ -185,6 +185,7 @@ from .. import (
     scatter_grid,
 )
 from .. import screenshot as _screenshot_fn
+from .. import sections as _sections_op
 from .. import segment
 from .. import select as _select_op
 from .. import shrinkwrap
@@ -1791,9 +1792,27 @@ def tool_slice(
     origin=(0.0, 0.0, 0.0),
     normal=(0.0, 0.0, 1.0),
     record_parent_ids=False,
+    chain=False,
+    min_length=0.0,
 ):
     """Planar cross-section (one topological dimension below the input)."""
     return _run_op(_slice_op, locals(), report=False)
+
+
+def tool_sections(
+    input_path,
+    output_path,
+    offsets,
+    input_format=None,
+    output_format=None,
+    direction=None,
+    min_length=0.0,
+    record_parent_ids=False,
+):
+    """Chained line sections of a surface at parallel planes."""
+    if direction is None:
+        direction = (0.0, 0.0, 1.0)
+    return _run_op(_sections_op, locals(), report=False)
 
 
 def tool_isosurface(
@@ -7236,6 +7255,7 @@ TOOL_REGISTRY = OrderedDict(
         ("clean", {"fn": tool_clean, "wraps": ("clean",), "gated": None}),
         ("crop", {"fn": tool_crop, "wraps": ("crop",), "gated": None}),
         ("slice", {"fn": tool_slice, "wraps": ("slice",), "gated": None}),
+        ("sections", {"fn": tool_sections, "wraps": ("sections",), "gated": None}),
         (
             "isosurface",
             {"fn": tool_isosurface, "wraps": ("isosurface",), "gated": None},

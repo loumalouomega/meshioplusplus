@@ -224,3 +224,69 @@ def test_determinism_two_runs():
     assert a.points.tobytes() == b.points.tobytes()
     for x, y in zip(a.cells, b.cells):
         assert np.asarray(x.data).tobytes() == np.asarray(y.data).tobytes()
+
+
+# --- chained sections (roadmap 7.6.1) -------------------------------------------
+
+
+@pytest.mark.parametrize("z", [0.1, 0.0, -0.37])
+def test_chain_matches_the_numpy_twin(z):
+    from meshioplusplus._slice import _chain_py
+
+    sphere = mp.icosa_sphere(1.0, 3)
+    sphere.point_data["u"] = sphere.points[:, 0].copy()
+    core = mp.slice(sphere, (0, 0, z), (0, 0, 1), True, chain=True)
+    twin = _chain_py(_slice_py(sphere, (0, 0, z), (0, 0, 1), True), 0.0)
+    np.testing.assert_array_equal(core.points, twin.points)
+    np.testing.assert_array_equal(core.cells[0].data, twin.cells[0].data)
+    for name in ("section:chain", "section:closed", "slice:parent_cell"):
+        np.testing.assert_array_equal(core.cell_data[name][0], twin.cell_data[name][0])
+    np.testing.assert_array_equal(core.point_data["u"], twin.point_data["u"])
+    chains = core.cell_data["section:chain"][0]
+    assert chains.max() == 0 and core.cell_data["section:closed"][0].min() == 1
+    conn = core.cells[0].data
+    assert np.array_equal(conn[1:, 0], conn[:-1, 1]) and conn[-1, 1] == conn[0, 0]
+
+
+def test_sections_numbers_chains_across_planes_and_refuses_volumes():
+    sphere = mp.icosa_sphere(1.0, 3)
+    out = mp.sections(sphere, (0, 0, 1), [-0.5, 0.0, 0.5, 2.0])
+    chains = np.concatenate(out.cell_data["section:chain"])
+    offs = np.concatenate(out.cell_data["section:offset"])
+    assert chains.max() == 2 and sorted(set(offs)) == [-0.5, 0.0, 0.5]
+    short = mp.sections(sphere, (0, 0, 1), [0.0], min_length=100.0)
+    assert sum(len(c.data) for c in short.cells) == 0
+    with pytest.raises(ValueError, match="offset"):
+        mp.sections(sphere, (0, 0, 1), [])
+    with pytest.raises(ValueError, match="surface"):
+        mp.slice(mp.box((2, 2, 2)), (0.5, 0.5, 0.5), (0, 0, 1), chain=True)
+
+
+def test_sections_cli_pipeline_and_mcp(tmp_path):
+    import json
+
+    from meshioplusplus import _core
+    from meshioplusplus.mcp import _tools
+
+    src = str(tmp_path / "s.vtu")
+    mp.write(src, mp.icosa_sphere(1.0, 2), compression=None)
+    out = str(tmp_path / "o.vtu")
+    assert mp._cli.main(["sections", src, out, "--offsets=-0.5,0.5"]) in (0, None)
+    assert mp.read(out).cell_data["section:chain"][0].max() >= 0
+    doc = {
+        "Version": 1,
+        "Input": {"Path": src},
+        "Operations": [
+            {"Op": "Sections", "Offsets": [-0.5, 0.5], "Direction": [0, 0, 1]}
+        ],
+        "Output": {"Path": str(tmp_path / "p.vtu")},
+    }
+    rep_py = mp.run_pipeline(doc)
+    assert rep_py["steps"][0]["SectionCells"] > 0
+    if getattr(_core, "__has_json__", False):
+        doc["Output"]["Path"] = str(tmp_path / "c.vtu")
+        assert (
+            _core.run_pipeline_json(json.dumps(doc))["steps"][0] == rep_py["steps"][0]
+        )
+    res = _tools.tool_sections(src, str(tmp_path / "m.vtu"), [0.0])
+    assert res["num_cells"] > 0

@@ -667,7 +667,11 @@ meshioplusplus slice [options] INFILE OUTFILE
 | `--origin x,y,z` | A point on the cutting plane (default `0,0,0`) |
 | `--normal x,y,z` | The plane normal (default `0,0,1`; non-zero) |
 | `--record-parent-ids` | Attach `slice:parent_cell` (the input cell each section cell was cut from) |
+| `--chain` | Walk a surface's line section into polylines, with `section:chain` and `section:closed` cell data ([chained sections](/slice#chained-sections)) |
+| `--min-length L` | With `--chain`, drop chains shorter than `L` |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+`meshioplusplus sections IN OUT --offsets=a,b,... [--direction x,y,z] [--min-length L] [--record-parent-ids]` (both CLIs) slices a surface at the planes `n . x = offsets[k]` and merges the chained sections, with `section:offset` cell data.
 
 Negative components need the `=` form (`--normal=0,0,-1`). Unlike `crop`, which keeps whole cells on one side, `slice` computes the intersection itself.
 

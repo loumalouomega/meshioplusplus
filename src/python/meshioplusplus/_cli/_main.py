@@ -375,6 +375,13 @@ _VERBS = (
         "Planar cross-section of a mesh (volume -> surface, surface -> lines)",
     ),
     _Verb(
+        "sections",
+        "_slice",
+        "sections_cmd",
+        "Chained line sections of a surface at parallel planes",
+        "add_sections_args",
+    ),
+    _Verb(
         "isosurface",
         "_isosurface",
         "isosurface_cmd",

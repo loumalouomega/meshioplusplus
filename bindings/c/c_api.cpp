@@ -2727,6 +2727,35 @@ mio_mesh* mio_slice(const mio_mesh* mesh, const double* origin, const double* no
     });
 }
 
+mio_mesh* mio_slice_ex(const mio_mesh* mesh, const double* origin, const double* normal,
+                       int record_parent_ids, int chain, double min_length) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        if (!mesh || !origin || !normal)
+            throw std::invalid_argument("meshio++: mesh/origin/normal is NULL");
+        meshioplusplus::SliceOptions opts;
+        opts.mOrigin = {origin[0], origin[1], origin[2]};
+        opts.mNormal = {normal[0], normal[1], normal[2]};
+        opts.mRecordParentIds = record_parent_ids != 0;
+        opts.mChain = chain != 0;
+        opts.mMinLength = min_length;
+        return new mio_mesh{meshioplusplus::slice(mesh->mMesh, opts)};
+    });
+}
+
+mio_mesh* mio_sections(const mio_mesh* mesh, const double* direction, const double* offsets,
+                       int64_t n_offsets, double min_length, int record_parent_ids) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        if (!mesh || !direction || (n_offsets > 0 && !offsets) || n_offsets < 0)
+            throw std::invalid_argument("meshio++: sections: mesh/direction/offsets is NULL");
+        meshioplusplus::SectionsOptions o;
+        o.mDirection = {direction[0], direction[1], direction[2]};
+        o.mOffsets.assign(offsets, offsets + n_offsets);
+        o.mMinLength = min_length;
+        o.mRecordParentIds = record_parent_ids != 0;
+        return new mio_mesh{meshioplusplus::sections(mesh->mMesh, o)};
+    });
+}
+
 mio_mesh* mio_isosurface(const mio_mesh* mesh, const char* array_name, const double* isovalues,
                          int n_isovalues, int component, int record_parent_ids) {
     return capi_guarded_mesh([&]() -> mio_mesh* {

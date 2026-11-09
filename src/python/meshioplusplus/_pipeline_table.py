@@ -64,11 +64,22 @@ OP_TABLE = {
         "Point",
         "Normal",
         "RecordParentIds",
+        "Chain",
+        "MinLength",
+    ),
+    # Chained line sections of a surface at parallel planes (roadmap 7.6.1).
+    "Sections": (
+        "Direction",
+        "Offsets",
+        "MinLength",
+        "RecordParentIds",
     ),
     "Section": (
         "Point",
         "Normal",
         "RecordParentIds",
+        "Chain",
+        "MinLength",
     ),
     "Gradient": (
         "Array",

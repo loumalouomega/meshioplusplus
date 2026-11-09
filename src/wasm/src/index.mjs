@@ -293,7 +293,8 @@ export class MeshioPlusPlusLoadError extends Error {
  *   cropBbox: (mesh: Mesh, lo: number[], hi: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
- *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean) => Mesh,
+ *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean, options?: {chain?: boolean, minLength?: number}) => Mesh,
+ *   sections: (mesh: Mesh, direction: number[], offsets: ArrayLike<number>, options?: {minLength?: number, recordParentIds?: boolean}) => Mesh,
  *   isosurface: (mesh: Mesh, array: string, isovalues: number|number[], component?: number, recordParentIds?: boolean) => Mesh,
  *   grid: (dims: number[], origin?: number[], spacing?: number[], maxCells?: number) => Mesh,
  *   rectangle: (dims?: number[], size?: number[], origin?: number[], cellType?: string, split?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
@@ -850,8 +851,12 @@ export async function loadMeshioPlusPlus(
         cropPredicate: (
             mesh, array, compare = '<', value = 0, recordIds = false, returnMaps = false,
         ) => Module.cropPredicate(mesh, array, compare, value, recordIds, returnMaps),
-        slice: (mesh, origin, normal, recordParentIds = false) =>
-            Module.slice(mesh, origin, normal, recordParentIds),
+        slice: (mesh, origin, normal, recordParentIds = false, options = {}) =>
+            Module.slice(mesh, origin, normal, recordParentIds, Boolean(options.chain),
+                Number(options.minLength ?? 0)),
+        sections: (mesh, direction, offsets, options = {}) =>
+            Module.sections(mesh, Array.from(direction, Number), Array.from(offsets, Number),
+                Number(options.minLength ?? 0), Boolean(options.recordParentIds)),
         grid: (dims, origin = null, spacing = null, maxCells = 20000000) =>
             Module.grid(dims, origin, spacing, maxCells),
         rectangle: (

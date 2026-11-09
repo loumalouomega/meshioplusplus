@@ -3074,7 +3074,7 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "slice",
         [](py::object pymesh, const std::vector<double>& origin, const std::vector<double>& normal,
-           bool record_parent_ids) {
+           bool record_parent_ids, bool chain, double min_length) {
             if (origin.size() != 3 || normal.size() != 3)
                 throw std::invalid_argument("slice: origin and normal must each have 3 elements");
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
@@ -3084,11 +3084,32 @@ PYBIND11_MODULE(_core, m) {
             options.mOrigin = {origin[0], origin[1], origin[2]};
             options.mNormal = {normal[0], normal[1], normal[2]};
             options.mRecordParentIds = record_parent_ids;
+            options.mChain = chain;
+            options.mMinLength = min_length;
             meshioplusplus::Mesh out =
                 core_nogil([&] { return meshioplusplus::slice(cpp, options); });
             return meshioplusplus_py::mesh_to_py(std::move(out));
         },
-        py::arg("mesh"), py::arg("origin"), py::arg("normal"),
+        py::arg("mesh"), py::arg("origin"), py::arg("normal"), py::arg("record_parent_ids") = false,
+        py::arg("chain") = false, py::arg("min_length") = 0.0);
+
+    // Chained sections at parallel planes (roadmap 7.6.1).
+    m.def(
+        "sections",
+        [](py::object pymesh, std::array<double, 3> direction, std::vector<double> offsets,
+           double min_length, bool record_parent_ids) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            meshioplusplus::SectionsOptions o;
+            o.mDirection = direction;
+            o.mOffsets = std::move(offsets);
+            o.mMinLength = min_length;
+            o.mRecordParentIds = record_parent_ids;
+            meshioplusplus::Mesh out =
+                core_nogil([&] { return meshioplusplus::sections(cpp_in.mMesh, o); });
+            return meshioplusplus_py::mesh_to_py(std::move(out));
+        },
+        py::arg("mesh"), py::arg("direction"), py::arg("offsets"), py::arg("min_length") = 0.0,
         py::arg("record_parent_ids") = false);
 
     // Mass-preserving cross-mesh field transfer: exact overlap-measure

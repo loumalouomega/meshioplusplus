@@ -1405,6 +1405,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         pipe_vec3(rStep, "Point", opts.mOrigin.data());
         pipe_vec3(rStep, "Normal", opts.mNormal.data());
         opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        opts.mChain = pipe_flag(rStep, "Chain", false);
+        opts.mMinLength = pipe_number(rStep, "MinLength", 0.0);
         Mesh section = slice(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"SectionFaces", static_cast<double>(pipe_total_cells(section))}});
@@ -1412,6 +1414,22 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             rReport.mWarnings.push_back(
                 "the section is empty; the plane misses the mesh -- move or flip it");
         return section;
+    }
+    if (op == "Sections") {
+        SectionsOptions opts;
+        if (pipe_find(rStep, "Direction"))
+            pipe_vec3(rStep, "Direction", opts.mDirection.data());
+        opts.mOffsets = pipe_dvec(rStep, "Offsets");
+        if (opts.mOffsets.empty())
+            throw std::invalid_argument(pipe_err(rStep, "needs Offsets, the planes' distances"));
+        opts.mMinLength = pipe_number(rStep, "MinLength", 0.0);
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        Mesh out = sections(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"SectionCells", static_cast<double>(pipe_total_cells(out))}});
+        if (pipe_total_cells(out) == 0)
+            rReport.mWarnings.push_back("the sections are empty; no plane meets the surface");
+        return out;
     }
     if (op == "Gradient") {
         // A pure data step: geometry is untouched, so the pipeline carries the

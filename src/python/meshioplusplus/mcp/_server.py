@@ -524,9 +524,13 @@ def _register_operations(server: FastMCP) -> None:
         origin: Optional[List[float]] = None,
         normal: Optional[List[float]] = None,
         record_parent_ids: bool = False,
+        chain: bool = False,
+        min_length: float = 0.0,
     ) -> dict:
         """Planar cross-section: the true intersection with a plane, one
-        topological dimension below the input (default plane: z = 0)."""
+        topological dimension below the input (default plane: z = 0). chain
+        walks a surface's line section into polylines (section:chain and
+        section:closed cell data), dropping chains shorter than min_length."""
         return _guard(
             _tools.tool_slice,
             input_path=input_path,
@@ -536,7 +540,26 @@ def _register_operations(server: FastMCP) -> None:
             origin=origin if origin is not None else [0.0, 0.0, 0.0],
             normal=normal if normal is not None else [0.0, 0.0, 1.0],
             record_parent_ids=record_parent_ids,
+            chain=chain,
+            min_length=min_length,
         )
+
+    @server.tool()
+    @_forward(_tools.tool_sections)
+    def sections(
+        input_path: str,
+        output_path: str,
+        offsets: List[float],
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        direction: Optional[List[float]] = None,
+        min_length: float = 0.0,
+        record_parent_ids: bool = False,
+    ) -> dict:
+        """Chained line sections of a surface at the parallel planes
+        n . x = offsets[k] (n the unit direction, default +z), merged into one
+        line mesh with section:offset, section:chain and section:closed cell
+        data; the drawing profiles of a scanned part."""
 
     @server.tool()
     @_forward(_tools.tool_isosurface)

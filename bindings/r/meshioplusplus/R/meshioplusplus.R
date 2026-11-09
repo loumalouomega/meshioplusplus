@@ -1379,11 +1379,31 @@ mio_crop_plane <- function(mesh, point, normal, mode = "all", record_ids = FALSE
 
 #' @rdname mio_extract_surface
 #' @export
-mio_slice <- function(mesh, origin, normal, record_parent_ids = FALSE) {
+mio_slice <- function(mesh, origin, normal, record_parent_ids = FALSE, chain = FALSE,
+                      min_length = 0) {
   .Call(
     R_mio_slice, mesh, as.numeric(origin), as.numeric(normal),
-    isTRUE(record_parent_ids)
+    isTRUE(record_parent_ids), isTRUE(chain), as.numeric(min_length)
   )
+}
+
+#' Chained sections at parallel planes
+#'
+#' The sections of a surface at the planes `n . x = offsets[k]` (`n` the unit
+#' `direction`), each walked into polylines and merged into one line mesh with
+#' the `section:offset`, `section:chain` and `section:closed` cell data
+#' (roadmap 7.6.1). See `doc/slice.md`.
+#'
+#' @param mesh A surface mesh.
+#' @param direction The planes' normal.
+#' @param offsets The planes' signed distances from the origin.
+#' @param min_length Drop chains shorter than this.
+#' @param record_parent_ids Attach `slice:parent_cell`.
+#' @return A `mio_mesh`.
+#' @export
+mio_sections <- function(mesh, direction, offsets, min_length = 0, record_parent_ids = FALSE) {
+  .Call(R_mio_sections, mesh, as.numeric(direction), as.numeric(offsets),
+        as.numeric(min_length), isTRUE(record_parent_ids))
 }
 
 #' @rdname mio_extract_surface

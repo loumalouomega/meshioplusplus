@@ -215,14 +215,27 @@ static mxArray *O_mio_crop_plane(const mxArray **a) {
     return mio_o_wrap_mesh(out);
 }
 
-/* slice(mesh, origin, normal, record_parent_ids) */
+/* slice(mesh, origin, normal, record_parent_ids, chain, min_length) */
 static mxArray *O_mio_slice(const mxArray **a) {
     double o[3], n[3];
     mio_o_vec3(a[1], o, "origin");
     mio_o_vec3(a[2], n, "normal");
-    mio_mesh *out =
-        mio_slice(mio_o_mesh(a[0]), o, n, mio_o_bool(a[3], "record_parent_ids"));
+    mio_mesh *out = mio_slice_ex(mio_o_mesh(a[0]), o, n, mio_o_bool(a[3], "record_parent_ids"),
+                                 mio_o_bool(a[4], "chain"), mio_o_double(a[5], "min_length"));
     if (out == NULL) mio_o_fail("slice");
+    return mio_o_wrap_mesh(out);
+}
+
+/* sections(mesh, direction, offsets, min_length, record_parent_ids) */
+static mxArray *O_mio_sections(const mxArray **a) {
+    double d[3];
+    mio_o_vec3(a[1], d, "direction");
+    size_t n = 0;
+    double *v = mio_o_doubles(a[2], &n, "offsets");
+    mio_mesh *out = mio_sections(mio_o_mesh(a[0]), d, v, (int64_t)n,
+                                 mio_o_double(a[3], "min_length"),
+                                 mio_o_bool(a[4], "record_parent_ids"));
+    if (out == NULL) mio_o_fail("sections");
     return mio_o_wrap_mesh(out);
 }
 
@@ -1569,7 +1582,8 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_crop_bbox, 5),
     MIO_O_ENTRY(mio_crop_predicate, 5),
     MIO_O_ENTRY(mio_crop_plane, 5),
-    MIO_O_ENTRY(mio_slice, 4),
+    MIO_O_ENTRY(mio_slice, 6),
+    MIO_O_ENTRY(mio_sections, 5),
     MIO_O_ENTRY(mio_isosurface, 5),
     MIO_O_ENTRY(mio_gradient, 8),
     MIO_O_ENTRY(mio_hessian, 6),

@@ -321,13 +321,33 @@ triangle/quad surface, a 2-D surface mesh a line mesh). Contrast
 Empty when the plane misses the geometry — not an error. See `doc/slice.md`.
 """
 function slice(m::Mesh, origin::AbstractVector{<:Real}, normal::AbstractVector{<:Real};
-               record_parent_ids::Bool=false)
+               record_parent_ids::Bool=false, chain::Bool=false, min_length::Real=0.0)
     o = Float64[origin[1], origin[2], origin[3]]
     n = Float64[normal[1], normal[2], normal[3]]
-    ptr = GC.@preserve o n ccall(_sym(:mio_slice), Ptr{Cvoid},
-                                 (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint),
+    ptr = GC.@preserve o n ccall(_sym(:mio_slice_ex), Ptr{Cvoid},
+                                 (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cint, Cdouble),
                                  _handle(m), pointer(o), pointer(n),
-                                 record_parent_ids ? Cint(1) : Cint(0))
+                                 record_parent_ids ? Cint(1) : Cint(0),
+                                 chain ? Cint(1) : Cint(0), Cdouble(min_length))
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    sections(mesh, direction, offsets; min_length=0.0, record_parent_ids=false) -> Mesh
+
+Chained sections of a surface at the parallel planes `n . x = offsets[k]` (`n`
+the unit `direction`), merged into one line mesh with the `section:offset`,
+`section:chain` and `section:closed` cell data (roadmap 7.6.1; chains 0-based).
+See `doc/slice.md`.
+"""
+function sections(m::Mesh, direction::AbstractVector{<:Real}, offsets::AbstractVector{<:Real};
+                  min_length::Real=0.0, record_parent_ids::Bool=false)
+    d = Float64[direction[1], direction[2], direction[3]]
+    offs = Float64.(collect(offsets))
+    ptr = GC.@preserve d offs ccall(_sym(:mio_sections), Ptr{Cvoid},
+                                    (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Int64, Cdouble, Cint),
+                                    _handle(m), pointer(d), pointer(offs), length(offs),
+                                    Cdouble(min_length), record_parent_ids ? Cint(1) : Cint(0))
     Mesh(_check_ptr(ptr))
 end
 

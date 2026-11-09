@@ -2249,6 +2249,12 @@ test_that("find_intersections and thickness", {
   expect_equal(ts$method, "sphere")
   expect_lte(ts$p2, ts$p95)
   expect_error(mio_thickness(a, method = "laser"), "method")
+  ch <- mio_slice(a, c(0, 0, 0.1), c(0, 0, 1), chain = TRUE)
+  expect_gt(mio_num_points(ch), 0)
+  mio_release(ch)
+  ss <- mio_sections(a, c(0, 0, 1), c(-0.5, 0.5))
+  expect_gt(mio_num_points(ss), 0)
+  mio_release(ss)
 })
 
 test_that("deviation", {

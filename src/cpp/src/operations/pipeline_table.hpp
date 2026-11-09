@@ -40,8 +40,10 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Ratio", "TargetCells", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
           "FeatureAngle"}},
         {"Partition", {"Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"}},
-        {"Slice", {"Point", "Normal", "RecordParentIds"}},
-        {"Section", {"Point", "Normal", "RecordParentIds"}},
+        {"Slice", {"Point", "Normal", "RecordParentIds", "Chain", "MinLength"}},
+        // Chained line sections of a surface at parallel planes (roadmap 7.6.1).
+        {"Sections", {"Direction", "Offsets", "MinLength", "RecordParentIds"}},
+        {"Section", {"Point", "Normal", "RecordParentIds", "Chain", "MinLength"}},
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
         {"Hessian", {"Array", "Method", "Location", "Output"}},
         {"Curvature",

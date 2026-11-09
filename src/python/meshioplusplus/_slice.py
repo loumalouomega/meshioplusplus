@@ -20,6 +20,7 @@ by ``tests/python/test_slice.py::test_cpp_matches_python``.
 Public API:
 
 * :func:`slice` -- the planar cross-section of a mesh.
+* :func:`sections` -- chained sections at parallel planes (roadmap 7.6.1).
 """
 
 from __future__ import annotations
@@ -61,11 +62,119 @@ def _slice_py(mesh, origin, normal, record_parent_ids):
     )
 
 
+def _polyline_chains(segs, npts):
+    """``detail::polyline_chains``, step for step: a list of
+    ``(points, segments, reversed, closed)`` in the canonical order."""
+    adj = [[] for _ in range(npts)]
+    for s, (a, b) in enumerate(segs):
+        if a == b or a < 0 or b < 0 or a >= npts or b >= npts:
+            continue
+        adj[a].append((b, s))
+        adj[b].append((a, s))
+    for lst in adj:
+        lst.sort()
+    used = [False] * len(segs)
+
+    def next_edge(p):
+        for e in adj[p]:
+            if not used[e[1]]:
+                return e
+        return None
+
+    def walk(start, loop):
+        pts, sg, rev = [start], [], []
+        p = start
+        while True:
+            e = next_edge(p)
+            if e is None:
+                break
+            q, s = e
+            used[s] = True
+            sg.append(s)
+            rev.append(0 if segs[s][0] == p else 1)
+            pts.append(q)
+            p = q
+            if (p == start) if loop else (len(adj[p]) != 2):
+                break
+        return pts, sg, rev, loop
+
+    out = []
+    for p in range(npts):
+        if len(adj[p]) != 2 and adj[p]:
+            while next_edge(p) is not None:
+                out.append(walk(p, False))
+    for p in range(npts):
+        while next_edge(p) is not None:
+            pts, sg, rev, _ = walk(p, True)
+            out.append((pts, sg, rev, pts[-1] == pts[0]))
+    return out
+
+
+def _chain_py(section, min_length):
+    """``slc_chain``: the line section walked into chains."""
+    from ._mesh import CellBlock, Mesh
+
+    if not section.cells:
+        return section
+    if len(section.cells) != 1 or section.cells[0].type != "line":
+        raise ValueError(
+            "meshio++: slice: chain needs a line section; slice a surface mesh (a "
+            "volume's section is a surface)"
+        )
+    conn = np.asarray(section.cells[0].data, dtype=np.int64)
+    pts = np.asarray(section.points)
+    npts = len(pts)
+    # Points at exactly one position are one point of a chain, the lowest id
+    # standing in (slc_chain's rule).
+    first, same = {}, []
+    for i in range(npts):
+        key = tuple(float(v) for v in pts[i])
+        same.append(first.setdefault(key, i))
+    chains = _polyline_chains([(same[int(a)], same[int(b)]) for a, b in conn], npts)
+    new_of = np.full(npts, -1, dtype=np.int64)
+    old_points, seg_order, conn_out, chain_id, closed = [], [], [], [], []
+    kept = 0
+    for cp, cs, _rev, cl in chains:
+        length = 0.0
+        for k in range(len(cp) - 1):
+            d2 = 0.0
+            for a in range(pts.shape[1]):
+                d = float(pts[cp[k + 1], a]) - float(pts[cp[k], a])
+                d2 += d * d
+            length += float(np.sqrt(d2))
+        if length < min_length:
+            continue
+        for p in cp:
+            if new_of[p] < 0:
+                new_of[p] = len(old_points)
+                old_points.append(p)
+        for k, s in enumerate(cs):
+            seg_order.append(s)
+            conn_out.append((new_of[cp[k]], new_of[cp[k + 1]]))
+            chain_id.append(kept)
+            closed.append(1 if cl else 0)
+        kept += 1
+    old = np.asarray(old_points, dtype=np.int64)
+    order = np.asarray(seg_order, dtype=np.int64)
+    out = Mesh(
+        pts[old],
+        [CellBlock("line", np.asarray(conn_out, dtype=np.int64).reshape(-1, 2))],
+        point_data={k: np.asarray(v)[old] for k, v in section.point_data.items()},
+        cell_data={k: [np.asarray(v[0])[order]] for k, v in section.cell_data.items()},
+    )
+    out.cell_data["section:chain"] = [np.asarray(chain_id, dtype=np.int64)]
+    out.cell_data["section:closed"] = [np.asarray(closed, dtype=np.int64)]
+    return out
+
+
 def slice(
     mesh,
     origin=(0.0, 0.0, 0.0),
     normal=(0.0, 0.0, 1.0),
     record_parent_ids: bool = False,
+    *,
+    chain: bool = False,
+    min_length: float = 0.0,
 ):
     """Compute the planar cross-section of a mesh.
 
@@ -81,6 +190,14 @@ def slice(
         when true, attach an Int64 ``slice:parent_cell`` ``cell_data`` array
         recording, per section cell, the global (block-major) index of the input
         cell it was cut from.
+    chain :
+        walk a surface's line section into polylines (roadmap 7.6.1): open
+        chains from their lowest-id end, then loops from their lowest point,
+        segments emitted in walking order with Int64 ``section:chain`` and
+        ``section:closed`` cell data, points renumbered in visiting order. A
+        volume's section (a surface) is refused.
+    min_length :
+        with ``chain``, drop chains shorter than this.
 
     Returns
     -------
@@ -100,16 +217,98 @@ def slice(
     """
     origin = [float(v) for v in np.asarray(origin, dtype=np.float64).reshape(3)]
     normal = [float(v) for v in np.asarray(normal, dtype=np.float64).reshape(3)]
+    min_length = float(min_length)
+    if not (np.isfinite(min_length) and min_length >= 0.0):
+        raise ValueError("meshio++: slice: min_length must be finite and >= 0")
 
     out = None
     try:
         from . import _core
 
-        out = _core.slice(mesh, origin, normal, bool(record_parent_ids))
+        out = _core.slice(
+            mesh,
+            origin,
+            normal,
+            bool(record_parent_ids),
+            chain=bool(chain),
+            min_length=min_length,
+        )
     except Exception as exc:
         if not core_op_declined(exc, "slice"):
             raise
         out = None
     if out is None:
         out = _slice_py(mesh, origin, normal, record_parent_ids)
+        if chain:
+            out = _chain_py(out, min_length)
     return out
+
+
+def sections(
+    mesh,
+    direction=(0.0, 0.0, 1.0),
+    offsets=(0.0,),
+    *,
+    min_length: float = 0.0,
+    record_parent_ids: bool = False,
+):
+    """Chained sections of a surface at parallel planes, merged into one line
+    mesh (roadmap 7.6.1): plane ``k`` is ``n . x = offsets[k]`` with ``n`` the
+    unit ``direction``; each segment carries ``section:offset`` (Float64),
+    ``section:chain`` (numbered across all planes) and ``section:closed``.
+
+    :param mesh: a surface mesh (a volume's sections are surfaces: refused).
+    :param direction: the planes' normal, non-zero.
+    :param offsets: the planes' signed distances from the origin.
+    :param min_length: drop chains shorter than this.
+    :param record_parent_ids: as :func:`slice`.
+    :returns: the merged line mesh (empty when no plane meets the surface).
+    """
+    from ._merge import merge
+    from ._mesh import Mesh
+
+    d = np.asarray(direction, dtype=np.float64).reshape(3)
+    length = float(np.sqrt(d @ d))
+    if not (length > 0.0 and np.isfinite(length)):
+        raise ValueError("meshio++: sections: direction must be non-zero")
+    offs = [float(v) for v in np.asarray(offsets, dtype=np.float64).ravel()]
+    if not offs:
+        raise ValueError("meshio++: sections: give at least one offset")
+    if not all(np.isfinite(offs)):
+        raise ValueError("meshio++: sections: offsets must be finite")
+    try:
+        from . import _core
+
+        return _core.sections(
+            mesh,
+            [float(v) for v in d],
+            offs,
+            float(min_length),
+            bool(record_parent_ids),
+        )
+    except Exception as exc:
+        if not core_op_declined(exc, "sections"):
+            raise
+    n = d / length
+    parts, base = [], 0
+    for off in offs:
+        part = slice(
+            mesh,
+            n * off,
+            n,
+            record_parent_ids,
+            chain=True,
+            min_length=min_length,
+        )
+        if not part.cells or len(part.cells[0].data) == 0:
+            continue
+        chains = np.asarray(part.cell_data["section:chain"][0], dtype=np.int64)
+        part.cell_data["section:chain"] = [chains + base]
+        base += int(chains.max()) + 1
+        part.cell_data["section:offset"] = [np.full(len(chains), off, dtype=np.float64)]
+        parts.append(part)
+    if not parts:
+        return Mesh(np.zeros((0, 3)), [])
+    if len(parts) == 1:
+        return parts[0]
+    return merge(parts, source_tag=False)

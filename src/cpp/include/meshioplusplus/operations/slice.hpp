@@ -62,10 +62,27 @@
  * `cell_data` array records the originating **input** cell (global, block-major
  * over the input mesh). Section points are all new, so `point_sets`/`cell_sets`,
  * `mesh.info` and `gmsh_periodic` are **not** carried.
+ *
+ * ### Chained sections (roadmap 7.6.1)
+ *
+ * With `mChain`, a surface's line section comes back as polylines: its
+ * segments are walked into chains (`detail/polyline_chain.hpp`: open chains
+ * from their lowest-id end, then loops from their lowest point, each walk
+ * taking the lowest-id neighbour), emitted in chain order and walking
+ * direction, the points renumbered in order of first visit, with the Int64
+ * cell data `section:chain` (the chain's index) and `section:closed` (1 on a
+ * loop). Points at exactly one position are one point of a chain (a plane
+ * through a vertex cuts each of its edges there; the lowest id stands in), so
+ * a segment between two of them is left out. Chains shorter than
+ * `mMinLength` are dropped. A volume's section is
+ * a surface and is refused by name. `sections` slices along a direction at
+ * several offsets and merges the chained sections, with the Float64 cell
+ * data `section:offset` and the chains numbered across them.
  */
 
 // System includes
 #include <array>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/export.hpp"
@@ -85,6 +102,32 @@ struct SliceOptions {
     /// section cell, the global (block-major) index of the input cell it was
     /// cut from.
     bool mRecordParentIds = false;
+
+    /// Walk a line section into chains (see the file comment).
+    bool mChain = false;
+
+    /// With `mChain`, drop chains shorter than this.
+    double mMinLength = 0.0;
+};
+
+/// Cell data (Int64) of a chained section: each segment's chain.
+inline constexpr const char* kSectionChainName = "section:chain";
+/// Cell data (Int64) of a chained section: 1 when the segment's chain is a loop.
+inline constexpr const char* kSectionClosedName = "section:closed";
+/// Cell data (Float64) of `sections`: the offset each segment was cut at.
+inline constexpr const char* kSectionOffsetName = "section:offset";
+
+/// Options for `sections`.
+struct SectionsOptions {
+    /// The planes' normal; any non-zero length. Plane `k` is `n . x = mOffsets[k]`
+    /// with `n` the unit direction.
+    std::array<double, 3> mDirection{{0.0, 0.0, 1.0}};
+    /// The planes' signed distances from the origin along the unit direction.
+    std::vector<double> mOffsets;
+    /// Drop chains shorter than this.
+    double mMinLength = 0.0;
+    /// As `SliceOptions::mRecordParentIds`.
+    bool mRecordParentIds = false;
 };
 
 /**
@@ -99,5 +142,13 @@ struct SliceOptions {
  *         cannot be simplexified (a polyhedron block).
  */
 MESHIOPLUSPLUS_API Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions = {});
+
+/**
+ * @brief The chained sections of the surface @p rMesh at several parallel
+ * planes, merged into one line mesh (see the file comment).
+ * @throws std::invalid_argument on a zero direction, no offsets, a
+ *         non-finite offset, or a mesh whose sections are not lines.
+ */
+MESHIOPLUSPLUS_API Mesh sections(const Mesh& rMesh, const SectionsOptions& rOptions);
 
 }  // namespace meshioplusplus

@@ -1319,6 +1319,25 @@ MIO_API mio_mesh* mio_slice(const mio_mesh* mesh, const double* origin, const do
                             int record_parent_ids);
 
 /**
+ * mio_slice with chaining (roadmap 7.6.1): with `chain` nonzero a surface's
+ * line section comes back walked into polylines, in chain order, with the
+ * Int64 cell data "section:chain" and "section:closed"; chains shorter than
+ * `min_length` are dropped. A volume's section (a surface) is refused.
+ */
+MIO_API mio_mesh* mio_slice_ex(const mio_mesh* mesh, const double* origin, const double* normal,
+                               int record_parent_ids, int chain, double min_length);
+
+/**
+ * Chained sections of a surface at `n_offsets` parallel planes `n . x =
+ * offsets[k]` (`n` the unit `direction`), merged into one line mesh with the
+ * Float64 cell data "section:offset" and the chains numbered across planes
+ * (roadmap 7.6.1). Returns the mesh (free with mio_mesh_free) or NULL.
+ */
+MIO_API mio_mesh* mio_sections(const mio_mesh* mesh, const double* direction,
+                               const double* offsets, int64_t n_offsets, double min_length,
+                               int record_parent_ids);
+
+/**
  * Isosurfaces / contours: the level set of a scalar point_data field, one
  * topological dimension below the cut cells (a volume mesh yields a
  * triangle/quad surface, a 2D surface mesh a line mesh). The data-driven

@@ -38748,10 +38748,27 @@ MESHIOPLUSPLUS_API ShrinkwrapResult shrinkwrap(const Mesh& rMesh, const Mesh& rT
  * `cell_data` array records the originating **input** cell (global, block-major
  * over the input mesh). Section points are all new, so `point_sets`/`cell_sets`,
  * `mesh.info` and `gmsh_periodic` are **not** carried.
+ *
+ * ### Chained sections (roadmap 7.6.1)
+ *
+ * With `mChain`, a surface's line section comes back as polylines: its
+ * segments are walked into chains (`detail/polyline_chain.hpp`: open chains
+ * from their lowest-id end, then loops from their lowest point, each walk
+ * taking the lowest-id neighbour), emitted in chain order and walking
+ * direction, the points renumbered in order of first visit, with the Int64
+ * cell data `section:chain` (the chain's index) and `section:closed` (1 on a
+ * loop). Points at exactly one position are one point of a chain (a plane
+ * through a vertex cuts each of its edges there; the lowest id stands in), so
+ * a segment between two of them is left out. Chains shorter than
+ * `mMinLength` are dropped. A volume's section is
+ * a surface and is refused by name. `sections` slices along a direction at
+ * several offsets and merges the chained sections, with the Float64 cell
+ * data `section:offset` and the chains numbered across them.
  */
 
 // System includes
 #include <array>
+#include <vector>
 
 // Project includes
 
@@ -38769,6 +38786,32 @@ struct SliceOptions {
     /// section cell, the global (block-major) index of the input cell it was
     /// cut from.
     bool mRecordParentIds = false;
+
+    /// Walk a line section into chains (see the file comment).
+    bool mChain = false;
+
+    /// With `mChain`, drop chains shorter than this.
+    double mMinLength = 0.0;
+};
+
+/// Cell data (Int64) of a chained section: each segment's chain.
+inline constexpr const char* kSectionChainName = "section:chain";
+/// Cell data (Int64) of a chained section: 1 when the segment's chain is a loop.
+inline constexpr const char* kSectionClosedName = "section:closed";
+/// Cell data (Float64) of `sections`: the offset each segment was cut at.
+inline constexpr const char* kSectionOffsetName = "section:offset";
+
+/// Options for `sections`.
+struct SectionsOptions {
+    /// The planes' normal; any non-zero length. Plane `k` is `n . x = mOffsets[k]`
+    /// with `n` the unit direction.
+    std::array<double, 3> mDirection{{0.0, 0.0, 1.0}};
+    /// The planes' signed distances from the origin along the unit direction.
+    std::vector<double> mOffsets;
+    /// Drop chains shorter than this.
+    double mMinLength = 0.0;
+    /// As `SliceOptions::mRecordParentIds`.
+    bool mRecordParentIds = false;
 };
 
 /**
@@ -38783,6 +38826,14 @@ struct SliceOptions {
  *         cannot be simplexified (a polyhedron block).
  */
 MESHIOPLUSPLUS_API Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions = {});
+
+/**
+ * @brief The chained sections of the surface @p rMesh at several parallel
+ * planes, merged into one line mesh (see the file comment).
+ * @throws std::invalid_argument on a zero direction, no offsets, a
+ *         non-finite offset, or a mesh whose sections are not lines.
+ */
+MESHIOPLUSPLUS_API Mesh sections(const Mesh& rMesh, const SectionsOptions& rOptions);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/slice.hpp =====
@@ -52672,6 +52723,51 @@ inline std::vector<PolyhedronGroup> group_polyhedra_by_node_count(
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/polyhedron_groups.hpp =====
+// ===== begin src/cpp/src/detail/polyline_chain.hpp =====
+/**
+ * @file detail/polyline_chain.hpp
+ * @brief Segments joined into polylines (roadmap 7.6.1): the chains of a
+ * line mesh, each walked end to end in a canonical order, so a section is
+ * a list of curves rather than a bag of segments.
+ *
+ * A point's degree is the number of segments touching it. A chain runs
+ * between two points whose degree is not 2 (an end, or a branch point) or,
+ * with every degree 2, round a closed loop. Canonical order, so both engines
+ * and every run agree: open chains first, each started at the lowest-id
+ * point whose degree is not 2 that still has an unwalked segment, then
+ * loops, each started at its lowest point id; a walk always takes the
+ * unwalked segment to the lowest-id neighbour, the segment of lowest index
+ * on a tie. Degenerate segments (both ends one point) are left out.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+/// One chain: its points in walking order (a loop's last point is its first),
+/// its segments in that order and whether each was walked against its own
+/// orientation.
+struct PolylineChain {
+    std::vector<std::int64_t> mPoints;
+    std::vector<std::int64_t> mSegments;
+    std::vector<std::uint8_t> mReversed;
+    bool mClosed = false;
+};
+
+/**
+ * @brief The chains of @p rSegments (point-id pairs) over @p NumPoints
+ * points, in the canonical order of the file comment.
+ */
+std::vector<PolylineChain> polyline_chains(
+    const std::vector<std::array<std::int64_t, 2>>& rSegments, std::size_t NumPoints);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/polyline_chain.hpp =====
 // ===== begin src/cpp/src/detail/predicates.hpp =====
 /**
  * @file detail/predicates.hpp
@@ -59728,8 +59824,10 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Ratio", "TargetCells", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
           "FeatureAngle"}},
         {"Partition", {"Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"}},
-        {"Slice", {"Point", "Normal", "RecordParentIds"}},
-        {"Section", {"Point", "Normal", "RecordParentIds"}},
+        {"Slice", {"Point", "Normal", "RecordParentIds", "Chain", "MinLength"}},
+        // Chained line sections of a surface at parallel planes (roadmap 7.6.1).
+        {"Sections", {"Direction", "Offsets", "MinLength", "RecordParentIds"}},
+        {"Section", {"Point", "Normal", "RecordParentIds", "Chain", "MinLength"}},
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
         {"Hessian", {"Array", "Method", "Location", "Output"}},
         {"Curvature",
@@ -102782,6 +102880,75 @@ std::size_t FacetKeyHash::operator()(const FacetKey& rKey) const {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/polyhedron.cpp =====
+// ===== begin src/cpp/src/detail/polyline_chain.cpp =====
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+std::vector<PolylineChain> polyline_chains(
+    const std::vector<std::array<std::int64_t, 2>>& rSegments, std::size_t NumPoints) {
+    // Incidence lists, each sorted by (neighbour, segment).
+    std::vector<std::vector<std::array<std::int64_t, 2>>> adj(NumPoints);
+    for (std::size_t s = 0; s < rSegments.size(); ++s) {
+        const std::int64_t a = rSegments[s][0], b = rSegments[s][1];
+        if (a == b || a < 0 || b < 0 || static_cast<std::size_t>(a) >= NumPoints ||
+            static_cast<std::size_t>(b) >= NumPoints)
+            continue;
+        adj[static_cast<std::size_t>(a)].push_back({b, static_cast<std::int64_t>(s)});
+        adj[static_cast<std::size_t>(b)].push_back({a, static_cast<std::int64_t>(s)});
+    }
+    for (auto& r_list : adj)
+        std::sort(r_list.begin(), r_list.end());
+    std::vector<std::uint8_t> used(rSegments.size(), 0);
+    const auto next_edge = [&](std::int64_t P) -> const std::array<std::int64_t, 2>* {
+        for (const auto& r_e : adj[static_cast<std::size_t>(P)])
+            if (used[static_cast<std::size_t>(r_e[1])] == 0)
+                return &r_e;
+        return nullptr;
+    };
+    const auto walk = [&](std::int64_t Start, bool Loop) {
+        PolylineChain chain;
+        chain.mClosed = Loop;
+        chain.mPoints.push_back(Start);
+        std::int64_t p = Start;
+        while (true) {
+            const std::array<std::int64_t, 2>* p_e = next_edge(p);
+            if (p_e == nullptr)
+                break;
+            const std::int64_t q = (*p_e)[0], s = (*p_e)[1];
+            used[static_cast<std::size_t>(s)] = 1;
+            chain.mSegments.push_back(s);
+            chain.mReversed.push_back(rSegments[static_cast<std::size_t>(s)][0] == p ? 0 : 1);
+            chain.mPoints.push_back(q);
+            p = q;
+            if (Loop ? p == Start : adj[static_cast<std::size_t>(p)].size() != 2)
+                break;
+        }
+        return chain;
+    };
+    std::vector<PolylineChain> out;
+    for (std::size_t p = 0; p < NumPoints; ++p)
+        if (adj[p].size() != 2 && !adj[p].empty())
+            while (next_edge(static_cast<std::int64_t>(p)) != nullptr)
+                out.push_back(walk(static_cast<std::int64_t>(p), false));
+    for (std::size_t p = 0; p < NumPoints; ++p)
+        while (next_edge(static_cast<std::int64_t>(p)) != nullptr) {
+            PolylineChain chain = walk(static_cast<std::int64_t>(p), true);
+            chain.mClosed = chain.mPoints.back() == chain.mPoints.front();
+            out.push_back(std::move(chain));
+        }
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/polyline_chain.cpp =====
 // ===== begin src/cpp/src/detail/predicates.cpp =====
 #include <cmath>
 #include <cstddef>
@@ -258802,6 +258969,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         pipe_vec3(rStep, "Point", opts.mOrigin.data());
         pipe_vec3(rStep, "Normal", opts.mNormal.data());
         opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        opts.mChain = pipe_flag(rStep, "Chain", false);
+        opts.mMinLength = pipe_number(rStep, "MinLength", 0.0);
         Mesh section = slice(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"SectionFaces", static_cast<double>(pipe_total_cells(section))}});
@@ -258809,6 +258978,22 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             rReport.mWarnings.push_back(
                 "the section is empty; the plane misses the mesh -- move or flip it");
         return section;
+    }
+    if (op == "Sections") {
+        SectionsOptions opts;
+        if (pipe_find(rStep, "Direction"))
+            pipe_vec3(rStep, "Direction", opts.mDirection.data());
+        opts.mOffsets = pipe_dvec(rStep, "Offsets");
+        if (opts.mOffsets.empty())
+            throw std::invalid_argument(pipe_err(rStep, "needs Offsets, the planes' distances"));
+        opts.mMinLength = pipe_number(rStep, "MinLength", 0.0);
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        Mesh out = sections(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"SectionCells", static_cast<double>(pipe_total_cells(out))}});
+        if (pipe_total_cells(out) == 0)
+            rReport.mWarnings.push_back("the sections are empty; no plane meets the surface");
+        return out;
     }
     if (op == "Gradient") {
         // A pure data step: geometry is untouched, so the pipeline carries the
@@ -280756,16 +280941,115 @@ ShrinkwrapResult shrinkwrap(const Mesh& rMesh, const Mesh& rTarget,
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/shrinkwrap.cpp =====
 // ===== begin src/cpp/src/operations/slice.cpp =====
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 // Project includes
 
 namespace meshioplusplus {
 
+namespace {
+
+NDArray slc_int64(const std::vector<std::int64_t>& rValues) {
+    NDArray out = NDArray::Uninit(DType::Int64, {rValues.size()});
+    std::copy(rValues.begin(), rValues.end(), out.As<std::int64_t>());
+    return out;
+}
+
+// The line section @p rSection walked into chains (slice.hpp's contract).
+Mesh slc_chain(const Mesh& rSection, double MinLength) {
+    if (rSection.NumCellBlocks() == 0)
+        return rSection;
+    if (rSection.NumCellBlocks() != 1 || rSection.Cells(0).Type() != "line")
+        throw std::invalid_argument(
+            "meshio++: slice: chain needs a line section; slice a surface mesh (a volume's "
+            "section is a surface)");
+    const auto cells = rSection.Cells(0);
+    const std::size_t nseg = cells.NumCells();
+    const NDArray& conn = cells.Conn();
+    const std::size_t npts = rSection.NumPoints();
+    const std::size_t dim = rSection.PointDim();
+    // Points at exactly one position (a plane through a vertex cuts each of
+    // its edges there) are one point of the chain: the lowest id stands in.
+    std::vector<std::int64_t> same(npts);
+    {
+        std::map<std::array<double, 3>, std::int64_t> first;
+        for (std::size_t i = 0; i < npts; ++i) {
+            std::array<double, 3> key{0.0, 0.0, 0.0};
+            for (std::size_t a = 0; a < dim && a < 3; ++a)
+                key[a] = detail::read_double(rSection.Points(), i * dim + a);
+            same[i] = first.emplace(key, static_cast<std::int64_t>(i)).first->second;
+        }
+    }
+    std::vector<std::array<std::int64_t, 2>> segs(nseg);
+    for (std::size_t s = 0; s < nseg; ++s)
+        segs[s] = {same[static_cast<std::size_t>(detail::read_int(conn, 2 * s))],
+                   same[static_cast<std::size_t>(detail::read_int(conn, 2 * s + 1))]};
+    const std::vector<detail::PolylineChain> chains = detail::polyline_chains(segs, npts);
+    std::vector<std::int64_t> new_of(npts, -1), old_points, seg_order, conn_out, chain_id, closed;
+    std::int64_t kept = 0;
+    for (const detail::PolylineChain& r_c : chains) {
+        double length = 0.0;
+        for (std::size_t k = 0; k + 1 < r_c.mPoints.size(); ++k) {
+            double d2 = 0.0;
+            for (std::size_t a = 0; a < dim; ++a) {
+                const double d =
+                    detail::read_double(rSection.Points(),
+                                        static_cast<std::size_t>(r_c.mPoints[k + 1]) * dim + a) -
+                    detail::read_double(rSection.Points(),
+                                        static_cast<std::size_t>(r_c.mPoints[k]) * dim + a);
+                d2 += d * d;
+            }
+            length += std::sqrt(d2);
+        }
+        if (length < MinLength)
+            continue;
+        for (const std::int64_t p : r_c.mPoints)
+            if (new_of[static_cast<std::size_t>(p)] < 0) {
+                new_of[static_cast<std::size_t>(p)] = static_cast<std::int64_t>(old_points.size());
+                old_points.push_back(p);
+            }
+        for (std::size_t k = 0; k < r_c.mSegments.size(); ++k) {
+            seg_order.push_back(r_c.mSegments[k]);
+            conn_out.push_back(new_of[static_cast<std::size_t>(r_c.mPoints[k])]);
+            conn_out.push_back(new_of[static_cast<std::size_t>(r_c.mPoints[k + 1])]);
+            chain_id.push_back(kept);
+            closed.push_back(r_c.mClosed ? 1 : 0);
+        }
+        ++kept;
+    }
+    Mesh out;
+    out.AssignPoints(detail::subset_gather_rows(rSection.Points(), old_points));
+    for (const std::string& r_name : rSection.PointDataNames())
+        out.AddPointData(r_name,
+                         detail::subset_gather_rows(rSection.PointData(r_name), old_points));
+    NDArray c = NDArray::Uninit(DType::Int64, {seg_order.size(), std::size_t{2}});
+    std::copy(conn_out.begin(), conn_out.end(), c.As<std::int64_t>());
+    out.AddCellBlock("line", std::move(c));
+    for (const std::string& r_name : rSection.CellDataNames()) {
+        std::vector<NDArray> blocks;
+        blocks.push_back(detail::subset_gather_rows(rSection.CellData(r_name, 0), seg_order));
+        out.AddCellData(r_name, std::move(blocks));
+    }
+    std::vector<NDArray> chain_blocks, closed_blocks;
+    chain_blocks.push_back(slc_int64(chain_id));
+    closed_blocks.push_back(slc_int64(closed));
+    out.AddCellData(kSectionChainName, std::move(chain_blocks));
+    out.AddCellData(kSectionClosedName, std::move(closed_blocks));
+    return out;
+}
+
+}  // namespace
+
 Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions) {
+    if (!(rOptions.mMinLength >= 0.0) || !std::isfinite(rOptions.mMinLength))
+        throw std::invalid_argument("meshio++: slice: min_length must be finite and >= 0");
     using detail::Vec3;
 
     const Vec3 origin = {rOptions.mOrigin[0], rOptions.mOrigin[1], rOptions.mOrigin[2]};
@@ -280800,7 +281084,63 @@ Mesh slice(const Mesh& rMesh, const SliceOptions& rOptions) {
     options.mDirection = rOptions.mNormal;
 
     detail::warn_regions_dropped(rMesh, "slice");
+    if (rOptions.mChain)
+        return slc_chain(detail::marching_cut(input, dist, options), rOptions.mMinLength);
     return detail::marching_cut(input, dist, options);
+}
+
+Mesh sections(const Mesh& rMesh, const SectionsOptions& rOptions) {
+    const double len = std::sqrt(rOptions.mDirection[0] * rOptions.mDirection[0] +
+                                 rOptions.mDirection[1] * rOptions.mDirection[1] +
+                                 rOptions.mDirection[2] * rOptions.mDirection[2]);
+    if (!(len > 0.0) || !std::isfinite(len))
+        throw std::invalid_argument("meshio++: sections: direction must be non-zero");
+    if (rOptions.mOffsets.empty())
+        throw std::invalid_argument("meshio++: sections: give at least one offset");
+    std::vector<Mesh> parts;
+    std::int64_t chain_base = 0;
+    for (const double off : rOptions.mOffsets) {
+        if (!std::isfinite(off))
+            throw std::invalid_argument("meshio++: sections: offsets must be finite");
+        SliceOptions so;
+        for (std::size_t a = 0; a < 3; ++a) {
+            so.mNormal[a] = rOptions.mDirection[a] / len;
+            so.mOrigin[a] = off * so.mNormal[a];
+        }
+        so.mRecordParentIds = rOptions.mRecordParentIds;
+        so.mChain = true;
+        so.mMinLength = rOptions.mMinLength;
+        Mesh part = slice(rMesh, so);
+        if (part.NumCellBlocks() == 0 || part.Cells(0).NumCells() == 0)
+            continue;
+        const std::size_t n = part.Cells(0).NumCells();
+        std::vector<std::int64_t> chains(n);
+        std::int64_t top = -1;
+        for (std::size_t k = 0; k < n; ++k) {
+            const std::int64_t c = detail::read_int(part.CellData(kSectionChainName, 0), k);
+            chains[k] = c + chain_base;
+            top = std::max(top, c);
+        }
+        chain_base += top + 1;
+        NDArray offs = NDArray::Uninit(DType::Float64, {n});
+        std::fill(offs.As<double>(), offs.As<double>() + n, off);
+        std::vector<NDArray> cb, ob;
+        cb.push_back(slc_int64(chains));
+        ob.push_back(std::move(offs));
+        part.AddCellData(kSectionChainName, std::move(cb));
+        part.AddCellData(kSectionOffsetName, std::move(ob));
+        parts.push_back(std::move(part));
+    }
+    if (parts.empty())
+        return Mesh{};
+    if (parts.size() == 1)
+        return std::move(parts[0]);
+    std::vector<const Mesh*> ptrs;
+    for (const Mesh& r_p : parts)
+        ptrs.push_back(&r_p);
+    MergeOptions mo;
+    mo.source_tag = false;
+    return merge(ptrs, mo).mMesh;
 }
 
 }  // namespace meshioplusplus

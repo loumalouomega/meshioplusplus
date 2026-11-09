@@ -5989,6 +5989,10 @@ step('findIntersections and thickness (roadmap 3.1.2, 3.1.4)', () => {
     assert.equal(ts.method, 'cone');
     assert.ok(ts.p2 <= ts.p95);
     assert.throws(() => m.thickness(a, { method: 'laser' }), /method/);
+    const ch = m.slice(a, [0, 0, 0.1], [0, 0, 1], false, { chain: true });
+    assert.ok('section:chain' in ch.cell_data);
+    const ss = m.sections(a, [0, 0, 1], [-0.5, 0.5]);
+    assert.ok('section:offset' in ss.cell_data);
 });
 
 step('deviation (roadmap 7.4)', () => {

@@ -5386,11 +5386,12 @@ int cmd_select(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_slice(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(
-        rArgs,
-        cli_specs(
-            {io_flag_specs(),
-             {{"origin", {}, true}, {"normal", {}, true}, {"record-parent-ids", {}, false}}}));
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"origin", {}, true},
+                                          {"normal", {}, true},
+                                          {"record-parent-ids", {}, false},
+                                          {"chain", {}, false},
+                                          {"min-length", {}, true}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("slice requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -5408,8 +5409,35 @@ int cmd_slice(const std::vector<std::string>& rArgs) {
     options.mOrigin = {o[0], o[1], o[2]};
     options.mNormal = {n[0], n[1], n[2]};
     options.mRecordParentIds = has_flag(p, "record-parent-ids");
+    options.mChain = has_flag(p, "chain");
+    cli_opt_double(p, "min-length", options.mMinLength);
     Mesh out = meshioplusplus::slice(mesh, options);
 
+    write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
+    return 0;
+}
+
+// sections: chained line sections of a surface at parallel planes (roadmap 7.6.1).
+int cmd_sections(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"direction", {}, true},
+                                          {"offsets", {}, true},
+                                          {"min-length", {}, true},
+                                          {"record-parent-ids", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("sections requires exactly INFILE and OUTFILE");
+    if (!has_opt(p, "offsets"))
+        throw std::runtime_error("sections: --offsets is required");
+    const auto d = parse_doubles(opt_value(p, "direction", "0,0,1"));
+    if (d.size() != 3)
+        throw std::runtime_error("sections: --direction expects 'x,y,z'");
+    meshioplusplus::SectionsOptions o;
+    o.mDirection = {d[0], d[1], d[2]};
+    o.mOffsets = parse_doubles(opt_value(p, "offsets"));
+    cli_opt_double(p, "min-length", o.mMinLength);
+    o.mRecordParentIds = has_flag(p, "record-parent-ids");
+    Mesh out =
+        meshioplusplus::sections(read_mesh_cli(p.positionals[0], opt_value(p, "input-format")), o);
     write_mesh_cli(p.positionals[1], out, opt_value(p, "output-format"));
     return 0;
 }
@@ -9486,6 +9514,9 @@ const CliVerb kCliVerbs[] = {
     {"slice", nullptr,
      "  slice                   Planar cross-section (volume->surface, surface->lines)\n",
      &cmd_slice},
+    {"sections", nullptr,
+     "  sections                Chained line sections of a surface at parallel planes\n",
+     &cmd_sections},
     {"generate", nullptr,
      "  generate                Build a mesh from parameters: SHAPE OUTFILE with\n"
      "                            rectangle | box | disk | uv-sphere | icosa-sphere |\n"

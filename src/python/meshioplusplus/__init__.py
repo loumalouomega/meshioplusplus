@@ -305,7 +305,7 @@ if TYPE_CHECKING:
     )
     from ._shrinkwrap import shrinkwrap
     from ._skin import extract_skin
-    from ._slice import slice
+    from ._slice import sections, slice
     from ._smooth import smooth
     from ._sniff import sniff_format
     from ._sobolev_deform import sobolev_deform
@@ -557,6 +557,7 @@ _LAZY_ATTRS = {
     "shrinkwrap": "_shrinkwrap",
     "extract_skin": "_skin",
     "slice": "_slice",
+    "sections": "_slice",
     "smooth": "_smooth",
     "sniff_format": "_sniff",
     "sobolev_deform": "_sobolev_deform",
@@ -737,6 +738,7 @@ __all__ = [
     "estimate_error",
     "error_size",
     "slice",
+    "sections",
     "isosurface",
     "transform",
     "clean",
