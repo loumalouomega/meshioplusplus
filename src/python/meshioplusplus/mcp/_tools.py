@@ -225,6 +225,7 @@ from .. import (
     write_graph,
 )
 from .. import write_parquet as _write_parquet_fn
+from .. import write_step_elements as _write_step_elements_op
 from .._helpers import _filetypes_from_path, formats
 
 # --------------------------------------------------------------------------- #
@@ -1801,6 +1802,26 @@ def tool_slice(
 ):
     """Planar cross-section (one topological dimension below the input)."""
     return _run_op(_slice_op, locals(), report=False)
+
+
+def tool_write_step_elements(
+    input_path,
+    output_path,
+    input_format=None,
+    patches=None,
+    segments=64,
+):
+    """Fitted primitives as exact STEP geometry (planes, balls, cylinders, ...)."""
+    out = _resolve(output_path, for_write=True)
+    report = _write_step_elements_op(
+        out,
+        _load(input_path, input_format),
+        patches=None if patches is None else [int(p) for p in patches],
+        segments=int(segments),
+    )
+    _cache_invalidate(out)
+    report["output_path"] = str(out)
+    return _json_safe(report)
 
 
 def tool_silhouette(
@@ -7316,6 +7337,14 @@ TOOL_REGISTRY = OrderedDict(
         ("crop", {"fn": tool_crop, "wraps": ("crop",), "gated": None}),
         ("slice", {"fn": tool_slice, "wraps": ("slice",), "gated": None}),
         ("sections", {"fn": tool_sections, "wraps": ("sections",), "gated": None}),
+        (
+            "write_step_elements",
+            {
+                "fn": tool_write_step_elements,
+                "wraps": ("write_step_elements",),
+                "gated": None,
+            },
+        ),
         (
             "silhouette",
             {"fn": tool_silhouette, "wraps": ("silhouette",), "gated": None},

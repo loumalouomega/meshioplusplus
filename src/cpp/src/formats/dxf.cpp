@@ -35,6 +35,7 @@
 #include "meshioplusplus/detail/provenance.hpp"
 #include "../detail/open_source.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "../detail/sketch_pieces.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/ndarray.hpp"
 
@@ -135,41 +136,11 @@ void dxf_entity_head(DxfOut& rOut, const char* pType, const char* pSub) {
 }
 
 void dxf_entities(DxfOut& rOut, const Mesh& rMesh) {
-    const bool sketch = rMesh.HasFieldData("sketch:type") && rMesh.HasFieldData("sketch:params") &&
-                        rMesh.HasFieldData("sketch:frame") && rMesh.HasFieldData("sketch:frames");
-    if (sketch) {
-        const NDArray& types = rMesh.FieldData("sketch:type");
-        const NDArray& params = rMesh.FieldData("sketch:params");
-        const NDArray& frame_of = rMesh.FieldData("sketch:frame");
-        const NDArray& frames = rMesh.FieldData("sketch:frames");
-        if (params.Size() != 10 * types.Size() || frame_of.Size() != types.Size())
-            throw WriteError("meshio++: dxf: the sketch:* field data do not match");
-        for (std::size_t k = 0; k < types.Size(); ++k) {
-            const std::int64_t t = detail::read_int(types, k);
-            const std::int64_t f = detail::read_int(frame_of, k);
-            if (f < 0 || static_cast<std::size_t>(16 * (f + 1)) > frames.Size())
-                throw WriteError("meshio++: dxf: a sketch piece names a missing frame");
-            const auto m = [&](std::size_t R, std::size_t C) {
-                return detail::read_double(frames, static_cast<std::size_t>(16 * f) + 4 * R + C);
-            };
-            DxfV3 e1, e2, n, o;
-            for (std::size_t r = 0; r < 3; ++r) {
-                e1[r] = m(r, 0);
-                e2[r] = m(r, 1);
-                n[r] = m(r, 2);
-                o[r] = m(r, 3);
-            }
-            double p[10];
-            for (std::size_t q = 0; q < 10; ++q)
-                p[q] = detail::read_double(params, 10 * k + q);
-            const auto world = [&](double U, double V) {
-                DxfV3 w;
-                for (std::size_t r = 0; r < 3; ++r)
-                    w[r] = o[r] + U * e1[r] + V * e2[r];
-                return w;
-            };
-            const DxfV3 start = world(p[0], p[1]), end = world(p[2], p[3]),
-                        centre = world(p[4], p[5]);
+    if (detail::has_sketch(rMesh)) {
+        for (const detail::SketchWorldPiece& r_p :
+             detail::sketch_world_pieces(rMesh, "meshio++: dxf: ")) {
+            const std::int64_t t = r_p.mType;
+            const DxfV3 start = r_p.mStart, end = r_p.mEnd, centre = r_p.mCentre, n = r_p.mNormal;
             if (t == 1) {
                 dxf_entity_head(rOut, "LINE", "AcDbLine");
                 for (std::size_t r = 0; r < 3; ++r)
@@ -184,7 +155,7 @@ void dxf_entities(DxfOut& rOut, const Mesh& rMesh) {
             dxf_entity_head(rOut, t == 3 ? "CIRCLE" : "ARC", "AcDbCircle");
             for (std::size_t r = 0; r < 3; ++r)
                 rOut.Pair(10 + 10 * static_cast<int>(r), dxf_num(c[r]));
-            rOut.Pair(40, dxf_num(p[6]));
+            rOut.Pair(40, dxf_num(r_p.mRadius));
             for (std::size_t r = 0; r < 3; ++r)
                 rOut.Pair(210 + 10 * static_cast<int>(r), dxf_num(ocs[2][r]));
             if (t == 2) {
@@ -192,7 +163,7 @@ void dxf_entities(DxfOut& rOut, const Mesh& rMesh) {
                 const DxfV3 de{end[0] - centre[0], end[1] - centre[1], end[2] - centre[2]};
                 double a0 = std::atan2(dxf_dot(ds, ocs[1]), dxf_dot(ds, ocs[0])) * 180.0 / kDxfPi;
                 double a1 = std::atan2(dxf_dot(de, ocs[1]), dxf_dot(de, ocs[0])) * 180.0 / kDxfPi;
-                if (p[7] < 0.0)
+                if (r_p.mSweepDeg < 0.0)
                     std::swap(a0, a1);
                 rOut.Pair(100, "AcDbArc");
                 rOut.Pair(50, dxf_num(a0));

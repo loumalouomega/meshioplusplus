@@ -375,6 +375,12 @@ _VERBS = (
         "Planar cross-section of a mesh (volume -> surface, surface -> lines)",
     ),
     _Verb(
+        "step-elements",
+        "_step_elements",
+        "step_elements_cmd",
+        "Fitted primitives as exact STEP planes, balls, cylinders, cones, tori",
+    ),
+    _Verb(
         "silhouette",
         "_silhouette",
         "silhouette_cmd",

@@ -226,6 +226,29 @@ static mxArray *O_mio_slice(const mxArray **a) {
     return mio_o_wrap_mesh(out);
 }
 
+/* write_step_elements(path, mesh, patches, segments) (roadmap 7.6.5): patches
+ * a numeric vector of labels (empty: every fitted patch). */
+static mxArray *O_mio_write_step_elements(const mxArray **a) {
+    const mwSize n = mxIsEmpty(a[2]) ? 0 : mxGetNumberOfElements(a[2]);
+    if (n > 0 && (!mxIsDouble(a[2]) || mxIsComplex(a[2])))
+        mexErrMsgIdAndTxt("meshioplusplus:args", "write_step_elements: patches must be real numbers");
+    int64_t *ids = (int64_t *)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    for (mwSize i = 0; i < n; ++i) ids[i] = (int64_t)mxGetPr(a[2])[i];
+    mio_step_elements_report r;
+    mio_o_check(mio_write_step_elements(mio_o_string(a[0], "path"), mio_o_mesh(a[1]),
+                                        n > 0 ? ids : NULL, (int64_t)n,
+                                        (int64_t)mio_o_double(a[3], "segments"), &r),
+                "write_step_elements");
+    mxArray *w = mio_o_getbuffer(mio_write_step_elements_warnings, "write_step_elements");
+    const char *keys[] = {"num_planes", "num_spheres", "num_cylinders", "num_cones",
+                          "num_tori",   "num_skipped", "warnings"};
+    mxArray *values[] = {mio_o_scalar((double)r.num_planes),    mio_o_scalar((double)r.num_spheres),
+                         mio_o_scalar((double)r.num_cylinders), mio_o_scalar((double)r.num_cones),
+                         mio_o_scalar((double)r.num_tori),      mio_o_scalar((double)r.num_skipped),
+                         w};
+    return mio_o_struct(7, keys, values);
+}
+
 /* silhouette(mesh, normal, clearance, round_angle, arc_segments, extrude,
  * region, merge_tolerance) (roadmap 7.6.3). */
 static mxArray *O_mio_silhouette(const mxArray **a) {
@@ -1670,6 +1693,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_sections, 5),
     MIO_O_ENTRY(mio_fit_curves, 6),
     MIO_O_ENTRY(mio_silhouette, 8),
+    MIO_O_ENTRY(mio_write_step_elements, 4),
     MIO_O_ENTRY(mio_isosurface, 5),
     MIO_O_ENTRY(mio_gradient, 8),
     MIO_O_ENTRY(mio_hessian, 6),

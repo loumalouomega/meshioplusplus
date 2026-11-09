@@ -314,6 +314,7 @@ if TYPE_CHECKING:
     from ._sobolev_deform import sobolev_deform
     from ._split import split
     from ._stats import compute_stats
+    from ._step_elements import write_step_elements
     from ._subdivide import subdivide
     from ._surface import extract_surface
     from ._tensor_invariants import tensor_invariants
@@ -563,6 +564,7 @@ _LAZY_ATTRS = {
     "sections": "_slice",
     "fit_curves": "_fit_curves",
     "silhouette": "_silhouette",
+    "write_step_elements": "_step_elements",
     "smooth": "_smooth",
     "sniff_format": "_sniff",
     "sobolev_deform": "_sobolev_deform",
@@ -747,6 +749,7 @@ __all__ = [
     "sections",
     "fit_curves",
     "silhouette",
+    "write_step_elements",
     "isosurface",
     "transform",
     "clean",

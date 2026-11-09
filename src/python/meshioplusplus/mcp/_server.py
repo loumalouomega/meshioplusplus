@@ -545,6 +545,24 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    @_forward(_tools.tool_write_step_elements)
+    def write_step_elements(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        patches: Optional[List[int]] = None,
+        segments: int = 64,
+    ) -> dict:
+        """Write the fitted primitives of a mesh (segment, then
+        fit_primitives) to a STEP file as exact geometry a CAD user can snap
+        to: each plane as a face bounded by its points' convex hull, a sphere
+        as a ball, a cylinder as a solid with flat lids over its measured
+        length, a cone as its frustum, a torus whole. patches selects patch
+        labels (default every fitted one). Reports num_planes, num_spheres,
+        num_cylinders, num_cones, num_tori, num_skipped, warnings and
+        output_path."""
+
+    @server.tool()
     @_forward(_tools.tool_silhouette)
     def silhouette(
         input_path: str,

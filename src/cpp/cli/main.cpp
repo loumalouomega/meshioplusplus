@@ -5419,6 +5419,47 @@ int cmd_slice(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// step-elements: fitted primitives as exact STEP geometry (roadmap 7.6.5).
+int cmd_step_elements(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(
+        rArgs, cli_specs({io_flag_specs(),
+                          {{"patches", {}, true}, {"segments", {}, true}, {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("step-elements requires INFILE and OUTFILE (.step)");
+    meshioplusplus::StepElementsOptions o;
+    if (has_opt(p, "patches"))
+        for (const double v : parse_doubles(opt_value(p, "patches")))
+            o.mPatches.push_back(static_cast<std::int64_t>(v));
+    cli_opt_int64(p, "segments", o.mSegments);
+    const meshioplusplus::StepElementsResult r = meshioplusplus::write_step_elements(
+        p.positionals[1], read_mesh_cli(p.positionals[0], opt_value(p, "input-format")), o);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_planes", r.mNumPlanes);
+        json.Field("num_spheres", r.mNumSpheres);
+        json.Field("num_cylinders", r.mNumCylinders);
+        json.Field("num_cones", r.mNumCones);
+        json.Field("num_tori", r.mNumTori);
+        json.Field("num_skipped", r.mNumSkipped);
+        cli_names_json(json, "warnings", r.mWarnings);
+        json.EndObject();
+        return 0;
+    }
+    char line[256];
+    meshioplusplus::detail::snprintf_c(
+        line, sizeof(line),
+        "%lld plane(s), %lld sphere(s), %lld cylinder(s), %lld cone(s), %lld torus/tori; %lld "
+        "skipped\n",
+        static_cast<long long>(r.mNumPlanes), static_cast<long long>(r.mNumSpheres),
+        static_cast<long long>(r.mNumCylinders), static_cast<long long>(r.mNumCones),
+        static_cast<long long>(r.mNumTori), static_cast<long long>(r.mNumSkipped));
+    std::cout << line;
+    for (const std::string& w : r.mWarnings)
+        std::cout << "warning: " << w << "\n";
+    return 0;
+}
+
 // silhouette: the outline of a part along a direction (roadmap 7.6.3).
 int cmd_silhouette(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
@@ -9668,6 +9709,10 @@ const CliVerb kCliVerbs[] = {
     {"slice", nullptr,
      "  slice                   Planar cross-section (volume->surface, surface->lines)\n",
      &cmd_slice},
+    {"step-elements", nullptr,
+     "  step-elements           Fitted primitives as exact STEP planes, balls, cylinders, cones, "
+     "tori\n",
+     &cmd_step_elements},
     {"silhouette", nullptr,
      "  silhouette              The outline of a part along a direction, optionally offset or a "
      "prism\n",

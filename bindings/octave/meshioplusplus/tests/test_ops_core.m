@@ -385,6 +385,13 @@ function t_feature_segment()
     expect_equal(sg.num_patches, 6);
     fp = mio.fit_primitives(sg.mesh);
     expect_equal(fp.num_plane, 6);
+    step_path = [tempname() '.step'];
+    el = mio.write_step_elements(step_path, fp.mesh);
+    expect_equal(el.num_planes, 6);
+    el = mio.write_step_elements(step_path, fp.mesh, 'patches', 0);
+    expect_equal(el.num_planes, 1);
+    expect_error(@() mio.write_step_elements(step_path, fp.mesh, 'patches', 99), 'patch');
+    delete(step_path);
     fp2 = mio.fit_primitives(sg.mesh, 'types', 'plane');
     expect_equal(fp2.num_plane, 6);
     expect_error(@() mio.segment(m, 'feature_angle', 200));

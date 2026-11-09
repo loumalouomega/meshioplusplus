@@ -826,6 +826,7 @@ static_assert(offsetof(meshioplusplus::SliceOptions, mChain) == 49, "SliceOption
 MIO_ABI_LAYOUT(meshioplusplus::SectionsOptions, 64, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FitCurvesOptions, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SilhouetteOptions, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::StepElementsOptions, 32, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SketchPiece, 104, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SymmetryPlaneResult, 128, 8);
 MIO_ABI_LAYOUT(meshioplusplus::LandmarkResult, 160, 8);

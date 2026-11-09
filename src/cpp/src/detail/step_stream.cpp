@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <ios>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -159,6 +160,45 @@ void StepStream::Finish(const std::vector<std::int64_t>& rSolids) {
     const std::int64_t rep = Ent("ADVANCED_BREP_SHAPE_REPRESENTATION('',(" + Ref(mOrigin) + solids +
                                  ")," + Ref(mContext) + ")");
     Ent("SHAPE_DEFINITION_REPRESENTATION(" + Ref(mShape) + "," + Ref(rep) + ")");
+    Write();
+}
+
+void StepStream::FinishMixed(const std::vector<std::int64_t>& rSolids,
+                             const std::vector<std::int64_t>& rSurfaces,
+                             const std::vector<std::int64_t>& rCurveSets) {
+    if (rSurfaces.empty() && rCurveSets.empty()) {
+        Finish(rSolids);
+        return;
+    }
+    std::vector<std::pair<const char*, const std::vector<std::int64_t>*>> kinds;
+    if (!rSolids.empty())
+        kinds.emplace_back("ADVANCED_BREP_SHAPE_REPRESENTATION", &rSolids);
+    if (!rSurfaces.empty())
+        kinds.emplace_back("MANIFOLD_SURFACE_SHAPE_REPRESENTATION", &rSurfaces);
+    if (!rCurveSets.empty())
+        kinds.emplace_back("GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION", &rCurveSets);
+    auto rep_of = [&](const char* pName, const std::vector<std::int64_t>& rItems) {
+        std::string items = Ref(mOrigin);
+        for (std::int64_t i : rItems)
+            items += "," + Ref(i);
+        return Ent(std::string(pName) + "('',(" + items + ")," + Ref(mContext) + ")");
+    };
+    if (kinds.size() == 1) {
+        const std::int64_t rep = rep_of(kinds[0].first, *kinds[0].second);
+        Ent("SHAPE_DEFINITION_REPRESENTATION(" + Ref(mShape) + "," + Ref(rep) + ")");
+    } else {
+        const std::int64_t main =
+            Ent("SHAPE_REPRESENTATION('',(" + Ref(mOrigin) + ")," + Ref(mContext) + ")");
+        Ent("SHAPE_DEFINITION_REPRESENTATION(" + Ref(mShape) + "," + Ref(main) + ")");
+        for (const auto& [name, items] : kinds) {
+            const std::int64_t rep = rep_of(name, *items);
+            Ent("SHAPE_REPRESENTATION_RELATIONSHIP('',''," + Ref(rep) + "," + Ref(main) + ")");
+        }
+    }
+    Write();
+}
+
+void StepStream::Write() {
     mOut += "ENDSEC;\nEND-ISO-10303-21;\n";
     if (mPath.empty())
         return;  // built for its report only

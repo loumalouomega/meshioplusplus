@@ -7662,6 +7662,33 @@ PYBIND11_MODULE(_core, m) {
             });
         },
         py::arg("path"), py::arg("mesh"), py::arg("faces") = "auto", py::arg("tolerance") = 0.0);
+    // Fitted primitives as STEP elements (roadmap 7.6.5).
+    m.def(
+        "step_write_elements",
+        [](const std::string& path, py::object pymesh, std::vector<std::int64_t> patches,
+           std::int64_t segments) {
+            meshioplusplus::StepElementsOptions options;
+            options.mPatches = std::move(patches);
+            options.mSegments = segments;
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::StepElementsResult r =
+                core_nogil([&, mesh = meshioplusplus_py::py_to_mesh(pymesh, refs,
+                                                                    /*lenient_field_data=*/true,
+                                                                    /*allow_ragged=*/true)] {
+                    return meshioplusplus::write_step_elements(path, mesh, options);
+                });
+            py::dict out;
+            out["num_planes"] = r.mNumPlanes;
+            out["num_spheres"] = r.mNumSpheres;
+            out["num_cylinders"] = r.mNumCylinders;
+            out["num_cones"] = r.mNumCones;
+            out["num_tori"] = r.mNumTori;
+            out["num_skipped"] = r.mNumSkipped;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("path"), py::arg("mesh"), py::arg("patches") = std::vector<std::int64_t>{},
+        py::arg("segments") = 64);
     core_def_write(m, "off_write", &meshioplusplus::write_off);
     core_def_read(m, "off_read", "off", &meshioplusplus::read_off);
     core_def_write(m, "dxf_write", &meshioplusplus::write_dxf);

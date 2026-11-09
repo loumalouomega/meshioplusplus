@@ -333,6 +333,32 @@ function slice(m::Mesh, origin::AbstractVector{<:Real}, normal::AbstractVector{<
 end
 
 """
+    write_step_elements(path, m; patches=Int64[], segments=64)
+        -> (; num_planes, num_spheres, num_cylinders, num_cones, num_tori, num_skipped, warnings)
+
+Write the fitted primitives of `m` (`segment`, then `fit_primitives`) to a STEP
+file as exact geometry: bounded planes, balls, lidded cylinders, frusta and tori
+(roadmap 7.6.5). `patches` selects patch labels (all fitted ones when empty).
+"""
+function write_step_elements(path::AbstractString, m::Mesh; patches=Int64[], segments::Integer=64)
+    ids = Int64[Int64(p) for p in patches]
+    rep = Ref{_CStepElementsReport}()
+    GC.@preserve ids begin
+        _check(ccall(_sym(:mio_write_step_elements), Cint,
+                     (Cstring, Ptr{Cvoid}, Ptr{Int64}, Int64, Int64, Ref{_CStepElementsReport}),
+                     String(path), _handle(m), isempty(ids) ? Ptr{Int64}(C_NULL) : pointer(ids),
+                     Int64(length(ids)), Int64(segments), rep))
+    end
+    r = rep[]
+    text = _getstring((buf, n) -> ccall(_sym(:mio_write_step_elements_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    (num_planes=Int(r.num_planes), num_spheres=Int(r.num_spheres),
+     num_cylinders=Int(r.num_cylinders), num_cones=Int(r.num_cones), num_tori=Int(r.num_tori),
+     num_skipped=Int(r.num_skipped),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
     silhouette(m, normal=(0, 0, 1); clearance=0.0, round_angle=180.0, arc_segments=64,
                extrude=false, region="", merge_tolerance=1e-9)
         -> (; mesh, num_loops, num_outer, num_holes, num_triangles, area, perimeter,

@@ -6395,6 +6395,24 @@ TEST(CApi, SegmentAndFitACube) {
     EXPECT_EQ(freport.num_patches, 6);
     EXPECT_EQ(freport.num_plane, 6);
     EXPECT_EQ(freport.num_feature_cells, 0);
+    // Roadmap 7.6.5: the six fitted planes as bounded STEP faces.
+    {
+        const std::string step =
+            (std::filesystem::temp_directory_path() / "meshioplusplus_capi_elements.step").string();
+        mio_step_elements_report er;
+        ASSERT_EQ(mio_write_step_elements(step.c_str(), fit, nullptr, 0, 0, &er), MIO_OK)
+            << mio_last_error();
+        EXPECT_EQ(er.num_planes, 6);
+        const int64_t one = 0;
+        ASSERT_EQ(mio_write_step_elements(step.c_str(), fit, &one, 1, 0, &er), MIO_OK);
+        EXPECT_EQ(er.num_planes, 1);
+        const int64_t missing = 99;
+        EXPECT_NE(mio_write_step_elements(step.c_str(), fit, &missing, 1, 0, &er), MIO_OK);
+        EXPECT_NE(mio_write_step_elements(step.c_str(), seg, nullptr, 0, 0, &er), MIO_OK);
+        EXPECT_EQ(mio_write_step_elements(nullptr, fit, nullptr, 0, 0, &er), MIO_ERR_INVALID_ARG);
+        EXPECT_EQ(mio_write_step_elements_warnings(nullptr, 0), 0);
+        std::remove(step.c_str());
+    }
     mio_mesh_free(fit);
 
     // Roadmap 7.1.1: a seed on one face of the cube fits that face alone.

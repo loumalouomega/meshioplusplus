@@ -62,7 +62,7 @@ mp.write("bracket_facets.step", skin, faces="facet")
 
 ## What is written
 
-- **The surface.** `triangle`, `quad` and `polygon` blocks (quadratic surface cells contribute their corners); when the mesh has volume cells, the skin of those, as the [`stl`](/formats/stl) writer takes it. Lines and vertices are dropped with a warning.
+- **The surface.** `triangle`, `quad` and `polygon` blocks (quadratic surface cells contribute their corners); when the mesh has volume cells, the skin of those, as the [`stl`](/formats/stl) writer takes it. Lines and vertices beside them are dropped with a warning; a mesh of lines alone is written as [curves](#curves).
 - **Faces.** Each face is an `ADVANCED_FACE` bounded by `EDGE_LOOP`s of `ORIENTED_EDGE`s between `VERTEX_POINT`s. An edge two faces share is one `EDGE_CURVE`, used once in each direction, so the shell is topologically closed and needs no sewing. With `"facet"`, a facet of four or more corners that is not planar to `1e-9` of its size is fanned into triangles from its first corner, so every face lies exactly on its plane; a merged planar face takes the plane of its first facet. An analytic face's `same_sense` follows the facets' normals.
 - **Edges.** The mesh edges between two faces form chains from one corner (a point where three or more faces meet) to the next; a closed chain is split at its point farthest from its start. Between two planar faces a chain becomes the straight `LINE`s of its Douglas-Peucker corners, so the collinear points of the mesh disappear. Beside a curved analytic face a chain is a `CIRCLE` when it lies within the tolerance of one about the surface's axis (the rim of a bore, a cone's base), a `LINE` when it is straight (a cylinder's ruling), and otherwise a degree-1 `B_SPLINE_CURVE_WITH_KNOTS` through its points. A mesh point on analytic faces only is first moved onto them (alternating projections), when that moves it less than the tolerance.
 - **Periodic faces.** A cylinder, cone, sphere or torus face has one bound per boundary loop and no seam edge, as ISO 10303-42 allows; a reader adds its seams. A whole sphere or torus, with no boundary at all, is split in two faces by a plane through its centre.
@@ -72,13 +72,38 @@ mp.write("bracket_facets.step", skin, faces="facet")
 
 The roadmap item that queued this writer described the faces as `ADVANCED_FACE`s with `POLY_LOOP` bounds. That combination is not valid AP214, since an `ADVANCED_FACE` must be bounded by `EDGE_LOOP`s; the writer emits the edge-loop form, which is also what lets the faces share edges.
 
+## Curves
+
+A mesh whose cells are all lines (and vertices) is written as curves (roadmap 7.6.5): one `GEOMETRIC_CURVE_SET` in a `GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION`, which CAD tools import as sketch geometry to build on.
+
+- **A sketch.** A mesh carrying a [`fit_curves`](../fit_curves.md) sketch (the `sketch:*` field data) is written as its pieces, the set named `sketch`: a line as a `TRIMMED_CURVE` of a `LINE` (a unit direction, trimmed at 0 and its length), an arc as a `TRIMMED_CURVE` of a `CIRCLE` whose axis is the sketch plane's normal (reversed for a clockwise arc, so every trim runs counter-clockwise, in radians), and a full circle as a `CIRCLE`.
+- **Any other line mesh** (a [chained section](../slice.md#chained-sections), a [silhouette](../silhouette.md)) is chained and each chain written as a `POLYLINE`, a closed one repeating its first point, the set named `sections`.
+
+OpenCASCADE reads the sketch of a slot as two lines and two circular arcs, and a silhouette's circles as circles (`tests/python/test_step_elements.py`). The Python reference writes solids only; the curves are the C++ core's.
+
+## Elements
+
+`write_step_elements(path, mesh, patches=None, segments=64)` writes the primitives [`fit_primitives`](../fit_primitives.md) fitted (a mesh carrying `segment:patch` and the `fit:patch_*` table) as geometry a CAD user can snap to, exact and with no CAD kernel (roadmap 7.6.5):
+
+| Fitted type | Written as |
+|---|---|
+| plane | a `PLANE` face bounded by the convex hull of the patch's points in the plane, one `SHELL_BASED_SURFACE_MODEL` each |
+| sphere | a ball: one `SPHERICAL_SURFACE` face bounded by a vertex loop at its south pole, the form OpenCASCADE writes |
+| cylinder | a solid with flat lids over the patch points' extent along the axis: a `CYLINDRICAL_SURFACE` and two `PLANE` faces with `CIRCLE` rims |
+| cone | the frustum the points span (from the apex when they reach it), lidded the same way, on a `CONICAL_SURFACE` |
+| torus | the whole torus on a `TOROIDAL_SURFACE`, split in two faces by the writer's seams |
+
+Cylinders, cones and tori go through the fitted B-rep writer above: a tessellation of `segments` facets around, whose faces it writes as the exact surfaces and whose rims it recognises as circles. A torus whose tube reaches its axis is skipped with a warning. Solids are `MANIFOLD_SOLID_BREP`s in an `ADVANCED_BREP_SHAPE_REPRESENTATION`; when planes are written too, both representations are tied to the product's `SHAPE_REPRESENTATION` by `SHAPE_REPRESENTATION_RELATIONSHIP`s. `patches` writes only the listed patch labels, and an unknown label is refused. The report gives `num_planes`, `num_spheres`, `num_cylinders`, `num_cones`, `num_tori`, `num_skipped` and `warnings`.
+
+OpenCASCADE reads a fitted cylinder of radius 2 and length 5 as one valid solid of volume `20 pi` to `1e-9`, a fitted sphere as a ball of the exact volume, and a cone, torus and bounded plane as valid shapes (`tests/python/test_step_elements.py`, when `OCP` is importable). C++ core only. Surfaces: Python `meshioplusplus.write_step_elements`, both CLIs (`step-elements IN OUT [--patches 1,2] [--segments N] [--json]`), C `mio_write_step_elements`, Fortran, Julia, R, Octave/MATLAB, WASM `writeStepElements` and the MCP tool `write_step_elements`.
+
 ## Refusals
 
 The writer refuses, with a `WriteError`, anything that is not the boundary of a solid:
 
 - an **open**, **non-manifold** or **inconsistently wound** edge — the message gives the counts and names the first five as point-id pairs; run [`repair`](/repair) first;
 - a **degenerate** facet (zero area), or an edge between two coincident points (run [`clean`](/clean) first);
-- a non-finite coordinate, or a mesh with no surface facets at all.
+- a non-finite coordinate, or a mesh with no surface facets and no lines.
 
 ## C++ vs Python
 

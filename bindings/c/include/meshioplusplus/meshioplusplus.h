@@ -1426,6 +1426,32 @@ MIO_API mio_mesh* mio_silhouette(const mio_mesh* mesh, const mio_silhouette_opts
 /** The warnings of this thread's last mio_silhouette call; string rule 5. */
 MIO_API int64_t mio_silhouette_warnings(char* buf, int64_t buflen);
 
+/** What mio_write_step_elements wrote. 88 bytes. */
+typedef struct mio_step_elements_report {
+    int64_t num_planes;    /**< bounded faces */
+    int64_t num_spheres;   /**< balls */
+    int64_t num_cylinders; /**< solids with flat lids */
+    int64_t num_cones;     /**< frusta */
+    int64_t num_tori;
+    int64_t num_skipped;   /**< patches with no element */
+    int64_t num_warnings;
+    int64_t reserved[4];
+} mio_step_elements_report;
+
+/**
+ * Write the fitted primitives of a mesh carrying segment:patch and the
+ * fit:patch_* table (mio_segment, then mio_fit_primitives) to a STEP file as
+ * exact geometry: bounded planes, balls, lidded cylinders, frusta and tori
+ * (roadmap 7.6.5). `patches` (n of them, NULL or 0 for every fitted patch)
+ * selects patch labels; `segments` (64 when 0) is the tessellation the B-rep
+ * writer is given. `report` may be NULL.
+ */
+MIO_API mio_status mio_write_step_elements(const char* path, const mio_mesh* mesh,
+                                           const int64_t* patches, int64_t n, int64_t segments,
+                                           mio_step_elements_report* report);
+/** The warnings of this thread's last mio_write_step_elements call; string rule 5. */
+MIO_API int64_t mio_write_step_elements_warnings(char* buf, int64_t buflen);
+
 /**
  * Chained sections of a surface at `n_offsets` parallel planes `n . x =
  * offsets[k]` (`n` the unit `direction`), merged into one line mesh with the

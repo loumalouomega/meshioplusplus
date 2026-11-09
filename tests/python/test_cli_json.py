@@ -284,6 +284,14 @@ def files(tmp_path_factory):
         )
     except NotImplementedError:  # pragma: no cover - a core-less build
         pass
+    paths["fitted"] = str(d / "fitted.vtu")
+    try:
+        mio.write(
+            paths["fitted"],
+            mio.fit_primitives(mio.segment(mio.extract_skin(mio.box((2, 2, 2))))),
+        )
+    except NotImplementedError:  # pragma: no cover - a core-less build
+        pass
     paths["dir"] = str(d)
     return paths
 
@@ -622,6 +630,10 @@ WRITING = [
             "--record-stencil",
             "--json",
         ],
+    ),
+    (
+        "step_elements",
+        lambda f, out: ["step-elements", f["fitted"], out + ".step", "--json"],
     ),
     (
         "fit_primitives",

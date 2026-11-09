@@ -1997,6 +1997,11 @@ end
     @test seg.num_feature_edges == 12
     fit = fit_primitives(seg.mesh)
     @test fit.num_plane == 6
+    step_path = joinpath(mktempdir(), "elements.step")
+    el = write_step_elements(step_path, fit.mesh)
+    @test el.num_planes == 6 && isfile(step_path)
+    @test write_step_elements(step_path, fit.mesh; patches=[0]).num_planes == 1
+    @test_throws MeshioError write_step_elements(step_path, fit.mesh; patches=[99])
     close(fit.mesh)
     # refine_patches (v17.11.0): six planes are already one patch each.
     ref = refine_patches(seg.mesh)

@@ -69,8 +69,22 @@ public:
     /// write the file (nothing, for an empty path).
     /// @throws WriteError when the file cannot be opened.
     void Finish(const std::vector<std::int64_t>& rSolids);
+    /// Close over solids (`MANIFOLD_SOLID_BREP`), surface models
+    /// (`SHELL_BASED_SURFACE_MODEL`) and curve sets (`GEOMETRIC_CURVE_SET`),
+    /// each kind in its representation (`ADVANCED_BREP_`,
+    /// `MANIFOLD_SURFACE_` and `GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION`);
+    /// several kinds are tied to the product's plain `SHAPE_REPRESENTATION`
+    /// by `SHAPE_REPRESENTATION_RELATIONSHIP`s (roadmap 7.6.5). With solids
+    /// only it is `Finish`, byte for byte.
+    void FinishMixed(const std::vector<std::int64_t>& rSolids,
+                     const std::vector<std::int64_t>& rSurfaces,
+                     const std::vector<std::int64_t>& rCurveSets);
+    /// The world `AXIS2_PLACEMENT_3D`.
+    std::int64_t Origin() const { return mOrigin; }
 
 private:
+    void Write();
+
     std::string mPath;
     std::string mOut;
     std::int64_t mNext = 1;

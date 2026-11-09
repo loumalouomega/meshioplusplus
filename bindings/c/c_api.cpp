@@ -2761,6 +2761,10 @@ std::string& capi_silhouette_warnings() {
     thread_local std::string last;
     return last;
 }
+std::string& capi_step_elements_warnings() {
+    thread_local std::string last;
+    return last;
+}
 
 }  // namespace
 
@@ -2911,6 +2915,47 @@ int64_t mio_silhouette_warnings(char* buf, int64_t buflen) {
         if (buflen < 0)
             throw std::invalid_argument("meshio++: negative warnings buffer length");
         return copy_string(capi_silhouette_warnings(), buf, buflen);
+    });
+}
+
+static_assert(sizeof(mio_step_elements_report) == 88, "mio_step_elements_report layout");
+
+mio_status mio_write_step_elements(const char* path, const mio_mesh* mesh, const int64_t* patches,
+                                   int64_t n, int64_t segments, mio_step_elements_report* report) {
+    return guarded([&]() -> mio_status {
+        capi_step_elements_warnings().clear();
+        if (!path || !mesh || n < 0 || (n > 0 && !patches))
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: write_step_elements: path, mesh or patches is NULL");
+        meshioplusplus::StepElementsOptions options;
+        if (n > 0)
+            options.mPatches.assign(patches, patches + n);
+        if (segments != 0)
+            options.mSegments = segments;
+        const meshioplusplus::StepElementsResult r =
+            meshioplusplus::write_step_elements(path, mesh->mMesh, options);
+        for (const std::string& w : r.mWarnings)
+            capi_step_elements_warnings() +=
+                (capi_step_elements_warnings().empty() ? "" : "\n") + w;
+        if (report) {
+            *report = mio_step_elements_report{};
+            report->num_planes = r.mNumPlanes;
+            report->num_spheres = r.mNumSpheres;
+            report->num_cylinders = r.mNumCylinders;
+            report->num_cones = r.mNumCones;
+            report->num_tori = r.mNumTori;
+            report->num_skipped = r.mNumSkipped;
+            report->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+        }
+        return MIO_OK;
+    });
+}
+
+int64_t mio_write_step_elements_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_step_elements_warnings(), buf, buflen);
     });
 }
 

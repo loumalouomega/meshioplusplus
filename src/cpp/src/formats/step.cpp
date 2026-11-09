@@ -38,6 +38,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/closed_facets.hpp"
+#include "../detail/step_wireframe.hpp"
 #include "../detail/crease_edges.hpp"
 #include "../detail/step_brep.hpp"
 #include "../detail/step_stream.hpp"
@@ -86,6 +87,11 @@ void detail::write_step_report(const std::string& rPath, const Mesh& rMesh,
                          "faces must be 'auto', 'planar', 'fitted' or 'facet'");
     if (std::isnan(rOptions.mTolerance) || std::isinf(rOptions.mTolerance))
         throw WriteError(std::string(kStepPrefix) + "the tolerance must be finite");
+    // A line mesh is curves (roadmap 7.6.5): a sketch's pieces, else polylines.
+    if (detail::step_is_wireframe(rMesh)) {
+        detail::step_write_wireframe(rPath, rMesh);
+        return;
+    }
     // The facets: the skin of the volume cells when there are any.
     Mesh skin;
     const bool volume = has_skinnable_cells(rMesh);

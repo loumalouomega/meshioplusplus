@@ -1401,6 +1401,27 @@ mio_slice <- function(mesh, origin, normal, record_parent_ids = FALSE, chain = F
 #' @param record_parent_ids Attach `slice:parent_cell`.
 #' @return A `mio_mesh`.
 #' @export
+#' Fitted primitives as STEP elements
+#'
+#' Write the fitted primitives of a mesh (`mio_segment()`, then
+#' `mio_fit_primitives()`) to a STEP file as exact geometry a CAD user can snap
+#' to: bounded planes, balls, lidded cylinders, frusta and tori (roadmap
+#' 7.6.5). See `doc/formats/step.md`.
+#'
+#' @param path The `.step` file to create.
+#' @param mesh A mesh carrying `segment:patch` and the `fit:patch_*` table.
+#' @param patches Patch labels to write; empty writes every fitted patch.
+#' @param segments Facets round a cylinder, cone or torus in the tessellation
+#'   the B-rep writer is given.
+#' @return A list: `num_planes`, `num_spheres`, `num_cylinders`, `num_cones`,
+#'   `num_tori`, `num_skipped` and `warnings`.
+#' @export
+mio_write_step_elements <- function(path, mesh, patches = numeric(0), segments = 64) {
+  res <- .Call(R_mio_write_step_elements, path, mesh, as.numeric(patches), as.numeric(segments))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
 #' The outline of a part along a direction
 #'
 #' The surface (or a volume mesh's skin) projected onto the plane normal to

@@ -22486,8 +22486,8 @@ private:
  *
  * ### Reading
  *
- * `read_step` needs the OpenCASCADE backend (`MESHIOPLUSPLUS_WITH_OCCT`, LGPL-2.1 with the OCCT exception, bring your
- * own) and throws `Unsupported` naming the flag without it. The file's shape
+ * `read_step` needs the OpenCASCADE backend (`MESHIOPLUSPLUS_WITH_OCCT`, LGPL-2.1 with the OCCT
+ * exception, bring your own) and throws `Unsupported` naming the flag without it. The file's shape
  * is triangulated by `BRepMesh` at `CadReadOptions::mDeflection` into one
  * `triangle` block with the `cad:*` cell data of `BrepInfo`; the overload
  * taking a `BrepInfo` also returns the shape as NURBS -- every face's surface,
@@ -22543,6 +22543,7 @@ private:
 // System includes
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Project includes
 
@@ -22586,6 +22587,43 @@ MESHIOPLUSPLUS_API void write_step(const std::string& rPath, const Mesh& rMesh);
  */
 MESHIOPLUSPLUS_API void write_step(const std::string& rPath, const Mesh& rMesh,
                                    const StepWriteOptions& rOptions);
+
+/// Options of `write_step_elements` (roadmap 7.6.5).
+struct StepElementsOptions {
+    /// The `segment:patch` labels to write; empty writes every accepted patch.
+    std::vector<std::int64_t> mPatches;
+    /// Facets round a cylinder, cone or torus in the tessellation the B-rep
+    /// writer is given (its faces are the exact surfaces; at least 8).
+    std::int64_t mSegments = 64;
+};
+
+/// What `write_step_elements` wrote.
+struct StepElementsResult {
+    std::int64_t mNumPlanes = 0;     ///< bounded faces
+    std::int64_t mNumSpheres = 0;    ///< balls
+    std::int64_t mNumCylinders = 0;  ///< solids with flat lids
+    std::int64_t mNumCones = 0;      ///< frusta (or cones from the apex)
+    std::int64_t mNumTori = 0;
+    std::int64_t mNumSkipped = 0;  ///< patches with no element (type none, too few points)
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Write the fitted primitives of @p rFitted (`segment`, then
+ * `fit_primitives`) as geometry a CAD user can snap to (roadmap 7.6.5): a
+ * plane as a face bounded by the convex hull of its points, a sphere as a
+ * ball, a cylinder as a solid with flat lids over its points' axial extent, a
+ * cone as the frustum they span and a torus whole, each exact
+ * (`PLANE`, `SPHERICAL_SURFACE`, `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE`,
+ * `TOROIDAL_SURFACE` faces with `CIRCLE` rims). The solids are
+ * `MANIFOLD_SOLID_BREP`s and the planes `SHELL_BASED_SURFACE_MODEL`s of one
+ * face, in one file.
+ * @throws WriteError on a mesh with no fit table, an unknown patch label, a
+ *         selection with nothing to write, or a file that cannot be written.
+ */
+MESHIOPLUSPLUS_API StepElementsResult write_step_elements(const std::string& rPath,
+                                                          const Mesh& rFitted,
+                                                          const StepElementsOptions& rOptions = {});
 
 /// Read a STEP file as its triangulation (see "Reading" above).
 /// @throws Unsupported in a build without OpenCASCADE; ReadError on a file
@@ -54184,6 +54222,51 @@ ConvertCellsResult simplexify_ex(const Mesh& rMesh, bool RecordParentIds, bool E
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/simplexify.hpp =====
+// ===== begin src/cpp/src/detail/sketch_pieces.hpp =====
+/**
+ * @file detail/sketch_pieces.hpp
+ * @brief A `fit_curves` sketch read back from a mesh's `sketch:*` field data
+ * as pieces in world coordinates (roadmap 7.6.4, 7.6.5), for the writers that
+ * draw it: DXF and STEP.
+ *
+ * A piece's 2-D start, end and centre (`sketch:params`) are mapped through
+ * its frame (`sketch:frames`, row-major 4x4, columns e1, e2, normal, origin)
+ * as `origin + u e1 + v e2`, in that order.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+struct SketchWorldPiece {
+    std::int64_t mType = 0;  ///< 1 line, 2 arc, 3 circle (`SketchPieceType`)
+    std::array<double, 3> mStart{}, mEnd{}, mCentre{};
+    std::array<double, 3> mE1{}, mE2{}, mNormal{}, mOrigin{};  ///< its frame
+    double mRadius = 0.0;
+    double mSweepDeg = 0.0;  ///< counter-clockwise about the normal positive
+};
+
+/// Whether @p rMesh carries the four `sketch:*` field data arrays.
+bool has_sketch(const Mesh& rMesh);
+
+/**
+ * @brief The sketch's pieces in world coordinates.
+ * @param pPrefix the caller's error prefix (`"meshio++: dxf: "`).
+ * @throws WriteError when the arrays disagree or a piece names a missing frame.
+ */
+std::vector<SketchWorldPiece> sketch_world_pieces(const Mesh& rMesh, const char* pPrefix);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/sketch_pieces.hpp =====
 // ===== begin src/cpp/src/detail/sparse_solve.hpp =====
 /**
  * @file detail/sparse_solve.hpp
@@ -54351,6 +54434,87 @@ MIO_ALWAYS_INLINE void emit_flat_or_polygon(Mesh& rOut, TBlock& rBlock) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/staged_block.hpp =====
+// ===== begin src/cpp/src/detail/step_stream.hpp =====
+/**
+ * @file detail/step_stream.hpp
+ * @brief The AP214 file around a STEP B-rep: the header, the product
+ * structure, the units and the geometric context, then the entities a writer
+ * adds one by one (sequential ids), and the shape representation that
+ * collects its solids. Shared by the faceted `step` writer and the
+ * kernel-free B-rep writer (`step_brep`), so both write the same frame.
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+/// A STEP REAL: `%.17g`, with the decimal point the grammar requires and an
+/// upper-case exponent ("3" -> "3.", "1e-05" -> "1.E-05").
+std::string step_real(double V);
+
+/// A STEP string body: printable ASCII, apostrophes doubled.
+std::string step_string(const std::string& rText);
+
+/// The entities of one STEP file, written to memory and then to disk.
+class StepStream {
+public:
+    /**
+     * @brief Start a file: the header (with the provenance comment), the
+     * product named after @p rPath's basename, millimetres and radians, and
+     * the world placement.
+     * @param rDescription the `FILE_DESCRIPTION` text.
+     * @param LengthUnit the length unit the file declares, metres per unit
+     *        (`meshio:length_unit`): an SI prefix of the metre when it is one
+     *        (1, 0.01, 0.001, 1e-6, 1000), else a `CONVERSION_BASED_UNIT` on
+     *        the millimetre ('INCH', 'FOOT', or 'LENGTH UNIT'); at most 0 is
+     *        millimetres, as before units were connected.
+     */
+    StepStream(const std::string& rPath, const std::string& rDescription, double LengthUnit = -1.0);
+
+    /// Add an entity; returns its id.
+    std::int64_t Ent(const std::string& rBody);
+    /// `#id`.
+    static std::string Ref(std::int64_t Id);
+    /// `(x,y,z)` of three REALs.
+    static std::string Triple(const double* pV);
+    /// Close the representation over @p rSolids (MANIFOLD_SOLID_BREP ids) and
+    /// write the file (nothing, for an empty path).
+    /// @throws WriteError when the file cannot be opened.
+    void Finish(const std::vector<std::int64_t>& rSolids);
+    /// Close over solids (`MANIFOLD_SOLID_BREP`), surface models
+    /// (`SHELL_BASED_SURFACE_MODEL`) and curve sets (`GEOMETRIC_CURVE_SET`),
+    /// each kind in its representation (`ADVANCED_BREP_`,
+    /// `MANIFOLD_SURFACE_` and `GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION`);
+    /// several kinds are tied to the product's plain `SHAPE_REPRESENTATION`
+    /// by `SHAPE_REPRESENTATION_RELATIONSHIP`s (roadmap 7.6.5). With solids
+    /// only it is `Finish`, byte for byte.
+    void FinishMixed(const std::vector<std::int64_t>& rSolids,
+                     const std::vector<std::int64_t>& rSurfaces,
+                     const std::vector<std::int64_t>& rCurveSets);
+    /// The world `AXIS2_PLACEMENT_3D`.
+    std::int64_t Origin() const { return mOrigin; }
+
+private:
+    void Write();
+
+    std::string mPath;
+    std::string mOut;
+    std::int64_t mNext = 1;
+    std::int64_t mShape = 0;    // PRODUCT_DEFINITION_SHAPE
+    std::int64_t mContext = 0;  // the geometric representation context
+    std::int64_t mOrigin = 0;   // the world AXIS2_PLACEMENT_3D
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/step_stream.hpp =====
 // ===== begin src/cpp/src/detail/step_brep.hpp =====
 /**
  * @file detail/step_brep.hpp
@@ -54395,6 +54559,7 @@ MIO_ALWAYS_INLINE void emit_flat_or_polygon(Mesh& rOut, TBlock& rBlock) {
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -54450,6 +54615,12 @@ struct StepBrepOptions {
     /// The length unit the file declares, metres per unit; at most 0 is
     /// millimetres (`StepStream`).
     double mLengthUnit = -1.0;
+    /// More items written into the same file after the solids (roadmap 7.6.5,
+    /// `write_step_elements`' balls and bounded planes): given the stream, it
+    /// appends `MANIFOLD_SOLID_BREP` ids to the first list and
+    /// `SHELL_BASED_SURFACE_MODEL` ids to the second. Empty writes none, as before.
+    std::function<void(StepStream&, std::vector<std::int64_t>&, std::vector<std::int64_t>&)>
+        mExtraItems;
 };
 
 /// What the B-rep writer wrote.
@@ -54745,73 +54916,40 @@ std::int64_t step_fan_next(const std::vector<std::int64_t>& rStart,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/step_brep.hpp =====
-// ===== begin src/cpp/src/detail/step_stream.hpp =====
+// ===== begin src/cpp/src/detail/step_wireframe.hpp =====
 /**
- * @file detail/step_stream.hpp
- * @brief The AP214 file around a STEP B-rep: the header, the product
- * structure, the units and the geometric context, then the entities a writer
- * adds one by one (sequential ids), and the shape representation that
- * collects its solids. Shared by the faceted `step` writer and the
- * kernel-free B-rep writer (`step_brep`), so both write the same frame.
+ * @file detail/step_wireframe.hpp
+ * @brief Curves to STEP (roadmap 7.6.5): a line mesh written as a
+ * `GEOMETRIC_CURVE_SET` in a `GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION`.
  *
- * A **core-private** header (the `crease_edges.hpp` precedent): no installed
- * header names it, and it adds nothing to the API or the ABI.
+ * A `fit_curves` sketch is written as its pieces: a line as a `TRIMMED_CURVE`
+ * of a `LINE` (unit direction, trimmed at 0 and its length), an arc as a
+ * `TRIMMED_CURVE` of a `CIRCLE` whose axis is the sketch normal (its reverse
+ * for a clockwise arc, so every trim runs counter-clockwise), a circle as a
+ * `CIRCLE`. Any other line mesh is chained (`detail/polyline_chain.hpp`) and
+ * each chain written as a `POLYLINE` (a loop's first point repeated).
+ *
+ * A **core-private** header: nothing installed names it.
  */
 
 // System includes
-#include <cstdint>
 #include <string>
-#include <vector>
+
+// Project includes
 
 namespace meshioplusplus {
 namespace detail {
 
-/// A STEP REAL: `%.17g`, with the decimal point the grammar requires and an
-/// upper-case exponent ("3" -> "3.", "1e-05" -> "1.E-05").
-std::string step_real(double V);
+/// Whether @p rMesh has line cells and no cell of two or three dimensions.
+bool step_is_wireframe(const Mesh& rMesh);
 
-/// A STEP string body: printable ASCII, apostrophes doubled.
-std::string step_string(const std::string& rText);
-
-/// The entities of one STEP file, written to memory and then to disk.
-class StepStream {
-public:
-    /**
-     * @brief Start a file: the header (with the provenance comment), the
-     * product named after @p rPath's basename, millimetres and radians, and
-     * the world placement.
-     * @param rDescription the `FILE_DESCRIPTION` text.
-     * @param LengthUnit the length unit the file declares, metres per unit
-     *        (`meshio:length_unit`): an SI prefix of the metre when it is one
-     *        (1, 0.01, 0.001, 1e-6, 1000), else a `CONVERSION_BASED_UNIT` on
-     *        the millimetre ('INCH', 'FOOT', or 'LENGTH UNIT'); at most 0 is
-     *        millimetres, as before units were connected.
-     */
-    StepStream(const std::string& rPath, const std::string& rDescription, double LengthUnit = -1.0);
-
-    /// Add an entity; returns its id.
-    std::int64_t Ent(const std::string& rBody);
-    /// `#id`.
-    static std::string Ref(std::int64_t Id);
-    /// `(x,y,z)` of three REALs.
-    static std::string Triple(const double* pV);
-    /// Close the representation over @p rSolids (MANIFOLD_SOLID_BREP ids) and
-    /// write the file (nothing, for an empty path).
-    /// @throws WriteError when the file cannot be opened.
-    void Finish(const std::vector<std::int64_t>& rSolids);
-
-private:
-    std::string mPath;
-    std::string mOut;
-    std::int64_t mNext = 1;
-    std::int64_t mShape = 0;    // PRODUCT_DEFINITION_SHAPE
-    std::int64_t mContext = 0;  // the geometric representation context
-    std::int64_t mOrigin = 0;   // the world AXIS2_PLACEMENT_3D
-};
+/// Write @p rMesh's curves (see the file comment).
+/// @throws WriteError on a mesh with no curve to write, or a file that cannot be written.
+void step_write_wireframe(const std::string& rPath, const Mesh& rMesh);
 
 }  // namespace detail
 }  // namespace meshioplusplus
-// ===== end src/cpp/src/detail/step_stream.hpp =====
+// ===== end src/cpp/src/detail/step_wireframe.hpp =====
 // ===== begin src/cpp/src/detail/streamlines.hpp =====
 /**
  * @file detail/streamlines.hpp
@@ -110435,6 +110573,70 @@ bool render_triangle_contour(const double* pXyz, const double* pValue, double Le
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/render_field.cpp =====
+// ===== begin src/cpp/src/detail/sketch_pieces.cpp =====
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+bool has_sketch(const Mesh& rMesh) {
+    return rMesh.HasFieldData("sketch:type") && rMesh.HasFieldData("sketch:params") &&
+           rMesh.HasFieldData("sketch:frame") && rMesh.HasFieldData("sketch:frames");
+}
+
+std::vector<SketchWorldPiece> sketch_world_pieces(const Mesh& rMesh, const char* pPrefix) {
+    std::vector<SketchWorldPiece> out;
+    if (!has_sketch(rMesh))
+        return out;
+    const NDArray& types = rMesh.FieldData("sketch:type");
+    const NDArray& params = rMesh.FieldData("sketch:params");
+    const NDArray& frame_of = rMesh.FieldData("sketch:frame");
+    const NDArray& frames = rMesh.FieldData("sketch:frames");
+    if (params.Size() != 10 * types.Size() || frame_of.Size() != types.Size())
+        throw WriteError(std::string(pPrefix) + "the sketch:* field data do not match");
+    out.reserve(types.Size());
+    for (std::size_t k = 0; k < types.Size(); ++k) {
+        SketchWorldPiece piece;
+        piece.mType = read_int(types, k);
+        const std::int64_t f = read_int(frame_of, k);
+        if (f < 0 || static_cast<std::size_t>(16 * (f + 1)) > frames.Size())
+            throw WriteError(std::string(pPrefix) + "a sketch piece names a missing frame");
+        const auto m = [&](std::size_t R, std::size_t C) {
+            return read_double(frames, static_cast<std::size_t>(16 * f) + 4 * R + C);
+        };
+        for (std::size_t r = 0; r < 3; ++r) {
+            piece.mE1[r] = m(r, 0);
+            piece.mE2[r] = m(r, 1);
+            piece.mNormal[r] = m(r, 2);
+            piece.mOrigin[r] = m(r, 3);
+        }
+        double p[10];
+        for (std::size_t q = 0; q < 10; ++q)
+            p[q] = read_double(params, 10 * k + q);
+        const auto world = [&](double U, double V) {
+            std::array<double, 3> w{};
+            for (std::size_t r = 0; r < 3; ++r)
+                w[r] = piece.mOrigin[r] + U * piece.mE1[r] + V * piece.mE2[r];
+            return w;
+        };
+        piece.mStart = world(p[0], p[1]);
+        piece.mEnd = world(p[2], p[3]);
+        piece.mCentre = world(p[4], p[5]);
+        piece.mRadius = p[6];
+        piece.mSweepDeg = p[7];
+        out.push_back(piece);
+    }
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/sketch_pieces.cpp =====
 // ===== begin src/cpp/src/detail/sparse_solve.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -112212,7 +112414,10 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                     StepStream::Ref(shell) + ")"));
         }
         res.mNumSolids = static_cast<std::int64_t>(solids.size());
-        st.Finish(solids);
+        std::vector<std::int64_t> surfaces;
+        if (rOptions.mExtraItems)
+            rOptions.mExtraItems(st, solids, surfaces);
+        st.FinishMixed(solids, surfaces, {});
 
         // Per facet: its face, type and patch; the largest deviation.
         res.mFaceOfFacet.assign(nf, -1);
@@ -112249,6 +112454,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
 #include <cstdint>
 #include <ios>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Project includes
@@ -112382,6 +112588,45 @@ void StepStream::Finish(const std::vector<std::int64_t>& rSolids) {
     const std::int64_t rep = Ent("ADVANCED_BREP_SHAPE_REPRESENTATION('',(" + Ref(mOrigin) + solids +
                                  ")," + Ref(mContext) + ")");
     Ent("SHAPE_DEFINITION_REPRESENTATION(" + Ref(mShape) + "," + Ref(rep) + ")");
+    Write();
+}
+
+void StepStream::FinishMixed(const std::vector<std::int64_t>& rSolids,
+                             const std::vector<std::int64_t>& rSurfaces,
+                             const std::vector<std::int64_t>& rCurveSets) {
+    if (rSurfaces.empty() && rCurveSets.empty()) {
+        Finish(rSolids);
+        return;
+    }
+    std::vector<std::pair<const char*, const std::vector<std::int64_t>*>> kinds;
+    if (!rSolids.empty())
+        kinds.emplace_back("ADVANCED_BREP_SHAPE_REPRESENTATION", &rSolids);
+    if (!rSurfaces.empty())
+        kinds.emplace_back("MANIFOLD_SURFACE_SHAPE_REPRESENTATION", &rSurfaces);
+    if (!rCurveSets.empty())
+        kinds.emplace_back("GEOMETRICALLY_BOUNDED_WIREFRAME_SHAPE_REPRESENTATION", &rCurveSets);
+    auto rep_of = [&](const char* pName, const std::vector<std::int64_t>& rItems) {
+        std::string items = Ref(mOrigin);
+        for (std::int64_t i : rItems)
+            items += "," + Ref(i);
+        return Ent(std::string(pName) + "('',(" + items + ")," + Ref(mContext) + ")");
+    };
+    if (kinds.size() == 1) {
+        const std::int64_t rep = rep_of(kinds[0].first, *kinds[0].second);
+        Ent("SHAPE_DEFINITION_REPRESENTATION(" + Ref(mShape) + "," + Ref(rep) + ")");
+    } else {
+        const std::int64_t main =
+            Ent("SHAPE_REPRESENTATION('',(" + Ref(mOrigin) + ")," + Ref(mContext) + ")");
+        Ent("SHAPE_DEFINITION_REPRESENTATION(" + Ref(mShape) + "," + Ref(main) + ")");
+        for (const auto& [name, items] : kinds) {
+            const std::int64_t rep = rep_of(name, *items);
+            Ent("SHAPE_REPRESENTATION_RELATIONSHIP('',''," + Ref(rep) + "," + Ref(main) + ")");
+        }
+    }
+    Write();
+}
+
+void StepStream::Write() {
     mOut += "ENDSEC;\nEND-ISO-10303-21;\n";
     if (mPath.empty())
         return;  // built for its report only
@@ -112394,6 +112639,150 @@ void StepStream::Finish(const std::vector<std::int64_t>& rSolids) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/step_stream.cpp =====
+// ===== begin src/cpp/src/detail/step_wireframe.cpp =====
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr const char* kSwPrefix = "meshio++: step: ";
+constexpr double kSwPi = 3.14159265358979323846;
+
+std::array<double, 3> sw_cross(const std::array<double, 3>& rA, const std::array<double, 3>& rB) {
+    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
+            rA[0] * rB[1] - rA[1] * rB[0]};
+}
+
+double sw_dot(const std::array<double, 3>& rA, const std::array<double, 3>& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+
+}  // namespace
+
+bool step_is_wireframe(const Mesh& rMesh) {
+    bool lines = false;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            return false;
+        const std::string type(cb.Type());
+        if (type.rfind("polygon", 0) == 0)
+            return false;
+        const int dim = cell_type_dimension(cell_type_from_name(type));
+        if (dim >= 2)
+            return false;
+        lines = lines || (dim == 1 && cb.NumCells() > 0);
+    }
+    return lines;
+}
+
+void step_write_wireframe(const std::string& rPath, const Mesh& rMesh) {
+    StepStream st(rPath, "meshio++ wireframe", mesh_length_unit(rMesh));
+    auto point = [&](const std::array<double, 3>& rP) {
+        return st.Ent("CARTESIAN_POINT(''," + StepStream::Triple(rP.data()) + ")");
+    };
+    auto direction = [&](const std::array<double, 3>& rD) {
+        return st.Ent("DIRECTION(''," + StepStream::Triple(rD.data()) + ")");
+    };
+    std::vector<std::int64_t> curves;
+    std::string name;
+    if (has_sketch(rMesh)) {
+        name = "sketch";
+        for (const SketchWorldPiece& r_p : sketch_world_pieces(rMesh, kSwPrefix)) {
+            if (r_p.mType == 1) {
+                std::array<double, 3> d{r_p.mEnd[0] - r_p.mStart[0], r_p.mEnd[1] - r_p.mStart[1],
+                                        r_p.mEnd[2] - r_p.mStart[2]};
+                const double len = std::sqrt(sw_dot(d, d));
+                if (!(len > 0.0))
+                    continue;
+                for (double& r_x : d)
+                    r_x /= len;
+                const std::int64_t vec =
+                    st.Ent("VECTOR(''," + StepStream::Ref(direction(d)) + ",1.)");
+                const std::int64_t line = st.Ent("LINE(''," + StepStream::Ref(point(r_p.mStart)) +
+                                                 "," + StepStream::Ref(vec) + ")");
+                curves.push_back(st.Ent("TRIMMED_CURVE(''," + StepStream::Ref(line) +
+                                        ",(PARAMETER_VALUE(0.)),(PARAMETER_VALUE(" +
+                                        step_real(len) + ")),.T.,.PARAMETER.)"));
+                continue;
+            }
+            if (r_p.mType != 2 && r_p.mType != 3)
+                throw WriteError(std::string(kSwPrefix) + "a sketch piece of unknown type " +
+                                 std::to_string(r_p.mType));
+            // An arc runs counter-clockwise about its axis: the normal, or its
+            // reverse for a clockwise sweep.
+            std::array<double, 3> axis = r_p.mNormal;
+            if (r_p.mType == 2 && r_p.mSweepDeg < 0.0)
+                axis = {-axis[0], -axis[1], -axis[2]};
+            const std::int64_t place = st.Ent(
+                "AXIS2_PLACEMENT_3D(''," + StepStream::Ref(point(r_p.mCentre)) + "," +
+                StepStream::Ref(direction(axis)) + "," + StepStream::Ref(direction(r_p.mE1)) + ")");
+            const std::int64_t circle =
+                st.Ent("CIRCLE(''," + StepStream::Ref(place) + "," + step_real(r_p.mRadius) + ")");
+            if (r_p.mType == 3) {
+                curves.push_back(circle);
+                continue;
+            }
+            const std::array<double, 3> y = sw_cross(axis, r_p.mE1);
+            const std::array<double, 3> s{r_p.mStart[0] - r_p.mCentre[0],
+                                          r_p.mStart[1] - r_p.mCentre[1],
+                                          r_p.mStart[2] - r_p.mCentre[2]};
+            double t0 = std::atan2(sw_dot(s, y), sw_dot(s, r_p.mE1));
+            if (t0 < 0.0)
+                t0 += 2.0 * kSwPi;
+            const double t1 = t0 + std::fabs(r_p.mSweepDeg) * kSwPi / 180.0;
+            curves.push_back(st.Ent("TRIMMED_CURVE(''," + StepStream::Ref(circle) +
+                                    ",(PARAMETER_VALUE(" + step_real(t0) + ")),(PARAMETER_VALUE(" +
+                                    step_real(t1) + ")),.T.,.PARAMETER.)"));
+        }
+    } else {
+        name = "sections";
+        std::vector<std::array<std::int64_t, 2>> segments;
+        for (const auto cb : rMesh.CellRange()) {
+            if (cell_type_from_name(std::string(cb.Type())) != CellType::Line)
+                continue;
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                segments.push_back({read_int(cb.Conn(), 2 * c), read_int(cb.Conn(), 2 * c + 1)});
+        }
+        const std::size_t np = rMesh.NumPoints();
+        const std::size_t dim = rMesh.PointDim();
+        for (const auto& r_s : segments)
+            for (const std::int64_t v : r_s)
+                if (v < 0 || static_cast<std::size_t>(v) >= np)
+                    throw WriteError(std::string(kSwPrefix) + "a line cell names point " +
+                                     std::to_string(v) + " of " + std::to_string(np));
+        const NDArray& pts = rMesh.Points();
+        for (const PolylineChain& r_c : polyline_chains(segments, np)) {
+            std::string list;
+            for (const std::int64_t v : r_c.mPoints) {
+                std::array<double, 3> p{};
+                for (std::size_t k = 0; k < dim && k < 3; ++k)
+                    p[k] = read_double(pts, static_cast<std::size_t>(v) * dim + k);
+                list += (list.empty() ? "" : ",") + StepStream::Ref(point(p));
+            }
+            curves.push_back(st.Ent("POLYLINE('',(" + list + "))"));
+        }
+    }
+    if (curves.empty())
+        throw WriteError(std::string(kSwPrefix) + "no curves to write");
+    std::string list;
+    for (const std::int64_t c : curves)
+        list += (list.empty() ? "" : ",") + StepStream::Ref(c);
+    const std::int64_t set = st.Ent("GEOMETRIC_CURVE_SET('" + name + "',(" + list + "))");
+    st.FinishMixed({}, {}, {set});
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/step_wireframe.cpp =====
 // ===== begin src/cpp/src/detail/streamlines.cpp =====
 #include <algorithm>
 #include <array>
@@ -133624,41 +134013,11 @@ void dxf_entity_head(DxfOut& rOut, const char* pType, const char* pSub) {
 }
 
 void dxf_entities(DxfOut& rOut, const Mesh& rMesh) {
-    const bool sketch = rMesh.HasFieldData("sketch:type") && rMesh.HasFieldData("sketch:params") &&
-                        rMesh.HasFieldData("sketch:frame") && rMesh.HasFieldData("sketch:frames");
-    if (sketch) {
-        const NDArray& types = rMesh.FieldData("sketch:type");
-        const NDArray& params = rMesh.FieldData("sketch:params");
-        const NDArray& frame_of = rMesh.FieldData("sketch:frame");
-        const NDArray& frames = rMesh.FieldData("sketch:frames");
-        if (params.Size() != 10 * types.Size() || frame_of.Size() != types.Size())
-            throw WriteError("meshio++: dxf: the sketch:* field data do not match");
-        for (std::size_t k = 0; k < types.Size(); ++k) {
-            const std::int64_t t = detail::read_int(types, k);
-            const std::int64_t f = detail::read_int(frame_of, k);
-            if (f < 0 || static_cast<std::size_t>(16 * (f + 1)) > frames.Size())
-                throw WriteError("meshio++: dxf: a sketch piece names a missing frame");
-            const auto m = [&](std::size_t R, std::size_t C) {
-                return detail::read_double(frames, static_cast<std::size_t>(16 * f) + 4 * R + C);
-            };
-            DxfV3 e1, e2, n, o;
-            for (std::size_t r = 0; r < 3; ++r) {
-                e1[r] = m(r, 0);
-                e2[r] = m(r, 1);
-                n[r] = m(r, 2);
-                o[r] = m(r, 3);
-            }
-            double p[10];
-            for (std::size_t q = 0; q < 10; ++q)
-                p[q] = detail::read_double(params, 10 * k + q);
-            const auto world = [&](double U, double V) {
-                DxfV3 w;
-                for (std::size_t r = 0; r < 3; ++r)
-                    w[r] = o[r] + U * e1[r] + V * e2[r];
-                return w;
-            };
-            const DxfV3 start = world(p[0], p[1]), end = world(p[2], p[3]),
-                        centre = world(p[4], p[5]);
+    if (detail::has_sketch(rMesh)) {
+        for (const detail::SketchWorldPiece& r_p :
+             detail::sketch_world_pieces(rMesh, "meshio++: dxf: ")) {
+            const std::int64_t t = r_p.mType;
+            const DxfV3 start = r_p.mStart, end = r_p.mEnd, centre = r_p.mCentre, n = r_p.mNormal;
             if (t == 1) {
                 dxf_entity_head(rOut, "LINE", "AcDbLine");
                 for (std::size_t r = 0; r < 3; ++r)
@@ -133673,7 +134032,7 @@ void dxf_entities(DxfOut& rOut, const Mesh& rMesh) {
             dxf_entity_head(rOut, t == 3 ? "CIRCLE" : "ARC", "AcDbCircle");
             for (std::size_t r = 0; r < 3; ++r)
                 rOut.Pair(10 + 10 * static_cast<int>(r), dxf_num(c[r]));
-            rOut.Pair(40, dxf_num(p[6]));
+            rOut.Pair(40, dxf_num(r_p.mRadius));
             for (std::size_t r = 0; r < 3; ++r)
                 rOut.Pair(210 + 10 * static_cast<int>(r), dxf_num(ocs[2][r]));
             if (t == 2) {
@@ -133681,7 +134040,7 @@ void dxf_entities(DxfOut& rOut, const Mesh& rMesh) {
                 const DxfV3 de{end[0] - centre[0], end[1] - centre[1], end[2] - centre[2]};
                 double a0 = std::atan2(dxf_dot(ds, ocs[1]), dxf_dot(ds, ocs[0])) * 180.0 / kDxfPi;
                 double a1 = std::atan2(dxf_dot(de, ocs[1]), dxf_dot(de, ocs[0])) * 180.0 / kDxfPi;
-                if (p[7] < 0.0)
+                if (r_p.mSweepDeg < 0.0)
                     std::swap(a0, a1);
                 rOut.Pair(100, "AcDbArc");
                 rOut.Pair(50, dxf_num(a0));
@@ -199296,6 +199655,11 @@ void detail::write_step_report(const std::string& rPath, const Mesh& rMesh,
                          "faces must be 'auto', 'planar', 'fitted' or 'facet'");
     if (std::isnan(rOptions.mTolerance) || std::isinf(rOptions.mTolerance))
         throw WriteError(std::string(kStepPrefix) + "the tolerance must be finite");
+    // A line mesh is curves (roadmap 7.6.5): a sketch's pieces, else polylines.
+    if (detail::step_is_wireframe(rMesh)) {
+        detail::step_write_wireframe(rPath, rMesh);
+        return;
+    }
     // The facets: the skin of the volume cells when there are any.
     Mesh skin;
     const bool volume = has_skinnable_cells(rMesh);
@@ -199480,6 +199844,479 @@ void detail::write_step_report(const std::string& rPath, const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/step.cpp =====
+// ===== begin src/cpp/src/formats/step_elements.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+using SeV3 = std::array<double, 3>;
+
+constexpr const char* kSePrefix = "meshio++: step: write_step_elements: ";
+constexpr double kSePi = 3.14159265358979323846;
+
+SeV3 se_add(const SeV3& rA, const SeV3& rB, double S) {
+    return {rA[0] + S * rB[0], rA[1] + S * rB[1], rA[2] + S * rB[2]};
+}
+
+double se_dot(const SeV3& rA, const SeV3& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+
+SeV3 se_sub(const SeV3& rA, const SeV3& rB) {
+    return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
+}
+
+// A bounded plane: its corners, counter-clockwise about the normal.
+struct SePlane {
+    SeV3 mPoint{}, mNormal{}, mE1{};
+    std::vector<SeV3> mCorners;
+};
+
+// The closed tessellated solids, labelled by the rows of their fit table.
+struct SeSolids {
+    std::vector<double> mXyz;
+    std::vector<std::int64_t> mTri;
+    std::vector<std::int64_t> mLabel;
+    std::vector<std::int64_t> mType;
+    std::vector<double> mParams;
+
+    std::int64_t Row(std::int64_t Type, const std::array<double, 10>& rParams) {
+        mType.push_back(Type);
+        mParams.insert(mParams.end(), rParams.begin(), rParams.end());
+        return static_cast<std::int64_t>(mType.size()) - 1;
+    }
+    std::int64_t Point(const SeV3& rP) {
+        mXyz.insert(mXyz.end(), rP.begin(), rP.end());
+        return static_cast<std::int64_t>(mXyz.size() / 3) - 1;
+    }
+    void Tri(std::int64_t A, std::int64_t B, std::int64_t C, std::int64_t Label) {
+        mTri.insert(mTri.end(), {A, B, C});
+        mLabel.push_back(Label);
+    }
+    // A flat lid at `rCentre` with outward normal `rNormal` over a ring.
+    void Lid(const SeV3& rCentre, const SeV3& rNormal, const std::vector<std::int64_t>& rRing,
+             bool Reverse) {
+        const std::int64_t row = Row(1, {rCentre[0], rCentre[1], rCentre[2], rNormal[0], rNormal[1],
+                                         rNormal[2], 0, 0, 0, 0});
+        const std::int64_t c = Point(rCentre);
+        const std::size_t n = rRing.size();
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::int64_t a = rRing[i], b = rRing[(i + 1) % n];
+            if (Reverse)
+                Tri(c, b, a, row);
+            else
+                Tri(c, a, b, row);
+        }
+    }
+};
+
+// A ring of N points at height T along the axis, radius R.
+std::vector<std::int64_t> se_ring(SeSolids& rS, const SeV3& rP, const SeV3& rA, const SeV3& rU,
+                                  const SeV3& rV, double T, double R, std::int64_t N) {
+    std::vector<std::int64_t> ring;
+    for (std::int64_t i = 0; i < N; ++i) {
+        const double th = 2.0 * kSePi * static_cast<double>(i) / static_cast<double>(N);
+        SeV3 q = se_add(rP, rA, T);
+        q = se_add(q, rU, R * std::cos(th));
+        q = se_add(q, rV, R * std::sin(th));
+        ring.push_back(rS.Point(q));
+    }
+    return ring;
+}
+
+// The side between two rings (the second further along the axis), outward.
+void se_side(SeSolids& rS, const std::vector<std::int64_t>& rLo,
+             const std::vector<std::int64_t>& rHi, std::int64_t Label) {
+    const std::size_t n = rHi.size();
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t j = (i + 1) % n;
+        if (rLo.size() == 1) {  // a cone's apex
+            rS.Tri(rLo[0], rHi[j], rHi[i], Label);
+            continue;
+        }
+        rS.Tri(rLo[i], rLo[j], rHi[j], Label);
+        rS.Tri(rLo[i], rHi[j], rHi[i], Label);
+    }
+}
+
+// The convex hull of 2-D points, counter-clockwise (Andrew's monotone chain).
+std::vector<std::array<double, 2>> se_hull(std::vector<std::array<double, 2>> Pts) {
+    std::sort(Pts.begin(), Pts.end());
+    Pts.erase(std::unique(Pts.begin(), Pts.end()), Pts.end());
+    if (Pts.size() < 3)
+        return {};
+    std::vector<std::array<double, 2>> h(2 * Pts.size());
+    std::size_t k = 0;
+    for (std::size_t i = 0; i < Pts.size(); ++i) {
+        while (k >= 2 && detail::orient2d(h[k - 2].data(), h[k - 1].data(), Pts[i].data()) <= 0.0)
+            --k;
+        h[k++] = Pts[i];
+    }
+    for (std::size_t i = Pts.size() - 1, t = k + 1; i > 0; --i) {
+        while (k >= t &&
+               detail::orient2d(h[k - 2].data(), h[k - 1].data(), Pts[i - 1].data()) <= 0.0)
+            --k;
+        h[k++] = Pts[i - 1];
+    }
+    h.resize(k - 1);
+    return h.size() >= 3 ? h : std::vector<std::array<double, 2>>{};
+}
+
+// Each bounded plane as a SHELL_BASED_SURFACE_MODEL of one ADVANCED_FACE.
+std::vector<std::int64_t> se_write_planes(detail::StepStream& rSt,
+                                          const std::vector<SePlane>& rPlanes) {
+    using detail::StepStream;
+    std::vector<std::int64_t> models;
+    auto point = [&](const SeV3& rP) {
+        return rSt.Ent("CARTESIAN_POINT(''," + StepStream::Triple(rP.data()) + ")");
+    };
+    auto direction = [&](const SeV3& rD) {
+        return rSt.Ent("DIRECTION(''," + StepStream::Triple(rD.data()) + ")");
+    };
+    for (std::size_t k = 0; k < rPlanes.size(); ++k) {
+        const SePlane& r_pl = rPlanes[k];
+        const std::size_t n = r_pl.mCorners.size();
+        std::vector<std::int64_t> verts;
+        for (const SeV3& r_c : r_pl.mCorners)
+            verts.push_back(rSt.Ent("VERTEX_POINT(''," + StepStream::Ref(point(r_c)) + ")"));
+        std::string edges;
+        for (std::size_t i = 0; i < n; ++i) {
+            const SeV3& a = r_pl.mCorners[i];
+            const SeV3& b = r_pl.mCorners[(i + 1) % n];
+            SeV3 d = se_sub(b, a);
+            const double len = std::sqrt(se_dot(d, d));
+            for (double& r_x : d)
+                r_x /= len;
+            const std::int64_t vec = rSt.Ent("VECTOR(''," + StepStream::Ref(direction(d)) + "," +
+                                             detail::step_real(len) + ")");
+            const std::int64_t line =
+                rSt.Ent("LINE(''," + StepStream::Ref(point(a)) + "," + StepStream::Ref(vec) + ")");
+            const std::int64_t ec = rSt.Ent("EDGE_CURVE(''," + StepStream::Ref(verts[i]) + "," +
+                                            StepStream::Ref(verts[(i + 1) % n]) + "," +
+                                            StepStream::Ref(line) + ",.T.)");
+            edges +=
+                (edges.empty() ? "" : ",") +
+                StepStream::Ref(rSt.Ent("ORIENTED_EDGE('',*,*," + StepStream::Ref(ec) + ",.T.)"));
+        }
+        const std::int64_t loop = rSt.Ent("EDGE_LOOP('',(" + edges + "))");
+        const std::int64_t bound =
+            rSt.Ent("FACE_OUTER_BOUND(''," + StepStream::Ref(loop) + ",.T.)");
+        const std::int64_t place =
+            rSt.Ent("AXIS2_PLACEMENT_3D(''," + StepStream::Ref(point(r_pl.mPoint)) + "," +
+                    StepStream::Ref(direction(r_pl.mNormal)) + "," +
+                    StepStream::Ref(direction(r_pl.mE1)) + ")");
+        const std::int64_t plane = rSt.Ent("PLANE(''," + StepStream::Ref(place) + ")");
+        const std::int64_t face =
+            rSt.Ent("ADVANCED_FACE('plane" + std::to_string(k + 1) + "',(" +
+                    StepStream::Ref(bound) + ")," + StepStream::Ref(plane) + ",.T.)");
+        const std::int64_t shell = rSt.Ent("OPEN_SHELL('',(" + StepStream::Ref(face) + "))");
+        models.push_back(rSt.Ent("SHELL_BASED_SURFACE_MODEL('',(" + StepStream::Ref(shell) + "))"));
+    }
+    return models;
+}
+
+// Each ball as one SPHERICAL_SURFACE face bounded by a vertex loop at its
+// south pole (the form OpenCASCADE writes): exact, with no seam.
+std::vector<std::int64_t> se_write_balls(detail::StepStream& rSt,
+                                         const std::vector<std::array<double, 4>>& rBalls) {
+    using detail::StepStream;
+    std::vector<std::int64_t> out;
+    for (std::size_t k = 0; k < rBalls.size(); ++k) {
+        const auto& r_b = rBalls[k];
+        const double pole[3] = {r_b[0], r_b[1], r_b[2] - r_b[3]};
+        const double centre[3] = {r_b[0], r_b[1], r_b[2]};
+        const double z[3] = {0.0, 0.0, 1.0}, x[3] = {1.0, 0.0, 0.0};
+        const std::int64_t vp = rSt.Ent(
+            "VERTEX_POINT(''," +
+            StepStream::Ref(rSt.Ent("CARTESIAN_POINT(''," + StepStream::Triple(pole) + ")")) + ")");
+        const std::int64_t loop = rSt.Ent("VERTEX_LOOP(''," + StepStream::Ref(vp) + ")");
+        const std::int64_t bound = rSt.Ent("FACE_BOUND(''," + StepStream::Ref(loop) + ",.T.)");
+        const std::int64_t place = rSt.Ent(
+            "AXIS2_PLACEMENT_3D(''," +
+            StepStream::Ref(rSt.Ent("CARTESIAN_POINT(''," + StepStream::Triple(centre) + ")")) +
+            "," + StepStream::Ref(rSt.Ent("DIRECTION(''," + StepStream::Triple(z) + ")")) + "," +
+            StepStream::Ref(rSt.Ent("DIRECTION(''," + StepStream::Triple(x) + ")")) + ")");
+        const std::int64_t sphere = rSt.Ent("SPHERICAL_SURFACE(''," + StepStream::Ref(place) + "," +
+                                            detail::step_real(r_b[3]) + ")");
+        const std::int64_t face = rSt.Ent("ADVANCED_FACE('',(" + StepStream::Ref(bound) + ")," +
+                                          StepStream::Ref(sphere) + ",.T.)");
+        const std::int64_t shell = rSt.Ent("CLOSED_SHELL('',(" + StepStream::Ref(face) + "))");
+        out.push_back(rSt.Ent("MANIFOLD_SOLID_BREP('ball" + std::to_string(k + 1) + "'," +
+                              StepStream::Ref(shell) + ")"));
+    }
+    return out;
+}
+
+NDArray se_int64(const std::vector<std::int64_t>& rV, std::vector<std::size_t> Shape) {
+    NDArray a = NDArray::Uninit(DType::Int64, std::move(Shape));
+    std::copy(rV.begin(), rV.end(), a.As<std::int64_t>());
+    return a;
+}
+
+NDArray se_doubles(const std::vector<double>& rV, std::vector<std::size_t> Shape) {
+    NDArray a = NDArray::Uninit(DType::Float64, std::move(Shape));
+    std::copy(rV.begin(), rV.end(), a.As<double>());
+    return a;
+}
+
+}  // namespace
+
+StepElementsResult write_step_elements(const std::string& rPath, const Mesh& rFitted,
+                                       const StepElementsOptions& rOptions) {
+    if (rOptions.mSegments < 8)
+        throw WriteError(std::string(kSePrefix) + "segments must be at least 8");
+    if (!rFitted.HasCellData("segment:patch") || !rFitted.HasFieldData("fit:patch_id") ||
+        !rFitted.HasFieldData("fit:patch_type") || !rFitted.HasFieldData("fit:patch_params"))
+        throw WriteError(std::string(kSePrefix) +
+                         "the mesh carries no fitted patches (segment, then fit_primitives)");
+    const NDArray& ids = rFitted.FieldData("fit:patch_id");
+    const NDArray& types = rFitted.FieldData("fit:patch_type");
+    const NDArray& params = rFitted.FieldData("fit:patch_params");
+    const std::size_t m = ids.Size();
+    if (types.Size() != m || params.Size() != 10 * m)
+        throw WriteError(std::string(kSePrefix) + "the fit:patch_* arrays disagree");
+
+    // The points of each patch.
+    std::map<std::int64_t, std::set<std::int64_t>> points_of;
+    for (std::size_t b = 0; b < rFitted.NumCellBlocks(); ++b) {
+        const auto cb = rFitted.Cells(b);
+        const NDArray& labels = rFitted.CellData("segment:patch", b);
+        for (std::size_t c = 0; c < cb.NumCells() && c < labels.Size(); ++c) {
+            const std::int64_t l = detail::read_int(labels, c);
+            const std::size_t k = cb.IsRagged() ? cb.RowSize(c) : cb.NodesPerCell();
+            auto& r_set = points_of[l];
+            for (std::size_t i = 0; i < k; ++i)
+                r_set.insert(cb.IsRagged()
+                                 ? cb.Row(c)[i]
+                                 : detail::read_int(cb.Conn(), c * cb.NodesPerCell() + i));
+        }
+    }
+    const NDArray& pts = rFitted.Points();
+    const std::size_t dim = rFitted.PointDim();
+    auto point = [&](std::int64_t V) {
+        SeV3 p{};
+        for (std::size_t k = 0; k < dim && k < 3; ++k)
+            p[k] = detail::read_double(pts, static_cast<std::size_t>(V) * dim + k);
+        return p;
+    };
+
+    std::vector<std::size_t> rows;
+    if (rOptions.mPatches.empty()) {
+        for (std::size_t r = 0; r < m; ++r)
+            rows.push_back(r);
+    } else {
+        for (const std::int64_t want : rOptions.mPatches) {
+            std::size_t r = 0;
+            while (r < m && detail::read_int(ids, r) != want)
+                ++r;
+            if (r == m)
+                throw WriteError(std::string(kSePrefix) + "no fitted patch " +
+                                 std::to_string(want));
+            rows.push_back(r);
+        }
+    }
+
+    StepElementsResult result;
+    SeSolids solids;
+    std::vector<SePlane> planes;
+    std::vector<std::array<double, 4>> balls;  // centre, radius
+    const std::int64_t n_seg = rOptions.mSegments;
+    double scale = 0.0;
+    for (const std::size_t r : rows) {
+        const std::int64_t label = detail::read_int(ids, r);
+        const std::int64_t type = detail::read_int(types, r);
+        std::array<double, 10> p{};
+        bool finite = true;
+        for (std::size_t q = 0; q < 10; ++q) {
+            p[q] = detail::read_double(params, 10 * r + q);
+            finite = finite && std::isfinite(p[q]);
+        }
+        const auto it = points_of.find(label);
+        if (type < 1 || type > 5 || !finite || it == points_of.end() || it->second.size() < 3) {
+            ++result.mNumSkipped;
+            if (!rOptions.mPatches.empty())
+                result.mWarnings.push_back("patch " + std::to_string(label) +
+                                           " has no fitted primitive to write");
+            continue;
+        }
+        const SeV3 o{p[0], p[1], p[2]};
+        SeV3 a{p[3], p[4], p[5]};
+        const double an = std::sqrt(se_dot(a, a));
+        if (type == 2) {
+            a = {0.0, 0.0, 1.0};  // a sphere has no axis
+        } else if (!(an > 0.0)) {
+            ++result.mNumSkipped;
+            continue;
+        } else {
+            for (double& r_x : a)
+                r_x /= an;
+        }
+        SeV3 u{}, v{};
+        detail::lsq_frame(a.data(), u.data(), v.data());
+        double t_lo = 0.0, t_hi = 0.0;
+        bool first = true;
+        for (const std::int64_t q : it->second) {
+            const SeV3 x = point(q);
+            const double t = se_dot(se_sub(x, o), a);
+            t_lo = first ? t : std::min(t_lo, t);
+            t_hi = first ? t : std::max(t_hi, t);
+            first = false;
+            scale = std::max(scale, std::sqrt(se_dot(se_sub(x, o), se_sub(x, o))));
+        }
+        if (type == 1) {
+            SePlane pl;
+            pl.mPoint = o;
+            pl.mNormal = a;
+            pl.mE1 = u;
+            std::vector<std::array<double, 2>> uv;
+            for (const std::int64_t q : it->second) {
+                const SeV3 d = se_sub(point(q), o);
+                uv.push_back({se_dot(d, u), se_dot(d, v)});
+            }
+            for (const auto& r_h : se_hull(uv))
+                pl.mCorners.push_back(se_add(se_add(o, u, r_h[0]), v, r_h[1]));
+            if (pl.mCorners.size() < 3) {
+                ++result.mNumSkipped;
+                continue;
+            }
+            planes.push_back(std::move(pl));
+            ++result.mNumPlanes;
+        } else if (type == 2) {
+            if (!(p[6] > 0.0)) {
+                ++result.mNumSkipped;
+                continue;
+            }
+            balls.push_back({p[0], p[1], p[2], p[6]});
+            ++result.mNumSpheres;
+        } else if (type == 3 || type == 4) {
+            const double tan_a = type == 4 ? std::tan(p[8] * kSePi / 180.0) : 0.0;
+            if (type == 4)
+                t_lo = std::max(t_lo, 0.0);
+            if (!(t_hi > t_lo) || (type == 4 && !(tan_a > 0.0))) {
+                ++result.mNumSkipped;
+                continue;
+            }
+            auto radius = [&](double T) { return type == 3 ? p[6] : T * tan_a; };
+            const std::int64_t row = solids.Row(type, p);
+            const bool apex = type == 4 && t_lo <= 1e-9 * t_hi;
+            const std::vector<std::int64_t> lo =
+                apex ? std::vector<std::int64_t>{solids.Point(o)}
+                     : se_ring(solids, o, a, u, v, t_lo, radius(t_lo), n_seg);
+            const std::vector<std::int64_t> hi =
+                se_ring(solids, o, a, u, v, t_hi, radius(t_hi), n_seg);
+            se_side(solids, lo, hi, row);
+            if (!apex)
+                solids.Lid(se_add(o, a, t_lo), {-a[0], -a[1], -a[2]}, lo, true);
+            solids.Lid(se_add(o, a, t_hi), a, hi, false);
+            if (type == 3)
+                ++result.mNumCylinders;
+            else
+                ++result.mNumCones;
+        } else {
+            const double big = p[6], small = p[7];
+            if (!(small > 0.0) || !(big > small)) {
+                ++result.mNumSkipped;
+                result.mWarnings.push_back("patch " + std::to_string(label) +
+                                           ": a torus whose tube reaches its axis is not written");
+                continue;
+            }
+            const std::int64_t row = solids.Row(5, p);
+            const std::int64_t n_minor = std::max<std::int64_t>(8, n_seg / 2);
+            std::vector<std::int64_t> grid;
+            for (std::int64_t i = 0; i < n_seg; ++i) {
+                const double phi =
+                    2.0 * kSePi * static_cast<double>(i) / static_cast<double>(n_seg);
+                SeV3 d = se_add(se_add(SeV3{0, 0, 0}, u, std::cos(phi)), v, std::sin(phi));
+                for (std::int64_t j = 0; j < n_minor; ++j) {
+                    const double psi =
+                        2.0 * kSePi * static_cast<double>(j) / static_cast<double>(n_minor);
+                    SeV3 q = se_add(o, d, big + small * std::cos(psi));
+                    q = se_add(q, a, small * std::sin(psi));
+                    grid.push_back(solids.Point(q));
+                }
+            }
+            auto at = [&](std::int64_t I, std::int64_t J) {
+                return grid[static_cast<std::size_t>((I % n_seg) * n_minor + (J % n_minor))];
+            };
+            for (std::int64_t i = 0; i < n_seg; ++i)
+                for (std::int64_t j = 0; j < n_minor; ++j) {
+                    solids.Tri(at(i, j), at(i + 1, j), at(i + 1, j + 1), row);
+                    solids.Tri(at(i, j), at(i + 1, j + 1), at(i, j + 1), row);
+                }
+            ++result.mNumTori;
+        }
+    }
+    if (solids.mTri.empty() && planes.empty() && balls.empty())
+        throw WriteError(std::string(kSePrefix) + "no fitted primitive to write");
+
+    const double unit = detail::mesh_length_unit(rFitted);
+    auto extra = [&](detail::StepStream& rSt, std::vector<std::int64_t>& rSolids,
+                     std::vector<std::int64_t>& rSurfaces) {
+        const std::vector<std::int64_t> b = se_write_balls(rSt, balls);
+        rSolids.insert(rSolids.end(), b.begin(), b.end());
+        rSurfaces = se_write_planes(rSt, planes);
+    };
+    if (solids.mTri.empty()) {
+        detail::StepStream st(rPath, "meshio++ elements", unit);
+        std::vector<std::int64_t> solid_ids, surface_ids;
+        extra(st, solid_ids, surface_ids);
+        st.FinishMixed(solid_ids, surface_ids, {});
+        return result;
+    }
+    Mesh skin;
+    skin.AssignPoints(se_doubles(solids.mXyz, {solids.mXyz.size() / 3, std::size_t{3}}));
+    skin.AddCellBlock("triangle", se_int64(solids.mTri, {solids.mTri.size() / 3, std::size_t{3}}));
+    std::vector<NDArray> labels;
+    labels.push_back(se_int64(solids.mLabel, {solids.mLabel.size()}));
+    skin.AddCellData("segment:patch", std::move(labels));
+    const std::size_t nrow = solids.mType.size();
+    std::vector<std::int64_t> row_ids(nrow);
+    for (std::size_t i = 0; i < nrow; ++i)
+        row_ids[i] = static_cast<std::int64_t>(i);
+    skin.AddFieldData("fit:patch_id", se_int64(row_ids, {nrow}));
+    skin.AddFieldData("fit:patch_type", se_int64(solids.mType, {nrow}));
+    skin.AddFieldData("fit:patch_params", se_doubles(solids.mParams, {nrow, std::size_t{10}}));
+    skin.AddFieldData("fit:patch_tolerance",
+                      se_doubles(std::vector<double>(nrow, 1e-9 * std::max(scale, 1.0)), {nrow}));
+    const detail::ClosedFacets shell = detail::closed_facets(skin, kSePrefix);
+    detail::StepBrepOptions brep;
+    brep.mFitted = true;
+    brep.mLengthUnit = unit;
+    // The tessellation's chords sag off a curved rim by about R (pi/N)^2 / 2:
+    // the rims are circles within that.
+    double max_r = 0.0;
+    for (std::size_t i = 0; i < nrow; ++i)
+        if (solids.mType[i] != 1)
+            max_r = std::max(max_r, solids.mParams[10 * i + 6]);
+    brep.mTolerance =
+        std::max(1e-9 * std::max(scale, 1.0), max_r * (kSePi / static_cast<double>(n_seg)) *
+                                                  (kSePi / static_cast<double>(n_seg)));
+    if (!planes.empty() || !balls.empty())
+        brep.mExtraItems = extra;
+    const detail::StepBrepResult r = detail::step_brep_write(rPath, skin, shell, brep);
+    if (r.mCounts.mNumDemoted > 0)
+        result.mWarnings.push_back(std::to_string(r.mCounts.mNumDemoted) +
+                                   " element face(s) written as facets");
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/step_elements.cpp =====
 // ===== begin src/cpp/src/formats/stl.cpp =====
 #include <algorithm>
 #include <array>

@@ -80,6 +80,7 @@ module meshioplusplus
     public :: mio_auto_align, mio_auto_align_report, mio_sections
     public :: mio_fit_curves, mio_fit_curves_report, mio_fit_curves_piece, mio_sketch_piece
     public :: mio_silhouette, mio_silhouette_report
+    public :: mio_write_step_elements, mio_step_elements_report
     public :: mio_deviation_regions, mio_deviation_regions_report, mio_deviation_region_info
     public :: mio_deviation_region
     public :: mio_exaggerate, mio_exaggerate_report, mio_colorize, mio_colorize_report
@@ -1638,6 +1639,18 @@ module meshioplusplus
         real(c_double) :: perimeter = 0.0_c_double
         real(c_double) :: min_height = 0.0_c_double
         real(c_double) :: max_height = 0.0_c_double
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_step_elements_report` (88 bytes): what `mio_write_step_elements` wrote.
+    type, bind(c) :: mio_step_elements_report
+        integer(c_int64_t) :: num_planes = 0
+        integer(c_int64_t) :: num_spheres = 0
+        integer(c_int64_t) :: num_cylinders = 0
+        integer(c_int64_t) :: num_cones = 0
+        integer(c_int64_t) :: num_tori = 0
+        integer(c_int64_t) :: num_skipped = 0
         integer(c_int64_t) :: num_warnings = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
@@ -4305,6 +4318,17 @@ module meshioplusplus
             type(mio_silhouette_opts_t), intent(in) :: opts
             type(mio_silhouette_report), intent(out) :: report
             type(c_ptr) :: out
+        end function
+
+        function c_mio_write_step_elements(path, h, patches, n, segments, report) &
+                bind(c, name="mio_write_step_elements") result(s)
+            import :: c_ptr, c_char, c_int, c_int64_t, mio_step_elements_report
+            character(kind=c_char), dimension(*), intent(in) :: path
+            type(c_ptr), value :: h
+            integer(c_int64_t), dimension(*), intent(in) :: patches
+            integer(c_int64_t), value :: n, segments
+            type(mio_step_elements_report), intent(out) :: report
+            integer(c_int) :: s
         end function
 
         function c_mio_fit_curves_piece(index, piece) bind(c, name="mio_fit_curves_piece") &
@@ -8756,6 +8780,48 @@ contains
         if (present(report)) report = rep
         call clear_status(stat, errmsg)
     end function
+
+    !> Write the fitted primitives of `mesh` (`mio_segment`, then
+    !> `mio_fit_primitives`) to a STEP file as exact geometry: bounded planes,
+    !> balls, lidded cylinders, frusta and tori (roadmap 7.6.5). `patches`
+    !> selects patch labels (all fitted ones when absent).
+    subroutine mio_write_step_elements(path, mesh, patches, segments, report, stat, errmsg)
+        character(*), intent(in) :: path
+        type(mio_mesh), intent(in) :: mesh
+        integer(int64), intent(in), optional :: patches(:)
+        integer, intent(in), optional :: segments
+        type(mio_step_elements_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_step_elements_report) :: rep
+        integer(c_int64_t), allocatable :: ids(:)
+        integer(c_int64_t) :: seg
+        if (c_sizeof(rep) /= 88_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: step_elements layout mismatch'
+            error stop 1
+        end if
+        if (present(patches)) then
+            ids = int(patches, c_int64_t)
+        else
+            allocate (ids(1))
+            ids = 0
+        end if
+        seg = 0
+        if (present(segments)) seg = int(segments, c_int64_t)
+        if (present(patches)) then
+            if (c_mio_write_step_elements(c_str(path), mesh%handle, ids, &
+                                          int(size(patches), c_int64_t), seg, rep) /= 0) then
+                call handle_failure('write_step_elements', mio_error_message(), stat, errmsg)
+                return
+            end if
+        else if (c_mio_write_step_elements(c_str(path), mesh%handle, ids, 0_c_int64_t, seg, &
+                                           rep) /= 0) then
+            call handle_failure('write_step_elements', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end subroutine
 
     !> Piece `index` (1-based) of this thread's last `mio_fit_curves` call.
     subroutine mio_fit_curves_piece(index, piece, stat, errmsg)

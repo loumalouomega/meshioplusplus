@@ -59,6 +59,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -73,6 +74,7 @@
 #include "bspline_curve.hpp"
 #include "bspline_lsq.hpp"
 #include "closed_facets.hpp"
+#include "step_stream.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -120,6 +122,12 @@ struct StepBrepOptions {
     /// The length unit the file declares, metres per unit; at most 0 is
     /// millimetres (`StepStream`).
     double mLengthUnit = -1.0;
+    /// More items written into the same file after the solids (roadmap 7.6.5,
+    /// `write_step_elements`' balls and bounded planes): given the stream, it
+    /// appends `MANIFOLD_SOLID_BREP` ids to the first list and
+    /// `SHELL_BASED_SURFACE_MODEL` ids to the second. Empty writes none, as before.
+    std::function<void(StepStream&, std::vector<std::int64_t>&, std::vector<std::int64_t>&)>
+        mExtraItems;
 };
 
 /// What the B-rep writer wrote.

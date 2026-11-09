@@ -1553,7 +1553,10 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                     StepStream::Ref(shell) + ")"));
         }
         res.mNumSolids = static_cast<std::int64_t>(solids.size());
-        st.Finish(solids);
+        std::vector<std::int64_t> surfaces;
+        if (rOptions.mExtraItems)
+            rOptions.mExtraItems(st, solids, surfaces);
+        st.FinishMixed(solids, surfaces, {});
 
         // Per facet: its face, type and patch; the largest deviation.
         res.mFaceOfFacet.assign(nf, -1);

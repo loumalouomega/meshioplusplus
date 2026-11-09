@@ -3067,6 +3067,26 @@ export interface MeshioPlusPlusModule {
   ): Mesh;
 
   /**
+   * Write the fitted primitives of `mesh` (`segment`, then `fitPrimitives`)
+   * to a STEP file in the virtual file system as exact geometry: bounded
+   * planes, balls, lidded cylinders, frusta and tori (roadmap 7.6.5).
+   * @throws {Error} on a mesh with no fit table or an unknown patch.
+   */
+  writeStepElements(
+    path: string,
+    mesh: Mesh,
+    options?: { patches?: ArrayLike<number>; segments?: number },
+  ): {
+    numPlanes: number;
+    numSpheres: number;
+    numCylinders: number;
+    numCones: number;
+    numTori: number;
+    numSkipped: number;
+    warnings: string[];
+  };
+
+  /**
    * The outline of a surface (or a volume mesh's skin) seen along `normal`,
    * with its holes: a chained line mesh `fitCurves` reads, offset by
    * `clearance` (> 0 grows it), or with `extrude` the closed surface of the

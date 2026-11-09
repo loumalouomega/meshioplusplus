@@ -235,9 +235,14 @@ def test_lines_are_dropped_and_no_facets_is_refused(tmp_path):
     b = box_skin(1)
     mesh = mio.Mesh(b.points, [b.cells[0], ("line", np.array([[0, 1]]))])
     mio.write(tmp_path / "a.step", mesh)
-    line = mio.Mesh(b.points, [("line", np.array([[0, 1]]))])
-    with pytest.raises(Exception, match="no surface facets"):
+    # A line mesh alone is curves (roadmap 7.6.5); points alone are refused.
+    if _core is not None:
+        line = mio.Mesh(b.points, [("line", np.array([[0, 1]]))])
         mio.write(tmp_path / "b.step", line)
+        assert "GEOMETRIC_CURVE_SET('sections'" in (tmp_path / "b.step").read_text()
+    points = mio.Mesh(b.points, [("vertex", np.array([[0]]))])
+    with pytest.raises(Exception, match="no surface facets"):
+        mio.write(tmp_path / "c.step", points)
 
 
 @pytest.mark.parametrize("faces", ["facet", "planar"])

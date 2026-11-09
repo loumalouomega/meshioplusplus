@@ -231,6 +231,29 @@ SEXP R_mio_slice(SEXP mesh, SEXP origin, SEXP normal, SEXP record_parent_ids, SE
     return mio_r_wrap_mesh(out);
 }
 
+/* write_step_elements(path, mesh, patches, segments) (roadmap 7.6.5); patches
+ * a numeric vector of labels (empty: every fitted patch). */
+SEXP R_mio_write_step_elements(SEXP path, SEXP mesh, SEXP patches, SEXP segments) {
+    const R_xlen_t n = Rf_xlength(patches);
+    int64_t *ids = (int64_t *)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    for (R_xlen_t i = 0; i < n; ++i) ids[i] = (int64_t)REAL(patches)[i];
+    mio_step_elements_report r;
+    mio_r_check(mio_write_step_elements(mio_r_string(path, "path"), mio_r_mesh(mesh),
+                                        n > 0 ? ids : NULL, (int64_t)n,
+                                        (int64_t)mio_r_double(segments, "segments"), &r),
+                "write_step_elements");
+    SEXP w = PROTECT(mio_r_getbuffer(mio_write_step_elements_warnings, "write_step_elements"));
+    const char *names[] = {"num_planes", "num_spheres", "num_cylinders", "num_cones",
+                           "num_tori",   "num_skipped", "warnings"};
+    const SEXP values[] = {NULL, NULL, NULL, NULL, NULL, NULL, w};
+    const double numbers[] = {(double)r.num_planes, (double)r.num_spheres,
+                              (double)r.num_cylinders, (double)r.num_cones,
+                              (double)r.num_tori, (double)r.num_skipped};
+    SEXP res = mio_r_report_list(7, names, values, numbers);
+    UNPROTECT(1);
+    return res;
+}
+
 /* silhouette(mesh, normal, clearance, round_angle, arc_segments, extrude,
  * region, merge_tolerance) (roadmap 7.6.3). */
 SEXP R_mio_silhouette(SEXP mesh, SEXP normal, SEXP clearance, SEXP round_angle, SEXP arc_segments,

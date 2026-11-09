@@ -3997,6 +3997,39 @@ val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool r
 }
 
 /**
+ * @brief Fitted primitives as STEP elements (roadmap 7.6.5), written to
+ * @p rPath in the virtual file system. @p rOptions is `{patches, segments}`.
+ */
+val write_step_elements_js(const std::string& rPath, const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::StepElementsOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the writeStepElements options", {"patches", "segments"});
+            if (rOptions.hasOwnProperty("patches")) {
+                for (const double v : emscripten::vecFromJSArray<double>(rOptions["patches"]))
+                    o.mPatches.push_back(static_cast<std::int64_t>(v));
+            }
+            if (rOptions.hasOwnProperty("segments"))
+                o.mSegments = static_cast<std::int64_t>(rOptions["segments"].as<double>());
+        }
+        const meshioplusplus::StepElementsResult r =
+            meshioplusplus::write_step_elements(rPath, val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("numPlanes", static_cast<double>(r.mNumPlanes));
+        out.set("numSpheres", static_cast<double>(r.mNumSpheres));
+        out.set("numCylinders", static_cast<double>(r.mNumCylinders));
+        out.set("numCones", static_cast<double>(r.mNumCones));
+        out.set("numTori", static_cast<double>(r.mNumTori));
+        out.set("numSkipped", static_cast<double>(r.mNumSkipped));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/**
  * @brief The outline of a part along a direction (roadmap 7.6.3). @p rOptions
  * is `{normal, clearance, roundAngle, arcSegments, extrude, region,
  * mergeTolerance}`.
@@ -10448,6 +10481,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("sections", &sections_js);
     emscripten::function("fitCurves", &fit_curves_js);
     emscripten::function("silhouette", &silhouette_js);
+    emscripten::function("writeStepElements", &write_step_elements_js);
     emscripten::function("isosurface", &isosurface_js);
     emscripten::function("grid", &grid_js);
     emscripten::function("rectangle", &rectangle_js);

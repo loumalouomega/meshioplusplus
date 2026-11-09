@@ -3061,6 +3061,15 @@ contains
         fitted = seg%fit_primitives(num_plane=nplane, stat=ierr)
         call check(ierr == 0, 'fit_primitives succeeded')
         call check(nplane == 6_int64, 'every cube face fits a plane')
+        block
+            type(mio_step_elements_report) :: erep
+            call mio_write_step_elements(prefix//'_elements.step', fitted, report=erep, stat=ierr)
+            call check(ierr == 0 .and. erep%num_planes == 6_int64, &
+                       'write_step_elements writes the six planes')
+            call mio_write_step_elements(prefix//'_elements.step', fitted, &
+                                         patches=[99_int64], stat=ierr)
+            call check(ierr /= 0, 'write_step_elements refuses an unknown patch')
+        end block
         call fitted%free()
         ! Roadmap 7.1.1: a seed on the top face fits it alone.
         block
