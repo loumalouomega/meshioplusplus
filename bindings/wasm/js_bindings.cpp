@@ -4003,6 +4003,11 @@ val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool r
     });
 }
 
+// Defined with the parametric generators below; clip and silhouette read their
+// plane normals the same way.
+std::array<double, 3> prim_js_vec3(const val& rV, const std::array<double, 3>& rDefault,
+                                   bool PadZero);
+
 /// Cut by a plane, keep a side, cap it (roadmap 7.8.3). @p rOptions is
 /// `{keepBelow, cap}`.
 val clip_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, const val& rOptions) {
