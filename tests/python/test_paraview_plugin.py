@@ -301,3 +301,41 @@ def test_polyhedra_reach_paraview(tmp_path):
     assert sorted((b.type, len(b)) for b in back.cells) == sorted(
         (b.type, len(b)) for b in mesh.cells
     )
+
+
+_TIME = """
+src, dst = args
+reader = meshioreader(FileName=src)
+reader.UpdatePipelineInformation()
+times = list(reader.TimestepValues)
+reader.UpdatePipeline(2.0)
+grid = servermanager.Fetch(reader)
+u = grid.GetPointData().GetArray("u")
+writer = meshioWriter(Input=reader, FileName=dst, WriteTimeSteps=1)
+writer.UpdatePipeline()
+print(json.dumps({"times": times, "u": [u.GetValue(i) for i in range(u.GetNumberOfTuples())]}))
+"""
+
+
+def test_time_steps_in_and_out(tmp_path):
+    """roadmap 6.4: a three-step frd shows TimestepValues [0, 0.5, 2], time
+    2.0 is the last step, and the writer writes every step back."""
+    points = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]])
+    steps = [
+        (
+            t,
+            meshioplusplus.Mesh(
+                points,
+                [("tetra", [[0, 1, 2, 3]])],
+                point_data={"u": np.full(4, 10.0 * t)},
+            ),
+        )
+        for t in (0.0, 0.5, 2.0)
+    ]
+    src = tmp_path / "in.frd"
+    dst = tmp_path / "out.frd"
+    meshioplusplus.write_sequence(src, steps)
+    seen = _run_pvpython(tmp_path, _TIME, src, dst)
+    assert seen["times"] == [0.0, 0.5, 2.0]
+    assert seen["u"] == [20.0] * 4
+    assert meshioplusplus.read_metadata(dst)["time_values"] == [0.0, 0.5, 2.0]

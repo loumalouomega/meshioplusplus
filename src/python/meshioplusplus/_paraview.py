@@ -425,3 +425,117 @@ def mesh_from_grid(grid, op=WRITER_OP):
         cell_data=cell_data,
         field_data=field_data,
     )
+
+
+# --------------------------------------------------------------------------- #
+# time (roadmap 6.4)                                                          #
+# --------------------------------------------------------------------------- #
+#: ``{key: plan}``; a key names each file with its size and modification
+#: time, so a file rewritten in place (ParaView's *Reload Files*) is planned
+#: again and an unchanged one is not, which matters for the formats whose
+#: ``read_metadata`` is a full read.
+_PLANS: dict = {}
+
+
+def _plan_key(paths, file_format):
+    import os
+
+    stats = []
+    for path in paths:
+        try:
+            st = os.stat(path)
+            stats.append((os.path.abspath(path), st.st_mtime_ns, st.st_size))
+        except OSError:
+            stats.append((str(path), None, None))
+    return (file_format, tuple(stats))
+
+
+def time_plan(paths, file_format=None):
+    """The steps of ``paths``: one entry per step, ``{"path", "step", "time",
+    "time_source"}`` (:func:`meshioplusplus._sequence.sequence_entries`).
+
+    One path may hold several steps (the formats ``read_metadata`` reports
+    ``time_values`` for); several paths are a file series, each file one step
+    or more, in the order given. A step's time is the file's own where it has
+    one, else its position. Cached per file identity.
+    """
+    from ._sequence import _entry_time, sequence_entries
+
+    paths = [str(p) for p in paths]
+    key = _plan_key(paths, file_format)
+    if key not in _PLANS:
+        source = paths[0] if len(paths) == 1 else paths
+        plan = sequence_entries(source, file_format=file_format)
+        if len(plan) > 1:
+            # A step whose only time is inside its file (the meshio:time
+            # field data write_sequence stores) is read once to find it, as
+            # sequence_times does; the cache keeps it to once per file.
+            for entry in plan:
+                entry["time"] = _entry_time(entry, file_format, "auto")
+        _PLANS[key] = plan
+    return _PLANS[key]
+
+
+def forget_plans():
+    """Drop every cached plan (the reader's *Refresh*)."""
+    _PLANS.clear()
+
+
+def time_values(plan):
+    """The time steps ParaView should see: ``[]`` for a single step."""
+    if len(plan) < 2:
+        return []
+    return [float(e["time"]) for e in plan]
+
+
+def step_index(times, t):
+    """The step shown at time ``t``: the last one at or before it (the first
+    before the first), as VTK's own readers choose."""
+    if not times or t is None:
+        return 0
+    i = int(np.searchsorted(np.asarray(times, dtype=float), t, side="right")) - 1
+    return min(max(i, 0), len(times) - 1)
+
+
+def read_step(plan, index, file_format=None, **read_kwargs):
+    """Read step ``index`` of ``plan``."""
+    from ._helpers import read
+
+    entry = plan[index]
+    return read(
+        entry["path"],
+        file_format=file_format or None,
+        time_step=entry["step"],
+        **read_kwargs,
+    )
+
+
+def series_path(path, file_format=None):
+    """Where the writer puts several steps: ``path`` itself when its format
+    holds a series in one file, else ``path`` with ``_{step}`` before its
+    extension, one file per step (:func:`~meshioplusplus._sequence.write_sequence`'s
+    two modes)."""
+    import pathlib
+
+    from ._exceptions import WriteError
+    from ._sequence import _check_series_target
+
+    try:
+        _check_series_target(path, file_format)
+        return str(path)
+    except WriteError:
+        p = pathlib.Path(str(path))
+        return str(p.with_name(p.stem + "_{step}" + p.suffix))
+
+
+def write_one_step(template, index, count, time, mesh, file_format=None, **kwargs):
+    """Write step ``index`` of ``count`` to its own file of ``template`` (a
+    ``{step}`` path), with its time, as ``write_sequence``'s fan-out does; the
+    plugin's writer calls it as each step arrives, so no step is held."""
+    from ._helpers import write
+    from ._sequence import TIME_KEY, _time_array, expand_pattern
+
+    out = expand_pattern(template, index, count)
+    mesh.field_data[TIME_KEY] = _time_array(time)
+    write(out, mesh, file_format=file_format or None, **kwargs)
+    return out

@@ -330,3 +330,93 @@ def test_degrees_and_weights_are_the_active_attributes():
         back.point_data["RationalWeights"], [1, 1, 1, 0.8, 0.8, 0.8]
     )
     np.testing.assert_array_equal(back.cell_data["HigherOrderDegrees"][0], [[2, 2, 0]])
+
+
+# --------------------------------------------------------------------------- #
+# time (roadmap 6.4)                                                          #
+# --------------------------------------------------------------------------- #
+_TIMES = [0.0, 0.5, 2.0]
+
+
+def _step_meshes():
+    points = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]])
+    return [
+        (
+            t,
+            meshioplusplus.Mesh(
+                points,
+                [("tetra", [[0, 1, 2, 3]])],
+                point_data={"u": np.full(4, 10.0 * t)},
+            ),
+        )
+        for t in _TIMES
+    ]
+
+
+def test_time_plan_of_a_multi_step_file(tmp_path):
+    """The roadmap's probe, without ParaView: a three-step frd has three
+    time steps, and the time 2.0 reads the last step."""
+    path = tmp_path / "steps.frd"
+    meshioplusplus.write_sequence(path, _step_meshes())
+    plan = _paraview.time_plan([path])
+    times = _paraview.time_values(plan)
+    np.testing.assert_allclose(times, _TIMES)
+    index = _paraview.step_index(times, 2.0)
+    assert index == 2
+    mesh = _paraview.read_step(plan, index)
+    np.testing.assert_allclose(mesh.point_data["u"], 20.0)
+    assert _paraview.time_plan([path]) is plan  # cached
+
+
+def test_time_plan_of_a_file_series(tmp_path):
+    """A series of files with no number in their names takes each file's own
+    time (the meshio:time field data write_sequence stores)."""
+    paths = []
+    for name, (t, mesh) in zip(["first", "second", "third"], _step_meshes()):
+        mesh.field_data["meshio:time"] = np.array([t])
+        paths.append(tmp_path / f"{name}.vtu")
+        meshioplusplus.write(paths[-1], mesh)
+    plan = _paraview.time_plan(paths)
+    np.testing.assert_allclose(_paraview.time_values(plan), _TIMES)
+    np.testing.assert_allclose(_paraview.read_step(plan, 1).point_data["u"], 5.0)
+
+
+def test_a_rewritten_file_is_planned_again(tmp_path):
+    path = tmp_path / "steps.frd"
+    meshioplusplus.write_sequence(path, _step_meshes())
+    first = _paraview.time_plan([path])
+    meshioplusplus.write_sequence(path, _step_meshes()[:2])
+    import os
+
+    os.utime(path, ns=(1, 1))  # a different identity even on a coarse clock
+    assert len(_paraview.time_plan([path])) == 2
+    assert len(first) == 3
+
+
+def test_a_single_step_has_no_time():
+    assert _paraview.time_values([{"path": "x", "step": 0, "time": 0.0}]) == []
+
+
+def test_step_index_takes_the_last_step_at_or_before():
+    assert _paraview.step_index(_TIMES, -1.0) == 0
+    assert _paraview.step_index(_TIMES, 0.5) == 1
+    assert _paraview.step_index(_TIMES, 1.9) == 1
+    assert _paraview.step_index(_TIMES, 5.0) == 2
+    assert _paraview.step_index([], 5.0) == 0
+
+
+def test_series_path_and_one_file_per_step(tmp_path):
+    assert _paraview.series_path(tmp_path / "a.frd") == str(tmp_path / "a.frd")
+    template = _paraview.series_path(tmp_path / "a.vtu")
+    assert template == str(tmp_path / "a_{step}.vtu")
+    for i, (t, mesh) in enumerate(_step_meshes()):
+        _paraview.write_one_step(template, i, 3, t, mesh)
+    written = sorted(tmp_path.glob("a_*.vtu"))
+    assert [p.name for p in written] == ["a_0000.vtu", "a_0001.vtu", "a_0002.vtu"]
+    # Each file keeps its time, though a number in a file name takes
+    # precedence when the series is read back (the sequence driver's rule).
+    for path, t in zip(written, _TIMES):
+        assert meshioplusplus.read(path).field_data["meshio:time"][0] == t
+    np.testing.assert_allclose(
+        _paraview.time_values(_paraview.time_plan(written)), [0, 1, 2]
+    )

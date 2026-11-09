@@ -47,6 +47,12 @@ The reader registers every extension meshio++ knows, `.vtu` and the other format
 
 After loading, every extension meshio++ knows appears in ParaView's file dialogs. The reader's **FileFormat** property picks the format explicitly (`automatic` infers it from the file), and the file is exposed as a `vtkUnstructuredGrid` with its point, cell and field data. The writer saves an unstructured grid through `meshioplusplus.write`, choosing the format from the file name.
 
+## Time steps
+
+A file that holds several steps (every format [`read_metadata`](./sequences.md) reports `time_values` for: XDMF, Exodus, VTKHDF, CalculiX `frd`, ...) shows them on ParaView's time toolbar, and each time reads its step: the last step at or before the time asked for. Selecting a file series in the file dialog (`out_0.vtu`, `out_1.vtu`, ...) opens it as one reader with a step per file, timed as [sequences](./sequences.md) time a series: a number in the file name, else the file's own `meshio:time`, else its position. The plan of steps is cached per file and its size and modification time, so *File → Reload Files* on a rewritten file plans it again, and the reader's **Refresh** button drops every cached plan.
+
+The writer's **WriteTimeSteps** property writes every time step of its input rather than the current one: into one file when the format holds a series (XDMF, VTKHDF, `frd`, PVD and the other [`write_sequence`](./sequences.md) targets, which hold every step until the last arrives), else one file per step, `name_0000.vtu`, `name_0001.vtu`, ..., each with its time, written as it arrives.
+
 ## What crosses into ParaView
 
 The reader hands ParaView the mesh's points (padded to three columns when the mesh is 1-D or 2-D), its cells, and its point, cell and field data, in one vectorised pass with no per-cell Python loop:

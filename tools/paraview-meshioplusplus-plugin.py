@@ -18,7 +18,7 @@ from paraview.util.vtkAlgorithm import (
     smproperty,
     smproxy,
 )
-from vtkmodules.vtkCommonDataModel import vtkUnstructuredGrid
+from vtkmodules.vtkCommonDataModel import vtkDataObject, vtkUnstructuredGrid
 
 import meshioplusplus
 from meshioplusplus import _paraview
@@ -58,17 +58,30 @@ class MeshioPlusPlusReader(VTKPythonAlgorithmBase):
         VTKPythonAlgorithmBase.__init__(
             self, nInputPorts=0, nOutputPorts=1, outputType="vtkUnstructuredGrid"
         )
-        self._filename = None
+        self._filenames = []
         self._file_format = None
 
-    @smproperty.stringvector(name="FileName")
+    # Repeatable, so ParaView hands over a whole file series (out_0.vtu,
+    # out_1.vtu, ...) as one reader; a script may still pass one string.
+    @smproperty.stringvector(
+        name="FileName",
+        command="AddFileName",
+        clean_command="RemoveAllFileNames",
+        repeat_command="1",
+        number_of_elements_per_command="1",
+    )
     @smdomain.filelist()
     @smhint.filechooser(
         extensions=meshio_extensions, file_description="meshio++-supported files"
     )
-    def SetFileName(self, filename):
-        if self._filename != filename:
-            self._filename = filename
+    def AddFileName(self, filename):
+        if filename and filename not in self._filenames:
+            self._filenames.append(filename)
+            self.Modified()
+
+    def RemoveAllFileNames(self):
+        if self._filenames:
+            self._filenames = []
             self.Modified()
 
     @smproperty.stringvector(name="StringInfo", information_only="1")
@@ -94,9 +107,55 @@ class MeshioPlusPlusReader(VTKPythonAlgorithmBase):
             self._file_format = file_format
             self.Modified()
 
+    @smproperty.xml(
+        """<Property name="Refresh" command="Refresh" panel_widget="command_button">
+             <Documentation>Plan the file's time steps again.</Documentation>
+           </Property>"""
+    )
+    def Refresh(self):
+        _paraview.forget_plans()
+        self.Modified()
+
+    def _plan(self):
+        if not self._filenames:
+            return []
+        return _paraview.time_plan(self._filenames, self._file_format)
+
+    @smproperty.doublevector(
+        name="TimestepValues",
+        information_only="1",
+        si_class="vtkSITimeStepsProperty",
+    )
+    def GetTimestepValues(self):
+        return _paraview.time_values(self._plan())
+
+    def RequestInformation(self, request, inInfoVec, outInfoVec):
+        executive = self.GetExecutive()
+        info = outInfoVec.GetInformationObject(0)
+        info.Remove(executive.TIME_STEPS())
+        info.Remove(executive.TIME_RANGE())
+        times = _paraview.time_values(self._plan())
+        for t in times:
+            info.Append(executive.TIME_STEPS(), t)
+        if times:
+            info.Append(executive.TIME_RANGE(), times[0])
+            info.Append(executive.TIME_RANGE(), times[-1])
+        return 1
+
     def RequestData(self, request, inInfoVec, outInfoVec):
-        mesh = meshioplusplus.read(self._filename, self._file_format)
-        _paraview.fill_grid(vtkUnstructuredGrid.GetData(outInfoVec), mesh)
+        executive = self.GetExecutive()
+        info = outInfoVec.GetInformationObject(0)
+        plan = self._plan()
+        times = _paraview.time_values(plan)
+        t = None
+        if times and info.Has(executive.UPDATE_TIME_STEP()):
+            t = info.Get(executive.UPDATE_TIME_STEP())
+        index = _paraview.step_index(times, t)
+        mesh = _paraview.read_step(plan, index, self._file_format)
+        output = vtkUnstructuredGrid.GetData(outInfoVec)
+        _paraview.fill_grid(output, mesh)
+        if times:
+            output.GetInformation().Set(vtkDataObject.DATA_TIME_STEP(), times[index])
         return 1
 
 
@@ -115,6 +174,10 @@ class MeshioPlusPlusWriter(VTKPythonAlgorithmBase):
             self, nInputPorts=1, nOutputPorts=0, inputType="vtkUnstructuredGrid"
         )
         self._filename = None
+        self._all_steps = False
+        self._times = []
+        self._index = 0
+        self._steps = []
 
     @smproperty.stringvector(name="FileName", panel_visibility="never")
     @smdomain.filelist()
@@ -123,9 +186,51 @@ class MeshioPlusPlusWriter(VTKPythonAlgorithmBase):
             self._filename = filename
             self.Modified()
 
+    @smproperty.intvector(name="WriteTimeSteps", default_values="0")
+    @smdomain.xml('<BooleanDomain name="bool"/>')
+    def SetWriteTimeSteps(self, value):
+        if self._all_steps != bool(value):
+            self._all_steps = bool(value)
+            self.Modified()
+
+    def RequestInformation(self, request, inInfoVec, outInfoVec):
+        executive = self.GetExecutive()
+        info = inInfoVec[0].GetInformationObject(0)
+        self._times = []
+        if self._all_steps and info.Has(executive.TIME_STEPS()):
+            self._times = list(info.Get(executive.TIME_STEPS()))
+        return 1
+
+    def RequestUpdateExtent(self, request, inInfoVec, outInfoVec):
+        if self._times:
+            executive = self.GetExecutive()
+            info = inInfoVec[0].GetInformationObject(0)
+            info.Set(executive.UPDATE_TIME_STEP(), self._times[self._index])
+        return 1
+
     def RequestData(self, request, inInfoVec, outInfoVec):
-        grid = vtkUnstructuredGrid.GetData(inInfoVec[0])
-        meshioplusplus.write(self._filename, _paraview.mesh_from_grid(grid))
+        mesh = _paraview.mesh_from_grid(vtkUnstructuredGrid.GetData(inInfoVec[0]))
+        if len(self._times) < 2:
+            meshioplusplus.write(self._filename, mesh)
+            return 1
+        # Every step, one pass of the pipeline each (CONTINUE_EXECUTING): a
+        # one-file-per-step format is written as each step arrives; a format
+        # holding a series in one file is written once the last one has.
+        target = _paraview.series_path(self._filename)
+        t, n = self._times[self._index], len(self._times)
+        if target == str(self._filename):
+            self._steps.append((t, mesh))
+        else:
+            _paraview.write_one_step(target, self._index, n, t, mesh)
+        executive = self.GetExecutive()
+        if self._index + 1 < n:
+            self._index += 1
+            request.Set(executive.CONTINUE_EXECUTING(), 1)
+            return 1
+        request.Remove(executive.CONTINUE_EXECUTING())
+        if self._steps:
+            meshioplusplus.write_sequence(self._filename, self._steps)
+        self._index, self._steps = 0, []
         return 1
 
     def Write(self):
