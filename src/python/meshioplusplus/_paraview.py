@@ -30,6 +30,12 @@ from __future__ import annotations
 
 import numpy as np
 
+#: The arrays VTK reads a Lagrange or Bézier cell's degrees and a Bézier
+#: cell's weights from, once set as the active attribute of that name (the
+#: names the VTU readers and writers use).
+HIGHER_ORDER_DEGREES = "HigherOrderDegrees"
+RATIONAL_WEIGHTS = "RationalWeights"
+
 #: Operation names the notes are reported under.
 READER_OP = "ParaView reader"
 WRITER_OP = "ParaView writer"
@@ -193,9 +199,15 @@ def fill_grid(grid, mesh, op=READER_OP):
     set_cells(grid, payload)
 
     for name, values in payload.point_data.items():
-        grid.GetPointData().AddArray(_vtk_array(values, name))
+        array = _vtk_array(values, name)
+        grid.GetPointData().AddArray(array)
+        if name == RATIONAL_WEIGHTS:
+            grid.GetPointData().SetRationalWeights(array)
     for name, values in payload.cell_data.items():
-        grid.GetCellData().AddArray(_vtk_array(values, name))
+        array = _vtk_array(values, name)
+        grid.GetCellData().AddArray(array)
+        if name == HIGHER_ORDER_DEGREES:
+            grid.GetCellData().SetHigherOrderDegrees(array)
     for name in sorted(mesh.field_data):
         array = _field_array(name, mesh.field_data[name], notes)
         if array is not None:

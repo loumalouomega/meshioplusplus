@@ -294,3 +294,39 @@ def test_polyhedron_fixture_keeps_its_cells():
     assert grid.GetNumberOfCells() == sum(len(b) for b in mesh.cells)
     back = _paraview.mesh_from_grid(grid)
     assert sum(len(b) for b in back.cells) == sum(len(b) for b in mesh.cells)
+
+
+# --------------------------------------------------------------------------- #
+# higher order (roadmap 6.3.1)                                                #
+# --------------------------------------------------------------------------- #
+def test_degrees_and_weights_are_the_active_attributes():
+    """HigherOrderDegrees and RationalWeights reach VTK as the attributes its
+    Lagrange and Bézier cells read, and come back as arrays."""
+    # An order-2 Bézier triangle: corners, then the mid-edge control points.
+    points = np.array(
+        [
+            [0.0, 0, 0],
+            [1, 0, 0],
+            [0, 1, 0],
+            [0.5, -0.1, 0],
+            [0.6, 0.6, 0],
+            [-0.1, 0.5, 0],
+        ]
+    )
+    mesh = meshioplusplus.Mesh(
+        points,
+        [("VTK_BEZIER_TRIANGLE", [[0, 1, 2, 3, 4, 5]])],
+        point_data={"RationalWeights": np.array([1.0, 1, 1, 0.8, 0.8, 0.8])},
+        cell_data={"HigherOrderDegrees": [np.array([[2.0, 2, 0]])]},
+    )
+    grid = _paraview.grid_from_mesh(mesh)
+    assert grid.GetCellType(0) == vtk.VTK_BEZIER_TRIANGLE
+    degrees = grid.GetCellData().GetHigherOrderDegrees()
+    weights = grid.GetPointData().GetRationalWeights()
+    assert degrees is not None and degrees.GetName() == "HigherOrderDegrees"
+    assert weights is not None and weights.GetName() == "RationalWeights"
+    back = _paraview.mesh_from_grid(grid)
+    np.testing.assert_array_equal(
+        back.point_data["RationalWeights"], [1, 1, 1, 0.8, 0.8, 0.8]
+    )
+    np.testing.assert_array_equal(back.cell_data["HigherOrderDegrees"][0], [[2, 2, 0]])
