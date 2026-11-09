@@ -609,8 +609,17 @@ function t_intersections()
     ss = mio.sections(a, [0 0 1], [-0.5 0.5]);
     assert(mio.num_points(ss) > 0);
     fc = mio.fit_curves(ch);
-    expect_equal(fc.num_circles, 1);
-    expect_equal(fc.pieces(1).type, 'circle');
+    if wall == 2
+        % The sphere's section at z = 0.1 is one circle.
+        expect_equal(fc.num_circles, 1);
+        expect_equal(fc.pieces(1).type, 'circle');
+    else
+        % The cube's section is a square: four lines, never a circle through
+        % its corners.
+        expect_equal(fc.num_circles, 0);
+        expect_equal(fc.num_lines, 4);
+        expect_equal(fc.pieces(1).type, 'line');
+    end
     sil = mio.silhouette(a, 'clearance', 0.05);
     expect_equal(sil.num_loops, 1);
     expect_equal(sil.num_holes, 0);
