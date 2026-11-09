@@ -596,6 +596,77 @@ def _register_operations(server: FastMCP) -> None:
         num_loops, num_open_chains and warnings."""
 
     @server.tool()
+    @_forward(_tools.tool_constrain_primitives)
+    def constrain_primitives(
+        input_path: str,
+        output_path: str,
+        face_tolerance: float = 0.0,
+        angle_tolerance: float = -1.0,
+        distance_tolerance: float = -1.0,
+        min_fraction: float = -1.0,
+        force: Optional[List[List[Union[int, str]]]] = None,
+        forbid: Optional[List[List[Union[int, str]]]] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Fit related primitives of a fit_primitives skin together: coaxial
+        groups, parallel and perpendicular planes, equal radii, as
+        fit_cad's constrain_primitives does, with force and forbid lists of
+        [patch_a, patch_b, relation] (coaxial, parallel, perpendicular,
+        equal_radius; patches by segment:patch label) and angle (degrees)
+        and distance tolerances (negative keeps the pass's own). Reports
+        num_constrained, num_groups, face_tolerance, relations (each
+        patch_a, patch_b, relation, angle_deg, distance, forced) and unmet."""
+
+    @server.tool()
+    @_forward(_tools.tool_face_support)
+    def face_support(
+        solid_path: str,
+        scan_path: str,
+        output_path: Optional[str] = None,
+        tolerance: float = 0.0,
+        measured_share: float = 0.9,
+        inferred_share: float = 0.1,
+        hole_data: str = "repair:hole",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Class each face of a fit_cad re-mesh (solid_path) by how much of
+        it the scan supports: measured (at least measured_share of its area
+        within tolerance of the scan), inferred (below inferred_share: no
+        scan near) or partial; scan cells marked by hole_data (repair's
+        fills) count as unmeasured. Reports face_share, face_class,
+        num_measured, num_partial, num_inferred, share_within and
+        tolerance; output_path writes the solid with fit_cad:face_support."""
+
+    @server.tool()
+    @_forward(_tools.tool_fit_cad_iterate)
+    def fit_cad_iterate(
+        input_path: str,
+        output_path: str,
+        step_path: Optional[str] = None,
+        part_class: str = "any",
+        target_within: float = 0.0,
+        target_explained: float = 0.0,
+        segment_tolerance: float = 0.0,
+        fit_tolerance: float = 0.0,
+        max_rounds: int = 4,
+        worst_faces: int = 3,
+        refine_factor: float = 0.25,
+        backend: str = "auto",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Reverse-engineer a closed scan in rounds: segment, fit_primitives
+        and fit_cad, stopping when the share of the scan within tolerance of
+        the solid reaches target_within (and the explained area
+        target_explained), at no improvement or after max_rounds, else
+        re-segmenting the worst faces' patches finer. part_class (analytic,
+        cast, freeform) sets the target (0.90, 0.85, 0.75) and tolerances.
+        Writes the best solid (output_path, and step_path as STEP). Reports
+        rounds, best_round, target_met, stop_reason and the face support."""
+
+    @server.tool()
     @_forward(_tools.tool_offset_surface)
     def offset_surface(
         input_path: str,

@@ -21,6 +21,8 @@
 #include <limits>
 #include <memory>
 #include <set>
+#include <string>
+#include <tuple>
 #include <vector>
 
 // External includes
@@ -179,6 +181,8 @@
 #include "meshioplusplus/operations/flip_normals.hpp"
 #include "meshioplusplus/operations/clip.hpp"
 #include "meshioplusplus/operations/offset_surface.hpp"
+#include "meshioplusplus/operations/constrain_primitives.hpp"
+#include "meshioplusplus/operations/fit_cad_loop.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -3140,6 +3144,147 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("origin"), py::arg("normal"), py::arg("record_parent_ids") = false,
         py::arg("chain") = false, py::arg("min_length") = 0.0);
+
+    // Roadmap 7.7.3: constrain fitted primitives under control. `force` and
+    // `forbid` are lists of (patch_a, patch_b, relation name).
+    m.def(
+        "constrain_primitives",
+        [](py::object pymesh, double face_tolerance, double angle_tolerance,
+           double distance_tolerance, double min_fraction,
+           const std::vector<std::tuple<std::int64_t, std::int64_t, std::string>>& force,
+           const std::vector<std::tuple<std::int64_t, std::int64_t, std::string>>& forbid) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::ConstrainPrimitivesOptions o;
+            o.mFaceTolerance = face_tolerance;
+            o.mAngleToleranceDeg = angle_tolerance;
+            o.mDistanceTolerance = distance_tolerance;
+            o.mMinFraction = min_fraction;
+            for (const auto& [a, b, k] : force)
+                o.mForce.push_back({a, b, meshioplusplus::primitive_relation_from_name(k)});
+            for (const auto& [a, b, k] : forbid)
+                o.mForbid.push_back({a, b, meshioplusplus::primitive_relation_from_name(k)});
+            meshioplusplus::ConstrainPrimitivesResult r =
+                core_nogil([&] { return meshioplusplus::constrain_primitives(mesh, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_constrained"] = r.mNumConstrained;
+            out["num_groups"] = r.mNumGroups;
+            out["face_tolerance"] = r.mFaceTolerance;
+            py::list rel;
+            for (const auto& r_rec : r.mRelations) {
+                py::dict d;
+                d["patch_a"] = r_rec.mPatchA;
+                d["patch_b"] = r_rec.mPatchB;
+                d["relation"] = meshioplusplus::primitive_relation_name(r_rec.mKind);
+                d["angle_deg"] = r_rec.mAngleDeg;
+                d["distance"] = r_rec.mDistance;
+                d["forced"] = r_rec.mForced;
+                rel.append(d);
+            }
+            out["relations"] = rel;
+            py::list unmet;
+            for (const auto& r_rel : r.mUnmet)
+                unmet.append(py::make_tuple(r_rel.mPatchA, r_rel.mPatchB,
+                                            meshioplusplus::primitive_relation_name(r_rel.mKind)));
+            out["unmet"] = unmet;
+            return out;
+        },
+        py::arg("mesh"), py::arg("face_tolerance") = 0.0, py::arg("angle_tolerance") = -1.0,
+        py::arg("distance_tolerance") = -1.0, py::arg("min_fraction") = -1.0,
+        py::arg("force") = std::vector<std::tuple<std::int64_t, std::int64_t, std::string>>{},
+        py::arg("forbid") = std::vector<std::tuple<std::int64_t, std::int64_t, std::string>>{});
+
+    // Roadmap 7.7.1: the scan's support of each face of a fit_cad solid.
+    m.def(
+        "face_support",
+        [](py::object pysolid, py::object pyscan, double tolerance, double measured_share,
+           double inferred_share, const std::string& hole_data) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh solid = meshioplusplus_py::py_to_mesh(pysolid, refs, true, true);
+            meshioplusplus::Mesh scan = meshioplusplus_py::py_to_mesh(pyscan, refs, true, true);
+            meshioplusplus::FaceSupportOptions o;
+            o.mTolerance = tolerance;
+            o.mMeasuredShare = measured_share;
+            o.mInferredShare = inferred_share;
+            o.mHoleData = hole_data;
+            meshioplusplus::FaceSupportResult r =
+                core_nogil([&] { return meshioplusplus::face_support(solid, scan, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["face_share"] = r.mFaceShare;
+            out["face_class"] = r.mFaceClass;
+            out["num_measured"] = r.mNumMeasured;
+            out["num_partial"] = r.mNumPartial;
+            out["num_inferred"] = r.mNumInferred;
+            out["share_within"] = r.mShareWithin;
+            out["tolerance"] = r.mTolerance;
+            return out;
+        },
+        py::arg("solid"), py::arg("scan"), py::arg("tolerance") = 0.0,
+        py::arg("measured_share") = 0.9, py::arg("inferred_share") = 0.1,
+        py::arg("hole_data") = "repair:hole");
+
+    // Roadmap 7.7.2: segment, fit and build in rounds towards a target.
+    m.def(
+        "fit_cad_iterate",
+        [](py::object pyscan, const std::string& step_path, double segment_tolerance,
+           double fit_tolerance, double target_within, double target_explained,
+           const std::string& part_class, std::int64_t max_rounds, std::int64_t worst_faces,
+           double refine_factor, std::int64_t min_patch_cells, const std::string& backend) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh scan = meshioplusplus_py::py_to_mesh(pyscan, refs, true, true);
+            meshioplusplus::FitCadIterateOptions o;
+            o.mSegmentTolerance = segment_tolerance;
+            o.mFitTolerance = fit_tolerance;
+            o.mTargetWithin = target_within;
+            o.mTargetExplained = target_explained;
+            o.mPartClass = meshioplusplus::fit_cad_part_class_from_name(part_class);
+            o.mMaxRounds = max_rounds;
+            o.mWorstFaces = worst_faces;
+            o.mRefineFactor = refine_factor;
+            o.mMinPatchCells = min_patch_cells;
+            if (backend == "native")
+                o.mFitCad.mBackend = meshioplusplus::FitCadBackend::Native;
+            else if (backend == "occt")
+                o.mFitCad.mBackend = meshioplusplus::FitCadBackend::Occt;
+            else if (backend != "auto")
+                throw py::value_error("fit_cad_iterate: backend is auto, occt or native");
+            meshioplusplus::FitCadIterateResult r =
+                core_nogil([&] { return meshioplusplus::fit_cad_iterate(scan, step_path, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mSupport.mMesh));
+            out["skin"] = meshioplusplus_py::mesh_to_py(std::move(r.mSkin));
+            py::list rounds;
+            for (const auto& r_r : r.mRounds) {
+                py::dict d;
+                d["share_within"] = r_r.mShareWithin;
+                d["explained"] = r_r.mExplained;
+                d["hausdorff_max"] = r_r.mHausdorffMax;
+                d["segment_tolerance"] = r_r.mSegmentTolerance;
+                d["num_patches"] = r_r.mNumPatches;
+                d["num_faces"] = r_r.mNumFaces;
+                d["resegmented"] = r_r.mResegmented;
+                rounds.append(d);
+            }
+            out["rounds"] = rounds;
+            out["best_round"] = r.mBestRound;
+            out["target_within"] = r.mTargetWithin;
+            out["target_met"] = r.mTargetMet;
+            out["stop_reason"] = r.mStopReason;
+            out["num_measured"] = r.mSupport.mNumMeasured;
+            out["num_partial"] = r.mSupport.mNumPartial;
+            out["num_inferred"] = r.mSupport.mNumInferred;
+            out["valid"] = r.mFit.mValid;
+            out["num_faces"] = r.mFit.mCounts.mNumFaces;
+            return out;
+        },
+        py::arg("scan"), py::arg("step_path") = "", py::arg("segment_tolerance") = 0.0,
+        py::arg("fit_tolerance") = 0.0, py::arg("target_within") = 0.0,
+        py::arg("target_explained") = 0.0, py::arg("part_class") = "any", py::arg("max_rounds") = 4,
+        py::arg("worst_faces") = 3, py::arg("refine_factor") = 0.25, py::arg("min_patch_cells") = 1,
+        py::arg("backend") = "auto");
 
     // Offset, thicken and hollow (roadmap 7.8.4); `kind` is "offset",
     // "thicken" or "hollow", `amount` the distance, thickness or wall.

@@ -125,6 +125,7 @@ export segment, select_region, fit_primitives, refine_patches, fit_cad, has_occt
 export repair, shrinkwrap, sobolev_deform, geodesic_distance, parameterize, convert_coordinates,
        convex_hull, delaunay_2d, estimate_normals, reconstruct_surface, register_rigid, register_landmarks, sections, fit_curves, silhouette, write_step_elements, measure, align_datums, measure_element_primitive,
        remove_islands, flip_normals, clip, offset_surface, thicken, hollow,
+       constrain_primitives, face_support, fit_cad_iterate,
        find_symmetry_plane, auto_align, laplacian_eigenmodes, morph,
        untangle, prepare_metric
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth

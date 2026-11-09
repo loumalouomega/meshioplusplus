@@ -74,6 +74,9 @@ from .. import (
     compute_stats,
     cone,
     conservative_interpolate,
+)
+from .. import constrain_primitives as _constrain_primitives_op
+from .. import (
     contact_pairs,
     convert_cells,
     convert_coordinates,
@@ -106,6 +109,9 @@ from .. import (
     extract_skin,
     extract_surface,
     extrude,
+)
+from .. import face_support as _face_support_op
+from .. import (
     feature_edges,
     fichera,
     find_interface,
@@ -113,6 +119,7 @@ from .. import (
     find_symmetry_plane,
     fit_cad,
 )
+from .. import fit_cad_iterate as _fit_cad_iterate_op
 from .. import fit_curves as _fit_curves_op
 from .. import fit_primitives
 from .. import flip_normals as _flip_normals_op
@@ -1880,6 +1887,99 @@ def tool_clip(
         return_report=True,
     )
     report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_constrain_primitives(
+    input_path,
+    output_path,
+    face_tolerance=0.0,
+    angle_tolerance=-1.0,
+    distance_tolerance=-1.0,
+    min_fraction=-1.0,
+    force=None,
+    forbid=None,
+    input_format=None,
+    output_format=None,
+):
+    """Fit related primitives of a fitted skin together under control."""
+    out, report = _constrain_primitives_op(
+        _load(input_path, input_format),
+        face_tolerance=float(face_tolerance),
+        angle_tolerance=float(angle_tolerance),
+        distance_tolerance=float(distance_tolerance),
+        min_fraction=float(min_fraction),
+        force=[tuple(r) for r in force or []],
+        forbid=[tuple(r) for r in forbid or []],
+        return_report=True,
+    )
+    report["unmet"] = [list(u) for u in report["unmet"]]
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_face_support(
+    solid_path,
+    scan_path,
+    output_path=None,
+    tolerance=0.0,
+    measured_share=0.9,
+    inferred_share=0.1,
+    hole_data="repair:hole",
+    input_format=None,
+    output_format=None,
+):
+    """The scan's support of each face of a fit_cad solid."""
+    out, report = _face_support_op(
+        _load(solid_path, input_format),
+        _load(scan_path, input_format),
+        tolerance=float(tolerance),
+        measured_share=float(measured_share),
+        inferred_share=float(inferred_share),
+        hole_data=hole_data,
+        return_report=True,
+    )
+    if output_path:
+        report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_fit_cad_iterate(
+    input_path,
+    output_path,
+    step_path=None,
+    part_class="any",
+    target_within=0.0,
+    target_explained=0.0,
+    segment_tolerance=0.0,
+    fit_tolerance=0.0,
+    max_rounds=4,
+    worst_faces=3,
+    refine_factor=0.25,
+    backend="auto",
+    input_format=None,
+    output_format=None,
+):
+    """Segment, fit and build a solid in rounds towards a target."""
+    step = str(_resolve(step_path, for_write=True)) if step_path else None
+    out, report = _fit_cad_iterate_op(
+        _load(input_path, input_format),
+        step,
+        part_class=part_class,
+        target_within=float(target_within),
+        target_explained=float(target_explained),
+        segment_tolerance=float(segment_tolerance),
+        fit_tolerance=float(fit_tolerance),
+        max_rounds=int(max_rounds),
+        worst_faces=int(worst_faces),
+        refine_factor=float(refine_factor),
+        backend=backend,
+        return_report=True,
+    )
+    report.pop("skin")
+    report["output_path"] = _store(out, output_path, output_format)
+    if step:
+        report["step_path"] = step
     return _json_safe(report)
 
 
@@ -7524,6 +7624,22 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_flip_normals, "wraps": ("flip_normals",), "gated": None},
         ),
         ("clip", {"fn": tool_clip, "wraps": ("clip",), "gated": None}),
+        (
+            "constrain_primitives",
+            {
+                "fn": tool_constrain_primitives,
+                "wraps": ("constrain_primitives",),
+                "gated": None,
+            },
+        ),
+        (
+            "face_support",
+            {"fn": tool_face_support, "wraps": ("face_support",), "gated": None},
+        ),
+        (
+            "fit_cad_iterate",
+            {"fn": tool_fit_cad_iterate, "wraps": ("fit_cad_iterate",), "gated": None},
+        ),
         (
             "offset_surface",
             {"fn": tool_offset_surface, "wraps": ("offset_surface",), "gated": None},

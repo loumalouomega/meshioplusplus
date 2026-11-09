@@ -1639,6 +1639,15 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_lte(dv$deviation, 1e-9)
   mio_release(dv$mesh)
   expect_error(mio_decimate(m, max_deviation = 0.1, ratio = 0.5), "max_deviation")
+  it <- mio_fit_cad_iterate(m, backend = "native")
+  expect_true(it$target_met)
+  expect_equal(it$stop_reason, "target")
+  fs <- mio_face_support(it$mesh, m)
+  expect_equal(fs$num_measured, fs$num_faces)
+  mio_release(fs$mesh)
+  mio_release(it$mesh)
+  expect_error(mio_fit_cad_iterate(m, part_class = "plastic"), "part_class")
+  expect_error(mio_constrain_primitives(m), "fit_primitives")
   ms <- mio_measure(m, '{"elements": [
     {"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},
     {"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],

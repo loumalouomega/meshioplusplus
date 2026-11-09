@@ -226,6 +226,133 @@ static mxArray *O_mio_slice(const mxArray **a) {
     return mio_o_wrap_mesh(out);
 }
 
+/* A flat double vector of (a, b, kind) triples as int64; NULL when empty. */
+static const int64_t *oc_triples(const mxArray *a, int64_t *n) {
+    *n = 0;
+    if (mio_o_is_null(a)) return NULL;
+    size_t len = 0;
+    const double *x = mio_o_doubles(a, &len, "relations");
+    if (len == 0) return NULL;
+    if (len % 3 != 0) mio_o_error("constrain_primitives", "relations are (a, b, kind) triples");
+    int64_t *out = (int64_t *)mxMalloc(len * sizeof(int64_t));
+    for (size_t i = 0; i < len; ++i) out[i] = (int64_t)x[i];
+    *n = (int64_t)(len / 3);
+    return out;
+}
+
+/* constrain_primitives(mesh, face_tolerance, angle_tolerance, distance_tolerance,
+ * min_fraction, force, forbid) (roadmap 7.7.3); force and forbid flat triples. */
+static mxArray *O_mio_constrain_primitives(const mxArray **a) {
+    mio_constrain_primitives_opts opts;
+    mio_constrain_primitives_opts_init(&opts);
+    opts.face_tolerance = mio_o_double(a[1], "face_tolerance");
+    opts.angle_tolerance_deg = mio_o_double(a[2], "angle_tolerance");
+    opts.distance_tolerance = mio_o_double(a[3], "distance_tolerance");
+    opts.min_fraction = mio_o_double(a[4], "min_fraction");
+    opts.force = oc_triples(a[5], &opts.num_force);
+    opts.forbid = oc_triples(a[6], &opts.num_forbid);
+    mio_constrain_primitives_report r;
+    mio_mesh *out = mio_constrain_primitives(mio_o_mesh(a[0]), &opts, &r);
+    if (out == NULL) mio_o_fail("constrain_primitives");
+    const int64_t n = r.num_relations;
+    mxArray *pa = mio_o_column(n), *pb = mio_o_column(n), *kind = mio_o_column(n);
+    mxArray *ang = mio_o_column(n), *dst = mio_o_column(n), *fc = mio_o_column(n);
+    for (int64_t k = 0; k < n; ++k) {
+        int64_t ia = 0, ib = 0;
+        int32_t kd = 0, forced = 0;
+        double angle = 0.0, distance = 0.0;
+        mio_o_check(mio_constrain_primitives_relation(k, &ia, &ib, &kd, &angle, &distance, &forced),
+                    "constrain_primitives relation");
+        mxGetPr(pa)[k] = (double)ia;
+        mxGetPr(pb)[k] = (double)ib;
+        mxGetPr(kind)[k] = (double)kd;
+        mxGetPr(ang)[k] = angle;
+        mxGetPr(dst)[k] = distance;
+        mxGetPr(fc)[k] = (double)forced;
+    }
+    mxArray *unmet = mio_o_matrix(r.num_unmet, 3);
+    for (int64_t k = 0; k < r.num_unmet; ++k) {
+        int64_t ia = 0, ib = 0;
+        int32_t kd = 0;
+        mio_o_check(mio_constrain_primitives_unmet(k, &ia, &ib, &kd), "constrain_primitives unmet");
+        mxGetPr(unmet)[k] = (double)ia;
+        mxGetPr(unmet)[k + r.num_unmet] = (double)ib;
+        mxGetPr(unmet)[k + 2 * r.num_unmet] = (double)kd;
+    }
+    const char *keys[] = {"mesh",     "num_constrained", "num_groups", "face_tolerance",
+                          "patch_a",  "patch_b",         "relation",   "angle_deg",
+                          "distance", "forced",          "unmet"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mio_o_scalar((double)r.num_constrained),
+                         mio_o_scalar((double)r.num_groups),
+                         mio_o_scalar(r.face_tolerance),
+                         pa, pb, kind, ang, dst, fc, unmet};
+    return mio_o_struct(11, keys, values);
+}
+
+/* face_support(solid, scan, tolerance, measured_share, inferred_share, hole_data)
+ * (roadmap 7.7.1). */
+static mxArray *O_mio_face_support(const mxArray **a) {
+    mio_face_support_opts opts;
+    mio_face_support_opts_init(&opts);
+    opts.tolerance = mio_o_double(a[2], "tolerance");
+    opts.measured_share = mio_o_double(a[3], "measured_share");
+    opts.inferred_share = mio_o_double(a[4], "inferred_share");
+    opts.hole_data = mio_o_opt_string(a[5]);
+    mio_face_support_report r;
+    mio_mesh *out = mio_face_support(mio_o_mesh(a[0]), mio_o_mesh(a[1]), &opts, &r);
+    if (out == NULL) mio_o_fail("face_support");
+    const char *keys[] = {"mesh",      "num_measured", "num_partial", "num_inferred",
+                          "num_faces", "share_within", "tolerance"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),           mio_o_scalar((double)r.num_measured),
+                         mio_o_scalar((double)r.num_partial), mio_o_scalar((double)r.num_inferred),
+                         mio_o_scalar((double)r.num_faces),   mio_o_scalar(r.share_within),
+                         mio_o_scalar(r.tolerance)};
+    return mio_o_struct(7, keys, values);
+}
+
+/* fit_cad_iterate(scan, step_path, part_class, target_within, target_explained,
+ * segment_tolerance, fit_tolerance, max_rounds, worst_faces, refine_factor,
+ * backend) (roadmap 7.7.2); part_class and backend as their C enum values. */
+static mxArray *O_mio_fit_cad_iterate(const mxArray **a) {
+    mio_fit_cad_iterate_opts opts;
+    mio_fit_cad_iterate_opts_init(&opts);
+    opts.part_class = mio_o_int(a[2], "part_class");
+    opts.target_within = mio_o_double(a[3], "target_within");
+    opts.target_explained = mio_o_double(a[4], "target_explained");
+    opts.segment_tolerance = mio_o_double(a[5], "segment_tolerance");
+    opts.fit_tolerance = mio_o_double(a[6], "fit_tolerance");
+    opts.max_rounds = mio_o_int64(a[7], "max_rounds");
+    opts.worst_faces = mio_o_int64(a[8], "worst_faces");
+    opts.refine_factor = mio_o_double(a[9], "refine_factor");
+    opts.backend = mio_o_int(a[10], "backend");
+    mio_fit_cad_iterate_report r;
+    mio_mesh *out = mio_fit_cad_iterate(mio_o_mesh(a[0]), mio_o_opt_string(a[1]), &opts, &r);
+    if (out == NULL) mio_o_fail("fit_cad_iterate");
+    mxArray *share = mio_o_column(r.num_rounds), *expl = mio_o_column(r.num_rounds);
+    for (int64_t k = 0; k < r.num_rounds; ++k)
+        mio_o_check(mio_fit_cad_iterate_round(k, &mxGetPr(share)[k], &mxGetPr(expl)[k], NULL,
+                                              NULL, NULL),
+                    "fit_cad_iterate round");
+    const char *keys[] = {"mesh",          "num_rounds",    "best_round",   "target_met",
+                          "stop_reason",   "target_within", "share_within", "explained",
+                          "hausdorff_max", "num_faces",     "round_share_within",
+                          "round_explained"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mio_o_scalar((double)r.num_rounds),
+                         mio_o_scalar((double)r.best_round),
+                         mio_o_scalar((double)r.target_met),
+                         mio_o_scalar((double)r.stop_reason),
+                         mio_o_scalar(r.target_within),
+                         mio_o_scalar(r.share_within),
+                         mio_o_scalar(r.explained),
+                         mio_o_scalar(r.hausdorff_max),
+                         mio_o_scalar((double)r.num_faces),
+                         share,
+                         expl};
+    return mio_o_struct(12, keys, values);
+}
+
 /* The struct offset_surface, thicken and hollow return (roadmap 7.8.4). */
 static mxArray *mio_o_offset_struct(mio_mesh *out, const mio_offset_report *r, const char *what) {
     if (out == NULL) mio_o_fail(what);
@@ -1844,6 +1971,9 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_flip_normals, 2),
     MIO_O_ENTRY(mio_clip, 5),
     MIO_O_ENTRY(mio_offset_surface, 3),
+    MIO_O_ENTRY(mio_constrain_primitives, 7),
+    MIO_O_ENTRY(mio_face_support, 6),
+    MIO_O_ENTRY(mio_fit_cad_iterate, 11),
     MIO_O_ENTRY(mio_thicken, 4),
     MIO_O_ENTRY(mio_hollow, 3),
     MIO_O_ENTRY(mio_align_datums, 4),

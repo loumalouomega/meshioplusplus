@@ -155,6 +155,8 @@
 #include "meshioplusplus/operations/flip_normals.hpp"
 #include "meshioplusplus/operations/clip.hpp"
 #include "meshioplusplus/operations/offset_surface.hpp"
+#include "meshioplusplus/operations/constrain_primitives.hpp"
+#include "meshioplusplus/operations/fit_cad_loop.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -5620,6 +5622,202 @@ int cmd_hollow(const std::vector<std::string>& rArgs) {
     return cmd_offset_kind(rArgs, "hollow");
 }
 
+// "A:B:REL" -> a relation (roadmap 7.7.3).
+meshioplusplus::PrimitiveRelation cli_relation(const std::string& rText) {
+    const std::size_t i = rText.find(':');
+    const std::size_t j = i == std::string::npos ? i : rText.find(':', i + 1);
+    if (j == std::string::npos)
+        throw std::runtime_error(
+            "constrain-primitives: a relation is PATCH_A:PATCH_B:RELATION, "
+            "not '" +
+            rText + "'");
+    return {std::stoll(rText.substr(0, i)), std::stoll(rText.substr(i + 1, j - i - 1)),
+            meshioplusplus::primitive_relation_from_name(rText.substr(j + 1))};
+}
+
+// constrain-primitives: fitted primitives under control (roadmap 7.7.3).
+int cmd_constrain_primitives(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"face-tolerance", {}, true},
+                                          {"angle-tolerance", {}, true},
+                                          {"distance-tolerance", {}, true},
+                                          {"min-fraction", {}, true},
+                                          {"force", {}, true},
+                                          {"forbid", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("constrain-primitives requires INFILE and OUTFILE");
+    meshioplusplus::ConstrainPrimitivesOptions o;
+    cli_opt_double(p, "face-tolerance", o.mFaceTolerance);
+    cli_opt_double(p, "angle-tolerance", o.mAngleToleranceDeg);
+    cli_opt_double(p, "distance-tolerance", o.mDistanceTolerance);
+    cli_opt_double(p, "min-fraction", o.mMinFraction);
+    for (const std::string& r_v : opt_values(p, "force"))
+        o.mForce.push_back(cli_relation(r_v));
+    for (const std::string& r_v : opt_values(p, "forbid"))
+        o.mForbid.push_back(cli_relation(r_v));
+    meshioplusplus::ConstrainPrimitivesResult r = meshioplusplus::constrain_primitives(
+        read_mesh_cli(p.positionals[0], opt_value(p, "input-format")), o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_constrained", r.mNumConstrained);
+        json.Field("num_groups", r.mNumGroups);
+        json.Field("face_tolerance", r.mFaceTolerance);
+        json.Key("relations");
+        json.BeginArray();
+        for (const auto& r_rec : r.mRelations) {
+            json.BeginObject();
+            json.Field("patch_a", r_rec.mPatchA);
+            json.Field("patch_b", r_rec.mPatchB);
+            json.Field("relation", meshioplusplus::primitive_relation_name(r_rec.mKind));
+            json.Field("angle_deg", r_rec.mAngleDeg);
+            json.Field("distance", r_rec.mDistance);
+            json.Field("forced", r_rec.mForced);
+            json.EndObject();
+        }
+        json.EndArray();
+        json.Key("unmet");
+        json.BeginArray();
+        for (const auto& r_rel : r.mUnmet) {
+            json.BeginArray();
+            json.Int(r_rel.mPatchA);
+            json.Int(r_rel.mPatchB);
+            json.String(meshioplusplus::primitive_relation_name(r_rel.mKind));
+            json.EndArray();
+        }
+        json.EndArray();
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mNumConstrained << " primitive(s) constrained in " << r.mNumGroups
+              << " group(s); " << r.mRelations.size() << " relation(s), " << r.mUnmet.size()
+              << " forced relation(s) unmet\n";
+    return 0;
+}
+
+// face-support: the scan's support of each face of a fit_cad solid (roadmap 7.7.1).
+int cmd_face_support(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"tolerance", {}, true},
+                                          {"measured-share", {}, true},
+                                          {"inferred-share", {}, true},
+                                          {"hole-data", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() < 2 || p.positionals.size() > 3)
+        throw std::runtime_error("face-support requires SOLID SCAN and an optional OUTFILE");
+    meshioplusplus::FaceSupportOptions o;
+    cli_opt_double(p, "tolerance", o.mTolerance);
+    cli_opt_double(p, "measured-share", o.mMeasuredShare);
+    cli_opt_double(p, "inferred-share", o.mInferredShare);
+    if (has_opt(p, "hole-data"))
+        o.mHoleData = opt_value(p, "hole-data");
+    const std::string fmt = opt_value(p, "input-format");
+    meshioplusplus::FaceSupportResult r = meshioplusplus::face_support(
+        read_mesh_cli(p.positionals[0], fmt), read_mesh_cli(p.positionals[1], fmt), o);
+    if (p.positionals.size() == 3)
+        write_mesh_cli(p.positionals[2], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Key("face_share");
+        json.BeginArray();
+        for (const double v : r.mFaceShare)
+            json.Number(v);
+        json.EndArray();
+        json.Key("face_class");
+        json.BeginArray();
+        for (const std::int64_t v : r.mFaceClass)
+            json.Int(v);
+        json.EndArray();
+        json.Field("num_measured", r.mNumMeasured);
+        json.Field("num_partial", r.mNumPartial);
+        json.Field("num_inferred", r.mNumInferred);
+        json.Field("share_within", r.mShareWithin);
+        json.Field("tolerance", r.mTolerance);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mNumMeasured << " measured, " << r.mNumPartial << " partial, " << r.mNumInferred
+              << " inferred face(s)\n";
+    return 0;
+}
+
+// fit-cad-iterate: segment, fit and build in rounds towards a target (roadmap 7.7.2).
+int cmd_fit_cad_iterate(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"step", {}, true},
+                                          {"part-class", {}, true},
+                                          {"target-within", {}, true},
+                                          {"target-explained", {}, true},
+                                          {"segment-tolerance", {}, true},
+                                          {"fit-tolerance", {}, true},
+                                          {"max-rounds", {}, true},
+                                          {"worst-faces", {}, true},
+                                          {"refine-factor", {}, true},
+                                          {"backend", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("fit-cad-iterate requires SCAN and OUTFILE");
+    meshioplusplus::FitCadIterateOptions o;
+    if (has_opt(p, "part-class"))
+        o.mPartClass = meshioplusplus::fit_cad_part_class_from_name(opt_value(p, "part-class"));
+    cli_opt_double(p, "target-within", o.mTargetWithin);
+    cli_opt_double(p, "target-explained", o.mTargetExplained);
+    cli_opt_double(p, "segment-tolerance", o.mSegmentTolerance);
+    cli_opt_double(p, "fit-tolerance", o.mFitTolerance);
+    cli_opt_int64(p, "max-rounds", o.mMaxRounds);
+    cli_opt_int64(p, "worst-faces", o.mWorstFaces);
+    cli_opt_double(p, "refine-factor", o.mRefineFactor);
+    const std::string backend = opt_value(p, "backend", "auto");
+    if (backend == "native")
+        o.mFitCad.mBackend = meshioplusplus::FitCadBackend::Native;
+    else if (backend == "occt")
+        o.mFitCad.mBackend = meshioplusplus::FitCadBackend::Occt;
+    else if (backend != "auto")
+        throw std::runtime_error("fit-cad-iterate: --backend is auto, occt or native");
+    meshioplusplus::FitCadIterateResult r = meshioplusplus::fit_cad_iterate(
+        read_mesh_cli(p.positionals[0], opt_value(p, "input-format")), opt_value(p, "step"), o);
+    write_mesh_cli(p.positionals[1], r.mSupport.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Key("rounds");
+        json.BeginArray();
+        for (const auto& r_r : r.mRounds) {
+            json.BeginObject();
+            json.Field("share_within", r_r.mShareWithin);
+            json.Field("explained", r_r.mExplained);
+            json.Field("hausdorff_max", r_r.mHausdorffMax);
+            json.Field("segment_tolerance", r_r.mSegmentTolerance);
+            json.Field("num_patches", r_r.mNumPatches);
+            json.Field("num_faces", r_r.mNumFaces);
+            json.Key("resegmented");
+            json.BeginArray();
+            for (const std::int64_t v : r_r.mResegmented)
+                json.Int(v);
+            json.EndArray();
+            json.EndObject();
+        }
+        json.EndArray();
+        json.Field("best_round", r.mBestRound);
+        json.Field("target_within", r.mTargetWithin);
+        json.Field("target_met", r.mTargetMet);
+        json.Field("stop_reason", r.mStopReason);
+        json.Field("num_measured", r.mSupport.mNumMeasured);
+        json.Field("num_partial", r.mSupport.mNumPartial);
+        json.Field("num_inferred", r.mSupport.mNumInferred);
+        json.Field("valid", r.mFit.mValid);
+        json.Field("num_faces", r.mFit.mCounts.mNumFaces);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mRounds.size() << " round(s), best " << r.mBestRound << " (" << r.mStopReason
+              << "); target " << (r.mTargetMet ? "met" : "not met") << "\n";
+    return 0;
+}
+
 // measure: elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).
 int cmd_measure(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(), {{"json", {}, false}}}));
@@ -10014,6 +10212,15 @@ const CliVerb kCliVerbs[] = {
      "  thicken                 Turn a surface into a closed shell of a thickness\n", &cmd_thicken},
     {"hollow", nullptr, "  hollow                  Give a closed surface an inner wall\n",
      &cmd_hollow},
+    {"constrain-primitives", nullptr,
+     "  constrain-primitives    Fit related primitives together under control\n",
+     &cmd_constrain_primitives},
+    {"face-support", nullptr,
+     "  face-support            The scan's support of each face of a fitted solid\n",
+     &cmd_face_support},
+    {"fit-cad-iterate", nullptr,
+     "  fit-cad-iterate         Segment, fit and build a solid in rounds towards a target\n",
+     &cmd_fit_cad_iterate},
     {"flip-normals", nullptr,
      "  flip-normals            Reverse the winding of every cell, or of a region's\n",
      &cmd_flip_normals},

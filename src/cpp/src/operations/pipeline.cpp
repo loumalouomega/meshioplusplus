@@ -96,6 +96,8 @@
 #include "meshioplusplus/operations/flip_normals.hpp"
 #include "meshioplusplus/operations/clip.hpp"
 #include "meshioplusplus/operations/offset_surface.hpp"
+#include "meshioplusplus/operations/constrain_primitives.hpp"
+#include "meshioplusplus/operations/fit_cad_loop.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -1481,6 +1483,87 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumCapTriangles", static_cast<double>(cr.mNumCapTriangles)},
                         {"NumLoops", static_cast<double>(cr.mNumLoops)}});
         return std::move(cr.mMesh);
+    }
+    if (op == "ConstrainPrimitives") {
+        ConstrainPrimitivesOptions o;
+        o.mFaceTolerance = pipe_number(rStep, "FaceTolerance", 0.0);
+        o.mAngleToleranceDeg = pipe_number(rStep, "AngleTolerance", -1.0);
+        o.mDistanceTolerance = pipe_number(rStep, "DistanceTolerance", -1.0);
+        o.mMinFraction = pipe_number(rStep, "MinFraction", -1.0);
+        // "A:B:REL" texts separated by commas.
+        const auto relations = [&](const std::string& rText, const char* pKey) {
+            std::vector<PrimitiveRelation> out;
+            const std::string& text = rText;
+            std::size_t at = 0;
+            while (at < text.size()) {
+                std::size_t end = text.find(',', at);
+                if (end == std::string::npos)
+                    end = text.size();
+                const std::string item = text.substr(at, end - at);
+                const std::size_t i = item.find(':');
+                const std::size_t j = i == std::string::npos ? i : item.find(':', i + 1);
+                if (j == std::string::npos)
+                    throw std::invalid_argument(
+                        pipe_err(rStep, std::string(pKey) + " is A:B:RELATION, comma-separated"));
+                out.push_back({std::stoll(item.substr(0, i)),
+                               std::stoll(item.substr(i + 1, j - i - 1)),
+                               primitive_relation_from_name(item.substr(j + 1))});
+                at = end + 1;
+            }
+            return out;
+        };
+        o.mForce = relations(pipe_text(rStep, "Force", ""), "Force");
+        o.mForbid = relations(pipe_text(rStep, "Forbid", ""), "Forbid");
+        ConstrainPrimitivesResult r = constrain_primitives(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumConstrained", static_cast<double>(r.mNumConstrained)},
+                        {"NumGroups", static_cast<double>(r.mNumGroups)},
+                        {"NumRelations", static_cast<double>(r.mRelations.size())},
+                        {"NumUnmet", static_cast<double>(r.mUnmet.size())}});
+        return std::move(r.mMesh);
+    }
+    if (op == "FaceSupport") {
+        const std::string scan_path = pipe_text(rStep, "Scan", "");
+        if (scan_path.empty())
+            throw std::invalid_argument(pipe_err(rStep, "needs Scan, the scan's path"));
+        FaceSupportOptions o;
+        o.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        o.mMeasuredShare = pipe_number(rStep, "MeasuredShare", 0.9);
+        o.mInferredShare = pipe_number(rStep, "InferredShare", 0.1);
+        o.mHoleData = pipe_text(rStep, "HoleData", "repair:hole");
+        FaceSupportResult r = face_support(mesh, pipe_read_extra(scan_path), o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumMeasured", static_cast<double>(r.mNumMeasured)},
+                        {"NumPartial", static_cast<double>(r.mNumPartial)},
+                        {"NumInferred", static_cast<double>(r.mNumInferred)},
+                        {"ShareWithin", r.mShareWithin}});
+        return std::move(r.mMesh);
+    }
+    if (op == "FitCadIterate") {
+        FitCadIterateOptions o;
+        o.mPartClass = fit_cad_part_class_from_name(pipe_text(rStep, "PartClass", "any"));
+        o.mTargetWithin = pipe_number(rStep, "TargetWithin", 0.0);
+        o.mTargetExplained = pipe_number(rStep, "TargetExplained", 0.0);
+        o.mSegmentTolerance = pipe_number(rStep, "SegmentTolerance", 0.0);
+        o.mFitTolerance = pipe_number(rStep, "FitTolerance", 0.0);
+        o.mMaxRounds = static_cast<std::int64_t>(pipe_number(rStep, "MaxRounds", 4));
+        o.mWorstFaces = static_cast<std::int64_t>(pipe_number(rStep, "WorstFaces", 3));
+        o.mRefineFactor = pipe_number(rStep, "RefineFactor", 0.25);
+        const std::string backend = pipe_text(rStep, "Backend", "auto");
+        if (backend == "native")
+            o.mFitCad.mBackend = FitCadBackend::Native;
+        else if (backend == "occt")
+            o.mFitCad.mBackend = FitCadBackend::Occt;
+        else if (backend != "auto")
+            throw std::invalid_argument(pipe_err(rStep, "Backend is auto, occt or native"));
+        FitCadIterateResult r = fit_cad_iterate(mesh, pipe_text(rStep, "Step", ""), o);
+        pipe_push_step(
+            rReport, rStep,
+            {{"NumRounds", static_cast<double>(r.mRounds.size())},
+             {"BestRound", static_cast<double>(r.mBestRound)},
+             {"TargetMet", r.mTargetMet ? 1.0 : 0.0},
+             {"ShareWithin", r.mRounds[static_cast<std::size_t>(r.mBestRound)].mShareWithin}});
+        return std::move(r.mSupport.mMesh);
     }
     if (op == "OffsetSurface" || op == "Thicken" || op == "Hollow") {
         const char* amount = op == "OffsetSurface" ? "Distance"

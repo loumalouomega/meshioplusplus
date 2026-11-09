@@ -58,9 +58,11 @@
 
 // System includes
 #include <cstdint>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/operations/constrain_primitives.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -72,6 +74,20 @@ struct PrimitiveConstraintReport {
     /// Coaxial groups, parallel-normal families and equal-radius sets of two
     /// or more primitives.
     std::int64_t mNumGroups = 0;
+    /// Every relation applied (roadmap 7.7.3).
+    std::vector<PrimitiveRelationRecord> mRelations;
+    /// Forced relations not kept.
+    std::vector<PrimitiveRelation> mUnmet;
+};
+
+/// The control the `constrain_primitives` operation adds (roadmap 7.7.3); the
+/// defaults are the pass `fit_cad` runs.
+struct PrimitiveConstraintControl {
+    double mAngleToleranceDeg = -1.0;
+    double mDistanceTolerance = -1.0;
+    double mMinFraction = -1.0;
+    std::vector<PrimitiveRelation> mForce;
+    std::vector<PrimitiveRelation> mForbid;
 };
 
 /**
@@ -85,7 +101,8 @@ struct PrimitiveConstraintReport {
  * @param FaceTolerance the largest distance a face may keep from its patch
  *        before a writer demotes it; > 0.
  */
-PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance);
+PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance,
+                                               const PrimitiveConstraintControl& rControl = {});
 
 }  // namespace detail
 }  // namespace meshioplusplus

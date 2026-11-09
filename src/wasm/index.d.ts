@@ -3098,6 +3098,84 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * Fit related primitives of a fitted skin together under control (roadmap
+   * 7.7.3); relations are `[patchA, patchB, 'coaxial' | 'parallel' |
+   * 'perpendicular' | 'equal_radius']`.
+   */
+  constrainPrimitives(
+    mesh: Mesh,
+    options?: {
+      faceTolerance?: number;
+      angleTolerance?: number;
+      distanceTolerance?: number;
+      minFraction?: number;
+      force?: Array<[number, number, string]>;
+      forbid?: Array<[number, number, string]>;
+    },
+  ): {
+    mesh: Mesh;
+    numConstrained: number;
+    numGroups: number;
+    faceTolerance: number;
+    relations: Array<{
+      patchA: number;
+      patchB: number;
+      relation: string;
+      angleDeg: number;
+      distance: number;
+      forced: boolean;
+    }>;
+    unmet: Array<[number, number, string]>;
+  };
+
+  /** The scan's support of each face of a `fit_cad` solid (roadmap 7.7.1). */
+  faceSupport(
+    solid: Mesh,
+    scan: Mesh,
+    options?: { tolerance?: number; measuredShare?: number; inferredShare?: number; holeData?: string },
+  ): {
+    mesh: Mesh;
+    numMeasured: number;
+    numPartial: number;
+    numInferred: number;
+    shareWithin: number;
+    tolerance: number;
+    faceShare: number[];
+  };
+
+  /** Segment, fit and build a solid in rounds towards a target (roadmap 7.7.2). */
+  fitCadIterate(
+    scan: Mesh,
+    options?: {
+      stepPath?: string;
+      partClass?: 'any' | 'analytic' | 'cast' | 'freeform';
+      targetWithin?: number;
+      targetExplained?: number;
+      segmentTolerance?: number;
+      fitTolerance?: number;
+      maxRounds?: number;
+      worstFaces?: number;
+      refineFactor?: number;
+      backend?: 'auto' | 'occt' | 'native';
+    },
+  ): {
+    mesh: Mesh;
+    rounds: Array<{
+      shareWithin: number;
+      explained: number;
+      hausdorffMax: number;
+      numFaces: number;
+      numPatches: number;
+    }>;
+    bestRound: number;
+    targetWithin: number;
+    targetMet: boolean;
+    stopReason: string;
+    numMeasured: number;
+    numInferred: number;
+  };
+
+  /**
    * Move each point of a triangle and quad surface along its offset direction
    * so every face's plane moves by `distance` (roadmap 7.8.4).
    */

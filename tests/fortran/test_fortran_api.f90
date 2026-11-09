@@ -3129,6 +3129,26 @@ contains
                     call check(ierr == 0, 'thicken shells the cube')
                     if (ierr == 0) call f1%free()
                 end block
+                block
+                    ! Roadmap 7.7: the loop on the cube.
+                    type(mio_fit_cad_iterate_report) :: irep
+                    type(mio_face_support_report) :: srep
+                    type(mio_mesh) :: solid, marked
+                    solid = mio_fit_cad_iterate(sq, backend='native', report=irep, stat=ierr)
+                    call check(ierr == 0 .and. irep%num_rounds == 1_int64 .and. &
+                               irep%target_met == 1, 'fit_cad_iterate meets the target at once')
+                    if (ierr == 0) then
+                        marked = mio_face_support(solid, sq, report=srep, stat=ierr)
+                        call check(ierr == 0 .and. srep%num_measured == 6_int64, &
+                                   'face_support measures the six faces')
+                        if (ierr == 0) call marked%free()
+                        call solid%free()
+                    end if
+                    solid = mio_fit_cad_iterate(sq, part_class='plastic', stat=ierr)
+                    call check(ierr /= 0, 'fit_cad_iterate refuses an unknown part class')
+                    marked = mio_constrain_primitives(sq, stat=ierr)
+                    call check(ierr /= 0, 'constrain_primitives needs a fitted skin')
+                end block
             end block
         end block
         block

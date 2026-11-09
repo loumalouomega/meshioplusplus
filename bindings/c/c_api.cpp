@@ -90,6 +90,8 @@
 #include "meshioplusplus/operations/flip_normals.hpp"
 #include "meshioplusplus/operations/clip.hpp"
 #include "meshioplusplus/operations/offset_surface.hpp"
+#include "meshioplusplus/operations/constrain_primitives.hpp"
+#include "meshioplusplus/operations/fit_cad_loop.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -2789,6 +2791,17 @@ CapiMeasureLast& capi_measure_last() {
     thread_local CapiMeasureLast last;
     return last;
 }
+// Roadmap 7.7: what the last constrain_primitives and fit_cad_iterate of
+// this thread reported, for their indexed getters.
+struct CapiLoopLast {
+    std::vector<meshioplusplus::PrimitiveRelationRecord> mRelations;
+    std::vector<meshioplusplus::PrimitiveRelation> mUnmet;
+    std::vector<meshioplusplus::FitCadIterateRound> mRounds;
+};
+CapiLoopLast& capi_loop_last() {
+    thread_local CapiLoopLast last;
+    return last;
+}
 
 }  // namespace
 
@@ -3135,6 +3148,242 @@ int64_t mio_measure_warnings(char* buf, int64_t buflen) {
         if (buflen < 0)
             throw std::invalid_argument("meshio++: negative warnings buffer length");
         return copy_string(capi_measure_last().mWarnings, buf, buflen);
+    });
+}
+
+// ---- roadmap 7.7 -----------------------------------------------------------
+
+static_assert(sizeof(mio_constrain_primitives_opts) == 96, "mio_constrain_primitives_opts layout");
+static_assert(sizeof(mio_constrain_primitives_report) == 64,
+              "mio_constrain_primitives_report layout");
+static_assert(sizeof(mio_face_support_opts) == 64, "mio_face_support_opts layout");
+static_assert(sizeof(mio_face_support_report) == 64, "mio_face_support_report layout");
+static_assert(sizeof(mio_fit_cad_iterate_opts) == 112, "mio_fit_cad_iterate_opts layout");
+static_assert(sizeof(mio_fit_cad_iterate_report) == 96, "mio_fit_cad_iterate_report layout");
+
+void mio_constrain_primitives_opts_init(mio_constrain_primitives_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_constrain_primitives_opts{};
+    opts->angle_tolerance_deg = -1.0;
+    opts->distance_tolerance = -1.0;
+    opts->min_fraction = -1.0;
+}
+
+// Triples (a, b, kind) as relations.
+static std::vector<meshioplusplus::PrimitiveRelation> capi_relations(const int64_t* pTriples,
+                                                                     int64_t N) {
+    std::vector<meshioplusplus::PrimitiveRelation> out;
+    if (N < 0 || (N > 0 && !pTriples))
+        throw std::invalid_argument("meshio++: constrain_primitives: a relation list is NULL");
+    for (int64_t k = 0; k < N; ++k) {
+        const int64_t kind = pTriples[3 * k + 2];
+        if (kind < MIO_RELATION_COAXIAL || kind > MIO_RELATION_EQUAL_RADIUS)
+            throw std::invalid_argument(
+                "meshio++: constrain_primitives: a relation kind is 0 "
+                "coaxial, 1 parallel, 2 perpendicular or 3 equal_radius");
+        out.push_back({pTriples[3 * k], pTriples[3 * k + 1],
+                       static_cast<meshioplusplus::PrimitiveRelationKind>(kind)});
+    }
+    return out;
+}
+
+mio_mesh* mio_constrain_primitives(const mio_mesh* mesh, const mio_constrain_primitives_opts* opts,
+                                   mio_constrain_primitives_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_loop_last().mRelations.clear();
+        capi_loop_last().mUnmet.clear();
+        capi_require(mesh, "meshio++: constrain_primitives: mesh is NULL");
+        meshioplusplus::ConstrainPrimitivesOptions o;
+        if (opts) {
+            o.mFaceTolerance = opts->face_tolerance;
+            o.mAngleToleranceDeg = opts->angle_tolerance_deg;
+            o.mDistanceTolerance = opts->distance_tolerance;
+            o.mMinFraction = opts->min_fraction;
+            o.mForce = capi_relations(opts->force, opts->num_force);
+            o.mForbid = capi_relations(opts->forbid, opts->num_forbid);
+        }
+        meshioplusplus::ConstrainPrimitivesResult r =
+            meshioplusplus::constrain_primitives(mesh->mMesh, o);
+        if (report) {
+            *report = mio_constrain_primitives_report{};
+            report->num_constrained = r.mNumConstrained;
+            report->num_groups = r.mNumGroups;
+            report->num_relations = static_cast<int64_t>(r.mRelations.size());
+            report->num_unmet = static_cast<int64_t>(r.mUnmet.size());
+            report->face_tolerance = r.mFaceTolerance;
+        }
+        capi_loop_last().mRelations = r.mRelations;
+        capi_loop_last().mUnmet = r.mUnmet;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_status mio_constrain_primitives_relation(int64_t k, int64_t* patch_a, int64_t* patch_b,
+                                             int32_t* kind, double* angle_deg, double* distance,
+                                             int32_t* forced) {
+    return guarded([&]() -> mio_status {
+        const auto& r_list = capi_loop_last().mRelations;
+        if (k < 0 || k >= static_cast<int64_t>(r_list.size()))
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: constrain_primitives: relation index "
+                        "out of range");
+        const meshioplusplus::PrimitiveRelationRecord& r_rec = r_list[static_cast<std::size_t>(k)];
+        if (patch_a)
+            *patch_a = r_rec.mPatchA;
+        if (patch_b)
+            *patch_b = r_rec.mPatchB;
+        if (kind)
+            *kind = static_cast<int32_t>(r_rec.mKind);
+        if (angle_deg)
+            *angle_deg = r_rec.mAngleDeg;
+        if (distance)
+            *distance = r_rec.mDistance;
+        if (forced)
+            *forced = r_rec.mForced ? 1 : 0;
+        return MIO_OK;
+    });
+}
+
+mio_status mio_constrain_primitives_unmet(int64_t k, int64_t* patch_a, int64_t* patch_b,
+                                          int32_t* kind) {
+    return guarded([&]() -> mio_status {
+        const auto& r_list = capi_loop_last().mUnmet;
+        if (k < 0 || k >= static_cast<int64_t>(r_list.size()))
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: constrain_primitives: unmet index out of range");
+        const meshioplusplus::PrimitiveRelation& r_rel = r_list[static_cast<std::size_t>(k)];
+        if (patch_a)
+            *patch_a = r_rel.mPatchA;
+        if (patch_b)
+            *patch_b = r_rel.mPatchB;
+        if (kind)
+            *kind = static_cast<int32_t>(r_rel.mKind);
+        return MIO_OK;
+    });
+}
+
+void mio_face_support_opts_init(mio_face_support_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_face_support_opts{};
+    opts->measured_share = 0.9;
+    opts->inferred_share = 0.1;
+}
+
+// The C options as FaceSupportOptions (NULL: the defaults).
+static meshioplusplus::FaceSupportOptions capi_face_support_options(
+    const mio_face_support_opts* pOpts) {
+    meshioplusplus::FaceSupportOptions o;
+    if (pOpts) {
+        o.mTolerance = pOpts->tolerance;
+        o.mMeasuredShare = pOpts->measured_share;
+        o.mInferredShare = pOpts->inferred_share;
+        if (pOpts->hole_data)
+            o.mHoleData = pOpts->hole_data;
+    }
+    return o;
+}
+
+mio_mesh* mio_face_support(const mio_mesh* solid, const mio_mesh* scan,
+                           const mio_face_support_opts* opts, mio_face_support_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(solid, "meshio++: face_support: solid is NULL");
+        capi_require(scan, "meshio++: face_support: scan is NULL");
+        meshioplusplus::FaceSupportResult r = meshioplusplus::face_support(
+            solid->mMesh, scan->mMesh, capi_face_support_options(opts));
+        if (report) {
+            *report = mio_face_support_report{};
+            report->num_measured = r.mNumMeasured;
+            report->num_partial = r.mNumPartial;
+            report->num_inferred = r.mNumInferred;
+            report->num_faces = static_cast<int64_t>(r.mFaceClass.size());
+            report->share_within = r.mShareWithin;
+            report->tolerance = r.mTolerance;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_fit_cad_iterate_opts_init(mio_fit_cad_iterate_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_fit_cad_iterate_opts{};
+    opts->refine_factor = 0.25;
+    opts->max_rounds = 4;
+    opts->worst_faces = 3;
+    opts->min_patch_cells = 1;
+}
+
+mio_mesh* mio_fit_cad_iterate(const mio_mesh* scan, const char* step_path,
+                              const mio_fit_cad_iterate_opts* opts,
+                              mio_fit_cad_iterate_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_loop_last().mRounds.clear();
+        capi_require(scan, "meshio++: fit_cad_iterate: scan is NULL");
+        meshioplusplus::FitCadIterateOptions o;
+        if (opts) {
+            o.mSegmentTolerance = opts->segment_tolerance;
+            o.mFitTolerance = opts->fit_tolerance;
+            o.mTargetWithin = opts->target_within;
+            o.mTargetExplained = opts->target_explained;
+            o.mRefineFactor = opts->refine_factor;
+            if (opts->part_class < MIO_PART_ANY || opts->part_class > MIO_PART_FREEFORM)
+                throw std::invalid_argument(
+                    "meshio++: fit_cad_iterate: part_class is 0 any, 1 "
+                    "analytic, 2 cast or 3 freeform");
+            o.mPartClass = static_cast<meshioplusplus::FitCadPartClass>(opts->part_class);
+            if (opts->backend < 0 || opts->backend > 2)
+                throw std::invalid_argument(
+                    "meshio++: fit_cad_iterate: backend is 0 auto, 1 occt or 2 native");
+            o.mFitCad.mBackend = static_cast<meshioplusplus::FitCadBackend>(opts->backend);
+            o.mMaxRounds = opts->max_rounds;
+            o.mWorstFaces = opts->worst_faces;
+            o.mMinPatchCells = opts->min_patch_cells;
+        }
+        meshioplusplus::FitCadIterateResult r =
+            meshioplusplus::fit_cad_iterate(scan->mMesh, step_path ? step_path : "", o);
+        const meshioplusplus::FitCadIterateRound& best =
+            r.mRounds[static_cast<std::size_t>(r.mBestRound)];
+        if (report) {
+            *report = mio_fit_cad_iterate_report{};
+            report->num_rounds = static_cast<int64_t>(r.mRounds.size());
+            report->best_round = r.mBestRound;
+            report->target_met = r.mTargetMet ? 1 : 0;
+            report->stop_reason = r.mStopReason == "target"           ? 0
+                                  : r.mStopReason == "no improvement" ? 1
+                                  : r.mStopReason == "rounds"         ? 2
+                                                                      : 3;
+            report->target_within = r.mTargetWithin;
+            report->share_within = best.mShareWithin;
+            report->explained = best.mExplained;
+            report->hausdorff_max = best.mHausdorffMax;
+            report->num_faces = best.mNumFaces;
+        }
+        capi_loop_last().mRounds = r.mRounds;
+        return new mio_mesh{std::move(r.mSupport.mMesh)};
+    });
+}
+
+mio_status mio_fit_cad_iterate_round(int64_t k, double* share_within, double* explained,
+                                     double* hausdorff_max, int64_t* num_faces,
+                                     int64_t* num_resegmented) {
+    return guarded([&]() -> mio_status {
+        const auto& r_rounds = capi_loop_last().mRounds;
+        if (k < 0 || k >= static_cast<int64_t>(r_rounds.size()))
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: fit_cad_iterate: round index out of range");
+        const meshioplusplus::FitCadIterateRound& r_r = r_rounds[static_cast<std::size_t>(k)];
+        if (share_within)
+            *share_within = r_r.mShareWithin;
+        if (explained)
+            *explained = r_r.mExplained;
+        if (hausdorff_max)
+            *hausdorff_max = r_r.mHausdorffMax;
+        if (num_faces)
+            *num_faces = r_r.mNumFaces;
+        if (num_resegmented)
+            *num_resegmented = static_cast<int64_t>(r_r.mResegmented.size());
+        return MIO_OK;
     });
 }
 

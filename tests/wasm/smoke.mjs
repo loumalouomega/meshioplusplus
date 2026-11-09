@@ -5714,6 +5714,10 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.equal(m.offsetSurface(cubeSurface, 0.1).numFolded, 0);
     assert.equal(m.hollow(cubeSurface, 0.1).numRimQuads, 0);
     assert.throws(() => m.thicken(cubeSurface, 0.1, { side: 'sideways' }), /side/);
+    const it = m.fitCadIterate(cubeSurface, { backend: 'native' });
+    assert.ok(it.targetMet && it.rounds.length === 1);
+    assert.equal(m.faceSupport(it.mesh, cubeSurface).numMeasured, 6);
+    assert.throws(() => m.constrainPrimitives(cubeSurface), /fit_primitives/);
     const ri = m.removeIslands(cubeSurface);
     assert.equal(ri.numComponents, 1);
     assert.throws(() => m.removeIslands(cubeSurface, { connectivity: 'face' }), /connectivity/);

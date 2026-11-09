@@ -431,6 +431,15 @@ solid = meshioplusplus.fit_cad(fit, "part_cad.step")         # trimmed and check
 meshioplusplus.fit_cad(meshioplusplus.read("bracket.stl"), "bracket.step")  # raw skin, one face per surface
 ```
 
+**`meshioplusplus.face_support(solid, scan)`** says how much of each face of a fitted solid the scan supports (measured, partial or inferred, `repair`'s fills counting as unmeasured), **`fit_cad_iterate(scan)`** segments, fits and builds in rounds towards a target share within tolerance, re-segmenting the worst faces finer, and **`constrain_primitives(skin)`** relates fitted primitives under control (forced and forbidden relations, tolerances, a report of every relation with its residual). See [closing the CAD loop](doc/fit_cad_loop.md) and [constraining primitives](doc/constrain_primitives.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+solid, rounds = meshioplusplus.fit_cad_iterate(scan, "part.step", part_class="cast", return_report=True)
+marked, support = meshioplusplus.face_support(solid, scan, return_report=True)
+```
+
 #### Isogeometric layer: evaluate, refine, sample NURBS models
 
 The NURBS model a reader keeps beside its mesh (`mesh.info["nurbs"]` for MFEM NURBS meshes, `mesh.info["brep"]` for Kratos CAD JSON, STEP and IGES) can be acted on directly, on every surface (Python, C++, C, Fortran, Julia, R, WASM, both CLIs, MCP): **`iga_refine`** inserts knots and elevates degrees exactly, with the geometry, the NURBS fields and a trimmed face's trimming loops unchanged; **`iga_evaluate`** returns points, first derivatives, normals and the trimming test at parametric coordinates; **`iga_sample`** samples a model into Lagrange cells again. A refined MFEM model writes back as an `MFEM NURBS mesh`. See [isogeometric layer](doc/iga.md).

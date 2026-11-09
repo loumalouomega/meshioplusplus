@@ -319,6 +319,33 @@
       {"name": "Keep", "kind": "text", "default": "below"},
       {"name": "Cap", "kind": "flag", "default": true}
     ]},
+    {"op": "ConstrainPrimitives", "note": "Fitted primitives together under control (roadmap 7.7.3).", "keys": [
+      {"name": "FaceTolerance", "kind": "number", "default": 0.0},
+      {"name": "AngleTolerance", "kind": "number", "default": -1.0},
+      {"name": "DistanceTolerance", "kind": "number", "default": -1.0},
+      {"name": "MinFraction", "kind": "number", "default": -1.0},
+      {"name": "Force", "kind": "text", "default": ""},
+      {"name": "Forbid", "kind": "text", "default": ""}
+    ]},
+    {"op": "FaceSupport", "note": "The scan's support of each face of a fit_cad solid (roadmap 7.7.1).", "keys": [
+      {"name": "Scan", "kind": "text", "default": ""},
+      {"name": "Tolerance", "kind": "number", "default": 0.0},
+      {"name": "MeasuredShare", "kind": "number", "default": 0.9},
+      {"name": "InferredShare", "kind": "number", "default": 0.1},
+      {"name": "HoleData", "kind": "text", "default": "repair:hole"}
+    ]},
+    {"op": "FitCadIterate", "note": "Segment, fit and build a solid in rounds towards a target (roadmap 7.7.2).", "keys": [
+      {"name": "Step", "kind": "text", "default": ""},
+      {"name": "PartClass", "kind": "text", "default": "any"},
+      {"name": "TargetWithin", "kind": "number", "default": 0.0},
+      {"name": "TargetExplained", "kind": "number", "default": 0.0},
+      {"name": "SegmentTolerance", "kind": "number", "default": 0.0},
+      {"name": "FitTolerance", "kind": "number", "default": 0.0},
+      {"name": "MaxRounds", "kind": "number", "default": 4},
+      {"name": "WorstFaces", "kind": "number", "default": 3},
+      {"name": "RefineFactor", "kind": "number", "default": 0.25},
+      {"name": "Backend", "kind": "text", "default": "auto"}
+    ]},
     {"op": "OffsetSurface", "note": "Move a surface along its offset directions (roadmap 7.8.4).", "keys": [
       {"name": "Distance"},
       {"name": "SmoothIterations", "kind": "number", "default": 0}

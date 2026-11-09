@@ -26705,6 +26705,112 @@ MESHIOPLUSPLUS_API Mesh conservative_interpolate(
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/conservative_interpolate.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/constrain_primitives.hpp =====
+/**
+ * @file operations/constrain_primitives.hpp
+ * @brief Fit related primitives together under explicit control (roadmap
+ * 7.7.3): the pass `fit_cad`'s `mConstrainPrimitives` runs (coaxial groups,
+ * parallel and perpendicular planes, equal radii; `doc/fit_cad.md`), on a
+ * `fit_primitives` skin, with a force and a forbid list of relations between
+ * patches, angle and distance tolerances in place of its own, and a report of
+ * every relation applied with its residual.
+ *
+ * Relations name patches by their `segment:patch` label (`fit:patch_id`). A
+ * forbidden relation is never applied; a forced one is tried whatever the
+ * tolerances say, and kept only when the patches still pass the test they were
+ * accepted under (a forced relation that fails is listed in `mUnmet`). With
+ * the default options the result is the pass `fit_cad` runs, bit for bit.
+ * Run it before `fit_cad` (with `mConstrainPrimitives` off) to control the
+ * relations a solid is built with.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// A relation between two fitted primitives.
+enum class PrimitiveRelationKind : std::int32_t {
+    Coaxial = 0,        ///< one axis (a sphere: its centre on it)
+    Parallel = 1,       ///< a plane's normal along an axis or another normal
+    Perpendicular = 2,  ///< a plane's normal across an axis or another normal
+    EqualRadius = 3     ///< one radius (cylinders, spheres; a torus's minor radius)
+};
+
+/// `"coaxial"`, `"parallel"`, `"perpendicular"` or `"equal_radius"`; anything
+/// else throws naming them.
+MESHIOPLUSPLUS_API PrimitiveRelationKind primitive_relation_from_name(const std::string& rName);
+/// The name `primitive_relation_from_name` reads.
+MESHIOPLUSPLUS_API const char* primitive_relation_name(PrimitiveRelationKind Kind) noexcept;
+
+/// A relation named by two `segment:patch` labels (unordered).
+struct PrimitiveRelation {
+    std::int64_t mPatchA = -1;
+    std::int64_t mPatchB = -1;
+    PrimitiveRelationKind mKind = PrimitiveRelationKind::Coaxial;
+};
+
+/// A relation the pass applied.
+struct PrimitiveRelationRecord {
+    std::int64_t mPatchA = -1;  ///< the reference (the group's seed, the earlier plane or axis)
+    std::int64_t mPatchB = -1;  ///< the patch that took it
+    PrimitiveRelationKind mKind = PrimitiveRelationKind::Coaxial;
+    /// Before the change: the angle between the two directions, in degrees
+    /// (for `Perpendicular`, its distance from 90; 0 for `EqualRadius`).
+    double mAngleDeg = 0.0;
+    /// Before the change: a coaxial member's axis point (a sphere's centre)
+    /// from the seed's axis, or the two radii's difference; 0 otherwise.
+    double mDistance = 0.0;
+    bool mForced = false;
+};
+
+struct ConstrainPrimitivesOptions {
+    /// The largest distance a face may keep from its patch before a writer
+    /// demotes it; at most 0 takes three times the largest
+    /// `fit:patch_tolerance` (as `fit_cad`'s default tolerance does).
+    double mFaceTolerance = 0.0;
+    /// The largest angle, in degrees, between two directions still related;
+    /// negative keeps the pass's own (what moves a patch by twice its
+    /// tolerance over its extent).
+    double mAngleToleranceDeg = -1.0;
+    /// The largest distance between two axes (or of a centre from an axis)
+    /// still coaxial, and between two radii still equal; negative keeps the
+    /// pass's own (twice the patch tolerance; the smaller tolerance).
+    double mDistanceTolerance = -1.0;
+    /// The share of a patch's points that must stay within its tolerance;
+    /// negative takes `FitPrimitivesOptions`' default.
+    double mMinFraction = -1.0;
+    std::vector<PrimitiveRelation> mForce;
+    std::vector<PrimitiveRelation> mForbid;
+};
+
+struct ConstrainPrimitivesResult {
+    /// The skin with its `fit:patch_*` table (and `fit:rms`, `fit:max`)
+    /// rewritten for the patches changed.
+    Mesh mMesh;
+    std::int64_t mNumConstrained = 0;  ///< patches that took a shared value
+    std::int64_t mNumGroups = 0;       ///< groups, families and sets of two or more
+    std::vector<PrimitiveRelationRecord> mRelations;
+    std::vector<PrimitiveRelation> mUnmet;  ///< forced relations not kept
+    double mFaceTolerance = 0.0;            ///< the face tolerance used
+};
+
+/**
+ * @brief Constrain the primitives of a `fit_primitives` skin (see the file
+ * comment).
+ * @throws std::invalid_argument on a mesh without the `fit:patch_*` table or
+ * `segment:patch`, an unknown patch in a relation, or a tolerance that is not
+ * finite.
+ */
+MESHIOPLUSPLUS_API ConstrainPrimitivesResult
+constrain_primitives(const Mesh& rMesh, const ConstrainPrimitivesOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/constrain_primitives.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/coordinates.hpp =====
 /**
  * @file operations/coordinates.hpp
@@ -30732,6 +30838,150 @@ MESHIOPLUSPLUS_API const char* fit_cad_occt_version() noexcept;
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/fit_cad.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/fit_cad_loop.hpp =====
+/**
+ * @file operations/fit_cad_loop.hpp
+ * @brief Closing the reverse-engineering loop (roadmap 7.7.1, 7.7.2): how much
+ * of each face of a fitted solid the scan supports, and a driver that refits
+ * towards a target.
+ *
+ * `face_support(solid, scan)` samples each face of a `fit_cad` re-mesh (its
+ * `fit_cad:face` cell data; each triangle's four sub-triangle centroids,
+ * weighted by area) and measures the samples against the scan. A face is
+ * `Measured` when at least `mMeasuredShare` of its area lies within the
+ * tolerance of the scan, `Inferred` below `mInferredShare` (no scan near:
+ * hidden interiors, the far side of a through-hole, a face the solid closed
+ * by construction) and `Partial` between. Scan cells marked as fill
+ * (`repair:hole` at least 0, `repair`'s provenance) count as unmeasured, so a
+ * hole `repair` closed before `fit_cad` reads as inferred. The solid gains the
+ * field data `fit_cad:face_support` (Int64, per face, 0 measured, 1 partial, 2
+ * inferred) and `fit_cad:face_measured` (Float64, the share), and the cell data
+ * `fit_cad:support` (its face's class); the report gives the counts and the
+ * share of the scan's points within the tolerance of the solid.
+ *
+ * `fit_cad_iterate(scan)` segments the scan (`segment`'s primitive method),
+ * fits (`fit_primitives`) and builds the solid (`fit_cad`) in rounds: each
+ * round measures the share of the scan within tolerance of the solid (and,
+ * with `mTargetExplained`, the share of the skin's area analytic faces
+ * explain), stops at the target, at no improvement or after `mMaxRounds`, and
+ * otherwise re-segments the patches of the worst faces (the largest face
+ * deviation beyond the tolerance first, then the largest faceted faces) with a
+ * finer tolerance, splicing their new labels in. `mPartClass` sets the target
+ * and the tolerances (`Analytic` 0.90 and `1e-3` of the diagonal, `Cast` 0.85
+ * and `2e-3`, `Freeform` 0.75 and `4e-3`). The best round's solid is kept;
+ * deterministic: the same input and options give the same rounds.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Field data (Int64, per face): 0 measured, 1 partial, 2 inferred.
+inline constexpr const char* kFitCadFaceSupportName = "fit_cad:face_support";
+/// Field data (Float64, per face): the share of its area within tolerance of the scan.
+inline constexpr const char* kFitCadFaceMeasuredName = "fit_cad:face_measured";
+/// Cell data (Int64): the support class of each triangle's face.
+inline constexpr const char* kFitCadSupportName = "fit_cad:support";
+
+struct FaceSupportOptions {
+    /// Within this distance of the scan a sample is measured; at most 0 takes
+    /// `1e-3` of the scan's bounding-box diagonal.
+    double mTolerance = 0.0;
+    double mMeasuredShare = 0.9;  ///< at least this share: measured
+    double mInferredShare = 0.1;  ///< below this share: inferred
+    /// Scan cell data naming fill cells (value >= 0), which count as unmeasured.
+    std::string mHoleData = "repair:hole";
+};
+
+struct FaceSupportResult {
+    Mesh mMesh;  ///< the solid with the support arrays
+    std::vector<double> mFaceShare;
+    std::vector<std::int64_t> mFaceClass;
+    std::int64_t mNumMeasured = 0;
+    std::int64_t mNumPartial = 0;
+    std::int64_t mNumInferred = 0;
+    /// The share of the scan's points (on measured cells) within the tolerance of the solid.
+    double mShareWithin = 0.0;
+    double mTolerance = 0.0;
+};
+
+/**
+ * @brief Class each face of a `fit_cad` re-mesh by the scan's support (see
+ * the file comment).
+ * @throws std::invalid_argument on a solid without `fit_cad:face` or a scan
+ * with no surface cell outside the fills.
+ */
+MESHIOPLUSPLUS_API FaceSupportResult face_support(const Mesh& rSolid, const Mesh& rScan,
+                                                  const FaceSupportOptions& rOptions = {});
+
+/// A part class, setting `fit_cad_iterate`'s target and tolerances.
+enum class FitCadPartClass : std::int32_t { Any = 0, Analytic = 1, Cast = 2, Freeform = 3 };
+
+/// `"any"`, `"analytic"`, `"cast"` or `"freeform"`; anything else throws naming them.
+MESHIOPLUSPLUS_API FitCadPartClass fit_cad_part_class_from_name(const std::string& rName);
+
+struct FitCadIterateOptions {
+    /// Each round's `fit_cad` (its `mFaceDeviation` is turned on).
+    FitCadOptions mFitCad;
+    /// The first segmentation's tolerance, relative to the scan's diagonal;
+    /// at most 0 takes the part class's (`1e-3` for `Any`).
+    double mSegmentTolerance = 0.0;
+    /// `fit_primitives`' relative tolerance; at most 0 takes the segment one.
+    double mFitTolerance = 0.0;
+    /// The share of the scan within tolerance to stop at; at most 0 takes the
+    /// part class's (0.9 for `Any`).
+    double mTargetWithin = 0.0;
+    /// The share of the skin's area analytic faces must also explain; 0 off.
+    double mTargetExplained = 0.0;
+    FitCadPartClass mPartClass = FitCadPartClass::Any;
+    std::int64_t mMaxRounds = 4;    ///< at least 1
+    std::int64_t mWorstFaces = 3;   ///< faces re-segmented per round; at least 1
+    double mRefineFactor = 0.25;    ///< the segment tolerance's factor per round, in (0, 1)
+    std::int64_t mMinPatchCells = 1;  ///< `segment`'s smallest patch
+    FaceSupportOptions mSupport;
+};
+
+/// One round of `fit_cad_iterate`.
+struct FitCadIterateRound {
+    double mShareWithin = 0.0;
+    double mExplained = 0.0;  ///< the solid's area on analytic or feature faces, a share
+    double mHausdorffMax = 0.0;
+    double mSegmentTolerance = 0.0;
+    std::int64_t mNumPatches = 0;
+    std::int64_t mNumFaces = 0;
+    /// The patches this round re-segmented for the next.
+    std::vector<std::int64_t> mResegmented;
+};
+
+struct FitCadIterateResult {
+    FitCadResult mFit;            ///< the best round's solid
+    FaceSupportResult mSupport;   ///< its support (`mMesh` the solid with the arrays)
+    Mesh mSkin;                   ///< the best round's fitted skin
+    std::vector<FitCadIterateRound> mRounds;
+    std::int64_t mBestRound = 0;
+    double mTargetWithin = 0.0;
+    bool mTargetMet = false;
+    /// `"target"`, `"no improvement"`, `"rounds"` or `"nothing to refine"`.
+    std::string mStopReason;
+};
+
+/**
+ * @brief Segment, fit and build in rounds towards a target (see the file
+ * comment); with @p rStepPath, the best solid is written there as STEP.
+ * @throws std::invalid_argument on an option out of range, and whatever
+ * `segment`, `fit_primitives` and `fit_cad` throw.
+ */
+MESHIOPLUSPLUS_API FitCadIterateResult fit_cad_iterate(const Mesh& rScan,
+                                                       const std::string& rStepPath = {},
+                                                       const FitCadIterateOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/fit_cad_loop.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/fit_curves.hpp =====
 /**
  * @file operations/fit_curves.hpp
@@ -50735,6 +50985,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
 
 // System includes
 #include <cstdint>
+#include <vector>
 
 // Project includes
 
@@ -50748,6 +50999,20 @@ struct PrimitiveConstraintReport {
     /// Coaxial groups, parallel-normal families and equal-radius sets of two
     /// or more primitives.
     std::int64_t mNumGroups = 0;
+    /// Every relation applied (roadmap 7.7.3).
+    std::vector<PrimitiveRelationRecord> mRelations;
+    /// Forced relations not kept.
+    std::vector<PrimitiveRelation> mUnmet;
+};
+
+/// The control the `constrain_primitives` operation adds (roadmap 7.7.3); the
+/// defaults are the pass `fit_cad` runs.
+struct PrimitiveConstraintControl {
+    double mAngleToleranceDeg = -1.0;
+    double mDistanceTolerance = -1.0;
+    double mMinFraction = -1.0;
+    std::vector<PrimitiveRelation> mForce;
+    std::vector<PrimitiveRelation> mForbid;
 };
 
 /**
@@ -50761,7 +51026,8 @@ struct PrimitiveConstraintReport {
  * @param FaceTolerance the largest distance a face may keep from its patch
  *        before a writer demotes it; > 0.
  */
-PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance);
+PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance,
+                                               const PrimitiveConstraintControl& rControl = {});
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -61239,6 +61505,16 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FlipNormals", {"Region"}},
         // Cut by a plane, keep a side and cap it (roadmap 7.8.3).
         {"Clip", {"Origin", "Normal", "Keep", "Cap"}},
+        // Fitted primitives together under control (roadmap 7.7.3).
+        {"ConstrainPrimitives",
+         {"FaceTolerance", "AngleTolerance", "DistanceTolerance", "MinFraction", "Force",
+          "Forbid"}},
+        // The scan's support of each face of a fit_cad solid (roadmap 7.7.1).
+        {"FaceSupport", {"Scan", "Tolerance", "MeasuredShare", "InferredShare", "HoleData"}},
+        // Segment, fit and build a solid in rounds towards a target (roadmap 7.7.2).
+        {"FitCadIterate",
+         {"Step", "PartClass", "TargetWithin", "TargetExplained", "SegmentTolerance",
+          "FitTolerance", "MaxRounds", "WorstFaces", "RefineFactor", "Backend"}},
         // Move a surface along its offset directions (roadmap 7.8.4).
         {"OffsetSurface", {"Distance", "SmoothIterations"}},
         // A closed shell of a thickness from a surface (roadmap 7.8.4).
@@ -106025,6 +106301,7 @@ double lens_angle(const double* pA, const double* pB, const double* pP) {
 // ===== end src/cpp/src/detail/predicates.cpp =====
 // ===== begin src/cpp/src/detail/primitive_constraints.cpp =====
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -106047,6 +106324,8 @@ constexpr std::size_t kPcMaxJointSamples = 20000;
 // How far, in multiples of a patch's tolerance, a shared axis or normal may
 // move the patch for it to be tried.
 constexpr double kPcReach = 2.0;
+// Degrees to radians.
+const double kPcDegree = std::acos(-1.0) / 180.0;
 
 bool pc_normalize(double* pV) {
     const double n = std::sqrt(detail::MathUtils::Dot(pV, pV));
@@ -106157,13 +106436,18 @@ double pc_line_distance(const double* pX, const double* pD, const double* pP) {
 // Whether a patch's primitive can take the axis (pX, pD): an axial one whose
 // axis is parallel to it and lies on it, a sphere whose centre is on it, each
 // within what moves the patch by kPcReach of its tolerance.
-bool pc_on_axis(const PcPatch& rPatch, const double* pX, const double* pD) {
-    const double reach = kPcReach * rPatch.mTol;
+// DistTol and SinTol (roadmap 7.7.3), when not negative, replace the reach
+// as a distance and the angle test as a sine.
+bool pc_on_axis(const PcPatch& rPatch, const double* pX, const double* pD, double DistTol,
+                double SinTol) {
+    const double own = kPcReach * rPatch.mTol;
+    const double reach = DistTol >= 0.0 ? DistTol : own;
     if (rPatch.mType == 2)
         return pc_line_distance(pX, pD, rPatch.mParams) <= reach;
     if (!rPatch.Axial())
         return false;
-    if (pc_sin(pD, rPatch.mParams + 3) * rPatch.mExtent > reach)
+    const double sine = pc_sin(pD, rPatch.mParams + 3);
+    if (SinTol >= 0.0 ? sine > SinTol : sine * rPatch.mExtent > own)
         return false;
     double p[3];
     pc_axis_point(rPatch, p);
@@ -106367,7 +106651,8 @@ void pc_fit_group(const std::vector<PcPatch>& rPatches, const std::vector<std::s
 
 }  // namespace
 
-PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance) {
+PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance,
+                                               const PrimitiveConstraintControl& rControl) {
     PrimitiveConstraintReport report;
     for (const char* name : {"fit:patch_id", "fit:patch_type", "fit:patch_params",
                              "fit:patch_rms", "fit:patch_max", "fit:patch_fraction",
@@ -106459,7 +106744,34 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
         p.mExtent = std::sqrt(detail::MathUtils::Dot(ext, ext));
     }
-    const double min_fraction = FitPrimitivesOptions().mMinInlierFraction;
+    const double min_fraction = rControl.mMinFraction >= 0.0
+                                    ? rControl.mMinFraction
+                                    : FitPrimitivesOptions().mMinInlierFraction;
+    // Roadmap 7.7.3: the tolerances, and the relations forced or forbidden.
+    const double dist_tol = rControl.mDistanceTolerance;
+    const double sin_tol = rControl.mAngleToleranceDeg >= 0.0
+                               ? std::sin(rControl.mAngleToleranceDeg * kPcDegree)
+                               : -1.0;
+    const auto listed = [&](const std::vector<PrimitiveRelation>& rList, std::size_t A,
+                            std::size_t B, PrimitiveRelationKind Kind) {
+        const std::int64_t a = read_int(ids, A), b = read_int(ids, B);
+        for (const PrimitiveRelation& r_rel : rList)
+            if (r_rel.mKind == Kind && ((r_rel.mPatchA == a && r_rel.mPatchB == b) ||
+                                        (r_rel.mPatchA == b && r_rel.mPatchB == a)))
+                return true;
+        return false;
+    };
+    const auto record = [&](std::size_t A, std::size_t B, PrimitiveRelationKind Kind,
+                            double AngleDeg, double Distance) {
+        PrimitiveRelationRecord rec;
+        rec.mPatchA = read_int(ids, A);
+        rec.mPatchB = read_int(ids, B);
+        rec.mKind = Kind;
+        rec.mAngleDeg = AngleDeg;
+        rec.mDistance = Distance;
+        rec.mForced = listed(rControl.mForce, A, B, Kind);
+        report.mRelations.push_back(rec);
+    };
     const auto keep = [&](PcPatch& rPatch, const double* pParams) {
         PcStats s;
         if (!pc_accept(rPatch, pParams, FaceTolerance, min_fraction, s))
@@ -106472,6 +106784,7 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
     // 1. Coaxial groups, seeded in row order by the axial primitives.
     std::vector<std::uint8_t> grouped(m, 0);
     std::vector<std::vector<double>> references;  // unit directions, axes first
+    std::vector<std::size_t> ref_row;             // the row each came from
     for (std::size_t a = 0; a < m; ++a) {
         if (grouped[a] || !patches[a].Axial())
             continue;
@@ -106482,9 +106795,33 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         std::vector<std::size_t> rows = {a};
         // Every other row not yet grouped, in order: a sphere before the
         // seed too (an earlier axial row seeded its own group already).
-        for (std::size_t b = 0; b < m; ++b)
-            if (b != a && !grouped[b] && pc_on_axis(patches[b], x, d))
+        for (std::size_t b = 0; b < m; ++b) {
+            if (b == a || grouped[b])
+                continue;
+            bool forbidden = false;
+            for (const std::size_t q : rows)
+                forbidden = forbidden || listed(rControl.mForbid, q, b, PrimitiveRelationKind::Coaxial);
+            if (forbidden)
+                continue;
+            const bool forced = listed(rControl.mForce, a, b, PrimitiveRelationKind::Coaxial) &&
+                                (patches[b].Axial() || patches[b].mType == 2);
+            if (forced || pc_on_axis(patches[b], x, d, dist_tol, sin_tol))
                 rows.push_back(b);
+        }
+        // Each member's residual before the joint fit: its axis's angle to the
+        // seed's and its axis point's distance from the seed's axis.
+        std::vector<std::array<double, 2>> before(m, {0.0, 0.0});
+        for (const std::size_t b : rows) {
+            const PcPatch& r_p = patches[b];
+            double q[3];
+            if (r_p.mType == 2) {
+                std::copy(r_p.mParams, r_p.mParams + 3, q);
+            } else {
+                pc_axis_point(r_p, q);
+                before[b][0] = std::asin(std::min(1.0, pc_sin(d, r_p.mParams + 3))) / kPcDegree;
+            }
+            before[b][1] = pc_line_distance(x, d, q);
+        }
         // Fit jointly; a member that no longer passes leaves and the rest are
         // fitted again, until every member passes or one is left.
         while (rows.size() >= 2) {
@@ -106501,6 +106838,9 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
                 for (std::size_t i = 0; i < rows.size(); ++i) {
                     keep(patches[rows[i]], fitted[i].data());
                     grouped[rows[i]] = 1;
+                    if (i > 0)
+                        record(a, rows[i], PrimitiveRelationKind::Coaxial, before[rows[i]][0],
+                               before[rows[i]][1]);
                 }
                 ++report.mNumGroups;
                 break;
@@ -106516,6 +106856,7 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         double axis[3] = {patches[a].mParams[3], patches[a].mParams[4], patches[a].mParams[5]};
         pc_canonical(axis);
         references.push_back({axis[0], axis[1], axis[2]});
+        ref_row.push_back(a);
     }
 
     // 2. Planes against the references: the axes, then the planes seen.
@@ -106526,24 +106867,39 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
             continue;
         const double budget = p.mExtent > 0.0 ? kPcReach * p.mTol / p.mExtent : 0.0;
         const double* n = p.mParams + 3;
+        const double n0[3] = {n[0], n[1], n[2]};
         double target[3];
         bool have = false;
         std::size_t parallel = references.size();
-        for (std::size_t i = 0; i < references.size() && !have; ++i) {
-            const double* ref = references[i].data();
-            if (pc_sin(n, ref) <= budget) {
-                const double s = detail::MathUtils::Dot(n, ref) < 0.0 ? -1.0 : 1.0;
-                for (int k = 0; k < 3; ++k)
-                    target[k] = s * ref[k];
-                have = true;
-                parallel = i;
+        // A forced reference first (roadmap 7.7.3), then the first within
+        // the tolerance; a forbidden one never.
+        for (int pass = 0; pass < 2; ++pass)
+            for (std::size_t i = 0; i < references.size() && !have; ++i) {
+                const double* ref = references[i].data();
+                if (listed(rControl.mForbid, ref_row[i], r, PrimitiveRelationKind::Parallel))
+                    continue;
+                const bool forced =
+                    listed(rControl.mForce, ref_row[i], r, PrimitiveRelationKind::Parallel);
+                if (pass == 0 ? forced
+                              : (sin_tol >= 0.0 ? pc_sin(n, ref) <= sin_tol
+                                                : pc_sin(n, ref) <= budget)) {
+                    const double s = detail::MathUtils::Dot(n, ref) < 0.0 ? -1.0 : 1.0;
+                    for (int k = 0; k < 3; ++k)
+                        target[k] = s * ref[k];
+                    have = true;
+                    parallel = i;
+                }
             }
-        }
+        std::vector<std::size_t> perp;
         if (!have) {
-            std::vector<std::size_t> perp;
-            for (std::size_t i = 0; i < references.size(); ++i)
-                if (std::fabs(detail::MathUtils::Dot(n, references[i].data())) <= budget)
+            for (std::size_t i = 0; i < references.size(); ++i) {
+                if (listed(rControl.mForbid, ref_row[i], r, PrimitiveRelationKind::Perpendicular))
+                    continue;
+                const double c = std::fabs(detail::MathUtils::Dot(n, references[i].data()));
+                if (listed(rControl.mForce, ref_row[i], r, PrimitiveRelationKind::Perpendicular) ||
+                    (sin_tol >= 0.0 ? c <= sin_tol : c <= budget))
                     perp.push_back(i);
+            }
             if (!perp.empty()) {
                 const double* r1 = references[perp[0]].data();
                 const double* r2 = nullptr;
@@ -106578,10 +106934,28 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
             }
             snapped = keep(p, cand);
         }
+        if (snapped && parallel < references.size()) {
+            record(ref_row[parallel], r, PrimitiveRelationKind::Parallel,
+                   std::asin(std::min(1.0, pc_sin(n0, references[parallel].data()))) / kPcDegree,
+                   0.0);
+        } else if (snapped) {
+            // The one or two references it was made perpendicular to.
+            for (std::size_t j = 0; j < perp.size(); ++j) {
+                const double c =
+                    std::fabs(detail::MathUtils::Dot(n0, references[perp[j]].data()));
+                if (j == 0 || pc_sin(references[perp[0]].data(), references[perp[j]].data()) > 1e-6) {
+                    record(ref_row[perp[j]], r, PrimitiveRelationKind::Perpendicular,
+                           std::asin(std::min(1.0, c)) / kPcDegree, 0.0);
+                    if (j > 0)
+                        break;
+                }
+            }
+        }
         if (snapped && parallel < references.size())
             family[parallel] = 1;
         else if (parallel == references.size()) {
             references.push_back({p.mParams[3], p.mParams[4], p.mParams[5]});
+            ref_row.push_back(r);
             family.push_back(0);
         }
     }
@@ -106599,11 +106973,18 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         sized[a] = 1;
         const int slot = radius_slot(t);
         std::vector<std::size_t> rows = {a};
-        for (std::size_t b = a + 1; b < m; ++b)
-            if (!sized[b] && patches[b].mType == t &&
-                std::fabs(patches[b].mParams[slot] - patches[a].mParams[slot]) <=
-                    std::min(patches[a].mTol, patches[b].mTol))
+        for (std::size_t b = a + 1; b < m; ++b) {
+            if (sized[b] || patches[b].mType != t ||
+                listed(rControl.mForbid, a, b, PrimitiveRelationKind::EqualRadius))
+                continue;
+            const double gap = std::fabs(patches[b].mParams[slot] - patches[a].mParams[slot]);
+            if (listed(rControl.mForce, a, b, PrimitiveRelationKind::EqualRadius) ||
+                gap <= (dist_tol >= 0.0 ? dist_tol : std::min(patches[a].mTol, patches[b].mTol)))
                 rows.push_back(b);
+        }
+        std::vector<double> radius_before(m, 0.0);
+        for (const std::size_t q : rows)
+            radius_before[q] = patches[q].mParams[slot];
         while (rows.size() >= 2) {
             double sum = 0.0, w = 0.0;
             for (std::size_t r : rows) {
@@ -106631,8 +107012,13 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
                     keep(patches[r], cand);
                     sized[r] = 1;
                 }
-                if (changed)
+                if (changed) {
                     ++report.mNumGroups;
+                    for (const std::size_t q : rows)
+                        if (q != a)
+                            record(a, q, PrimitiveRelationKind::EqualRadius, 0.0,
+                                   std::fabs(radius_before[q] - radius_before[a]));
+                }
                 break;
             }
             rows = std::move(passing);
@@ -106647,6 +107033,15 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
                 changed[r] = 1;
     for (std::uint8_t c : changed)
         report.mNumConstrained += c;
+    for (const PrimitiveRelation& r_rel : rControl.mForce) {
+        bool met = false;
+        for (const PrimitiveRelationRecord& r_rec : report.mRelations)
+            met = met || (r_rec.mKind == r_rel.mKind &&
+                          ((r_rec.mPatchA == r_rel.mPatchA && r_rec.mPatchB == r_rel.mPatchB) ||
+                           (r_rec.mPatchA == r_rel.mPatchB && r_rec.mPatchB == r_rel.mPatchA)));
+        if (!met)
+            report.mUnmet.push_back(r_rel);
+    }
     if (report.mNumConstrained == 0)
         return report;
 
@@ -228082,6 +228477,116 @@ Mesh conservative_interpolate(const Mesh& rSource, const Mesh& rTarget,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/conservative_interpolate.cpp =====
+// ===== begin src/cpp/src/operations/constrain_primitives.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <set>
+#include <stdexcept>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+[[noreturn]] void cpr_fail(const std::string& rWhy) {
+    throw std::invalid_argument("meshio++: constrain_primitives: " + rWhy);
+}
+
+}  // namespace
+
+PrimitiveRelationKind primitive_relation_from_name(const std::string& rName) {
+    if (rName == "coaxial")
+        return PrimitiveRelationKind::Coaxial;
+    if (rName == "parallel")
+        return PrimitiveRelationKind::Parallel;
+    if (rName == "perpendicular")
+        return PrimitiveRelationKind::Perpendicular;
+    if (rName == "equal_radius")
+        return PrimitiveRelationKind::EqualRadius;
+    cpr_fail("a relation is coaxial, parallel, perpendicular or equal_radius, not '" + rName +
+             "'");
+}
+
+const char* primitive_relation_name(PrimitiveRelationKind Kind) noexcept {
+    switch (Kind) {
+        case PrimitiveRelationKind::Coaxial:
+            return "coaxial";
+        case PrimitiveRelationKind::Parallel:
+            return "parallel";
+        case PrimitiveRelationKind::Perpendicular:
+            return "perpendicular";
+        case PrimitiveRelationKind::EqualRadius:
+            return "equal_radius";
+    }
+    return "";
+}
+
+ConstrainPrimitivesResult constrain_primitives(const Mesh& rMesh,
+                                               const ConstrainPrimitivesOptions& rOptions) {
+    for (const char* name : {"fit:patch_id", "fit:patch_type", "fit:patch_params",
+                             "fit:patch_rms", "fit:patch_max", "fit:patch_fraction",
+                             "fit:patch_tolerance"})
+        if (!rMesh.HasFieldData(name))
+            cpr_fail(std::string("the mesh has no '") + name +
+                     "' field data (run fit_primitives first)");
+    if (!rMesh.HasCellData(kSegmentPatchName))
+        cpr_fail("the mesh has no segment:patch cell data (run segment first)");
+    const ConstrainPrimitivesOptions& o = rOptions;
+    for (const double v : {o.mFaceTolerance, o.mAngleToleranceDeg, o.mDistanceTolerance,
+                           o.mMinFraction})
+        if (!std::isfinite(v))
+            cpr_fail("a tolerance is not finite");
+    if (o.mMinFraction > 1.0)
+        cpr_fail("min_fraction is at most 1");
+    if (o.mAngleToleranceDeg > 90.0)
+        cpr_fail("angle_tolerance is at most 90 degrees");
+    const NDArray& ids = rMesh.FieldData("fit:patch_id");
+    std::set<std::int64_t> known;
+    for (std::size_t r = 0; r < ids.Size(); ++r)
+        known.insert(detail::read_int(ids, r));
+    for (const auto* p_list : {&o.mForce, &o.mForbid})
+        for (const PrimitiveRelation& r_rel : *p_list)
+            if (!known.count(r_rel.mPatchA) || !known.count(r_rel.mPatchB) ||
+                r_rel.mPatchA == r_rel.mPatchB)
+                cpr_fail("relation (" + std::to_string(r_rel.mPatchA) + ", " +
+                         std::to_string(r_rel.mPatchB) + ") names no two fitted patches");
+    double face_tol = o.mFaceTolerance;
+    if (!(face_tol > 0.0)) {
+        const NDArray& tols = rMesh.FieldData("fit:patch_tolerance");
+        double most = 0.0;
+        // fit_cad's own default (fcn_face_tolerance): three times the largest.
+        for (std::size_t r = 0; r < tols.Size(); ++r) {
+            const double t = detail::read_double(tols, r);
+            if (std::isfinite(t))
+                most = std::max(most, t);
+        }
+        face_tol = 3.0 * most;
+    }
+    if (!(face_tol > 0.0))
+        cpr_fail("no fitted patch has a tolerance; give face_tolerance");
+
+    ConstrainPrimitivesResult result;
+    result.mMesh = detail::clone_mesh(rMesh);
+    detail::PrimitiveConstraintControl control;
+    control.mAngleToleranceDeg = o.mAngleToleranceDeg;
+    control.mDistanceTolerance = o.mDistanceTolerance;
+    control.mMinFraction = o.mMinFraction;
+    control.mForce = o.mForce;
+    control.mForbid = o.mForbid;
+    detail::PrimitiveConstraintReport rep =
+        detail::constrain_primitives(result.mMesh, face_tol, control);
+    result.mNumConstrained = rep.mNumConstrained;
+    result.mNumGroups = rep.mNumGroups;
+    result.mRelations = std::move(rep.mRelations);
+    result.mUnmet = std::move(rep.mUnmet);
+    result.mFaceTolerance = face_tol;
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/constrain_primitives.cpp =====
 // ===== begin src/cpp/src/operations/convert_cells.cpp =====
 #include <algorithm>
 #include <array>
@@ -238688,6 +239193,383 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/fit_cad.cpp =====
+// ===== begin src/cpp/src/operations/fit_cad_loop.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <map>
+#include <set>
+#include <stdexcept>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+[[noreturn]] void fcl_fail(const char* pOp, const std::string& rWhy) {
+    throw std::invalid_argument(std::string("meshio++: ") + pOp + ": " + rWhy);
+}
+
+double fcl_diagonal(const Mesh& rMesh) {
+    const NDArray& p = rMesh.Points();
+    std::vector<Vec3> pts(rMesh.NumPoints());
+    for (std::size_t i = 0; i < pts.size(); ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            pts[i][k] = detail::read_double(p, 3 * i + k);
+    return detail::BoundingBoxUtils::Diagonal(detail::BoundingBoxUtils::FromPoints(pts));
+}
+
+// A per-cell Int64 array, block-major (absent: all -1).
+std::vector<std::int64_t> fcl_cell_ints(const Mesh& rMesh, const std::string& rName) {
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    std::vector<std::int64_t> out(static_cast<std::size_t>(detail::total_cells(bases)), -1);
+    if (!rMesh.HasCellData(rName))
+        return out;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const NDArray& a = rMesh.CellData(rName, b);
+        for (std::size_t c = 0; c < a.Size() && c < rMesh.Cells(b).NumCells(); ++c)
+            out[static_cast<std::size_t>(bases[b]) + c] = detail::read_int(a, c);
+    }
+    return out;
+}
+
+// A per-cell Int64 array as cell data, block by block.
+std::vector<NDArray> fcl_blocks(const Mesh& rMesh, const std::vector<std::int64_t>& rValues) {
+    std::vector<NDArray> out;
+    std::size_t at = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const std::size_t nc = rMesh.Cells(b).NumCells();
+        NDArray a = NDArray::Uninit(DType::Int64, {nc});
+        std::copy(rValues.begin() + static_cast<std::ptrdiff_t>(at),
+                  rValues.begin() + static_cast<std::ptrdiff_t>(at + nc), a.As<std::int64_t>());
+        out.push_back(std::move(a));
+        at += nc;
+    }
+    return out;
+}
+
+detail::DistanceQuery fcl_query(const detail::TriangleSoup& rSoup) {
+    SurfaceDistanceOptions o;
+    o.mSign = SdfSign::Unsigned;
+    o.mWatertightCheck = SdfWatertightCheck::Off;
+    return detail::build_distance_query(rSoup, o);
+}
+
+// The share of a fit_cad re-mesh's area on analytic or feature faces
+// (fit_cad:type other than 0, a facet).
+double fcl_explained(const Mesh& rSolid) {
+    const std::vector<std::int64_t> type = fcl_cell_ints(rSolid, kFitCadTypeName);
+    const detail::TriangleSoup soup = detail::build_triangle_soup(rSolid, "");
+    double all = 0.0, explained = 0.0;
+    for (std::size_t t = 0; t < soup.NumTriangles(); ++t) {
+        const Vec3& a = soup.mCorners[3 * t];
+        const double area = 0.5 * detail::vec3_norm(detail::vec3_cross(
+                                      detail::vec3_sub(soup.mCorners[3 * t + 1], a),
+                                      detail::vec3_sub(soup.mCorners[3 * t + 2], a)));
+        all += area;
+        if (type[static_cast<std::size_t>(soup.mSourceCell[t])] != 0)
+            explained += area;
+    }
+    return all > 0.0 ? explained / all : 0.0;
+}
+
+}  // namespace
+
+FaceSupportResult face_support(const Mesh& rSolid, const Mesh& rScan,
+                               const FaceSupportOptions& rOptions) {
+    const FaceSupportOptions& o = rOptions;
+    if (!rSolid.HasCellData(kFitCadFaceName))
+        fcl_fail("face_support", "the solid has no fit_cad:face cell data (a fit_cad re-mesh)");
+    if (!(std::isfinite(o.mTolerance) && std::isfinite(o.mMeasuredShare) &&
+          std::isfinite(o.mInferredShare) && o.mInferredShare >= 0.0 &&
+          o.mInferredShare <= o.mMeasuredShare && o.mMeasuredShare <= 1.0))
+        fcl_fail("face_support", "the shares must satisfy 0 <= inferred <= measured <= 1");
+    FaceSupportResult result;
+    result.mTolerance = o.mTolerance > 0.0 ? o.mTolerance : 1e-3 * fcl_diagonal(rScan);
+    const double tol = result.mTolerance;
+
+    // The scan without its fills, as a distance query.
+    Mesh scan = detail::clone_mesh(rScan);
+    const std::vector<std::int64_t> hole = fcl_cell_ints(rScan, o.mHoleData);
+    std::vector<std::int64_t> kept;
+    for (std::size_t c = 0; c < hole.size(); ++c)
+        if (hole[c] < 0)
+            kept.push_back(static_cast<std::int64_t>(c));
+    NDArray ids = NDArray::Uninit(DType::Int64, {kept.size()});
+    std::copy(kept.begin(), kept.end(), ids.As<std::int64_t>());
+    scan.AddRegion(Region("fit_cad:measured_cells", RegionKind::Cell, std::move(ids)));
+    const detail::TriangleSoup scan_soup =
+        detail::build_triangle_soup(scan, "fit_cad:measured_cells");
+    if (scan_soup.NumTriangles() == 0)
+        fcl_fail("face_support", "the scan has no surface cell outside its fills");
+    const detail::DistanceQuery scan_query = fcl_query(scan_soup);
+
+    // Each solid triangle's four sub-triangle centroids, a quarter of its area each.
+    const detail::TriangleSoup solid_soup = detail::build_triangle_soup(rSolid, "");
+    const std::vector<std::int64_t> face_of_cell = fcl_cell_ints(rSolid, kFitCadFaceName);
+    std::int64_t nfaces = 0;
+    for (const std::int64_t f : face_of_cell)
+        nfaces = std::max(nfaces, f + 1);
+    std::vector<Vec3> samples;
+    std::vector<double> weight;
+    std::vector<std::int64_t> sample_face;
+    for (std::size_t t = 0; t < solid_soup.NumTriangles(); ++t) {
+        const Vec3& a = solid_soup.mCorners[3 * t];
+        const Vec3& b = solid_soup.mCorners[3 * t + 1];
+        const Vec3& c = solid_soup.mCorners[3 * t + 2];
+        const double area =
+            0.5 * detail::vec3_norm(detail::vec3_cross(detail::vec3_sub(b, a), detail::vec3_sub(c, a)));
+        const std::int64_t f = face_of_cell[static_cast<std::size_t>(solid_soup.mSourceCell[t])];
+        const Vec3 ab = detail::vec3_scale(detail::vec3_add(a, b), 0.5);
+        const Vec3 bc = detail::vec3_scale(detail::vec3_add(b, c), 0.5);
+        const Vec3 ca = detail::vec3_scale(detail::vec3_add(c, a), 0.5);
+        const Vec3 corners[4][3] = {{a, ab, ca}, {ab, b, bc}, {ca, bc, c}, {ab, bc, ca}};
+        for (const auto& r_q : corners) {
+            samples.push_back(detail::vec3_scale(
+                detail::vec3_add(detail::vec3_add(r_q[0], r_q[1]), r_q[2]), 1.0 / 3.0));
+            weight.push_back(0.25 * area);
+            sample_face.push_back(f);
+        }
+    }
+    const std::vector<detail::ClosestPointHit> hits =
+        detail::query_closest_points(scan_query, samples);
+    std::vector<double> within(static_cast<std::size_t>(nfaces), 0.0);
+    std::vector<double> total(static_cast<std::size_t>(nfaces), 0.0);
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        if (sample_face[i] < 0)
+            continue;
+        const auto f = static_cast<std::size_t>(sample_face[i]);
+        total[f] += weight[i];
+        if (hits[i].mDistance <= tol)
+            within[f] += weight[i];
+    }
+    result.mFaceShare.resize(static_cast<std::size_t>(nfaces), 0.0);
+    result.mFaceClass.resize(static_cast<std::size_t>(nfaces), 2);
+    for (std::size_t f = 0; f < within.size(); ++f) {
+        const double share = total[f] > 0.0 ? within[f] / total[f] : 0.0;
+        result.mFaceShare[f] = share;
+        const std::int64_t cls = share >= o.mMeasuredShare ? 0 : share >= o.mInferredShare ? 1 : 2;
+        result.mFaceClass[f] = cls;
+        (cls == 0 ? result.mNumMeasured : cls == 1 ? result.mNumPartial : result.mNumInferred) += 1;
+    }
+
+    // The scan's points (on measured cells) against the solid.
+    std::set<std::int64_t> scan_pts;
+    for (const auto& r_v : scan_soup.mVertices)
+        scan_pts.insert(r_v.begin(), r_v.end());
+    std::vector<Vec3> qs;
+    for (const std::int64_t v : scan_pts)
+        qs.push_back(scan_soup.mPoints[static_cast<std::size_t>(v)]);
+    const std::vector<detail::ClosestPointHit> back =
+        detail::query_closest_points(fcl_query(solid_soup), qs);
+    std::size_t ok = 0;
+    for (const detail::ClosestPointHit& r_h : back)
+        ok += r_h.mDistance <= tol ? 1 : 0;
+    result.mShareWithin = qs.empty() ? 0.0 : static_cast<double>(ok) / static_cast<double>(qs.size());
+
+    result.mMesh = detail::clone_mesh(rSolid);
+    NDArray cls = NDArray::Uninit(DType::Int64, {result.mFaceClass.size()});
+    std::copy(result.mFaceClass.begin(), result.mFaceClass.end(), cls.As<std::int64_t>());
+    NDArray share = NDArray::Uninit(DType::Float64, {result.mFaceShare.size()});
+    std::copy(result.mFaceShare.begin(), result.mFaceShare.end(), share.As<double>());
+    result.mMesh.AddFieldData(kFitCadFaceSupportName, std::move(cls));
+    result.mMesh.AddFieldData(kFitCadFaceMeasuredName, std::move(share));
+    std::vector<std::int64_t> per_cell(face_of_cell.size(), 2);
+    for (std::size_t c = 0; c < face_of_cell.size(); ++c)
+        if (face_of_cell[c] >= 0)
+            per_cell[c] = result.mFaceClass[static_cast<std::size_t>(face_of_cell[c])];
+    result.mMesh.AddCellData(kFitCadSupportName, fcl_blocks(result.mMesh, per_cell));
+    return result;
+}
+
+FitCadPartClass fit_cad_part_class_from_name(const std::string& rName) {
+    if (rName == "any")
+        return FitCadPartClass::Any;
+    if (rName == "analytic")
+        return FitCadPartClass::Analytic;
+    if (rName == "cast")
+        return FitCadPartClass::Cast;
+    if (rName == "freeform")
+        return FitCadPartClass::Freeform;
+    fcl_fail("fit_cad_iterate",
+             "part_class must be any, analytic, cast or freeform, not '" + rName + "'");
+}
+
+FitCadIterateResult fit_cad_iterate(const Mesh& rScan, const std::string& rStepPath,
+                                    const FitCadIterateOptions& rOptions) {
+    const FitCadIterateOptions& o = rOptions;
+    const char* op = "fit_cad_iterate";
+    if (o.mMaxRounds < 1 || o.mWorstFaces < 1 || o.mMinPatchCells < 1)
+        fcl_fail(op, "max_rounds, worst_faces and min_patch_cells must be at least 1");
+    if (!(o.mRefineFactor > 0.0 && o.mRefineFactor < 1.0))
+        fcl_fail(op, "refine_factor must be in (0, 1)");
+    for (const double v : {o.mSegmentTolerance, o.mFitTolerance, o.mTargetWithin,
+                           o.mTargetExplained})
+        if (!std::isfinite(v) || v > 1.0)
+            fcl_fail(op, "the tolerances and targets are finite and at most 1");
+    if (o.mPartClass != FitCadPartClass::Any && o.mPartClass != FitCadPartClass::Analytic &&
+        o.mPartClass != FitCadPartClass::Cast && o.mPartClass != FitCadPartClass::Freeform)
+        fcl_fail(op, "part_class must be any, analytic, cast or freeform");
+    const int cls = static_cast<int>(o.mPartClass);
+    const double class_target[4] = {0.9, 0.9, 0.85, 0.75};
+    const double class_tol[4] = {1e-3, 1e-3, 2e-3, 4e-3};
+    FitCadIterateResult result;
+    result.mTargetWithin = o.mTargetWithin > 0.0 ? o.mTargetWithin : class_target[cls];
+    const double seg_tol0 = o.mSegmentTolerance > 0.0 ? o.mSegmentTolerance : class_tol[cls];
+    const double fit_tol = o.mFitTolerance > 0.0 ? o.mFitTolerance : seg_tol0;
+
+    FitCadOptions fc = o.mFitCad;
+    fc.mFaceDeviation = true;
+    FitPrimitivesOptions fp;
+    fp.mTolerance = fit_tol;
+    fp.mExtendedReport = false;
+
+    // Round 0's segmentation.
+    SegmentOptions so;
+    so.mMethod = SegmentMethod::Primitive;
+    so.mTolerance = seg_tol0;
+    so.mMinPatchCells = o.mMinPatchCells;
+    Mesh segmented = segment(rScan, so).mMesh;
+    double seg_tol = seg_tol0;
+    double best_share = -1.0, best_explained = -1.0;
+    for (std::int64_t round = 0; round < o.mMaxRounds; ++round) {
+        Mesh skin = fit_primitives(segmented, fp).mMesh;
+        FitCadResult fit = fit_cad(skin, "", fc);
+        FaceSupportOptions sup_o = o.mSupport;
+        if (!(sup_o.mTolerance > 0.0))
+            sup_o.mTolerance = fit.mTolerance;
+        FaceSupportResult sup = face_support(fit.mMesh, rScan, sup_o);
+        FitCadIterateRound rec;
+        rec.mShareWithin = sup.mShareWithin;
+        rec.mExplained = fcl_explained(fit.mMesh);
+        rec.mHausdorffMax = std::isfinite(fit.mHausdorffMax) ? fit.mHausdorffMax : 0.0;
+        rec.mSegmentTolerance = seg_tol;
+        {
+            std::set<std::int64_t> labels;
+            for (const std::int64_t l : fcl_cell_ints(segmented, kSegmentPatchName))
+                if (l >= 0)
+                    labels.insert(l);
+            rec.mNumPatches = static_cast<std::int64_t>(labels.size());
+        }
+        rec.mNumFaces = fit.mCounts.mNumFaces;
+        const bool better = rec.mShareWithin > best_share ||
+                            (rec.mShareWithin == best_share && rec.mExplained > best_explained);
+        if (better) {
+            best_share = rec.mShareWithin;
+            best_explained = rec.mExplained;
+            result.mBestRound = round;
+            result.mFit = std::move(fit);
+            result.mSupport = std::move(sup);
+            result.mSkin = detail::clone_mesh(skin);
+        }
+        result.mRounds.push_back(rec);
+        const bool met = rec.mShareWithin >= result.mTargetWithin &&
+                         rec.mExplained >= o.mTargetExplained;
+        if (met) {
+            result.mStopReason = "target";
+            break;
+        }
+        if (round > 0 && !better) {
+            result.mStopReason = "no improvement";
+            break;
+        }
+        if (round + 1 == o.mMaxRounds) {
+            result.mStopReason = "rounds";
+            break;
+        }
+        // The worst faces: their deviation beyond the tolerance first, then
+        // the largest faceted faces.
+        const FitCadResult& cur = better ? result.mFit : fit;
+        const std::vector<std::int64_t> face = fcl_cell_ints(cur.mMesh, kFitCadFaceName);
+        const std::vector<std::int64_t> type = fcl_cell_ints(cur.mMesh, kFitCadTypeName);
+        const std::vector<std::int64_t> patch = fcl_cell_ints(cur.mMesh, kFitCadPatchName);
+        std::map<std::int64_t, std::set<std::int64_t>> face_patches;
+        std::map<std::int64_t, double> face_area;
+        std::map<std::int64_t, std::int64_t> face_type;
+        {
+            const detail::TriangleSoup soup = detail::build_triangle_soup(cur.mMesh, "");
+            for (std::size_t t = 0; t < soup.NumTriangles(); ++t) {
+                const auto c = static_cast<std::size_t>(soup.mSourceCell[t]);
+                if (face[c] < 0)
+                    continue;
+                const Vec3& a = soup.mCorners[3 * t];
+                face_area[face[c]] += 0.5 * detail::vec3_norm(detail::vec3_cross(
+                                                detail::vec3_sub(soup.mCorners[3 * t + 1], a),
+                                                detail::vec3_sub(soup.mCorners[3 * t + 2], a)));
+                face_type[face[c]] = type[c];
+                if (patch[c] >= 0)
+                    face_patches[face[c]].insert(patch[c]);
+            }
+        }
+        std::vector<std::pair<double, std::int64_t>> ranked;  // (-key, face)
+        if (cur.mMesh.HasFieldData(kFitCadFaceHausdorffName)) {
+            const NDArray& h = cur.mMesh.FieldData(kFitCadFaceHausdorffName);
+            const std::size_t nf = h.Ndim() == 2 ? h.Shape()[0] : 0;
+            for (std::size_t f = 0; f < nf; ++f) {
+                const double d = std::max(detail::read_double(h, 2 * f), detail::read_double(h, 2 * f + 1));
+                if (std::isfinite(d) && d > cur.mTolerance)
+                    ranked.push_back({-(1e300 + d), static_cast<std::int64_t>(f)});
+            }
+        }
+        for (const auto& [f, area] : face_area)
+            if (face_type[f] == 0)
+                ranked.push_back({-area, f});
+        std::sort(ranked.begin(), ranked.end());
+        std::set<std::int64_t> worst;
+        std::set<std::int64_t> seen_faces;
+        for (const auto& [key, f] : ranked) {
+            if (static_cast<std::int64_t>(seen_faces.size()) >= o.mWorstFaces)
+                break;
+            if (!seen_faces.insert(f).second)
+                continue;
+            for (const std::int64_t p : face_patches[f])
+                worst.insert(p);
+        }
+        if (worst.empty()) {
+            result.mStopReason = "nothing to refine";
+            break;
+        }
+        result.mRounds.back().mResegmented.assign(worst.begin(), worst.end());
+        // Re-segment those patches' cells finer and splice the labels in.
+        std::vector<std::int64_t> labels = fcl_cell_ints(segmented, kSegmentPatchName);
+        std::int64_t next = 0;
+        std::vector<std::int64_t> region;
+        for (std::size_t c = 0; c < labels.size(); ++c) {
+            next = std::max(next, labels[c] + 1);
+            if (labels[c] >= 0 && worst.count(labels[c]))
+                region.push_back(static_cast<std::int64_t>(c));
+        }
+        Mesh marked = detail::clone_mesh(segmented);
+        NDArray rid = NDArray::Uninit(DType::Int64, {region.size()});
+        std::copy(region.begin(), region.end(), rid.As<std::int64_t>());
+        marked.AddRegion(Region("fit_cad:refine", RegionKind::Cell, std::move(rid)));
+        seg_tol *= o.mRefineFactor;
+        SegmentOptions fine = so;
+        fine.mTolerance = seg_tol;
+        fine.mRegion = "fit_cad:refine";
+        fine.mPrefix = "fit_cad_refine";
+        const std::vector<std::int64_t> sub =
+            fcl_cell_ints(segment(marked, fine).mMesh, kSegmentPatchName);
+        for (const std::int64_t c : region)
+            if (sub[static_cast<std::size_t>(c)] >= 0)
+                labels[static_cast<std::size_t>(c)] = next + sub[static_cast<std::size_t>(c)];
+        segmented = detail::clone_mesh(rScan);
+        segmented.AddCellData(kSegmentPatchName, fcl_blocks(segmented, labels));
+    }
+    result.mTargetMet = result.mRounds[static_cast<std::size_t>(result.mBestRound)].mShareWithin >=
+                            result.mTargetWithin &&
+                        result.mRounds[static_cast<std::size_t>(result.mBestRound)].mExplained >=
+                            o.mTargetExplained;
+    if (!rStepPath.empty())
+        fit_cad(result.mSkin, rStepPath, fc);
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/fit_cad_loop.cpp =====
 // ===== begin src/cpp/src/operations/fit_curves.cpp =====
 #include <algorithm>
 #include <array>
@@ -265706,6 +266588,87 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumCapTriangles", static_cast<double>(cr.mNumCapTriangles)},
                         {"NumLoops", static_cast<double>(cr.mNumLoops)}});
         return std::move(cr.mMesh);
+    }
+    if (op == "ConstrainPrimitives") {
+        ConstrainPrimitivesOptions o;
+        o.mFaceTolerance = pipe_number(rStep, "FaceTolerance", 0.0);
+        o.mAngleToleranceDeg = pipe_number(rStep, "AngleTolerance", -1.0);
+        o.mDistanceTolerance = pipe_number(rStep, "DistanceTolerance", -1.0);
+        o.mMinFraction = pipe_number(rStep, "MinFraction", -1.0);
+        // "A:B:REL" texts separated by commas.
+        const auto relations = [&](const std::string& rText, const char* pKey) {
+            std::vector<PrimitiveRelation> out;
+            const std::string& text = rText;
+            std::size_t at = 0;
+            while (at < text.size()) {
+                std::size_t end = text.find(',', at);
+                if (end == std::string::npos)
+                    end = text.size();
+                const std::string item = text.substr(at, end - at);
+                const std::size_t i = item.find(':');
+                const std::size_t j = i == std::string::npos ? i : item.find(':', i + 1);
+                if (j == std::string::npos)
+                    throw std::invalid_argument(
+                        pipe_err(rStep, std::string(pKey) + " is A:B:RELATION, comma-separated"));
+                out.push_back({std::stoll(item.substr(0, i)),
+                               std::stoll(item.substr(i + 1, j - i - 1)),
+                               primitive_relation_from_name(item.substr(j + 1))});
+                at = end + 1;
+            }
+            return out;
+        };
+        o.mForce = relations(pipe_text(rStep, "Force", ""), "Force");
+        o.mForbid = relations(pipe_text(rStep, "Forbid", ""), "Forbid");
+        ConstrainPrimitivesResult r = constrain_primitives(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumConstrained", static_cast<double>(r.mNumConstrained)},
+                        {"NumGroups", static_cast<double>(r.mNumGroups)},
+                        {"NumRelations", static_cast<double>(r.mRelations.size())},
+                        {"NumUnmet", static_cast<double>(r.mUnmet.size())}});
+        return std::move(r.mMesh);
+    }
+    if (op == "FaceSupport") {
+        const std::string scan_path = pipe_text(rStep, "Scan", "");
+        if (scan_path.empty())
+            throw std::invalid_argument(pipe_err(rStep, "needs Scan, the scan's path"));
+        FaceSupportOptions o;
+        o.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        o.mMeasuredShare = pipe_number(rStep, "MeasuredShare", 0.9);
+        o.mInferredShare = pipe_number(rStep, "InferredShare", 0.1);
+        o.mHoleData = pipe_text(rStep, "HoleData", "repair:hole");
+        FaceSupportResult r = face_support(mesh, pipe_read_extra(scan_path), o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumMeasured", static_cast<double>(r.mNumMeasured)},
+                        {"NumPartial", static_cast<double>(r.mNumPartial)},
+                        {"NumInferred", static_cast<double>(r.mNumInferred)},
+                        {"ShareWithin", r.mShareWithin}});
+        return std::move(r.mMesh);
+    }
+    if (op == "FitCadIterate") {
+        FitCadIterateOptions o;
+        o.mPartClass = fit_cad_part_class_from_name(pipe_text(rStep, "PartClass", "any"));
+        o.mTargetWithin = pipe_number(rStep, "TargetWithin", 0.0);
+        o.mTargetExplained = pipe_number(rStep, "TargetExplained", 0.0);
+        o.mSegmentTolerance = pipe_number(rStep, "SegmentTolerance", 0.0);
+        o.mFitTolerance = pipe_number(rStep, "FitTolerance", 0.0);
+        o.mMaxRounds = static_cast<std::int64_t>(pipe_number(rStep, "MaxRounds", 4));
+        o.mWorstFaces = static_cast<std::int64_t>(pipe_number(rStep, "WorstFaces", 3));
+        o.mRefineFactor = pipe_number(rStep, "RefineFactor", 0.25);
+        const std::string backend = pipe_text(rStep, "Backend", "auto");
+        if (backend == "native")
+            o.mFitCad.mBackend = FitCadBackend::Native;
+        else if (backend == "occt")
+            o.mFitCad.mBackend = FitCadBackend::Occt;
+        else if (backend != "auto")
+            throw std::invalid_argument(pipe_err(rStep, "Backend is auto, occt or native"));
+        FitCadIterateResult r = fit_cad_iterate(mesh, pipe_text(rStep, "Step", ""), o);
+        pipe_push_step(
+            rReport, rStep,
+            {{"NumRounds", static_cast<double>(r.mRounds.size())},
+             {"BestRound", static_cast<double>(r.mBestRound)},
+             {"TargetMet", r.mTargetMet ? 1.0 : 0.0},
+             {"ShareWithin", r.mRounds[static_cast<std::size_t>(r.mBestRound)].mShareWithin}});
+        return std::move(r.mSupport.mMesh);
     }
     if (op == "OffsetSurface" || op == "Thicken" || op == "Hollow") {
         const char* amount = op == "OffsetSurface" ? "Distance"

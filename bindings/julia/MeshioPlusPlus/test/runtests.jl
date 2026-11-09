@@ -2027,6 +2027,14 @@ end
     @test ho.num_rim_quads == 0
     close(ho.mesh)
     @test_throws ArgumentError thicken(cube, 0.1; side="sideways")
+    it = fit_cad_iterate(cube; backend="native")
+    @test it.target_met && it.num_rounds == 1 && it.stop_reason == "target"
+    fs = face_support(it.mesh, cube)
+    @test fs.num_measured == fs.num_faces
+    close(fs.mesh)
+    close(it.mesh)
+    @test_throws ArgumentError fit_cad_iterate(cube; part_class="plastic")
+    @test_throws MeshioError constrain_primitives(cube)
     ms = measure(cube, """{"elements": [
         {"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},
         {"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],

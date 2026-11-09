@@ -295,6 +295,9 @@ export class MeshioPlusPlusLoadError extends Error {
  *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean, options?: {chain?: boolean, minLength?: number}) => Mesh,
  *   clip: (mesh: Mesh, origin: number[], normal: number[], options?: {keepBelow?: boolean, cap?: boolean}) => {mesh: Mesh, numKept: number, numSplit: number, numCapTriangles: number, numLoops: number, numOpenChains: number, warnings: string[]},
+ *   constrainPrimitives: (mesh: Mesh, options?: {faceTolerance?: number, angleTolerance?: number, distanceTolerance?: number, minFraction?: number, force?: Array<[number, number, string]>, forbid?: Array<[number, number, string]>}) => {mesh: Mesh, numConstrained: number, numGroups: number, faceTolerance: number, relations: Array<{patchA: number, patchB: number, relation: string, angleDeg: number, distance: number, forced: boolean}>, unmet: Array<[number, number, string]>},
+ *   faceSupport: (solid: Mesh, scan: Mesh, options?: {tolerance?: number, measuredShare?: number, inferredShare?: number, holeData?: string}) => {mesh: Mesh, numMeasured: number, numPartial: number, numInferred: number, shareWithin: number, tolerance: number, faceShare: number[]},
+ *   fitCadIterate: (scan: Mesh, options?: {stepPath?: string, partClass?: string, targetWithin?: number, targetExplained?: number, segmentTolerance?: number, fitTolerance?: number, maxRounds?: number, worstFaces?: number, refineFactor?: number, backend?: string}) => {mesh: Mesh, rounds: Array<{shareWithin: number, explained: number, hausdorffMax: number, numFaces: number, numPatches: number}>, bestRound: number, targetWithin: number, targetMet: boolean, stopReason: string, numMeasured: number, numInferred: number},
  *   offsetSurface: (mesh: Mesh, distance: number, options?: {smoothIterations?: number}) => {mesh: Mesh, numNotVisible: number, numClamped: number, numFolded: number, numRimQuads: number, maxMove: number, warnings: string[]},
  *   thicken: (mesh: Mesh, thickness: number, options?: {side?: string, smoothIterations?: number}) => {mesh: Mesh, numNotVisible: number, numClamped: number, numFolded: number, numRimQuads: number, maxMove: number, warnings: string[]},
  *   hollow: (mesh: Mesh, wall: number, options?: {smoothIterations?: number}) => {mesh: Mesh, numNotVisible: number, numClamped: number, numFolded: number, numRimQuads: number, maxMove: number, warnings: string[]},
@@ -868,6 +871,9 @@ export async function loadMeshioPlusPlus(
                 Number(options.minLength ?? 0)),
         clip: (mesh, origin, normal, options = {}) =>
             Module.clip(mesh, Array.from(origin, Number), Array.from(normal, Number), options),
+        constrainPrimitives: (mesh, options = {}) => Module.constrainPrimitives(mesh, options ?? {}),
+        faceSupport: (solid, scan, options = {}) => Module.faceSupport(solid, scan, options ?? {}),
+        fitCadIterate: (scan, options = {}) => Module.fitCadIterate(scan, options ?? {}),
         offsetSurface: (mesh, distance, options = {}) =>
             Module.offsetSurface(mesh, 'offset', Number(distance), options),
         thicken: (mesh, thickness, options = {}) =>

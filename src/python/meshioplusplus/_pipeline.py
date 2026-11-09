@@ -1865,6 +1865,77 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumSplit"] = float(rep["num_split"])
         entry["NumCapTriangles"] = float(rep["num_cap_triangles"])
         entry["NumLoops"] = float(rep["num_loops"])
+    elif op == "ConstrainPrimitives":
+        from ._fit_cad_loop import constrain_primitives
+
+        def _relations(text, key):
+            out = []
+            for item in filter(None, text.split(",")):
+                parts = item.split(":")
+                if len(parts) != 3:
+                    raise ValueError(
+                        f"meshio++: pipeline: ConstrainPrimitives: {key} is "
+                        "A:B:RELATION, comma-separated"
+                    )
+                out.append((int(parts[0]), int(parts[1]), parts[2]))
+            return out
+
+        mesh, rep = constrain_primitives(
+            mesh,
+            face_tolerance=_number(step, "FaceTolerance", 0.0),
+            angle_tolerance=_number(step, "AngleTolerance", -1.0),
+            distance_tolerance=_number(step, "DistanceTolerance", -1.0),
+            min_fraction=_number(step, "MinFraction", -1.0),
+            force=_relations(_text(step, "Force", ""), "Force"),
+            forbid=_relations(_text(step, "Forbid", ""), "Forbid"),
+            return_report=True,
+        )
+        entry["NumConstrained"] = float(rep["num_constrained"])
+        entry["NumGroups"] = float(rep["num_groups"])
+        entry["NumRelations"] = float(len(rep["relations"]))
+        entry["NumUnmet"] = float(len(rep["unmet"]))
+    elif op == "FaceSupport":
+        from ._fit_cad_loop import face_support
+
+        scan_path = _text(step, "Scan", "")
+        if not scan_path:
+            raise ValueError(
+                "meshio++: pipeline: FaceSupport needs Scan, the scan's path"
+            )
+        mesh, rep = face_support(
+            mesh,
+            read(scan_path),
+            tolerance=_number(step, "Tolerance", 0.0),
+            measured_share=_number(step, "MeasuredShare", 0.9),
+            inferred_share=_number(step, "InferredShare", 0.1),
+            hole_data=_text(step, "HoleData", "repair:hole"),
+            return_report=True,
+        )
+        entry["NumMeasured"] = float(rep["num_measured"])
+        entry["NumPartial"] = float(rep["num_partial"])
+        entry["NumInferred"] = float(rep["num_inferred"])
+        entry["ShareWithin"] = float(rep["share_within"])
+    elif op == "FitCadIterate":
+        from ._fit_cad_loop import fit_cad_iterate
+
+        mesh, rep = fit_cad_iterate(
+            mesh,
+            _text(step, "Step", "") or None,
+            part_class=_text(step, "PartClass", "any"),
+            target_within=_number(step, "TargetWithin", 0.0),
+            target_explained=_number(step, "TargetExplained", 0.0),
+            segment_tolerance=_number(step, "SegmentTolerance", 0.0),
+            fit_tolerance=_number(step, "FitTolerance", 0.0),
+            max_rounds=int(_number(step, "MaxRounds", 4)),
+            worst_faces=int(_number(step, "WorstFaces", 3)),
+            refine_factor=_number(step, "RefineFactor", 0.25),
+            backend=_text(step, "Backend", "auto"),
+            return_report=True,
+        )
+        entry["NumRounds"] = float(len(rep["rounds"]))
+        entry["BestRound"] = float(rep["best_round"])
+        entry["TargetMet"] = 1.0 if rep["target_met"] else 0.0
+        entry["ShareWithin"] = float(rep["rounds"][rep["best_round"]]["share_within"])
     elif op in ("OffsetSurface", "Thicken", "Hollow"):
         from ._offset_surface import hollow, offset_surface, thicken
 

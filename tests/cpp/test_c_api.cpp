@@ -9069,3 +9069,65 @@ TEST(CApi, DecimateMaxDeviationAndMaxFaces) {
     EXPECT_EQ(mio_decimate_ex(s, &o), nullptr);
     mio_mesh_free(s);
 }
+
+TEST(CApi, TheReverseEngineeringLoop) {
+    // Roadmap 7.7: a box surface iterated to a solid, its faces all measured,
+    // its fitted skin's primitives constrained.
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = g.counts[1] = g.counts[2] = 3;
+    mio_mesh* box = mio_box_surface(&g);
+    ASSERT_NE(box, nullptr) << mio_last_error();
+    mio_fit_cad_iterate_opts io;
+    mio_fit_cad_iterate_opts_init(&io);
+    EXPECT_EQ(io.max_rounds, 4);
+    io.backend = MIO_FIT_CAD_NATIVE;
+    mio_fit_cad_iterate_report ir;
+    mio_mesh* solid = mio_fit_cad_iterate(box, nullptr, &io, &ir);
+    ASSERT_NE(solid, nullptr) << mio_last_error();
+    EXPECT_EQ(ir.num_rounds, 1);
+    EXPECT_EQ(ir.target_met, 1);
+    EXPECT_EQ(ir.stop_reason, 0);
+    double share = 0.0;
+    EXPECT_EQ(mio_fit_cad_iterate_round(0, &share, nullptr, nullptr, nullptr, nullptr), MIO_OK);
+    EXPECT_NEAR(share, 1.0, 1e-12);
+    EXPECT_NE(mio_fit_cad_iterate_round(5, &share, nullptr, nullptr, nullptr, nullptr), MIO_OK);
+    mio_face_support_report fr;
+    mio_mesh* marked = mio_face_support(solid, box, nullptr, &fr);
+    ASSERT_NE(marked, nullptr) << mio_last_error();
+    EXPECT_EQ(fr.num_measured, 6);
+    EXPECT_EQ(fr.num_faces, 6);
+    EXPECT_EQ(mio_face_support(box, box, nullptr, &fr), nullptr);  // no fit_cad:face
+    io.part_class = 9;
+    EXPECT_EQ(mio_fit_cad_iterate(box, nullptr, &io, &ir), nullptr);
+
+    mio_mesh* seg = mio_segment(box, nullptr, nullptr);
+    ASSERT_NE(seg, nullptr) << mio_last_error();
+    mio_mesh* fitted = mio_fit_primitives(seg, nullptr, nullptr);
+    ASSERT_NE(fitted, nullptr) << mio_last_error();
+    mio_constrain_primitives_opts co;
+    mio_constrain_primitives_opts_init(&co);
+    EXPECT_EQ(co.angle_tolerance_deg, -1.0);
+    const int64_t forbid[3] = {0, 1, MIO_RELATION_PARALLEL};
+    co.forbid = forbid;
+    co.num_forbid = 1;
+    mio_constrain_primitives_report cr;
+    mio_mesh* constrained = mio_constrain_primitives(fitted, &co, &cr);
+    ASSERT_NE(constrained, nullptr) << mio_last_error();
+    EXPECT_GT(cr.face_tolerance, 0.0);
+    for (int64_t k = 0; k < cr.num_relations; ++k) {
+        int64_t a = -1, b = -1;
+        int32_t kind = -1, forced = -1;
+        ASSERT_EQ(mio_constrain_primitives_relation(k, &a, &b, &kind, nullptr, nullptr, &forced),
+                  MIO_OK);
+        EXPECT_FALSE((a == 0 && b == 1 || a == 1 && b == 0) && kind == MIO_RELATION_PARALLEL);
+        EXPECT_EQ(forced, 0);
+    }
+    EXPECT_EQ(mio_constrain_primitives(box, nullptr, &cr), nullptr);  // no fit:patch_* table
+    mio_mesh_free(constrained);
+    mio_mesh_free(fitted);
+    mio_mesh_free(seg);
+    mio_mesh_free(marked);
+    mio_mesh_free(solid);
+    mio_mesh_free(box);
+}

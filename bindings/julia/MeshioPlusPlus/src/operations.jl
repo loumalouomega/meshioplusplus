@@ -356,6 +356,145 @@ function clip(m::Mesh, origin, normal; keep_below::Bool=true, cap::Bool=true)
      warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
 end
 
+const _RELATIONS = ("coaxial", "parallel", "perpendicular", "equal_radius")
+
+# (a, b, relation name) tuples as int64 triples.
+function _relation_triples(list)
+    out = Int64[]
+    for (a, b, kind) in list
+        k = findfirst(==(String(kind)), _RELATIONS)
+        k === nothing && throw(ArgumentError(
+            "meshio++: constrain_primitives: a relation is coaxial, parallel, perpendicular or equal_radius"))
+        append!(out, (Int64(a), Int64(b), Int64(k - 1)))
+    end
+    out
+end
+
+"""
+    constrain_primitives(m; face_tolerance=0.0, angle_tolerance=-1.0, distance_tolerance=-1.0,
+                         min_fraction=-1.0, force=(), forbid=())
+        -> (; mesh, num_constrained, num_groups, face_tolerance, relations, unmet)
+
+Fit related primitives of a `fit_primitives` skin together under control
+(roadmap 7.7.3): `force` and `forbid` hold `(patch_a, patch_b, relation)`
+tuples, patches by `segment:patch` label. `relations` are named tuples
+`(; patch_a, patch_b, relation, angle_deg, distance, forced)`. See
+`doc/constrain_primitives.md`.
+"""
+function constrain_primitives(m::Mesh; face_tolerance::Real=0.0, angle_tolerance::Real=-1.0,
+                              distance_tolerance::Real=-1.0, min_fraction::Real=-1.0,
+                              force=(), forbid=())
+    fo = _relation_triples(force)
+    fb = _relation_triples(forbid)
+    rep = Ref{_CConstrainPrimitivesReport}()
+    ptr = GC.@preserve fo fb begin
+        opts = _CConstrainPrimitivesOpts(Cdouble(face_tolerance), Cdouble(angle_tolerance),
+                                         Cdouble(distance_tolerance), Cdouble(min_fraction),
+                                         isempty(fo) ? Ptr{Int64}(C_NULL) : pointer(fo),
+                                         Int64(length(fo) ÷ 3),
+                                         isempty(fb) ? Ptr{Int64}(C_NULL) : pointer(fb),
+                                         Int64(length(fb) ÷ 3), (0, 0, 0, 0))
+        ccall(_sym(:mio_constrain_primitives), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CConstrainPrimitivesOpts}, Ref{_CConstrainPrimitivesReport}),
+              _handle(m), Ref(opts), rep)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    relations = map(0:r.num_relations-1) do k
+        a = Ref{Int64}(0); b = Ref{Int64}(0); kind = Ref{Int32}(0)
+        ang = Ref{Cdouble}(0); dst = Ref{Cdouble}(0); fc = Ref{Int32}(0)
+        ccall(_sym(:mio_constrain_primitives_relation), Cint,
+              (Int64, Ref{Int64}, Ref{Int64}, Ref{Int32}, Ref{Cdouble}, Ref{Cdouble}, Ref{Int32}),
+              k, a, b, kind, ang, dst, fc)
+        (; patch_a=Int(a[]), patch_b=Int(b[]), relation=_RELATIONS[kind[] + 1],
+         angle_deg=ang[], distance=dst[], forced=fc[] != 0)
+    end
+    unmet = map(0:r.num_unmet-1) do k
+        a = Ref{Int64}(0); b = Ref{Int64}(0); kind = Ref{Int32}(0)
+        ccall(_sym(:mio_constrain_primitives_unmet), Cint,
+              (Int64, Ref{Int64}, Ref{Int64}, Ref{Int32}), k, a, b, kind)
+        (Int(a[]), Int(b[]), _RELATIONS[kind[] + 1])
+    end
+    (mesh=out, num_constrained=Int(r.num_constrained), num_groups=Int(r.num_groups),
+     face_tolerance=r.face_tolerance, relations=relations, unmet=unmet)
+end
+
+"""
+    face_support(solid, scan; tolerance=0.0, measured_share=0.9, inferred_share=0.1,
+                 hole_data="repair:hole")
+        -> (; mesh, num_measured, num_partial, num_inferred, num_faces, share_within, tolerance)
+
+Class each face of a `fit_cad` re-mesh by how much of it the scan supports
+(roadmap 7.7.1). See `doc/fit_cad_loop.md`.
+"""
+function face_support(solid::Mesh, scan::Mesh; tolerance::Real=0.0, measured_share::Real=0.9,
+                      inferred_share::Real=0.1, hole_data::AbstractString="repair:hole")
+    rep = Ref{_CFaceSupportReport}()
+    hd = String(hole_data)
+    ptr = GC.@preserve hd begin
+        opts = _CFaceSupportOpts(Cdouble(tolerance), Cdouble(measured_share),
+                                 Cdouble(inferred_share), Base.unsafe_convert(Cstring, hd),
+                                 (0, 0, 0, 0))
+        ccall(_sym(:mio_face_support), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CFaceSupportOpts}, Ref{_CFaceSupportReport}),
+              _handle(solid), _handle(scan), Ref(opts), rep)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    (mesh=out, num_measured=Int(r.num_measured), num_partial=Int(r.num_partial),
+     num_inferred=Int(r.num_inferred), num_faces=Int(r.num_faces),
+     share_within=r.share_within, tolerance=r.tolerance)
+end
+
+const _PART_CLASSES = ("any", "analytic", "cast", "freeform")
+const _STOP_REASONS = ("target", "no improvement", "rounds", "nothing to refine")
+
+"""
+    fit_cad_iterate(scan; step_path="", part_class="any", target_within=0.0,
+                    target_explained=0.0, segment_tolerance=0.0, fit_tolerance=0.0,
+                    max_rounds=4, worst_faces=3, refine_factor=0.25, backend="auto")
+        -> (; mesh, num_rounds, best_round, target_met, stop_reason, target_within,
+              share_within, explained, hausdorff_max, num_faces, rounds)
+
+Segment, fit and build a solid in rounds towards a target (roadmap 7.7.2);
+`rounds` are named tuples `(; share_within, explained, hausdorff_max,
+num_faces, num_resegmented)`. See `doc/fit_cad_loop.md`.
+"""
+function fit_cad_iterate(scan::Mesh; step_path::AbstractString="", part_class::AbstractString="any",
+                         target_within::Real=0.0, target_explained::Real=0.0,
+                         segment_tolerance::Real=0.0, fit_tolerance::Real=0.0,
+                         max_rounds::Integer=4, worst_faces::Integer=3, refine_factor::Real=0.25,
+                         backend::AbstractString="auto")
+    pc = findfirst(==(String(part_class)), _PART_CLASSES)
+    pc === nothing && throw(ArgumentError(
+        "meshio++: fit_cad_iterate: part_class must be any, analytic, cast or freeform"))
+    be = findfirst(==(String(backend)), ("auto", "occt", "native"))
+    be === nothing && throw(ArgumentError("meshio++: fit_cad_iterate: backend must be auto, occt or native"))
+    opts = _CFitCadIterateOpts(Cdouble(segment_tolerance), Cdouble(fit_tolerance),
+                               Cdouble(target_within), Cdouble(target_explained),
+                               Cdouble(refine_factor), Int32(pc - 1), Int32(be - 1),
+                               Int64(max_rounds), Int64(worst_faces), Int64(1), (0, 0, 0, 0, 0))
+    rep = Ref{_CFitCadIterateReport}()
+    ptr = ccall(_sym(:mio_fit_cad_iterate), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Ref{_CFitCadIterateOpts}, Ref{_CFitCadIterateReport}),
+                _handle(scan), String(step_path), Ref(opts), rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    rounds = map(0:r.num_rounds-1) do k
+        sw = Ref{Cdouble}(0); ex = Ref{Cdouble}(0); hm = Ref{Cdouble}(0)
+        nf = Ref{Int64}(0); nr = Ref{Int64}(0)
+        ccall(_sym(:mio_fit_cad_iterate_round), Cint,
+              (Int64, Ref{Cdouble}, Ref{Cdouble}, Ref{Cdouble}, Ref{Int64}, Ref{Int64}),
+              k, sw, ex, hm, nf, nr)
+        (; share_within=sw[], explained=ex[], hausdorff_max=hm[], num_faces=Int(nf[]),
+         num_resegmented=Int(nr[]))
+    end
+    (mesh=out, num_rounds=Int(r.num_rounds), best_round=Int(r.best_round),
+     target_met=r.target_met != 0, stop_reason=_STOP_REASONS[r.stop_reason + 1],
+     target_within=r.target_within, share_within=r.share_within, explained=r.explained,
+     hausdorff_max=r.hausdorff_max, num_faces=Int(r.num_faces), rounds=rounds)
+end
+
 # The shared tail of offset_surface, thicken and hollow.
 function _offset_result(ptr, rep)
     out = Mesh(_check_ptr(ptr))

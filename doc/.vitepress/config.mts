@@ -127,6 +127,8 @@ export default defineConfig({
               { text: "Refine patches", link: "/refine_patches" },
               { text: "Fit primitives", link: "/fit_primitives" },
               { text: "Fit CAD", link: "/fit_cad" },
+              { text: "Constrain primitives", link: "/constrain_primitives" },
+              { text: "Closing the CAD loop", link: "/fit_cad_loop" },
               { text: "Skin to CAD", link: "/cad_fit" },
               { text: "Isogeometric layer (NURBS)", link: "/iga" },
               { text: "Interfaces and contact", link: "/region_adjacency" },

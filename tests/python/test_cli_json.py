@@ -292,6 +292,14 @@ def files(tmp_path_factory):
         )
     except NotImplementedError:  # pragma: no cover - a core-less build
         pass
+    paths["box_skin"] = str(d / "box_skin.vtu")
+    paths["box_solid"] = str(d / "box_solid.vtu")
+    try:
+        skin = mio.box_surface((3, 3, 3))
+        mio.write(paths["box_skin"], skin)
+        mio.write(paths["box_solid"], mio.fit_cad_iterate(skin, backend="native"))
+    except NotImplementedError:  # pragma: no cover - a core-less build
+        pass
     paths["block"] = str(d / "block.vtu")
     paths["block_spec"] = str(d / "block_spec.json")
     paths["measured"] = str(d / "measured.vtu")
@@ -774,6 +782,25 @@ WRITING = [
             out + ".vtu",
             "--wall",
             "0.05",
+            "--json",
+        ],
+    ),
+    (
+        "constrain_primitives",
+        lambda f, out: ["constrain-primitives", f["fitted"], out + ".vtu", "--json"],
+    ),
+    (
+        "face_support",
+        lambda f, out: ["face-support", f["box_solid"], f["box_skin"], "--json"],
+    ),
+    (
+        "fit_cad_iterate",
+        lambda f, out: [
+            "fit-cad-iterate",
+            f["box_skin"],
+            out + ".vtu",
+            "--backend",
+            "native",
             "--json",
         ],
     ),

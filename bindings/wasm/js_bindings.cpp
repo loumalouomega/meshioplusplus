@@ -145,6 +145,8 @@
 #include "meshioplusplus/operations/flip_normals.hpp"
 #include "meshioplusplus/operations/clip.hpp"
 #include "meshioplusplus/operations/offset_surface.hpp"
+#include "meshioplusplus/operations/constrain_primitives.hpp"
+#include "meshioplusplus/operations/fit_cad_loop.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -4027,6 +4029,171 @@ val clip_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, const v
         for (const std::string& w : r.mWarnings)
             warnings.call<void>("push", w);
         out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/// Roadmap 7.7.3: `{faceTolerance, angleTolerance, distanceTolerance,
+/// minFraction, force, forbid}`, the relations `[[a, b, 'coaxial'], ...]`.
+val constrain_primitives_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ConstrainPrimitivesOptions o;
+        const auto relations = [](const val& rList) {
+            std::vector<meshioplusplus::PrimitiveRelation> out;
+            const auto n = rList["length"].as<unsigned>();
+            for (unsigned i = 0; i < n; ++i) {
+                const val item = rList[i];
+                out.push_back(
+                    {static_cast<std::int64_t>(item[0].as<double>()),
+                     static_cast<std::int64_t>(item[1].as<double>()),
+                     meshioplusplus::primitive_relation_from_name(item[2].as<std::string>())});
+            }
+            return out;
+        };
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the constrain options",
+                                {"faceTolerance", "angleTolerance", "distanceTolerance",
+                                 "minFraction", "force", "forbid"});
+            if (rOptions.hasOwnProperty("faceTolerance"))
+                o.mFaceTolerance = rOptions["faceTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("angleTolerance"))
+                o.mAngleToleranceDeg = rOptions["angleTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("distanceTolerance"))
+                o.mDistanceTolerance = rOptions["distanceTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("minFraction"))
+                o.mMinFraction = rOptions["minFraction"].as<double>();
+            if (rOptions.hasOwnProperty("force"))
+                o.mForce = relations(rOptions["force"]);
+            if (rOptions.hasOwnProperty("forbid"))
+                o.mForbid = relations(rOptions["forbid"]);
+        }
+        meshioplusplus::ConstrainPrimitivesResult r =
+            meshioplusplus::constrain_primitives(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numConstrained", static_cast<double>(r.mNumConstrained));
+        out.set("numGroups", static_cast<double>(r.mNumGroups));
+        out.set("faceTolerance", r.mFaceTolerance);
+        val rel = val::array();
+        for (const auto& r_rec : r.mRelations) {
+            val d = val::object();
+            d.set("patchA", static_cast<double>(r_rec.mPatchA));
+            d.set("patchB", static_cast<double>(r_rec.mPatchB));
+            d.set("relation", std::string(meshioplusplus::primitive_relation_name(r_rec.mKind)));
+            d.set("angleDeg", r_rec.mAngleDeg);
+            d.set("distance", r_rec.mDistance);
+            d.set("forced", r_rec.mForced);
+            rel.call<void>("push", d);
+        }
+        out.set("relations", rel);
+        val unmet = val::array();
+        for (const auto& r_rel : r.mUnmet) {
+            val t = val::array();
+            t.call<void>("push", static_cast<double>(r_rel.mPatchA));
+            t.call<void>("push", static_cast<double>(r_rel.mPatchB));
+            t.call<void>("push", std::string(meshioplusplus::primitive_relation_name(r_rel.mKind)));
+            unmet.call<void>("push", t);
+        }
+        out.set("unmet", unmet);
+        return out;
+    });
+}
+
+/// Roadmap 7.7.1: `{tolerance, measuredShare, inferredShare, holeData}`.
+val face_support_js(const val& rSolid, const val& rScan, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::FaceSupportOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the face support options",
+                                {"tolerance", "measuredShare", "inferredShare", "holeData"});
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("measuredShare"))
+                o.mMeasuredShare = rOptions["measuredShare"].as<double>();
+            if (rOptions.hasOwnProperty("inferredShare"))
+                o.mInferredShare = rOptions["inferredShare"].as<double>();
+            if (rOptions.hasOwnProperty("holeData"))
+                o.mHoleData = rOptions["holeData"].as<std::string>();
+        }
+        meshioplusplus::FaceSupportResult r =
+            meshioplusplus::face_support(val_to_mesh(rSolid), val_to_mesh(rScan), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numMeasured", static_cast<double>(r.mNumMeasured));
+        out.set("numPartial", static_cast<double>(r.mNumPartial));
+        out.set("numInferred", static_cast<double>(r.mNumInferred));
+        out.set("shareWithin", r.mShareWithin);
+        out.set("tolerance", r.mTolerance);
+        val share = val::array();
+        for (const double v : r.mFaceShare)
+            share.call<void>("push", v);
+        out.set("faceShare", share);
+        return out;
+    });
+}
+
+/// Roadmap 7.7.2: `{stepPath, partClass, targetWithin, targetExplained,
+/// segmentTolerance, fitTolerance, maxRounds, worstFaces, refineFactor,
+/// backend}`.
+val fit_cad_iterate_js(const val& rScan, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::FitCadIterateOptions o;
+        std::string step;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(
+                rOptions, "the iterate options",
+                {"stepPath", "partClass", "targetWithin", "targetExplained", "segmentTolerance",
+                 "fitTolerance", "maxRounds", "worstFaces", "refineFactor", "backend"});
+            if (rOptions.hasOwnProperty("stepPath"))
+                step = rOptions["stepPath"].as<std::string>();
+            if (rOptions.hasOwnProperty("partClass"))
+                o.mPartClass = meshioplusplus::fit_cad_part_class_from_name(
+                    rOptions["partClass"].as<std::string>());
+            if (rOptions.hasOwnProperty("targetWithin"))
+                o.mTargetWithin = rOptions["targetWithin"].as<double>();
+            if (rOptions.hasOwnProperty("targetExplained"))
+                o.mTargetExplained = rOptions["targetExplained"].as<double>();
+            if (rOptions.hasOwnProperty("segmentTolerance"))
+                o.mSegmentTolerance = rOptions["segmentTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("fitTolerance"))
+                o.mFitTolerance = rOptions["fitTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("maxRounds"))
+                o.mMaxRounds = static_cast<std::int64_t>(rOptions["maxRounds"].as<double>());
+            if (rOptions.hasOwnProperty("worstFaces"))
+                o.mWorstFaces = static_cast<std::int64_t>(rOptions["worstFaces"].as<double>());
+            if (rOptions.hasOwnProperty("refineFactor"))
+                o.mRefineFactor = rOptions["refineFactor"].as<double>();
+            if (rOptions.hasOwnProperty("backend")) {
+                const std::string b = rOptions["backend"].as<std::string>();
+                if (b == "native")
+                    o.mFitCad.mBackend = meshioplusplus::FitCadBackend::Native;
+                else if (b == "occt")
+                    o.mFitCad.mBackend = meshioplusplus::FitCadBackend::Occt;
+                else if (b != "auto")
+                    throw std::invalid_argument("fitCadIterate: backend is auto, occt or native");
+            }
+        }
+        meshioplusplus::FitCadIterateResult r =
+            meshioplusplus::fit_cad_iterate(val_to_mesh(rScan), step, o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mSupport.mMesh));
+        val rounds = val::array();
+        for (const auto& r_r : r.mRounds) {
+            val d = val::object();
+            d.set("shareWithin", r_r.mShareWithin);
+            d.set("explained", r_r.mExplained);
+            d.set("hausdorffMax", r_r.mHausdorffMax);
+            d.set("numFaces", static_cast<double>(r_r.mNumFaces));
+            d.set("numPatches", static_cast<double>(r_r.mNumPatches));
+            rounds.call<void>("push", d);
+        }
+        out.set("rounds", rounds);
+        out.set("bestRound", static_cast<double>(r.mBestRound));
+        out.set("targetWithin", r.mTargetWithin);
+        out.set("targetMet", r.mTargetMet);
+        out.set("stopReason", r.mStopReason);
+        out.set("numMeasured", static_cast<double>(r.mSupport.mNumMeasured));
+        out.set("numInferred", static_cast<double>(r.mSupport.mNumInferred));
         return out;
     });
 }
@@ -10683,6 +10850,9 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("flipNormals", &flip_normals_js);
     emscripten::function("clip", &clip_js);
     emscripten::function("offsetSurface", &offset_surface_js);
+    emscripten::function("constrainPrimitives", &constrain_primitives_js);
+    emscripten::function("faceSupport", &face_support_js);
+    emscripten::function("fitCadIterate", &fit_cad_iterate_js);
     emscripten::function("alignDatums", &align_datums_js);
     emscripten::function("measureElementPrimitive", &measure_element_primitive_js);
     emscripten::function("isosurface", &isosurface_js);

@@ -252,6 +252,147 @@ SEXP R_mio_clip(SEXP mesh, SEXP origin, SEXP normal, SEXP keep_below, SEXP cap) 
     return res;
 }
 
+/* A flat numeric vector of (a, b, kind) triples as int64; NULL when empty. */
+static const int64_t *r_triples(SEXP v, int64_t *n) {
+    *n = 0;
+    if (Rf_isNull(v) || Rf_length(v) == 0) return NULL;
+    if (Rf_length(v) % 3 != 0) Rf_error("meshio++: constrain_primitives: relations are triples");
+    const double *x = REAL(v);
+    int64_t *out = (int64_t *)R_alloc((size_t)Rf_length(v), sizeof(int64_t));
+    for (R_xlen_t i = 0; i < Rf_xlength(v); ++i) out[i] = (int64_t)x[i];
+    *n = (int64_t)(Rf_length(v) / 3);
+    return out;
+}
+
+/* constrain_primitives(mesh, face_tolerance, angle_tolerance, distance_tolerance,
+ * min_fraction, force, forbid) (roadmap 7.7.3); force and forbid flat triples. */
+SEXP R_mio_constrain_primitives(SEXP mesh, SEXP face_tolerance, SEXP angle_tolerance,
+                                SEXP distance_tolerance, SEXP min_fraction, SEXP force,
+                                SEXP forbid) {
+    mio_constrain_primitives_opts opts;
+    mio_constrain_primitives_opts_init(&opts);
+    opts.face_tolerance = mio_r_double(face_tolerance, "face_tolerance");
+    opts.angle_tolerance_deg = mio_r_double(angle_tolerance, "angle_tolerance");
+    opts.distance_tolerance = mio_r_double(distance_tolerance, "distance_tolerance");
+    opts.min_fraction = mio_r_double(min_fraction, "min_fraction");
+    opts.force = r_triples(force, &opts.num_force);
+    opts.forbid = r_triples(forbid, &opts.num_forbid);
+    mio_constrain_primitives_report r;
+    mio_mesh *out = mio_constrain_primitives(mio_r_mesh(mesh), &opts, &r);
+    if (out == NULL) mio_r_fail("constrain_primitives");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const R_xlen_t n = (R_xlen_t)r.num_relations;
+    SEXP pa = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP pb = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP kind = PROTECT(Rf_allocVector(INTSXP, n));
+    SEXP ang = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP dst = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP fc = PROTECT(Rf_allocVector(LGLSXP, n));
+    for (R_xlen_t k = 0; k < n; ++k) {
+        int64_t a = 0, b = 0;
+        int32_t kd = 0, forced = 0;
+        double angle = 0.0, distance = 0.0;
+        mio_r_check(mio_constrain_primitives_relation((int64_t)k, &a, &b, &kd, &angle, &distance,
+                                                      &forced),
+                    "constrain_primitives relation");
+        REAL(pa)[k] = (double)a;
+        REAL(pb)[k] = (double)b;
+        INTEGER(kind)[k] = kd;
+        REAL(ang)[k] = angle;
+        REAL(dst)[k] = distance;
+        LOGICAL(fc)[k] = forced != 0;
+    }
+    const R_xlen_t nu = (R_xlen_t)r.num_unmet;
+    SEXP unmet = PROTECT(Rf_allocVector(REALSXP, nu * 3));
+    for (R_xlen_t k = 0; k < nu; ++k) {
+        int64_t a = 0, b = 0;
+        int32_t kd = 0;
+        mio_r_check(mio_constrain_primitives_unmet((int64_t)k, &a, &b, &kd),
+                    "constrain_primitives unmet");
+        REAL(unmet)[3 * k] = (double)a;
+        REAL(unmet)[3 * k + 1] = (double)b;
+        REAL(unmet)[3 * k + 2] = (double)kd;
+    }
+    const char *names[] = {"mesh",     "num_constrained", "num_groups", "face_tolerance",
+                           "patch_a",  "patch_b",         "relation",   "angle_deg",
+                           "distance", "forced",          "unmet"};
+    const SEXP values[] = {mo, NULL, NULL, NULL, pa, pb, kind, ang, dst, fc, unmet};
+    const double numbers[] = {(double)r.num_constrained, (double)r.num_groups, r.face_tolerance};
+    SEXP res = mio_r_report_list(11, names, values, numbers);
+    UNPROTECT(8);
+    return res;
+}
+
+/* face_support(solid, scan, tolerance, measured_share, inferred_share, hole_data)
+ * (roadmap 7.7.1). */
+SEXP R_mio_face_support(SEXP solid, SEXP scan, SEXP tolerance, SEXP measured_share,
+                        SEXP inferred_share, SEXP hole_data) {
+    mio_face_support_opts opts;
+    mio_face_support_opts_init(&opts);
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.measured_share = mio_r_double(measured_share, "measured_share");
+    opts.inferred_share = mio_r_double(inferred_share, "inferred_share");
+    opts.hole_data = mio_r_opt_string(hole_data);
+    mio_face_support_report r;
+    mio_mesh *out = mio_face_support(mio_r_mesh(solid), mio_r_mesh(scan), &opts, &r);
+    if (out == NULL) mio_r_fail("face_support");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const char *names[] = {"mesh",      "num_measured", "num_partial", "num_inferred",
+                           "num_faces", "share_within", "tolerance"};
+    const SEXP values[] = {mo, NULL, NULL, NULL, NULL, NULL, NULL};
+    const double numbers[] = {(double)r.num_measured, (double)r.num_partial,
+                              (double)r.num_inferred, (double)r.num_faces, r.share_within,
+                              r.tolerance};
+    SEXP res = mio_r_report_list(7, names, values, numbers);
+    UNPROTECT(1);
+    return res;
+}
+
+/* fit_cad_iterate(scan, step_path, part_class, target_within, target_explained,
+ * segment_tolerance, fit_tolerance, max_rounds, worst_faces, refine_factor,
+ * backend) (roadmap 7.7.2); part_class and backend as their C enum values. */
+SEXP R_mio_fit_cad_iterate(SEXP scan, SEXP step_path, SEXP part_class, SEXP target_within,
+                           SEXP target_explained, SEXP segment_tolerance, SEXP fit_tolerance,
+                           SEXP max_rounds, SEXP worst_faces, SEXP refine_factor, SEXP backend) {
+    mio_fit_cad_iterate_opts opts;
+    mio_fit_cad_iterate_opts_init(&opts);
+    opts.part_class = mio_r_int(part_class, "part_class");
+    opts.target_within = mio_r_double(target_within, "target_within");
+    opts.target_explained = mio_r_double(target_explained, "target_explained");
+    opts.segment_tolerance = mio_r_double(segment_tolerance, "segment_tolerance");
+    opts.fit_tolerance = mio_r_double(fit_tolerance, "fit_tolerance");
+    opts.max_rounds = mio_r_int64(max_rounds, "max_rounds");
+    opts.worst_faces = mio_r_int64(worst_faces, "worst_faces");
+    opts.refine_factor = mio_r_double(refine_factor, "refine_factor");
+    opts.backend = mio_r_int(backend, "backend");
+    mio_fit_cad_iterate_report r;
+    mio_mesh *out =
+        mio_fit_cad_iterate(mio_r_mesh(scan), mio_r_opt_string(step_path), &opts, &r);
+    if (out == NULL) mio_r_fail("fit_cad_iterate");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const R_xlen_t n = (R_xlen_t)r.num_rounds;
+    SEXP share = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP expl = PROTECT(Rf_allocVector(REALSXP, n));
+    for (R_xlen_t k = 0; k < n; ++k) {
+        double sw = 0.0, ex = 0.0;
+        mio_r_check(mio_fit_cad_iterate_round((int64_t)k, &sw, &ex, NULL, NULL, NULL),
+                    "fit_cad_iterate round");
+        REAL(share)[k] = sw;
+        REAL(expl)[k] = ex;
+    }
+    const char *names[] = {"mesh",          "num_rounds",   "best_round", "target_met",
+                           "stop_reason",   "target_within", "share_within", "explained",
+                           "hausdorff_max", "num_faces",    "round_share_within",
+                           "round_explained"};
+    const SEXP values[] = {mo, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, share, expl};
+    const double numbers[] = {(double)r.num_rounds,  (double)r.best_round, (double)r.target_met,
+                              (double)r.stop_reason, r.target_within,      r.share_within,
+                              r.explained,           r.hausdorff_max,      (double)r.num_faces};
+    SEXP res = mio_r_report_list(12, names, values, numbers);
+    UNPROTECT(3);
+    return res;
+}
+
 /* The list offset_surface, thicken and hollow return (roadmap 7.8.4). */
 static SEXP mio_r_offset_list(mio_mesh *out, const mio_offset_report *r, const char *what) {
     if (out == NULL) mio_r_fail(what);

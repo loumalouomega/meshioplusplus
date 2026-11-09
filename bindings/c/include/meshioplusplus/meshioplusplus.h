@@ -1544,6 +1544,149 @@ MIO_API mio_mesh* mio_measure(const mio_mesh* mesh, const char* spec_json,
 MIO_API int64_t mio_measure_report_json(char* buf, int64_t buflen);
 /** The warnings of that call; string rule 5. */
 MIO_API int64_t mio_measure_warnings(char* buf, int64_t buflen);
+
+/* ---- roadmap 7.7: closing the reverse-engineering loop ---------------- */
+
+/** A relation between two fitted primitives (roadmap 7.7.3). */
+typedef enum mio_primitive_relation {
+    MIO_RELATION_COAXIAL = 0,
+    MIO_RELATION_PARALLEL = 1,
+    MIO_RELATION_PERPENDICULAR = 2,
+    MIO_RELATION_EQUAL_RADIUS = 3
+} mio_primitive_relation;
+
+/** Options of mio_constrain_primitives; mio_constrain_primitives_opts_init. 96 bytes. */
+typedef struct mio_constrain_primitives_opts {
+    double face_tolerance;      /**< <= 0: three times the largest patch tolerance */
+    double angle_tolerance_deg; /**< negative: the pass's own (init -1) */
+    double distance_tolerance;  /**< negative: the pass's own (init -1) */
+    double min_fraction;        /**< negative: fit_primitives' default (init -1) */
+    /** Forced relations, as triples (patch a, patch b, mio_primitive_relation); or NULL. */
+    const int64_t* force;
+    int64_t num_force; /**< triples */
+    const int64_t* forbid; /**< forbidden relations, as triples; or NULL */
+    int64_t num_forbid;
+    int64_t reserved[4];
+} mio_constrain_primitives_opts;
+
+/** What mio_constrain_primitives did. 64 bytes. */
+typedef struct mio_constrain_primitives_report {
+    int64_t num_constrained; /**< patches that took a shared value */
+    int64_t num_groups;
+    int64_t num_relations; /**< read each with mio_constrain_primitives_relation */
+    int64_t num_unmet;     /**< forced relations not kept; mio_constrain_primitives_unmet */
+    double face_tolerance;
+    int64_t reserved[3];
+} mio_constrain_primitives_report;
+
+MIO_API void mio_constrain_primitives_opts_init(mio_constrain_primitives_opts* opts);
+/**
+ * Fit related primitives of a fit_primitives skin together under control:
+ * coaxial groups, parallel and perpendicular planes, equal radii, with forced
+ * and forbidden relations and tolerances (roadmap 7.7.3;
+ * doc/constrain_primitives.md). Returns the skin with its fit:patch_* table
+ * rewritten, or NULL. `report` may be NULL.
+ */
+MIO_API mio_mesh* mio_constrain_primitives(const mio_mesh* mesh,
+                                           const mio_constrain_primitives_opts* opts,
+                                           mio_constrain_primitives_report* report);
+/**
+ * The k-th relation this thread's last mio_constrain_primitives applied: the
+ * reference and the patch that took it, its mio_primitive_relation, its
+ * residual before the change (angle in degrees, distance) and whether it was
+ * forced. Any out-param may be NULL.
+ */
+MIO_API mio_status mio_constrain_primitives_relation(int64_t k, int64_t* patch_a,
+                                                     int64_t* patch_b, int32_t* kind,
+                                                     double* angle_deg, double* distance,
+                                                     int32_t* forced);
+/** The k-th forced relation this thread's last call did not keep. */
+MIO_API mio_status mio_constrain_primitives_unmet(int64_t k, int64_t* patch_a, int64_t* patch_b,
+                                                  int32_t* kind);
+
+/** Options of mio_face_support; mio_face_support_opts_init. 64 bytes. */
+typedef struct mio_face_support_opts {
+    double tolerance;      /**< <= 0: 1e-3 of the scan's diagonal */
+    double measured_share; /**< at least this share: measured (init 0.9) */
+    double inferred_share; /**< below this share: inferred (init 0.1) */
+    const char* hole_data; /**< scan cell data marking fills; NULL: "repair:hole" */
+    int64_t reserved[4];
+} mio_face_support_opts;
+
+/** What mio_face_support found. 64 bytes. */
+typedef struct mio_face_support_report {
+    int64_t num_measured;
+    int64_t num_partial;
+    int64_t num_inferred;
+    int64_t num_faces;
+    double share_within; /**< the scan's points within the tolerance of the solid */
+    double tolerance;
+    int64_t reserved[2];
+} mio_face_support_report;
+
+MIO_API void mio_face_support_opts_init(mio_face_support_opts* opts);
+/**
+ * Class each face of a fit_cad re-mesh by how much of it the scan supports:
+ * measured, partial or inferred (roadmap 7.7.1; doc/fit_cad_loop.md). Returns
+ * the solid with fit_cad:face_support, fit_cad:face_measured and
+ * fit_cad:support, or NULL. `opts` and `report` may be NULL.
+ */
+MIO_API mio_mesh* mio_face_support(const mio_mesh* solid, const mio_mesh* scan,
+                                   const mio_face_support_opts* opts,
+                                   mio_face_support_report* report);
+
+/** fit_cad_iterate's part classes (roadmap 7.7.2). */
+typedef enum mio_fit_cad_part_class {
+    MIO_PART_ANY = 0,
+    MIO_PART_ANALYTIC = 1,
+    MIO_PART_CAST = 2,
+    MIO_PART_FREEFORM = 3
+} mio_fit_cad_part_class;
+
+/** Options of mio_fit_cad_iterate; mio_fit_cad_iterate_opts_init. 112 bytes. */
+typedef struct mio_fit_cad_iterate_opts {
+    double segment_tolerance; /**< <= 0: the part class's */
+    double fit_tolerance;     /**< <= 0: the segment tolerance */
+    double target_within;     /**< <= 0: the part class's */
+    double target_explained;  /**< 0: off */
+    double refine_factor;     /**< in (0, 1) (init 0.25) */
+    int32_t part_class;       /**< a mio_fit_cad_part_class */
+    int32_t backend;          /**< each round's fit_cad engine, a mio_fit_cad_backend */
+    int64_t max_rounds;       /**< init 4 */
+    int64_t worst_faces;      /**< init 3 */
+    int64_t min_patch_cells;  /**< init 1 */
+    int64_t reserved[5];
+} mio_fit_cad_iterate_opts;
+
+/** What mio_fit_cad_iterate did. 96 bytes. */
+typedef struct mio_fit_cad_iterate_report {
+    int64_t num_rounds;
+    int64_t best_round;
+    int32_t target_met;
+    int32_t stop_reason; /**< 0 target, 1 no improvement, 2 rounds, 3 nothing to refine */
+    double target_within;
+    double share_within; /**< the best round's */
+    double explained;    /**< the best round's explained area share */
+    double hausdorff_max;
+    int64_t num_faces;
+    int64_t reserved[4];
+} mio_fit_cad_iterate_report;
+
+MIO_API void mio_fit_cad_iterate_opts_init(mio_fit_cad_iterate_opts* opts);
+/**
+ * Segment, fit and build a solid in rounds towards a target, re-segmenting the
+ * worst faces' patches finer each round (roadmap 7.7.2; doc/fit_cad_loop.md).
+ * Returns the best round's solid, with face_support's arrays, or NULL;
+ * `step_path` (NULL or "": none) receives it as STEP. `opts` and `report` may
+ * be NULL.
+ */
+MIO_API mio_mesh* mio_fit_cad_iterate(const mio_mesh* scan, const char* step_path,
+                                      const mio_fit_cad_iterate_opts* opts,
+                                      mio_fit_cad_iterate_report* report);
+/** Round k of this thread's last mio_fit_cad_iterate. Any out-param may be NULL. */
+MIO_API mio_status mio_fit_cad_iterate_round(int64_t k, double* share_within, double* explained,
+                                             double* hausdorff_max, int64_t* num_faces,
+                                             int64_t* num_resegmented);
 /**
  * The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4): `primary` sets
  * Z, `secondary` X, and `origin` (NULL or "": the primary's point) a point-like

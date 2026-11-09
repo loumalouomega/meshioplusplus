@@ -382,6 +382,27 @@ _VERBS = (
         add_args="add_islands_args",
     ),
     _Verb(
+        "constrain-primitives",
+        "_fit_cad_loop",
+        "constrain_primitives_cmd",
+        "Fit related primitives together under control",
+        add_args="add_constrain_args",
+    ),
+    _Verb(
+        "face-support",
+        "_fit_cad_loop",
+        "face_support_cmd",
+        "The scan's support of each face of a fitted solid",
+        add_args="add_face_support_args",
+    ),
+    _Verb(
+        "fit-cad-iterate",
+        "_fit_cad_loop",
+        "fit_cad_iterate_cmd",
+        "Segment, fit and build a solid in rounds towards a target",
+        add_args="add_iterate_args",
+    ),
+    _Verb(
         "offset-surface",
         "_scan_edit",
         "offset_surface_cmd",

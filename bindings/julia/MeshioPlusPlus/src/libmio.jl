@@ -2136,6 +2136,78 @@ struct _CClipReport
     reserved::NTuple{3,Int64}
 end
 
+"""Mirror of C `mio_constrain_primitives_opts` (roadmap 7.7.3)."""
+struct _CConstrainPrimitivesOpts
+    face_tolerance::Cdouble
+    angle_tolerance_deg::Cdouble
+    distance_tolerance::Cdouble
+    min_fraction::Cdouble
+    force::Ptr{Int64}
+    num_force::Int64
+    forbid::Ptr{Int64}
+    num_forbid::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_constrain_primitives_report`."""
+struct _CConstrainPrimitivesReport
+    num_constrained::Int64
+    num_groups::Int64
+    num_relations::Int64
+    num_unmet::Int64
+    face_tolerance::Cdouble
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_face_support_opts` (roadmap 7.7.1)."""
+struct _CFaceSupportOpts
+    tolerance::Cdouble
+    measured_share::Cdouble
+    inferred_share::Cdouble
+    hole_data::Cstring
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_face_support_report`."""
+struct _CFaceSupportReport
+    num_measured::Int64
+    num_partial::Int64
+    num_inferred::Int64
+    num_faces::Int64
+    share_within::Cdouble
+    tolerance::Cdouble
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_fit_cad_iterate_opts` (roadmap 7.7.2)."""
+struct _CFitCadIterateOpts
+    segment_tolerance::Cdouble
+    fit_tolerance::Cdouble
+    target_within::Cdouble
+    target_explained::Cdouble
+    refine_factor::Cdouble
+    part_class::Int32
+    backend::Int32
+    max_rounds::Int64
+    worst_faces::Int64
+    min_patch_cells::Int64
+    reserved::NTuple{5,Int64}
+end
+
+"""Mirror of C `mio_fit_cad_iterate_report`."""
+struct _CFitCadIterateReport
+    num_rounds::Int64
+    best_round::Int64
+    target_met::Int32
+    stop_reason::Int32
+    target_within::Cdouble
+    share_within::Cdouble
+    explained::Cdouble
+    hausdorff_max::Cdouble
+    num_faces::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_offset_report` (roadmap 7.8.4)."""
 struct _COffsetReport
     num_not_visible::Int64
@@ -2734,6 +2806,12 @@ function _check_abi_layout()
         error("meshio++: mio_remove_islands layout mismatch")
     sizeof(_CClipReport) == 72 || error("meshio++: mio_clip_report layout mismatch")
     sizeof(_COffsetReport) == 64 || error("meshio++: mio_offset_report layout mismatch")
+    sizeof(_CConstrainPrimitivesOpts) == 96 || error("meshio++: mio_constrain_primitives_opts layout mismatch")
+    sizeof(_CConstrainPrimitivesReport) == 64 || error("meshio++: mio_constrain_primitives_report layout mismatch")
+    sizeof(_CFaceSupportOpts) == 64 || error("meshio++: mio_face_support_opts layout mismatch")
+    sizeof(_CFaceSupportReport) == 64 || error("meshio++: mio_face_support_report layout mismatch")
+    sizeof(_CFitCadIterateOpts) == 112 || error("meshio++: mio_fit_cad_iterate_opts layout mismatch")
+    sizeof(_CFitCadIterateReport) == 96 || error("meshio++: mio_fit_cad_iterate_report layout mismatch")
     sizeof(_CSymmetryPlaneOpts) == 112 ||
         error("meshio++: mio_symmetry_plane_opts layout mismatch ($(sizeof(_CSymmetryPlaneOpts)) bytes)")
     sizeof(_CSymmetryPlaneReport) == 128 ||

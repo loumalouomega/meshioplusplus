@@ -1421,6 +1421,112 @@ mio_clip <- function(mesh, origin, normal, keep_below = TRUE, cap = TRUE) {
   res
 }
 
+mio_relations_ <- c("coaxial", "parallel", "perpendicular", "equal_radius")
+
+# A list of list(a, b, relation) (or a data frame of patch_a, patch_b,
+# relation) as flat numeric triples.
+mio_relation_triples_ <- function(x) {
+  if (is.null(x) || length(x) == 0) return(numeric(0))
+  if (is.data.frame(x)) x <- lapply(seq_len(nrow(x)), function(i) as.list(x[i, ]))
+  unlist(lapply(x, function(r) {
+    k <- match(as.character(r[[3]]), mio_relations_)
+    if (is.na(k)) stop("meshio++: constrain_primitives: a relation is coaxial, parallel, perpendicular or equal_radius")
+    c(as.numeric(r[[1]]), as.numeric(r[[2]]), k - 1)
+  }))
+}
+
+#' Constrain fitted primitives under control
+#'
+#' Fit related primitives of a `mio_fit_primitives` skin together: coaxial
+#' groups, parallel and perpendicular planes, equal radii (roadmap 7.7.3).
+#' `force` and `forbid` are lists of `list(patch_a, patch_b, relation)`
+#' (`"coaxial"`, `"parallel"`, `"perpendicular"`, `"equal_radius"`). See
+#' `doc/constrain_primitives.md`.
+#'
+#' @param mesh A fitted skin.
+#' @param face_tolerance How far a face may lie from its patch (`0`: three
+#'   times the largest patch tolerance).
+#' @param angle_tolerance,distance_tolerance,min_fraction In place of the
+#'   pass's own (negative keeps them).
+#' @param force,forbid Relations to force or forbid.
+#' @return A list: `mesh`, `num_constrained`, `num_groups`, `face_tolerance`,
+#'   `relations` (a data frame of `patch_a`, `patch_b`, `relation`,
+#'   `angle_deg`, `distance`, `forced`) and `unmet`.
+#' @export
+mio_constrain_primitives <- function(mesh, face_tolerance = 0, angle_tolerance = -1,
+                                     distance_tolerance = -1, min_fraction = -1,
+                                     force = NULL, forbid = NULL) {
+  r <- .Call(R_mio_constrain_primitives, mesh, as.numeric(face_tolerance),
+             as.numeric(angle_tolerance), as.numeric(distance_tolerance),
+             as.numeric(min_fraction), mio_relation_triples_(force),
+             mio_relation_triples_(forbid))
+  rel <- data.frame(patch_a = r$patch_a, patch_b = r$patch_b,
+                    relation = mio_relations_[r$relation + 1L], angle_deg = r$angle_deg,
+                    distance = r$distance, forced = r$forced, stringsAsFactors = FALSE)
+  u <- matrix(r$unmet, ncol = 3, byrow = TRUE)
+  unmet <- lapply(seq_len(nrow(u)), function(i)
+    list(u[i, 1], u[i, 2], mio_relations_[u[i, 3] + 1L]))
+  list(mesh = r$mesh, num_constrained = r$num_constrained, num_groups = r$num_groups,
+       face_tolerance = r$face_tolerance, relations = rel, unmet = unmet)
+}
+
+#' The scan's support of each face of a fitted solid
+#'
+#' Class each face of a `mio_fit_cad` re-mesh as measured, partial or inferred
+#' by the share of its area within `tolerance` of the scan (roadmap 7.7.1);
+#' scan cells marked by `hole_data` (`repair`'s fills) count as unmeasured.
+#' See `doc/fit_cad_loop.md`.
+#'
+#' @param solid A `fit_cad` re-mesh.
+#' @param scan The scan.
+#' @param tolerance Within this of the scan a sample is measured (`0`: `1e-3`
+#'   of the scan's diagonal).
+#' @param measured_share,inferred_share The class thresholds.
+#' @param hole_data The scan cell data marking fills.
+#' @return A list: `mesh`, `num_measured`, `num_partial`, `num_inferred`,
+#'   `num_faces`, `share_within` and `tolerance`.
+#' @export
+mio_face_support <- function(solid, scan, tolerance = 0, measured_share = 0.9,
+                             inferred_share = 0.1, hole_data = "repair:hole") {
+  .Call(R_mio_face_support, solid, scan, as.numeric(tolerance), as.numeric(measured_share),
+        as.numeric(inferred_share), as.character(hole_data))
+}
+
+#' Segment, fit and build a solid in rounds towards a target
+#'
+#' Roadmap 7.7.2: each round segments, fits and builds; it stops at the
+#' target, at no improvement or after `max_rounds`, else re-segments the
+#' worst faces' patches finer. See `doc/fit_cad_loop.md`.
+#'
+#' @param scan A closed scan.
+#' @param step_path Where the best solid goes as STEP (`NULL`: nowhere).
+#' @param part_class `"any"`, `"analytic"`, `"cast"` or `"freeform"`.
+#' @param target_within,target_explained The targets (`0`: the class's; off).
+#' @param segment_tolerance,fit_tolerance Relative tolerances (`0`: the class's).
+#' @param max_rounds,worst_faces,refine_factor The driver's budget.
+#' @param backend `"auto"`, `"occt"` or `"native"`.
+#' @return A list: `mesh` (the best solid), `num_rounds`, `best_round`,
+#'   `target_met`, `stop_reason`, `target_within`, `share_within`,
+#'   `explained`, `hausdorff_max`, `num_faces`, `round_share_within` and
+#'   `round_explained`.
+#' @export
+mio_fit_cad_iterate <- function(scan, step_path = NULL, part_class = "any", target_within = 0,
+                                target_explained = 0, segment_tolerance = 0, fit_tolerance = 0,
+                                max_rounds = 4, worst_faces = 3, refine_factor = 0.25,
+                                backend = "auto") {
+  pc <- match(part_class, c("any", "analytic", "cast", "freeform"))
+  if (is.na(pc)) stop("meshio++: fit_cad_iterate: part_class must be any, analytic, cast or freeform")
+  be <- match(backend, c("auto", "occt", "native"))
+  if (is.na(be)) stop("meshio++: fit_cad_iterate: backend must be auto, occt or native")
+  r <- .Call(R_mio_fit_cad_iterate, scan, step_path, as.integer(pc - 1L),
+             as.numeric(target_within), as.numeric(target_explained),
+             as.numeric(segment_tolerance), as.numeric(fit_tolerance), as.numeric(max_rounds),
+             as.numeric(worst_faces), as.numeric(refine_factor), as.integer(be - 1L))
+  r$target_met <- r$target_met != 0
+  r$stop_reason <- c("target", "no improvement", "rounds", "nothing to refine")[r$stop_reason + 1]
+  r
+}
+
 #' Offset a surface
 #'
 #' Move each point of a triangle and quad surface along its offset direction

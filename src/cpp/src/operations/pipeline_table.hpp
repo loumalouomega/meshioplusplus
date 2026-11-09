@@ -105,6 +105,16 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FlipNormals", {"Region"}},
         // Cut by a plane, keep a side and cap it (roadmap 7.8.3).
         {"Clip", {"Origin", "Normal", "Keep", "Cap"}},
+        // Fitted primitives together under control (roadmap 7.7.3).
+        {"ConstrainPrimitives",
+         {"FaceTolerance", "AngleTolerance", "DistanceTolerance", "MinFraction", "Force",
+          "Forbid"}},
+        // The scan's support of each face of a fit_cad solid (roadmap 7.7.1).
+        {"FaceSupport", {"Scan", "Tolerance", "MeasuredShare", "InferredShare", "HoleData"}},
+        // Segment, fit and build a solid in rounds towards a target (roadmap 7.7.2).
+        {"FitCadIterate",
+         {"Step", "PartClass", "TargetWithin", "TargetExplained", "SegmentTolerance",
+          "FitTolerance", "MaxRounds", "WorstFaces", "RefineFactor", "Backend"}},
         // Move a surface along its offset directions (roadmap 7.8.4).
         {"OffsetSurface", {"Distance", "SmoothIterations"}},
         // A closed shell of a thickness from a surface (roadmap 7.8.4).

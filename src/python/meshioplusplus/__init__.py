@@ -143,6 +143,7 @@ if TYPE_CHECKING:
     from ._feature_edges import feature_edges
     from ._find_intersections import find_intersections
     from ._fit_cad import fit_cad
+    from ._fit_cad_loop import constrain_primitives, face_support, fit_cad_iterate
     from ._fit_curves import fit_curves
     from ._fit_primitives import fit_primitives
     from ._flip_normals import flip_normals
@@ -572,6 +573,9 @@ _LAZY_ATTRS = {
     "measure": "_measure",
     "remove_islands": "_remove_islands",
     "offset_surface": "_offset_surface",
+    "constrain_primitives": "_fit_cad_loop",
+    "face_support": "_fit_cad_loop",
+    "fit_cad_iterate": "_fit_cad_loop",
     "thicken": "_offset_surface",
     "hollow": "_offset_surface",
     "flip_normals": "_flip_normals",
@@ -769,6 +773,9 @@ __all__ = [
     "align_datums",
     "remove_islands",
     "offset_surface",
+    "constrain_primitives",
+    "face_support",
+    "fit_cad_iterate",
     "thicken",
     "hollow",
     "flip_normals",

@@ -409,6 +409,12 @@ function t_feature_segment()
     ho = mio.hollow(m, 0.1);
     expect_equal(ho.num_rim_quads, 0);
     expect_error(@() mio.thicken(m, 0.1, 'side', 'sideways'), 'side');
+    it = mio.fit_cad_iterate(m, 'backend', 'native');
+    expect_equal(it.target_met, true);
+    fs = mio.face_support(it.mesh, m);
+    expect_equal(fs.num_measured, fs.num_faces);
+    expect_error(@() mio.fit_cad_iterate(m, 'part_class', 'plastic'), 'part_class');
+    expect_error(@() mio.constrain_primitives(m), 'fit_primitives');
     ms = mio.measure(m, ['{"elements": [' ...
         '{"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},' ...
         '{"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],' ...
