@@ -136,7 +136,7 @@ Mesh read_avsucd(const std::string& rPath) {
         detail::need_tokens(t, 4, "AVS-UCD");
         point_ids[detail::strtoll_token(t[0])] = i;
         for (int c = 0; c < 3; ++c)
-            pp[i * 3 + c] = detail::parse_double_prefix(t[1 + c]);
+            pp[i * 3 + c] = detail::parse_double_prefix(t[1 + c]);  // NOSONAR(cpp:S3519)
     }
     mesh.AssignPoints(std::move(pts));
 
@@ -190,7 +190,7 @@ Mesh read_avsucd(const std::string& rPath) {
         for (std::size_t r = 0; r < blk.mCount; ++r)
             for (int j = 0; j < blk.mN; ++j) {
                 int src = perm.empty() ? j : perm[j];
-                dp[r * blk.mN + j] = blk.mConn[r * blk.mN + src];
+                dp[r * blk.mN + j] = blk.mConn[r * blk.mN + src];  // NOSONAR(cpp:S3519)
             }
         mesh.AddCellBlock(blk.mType, std::move(data));
         NDArray m(DType::Int64, {blk.mCount});

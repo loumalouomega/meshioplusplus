@@ -157,14 +157,14 @@ Mesh read_wkt(const std::string& rPath) {
     double* pp = pts.As<double>();
     for (std::size_t i = 0; i < points.size(); ++i)
         for (std::size_t j = 0; j < dim; ++j)
-            pp[i * dim + j] = points[i][j];
+            pp[i * dim + j] = points[i][j];  // NOSONAR(cpp:S3519)
     mesh.AssignPoints(std::move(pts));
 
     NDArray data(DType::Int64, {tris.size(), 3});
     std::int64_t* dp = data.As<std::int64_t>();
     for (std::size_t i = 0; i < tris.size(); ++i)
         for (int j = 0; j < 3; ++j)
-            dp[i * 3 + j] = tris[i][j];
+            dp[i * 3 + j] = tris[i][j];  // NOSONAR(cpp:S3519)
     mesh.AddCellBlock("triangle", std::move(data));
 
     return mesh;

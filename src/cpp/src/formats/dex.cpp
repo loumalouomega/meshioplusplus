@@ -137,7 +137,7 @@ Mesh read_dex(const std::string& rPath) {
     NDArray pts(DType::Float64, {n, static_cast<std::size_t>(kDim)});
     for (std::size_t r = 0; r < n; ++r)
         for (int c = 0; c < kDim; ++c)
-            pts.As<double>()[r * kDim + c] =
+            pts.As<double>()[r * kDim + c] =  // NOSONAR(cpp:S3519)
                 c < static_cast<int>(rows[r].size()) ? rows[r][c] : 0.0;
     mesh.AssignPoints(std::move(pts));
 

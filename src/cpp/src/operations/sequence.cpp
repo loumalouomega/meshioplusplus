@@ -29,6 +29,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -667,7 +668,10 @@ public:
 template <class TWriter, bool kStaticGrid>
 class SeqSink final : public SeqSeriesSink {
 public:
+    // Constrained so it never stands in for SeqSink's own copy or move.
     template <class... TArgs>
+        requires(!(sizeof...(TArgs) == 1 &&
+                   (std::is_same_v<std::remove_cvref_t<TArgs>, SeqSink> && ...)))
     explicit SeqSink(TArgs&&... rArgs) : mWriter(std::forward<TArgs>(rArgs)...) {}
     void WritePointsCells(const Mesh& rMesh) override {
         if constexpr (kStaticGrid)

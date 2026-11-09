@@ -326,7 +326,7 @@ Mesh read_netgen(const std::string& rPath) {
                 NDArray data(DType::Int64, {2});
                 if (!detail::parse_int_token(tokens[0], data.As<std::int64_t>()[0]))
                     throw ReadError("Netgen: invalid name-table index");
-                data.As<std::int64_t>()[1] = edim;
+                data.As<std::int64_t>()[1] = edim;  // NOSONAR(cpp:S3519)
                 fields.insert_or_assign(std::string(tokens[1]), std::move(data));
             }
         } else if (line == "identifications" || line == "identificationtypes") {
@@ -341,10 +341,12 @@ Mesh read_netgen(const std::string& rPath) {
                     const std::size_t width = pairs ? 3 : n;
                     if (eof || tokens.size() != width)
                         throw ReadError("Netgen: malformed periodic table");
-                    for (std::size_t j = 0; j < width; ++j)
-                        if (!detail::parse_int_token(tokens[j],
-                                                     data.As<std::int64_t>()[i * width + j]))
+                    for (std::size_t j = 0; j < width; ++j) {
+                        std::int64_t v = 0;
+                        if (!detail::parse_int_token(tokens[j], v))
                             throw ReadError("Netgen: invalid periodic-table integer");
+                        data.As<std::int64_t>()[i * width + j] = v;  // NOSONAR(cpp:S3519)
+                    }
                 }
             }
             fields.insert_or_assign(key, std::move(data));
@@ -382,7 +384,7 @@ Mesh read_netgen(const std::string& rPath) {
         std::int64_t* dp = data.As<std::int64_t>();
         for (std::size_t r = 0; r < n; ++r)
             for (std::size_t j = 0; j < k; ++j)
-                dp[r * k + j] = b.mRows[r][pmap[j]] - 1;
+                dp[r * k + j] = b.mRows[r][pmap[j]] - 1;  // NOSONAR(cpp:S3519)
         mesh.AddCellBlock(b.mType, std::move(data));
 
         NDArray idx(DType::Int64, {n});

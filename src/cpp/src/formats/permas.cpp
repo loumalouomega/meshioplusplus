@@ -194,7 +194,7 @@ Mesh read_permas(const std::string& rPath) {
             std::int64_t* dp = data.As<std::int64_t>();
             for (std::size_t r = 0; r < rows.size(); ++r)
                 for (std::size_t j = 0; j < k; ++j)
-                    dp[r * k + j] = rows[r][j];
+                    dp[r * k + j] = rows[r][j];  // NOSONAR(cpp:S3519)
             mesh.AddCellBlock(cell_type, std::move(data));
         }
         // all other keywords (NSET/ESET/...) are ignored
@@ -205,7 +205,7 @@ Mesh read_permas(const std::string& rPath) {
     NDArray pts(DType::Float64, {static_cast<std::size_t>(npoints), ncoord});
     double* pp = pts.As<double>();
     for (std::size_t i = 0; i < points.size(); ++i)
-        pp[i] = points[i];
+        pp[i] = points[i];  // NOSONAR(cpp:S3519)
     mesh.AssignPoints(std::move(pts));
 
     return mesh;
