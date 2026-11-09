@@ -4,7 +4,19 @@ meshio++ ships a ParaView Python plugin (`tools/paraview-meshioplusplus-plugin.p
 
 ## Installation
 
-The plugin runs inside ParaView's own Python, so meshio++ must be installed for that interpreter, and its compiled core must match that interpreter's version.
+The plugin runs inside ParaView's own Python, so meshio++ must be importable by that interpreter, and its compiled core must match that interpreter's version. There are two ways to get there.
+
+### The self-contained bundle
+
+Every release attaches one zip per platform and ParaView Python to its GitHub release: `meshioplusplus-paraview-<version>-<platform>-cp<XY>.zip`, for Linux x64, Windows x64 and macOS (x64 and arm64), and Python 3.10 to 3.13. It holds the plugin beside a `site-packages` folder with meshio++, the OpenCASCADE, Netgen and MMG add-ons the platform has, and `rich`, already unpacked (numpy is left out: ParaView ships it). Nothing is installed: the plugin puts that folder on `sys.path` when it finds it beside itself, so it works with Kitware's binaries, which have their own Python and no pip.
+
+1. Find the Python of your ParaView: `pvpython -c "import sys; print(sys.version)"` (3.12 is `cp312`).
+2. Download the matching zip and unzip it anywhere; keep the folder whole.
+3. Load `paraview-meshioplusplus-plugin.py` from it (*Tools → Manage Plugins → Load New*, *Auto Load*), or point `PV_PLUGIN_PATH` at the folder.
+
+`src/paraview/build_bundle.py` builds it (`--platform`, `--python-tag`, `--local-wheel`, `--addon-wheel`), as `src/blender/build_extension.py` builds the Blender extension; CI's `paraview-bundle` job loads a bundle in the newest Kitware Linux binary of each ParaView series it lists, with no meshio++ installed.
+
+### Installing into ParaView's Python
 
 1. Find the Python that your ParaView uses:
 

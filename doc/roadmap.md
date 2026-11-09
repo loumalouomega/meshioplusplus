@@ -120,7 +120,7 @@ The sanitizer leg, the reader fuzzing, the format conformance matrix, the proper
 | Julia General | Not registered, so `Pkg.add("MeshioPlusPlus")` does not work yet ([Julia](./julia.md)). |
 | Blender Extensions Platform | Extension zips are built and attached to every release; only the listing remains ([Blender](./blender.md)). |
 | ConanCenter and the vcpkg registry | Recipes are self-hosted and CI-validated under `packages/`; neither is submitted ([C API](./c_api.md#package-managers-conan-vcpkg-spack)). |
-| ParaView | The plugin installs with the wheel (`share/meshioplusplus/paraview/`) and is tested against conda-forge ParaView in CI ([ParaView plugin](./paraview_plugin.md)); no listing on a plugin index yet, and the self-contained bundle a listing would point at is 6.11. |
+| ParaView | The plugin installs with the wheel (`share/meshioplusplus/paraview/`), is tested against conda-forge ParaView in CI, and ships as a self-contained bundle per platform and ParaView Python on every release, which CI loads in Kitware's own binaries ([ParaView plugin](./paraview_plugin.md#installation)); only a listing on a plugin index remains. |
 
 - **4.2 Rust bindings** over the C API — the next language by scientific adoption after Julia and R, and the ABI/`SOVERSION` work makes it cheap. **M**
 - **4.3 Interop phase 2** — the Open3D and DOLFINx bridges exist as named stubs that raise `NotImplementedError` ([interop](./interop.md)). The pinned-memory staging for CuPy, once listed here, ships in Python (`to_cupy(pinned=True)`, [GPU handoff](./gpu.md#pinned-staging)). **S–M each**
@@ -171,7 +171,6 @@ The sanitizer leg, the reader fuzzing, the format conformance matrix, the proper
 
 *Admission: bringing what the library does into ParaView, where much of its output is post-processed. An item mirrors a library feature through the public Python API and never re-implements one, and an operation ParaView already has natively is not wrapped. Audited in November 2026 against `tools/paraview-meshioplusplus-plugin.py`, a reader and a writer of unstructured grids in about 200 lines ([ParaView plugin](./paraview_plugin.md)). The [Blender add-on](./blender.md) is the pattern: its import toggles, export format choice, pure payload layer and bundled zips are mirrored below.*
 
-- **6.11 A self-contained bundle per ParaView Python.** Installing into ParaView's own Python is the hard step of the plugin's [installation](./paraview_plugin.md#installation), and Kitware's binaries make it harder. Build one zip per ParaView Python version that vendors the base wheel and the add-ons, as the Blender extension zips do (`src/blender/build_extension.py`), attach it to each release, and test it on a matrix of ParaView versions, a Kitware tarball included. It is what the plugin-index listing of 4.1 would point at. Probe: `pvpython` from a Kitware tarball loads the bundle without pip. **M**
 
 ---
 

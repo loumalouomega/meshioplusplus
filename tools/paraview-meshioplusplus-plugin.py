@@ -1,4 +1,4 @@
-"""meshio++ in ParaView: a reader and a writer of unstructured grids.
+"""meshio++ in ParaView: a reader, a writer and filters.
 
 Only the proxy declarations live here; every conversion is in
 ``meshioplusplus._paraview``, which is tested without ParaView. See
@@ -9,9 +9,14 @@ Proxy names are stable identifiers (``MeshioPlusPlusReader``,
 labels, which keep the spellings scripts already use (``meshioreader``,
 ``meshioWriter``). The names the plugin used before are registered as aliases,
 so state files saved with them still load.
+
+The self-contained bundle (src/paraview/build_bundle.py) puts this file beside
+a site-packages folder holding meshio++; it is put on the path first.
 """
 
 import html
+import os
+import sys
 
 from paraview.util.vtkAlgorithm import (
     VTKPythonAlgorithmBase,
@@ -28,8 +33,12 @@ from vtkmodules.vtkCommonDataModel import (
     vtkUnstructuredGrid,
 )
 
-import meshioplusplus
-from meshioplusplus import _paraview
+_BUNDLED = os.path.join(os.path.dirname(os.path.abspath(__file__)), "site-packages")
+if os.path.isdir(_BUNDLED) and _BUNDLED not in sys.path:
+    sys.path.insert(0, _BUNDLED)
+
+import meshioplusplus  # noqa: E402  isort:skip
+from meshioplusplus import _paraview  # noqa: E402  isort:skip
 
 paraview_plugin_version = meshioplusplus.__version__
 _formats = meshioplusplus.formats()

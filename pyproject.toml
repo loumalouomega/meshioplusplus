@@ -216,3 +216,6 @@ relative_files = true
 
 [tool.isort]
 profile = "black"
+# src/paraview/ holds the ParaView bundle builder, not a `paraview` package:
+# the plugin's `paraview` is ParaView's own, a third-party module.
+known_third_party = ["paraview"]
