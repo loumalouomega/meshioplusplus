@@ -1621,6 +1621,15 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_equal(ri$num_removed, 0)
   mio_release(ri$mesh)
   expect_error(mio_remove_islands(m, connectivity = "face"), "connectivity")
+  os <- mio_offset_surface(m, 0.1)
+  expect_equal(os$num_folded, 0)
+  expect_gte(os$max_move, 0.1)
+  mio_release(os$mesh)
+  ho <- mio_hollow(m, 0.1)
+  expect_equal(ho$num_rim_quads, 0)
+  mio_release(ho$mesh)
+  expect_error(mio_thicken(m, 0.1, side = "sideways"), "side")
+  expect_error(mio_offset_surface(m, NaN), "finite")
   ms <- mio_measure(m, '{"elements": [
     {"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},
     {"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],

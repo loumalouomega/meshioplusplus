@@ -140,3 +140,108 @@ def test_the_mcp_tools(tmp_path):
         str(tmp_path / "b.vtu"), str(tmp_path / "c.vtu"), [0, 0, 0], [0, 0, 1]
     )
     assert rep["num_loops"] == 1
+
+
+def quad_cube():
+    pts = np.array(
+        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]]
+        + [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]],
+        dtype=float,
+    )
+    quads = np.array(
+        [
+            [0, 3, 2, 1],
+            [4, 5, 6, 7],
+            [0, 4, 7, 3],
+            [1, 2, 6, 5],
+            [0, 1, 5, 4],
+            [3, 7, 6, 2],
+        ]
+    )
+    return mp.Mesh(pts, [("quad", quads)])
+
+
+def shell_volume(mesh):
+    p = mesh.points
+    tris = []
+    for c in mesh.cells:
+        d = c.data
+        if c.type == "triangle":
+            tris.append(d)
+        else:
+            tris.append(d[:, [0, 1, 2]])
+            tris.append(d[:, [0, 2, 3]])
+    t = np.concatenate(tris)
+    a, b, c = p[t[:, 0]], p[t[:, 1]], p[t[:, 2]]
+    return float(np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6.0)
+
+
+def test_offset_a_cube_grows_it_by_the_distance():
+    out, rep = mp.offset_surface(quad_cube(), 0.1, return_report=True)
+    np.testing.assert_allclose(np.abs(out.points - 0.5), 0.6, atol=1e-12)
+    assert rep["max_move"] == pytest.approx(0.1 * np.sqrt(3.0), abs=1e-12)
+    assert rep["num_folded"] == 0 and rep["warnings"] == []
+    inward = mp.offset_surface(quad_cube(), -0.1)
+    np.testing.assert_allclose(np.abs(inward.points - 0.5), 0.4, atol=1e-12)
+    with pytest.raises(ValueError, match="finite"):
+        mp.offset_surface(quad_cube(), float("nan"))
+
+
+def test_thicken_a_hemisphere_and_hollow_a_cube():
+    hemi = mp.clip(
+        mp.icosa_sphere(1.0, 4), (0, 0, 0), (0, 0, 1), keep="above", cap=False
+    )
+    for side, hi in (("inward", 1.0), ("outward", 1.05), ("both", 1.025)):
+        shell, rep = mp.thicken(hemi, 0.05, side=side, return_report=True)
+        assert rep["num_rim_quads"] > 0
+        want = 2 * np.pi / 3 * (hi**3 - (hi - 0.05) ** 3)
+        assert shell_volume(shell) == pytest.approx(want, rel=0.02)
+        assert set(np.concatenate(shell.cell_data["thicken:side"]).tolist()) == {
+            0,
+            1,
+            2,
+        }
+    with pytest.raises(ValueError, match="side"):
+        mp.thicken(hemi, 0.05, side="sideways")
+    hollowed = mp.hollow(quad_cube(), 0.1)
+    assert shell_volume(hollowed) == pytest.approx(1.0 - 0.8**3, abs=1e-12)
+    with pytest.raises(ValueError, match="boundary"):
+        mp.hollow(hemi, 0.05)
+
+
+def test_offset_pipeline_engines_agree(tmp_path):
+    src = tmp_path / "cube.vtu"
+    mp.write(src, quad_cube())
+    settings = {
+        "Version": 1,
+        "Input": {"Path": str(src)},
+        "Operations": [
+            {"Op": "OffsetSurface", "Distance": 0.1},
+            {"Op": "Hollow", "Wall": 0.2},
+        ],
+        "Output": {"Path": str(tmp_path / "py.vtu")},
+    }
+    rep = mp.run_pipeline(settings)
+    assert rep["steps"][0]["MaxMove"] == pytest.approx(0.1 * np.sqrt(3.0))
+    settings["Output"]["Path"] = str(tmp_path / "cpp.vtu")
+    _core.run_pipeline_json(__import__("json").dumps(settings))
+    a, b = mp.read(str(tmp_path / "py.vtu")), mp.read(str(tmp_path / "cpp.vtu"))
+    np.testing.assert_array_equal(a.points, b.points)
+    settings["Operations"] = [{"Op": "Thicken"}]
+    with pytest.raises(Exception, match="Thickness"):
+        mp.run_pipeline(settings)
+
+
+def test_offset_mcp_tools(tmp_path):
+    from meshioplusplus.mcp import _tools
+
+    src = tmp_path / "cube.vtu"
+    mp.write(src, quad_cube())
+    assert _tools.tool_offset_surface(str(src), str(tmp_path / "o.vtu"), 0.1)[
+        "max_move"
+    ] == pytest.approx(0.1 * np.sqrt(3.0))
+    assert _tools.tool_hollow(str(src), str(tmp_path / "h.vtu"), 0.1)["num_folded"] == 0
+    assert (
+        _tools.tool_thicken(str(src), str(tmp_path / "t.vtu"), 0.1)["num_rim_quads"]
+        == 0
+    )

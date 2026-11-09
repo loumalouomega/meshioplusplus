@@ -8990,3 +8990,29 @@ TEST(CApi, ClipASphereAndCapIt) {
     mio_mesh_free(half);
     mio_mesh_free(s);
 }
+
+TEST(CApi, OffsetThickenAndHollowASphere) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    mio_mesh* s = mio_icosa_sphere(&g);
+    ASSERT_NE(s, nullptr);
+    mio_offset_report r;
+    mio_mesh* grown = mio_offset_surface(s, 0.1, 0, &r);
+    ASSERT_NE(grown, nullptr) << mio_last_error();
+    EXPECT_EQ(r.num_folded, 0);
+    EXPECT_GE(r.max_move, 0.1);
+    EXPECT_EQ(mio_offset_warnings(nullptr, 0), 0);
+    mio_mesh* shell = mio_hollow(s, 0.1, 0, &r);
+    ASSERT_NE(shell, nullptr) << mio_last_error();
+    EXPECT_EQ(r.num_rim_quads, 0);
+    // A closed sphere has no rim: thicken joins nothing, and side 3 is refused.
+    mio_mesh* thick = mio_thicken(s, 0.1, MIO_THICKEN_OUTWARD, 0, &r);
+    ASSERT_NE(thick, nullptr) << mio_last_error();
+    EXPECT_EQ(r.num_rim_quads, 0);
+    EXPECT_EQ(mio_thicken(s, 0.1, 3, 0, &r), nullptr);
+    EXPECT_EQ(mio_offset_surface(s, std::nan(""), 0, &r), nullptr);
+    mio_mesh_free(thick);
+    mio_mesh_free(shell);
+    mio_mesh_free(grown);
+    mio_mesh_free(s);
+}

@@ -100,6 +100,9 @@ extern SEXP R_mio_measure(SEXP, SEXP);
 extern SEXP R_mio_remove_islands(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_flip_normals(SEXP, SEXP);
 extern SEXP R_mio_clip(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_offset_surface(SEXP, SEXP, SEXP);
+extern SEXP R_mio_thicken(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_hollow(SEXP, SEXP, SEXP);
 extern SEXP R_mio_align_datums(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_measure_element_primitive(SEXP, SEXP);
 extern SEXP R_mio_isosurface(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -376,6 +379,9 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_remove_islands, 7),
                                               CALLDEF(R_mio_flip_normals, 2),
                                               CALLDEF(R_mio_clip, 5),
+                                              CALLDEF(R_mio_offset_surface, 3),
+                                              CALLDEF(R_mio_thicken, 4),
+                                              CALLDEF(R_mio_hollow, 3),
                                               CALLDEF(R_mio_align_datums, 4),
                                               CALLDEF(R_mio_measure_element_primitive, 2),
                                               CALLDEF(R_mio_isosurface, 5),

@@ -1448,6 +1448,46 @@ MIO_API mio_mesh* mio_clip(const mio_mesh* mesh, const double origin[3], const d
 /** The warnings of this thread's last mio_clip call; string rule 5. */
 MIO_API int64_t mio_clip_warnings(char* buf, int64_t buflen);
 
+/** What mio_offset_surface, mio_thicken and mio_hollow did (roadmap 7.8.4). 64 bytes. */
+typedef struct mio_offset_report {
+    int64_t num_not_visible; /**< points moved by the distance alone */
+    int64_t num_clamped;     /**< points whose stretch hit its bound (4) */
+    int64_t num_folded;      /**< faces whose normal turned over */
+    int64_t num_rim_quads;   /**< mio_thicken: the quads joining the layers */
+    double max_move;         /**< the longest point move */
+    int64_t num_warnings;
+    int64_t reserved[2];
+} mio_offset_report;
+
+/** The sides of mio_thicken's wall. */
+typedef enum mio_thicken_side {
+    MIO_THICKEN_INWARD = 0,  /**< the surface and its offset by -thickness */
+    MIO_THICKEN_OUTWARD = 1, /**< the surface and its offset by +thickness */
+    MIO_THICKEN_BOTH = 2     /**< its offsets by +-thickness / 2 */
+} mio_thicken_side;
+
+/**
+ * Move each point of a triangle and quad surface along its offset direction
+ * by `distance` over the least cosine to its faces, so each face's plane
+ * moves by `distance` (positive along the faces' normals); the connectivity,
+ * data and regions are kept (roadmap 7.8.4; doc/offset_surface.md).
+ * `smooth_iterations` smooths the directions. `report` may be NULL.
+ */
+MIO_API mio_mesh* mio_offset_surface(const mio_mesh* mesh, double distance,
+                                     int32_t smooth_iterations, mio_offset_report* report);
+/**
+ * A closed shell `thickness` thick from a surface: its two offsets on the
+ * `side` (mio_thicken_side) of the wall, the lower reversed, the boundary
+ * edges joined by quads; Int64 cell data thicken:side (roadmap 7.8.4).
+ */
+MIO_API mio_mesh* mio_thicken(const mio_mesh* mesh, double thickness, int32_t side,
+                              int32_t smooth_iterations, mio_offset_report* report);
+/** A closed surface with its offset by -wall, reversed, inside it (roadmap 7.8.4). */
+MIO_API mio_mesh* mio_hollow(const mio_mesh* mesh, double wall, int32_t smooth_iterations,
+                             mio_offset_report* report);
+/** The warnings of this thread's last offset, thicken or hollow call; string rule 5. */
+MIO_API int64_t mio_offset_warnings(char* buf, int64_t buflen);
+
 /**
  * Reverse the winding of every cell, or of the cell region `region` (NULL or
  * ""), with no point moved; Side entries move with their cells (roadmap

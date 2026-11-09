@@ -34426,6 +34426,99 @@ MESHIOPLUSPLUS_API OctreeMeshResult octree_mesh(const Mesh& rSkin,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/octree_mesh.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/offset_surface.hpp =====
+/**
+ * @file operations/offset_surface.hpp
+ * @brief Offset a surface, thicken it into a shell, hollow a solid (roadmap
+ * 7.8.4).
+ *
+ * Each point of a triangle and quad surface moves along its offset direction
+ * (`detail/offset_normals.hpp`, the directions `boundary_layer` grows along:
+ * the most normal normal of Aubry and Löhner), by the distance times its
+ * stretch, one over the least cosine between the direction and a face around
+ * it, at most 4: both faces of a sharp edge keep the distance (a cube offset
+ * by `d` is the cube grown by `d`, its corners moved by `sqrt(3) * d`). A
+ * positive distance moves along the faces' normals (their winding). A point
+ * no direction sees from all its faces within a cosine of 0.05 moves by the
+ * distance alone and is counted; a face whose normal turns over is counted as
+ * folded, with a warning, as the offset of a concave region deeper than its
+ * radius folds.
+ *
+ * `offset_surface` keeps the connectivity, the data and the regions, and moves
+ * the points. `thicken` turns a surface into a closed shell: the surface
+ * offset to the two sides of the wall (`Outward`: the surface and its offset
+ * by `+thickness`; `Inward`: by `-thickness`; `Both`: by `+-thickness / 2`),
+ * the lower one reversed, and each boundary edge joined across by a quad; the
+ * points are the upper layer's then the lower's (the point data duplicated),
+ * and the Int64 cell data `thicken:side` is 0 on the upper layer, 1 on the
+ * lower and 2 on the rim. `hollow` gives a closed surface an inner wall: the
+ * surface and its offset by `-wall`, reversed, with no rim (an open surface is
+ * refused). Their cells are one `triangle` and one `quad` block; the input's
+ * cell data and regions are not carried (a warning names them).
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+struct OffsetSurfaceOptions {
+    double mDistance = 0.0;     ///< along the faces' normals; negative: against them
+    int mSmoothIterations = 0;  ///< smoothing passes over the directions
+};
+
+struct OffsetSurfaceResult {
+    Mesh mMesh;
+    std::int64_t mNumNotVisible = 0;  ///< points moved by the distance alone
+    std::int64_t mNumClamped = 0;     ///< points whose stretch hit its bound
+    std::int64_t mNumFolded = 0;      ///< faces whose normal turned over
+    double mMaxMove = 0.0;            ///< the longest point move
+    std::int64_t mNumRimQuads = 0;    ///< thicken: the quads joining the layers
+    std::vector<std::string> mWarnings;
+};
+
+enum class ThickenSide : std::int32_t { Inward = 0, Outward = 1, Both = 2 };
+
+struct ThickenOptions {
+    double mThickness = 0.0;
+    ThickenSide mSide = ThickenSide::Inward;
+    int mSmoothIterations = 0;
+};
+
+/// @throws std::invalid_argument naming the accepted sides.
+MESHIOPLUSPLUS_API ThickenSide thicken_side_from_name(std::string_view Name);
+
+/**
+ * @brief Move each point of @p rMesh along its offset direction by the
+ * distance times its stretch (see the file comment).
+ * @throws std::invalid_argument on a non-finite distance or a cell that is not
+ * a triangle or a quad.
+ */
+MESHIOPLUSPLUS_API OffsetSurfaceResult offset_surface(const Mesh& rMesh,
+                                                      const OffsetSurfaceOptions& rOptions = {});
+
+/**
+ * @brief A closed shell of the given thickness from a surface (see the file
+ * comment).
+ * @throws std::invalid_argument on a thickness that is not positive and finite.
+ */
+MESHIOPLUSPLUS_API OffsetSurfaceResult thicken(const Mesh& rMesh, const ThickenOptions& rOptions);
+
+/**
+ * @brief A closed surface with an inner, reversed wall @p Wall inside it.
+ * @throws std::invalid_argument on a wall that is not positive and finite or
+ * a surface with boundary edges.
+ */
+MESHIOPLUSPLUS_API OffsetSurfaceResult hollow(const Mesh& rMesh, double Wall,
+                                              int SmoothIterations = 0);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/offset_surface.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/optimize_volume.hpp =====
 /**
  * @file optimize_volume.hpp
@@ -53146,6 +53239,67 @@ bool octree_prim_hits(const OctreeFrame& rFrame, const SizedPrim& rPrim,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/octree_size_field.hpp =====
+// ===== begin src/cpp/src/detail/offset_normals.hpp =====
+/**
+ * @file detail/offset_normals.hpp
+ * @brief Each point's offset direction over a triangle and quad surface: the
+ * most normal normal of Aubry and Löhner (2009), optionally smoothed, and the
+ * stretch that keeps every face around a point at the offset distance.
+ *
+ * A **core-private** header: no installed header names it. `boundary_layer`
+ * grows its layers along these directions and `offset_surface`, `thicken` and
+ * `hollow` move points along them (roadmap 6.9, 7.8.4); one function computes
+ * both, so they agree bit for bit.
+ *
+ * For each point, the angle-weighted mean of its faces' unit normals is
+ * stepped towards the face that sees it least (100 steps, the best kept);
+ * `mStretch` is one over the least cosine between the direction and a face
+ * normal around the point, at most `kOffsetMaxStretch`, so moving a point by
+ * `distance * stretch` keeps each face's plane `distance` away (a cube's
+ * corner moves by `sqrt(3) * distance` along its diagonal). A point that no
+ * direction sees from every face within `kOffsetVisible` is `mNotVisible`,
+ * its stretch 0. Smoothing passes (Jacobi, so order-free) move a direction
+ * towards its neighbours' mean while every face still sees it at more than
+ * half its first least cosine; the stretch is then recomputed.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+/// The least cosine at which a point still sees all its faces.
+inline constexpr double kOffsetVisible = 0.05;
+/// Offsets are divided by the least cosine, at most this many times.
+inline constexpr double kOffsetMaxStretch = 4.0;
+
+struct OffsetNormals {
+    std::vector<std::array<double, 3>> mFaceNormals;  ///< unit, times the sign
+    /// Each point's faces, with the corner angle there.
+    std::vector<std::vector<std::pair<std::size_t, double>>> mAround;
+    std::vector<std::vector<std::int64_t>> mNeighbours;  ///< sorted, unique
+    std::vector<std::array<double, 3>> mDirections;
+    std::vector<double> mStretch;  ///< 0 where not visible or unused
+    std::vector<double> mSeen;     ///< the first least cosine
+    std::vector<char> mUsed;
+    std::vector<char> mNotVisible;
+};
+
+/**
+ * @brief The offset directions of the points @p rX (xyz, packed) over the
+ * faces @p rFaces (a triangle's fourth entry is -1); @p Sign is 1 or -1 (the
+ * faces' own normals, or the opposite side).
+ */
+OffsetNormals offset_normals(const std::vector<double>& rX,
+                             const std::vector<std::array<std::int64_t, 4>>& rFaces, double Sign,
+                             int SmoothIterations);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/offset_normals.hpp =====
 // ===== begin src/cpp/src/detail/open_source.hpp =====
 /**
  * @file detail/open_source.hpp
@@ -60924,6 +61078,12 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FlipNormals", {"Region"}},
         // Cut by a plane, keep a side and cap it (roadmap 7.8.3).
         {"Clip", {"Origin", "Normal", "Keep", "Cap"}},
+        // Move a surface along its offset directions (roadmap 7.8.4).
+        {"OffsetSurface", {"Distance", "SmoothIterations"}},
+        // A closed shell of a thickness from a surface (roadmap 7.8.4).
+        {"Thicken", {"Thickness", "Side", "SmoothIterations"}},
+        // An inner wall inside a closed surface (roadmap 7.8.4).
+        {"Hollow", {"Wall", "SmoothIterations"}},
         // Elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).
         {"Measure", {"Spec", "Require"}},
         // The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4).
@@ -101403,6 +101563,162 @@ void octree_adaptive_refresh(AdaptiveOctree& rOctree, const OctreeFrame& rFrame,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/octree_size_field.cpp =====
+// ===== begin src/cpp/src/detail/offset_normals.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+using OnV3 = std::array<double, 3>;
+
+OffsetNormals offset_normals(const std::vector<double>& rX,
+                             const std::vector<std::array<std::int64_t, 4>>& rFaces, double Sign,
+                             int SmoothIterations) {
+    const std::size_t np = rX.size() / 3;
+    const std::size_t nf = rFaces.size();
+    const auto& faces = rFaces;
+    const auto point = [&](std::int64_t P) {
+        const auto i = static_cast<std::size_t>(P);
+        return OnV3{rX[3 * i], rX[3 * i + 1], rX[3 * i + 2]};
+    };
+    const auto corners = [&](std::size_t F) { return faces[F][3] >= 0 ? 4 : 3; };
+    // Unit face normals along the growth, and each point's faces with its
+    // corner angle there.
+    const double sign = Sign;
+    std::vector<OnV3> fn(nf);
+    std::vector<std::vector<std::pair<std::size_t, double>>> around(np);
+    std::vector<std::vector<std::int64_t>> nbrs(np);
+    for (std::size_t f = 0; f < nf; ++f) {
+        const int k = corners(f);
+        OnV3 n{0.0, 0.0, 0.0};
+        for (int i = 0; i < k; ++i) {
+            const OnV3 a = point(faces[f][static_cast<std::size_t>(i)]);
+            const OnV3 b = point(faces[f][static_cast<std::size_t>((i + 1) % k)]);
+            n = {n[0] + (a[1] - b[1]) * (a[2] + b[2]), n[1] + (a[2] - b[2]) * (a[0] + b[0]),
+                 n[2] + (a[0] - b[0]) * (a[1] + b[1])};
+        }
+        n = detail::MathUtils::UnitByDivision(n);
+        fn[f] = {sign * n[0], sign * n[1], sign * n[2]};
+        for (int i = 0; i < k; ++i) {
+            const std::int64_t p = faces[f][static_cast<std::size_t>(i)];
+            const std::int64_t q = faces[f][static_cast<std::size_t>((i + 1) % k)];
+            const std::int64_t r = faces[f][static_cast<std::size_t>((i + k - 1) % k)];
+            const OnV3 u = detail::MathUtils::UnitByDivision(detail::vec3_sub(point(q), point(p)));
+            const OnV3 v = detail::MathUtils::UnitByDivision(detail::vec3_sub(point(r), point(p)));
+            const double angle = std::acos(std::clamp(detail::vec3_dot(u, v), -1.0, 1.0));
+            around[static_cast<std::size_t>(p)].push_back({f, angle});
+            nbrs[static_cast<std::size_t>(p)].push_back(q);
+            nbrs[static_cast<std::size_t>(p)].push_back(r);
+        }
+    }
+    for (auto& r_n : nbrs) {
+        std::sort(r_n.begin(), r_n.end());
+        r_n.erase(std::unique(r_n.begin(), r_n.end()), r_n.end());
+    }
+    // Each point's most normal normal (Aubry and Löhner 2009): from the
+    // angle-weighted mean, steps toward the face that sees it least.
+    std::vector<OnV3> dir(np, OnV3{0.0, 0.0, 0.0});
+    std::vector<double> stretch(np, 0.0), seen(np, 0.0);
+    std::vector<char> used(np, 0), not_visible(np, 0);
+    parallel_for(
+        np,
+        [&](std::size_t P) {
+            const auto& r_a = around[P];
+            if (r_a.empty())
+                return;
+            used[P] = 1;
+            OnV3 m{0.0, 0.0, 0.0};
+            for (const auto& [f, w] : r_a)
+                m = {m[0] + w * fn[f][0], m[1] + w * fn[f][1], m[2] + w * fn[f][2]};
+            OnV3 n = detail::MathUtils::UnitByDivision(m);
+            const auto least = [&](const OnV3& rN, std::size_t& rWho) {
+                double lo = std::numeric_limits<double>::infinity();
+                for (const auto& [f, w] : r_a) {
+                    (void)w;
+                    const double d = detail::vec3_dot(rN, fn[f]);
+                    if (d < lo) {
+                        lo = d;
+                        rWho = f;
+                    }
+                }
+                return lo;
+            };
+            std::size_t who = 0;
+            OnV3 best = n;
+            double best_lo = least(n, who);
+            for (int it = 0; it < 100 && r_a.size() > 1; ++it) {
+                const double eta = 1.0 / double(it + 2);
+                n = detail::MathUtils::UnitByDivision(
+                    {n[0] + eta * fn[who][0], n[1] + eta * fn[who][1], n[2] + eta * fn[who][2]});
+                const double lo = least(n, who);
+                if (lo > best_lo) {
+                    best_lo = lo;
+                    best = n;
+                }
+            }
+            dir[P] = best;
+            if (!(best_lo > kOffsetVisible)) {
+                not_visible[P] = 1;
+                return;
+            }
+            stretch[P] = 1.0 / std::max(best_lo, 1.0 / kOffsetMaxStretch);
+            seen[P] = best_lo;
+        },
+        64);
+    // Smoothed directions (6.9.1): each moved toward its neighbours' mean,
+    // kept while every face around it still sees it at more than half the
+    // least cosine its most normal normal had (Jacobi passes, so the result
+    // does not depend on the order).
+    const auto least_cos = [&](std::size_t P, const OnV3& rN) {
+        double lo = std::numeric_limits<double>::infinity();
+        for (const auto& [f, w] : around[P]) {
+            (void)w;
+            lo = std::min(lo, detail::vec3_dot(rN, fn[f]));
+        }
+        return lo;
+    };
+    for (int it = 0; it < SmoothIterations; ++it) {
+        std::vector<OnV3> next = dir;
+        parallel_for(
+            np,
+            [&](std::size_t P) {
+                if (!(stretch[P] > 0.0) || nbrs[P].empty())
+                    return;
+                OnV3 m = dir[P];
+                for (const std::int64_t q : nbrs[P]) {
+                    const auto& r_q = dir[static_cast<std::size_t>(q)];
+                    if (stretch[static_cast<std::size_t>(q)] > 0.0)
+                        m = {m[0] + r_q[0], m[1] + r_q[1], m[2] + r_q[2]};
+                }
+                const OnV3 n = detail::MathUtils::UnitByDivision(m);
+                const double lo = least_cos(P, n);
+                if (lo > 0.5 * seen[P] && lo > kOffsetVisible)
+                    next[P] = n;
+            },
+            64);
+        dir = std::move(next);
+    }
+    if (SmoothIterations > 0)
+        for (std::size_t p = 0; p < np; ++p)
+            if (stretch[p] > 0.0)
+                stretch[p] = 1.0 / std::max(least_cos(p, dir[p]), 1.0 / kOffsetMaxStretch);
+    OffsetNormals out;
+    out.mFaceNormals = std::move(fn);
+    out.mAround = std::move(around);
+    out.mNeighbours = std::move(nbrs);
+    out.mDirections = std::move(dir);
+    out.mStretch = std::move(stretch);
+    out.mSeen = std::move(seen);
+    out.mUsed = std::move(used);
+    out.mNotVisible = std::move(not_visible);
+    return out;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/offset_normals.cpp =====
 // ===== begin src/cpp/src/detail/param_disc.cpp =====
 #include <algorithm>
 #include <array>
@@ -224384,10 +224700,6 @@ namespace {
 using BlV3 = std::array<double, 3>;
 
 constexpr const char* kBoundaryLayerPrefix = "meshio++: boundary_layer: ";
-// The least cosine at which a point still sees all its faces.
-constexpr double kBlVisible = 0.05;
-// Offsets are divided by the least cosine, at most this many times.
-constexpr double kBlMaxStretch = 4.0;
 // A cell is valid when its least scaled corner Jacobian passes this.
 constexpr double kBlMinJacobian = 1e-6;
 
@@ -224659,127 +224971,19 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
                         std::to_string(e.second) + ") disagree on its direction (orient them)");
         }
     }
-    // Unit face normals along the growth, and each point's faces with its
-    // corner angle there.
-    const double sign = o.mReverse ? -1.0 : 1.0;
-    std::vector<BlV3> fn(nf);
-    std::vector<std::vector<std::pair<std::size_t, double>>> around(np);
-    std::vector<std::vector<std::int64_t>> nbrs(np);
-    for (std::size_t f = 0; f < nf; ++f) {
-        const int k = corners(f);
-        BlV3 n{0.0, 0.0, 0.0};
-        for (int i = 0; i < k; ++i) {
-            const BlV3 a = point(faces[f][static_cast<std::size_t>(i)]);
-            const BlV3 b = point(faces[f][static_cast<std::size_t>((i + 1) % k)]);
-            n = {n[0] + (a[1] - b[1]) * (a[2] + b[2]), n[1] + (a[2] - b[2]) * (a[0] + b[0]),
-                 n[2] + (a[0] - b[0]) * (a[1] + b[1])};
-        }
-        n = detail::MathUtils::UnitByDivision(n);
-        fn[f] = {sign * n[0], sign * n[1], sign * n[2]};
-        for (int i = 0; i < k; ++i) {
-            const std::int64_t p = faces[f][static_cast<std::size_t>(i)];
-            const std::int64_t q = faces[f][static_cast<std::size_t>((i + 1) % k)];
-            const std::int64_t r = faces[f][static_cast<std::size_t>((i + k - 1) % k)];
-            const BlV3 u = detail::MathUtils::UnitByDivision(detail::vec3_sub(point(q), point(p)));
-            const BlV3 v = detail::MathUtils::UnitByDivision(detail::vec3_sub(point(r), point(p)));
-            const double angle = std::acos(std::clamp(detail::vec3_dot(u, v), -1.0, 1.0));
-            around[static_cast<std::size_t>(p)].push_back({f, angle});
-            nbrs[static_cast<std::size_t>(p)].push_back(q);
-            nbrs[static_cast<std::size_t>(p)].push_back(r);
-        }
-    }
-    for (auto& r_n : nbrs) {
-        std::sort(r_n.begin(), r_n.end());
-        r_n.erase(std::unique(r_n.begin(), r_n.end()), r_n.end());
-    }
-    // Each point's most normal normal (Aubry and Löhner 2009): from the
-    // angle-weighted mean, steps toward the face that sees it least.
-    std::vector<BlV3> dir(np, BlV3{0.0, 0.0, 0.0});
-    std::vector<double> stretch(np, 0.0), sigma(np, 0.0), seen(np, 0.0);
-    std::vector<char> used(np, 0), not_visible(np, 0);
-    parallel_for(
-        np,
-        [&](std::size_t P) {
-            const auto& r_a = around[P];
-            if (r_a.empty())
-                return;
-            used[P] = 1;
-            BlV3 m{0.0, 0.0, 0.0};
-            for (const auto& [f, w] : r_a)
-                m = {m[0] + w * fn[f][0], m[1] + w * fn[f][1], m[2] + w * fn[f][2]};
-            BlV3 n = detail::MathUtils::UnitByDivision(m);
-            const auto least = [&](const BlV3& rN, std::size_t& rWho) {
-                double lo = std::numeric_limits<double>::infinity();
-                for (const auto& [f, w] : r_a) {
-                    (void)w;
-                    const double d = detail::vec3_dot(rN, fn[f]);
-                    if (d < lo) {
-                        lo = d;
-                        rWho = f;
-                    }
-                }
-                return lo;
-            };
-            std::size_t who = 0;
-            BlV3 best = n;
-            double best_lo = least(n, who);
-            for (int it = 0; it < 100 && r_a.size() > 1; ++it) {
-                const double eta = 1.0 / double(it + 2);
-                n = detail::MathUtils::UnitByDivision(
-                    {n[0] + eta * fn[who][0], n[1] + eta * fn[who][1], n[2] + eta * fn[who][2]});
-                const double lo = least(n, who);
-                if (lo > best_lo) {
-                    best_lo = lo;
-                    best = n;
-                }
-            }
-            dir[P] = best;
-            if (!(best_lo > kBlVisible)) {
-                not_visible[P] = 1;
-                return;
-            }
-            stretch[P] = 1.0 / std::max(best_lo, 1.0 / kBlMaxStretch);
-            sigma[P] = 1.0;
-            seen[P] = best_lo;
-        },
-        64);
-    // Smoothed directions (6.9.1): each moved toward its neighbours' mean,
-    // kept while every face around it still sees it at more than half the
-    // least cosine its most normal normal had (Jacobi passes, so the result
-    // does not depend on the order).
-    const auto least_cos = [&](std::size_t P, const BlV3& rN) {
-        double lo = std::numeric_limits<double>::infinity();
-        for (const auto& [f, w] : around[P]) {
-            (void)w;
-            lo = std::min(lo, detail::vec3_dot(rN, fn[f]));
-        }
-        return lo;
-    };
-    for (int it = 0; it < o.mNormalSmoothIterations; ++it) {
-        std::vector<BlV3> next = dir;
-        parallel_for(
-            np,
-            [&](std::size_t P) {
-                if (!(sigma[P] > 0.0) || nbrs[P].empty())
-                    return;
-                BlV3 m = dir[P];
-                for (const std::int64_t q : nbrs[P]) {
-                    const auto& r_q = dir[static_cast<std::size_t>(q)];
-                    if (sigma[static_cast<std::size_t>(q)] > 0.0)
-                        m = {m[0] + r_q[0], m[1] + r_q[1], m[2] + r_q[2]};
-                }
-                const BlV3 n = detail::MathUtils::UnitByDivision(m);
-                const double lo = least_cos(P, n);
-                if (lo > 0.5 * seen[P] && lo > kBlVisible)
-                    next[P] = n;
-            },
-            64);
-        dir = std::move(next);
-    }
-    if (o.mNormalSmoothIterations > 0)
-        for (std::size_t p = 0; p < np; ++p)
-            if (sigma[p] > 0.0)
-                stretch[p] = 1.0 / std::max(least_cos(p, dir[p]), 1.0 / kBlMaxStretch);
+    // Each point's most normal normal (Aubry and Löhner 2009), smoothed
+    // (6.9.1), and its stretch: detail/offset_normals, shared with
+    // offset_surface.
+    detail::OffsetNormals normals =
+        detail::offset_normals(x, faces, o.mReverse ? -1.0 : 1.0, o.mNormalSmoothIterations);
+    const std::vector<std::vector<std::int64_t>>& nbrs = normals.mNeighbours;
+    const std::vector<BlV3>& dir = normals.mDirections;
+    const std::vector<double>& stretch = normals.mStretch;
+    const std::vector<char>& used = normals.mUsed;
+    const std::vector<char>& not_visible = normals.mNotVisible;
+    std::vector<double> sigma(np, 0.0);
+    for (std::size_t p = 0; p < np; ++p)
+        sigma[p] = stretch[p] > 0.0 ? 1.0 : 0.0;
     // The levels' offsets, before each point's own fraction and stretch.
     const auto nl = static_cast<std::size_t>(o.mNumLayers);
     std::vector<double> level(nl);
@@ -260651,6 +260855,285 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/octree_mesh_tetra.cpp =====
+// ===== begin src/cpp/src/operations/offset_surface.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using OfsV3 = std::array<double, 3>;
+using OfsFace = std::array<std::int64_t, 4>;
+
+[[noreturn]] void ofs_fail(const char* pOp, const std::string& rWhy) {
+    throw std::invalid_argument(std::string("meshio++: ") + pOp + ": " + rWhy);
+}
+
+// The surface's points (packed xyz) and faces (a triangle's fourth entry -1),
+// with the block each face came from.
+struct OfsSurface {
+    std::vector<double> mX;
+    std::vector<OfsFace> mFaces;
+};
+
+OfsSurface ofs_read(const Mesh& rMesh, const char* pOp) {
+    OfsSurface s;
+    const std::size_t np = rMesh.NumPoints();
+    const NDArray& r_pts = rMesh.Points();
+    if (np > 0 && (r_pts.Ndim() != 2 || r_pts.Shape()[1] != 3))
+        ofs_fail(pOp, "the points must be three-dimensional");
+    s.mX.resize(3 * np);
+    for (std::size_t i = 0; i < 3 * np; ++i)
+        s.mX[i] = detail::read_double(r_pts, i);
+    for (const auto cb : rMesh.CellRange()) {
+        const std::string type(cb.Type());
+        if ((type != "triangle" && type != "quad") || cb.IsRagged())
+            ofs_fail(pOp, "a '" + type + "' block: only triangles and quads are offset " +
+                              "(extract_surface or linearize first)");
+        const std::size_t k = type == "triangle" ? 3 : 4;
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            OfsFace f{-1, -1, -1, -1};
+            for (std::size_t i = 0; i < k; ++i) {
+                f[i] = detail::read_int(cb.Conn(), k * c + i);
+                if (f[i] < 0 || static_cast<std::size_t>(f[i]) >= np)
+                    ofs_fail(pOp, "a cell names a point out of range");
+            }
+            s.mFaces.push_back(f);
+        }
+    }
+    if (s.mFaces.empty())
+        ofs_fail(pOp, "the mesh has no triangle or quad");
+    return s;
+}
+
+// A face's Newell normal (not unit) over the points X.
+OfsV3 ofs_face_normal(const std::vector<double>& rX, const OfsFace& rF) {
+    const int k = rF[3] >= 0 ? 4 : 3;
+    OfsV3 n{0.0, 0.0, 0.0};
+    for (int i = 0; i < k; ++i) {
+        const auto a = static_cast<std::size_t>(rF[static_cast<std::size_t>(i)]);
+        const auto b = static_cast<std::size_t>(rF[static_cast<std::size_t>((i + 1) % k)]);
+        n[0] += (rX[3 * a + 1] - rX[3 * b + 1]) * (rX[3 * a + 2] + rX[3 * b + 2]);
+        n[1] += (rX[3 * a + 2] - rX[3 * b + 2]) * (rX[3 * a] + rX[3 * b]);
+        n[2] += (rX[3 * a] - rX[3 * b]) * (rX[3 * a + 1] + rX[3 * b + 1]);
+    }
+    return n;
+}
+
+// The points moved by Distance along the offset directions; the counts go
+// into rResult.
+std::vector<double> ofs_move(const OfsSurface& rS, const detail::OffsetNormals& rN,
+                             double Distance, OffsetSurfaceResult& rResult) {
+    std::vector<double> y = rS.mX;
+    const std::size_t np = rS.mX.size() / 3;
+    for (std::size_t p = 0; p < np; ++p) {
+        if (!rN.mUsed[p])
+            continue;
+        double stretch = rN.mStretch[p];
+        if (!(stretch > 0.0)) {
+            stretch = 1.0;
+            ++rResult.mNumNotVisible;
+        } else if (stretch >= detail::kOffsetMaxStretch) {
+            ++rResult.mNumClamped;
+        }
+        const double move = Distance * stretch;
+        for (std::size_t c = 0; c < 3; ++c)
+            y[3 * p + c] += move * rN.mDirections[p][c];
+        rResult.mMaxMove = std::max(rResult.mMaxMove, std::abs(move));
+    }
+    for (std::size_t f = 0; f < rS.mFaces.size(); ++f)
+        if (detail::vec3_dot(ofs_face_normal(rS.mX, rS.mFaces[f]),
+                             ofs_face_normal(y, rS.mFaces[f])) <= 0.0)
+            ++rResult.mNumFolded;
+    return y;
+}
+
+void ofs_warn(OffsetSurfaceResult& rResult, const char* pOp) {
+    if (rResult.mNumNotVisible > 0)
+        rResult.mWarnings.push_back(std::string(pOp) + ": " +
+                                    std::to_string(rResult.mNumNotVisible) +
+                                    " point(s) have no direction every face around them sees; "
+                                    "they moved by the distance alone");
+    if (rResult.mNumFolded > 0)
+        rResult.mWarnings.push_back(std::string(pOp) + ": " +
+                                    std::to_string(rResult.mNumFolded) +
+                                    " face(s) turned over: the offset is deeper than a concave "
+                                    "region's radius");
+}
+
+NDArray ofs_points(const std::vector<double>& rX) {
+    NDArray p = NDArray::Uninit(DType::Float64, {rX.size() / 3, std::size_t{3}});
+    std::copy(rX.begin(), rX.end(), p.As<double>());
+    return p;
+}
+
+// A shell: the upper layer U (kept), the lower layer L (reversed), with the
+// rim quads when Rim; its point data duplicated, thicken:side attached.
+void ofs_shell(const Mesh& rMesh, const OfsSurface& rS, const std::vector<double>& rUpper,
+               const std::vector<double>& rLower, bool Rim, const char* pOp,
+               OffsetSurfaceResult& rResult) {
+    const auto np = static_cast<std::int64_t>(rS.mX.size() / 3);
+    std::vector<double> xyz = rUpper;
+    xyz.insert(xyz.end(), rLower.begin(), rLower.end());
+    std::vector<std::int64_t> tris, quads, tri_side, quad_side;
+    for (int layer = 0; layer < 2; ++layer)
+        for (const OfsFace& r_f : rS.mFaces) {
+            const std::int64_t off = layer == 0 ? 0 : np;
+            if (r_f[3] < 0) {
+                if (layer == 0)
+                    tris.insert(tris.end(), {r_f[0], r_f[1], r_f[2]});
+                else
+                    tris.insert(tris.end(), {r_f[0] + off, r_f[2] + off, r_f[1] + off});
+                tri_side.push_back(layer);
+            } else {
+                if (layer == 0)
+                    quads.insert(quads.end(), {r_f[0], r_f[1], r_f[2], r_f[3]});
+                else
+                    quads.insert(quads.end(),
+                                 {r_f[0] + off, r_f[3] + off, r_f[2] + off, r_f[1] + off});
+                quad_side.push_back(layer);
+            }
+        }
+    // The boundary edges, in their face's direction, in face order.
+    std::map<std::pair<std::int64_t, std::int64_t>, int> uses;
+    for (const OfsFace& r_f : rS.mFaces) {
+        const int k = r_f[3] >= 0 ? 4 : 3;
+        for (int i = 0; i < k; ++i) {
+            const std::int64_t a = r_f[static_cast<std::size_t>(i)];
+            const std::int64_t b = r_f[static_cast<std::size_t>((i + 1) % k)];
+            ++uses[{std::min(a, b), std::max(a, b)}];
+        }
+    }
+    std::int64_t num_boundary = 0;
+    for (const OfsFace& r_f : rS.mFaces) {
+        const int k = r_f[3] >= 0 ? 4 : 3;
+        for (int i = 0; i < k; ++i) {
+            const std::int64_t a = r_f[static_cast<std::size_t>(i)];
+            const std::int64_t b = r_f[static_cast<std::size_t>((i + 1) % k)];
+            if (uses[{std::min(a, b), std::max(a, b)}] != 1)
+                continue;
+            ++num_boundary;
+            if (Rim) {
+                quads.insert(quads.end(), {b, a, a + np, b + np});
+                quad_side.push_back(2);
+            }
+        }
+    }
+    if (!Rim && num_boundary > 0)
+        ofs_fail(pOp, "the surface has " + std::to_string(num_boundary) +
+                          " boundary edge(s): hollow takes a closed surface (thicken an open one)");
+    rResult.mNumRimQuads = Rim ? num_boundary : 0;
+
+    Mesh& out = rResult.mMesh;
+    out.AssignPoints(ofs_points(xyz));
+    std::vector<NDArray> side;
+    const auto add_block = [&](const char* pType, const std::vector<std::int64_t>& rConn,
+                               const std::vector<std::int64_t>& rSide, std::size_t K) {
+        if (rSide.empty())
+            return;
+        NDArray c = NDArray::Uninit(DType::Int64, {rSide.size(), K});
+        std::copy(rConn.begin(), rConn.end(), c.As<std::int64_t>());
+        out.AddCellBlock(pType, std::move(c));
+        NDArray s = NDArray::Uninit(DType::Int64, {rSide.size()});
+        std::copy(rSide.begin(), rSide.end(), s.As<std::int64_t>());
+        side.push_back(std::move(s));
+    };
+    add_block("triangle", tris, tri_side, 3);
+    add_block("quad", quads, quad_side, 4);
+    std::vector<std::int64_t> twice(2 * static_cast<std::size_t>(np));
+    for (std::size_t i = 0; i < twice.size(); ++i)
+        twice[i] = static_cast<std::int64_t>(i % static_cast<std::size_t>(np));
+    for (const std::string& r_name : rMesh.PointDataNames())
+        out.AddPointData(r_name, detail::subset_gather_rows(rMesh.PointData(r_name), twice));
+    out.AddCellData("thicken:side", std::move(side));
+    for (const std::string& r_name : rMesh.FieldDataNames())
+        out.AddFieldData(r_name, rMesh.FieldData(r_name));
+    if (!rMesh.CellDataNames().empty() || rMesh.NumRegions() > 0)
+        rResult.mWarnings.push_back(std::string(pOp) +
+                                    ": the input's cell data and regions are not carried "
+                                    "onto the shell");
+}
+
+}  // namespace
+
+ThickenSide thicken_side_from_name(std::string_view Name) {
+    if (Name == "inward")
+        return ThickenSide::Inward;
+    if (Name == "outward")
+        return ThickenSide::Outward;
+    if (Name == "both")
+        return ThickenSide::Both;
+    throw std::invalid_argument("meshio++: thicken: side must be inward, outward or both, not '" +
+                                std::string(Name) + "'");
+}
+
+OffsetSurfaceResult offset_surface(const Mesh& rMesh, const OffsetSurfaceOptions& rOptions) {
+    if (!std::isfinite(rOptions.mDistance))
+        ofs_fail("offset_surface", "distance must be finite");
+    if (rOptions.mSmoothIterations < 0 || rOptions.mSmoothIterations > 1000)
+        ofs_fail("offset_surface", "smooth_iterations must be between 0 and 1000");
+    const OfsSurface s = ofs_read(rMesh, "offset_surface");
+    const detail::OffsetNormals n =
+        detail::offset_normals(s.mX, s.mFaces, 1.0, rOptions.mSmoothIterations);
+    OffsetSurfaceResult result;
+    const std::vector<double> y = ofs_move(s, n, rOptions.mDistance, result);
+    result.mMesh = detail::clone_mesh(rMesh);
+    result.mMesh.AssignPoints(ofs_points(y));
+    ofs_warn(result, "offset_surface");
+    return result;
+}
+
+OffsetSurfaceResult thicken(const Mesh& rMesh, const ThickenOptions& rOptions) {
+    const double t = rOptions.mThickness;
+    if (!(std::isfinite(t) && t > 0.0))
+        ofs_fail("thicken", "thickness must be positive and finite");
+    if (rOptions.mSmoothIterations < 0 || rOptions.mSmoothIterations > 1000)
+        ofs_fail("thicken", "smooth_iterations must be between 0 and 1000");
+    if (rOptions.mSide != ThickenSide::Inward && rOptions.mSide != ThickenSide::Outward &&
+        rOptions.mSide != ThickenSide::Both)
+        ofs_fail("thicken", "side must be inward, outward or both");
+    const OfsSurface s = ofs_read(rMesh, "thicken");
+    const detail::OffsetNormals n =
+        detail::offset_normals(s.mX, s.mFaces, 1.0, rOptions.mSmoothIterations);
+    OffsetSurfaceResult result;
+    const double hi = rOptions.mSide == ThickenSide::Outward ? t
+                      : rOptions.mSide == ThickenSide::Inward ? 0.0
+                                                               : 0.5 * t;
+    const double lo = hi - t;
+    const std::vector<double> upper = hi == 0.0 ? s.mX : ofs_move(s, n, hi, result);
+    const std::vector<double> lower = lo == 0.0 ? s.mX : ofs_move(s, n, lo, result);
+    ofs_shell(rMesh, s, upper, lower, true, "thicken", result);
+    ofs_warn(result, "thicken");
+    return result;
+}
+
+OffsetSurfaceResult hollow(const Mesh& rMesh, double Wall, int SmoothIterations) {
+    if (!(std::isfinite(Wall) && Wall > 0.0))
+        ofs_fail("hollow", "wall must be positive and finite");
+    if (SmoothIterations < 0 || SmoothIterations > 1000)
+        ofs_fail("hollow", "smooth_iterations must be between 0 and 1000");
+    const OfsSurface s = ofs_read(rMesh, "hollow");
+    const detail::OffsetNormals n = detail::offset_normals(s.mX, s.mFaces, 1.0, SmoothIterations);
+    OffsetSurfaceResult result;
+    const std::vector<double> inner = ofs_move(s, n, -Wall, result);
+    ofs_shell(rMesh, s, s.mX, inner, false, "hollow", result);
+    ofs_warn(result, "hollow");
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/offset_surface.cpp =====
 // ===== begin src/cpp/src/operations/optimize_volume.cpp =====
 #include <algorithm>
 #include <array>
@@ -264600,6 +265083,34 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumCapTriangles", static_cast<double>(cr.mNumCapTriangles)},
                         {"NumLoops", static_cast<double>(cr.mNumLoops)}});
         return std::move(cr.mMesh);
+    }
+    if (op == "OffsetSurface" || op == "Thicken" || op == "Hollow") {
+        const char* amount = op == "OffsetSurface" ? "Distance"
+                             : op == "Thicken"     ? "Thickness"
+                                                   : "Wall";
+        if (!pipe_find(rStep, amount))
+            throw std::invalid_argument(pipe_err(rStep, std::string("needs ") + amount));
+        const double value = pipe_number(rStep, amount, 0.0);
+        const int smooth = static_cast<int>(pipe_number(rStep, "SmoothIterations", 0.0));
+        OffsetSurfaceResult r;
+        if (op == "OffsetSurface") {
+            r = offset_surface(mesh, {value, smooth});
+        } else if (op == "Thicken") {
+            ThickenOptions o;
+            o.mThickness = value;
+            o.mSide = thicken_side_from_name(pipe_text(rStep, "Side", "inward"));
+            o.mSmoothIterations = smooth;
+            r = thicken(mesh, o);
+        } else {
+            r = hollow(mesh, value, smooth);
+        }
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back(w);
+        pipe_push_step(rReport, rStep,
+                       {{"MaxMove", r.mMaxMove},
+                        {"NumFolded", static_cast<double>(r.mNumFolded)},
+                        {"NumRimQuads", static_cast<double>(r.mNumRimQuads)}});
+        return std::move(r.mMesh);
     }
     if (op == "Measure") {
         std::string spec = pipe_text(rStep, "Spec", "");

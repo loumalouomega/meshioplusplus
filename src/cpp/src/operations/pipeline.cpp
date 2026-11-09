@@ -95,6 +95,7 @@
 #include "meshioplusplus/operations/remove_islands.hpp"
 #include "meshioplusplus/operations/flip_normals.hpp"
 #include "meshioplusplus/operations/clip.hpp"
+#include "meshioplusplus/operations/offset_surface.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -1461,6 +1462,34 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumCapTriangles", static_cast<double>(cr.mNumCapTriangles)},
                         {"NumLoops", static_cast<double>(cr.mNumLoops)}});
         return std::move(cr.mMesh);
+    }
+    if (op == "OffsetSurface" || op == "Thicken" || op == "Hollow") {
+        const char* amount = op == "OffsetSurface" ? "Distance"
+                             : op == "Thicken"     ? "Thickness"
+                                                   : "Wall";
+        if (!pipe_find(rStep, amount))
+            throw std::invalid_argument(pipe_err(rStep, std::string("needs ") + amount));
+        const double value = pipe_number(rStep, amount, 0.0);
+        const int smooth = static_cast<int>(pipe_number(rStep, "SmoothIterations", 0.0));
+        OffsetSurfaceResult r;
+        if (op == "OffsetSurface") {
+            r = offset_surface(mesh, {value, smooth});
+        } else if (op == "Thicken") {
+            ThickenOptions o;
+            o.mThickness = value;
+            o.mSide = thicken_side_from_name(pipe_text(rStep, "Side", "inward"));
+            o.mSmoothIterations = smooth;
+            r = thicken(mesh, o);
+        } else {
+            r = hollow(mesh, value, smooth);
+        }
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back(w);
+        pipe_push_step(rReport, rStep,
+                       {{"MaxMove", r.mMaxMove},
+                        {"NumFolded", static_cast<double>(r.mNumFolded)},
+                        {"NumRimQuads", static_cast<double>(r.mNumRimQuads)}});
+        return std::move(r.mMesh);
     }
     if (op == "Measure") {
         std::string spec = pipe_text(rStep, "Spec", "");

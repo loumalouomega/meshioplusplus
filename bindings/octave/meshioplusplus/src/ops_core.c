@@ -226,6 +226,47 @@ static mxArray *O_mio_slice(const mxArray **a) {
     return mio_o_wrap_mesh(out);
 }
 
+/* The struct offset_surface, thicken and hollow return (roadmap 7.8.4). */
+static mxArray *mio_o_offset_struct(mio_mesh *out, const mio_offset_report *r, const char *what) {
+    if (out == NULL) mio_o_fail(what);
+    mxArray *w = mio_o_getbuffer(mio_offset_warnings, what);
+    const char *keys[] = {"mesh",          "num_not_visible", "num_clamped", "num_folded",
+                          "num_rim_quads", "max_move",        "warnings"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mio_o_scalar((double)r->num_not_visible),
+                         mio_o_scalar((double)r->num_clamped),
+                         mio_o_scalar((double)r->num_folded),
+                         mio_o_scalar((double)r->num_rim_quads),
+                         mio_o_scalar(r->max_move),
+                         w};
+    return mio_o_struct(7, keys, values);
+}
+
+/* offset_surface(mesh, distance, smooth_iterations) (roadmap 7.8.4). */
+static mxArray *O_mio_offset_surface(const mxArray **a) {
+    mio_offset_report r;
+    mio_mesh *out = mio_offset_surface(mio_o_mesh(a[0]), mio_o_double(a[1], "distance"),
+                                       mio_o_int(a[2], "smooth_iterations"), &r);
+    return mio_o_offset_struct(out, &r, "offset_surface");
+}
+
+/* thicken(mesh, thickness, side, smooth_iterations); side 0 inward, 1
+ * outward, 2 both (roadmap 7.8.4). */
+static mxArray *O_mio_thicken(const mxArray **a) {
+    mio_offset_report r;
+    mio_mesh *out = mio_thicken(mio_o_mesh(a[0]), mio_o_double(a[1], "thickness"),
+                                mio_o_int(a[2], "side"), mio_o_int(a[3], "smooth_iterations"), &r);
+    return mio_o_offset_struct(out, &r, "thicken");
+}
+
+/* hollow(mesh, wall, smooth_iterations) (roadmap 7.8.4). */
+static mxArray *O_mio_hollow(const mxArray **a) {
+    mio_offset_report r;
+    mio_mesh *out = mio_hollow(mio_o_mesh(a[0]), mio_o_double(a[1], "wall"),
+                               mio_o_int(a[2], "smooth_iterations"), &r);
+    return mio_o_offset_struct(out, &r, "hollow");
+}
+
 /* clip(mesh, origin, normal, keep_below, cap) (roadmap 7.8.3). */
 static mxArray *O_mio_clip(const mxArray **a) {
     double o[3], n[3];
@@ -1801,6 +1842,9 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_remove_islands, 7),
     MIO_O_ENTRY(mio_flip_normals, 2),
     MIO_O_ENTRY(mio_clip, 5),
+    MIO_O_ENTRY(mio_offset_surface, 3),
+    MIO_O_ENTRY(mio_thicken, 4),
+    MIO_O_ENTRY(mio_hollow, 3),
     MIO_O_ENTRY(mio_align_datums, 4),
     MIO_O_ENTRY(mio_measure_element_primitive, 2),
     MIO_O_ENTRY(mio_isosurface, 5),

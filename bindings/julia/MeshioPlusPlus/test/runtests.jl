@@ -2016,6 +2016,13 @@ end
     @test ri.num_components == 1 && ri.num_removed == 0
     close(ri.mesh)
     @test_throws ArgumentError remove_islands(cube; connectivity="face")
+    os = offset_surface(cube, 0.1)
+    @test os.num_folded == 0 && os.max_move >= 0.1
+    close(os.mesh)
+    ho = hollow(cube, 0.1)
+    @test ho.num_rim_quads == 0
+    close(ho.mesh)
+    @test_throws ArgumentError thicken(cube, 0.1; side="sideways")
     ms = measure(cube, """{"elements": [
         {"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},
         {"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],

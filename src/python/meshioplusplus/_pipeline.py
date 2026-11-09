@@ -1845,6 +1845,34 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumSplit"] = float(rep["num_split"])
         entry["NumCapTriangles"] = float(rep["num_cap_triangles"])
         entry["NumLoops"] = float(rep["num_loops"])
+    elif op in ("OffsetSurface", "Thicken", "Hollow"):
+        from ._offset_surface import hollow, offset_surface, thicken
+
+        amount = {"OffsetSurface": "Distance", "Thicken": "Thickness"}.get(op, "Wall")
+        if amount not in step:
+            raise ValueError(f"meshio++: pipeline: {op} needs {amount}")
+        value = _number(step, amount, 0.0)
+        passes = int(_number(step, "SmoothIterations", 0.0))
+        if op == "OffsetSurface":
+            mesh, rep = offset_surface(
+                mesh, value, smooth_iterations=passes, return_report=True
+            )
+        elif op == "Thicken":
+            mesh, rep = thicken(
+                mesh,
+                value,
+                side=_text(step, "Side", "inward"),
+                smooth_iterations=passes,
+                return_report=True,
+            )
+        else:
+            mesh, rep = hollow(
+                mesh, value, smooth_iterations=passes, return_report=True
+            )
+        warnings.extend(rep["warnings"])
+        entry["MaxMove"] = float(rep["max_move"])
+        entry["NumFolded"] = float(rep["num_folded"])
+        entry["NumRimQuads"] = float(rep["num_rim_quads"])
     elif op == "Measure":
         from ._measure import measure
 

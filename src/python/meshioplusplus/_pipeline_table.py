@@ -322,6 +322,22 @@ OP_TABLE = {
         "Keep",
         "Cap",
     ),
+    # Move a surface along its offset directions (roadmap 7.8.4).
+    "OffsetSurface": (
+        "Distance",
+        "SmoothIterations",
+    ),
+    # A closed shell of a thickness from a surface (roadmap 7.8.4).
+    "Thicken": (
+        "Thickness",
+        "Side",
+        "SmoothIterations",
+    ),
+    # An inner wall inside a closed surface (roadmap 7.8.4).
+    "Hollow": (
+        "Wall",
+        "SmoothIterations",
+    ),
     # Elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).
     "Measure": (
         "Spec",

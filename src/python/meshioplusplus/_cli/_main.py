@@ -382,6 +382,27 @@ _VERBS = (
         add_args="add_islands_args",
     ),
     _Verb(
+        "offset-surface",
+        "_scan_edit",
+        "offset_surface_cmd",
+        "Move a surface's points along their offset directions",
+        add_args="add_offset_args",
+    ),
+    _Verb(
+        "thicken",
+        "_scan_edit",
+        "thicken_cmd",
+        "Turn a surface into a closed shell of a thickness",
+        add_args="add_thicken_args",
+    ),
+    _Verb(
+        "hollow",
+        "_scan_edit",
+        "hollow_cmd",
+        "Give a closed surface an inner wall",
+        add_args="add_hollow_args",
+    ),
+    _Verb(
         "flip-normals",
         "_scan_edit",
         "flip_normals_cmd",

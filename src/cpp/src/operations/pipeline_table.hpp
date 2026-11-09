@@ -105,6 +105,12 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FlipNormals", {"Region"}},
         // Cut by a plane, keep a side and cap it (roadmap 7.8.3).
         {"Clip", {"Origin", "Normal", "Keep", "Cap"}},
+        // Move a surface along its offset directions (roadmap 7.8.4).
+        {"OffsetSurface", {"Distance", "SmoothIterations"}},
+        // A closed shell of a thickness from a surface (roadmap 7.8.4).
+        {"Thicken", {"Thickness", "Side", "SmoothIterations"}},
+        // An inner wall inside a closed surface (roadmap 7.8.4).
+        {"Hollow", {"Wall", "SmoothIterations"}},
         // Elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).
         {"Measure", {"Spec", "Require"}},
         // The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4).

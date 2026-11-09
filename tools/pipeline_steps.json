@@ -316,6 +316,19 @@
       {"name": "Keep", "kind": "text", "default": "below"},
       {"name": "Cap", "kind": "flag", "default": true}
     ]},
+    {"op": "OffsetSurface", "note": "Move a surface along its offset directions (roadmap 7.8.4).", "keys": [
+      {"name": "Distance"},
+      {"name": "SmoothIterations", "kind": "number", "default": 0}
+    ]},
+    {"op": "Thicken", "note": "A closed shell of a thickness from a surface (roadmap 7.8.4).", "keys": [
+      {"name": "Thickness"},
+      {"name": "Side", "kind": "text", "default": "inward"},
+      {"name": "SmoothIterations", "kind": "number", "default": 0}
+    ]},
+    {"op": "Hollow", "note": "An inner wall inside a closed surface (roadmap 7.8.4).", "keys": [
+      {"name": "Wall"},
+      {"name": "SmoothIterations", "kind": "number", "default": 0}
+    ]},
     {"op": "Measure", "note": "Elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).", "keys": [
       {"name": "Spec", "kind": "text", "default": ""},
       {"name": "Require", "kind": "flag", "default": false}

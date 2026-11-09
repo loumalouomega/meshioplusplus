@@ -356,6 +356,59 @@ function clip(m::Mesh, origin, normal; keep_below::Bool=true, cap::Bool=true)
      warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
 end
 
+# The shared tail of offset_surface, thicken and hollow.
+function _offset_result(ptr, rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    text = _getstring((buf, k) -> ccall(_sym(:mio_offset_warnings), Int64, (Ptr{UInt8}, Int64), buf, k))
+    (mesh=out, num_not_visible=Int(r.num_not_visible), num_clamped=Int(r.num_clamped),
+     num_folded=Int(r.num_folded), num_rim_quads=Int(r.num_rim_quads), max_move=r.max_move,
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    offset_surface(m, distance; smooth_iterations=0)
+        -> (; mesh, num_not_visible, num_clamped, num_folded, num_rim_quads, max_move, warnings)
+
+Move each point of a triangle and quad surface along its offset direction so
+every face's plane moves by `distance` (roadmap 7.8.4). See `doc/offset_surface.md`.
+"""
+function offset_surface(m::Mesh, distance::Real; smooth_iterations::Integer=0)
+    rep = Ref{_COffsetReport}()
+    ptr = ccall(_sym(:mio_offset_surface), Ptr{Cvoid}, (Ptr{Cvoid}, Cdouble, Int32, Ref{_COffsetReport}),
+                _handle(m), Float64(distance), Int32(smooth_iterations), rep)
+    _offset_result(ptr, rep)
+end
+
+"""
+    thicken(m, thickness; side="inward", smooth_iterations=0) -> (; mesh, ..., num_rim_quads, ...)
+
+A closed shell `thickness` thick from a surface; `side` is `"inward"`,
+`"outward"` or `"both"` (roadmap 7.8.4). See `doc/offset_surface.md`.
+"""
+function thicken(m::Mesh, thickness::Real; side::AbstractString="inward",
+                 smooth_iterations::Integer=0)
+    s = side == "inward" ? Int32(0) : side == "outward" ? Int32(1) : side == "both" ? Int32(2) :
+        throw(ArgumentError("meshio++: thicken: side must be inward, outward or both"))
+    rep = Ref{_COffsetReport}()
+    ptr = ccall(_sym(:mio_thicken), Ptr{Cvoid}, (Ptr{Cvoid}, Cdouble, Int32, Int32, Ref{_COffsetReport}),
+                _handle(m), Float64(thickness), s, Int32(smooth_iterations), rep)
+    _offset_result(ptr, rep)
+end
+
+"""
+    hollow(m, wall; smooth_iterations=0) -> (; mesh, ...)
+
+A closed surface with an inner, reversed wall `wall` inside it (roadmap 7.8.4).
+See `doc/offset_surface.md`.
+"""
+function hollow(m::Mesh, wall::Real; smooth_iterations::Integer=0)
+    rep = Ref{_COffsetReport}()
+    ptr = ccall(_sym(:mio_hollow), Ptr{Cvoid}, (Ptr{Cvoid}, Cdouble, Int32, Ref{_COffsetReport}),
+                _handle(m), Float64(wall), Int32(smooth_iterations), rep)
+    _offset_result(ptr, rep)
+end
+
 """
     flip_normals(m; region="") -> (; mesh, num_flipped)
 

@@ -85,6 +85,7 @@ module meshioplusplus
     public :: mio_remove_islands, mio_remove_islands_report
     public :: mio_flip_normals
     public :: mio_clip, mio_clip_report
+    public :: mio_offset_surface, mio_thicken, mio_hollow, mio_offset_report
     public :: mio_deviation_regions, mio_deviation_regions_report, mio_deviation_region_info
     public :: mio_deviation_region
     public :: mio_exaggerate, mio_exaggerate_report, mio_colorize, mio_colorize_report
@@ -1656,6 +1657,17 @@ module meshioplusplus
         integer(c_int64_t) :: num_open_chains = 0
         integer(c_int64_t) :: num_warnings = 0
         integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> Interop mirror of C `mio_offset_report` (64 bytes; roadmap 7.8.4).
+    type, bind(c) :: mio_offset_report
+        integer(c_int64_t) :: num_not_visible = 0
+        integer(c_int64_t) :: num_clamped = 0
+        integer(c_int64_t) :: num_folded = 0
+        integer(c_int64_t) :: num_rim_quads = 0
+        real(c_double) :: max_move = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(2) = 0
     end type
 
     !> Interop mirror of C `mio_remove_islands_opts` (64 bytes; roadmap 7.8.1).
@@ -4373,6 +4385,35 @@ module meshioplusplus
             real(c_double), intent(in) :: origin(3), normal(3)
             integer(c_int32_t), value :: keep_below, cap
             type(mio_clip_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_offset_surface(h, distance, smooth, report) &
+                bind(c, name="mio_offset_surface") result(out)
+            import :: c_ptr, c_double, c_int32_t, mio_offset_report
+            type(c_ptr), value :: h
+            real(c_double), value :: distance
+            integer(c_int32_t), value :: smooth
+            type(mio_offset_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_thicken(h, thickness, side, smooth, report) &
+                bind(c, name="mio_thicken") result(out)
+            import :: c_ptr, c_double, c_int32_t, mio_offset_report
+            type(c_ptr), value :: h
+            real(c_double), value :: thickness
+            integer(c_int32_t), value :: side, smooth
+            type(mio_offset_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_hollow(h, wall, smooth, report) bind(c, name="mio_hollow") result(out)
+            import :: c_ptr, c_double, c_int32_t, mio_offset_report
+            type(c_ptr), value :: h
+            real(c_double), value :: wall
+            integer(c_int32_t), value :: smooth
+            type(mio_offset_report), intent(out) :: report
             type(c_ptr) :: out
         end function
 
@@ -8922,6 +8963,103 @@ contains
         end if
         if (present(report)) report = rep
         call clear_status(stat, errmsg)
+    end function
+
+    !> Offset a triangle and quad surface along its points' offset directions
+    !> by `distance` (roadmap 7.8.4); `kind` 0 offset, 1 thicken, 2 hollow.
+    function mio_offset_kind_(mesh, kind, amount, side, smooth_iterations, report, stat, &
+                              errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        integer, intent(in) :: kind
+        real(real64), intent(in) :: amount
+        character(*), intent(in), optional :: side
+        integer, intent(in), optional :: smooth_iterations
+        type(mio_offset_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_offset_report) :: rep
+        integer(c_int32_t) :: sm, sd
+        character(*), parameter :: names(3) = [character(14) :: 'offset_surface', 'thicken', &
+                                                'hollow']
+        if (c_sizeof(rep) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: offset layout mismatch'
+            error stop 1
+        end if
+        sm = 0
+        if (present(smooth_iterations)) sm = int(smooth_iterations, c_int32_t)
+        sd = 0
+        if (present(side)) then
+            select case (side)
+            case ('inward')
+                sd = 0
+            case ('outward')
+                sd = 1
+            case ('both')
+                sd = 2
+            case default
+                call handle_failure('thicken', 'meshio++: thicken: side must be inward, ' // &
+                                    'outward or both', stat, errmsg)
+                return
+            end select
+        end if
+        select case (kind)
+        case (0)
+            out%handle = c_mio_offset_surface(mesh%handle, real(amount, c_double), sm, rep)
+        case (1)
+            out%handle = c_mio_thicken(mesh%handle, real(amount, c_double), sd, sm, rep)
+        case default
+            out%handle = c_mio_hollow(mesh%handle, real(amount, c_double), sm, rep)
+        end select
+        if (.not. c_associated(out%handle)) then
+            call handle_failure(trim(names(kind + 1)), mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Move each point of a triangle and quad surface along its offset
+    !> direction so every face's plane moves by `distance` (roadmap 7.8.4).
+    function mio_offset_surface(mesh, distance, smooth_iterations, report, stat, errmsg) &
+            result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in) :: distance
+        integer, intent(in), optional :: smooth_iterations
+        type(mio_offset_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        out = mio_offset_kind_(mesh, 0, distance, smooth_iterations=smooth_iterations, &
+                               report=report, stat=stat, errmsg=errmsg)
+    end function
+
+    !> A closed shell `thickness` thick from a surface; `side` is 'inward'
+    !> (default), 'outward' or 'both' (roadmap 7.8.4).
+    function mio_thicken(mesh, thickness, side, smooth_iterations, report, stat, errmsg) &
+            result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in) :: thickness
+        character(*), intent(in), optional :: side
+        integer, intent(in), optional :: smooth_iterations
+        type(mio_offset_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        out = mio_offset_kind_(mesh, 1, thickness, side, smooth_iterations, report, stat, errmsg)
+    end function
+
+    !> A closed surface with an inner, reversed wall `wall` inside it (roadmap 7.8.4).
+    function mio_hollow(mesh, wall, smooth_iterations, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in) :: wall
+        integer, intent(in), optional :: smooth_iterations
+        type(mio_offset_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        out = mio_offset_kind_(mesh, 2, wall, smooth_iterations=smooth_iterations, &
+                               report=report, stat=stat, errmsg=errmsg)
     end function
 
     !> Reverse the winding of every cell, or of the cell region `region`

@@ -252,6 +252,47 @@ SEXP R_mio_clip(SEXP mesh, SEXP origin, SEXP normal, SEXP keep_below, SEXP cap) 
     return res;
 }
 
+/* The list offset_surface, thicken and hollow return (roadmap 7.8.4). */
+static SEXP mio_r_offset_list(mio_mesh *out, const mio_offset_report *r, const char *what) {
+    if (out == NULL) mio_r_fail(what);
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP w = PROTECT(mio_r_getbuffer(mio_offset_warnings, what));
+    const char *names[] = {"mesh",          "num_not_visible", "num_clamped", "num_folded",
+                           "num_rim_quads", "max_move",        "warnings"};
+    const SEXP values[] = {mo, NULL, NULL, NULL, NULL, NULL, w};
+    const double numbers[] = {(double)r->num_not_visible, (double)r->num_clamped,
+                              (double)r->num_folded, (double)r->num_rim_quads, r->max_move};
+    SEXP res = mio_r_report_list(7, names, values, numbers);
+    UNPROTECT(2);
+    return res;
+}
+
+/* offset_surface(mesh, distance, smooth_iterations) (roadmap 7.8.4). */
+SEXP R_mio_offset_surface(SEXP mesh, SEXP distance, SEXP smooth) {
+    mio_offset_report r;
+    mio_mesh *out = mio_offset_surface(mio_r_mesh(mesh), mio_r_double(distance, "distance"),
+                                       mio_r_int(smooth, "smooth_iterations"), &r);
+    return mio_r_offset_list(out, &r, "offset_surface");
+}
+
+/* thicken(mesh, thickness, side, smooth_iterations); side 0 inward, 1
+ * outward, 2 both (roadmap 7.8.4). */
+SEXP R_mio_thicken(SEXP mesh, SEXP thickness, SEXP side, SEXP smooth) {
+    mio_offset_report r;
+    mio_mesh *out = mio_thicken(mio_r_mesh(mesh), mio_r_double(thickness, "thickness"),
+                                mio_r_int(side, "side"), mio_r_int(smooth, "smooth_iterations"),
+                                &r);
+    return mio_r_offset_list(out, &r, "thicken");
+}
+
+/* hollow(mesh, wall, smooth_iterations) (roadmap 7.8.4). */
+SEXP R_mio_hollow(SEXP mesh, SEXP wall, SEXP smooth) {
+    mio_offset_report r;
+    mio_mesh *out = mio_hollow(mio_r_mesh(mesh), mio_r_double(wall, "wall"),
+                               mio_r_int(smooth, "smooth_iterations"), &r);
+    return mio_r_offset_list(out, &r, "hollow");
+}
+
 /* flip_normals(mesh, region) (roadmap 7.8.2). */
 SEXP R_mio_flip_normals(SEXP mesh, SEXP region) {
     int64_t n = 0;

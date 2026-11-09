@@ -596,6 +596,54 @@ def _register_operations(server: FastMCP) -> None:
         num_loops, num_open_chains and warnings."""
 
     @server.tool()
+    @_forward(_tools.tool_offset_surface)
+    def offset_surface(
+        input_path: str,
+        output_path: str,
+        distance: float,
+        smooth_iterations: int = 0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Offset a triangle and quad surface: each point moves along its
+        offset direction (boundary_layer's) by distance over the least cosine
+        to its faces, so every face's plane moves by distance (positive along
+        the faces' normals). Keeps the connectivity, data and regions.
+        Reports num_not_visible, num_clamped, num_folded, max_move and
+        warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_thicken)
+    def thicken(
+        input_path: str,
+        output_path: str,
+        thickness: float,
+        side: str = "inward",
+        smooth_iterations: int = 0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Turn a surface into a closed shell thickness thick: side
+        "inward" (the surface and its offset by -thickness), "outward" or
+        "both" (+-thickness/2); the lower layer is reversed and the boundary
+        edges are joined by quads (thicken:side cell data 0 upper, 1 lower, 2
+        rim). Reports num_rim_quads, num_folded, max_move and warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_hollow)
+    def hollow(
+        input_path: str,
+        output_path: str,
+        wall: float,
+        smooth_iterations: int = 0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Give a closed surface an inner wall: the surface plus its offset
+        by -wall, reversed (an open surface is refused). Reports num_folded,
+        max_move and warnings."""
+
+    @server.tool()
     @_forward(_tools.tool_measure)
     def measure(
         input_path: str,

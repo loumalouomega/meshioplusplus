@@ -89,6 +89,7 @@
 #include "meshioplusplus/operations/remove_islands.hpp"
 #include "meshioplusplus/operations/flip_normals.hpp"
 #include "meshioplusplus/operations/clip.hpp"
+#include "meshioplusplus/operations/offset_surface.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -2769,6 +2770,10 @@ std::string& capi_clip_warnings() {
     thread_local std::string last;
     return last;
 }
+std::string& capi_offset_warnings() {
+    thread_local std::string last;
+    return last;
+}
 std::string& capi_step_elements_warnings() {
     thread_local std::string last;
     return last;
@@ -2969,6 +2974,72 @@ int64_t mio_clip_warnings(char* buf, int64_t buflen) {
         if (buflen < 0)
             throw std::invalid_argument("meshio++: negative warnings buffer length");
         return copy_string(capi_clip_warnings(), buf, buflen);
+    });
+}
+
+static_assert(sizeof(mio_offset_report) == 64, "mio_offset_report layout");
+static_assert(offsetof(mio_offset_report, max_move) == 32, "mio_offset_report layout");
+
+// The shared tail of mio_offset_surface, mio_thicken and mio_hollow.
+static mio_mesh* capi_offset_done(meshioplusplus::OffsetSurfaceResult& rR,
+                                  mio_offset_report* pReport) {
+    for (const std::string& w : rR.mWarnings)
+        capi_offset_warnings() += (capi_offset_warnings().empty() ? "" : "\n") + w;
+    if (pReport) {
+        *pReport = mio_offset_report{};
+        pReport->num_not_visible = rR.mNumNotVisible;
+        pReport->num_clamped = rR.mNumClamped;
+        pReport->num_folded = rR.mNumFolded;
+        pReport->num_rim_quads = rR.mNumRimQuads;
+        pReport->max_move = rR.mMaxMove;
+        pReport->num_warnings = static_cast<int64_t>(rR.mWarnings.size());
+    }
+    return new mio_mesh{std::move(rR.mMesh)};
+}
+
+mio_mesh* mio_offset_surface(const mio_mesh* mesh, double distance, int32_t smooth_iterations,
+                             mio_offset_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_offset_warnings().clear();
+        capi_require(mesh, "meshio++: offset_surface: mesh is NULL");
+        meshioplusplus::OffsetSurfaceResult r =
+            meshioplusplus::offset_surface(mesh->mMesh, {distance, smooth_iterations});
+        return capi_offset_done(r, report);
+    });
+}
+
+mio_mesh* mio_thicken(const mio_mesh* mesh, double thickness, int32_t side,
+                      int32_t smooth_iterations, mio_offset_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_offset_warnings().clear();
+        capi_require(mesh, "meshio++: thicken: mesh is NULL");
+        if (side < MIO_THICKEN_INWARD || side > MIO_THICKEN_BOTH)
+            throw std::invalid_argument("meshio++: thicken: side is 0 inward, 1 outward or 2 both");
+        meshioplusplus::ThickenOptions o;
+        o.mThickness = thickness;
+        o.mSide = static_cast<meshioplusplus::ThickenSide>(side);
+        o.mSmoothIterations = smooth_iterations;
+        meshioplusplus::OffsetSurfaceResult r = meshioplusplus::thicken(mesh->mMesh, o);
+        return capi_offset_done(r, report);
+    });
+}
+
+mio_mesh* mio_hollow(const mio_mesh* mesh, double wall, int32_t smooth_iterations,
+                     mio_offset_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_offset_warnings().clear();
+        capi_require(mesh, "meshio++: hollow: mesh is NULL");
+        meshioplusplus::OffsetSurfaceResult r =
+            meshioplusplus::hollow(mesh->mMesh, wall, smooth_iterations);
+        return capi_offset_done(r, report);
+    });
+}
+
+int64_t mio_offset_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_offset_warnings(), buf, buflen);
     });
 }
 

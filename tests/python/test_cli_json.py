@@ -743,6 +743,41 @@ WRITING = [
         ],
     ),
     (
+        "offset_surface",
+        lambda f, out: [
+            "offset-surface",
+            f["sphere_a"],
+            out + ".vtu",
+            "--distance",
+            "0.05",
+            "--json",
+        ],
+    ),
+    (
+        "thicken",
+        lambda f, out: [
+            "thicken",
+            f["sphere_a"],
+            out + ".vtu",
+            "--thickness",
+            "0.05",
+            "--side",
+            "both",
+            "--json",
+        ],
+    ),
+    (
+        "hollow",
+        lambda f, out: [
+            "hollow",
+            f["sphere_a"],
+            out + ".vtu",
+            "--wall",
+            "0.05",
+            "--json",
+        ],
+    ),
+    (
         "step_elements",
         lambda f, out: ["step-elements", f["fitted"], out + ".step", "--json"],
     ),

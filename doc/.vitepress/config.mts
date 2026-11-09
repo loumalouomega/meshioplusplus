@@ -276,6 +276,7 @@ export default defineConfig({
           { text: "Surface reconstruction", link: "/reconstruct_surface" },
           { text: "Surface repair", link: "/repair" },
           { text: "Removing islands", link: "/remove_islands" },
+              { text: "Offset, thicken and hollow", link: "/offset_surface" },
           { text: "Shrinkwrap", link: "/shrinkwrap" },
           { text: "Sobolev deformation", link: "/sobolev_deform" },
           { text: "Mesh morphing", link: "/morph" },

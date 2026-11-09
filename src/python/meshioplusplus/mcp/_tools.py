@@ -128,6 +128,9 @@ from .. import (
     hausdorff_distance,
     helix,
     hessian,
+)
+from .. import hollow as _hollow_op
+from .. import (
     honeycomb,
     icosa_sphere,
     iga_evaluate,
@@ -154,6 +157,9 @@ from .. import (
     octa_sphere,
     octree,
     octree_mesh,
+)
+from .. import offset_surface as _offset_surface_op
+from .. import (
     optimize_volume,
     parameterize,
     partition,
@@ -220,6 +226,9 @@ from .. import (
     tetra_sphere,
     tetrahedralize,
     tetrahedralize_backends,
+)
+from .. import thicken as _thicken_op
+from .. import (
     thickness,
     torus,
     transform,
@@ -1868,6 +1877,65 @@ def tool_clip(
         normal,
         keep=keep,
         cap=bool(cap),
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_offset_surface(
+    input_path,
+    output_path,
+    distance,
+    smooth_iterations=0,
+    input_format=None,
+    output_format=None,
+):
+    """Move a surface's points along their offset directions."""
+    out, report = _offset_surface_op(
+        _load(input_path, input_format),
+        float(distance),
+        smooth_iterations=int(smooth_iterations),
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_thicken(
+    input_path,
+    output_path,
+    thickness,
+    side="inward",
+    smooth_iterations=0,
+    input_format=None,
+    output_format=None,
+):
+    """Turn a surface into a closed shell of a thickness."""
+    out, report = _thicken_op(
+        _load(input_path, input_format),
+        float(thickness),
+        side=side,
+        smooth_iterations=int(smooth_iterations),
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_hollow(
+    input_path,
+    output_path,
+    wall,
+    smooth_iterations=0,
+    input_format=None,
+    output_format=None,
+):
+    """Give a closed surface an inner wall."""
+    out, report = _hollow_op(
+        _load(input_path, input_format),
+        float(wall),
+        smooth_iterations=int(smooth_iterations),
         return_report=True,
     )
     report["output_path"] = _store(out, output_path, output_format)
@@ -7451,6 +7519,12 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_flip_normals, "wraps": ("flip_normals",), "gated": None},
         ),
         ("clip", {"fn": tool_clip, "wraps": ("clip",), "gated": None}),
+        (
+            "offset_surface",
+            {"fn": tool_offset_surface, "wraps": ("offset_surface",), "gated": None},
+        ),
+        ("thicken", {"fn": tool_thicken, "wraps": ("thicken",), "gated": None}),
+        ("hollow", {"fn": tool_hollow, "wraps": ("hollow",), "gated": None}),
         (
             "measure",
             {"fn": tool_measure, "wraps": ("measure", "measure_table"), "gated": None},

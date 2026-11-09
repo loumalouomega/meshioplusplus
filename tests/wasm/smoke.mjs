@@ -5706,6 +5706,9 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.writeStepElements('/elements.step', fp.mesh, { patches: [99] }), /patch/);
     assert.equal(m.clip(cubeSurface, [0, 0, 0.5], [0, 0, 1]).numLoops, 1);
     assert.equal(m.flipNormals(cubeSurface).numFlipped, 12);
+    assert.equal(m.offsetSurface(cubeSurface, 0.1).numFolded, 0);
+    assert.equal(m.hollow(cubeSurface, 0.1).numRimQuads, 0);
+    assert.throws(() => m.thicken(cubeSurface, 0.1, { side: 'sideways' }), /side/);
     const ri = m.removeIslands(cubeSurface);
     assert.equal(ri.numComponents, 1);
     assert.throws(() => m.removeIslands(cubeSurface, { connectivity: 'face' }), /connectivity/);

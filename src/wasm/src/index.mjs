@@ -295,6 +295,9 @@ export class MeshioPlusPlusLoadError extends Error {
  *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean, options?: {chain?: boolean, minLength?: number}) => Mesh,
  *   clip: (mesh: Mesh, origin: number[], normal: number[], options?: {keepBelow?: boolean, cap?: boolean}) => {mesh: Mesh, numKept: number, numSplit: number, numCapTriangles: number, numLoops: number, numOpenChains: number, warnings: string[]},
+ *   offsetSurface: (mesh: Mesh, distance: number, options?: {smoothIterations?: number}) => {mesh: Mesh, numNotVisible: number, numClamped: number, numFolded: number, numRimQuads: number, maxMove: number, warnings: string[]},
+ *   thicken: (mesh: Mesh, thickness: number, options?: {side?: string, smoothIterations?: number}) => {mesh: Mesh, numNotVisible: number, numClamped: number, numFolded: number, numRimQuads: number, maxMove: number, warnings: string[]},
+ *   hollow: (mesh: Mesh, wall: number, options?: {smoothIterations?: number}) => {mesh: Mesh, numNotVisible: number, numClamped: number, numFolded: number, numRimQuads: number, maxMove: number, warnings: string[]},
  *   flipNormals: (mesh: Mesh, region?: string) => {mesh: Mesh, numFlipped: number},
  *   removeIslands: (mesh: Mesh, options?: {connectivity?: string, minDiagonal?: number, minArea?: number, minCells?: number, relative?: boolean, dryRun?: boolean}) => {mesh: Mesh, numComponents: number, numRemoved: number, numCellsRemoved: number, numPointsRemoved: number},
  *   measure: (mesh: Mesh, spec: object | string) => {mesh: Mesh, report: object, numFail: number, warnings: string[]},
@@ -865,6 +868,12 @@ export async function loadMeshioPlusPlus(
                 Number(options.minLength ?? 0)),
         clip: (mesh, origin, normal, options = {}) =>
             Module.clip(mesh, Array.from(origin, Number), Array.from(normal, Number), options),
+        offsetSurface: (mesh, distance, options = {}) =>
+            Module.offsetSurface(mesh, 'offset', Number(distance), options),
+        thicken: (mesh, thickness, options = {}) =>
+            Module.offsetSurface(mesh, 'thicken', Number(thickness), options),
+        hollow: (mesh, wall, options = {}) =>
+            Module.offsetSurface(mesh, 'hollow', Number(wall), options),
         flipNormals: (mesh, region = '') => Module.flipNormals(mesh, region ?? ''),
         removeIslands: (mesh, options = {}) => Module.removeIslands(mesh, options),
         measure: (mesh, spec) => {

@@ -756,13 +756,14 @@ aligned, matrix = meshioplusplus.align_datums(measured, "A", "B", origin="C")
 
 #### Scan editing: islands, normals and clipping
 
-**`meshioplusplus.remove_islands(scan)`** drops the crumbs a scanner leaves (the connected components whose diagonal, area or cell count is below a threshold, a fraction of the whole mesh's by default), **`flip_normals`** reverses the winding of every cell or a region's with no point moved, and **`clip`** cuts a surface by a plane, keeps a side and caps the cut so a closed part stays closed. See [remove islands](doc/remove_islands.md), [flip normals](doc/flip_normals.md) and [clip](doc/clip.md).
+**`meshioplusplus.remove_islands(scan)`** drops the crumbs a scanner leaves (the connected components whose diagonal, area or cell count is below a threshold, a fraction of the whole mesh's by default), **`flip_normals`** reverses the winding of every cell or a region's with no point moved, **`clip`** cuts a surface by a plane, keeps a side and caps the cut so a closed part stays closed, and **`offset_surface`**, **`thicken`** and **`hollow`** move a surface along its normals, turn it into a closed shell or give a solid an inner wall. See [remove islands](doc/remove_islands.md), [flip normals](doc/flip_normals.md), [clip](doc/clip.md) and [offset](doc/offset_surface.md).
 
 <!--pytest-codeblocks:skip-->
 
 ```python
 clean = meshioplusplus.remove_islands(scan)
 lower = meshioplusplus.clip(clean, (0, 0, 10), (0, 0, 1))  # closed below z = 10
+shell = meshioplusplus.thicken(scan, 2.0)  # a closed shell, the scan outside
 ```
 
 #### Rigid registration (ICP)

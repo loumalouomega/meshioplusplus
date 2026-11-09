@@ -1421,6 +1421,60 @@ mio_clip <- function(mesh, origin, normal, keep_below = TRUE, cap = TRUE) {
   res
 }
 
+#' Offset a surface
+#'
+#' Move each point of a triangle and quad surface along its offset direction
+#' (the one `mio_boundary_layer` grows along) so every face's plane moves by
+#' `distance`; a cube offset by `d` is the cube grown by `d` (roadmap 7.8.4).
+#' See `doc/offset_surface.md`.
+#'
+#' @param mesh A surface mesh.
+#' @param distance Along the faces' normals; negative against them.
+#' @param smooth_iterations Smoothing passes over the directions.
+#' @return A list: `mesh`, `num_not_visible`, `num_clamped`, `num_folded`,
+#'   `num_rim_quads`, `max_move` and `warnings`.
+#' @export
+mio_offset_surface <- function(mesh, distance, smooth_iterations = 0) {
+  res <- .Call(R_mio_offset_surface, mesh, as.numeric(distance), as.integer(smooth_iterations))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Thicken a surface into a closed shell
+#'
+#' The surface offset to the two sides of a wall `thickness` thick (`side`
+#' `"inward"`, `"outward"` or `"both"`), the lower layer reversed and the
+#' boundary edges joined by quads; cell data `thicken:side` (roadmap 7.8.4).
+#'
+#' @inheritParams mio_offset_surface
+#' @param thickness The wall's thickness.
+#' @param side `"inward"`, `"outward"` or `"both"`.
+#' @return As `mio_offset_surface`.
+#' @export
+mio_thicken <- function(mesh, thickness, side = "inward", smooth_iterations = 0) {
+  s <- match(side, c("inward", "outward", "both"))
+  if (is.na(s)) stop("meshio++: thicken: side must be inward, outward or both")
+  res <- .Call(R_mio_thicken, mesh, as.numeric(thickness), as.integer(s - 1L),
+               as.integer(smooth_iterations))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Hollow a closed surface
+#'
+#' The surface with its offset by `-wall`, reversed, inside it; an open
+#' surface is refused (roadmap 7.8.4).
+#'
+#' @inheritParams mio_offset_surface
+#' @param wall The wall's thickness.
+#' @return As `mio_offset_surface`.
+#' @export
+mio_hollow <- function(mesh, wall, smooth_iterations = 0) {
+  res <- .Call(R_mio_hollow, mesh, as.numeric(wall), as.integer(smooth_iterations))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
 #' Reverse the winding of cells
 #'
 #' Every cell, or the cells of a cell region, with no point moved; Side region

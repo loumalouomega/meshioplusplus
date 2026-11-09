@@ -3095,6 +3095,22 @@ contains
                                crep%num_cap_triangles > 0_int64, 'clip halves the cube and caps it')
                     if (ierr == 0) call f1%free()
                 end block
+                block
+                    type(mio_offset_report) :: orep
+                    f1 = mio_offset_surface(sq, 0.1_real64, report=orep, stat=ierr)
+                    call check(ierr == 0 .and. orep%num_folded == 0_int64 .and. &
+                               abs(orep%max_move - 0.1_real64 * sqrt(3.0_real64)) < 1e-12_real64, &
+                               'offset_surface grows the cube by the distance')
+                    if (ierr == 0) call f1%free()
+                    f1 = mio_hollow(sq, 0.1_real64, report=orep, stat=ierr)
+                    call check(ierr == 0 .and. orep%num_rim_quads == 0_int64, 'hollow walls the cube')
+                    if (ierr == 0) call f1%free()
+                    f1 = mio_thicken(sq, 0.1_real64, side='sideways', stat=ierr)
+                    call check(ierr /= 0, 'thicken refuses an unknown side')
+                    f1 = mio_thicken(sq, 0.1_real64, side='both', report=orep, stat=ierr)
+                    call check(ierr == 0, 'thicken shells the cube')
+                    if (ierr == 0) call f1%free()
+                end block
             end block
         end block
         block

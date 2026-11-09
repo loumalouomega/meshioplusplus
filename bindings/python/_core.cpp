@@ -178,6 +178,7 @@
 #include "meshioplusplus/operations/remove_islands.hpp"
 #include "meshioplusplus/operations/flip_normals.hpp"
 #include "meshioplusplus/operations/clip.hpp"
+#include "meshioplusplus/operations/offset_surface.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -3099,6 +3100,45 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("origin"), py::arg("normal"), py::arg("record_parent_ids") = false,
         py::arg("chain") = false, py::arg("min_length") = 0.0);
+
+    // Offset, thicken and hollow (roadmap 7.8.4); `kind` is "offset",
+    // "thicken" or "hollow", `amount` the distance, thickness or wall.
+    m.def(
+        "offset_surface",
+        [](py::object pymesh, const std::string& kind, double amount, const std::string& side,
+           int smooth_iterations) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::OffsetSurfaceResult r;
+            if (kind == "offset") {
+                r = core_nogil([&] {
+                    return meshioplusplus::offset_surface(mesh, {amount, smooth_iterations});
+                });
+            } else if (kind == "thicken") {
+                meshioplusplus::ThickenOptions o;
+                o.mThickness = amount;
+                o.mSide = meshioplusplus::thicken_side_from_name(side);
+                o.mSmoothIterations = smooth_iterations;
+                r = core_nogil([&] { return meshioplusplus::thicken(mesh, o); });
+            } else if (kind == "hollow") {
+                r = core_nogil(
+                    [&] { return meshioplusplus::hollow(mesh, amount, smooth_iterations); });
+            } else {
+                throw py::value_error("offset_surface: kind is offset, thicken or hollow");
+            }
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_not_visible"] = r.mNumNotVisible;
+            out["num_clamped"] = r.mNumClamped;
+            out["num_folded"] = r.mNumFolded;
+            out["num_rim_quads"] = r.mNumRimQuads;
+            out["max_move"] = r.mMaxMove;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("kind"), py::arg("amount"), py::arg("side") = "inward",
+        py::arg("smooth_iterations") = 0);
 
     // Cut by a plane, keep a side and cap it (roadmap 7.8.3).
     m.def(

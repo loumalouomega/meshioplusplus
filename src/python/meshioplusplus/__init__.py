@@ -223,6 +223,7 @@ if TYPE_CHECKING:
     from ._normals import compute_normals
     from ._octree import octree
     from ._octree_mesh import octree_mesh
+    from ._offset_surface import hollow, offset_surface, thicken
     from ._optimize_volume import optimize_volume
     from ._parameterize import parameterize
     from ._partition import partition, partition_labels
@@ -570,6 +571,9 @@ _LAZY_ATTRS = {
     "silhouette": "_silhouette",
     "measure": "_measure",
     "remove_islands": "_remove_islands",
+    "offset_surface": "_offset_surface",
+    "thicken": "_offset_surface",
+    "hollow": "_offset_surface",
     "flip_normals": "_flip_normals",
     "clip": "_clip",
     "measure_table": "_measure",
@@ -764,6 +768,9 @@ __all__ = [
     "measure_table",
     "align_datums",
     "remove_islands",
+    "offset_surface",
+    "thicken",
+    "hollow",
     "flip_normals",
     "clip",
     "isosurface",

@@ -21,6 +21,17 @@ export interface SurfaceQualityInfo {
 }
 
 /** Names one region: its name plus, optionally, its kind, dimension and tag. */
+/** What `offsetSurface`, `thicken` and `hollow` did (roadmap 7.8.4). */
+export interface OffsetSurfaceResult {
+  mesh: Mesh;
+  numNotVisible: number;
+  numClamped: number;
+  numFolded: number;
+  numRimQuads: number;
+  maxMove: number;
+  warnings: string[];
+}
+
 export interface RegionSelector {
   name: string;
   kind?: 'point' | 'cell' | 'side';
@@ -3085,6 +3096,29 @@ export interface MeshioPlusPlusModule {
     numOpenChains: number;
     warnings: string[];
   };
+
+  /**
+   * Move each point of a triangle and quad surface along its offset direction
+   * so every face's plane moves by `distance` (roadmap 7.8.4).
+   */
+  offsetSurface(
+    mesh: Mesh,
+    distance: number,
+    options?: { smoothIterations?: number },
+  ): OffsetSurfaceResult;
+
+  /**
+   * A closed shell `thickness` thick from a surface (roadmap 7.8.4): the two
+   * offsets on `side` of the wall, the lower reversed, the rim joined by quads.
+   */
+  thicken(
+    mesh: Mesh,
+    thickness: number,
+    options?: { side?: 'inward' | 'outward' | 'both'; smoothIterations?: number },
+  ): OffsetSurfaceResult;
+
+  /** A closed surface with an inner, reversed wall inside it (roadmap 7.8.4). */
+  hollow(mesh: Mesh, wall: number, options?: { smoothIterations?: number }): OffsetSurfaceResult;
 
   /**
    * Reverse the winding of every cell, or of a cell region's (roadmap 7.8.2),

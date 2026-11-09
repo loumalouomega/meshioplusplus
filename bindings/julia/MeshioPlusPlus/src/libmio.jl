@@ -2133,6 +2133,17 @@ struct _CClipReport
     reserved::NTuple{3,Int64}
 end
 
+"""Mirror of C `mio_offset_report` (roadmap 7.8.4)."""
+struct _COffsetReport
+    num_not_visible::Int64
+    num_clamped::Int64
+    num_folded::Int64
+    num_rim_quads::Int64
+    max_move::Cdouble
+    num_warnings::Int64
+    reserved::NTuple{2,Int64}
+end
+
 """Mirror of C `mio_remove_islands_opts` (roadmap 7.8.1)."""
 struct _CRemoveIslandsOpts
     connectivity::Int32
@@ -2719,6 +2730,7 @@ function _check_abi_layout()
     (sizeof(_CRemoveIslandsOpts) == 64 && sizeof(_CRemoveIslandsReport) == 64) ||
         error("meshio++: mio_remove_islands layout mismatch")
     sizeof(_CClipReport) == 72 || error("meshio++: mio_clip_report layout mismatch")
+    sizeof(_COffsetReport) == 64 || error("meshio++: mio_offset_report layout mismatch")
     sizeof(_CSymmetryPlaneOpts) == 112 ||
         error("meshio++: mio_symmetry_plane_opts layout mismatch ($(sizeof(_CSymmetryPlaneOpts)) bytes)")
     sizeof(_CSymmetryPlaneReport) == 128 ||

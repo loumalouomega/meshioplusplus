@@ -401,6 +401,11 @@ function t_feature_segment()
     ri = mio.remove_islands(m);
     expect_equal(ri.num_components, 1);
     expect_error(@() mio.remove_islands(m, 'connectivity', 'face'), 'connectivity');
+    os = mio.offset_surface(m, 0.1);
+    expect_equal(os.num_folded, 0);
+    ho = mio.hollow(m, 0.1);
+    expect_equal(ho.num_rim_quads, 0);
+    expect_error(@() mio.thicken(m, 0.1, 'side', 'sideways'), 'side');
     ms = mio.measure(m, ['{"elements": [' ...
         '{"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},' ...
         '{"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],' ...

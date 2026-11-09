@@ -144,6 +144,7 @@
 #include "meshioplusplus/operations/remove_islands.hpp"
 #include "meshioplusplus/operations/flip_normals.hpp"
 #include "meshioplusplus/operations/clip.hpp"
+#include "meshioplusplus/operations/offset_surface.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -4022,6 +4023,52 @@ val clip_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, const v
         out.set("numCapTriangles", static_cast<double>(r.mNumCapTriangles));
         out.set("numLoops", static_cast<double>(r.mNumLoops));
         out.set("numOpenChains", static_cast<double>(r.mNumOpenChains));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/// Offset, thicken or hollow a surface (roadmap 7.8.4): @p rKind is
+/// "offset", "thicken" or "hollow", @p Amount the distance, thickness or
+/// wall, @p rOptions `{side, smoothIterations}`.
+val offset_surface_js(const val& rMeshObj, const std::string& rKind, double Amount,
+                      const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        std::string side = "inward";
+        int smooth = 0;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the offset options", {"side", "smoothIterations"});
+            if (rOptions.hasOwnProperty("side"))
+                side = rOptions["side"].as<std::string>();
+            if (rOptions.hasOwnProperty("smoothIterations"))
+                smooth = rOptions["smoothIterations"].as<int>();
+        }
+        const meshioplusplus::Mesh mesh = val_to_mesh(rMeshObj);
+        meshioplusplus::OffsetSurfaceResult r;
+        if (rKind == "offset") {
+            r = meshioplusplus::offset_surface(mesh, {Amount, smooth});
+        } else if (rKind == "thicken") {
+            meshioplusplus::ThickenOptions o;
+            o.mThickness = Amount;
+            o.mSide = meshioplusplus::thicken_side_from_name(side);
+            o.mSmoothIterations = smooth;
+            r = meshioplusplus::thicken(mesh, o);
+        } else if (rKind == "hollow") {
+            r = meshioplusplus::hollow(mesh, Amount, smooth);
+        } else {
+            throw std::invalid_argument(
+                "meshio++: offsetSurface: kind is offset, thicken or hollow");
+        }
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numNotVisible", static_cast<double>(r.mNumNotVisible));
+        out.set("numClamped", static_cast<double>(r.mNumClamped));
+        out.set("numFolded", static_cast<double>(r.mNumFolded));
+        out.set("numRimQuads", static_cast<double>(r.mNumRimQuads));
+        out.set("maxMove", r.mMaxMove);
         val warnings = val::array();
         for (const std::string& w : r.mWarnings)
             warnings.call<void>("push", w);
@@ -10616,6 +10663,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("removeIslands", &remove_islands_js);
     emscripten::function("flipNormals", &flip_normals_js);
     emscripten::function("clip", &clip_js);
+    emscripten::function("offsetSurface", &offset_surface_js);
     emscripten::function("alignDatums", &align_datums_js);
     emscripten::function("measureElementPrimitive", &measure_element_primitive_js);
     emscripten::function("isosurface", &isosurface_js);

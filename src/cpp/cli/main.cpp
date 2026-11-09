@@ -153,6 +153,7 @@
 #include "meshioplusplus/operations/remove_islands.hpp"
 #include "meshioplusplus/operations/flip_normals.hpp"
 #include "meshioplusplus/operations/clip.hpp"
+#include "meshioplusplus/operations/offset_surface.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -5547,6 +5548,73 @@ int cmd_remove_islands(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// offset-surface, thicken and hollow (roadmap 7.8.4): Kind is the verb.
+int cmd_offset_kind(const std::vector<std::string>& rArgs, const std::string& rKind) {
+    const char* amount = rKind == "offset-surface" ? "distance"
+                         : rKind == "thicken"      ? "thickness"
+                                                   : "wall";
+    auto p = cli_parse(
+        rArgs,
+        cli_specs(
+            {io_flag_specs(),
+             {{amount, {}, true}, {"side", {}, true}, {"smooth", {}, true}, {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error(rKind + " requires INFILE and OUTFILE");
+    if (!has_opt(p, amount))
+        throw std::runtime_error(rKind + " requires --" + amount);
+    double value = 0.0;
+    int smooth = 0;
+    cli_opt_double(p, amount, value);
+    cli_opt_int(p, "smooth", smooth);
+    const Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::OffsetSurfaceResult r;
+    if (rKind == "offset-surface") {
+        r = meshioplusplus::offset_surface(mesh, {value, smooth});
+    } else if (rKind == "thicken") {
+        meshioplusplus::ThickenOptions o;
+        o.mThickness = value;
+        o.mSmoothIterations = smooth;
+        if (has_opt(p, "side"))
+            o.mSide = meshioplusplus::thicken_side_from_name(opt_value(p, "side"));
+        r = meshioplusplus::thicken(mesh, o);
+    } else {
+        r = meshioplusplus::hollow(mesh, value, smooth);
+    }
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_not_visible", r.mNumNotVisible);
+        json.Field("num_clamped", r.mNumClamped);
+        json.Field("num_folded", r.mNumFolded);
+        json.Field("num_rim_quads", r.mNumRimQuads);
+        json.Field("max_move", r.mMaxMove);
+        cli_names_json(json, "warnings", r.mWarnings);
+        json.EndObject();
+        return 0;
+    }
+    char line[256];
+    meshioplusplus::detail::snprintf_c(
+        line, sizeof(line), "max move %.17g; %lld folded face(s), %lld rim quad(s)\n", r.mMaxMove,
+        static_cast<long long>(r.mNumFolded), static_cast<long long>(r.mNumRimQuads));
+    std::cout << line;
+    for (const std::string& w : r.mWarnings)
+        std::cout << "warning: " << w << "\n";
+    return 0;
+}
+
+int cmd_offset_surface(const std::vector<std::string>& rArgs) {
+    return cmd_offset_kind(rArgs, "offset-surface");
+}
+
+int cmd_thicken(const std::vector<std::string>& rArgs) {
+    return cmd_offset_kind(rArgs, "thicken");
+}
+
+int cmd_hollow(const std::vector<std::string>& rArgs) {
+    return cmd_offset_kind(rArgs, "hollow");
+}
+
 // measure: elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).
 int cmd_measure(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(), {{"json", {}, false}}}));
@@ -9915,6 +9983,13 @@ const CliVerb kCliVerbs[] = {
      &cmd_slice},
     {"clip", nullptr,
      "  clip                    Cut a surface by a plane, keep a side and cap it\n", &cmd_clip},
+    {"offset-surface", nullptr,
+     "  offset-surface          Move a surface's points along their offset directions\n",
+     &cmd_offset_surface},
+    {"thicken", nullptr,
+     "  thicken                 Turn a surface into a closed shell of a thickness\n", &cmd_thicken},
+    {"hollow", nullptr, "  hollow                  Give a closed surface an inner wall\n",
+     &cmd_hollow},
     {"flip-normals", nullptr,
      "  flip-normals            Reverse the winding of every cell, or of a region's\n",
      &cmd_flip_normals},
