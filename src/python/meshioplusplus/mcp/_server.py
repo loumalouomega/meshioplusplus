@@ -5093,6 +5093,29 @@ def _register_gated(server: FastMCP) -> None:
 # Resources                                                                   #
 # --------------------------------------------------------------------------- #
 def _register_resources(server: FastMCP) -> None:
+    @server.prompt(
+        name="measure_scan", description="Measure a scan against its drawing"
+    )
+    def measure_scan_prompt(
+        scan_path: str = "scan.stl",
+        spec_path: str = "inspection.json",
+        part_class: str = "analytic",
+    ) -> str:
+        """The documented order of the measuring tools (roadmap 7.9.2)."""
+        return _tools.prompt_measure_scan(scan_path, spec_path, part_class)
+
+    @server.prompt(
+        name="reverse_engineer_scan",
+        description="Reverse-engineer a scan into a CAD solid",
+    )
+    def reverse_engineer_scan_prompt(
+        scan_path: str = "scan.stl",
+        step_path: str = "part.step",
+        part_class: str = "analytic",
+    ) -> str:
+        """The documented order of the reverse-engineering tools (roadmap 7.9.2)."""
+        return _tools.prompt_reverse_engineer_scan(scan_path, step_path, part_class)
+
     @server.resource("meshioplusplus://formats")
     def formats_resource() -> str:
         """The supported-formats registry as JSON."""

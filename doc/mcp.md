@@ -224,6 +224,10 @@ Jobs on the machine the server runs on (see [the dashboard](./dashboard#launchin
 
 `view`, `has_viewer` and `tui` are deliberately not tools: they hand control to a person (a window, a browser tab, or a terminal taken over for orbiting and zooming), and an agent has nothing to drive. `screenshot` and `render_mesh` are their headless equivalents; the [interactive terminal viewer](/tui#the-interactive-viewer-tui) is for the person at the keyboard.
 
+## Workflow prompts
+
+Two MCP prompts (roadmap 7.9.2) give an agent the documented order of the tools for a scan, so it follows the workflow rather than inventing one: `measure_scan` (arguments `scan_path`, `spec_path`, `part_class`) walks `info`, `repair`, `remove_islands`, alignment (`auto_align`, `register_rigid`, `register_landmarks`), `segment` and `fit_primitives`, `measure`, `align_datums`, `deviation`, `deviation_regions`, `colorize` and `thickness`, naming the report fields to check at each step; `reverse_engineer_scan` (`scan_path`, `step_path`, `part_class`) walks `repair`, `remove_islands`, `auto_align`, `fit_cad_iterate` with the part class's target and tolerance, `face_support`, `constrain_primitives`, `sections` and `fit_curves`, `write_step_elements` and `deviation`. The part classes are `fit_cad_iterate`'s ([closing the CAD loop](/fit_cad_loop)). `prompts/list` returns both, and `tests/python/test_mcp.py` checks that every tool a prompt names is registered. The text is built by `_tools.prompt_measure_scan` and `_tools.prompt_reverse_engineer_scan`.
+
 ## Reports are strict JSON
 
 Every response survives `json.dumps(..., allow_nan=False)`: numpy scalars and arrays are converted, `NaN`/`±Inf` become `null` (with a `non_finite_replaced` count so the loss is visible), and any array longer than 1000 elements is replaced by a `{"truncated": true, "size", "shape", "dtype", "preview"}` wrapper — reports stay agent-sized no matter how large the mesh.

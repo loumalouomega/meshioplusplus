@@ -7536,6 +7536,98 @@ def tool_render_mesh(
 # --------------------------------------------------------------------------- #
 # name -> {"fn", "wraps" (public meshioplusplus API names this tool covers,
 # consumed by the parity-guard test), "gated" (extra name, or None)}.
+# --------------------------------------------------------------------------- #
+# Workflow prompts (roadmap 7.9.2): the documented order of the tools, the    #
+# defaults per part class and the report fields to check. Every tool a       #
+# prompt names in backticks is in TOOL_REGISTRY (test_mcp checks it).        #
+# --------------------------------------------------------------------------- #
+_PART_CLASS_DEFAULTS = {
+    "analytic": (0.90, 1e-3),
+    "cast": (0.85, 2e-3),
+    "freeform": (0.75, 4e-3),
+}
+
+
+def _part_class_line(part_class):
+    target, tol = _PART_CLASS_DEFAULTS.get(part_class, _PART_CLASS_DEFAULTS["analytic"])
+    return (
+        f"Part class `{part_class}`: aim for {target:.0%} of the scan within "
+        f"tolerance; fit and segment at {tol:g} of the bounding-box diagonal."
+    )
+
+
+def prompt_measure_scan(
+    scan_path="scan.stl", spec_path="inspection.json", part_class="analytic"
+):
+    """The 'measure this scan' workflow, as text."""
+    return f"""Measure the scan `{scan_path}` against its drawing, step by step. Use the
+meshio++ tools in this order and check each report before going on.
+
+1. `info` on {scan_path}: units, cell types, size. A scan in millimetres
+   reads in millimetres; nothing below rescales it.
+2. `repair` (fill_style "curved" for scan holes; record_provenance true so
+   the fills are known later), then `remove_islands` for the scanner's
+   crumbs. Check quality_after.watertight and num_removed.
+3. Align: `auto_align` when there is no nominal (it lays the part on its
+   largest flat face), `register_rigid` (initial "auto") against a CAD mesh,
+   or `register_landmarks` from picked pairs. Check rms and share.
+4. `segment` (method "primitive") then `fit_primitives` (criterion
+   "minimum_zone" for form tolerances). Check each patch's type, rms and
+   form_error; a patch reported "none" is not a primitive, do not force one.
+5. `measure` with the spec {spec_path}: elements (fit a plane, cylinder,
+   sphere from a region or seed points; construct axes, intersections),
+   dimensions with nominal and tolerance, and the GD&T tolerances. Read
+   num_fail, then each dimension's and tolerance's value and pass.
+6. `align_datums` lays the part on its datums A, B, C (the 3-2-1 frame a
+   CMM uses) when the report must be in the part's frame.
+7. `deviation` against the nominal (or against an element), then
+   `deviation_regions` for the areas beyond tolerance and `colorize` for the
+   colour map. Check share_within, the percentiles and suggested_range.
+8. `thickness` (method "sphere" or "cone" on a scan) where walls matter;
+   check p2, the thinnest reading.
+
+{_part_class_line(part_class)}
+Report every value with its unit, the PASS/FAIL table from `measure`, and
+what could not be measured (an element whose fit was refused, a tolerance
+with no datum)."""
+
+
+def prompt_reverse_engineer_scan(
+    scan_path="scan.stl", step_path="part.step", part_class="analytic"
+):
+    """The 'reverse-engineer this scan' workflow, as text."""
+    target, tol = _PART_CLASS_DEFAULTS.get(part_class, _PART_CLASS_DEFAULTS["analytic"])
+    return f"""Reverse-engineer the scan `{scan_path}` into a CAD solid `{step_path}`, step by
+step. Use the meshio++ tools in this order and check each report.
+
+1. `info` on {scan_path}, then `repair` (record_provenance true: its fills
+   are marked repair:hole, so `face_support` later knows them) and
+   `remove_islands`. The skin must be closed and consistently wound
+   (quality_after.watertight) before any fit.
+2. `auto_align` (or `find_symmetry_plane` for a symmetric part) so the part
+   sits in a sensible frame; `decimate` with max_deviation only if the scan
+   is too heavy to fit, never coarser than the tolerance.
+3. `fit_cad_iterate` with part_class "{part_class}" (target {target:.0%},
+   tolerance {tol:g} of the diagonal) and step_path {step_path}: it runs
+   `segment`, `fit_primitives` and `fit_cad` in rounds and re-segments the
+   worst faces. Check rounds (share_within and explained rising),
+   stop_reason and target_met.
+4. `face_support` on the solid against the scan: faces "inferred" were
+   guessed (hidden, or closed by repair), "partial" half measured. Say which.
+5. If related primitives should share an axis or be perpendicular,
+   `constrain_primitives` on the fitted skin (force or forbid relations by
+   patch label), then `fit_cad` again with constrain_primitives false.
+6. For prismatic or turned regions, `sections` and `fit_curves` give a
+   sketch of lines, arcs and circles; `write_step_elements` exports fitted
+   planes, cylinders and spheres as exact solids.
+7. `deviation` of the scan against the solid's re-mesh: share_within and
+   the percentiles are the honest verdict.
+
+Report the faces by type, the share within tolerance, the inferred faces
+and the deviation; a face left as facets is a region no primitive or
+freeform surface explained within tolerance, not an error to hide."""
+
+
 TOOL_REGISTRY = OrderedDict(
     [
         (

@@ -4397,3 +4397,25 @@ def test_cut_tools(tmp_path):
     assert report["dimension"] == 2
     with pytest.raises(ValueError, match="six numbers"):
         _tools.tool_cut_level_set(str(box), str(out), planes=[[0.3, 0, 0]])
+
+
+def test_workflow_prompts_name_only_registered_tools():
+    import re
+
+    for text in (
+        _tools.prompt_measure_scan(),
+        _tools.prompt_reverse_engineer_scan(part_class="cast"),
+    ):
+        named = set(re.findall(r"`([a-z_]+)`", text))
+        tools = {n for n in named if not n.startswith(("scan", "part", "inspection"))}
+        tools -= {"cast", "analytic"}
+        missing = sorted(n for n in tools if n not in _tools.TOOL_REGISTRY)
+        assert not missing, missing
+        assert len(tools) >= 8
+
+
+def test_server_lists_the_workflow_prompts():
+    server = _server()
+    prompts = _run(server.list_prompts())
+    names = sorted(p.name for p in prompts)
+    assert names == ["measure_scan", "reverse_engineer_scan"]
