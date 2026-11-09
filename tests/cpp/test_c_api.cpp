@@ -6394,7 +6394,27 @@ TEST(CApi, SegmentAndFitACube) {
     ASSERT_NE(fit, nullptr) << mio_last_error();
     EXPECT_EQ(freport.num_patches, 6);
     EXPECT_EQ(freport.num_plane, 6);
+    EXPECT_EQ(freport.num_feature_cells, 0);
     mio_mesh_free(fit);
+
+    // Roadmap 7.1.1: a seed on one face of the cube fits that face alone.
+    mio_fit_primitives_ex_opts xopts;
+    mio_fit_primitives_ex_opts_init(&xopts);
+    EXPECT_EQ(xopts.used_points, MIO_FIT_USED_AUTO);
+    EXPECT_DOUBLE_EQ(xopts.rim_angle, 15.0);
+    const double seed[3] = {0.5, 0.5, 0.0};
+    xopts.seeds = seed;
+    xopts.num_seeds = 1;
+    xopts.base.types = 1u << MIO_FIT_PLANE;
+    fit = mio_fit_primitives_ex(seg, &xopts, &freport);
+    ASSERT_NE(fit, nullptr) << mio_last_error();
+    EXPECT_EQ(freport.num_patches, 1);
+    EXPECT_EQ(freport.num_plane, 1);
+    EXPECT_GT(freport.num_feature_cells, 0);
+    EXPECT_GE(mio_fit_primitives_warnings(nullptr, 0), 0);
+    mio_mesh_free(fit);
+    xopts.used_points = 9;
+    EXPECT_EQ(mio_fit_primitives_ex(seg, &xopts, nullptr), nullptr);
 
     // No label array on the raw cube; a bad tolerance; NULL meshes.
     EXPECT_EQ(mio_fit_primitives(m, &fopts, nullptr), nullptr);

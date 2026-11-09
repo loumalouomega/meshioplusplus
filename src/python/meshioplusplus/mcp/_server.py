@@ -2356,6 +2356,12 @@ def _register_operations(server: FastMCP) -> None:
         min_inlier_fraction: float = 0.9,
         types: Optional[List[str]] = None,
         max_iterations: int = 50,
+        region: Optional[str] = None,
+        seeds: Optional[List[List[float]]] = None,
+        feature_angle: float = 30.0,
+        rim_angle: float = 15.0,
+        output_region: str = "fit:feature",
+        used_points: str = "auto",
     ) -> dict:
         """Fit a plane, sphere, cylinder, cone or torus to each patch of a
         surface and report how well it fits -- a recovered radius, axis or
@@ -2371,7 +2377,17 @@ def _register_operations(server: FastMCP) -> None:
         with its best residual. The mesh is written with cell data fit:type /
         fit:rms / fit:max and field data fit:patch_*; the report lists each
         patch's type, params (x, y, z, ax, ay, az, r1, r2, angle_deg, 0), rms,
-        max and fraction, plus counts per type."""
+        max and fraction, the form error and extremes, sigma, num_used and
+        num_rejected, plus counts per type.
+
+        region fits one named cell region as one patch; seeds (a list of
+        [x, y, z]) grows a feature from the facet nearest each point across
+        edges below feature_angle while one primitive of types explains it,
+        peels rim faces turning more than rim_angle from the fit, fits it as
+        one patch and writes its cells as the cell region output_region
+        (num_feature_cells). used_points "3sigma"/"2sigma"/"1sigma" refits on
+        the points within k RMS distances until the set stops changing;
+        "auto" is "3sigma" with a region or seeds, "all" otherwise."""
 
     @server.tool()
     @_forward(_tools.tool_refine_patches)

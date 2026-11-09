@@ -148,6 +148,12 @@ OP_TABLE = {
         "MinInlierFraction",
         "Types",
         "MaxIterations",
+        "Region",
+        "Seeds",
+        "FeatureAngle",
+        "RimAngle",
+        "OutputRegion",
+        "UsedPoints",
     ),
     "FitCad": (
         "Path",

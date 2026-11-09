@@ -546,7 +546,14 @@ MIO_ABI_LAYOUT(meshioplusplus::PeriodicOptions, 144, 8);
 // SegmentOptions::mMethod and mTolerance (primitive segmentation): 96 -> 112.
 MIO_ABI_LAYOUT(meshioplusplus::SegmentOptions, 112, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TessellateOptions, 16, 8);
-MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
+// ABI 43 added roadmap 7.1's region and seed modes and sigma trimming
+// (mExtendedReport, mRegion, mSeeds, mFeatureAngleDeg, mRimAngleDeg,
+// mOutputRegion, mUsedPoints): 72 -> 192.
+MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 192, 8);
+static_assert(offsetof(meshioplusplus::FitPrimitivesOptions, mSeeds) == 112,
+              "FitPrimitivesOptions::mSeeds moved");
+static_assert(offsetof(meshioplusplus::FitPrimitivesOptions, mUsedPoints) == 184,
+              "FitPrimitivesOptions::mUsedPoints moved");
 // fit_cad's options (roadmap 6.3.3), the same rule; FitCadResult embeds a Mesh.
 // ABI 27 added the freeform options (roadmap 6.3.2): 32 -> 48 bytes; ABI 28
 // added mFreeformSplit, mFillets and mThreads (roadmap 6.3.1, 6.3.2): 48 -> 56.

@@ -5424,7 +5424,7 @@ val segment_js(const val& rMeshObj, double featureAngle, double normalTolerance,
  */
 val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double tolerance,
                       bool relative, double minInlierFraction, const val& rTypes,
-                      double maxIterations) {
+                      double maxIterations, const val& rExtra) {
     return with_js_errors([&]() -> val {
         static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
         meshioplusplus::FitPrimitivesOptions options;
@@ -5447,6 +5447,51 @@ val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double
                 throw std::invalid_argument("meshio++: fit_primitives: unknown primitive type '" +
                                             name + "'");
         }
+        // Roadmap 7.1: {region, seeds: [[x, y, z], ...], featureAngle,
+        // rimAngle, outputRegion, usedPoints}.
+        if (!rExtra.isUndefined() && !rExtra.isNull()) {
+            check_settings_keys(rExtra, "the fitPrimitives options",
+                                {"region", "seeds", "featureAngle", "rimAngle", "outputRegion",
+                                 "usedPoints"});
+            if (rExtra.hasOwnProperty("region"))
+                options.mRegion = rExtra["region"].as<std::string>();
+            if (rExtra.hasOwnProperty("seeds")) {
+                const val seeds = rExtra["seeds"];
+                const unsigned ns = seeds["length"].as<unsigned>();
+                for (unsigned k = 0; k < ns; ++k) {
+                    const val p = seeds[k];
+                    if (p["length"].as<unsigned>() != 3)
+                        throw std::invalid_argument(
+                            "meshio++: fit_primitives: a seed is [x, y, z]");
+                    options.mSeeds.push_back({p[0].as<double>(), p[1].as<double>(),
+                                              p[2].as<double>()});
+                }
+            }
+            if (rExtra.hasOwnProperty("featureAngle"))
+                options.mFeatureAngleDeg = rExtra["featureAngle"].as<double>();
+            if (rExtra.hasOwnProperty("rimAngle"))
+                options.mRimAngleDeg = rExtra["rimAngle"].as<double>();
+            if (rExtra.hasOwnProperty("outputRegion"))
+                options.mOutputRegion = rExtra["outputRegion"].as<std::string>();
+            if (rExtra.hasOwnProperty("usedPoints")) {
+                const std::string u = rExtra["usedPoints"].as<std::string>();
+                using meshioplusplus::FitUsedPoints;
+                if (u == "auto")
+                    options.mUsedPoints = FitUsedPoints::Auto;
+                else if (u == "all")
+                    options.mUsedPoints = FitUsedPoints::All;
+                else if (u == "3sigma")
+                    options.mUsedPoints = FitUsedPoints::Sigma3;
+                else if (u == "2sigma")
+                    options.mUsedPoints = FitUsedPoints::Sigma2;
+                else if (u == "1sigma")
+                    options.mUsedPoints = FitUsedPoints::Sigma1;
+                else
+                    throw std::invalid_argument(
+                        "meshio++: fit_primitives: usedPoints must be auto, all, 3sigma, "
+                        "2sigma or 1sigma");
+            }
+        }
         meshioplusplus::FitPrimitivesResult r =
             meshioplusplus::fit_primitives(val_to_mesh(rMeshObj), options);
         val out = val::object();
@@ -5458,6 +5503,11 @@ val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double
         out.set("numCone", static_cast<double>(r.mNumCone));
         out.set("numTorus", static_cast<double>(r.mNumTorus));
         out.set("numUnfitted", static_cast<double>(r.mNumUnfitted));
+        out.set("numFeatureCells", static_cast<double>(r.mNumFeatureCells));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
         return out;
     });
 }

@@ -556,6 +556,7 @@ def _fit_patch(patch, opts):
     tol = opts["tolerance"] * patch["diag"] if opts["relative"] else opts["tolerance"]
     out = {"type": 0, "params": params, "rms": np.nan, "max": np.nan}
     out.update(fraction=0.0, tol=tol, form=form_metrics(0, params, patch["pts"]))
+    out.update(sigma=math.nan, num_used=len(patch["pts"]))
     if len(patch["pts"]) == 0 or not patch["diag"] > 0.0:
         return out
     max_it = min(opts["max_iterations"], 100000)
@@ -601,7 +602,11 @@ def _fit_patch(patch, opts):
             p = np.array(p, dtype=np.float64)
             p[0:3] += patch["shift"]
             out.update(type=best_t, params=p, rms=rms, max=mx, fraction=frac)
-            out["form"] = form_metrics(best_t, p, patch["pts"] + patch["shift"])
+            world = patch["pts"] + patch["shift"]
+            out["form"] = form_metrics(best_t, p, world)
+            out["sigma"] = float(
+                np.sqrt(np.mean(_signed_distance(best_t, p, world) ** 2))
+            )
             return out
         if not have_best or rms < out["rms"]:
             have_best = True
@@ -616,7 +621,16 @@ def _fit_primitives_py(mesh, opts):
     total = int(bases[-1]) + len(mesh.cells[-1].data) if len(mesh.cells) else 0
     label = np.zeros(total, dtype=np.int64)
     name = opts["patch_data"]
-    if name:
+    if opts.get("region"):
+        region = [
+            r for r in mesh.regions if r.name == opts["region"] and r.kind == "cell"
+        ]
+        if not region:
+            raise ValueError(f"{_PREFIX}no Cell region named '{opts['region']}'")
+        label[:] = -1
+        for r in region:
+            label[np.asarray(r.entries, dtype=np.int64).ravel()] = 0
+    elif name:
         if name not in mesh.cell_data:
             raise ValueError(
                 f"{_PREFIX}no cell data named '{name}' "
@@ -719,6 +733,13 @@ def _fit_primitives_py(mesh, opts):
     out.field_data["fit:patch_extent"] = np.array(
         [o["form"]["extent"] for o in rows], dtype=np.float64
     ).reshape(-1, 2)
+    out.field_data["fit:patch_sigma"] = np.array(
+        [o["sigma"] for o in rows], dtype=np.float64
+    )
+    out.field_data["fit:patch_num_used"] = np.array(
+        [o["num_used"] for o in rows], dtype=np.int64
+    )
+    out.field_data["fit:patch_num_rejected"] = np.zeros(len(rows), dtype=np.int64)
     counts = [int(np.count_nonzero(ptype == t)) for t in range(6)]
     report = {
         "num_patches": len(ids),
@@ -728,6 +749,8 @@ def _fit_primitives_py(mesh, opts):
         "num_cone": counts[4],
         "num_torus": counts[5],
         "num_unfitted": counts[0],
+        "num_feature_cells": 0,
+        "warnings": [],
     }
     return out, report
 
@@ -740,7 +763,11 @@ _REPORT_KEYS = (
     "num_cone",
     "num_torus",
     "num_unfitted",
+    "num_feature_cells",
 )
+
+#: ``used_points`` values: which points a fit uses (roadmap 7.1.2).
+USED_POINTS = ("auto", "all", "3sigma", "2sigma", "1sigma")
 
 
 def types_mask(types):
@@ -769,6 +796,13 @@ def fit_primitives(
     types=("plane", "sphere", "cylinder", "cone", "torus"),
     max_iterations: int = 50,
     return_report: bool = False,
+    *,
+    region: str | None = None,
+    seeds=None,
+    feature_angle: float = 30.0,
+    rim_angle: float = 15.0,
+    output_region: str = "fit:feature",
+    used_points: str = "auto",
 ):
     """Fit a plane, sphere, cylinder, cone or torus to each patch of a surface.
 
@@ -785,6 +819,19 @@ def fit_primitives(
         ``cylinder``, ``cone``, ``torus``; the first accepted in that order wins.
     :param max_iterations: the Levenberg-Marquardt iteration cap per fit.
     :param return_report: also return the per-type counts.
+    :param region: fit the cells of this named ``Cell`` region as one patch
+        (roadmap 7.1.1; ``patch_data`` is then unused).
+    :param seeds: one ``(x, y, z)`` or several: from the facet nearest each,
+        grow across smooth edges (below ``feature_angle`` degrees) while one
+        primitive of ``types`` explains the region, union the regions, peel
+        boundary faces turning more than ``rim_angle`` degrees from the fit,
+        and fit the result as one patch, written as the cell region
+        ``output_region``. A relative tolerance is then a fraction of the whole
+        surface's diagonal.
+    :param used_points: ``"all"``, or ``"3sigma"``/``"2sigma"``/``"1sigma"``:
+        refit on the points within k times the RMS distance of the points kept
+        until the set stops changing (roadmap 7.1.2). ``"auto"`` is ``"3sigma"``
+        with a region or seeds, ``"all"`` otherwise.
     :returns: the input with cell data ``fit:type`` (-1 no patch, 0 none,
         1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus), ``fit:rms`` and
         ``fit:max``, and per-patch field data ``fit:patch_id``,
@@ -796,7 +843,19 @@ def fit_primitives(
         (degrees) and ``fit:patch_extent`` (``(m, 2)``), NaN where they do not
         apply. With ``return_report``, ``(mesh, report)``.
     """
+    if used_points not in USED_POINTS:
+        raise ValueError(
+            f"{_PREFIX}used_points must be one of {USED_POINTS}, got {used_points!r}"
+        )
+    if seeds is not None:
+        arr = np.asarray(seeds, dtype=np.float64)
+        seeds = [tuple(float(x) for x in row) for row in arr.reshape(-1, 3)]
+    feature_mode = bool(region) or bool(seeds)
+    resolved = used_points
+    if resolved == "auto":
+        resolved = "3sigma" if feature_mode else "all"
     opts = {
+        "region": str(region or ""),
         "patch_data": str(patch_data),
         "tolerance": float(tolerance),
         "relative": bool(relative),
@@ -823,14 +882,27 @@ def fit_primitives(
             opts["min_inlier_fraction"],
             opts["types"],
             opts["max_iterations"],
+            region=opts["region"],
+            seeds=seeds or [],
+            feature_angle=float(feature_angle),
+            rim_angle=float(rim_angle),
+            output_region=str(output_region),
+            used_points=str(used_points),
         )
         out = res["mesh"]
         report = {k: int(res[k]) for k in _REPORT_KEYS}
+        report["warnings"] = [str(w) for w in res["warnings"]]
     except Exception as exc:
         if not core_op_declined(exc, "fit_primitives"):
             raise
         out = None
     if out is None:
+        if seeds or resolved != "all":
+            raise NotImplementedError(
+                f"{_PREFIX}seeds and sigma trimming need the compiled C++ core "
+                "(meshioplusplus._core); the numpy twin fits patches and regions with "
+                "used_points='all'"
+            )
         out, report = _fit_primitives_py(mesh, opts)
     return (out, report) if return_report else out
 

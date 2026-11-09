@@ -3028,6 +3028,19 @@ contains
         call check(ierr == 0, 'fit_primitives succeeded')
         call check(nplane == 6_int64, 'every cube face fits a plane')
         call fitted%free()
+        ! Roadmap 7.1.1: a seed on the top face fits it alone.
+        block
+            integer(int64) :: nfeature
+            real(real64) :: one_seed(3, 1)
+            one_seed(:, 1) = [0.5_real64, 0.5_real64, 1.0_real64]
+            fitted = seg%fit_primitives(types=2, seeds=one_seed, num_plane=nplane, &
+                                        num_feature_cells=nfeature, stat=ierr)
+            call check(ierr == 0 .and. nplane == 1_int64 .and. nfeature > 0_int64, &
+                       'a seed fits one face')
+            if (ierr == 0) call fitted%free()
+            fitted = seg%fit_primitives(used_points='5sigma', stat=ierr)
+            call check(ierr /= 0, 'fit_primitives refuses an unknown used_points')
+        end block
 
         ! refine_patches (v17.11.0): six planes are already one patch each.
         refined_mesh = seg%refine_patches(num_patches=npatch, num_splits=nrsplit, &

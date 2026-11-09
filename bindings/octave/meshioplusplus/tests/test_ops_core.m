@@ -391,6 +391,10 @@ function t_feature_segment()
     expect_error(@() mio.segment(m, 'method', 'blob'), 'method');
     expect_error(@() mio.fit_primitives(m));
     expect_error(@() mio.fit_primitives(sg.mesh, 'types', 'blob'), 'blob');
+    fp3 = mio.fit_primitives(sg.mesh, 'types', 'plane', 'seeds', [0.5 0.5 1]);
+    expect_equal(fp3.num_plane, 1);
+    assert(fp3.num_feature_cells > 0);
+    expect_error(@() mio.fit_primitives(sg.mesh, 'used_points', '5sigma'), 'used_points');
 end
 
 function t_refine_patches()

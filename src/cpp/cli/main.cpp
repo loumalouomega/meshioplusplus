@@ -2303,6 +2303,8 @@ std::uint32_t cli_fit_types(const std::string& rList, const char* pCommand) {
     return mask;
 }
 
+std::vector<double> parse_doubles(const std::string& rText);  // below
+
 int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
                                          {{"patch-data", {}, true},
@@ -2310,7 +2312,13 @@ int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
                                           {"absolute", {}, false},
                                           {"min-inlier-fraction", {}, true},
                                           {"types", {}, true},
-                                          {"max-iterations", {}, true}},
+                                          {"max-iterations", {}, true},
+                                          {"region", {}, true},
+                                          {"seed", {}, true},
+                                          {"feature-angle", {}, true},
+                                          {"rim-angle", {}, true},
+                                          {"output-region", {}, true},
+                                          {"used-points", {}, true}},
                                          report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("fit-primitives requires exactly INFILE and OUTFILE");
@@ -2323,6 +2331,33 @@ int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
     cli_opt_int64(p, "max-iterations", options.mMaxIterations);
     if (has_opt(p, "types"))
         options.mTypes = cli_fit_types(opt_value(p, "types"), "fit-primitives");
+    cli_opt_string(p, "region", options.mRegion);
+    for (const std::string& seed : opt_values(p, "seed")) {
+        const std::vector<double> xyz = parse_doubles(seed);
+        if (xyz.size() != 3)
+            throw std::runtime_error("fit-primitives: --seed takes X,Y,Z");
+        options.mSeeds.push_back({xyz[0], xyz[1], xyz[2]});
+    }
+    cli_opt_double(p, "feature-angle", options.mFeatureAngleDeg);
+    cli_opt_double(p, "rim-angle", options.mRimAngleDeg);
+    cli_opt_string(p, "output-region", options.mOutputRegion);
+    if (has_opt(p, "used-points")) {
+        const std::string u = opt_value(p, "used-points");
+        using meshioplusplus::FitUsedPoints;
+        if (u == "auto")
+            options.mUsedPoints = FitUsedPoints::Auto;
+        else if (u == "all")
+            options.mUsedPoints = FitUsedPoints::All;
+        else if (u == "3sigma")
+            options.mUsedPoints = FitUsedPoints::Sigma3;
+        else if (u == "2sigma")
+            options.mUsedPoints = FitUsedPoints::Sigma2;
+        else if (u == "1sigma")
+            options.mUsedPoints = FitUsedPoints::Sigma1;
+        else
+            throw std::runtime_error(
+                "fit-primitives: --used-points must be auto, all, 3sigma, 2sigma or 1sigma");
+    }
     meshioplusplus::FitPrimitivesResult r = meshioplusplus::fit_primitives(mesh, options);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     if (has_flag(p, "json")) {
@@ -2335,6 +2370,8 @@ int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
         json.Field("num_cone", r.mNumCone);
         json.Field("num_torus", r.mNumTorus);
         json.Field("num_unfitted", r.mNumUnfitted);
+        json.Field("num_feature_cells", r.mNumFeatureCells);
+        cli_names_json(json, "warnings", r.mWarnings);
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "fit_primitives: " << r.mNumPatches << " patch(es)\n";
@@ -2344,6 +2381,9 @@ int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
         std::cout << "  cone:      " << r.mNumCone << "\n";
         std::cout << "  torus:     " << r.mNumTorus << "\n";
         std::cout << "  unfitted:  " << r.mNumUnfitted << "\n";
+        if (r.mNumFeatureCells)
+            std::cout << "  feature:   " << r.mNumFeatureCells << " cells\n";
+        cli_print_warnings(std::cout, "  warning: ", r.mWarnings);
     }
     return 0;
 }

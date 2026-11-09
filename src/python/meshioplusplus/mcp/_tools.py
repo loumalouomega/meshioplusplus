@@ -3380,6 +3380,12 @@ def tool_fit_primitives(
     min_inlier_fraction=0.9,
     types=None,
     max_iterations=50,
+    region=None,
+    seeds=None,
+    feature_angle=30.0,
+    rim_angle=15.0,
+    output_region="fit:feature",
+    used_points="auto",
 ):
     """Fit a plane, sphere, cylinder, cone or torus to each patch of a surface;
     written with cell data fit:type / fit:rms / fit:max and per-patch field
@@ -3396,6 +3402,12 @@ def tool_fit_primitives(
         types=tuple(types) if types else TYPES[1:],
         max_iterations=max_iterations,
         return_report=True,
+        region=region,
+        seeds=seeds,
+        feature_angle=feature_angle,
+        rim_angle=rim_angle,
+        output_region=output_region,
+        used_points=used_points,
     )
     fd = out.field_data
     patches = []
@@ -3415,13 +3427,17 @@ def tool_fit_primitives(
                 "length": float(fd["fit:patch_length"][i]),
                 "arc_deg": float(fd["fit:patch_arc"][i]),
                 "extent": [float(x) for x in fd["fit:patch_extent"][i]],
+                "sigma": float(fd["fit:patch_sigma"][i]),
+                "num_used": int(fd["fit:patch_num_used"][i]),
+                "num_rejected": int(fd["fit:patch_num_rejected"][i]),
             }
         )
     return _result(
         _store(out, output_path, output_format),
         out,
         patches=patches,
-        **{k: int(v) for k, v in report.items()},
+        warnings=list(report["warnings"]),
+        **{k: int(v) for k, v in report.items() if k != "warnings"},
     )
 
 

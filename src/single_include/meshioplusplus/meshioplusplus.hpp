@@ -127,7 +127,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 42
+#define MESHIOPLUSPLUS_ABI_VERSION 43
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -29493,14 +29493,41 @@ find_intersections(const Mesh& rA, const Mesh& rB, const FindIntersectionsOption
  * A value that does not apply to the patch's type (or a patch of type none) is
  * NaN.
  *
+ *  - `fit:patch_sigma` (Float64): the RMS orthogonal distance of the points
+ *    the fit used;
+ *  - `fit:patch_num_used`, `fit:patch_num_rejected` (Int64): the points the
+ *    fit used and the points sigma trimming left out.
+ *
+ * ### Measurement-grade fits (roadmap 7.1.1, 7.1.2)
+ *
+ * **Region and seed modes.** `mRegion` fits one named cell region; `mSeeds`
+ * grows a region from the facet nearest each seed point while one primitive
+ * explains it (the growth `segment`'s primitive method runs from its own
+ * seeds, `detail/primitive_grow.hpp`), unions the regions of several seeds
+ * (a bore interrupted by a cross hole) and peels their rim; the cells are
+ * written as the region `mOutputRegion`. Either way the fit is one patch, the
+ * usual `fit:` rows with patch id 0.
+ *
+ * **Sigma trimming.** With `mUsedPoints` `Sigma3`, `Sigma2` or `Sigma1` the
+ * patch is refitted on the points within k times the RMS distance of the
+ * points kept, until that set stops changing (at most 20 rounds), so a scan's
+ * stray points, a burr or a fixture do not drag the fit. A plane or sphere
+ * fit (when that is the one type asked for) starts from a least median of
+ * squares consensus (Rousseeuw 1984) over a fixed schedule of minimal subsets
+ * drawn by stride from the Hilbert-ordered points, with no random sampling;
+ * the other types start from the least-squares fit. The share of points
+ * within tolerance is then over the points used.
+ *
  * Patches are fitted in parallel, each serially, so the output is
  * byte-identical on every backend and thread count. The numpy twin follows the
  * same steps and agrees within rounding.
  */
 
 // System includes
+#include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Project includes
 
@@ -29525,6 +29552,12 @@ inline constexpr const char* kFitPatchLengthName = "fit:patch_length";
 inline constexpr const char* kFitPatchArcName = "fit:patch_arc";
 /// Field data (Float64, `(m, 2)`): a plane's two in-plane extents.
 inline constexpr const char* kFitPatchExtentName = "fit:patch_extent";
+/// Field data (Float64): the RMS orthogonal distance of the points used.
+inline constexpr const char* kFitPatchSigmaName = "fit:patch_sigma";
+/// Field data (Int64): the points the fit used.
+inline constexpr const char* kFitPatchNumUsedName = "fit:patch_num_used";
+/// Field data (Int64): the points sigma trimming left out.
+inline constexpr const char* kFitPatchNumRejectedName = "fit:patch_num_rejected";
 
 /// The values of `fit:type` and `fit:patch_type`.
 enum class FitPrimitiveType : std::int32_t {
@@ -29539,6 +29572,19 @@ enum class FitPrimitiveType : std::int32_t {
 /// `FitPrimitivesOptions::mTypes` bits: `1 << FitPrimitiveType`.
 inline constexpr std::uint32_t kFitAllTypes =
     (1u << 1) | (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5);
+
+/// Which points a fit uses (roadmap 7.1.2).
+enum class FitUsedPoints : std::int32_t {
+    /// `Sigma3` in the region and seed modes, `All` in the patch mode.
+    Auto = 0,
+    /// Every point, as before roadmap 7.1.2.
+    All = 1,
+    /// Refit until the points within 3, 2 or 1 times the RMS distance of the
+    /// points kept are the points kept.
+    Sigma3 = 2,
+    Sigma2 = 3,
+    Sigma1 = 4,
+};
 
 /// What `fit_primitives` fits and accepts.
 struct FitPrimitivesOptions {
@@ -29556,6 +29602,35 @@ struct FitPrimitivesOptions {
     std::uint32_t mTypes = kFitAllTypes;
     /// The cap on Levenberg-Marquardt iterations per refined fit; at least 1.
     std::int64_t mMaxIterations = 50;
+
+    // ---- roadmap 7.1 (ABI 43) ------------------------------------------------
+
+    /// Write the roadmap 7.1 columns: the form error and extremes
+    /// (`fit:patch_form_error` to `fit:patch_extent`) and `fit:patch_sigma`,
+    /// `fit:patch_num_used`, `fit:patch_num_rejected`. `fit_cad` and
+    /// `refine_patches` turn it off: the tables they carry never had them.
+    bool mExtendedReport = true;
+    /// Region mode: fit the cells of this named `Cell` region as one patch
+    /// (`mPatchData` is then unused).
+    std::string mRegion;
+    /// Seed mode: from the facet nearest each point, grow across smooth edges
+    /// while one primitive of `mTypes` (the type to fit, or several for "auto")
+    /// explains the region within the tolerance, union the regions and peel
+    /// their rim; the result is fitted as one patch and written as the cell
+    /// region `mOutputRegion`. The tolerance, when relative, is a fraction of
+    /// the whole surface's diagonal.
+    std::vector<std::array<double, 3>> mSeeds;
+    /// Seed mode: edges whose faces' normals turn by more are not crossed.
+    double mFeatureAngleDeg = 30.0;
+    /// Seed mode: boundary faces of the grown region whose normal turns from
+    /// the fitted surface's by more are peeled off, ring by ring (a fillet or
+    /// a flared bore mouth); 180 keeps every one.
+    double mRimAngleDeg = 15.0;
+    /// Seed mode: the name of the cell region the fitted cells are written as.
+    std::string mOutputRegion = "fit:feature";
+    /// Which points the fit uses (roadmap 7.1.2): `Auto` is `Sigma3` in the
+    /// region and seed modes and `All` in the patch mode.
+    FitUsedPoints mUsedPoints = FitUsedPoints::Auto;
 };
 
 /// The annotated mesh and how many patches took each type.
@@ -29570,6 +29645,10 @@ struct FitPrimitivesResult {
     std::int64_t mNumTorus = 0;
     /// Patches no type was accepted for.
     std::int64_t mNumUnfitted = 0;
+    /// Seed mode: the cells written as `mOutputRegion` (0 otherwise).
+    std::int64_t mNumFeatureCells = 0;
+    /// What the run could not do (a seed nothing grew from, ...).
+    std::vector<std::string> mWarnings;
 };
 
 /**
@@ -52497,6 +52576,225 @@ PrimitiveFit fit_primitive_samples(const std::vector<double>& rPts,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/primitive_geom.hpp =====
+// ===== begin src/cpp/src/detail/surface_rings.hpp =====
+/**
+ * @file detail/surface_rings.hpp
+ * @brief The 2-D cells of a mesh as face rings tagged with their global cell
+ * ids -- the surface `segment` grows patches over and `fit_primitives` fits.
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * Triangles, quads and their quadratic variants contribute their corners (the
+ * leading node of each `cell_edges` entry), polygons their whole row. Lines,
+ * vertices, VTK Lagrange surfaces and cells naming a missing point are
+ * skipped; a volume block (or polyhedron) throws `std::invalid_argument`.
+ * The numpy twin is `_segment.surface_rings`.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Face rings in CSR form, one per kept surface cell.
+struct SurfaceRings {
+    std::vector<std::int64_t> mStart{0};  ///< offsets into `mNodes`, one more than faces
+    std::vector<std::int64_t> mNodes;     ///< the rings' point ids, concatenated
+    std::vector<std::int64_t> mCell;      ///< the global (block-major) cell id of each ring
+
+    std::size_t NumFaces() const { return mCell.size(); }
+};
+
+/**
+ * @brief Collect the selected 2-D cells as face rings.
+ * @param rSelected per global cell, non-zero when the cell is taken.
+ * @param rErrorPrefix prepended to the volume-block error message.
+ * @throws std::invalid_argument on a volume or polyhedron block.
+ */
+SurfaceRings surface_rings(const Mesh& rMesh, const std::vector<std::uint8_t>& rSelected,
+                           const std::string& rErrorPrefix);
+
+/// The mesh's points as a flat `n * 3` array, padded with zeros below 3-D.
+std::vector<double> surface_xyz(const Mesh& rMesh);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/surface_rings.hpp =====
+// ===== begin src/cpp/src/detail/primitive_grow.hpp =====
+/**
+ * @file detail/primitive_grow.hpp
+ * @brief Regions of a surface grown from a seed facet while one primitive
+ * (plane, sphere, cylinder, cone, torus) explains them: the growth
+ * `segment(method="primitive")` runs from its own seeds and `fit_primitives`
+ * runs from a seed point a user names (roadmap 7.1.1), one implementation for
+ * both.
+ *
+ * `build_primitive_grow_surface` collects the 2-D cells as face rings with
+ * their unit normals and centroids, the edges two faces share (smooth below
+ * the feature angle) and each face's neighbours across them;
+ * `prepare_primitive_grow` adds the areas, the bounding-box diagonal and the
+ * tolerances; `primitive_smooth_areas` numbers the smooth areas.
+ * `primitive_grow_from_seed` then grows a plane and a curved surface through a
+ * seed, trims each to what its own refit explains exactly and returns the
+ * larger.
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI. Every step is
+ * serial and ordered (faces by index, neighbours ascending), so a region is
+ * the same on every backend and thread count.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <utility>
+#include <vector>
+
+// Project includes
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The largest RMS of a grown region, as a share of the tolerance.
+inline constexpr double kPrimitiveGrowExactShare = 0.02;
+
+/// An edge shared by exactly two distinct faces.
+struct PrimitiveGrowPair {
+    std::int64_t mA;  ///< the lower face
+    std::int64_t mB;  ///< the higher face
+    bool mInconsistent;
+    bool mSmooth;
+    double mAngleRad;  ///< NaN when either face is degenerate
+};
+
+/// The growth's view of the surface: per face its ring, area, normal and
+/// centroid, its smooth neighbours, and the smooth area it lies in.
+struct PrimitiveGrowInput {
+    const std::vector<std::int64_t>* mStart;
+    const std::vector<std::int64_t>* mNodes;
+    const std::vector<double>* mXyz;
+    const std::vector<double>* mNormals;
+    const std::vector<double>* mCentroid;
+    const std::vector<std::int64_t>* mAdjStart;
+    const std::vector<std::pair<std::int64_t, std::int64_t>>* mAdj;
+    const std::vector<PrimitiveGrowPair>* mPairs;
+    std::vector<double> mArea;
+    std::vector<std::int64_t> mSmoothArea;
+    double mTol = 0.0;
+    double mGrowTol = 0.0;  ///< how far a corner may lie from a growing region's primitive
+    double mDiag = 0.0;
+};
+
+/// A surface prepared for growth, owning what `PrimitiveGrowInput` points at.
+struct PrimitiveGrowSurface {
+    SurfaceRings mRings;
+    std::vector<double> mXyz;       ///< every point, padded to 3-D
+    std::vector<double> mNormals;   ///< unit, three per face (zero when degenerate)
+    std::vector<double> mCentroid;  ///< three per face
+    std::vector<PrimitiveGrowPair> mPairs;
+    std::vector<std::int64_t> mAdjStart;  ///< per face, its first entry in `mAdj`
+    std::vector<std::pair<std::int64_t, std::int64_t>> mAdj;  ///< (neighbour, pair), ascending
+    std::int64_t mNumBoundaryEdges = 0;
+    std::int64_t mNumNonManifoldEdges = 0;
+    std::int64_t mNumFeatureEdges = 0;
+
+    std::size_t NumFaces() const { return mRings.NumFaces(); }
+
+    /// The growth's input over this surface (areas, tolerances unset).
+    PrimitiveGrowInput Input() const;
+};
+
+/**
+ * @brief The selected 2-D cells of @p rMesh as a growth surface, the edges
+ * between faces whose normals turn by more than @p FeatureAngleDeg (an
+ * inconsistently wound pair is turned first) marked not smooth.
+ * @throws std::invalid_argument (prefixed) on a volume or polyhedron block.
+ */
+PrimitiveGrowSurface build_primitive_grow_surface(const Mesh& rMesh,
+                                                  const std::vector<std::uint8_t>& rSelected,
+                                                  double FeatureAngleDeg, const char* pPrefix);
+
+/// Fill `mArea` and `mDiag`, then `mTol = RelTolerance * mDiag` and
+/// `mGrowTol = kPrimitiveGrowExactShare * mTol`.
+void prepare_primitive_grow(PrimitiveGrowInput& rIn, std::size_t NumFaces, double RelTolerance);
+
+/// Number the smooth areas (faces joined across smooth edges) in the order of
+/// their lowest face into `mSmoothArea`; returns each area's faces, ascending.
+std::vector<std::vector<std::int64_t>> primitive_smooth_areas(PrimitiveGrowInput& rIn,
+                                                              std::size_t NumFaces);
+
+/// The samples a fit takes from faces: their distinct corners, normals and centroids.
+void primitive_grow_samples(const PrimitiveGrowInput& rIn, const std::vector<std::int64_t>& rFaces,
+                            std::vector<double>& rPts, std::vector<double>& rNormals,
+                            std::vector<double>& rCentres);
+
+/// A fit accepted with every point within the tolerance, and not a curved
+/// surface so flat it stands in for a plane.
+PrimitiveFit primitive_grow_fit(const PrimitiveGrowInput& rIn,
+                                const std::vector<std::int64_t>& rFaces, std::uint32_t Types);
+
+/// Whether every corner of face @p F lies within @p Within of the fit.
+bool primitive_grow_face_fits(const PrimitiveGrowInput& rIn, std::int64_t F,
+                              const PrimitiveFit& rFit, double Within);
+
+/// Grow a region from @p Faces across smooth edges, within the faces' smooth
+/// area, over faces with @p rPatch -1, while every corner lies within the growth
+/// tolerance; the primitive is refitted each time the region doubles past
+/// @p FittedOn faces. @p rMark is scratch, all zero on entry and exit.
+std::vector<std::int64_t> primitive_grow(const PrimitiveGrowInput& rIn,
+                                         std::vector<std::int64_t> Faces, PrimitiveFit Fit,
+                                         std::size_t FittedOn,
+                                         const std::vector<std::int64_t>& rPatch,
+                                         std::vector<std::uint8_t>& rMark);
+
+/// Trim a grown region to the cells its own refit explains within @p Within,
+/// keeping the part connected to its first cell, three times over.
+void primitive_grow_trim(const PrimitiveGrowInput& rIn, std::vector<std::int64_t>& rRegion,
+                         std::uint32_t Types, double Within, std::vector<std::uint8_t>& rMark);
+
+/// The faces' summed area.
+double primitive_grow_area_of(const PrimitiveGrowInput& rIn,
+                              const std::vector<std::int64_t>& rFaces);
+
+/// What `primitive_grow_from_seed` grew.
+struct PrimitiveGrowRegion {
+    std::vector<std::int64_t> mFaces;  ///< empty when neither surface holds
+    bool mCurved = false;
+    std::vector<std::int64_t> mHood;   ///< the seed's neighbourhood the curved fit started on
+};
+
+/**
+ * @brief A plane through the seed's own facet and a curved surface (of
+ * @p CurvedTypes) through its two-ring neighbourhood of up to 32 faces, each
+ * grown, trimmed to what its refit explains within @p ExactShare of the
+ * tolerance (`segment` passes `kPrimitiveGrowExactShare`) and kept only when
+ * that refit holds and a curved one has
+ * three points per parameter; the curved region wins when its area is over
+ * 1.5 times the plane's, the plane when it has two faces and at least
+ * @p MinPlaneShare of @p AreaTotal. The step `segment`'s primitive method runs
+ * per seed.
+ */
+PrimitiveGrowRegion primitive_grow_from_seed(const PrimitiveGrowInput& rIn, std::int64_t Seed,
+                                             bool TryPlane, std::uint32_t CurvedTypes,
+                                             double AreaTotal, double MinPlaneShare,
+                                             double ExactShare,
+                                             const std::vector<std::int64_t>& rPatch,
+                                             std::vector<std::uint8_t>& rMark);
+
+/// The face whose centroid lies nearest @p pPoint (ties to the lowest
+/// index), or -1 for none: `select`'s seed lookup.
+std::int64_t nearest_centroid_face(const std::vector<double>& rCentroid, const double* pPoint);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/primitive_grow.hpp =====
 // ===== begin src/cpp/src/detail/quad_recombine.hpp =====
 /**
  * @file detail/quad_recombine.hpp
@@ -54101,56 +54399,6 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/surface_project.hpp =====
-// ===== begin src/cpp/src/detail/surface_rings.hpp =====
-/**
- * @file detail/surface_rings.hpp
- * @brief The 2-D cells of a mesh as face rings tagged with their global cell
- * ids -- the surface `segment` grows patches over and `fit_primitives` fits.
- *
- * A **core-private** header (the `crease_edges.hpp` precedent): no installed
- * header names it, and it adds nothing to the API or the ABI.
- *
- * Triangles, quads and their quadratic variants contribute their corners (the
- * leading node of each `cell_edges` entry), polygons their whole row. Lines,
- * vertices, VTK Lagrange surfaces and cells naming a missing point are
- * skipped; a volume block (or polyhedron) throws `std::invalid_argument`.
- * The numpy twin is `_segment.surface_rings`.
- */
-
-// System includes
-#include <cstdint>
-#include <string>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-namespace detail {
-
-/// Face rings in CSR form, one per kept surface cell.
-struct SurfaceRings {
-    std::vector<std::int64_t> mStart{0};  ///< offsets into `mNodes`, one more than faces
-    std::vector<std::int64_t> mNodes;     ///< the rings' point ids, concatenated
-    std::vector<std::int64_t> mCell;      ///< the global (block-major) cell id of each ring
-
-    std::size_t NumFaces() const { return mCell.size(); }
-};
-
-/**
- * @brief Collect the selected 2-D cells as face rings.
- * @param rSelected per global cell, non-zero when the cell is taken.
- * @param rErrorPrefix prepended to the volume-block error message.
- * @throws std::invalid_argument on a volume or polyhedron block.
- */
-SurfaceRings surface_rings(const Mesh& rMesh, const std::vector<std::uint8_t>& rSelected,
-                           const std::string& rErrorPrefix);
-
-/// The mesh's points as a flat `n * 3` array, padded with zeros below 3-D.
-std::vector<double> surface_xyz(const Mesh& rMesh);
-
-}  // namespace detail
-}  // namespace meshioplusplus
-// ===== end src/cpp/src/detail/surface_rings.hpp =====
 // ===== begin src/cpp/src/detail/surface_validate.hpp =====
 /**
  * @file detail/surface_validate.hpp
@@ -59212,7 +59460,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "Radius", "Where", "Compare", "Value", "Quality", "QualityCompare", "QualityValue",
           "Component", "Seed", "FeatureAngle", "NormalTolerance"}},
         {"FitPrimitives",
-         {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
+         {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations",
+          "Region", "Seeds", "FeatureAngle", "RimAngle", "OutputRegion", "UsedPoints"}},
         {"FitCad",
          {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
           "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets", "Threads",
@@ -103761,6 +104010,469 @@ PrimitiveFormMetrics primitive_form_metrics(std::int64_t Type, const double* pPa
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/primitive_geom.cpp =====
+// ===== begin src/cpp/src/detail/primitive_grow.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <utility>
+#include <vector>
+
+// Project includes
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+constexpr double kPgrPi = 3.14159265358979323846;
+}  // namespace
+
+PrimitiveGrowInput PrimitiveGrowSurface::Input() const {
+    PrimitiveGrowInput in;
+    in.mStart = &mRings.mStart;
+    in.mNodes = &mRings.mNodes;
+    in.mXyz = &mXyz;
+    in.mNormals = &mNormals;
+    in.mCentroid = &mCentroid;
+    in.mAdjStart = &mAdjStart;
+    in.mAdj = &mAdj;
+    in.mPairs = &mPairs;
+    return in;
+}
+
+PrimitiveGrowSurface build_primitive_grow_surface(const Mesh& rMesh,
+                                                  const std::vector<std::uint8_t>& rSelected,
+                                                  double FeatureAngleDeg, const char* pPrefix) {
+    PrimitiveGrowSurface out;
+    out.mRings = surface_rings(rMesh, rSelected, pPrefix);
+    const std::vector<std::int64_t>& start = out.mRings.mStart;
+    const std::vector<std::int64_t>& nodes = out.mRings.mNodes;
+    const std::size_t nf = out.mRings.NumFaces();
+
+    // Flat coordinates padded to 3-D, unit normals and centroids per face.
+    out.mXyz = surface_xyz(rMesh);
+    const std::vector<double>& xyz = out.mXyz;
+    std::vector<double>& normals = out.mNormals;
+    std::vector<double>& centroid = out.mCentroid;
+    normals.resize(nf * 3);
+    centroid.resize(nf * 3);
+    parallel_for(nf, [&](std::size_t f) {
+        const std::int64_t* ring = nodes.data() + start[f];
+        const std::size_t size = static_cast<std::size_t>(start[f + 1] - start[f]);
+        ring_unit_normal(xyz.data(), ring, size, &normals[f * 3]);
+        double c[3] = {0.0, 0.0, 0.0};
+        for (std::size_t k = 0; k < size; ++k)
+            for (std::size_t d = 0; d < 3; ++d)
+                c[d] += xyz[static_cast<std::size_t>(ring[k]) * 3 + d];
+        for (std::size_t d = 0; d < 3; ++d)
+            centroid[f * 3 + d] = c[d] / static_cast<double>(size);
+    });
+
+    // Every non-collapsed ring edge is one use; sorted, each run is one edge.
+    const std::vector<CreaseEdgeUse> uses = crease_edge_uses(start, nodes);
+
+    const double cos_feature = std::cos(FeatureAngleDeg * kPgrPi / 180.0);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<PrimitiveGrowPair>& pairs = out.mPairs;
+    for (std::size_t b = 0; b < uses.size();) {
+        std::size_t e = b + 1;
+        while (e < uses.size() && uses[e].mLo == uses[b].mLo && uses[e].mHi == uses[b].mHi)
+            ++e;
+        const std::size_t u = e - b;
+        if (u == 1) {
+            ++out.mNumBoundaryEdges;
+        } else if (u >= 3) {
+            ++out.mNumNonManifoldEdges;
+        } else if (uses[b].mFace != uses[b + 1].mFace) {
+            PrimitiveGrowPair p;
+            p.mA = uses[b].mFace;
+            p.mB = uses[b + 1].mFace;
+            p.mInconsistent = uses[b].mForward == uses[b + 1].mForward;
+            const double* nx = &normals[static_cast<std::size_t>(p.mA) * 3];
+            const double* ny = &normals[static_cast<std::size_t>(p.mB) * 3];
+            const bool zx = nx[0] == 0.0 && nx[1] == 0.0 && nx[2] == 0.0;
+            const bool zy = ny[0] == 0.0 && ny[1] == 0.0 && ny[2] == 0.0;
+            p.mSmooth = true;
+            p.mAngleRad = nan;
+            if (!zx && !zy) {
+                double dot = nx[0] * ny[0] + nx[1] * ny[1] + nx[2] * ny[2];
+                if (p.mInconsistent)
+                    dot = -dot;
+                p.mSmooth = !(dot < cos_feature);
+                const double c = dot < -1.0 ? -1.0 : (dot > 1.0 ? 1.0 : dot);
+                p.mAngleRad = std::acos(c);
+            }
+            if (!p.mSmooth)
+                ++out.mNumFeatureEdges;
+            pairs.push_back(p);
+        }
+        b = e;
+    }
+
+    // Per face, its neighbours across paired edges, ascending by face then edge.
+    std::vector<std::int64_t>& adj_start = out.mAdjStart;
+    adj_start.assign(nf + 1, 0);
+    for (const PrimitiveGrowPair& p : pairs) {
+        ++adj_start[static_cast<std::size_t>(p.mA) + 1];
+        ++adj_start[static_cast<std::size_t>(p.mB) + 1];
+    }
+    for (std::size_t f = 0; f < nf; ++f)
+        adj_start[f + 1] += adj_start[f];
+    std::vector<std::pair<std::int64_t, std::int64_t>>& adj = out.mAdj;
+    adj.resize(static_cast<std::size_t>(adj_start[nf]));
+    {
+        std::vector<std::int64_t> fill(adj_start.begin(), adj_start.end() - 1);
+        for (std::size_t e = 0; e < pairs.size(); ++e) {
+            const std::int64_t ei = static_cast<std::int64_t>(e);
+            adj[static_cast<std::size_t>(fill[static_cast<std::size_t>(pairs[e].mA)]++)] = {
+                pairs[e].mB, ei};
+            adj[static_cast<std::size_t>(fill[static_cast<std::size_t>(pairs[e].mB)]++)] = {
+                pairs[e].mA, ei};
+        }
+        parallel_for(nf, [&](std::size_t f) {
+            std::sort(adj.begin() + adj_start[f], adj.begin() + adj_start[f + 1]);
+        });
+    }
+    return out;
+}
+
+void prepare_primitive_grow(PrimitiveGrowInput& rIn, std::size_t NumFaces, double RelTolerance) {
+    const std::size_t nf = NumFaces;
+    rIn.mArea.assign(nf, 0.0);
+    double lo[3], hi[3];
+    for (int d = 0; d < 3; ++d) {
+        lo[d] = std::numeric_limits<double>::infinity();
+        hi[d] = -lo[d];
+    }
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::int64_t* ring = rIn.mNodes->data() + (*rIn.mStart)[f];
+        const std::size_t size = static_cast<std::size_t>((*rIn.mStart)[f + 1] - (*rIn.mStart)[f]);
+        double twice[3] = {0.0, 0.0, 0.0};
+        for (std::size_t k = 0; k < size; ++k) {
+            const double* a = &(*rIn.mXyz)[static_cast<std::size_t>(ring[k]) * 3];
+            const double* b = &(*rIn.mXyz)[static_cast<std::size_t>(ring[(k + 1) % size]) * 3];
+            twice[0] += a[1] * b[2] - a[2] * b[1];
+            twice[1] += a[2] * b[0] - a[0] * b[2];
+            twice[2] += a[0] * b[1] - a[1] * b[0];
+            for (int d = 0; d < 3; ++d) {
+                lo[d] = std::min(lo[d], a[d]);
+                hi[d] = std::max(hi[d], a[d]);
+            }
+        }
+        rIn.mArea[f] =
+            0.5 * std::sqrt(twice[0] * twice[0] + twice[1] * twice[1] + twice[2] * twice[2]);
+    }
+    rIn.mDiag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                         (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    rIn.mTol = RelTolerance * rIn.mDiag;
+    rIn.mGrowTol = kPrimitiveGrowExactShare * rIn.mTol;
+}
+
+std::vector<std::vector<std::int64_t>> primitive_smooth_areas(PrimitiveGrowInput& rIn,
+                                                              std::size_t NumFaces) {
+    const std::size_t nf = NumFaces;
+    // Smooth areas, numbered in the order of their lowest face.
+    rIn.mSmoothArea.assign(nf, -1);
+    std::vector<std::vector<std::int64_t>> areas;
+    for (std::size_t seed = 0; seed < nf; ++seed) {
+        if (rIn.mSmoothArea[seed] != -1)
+            continue;
+        const std::int64_t id = static_cast<std::int64_t>(areas.size());
+        std::vector<std::int64_t> faces{static_cast<std::int64_t>(seed)};
+        rIn.mSmoothArea[seed] = id;
+        for (std::size_t q = 0; q < faces.size(); ++q) {
+            const std::size_t g = static_cast<std::size_t>(faces[q]);
+            for (std::int64_t k = (*rIn.mAdjStart)[g]; k < (*rIn.mAdjStart)[g + 1]; ++k) {
+                const auto& a = (*rIn.mAdj)[static_cast<std::size_t>(k)];
+                const std::size_t nb = static_cast<std::size_t>(a.first);
+                if (rIn.mSmoothArea[nb] != -1 ||
+                    !(*rIn.mPairs)[static_cast<std::size_t>(a.second)].mSmooth)
+                    continue;
+                rIn.mSmoothArea[nb] = id;
+                faces.push_back(a.first);
+            }
+        }
+        std::sort(faces.begin(), faces.end());
+        areas.push_back(std::move(faces));
+    }
+    return areas;
+}
+
+void primitive_grow_samples(const PrimitiveGrowInput& rIn, const std::vector<std::int64_t>& rFaces,
+                 std::vector<double>& rPts, std::vector<double>& rNormals,
+                 std::vector<double>& rCentres) {
+    std::vector<std::int64_t> verts;
+    for (std::int64_t f : rFaces)
+        for (std::int64_t k = (*rIn.mStart)[static_cast<std::size_t>(f)];
+             k < (*rIn.mStart)[static_cast<std::size_t>(f) + 1]; ++k)
+            verts.push_back((*rIn.mNodes)[static_cast<std::size_t>(k)]);
+    std::sort(verts.begin(), verts.end());
+    verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+    rPts.resize(verts.size() * 3);
+    for (std::size_t i = 0; i < verts.size(); ++i)
+        for (std::size_t d = 0; d < 3; ++d)
+            rPts[i * 3 + d] = (*rIn.mXyz)[static_cast<std::size_t>(verts[i]) * 3 + d];
+    rNormals.clear();
+    rCentres.clear();
+    for (std::int64_t f : rFaces)
+        for (std::size_t d = 0; d < 3; ++d) {
+            rNormals.push_back((*rIn.mNormals)[static_cast<std::size_t>(f) * 3 + d]);
+            rCentres.push_back((*rIn.mCentroid)[static_cast<std::size_t>(f) * 3 + d]);
+        }
+}
+
+// A fit accepted with every point within the tolerance, and not a curved
+// surface so flat it stands in for a plane.
+PrimitiveFit primitive_grow_fit(const PrimitiveGrowInput& rIn, const std::vector<std::int64_t>& rFaces,
+                             std::uint32_t Types) {
+    std::vector<double> pts, nrm, ctr;
+    primitive_grow_samples(rIn, rFaces, pts, nrm, ctr);
+    PrimitiveFit fit =
+        fit_primitive_samples(pts, nrm, ctr, rIn.mTol, Types, 1.0, 50);
+    if (fit.mType >= 2) {
+        bool sane = true;
+        for (int k = 0; k < kPrimitiveParams; ++k)
+            sane = sane && std::isfinite(fit.mParams[k]);
+        if (fit.mType == 4)
+            sane = sane && fit.mParams[8] < 85.0;
+        else
+            sane = sane && fit.mParams[6] <= rIn.mDiag && fit.mParams[7] <= rIn.mDiag;
+        if (!sane)
+            fit.mType = 0;
+    }
+    return fit;
+}
+
+bool primitive_grow_face_fits(const PrimitiveGrowInput& rIn, std::int64_t F, const PrimitiveFit& rFit,
+                   double Within) {
+    for (std::int64_t k = (*rIn.mStart)[static_cast<std::size_t>(F)];
+         k < (*rIn.mStart)[static_cast<std::size_t>(F) + 1]; ++k) {
+        const double* p =
+            &(*rIn.mXyz)[static_cast<std::size_t>((*rIn.mNodes)[static_cast<std::size_t>(k)]) * 3];
+        if (!(primitive_point_distance(rFit.mType, rFit.mParams, p) <= Within))
+            return false;
+    }
+    return true;
+}
+
+// Grow a region from rFaces across smooth edges, within the faces' smooth
+// area, over faces not yet claimed, while every corner lies within the
+// growth tolerance of the primitive. The primitive was fitted to FittedOn faces; it
+// is refitted (same type) each time the region doubles past that, never on
+// fewer faces, where a curved fit is ill-conditioned.
+std::vector<std::int64_t> primitive_grow(const PrimitiveGrowInput& rIn, std::vector<std::int64_t> Faces,
+                                   PrimitiveFit Fit, std::size_t FittedOn,
+                                   const std::vector<std::int64_t>& rPatch,
+                                   std::vector<std::uint8_t>& rMark) {
+    for (std::int64_t f : Faces)
+        rMark[static_cast<std::size_t>(f)] = 1;
+    const std::int64_t area = rIn.mSmoothArea[static_cast<std::size_t>(Faces.front())];
+    std::size_t fitted_at = std::max(Faces.size(), FittedOn);
+    for (std::size_t q = 0; q < Faces.size(); ++q) {
+        const std::size_t g = static_cast<std::size_t>(Faces[q]);
+        for (std::int64_t k = (*rIn.mAdjStart)[g]; k < (*rIn.mAdjStart)[g + 1]; ++k) {
+            const auto& a = (*rIn.mAdj)[static_cast<std::size_t>(k)];
+            const std::size_t nb = static_cast<std::size_t>(a.first);
+            if (rMark[nb] || rPatch[nb] != -1 ||
+                !(*rIn.mPairs)[static_cast<std::size_t>(a.second)].mSmooth ||
+                rIn.mSmoothArea[nb] != area || !primitive_grow_face_fits(rIn, a.first, Fit, rIn.mGrowTol))
+                continue;
+            rMark[nb] = 1;
+            Faces.push_back(a.first);
+        }
+        if (Faces.size() >= 2 * fitted_at) {
+            fitted_at = Faces.size();
+            const PrimitiveFit refit =
+                primitive_grow_fit(rIn, Faces, 1u << static_cast<unsigned>(Fit.mType));
+            if (refit.mType == Fit.mType)
+                Fit = refit;
+        }
+    }
+    for (std::int64_t f : Faces)
+        rMark[static_cast<std::size_t>(f)] = 0;
+    return Faces;
+}
+
+// Trim a grown region to the cells its own refit explains within Within,
+// keeping the part edge-connected to its first cell, three times over: a
+// plane grown to the tolerance takes the first strip of a fillet tangent to
+// it, which tilts its fit; the refit without it leaves that strip out.
+void primitive_grow_trim(const PrimitiveGrowInput& rIn, std::vector<std::int64_t>& rRegion, std::uint32_t Types,
+              double Within, std::vector<std::uint8_t>& rMark) {
+    for (int pass = 0; pass < 3 && !rRegion.empty(); ++pass) {
+        const PrimitiveFit fit = primitive_grow_fit(rIn, rRegion, Types);
+        if (fit.mType == 0) {
+            rRegion.clear();
+            return;
+        }
+        std::size_t kept = 0;
+        for (std::int64_t f : rRegion) {
+            bool on = true;
+            for (std::int64_t k = (*rIn.mStart)[static_cast<std::size_t>(f)];
+                 k < (*rIn.mStart)[static_cast<std::size_t>(f) + 1] && on; ++k)
+                on = primitive_point_distance(
+                         fit.mType, fit.mParams,
+                         &(*rIn.mXyz)[static_cast<std::size_t>(
+                                          (*rIn.mNodes)[static_cast<std::size_t>(k)]) *
+                                      3]) <= Within;
+            rMark[static_cast<std::size_t>(f)] = on ? 1 : 0;
+            kept += on ? 1 : 0;
+        }
+        if (kept == rRegion.size()) {
+            for (std::int64_t f : rRegion)
+                rMark[static_cast<std::size_t>(f)] = 0;
+            return;
+        }
+        // The part connected to the seed (the first cell), walk order kept.
+        std::vector<std::int64_t> part;
+        if (rMark[static_cast<std::size_t>(rRegion.front())]) {
+            part.push_back(rRegion.front());
+            rMark[static_cast<std::size_t>(rRegion.front())] = 2;
+            for (std::size_t q = 0; q < part.size(); ++q) {
+                const std::size_t g = static_cast<std::size_t>(part[q]);
+                for (std::int64_t k = (*rIn.mAdjStart)[g]; k < (*rIn.mAdjStart)[g + 1]; ++k) {
+                    const std::size_t nb =
+                        static_cast<std::size_t>((*rIn.mAdj)[static_cast<std::size_t>(k)].first);
+                    if (rMark[nb] != 1)
+                        continue;
+                    rMark[nb] = 2;
+                    part.push_back(static_cast<std::int64_t>(nb));
+                }
+            }
+        }
+        for (std::int64_t f : rRegion)
+            rMark[static_cast<std::size_t>(f)] = 0;
+        rRegion.swap(part);
+    }
+}
+
+double primitive_grow_area_of(const PrimitiveGrowInput& rIn, const std::vector<std::int64_t>& rFaces) {
+    double a = 0.0;
+    for (std::int64_t f : rFaces)
+        a += rIn.mArea[static_cast<std::size_t>(f)];
+    return a;
+}
+
+PrimitiveGrowRegion primitive_grow_from_seed(const PrimitiveGrowInput& rIn, std::int64_t Seed,
+                                             bool TryPlane, std::uint32_t CurvedTypes,
+                                             double AreaTotal, double MinPlaneShare,
+                                             double ExactShare,
+                                             const std::vector<std::int64_t>& rPatch,
+                                             std::vector<std::uint8_t>& rMark) {
+    const std::int64_t s = Seed;
+    const std::size_t ss = static_cast<std::size_t>(s);
+    std::vector<std::uint8_t>& mark = rMark;
+    // A plane through the seed.
+    std::vector<std::int64_t> plane_region;
+    {
+        PrimitiveFit plane;
+        plane.mType = 1;
+        for (std::size_t d = 0; d < 3; ++d) {
+            plane.mParams[d] = (*rIn.mCentroid)[ss * 3 + d];
+            plane.mParams[3 + d] = (*rIn.mNormals)[ss * 3 + d];
+        }
+        if (TryPlane && primitive_grow_face_fits(rIn, s, plane, rIn.mGrowTol))
+            plane_region = primitive_grow(rIn, {s}, plane, 1, rPatch, mark);
+    }
+    // A curved surface through the seed's neighbourhood.
+    std::vector<std::int64_t> curved_region;
+    std::vector<std::int64_t> hood{s};
+    {
+        mark[ss] = 1;
+        std::size_t ring_end = 1;
+        for (int ring = 0; ring < 2 && hood.size() < 32; ++ring) {
+            const std::size_t from = ring == 0 ? 0 : ring_end;
+            ring_end = hood.size();
+            for (std::size_t q = from; q < ring_end && hood.size() < 32; ++q) {
+                const std::size_t g = static_cast<std::size_t>(hood[q]);
+                for (std::int64_t k = (*rIn.mAdjStart)[g];
+                     k < (*rIn.mAdjStart)[g + 1] && hood.size() < 32; ++k) {
+                    const auto& a = (*rIn.mAdj)[static_cast<std::size_t>(k)];
+                    const std::size_t nb = static_cast<std::size_t>(a.first);
+                    if (mark[nb] || rPatch[nb] != -1 ||
+                        !(*rIn.mPairs)[static_cast<std::size_t>(a.second)].mSmooth ||
+                        rIn.mSmoothArea[nb] != rIn.mSmoothArea[ss])
+                        continue;
+                    mark[nb] = 1;
+                    hood.push_back(a.first);
+                }
+            }
+        }
+        for (std::int64_t f : hood)
+            mark[static_cast<std::size_t>(f)] = 0;
+        if (hood.size() >= 3) {
+            const PrimitiveFit fit = primitive_grow_fit(rIn, hood, CurvedTypes);
+            if (fit.mType >= 2)
+                curved_region = primitive_grow(rIn, {s}, fit, hood.size(), rPatch, mark);
+        }
+    }
+    // A region grown to the tolerance is kept only when its refit
+    // leaves an RMS under 2% of it: a CAD tessellation lies on its
+    // surfaces exactly, while a sphere or cone fitted to a patch of a
+    // freeform or helical surface grows until it strays the tolerance.
+    auto exact = [&](std::vector<std::int64_t>& rRegion, std::uint32_t Types) {
+        if (rRegion.empty())
+            return;
+        primitive_grow_trim(rIn, rRegion, Types, ExactShare * rIn.mTol, mark);
+        if (rRegion.empty())
+            return;
+        const PrimitiveFit refit = primitive_grow_fit(rIn, rRegion, Types);
+        if (refit.mType == 0 || !(refit.mRms <= ExactShare * rIn.mTol)) {
+            rRegion.clear();
+            return;
+        }
+        // A curved surface needs three points per parameter (4 for a
+        // sphere up to 7 for a torus): a handful of points lies
+        // exactly on some sphere or cylinder whatever the surface.
+        if (refit.mType >= 2) {
+            std::vector<double> pts, nrm, ctr;
+            primitive_grow_samples(rIn, rRegion, pts, nrm, ctr);
+            if (pts.size() / 3 < static_cast<std::size_t>(3 * (refit.mType + 2)))
+                rRegion.clear();
+        }
+    };
+    exact(plane_region, 1u << 1);
+    exact(curved_region, CurvedTypes);
+    const double plane_area = primitive_grow_area_of(rIn, plane_region);
+    const double curved_area = primitive_grow_area_of(rIn, curved_region);
+    const std::vector<std::int64_t>* chosen = nullptr;
+    if (curved_region.size() >= 3 && curved_area > 1.5 * plane_area)
+        chosen = &curved_region;
+    else if (plane_region.size() >= 2 && plane_area >= MinPlaneShare * AreaTotal)
+        chosen = &plane_region;
+    else if (curved_region.size() >= 3)
+        chosen = &curved_region;
+    PrimitiveGrowRegion out;
+    out.mHood = std::move(hood);
+    if (chosen != nullptr) {
+        out.mCurved = chosen == &curved_region;
+        out.mFaces = *chosen;
+    }
+    return out;
+}
+
+std::int64_t nearest_centroid_face(const std::vector<double>& rCentroid, const double* pPoint) {
+    std::int64_t best = -1;
+    double best_d2 = std::numeric_limits<double>::infinity();
+    const std::size_t nf = rCentroid.size() / 3;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const double dx = rCentroid[f * 3] - pPoint[0];
+        const double dy = rCentroid[f * 3 + 1] - pPoint[1];
+        const double dz = rCentroid[f * 3 + 2] - pPoint[2];
+        const double d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            best = static_cast<std::int64_t>(f);
+        }
+    }
+    return best;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/primitive_grow.cpp =====
 // ===== begin src/cpp/src/detail/projection.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -231219,7 +231931,9 @@ const Mesh* fcn_annotate(const Mesh& rMesh, Mesh& rOwned) {
         if (rMesh.HasFieldData("fit:patch_id"))
             return &rMesh;
         log::info("fit_cad: no fit:patch_* table; running fit_primitives");
-        rOwned = fit_primitives(rMesh).mMesh;
+        FitPrimitivesOptions fit;
+        fit.mExtendedReport = false;  // the table fit_cad has always carried
+        rOwned = fit_primitives(rMesh, fit).mMesh;
         return &rOwned;
     }
     log::info(
@@ -231246,6 +231960,7 @@ const Mesh* fcn_annotate(const Mesh& rMesh, Mesh& rOwned) {
         diag += hi[k] > lo[k] ? (hi[k] - lo[k]) * (hi[k] - lo[k]) : 0.0;
     diag = std::sqrt(diag);
     FitPrimitivesOptions fit;
+    fit.mExtendedReport = false;  // the table fit_cad has always carried
     if (diag > 0.0) {
         fit.mTolerance = seg.mTolerance * diag;
         fit.mRelative = false;
@@ -233114,6 +233829,14 @@ struct FpOutcome {
     double mFraction = 0.0;
     double mTol = 0.0;
     detail::PrimitiveFormMetrics mForm{};
+    // The points the fit used, and their RMS distance (roadmap 7.1.2).
+    double mSigma = std::numeric_limits<double>::quiet_NaN();
+    std::int64_t mNumUsed = 0;
+    std::int64_t mNumRejected = 0;
+    // The best attempt when no type was accepted (world frame): what sigma
+    // trimming measures residuals against.
+    std::int64_t mTryType = 0;
+    double mTryParams[kFpParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 };
 
 // How far the facets' centres lie from a fitted surface (the parameters in
@@ -233204,9 +233927,326 @@ FpOutcome fp_fit_patch(const FpPatch& rP, const FitPrimitivesOptions& rOptions) 
             out.mRms = fit.mRms;
             out.mMax = fit.mMax;
             out.mFraction = fit.mFraction;
+            out.mTryType = t;
+            for (std::size_t k = 0; k < kFpParams; ++k)
+                out.mTryParams[k] = fit.mParams[k];
+            for (int k = 0; k < 3; ++k)
+                out.mTryParams[k] += rP.mShift[k];
         }
     }
     return out;
+}
+
+// A copy of the patch with only the points @p rUsed marks, centred on their
+// own mean as the fitters expect (its faces and diagonal kept).
+FpPatch fp_subset(const FpPatch& rP, const std::vector<std::uint8_t>& rUsed) {
+    FpPatch sub;
+    sub.mDiag = rP.mDiag;
+    for (std::size_t i = 0; i < rP.NumPoints(); ++i)
+        if (rUsed[i])
+            for (std::size_t k = 0; k < 3; ++k)
+                sub.mPts.push_back(rP.mPts[i * 3 + k]);
+    double mean[3] = {0.0, 0.0, 0.0};
+    if (!sub.mPts.empty())
+        fp_mean(sub.mPts, mean);
+    for (std::size_t i = 0; i < sub.NumPoints(); ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            sub.mPts[i * 3 + k] -= mean[k];
+    sub.mNormals = rP.mNormals;
+    sub.mCentres = rP.mCentres;
+    for (std::size_t f = 0; f < sub.NumFaces(); ++f)
+        for (std::size_t k = 0; k < 3; ++k)
+            sub.mCentres[f * 3 + k] -= mean[k];
+    for (int k = 0; k < 3; ++k)
+        sub.mShift[k] = rP.mShift[k] + mean[k];
+    return sub;
+}
+
+// The points in Hilbert order over their bounding box (ties: point order).
+std::vector<std::int64_t> fp_hilbert_order(const FpPatch& rP) {
+    const std::size_t n = rP.NumPoints();
+    double lo[3], hi[3];
+    for (int k = 0; k < 3; ++k) {
+        lo[k] = std::numeric_limits<double>::infinity();
+        hi[k] = -lo[k];
+    }
+    for (std::size_t i = 0; i < n; ++i)
+        for (int k = 0; k < 3; ++k) {
+            lo[k] = std::min(lo[k], rP.mPts[i * 3 + static_cast<std::size_t>(k)]);
+            hi[k] = std::max(hi[k], rP.mPts[i * 3 + static_cast<std::size_t>(k)]);
+        }
+    double ext = 0.0;
+    for (int k = 0; k < 3; ++k)
+        ext = std::max(ext, hi[k] - lo[k]);
+    const double scale = ext > 0.0 ? static_cast<double>((1u << detail::sfc_bits) - 1) / ext : 0.0;
+    std::vector<std::uint64_t> keys(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        std::uint32_t q[3];
+        for (int k = 0; k < 3; ++k)
+            q[k] = static_cast<std::uint32_t>((rP.mPts[i * 3 + static_cast<std::size_t>(k)] - lo[k]) *
+                                              scale);
+        keys[i] = detail::sfc_hilbert_key(q, detail::sfc_bits);
+    }
+    return detail::sfc_stable_argsort(keys);
+}
+
+// A least median of squares consensus (Rousseeuw 1984) for a plane (3 points)
+// or a sphere (4), over a fixed schedule of minimal subsets drawn by stride
+// from the Hilbert-ordered points, no random sampling; the inliers of the
+// best subset: points within 2.5 robust standard deviations of it.
+std::vector<std::uint8_t> fp_lmeds_inliers(const FpPatch& rP, std::int64_t Type) {
+    const std::size_t n = rP.NumPoints();
+    const std::size_t m = Type == 1 ? 3 : 4;
+    std::vector<std::uint8_t> used(n, 1);
+    if (n < 2 * m)
+        return used;
+    const std::vector<std::int64_t> order = fp_hilbert_order(rP);
+    const std::size_t trials = std::min<std::size_t>(500, n);
+    double best_med = std::numeric_limits<double>::infinity();
+    double best[kFpParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    std::vector<double> r2(n);
+    for (std::size_t j = 0; j < trials; ++j) {
+        std::size_t idx[4];
+        for (std::size_t k = 0; k < m; ++k)
+            idx[k] = static_cast<std::size_t>(
+                order[(j * 7919 + k * (n / m) + k * j) % n]);
+        double prm[kFpParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        const double* a = &rP.mPts[idx[0] * 3];
+        const double* b = &rP.mPts[idx[1] * 3];
+        const double* c = &rP.mPts[idx[2] * 3];
+        if (Type == 1) {
+            const double u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+            const double v[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+            double nrm[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                             u[0] * v[1] - u[1] * v[0]};
+            const double len = std::sqrt(detail::MathUtils::Dot(nrm, nrm));
+            if (!(len > 0.0))
+                continue;
+            for (int k = 0; k < 3; ++k) {
+                prm[k] = a[k];
+                prm[3 + k] = nrm[k] / len;
+            }
+        } else {
+            std::vector<double> mat(16, 0.0), rhs(4, 0.0);
+            for (std::size_t r = 0; r < 4; ++r) {
+                const double* p = &rP.mPts[idx[r] * 3];
+                mat[r * 4 + 0] = 2.0 * p[0];
+                mat[r * 4 + 1] = 2.0 * p[1];
+                mat[r * 4 + 2] = 2.0 * p[2];
+                mat[r * 4 + 3] = 1.0;
+                rhs[r] = detail::MathUtils::Dot(p, p);
+            }
+            if (!detail::lsq_solve(mat, rhs, 4))
+                continue;
+            const double rad2 = rhs[3] + rhs[0] * rhs[0] + rhs[1] * rhs[1] + rhs[2] * rhs[2];
+            if (!(rad2 > 0.0))
+                continue;
+            prm[0] = rhs[0];
+            prm[1] = rhs[1];
+            prm[2] = rhs[2];
+            prm[6] = std::sqrt(rad2);
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            const double d = detail::primitive_signed_distance(Type, prm, &rP.mPts[i * 3]);
+            r2[i] = d * d;
+        }
+        std::vector<double> sorted = r2;
+        std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(n / 2),
+                         sorted.end());
+        const double med = sorted[n / 2];
+        if (med < best_med) {
+            best_med = med;
+            std::copy(prm, prm + kFpParams, best);
+        }
+    }
+    if (!std::isfinite(best_med))
+        return used;
+    // Rousseeuw's robust scale, with the small-sample factor.
+    const double scale = 1.4826 * (1.0 + 5.0 / static_cast<double>(n - m)) * std::sqrt(best_med);
+    // An exact consensus has no spread: keep what lies on it to rounding.
+    const double cut = std::max(2.5 * scale, 1e-12 * rP.mDiag);
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double d = std::fabs(detail::primitive_signed_distance(Type, best, &rP.mPts[i * 3]));
+        used[i] = d <= cut ? 1 : 0;
+        kept += used[i];
+    }
+    if (kept < 2 * m)
+        std::fill(used.begin(), used.end(), std::uint8_t{1});
+    return used;
+}
+
+// The sigma-trimmed fit of a patch (roadmap 7.1.2): refit on the points within
+// K times the RMS distance of the points kept, until that set stops changing.
+FpOutcome fp_fit_patch_trimmed(const FpPatch& rP, const FitPrimitivesOptions& rOptions,
+                               double K, std::vector<std::uint8_t>& rUsed) {
+    const std::size_t n = rP.NumPoints();
+    std::vector<std::uint8_t>& used = rUsed;
+    used.assign(n, 1);
+    if (rOptions.mTypes == (1u << 1) || rOptions.mTypes == (1u << 2))
+        used = fp_lmeds_inliers(rP, rOptions.mTypes == (1u << 1) ? 1 : 2);
+    // The tolerance stays the whole patch's.
+    FitPrimitivesOptions o = rOptions;
+    if (o.mRelative) {
+        o.mTolerance = rOptions.mTolerance * rP.mDiag;
+        o.mRelative = false;
+    }
+    FpOutcome out;
+    std::vector<double> dist(n);
+    for (int round = 0; round < 20; ++round) {
+        out = fp_fit_patch(fp_subset(rP, used), o);
+        const std::int64_t type = out.mType ? out.mType : out.mTryType;
+        const double* prm = out.mType ? out.mParams : out.mTryParams;
+        if (type == 0)
+            break;
+        double sum = 0.0;
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            double w[3];
+            for (std::size_t k = 0; k < 3; ++k)
+                w[k] = rP.mPts[i * 3 + k] + rP.mShift[k];
+            dist[i] = detail::primitive_signed_distance(type, prm, w);
+            if (used[i]) {
+                sum += dist[i] * dist[i];
+                ++count;
+            }
+        }
+        const double sigma = count ? std::sqrt(sum / static_cast<double>(count)) : 0.0;
+        if (!(sigma > 0.0))
+            break;
+        std::vector<std::uint8_t> next(n);
+        std::size_t kept = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            next[i] = std::fabs(dist[i]) <= K * sigma ? 1 : 0;
+            kept += next[i];
+        }
+        if (next == used || kept < 6)
+            break;
+        used.swap(next);
+    }
+    out.mTol = o.mTolerance;
+    std::int64_t nused = 0;
+    for (std::uint8_t u : used)
+        nused += u;
+    out.mNumUsed = nused;
+    out.mNumRejected = static_cast<std::int64_t>(n) - nused;
+    return out;
+}
+
+// Seed mode (roadmap 7.1.1): the label marking the cells grown from the seeds
+// (0) and the rest (-1), the cells themselves, and the absolute tolerance the
+// growth ran at, which the patch is then fitted at.
+std::vector<std::int64_t> fp_seed_labels(const Mesh& rMesh, const FitPrimitivesOptions& rOptions,
+                                         std::size_t NCells, FitPrimitivesOptions& rFit,
+                                         std::vector<std::int64_t>& rCells,
+                                         std::vector<std::string>& rWarnings) {
+    std::vector<std::uint8_t> selected(NCells, 1);
+    if (!rOptions.mRegion.empty())
+        selected = detail::cell_region_mask(rMesh, rOptions.mRegion, NCells, kFpPrefix);
+    const detail::PrimitiveGrowSurface surf = detail::build_primitive_grow_surface(
+        rMesh, selected, rOptions.mFeatureAngleDeg, kFpPrefix);
+    std::vector<std::int64_t> label(NCells, -1);
+    const std::size_t nf = surf.NumFaces();
+    if (nf == 0) {
+        rWarnings.emplace_back("the surface has no 2-D cells to grow from");
+        return label;
+    }
+    detail::PrimitiveGrowInput in = surf.Input();
+    detail::prepare_primitive_grow(in, nf, rOptions.mRelative ? rOptions.mTolerance : 1.0);
+    if (!rOptions.mRelative)
+        in.mTol = rOptions.mTolerance;
+    const std::vector<std::vector<std::int64_t>> areas = detail::primitive_smooth_areas(in, nf);
+    std::vector<std::int64_t> patch(nf, -1);
+    std::vector<std::uint8_t> mark(nf, 0);
+    const std::uint32_t types = rOptions.mTypes;
+    const bool try_plane = (types & (1u << 1)) != 0;
+    const std::uint32_t curved = types & ~(1u << 1);
+    std::vector<std::int64_t> faces;
+    for (std::size_t k = 0; k < rOptions.mSeeds.size(); ++k) {
+        const std::int64_t f = detail::nearest_centroid_face(surf.mCentroid, rOptions.mSeeds[k].data());
+        if (f < 0)
+            continue;
+        if (patch[static_cast<std::size_t>(f)] != -1)
+            continue;  // an earlier seed's region holds it
+        const std::vector<std::int64_t>& area =
+            areas[static_cast<std::size_t>(in.mSmoothArea[static_cast<std::size_t>(f)])];
+        const double area_total = detail::primitive_grow_area_of(in, area);
+        // The seed's whole smooth area when one primitive explains it (step 1
+        // of `segment`'s primitive method: a bore between sharp edges), else a
+        // region grown exactly, as `segment` grows a CAD tessellation (a
+        // fillet's tangent planes stay out), else within the whole tolerance,
+        // as a scan's noise wants.
+        detail::PrimitiveGrowRegion reg;
+        bool whole_free = true;
+        for (std::int64_t g : area)
+            whole_free = whole_free && patch[static_cast<std::size_t>(g)] == -1;
+        if (whole_free && detail::primitive_grow_fit(in, area, types).mType > 0)
+            reg.mFaces = area;
+        in.mGrowTol = detail::kPrimitiveGrowExactShare * in.mTol;
+        if (reg.mFaces.empty())
+            reg = detail::primitive_grow_from_seed(in, f, try_plane, curved, area_total, 0.0,
+                                                   detail::kPrimitiveGrowExactShare, patch, mark);
+        if (reg.mFaces.empty()) {
+            in.mGrowTol = in.mTol;
+            reg = detail::primitive_grow_from_seed(in, f, try_plane, curved, area_total, 0.0, 1.0,
+                                                   patch, mark);
+        }
+        if (reg.mFaces.empty()) {
+            rWarnings.push_back("seed " + std::to_string(k) +
+                                ": no primitive of the asked types grows from the facet nearest it");
+            continue;
+        }
+        for (std::int64_t g : reg.mFaces) {
+            patch[static_cast<std::size_t>(g)] = 0;
+            faces.push_back(g);
+        }
+    }
+    std::sort(faces.begin(), faces.end());
+    // Peel the rim: boundary faces whose normal turns away from the fitted
+    // surface's, ring by ring.
+    if (rOptions.mRimAngleDeg < 180.0 && !faces.empty()) {
+        const double cos_rim = std::cos(rOptions.mRimAngleDeg * kFpPi / 180.0);
+        std::vector<std::uint8_t> in_region(nf, 0);
+        for (std::int64_t g : faces)
+            in_region[static_cast<std::size_t>(g)] = 1;
+        for (int pass = 0; pass < 8; ++pass) {
+            const detail::PrimitiveFit fit = detail::primitive_grow_fit(in, faces, types);
+            if (fit.mType == 0)
+                break;
+            std::vector<std::int64_t> kept;
+            for (std::int64_t g : faces) {
+                const std::size_t gs = static_cast<std::size_t>(g);
+                const std::int64_t ring =
+                    surf.mRings.mStart[gs + 1] - surf.mRings.mStart[gs];
+                const std::int64_t neighbours = surf.mAdjStart[gs + 1] - surf.mAdjStart[gs];
+                bool rim = neighbours < ring;
+                for (std::int64_t e = surf.mAdjStart[gs]; e < surf.mAdjStart[gs + 1] && !rim; ++e)
+                    rim = !in_region[static_cast<std::size_t>(surf.mAdj[static_cast<std::size_t>(e)].first)];
+                double nrm[3];
+                const bool peel = rim &&
+                                  detail::primitive_normal(fit.mType, fit.mParams, &surf.mCentroid[gs * 3], nrm) &&
+                                  std::fabs(detail::MathUtils::Dot(nrm, &surf.mNormals[gs * 3])) < cos_rim;
+                if (peel)
+                    in_region[gs] = 0;
+                else
+                    kept.push_back(g);
+            }
+            if (kept.size() == faces.size() || kept.empty())
+                break;
+            faces.swap(kept);
+        }
+    }
+    for (std::int64_t g : faces) {
+        const std::int64_t c = surf.mRings.mCell[static_cast<std::size_t>(g)];
+        label[static_cast<std::size_t>(c)] = 0;
+        rCells.push_back(c);
+    }
+    std::sort(rCells.begin(), rCells.end());
+    if (faces.empty())
+        rWarnings.emplace_back("no seed grew a region");
+    rFit.mTolerance = in.mTol;
+    rFit.mRelative = false;
+    return label;
 }
 
 }  // namespace
@@ -233271,11 +234311,43 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
                                     "cone, torus and nothing else");
     if (rOptions.mMaxIterations < 1)
         throw std::invalid_argument(std::string(kFpPrefix) + "max_iterations must be >= 1");
+    if (rOptions.mUsedPoints < FitUsedPoints::Auto || rOptions.mUsedPoints > FitUsedPoints::Sigma1)
+        throw std::invalid_argument(std::string(kFpPrefix) + "unknown used_points");
+    if (!(rOptions.mFeatureAngleDeg >= 0.0 && rOptions.mFeatureAngleDeg <= 180.0) ||
+        !(rOptions.mRimAngleDeg >= 0.0 && rOptions.mRimAngleDeg <= 180.0))
+        throw std::invalid_argument(std::string(kFpPrefix) +
+                                    "feature_angle and rim_angle must lie in [0, 180] degrees");
+    for (const std::array<double, 3>& rSeed : rOptions.mSeeds)
+        for (double v : rSeed)
+            if (!std::isfinite(v))
+                throw std::invalid_argument(std::string(kFpPrefix) + "a seed must be finite");
+    const bool seeded = !rOptions.mSeeds.empty();
+    if (seeded && rOptions.mOutputRegion.empty())
+        throw std::invalid_argument(std::string(kFpPrefix) +
+                                    "the output region needs a name");
+    const bool feature_mode = seeded || !rOptions.mRegion.empty();
+    const FitUsedPoints used_mode =
+        rOptions.mUsedPoints == FitUsedPoints::Auto
+            ? (feature_mode ? FitUsedPoints::Sigma3 : FitUsedPoints::All)
+            : rOptions.mUsedPoints;
+    const double trim_k = used_mode == FitUsedPoints::Sigma3   ? 3.0
+                          : used_mode == FitUsedPoints::Sigma2 ? 2.0
+                                                               : 1.0;
+    FitPrimitivesResult result;
+    FitPrimitivesOptions fit_opts = rOptions;
 
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const std::size_t ncells = static_cast<std::size_t>(detail::total_cells(bases));
     std::vector<std::int64_t> label(ncells, 0);
-    if (!rOptions.mPatchData.empty()) {
+    std::vector<std::int64_t> feature_cells;
+    if (seeded) {
+        label = fp_seed_labels(rMesh, rOptions, ncells, fit_opts, feature_cells, result.mWarnings);
+    } else if (!rOptions.mRegion.empty()) {
+        const std::vector<std::uint8_t> mask =
+            detail::cell_region_mask(rMesh, rOptions.mRegion, ncells, kFpPrefix);
+        for (std::size_t c = 0; c < ncells; ++c)
+            label[c] = mask[c] ? 0 : -1;
+    } else if (!rOptions.mPatchData.empty()) {
         if (!rMesh.HasCellData(rOptions.mPatchData))
             throw std::invalid_argument(std::string(kFpPrefix) + "no cell data named '" +
                                         rOptions.mPatchData +
@@ -233364,17 +234436,37 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
                 patch.mCentres.push_back(c[d] / static_cast<double>(size) - patch.mShift[d]);
             }
         }
-        outcome[r] = fp_fit_patch(patch, rOptions);
-        // Form error and extremes, in the world frame the parameters are in.
-        std::vector<double> world(patch.mPts);
+        std::vector<std::uint8_t> used;
+        if (used_mode == FitUsedPoints::All) {
+            outcome[r] = fp_fit_patch(patch, fit_opts);
+            used.assign(verts.size(), 1);
+            outcome[r].mNumUsed = static_cast<std::int64_t>(verts.size());
+        } else {
+            outcome[r] = fp_fit_patch_trimmed(patch, fit_opts, trim_k, used);
+        }
+        if (!rOptions.mExtendedReport)
+            return;
+        // Sigma, form error and extremes over the points used, in the world
+        // frame the parameters are in.
+        std::vector<double> world;
         for (std::size_t i = 0; i < verts.size(); ++i)
-            for (int k = 0; k < 3; ++k)
-                world[i * 3 + static_cast<std::size_t>(k)] += patch.mShift[k];
-        outcome[r].mForm = detail::primitive_form_metrics(outcome[r].mType, outcome[r].mParams,
-                                                          world.data(), verts.size());
+            if (used[i])
+                for (int k = 0; k < 3; ++k)
+                    world.push_back(patch.mPts[i * 3 + static_cast<std::size_t>(k)] +
+                                    patch.mShift[k]);
+        const std::size_t nused = world.size() / 3;
+        FpOutcome& o = outcome[r];
+        if (o.mType > 0 && nused > 0) {
+            double sum = 0.0;
+            for (std::size_t i = 0; i < nused; ++i) {
+                const double d = detail::primitive_signed_distance(o.mType, o.mParams, &world[i * 3]);
+                sum += d * d;
+            }
+            o.mSigma = std::sqrt(sum / static_cast<double>(nused));
+        }
+        o.mForm = detail::primitive_form_metrics(o.mType, o.mParams, world.data(), nused);
     });
 
-    FitPrimitivesResult result;
     result.mNumPatches = static_cast<std::int64_t>(m);
     for (const FpOutcome& o : outcome) {
         switch (o.mType) {
@@ -233440,6 +234532,9 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     NDArray pmax = NDArray::Uninit(DType::Float64, {m});
     NDArray pfrac = NDArray::Uninit(DType::Float64, {m});
     NDArray ptol = NDArray::Uninit(DType::Float64, {m});
+    NDArray psigma = NDArray::Uninit(DType::Float64, {m});
+    NDArray pnused = NDArray::Uninit(DType::Int64, {m});
+    NDArray pnrej = NDArray::Uninit(DType::Int64, {m});
     NDArray pform = NDArray::Uninit(DType::Float64, {m});
     NDArray pdmin = NDArray::Uninit(DType::Float64, {m});
     NDArray pdmax = NDArray::Uninit(DType::Float64, {m});
@@ -233448,6 +234543,9 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     NDArray pext = NDArray::Uninit(DType::Float64, {m, 2});
     for (std::size_t r = 0; r < m; ++r) {
         const detail::PrimitiveFormMetrics& f = outcome[r].mForm;
+        psigma.As<double>()[r] = outcome[r].mSigma;
+        pnused.As<std::int64_t>()[r] = outcome[r].mNumUsed;
+        pnrej.As<std::int64_t>()[r] = outcome[r].mNumRejected;
         pform.As<double>()[r] = f.mFormError;
         pdmin.As<double>()[r] = f.mDiameterMin;
         pdmax.As<double>()[r] = f.mDiameterMax;
@@ -233473,12 +234571,29 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     out.AddFieldData("fit:patch_max", std::move(pmax));
     out.AddFieldData("fit:patch_fraction", std::move(pfrac));
     out.AddFieldData("fit:patch_tolerance", std::move(ptol));
-    out.AddFieldData(kFitPatchFormErrorName, std::move(pform));
-    out.AddFieldData(kFitPatchDiameterMinName, std::move(pdmin));
-    out.AddFieldData(kFitPatchDiameterMaxName, std::move(pdmax));
-    out.AddFieldData(kFitPatchLengthName, std::move(plen));
-    out.AddFieldData(kFitPatchArcName, std::move(parc));
-    out.AddFieldData(kFitPatchExtentName, std::move(pext));
+    if (rOptions.mExtendedReport) {
+        out.AddFieldData(kFitPatchFormErrorName, std::move(pform));
+        out.AddFieldData(kFitPatchDiameterMinName, std::move(pdmin));
+        out.AddFieldData(kFitPatchDiameterMaxName, std::move(pdmax));
+        out.AddFieldData(kFitPatchLengthName, std::move(plen));
+        out.AddFieldData(kFitPatchArcName, std::move(parc));
+        out.AddFieldData(kFitPatchExtentName, std::move(pext));
+        out.AddFieldData(kFitPatchSigmaName, std::move(psigma));
+        out.AddFieldData(kFitPatchNumUsedName, std::move(pnused));
+        out.AddFieldData(kFitPatchNumRejectedName, std::move(pnrej));
+    }
+    if (seeded) {
+        result.mNumFeatureCells = static_cast<std::int64_t>(feature_cells.size());
+        for (std::size_t k = out.NumRegions(); k-- > 0;)
+            if (out.Region(k).mKind == RegionKind::Cell &&
+                out.Region(k).mName == rOptions.mOutputRegion)
+                out.RemoveRegion(k);
+        NDArray entries = NDArray::Uninit(DType::Int64, {feature_cells.size()});
+        std::copy(feature_cells.begin(), feature_cells.end(), entries.As<std::int64_t>());
+        meshioplusplus::Region region(rOptions.mOutputRegion, RegionKind::Cell, std::move(entries));
+        region.Canonicalize();
+        out.AddRegion(std::move(region));
+    }
     return result;
 }
 
@@ -257296,6 +258411,28 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mMaxIterations = static_cast<std::int64_t>(pipe_number(rStep, "MaxIterations", 50.0));
         if (!pipe_svec(rStep, "Types").empty())
             opts.mTypes = pipe_fit_types(rStep);
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        const std::vector<double> seeds = pipe_dvec(rStep, "Seeds");
+        if (seeds.size() % 3 != 0)
+            throw std::invalid_argument(
+                "meshio++: pipeline: FitPrimitives: Seeds holds x, y, z triples");
+        for (std::size_t k = 0; k + 2 < seeds.size(); k += 3)
+            opts.mSeeds.push_back({seeds[k], seeds[k + 1], seeds[k + 2]});
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mRimAngleDeg = pipe_number(rStep, "RimAngle", 15.0);
+        opts.mOutputRegion = pipe_text(rStep, "OutputRegion", "fit:feature");
+        {
+            const std::string u = pipe_text(rStep, "UsedPoints", "auto");
+            opts.mUsedPoints = u == "all"      ? FitUsedPoints::All
+                               : u == "3sigma" ? FitUsedPoints::Sigma3
+                               : u == "2sigma" ? FitUsedPoints::Sigma2
+                               : u == "1sigma" ? FitUsedPoints::Sigma1
+                                               : FitUsedPoints::Auto;
+            if (u != "auto" && opts.mUsedPoints == FitUsedPoints::Auto)
+                throw std::invalid_argument(
+                    "meshio++: pipeline: FitPrimitives: UsedPoints must be auto, all, 3sigma, "
+                    "2sigma or 1sigma");
+        }
         FitPrimitivesResult fr = fit_primitives(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumPatches", static_cast<double>(fr.mNumPatches)},
@@ -257304,7 +258441,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumCylinder", static_cast<double>(fr.mNumCylinder)},
                         {"NumCone", static_cast<double>(fr.mNumCone)},
                         {"NumTorus", static_cast<double>(fr.mNumTorus)},
-                        {"NumUnfitted", static_cast<double>(fr.mNumUnfitted)}});
+                        {"NumUnfitted", static_cast<double>(fr.mNumUnfitted)},
+                        {"NumFeatureCells", static_cast<double>(fr.mNumFeatureCells)}});
         return std::move(fr.mMesh);
     }
     if (op == "FitCad") {
@@ -267368,6 +268506,7 @@ RefinePatchesResult refine_patches(const Mesh& rMesh, const RefinePatchesOptions
     fo.mTolerance = s.mTol;
     fo.mRelative = false;
     fo.mTypes = rOptions.mTypes;
+    fo.mExtendedReport = false;  // the table fit_cad has always read
     Mesh fitted = fit_primitives(out, fo).mMesh;
 
     NDArray pid = NDArray::Uninit(DType::Int64, {m});
@@ -275942,7 +277081,6 @@ SdfResult compute_sdf(const Mesh& rSurface, const SdfOptions& rOptions) {
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -275957,224 +277095,14 @@ namespace meshioplusplus {
 namespace {
 
 constexpr const char* kSegPrefix = "meshio++: segment: ";
-// The primitive method's largest RMS of a grown region, as a share of the
-// tolerance.
-constexpr double kSegExactShare = 0.02;
 constexpr double kSegPi = 3.14159265358979323846;
-
-// An edge shared by exactly two distinct faces.
-struct SegPair {
-    std::int64_t mA;  // the lower face
-    std::int64_t mB;  // the higher face
-    bool mInconsistent;
-    bool mSmooth;
-    double mAngleRad;  // NaN when either face is degenerate
-};
-
-// The primitive method's view of the surface: per face its ring, area,
-// normal and centroid, its smooth neighbours, and the smooth area it lies in.
-struct SegPrimitiveInput {
-    const std::vector<std::int64_t>* mStart;
-    const std::vector<std::int64_t>* mNodes;
-    const std::vector<double>* mXyz;
-    const std::vector<double>* mNormals;
-    const std::vector<double>* mCentroid;
-    const std::vector<std::int64_t>* mAdjStart;
-    const std::vector<std::pair<std::int64_t, std::int64_t>>* mAdj;
-    const std::vector<SegPair>* mPairs;
-    std::vector<double> mArea;
-    std::vector<std::int64_t> mSmoothArea;
-    double mTol = 0.0;
-    double mGrowTol = 0.0;  // how far a corner may lie from a growing region's primitive
-    double mDiag = 0.0;
-};
-
-// The samples fit_primitives fits for a set of faces: their distinct corners,
-// normals and centroids.
-void seg_samples(const SegPrimitiveInput& rIn, const std::vector<std::int64_t>& rFaces,
-                 std::vector<double>& rPts, std::vector<double>& rNormals,
-                 std::vector<double>& rCentres) {
-    std::vector<std::int64_t> verts;
-    for (std::int64_t f : rFaces)
-        for (std::int64_t k = (*rIn.mStart)[static_cast<std::size_t>(f)];
-             k < (*rIn.mStart)[static_cast<std::size_t>(f) + 1]; ++k)
-            verts.push_back((*rIn.mNodes)[static_cast<std::size_t>(k)]);
-    std::sort(verts.begin(), verts.end());
-    verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
-    rPts.resize(verts.size() * 3);
-    for (std::size_t i = 0; i < verts.size(); ++i)
-        for (std::size_t d = 0; d < 3; ++d)
-            rPts[i * 3 + d] = (*rIn.mXyz)[static_cast<std::size_t>(verts[i]) * 3 + d];
-    rNormals.clear();
-    rCentres.clear();
-    for (std::int64_t f : rFaces)
-        for (std::size_t d = 0; d < 3; ++d) {
-            rNormals.push_back((*rIn.mNormals)[static_cast<std::size_t>(f) * 3 + d]);
-            rCentres.push_back((*rIn.mCentroid)[static_cast<std::size_t>(f) * 3 + d]);
-        }
-}
-
-// A fit accepted with every point within the tolerance, and not a curved
-// surface so flat it stands in for a plane.
-detail::PrimitiveFit seg_fit(const SegPrimitiveInput& rIn, const std::vector<std::int64_t>& rFaces,
-                             std::uint32_t Types) {
-    std::vector<double> pts, nrm, ctr;
-    seg_samples(rIn, rFaces, pts, nrm, ctr);
-    detail::PrimitiveFit fit =
-        detail::fit_primitive_samples(pts, nrm, ctr, rIn.mTol, Types, 1.0, 50);
-    if (fit.mType >= 2) {
-        bool sane = true;
-        for (int k = 0; k < detail::kPrimitiveParams; ++k)
-            sane = sane && std::isfinite(fit.mParams[k]);
-        if (fit.mType == 4)
-            sane = sane && fit.mParams[8] < 85.0;
-        else
-            sane = sane && fit.mParams[6] <= rIn.mDiag && fit.mParams[7] <= rIn.mDiag;
-        if (!sane)
-            fit.mType = 0;
-    }
-    return fit;
-}
-
-bool seg_face_fits(const SegPrimitiveInput& rIn, std::int64_t F, const detail::PrimitiveFit& rFit,
-                   double Within) {
-    for (std::int64_t k = (*rIn.mStart)[static_cast<std::size_t>(F)];
-         k < (*rIn.mStart)[static_cast<std::size_t>(F) + 1]; ++k) {
-        const double* p =
-            &(*rIn.mXyz)[static_cast<std::size_t>((*rIn.mNodes)[static_cast<std::size_t>(k)]) * 3];
-        if (!(detail::primitive_point_distance(rFit.mType, rFit.mParams, p) <= Within))
-            return false;
-    }
-    return true;
-}
-
-// Grow a region from rFaces across smooth edges, within the faces' smooth
-// area, over faces not yet claimed, while every corner lies within the
-// growth tolerance of the primitive. The primitive was fitted to FittedOn faces; it
-// is refitted (same type) each time the region doubles past that, never on
-// fewer faces, where a curved fit is ill-conditioned.
-std::vector<std::int64_t> seg_grow(const SegPrimitiveInput& rIn, std::vector<std::int64_t> Faces,
-                                   detail::PrimitiveFit Fit, std::size_t FittedOn,
-                                   const std::vector<std::int64_t>& rPatch,
-                                   std::vector<std::uint8_t>& rMark) {
-    for (std::int64_t f : Faces)
-        rMark[static_cast<std::size_t>(f)] = 1;
-    const std::int64_t area = rIn.mSmoothArea[static_cast<std::size_t>(Faces.front())];
-    std::size_t fitted_at = std::max(Faces.size(), FittedOn);
-    for (std::size_t q = 0; q < Faces.size(); ++q) {
-        const std::size_t g = static_cast<std::size_t>(Faces[q]);
-        for (std::int64_t k = (*rIn.mAdjStart)[g]; k < (*rIn.mAdjStart)[g + 1]; ++k) {
-            const auto& a = (*rIn.mAdj)[static_cast<std::size_t>(k)];
-            const std::size_t nb = static_cast<std::size_t>(a.first);
-            if (rMark[nb] || rPatch[nb] != -1 ||
-                !(*rIn.mPairs)[static_cast<std::size_t>(a.second)].mSmooth ||
-                rIn.mSmoothArea[nb] != area || !seg_face_fits(rIn, a.first, Fit, rIn.mGrowTol))
-                continue;
-            rMark[nb] = 1;
-            Faces.push_back(a.first);
-        }
-        if (Faces.size() >= 2 * fitted_at) {
-            fitted_at = Faces.size();
-            const detail::PrimitiveFit refit =
-                seg_fit(rIn, Faces, 1u << static_cast<unsigned>(Fit.mType));
-            if (refit.mType == Fit.mType)
-                Fit = refit;
-        }
-    }
-    for (std::int64_t f : Faces)
-        rMark[static_cast<std::size_t>(f)] = 0;
-    return Faces;
-}
-
-// Trim a grown region to the cells its own refit explains within Within,
-// keeping the part edge-connected to its first cell, three times over: a
-// plane grown to the tolerance takes the first strip of a fillet tangent to
-// it, which tilts its fit; the refit without it leaves that strip out.
-void seg_trim(const SegPrimitiveInput& rIn, std::vector<std::int64_t>& rRegion, std::uint32_t Types,
-              double Within, std::vector<std::uint8_t>& rMark) {
-    for (int pass = 0; pass < 3 && !rRegion.empty(); ++pass) {
-        const detail::PrimitiveFit fit = seg_fit(rIn, rRegion, Types);
-        if (fit.mType == 0) {
-            rRegion.clear();
-            return;
-        }
-        std::size_t kept = 0;
-        for (std::int64_t f : rRegion) {
-            bool on = true;
-            for (std::int64_t k = (*rIn.mStart)[static_cast<std::size_t>(f)];
-                 k < (*rIn.mStart)[static_cast<std::size_t>(f) + 1] && on; ++k)
-                on = detail::primitive_point_distance(
-                         fit.mType, fit.mParams,
-                         &(*rIn.mXyz)[static_cast<std::size_t>(
-                                          (*rIn.mNodes)[static_cast<std::size_t>(k)]) *
-                                      3]) <= Within;
-            rMark[static_cast<std::size_t>(f)] = on ? 1 : 0;
-            kept += on ? 1 : 0;
-        }
-        if (kept == rRegion.size()) {
-            for (std::int64_t f : rRegion)
-                rMark[static_cast<std::size_t>(f)] = 0;
-            return;
-        }
-        // The part connected to the seed (the first cell), walk order kept.
-        std::vector<std::int64_t> part;
-        if (rMark[static_cast<std::size_t>(rRegion.front())]) {
-            part.push_back(rRegion.front());
-            rMark[static_cast<std::size_t>(rRegion.front())] = 2;
-            for (std::size_t q = 0; q < part.size(); ++q) {
-                const std::size_t g = static_cast<std::size_t>(part[q]);
-                for (std::int64_t k = (*rIn.mAdjStart)[g]; k < (*rIn.mAdjStart)[g + 1]; ++k) {
-                    const std::size_t nb =
-                        static_cast<std::size_t>((*rIn.mAdj)[static_cast<std::size_t>(k)].first);
-                    if (rMark[nb] != 1)
-                        continue;
-                    rMark[nb] = 2;
-                    part.push_back(static_cast<std::int64_t>(nb));
-                }
-            }
-        }
-        for (std::int64_t f : rRegion)
-            rMark[static_cast<std::size_t>(f)] = 0;
-        rRegion.swap(part);
-    }
-}
-
-double seg_area_of(const SegPrimitiveInput& rIn, const std::vector<std::int64_t>& rFaces) {
-    double a = 0.0;
-    for (std::int64_t f : rFaces)
-        a += rIn.mArea[static_cast<std::size_t>(f)];
-    return a;
-}
 
 // The primitive method's patches (steps 1 and 2 of segment.hpp's "Primitive
 // method"): sets rPatch for the faces a primitive claims, returns the count.
-std::int64_t seg_primitive_patches(SegPrimitiveInput& rIn, std::size_t NumFaces,
+std::int64_t seg_primitive_patches(detail::PrimitiveGrowInput& rIn, std::size_t NumFaces,
                                    std::vector<std::int64_t>& rPatch) {
     const std::size_t nf = NumFaces;
-    // Smooth areas, numbered in the order of their lowest face.
-    rIn.mSmoothArea.assign(nf, -1);
-    std::vector<std::vector<std::int64_t>> areas;
-    for (std::size_t seed = 0; seed < nf; ++seed) {
-        if (rIn.mSmoothArea[seed] != -1)
-            continue;
-        const std::int64_t id = static_cast<std::int64_t>(areas.size());
-        std::vector<std::int64_t> faces{static_cast<std::int64_t>(seed)};
-        rIn.mSmoothArea[seed] = id;
-        for (std::size_t q = 0; q < faces.size(); ++q) {
-            const std::size_t g = static_cast<std::size_t>(faces[q]);
-            for (std::int64_t k = (*rIn.mAdjStart)[g]; k < (*rIn.mAdjStart)[g + 1]; ++k) {
-                const auto& a = (*rIn.mAdj)[static_cast<std::size_t>(k)];
-                const std::size_t nb = static_cast<std::size_t>(a.first);
-                if (rIn.mSmoothArea[nb] != -1 ||
-                    !(*rIn.mPairs)[static_cast<std::size_t>(a.second)].mSmooth)
-                    continue;
-                rIn.mSmoothArea[nb] = id;
-                faces.push_back(a.first);
-            }
-        }
-        std::sort(faces.begin(), faces.end());
-        areas.push_back(std::move(faces));
-    }
+    const std::vector<std::vector<std::int64_t>> areas = detail::primitive_smooth_areas(rIn, nf);
 
     std::int64_t npatches = 0;
     std::vector<std::uint8_t> mark(nf, 0), tried(nf, 0);
@@ -276182,7 +277110,7 @@ std::int64_t seg_primitive_patches(SegPrimitiveInput& rIn, std::size_t NumFaces,
     constexpr std::uint32_t kCurved = (1u << 2) | (1u << 3) | (1u << 4) | (1u << 5);
     for (const std::vector<std::int64_t>& area : areas) {
         // 1. One primitive for the whole smooth area.
-        const detail::PrimitiveFit whole = seg_fit(rIn, area, kAll);
+        const detail::PrimitiveFit whole = detail::primitive_grow_fit(rIn, area, kAll);
         if (whole.mType > 0) {
             for (std::int64_t f : area)
                 rPatch[static_cast<std::size_t>(f)] = npatches;
@@ -276191,7 +277119,7 @@ std::int64_t seg_primitive_patches(SegPrimitiveInput& rIn, std::size_t NumFaces,
         }
         // 2. Grown regions, largest seed first; claimed for the area only once
         // it is clear the primitives explain it (below).
-        const double area_total = seg_area_of(rIn, area);
+        const double area_total = detail::primitive_grow_area_of(rIn, area);
         const std::int64_t first_patch = npatches;
         std::vector<std::pair<std::vector<std::int64_t>, bool>> grown;  // faces, curved
         std::vector<std::int64_t> seeds = area;
@@ -276202,99 +277130,22 @@ std::int64_t seg_primitive_patches(SegPrimitiveInput& rIn, std::size_t NumFaces,
             const std::size_t ss = static_cast<std::size_t>(s);
             if (rPatch[ss] != -1 || tried[ss])
                 continue;
-            // A plane through the seed.
-            std::vector<std::int64_t> plane_region;
-            {
-                detail::PrimitiveFit plane;
-                plane.mType = 1;
-                for (std::size_t d = 0; d < 3; ++d) {
-                    plane.mParams[d] = (*rIn.mCentroid)[ss * 3 + d];
-                    plane.mParams[3 + d] = (*rIn.mNormals)[ss * 3 + d];
-                }
-                if (seg_face_fits(rIn, s, plane, rIn.mGrowTol))
-                    plane_region = seg_grow(rIn, {s}, plane, 1, rPatch, mark);
-            }
-            // A curved surface through the seed's neighbourhood.
-            std::vector<std::int64_t> curved_region;
-            std::vector<std::int64_t> hood{s};
-            {
-                mark[ss] = 1;
-                std::size_t ring_end = 1;
-                for (int ring = 0; ring < 2 && hood.size() < 32; ++ring) {
-                    const std::size_t from = ring == 0 ? 0 : ring_end;
-                    ring_end = hood.size();
-                    for (std::size_t q = from; q < ring_end && hood.size() < 32; ++q) {
-                        const std::size_t g = static_cast<std::size_t>(hood[q]);
-                        for (std::int64_t k = (*rIn.mAdjStart)[g];
-                             k < (*rIn.mAdjStart)[g + 1] && hood.size() < 32; ++k) {
-                            const auto& a = (*rIn.mAdj)[static_cast<std::size_t>(k)];
-                            const std::size_t nb = static_cast<std::size_t>(a.first);
-                            if (mark[nb] || rPatch[nb] != -1 ||
-                                !(*rIn.mPairs)[static_cast<std::size_t>(a.second)].mSmooth ||
-                                rIn.mSmoothArea[nb] != rIn.mSmoothArea[ss])
-                                continue;
-                            mark[nb] = 1;
-                            hood.push_back(a.first);
-                        }
-                    }
-                }
-                for (std::int64_t f : hood)
-                    mark[static_cast<std::size_t>(f)] = 0;
-                if (hood.size() >= 3) {
-                    const detail::PrimitiveFit fit = seg_fit(rIn, hood, kCurved);
-                    if (fit.mType >= 2)
-                        curved_region = seg_grow(rIn, {s}, fit, hood.size(), rPatch, mark);
-                }
-            }
-            // A region grown to the tolerance is kept only when its refit
-            // leaves an RMS under 2% of it: a CAD tessellation lies on its
-            // surfaces exactly, while a sphere or cone fitted to a patch of a
-            // freeform or helical surface grows until it strays the tolerance.
-            auto exact = [&](std::vector<std::int64_t>& rRegion, std::uint32_t Types) {
-                if (rRegion.empty())
-                    return;
-                seg_trim(rIn, rRegion, Types, kSegExactShare * rIn.mTol, mark);
-                if (rRegion.empty())
-                    return;
-                const detail::PrimitiveFit refit = seg_fit(rIn, rRegion, Types);
-                if (refit.mType == 0 || !(refit.mRms <= kSegExactShare * rIn.mTol)) {
-                    rRegion.clear();
-                    return;
-                }
-                // A curved surface needs three points per parameter (4 for a
-                // sphere up to 7 for a torus): a handful of points lies
-                // exactly on some sphere or cylinder whatever the surface.
-                if (refit.mType >= 2) {
-                    std::vector<double> pts, nrm, ctr;
-                    seg_samples(rIn, rRegion, pts, nrm, ctr);
-                    if (pts.size() / 3 < static_cast<std::size_t>(3 * (refit.mType + 2)))
-                        rRegion.clear();
-                }
-            };
-            exact(plane_region, 1u << 1);
-            exact(curved_region, kCurved);
-            const double plane_area = seg_area_of(rIn, plane_region);
-            const double curved_area = seg_area_of(rIn, curved_region);
-            const std::vector<std::int64_t>* chosen = nullptr;
-            if (curved_region.size() >= 3 && curved_area > 1.5 * plane_area)
-                chosen = &curved_region;
-            else if (plane_region.size() >= 2 && plane_area >= 0.02 * area_total)
-                chosen = &plane_region;
-            else if (curved_region.size() >= 3)
-                chosen = &curved_region;
-            if (chosen == nullptr) {
+            const detail::PrimitiveGrowRegion region = detail::primitive_grow_from_seed(
+                rIn, s, true, kCurved, area_total, 0.02, detail::kPrimitiveGrowExactShare, rPatch, mark);
+            if (region.mFaces.empty()) {
                 // Neither surface holds here: no cell of this neighbourhood
                 // seeds again (a freeform area would cost a fit per cell);
                 // another seed's region may still grow over them.
-                for (std::int64_t f : hood)
+                for (std::int64_t f : region.mHood)
                     tried[static_cast<std::size_t>(f)] = 1;
                 continue;
             }
+            const std::vector<std::int64_t>* chosen = &region.mFaces;
             // Claim the faces now, so later seeds grow around them.
             for (std::int64_t f : *chosen)
                 rPatch[static_cast<std::size_t>(f)] = npatches;
             ++npatches;
-            grown.emplace_back(*chosen, chosen == &curved_region);
+            grown.emplace_back(*chosen, region.mCurved);
         }
         // A freeform surface fits small spheres and tori anywhere: a curved
         // region under 1% of its smooth area is dropped, and an area the kept
@@ -276303,7 +277154,7 @@ std::int64_t seg_primitive_patches(SegPrimitiveInput& rIn, std::size_t NumFaces,
         double explained = 0.0;
         std::vector<std::uint8_t> keep(grown.size(), 1);
         for (std::size_t i = 0; i < grown.size(); ++i) {
-            const double a = seg_area_of(rIn, grown[i].first);
+            const double a = detail::primitive_grow_area_of(rIn, grown[i].first);
             if (grown[i].second && a < 0.01 * area_total)
                 keep[i] = 0;
             else
@@ -276351,99 +277202,30 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
     const std::vector<std::uint8_t> selected =
         detail::cell_region_mask(rMesh, rOptions.mRegion, ncells, kSegPrefix);
 
-    const detail::SurfaceRings rings = detail::surface_rings(rMesh, selected, kSegPrefix);
-    const std::vector<std::int64_t>& start = rings.mStart;
-    const std::vector<std::int64_t>& nodes = rings.mNodes;
-    const std::vector<std::int64_t>& cell_of = rings.mCell;
-    const std::size_t nf = rings.NumFaces();
-
-    // Flat coordinates padded to 3-D, unit normals and centroids per face.
-    const std::vector<double> xyz = detail::surface_xyz(rMesh);
-    std::vector<double> normals(nf * 3);
-    std::vector<double> centroid(nf * 3);
-    parallel_for(nf, [&](std::size_t f) {
-        const std::int64_t* ring = nodes.data() + start[f];
-        const std::size_t size = static_cast<std::size_t>(start[f + 1] - start[f]);
-        detail::ring_unit_normal(xyz.data(), ring, size, &normals[f * 3]);
-        double c[3] = {0.0, 0.0, 0.0};
-        for (std::size_t k = 0; k < size; ++k)
-            for (std::size_t d = 0; d < 3; ++d)
-                c[d] += xyz[static_cast<std::size_t>(ring[k]) * 3 + d];
-        for (std::size_t d = 0; d < 3; ++d)
-            centroid[f * 3 + d] = c[d] / static_cast<double>(size);
-    });
-
-    // Every non-collapsed ring edge is one use; sorted, each run is one edge.
-    const std::vector<detail::CreaseEdgeUse> uses = detail::crease_edge_uses(start, nodes);
+    const detail::PrimitiveGrowSurface surf =
+        detail::build_primitive_grow_surface(rMesh, selected, rOptions.mFeatureAngleDeg, kSegPrefix);
+    const std::vector<std::int64_t>& start = surf.mRings.mStart;
+    const std::vector<std::int64_t>& nodes = surf.mRings.mNodes;
+    const std::vector<std::int64_t>& cell_of = surf.mRings.mCell;
+    const std::size_t nf = surf.NumFaces();
+    const std::vector<double>& xyz = surf.mXyz;
+    const std::vector<double>& normals = surf.mNormals;
+    const std::vector<double>& centroid = surf.mCentroid;
+    const std::vector<detail::PrimitiveGrowPair>& pairs = surf.mPairs;
+    const std::vector<std::int64_t>& adj_start = surf.mAdjStart;
+    const std::vector<std::pair<std::int64_t, std::int64_t>>& adj = surf.mAdj;
 
     SegmentResult result;
-    const double cos_feature = std::cos(rOptions.mFeatureAngleDeg * kSegPi / 180.0);
-    const double nan = std::numeric_limits<double>::quiet_NaN();
-    std::vector<SegPair> pairs;
-    for (std::size_t b = 0; b < uses.size();) {
-        std::size_t e = b + 1;
-        while (e < uses.size() && uses[e].mLo == uses[b].mLo && uses[e].mHi == uses[b].mHi)
-            ++e;
-        const std::size_t u = e - b;
-        if (u == 1) {
-            ++result.mNumBoundaryEdges;
-        } else if (u >= 3) {
-            ++result.mNumNonManifoldEdges;
-        } else if (uses[b].mFace != uses[b + 1].mFace) {
-            SegPair p;
-            p.mA = uses[b].mFace;
-            p.mB = uses[b + 1].mFace;
-            p.mInconsistent = uses[b].mForward == uses[b + 1].mForward;
-            const double* nx = &normals[static_cast<std::size_t>(p.mA) * 3];
-            const double* ny = &normals[static_cast<std::size_t>(p.mB) * 3];
-            const bool zx = nx[0] == 0.0 && nx[1] == 0.0 && nx[2] == 0.0;
-            const bool zy = ny[0] == 0.0 && ny[1] == 0.0 && ny[2] == 0.0;
-            p.mSmooth = true;
-            p.mAngleRad = nan;
-            if (!zx && !zy) {
-                double dot = nx[0] * ny[0] + nx[1] * ny[1] + nx[2] * ny[2];
-                if (p.mInconsistent)
-                    dot = -dot;
-                p.mSmooth = !(dot < cos_feature);
-                const double c = dot < -1.0 ? -1.0 : (dot > 1.0 ? 1.0 : dot);
-                p.mAngleRad = std::acos(c);
-            }
-            if (!p.mSmooth)
-                ++result.mNumFeatureEdges;
-            pairs.push_back(p);
-        }
-        b = e;
-    }
-
-    // Per face, its neighbours across paired edges, ascending by face then edge.
-    std::vector<std::int64_t> adj_start(nf + 1, 0);
-    for (const SegPair& p : pairs) {
-        ++adj_start[static_cast<std::size_t>(p.mA) + 1];
-        ++adj_start[static_cast<std::size_t>(p.mB) + 1];
-    }
-    for (std::size_t f = 0; f < nf; ++f)
-        adj_start[f + 1] += adj_start[f];
-    std::vector<std::pair<std::int64_t, std::int64_t>> adj(static_cast<std::size_t>(adj_start[nf]));
-    {
-        std::vector<std::int64_t> fill(adj_start.begin(), adj_start.end() - 1);
-        for (std::size_t e = 0; e < pairs.size(); ++e) {
-            const std::int64_t ei = static_cast<std::int64_t>(e);
-            adj[static_cast<std::size_t>(fill[static_cast<std::size_t>(pairs[e].mA)]++)] = {
-                pairs[e].mB, ei};
-            adj[static_cast<std::size_t>(fill[static_cast<std::size_t>(pairs[e].mB)]++)] = {
-                pairs[e].mA, ei};
-        }
-        parallel_for(nf, [&](std::size_t f) {
-            std::sort(adj.begin() + adj_start[f], adj.begin() + adj_start[f + 1]);
-        });
-    }
+    result.mNumBoundaryEdges = surf.mNumBoundaryEdges;
+    result.mNumNonManifoldEdges = surf.mNumNonManifoldEdges;
+    result.mNumFeatureEdges = surf.mNumFeatureEdges;
 
     // The curvature estimate, only when it is asked for.
     const bool use_curv = rOptions.mCurvatureTolerance > 0.0;
     std::vector<double> curv;
     if (use_curv) {
         curv.assign(nf, 0.0);
-        for (const SegPair& p : pairs) {
+        for (const detail::PrimitiveGrowPair& p : pairs) {
             if (!p.mSmooth || std::isnan(p.mAngleRad))
                 continue;
             const double* ca = &centroid[static_cast<std::size_t>(p.mA) * 3];
@@ -276469,43 +277251,8 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
     queue.reserve(nf);
     std::int64_t npatches = 0;
     if (rOptions.mMethod == SegmentMethod::Primitive && nf > 0) {
-        SegPrimitiveInput in;
-        in.mStart = &start;
-        in.mNodes = &nodes;
-        in.mXyz = &xyz;
-        in.mNormals = &normals;
-        in.mCentroid = &centroid;
-        in.mAdjStart = &adj_start;
-        in.mAdj = &adj;
-        in.mPairs = &pairs;
-        in.mArea.assign(nf, 0.0);
-        double lo[3], hi[3];
-        for (int d = 0; d < 3; ++d) {
-            lo[d] = std::numeric_limits<double>::infinity();
-            hi[d] = -lo[d];
-        }
-        for (std::size_t f = 0; f < nf; ++f) {
-            const std::int64_t* ring = nodes.data() + start[f];
-            const std::size_t size = static_cast<std::size_t>(start[f + 1] - start[f]);
-            double twice[3] = {0.0, 0.0, 0.0};
-            for (std::size_t k = 0; k < size; ++k) {
-                const double* a = &xyz[static_cast<std::size_t>(ring[k]) * 3];
-                const double* b = &xyz[static_cast<std::size_t>(ring[(k + 1) % size]) * 3];
-                twice[0] += a[1] * b[2] - a[2] * b[1];
-                twice[1] += a[2] * b[0] - a[0] * b[2];
-                twice[2] += a[0] * b[1] - a[1] * b[0];
-                for (int d = 0; d < 3; ++d) {
-                    lo[d] = std::min(lo[d], a[d]);
-                    hi[d] = std::max(hi[d], a[d]);
-                }
-            }
-            in.mArea[f] =
-                0.5 * std::sqrt(twice[0] * twice[0] + twice[1] * twice[1] + twice[2] * twice[2]);
-        }
-        in.mDiag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
-                             (hi[2] - lo[2]) * (hi[2] - lo[2]));
-        in.mTol = rOptions.mTolerance * in.mDiag;
-        in.mGrowTol = kSegExactShare * in.mTol;
+        detail::PrimitiveGrowInput in = surf.Input();
+        detail::prepare_primitive_grow(in, nf, rOptions.mTolerance);
         if (in.mTol > 0.0)
             npatches = seg_primitive_patches(in, nf, patch);
     }
@@ -276526,7 +277273,7 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
             for (std::int64_t k = adj_start[g]; k < adj_start[g + 1]; ++k) {
                 const std::size_t nb =
                     static_cast<std::size_t>(adj[static_cast<std::size_t>(k)].first);
-                const SegPair& e =
+                const detail::PrimitiveGrowPair& e =
                     pairs[static_cast<std::size_t>(adj[static_cast<std::size_t>(k)].second)];
                 if (patch[nb] != -1 || !e.mSmooth)
                     continue;
@@ -276564,7 +277311,7 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
             ++size[static_cast<std::size_t>(patch[f])];
         std::vector<std::map<std::int64_t, std::int64_t>> shared(
             static_cast<std::size_t>(npatches));
-        for (const SegPair& e : pairs) {
+        for (const detail::PrimitiveGrowPair& e : pairs) {
             const std::int64_t a = patch[static_cast<std::size_t>(e.mA)];
             const std::int64_t b = patch[static_cast<std::size_t>(e.mB)];
             if (a == b)
@@ -276623,7 +277370,7 @@ SegmentResult segment(const Mesh& rMesh, const SegmentOptions& rOptions) {
         cell_patch[static_cast<std::size_t>(cell_of[f])] = patch[f];
 
     std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> adjacency;
-    for (const SegPair& e : pairs) {
+    for (const detail::PrimitiveGrowPair& e : pairs) {
         std::int64_t a = patch[static_cast<std::size_t>(e.mA)];
         std::int64_t b = patch[static_cast<std::size_t>(e.mB)];
         if (a == b)

@@ -130,6 +130,10 @@ _C_WITHOUT_JS = {
     "discretize_levelset",
     "metric_from_hessian",
     "move",
+    # `mio_fit_primitives_ex` is `mio_fit_primitives` with roadmap 7.1's
+    # options its fixed struct has no room for; the JS `fitPrimitives` takes
+    # them as keys.
+    "fit_primitives_ex",
     # `mio_deviation_primitive` is `mio_deviation` against a fitted
     # primitive; the JS `deviation` takes it as its `primitive` option.
     "deviation_primitive",

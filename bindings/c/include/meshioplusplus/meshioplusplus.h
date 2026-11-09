@@ -5938,7 +5938,9 @@ typedef struct mio_fit_primitives_report {
     int64_t num_cone;
     int64_t num_torus;
     int64_t num_unfitted;
-    int64_t reserved[5]; /**< must be zero; room for additive growth */
+    int64_t num_feature_cells; /**< seed mode: the cells written as output_region */
+    int64_t num_warnings;      /**< see mio_fit_primitives_warnings() */
+    int64_t reserved[3];       /**< must be zero; room for additive growth */
 } mio_fit_primitives_report;
 
 /**
@@ -5956,6 +5958,41 @@ typedef struct mio_fit_primitives_report {
  */
 MIO_API mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primitives_opts* opts,
                                      mio_fit_primitives_report* report);
+
+/** mio_fit_primitives_ex_opts.used_points (roadmap 7.1.2). */
+typedef enum mio_fit_used_points {
+    MIO_FIT_USED_AUTO = 0,   /**< 3 sigma with a region or seeds, every point otherwise */
+    MIO_FIT_USED_ALL = 1,    /**< every point */
+    MIO_FIT_USED_SIGMA3 = 2, /**< refit on the points within 3 RMS distances, until stable */
+    MIO_FIT_USED_SIGMA2 = 3,
+    MIO_FIT_USED_SIGMA1 = 4
+} mio_fit_used_points;
+
+/**
+ * mio_fit_primitives with roadmap 7.1's region and seed modes and sigma
+ * trimming, which the fixed struct above has no room for. Initialise with
+ * mio_fit_primitives_ex_opts_init. 192 bytes.
+ */
+typedef struct mio_fit_primitives_ex_opts {
+    mio_fit_primitives_opts base; /**< the options of mio_fit_primitives */
+    const char* region;           /**< fit this named Cell region as one patch; NULL: none */
+    const double* seeds;          /**< num_seeds (x, y, z) triples: grow and fit a feature */
+    int64_t num_seeds;
+    double feature_angle;         /**< seed growth: edges sharper are not crossed (init: 30) */
+    double rim_angle;             /**< seed growth: peel rim faces turning more (init: 15) */
+    const char* output_region;    /**< seed growth: the region written; NULL: "fit:feature" */
+    int32_t used_points;          /**< a mio_fit_used_points (init: AUTO) */
+    int32_t reserved32;
+    int64_t reserved[6];
+} mio_fit_primitives_ex_opts;
+
+MIO_API void mio_fit_primitives_ex_opts_init(mio_fit_primitives_ex_opts* opts);
+/** mio_fit_primitives with the options of mio_fit_primitives_ex_opts (roadmap 7.1.1, 7.1.2). */
+MIO_API mio_mesh* mio_fit_primitives_ex(const mio_mesh* mesh,
+                                        const mio_fit_primitives_ex_opts* opts,
+                                        mio_fit_primitives_report* report);
+/** The warnings of this thread's last fit_primitives call; string rule 5. */
+MIO_API int64_t mio_fit_primitives_warnings(char* buf, int64_t buflen);
 
 /**
  * Options for mio_refine_patches (v17.11.0). Same ABI rules as above; always

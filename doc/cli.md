@@ -136,7 +136,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `select` | `num_candidates`, `num_selected`, `num_grown` and `num_components` |
 | `segment` | `num_patches`, `num_merged`, `num_feature_edges`, `num_boundary_edges` and `num_non_manifold_edges` |
 | `refine-patches` | `num_patches`, `num_iterations`, `num_splits`, `num_merges`, `num_absorbed`, `num_primitive`, `num_freeform`, `num_facets`, `tolerance`, `explained_area_fraction`, `initial_explained_area_fraction`, `hausdorff_max`, `hausdorff_rms`, `initial_energy`, `energy` and `stop` (`unchanged`, `small_gain`, `iteration_cap` or `energy_rose`) |
-| `fit-primitives` | `num_patches`, one count per type (`num_plane` … `num_torus`) and `num_unfitted` |
+| `fit-primitives` | `num_patches`, one count per type (`num_plane` … `num_torus`), `num_unfitted`, `num_feature_cells` and `warnings` |
 | `iga-refine`, `iga-sample` | `operation`, `model` (`nurbs` or `brep`), `num_patches`, `num_points`, `num_cells` and `cell_blocks` |
 | `iga-evaluate` | `num_points`, `space_dim`, `points`, `fields` (`components`, `values`), and with `--derivatives 1` `derivatives` and `normals`; for a B-rep face `inside`; arrays flattened row-major |
 | `tessellate` | `Tessellation.schema` without `version`: `levels`, `curved`, the source and output counts, `stencil_width` and the `watertight` facet counts |
@@ -1476,6 +1476,12 @@ meshioplusplus fit-primitives [options] INFILE OUTFILE
 | `--min-inlier-fraction F` | Share of points that must lie within tolerance (default `0.9`) |
 | `--types LIST` | Comma-separated candidates from `plane,sphere,cylinder,cone,torus` (default all) |
 | `--max-iterations N` | Levenberg-Marquardt cap per fit (default `50`) |
+| `--region NAME` | Fit this named cell region as one patch |
+| `--seed X,Y,Z` | Grow and fit a feature from the facet nearest this point (repeatable; see [fit primitives](/fit_primitives#a-feature-from-a-seed-or-a-region)) |
+| `--feature-angle DEG` | Seed growth: edges sharper than this are not crossed (default `30`) |
+| `--rim-angle DEG` | Seed growth: rim faces turning more from the fit are peeled (default `15`) |
+| `--output-region NAME` | Seed growth: the cell region written (default `fit:feature`) |
+| `--used-points MODE` | `auto` (default), `all`, `3sigma`, `2sigma` or `1sigma`: sigma trimming |
 | `--json`, `-q/--quiet` | Machine-readable counts, or no summary |
 
 ```sh

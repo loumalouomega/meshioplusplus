@@ -51,6 +51,9 @@ inline Mesh fitted(const Mesh& rSkin, double CurvatureTolerance = 0.0, double To
     so.mMinPatchCells = MinPatchCells;
     meshioplusplus::FitPrimitivesOptions fo;
     fo.mTolerance = Tolerance;
+    // The table fit_cad has always read: the goldens pin fit_cad, not the
+    // roadmap 7.1 columns.
+    fo.mExtendedReport = false;
     return meshioplusplus::fit_primitives(meshioplusplus::segment(rSkin, so).mMesh, fo).mMesh;
 }
 
@@ -126,7 +129,11 @@ inline std::vector<Fixture> golden_fixtures() {
     f.push_back({"saddle_box", fitted(saddle_box(24))});
     f.push_back({"wavy_capped", fitted(analytic::wavy_capped())});
     f.push_back({"threaded_rod", fitted(analytic::threaded_rod())});
-    f.push_back({"rounded_box", meshioplusplus::fit_primitives(analytic::rounded_box()).mMesh});
+    f.push_back({"rounded_box", [] {
+                     meshioplusplus::FitPrimitivesOptions fo;
+                     fo.mExtendedReport = false;
+                     return meshioplusplus::fit_primitives(analytic::rounded_box(), fo).mMesh;
+                 }()});
     f.push_back(
         {"noisy_turned_part", fitted(jittered(analytic::turned_part(), 1e-3), 1.0, 2e-3, 20)});
     return f;

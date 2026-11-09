@@ -1794,14 +1794,27 @@ mio_select <- function(mesh, name, kind = "cell", box = NULL, plane = NULL, sphe
 #' @param min_inlier_fraction The share of points that must be within tolerance.
 #' @param types The primitives to try.
 #' @param max_iterations The Levenberg-Marquardt iteration cap per fit.
+#' @param region Fit this named cell region as one patch (roadmap 7.1.1).
+#' @param seeds An `n x 3` matrix of seed points: grow and fit a feature from
+#'   the facet nearest each, written as the cell region `output_region`.
+#' @param feature_angle Seed growth: edges sharper than this are not crossed.
+#' @param rim_angle Seed growth: rim faces turning more from the fit are peeled.
+#' @param output_region Seed growth: the cell region written.
+#' @param used_points `"auto"`, `"all"`, `"3sigma"`, `"2sigma"` or `"1sigma"`:
+#'   sigma trimming (roadmap 7.1.2); `"auto"` is `"3sigma"` with a region or seeds.
 #' @return A list of `mesh` (with cell data `fit:type`, `fit:rms`, `fit:max`
 #'   and field data `fit:patch_*`), `num_patches`, `num_plane`, `num_sphere`,
-#'   `num_cylinder`, `num_cone`, `num_torus` and `num_unfitted`.
+#'   `num_cylinder`, `num_cone`, `num_torus`, `num_unfitted`,
+#'   `num_feature_cells` and `warnings`.
 #' @export
 mio_fit_primitives <- function(mesh, patch_data = "segment:patch", tolerance = 1e-3,
                                relative = TRUE, min_inlier_fraction = 0.9,
                                types = c("plane", "sphere", "cylinder", "cone", "torus"),
-                               max_iterations = 50) {
+                               max_iterations = 50, region = "", seeds = NULL,
+                               feature_angle = 30, rim_angle = 15,
+                               output_region = "fit:feature", used_points = "auto") {
+  used <- match(used_points, c("auto", "all", "3sigma", "2sigma", "1sigma"))
+  if (is.na(used)) stop("meshio++: fit_primitives: unknown used_points ", used_points)
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -1811,8 +1824,13 @@ mio_fit_primitives <- function(mesh, patch_data = "segment:patch", tolerance = 1
   .Call(
     R_mio_fit_primitives, mesh, as.character(patch_data), as.numeric(tolerance),
     isTRUE(relative), as.numeric(min_inlier_fraction), as.numeric(mask),
-    as.numeric(max_iterations)
-  )
+    as.numeric(max_iterations), as.character(region),
+    if (is.null(seeds)) NULL else as.numeric(t(as.matrix(seeds))),
+    as.numeric(feature_angle), as.numeric(rim_angle), as.character(output_region),
+    as.numeric(used - 1)
+  ) -> res
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
 }
 
 #' Refine a segmentation until each patch is one surface

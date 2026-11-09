@@ -2016,6 +2016,9 @@ end
     close(seg.mesh)
     @test_throws MeshioError segment(cube; feature_angle=200)
     @test_throws MeshioError fit_primitives(cube)  # no segment:patch labels
+    seeded = fit_primitives(seg.mesh; types=("plane",), seeds=[[0.5, 0.5, 1.0]])
+    @test seeded.num_plane == 1 && seeded.num_feature_cells > 0
+    @test_throws ArgumentError fit_primitives(seg.mesh; used_points="5sigma")
     @test_throws MeshioError refine_patches(cube)  # no segment:patch labels
     # fit_cad refines the segmentation on request, on every backend.
     refined = fit_cad(cube; backend="native", refine_segmentation=true, max_refine_iterations=5)

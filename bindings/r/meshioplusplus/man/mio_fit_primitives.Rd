@@ -11,7 +11,13 @@ mio_fit_primitives(
   relative = TRUE,
   min_inlier_fraction = 0.9,
   types = c("plane", "sphere", "cylinder", "cone", "torus"),
-  max_iterations = 50
+  max_iterations = 50,
+  region = "",
+  seeds = NULL,
+  feature_angle = 30,
+  rim_angle = 15,
+  output_region = "fit:feature",
+  used_points = "auto"
 )
 }
 \arguments{
@@ -29,11 +35,26 @@ bounding-box diagonal.}
 \item{types}{The primitives to try.}
 
 \item{max_iterations}{The Levenberg-Marquardt iteration cap per fit.}
+
+\item{region}{Fit this named cell region as one patch (roadmap 7.1.1).}
+
+\item{seeds}{An `n x 3` matrix of seed points: grow and fit a feature from
+the facet nearest each, written as the cell region `output_region`.}
+
+\item{feature_angle}{Seed growth: edges sharper than this are not crossed.}
+
+\item{rim_angle}{Seed growth: rim faces turning more from the fit are peeled.}
+
+\item{output_region}{Seed growth: the cell region written.}
+
+\item{used_points}{`"auto"`, `"all"`, `"3sigma"`, `"2sigma"` or `"1sigma"`:
+sigma trimming (roadmap 7.1.2); `"auto"` is `"3sigma"` with a region or seeds.}
 }
 \value{
 A list of `mesh` (with cell data `fit:type`, `fit:rms`, `fit:max`
   and field data `fit:patch_*`), `num_patches`, `num_plane`, `num_sphere`,
-  `num_cylinder`, `num_cone`, `num_torus` and `num_unfitted`.
+  `num_cylinder`, `num_cone`, `num_torus`, `num_unfitted`,
+  `num_feature_cells` and `warnings`.
 }
 \description{
 Fits a plane, sphere, cylinder, cone or torus to each patch (the

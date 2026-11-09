@@ -1075,6 +1075,7 @@ RefinePatchesResult refine_patches(const Mesh& rMesh, const RefinePatchesOptions
     fo.mTolerance = s.mTol;
     fo.mRelative = false;
     fo.mTypes = rOptions.mTypes;
+    fo.mExtendedReport = false;  // the table fit_cad has always read
     Mesh fitted = fit_primitives(out, fo).mMesh;
 
     NDArray pid = NDArray::Uninit(DType::Int64, {m});

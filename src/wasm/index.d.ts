@@ -3839,6 +3839,20 @@ export interface MeshioPlusPlusModule {
     minInlierFraction?: number,
     types?: Array<'plane' | 'sphere' | 'cylinder' | 'cone' | 'torus'>,
     maxIterations?: number,
+    options?: {
+      /** Fit this named cell region as one patch (roadmap 7.1.1). */
+      region?: string;
+      /** Grow and fit a feature from the facet nearest each point. */
+      seeds?: Array<[number, number, number]>;
+      /** Seed growth: edges sharper than this are not crossed (default 30). */
+      featureAngle?: number;
+      /** Seed growth: rim faces turning more from the fit are peeled (default 15). */
+      rimAngle?: number;
+      /** Seed growth: the cell region written (default `fit:feature`). */
+      outputRegion?: string;
+      /** Sigma trimming (roadmap 7.1.2; default `auto`). */
+      usedPoints?: 'auto' | 'all' | '3sigma' | '2sigma' | '1sigma';
+    },
   ): {
     mesh: Mesh;
     numPatches: number;
@@ -3848,6 +3862,8 @@ export interface MeshioPlusPlusModule {
     numCone: number;
     numTorus: number;
     numUnfitted: number;
+    numFeatureCells: number;
+    warnings: string[];
   };
 
   /**

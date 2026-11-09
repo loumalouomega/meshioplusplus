@@ -3827,20 +3827,34 @@ end
     fit_primitives(m; patch_data="segment:patch", tolerance=1e-3, relative=true,
                    min_inlier_fraction=0.9,
                    types=("plane", "sphere", "cylinder", "cone", "torus"),
-                   max_iterations=50)
+                   max_iterations=50, region="", seeds=nothing, feature_angle=30.0,
+                   rim_angle=15.0, output_region="fit:feature", used_points="auto")
         -> (; mesh, num_patches, num_plane, num_sphere, num_cylinder, num_cone,
-             num_torus, num_unfitted)
+             num_torus, num_unfitted, num_feature_cells, warnings)
 
 Fit a plane, sphere, cylinder, cone or torus to each patch of a surface (the
 first accepted in that order, or none). The mesh comes back unchanged plus cell
 data `fit:type`, `fit:rms`, `fit:max` and per-patch field data `fit:patch_*`.
-`patch_data=""` fits the whole surface as one patch. See `doc/fit_primitives.md`.
+`patch_data=""` fits the whole surface as one patch. `region` fits a named cell
+region, `seeds` (a vector of 3-vectors) grows and fits a feature from each and
+writes its cells as `output_region`, and `used_points` (`"auto"`, `"all"`,
+`"3sigma"`, `"2sigma"`, `"1sigma"`) trims outliers (roadmap 7.1.1, 7.1.2). See
+`doc/fit_primitives.md`.
 """
 function fit_primitives(m::Mesh; patch_data::AbstractString="segment:patch",
                         tolerance::Real=1e-3, relative::Bool=true,
                         min_inlier_fraction::Real=0.9,
                         types=("plane", "sphere", "cylinder", "cone", "torus"),
-                        max_iterations::Integer=50)
+                        max_iterations::Integer=50, region::AbstractString="",
+                        seeds=nothing, feature_angle::Real=30.0, rim_angle::Real=15.0,
+                        output_region::AbstractString="fit:feature",
+                        used_points::AbstractString="auto")
+    used = findfirst(==(String(used_points)), ("auto", "all", "3sigma", "2sigma", "1sigma"))
+    used === nothing &&
+        throw(ArgumentError("meshio++: fit_primitives: unknown used_points $(used_points)"))
+    flat = seeds === nothing ? Cdouble[] : Cdouble[Float64(x) for s in seeds for x in s]
+    length(flat) % 3 == 0 ||
+        throw(ArgumentError("meshio++: fit_primitives: seeds must be 3-vectors"))
     mask = UInt32(0)
     for t in types
         k = findfirst(==(String(t)), _FIT_TYPES)
@@ -3849,20 +3863,30 @@ function fit_primitives(m::Mesh; patch_data::AbstractString="segment:patch",
     end
     report = Ref{_CFitPrimitivesReport}()
     patch_c = Vector{UInt8}(codeunits(String(patch_data) * "\0"))
-    ptr = GC.@preserve patch_c begin
-        opts = _CFitPrimitivesOpts(Cstring(pointer(patch_c)), Float64(tolerance),
+    region_c = Vector{UInt8}(codeunits(String(region) * "\0"))
+    out_c = Vector{UInt8}(codeunits(String(output_region) * "\0"))
+    ptr = GC.@preserve patch_c region_c out_c flat begin
+        base = _CFitPrimitivesOpts(Cstring(pointer(patch_c)), Float64(tolerance),
                                    Float64(min_inlier_fraction), Int32(relative), mask,
                                    Int64(max_iterations), ntuple(_ -> Int64(0), 6))
-        ccall(_sym(:mio_fit_primitives), Ptr{Cvoid},
-              (Ptr{Cvoid}, Ref{_CFitPrimitivesOpts}, Ptr{_CFitPrimitivesReport}),
+        opts = _CFitPrimitivesExOpts(base, Cstring(pointer(region_c)),
+                                     isempty(flat) ? Ptr{Cdouble}(C_NULL) : pointer(flat),
+                                     Int64(length(flat) ÷ 3), Float64(feature_angle),
+                                     Float64(rim_angle), Cstring(pointer(out_c)),
+                                     Int32(used - 1), Int32(0), ntuple(_ -> Int64(0), 6))
+        ccall(_sym(:mio_fit_primitives_ex), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CFitPrimitivesExOpts}, Ptr{_CFitPrimitivesReport}),
               _handle(m), Ref(opts), report)
     end
     r = _check_ptr(ptr)
     rep = report[]
+    text = _getstring((buf, n) -> ccall(_sym(:mio_fit_primitives_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
     (mesh=Mesh(r), num_patches=Int(rep.num_patches), num_plane=Int(rep.num_plane),
      num_sphere=Int(rep.num_sphere), num_cylinder=Int(rep.num_cylinder),
      num_cone=Int(rep.num_cone), num_torus=Int(rep.num_torus),
-     num_unfitted=Int(rep.num_unfitted))
+     num_unfitted=Int(rep.num_unfitted), num_feature_cells=Int(rep.num_feature_cells),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
 end
 
 """

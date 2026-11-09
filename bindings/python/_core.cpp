@@ -5449,7 +5449,10 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "fit_primitives",
         [](py::object pymesh, const std::string& patch_data, double tolerance, bool relative,
-           double min_inlier_fraction, std::uint32_t types, std::int64_t max_iterations) {
+           double min_inlier_fraction, std::uint32_t types, std::int64_t max_iterations,
+           const std::string& region, const std::vector<std::array<double, 3>>& seeds,
+           double feature_angle, double rim_angle, const std::string& output_region,
+           const std::string& used_points) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
@@ -5460,6 +5463,27 @@ PYBIND11_MODULE(_core, m) {
             options.mMinInlierFraction = min_inlier_fraction;
             options.mTypes = types;
             options.mMaxIterations = max_iterations;
+            options.mRegion = region;
+            options.mSeeds = seeds;
+            options.mFeatureAngleDeg = feature_angle;
+            options.mRimAngleDeg = rim_angle;
+            options.mOutputRegion = output_region;
+            using meshioplusplus::FitUsedPoints;
+            if (used_points == "auto")
+                options.mUsedPoints = FitUsedPoints::Auto;
+            else if (used_points == "all")
+                options.mUsedPoints = FitUsedPoints::All;
+            else if (used_points == "3sigma")
+                options.mUsedPoints = FitUsedPoints::Sigma3;
+            else if (used_points == "2sigma")
+                options.mUsedPoints = FitUsedPoints::Sigma2;
+            else if (used_points == "1sigma")
+                options.mUsedPoints = FitUsedPoints::Sigma1;
+            else
+                throw std::invalid_argument(
+                    "meshio++: fit_primitives: used_points must be auto, all, 3sigma, 2sigma or "
+                    "1sigma, got '" +
+                    used_points + "'");
             meshioplusplus::FitPrimitivesResult r =
                 core_nogil([&] { return meshioplusplus::fit_primitives(cpp, options); });
             py::dict out;
@@ -5471,11 +5495,17 @@ PYBIND11_MODULE(_core, m) {
             out["num_cone"] = r.mNumCone;
             out["num_torus"] = r.mNumTorus;
             out["num_unfitted"] = r.mNumUnfitted;
+            out["num_feature_cells"] = r.mNumFeatureCells;
+            out["warnings"] = r.mWarnings;
             return out;
         },
         py::arg("mesh"), py::arg("patch_data") = "segment:patch", py::arg("tolerance") = 1e-3,
         py::arg("relative") = true, py::arg("min_inlier_fraction") = 0.9,
-        py::arg("types") = meshioplusplus::kFitAllTypes, py::arg("max_iterations") = 50);
+        py::arg("types") = meshioplusplus::kFitAllTypes, py::arg("max_iterations") = 50,
+        py::arg("region") = std::string(),
+        py::arg("seeds") = std::vector<std::array<double, 3>>(),
+        py::arg("feature_angle") = 30.0, py::arg("rim_angle") = 15.0,
+        py::arg("output_region") = "fit:feature", py::arg("used_points") = "auto");
 
     // Variational shape approximation of a segmentation. See
     // operations/refine_patches.hpp.

@@ -393,7 +393,23 @@ module meshioplusplus
         integer(c_int64_t) :: num_cone = 0
         integer(c_int64_t) :: num_torus = 0
         integer(c_int64_t) :: num_unfitted = 0
-        integer(c_int64_t) :: reserved(5) = 0
+        integer(c_int64_t) :: num_feature_cells = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_primitives_ex_opts` (192 bytes; roadmap 7.1).
+    type, bind(c) :: mio_fit_primitives_ex_opts_t
+        type(mio_fit_primitives_opts_t) :: base
+        type(c_ptr) :: region = c_null_ptr
+        type(c_ptr) :: seeds = c_null_ptr
+        integer(c_int64_t) :: num_seeds = 0
+        real(c_double) :: feature_angle = 30.0_c_double
+        real(c_double) :: rim_angle = 15.0_c_double
+        type(c_ptr) :: output_region = c_null_ptr
+        integer(c_int32_t) :: used_points = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(6) = 0
     end type
 
     !> Interop mirror of C `mio_fit_cad_opts` (`types` as for fit_primitives;
@@ -3626,6 +3642,15 @@ module meshioplusplus
             import :: mio_fit_primitives_opts_t
             type(mio_fit_primitives_opts_t), intent(out) :: opts
         end subroutine
+
+        function c_mio_fit_primitives_ex(h, opts, report) &
+                bind(c, name="mio_fit_primitives_ex") result(r)
+            import :: c_ptr, mio_fit_primitives_ex_opts_t, mio_fit_primitives_report_t
+            type(c_ptr), value :: h
+            type(mio_fit_primitives_ex_opts_t), intent(in) :: opts
+            type(mio_fit_primitives_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
 
         function c_mio_fit_primitives(h, opts, report) &
                 bind(c, name="mio_fit_primitives") result(r)
@@ -9171,7 +9196,9 @@ contains
     function mesh_fit_primitives(self, patch_data, tolerance, relative, &
                                  min_inlier_fraction, types, max_iterations, num_patches, &
                                  num_plane, num_sphere, num_cylinder, num_cone, num_torus, &
-                                 num_unfitted, stat, errmsg) result(out)
+                                 num_unfitted, stat, errmsg, region, seeds, feature_angle, &
+                                 rim_angle, output_region, used_points, &
+                                 num_feature_cells) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: patch_data
         real(real64), intent(in), optional :: tolerance, min_inlier_fraction
@@ -9182,24 +9209,69 @@ contains
         integer(int64), intent(out), optional :: num_cylinder, num_cone, num_torus, num_unfitted
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        character(*), intent(in), optional :: region, output_region, used_points
+        real(real64), intent(in), optional :: seeds(:, :)
+        real(real64), intent(in), optional :: feature_angle, rim_angle
+        integer(int64), intent(out), optional :: num_feature_cells
         type(mio_mesh) :: out
         type(c_ptr) :: res
-        type(mio_fit_primitives_opts_t) :: opts
+        type(mio_fit_primitives_ex_opts_t) :: xopts
         type(mio_fit_primitives_report_t) :: report
-        character(kind=c_char, len=STRBUF_LEN), target :: patch_buf
+        character(kind=c_char, len=STRBUF_LEN), target :: patch_buf, region_buf, out_buf
+        real(c_double), allocatable, target :: seed_buf(:)
 
-        call c_mio_fit_primitives_opts_init(opts)
+        if (c_sizeof(xopts) /= 192_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: fit_primitives_ex layout mismatch'
+            error stop 1
+        end if
+        call c_mio_fit_primitives_opts_init(xopts%base)
         if (present(patch_data)) then
             patch_buf = trim(patch_data)//c_null_char
-            opts%patch_data = c_loc(patch_buf(1:1))
+            xopts%base%patch_data = c_loc(patch_buf(1:1))
         end if
-        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(tolerance)) xopts%base%tolerance = real(tolerance, c_double)
         if (present(min_inlier_fraction)) &
-            opts%min_inlier_fraction = real(min_inlier_fraction, c_double)
-        if (present(relative)) opts%relative = merge(1_c_int32_t, 0_c_int32_t, relative)
-        if (present(types)) opts%types = int(types, c_int32_t)
-        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int64_t)
-        res = c_mio_fit_primitives(self%handle, opts, report)
+            xopts%base%min_inlier_fraction = real(min_inlier_fraction, c_double)
+        if (present(relative)) xopts%base%relative = merge(1_c_int32_t, 0_c_int32_t, relative)
+        if (present(types)) xopts%base%types = int(types, c_int32_t)
+        if (present(max_iterations)) xopts%base%max_iterations = int(max_iterations, c_int64_t)
+        if (present(region)) then
+            region_buf = trim(region)//c_null_char
+            xopts%region = c_loc(region_buf(1:1))
+        end if
+        if (present(seeds)) then
+            ! seeds(3, n): one (x, y, z) column per seed
+            allocate (seed_buf(size(seeds)))
+            seed_buf = reshape(real(seeds, c_double), [size(seeds)])
+            xopts%seeds = c_loc(seed_buf(1))
+            xopts%num_seeds = int(size(seeds, 2), c_int64_t)
+        end if
+        if (present(feature_angle)) xopts%feature_angle = real(feature_angle, c_double)
+        if (present(rim_angle)) xopts%rim_angle = real(rim_angle, c_double)
+        if (present(output_region)) then
+            out_buf = trim(output_region)//c_null_char
+            xopts%output_region = c_loc(out_buf(1:1))
+        end if
+        if (present(used_points)) then
+            select case (trim(used_points))
+            case ('auto')
+                xopts%used_points = 0
+            case ('all')
+                xopts%used_points = 1
+            case ('3sigma')
+                xopts%used_points = 2
+            case ('2sigma')
+                xopts%used_points = 3
+            case ('1sigma')
+                xopts%used_points = 4
+            case default
+                call handle_failure('fit_primitives', &
+                                    "used_points must be auto, all, 3sigma, 2sigma or 1sigma", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        res = c_mio_fit_primitives_ex(self%handle, xopts, report)
         if (.not. c_associated(res)) then
             call handle_failure('fit_primitives', mio_error_message(), stat, errmsg)
             return
@@ -9212,6 +9284,7 @@ contains
         if (present(num_cone)) num_cone = int(report%num_cone, int64)
         if (present(num_torus)) num_torus = int(report%num_torus, int64)
         if (present(num_unfitted)) num_unfitted = int(report%num_unfitted, int64)
+        if (present(num_feature_cells)) num_feature_cells = int(report%num_feature_cells, int64)
         call clear_status(stat, errmsg)
     end function
 

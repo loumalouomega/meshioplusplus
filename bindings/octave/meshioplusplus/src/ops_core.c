@@ -454,24 +454,39 @@ static mxArray *O_mio_segment(const mxArray **a) {
 }
 
 /* fit_primitives(mesh, patch_data, tolerance, relative, min_inlier_fraction,
- *                types, max_iterations) -- `types` the bit mask the .m
- * wrapper builds. */
+ *                types, max_iterations, region, seeds, feature_angle,
+ *                rim_angle, output_region, used_points) -- `types` the bit
+ * mask and `seeds` the flat x, y, z list the .m wrapper builds. */
 static mxArray *O_mio_fit_primitives(const mxArray **a) {
-    mio_fit_primitives_opts opts;
+    mio_fit_primitives_ex_opts opts;
     mio_fit_primitives_report report;
 
-    mio_fit_primitives_opts_init(&opts);
-    opts.patch_data = mio_o_string(a[1], "patch_data");
-    opts.tolerance = mio_o_double(a[2], "tolerance");
-    opts.relative = mio_o_bool(a[3], "relative") ? 1 : 0;
-    opts.min_inlier_fraction = mio_o_double(a[4], "min_inlier_fraction");
-    opts.types = (uint32_t)mio_o_int(a[5], "types");
-    opts.max_iterations = (int64_t)mio_o_int(a[6], "max_iterations");
+    mio_fit_primitives_ex_opts_init(&opts);
+    opts.base.patch_data = mio_o_string(a[1], "patch_data");
+    opts.base.tolerance = mio_o_double(a[2], "tolerance");
+    opts.base.relative = mio_o_bool(a[3], "relative") ? 1 : 0;
+    opts.base.min_inlier_fraction = mio_o_double(a[4], "min_inlier_fraction");
+    opts.base.types = (uint32_t)mio_o_int(a[5], "types");
+    opts.base.max_iterations = (int64_t)mio_o_int(a[6], "max_iterations");
+    opts.region = mio_o_opt_string(a[7]);
+    if (!mio_o_is_null(a[8])) {
+        size_t n = 0;
+        double *seeds = mio_o_doubles(a[8], &n, "seeds");
+        if (n % 3 != 0) mio_o_error("fit_primitives", "`seeds` must hold x, y, z triples");
+        opts.seeds = seeds;
+        opts.num_seeds = (int64_t)(n / 3);
+    }
+    opts.feature_angle = mio_o_double(a[9], "feature_angle");
+    opts.rim_angle = mio_o_double(a[10], "rim_angle");
+    opts.output_region = mio_o_opt_string(a[11]);
+    opts.used_points = (int32_t)mio_o_int(a[12], "used_points");
 
-    mio_mesh *out = mio_fit_primitives(mio_o_mesh(a[0]), &opts, &report);
+    mio_mesh *out = mio_fit_primitives_ex(mio_o_mesh(a[0]), &opts, &report);
     if (out == NULL) mio_o_fail("fit_primitives");
-    const char *names[] = {"mesh",         "num_patches", "num_plane", "num_sphere",
-                           "num_cylinder", "num_cone",    "num_torus", "num_unfitted"};
+    mxArray *w = mio_o_getbuffer(mio_fit_primitives_warnings, "fit_primitives");
+    const char *names[] = {"mesh",         "num_patches", "num_plane",    "num_sphere",
+                           "num_cylinder", "num_cone",    "num_torus",    "num_unfitted",
+                           "num_feature_cells", "warnings"};
     mxArray *values[] = {mio_o_wrap_mesh(out),
                          mio_o_scalar((double)report.num_patches),
                          mio_o_scalar((double)report.num_plane),
@@ -479,8 +494,10 @@ static mxArray *O_mio_fit_primitives(const mxArray **a) {
                          mio_o_scalar((double)report.num_cylinder),
                          mio_o_scalar((double)report.num_cone),
                          mio_o_scalar((double)report.num_torus),
-                         mio_o_scalar((double)report.num_unfitted)};
-    return mio_o_struct(8, names, values);
+                         mio_o_scalar((double)report.num_unfitted),
+                         mio_o_scalar((double)report.num_feature_cells),
+                         w};
+    return mio_o_struct(10, names, values);
 }
 
 static mxArray *O_mio_has_occt(const mxArray **a) {
@@ -1450,7 +1467,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_compute_normals, 7),
     MIO_O_ENTRY(mio_feature_edges, 7),
     MIO_O_ENTRY(mio_segment, 9),
-    MIO_O_ENTRY(mio_fit_primitives, 7),
+    MIO_O_ENTRY(mio_fit_primitives, 13),
     MIO_O_ENTRY(mio_has_occt, 0),
     MIO_O_ENTRY(mio_refine_patches, 13),
     MIO_O_ENTRY(mio_fit_cad, 46),

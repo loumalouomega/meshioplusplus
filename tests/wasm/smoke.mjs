@@ -5698,6 +5698,12 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.equal(fp.numPlane, 6);
     assert.throws(() => m.segment(cubeSurface, 200));
     assert.throws(() => m.fitPrimitives(sg.mesh, 'segment:patch', 1e-3, true, 0.9, ['blob']));
+    const seeded = m.fitPrimitives(sg.mesh, 'segment:patch', 1e-3, true, 0.9, ['plane'], 50,
+        { seeds: [[0.5, 0.5, 1.0]] });
+    assert.equal(seeded.numPlane, 1);
+    assert.ok(seeded.numFeatureCells > 0);
+    assert.throws(() => m.fitPrimitives(sg.mesh, 'segment:patch', 1e-3, true, 0.9, ['plane'], 50,
+        { usedPoints: '5sigma' }), /usedPoints/);
 
     // refinePatches (both artifacts): a box segmented at its creases is left
     // alone, six planes explaining all of it.

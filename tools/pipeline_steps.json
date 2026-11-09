@@ -143,7 +143,13 @@
       {"name": "Relative", "kind": "flag", "default": true},
       {"name": "MinInlierFraction", "kind": "number", "default": 0.9},
       {"name": "Types"},
-      {"name": "MaxIterations", "kind": "number", "default": 50.0}
+      {"name": "MaxIterations", "kind": "number", "default": 50.0},
+      {"name": "Region", "kind": "text", "default": ""},
+      {"name": "Seeds"},
+      {"name": "FeatureAngle", "kind": "number", "default": 30.0},
+      {"name": "RimAngle", "kind": "number", "default": 15.0},
+      {"name": "OutputRegion", "kind": "text", "default": "fit:feature"},
+      {"name": "UsedPoints", "kind": "text", "default": "auto"}
     ]},
     {"op": "FitCad", "keys": [
       {"name": "Path", "kind": "text", "default": ""},

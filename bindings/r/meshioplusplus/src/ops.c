@@ -489,31 +489,46 @@ SEXP R_mio_segment(SEXP mesh, SEXP feature_angle, SEXP normal_tolerance,
 }
 
 SEXP R_mio_fit_primitives(SEXP mesh, SEXP patch_data, SEXP tolerance, SEXP relative,
-                          SEXP min_inlier_fraction, SEXP types, SEXP max_iterations) {
-    mio_fit_primitives_opts opts;
+                          SEXP min_inlier_fraction, SEXP types, SEXP max_iterations,
+                          SEXP region, SEXP seeds, SEXP feature_angle, SEXP rim_angle,
+                          SEXP output_region, SEXP used_points) {
+    mio_fit_primitives_ex_opts opts;
     mio_fit_primitives_report report;
     mio_mesh *out;
 
-    mio_fit_primitives_opts_init(&opts);
-    opts.patch_data = mio_r_string(patch_data, "patch_data");
-    opts.tolerance = mio_r_double(tolerance, "tolerance");
-    opts.relative = mio_r_bool(relative, "relative") ? 1 : 0;
-    opts.min_inlier_fraction = mio_r_double(min_inlier_fraction, "min_inlier_fraction");
-    opts.types = (uint32_t)mio_r_int(types, "types");
-    opts.max_iterations = (int64_t)mio_r_int(max_iterations, "max_iterations");
+    mio_fit_primitives_ex_opts_init(&opts);
+    opts.base.patch_data = mio_r_string(patch_data, "patch_data");
+    opts.base.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.base.relative = mio_r_bool(relative, "relative") ? 1 : 0;
+    opts.base.min_inlier_fraction = mio_r_double(min_inlier_fraction, "min_inlier_fraction");
+    opts.base.types = (uint32_t)mio_r_int(types, "types");
+    opts.base.max_iterations = (int64_t)mio_r_int(max_iterations, "max_iterations");
+    opts.region = mio_r_opt_string(region);
+    if (seeds != R_NilValue) {
+        if (!Rf_isReal(seeds) || XLENGTH(seeds) % 3 != 0)
+            Rf_error("`seeds` must hold x, y, z triples");
+        opts.seeds = REAL(seeds);
+        opts.num_seeds = (int64_t)(XLENGTH(seeds) / 3);
+    }
+    opts.feature_angle = mio_r_double(feature_angle, "feature_angle");
+    opts.rim_angle = mio_r_double(rim_angle, "rim_angle");
+    opts.output_region = mio_r_opt_string(output_region);
+    opts.used_points = (int32_t)mio_r_int(used_points, "used_points");
 
-    out = mio_fit_primitives(mio_r_mesh(mesh), &opts, &report);
+    out = mio_fit_primitives_ex(mio_r_mesh(mesh), &opts, &report);
     if (out == NULL) mio_r_fail("fit_primitives");
     SEXP mo = PROTECT(mio_r_wrap_mesh(out));
-    const char *names[] = {"mesh",     "num_patches", "num_plane", "num_sphere",
-                           "num_cylinder", "num_cone", "num_torus", "num_unfitted"};
-    const SEXP values[] = {mo, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+    SEXP warnings = PROTECT(mio_r_getbuffer(mio_fit_primitives_warnings, "fit_primitives"));
+    const char *names[] = {"mesh",      "num_patches", "num_plane",    "num_sphere",
+                           "num_cylinder", "num_cone", "num_torus",    "num_unfitted",
+                           "num_feature_cells", "warnings"};
+    const SEXP values[] = {mo, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, warnings};
     const double numbers[] = {(double)report.num_patches, (double)report.num_plane,
                               (double)report.num_sphere, (double)report.num_cylinder,
                               (double)report.num_cone, (double)report.num_torus,
-                              (double)report.num_unfitted};
-    SEXP res = mio_r_report_list(8, names, values, numbers);
-    UNPROTECT(1);
+                              (double)report.num_unfitted, (double)report.num_feature_cells};
+    SEXP res = mio_r_report_list(10, names, values, numbers);
+    UNPROTECT(2);
     return res;
 }
 

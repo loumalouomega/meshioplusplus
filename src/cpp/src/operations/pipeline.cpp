@@ -1567,6 +1567,28 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mMaxIterations = static_cast<std::int64_t>(pipe_number(rStep, "MaxIterations", 50.0));
         if (!pipe_svec(rStep, "Types").empty())
             opts.mTypes = pipe_fit_types(rStep);
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        const std::vector<double> seeds = pipe_dvec(rStep, "Seeds");
+        if (seeds.size() % 3 != 0)
+            throw std::invalid_argument(
+                "meshio++: pipeline: FitPrimitives: Seeds holds x, y, z triples");
+        for (std::size_t k = 0; k + 2 < seeds.size(); k += 3)
+            opts.mSeeds.push_back({seeds[k], seeds[k + 1], seeds[k + 2]});
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mRimAngleDeg = pipe_number(rStep, "RimAngle", 15.0);
+        opts.mOutputRegion = pipe_text(rStep, "OutputRegion", "fit:feature");
+        {
+            const std::string u = pipe_text(rStep, "UsedPoints", "auto");
+            opts.mUsedPoints = u == "all"      ? FitUsedPoints::All
+                               : u == "3sigma" ? FitUsedPoints::Sigma3
+                               : u == "2sigma" ? FitUsedPoints::Sigma2
+                               : u == "1sigma" ? FitUsedPoints::Sigma1
+                                               : FitUsedPoints::Auto;
+            if (u != "auto" && opts.mUsedPoints == FitUsedPoints::Auto)
+                throw std::invalid_argument(
+                    "meshio++: pipeline: FitPrimitives: UsedPoints must be auto, all, 3sigma, "
+                    "2sigma or 1sigma");
+        }
         FitPrimitivesResult fr = fit_primitives(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumPatches", static_cast<double>(fr.mNumPatches)},
@@ -1575,7 +1597,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumCylinder", static_cast<double>(fr.mNumCylinder)},
                         {"NumCone", static_cast<double>(fr.mNumCone)},
                         {"NumTorus", static_cast<double>(fr.mNumTorus)},
-                        {"NumUnfitted", static_cast<double>(fr.mNumUnfitted)}});
+                        {"NumUnfitted", static_cast<double>(fr.mNumUnfitted)},
+                        {"NumFeatureCells", static_cast<double>(fr.mNumFeatureCells)}});
         return std::move(fr.mMesh);
     }
     if (op == "FitCad") {

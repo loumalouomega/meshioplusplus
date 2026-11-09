@@ -1601,6 +1601,10 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_error(mio_segment(m, feature_angle = 200))
   expect_error(mio_fit_primitives(m))
   expect_error(mio_fit_primitives(sg$mesh, types = "blob"))
+  seeded <- mio_fit_primitives(sg$mesh, types = "plane", seeds = matrix(c(0.5, 0.5, 1), 1, 3))
+  expect_equal(seeded$num_plane, 1)
+  expect_gt(seeded$num_feature_cells, 0)
+  expect_error(mio_fit_primitives(sg$mesh, used_points = "5sigma"), "used_points")
 
   # refine_patches (v17.11.0): six planes are already one patch each.
   rp <- mio_refine_patches(sg$mesh)

@@ -46,6 +46,42 @@ def add_args(parser):
         default=50,
         help="Levenberg-Marquardt iteration cap per fit (default: 50)",
     )
+    parser.add_argument(
+        "--region", type=str, default="", help="fit this named cell region as one patch"
+    )
+    parser.add_argument(
+        "--seed",
+        type=str,
+        action="append",
+        default=None,
+        metavar="X,Y,Z",
+        help="grow and fit a feature from the facet nearest this point (repeatable)",
+    )
+    parser.add_argument(
+        "--feature-angle",
+        type=float,
+        default=30.0,
+        help="seed growth: edges sharper than this are not crossed (default: 30)",
+    )
+    parser.add_argument(
+        "--rim-angle",
+        type=float,
+        default=15.0,
+        help="seed growth: peel rim faces turning more from the fit (default: 15)",
+    )
+    parser.add_argument(
+        "--output-region",
+        type=str,
+        default="fit:feature",
+        help="seed growth: the cell region written (default: fit:feature)",
+    )
+    parser.add_argument(
+        "--used-points",
+        type=str,
+        choices=("auto", "all", "3sigma", "2sigma", "1sigma"),
+        default="auto",
+        help="sigma trimming (default: auto, 3sigma with --region or --seed)",
+    )
     parser.add_argument("--json", action="store_true", help="emit the counts as JSON")
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="suppress the summary"
@@ -63,6 +99,14 @@ def fit_primitives_cmd(args):
         types=[t.strip() for t in args.types.split(",") if t.strip()],
         max_iterations=args.max_iterations,
         return_report=True,
+        region=args.region or None,
+        seeds=(
+            [[float(v) for v in s.split(",")] for s in args.seed] if args.seed else None
+        ),
+        feature_angle=args.feature_angle,
+        rim_angle=args.rim_angle,
+        output_region=args.output_region,
+        used_points=args.used_points,
     )
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
@@ -72,4 +116,8 @@ def fit_primitives_cmd(args):
         for t in TYPES[1:]:
             print(f"  {t + ':':10s} {report['num_' + t]}")
         print(f"  {'unfitted:':10s} {report['num_unfitted']}")
+        if report["num_feature_cells"]:
+            print(f"  feature:   {report['num_feature_cells']} cells")
+        for w in report["warnings"]:
+            print(f"  warning: {w}")
     return 0

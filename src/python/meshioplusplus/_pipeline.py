@@ -394,6 +394,16 @@ def _dvec(step, key):
     return [float(e) for e in v]
 
 
+def _fit_seeds(op, step):
+    """``Seeds`` as ``(x, y, z)`` triples, or ``None``."""
+    v = _dvec(step, "Seeds")
+    if not v:
+        return None
+    if len(v) % 3:
+        raise _err(op, "Seeds holds x, y, z triples")
+    return [tuple(v[k : k + 3]) for k in range(0, len(v), 3)]
+
+
 def _svec(step, key):
     v = step.get(key)
     if v is None:
@@ -1432,11 +1442,18 @@ def _apply_step(mesh, step, steps, warnings):
             types=mask_types,
             max_iterations=int(_number(step, "MaxIterations", 50.0)),
             return_report=True,
+            region=_text(step, "Region", "") or None,
+            seeds=_fit_seeds(op, step),
+            feature_angle=_number(step, "FeatureAngle", 30.0),
+            rim_angle=_number(step, "RimAngle", 15.0),
+            output_region=_text(step, "OutputRegion", "fit:feature"),
+            used_points=_text(step, "UsedPoints", "auto"),
         )
         entry["NumPatches"] = report["num_patches"]
         for t in TYPES[1:]:
             entry["Num" + t.capitalize()] = report["num_" + t]
         entry["NumUnfitted"] = report["num_unfitted"]
+        entry["NumFeatureCells"] = report["num_feature_cells"]
     elif op == "FitCad":
         # The fitted skin becomes a CAD solid, written to `Path` when given; the
         # mesh continues as the solid re-meshed.

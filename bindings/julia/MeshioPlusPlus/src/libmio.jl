@@ -786,7 +786,23 @@ struct _CFitPrimitivesReport
     num_cone::Int64
     num_torus::Int64
     num_unfitted::Int64
-    reserved::NTuple{5,Int64}
+    num_feature_cells::Int64
+    num_warnings::Int64
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_fit_primitives_ex_opts` (roadmap 7.1)."""
+struct _CFitPrimitivesExOpts
+    base::_CFitPrimitivesOpts
+    region::Cstring
+    seeds::Ptr{Cdouble}
+    num_seeds::Int64
+    feature_angle::Cdouble
+    rim_angle::Cdouble
+    output_region::Cstring
+    used_points::Int32
+    reserved32::Int32
+    reserved::NTuple{6,Int64}
 end
 
 """Mirror of C `mio_iga_opts`. ABI; build through [`iga_refine`](@ref) and
@@ -2262,6 +2278,9 @@ function _check_abi_layout()
     sizeof(_CFitPrimitivesOpts) == 88 ||
         error("meshio++: mio_fit_primitives_opts layout mismatch " *
               "($(sizeof(_CFitPrimitivesOpts)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CFitPrimitivesExOpts) == 192 &&
+                                 fieldoffset(_CFitPrimitivesExOpts, 8) == 136)) ||
+        error("meshio++: mio_fit_primitives_ex_opts layout mismatch")
     sizeof(_CFitPrimitivesReport) == 96 ||
         error("meshio++: mio_fit_primitives_report layout mismatch " *
               "($(sizeof(_CFitPrimitivesReport)) bytes)")

@@ -8080,33 +8080,112 @@ void mio_fit_primitives_opts_init(mio_fit_primitives_opts* opts) {
     opts->max_iterations = 50;
 }
 
+}  // extern "C"
+
+namespace {
+
+std::string& capi_fit_primitives_warnings() {
+    thread_local std::string warnings;
+    return warnings;
+}
+
+void capi_fit_primitives_base(const mio_fit_primitives_opts* pOpts,
+                              meshioplusplus::FitPrimitivesOptions& rOptions) {
+    if (!pOpts)
+        return;
+    if (pOpts->patch_data)
+        rOptions.mPatchData = pOpts->patch_data;
+    rOptions.mTolerance = pOpts->tolerance;
+    rOptions.mMinInlierFraction = pOpts->min_inlier_fraction;
+    rOptions.mRelative = pOpts->relative != 0;
+    rOptions.mTypes = pOpts->types;
+    rOptions.mMaxIterations = pOpts->max_iterations;
+}
+
+mio_mesh* capi_fit_primitives_run(const mio_mesh* pMesh,
+                                  const meshioplusplus::FitPrimitivesOptions& rOptions,
+                                  mio_fit_primitives_report* pReport) {
+    meshioplusplus::FitPrimitivesResult r = meshioplusplus::fit_primitives(pMesh->mMesh, rOptions);
+    std::string& warnings = capi_fit_primitives_warnings();
+    for (const std::string& w : r.mWarnings)
+        warnings += (warnings.empty() ? "" : "\n") + w;
+    if (pReport) {
+        *pReport = mio_fit_primitives_report{};
+        pReport->num_patches = r.mNumPatches;
+        pReport->num_plane = r.mNumPlane;
+        pReport->num_sphere = r.mNumSphere;
+        pReport->num_cylinder = r.mNumCylinder;
+        pReport->num_cone = r.mNumCone;
+        pReport->num_torus = r.mNumTorus;
+        pReport->num_unfitted = r.mNumUnfitted;
+        pReport->num_feature_cells = r.mNumFeatureCells;
+        pReport->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+    }
+    return new mio_mesh{std::move(r.mMesh)};
+}
+
+}  // namespace
+
+extern "C" {
+
+static_assert(sizeof(mio_fit_primitives_ex_opts) == 192, "mio_fit_primitives_ex_opts layout");
+static_assert(offsetof(mio_fit_primitives_ex_opts, used_points) == 136,
+              "mio_fit_primitives_ex_opts layout");
+
 mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primitives_opts* opts,
                              mio_fit_primitives_report* report) {
     return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_fit_primitives_warnings().clear();
         capi_require(mesh, "meshio++: mesh is NULL");
         meshioplusplus::FitPrimitivesOptions options;
-        if (opts) {
-            if (opts->patch_data)
-                options.mPatchData = opts->patch_data;
-            options.mTolerance = opts->tolerance;
-            options.mMinInlierFraction = opts->min_inlier_fraction;
-            options.mRelative = opts->relative != 0;
-            options.mTypes = opts->types;
-            options.mMaxIterations = opts->max_iterations;
-        }
-        meshioplusplus::FitPrimitivesResult r =
-            meshioplusplus::fit_primitives(mesh->mMesh, options);
-        if (report) {
-            *report = mio_fit_primitives_report{};
-            report->num_patches = r.mNumPatches;
-            report->num_plane = r.mNumPlane;
-            report->num_sphere = r.mNumSphere;
-            report->num_cylinder = r.mNumCylinder;
-            report->num_cone = r.mNumCone;
-            report->num_torus = r.mNumTorus;
-            report->num_unfitted = r.mNumUnfitted;
-        }
-        return new mio_mesh{std::move(r.mMesh)};
+        capi_fit_primitives_base(opts, options);
+        return capi_fit_primitives_run(mesh, options, report);
+    });
+}
+
+void mio_fit_primitives_ex_opts_init(mio_fit_primitives_ex_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_fit_primitives_ex_opts{};
+    mio_fit_primitives_opts_init(&opts->base);
+    opts->feature_angle = 30.0;
+    opts->rim_angle = 15.0;
+    opts->used_points = MIO_FIT_USED_AUTO;
+}
+
+mio_mesh* mio_fit_primitives_ex(const mio_mesh* mesh, const mio_fit_primitives_ex_opts* opts,
+                                mio_fit_primitives_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_fit_primitives_warnings().clear();
+        capi_require(mesh, "meshio++: mesh is NULL");
+        mio_fit_primitives_ex_opts defaults;
+        mio_fit_primitives_ex_opts_init(&defaults);
+        const mio_fit_primitives_ex_opts& r = opts ? *opts : defaults;
+        meshioplusplus::FitPrimitivesOptions options;
+        capi_fit_primitives_base(&r.base, options);
+        if (r.region)
+            options.mRegion = r.region;
+        if (r.num_seeds < 0 || (r.num_seeds > 0 && !r.seeds))
+            throw std::invalid_argument("meshio++: fit_primitives: bad seeds");
+        for (int64_t k = 0; k < r.num_seeds; ++k)
+            options.mSeeds.push_back({r.seeds[3 * k], r.seeds[3 * k + 1], r.seeds[3 * k + 2]});
+        options.mFeatureAngleDeg = r.feature_angle;
+        options.mRimAngleDeg = r.rim_angle;
+        if (r.output_region)
+            options.mOutputRegion = r.output_region;
+        if (r.used_points < MIO_FIT_USED_AUTO || r.used_points > MIO_FIT_USED_SIGMA1)
+            throw std::invalid_argument("meshio++: fit_primitives: unknown used_points " +
+                                        std::to_string(r.used_points));
+        options.mUsedPoints = static_cast<meshioplusplus::FitUsedPoints>(r.used_points);
+        return capi_fit_primitives_run(mesh, options, report);
+    });
+}
+
+int64_t mio_fit_primitives_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_fit_primitives_warnings(), buf, buflen);
     });
 }
 

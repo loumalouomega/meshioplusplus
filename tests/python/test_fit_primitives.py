@@ -239,3 +239,85 @@ def test_form_error_and_extremes_of_a_half_cylinder(engine):
 def test_form_error_of_a_closed_cylinder_spans_the_circle():
     out, _ = fp._fit_primitives_py(cylinder(1.0, 2.0), dict(_DEFAULTS, patch_data=""))
     assert out.field_data["fit:patch_arc"][0] == 360.0
+
+
+# --- roadmap 7.1.1 and 7.1.2 ---------------------------------------------------------
+
+
+def _hole_cells(mesh, r=0.6):
+    pts = np.asarray(mesh.points)
+    conn = np.asarray(mesh.cells[0].data)
+    rad = np.hypot(pts[conn][..., 0], pts[conn][..., 1])
+    return np.nonzero(np.all(np.abs(rad - r) < 1e-12, axis=1))[0]
+
+
+@needs_core
+def test_a_seed_on_the_hole_fits_it_and_names_its_cells():
+    from .analytic_surfaces import filleted_plate
+
+    plate = filleted_plate()
+    out, rep = mio.fit_primitives(
+        plate, seeds=[(0.6, 0.0, 0.25)], types=["cylinder"], return_report=True
+    )
+    assert rep["num_cylinder"] == 1
+    region = next(r for r in out.regions if r.name == "fit:feature")
+    np.testing.assert_array_equal(np.sort(region.entries), _hole_cells(plate))
+    assert out.field_data["fit:patch_params"][0][6] == pytest.approx(0.6, abs=1e-9)
+    assert rep["num_feature_cells"] == len(_hole_cells(plate))
+    # the region mode fits the same cells
+    again = mio.fit_primitives(out, region="fit:feature", types=["cylinder"])
+    assert again.field_data["fit:patch_params"][0][6] == pytest.approx(0.6, abs=1e-9)
+
+
+@needs_core
+def test_sigma_trimming_ignores_gross_outliers():
+    rng = np.random.default_rng(3)
+    mesh = cylinder(1.0, 2.0, m=20)
+    p = np.asarray(mesh.points, dtype=float).copy()
+    r = np.hypot(p[:, 0], p[:, 1])
+    dr = rng.normal(0.0, 1e-3, len(p))
+    dr[::20] = 1e-2  # 5 % of the points, 10 sigma out
+    p[:, :2] *= ((r + dr) / r)[:, None]
+    mesh.points = p
+    kw = dict(
+        patch_data="", types=["cylinder"], tolerance=0.02, min_inlier_fraction=0.5
+    )
+    plain = mio.fit_primitives(mesh, used_points="all", **kw)
+    trimmed = mio.fit_primitives(mesh, used_points="3sigma", **kw)
+    r_plain = plain.field_data["fit:patch_params"][0][6]
+    r_trim = trimmed.field_data["fit:patch_params"][0][6]
+    assert abs(r_trim - 1.0) < 1e-3 < abs(r_plain - 1.0) + 1e-3
+    assert abs(r_trim - 1.0) < abs(r_plain - 1.0)
+    assert int(trimmed.field_data["fit:patch_num_rejected"][0]) >= len(p) // 20
+    assert int(plain.field_data["fit:patch_num_rejected"][0]) == 0
+
+
+def test_the_twin_fits_a_region_and_refuses_seeds(monkeypatch):
+    mesh = cylinder(1.0, 2.0)
+    n = len(mesh.cells[0].data)
+    mesh.regions = [mio.Region("half", "cell", np.arange(n // 2))]
+    opts = dict(_DEFAULTS, region="half")
+    twin, report = fp._fit_primitives_py(mesh, opts)
+    assert report["num_cylinder"] == 1
+    if _core is not None:
+        core, core_report = mio.fit_primitives(
+            mesh, region="half", used_points="all", return_report=True
+        )
+        assert core_report == report
+        for key in ("fit:patch_params", "fit:patch_sigma", "fit:patch_num_used"):
+            np.testing.assert_allclose(
+                core.field_data[key], twin.field_data[key], rtol=1e-6, atol=1e-9
+            )
+    if _core is None:
+        with pytest.raises(NotImplementedError):
+            mio.fit_primitives(mesh, seeds=[(1.0, 0.0, 1.0)])
+        return
+    import meshioplusplus._fit_primitives as mod
+
+    def declined(*args, **kwargs):
+        raise RuntimeError("declined")
+
+    monkeypatch.setattr(mod, "core_op_declined", lambda exc, op: True)
+    monkeypatch.setattr(_core, "fit_primitives", declined)
+    with pytest.raises(NotImplementedError, match="seeds and sigma trimming"):
+        mio.fit_primitives(mesh, seeds=[(1.0, 0.0, 1.0)])
