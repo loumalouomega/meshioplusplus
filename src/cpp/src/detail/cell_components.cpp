@@ -30,6 +30,7 @@
 
 // Project includes (private, not installed)
 #include "cell_components.hpp"
+#include "dual_graph.hpp"
 #include "typed_view.hpp"
 
 namespace meshioplusplus {
@@ -126,6 +127,36 @@ CellComponents cell_components(const Mesh& rMesh) {
     parallel_for_bw(total, [&](std::size_t gc) {
         out.mLabel[gc] = static_cast<std::int64_t>(label_at[static_cast<std::size_t>(parent[gc])]);
     });
+    return out;
+}
+
+CellComponents cell_components_by_edge(const Mesh& rMesh) {
+    std::size_t total = 0;
+    for (const auto cb : rMesh.CellRange())
+        total += cb.NumCells();
+    const DualGraphCsr graph = build_facet_dual_graph(rMesh, total, true);
+    CellComponents out;
+    out.mLabel.assign(total, -1);
+    std::vector<std::int64_t> stack;
+    for (std::size_t seed = 0; seed < total; ++seed) {
+        if (out.mLabel[seed] >= 0)
+            continue;
+        out.mLabel[seed] = out.mCount;
+        stack.assign(1, static_cast<std::int64_t>(seed));
+        while (!stack.empty()) {
+            const auto c = static_cast<std::size_t>(stack.back());
+            stack.pop_back();
+            for (std::int64_t e = graph.mXadj[c]; e < graph.mXadj[c + 1]; ++e) {
+                const auto nb =
+                    static_cast<std::size_t>(graph.mAdjncy[static_cast<std::size_t>(e)]);
+                if (out.mLabel[nb] < 0) {
+                    out.mLabel[nb] = out.mCount;
+                    stack.push_back(static_cast<std::int64_t>(nb));
+                }
+            }
+        }
+        ++out.mCount;
+    }
     return out;
 }
 

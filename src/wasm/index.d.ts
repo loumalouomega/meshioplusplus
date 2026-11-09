@@ -3067,6 +3067,55 @@ export interface MeshioPlusPlusModule {
   ): Mesh;
 
   /**
+   * Cut a surface by the plane through `origin` normal to `normal`, keep the
+   * side below it (or above, `keepBelow: false`) and cap the cut's closed
+   * loops (roadmap 7.8.3).
+   */
+  clip(
+    mesh: Mesh,
+    origin: ArrayLike<number>,
+    normal: ArrayLike<number>,
+    options?: { keepBelow?: boolean; cap?: boolean },
+  ): {
+    mesh: Mesh;
+    numKept: number;
+    numSplit: number;
+    numCapTriangles: number;
+    numLoops: number;
+    numOpenChains: number;
+    warnings: string[];
+  };
+
+  /**
+   * Reverse the winding of every cell, or of a cell region's (roadmap 7.8.2),
+   * with no point moved; Side entries move with their cells.
+   */
+  flipNormals(mesh: Mesh, region?: string): { mesh: Mesh; numFlipped: number };
+
+  /**
+   * Remove a scan's crumbs (roadmap 7.8.1): the connected components (by
+   * shared edges or points) whose diagonal, area or cell count is below a
+   * threshold, relative to the whole mesh by default.
+   */
+  removeIslands(
+    mesh: Mesh,
+    options?: {
+      connectivity?: 'edge' | 'point';
+      minDiagonal?: number;
+      minArea?: number;
+      minCells?: number;
+      relative?: boolean;
+      dryRun?: boolean;
+    },
+  ): {
+    mesh: Mesh;
+    numComponents: number;
+    numRemoved: number;
+    numCellsRemoved: number;
+    numPointsRemoved: number;
+  };
+
+  /**
    * Measure a mesh by a spec (an object or its JSON text): elements fitted
    * from regions, seeds or patches, constructed or literal; dimensions and
    * GD&T tolerances (roadmap 7.2, doc/measure.md). `report` is the parsed

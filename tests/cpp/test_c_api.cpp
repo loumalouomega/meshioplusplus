@@ -8929,3 +8929,64 @@ TEST(CApi, MeasureAlignAndAnElementReference) {
     mio_mesh_free(skin);
     mio_mesh_free(box);
 }
+
+TEST(CApi, RemoveIslandsDropsACrumb) {
+    // A unit quad and a tiny one far away (roadmap 7.8.1).
+    mio_mesh* m = mio_mesh_create();
+    // clang-format off
+    const double pts[] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0,
+                          5, 5, 0, 5.001, 5, 0, 5.001, 5.001, 0, 5, 5.001, 0};
+    // clang-format on
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 8, 3, pts), MIO_OK);
+    const int64_t conn[] = {0, 1, 2, 3, 4, 5, 6, 7};
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "quad", 2, 4, MIO_INT64, conn), MIO_OK);
+    mio_remove_islands_opts o;
+    mio_remove_islands_opts_init(&o);
+    EXPECT_EQ(o.relative, 1);
+    mio_remove_islands_report r;
+    mio_mesh* out = mio_remove_islands(m, &o, &r);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(r.num_components, 2);
+    EXPECT_EQ(r.num_removed, 1);
+    EXPECT_EQ(mio_mesh_num_points(out), 4);
+    o.connectivity = 7;
+    EXPECT_EQ(mio_remove_islands(m, &o, &r), nullptr);
+    mio_mesh_free(out);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, FlipNormalsTwiceIsTheInput) {
+    mio_mesh* m = mio_mesh_create();
+    const double pts[] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 3, 3, pts), MIO_OK);
+    const int64_t conn[] = {0, 1, 2};
+    ASSERT_EQ(mio_mesh_add_cell_block(m, "triangle", 1, 3, MIO_INT64, conn), MIO_OK);
+    int64_t n = 0;
+    mio_mesh* once = mio_flip_normals(m, nullptr, &n);
+    ASSERT_NE(once, nullptr) << mio_last_error();
+    EXPECT_EQ(n, 1);
+    mio_mesh* twice = mio_flip_normals(once, "", &n);
+    ASSERT_NE(twice, nullptr);
+    EXPECT_EQ(mio_flip_normals(m, "nope", &n), nullptr);
+    mio_mesh_free(twice);
+    mio_mesh_free(once);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, ClipASphereAndCapIt) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    mio_mesh* s = mio_icosa_sphere(&g);
+    ASSERT_NE(s, nullptr);
+    const double origin[3] = {0.0, 0.0, 0.013}, normal[3] = {0.0, 0.0, 1.0};
+    mio_clip_report r;
+    mio_mesh* half = mio_clip(s, origin, normal, 1, 1, &r);
+    ASSERT_NE(half, nullptr) << mio_last_error();
+    EXPECT_EQ(r.num_loops, 1);
+    EXPECT_GT(r.num_cap_triangles, 0);
+    EXPECT_EQ(mio_clip_warnings(nullptr, 0), 0);
+    const double zero[3] = {0.0, 0.0, 0.0};
+    EXPECT_EQ(mio_clip(s, origin, zero, 1, 1, &r), nullptr);
+    mio_mesh_free(half);
+    mio_mesh_free(s);
+}

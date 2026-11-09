@@ -722,6 +722,27 @@ WRITING = [
         ],
     ),
     (
+        "remove_islands",
+        lambda f, out: ["remove-islands", f["sphere_a"], out + ".vtu", "--json"],
+    ),
+    (
+        "flip_normals",
+        lambda f, out: ["flip-normals", f["sphere_a"], out + ".vtu", "--json"],
+    ),
+    (
+        "clip",
+        lambda f, out: [
+            "clip",
+            f["sphere_a"],
+            out + ".vtu",
+            "--origin",
+            "0,0,0.1",
+            "--normal",
+            "0,0,1",
+            "--json",
+        ],
+    ),
+    (
         "step_elements",
         lambda f, out: ["step-elements", f["fitted"], out + ".step", "--json"],
     ),

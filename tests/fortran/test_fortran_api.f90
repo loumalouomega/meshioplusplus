@@ -3071,6 +3071,33 @@ contains
             call check(ierr /= 0, 'write_step_elements refuses an unknown patch')
         end block
         block
+            type(mio_mesh) :: kept
+            type(mio_remove_islands_report) :: irep
+            kept = mio_remove_islands(sq, report=irep, stat=ierr)
+            call check(ierr == 0 .and. irep%num_components == 1_int64 .and. &
+                       irep%num_removed == 0_int64, 'remove_islands keeps the cube')
+            if (ierr == 0) call kept%free()
+            kept = mio_remove_islands(sq, connectivity='face', stat=ierr)
+            call check(ierr /= 0, 'remove_islands refuses an unknown connectivity')
+            block
+                type(mio_mesh) :: f1
+                integer(int64) :: nflip
+                f1 = mio_flip_normals(sq, num_flipped=nflip, stat=ierr)
+                call check(ierr == 0 .and. nflip == 6_int64, 'flip_normals flips the six faces')
+                if (ierr == 0) call f1%free()
+                f1 = mio_flip_normals(sq, region='nope', stat=ierr)
+                call check(ierr /= 0, 'flip_normals refuses an unknown region')
+                block
+                    type(mio_clip_report) :: crep
+                    f1 = mio_clip(sq, [0.0_real64, 0.0_real64, 0.5_real64], &
+                                  [0.0_real64, 0.0_real64, 1.0_real64], report=crep, stat=ierr)
+                    call check(ierr == 0 .and. crep%num_loops == 1_int64 .and. &
+                               crep%num_cap_triangles > 0_int64, 'clip halves the cube and caps it')
+                    if (ierr == 0) call f1%free()
+                end block
+            end block
+        end block
+        block
             type(mio_mesh) :: measured, aligned
             type(mio_measure_report) :: mrep
             character(:), allocatable :: mjson

@@ -150,6 +150,9 @@
 #include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
 #include "meshioplusplus/operations/measure.hpp"
+#include "meshioplusplus/operations/remove_islands.hpp"
+#include "meshioplusplus/operations/flip_normals.hpp"
+#include "meshioplusplus/operations/clip.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -5428,6 +5431,122 @@ int cmd_slice(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// clip: cut by a plane, keep a side, cap it (roadmap 7.8.3).
+int cmd_clip(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"origin", {}, true},
+                                          {"normal", {}, true},
+                                          {"keep", {}, true},
+                                          {"no-cap", {}, false},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("clip requires INFILE and OUTFILE");
+    meshioplusplus::ClipOptions o;
+    for (const char* k : {"origin", "normal"})
+        if (has_opt(p, k)) {
+            const auto v = parse_doubles(opt_value(p, k));
+            if (v.size() != 3)
+                throw std::runtime_error(std::string("clip: --") + k + " expects 'x,y,z'");
+            std::array<double, 3>& r_target = std::string(k) == "origin" ? o.mOrigin : o.mNormal;
+            r_target = {v[0], v[1], v[2]};
+        }
+    if (has_opt(p, "keep")) {
+        const std::string keep = opt_value(p, "keep");
+        if (keep != "below" && keep != "above")
+            throw std::runtime_error("clip: --keep is below or above");
+        o.mKeepBelow = keep == "below";
+    }
+    o.mCap = !has_flag(p, "no-cap");
+    meshioplusplus::ClipResult r =
+        meshioplusplus::clip(read_mesh_cli(p.positionals[0], opt_value(p, "input-format")), o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_kept", r.mNumKept);
+        json.Field("num_split", r.mNumSplit);
+        json.Field("num_cap_triangles", r.mNumCapTriangles);
+        json.Field("num_loops", r.mNumLoops);
+        json.Field("num_open_chains", r.mNumOpenChains);
+        cli_names_json(json, "warnings", r.mWarnings);
+        json.EndObject();
+        return 0;
+    }
+    char line[256];
+    meshioplusplus::detail::snprintf_c(
+        line, sizeof(line), "%lld kept, %lld split; %lld cap triangle(s) over %lld loop(s)\n",
+        static_cast<long long>(r.mNumKept), static_cast<long long>(r.mNumSplit),
+        static_cast<long long>(r.mNumCapTriangles), static_cast<long long>(r.mNumLoops));
+    std::cout << line;
+    for (const std::string& w : r.mWarnings)
+        std::cout << "warning: " << w << "\n";
+    return 0;
+}
+
+// flip-normals: reverse the winding of cells (roadmap 7.8.2).
+int cmd_flip_normals(const std::vector<std::string>& rArgs) {
+    auto p =
+        cli_parse(rArgs, cli_specs({io_flag_specs(), {{"region", {}, true}, {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("flip-normals requires INFILE and OUTFILE");
+    meshioplusplus::FlipNormalsResult r = meshioplusplus::flip_normals(
+        read_mesh_cli(p.positionals[0], opt_value(p, "input-format")), opt_value(p, "region"));
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_flipped", r.mNumFlipped);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mNumFlipped << " cell(s) flipped\n";
+    return 0;
+}
+
+// remove-islands: drop a scan's crumbs (roadmap 7.8.1).
+int cmd_remove_islands(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"connectivity", {}, true},
+                                          {"min-diagonal", {}, true},
+                                          {"min-area", {}, true},
+                                          {"min-cells", {}, true},
+                                          {"absolute", {}, false},
+                                          {"dry-run", {}, false},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("remove-islands requires INFILE and OUTFILE");
+    meshioplusplus::RemoveIslandsOptions o;
+    if (has_opt(p, "connectivity"))
+        o.mConnectivity =
+            meshioplusplus::island_connectivity_from_name(opt_value(p, "connectivity"));
+    cli_opt_double(p, "min-diagonal", o.mMinDiagonal);
+    cli_opt_double(p, "min-area", o.mMinArea);
+    cli_opt_int64(p, "min-cells", o.mMinCells);
+    o.mRelative = !has_flag(p, "absolute");
+    o.mDryRun = has_flag(p, "dry-run");
+    meshioplusplus::RemoveIslandsResult r = meshioplusplus::remove_islands(
+        read_mesh_cli(p.positionals[0], opt_value(p, "input-format")), o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_components", r.mNumComponents);
+        json.Field("num_removed", r.mNumRemoved);
+        json.Field("num_cells_removed", r.mNumCellsRemoved);
+        json.Field("num_points_removed", r.mNumPointsRemoved);
+        json.EndObject();
+        return 0;
+    }
+    char line[256];
+    meshioplusplus::detail::snprintf_c(
+        line, sizeof(line), "%lld component(s); %lld removed (%lld cell(s), %lld point(s))%s\n",
+        static_cast<long long>(r.mNumComponents), static_cast<long long>(r.mNumRemoved),
+        static_cast<long long>(r.mNumCellsRemoved), static_cast<long long>(r.mNumPointsRemoved),
+        o.mDryRun ? " [dry run]" : "");
+    std::cout << line;
+    return 0;
+}
+
 // measure: elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).
 int cmd_measure(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(), {{"json", {}, false}}}));
@@ -9794,6 +9913,14 @@ const CliVerb kCliVerbs[] = {
     {"slice", nullptr,
      "  slice                   Planar cross-section (volume->surface, surface->lines)\n",
      &cmd_slice},
+    {"clip", nullptr,
+     "  clip                    Cut a surface by a plane, keep a side and cap it\n", &cmd_clip},
+    {"flip-normals", nullptr,
+     "  flip-normals            Reverse the winding of every cell, or of a region's\n",
+     &cmd_flip_normals},
+    {"remove-islands", nullptr,
+     "  remove-islands          Drop the small connected components (a scan's crumbs)\n",
+     &cmd_remove_islands},
     {"measure", nullptr,
      "  measure                 Elements, dimensions and GD&T tolerances by a JSON spec\n",
      &cmd_measure},

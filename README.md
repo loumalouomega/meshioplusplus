@@ -754,6 +754,17 @@ measured, report = meshioplusplus.measure(scan, "inspection.json")
 aligned, matrix = meshioplusplus.align_datums(measured, "A", "B", origin="C")
 ```
 
+#### Scan editing: islands, normals and clipping
+
+**`meshioplusplus.remove_islands(scan)`** drops the crumbs a scanner leaves (the connected components whose diagonal, area or cell count is below a threshold, a fraction of the whole mesh's by default), **`flip_normals`** reverses the winding of every cell or a region's with no point moved, and **`clip`** cuts a surface by a plane, keeps a side and caps the cut so a closed part stays closed. See [remove islands](doc/remove_islands.md), [flip normals](doc/flip_normals.md) and [clip](doc/clip.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+clean = meshioplusplus.remove_islands(scan)
+lower = meshioplusplus.clip(clean, (0, 0, 10), (0, 0, 1))  # closed below z = 10
+```
+
 #### Rigid registration (ICP)
 
 **`meshioplusplus.register_rigid(source, target)`** finds the rotation and translation laying a scan onto its design (or one run's mesh onto another's) by iterative closest points, point-to-point or point-to-plane, and returns the 4 × 4 matrix `transform` applies. `initial="auto"` needs no start (the best of the 24 candidates laying the two principal frames onto each other), `source_region` keeps a fixture out of the fit and `adaptive_trim` drops far pairs. `register_landmarks` solves picked point pairs, `auto_align` poses a scan on its largest flat face or a cylinder on its axis without a nominal, and `find_symmetry_plane` finds the plane a part is symmetric about, which `mirror(plane="auto")` reflects across. See [rigid registration](doc/registration.md).

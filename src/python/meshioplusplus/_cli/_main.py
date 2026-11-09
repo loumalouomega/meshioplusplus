@@ -375,6 +375,27 @@ _VERBS = (
         "Planar cross-section of a mesh (volume -> surface, surface -> lines)",
     ),
     _Verb(
+        "remove-islands",
+        "_scan_edit",
+        "remove_islands_cmd",
+        "Drop the small connected components (a scan's crumbs)",
+        add_args="add_islands_args",
+    ),
+    _Verb(
+        "flip-normals",
+        "_scan_edit",
+        "flip_normals_cmd",
+        "Reverse the winding of every cell, or of a region's",
+        add_args="add_flip_args",
+    ),
+    _Verb(
+        "clip",
+        "_scan_edit",
+        "clip_cmd",
+        "Cut a surface by a plane, keep a side and cap it",
+        add_args="add_clip_args",
+    ),
+    _Verb(
         "measure",
         "_measure",
         "measure_cmd",

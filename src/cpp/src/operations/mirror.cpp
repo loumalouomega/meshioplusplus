@@ -43,60 +43,6 @@ namespace meshioplusplus {
 
 namespace {
 
-// How one block's cells are flipped: a fixed table, a polygon ring or a
-// polyhedron's face rings.
-struct MirBlockFlip {
-    const std::vector<int>* pPerm = nullptr;
-    const std::vector<int>* pFacets = nullptr;
-    std::vector<int> mPolygonPerm;  // a rectangular polygon block's own table
-    bool mRaggedPolygon = false;
-    bool mPolyhedron = false;
-};
-
-template <class CellViewT>
-MirBlockFlip mir_block_flip(const CellViewT& rCells) {
-    MirBlockFlip f;
-    const std::string type(rCells.Type());
-    const CellType ct = cell_type_from_name(type);
-    if (rCells.IsPolyhedron()) {
-        f.mPolyhedron = true;
-        return f;
-    }
-    if (ct == CellType::Polygon) {
-        if (rCells.IsRagged()) {
-            f.mRaggedPolygon = true;
-            return f;
-        }
-        // A polygon with rectangular storage: every row has the same size.
-        const int npc = static_cast<int>(rCells.NodesPerCell());
-        f.mPolygonPerm.push_back(0);
-        for (int i = npc - 1; i >= 1; --i)
-            f.mPolygonPerm.push_back(i);
-        return f;
-    }
-    f.pPerm = rCells.IsRagged() ? nullptr : detail::cell_flip_permutation(ct);
-    f.pFacets = detail::cell_flip_facet_map(ct);
-    if (f.pPerm == nullptr ||
-        static_cast<std::size_t>(cell_type_num_nodes(ct)) != rCells.NodesPerCell())
-        throw Unsupported("meshio++: mirror: no orientation flip for cell type '" + type +
-                          "' (linear and quadratic types, polygons and polyhedra only)");
-    return f;
-}
-
-// The local facet a flipped cell gives facet F of a cell with N facets (a
-// polygon's N is its node count), or -1 when F is not a facet of the cell.
-std::int64_t mir_flip_facet(const MirBlockFlip& rFlip, std::int64_t F, std::int64_t N) {
-    if (F < 0)
-        return -1;
-    if (rFlip.mPolyhedron)
-        return F < N ? F : -1;
-    if (rFlip.mRaggedPolygon || !rFlip.mPolygonPerm.empty())
-        return F < N ? N - 1 - F : -1;
-    if (rFlip.pFacets == nullptr || F >= static_cast<std::int64_t>(rFlip.pFacets->size()))
-        return -1;
-    return (*rFlip.pFacets)[static_cast<std::size_t>(F)];
-}
-
 // Reflect rows [Start, Start + Rows) of a float array of 3 (v' = H v) or 9
 // (A' = H A H, row-major) columns in place.
 void mir_reflect_rows(NDArray& rA, std::size_t Start, std::size_t Rows, std::size_t Cols,
@@ -109,8 +55,8 @@ void mir_reflect_rows(NDArray& rA, std::size_t Start, std::size_t Rows, std::siz
                 const double v[3] = {static_cast<double>(p[b]), static_cast<double>(p[b + 1]),
                                      static_cast<double>(p[b + 2])};
                 for (std::size_t i = 0; i < 3; ++i)
-                    p[b + i] =
-                        static_cast<T>(rH[i * 3] * v[0] + rH[i * 3 + 1] * v[1] + rH[i * 3 + 2] * v[2]);
+                    p[b + i] = static_cast<T>(rH[i * 3] * v[0] + rH[i * 3 + 1] * v[1] +
+                                              rH[i * 3 + 2] * v[2]);
                 return;
             }
             double a[9], t[9];
@@ -118,12 +64,13 @@ void mir_reflect_rows(NDArray& rA, std::size_t Start, std::size_t Rows, std::siz
                 a[k] = static_cast<double>(p[b + k]);
             for (std::size_t i = 0; i < 3; ++i)
                 for (std::size_t j = 0; j < 3; ++j)
-                    t[i * 3 + j] = rH[i * 3] * a[j] + rH[i * 3 + 1] * a[3 + j] + rH[i * 3 + 2] * a[6 + j];
+                    t[i * 3 + j] =
+                        rH[i * 3] * a[j] + rH[i * 3 + 1] * a[3 + j] + rH[i * 3 + 2] * a[6 + j];
             for (std::size_t i = 0; i < 3; ++i)
                 for (std::size_t j = 0; j < 3; ++j)
-                    p[b + i * 3 + j] = static_cast<T>(t[i * 3] * rH[j * 3] +
-                                                      t[i * 3 + 1] * rH[j * 3 + 1] +
-                                                      t[i * 3 + 2] * rH[j * 3 + 2]);
+                    p[b + i * 3 + j] =
+                        static_cast<T>(t[i * 3] * rH[j * 3] + t[i * 3 + 1] * rH[j * 3 + 1] +
+                                       t[i * 3 + 2] * rH[j * 3 + 2]);
         });
     });
 }
@@ -175,21 +122,20 @@ MirrorResult mirror(const Mesh& rMesh, const MirrorOptions& rOptions) {
     const std::size_t dim = rMesh.PointDim();
     for (std::size_t d = std::min<std::size_t>(dim, 3); d < 3; ++d)
         if (nrm[d] != 0.0)
-            throw std::invalid_argument(
-                "meshio++: mirror: the points have " + std::to_string(dim) +
-                " coordinates, so the normal's component " + std::to_string(d) +
-                " must be zero (the image would leave their space)");
+            throw std::invalid_argument("meshio++: mirror: the points have " + std::to_string(dim) +
+                                        " coordinates, so the normal's component " +
+                                        std::to_string(d) +
+                                        " must be zero (the image would leave their space)");
     const std::size_t sdim = std::min<std::size_t>(dim, 3);
-    const std::array<double, 9> H{{1.0 - 2.0 * nrm[0] * nrm[0], -2.0 * nrm[0] * nrm[1],
-                                   -2.0 * nrm[0] * nrm[2], -2.0 * nrm[1] * nrm[0],
-                                   1.0 - 2.0 * nrm[1] * nrm[1], -2.0 * nrm[1] * nrm[2],
-                                   -2.0 * nrm[2] * nrm[0], -2.0 * nrm[2] * nrm[1],
-                                   1.0 - 2.0 * nrm[2] * nrm[2]}};
+    const std::array<double, 9> H{
+        {1.0 - 2.0 * nrm[0] * nrm[0], -2.0 * nrm[0] * nrm[1], -2.0 * nrm[0] * nrm[2],
+         -2.0 * nrm[1] * nrm[0], 1.0 - 2.0 * nrm[1] * nrm[1], -2.0 * nrm[1] * nrm[2],
+         -2.0 * nrm[2] * nrm[0], -2.0 * nrm[2] * nrm[1], 1.0 - 2.0 * nrm[2] * nrm[2]}};
 
     // Every block's flip, checked before anything is built.
-    std::vector<MirBlockFlip> flips;
+    std::vector<detail::BlockFlip> flips;
     for (const auto cb : rMesh.CellRange())
-        flips.push_back(mir_block_flip(cb));
+        flips.push_back(detail::block_flip(cb, "mirror"));
 
     // Signed distances to the plane and the points on it.
     const NDArray& pts = rMesh.Points();
@@ -255,7 +201,7 @@ MirrorResult mirror(const Mesh& rMesh, const MirrorOptions& rOptions) {
     std::vector<std::vector<std::int64_t>> rank(nb);      // per cell, its copy's rank or -1
     for (std::size_t b = 0; b < nb; ++b) {
         const auto cb = rMesh.Cells(b);
-        const MirBlockFlip& r_flip = flips[b];
+        const detail::BlockFlip& r_flip = flips[b];
         const std::size_t nc = cb.NumCells();
         const auto all_on = [&](const std::int64_t* pNodes, std::size_t K) {
             for (std::size_t k = 0; k < K; ++k)
@@ -320,15 +266,15 @@ MirrorResult mirror(const Mesh& rMesh, const MirrorOptions& rOptions) {
             }
             res.mMesh.AddPolygonBlock(type, std::move(flat), std::move(rows));
         } else {
-            const std::vector<int>& perm =
-                r_flip.mPolygonPerm.empty() ? *r_flip.pPerm : r_flip.mPolygonPerm;
+            const std::vector<int>& perm = r_flip.Perm();
             const std::size_t npc = cb.NodesPerCell();
             const NDArray& conn = cb.Conn();
             std::vector<std::int64_t> row(npc);
             for (std::size_t c = 0; c < nc; ++c) {
                 bool on = weld;
                 for (std::size_t k = 0; k < npc && on; ++k)
-                    on = on_plane[static_cast<std::size_t>(detail::read_int(conn, c * npc + k))] != 0;
+                    on = on_plane[static_cast<std::size_t>(detail::read_int(conn, c * npc + k))] !=
+                         0;
                 if (!on || npc == 0) {
                     r_rank[c] = static_cast<std::int64_t>(r_kept.size());
                     r_kept.push_back(static_cast<std::int64_t>(c));
@@ -392,8 +338,7 @@ MirrorResult mirror(const Mesh& rMesh, const MirrorOptions& rOptions) {
         const std::int64_t r = rank[B][static_cast<std::size_t>(C)];
         if (r < 0)
             return -1;
-        return out_bases[B] +
-               (keep ? static_cast<std::int64_t>(rMesh.Cells(B).NumCells()) : 0) + r;
+        return out_bases[B] + (keep ? static_cast<std::int64_t>(rMesh.Cells(B).NumCells()) : 0) + r;
     };
     std::vector<std::int64_t> facet;
     for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
@@ -438,10 +383,9 @@ MirrorResult mirror(const Mesh& rMesh, const MirrorOptions& rOptions) {
                 const std::int64_t nfac =
                     flips[b].mPolyhedron
                         ? static_cast<std::int64_t>(cb.NumFaces(uc))
-                        : (flips[b].mRaggedPolygon
-                               ? static_cast<std::int64_t>(cb.RowSize(uc))
-                               : static_cast<std::int64_t>(cb.NodesPerCell()));
-                const std::int64_t nf = mir_flip_facet(flips[b], f, nfac);
+                        : (flips[b].mRaggedPolygon ? static_cast<std::int64_t>(cb.RowSize(uc))
+                                                   : static_cast<std::int64_t>(cb.NodesPerCell()));
+                const std::int64_t nf = detail::block_flip_facet(flips[b], f, nfac);
                 if (nf < 0) {
                     ++invalid;
                     continue;

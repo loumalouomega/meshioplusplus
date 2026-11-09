@@ -1608,6 +1608,19 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_true(file.exists(step_path))
   expect_equal(mio_write_step_elements(step_path, fp$mesh, patches = 0)$num_planes, 1)
   expect_error(mio_write_step_elements(step_path, fp$mesh, patches = 99), "patch")
+  cl <- mio_clip(m, c(0, 0, 0.5), c(0, 0, 1))
+  expect_equal(cl$num_loops, 1)
+  expect_gt(cl$num_cap_triangles, 0)
+  mio_release(cl$mesh)
+  fl <- mio_flip_normals(m)
+  expect_equal(fl$num_flipped, 12)
+  mio_release(fl$mesh)
+  expect_error(mio_flip_normals(m, "nope"), "nope")
+  ri <- mio_remove_islands(m)
+  expect_equal(ri$num_components, 1)
+  expect_equal(ri$num_removed, 0)
+  mio_release(ri$mesh)
+  expect_error(mio_remove_islands(m, connectivity = "face"), "connectivity")
   ms <- mio_measure(m, '{"elements": [
     {"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},
     {"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],

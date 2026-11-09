@@ -1426,6 +1426,61 @@ MIO_API mio_mesh* mio_silhouette(const mio_mesh* mesh, const mio_silhouette_opts
 /** The warnings of this thread's last mio_silhouette call; string rule 5. */
 MIO_API int64_t mio_silhouette_warnings(char* buf, int64_t buflen);
 
+/** What mio_clip did (roadmap 7.8.3). 72 bytes. */
+typedef struct mio_clip_report {
+    int64_t num_kept;          /**< triangles kept whole */
+    int64_t num_split;         /**< triangles split at the plane */
+    int64_t num_cap_triangles;
+    int64_t num_loops;         /**< closed loops capped */
+    int64_t num_open_chains;   /**< open chains of the cut, not capped */
+    int64_t num_warnings;
+    int64_t reserved[3];
+} mio_clip_report;
+
+/**
+ * Cut a surface by the plane through `origin` normal to `normal`, keep the
+ * side below it (`keep_below` nonzero) or above, and with `cap` triangulate
+ * the cut's closed loops so a closed part stays closed (roadmap 7.8.3;
+ * doc/clip.md). `report` may be NULL.
+ */
+MIO_API mio_mesh* mio_clip(const mio_mesh* mesh, const double origin[3], const double normal[3],
+                           int32_t keep_below, int32_t cap, mio_clip_report* report);
+/** The warnings of this thread's last mio_clip call; string rule 5. */
+MIO_API int64_t mio_clip_warnings(char* buf, int64_t buflen);
+
+/**
+ * Reverse the winding of every cell, or of the cell region `region` (NULL or
+ * ""), with no point moved; Side entries move with their cells (roadmap
+ * 7.8.2; doc/flip_normals.md). `num_flipped` may be NULL.
+ */
+MIO_API mio_mesh* mio_flip_normals(const mio_mesh* mesh, const char* region, int64_t* num_flipped);
+
+/** Options of mio_remove_islands (roadmap 7.8.1); mio_remove_islands_opts_init. 64 bytes. */
+typedef struct mio_remove_islands_opts {
+    int32_t connectivity; /**< 0 edge (cells sharing a facet), 1 point (init: 0) */
+    int32_t relative;     /**< diagonal and area as fractions of the mesh's (init: 1) */
+    double min_diagonal;  /**< a component with a smaller diagonal goes (init: 0.01) */
+    double min_area;      /**< likewise for its area, 0 off (init: 0) */
+    int64_t min_cells;    /**< likewise for its cell count, 0 off (init: 0) */
+    int32_t dry_run;      /**< nonzero: remove nothing, label islands:component/removed */
+    int32_t reserved32;
+    int64_t reserved[3];
+} mio_remove_islands_opts;
+
+/** What mio_remove_islands removed. 64 bytes. */
+typedef struct mio_remove_islands_report {
+    int64_t num_components;
+    int64_t num_removed;
+    int64_t num_cells_removed;
+    int64_t num_points_removed;
+    int64_t reserved[4];
+} mio_remove_islands_report;
+
+MIO_API void mio_remove_islands_opts_init(mio_remove_islands_opts* opts);
+/** Remove the small connected components of a mesh (roadmap 7.8.1; doc/remove_islands.md). */
+MIO_API mio_mesh* mio_remove_islands(const mio_mesh* mesh, const mio_remove_islands_opts* opts,
+                                     mio_remove_islands_report* report);
+
 /** What mio_measure found (roadmap 7.2). 80 bytes. */
 typedef struct mio_measure_report {
     int64_t num_elements;

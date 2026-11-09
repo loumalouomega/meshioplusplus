@@ -333,6 +333,69 @@ function slice(m::Mesh, origin::AbstractVector{<:Real}, normal::AbstractVector{<
 end
 
 """
+    clip(m, origin, normal; keep_below=true, cap=true)
+        -> (; mesh, num_kept, num_split, num_cap_triangles, num_loops, num_open_chains, warnings)
+
+Cut a surface by the plane through `origin` normal to `normal`, keep a side and
+cap the cut's closed loops (roadmap 7.8.3). See `doc/clip.md`.
+"""
+function clip(m::Mesh, origin, normal; keep_below::Bool=true, cap::Bool=true)
+    o = Cdouble[origin[1], origin[2], origin[3]]
+    n = Cdouble[normal[1], normal[2], normal[3]]
+    rep = Ref{_CClipReport}()
+    ptr = GC.@preserve o n ccall(_sym(:mio_clip), Ptr{Cvoid},
+                                 (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Int32, Int32,
+                                  Ref{_CClipReport}), _handle(m), o, n, Int32(keep_below),
+                                 Int32(cap), rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    text = _getstring((buf, k) -> ccall(_sym(:mio_clip_warnings), Int64, (Ptr{UInt8}, Int64), buf, k))
+    (mesh=out, num_kept=Int(r.num_kept), num_split=Int(r.num_split),
+     num_cap_triangles=Int(r.num_cap_triangles), num_loops=Int(r.num_loops),
+     num_open_chains=Int(r.num_open_chains),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    flip_normals(m; region="") -> (; mesh, num_flipped)
+
+Reverse the winding of every cell, or of the cell region `region` (roadmap
+7.8.2), with no point moved. See `doc/flip_normals.md`.
+"""
+function flip_normals(m::Mesh; region::AbstractString="")
+    n = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_flip_normals), Ptr{Cvoid}, (Ptr{Cvoid}, Cstring, Ref{Int64}),
+                _handle(m), String(region), n)
+    (mesh=Mesh(_check_ptr(ptr)), num_flipped=Int(n[]))
+end
+
+"""
+    remove_islands(m; connectivity="edge", min_diagonal=0.01, min_area=0.0, min_cells=0,
+                   relative=true, dry_run=false)
+        -> (; mesh, num_components, num_removed, num_cells_removed, num_points_removed)
+
+Remove the small connected components of `m` (roadmap 7.8.1). See
+`doc/remove_islands.md`.
+"""
+function remove_islands(m::Mesh; connectivity::AbstractString="edge", min_diagonal::Real=0.01,
+                        min_area::Real=0.0, min_cells::Integer=0, relative::Bool=true,
+                        dry_run::Bool=false)
+    conn = connectivity == "edge" ? Int32(0) :
+           connectivity == "point" ? Int32(1) :
+           throw(ArgumentError("meshio++: remove_islands: connectivity must be edge or point"))
+    opts = _CRemoveIslandsOpts(conn, Int32(relative), Cdouble(min_diagonal), Cdouble(min_area),
+                               Int64(min_cells), Int32(dry_run), Int32(0), ntuple(_ -> Int64(0), 3))
+    rep = Ref{_CRemoveIslandsReport}()
+    ptr = ccall(_sym(:mio_remove_islands), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CRemoveIslandsOpts}, Ref{_CRemoveIslandsReport}), _handle(m),
+                Ref(opts), rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    (mesh=out, num_components=Int(r.num_components), num_removed=Int(r.num_removed),
+     num_cells_removed=Int(r.num_cells_removed), num_points_removed=Int(r.num_points_removed))
+end
+
+"""
     measure(m, spec::AbstractString)
         -> (; mesh, num_elements, num_dimensions, num_tolerances, num_fail, report_json, warnings)
 

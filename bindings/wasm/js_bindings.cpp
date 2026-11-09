@@ -141,6 +141,9 @@
 #include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
 #include "meshioplusplus/operations/measure.hpp"
+#include "meshioplusplus/operations/remove_islands.hpp"
+#include "meshioplusplus/operations/flip_normals.hpp"
+#include "meshioplusplus/operations/clip.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -3994,6 +3997,85 @@ val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool r
         options.mChain = Chain;
         options.mMinLength = MinLength;
         return mesh_to_val(meshioplusplus::slice(val_to_mesh(rMeshObj), options));
+    });
+}
+
+/// Cut by a plane, keep a side, cap it (roadmap 7.8.3). @p rOptions is
+/// `{keepBelow, cap}`.
+val clip_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ClipOptions o;
+        o.mOrigin = prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, false);
+        o.mNormal = prim_js_vec3(rNormal, {{0.0, 0.0, 1.0}}, false);
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the clip options", {"keepBelow", "cap"});
+            if (rOptions.hasOwnProperty("keepBelow"))
+                o.mKeepBelow = rOptions["keepBelow"].as<bool>();
+            if (rOptions.hasOwnProperty("cap"))
+                o.mCap = rOptions["cap"].as<bool>();
+        }
+        meshioplusplus::ClipResult r = meshioplusplus::clip(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numKept", static_cast<double>(r.mNumKept));
+        out.set("numSplit", static_cast<double>(r.mNumSplit));
+        out.set("numCapTriangles", static_cast<double>(r.mNumCapTriangles));
+        out.set("numLoops", static_cast<double>(r.mNumLoops));
+        out.set("numOpenChains", static_cast<double>(r.mNumOpenChains));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/// Reverse the winding of cells (roadmap 7.8.2): `{mesh, numFlipped}`.
+val flip_normals_js(const val& rMeshObj, const std::string& rRegion) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::FlipNormalsResult r =
+            meshioplusplus::flip_normals(val_to_mesh(rMeshObj), rRegion);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numFlipped", static_cast<double>(r.mNumFlipped));
+        return out;
+    });
+}
+
+/**
+ * @brief Remove a scan's crumbs (roadmap 7.8.1). @p rOptions is
+ * `{connectivity, minDiagonal, minArea, minCells, relative, dryRun}`.
+ */
+val remove_islands_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RemoveIslandsOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(
+                rOptions, "the removeIslands options",
+                {"connectivity", "minDiagonal", "minArea", "minCells", "relative", "dryRun"});
+            if (rOptions.hasOwnProperty("connectivity"))
+                o.mConnectivity = meshioplusplus::island_connectivity_from_name(
+                    rOptions["connectivity"].as<std::string>());
+            if (rOptions.hasOwnProperty("minDiagonal"))
+                o.mMinDiagonal = rOptions["minDiagonal"].as<double>();
+            if (rOptions.hasOwnProperty("minArea"))
+                o.mMinArea = rOptions["minArea"].as<double>();
+            if (rOptions.hasOwnProperty("minCells"))
+                o.mMinCells = static_cast<std::int64_t>(rOptions["minCells"].as<double>());
+            if (rOptions.hasOwnProperty("relative"))
+                o.mRelative = rOptions["relative"].as<bool>();
+            if (rOptions.hasOwnProperty("dryRun"))
+                o.mDryRun = rOptions["dryRun"].as<bool>();
+        }
+        meshioplusplus::RemoveIslandsResult r =
+            meshioplusplus::remove_islands(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numComponents", static_cast<double>(r.mNumComponents));
+        out.set("numRemoved", static_cast<double>(r.mNumRemoved));
+        out.set("numCellsRemoved", static_cast<double>(r.mNumCellsRemoved));
+        out.set("numPointsRemoved", static_cast<double>(r.mNumPointsRemoved));
+        return out;
     });
 }
 
@@ -10531,6 +10613,9 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("silhouette", &silhouette_js);
     emscripten::function("writeStepElements", &write_step_elements_js);
     emscripten::function("measure", &measure_js);
+    emscripten::function("removeIslands", &remove_islands_js);
+    emscripten::function("flipNormals", &flip_normals_js);
+    emscripten::function("clip", &clip_js);
     emscripten::function("alignDatums", &align_datums_js);
     emscripten::function("measureElementPrimitive", &measure_element_primitive_js);
     emscripten::function("isosurface", &isosurface_js);

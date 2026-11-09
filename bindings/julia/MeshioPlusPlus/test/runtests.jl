@@ -2006,6 +2006,16 @@ end
     @test el.num_planes == 6 && isfile(step_path)
     @test write_step_elements(step_path, fit.mesh; patches=[0]).num_planes == 1
     @test_throws MeshioError write_step_elements(step_path, fit.mesh; patches=[99])
+    cl = clip(cube, (0.0, 0.0, 0.5), (0.0, 0.0, 1.0))
+    @test cl.num_loops == 1 && cl.num_cap_triangles > 0
+    close(cl.mesh)
+    fl = flip_normals(cube)
+    @test fl.num_flipped == 12
+    close(fl.mesh)
+    ri = remove_islands(cube)
+    @test ri.num_components == 1 && ri.num_removed == 0
+    close(ri.mesh)
+    @test_throws ArgumentError remove_islands(cube; connectivity="face")
     ms = measure(cube, """{"elements": [
         {"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},
         {"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],

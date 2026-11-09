@@ -294,6 +294,9 @@ export class MeshioPlusPlusLoadError extends Error {
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean, options?: {chain?: boolean, minLength?: number}) => Mesh,
+ *   clip: (mesh: Mesh, origin: number[], normal: number[], options?: {keepBelow?: boolean, cap?: boolean}) => {mesh: Mesh, numKept: number, numSplit: number, numCapTriangles: number, numLoops: number, numOpenChains: number, warnings: string[]},
+ *   flipNormals: (mesh: Mesh, region?: string) => {mesh: Mesh, numFlipped: number},
+ *   removeIslands: (mesh: Mesh, options?: {connectivity?: string, minDiagonal?: number, minArea?: number, minCells?: number, relative?: boolean, dryRun?: boolean}) => {mesh: Mesh, numComponents: number, numRemoved: number, numCellsRemoved: number, numPointsRemoved: number},
  *   measure: (mesh: Mesh, spec: object | string) => {mesh: Mesh, report: object, numFail: number, warnings: string[]},
  *   alignDatums: (mesh: Mesh, primary: string, secondary: string, origin?: string) => {mesh: Mesh, matrix: Float64Array},
  *   measureElementPrimitive: (mesh: Mesh, name: string) => {type: number, params: Float64Array},
@@ -860,6 +863,10 @@ export async function loadMeshioPlusPlus(
         slice: (mesh, origin, normal, recordParentIds = false, options = {}) =>
             Module.slice(mesh, origin, normal, recordParentIds, Boolean(options.chain),
                 Number(options.minLength ?? 0)),
+        clip: (mesh, origin, normal, options = {}) =>
+            Module.clip(mesh, Array.from(origin, Number), Array.from(normal, Number), options),
+        flipNormals: (mesh, region = '') => Module.flipNormals(mesh, region ?? ''),
+        removeIslands: (mesh, options = {}) => Module.removeIslands(mesh, options),
         measure: (mesh, spec) => {
             const r = Module.measure(mesh, typeof spec === 'string' ? spec : JSON.stringify(spec));
             return { ...r, report: JSON.parse(r.report) };

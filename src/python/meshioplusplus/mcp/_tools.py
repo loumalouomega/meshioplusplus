@@ -62,6 +62,9 @@ from .. import (
     check_tetrahedra,
     circle,
     clean,
+)
+from .. import clip as _clip_op
+from .. import (
     colorize,
     compute_bandwidth,
     compute_curvature,
@@ -111,8 +114,9 @@ from .. import (
     fit_cad,
 )
 from .. import fit_curves as _fit_curves_op
+from .. import fit_primitives
+from .. import flip_normals as _flip_normals_op
 from .. import (
-    fit_primitives,
     geo_sphere,
     geodesic_distance,
     geometry_descriptors,
@@ -177,6 +181,9 @@ from .. import (
     remesh_quads,
     remesh_quads_backends,
     remesh_volume,
+)
+from .. import remove_islands as _remove_islands_op
+from .. import (
     render_text,
     reorder,
     repair,
@@ -1804,6 +1811,67 @@ def tool_slice(
 ):
     """Planar cross-section (one topological dimension below the input)."""
     return _run_op(_slice_op, locals(), report=False)
+
+
+def tool_remove_islands(
+    input_path,
+    output_path,
+    connectivity="edge",
+    min_diagonal=0.01,
+    min_area=0.0,
+    min_cells=0,
+    relative=True,
+    dry_run=False,
+    input_format=None,
+    output_format=None,
+):
+    """Drop the small connected components of a mesh."""
+    out, report = _remove_islands_op(
+        _load(input_path, input_format),
+        connectivity=connectivity,
+        min_diagonal=float(min_diagonal),
+        min_area=float(min_area),
+        min_cells=int(min_cells),
+        relative=bool(relative),
+        dry_run=bool(dry_run),
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_flip_normals(
+    input_path, output_path, region=None, input_format=None, output_format=None
+):
+    """Reverse the winding of cells."""
+    out, report = _flip_normals_op(
+        _load(input_path, input_format), region, return_report=True
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_clip(
+    input_path,
+    output_path,
+    origin,
+    normal,
+    keep="below",
+    cap=True,
+    input_format=None,
+    output_format=None,
+):
+    """Cut a surface by a plane, keep a side and cap it."""
+    out, report = _clip_op(
+        _load(input_path, input_format),
+        origin,
+        normal,
+        keep=keep,
+        cap=bool(cap),
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
 
 
 def tool_measure(
@@ -7374,6 +7442,15 @@ TOOL_REGISTRY = OrderedDict(
         ("crop", {"fn": tool_crop, "wraps": ("crop",), "gated": None}),
         ("slice", {"fn": tool_slice, "wraps": ("slice",), "gated": None}),
         ("sections", {"fn": tool_sections, "wraps": ("sections",), "gated": None}),
+        (
+            "remove_islands",
+            {"fn": tool_remove_islands, "wraps": ("remove_islands",), "gated": None},
+        ),
+        (
+            "flip_normals",
+            {"fn": tool_flip_normals, "wraps": ("flip_normals",), "gated": None},
+        ),
+        ("clip", {"fn": tool_clip, "wraps": ("clip",), "gated": None}),
         (
             "measure",
             {"fn": tool_measure, "wraps": ("measure", "measure_table"), "gated": None},

@@ -394,6 +394,13 @@ function t_feature_segment()
     el = mio.write_step_elements(step_path, fp.mesh, 'patches', 0);
     expect_equal(el.num_planes, 1);
     expect_error(@() mio.write_step_elements(step_path, fp.mesh, 'patches', 99), 'patch');
+    cl = mio.clip(m, [0 0 0.5], [0 0 1]);
+    expect_equal(cl.num_loops, 1);
+    fl = mio.flip_normals(m);
+    expect_equal(fl.num_flipped, 12);
+    ri = mio.remove_islands(m);
+    expect_equal(ri.num_components, 1);
+    expect_error(@() mio.remove_islands(m, 'connectivity', 'face'), 'connectivity');
     ms = mio.measure(m, ['{"elements": [' ...
         '{"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},' ...
         '{"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],' ...

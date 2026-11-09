@@ -2122,6 +2122,38 @@ struct _CSilhouetteReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_clip_report` (roadmap 7.8.3)."""
+struct _CClipReport
+    num_kept::Int64
+    num_split::Int64
+    num_cap_triangles::Int64
+    num_loops::Int64
+    num_open_chains::Int64
+    num_warnings::Int64
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_remove_islands_opts` (roadmap 7.8.1)."""
+struct _CRemoveIslandsOpts
+    connectivity::Int32
+    relative::Int32
+    min_diagonal::Cdouble
+    min_area::Cdouble
+    min_cells::Int64
+    dry_run::Int32
+    reserved32::Int32
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_remove_islands_report`."""
+struct _CRemoveIslandsReport
+    num_components::Int64
+    num_removed::Int64
+    num_cells_removed::Int64
+    num_points_removed::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_measure_report` (roadmap 7.2)."""
 struct _CMeasureReport
     num_elements::Int64
@@ -2684,6 +2716,9 @@ function _check_abi_layout()
         error("meshio++: mio_silhouette layout mismatch")
     sizeof(_CStepElementsReport) == 88 || error("meshio++: mio_step_elements_report layout mismatch")
     sizeof(_CMeasureReport) == 80 || error("meshio++: mio_measure_report layout mismatch")
+    (sizeof(_CRemoveIslandsOpts) == 64 && sizeof(_CRemoveIslandsReport) == 64) ||
+        error("meshio++: mio_remove_islands layout mismatch")
+    sizeof(_CClipReport) == 72 || error("meshio++: mio_clip_report layout mismatch")
     sizeof(_CSymmetryPlaneOpts) == 112 ||
         error("meshio++: mio_symmetry_plane_opts layout mismatch ($(sizeof(_CSymmetryPlaneOpts)) bytes)")
     sizeof(_CSymmetryPlaneReport) == 128 ||

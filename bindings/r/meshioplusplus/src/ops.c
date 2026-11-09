@@ -231,6 +231,67 @@ SEXP R_mio_slice(SEXP mesh, SEXP origin, SEXP normal, SEXP record_parent_ids, SE
     return mio_r_wrap_mesh(out);
 }
 
+/* clip(mesh, origin, normal, keep_below, cap) (roadmap 7.8.3). */
+SEXP R_mio_clip(SEXP mesh, SEXP origin, SEXP normal, SEXP keep_below, SEXP cap) {
+    double o[3], n[3];
+    mio_r_vec3(origin, o, "origin");
+    mio_r_vec3(normal, n, "normal");
+    mio_clip_report r;
+    mio_mesh *out = mio_clip(mio_r_mesh(mesh), o, n, mio_r_bool(keep_below, "keep_below"),
+                             mio_r_bool(cap, "cap"), &r);
+    if (out == NULL) mio_r_fail("clip");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP w = PROTECT(mio_r_getbuffer(mio_clip_warnings, "clip"));
+    const char *names[] = {"mesh",      "num_kept",        "num_split", "num_cap_triangles",
+                           "num_loops", "num_open_chains", "warnings"};
+    const SEXP values[] = {mo, NULL, NULL, NULL, NULL, NULL, w};
+    const double numbers[] = {(double)r.num_kept, (double)r.num_split, (double)r.num_cap_triangles,
+                              (double)r.num_loops, (double)r.num_open_chains};
+    SEXP res = mio_r_report_list(7, names, values, numbers);
+    UNPROTECT(2);
+    return res;
+}
+
+/* flip_normals(mesh, region) (roadmap 7.8.2). */
+SEXP R_mio_flip_normals(SEXP mesh, SEXP region) {
+    int64_t n = 0;
+    mio_mesh *out = mio_flip_normals(mio_r_mesh(mesh), mio_r_opt_string(region), &n);
+    if (out == NULL) mio_r_fail("flip_normals");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const char *names[] = {"mesh", "num_flipped"};
+    const SEXP values[] = {mo, NULL};
+    const double numbers[] = {(double)n};
+    SEXP res = mio_r_report_list(2, names, values, numbers);
+    UNPROTECT(1);
+    return res;
+}
+
+/* remove_islands(mesh, connectivity, min_diagonal, min_area, min_cells,
+ * relative, dry_run) (roadmap 7.8.1). */
+SEXP R_mio_remove_islands(SEXP mesh, SEXP connectivity, SEXP min_diagonal, SEXP min_area,
+                          SEXP min_cells, SEXP relative, SEXP dry_run) {
+    mio_remove_islands_opts opts;
+    mio_remove_islands_opts_init(&opts);
+    opts.connectivity = mio_r_int(connectivity, "connectivity");
+    opts.min_diagonal = mio_r_double(min_diagonal, "min_diagonal");
+    opts.min_area = mio_r_double(min_area, "min_area");
+    opts.min_cells = (int64_t)mio_r_double(min_cells, "min_cells");
+    opts.relative = mio_r_bool(relative, "relative");
+    opts.dry_run = mio_r_bool(dry_run, "dry_run");
+    mio_remove_islands_report r;
+    mio_mesh *out = mio_remove_islands(mio_r_mesh(mesh), &opts, &r);
+    if (out == NULL) mio_r_fail("remove_islands");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const char *names[] = {"mesh", "num_components", "num_removed", "num_cells_removed",
+                           "num_points_removed"};
+    const SEXP values[] = {mo, NULL, NULL, NULL, NULL};
+    const double numbers[] = {(double)r.num_components, (double)r.num_removed,
+                              (double)r.num_cells_removed, (double)r.num_points_removed};
+    SEXP res = mio_r_report_list(5, names, values, numbers);
+    UNPROTECT(1);
+    return res;
+}
+
 /* measure(mesh, spec) (roadmap 7.2): the report as its JSON text. */
 SEXP R_mio_measure(SEXP mesh, SEXP spec) {
     mio_measure_report r;

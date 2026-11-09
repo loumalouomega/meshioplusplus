@@ -117,6 +117,7 @@ if TYPE_CHECKING:
     from ._check_conformity import check_conformity
     from ._check_tetrahedra import check_tetrahedra
     from ._clean import clean
+    from ._clip import clip
     from ._colorize import colorize
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
@@ -144,6 +145,7 @@ if TYPE_CHECKING:
     from ._fit_cad import fit_cad
     from ._fit_curves import fit_curves
     from ._fit_primitives import fit_primitives
+    from ._flip_normals import flip_normals
     from ._geodesic import geodesic_distance
     from ._gpu import (
         from_cupy,
@@ -286,6 +288,7 @@ if TYPE_CHECKING:
     from ._remesh import remesh
     from ._remesh_quads import remesh_quads, remesh_quads_backends
     from ._remesh_volume import remesh_volume
+    from ._remove_islands import remove_islands
     from ._render import render_image, render_text, snapshot
     from ._reorder import compute_bandwidth, reorder
     from ._repair import repair
@@ -566,6 +569,9 @@ _LAZY_ATTRS = {
     "fit_curves": "_fit_curves",
     "silhouette": "_silhouette",
     "measure": "_measure",
+    "remove_islands": "_remove_islands",
+    "flip_normals": "_flip_normals",
+    "clip": "_clip",
     "measure_table": "_measure",
     "align_datums": "_measure",
     "write_step_elements": "_step_elements",
@@ -757,6 +763,9 @@ __all__ = [
     "measure",
     "measure_table",
     "align_datums",
+    "remove_islands",
+    "flip_normals",
+    "clip",
     "isosurface",
     "transform",
     "clean",

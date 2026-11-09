@@ -175,6 +175,9 @@
 #include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
 #include "meshioplusplus/operations/measure.hpp"
+#include "meshioplusplus/operations/remove_islands.hpp"
+#include "meshioplusplus/operations/flip_normals.hpp"
+#include "meshioplusplus/operations/clip.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -3096,6 +3099,84 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("origin"), py::arg("normal"), py::arg("record_parent_ids") = false,
         py::arg("chain") = false, py::arg("min_length") = 0.0);
+
+    // Cut by a plane, keep a side and cap it (roadmap 7.8.3).
+    m.def(
+        "clip",
+        [](py::object pymesh, std::array<double, 3> origin, std::array<double, 3> normal,
+           bool keep_below, bool cap) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::ClipOptions o;
+            o.mOrigin = origin;
+            o.mNormal = normal;
+            o.mKeepBelow = keep_below;
+            o.mCap = cap;
+            meshioplusplus::ClipResult r =
+                core_nogil([&] { return meshioplusplus::clip(mesh, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_kept"] = r.mNumKept;
+            out["num_split"] = r.mNumSplit;
+            out["num_cap_triangles"] = r.mNumCapTriangles;
+            out["num_loops"] = r.mNumLoops;
+            out["num_open_chains"] = r.mNumOpenChains;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("origin"), py::arg("normal"), py::arg("keep_below") = true,
+        py::arg("cap") = true);
+
+    // Reverse the winding of cells (roadmap 7.8.2).
+    m.def(
+        "flip_normals",
+        [](py::object pymesh, const std::string& region) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::FlipNormalsResult r =
+                core_nogil([&] { return meshioplusplus::flip_normals(mesh, region); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_flipped"] = r.mNumFlipped;
+            return out;
+        },
+        py::arg("mesh"), py::arg("region") = std::string());
+
+    // Drop a scan's crumbs (roadmap 7.8.1).
+    m.def(
+        "remove_islands",
+        [](py::object pymesh, const std::string& connectivity, double min_diagonal, double min_area,
+           std::int64_t min_cells, bool relative, bool dry_run) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::RemoveIslandsOptions o;
+            o.mConnectivity = meshioplusplus::island_connectivity_from_name(connectivity);
+            o.mMinDiagonal = min_diagonal;
+            o.mMinArea = min_area;
+            o.mMinCells = min_cells;
+            o.mRelative = relative;
+            o.mDryRun = dry_run;
+            meshioplusplus::RemoveIslandsResult r =
+                core_nogil([&] { return meshioplusplus::remove_islands(mesh, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_components"] = r.mNumComponents;
+            out["num_removed"] = r.mNumRemoved;
+            out["num_cells_removed"] = r.mNumCellsRemoved;
+            out["num_points_removed"] = r.mNumPointsRemoved;
+            out["component_cells"] = r.mComponentCells;
+            out["component_diagonal"] = r.mComponentDiagonal;
+            out["component_area"] = r.mComponentArea;
+            out["component_removed"] =
+                std::vector<int>(r.mComponentRemoved.begin(), r.mComponentRemoved.end());
+            return out;
+        },
+        py::arg("mesh"), py::arg("connectivity") = "edge", py::arg("min_diagonal") = 0.01,
+        py::arg("min_area") = 0.0, py::arg("min_cells") = 0, py::arg("relative") = true,
+        py::arg("dry_run") = false);
 
     // Elements, dimensions and GD&T (roadmap 7.2) and datum alignment (7.3.4).
     m.def(

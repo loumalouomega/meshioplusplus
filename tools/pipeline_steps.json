@@ -299,6 +299,23 @@
       {"name": "TwoSided", "kind": "flag", "default": false},
       {"name": "MaxNormalDeviation", "kind": "number", "default": 90.0}
     ]},
+    {"op": "RemoveIslands", "note": "Drop the small connected components (roadmap 7.8.1).", "keys": [
+      {"name": "Connectivity", "kind": "text", "default": "edge"},
+      {"name": "MinDiagonal", "kind": "number", "default": 0.01},
+      {"name": "MinArea", "kind": "number", "default": 0.0},
+      {"name": "MinCells", "kind": "number", "default": 0.0},
+      {"name": "Relative", "kind": "flag", "default": true},
+      {"name": "DryRun", "kind": "flag", "default": false}
+    ]},
+    {"op": "FlipNormals", "note": "Reverse the winding of cells (roadmap 7.8.2).", "keys": [
+      {"name": "Region", "kind": "text", "default": ""}
+    ]},
+    {"op": "Clip", "note": "Cut by a plane, keep a side and cap it (roadmap 7.8.3).", "keys": [
+      {"name": "Origin"},
+      {"name": "Normal"},
+      {"name": "Keep", "kind": "text", "default": "below"},
+      {"name": "Cap", "kind": "flag", "default": true}
+    ]},
     {"op": "Measure", "note": "Elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).", "keys": [
       {"name": "Spec", "kind": "text", "default": ""},
       {"name": "Require", "kind": "flag", "default": false}

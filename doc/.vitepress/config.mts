@@ -139,6 +139,7 @@ export default defineConfig({
               { text: "Cylindrical and spherical coordinates", link: "/coordinates" },
               { text: "Convex hull and planar Delaunay", link: "/hull" },
               { text: "Reflection (mirror)", link: "/mirror" },
+              { text: "Flipping normals", link: "/flip_normals" },
               { text: "Clean (weld / prune)", link: "/clean" },
               { text: "Merge / combine", link: "/merge" },
               { text: "Split (by criterion)", link: "/split" },
@@ -191,6 +192,7 @@ export default defineConfig({
             collapsed: true,
             items: [
               { text: "Crop (bbox / half-space / predicate)", link: "/crop" },
+              { text: "Clipping and capping", link: "/clip" },
               { text: "Slicing / cross-sections", link: "/slice" },
               { text: "Lines, arcs and circles from sections", link: "/fit_curves" },
               { text: "Silhouette outlines", link: "/silhouette" },
@@ -273,6 +275,7 @@ export default defineConfig({
           { text: "Point-cloud normals", link: "/point_normals" },
           { text: "Surface reconstruction", link: "/reconstruct_surface" },
           { text: "Surface repair", link: "/repair" },
+          { text: "Removing islands", link: "/remove_islands" },
           { text: "Shrinkwrap", link: "/shrinkwrap" },
           { text: "Sobolev deformation", link: "/sobolev_deform" },
           { text: "Mesh morphing", link: "/morph" },

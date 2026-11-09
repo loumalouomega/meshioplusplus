@@ -545,6 +545,57 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    @_forward(_tools.tool_remove_islands)
+    def remove_islands(
+        input_path: str,
+        output_path: str,
+        connectivity: str = "edge",
+        min_diagonal: float = 0.01,
+        min_area: float = 0.0,
+        min_cells: int = 0,
+        relative: bool = True,
+        dry_run: bool = False,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Drop a scan's crumbs: the connected components (by shared edges,
+        or points) whose bounding-box diagonal, area or cell count is below a
+        threshold, relative to the whole mesh by default (min_diagonal 0.01).
+        dry_run labels islands:component and islands:removed instead. Reports
+        num_components, num_removed, num_cells_removed, num_points_removed
+        and per component its cells, diagonal, area and whether it goes."""
+
+    @server.tool()
+    @_forward(_tools.tool_flip_normals)
+    def flip_normals(
+        input_path: str,
+        output_path: str,
+        region: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Reverse the winding of every cell, or of a cell region's, with no
+        point moved; Side regions move with their cells. Reports num_flipped."""
+
+    @server.tool()
+    @_forward(_tools.tool_clip)
+    def clip(
+        input_path: str,
+        output_path: str,
+        origin: List[float],
+        normal: List[float],
+        keep: str = "below",
+        cap: bool = True,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Cut a surface by the plane through origin normal to normal, keep
+        the side below it (or "above"), split the triangles across it at the
+        crossings slice computes, and cap the cut's closed loops so a closed
+        part stays closed. Reports num_kept, num_split, num_cap_triangles,
+        num_loops, num_open_chains and warnings."""
+
+    @server.tool()
     @_forward(_tools.tool_measure)
     def measure(
         input_path: str,

@@ -5704,6 +5704,11 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.equal(el.numPlanes, 6);
     assert.ok(m.FS.readFile('/elements.step', { encoding: 'utf8' }).includes('SHELL_BASED_SURFACE_MODEL'));
     assert.throws(() => m.writeStepElements('/elements.step', fp.mesh, { patches: [99] }), /patch/);
+    assert.equal(m.clip(cubeSurface, [0, 0, 0.5], [0, 0, 1]).numLoops, 1);
+    assert.equal(m.flipNormals(cubeSurface).numFlipped, 12);
+    const ri = m.removeIslands(cubeSurface);
+    assert.equal(ri.numComponents, 1);
+    assert.throws(() => m.removeIslands(cubeSurface, { connectivity: 'face' }), /connectivity/);
     const ms = m.measure(cubeSurface, {
         elements: [
             { name: 'A', fit: 'plane', seeds: [[0.5, 0.5, 0.0]] },

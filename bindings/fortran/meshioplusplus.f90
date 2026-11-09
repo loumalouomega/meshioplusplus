@@ -82,6 +82,9 @@ module meshioplusplus
     public :: mio_silhouette, mio_silhouette_report
     public :: mio_write_step_elements, mio_step_elements_report
     public :: mio_measure, mio_measure_report, mio_align_datums, mio_measure_element_primitive
+    public :: mio_remove_islands, mio_remove_islands_report
+    public :: mio_flip_normals
+    public :: mio_clip, mio_clip_report
     public :: mio_deviation_regions, mio_deviation_regions_report, mio_deviation_region_info
     public :: mio_deviation_region
     public :: mio_exaggerate, mio_exaggerate_report, mio_colorize, mio_colorize_report
@@ -1641,6 +1644,38 @@ module meshioplusplus
         real(c_double) :: min_height = 0.0_c_double
         real(c_double) :: max_height = 0.0_c_double
         integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_clip_report` (72 bytes; roadmap 7.8.3).
+    type, bind(c) :: mio_clip_report
+        integer(c_int64_t) :: num_kept = 0
+        integer(c_int64_t) :: num_split = 0
+        integer(c_int64_t) :: num_cap_triangles = 0
+        integer(c_int64_t) :: num_loops = 0
+        integer(c_int64_t) :: num_open_chains = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> Interop mirror of C `mio_remove_islands_opts` (64 bytes; roadmap 7.8.1).
+    type, bind(c) :: mio_remove_islands_opts_t
+        integer(c_int32_t) :: connectivity = 0
+        integer(c_int32_t) :: relative = 1
+        real(c_double) :: min_diagonal = 0.01_c_double
+        real(c_double) :: min_area = 0.0_c_double
+        integer(c_int64_t) :: min_cells = 0
+        integer(c_int32_t) :: dry_run = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> `mio_remove_islands_report` (64 bytes).
+    type, bind(c) :: mio_remove_islands_report
+        integer(c_int64_t) :: num_components = 0
+        integer(c_int64_t) :: num_removed = 0
+        integer(c_int64_t) :: num_cells_removed = 0
+        integer(c_int64_t) :: num_points_removed = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
@@ -4328,6 +4363,33 @@ module meshioplusplus
             type(c_ptr), value :: h
             type(mio_silhouette_opts_t), intent(in) :: opts
             type(mio_silhouette_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_clip(h, origin, normal, keep_below, cap, report) &
+                bind(c, name="mio_clip") result(out)
+            import :: c_ptr, c_double, c_int32_t, mio_clip_report
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: origin(3), normal(3)
+            integer(c_int32_t), value :: keep_below, cap
+            type(mio_clip_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_flip_normals(h, region, n) bind(c, name="mio_flip_normals") result(out)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: region
+            integer(c_int64_t), intent(out) :: n
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_remove_islands(h, opts, report) bind(c, name="mio_remove_islands") &
+                result(out)
+            import :: c_ptr, mio_remove_islands_opts_t, mio_remove_islands_report
+            type(c_ptr), value :: h
+            type(mio_remove_islands_opts_t), intent(in) :: opts
+            type(mio_remove_islands_report), intent(out) :: report
             type(c_ptr) :: out
         end function
 
@@ -8821,6 +8883,113 @@ contains
         out%handle = c_mio_silhouette(mesh%handle, opts, rep)
         if (.not. c_associated(out%handle)) then
             call handle_failure('silhouette', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Cut a surface by the plane through `origin` normal to `normal`, keep
+    !> the side below (`keep_below`, default) or above, and cap the cut's
+    !> closed loops (`cap`, default) (roadmap 7.8.3).
+    function mio_clip(mesh, origin, normal, keep_below, cap, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in) :: origin(3), normal(3)
+        logical, intent(in), optional :: keep_below, cap
+        type(mio_clip_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_clip_report) :: rep
+        integer(c_int32_t) :: kb, cp
+        if (c_sizeof(rep) /= 72_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: clip layout mismatch'
+            error stop 1
+        end if
+        kb = 1
+        cp = 1
+        if (present(keep_below)) then
+            if (.not. keep_below) kb = 0
+        end if
+        if (present(cap)) then
+            if (.not. cap) cp = 0
+        end if
+        out%handle = c_mio_clip(mesh%handle, real(origin, c_double), real(normal, c_double), &
+                                kb, cp, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('clip', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Reverse the winding of every cell, or of the cell region `region`
+    !> (roadmap 7.8.2), with no point moved.
+    function mio_flip_normals(mesh, region, num_flipped, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in), optional :: region
+        integer(int64), intent(out), optional :: num_flipped
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int64_t) :: n
+        if (present(region)) then
+            out%handle = c_mio_flip_normals(mesh%handle, c_str(region), n)
+        else
+            out%handle = c_mio_flip_normals(mesh%handle, c_str(''), n)
+        end if
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('flip_normals', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_flipped)) num_flipped = int(n, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Remove the small connected components of `mesh` (roadmap 7.8.1):
+    !> `connectivity` 'edge' (default) or 'point'; `dry_run` labels instead.
+    function mio_remove_islands(mesh, connectivity, min_diagonal, min_area, min_cells, &
+                                relative, dry_run, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in), optional :: connectivity
+        real(real64), intent(in), optional :: min_diagonal, min_area
+        integer, intent(in), optional :: min_cells
+        logical, intent(in), optional :: relative, dry_run
+        type(mio_remove_islands_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_remove_islands_opts_t) :: opts
+        type(mio_remove_islands_report) :: rep
+        if (c_sizeof(opts) /= 64_c_size_t .or. c_sizeof(rep) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: remove_islands layout mismatch'
+            error stop 1
+        end if
+        if (present(connectivity)) then
+            select case (trim(connectivity))
+            case ('edge')
+                opts%connectivity = 0
+            case ('point')
+                opts%connectivity = 1
+            case default
+                call handle_failure('remove_islands', "connectivity must be edge or point", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(min_diagonal)) opts%min_diagonal = real(min_diagonal, c_double)
+        if (present(min_area)) opts%min_area = real(min_area, c_double)
+        if (present(min_cells)) opts%min_cells = int(min_cells, c_int64_t)
+        if (present(relative)) then
+            if (.not. relative) opts%relative = 0
+        end if
+        if (present(dry_run)) then
+            if (dry_run) opts%dry_run = 1
+        end if
+        out%handle = c_mio_remove_islands(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('remove_islands', mio_error_message(), stat, errmsg)
             return
         end if
         if (present(report)) report = rep

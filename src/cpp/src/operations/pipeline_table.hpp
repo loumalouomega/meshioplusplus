@@ -98,6 +98,13 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Thickness",
          {"Other", "Direction", "MaxDistance", "Min", "Region", "RegionOther", "Require", "Method",
           "ConeAngle", "ConeRays", "TwoSided", "MaxNormalDeviation"}},
+        // Drop the small connected components (roadmap 7.8.1).
+        {"RemoveIslands",
+         {"Connectivity", "MinDiagonal", "MinArea", "MinCells", "Relative", "DryRun"}},
+        // Reverse the winding of cells (roadmap 7.8.2).
+        {"FlipNormals", {"Region"}},
+        // Cut by a plane, keep a side and cap it (roadmap 7.8.3).
+        {"Clip", {"Origin", "Normal", "Keep", "Cap"}},
         // Elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).
         {"Measure", {"Spec", "Require"}},
         // The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4).

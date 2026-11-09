@@ -54,5 +54,10 @@ struct CellComponents {
 /// Label the node-connected components of @p rMesh's cells.
 CellComponents cell_components(const Mesh& rMesh);
 
+/// Label the edge-connected components (cells sharing a facet, over
+/// `build_facet_dual_graph` with polygon rings), numbered alike: in the order
+/// of each one's lowest global cell. Serial (roadmap 7.8.1).
+CellComponents cell_components_by_edge(const Mesh& rMesh);
+
 }  // namespace detail
 }  // namespace meshioplusplus

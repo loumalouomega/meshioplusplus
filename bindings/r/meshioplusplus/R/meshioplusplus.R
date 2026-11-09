@@ -1401,6 +1401,61 @@ mio_slice <- function(mesh, origin, normal, record_parent_ids = FALSE, chain = F
 #' @param record_parent_ids Attach `slice:parent_cell`.
 #' @return A `mio_mesh`.
 #' @export
+#' Cut a surface by a plane, keep a side and cap it
+#'
+#' The plane through `origin` normal to `normal`; the side below it (or above)
+#' is kept, straddling triangles split, and the cut's closed loops capped
+#' (roadmap 7.8.3). See `doc/clip.md`.
+#'
+#' @param mesh A surface mesh.
+#' @param origin,normal The plane.
+#' @param keep_below Keep the side below (else above).
+#' @param cap Triangulate the cut's closed loops.
+#' @return A list: `mesh`, `num_kept`, `num_split`, `num_cap_triangles`,
+#'   `num_loops`, `num_open_chains` and `warnings`.
+#' @export
+mio_clip <- function(mesh, origin, normal, keep_below = TRUE, cap = TRUE) {
+  res <- .Call(R_mio_clip, mesh, as.numeric(origin), as.numeric(normal), as.logical(keep_below),
+               as.logical(cap))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Reverse the winding of cells
+#'
+#' Every cell, or the cells of a cell region, with no point moved; Side region
+#' entries move with their cells (roadmap 7.8.2). See `doc/flip_normals.md`.
+#'
+#' @param mesh A mesh.
+#' @param region A cell region's name, or `NULL` for every cell.
+#' @return A list: `mesh` and `num_flipped`.
+#' @export
+mio_flip_normals <- function(mesh, region = NULL) {
+  .Call(R_mio_flip_normals, mesh, region)
+}
+
+#' Remove the small connected components of a mesh
+#'
+#' Drop a scan's crumbs (roadmap 7.8.1): components (by shared edges or
+#' points) whose bounding-box diagonal, area or cell count is below a
+#' threshold. See `doc/remove_islands.md`.
+#'
+#' @param mesh A mesh.
+#' @param connectivity `"edge"` or `"point"`.
+#' @param min_diagonal,min_area,min_cells The thresholds (0 off).
+#' @param relative Diagonal and area as fractions of the whole mesh's.
+#' @param dry_run Remove nothing; label `islands:component` and `islands:removed`.
+#' @return A list: `mesh`, `num_components`, `num_removed`,
+#'   `num_cells_removed` and `num_points_removed`.
+#' @export
+mio_remove_islands <- function(mesh, connectivity = "edge", min_diagonal = 0.01, min_area = 0,
+                               min_cells = 0, relative = TRUE, dry_run = FALSE) {
+  conn <- match(connectivity, c("edge", "point"))
+  if (is.na(conn)) stop("meshio++: remove_islands: connectivity must be edge or point")
+  .Call(R_mio_remove_islands, mesh, as.integer(conn - 1L), as.numeric(min_diagonal),
+        as.numeric(min_area), as.numeric(min_cells), as.logical(relative), as.logical(dry_run))
+}
+
 #' Elements, dimensions and GD&T tolerances
 #'
 #' Measure a mesh by a JSON spec (roadmap 7.2): elements fitted from regions,

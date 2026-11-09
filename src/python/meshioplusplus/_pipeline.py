@@ -1804,6 +1804,47 @@ def _apply_step(mesh, step, steps, warnings):
         entry["Mean"] = float(rep["mean"])
         entry["P2"] = float(rep["p2"])
         entry["P95"] = float(rep["p95"])
+    elif op == "RemoveIslands":
+        from ._remove_islands import remove_islands
+
+        mesh, rep = remove_islands(
+            mesh,
+            connectivity=_text(step, "Connectivity", "edge"),
+            min_diagonal=_number(step, "MinDiagonal", 0.01),
+            min_area=_number(step, "MinArea", 0.0),
+            min_cells=int(_number(step, "MinCells", 0.0)),
+            relative=_flag(step, "Relative", True),
+            dry_run=_flag(step, "DryRun", False),
+            return_report=True,
+        )
+        entry["NumComponents"] = float(rep["num_components"])
+        entry["NumRemoved"] = float(rep["num_removed"])
+        entry["NumCellsRemoved"] = float(rep["num_cells_removed"])
+    elif op == "FlipNormals":
+        from ._flip_normals import flip_normals
+
+        mesh, rep = flip_normals(
+            mesh, _text(step, "Region", "") or None, return_report=True
+        )
+        entry["NumFlipped"] = float(rep["num_flipped"])
+    elif op == "Clip":
+        from ._clip import clip
+
+        keep = _text(step, "Keep", "below")
+        if keep not in ("below", "above"):
+            raise ValueError("meshio++: pipeline: Clip: Keep is below or above")
+        mesh, rep = clip(
+            mesh,
+            _vec3(step, "Origin") if "Origin" in step else (0.0, 0.0, 0.0),
+            _vec3(step, "Normal") if "Normal" in step else (0.0, 0.0, 1.0),
+            keep=keep,
+            cap=_flag(step, "Cap", True),
+            return_report=True,
+        )
+        warnings.extend(f"clip: {w}" for w in rep["warnings"])
+        entry["NumSplit"] = float(rep["num_split"])
+        entry["NumCapTriangles"] = float(rep["num_cap_triangles"])
+        entry["NumLoops"] = float(rep["num_loops"])
     elif op == "Measure":
         from ._measure import measure
 

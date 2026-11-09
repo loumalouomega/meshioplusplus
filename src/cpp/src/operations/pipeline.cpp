@@ -92,6 +92,9 @@
 #include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
 #include "meshioplusplus/operations/measure.hpp"
+#include "meshioplusplus/operations/remove_islands.hpp"
+#include "meshioplusplus/operations/flip_normals.hpp"
+#include "meshioplusplus/operations/clip.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -1418,6 +1421,46 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             rReport.mWarnings.push_back(
                 "the section is empty; the plane misses the mesh -- move or flip it");
         return section;
+    }
+    if (op == "RemoveIslands") {
+        RemoveIslandsOptions o;
+        o.mConnectivity = island_connectivity_from_name(pipe_text(rStep, "Connectivity", "edge"));
+        o.mMinDiagonal = pipe_number(rStep, "MinDiagonal", 0.01);
+        o.mMinArea = pipe_number(rStep, "MinArea", 0.0);
+        o.mMinCells = static_cast<std::int64_t>(pipe_number(rStep, "MinCells", 0.0));
+        o.mRelative = pipe_flag(rStep, "Relative", true);
+        o.mDryRun = pipe_flag(rStep, "DryRun", false);
+        RemoveIslandsResult rr = remove_islands(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumComponents", static_cast<double>(rr.mNumComponents)},
+                        {"NumRemoved", static_cast<double>(rr.mNumRemoved)},
+                        {"NumCellsRemoved", static_cast<double>(rr.mNumCellsRemoved)}});
+        return std::move(rr.mMesh);
+    }
+    if (op == "FlipNormals") {
+        FlipNormalsResult fr = flip_normals(mesh, pipe_text(rStep, "Region", ""));
+        pipe_push_step(rReport, rStep, {{"NumFlipped", static_cast<double>(fr.mNumFlipped)}});
+        return std::move(fr.mMesh);
+    }
+    if (op == "Clip") {
+        ClipOptions o;
+        if (pipe_find(rStep, "Origin"))
+            pipe_vec3(rStep, "Origin", o.mOrigin.data());
+        if (pipe_find(rStep, "Normal"))
+            pipe_vec3(rStep, "Normal", o.mNormal.data());
+        const std::string keep = pipe_text(rStep, "Keep", "below");
+        if (keep != "below" && keep != "above")
+            throw std::invalid_argument(pipe_err(rStep, "Keep is below or above"));
+        o.mKeepBelow = keep == "below";
+        o.mCap = pipe_flag(rStep, "Cap", true);
+        ClipResult cr = clip(mesh, o);
+        for (const std::string& w : cr.mWarnings)
+            rReport.mWarnings.push_back("clip: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumSplit", static_cast<double>(cr.mNumSplit)},
+                        {"NumCapTriangles", static_cast<double>(cr.mNumCapTriangles)},
+                        {"NumLoops", static_cast<double>(cr.mNumLoops)}});
+        return std::move(cr.mMesh);
     }
     if (op == "Measure") {
         std::string spec = pipe_text(rStep, "Spec", "");

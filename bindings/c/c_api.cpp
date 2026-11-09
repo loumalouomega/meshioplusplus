@@ -86,6 +86,9 @@
 #include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
 #include "meshioplusplus/operations/measure.hpp"
+#include "meshioplusplus/operations/remove_islands.hpp"
+#include "meshioplusplus/operations/flip_normals.hpp"
+#include "meshioplusplus/operations/clip.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -2762,6 +2765,10 @@ std::string& capi_silhouette_warnings() {
     thread_local std::string last;
     return last;
 }
+std::string& capi_clip_warnings() {
+    thread_local std::string last;
+    return last;
+}
 std::string& capi_step_elements_warnings() {
     thread_local std::string last;
     return last;
@@ -2924,6 +2931,96 @@ int64_t mio_silhouette_warnings(char* buf, int64_t buflen) {
         if (buflen < 0)
             throw std::invalid_argument("meshio++: negative warnings buffer length");
         return copy_string(capi_silhouette_warnings(), buf, buflen);
+    });
+}
+
+static_assert(sizeof(mio_clip_report) == 72, "mio_clip_report layout");
+
+mio_mesh* mio_clip(const mio_mesh* mesh, const double origin[3], const double normal[3],
+                   int32_t keep_below, int32_t cap, mio_clip_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_clip_warnings().clear();
+        capi_require(mesh, "meshio++: clip: mesh is NULL");
+        capi_require(origin, "meshio++: clip: origin is NULL");
+        capi_require(normal, "meshio++: clip: normal is NULL");
+        meshioplusplus::ClipOptions o;
+        o.mOrigin = {origin[0], origin[1], origin[2]};
+        o.mNormal = {normal[0], normal[1], normal[2]};
+        o.mKeepBelow = keep_below != 0;
+        o.mCap = cap != 0;
+        meshioplusplus::ClipResult r = meshioplusplus::clip(mesh->mMesh, o);
+        for (const std::string& w : r.mWarnings)
+            capi_clip_warnings() += (capi_clip_warnings().empty() ? "" : "\n") + w;
+        if (report) {
+            *report = mio_clip_report{};
+            report->num_kept = r.mNumKept;
+            report->num_split = r.mNumSplit;
+            report->num_cap_triangles = r.mNumCapTriangles;
+            report->num_loops = r.mNumLoops;
+            report->num_open_chains = r.mNumOpenChains;
+            report->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_clip_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_clip_warnings(), buf, buflen);
+    });
+}
+
+mio_mesh* mio_flip_normals(const mio_mesh* mesh, const char* region, int64_t* num_flipped) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: flip_normals: mesh is NULL");
+        meshioplusplus::FlipNormalsResult r =
+            meshioplusplus::flip_normals(mesh->mMesh, region ? std::string(region) : std::string());
+        if (num_flipped)
+            *num_flipped = r.mNumFlipped;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+static_assert(sizeof(mio_remove_islands_opts) == 64, "mio_remove_islands_opts layout");
+static_assert(sizeof(mio_remove_islands_report) == 64, "mio_remove_islands_report layout");
+
+void mio_remove_islands_opts_init(mio_remove_islands_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_remove_islands_opts{};
+    opts->relative = 1;
+    opts->min_diagonal = 0.01;
+}
+
+mio_mesh* mio_remove_islands(const mio_mesh* mesh, const mio_remove_islands_opts* opts,
+                             mio_remove_islands_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: remove_islands: mesh is NULL");
+        mio_remove_islands_opts o;
+        mio_remove_islands_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::RemoveIslandsOptions options;
+        if (o.connectivity != 0 && o.connectivity != 1)
+            throw std::invalid_argument("meshio++: remove_islands: connectivity is 0 or 1");
+        options.mConnectivity = static_cast<meshioplusplus::IslandConnectivity>(o.connectivity);
+        options.mRelative = o.relative != 0;
+        options.mMinDiagonal = o.min_diagonal;
+        options.mMinArea = o.min_area;
+        options.mMinCells = o.min_cells;
+        options.mDryRun = o.dry_run != 0;
+        meshioplusplus::RemoveIslandsResult r =
+            meshioplusplus::remove_islands(mesh->mMesh, options);
+        if (report) {
+            *report = mio_remove_islands_report{};
+            report->num_components = r.mNumComponents;
+            report->num_removed = r.mNumRemoved;
+            report->num_cells_removed = r.mNumCellsRemoved;
+            report->num_points_removed = r.mNumPointsRemoved;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
     });
 }
 

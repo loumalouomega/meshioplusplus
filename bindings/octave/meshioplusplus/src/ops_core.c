@@ -226,6 +226,61 @@ static mxArray *O_mio_slice(const mxArray **a) {
     return mio_o_wrap_mesh(out);
 }
 
+/* clip(mesh, origin, normal, keep_below, cap) (roadmap 7.8.3). */
+static mxArray *O_mio_clip(const mxArray **a) {
+    double o[3], n[3];
+    mio_o_vec3(a[1], o, "origin");
+    mio_o_vec3(a[2], n, "normal");
+    mio_clip_report r;
+    mio_mesh *out = mio_clip(mio_o_mesh(a[0]), o, n, mio_o_bool(a[3], "keep_below"),
+                             mio_o_bool(a[4], "cap"), &r);
+    if (out == NULL) mio_o_fail("clip");
+    mxArray *w = mio_o_getbuffer(mio_clip_warnings, "clip");
+    const char *keys[] = {"mesh",      "num_kept",        "num_split", "num_cap_triangles",
+                          "num_loops", "num_open_chains", "warnings"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mio_o_scalar((double)r.num_kept),
+                         mio_o_scalar((double)r.num_split),
+                         mio_o_scalar((double)r.num_cap_triangles),
+                         mio_o_scalar((double)r.num_loops),
+                         mio_o_scalar((double)r.num_open_chains),
+                         w};
+    return mio_o_struct(7, keys, values);
+}
+
+/* flip_normals(mesh, region) (roadmap 7.8.2). */
+static mxArray *O_mio_flip_normals(const mxArray **a) {
+    int64_t n = 0;
+    mio_mesh *out = mio_flip_normals(mio_o_mesh(a[0]), mio_o_opt_string(a[1]), &n);
+    if (out == NULL) mio_o_fail("flip_normals");
+    const char *keys[] = {"mesh", "num_flipped"};
+    mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)n)};
+    return mio_o_struct(2, keys, values);
+}
+
+/* remove_islands(mesh, connectivity, min_diagonal, min_area, min_cells,
+ * relative, dry_run) (roadmap 7.8.1). */
+static mxArray *O_mio_remove_islands(const mxArray **a) {
+    mio_remove_islands_opts opts;
+    mio_remove_islands_opts_init(&opts);
+    opts.connectivity = mio_o_int(a[1], "connectivity");
+    opts.min_diagonal = mio_o_double(a[2], "min_diagonal");
+    opts.min_area = mio_o_double(a[3], "min_area");
+    opts.min_cells = (int64_t)mio_o_double(a[4], "min_cells");
+    opts.relative = mio_o_bool(a[5], "relative");
+    opts.dry_run = mio_o_bool(a[6], "dry_run");
+    mio_remove_islands_report r;
+    mio_mesh *out = mio_remove_islands(mio_o_mesh(a[0]), &opts, &r);
+    if (out == NULL) mio_o_fail("remove_islands");
+    const char *keys[] = {"mesh", "num_components", "num_removed", "num_cells_removed",
+                          "num_points_removed"};
+    mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)r.num_components),
+                         mio_o_scalar((double)r.num_removed),
+                         mio_o_scalar((double)r.num_cells_removed),
+                         mio_o_scalar((double)r.num_points_removed)};
+    return mio_o_struct(5, keys, values);
+}
+
 /* measure(mesh, spec) (roadmap 7.2): the report as its JSON text. */
 static mxArray *O_mio_measure(const mxArray **a) {
     mio_measure_report r;
@@ -1743,6 +1798,9 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_silhouette, 8),
     MIO_O_ENTRY(mio_write_step_elements, 4),
     MIO_O_ENTRY(mio_measure, 2),
+    MIO_O_ENTRY(mio_remove_islands, 7),
+    MIO_O_ENTRY(mio_flip_normals, 2),
+    MIO_O_ENTRY(mio_clip, 5),
     MIO_O_ENTRY(mio_align_datums, 4),
     MIO_O_ENTRY(mio_measure_element_primitive, 2),
     MIO_O_ENTRY(mio_isosurface, 5),

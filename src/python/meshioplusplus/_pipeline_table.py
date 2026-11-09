@@ -304,6 +304,24 @@ OP_TABLE = {
         "TwoSided",
         "MaxNormalDeviation",
     ),
+    # Drop the small connected components (roadmap 7.8.1).
+    "RemoveIslands": (
+        "Connectivity",
+        "MinDiagonal",
+        "MinArea",
+        "MinCells",
+        "Relative",
+        "DryRun",
+    ),
+    # Reverse the winding of cells (roadmap 7.8.2).
+    "FlipNormals": ("Region",),
+    # Cut by a plane, keep a side and cap it (roadmap 7.8.3).
+    "Clip": (
+        "Origin",
+        "Normal",
+        "Keep",
+        "Cap",
+    ),
     # Elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).
     "Measure": (
         "Spec",
