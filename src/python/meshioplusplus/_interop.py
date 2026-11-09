@@ -227,21 +227,25 @@ def _flatten_cell_data(mesh, name, block_indices, notes):
     return np.concatenate(parts, axis=0)
 
 
-def _region_payload(mesh, num_points, kept_global, notes):
+def _region_payload(mesh, num_points, kept_global, notes, carry_sides=False):
     """Region masks + the JSON-serializable metadata sidecar.
 
     ``Point`` and ``Cell`` regions become int8 0/1 masks keyed
     ``(kind, name)``; ``Side`` regions are dropped by name, because neither VTK
     nor trimesh has a ``(cell, local facet)`` concept to map them onto.
 
-    ``kept_global`` is the ascending array of *global block-major* cell indices
-    actually emitted (blocks the target cannot express are absent from it), so a
+    ``carry_sides`` skips side regions without a note, for a caller that
+    carries them itself (the ParaView plugin, as the VTU convention's field
+    arrays). ``kept_global`` is the ascending array of *global block-major*
+    cell indices actually emitted (blocks the target cannot express are absent from it), so a
     cell region entry in a dropped block is removed here rather than silently
     landing on the wrong cell.
     """
     masks, meta = {}, []
     n_cells = len(kept_global)
     for region in getattr(mesh, "regions", []):
+        if region.kind == "side" and carry_sides:
+            continue  # the caller carries it another way
         if region.kind == "side":
             notes.append(
                 f"side region '{region.name}' was dropped: the target has no "
@@ -462,7 +466,9 @@ def _vtk_polyhedron_block(cell_block):
     return nodes[first], counts, flat, np.diff(offsets), np.diff(face_offsets)
 
 
-def _to_vtk_payload(mesh, zero_copy_only: bool = False) -> VtkPayload:
+def _to_vtk_payload(
+    mesh, zero_copy_only: bool = False, carry_sides: bool = False
+) -> VtkPayload:
     """Map a mesh onto the arrays a VTK 9 unstructured grid needs.
 
     Pure: imports no third-party library, touches no VTK object, and does not
@@ -473,6 +479,9 @@ def _to_vtk_payload(mesh, zero_copy_only: bool = False) -> VtkPayload:
     exception. Mixed-type meshes are the normal case. A polyhedron block is a
     ``VTK_POLYHEDRON`` block: its faces travel in ``face_connectivity``,
     ``face_offsets`` and ``face_location_offsets``.
+
+    ``carry_sides`` leaves side regions out without the note that they were
+    dropped, for a caller that carries them itself.
 
     Raises
     ------
@@ -607,7 +616,9 @@ def _to_vtk_payload(mesh, zero_copy_only: bool = False) -> VtkPayload:
         if got is not None:
             cell_data[name] = got
 
-    masks, meta = _region_payload(mesh, len(points), kept_global, notes)
+    masks, meta = _region_payload(
+        mesh, len(points), kept_global, notes, carry_sides=carry_sides
+    )
 
     return VtkPayload(
         points=points,

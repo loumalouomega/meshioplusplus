@@ -370,3 +370,37 @@ def test_an_unticked_array_is_absent(tmp_path):
     assert seen["offered"] == ["u", "v"]
     assert seen["read"] == ["v"]
     assert sorted(a.split(":")[0] for a in seen["addons"]) == ["mmg", "netgen", "occt"]
+
+
+_BLOCKS = """
+src = args[0]
+reader = meshioreader(FileName=src, RegionsAsBlocks=1)
+reader.UpdatePipeline()
+data = servermanager.Fetch(reader)
+blocks = {}
+for i in range(data.GetNumberOfPartitionedDataSets()):
+    name = data.GetMetaData(i).Get(data.NAME())
+    blocks[name] = data.GetPartition(i, 0).GetNumberOfCells()
+print(json.dumps({"class": data.GetClassName(), "blocks": blocks}))
+"""
+
+
+def test_regions_as_blocks_in_paraview(tmp_path):
+    """roadmap 6.6.2: a Gmsh file with two physical groups shows both names,
+    each block with its region's cell count."""
+    from meshioplusplus._regions import Region
+
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]]),
+        [("tetra", [[0, 1, 2, 3], [1, 2, 3, 4]]), ("triangle", [[0, 1, 2]])],
+        regions=[
+            Region("solid", "cell", [0, 1], 3, 1),
+            Region("bottom", "cell", [2], 2, 2),
+        ],
+    )
+    src = tmp_path / "groups.msh"
+    meshioplusplus.write(src, mesh)
+    seen = _run_pvpython(tmp_path, _BLOCKS, src)
+    assert seen["class"] == "vtkPartitionedDataSetCollection"
+    assert seen["blocks"]["solid"] == 2
+    assert seen["blocks"]["bottom"] == 1

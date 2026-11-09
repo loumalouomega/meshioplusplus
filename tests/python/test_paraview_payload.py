@@ -466,3 +466,96 @@ def test_addon_status_names_the_three_addons():
     status = _paraview.addon_status()
     assert set(status) == {"occt", "netgen", "mmg"}
     assert all(isinstance(v, bool) for v in status.values())
+
+
+# --------------------------------------------------------------------------- #
+# named regions (roadmap 6.6)                                                 #
+# --------------------------------------------------------------------------- #
+def _regions_mesh():
+    from meshioplusplus._regions import Region
+
+    return meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]]),
+        [("triangle", [[0, 1, 2]]), ("tetra", [[0, 1, 2, 3], [1, 2, 3, 4]])],
+        regions=[
+            Region("inlet", "point", [0, 1], 0, 5),
+            Region("steel", "cell", [1, 2], 3, 7),
+            Region("skin", "cell", [0], 2, 8),
+            Region("wall", "side", [[1, 0], [2, 3]], 2, 9),
+        ],
+    )
+
+
+def _regions_of(mesh):
+    return sorted(
+        (r.name, r.kind, np.asarray(r.entries).tolist(), r.dim, r.tag)
+        for r in mesh.regions
+    )
+
+
+def test_regions_round_trip_as_arrays():
+    """roadmap 6.6.1: point and cell regions as region: masks with the
+    sidecar, side regions as the VTU convention's field arrays; all come
+    back with their dim and tag, and no carrier array is left over."""
+    mesh = _regions_mesh()
+    grid = _paraview.grid_from_mesh(mesh)
+    cell_names = {
+        grid.GetCellData().GetArrayName(i)
+        for i in range(grid.GetCellData().GetNumberOfArrays())
+    }
+    assert cell_names == {"region:steel", "region:skin"}
+    assert grid.GetFieldData().GetAbstractArray("region:side:wall") is not None
+    back = _paraview.mesh_from_grid(grid)
+    assert _regions_of(back) == _regions_of(mesh)
+    assert dict(back.field_data) == {} and back.cell_data == {}
+    assert back.point_data == {}
+
+
+def test_regions_from_a_vtu_paraview_opened_itself(tmp_path):
+    """A meshio++ VTU read by ParaView's own reader carries its regions as
+    region:<kind>:<name> field arrays; the writer turns them back into
+    regions."""
+    path = tmp_path / "r.vtu"
+    meshioplusplus.write(path, _regions_mesh())
+    reader = vtk.vtkXMLUnstructuredGridReader()
+    reader.SetFileName(str(path))
+    reader.Update()
+    back = _paraview.mesh_from_grid(reader.GetOutput())
+    assert _regions_of(back) == _regions_of(_regions_mesh())
+
+
+def test_regions_as_blocks(tmp_path):
+    """roadmap 6.6.2: the roadmap's probe -- a Gmsh file with two physical
+    groups shows both names in the assembly, each with its cell count."""
+    from meshioplusplus._regions import Region
+
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]]),
+        [("tetra", [[0, 1, 2, 3], [1, 2, 3, 4]]), ("triangle", [[0, 1, 2]])],
+        regions=[
+            Region("solid", "cell", [0, 1], 3, 1),
+            Region("bottom", "cell", [2], 2, 2),
+        ],
+    )
+    path = tmp_path / "groups.msh"
+    meshioplusplus.write(path, mesh)
+    read = meshioplusplus.read(path)
+    collection = _paraview.fill_collection(vtk.vtkPartitionedDataSetCollection(), read)
+    names = {
+        collection.GetMetaData(i)
+        .Get(vtk.vtkCompositeDataSet.NAME()): collection.GetPartition(i, 0)
+        .GetNumberOfCells()
+        for i in range(collection.GetNumberOfPartitionedDataSets())
+    }
+    expected = {r.name: len(r.entries) for r in read.regions if r.kind == "cell"}
+    assert names == expected
+    assert names["solid"] == 2 and names["bottom"] == 1
+    assembly = collection.GetDataAssembly()
+    group = assembly.FindFirstNodeWithName("cell_regions")
+    children = {assembly.GetNodeName(n) for n in assembly.GetChildNodes(group)}
+    assert children == set(expected)
+
+
+def test_region_pieces_of_a_mesh_without_regions():
+    mesh = _step_meshes()[0][1]
+    assert [(g, n) for g, n, _ in _paraview.region_pieces(mesh)] == [("mesh", "mesh")]

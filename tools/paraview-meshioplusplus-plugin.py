@@ -19,7 +19,11 @@ from paraview.util.vtkAlgorithm import (
     smproxy,
 )
 from vtkmodules.vtkCommonCore import vtkDataArraySelection
-from vtkmodules.vtkCommonDataModel import vtkDataObject, vtkUnstructuredGrid
+from vtkmodules.vtkCommonDataModel import (
+    vtkDataObject,
+    vtkPartitionedDataSetCollection,
+    vtkUnstructuredGrid,
+)
 
 import meshioplusplus
 from meshioplusplus import _paraview
@@ -71,9 +75,12 @@ def _alias(proxy, name, decorator):
 )
 class MeshioPlusPlusReader(VTKPythonAlgorithmBase):
     def __init__(self):
+        # vtkDataObject: RequestDataObject picks an unstructured grid, or a
+        # partitioned dataset collection when RegionsAsBlocks is on.
         VTKPythonAlgorithmBase.__init__(
-            self, nInputPorts=0, nOutputPorts=1, outputType="vtkUnstructuredGrid"
+            self, nInputPorts=0, nOutputPorts=1, outputType="vtkDataObject"
         )
+        self._regions_as_blocks = False
         self._filenames = []
         self._file_format = None
         self._points_only = False
@@ -190,6 +197,15 @@ class MeshioPlusPlusReader(VTKPythonAlgorithmBase):
             self._angular_deflection = float(value)
             self.Modified()
 
+    @smproperty.intvector(name="RegionsAsBlocks", default_values="0")
+    @smdomain.xml('<BooleanDomain name="bool"/>')
+    def SetRegionsAsBlocks(self, value):
+        # One block per named region, in a data assembly, as ParaView's own
+        # Exodus reader shows its blocks and sets.
+        if self._regions_as_blocks != bool(value):
+            self._regions_as_blocks = bool(value)
+            self.Modified()
+
     @smproperty.stringvector(name="AddOns", information_only="1")
     def GetAddOns(self):
         # Which add-ons are loaded, e.g. "occt: no": a STEP read without
@@ -220,6 +236,18 @@ class MeshioPlusPlusReader(VTKPythonAlgorithmBase):
     )
     def GetTimestepValues(self):
         return _paraview.time_values(self._plan())
+
+    def RequestDataObject(self, request, inInfoVec, outInfoVec):
+        want = (
+            vtkPartitionedDataSetCollection
+            if self._regions_as_blocks
+            else vtkUnstructuredGrid
+        )
+        info = outInfoVec.GetInformationObject(0)
+        output = info.Get(vtkDataObject.DATA_OBJECT())
+        if output is None or not output.IsA(want.__name__):
+            info.Set(vtkDataObject.DATA_OBJECT(), want())
+        return 1
 
     def RequestInformation(self, request, inInfoVec, outInfoVec):
         executive = self.GetExecutive()
@@ -283,8 +311,11 @@ class MeshioPlusPlusReader(VTKPythonAlgorithmBase):
             angular_deflection=self._angular_deflection,
             **self._read_kwargs(),
         )
-        output = vtkUnstructuredGrid.GetData(outInfoVec)
-        _paraview.fill_grid(output, mesh)
+        output = vtkDataObject.GetData(outInfoVec)
+        if self._regions_as_blocks:
+            _paraview.fill_collection(output, mesh)
+        else:
+            _paraview.fill_grid(output, mesh)
         if times:
             output.GetInformation().Set(vtkDataObject.DATA_TIME_STEP(), times[index])
         return 1

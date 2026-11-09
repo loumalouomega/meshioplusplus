@@ -57,6 +57,7 @@ After loading, every extension meshio++ knows appears in ParaView's file dialogs
 | **Piece** | One piece of a partitioned file (`pvtu`, `pvtp`, `pvd`, VTKHDF, MFEM, Elmer); `-1`, the default, reads every piece. |
 | **Ghosts** | `keep` or `drop` the ghost cells of a partitioned file ([selective reads](./selective_read.md)). |
 | **Deflection**, **AngularDeflection** | The tessellation of a [STEP](./formats/step.md#reading) or IGES file: a length (0 takes 1e-3 of the bounding-box diagonal) and an angle in radians (0.5). |
+| **RegionsAsBlocks** | Output one block per named region instead of one grid (see [named regions](#named-regions)). |
 | **AddOns** | Information only: whether the OpenCASCADE, Netgen and MMG add-ons are loaded (`occt: yes`, ...), so a STEP read that fails for want of OpenCASCADE explains itself. |
 | **Refresh** | Plans the time steps again (see below). |
 
@@ -65,6 +66,12 @@ After loading, every extension meshio++ knows appears in ParaView's file dialogs
 A file that holds several steps (every format [`read_metadata`](./sequences.md) reports `time_values` for: XDMF, Exodus, VTKHDF, CalculiX `frd`, ...) shows them on ParaView's time toolbar, and each time reads its step: the last step at or before the time asked for. Selecting a file series in the file dialog (`out_0.vtu`, `out_1.vtu`, ...) opens it as one reader with a step per file, timed as [sequences](./sequences.md) time a series: a number in the file name, else the file's own `meshio:time`, else its position. The plan of steps is cached per file and its size and modification time, so *File → Reload Files* on a rewritten file plans it again, and the reader's **Refresh** button drops every cached plan.
 
 The writer's **WriteTimeSteps** property writes every time step of its input rather than the current one: into one file when the format holds a series (XDMF, VTKHDF, `frd`, PVD and the other [`write_sequence`](./sequences.md) targets, which hold every step until the last arrives), else one file per step, `name_0000.vtu`, `name_0001.vtu`, ..., each with its time, written as it arrives.
+
+## Named regions
+
+Regions cross as arrays by default, so they survive a round trip through ParaView and can be thresholded or coloured by: a point or cell region is a 0/1 `region:<name>` point or cell array (the masks [`to_pyvista`](./interop.md) writes), with each region's `dim` and `tag` in a `meshioplusplus:regions` JSON field array; a side region, which VTK has no `(cell, facet)` concept for, is the [VTU convention](./regions.md)'s `region:side:<name>` field array of `(cell, facet)` pairs with its `region-meta:side:<name>`. The writer turns all of them back into regions, and so it does the `region:<kind>:<name>` field arrays of a meshio++ `.vtu` that ParaView opened with its own reader.
+
+With **RegionsAsBlocks** the reader outputs a `vtkPartitionedDataSetCollection` instead, one block per region in a `vtkDataAssembly` (groups `cell_regions`, `side_regions` and `point_regions`), as ParaView's own Exodus reader shows its blocks and sets, so a region is a block to tick in the *Multiblock Inspector*: a cell region's piece of [`split(by="regions")`](./regions.md) (regions may overlap, and a cell can be in several blocks), a side region's facets, a point region's points as vertices. A mesh with no cell region is one more block, `mesh`.
 
 ## What crosses into ParaView
 

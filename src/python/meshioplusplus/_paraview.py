@@ -28,7 +28,11 @@ string array) are surfaced as warnings, the interop layer's convention.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
+
+from ._interop import REGION_META_KEY, REGION_PREFIX
 
 #: The arrays VTK reads a Lagrange or Bézier cell's degrees and a Bézier
 #: cell's weights from, once set as the active attribute of that name (the
@@ -189,7 +193,7 @@ def fill_grid(grid, mesh, op=READER_OP):
 
     from ._interop import _emit, _to_vtk_payload
 
-    payload = _to_vtk_payload(mesh)
+    payload = _to_vtk_payload(mesh, carry_sides=True)
     notes = list(payload.notes)
 
     points = vtkPoints()
@@ -208,6 +212,14 @@ def fill_grid(grid, mesh, op=READER_OP):
         grid.GetCellData().AddArray(array)
         if name == HIGHER_ORDER_DEGREES:
             grid.GetCellData().SetHigherOrderDegrees(array)
+    for (kind, name), mask in payload.region_masks.items():
+        target = grid.GetPointData() if kind == "point" else grid.GetCellData()
+        target.AddArray(_vtk_array(mask, REGION_PREFIX + name))
+    if payload.region_meta:
+        meta = json.dumps(payload.region_meta, separators=(",", ":"))
+        grid.GetFieldData().AddArray(_field_array(REGION_META_KEY, [meta], notes))
+    for name, entries in side_region_arrays(mesh, payload.kept_global, notes).items():
+        grid.GetFieldData().AddArray(_vtk_array(entries, name))
     for name in sorted(mesh.field_data):
         array = _field_array(name, mesh.field_data[name], notes)
         if array is not None:
@@ -215,6 +227,50 @@ def fill_grid(grid, mesh, op=READER_OP):
 
     _emit(op, notes)
     return notes
+
+
+def side_region_arrays(mesh, kept_global, notes):
+    """Side regions as the VTU convention's field arrays
+    (``region:side:<name>``, ``(cell, facet)`` pairs in the grid's cell
+    numbering, and ``region-meta:side:<name>``), which ParaView carries as
+    field data and the writer reads back.
+
+    ``kept_global`` maps a grid cell to its global cell; an entry in a cell
+    block the grid does not hold is dropped with a note.
+    """
+    from types import SimpleNamespace
+
+    from ._region_field_data import regions_to_field_arrays
+    from ._regions import Region
+
+    sides = [r for r in getattr(mesh, "regions", []) if r.kind == "side"]
+    if not sides:
+        return {}
+    kept_global = np.asarray(kept_global, dtype=np.int64)
+    total = int(kept_global.max()) + 1 if len(kept_global) else 0
+    total = max(
+        [total]
+        + [
+            int(np.asarray(r.entries).reshape(-1, 2)[:, 0].max()) + 1
+            for r in sides
+            if np.asarray(r.entries).size
+        ]
+    )
+    to_grid = np.full(total, -1, dtype=np.int64)
+    to_grid[kept_global] = np.arange(len(kept_global), dtype=np.int64)
+
+    carried = []
+    for r in sides:
+        e = np.asarray(r.entries, dtype=np.int64).reshape(-1, 2)
+        keep = to_grid[e[:, 0]] >= 0 if len(e) else np.zeros(0, dtype=bool)
+        if not bool(keep.all()):
+            notes.append(
+                f"side region '{r.name}': {int((~keep).sum())} entrie(s) lie in "
+                "cell blocks VTK cannot express"
+            )
+        carried.append(Region(r.name, "side", e[keep], r.dim, r.tag))
+    # regions_to_field_arrays reads only a mesh's regions.
+    return regions_to_field_arrays(SimpleNamespace(regions=carried), to_grid)
 
 
 def grid_from_mesh(mesh, op=READER_OP):
@@ -414,7 +470,12 @@ def mesh_from_grid(grid, op=WRITER_OP):
     point_data = _arrays(grid.GetPointData(), "point_data", notes)
     cell_flat = _arrays(grid.GetCellData(), "cell_data", notes)
     field_data = _arrays(grid.GetFieldData(), "field_data", notes)
+    regions = _regions_from_grid_arrays(
+        point_data, cell_flat, field_data, len(points), notes
+    )
 
+    # cells_from_grid keeps the grid's cell order, so a grid cell index is the
+    # global (block-major) cell index the regions above are numbered in.
     cells, cell_data = cells_from_grid(grid, cell_flat)
 
     _emit(op, notes)
@@ -424,7 +485,35 @@ def mesh_from_grid(grid, op=WRITER_OP):
         point_data=point_data,
         cell_data=cell_data,
         field_data=field_data,
+        regions=regions,
     )
+
+
+def _regions_from_grid_arrays(point_data, cell_flat, field_data, num_points, notes):
+    """Regions from a grid's arrays, removing the arrays that carried them:
+    ``region:<name>`` masks with the ``meshioplusplus:regions`` sidecar (what
+    the reader and ``to_pyvista`` write), and the VTU convention's
+    ``region:<kind>:<name>`` field arrays (side regions from the reader, and
+    every region of a meshio++ VTU that ParaView's own reader opened)."""
+    from ._interop import _regions_from_masks
+    from ._region_field_data import regions_from_field_arrays
+
+    meta_by_name = {}
+    raw = field_data.pop(REGION_META_KEY, None)
+    if raw is not None:
+        try:
+            entries = json.loads(str(np.asarray(raw).reshape(-1)[0]))
+            meta_by_name = {(e["kind"], e["name"]): e for e in entries}
+        except (ValueError, KeyError, TypeError, IndexError):
+            notes.append(f"the '{REGION_META_KEY}' sidecar is unreadable; ignored")
+    regions = _regions_from_masks(point_data, "point", meta_by_name, notes)
+    regions += _regions_from_masks(cell_flat, "cell", meta_by_name, notes)
+    from_fields, rest = regions_from_field_arrays(
+        field_data, num_points, None, WRITER_OP
+    )
+    field_data.clear()
+    field_data.update(rest)
+    return regions + from_fields
 
 
 # --------------------------------------------------------------------------- #
@@ -640,3 +729,97 @@ def addon_status():
     from ._tetrahedralize import has_netgen
 
     return {"occt": has_occt(), "netgen": has_netgen(), "mmg": has_mmg()}
+
+
+# --------------------------------------------------------------------------- #
+# regions as blocks (roadmap 6.6.2)                                           #
+# --------------------------------------------------------------------------- #
+#: The assembly's groups, by region kind, in this order.
+REGION_GROUPS = {
+    "cell": "cell_regions",
+    "side": "side_regions",
+    "point": "point_regions",
+}
+
+
+def _side_piece(mesh, region):
+    """A side region as a mesh of its facets (``facet_nodes``), one block per
+    facet type in first-seen order, over the whole mesh's points."""
+    from ._facets import facet_nodes
+    from ._mesh import Mesh
+
+    rows: dict = {}
+    for cell, facet in np.asarray(region.entries, dtype=np.int64).reshape(-1, 2):
+        got = facet_nodes(mesh, int(cell), int(facet))
+        if got is not None:
+            rows.setdefault(got[0], []).append(np.asarray(got[1], dtype=np.int64))
+    blocks = [(t, np.vstack(r)) for t, r in rows.items()]
+    return Mesh(mesh.points, blocks)
+
+
+def region_pieces(mesh):
+    """``[(group, name, Mesh)]``: one piece per named region, the blocks of the
+    reader's *RegionsAsBlocks* output.
+
+    Cell regions are :func:`meshioplusplus.split` ``(by="regions")``'s pieces
+    (which may overlap), side regions their facets (``facet_nodes``), point
+    regions their points as ``vertex`` cells. A mesh with no cell region is
+    also one piece, ``mesh``, so its cells are not lost.
+    """
+    from ._mesh import Mesh
+    from ._split import split
+
+    regions = list(getattr(mesh, "regions", []))
+    pieces = []
+    cell_regions = [r for r in regions if r.kind == "cell"]
+    if cell_regions:
+        # Split a view holding the cell regions alone: the others are pieces
+        # of their own, and split would warn that each piece lost them.
+        view = Mesh(
+            mesh.points,
+            mesh.cells,
+            point_data=mesh.point_data,
+            cell_data=mesh.cell_data,
+            regions=cell_regions,
+        )
+        for name, piece in split(view, by="regions").items():
+            pieces.append((REGION_GROUPS["cell"], str(name), piece))
+    else:
+        pieces.append(("mesh", "mesh", mesh))
+    for r in regions:
+        if r.kind == "side":
+            pieces.append((REGION_GROUPS["side"], r.name, _side_piece(mesh, r)))
+        elif r.kind == "point":
+            ids = np.asarray(r.entries, dtype=np.int64).reshape(-1, 1)
+            pieces.append(
+                (REGION_GROUPS["point"], r.name, Mesh(mesh.points, [("vertex", ids)]))
+            )
+    return pieces
+
+
+def fill_collection(collection, mesh, op=READER_OP):
+    """Fill a ``vtkPartitionedDataSetCollection`` with ``mesh``'s regions,
+    one partitioned dataset each, named and grouped in a ``vtkDataAssembly``
+    (``cell_regions``, ``side_regions``, ``point_regions``), as ParaView's
+    own Exodus reader presents its blocks and sets."""
+    from vtkmodules.vtkCommonDataModel import (
+        vtkCompositeDataSet,
+        vtkDataAssembly,
+        vtkPartitionedDataSet,
+    )
+
+    assembly = vtkDataAssembly()
+    assembly.SetRootNodeName("meshioplusplus")
+    groups = {}
+    collection.SetNumberOfPartitionedDataSets(0)
+    for index, (group, name, piece) in enumerate(region_pieces(mesh)):
+        partitioned = vtkPartitionedDataSet()
+        partitioned.SetPartition(0, grid_from_mesh(piece, op))
+        collection.SetPartitionedDataSet(index, partitioned)
+        collection.GetMetaData(index).Set(vtkCompositeDataSet.NAME(), name)
+        if group not in groups:
+            groups[group] = assembly.AddNode(group, 0)
+        node = assembly.AddNode(vtkDataAssembly.MakeValidNodeName(name), groups[group])
+        assembly.AddDataSetIndex(node, index)
+    collection.SetDataAssembly(assembly)
+    return collection
