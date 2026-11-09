@@ -893,6 +893,8 @@ export interface DeviationOptions {
   maxNormalAngle?: number;
   /** Measure against only this named cell region of the reference. */
   referenceRegion?: string;
+  /** Register the scan to the reference first (roadmap 7.4.1). */
+  register?: boolean;
 }
 
 /** What `deviation` returns. */
@@ -919,6 +921,10 @@ export interface DeviationResult {
   suggestedRange: number;
   numWithoutNormal: number;
   warnings: string[];
+  /** With `register`: the registration applied (16 numbers, row-major). */
+  registered: boolean;
+  matrix: number[];
+  registrationRms: number;
 }
 
 /** Options of `deviationRegions` (doc/deviation.md). */
@@ -4423,7 +4429,16 @@ export interface MeshioPlusPlusModule {
       maxIterations?: number;
       tolerance?: number;
       maxDistance?: number;
-      initial?: ArrayLike<number>;
+      /** A starting 4x4 matrix (16 numbers, row-major), or `'auto'`: the best
+       * of the 24 principal-frame candidates (roadmap 7.3.1). */
+      initial?: ArrayLike<number> | 'auto';
+      symmetricCheck?: boolean;
+      symmetricTolerance?: number;
+      /** Cell regions restricting the pairs (roadmap 7.3.3). */
+      sourceRegion?: string;
+      targetRegion?: string;
+      /** Drop pairs beyond this multiple of the median pair distance; 0 keeps them. */
+      adaptiveTrim?: number;
     },
   ): {
     matrix: number[];
@@ -4432,6 +4447,73 @@ export interface MeshioPlusPlusModule {
     iterations: number;
     numPairs: number;
     converged: boolean;
+    numRejected: number;
+    candidateRms: Float64Array;
+    chosenCandidate: number;
+    warnings: string[];
+  };
+
+  /**
+   * Landmark registration (roadmap 7.3.2): the weighted Horn solve laying
+   * picked source points (flat xyz) onto their targets.
+   * @throws {Error} on fewer than three pairs or collinear source points.
+   */
+  registerLandmarks(
+    source: ArrayLike<number>,
+    target: ArrayLike<number>,
+    weights?: ArrayLike<number> | null,
+  ): { matrix: number[]; residuals: Float64Array; rms: number };
+
+  /**
+   * The plane a mesh is most nearly symmetric about (roadmap 7.3.6). See
+   * doc/registration.md.
+   * @throws {Error} when no plane reaches `minShare`.
+   */
+  findSymmetryPlane(
+    mesh: Mesh,
+    options?: {
+      seedOrigin?: ArrayLike<number>;
+      seedNormal?: ArrayLike<number>;
+      tolerance?: number;
+      minShare?: number;
+      maxSamples?: number;
+      maxIterations?: number;
+    },
+  ): {
+    origin: number[];
+    normal: number[];
+    rms: number;
+    share: number;
+    tolerance: number;
+    candidateRms: Float64Array;
+    chosenCandidate: number;
+    warnings: string[];
+  };
+
+  /**
+   * Pose a scan from itself alone (roadmap 7.3.5): on its largest flat face,
+   * or a cylinder on the end of its axis. See doc/registration.md.
+   * @throws {Error} on a bad option or no surface cell.
+   */
+  autoAlign(
+    mesh: Mesh,
+    options?: {
+      angleTolerance?: number;
+      subdivisions?: number;
+      region?: string;
+      rotateVectorData?: boolean;
+    },
+  ): {
+    mesh: Mesh;
+    matrix: number[];
+    mode: 'face' | 'axis';
+    primary: number[];
+    secondary: number[];
+    share: number;
+    faceShare: number;
+    axisShare: number;
+    openingArea: number;
+    warnings: string[];
   };
 
   /**

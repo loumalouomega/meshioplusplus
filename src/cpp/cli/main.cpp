@@ -146,6 +146,7 @@
 #include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -486,6 +487,45 @@ void cli_names_json(meshioplusplus::cli::JsonOut& rJson, const char* pKey,
     for (const std::string& n : rNames)
         rJson.String(n);
     rJson.EndArray();
+}
+
+/// A row-major 4x4 matrix as four rows of four numbers.
+void cli_matrix_json(meshioplusplus::cli::JsonOut& rJson, const char* pKey,
+                     const std::array<double, 16>& rM) {
+    rJson.Key(pKey);
+    rJson.BeginArray();
+    for (int row = 0; row < 4; ++row) {
+        rJson.BeginArray();
+        for (int col = 0; col < 4; ++col)
+            rJson.Number(rM[static_cast<std::size_t>(4 * row + col)]);
+        rJson.EndArray();
+    }
+    rJson.EndArray();
+}
+
+/// A number list as a JSON array.
+void cli_numbers_json(meshioplusplus::cli::JsonOut& rJson, const char* pKey,
+                      const std::vector<double>& rV) {
+    rJson.Key(pKey);
+    rJson.BeginArray();
+    for (const double v : rV)
+        rJson.Number(v);
+    rJson.EndArray();
+}
+
+/// `find_symmetry_plane`'s report, the keys of the Python CLI's.
+void cli_symmetry_json(meshioplusplus::cli::JsonOut& rJson,
+                       const meshioplusplus::SymmetryPlaneResult& rR) {
+    rJson.BeginObject();
+    rJson.Field("rms", rR.mRms);
+    rJson.Field("share", rR.mShare);
+    rJson.Field("tolerance", rR.mTolerance);
+    cli_numbers_json(rJson, "origin", {rR.mOrigin.begin(), rR.mOrigin.end()});
+    cli_numbers_json(rJson, "normal", {rR.mNormal.begin(), rR.mNormal.end()});
+    cli_numbers_json(rJson, "candidate_rms", rR.mCandidateRms);
+    rJson.Field("chosen_candidate", rR.mChosenCandidate);
+    cli_names_json(rJson, "warnings", rR.mWarnings);
+    rJson.EndObject();
 }
 
 // `info --fast --json`: the keys of the Python `read_metadata` dict.
@@ -1920,6 +1960,7 @@ int cmd_deviation(const std::vector<std::string>& rArgs) {
                                           {"range", {}, true},
                                           {"max-normal-angle", {}, true},
                                           {"reference-region", {}, true},
+                                          {"register", {}, false},
                                           {"json", {}, false}}}));
     if (p.positionals.size() < 2 || p.positionals.size() > 3)
         throw std::runtime_error("deviation requires SCAN REFERENCE and an optional OUTFILE");
@@ -1928,6 +1969,7 @@ int cmd_deviation(const std::vector<std::string>& rArgs) {
     cli_opt_int64(p, "bins", o.mBins);
     cli_opt_double(p, "max-normal-angle", o.mMaxNormalAngleDeg);
     o.mReferenceRegion = opt_value(p, "reference-region");
+    o.mRegister = has_flag(p, "register");
     if (has_opt(p, "range")) {
         const std::string text = opt_value(p, "range");
         const std::size_t comma = text.find(',');
@@ -1988,6 +2030,11 @@ int cmd_deviation(const std::vector<std::string>& rArgs) {
             json.Int(v);
         json.EndArray();
         cli_names_json(json, "warnings", r.mWarnings);
+        if (r.mRegistered) {
+            json.Field("registered", true);
+            cli_matrix_json(json, "matrix", r.mMatrix);
+            json.Field("registration_rms", r.mRegistrationRms);
+        }
         if (has_share) {
             json.Field("min_share", min_share);
             json.Field("passed", !failed);
@@ -2084,8 +2131,8 @@ int cmd_deviation_regions(const std::vector<std::string>& rArgs) {
         for (const meshioplusplus::DeviationRegionRecord& g : r.mRegions)
             std::cout << "  " << g.mName << ": " << g.mNumCells << " cells, area " << g6(g.mArea)
                       << ", extreme " << g6(g.mExtreme) << ", volume " << g6(g.mVolume)
-                      << ", centroid (" << g6(g.mCentroid[0]) << ", " << g6(g.mCentroid[1])
-                      << ", " << g6(g.mCentroid[2]) << ")\n";
+                      << ", centroid (" << g6(g.mCentroid[0]) << ", " << g6(g.mCentroid[1]) << ", "
+                      << g6(g.mCentroid[2]) << ")\n";
         cli_print_warnings(std::cout, "  warning: ", r.mWarnings);
     }
     return 0;
@@ -4112,12 +4159,28 @@ int cmd_register(const std::vector<std::string>& rArgs) {
                                   {"max-iterations", {}, true},
                                   {"tolerance", {}, true},
                                   {"max-distance", {}, true},
+                                  {"initial", {}, true},
+                                  {"symmetric-check", {}, false},
+                                  {"source-region", {}, true},
+                                  {"target-region", {}, true},
+                                  {"adaptive-trim", {}, true},
                                   {"rotate-data", {}, false},
                                   {"json", {}, false},
                               });
     if (p.positionals.size() != 2)
         throw std::runtime_error("register requires SOURCE TARGET");
     meshioplusplus::RegistrationOptions o;
+    if (has_opt(p, "initial")) {
+        const std::string initial = opt_value(p, "initial");
+        if (initial == "auto")
+            o.mInitialMode = meshioplusplus::RegistrationInitial::Auto;
+        else if (initial != "identity")
+            throw std::runtime_error("register: --initial takes 'identity' or 'auto'");
+    }
+    o.mSymmetricCheck = has_flag(p, "symmetric-check");
+    o.mSourceRegion = opt_value(p, "source-region");
+    o.mTargetRegion = opt_value(p, "target-region");
+    cli_opt_double(p, "adaptive-trim", o.mAdaptiveTrim);
     if (has_opt(p, "method"))
         o.mMethod = meshioplusplus::registration_method_from_name(opt_value(p, "method"));
     cli_opt_int64(p, "max-iterations", o.mMaxIterations);
@@ -4152,6 +4215,10 @@ int cmd_register(const std::vector<std::string>& rArgs) {
         json.Field("iterations", r.mIterations);
         json.Field("num_pairs", r.mNumPairs);
         json.Field("converged", r.mConverged);
+        json.Field("num_rejected", r.mNumRejected);
+        cli_numbers_json(json, "candidate_rms", r.mCandidateRms);
+        json.Field("chosen_candidate", r.mChosenCandidate);
+        cli_names_json(json, "warnings", r.mWarnings);
         json.EndObject();
         return 0;
     }
@@ -4166,6 +4233,171 @@ int cmd_register(const std::vector<std::string>& rArgs) {
                                        "rms %.9g (from %.9g) after %lld iteration(s)%s\n", r.mRms,
                                        r.mInitialRms, static_cast<long long>(r.mIterations),
                                        r.mConverged ? "" : ", not converged");
+    std::cout << line;
+    for (const std::string& w : r.mWarnings)
+        std::cout << "warning: " << w << "\n";
+    return 0;
+}
+
+/// "x,y,z;x,y,z;..." as points.
+std::vector<std::array<double, 3>> cli_triples(const std::string& rText, const char* pWhat) {
+    std::vector<std::array<double, 3>> out;
+    auto in = meshioplusplus::detail::make_classic_istringstream(rText);
+    std::string item;
+    while (std::getline(in, item, ';')) {
+        if (item.find_first_not_of(" \t") == std::string::npos)
+            continue;
+        std::vector<double> v;
+        auto row = meshioplusplus::detail::make_classic_istringstream(item);
+        std::string tok;
+        while (std::getline(row, tok, ','))
+            v.push_back(meshioplusplus::detail::stod_c(tok));
+        if (v.size() != 3)
+            throw std::runtime_error(std::string("register-landmarks: ") + pWhat +
+                                     " takes x,y,z;x,y,z;...");
+        out.push_back({v[0], v[1], v[2]});
+    }
+    return out;
+}
+
+std::array<double, 3> cli_vec3(const cli_parsed& rP, const char* pName, const char* pVerb,
+                               const std::array<double, 3>& rDefault);  // below
+
+// register-landmarks: the rigid motion laying picked points onto their
+// targets (roadmap 7.3.2).
+int cmd_register_landmarks(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"weights", {}, true},
+                                  {"mesh", {}, true},
+                                  {"output", {}, true},
+                                  {"output-format", {"-o"}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("register-landmarks requires SOURCE_POINTS TARGET_POINTS");
+    std::vector<double> weights;
+    if (has_opt(p, "weights")) {
+        auto in = meshioplusplus::detail::make_classic_istringstream(opt_value(p, "weights"));
+        std::string tok;
+        while (std::getline(in, tok, ','))
+            if (tok.find_first_not_of(" \t") != std::string::npos)
+                weights.push_back(meshioplusplus::detail::stod_c(tok));
+    }
+    const meshioplusplus::LandmarkResult r =
+        meshioplusplus::register_landmarks(cli_triples(p.positionals[0], "the source"),
+                                           cli_triples(p.positionals[1], "the target"), weights);
+    const std::string mesh = opt_value(p, "mesh"), output = opt_value(p, "output");
+    const bool moved = !mesh.empty() && !output.empty();
+    if (moved)
+        write_mesh_cli(
+            output,
+            meshioplusplus::transform(read_mesh_cli(mesh, ""),
+                                      meshioplusplus::transform_from_matrix(r.mMatrix.data())),
+            opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        if (moved)
+            json.Field("output", output);
+        cli_matrix_json(json, "matrix", r.mMatrix);
+        cli_numbers_json(json, "residuals", r.mResiduals);
+        json.Field("rms", r.mRms);
+        json.EndObject();
+        return 0;
+    }
+    char line[160];
+    for (int row = 0; row < 4; ++row) {
+        meshioplusplus::detail::snprintf_c(line, sizeof(line), "%14.9g %14.9g %14.9g %14.9g\n",
+                                           r.mMatrix[4 * row], r.mMatrix[4 * row + 1],
+                                           r.mMatrix[4 * row + 2], r.mMatrix[4 * row + 3]);
+        std::cout << line;
+    }
+    meshioplusplus::detail::snprintf_c(line, sizeof(line), "rms %.9g over %zu pair(s)\n", r.mRms,
+                                       r.mResiduals.size());
+    std::cout << line;
+    return 0;
+}
+
+// auto-align: pose a scan on its largest flat face, or a cylinder on its axis
+// (roadmap 7.3.5).
+int cmd_auto_align(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"angle-tolerance", {}, true},
+                                          {"subdivisions", {}, true},
+                                          {"region", {}, true},
+                                          {"rotate-data", {}, false},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("auto-align requires INFILE OUTFILE");
+    meshioplusplus::AutoAlignOptions o;
+    cli_opt_double(p, "angle-tolerance", o.mAngleToleranceDeg);
+    cli_opt_int64(p, "subdivisions", o.mSubdivisions);
+    o.mRegion = opt_value(p, "region");
+    o.mRotateVectorData = has_flag(p, "rotate-data");
+    meshioplusplus::AutoAlignResult r = meshioplusplus::auto_align(
+        read_mesh_cli(p.positionals[0], opt_value(p, "input-format")), o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        cli_matrix_json(json, "matrix", r.mMatrix);
+        json.Field("mode", r.mMode);
+        cli_numbers_json(json, "primary", {r.mPrimary.begin(), r.mPrimary.end()});
+        cli_numbers_json(json, "secondary", {r.mSecondary.begin(), r.mSecondary.end()});
+        cli_names_json(json, "warnings", r.mWarnings);
+        json.Field("share", r.mShare);
+        json.Field("face_share", r.mFaceShare);
+        json.Field("axis_share", r.mAxisShare);
+        json.Field("opening_area", r.mOpeningArea);
+        json.EndObject();
+        return 0;
+    }
+    char line[200];
+    meshioplusplus::detail::snprintf_c(
+        line, sizeof(line), "posed on its %s: %.4g of the area agrees (face %.4g, axis %.4g)\n",
+        r.mMode == "face" ? "largest face" : "axis", r.mShare, r.mFaceShare, r.mAxisShare);
+    std::cout << line;
+    for (const std::string& w : r.mWarnings)
+        std::cout << "warning: " << w << "\n";
+    return 0;
+}
+
+// symmetry-plane: the plane a mesh is most nearly symmetric about (roadmap 7.3.6).
+int cmd_symmetry_plane(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, {
+                                  {"input-format", {"-i"}, true},
+                                  {"seed-origin", {}, true},
+                                  {"seed-normal", {}, true},
+                                  {"tolerance", {}, true},
+                                  {"min-share", {}, true},
+                                  {"max-samples", {}, true},
+                                  {"json", {}, false},
+                              });
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("symmetry-plane requires INFILE");
+    if (has_opt(p, "seed-origin") != has_opt(p, "seed-normal"))
+        throw std::runtime_error("symmetry-plane: --seed-origin and --seed-normal go together");
+    meshioplusplus::SymmetryPlaneOptions o;
+    o.mSeedOrigin = cli_vec3(p, "seed-origin", "symmetry-plane", o.mSeedOrigin);
+    o.mSeedNormal = cli_vec3(p, "seed-normal", "symmetry-plane", o.mSeedNormal);
+    cli_opt_double(p, "tolerance", o.mTolerance);
+    cli_opt_double(p, "min-share", o.mMinShare);
+    cli_opt_int64(p, "max-samples", o.mMaxSamples);
+    const meshioplusplus::SymmetryPlaneResult r = meshioplusplus::find_symmetry_plane(
+        read_mesh_cli(p.positionals[0], opt_value(p, "input-format")), o);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        cli_symmetry_json(json, r);
+        return 0;
+    }
+    char line[240];
+    meshioplusplus::detail::snprintf_c(
+        line, sizeof(line), "plane through (%.9g, %.9g, %.9g) normal (%.9g, %.9g, %.9g)\n",
+        r.mOrigin[0], r.mOrigin[1], r.mOrigin[2], r.mNormal[0], r.mNormal[1], r.mNormal[2]);
+    std::cout << line;
+    meshioplusplus::detail::snprintf_c(line, sizeof(line),
+                                       "rms %.9g, %.4g of the samples within %.6g\n", r.mRms,
+                                       r.mShare, r.mTolerance);
     std::cout << line;
     return 0;
 }
@@ -6498,7 +6730,8 @@ int cmd_mirror(const std::vector<std::string>& rArgs) {
                                           {"keep-original", {}, false},
                                           {"no-weld", {}, false},
                                           {"tolerance", {}, true},
-                                          {"reflect-data", {}, false}},
+                                          {"reflect-data", {}, false},
+                                          {"plane", {}, true}},
                                          report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("mirror requires exactly INFILE and OUTFILE");
@@ -6506,6 +6739,14 @@ int cmd_mirror(const std::vector<std::string>& rArgs) {
     meshioplusplus::MirrorOptions o;
     o.mOrigin = cli_vec3(p, "origin", "mirror", o.mOrigin);
     o.mNormal = cli_vec3(p, "normal", "mirror", o.mNormal);
+    std::optional<meshioplusplus::SymmetryPlaneResult> plane;
+    if (has_opt(p, "plane")) {
+        if (opt_value(p, "plane") != "auto")
+            throw std::runtime_error("mirror: --plane takes 'auto'");
+        plane = meshioplusplus::find_symmetry_plane(mesh);
+        o.mOrigin = plane->mOrigin;
+        o.mNormal = plane->mNormal;
+    }
     o.mKeepOriginal = has_flag(p, "keep-original");
     o.mWeld = !has_flag(p, "no-weld");
     cli_opt_double(p, "tolerance", o.mTolerance);
@@ -6519,6 +6760,10 @@ int cmd_mirror(const std::vector<std::string>& rArgs) {
         json.Field("num_dropped_cells", r.mNumDroppedCells);
         json.Field("num_dropped_sides", r.mNumDroppedSides);
         cli_names_json(json, "warnings", r.mWarnings);
+        if (plane) {
+            json.Key("plane");
+            cli_symmetry_json(json, *plane);
+        }
         json.EndObject();
         std::cout << "\n";
     } else if (!has_flag(p, "quiet")) {
@@ -9152,6 +9397,15 @@ const CliVerb kCliVerbs[] = {
     {"register", nullptr,
      "  register                Rigid registration of one mesh onto another (ICP)\n",
      &cmd_register},
+    {"register-landmarks", nullptr,
+     "  register-landmarks      The rigid motion laying picked points onto their targets\n",
+     &cmd_register_landmarks},
+    {"auto-align", nullptr,
+     "  auto-align              Pose a scan on its largest flat face, or a cylinder on its axis\n",
+     &cmd_auto_align},
+    {"symmetry-plane", nullptr,
+     "  symmetry-plane          The plane a mesh is most nearly symmetric about\n",
+     &cmd_symmetry_plane},
     {"eigenmodes", nullptr,
      "  eigenmodes              Lowest eigenpairs of a surface's Laplace-Beltrami operator\n",
      &cmd_eigenmodes},

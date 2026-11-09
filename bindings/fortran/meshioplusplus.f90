@@ -76,6 +76,8 @@ module meshioplusplus
     public :: mio_find_intersections, mio_find_intersections_report
     public :: mio_thickness, mio_thickness_report
     public :: mio_deviation, mio_deviation_primitive, mio_deviation_report
+    public :: mio_register_landmarks, mio_find_symmetry_plane, mio_symmetry_plane_report
+    public :: mio_auto_align, mio_auto_align_report
     public :: mio_deviation_regions, mio_deviation_regions_report, mio_deviation_region_info
     public :: mio_deviation_region
     public :: mio_exaggerate, mio_exaggerate_report, mio_colorize, mio_colorize_report
@@ -897,7 +899,7 @@ module meshioplusplus
         real(c_double) :: max_normal_angle = 90.0_c_double
         type(c_ptr) :: reference_region = c_null_ptr
         integer(c_int32_t) :: attach = 1
-        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int32_t) :: register_first = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
@@ -918,7 +920,9 @@ module meshioplusplus
         real(c_double) :: suggested_range = 0.0_c_double
         integer(c_int64_t) :: num_bins = 0
         integer(c_int64_t) :: num_warnings = 0
-        integer(c_int64_t) :: reserved(4) = 0
+        integer(c_int64_t) :: registered = 0
+        real(c_double) :: registration_rms = 0.0_c_double
+        integer(c_int64_t) :: reserved(2) = 0
     end type
 
     !> Interop mirror of C `mio_deviation_regions_opts` (64 bytes; roadmap 7.4.3).
@@ -1561,6 +1565,71 @@ module meshioplusplus
         integer(c_int64_t) :: num_pairs = 0
         integer(c_int32_t) :: converged = 0
         integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: num_rejected = 0
+        integer(c_int64_t) :: chosen_candidate = -1
+        integer(c_int64_t) :: num_candidates = 0
+        integer(c_int64_t) :: num_warnings = 0
+    end type
+
+    !> Interop mirror of C `mio_registration_ex_opts` (264 bytes; roadmap 7.3).
+    type, bind(c) :: mio_registration_ex_opts_t
+        type(mio_registration_opts_t) :: base
+        integer(c_int32_t) :: initial_mode = 0
+        integer(c_int32_t) :: symmetric_check = 0
+        real(c_double) :: symmetric_tolerance = 0.05_c_double
+        real(c_double) :: adaptive_trim = 0.0_c_double
+        type(c_ptr) :: source_region = c_null_ptr
+        type(c_ptr) :: target_region = c_null_ptr
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_symmetry_plane_opts` (112 bytes; roadmap 7.3.6).
+    type, bind(c) :: mio_symmetry_plane_opts_t
+        real(c_double) :: seed_origin(3) = 0.0_c_double
+        real(c_double) :: seed_normal(3) = 0.0_c_double
+        real(c_double) :: tolerance = 0.0_c_double
+        real(c_double) :: min_share = 0.9_c_double
+        integer(c_int64_t) :: max_samples = 4000
+        integer(c_int64_t) :: max_iterations = 50
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_symmetry_plane_report` (128 bytes): the plane `mio_find_symmetry_plane` found.
+    type, bind(c) :: mio_symmetry_plane_report
+        real(c_double) :: origin(3) = 0.0_c_double
+        real(c_double) :: normal(3) = 0.0_c_double
+        real(c_double) :: rms = 0.0_c_double
+        real(c_double) :: share = 0.0_c_double
+        real(c_double) :: tolerance = 0.0_c_double
+        integer(c_int64_t) :: chosen_candidate = 0
+        integer(c_int64_t) :: num_candidates = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_auto_align_opts` (64 bytes; roadmap 7.3.5).
+    type, bind(c) :: mio_auto_align_opts_t
+        real(c_double) :: angle_tolerance = 10.0_c_double
+        integer(c_int64_t) :: subdivisions = 3
+        type(c_ptr) :: region = c_null_ptr
+        integer(c_int32_t) :: rotate_vector_data = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_auto_align_report` (256 bytes): how `mio_auto_align` posed the mesh;
+    !> `mode` 0 face, 1 axis; `matrix` row-major.
+    type, bind(c) :: mio_auto_align_report
+        real(c_double) :: matrix(16) = 0.0_c_double
+        integer(c_int32_t) :: mode = 0
+        integer(c_int32_t) :: reserved32 = 0
+        real(c_double) :: primary(3) = 0.0_c_double
+        real(c_double) :: secondary(3) = 0.0_c_double
+        real(c_double) :: share = 0.0_c_double
+        real(c_double) :: face_share = 0.0_c_double
+        real(c_double) :: axis_share = 0.0_c_double
+        real(c_double) :: opening_area = 0.0_c_double
+        integer(c_int64_t) :: num_warnings = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
@@ -4105,6 +4174,43 @@ module meshioplusplus
             type(mio_eigenmode_opts_t), intent(in) :: opts
             type(mio_eigenmode_report_t), intent(out) :: report
             type(c_ptr) :: r
+        end function
+
+        function c_mio_register_rigid_ex(source, target, opts, report) &
+                bind(c, name="mio_register_rigid_ex") result(r)
+            import :: c_ptr, c_int, mio_registration_ex_opts_t, mio_registration_report_t
+            type(c_ptr), value :: source, target
+            type(mio_registration_ex_opts_t), intent(in) :: opts
+            type(mio_registration_report_t), intent(out) :: report
+            integer(c_int) :: r
+        end function
+
+        function c_mio_register_landmarks(source, target, weights, n, matrix, residuals, rms) &
+                bind(c, name="mio_register_landmarks") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_double
+            type(c_ptr), value :: source, target, weights
+            integer(c_int64_t), value :: n
+            real(c_double), intent(out) :: matrix(16)
+            type(c_ptr), value :: residuals
+            real(c_double), intent(out) :: rms
+            integer(c_int) :: r
+        end function
+
+        function c_mio_find_symmetry_plane(h, opts, report) &
+                bind(c, name="mio_find_symmetry_plane") result(r)
+            import :: c_ptr, c_int, mio_symmetry_plane_opts_t, mio_symmetry_plane_report
+            type(c_ptr), value :: h
+            type(mio_symmetry_plane_opts_t), intent(in) :: opts
+            type(mio_symmetry_plane_report), intent(out) :: report
+            integer(c_int) :: r
+        end function
+
+        function c_mio_auto_align(h, opts, report) bind(c, name="mio_auto_align") result(out)
+            import :: c_ptr, mio_auto_align_opts_t, mio_auto_align_report
+            type(c_ptr), value :: h
+            type(mio_auto_align_opts_t), intent(in) :: opts
+            type(mio_auto_align_report), intent(out) :: report
+            type(c_ptr) :: out
         end function
 
         function c_mio_register_rigid(source, target, opts, report) &
@@ -10705,7 +10811,9 @@ contains
     !> (its surface when it has surface cells, else its points). `method` is
     !> 'point_to_point' (default) or 'point_to_plane'. See doc/registration.md.
     subroutine mesh_register_rigid(self, target, matrix, method, max_iterations, tolerance, &
-                                   max_distance, rms, iterations, converged, stat, errmsg)
+                                   max_distance, rms, iterations, converged, stat, errmsg, &
+                                   initial, symmetric_check, source_region, target_region, &
+                                   adaptive_trim, num_rejected)
         class(mio_mesh), intent(in) :: self
         type(mio_mesh), intent(in) :: target
         real(real64), intent(out) :: matrix(4, 4)
@@ -10717,22 +10825,52 @@ contains
         logical, intent(out), optional :: converged
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
-        type(mio_registration_opts_t) :: opts
+        !> 'matrix' (the identity) or 'auto' (the 24 principal-frame candidates).
+        character(*), intent(in), optional :: initial
+        logical, intent(in), optional :: symmetric_check
+        character(*), intent(in), optional :: source_region, target_region
+        real(real64), intent(in), optional :: adaptive_trim
+        integer(int64), intent(out), optional :: num_rejected
+        type(mio_registration_ex_opts_t) :: opts
         type(mio_registration_report_t) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: src_buf, tgt_buf
         integer(c_int) :: rc
         integer :: i, j
 
+        if (c_sizeof(opts) /= 264_c_size_t .or. c_sizeof(rep) /= 200_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: registration layout mismatch'
+            error stop 1
+        end if
         if (present(method)) then
             if (trim(method) == 'point_to_plane') then
-                opts%method = 1
+                opts%base%method = 1
             else if (trim(method) /= 'point_to_point') then
-                opts%method = -1
+                opts%base%method = -1
             end if
         end if
-        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int64_t)
-        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
-        if (present(max_distance)) opts%max_distance = real(max_distance, c_double)
-        rc = c_mio_register_rigid(self%handle, target%handle, opts, rep)
+        if (present(max_iterations)) opts%base%max_iterations = int(max_iterations, c_int64_t)
+        if (present(tolerance)) opts%base%tolerance = real(tolerance, c_double)
+        if (present(max_distance)) opts%base%max_distance = real(max_distance, c_double)
+        if (present(initial)) then
+            if (trim(initial) == 'auto') then
+                opts%initial_mode = 1
+            else if (trim(initial) /= 'matrix') then
+                opts%initial_mode = -1
+            end if
+        end if
+        if (present(symmetric_check)) then
+            if (symmetric_check) opts%symmetric_check = 1
+        end if
+        if (present(source_region)) then
+            src_buf = trim(source_region)//c_null_char
+            opts%source_region = c_loc(src_buf(1:1))
+        end if
+        if (present(target_region)) then
+            tgt_buf = trim(target_region)//c_null_char
+            opts%target_region = c_loc(tgt_buf(1:1))
+        end if
+        if (present(adaptive_trim)) opts%adaptive_trim = real(adaptive_trim, c_double)
+        rc = c_mio_register_rigid_ex(self%handle, target%handle, opts, rep)
         if (rc /= 0) then
             matrix = 0.0_real64
             call handle_failure('register_rigid', mio_error_message(), stat, errmsg)
@@ -10746,8 +10884,127 @@ contains
         if (present(rms)) rms = real(rep%rms, real64)
         if (present(iterations)) iterations = int(rep%iterations, int64)
         if (present(converged)) converged = rep%converged /= 0
+        if (present(num_rejected)) num_rejected = int(rep%num_rejected, int64)
         call clear_status(stat, errmsg)
     end subroutine
+
+    !> The rigid motion laying picked `source(3, n)` points onto `target(3, n)`
+    !> (roadmap 7.3.2): the weighted Horn solve; `matrix(i, j)` row i, column j.
+    subroutine mio_register_landmarks(src_pts, dst_pts, matrix, weights, residuals, rms, &
+                                      stat, errmsg)
+        real(real64), intent(in) :: src_pts(:, :), dst_pts(:, :)
+        real(real64), intent(out) :: matrix(4, 4)
+        real(real64), intent(in), optional :: weights(:)
+        real(real64), intent(out), optional :: residuals(:)
+        real(real64), intent(out), optional :: rms
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(c_double), allocatable, target :: s(:), t(:), w(:), res(:)
+        real(c_double) :: m(16), r
+        type(c_ptr) :: wp
+        integer :: n, i, j
+        integer(c_int) :: rc
+        n = size(src_pts, 2)
+        if (size(src_pts, 1) /= 3 .or. size(dst_pts, 1) /= 3 .or. size(dst_pts, 2) /= n) then
+            matrix = 0.0_real64
+            call handle_failure('register_landmarks', &
+                                'meshio++: register_landmarks: source and target must be (3, n)', &
+                                stat, errmsg)
+            return
+        end if
+        allocate (s(3 * max(n, 1)), t(3 * max(n, 1)), res(max(n, 1)))
+        s(1:3 * n) = reshape(real(src_pts, c_double), [3 * n])
+        t(1:3 * n) = reshape(real(dst_pts, c_double), [3 * n])
+        wp = c_null_ptr
+        if (present(weights)) then
+            allocate (w(max(n, 1)))
+            w(1:n) = real(weights(1:n), c_double)
+            wp = c_loc(w(1))
+        end if
+        rc = c_mio_register_landmarks(c_loc(s(1)), c_loc(t(1)), wp, int(n, c_int64_t), m, &
+                                      c_loc(res(1)), r)
+        if (rc /= 0) then
+            matrix = 0.0_real64
+            call handle_failure('register_landmarks', mio_error_message(), stat, errmsg)
+            return
+        end if
+        do i = 1, 4
+            do j = 1, 4
+                matrix(i, j) = real(m(4 * (i - 1) + j), real64)
+            end do
+        end do
+        if (present(residuals)) residuals(1:n) = real(res(1:n), real64)
+        if (present(rms)) rms = real(r, real64)
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> The plane `mesh` is most nearly symmetric about (roadmap 7.3.6); see
+    !> doc/registration.md. `seed_normal` zero (the default) tries no seed.
+    subroutine mio_find_symmetry_plane(mesh, report, seed_origin, seed_normal, tolerance, &
+                                       min_share, max_samples, stat, errmsg)
+        type(mio_mesh), intent(in) :: mesh
+        type(mio_symmetry_plane_report), intent(out) :: report
+        real(real64), intent(in), optional :: seed_origin(3), seed_normal(3)
+        real(real64), intent(in), optional :: tolerance, min_share
+        integer, intent(in), optional :: max_samples
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_symmetry_plane_opts_t) :: opts
+        integer(c_int) :: rc
+        if (c_sizeof(opts) /= 112_c_size_t .or. c_sizeof(report) /= 128_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: symmetry plane layout mismatch'
+            error stop 1
+        end if
+        if (present(seed_origin)) opts%seed_origin = real(seed_origin, c_double)
+        if (present(seed_normal)) opts%seed_normal = real(seed_normal, c_double)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(min_share)) opts%min_share = real(min_share, c_double)
+        if (present(max_samples)) opts%max_samples = int(max_samples, c_int64_t)
+        rc = c_mio_find_symmetry_plane(mesh%handle, opts, report)
+        if (rc /= 0) then
+            call handle_failure('find_symmetry_plane', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Pose `mesh` from itself alone (roadmap 7.3.5): on its largest flat face,
+    !> or a cylinder on its axis; see doc/registration.md.
+    function mio_auto_align(mesh, angle_tolerance, subdivisions, region, rotate_vector_data, &
+                            report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in), optional :: angle_tolerance
+        integer, intent(in), optional :: subdivisions
+        character(*), intent(in), optional :: region
+        logical, intent(in), optional :: rotate_vector_data
+        type(mio_auto_align_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_auto_align_opts_t) :: opts
+        type(mio_auto_align_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf
+        if (c_sizeof(opts) /= 64_c_size_t .or. c_sizeof(rep) /= 256_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: auto_align layout mismatch'
+            error stop 1
+        end if
+        if (present(angle_tolerance)) opts%angle_tolerance = real(angle_tolerance, c_double)
+        if (present(subdivisions)) opts%subdivisions = int(subdivisions, c_int64_t)
+        if (present(region)) then
+            buf = trim(region)//c_null_char
+            opts%region = c_loc(buf(1:1))
+        end if
+        if (present(rotate_vector_data)) then
+            if (rotate_vector_data) opts%rotate_vector_data = 1
+        end if
+        out%handle = c_mio_auto_align(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('auto_align', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
 
     !> Normals of the mesh's points by local plane fits: `normals` point data,
     !> oriented 'consistent' (default: a spanning tree, then outward),
@@ -16953,11 +17210,14 @@ contains
     !> Returns `scan` with the `deviation:distance` point data; `report` holds
     !> the statistics (see doc/deviation.md).
     function mio_deviation(scan, reference, tolerance, bins, range_min, range_max, &
-                           max_normal_angle, reference_region, report, stat, errmsg) result(out)
+                           max_normal_angle, reference_region, report, stat, errmsg, &
+                           register_first) result(out)
         type(mio_mesh), intent(in) :: scan, reference
         real(real64), intent(in), optional :: tolerance, range_min, range_max, max_normal_angle
         integer, intent(in), optional :: bins
         character(*), intent(in), optional :: reference_region
+        !> Register the scan to the reference first (roadmap 7.4.1).
+        logical, intent(in), optional :: register_first
         type(mio_deviation_report), intent(out), optional :: report
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
@@ -16971,6 +17231,9 @@ contains
         end if
         call deviation_fill_opts(opts, buf, tolerance, bins, range_min, range_max, &
                                  max_normal_angle, reference_region)
+        if (present(register_first)) then
+            if (register_first) opts%register_first = 1
+        end if
         out%handle = c_mio_deviation(scan%handle, reference%handle, opts, rep)
         if (.not. c_associated(out%handle)) then
             call handle_failure('deviation', mio_error_message(), stat, errmsg)

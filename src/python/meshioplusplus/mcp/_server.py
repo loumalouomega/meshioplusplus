@@ -1921,6 +1921,7 @@ def _register_operations(server: FastMCP) -> None:
         range_max: Optional[float] = None,
         max_normal_angle: float = 90.0,
         reference_region: str = "",
+        register: bool = False,
     ) -> dict:
         """Signed deviation of every point of a scan (input_path) from a
         reference surface (reference_path): positive outside it (excess
@@ -1934,7 +1935,11 @@ def _register_operations(server: FastMCP) -> None:
         histogram_counts (bins over range_min..range_max, default +-max|d|),
         num_outside_range, share_within (within +-tolerance), suggested_range,
         num_without_normal and warnings; with min_share also passed. Pass
-        output_path to write the scan with deviation:distance point data."""
+        output_path to write the scan with deviation:distance point data.
+        register registers the scan to the reference first (an automatic
+        start, point-to-plane ICP, adaptive trimming): the written scan is
+        then the registered one, and the report adds registered, matrix and
+        registration_rms."""
 
     @server.tool()
     @_forward(_tools.tool_deviation_regions)
@@ -2834,6 +2839,11 @@ def _register_operations(server: FastMCP) -> None:
         source_format: Optional[str] = None,
         target_format: Optional[str] = None,
         output_format: Optional[str] = None,
+        initial: str = "identity",
+        symmetric_check: bool = False,
+        source_region: str = "",
+        target_region: str = "",
+        adaptive_trim: float = 0.0,
     ) -> dict:
         """Rigid registration by iterative closest points: the 4x4 matrix
         (rows) laying the source's points onto the target -- its surface when
@@ -2842,8 +2852,70 @@ def _register_operations(server: FastMCP) -> None:
         iterations; a point-cloud target needs normals point data, see
         estimate_normals). max_distance > 0 drops pairs farther apart
         (outliers). ICP finds the nearest optimum, so the two should start
-        roughly aligned. With output_path the moved source is written too.
-        Reports matrix, initial_rms, rms, iterations, num_pairs, converged."""
+        roughly aligned -- or initial="auto": the best of the 24 candidates
+        laying the two principal frames onto each other, coarse ICP from each
+        (any start; symmetric_check warns when the part looks symmetric).
+        source_region / target_region restrict the pairs to cell regions (the
+        part, not its fixture); adaptive_trim drops pairs beyond that multiple
+        of the median pair distance. With output_path the moved source is
+        written too. Reports matrix, initial_rms, rms, iterations, num_pairs,
+        converged, num_rejected, candidate_rms, chosen_candidate, warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_register_landmarks)
+    def register_landmarks(
+        source_points: List[List[float]],
+        target_points: List[List[float]],
+        weights: Optional[List[float]] = None,
+        input_path: Optional[str] = None,
+        output_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        rotate_data: bool = False,
+    ) -> dict:
+        """The rigid motion laying picked points ([[x, y, z], ...], three or
+        more, the sources not collinear) onto their targets: the weighted Horn
+        solve in closed form, a start for register_rigid. With input_path and
+        output_path the moved mesh is written too. Reports matrix, residuals
+        and rms."""
+
+    @server.tool()
+    @_forward(_tools.tool_find_symmetry_plane)
+    def find_symmetry_plane(
+        input_path: str,
+        input_format: Optional[str] = None,
+        seed_origin: Optional[List[float]] = None,
+        seed_normal: Optional[List[float]] = None,
+        tolerance: float = 0.0,
+        min_share: float = 0.9,
+        max_samples: int = 4000,
+    ) -> dict:
+        """The plane a mesh or point cloud is most nearly symmetric about:
+        each principal plane (and the seed plane) is mirrored, registered back
+        by ICP and read off the reflection-motion product. Refuses a plane
+        whose share of samples within tolerance (0: 0.005 of the diagonal) is
+        below min_share. Reports origin, normal, rms, share, tolerance,
+        candidate_rms, chosen_candidate and warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_auto_align)
+    def auto_align(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        angle_tolerance: float = 10.0,
+        subdivisions: int = 3,
+        region: str = "",
+        rotate_vector_data: bool = False,
+    ) -> dict:
+        """Pose a scan from itself alone: on its largest flat face, or a
+        cylindrical part on the end of its axis, from an area-weighted
+        histogram of its facet normals (an open scan's opening counts as a
+        face). The result sits on z = 0, centred on the Z axis. Reports
+        matrix, mode ("face" or "axis"), primary, secondary, share,
+        face_share, axis_share, opening_area and warnings alongside the mesh
+        summary."""
 
     @server.tool()
     def estimate_normals(
@@ -3389,15 +3461,17 @@ def _register_operations(server: FastMCP) -> None:
         weld: bool = True,
         tolerance: float = 1e-9,
         reflect_vector_data: bool = False,
+        plane: Optional[str] = None,
     ) -> dict:
         """Reflect a mesh across the plane through origin (default the
         origin) with normal (default [1, 0, 0]), every cell right side out
         (roadmap 3.2.5; a reflecting transform leaves them inverted). With
         keep_original the input followed by its image, the points on the
         plane shared when weld (default); reflect_vector_data reflects float
-        vector and tensor data. Reports num_flipped_cells,
-        num_points_on_plane, num_dropped_cells, num_dropped_sides and
-        warnings."""
+        vector and tensor data. plane="auto" mirrors across the mesh's own
+        symmetry plane (find_symmetry_plane), reported as plane. Reports
+        num_flipped_cells, num_points_on_plane, num_dropped_cells,
+        num_dropped_sides and warnings."""
         return _guard(
             _tools.tool_mirror,
             input_path=input_path,
@@ -3410,6 +3484,7 @@ def _register_operations(server: FastMCP) -> None:
             weld=weld,
             tolerance=tolerance,
             reflect_vector_data=reflect_vector_data,
+            plane=plane,
         )
 
     @server.tool()

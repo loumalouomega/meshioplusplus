@@ -3238,6 +3238,36 @@ contains
                    abs(g_matrix(1, 4)) < 1.0e-12_real64, 'the square registers onto itself')
         call square%register_rigid(square, g_matrix, method='affine', stat=ierr)
         call check(ierr /= 0, 'register_rigid rejects an unknown method')
+        ! The automatic start and adaptive trimming (roadmap 7.3.1, 7.3.3).
+        call square%register_rigid(square, g_matrix, initial='auto', adaptive_trim=3.0_real64, &
+                                   num_rejected=g_nv, stat=ierr)
+        call check(ierr == 0, 'register_rigid with initial=auto succeeded')
+        call square%register_rigid(square, g_matrix, initial='guess', stat=ierr)
+        call check(ierr /= 0, 'register_rigid rejects an unknown initial')
+        ! Landmarks (7.3.2): three pairs shifted by (1, 2, 3).
+        block
+            real(real64) :: lsrc(3, 3), ldst(3, 3), lrms
+            type(mio_symmetry_plane_report) :: srep
+            type(mio_auto_align_report) :: arep
+            type(mio_mesh) :: aligned
+            lsrc = reshape([0.0_real64, 0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64, &
+                            0.0_real64, 0.0_real64, 2.0_real64, 0.0_real64], [3, 3])
+            ldst = lsrc
+            ldst(1, :) = ldst(1, :) + 1.0_real64
+            ldst(2, :) = ldst(2, :) + 2.0_real64
+            ldst(3, :) = ldst(3, :) + 3.0_real64
+            call mio_register_landmarks(lsrc, ldst, g_matrix, rms=lrms, stat=ierr)
+            call check(ierr == 0 .and. abs(g_matrix(2, 4) - 2.0_real64) < 1.0e-12_real64, &
+                       'register_landmarks recovers the shift')
+            call mio_register_landmarks(lsrc(:, 1:2), ldst(:, 1:2), g_matrix, stat=ierr)
+            call check(ierr /= 0, 'register_landmarks refuses two pairs')
+            ! The square is symmetric (7.3.6) and lies on its face (7.3.5).
+            call mio_find_symmetry_plane(square, srep, stat=ierr)
+            call check(ierr == 0 .and. srep%share > 0.9_real64, 'find_symmetry_plane succeeded')
+            aligned = mio_auto_align(square, report=arep, stat=ierr)
+            call check(ierr == 0 .and. arep%mode == 0, 'auto_align lays the square on its face')
+            call aligned%free()
+        end block
         ! Normals of the square's corners: one plane, facing +z.
         dist = square%estimate_normals(k=3, num_degenerate=g_nv, stat=ierr)
         call check(ierr == 0, 'estimate_normals succeeded')

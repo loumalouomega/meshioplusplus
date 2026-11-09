@@ -242,6 +242,27 @@ _VERBS = (
         "Rigid registration of one mesh onto another (ICP)",
     ),
     _Verb(
+        "register-landmarks",
+        "_register",
+        "register_landmarks_cmd",
+        "The rigid motion laying picked points onto their targets",
+        "add_landmark_args",
+    ),
+    _Verb(
+        "auto-align",
+        "_register",
+        "auto_align_cmd",
+        "Pose a scan on its largest flat face, or a cylinder on its axis",
+        "add_auto_align_args",
+    ),
+    _Verb(
+        "symmetry-plane",
+        "_register",
+        "symmetry_plane_cmd",
+        "The plane a mesh is most nearly symmetric about",
+        "add_symmetry_args",
+    ),
+    _Verb(
         "point-normals",
         "_point_normals",
         "point_normals_cmd",

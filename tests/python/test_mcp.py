@@ -2274,6 +2274,31 @@ def test_register_rigid_tool(tmp_path):
     np.testing.assert_allclose(moved.points, target.points, atol=1e-8)
 
 
+def test_alignment_tools(tmp_path):
+    box = meshioplusplus.box((3, 2, 1), size=(3.0, 2.0, 1.0))
+    surf = meshioplusplus.extract_surface(box)
+    path = str(tmp_path / "box.vtk")
+    meshioplusplus.write(path, surf)
+    out = _dump(
+        _tools.tool_register_rigid(path, path, initial="auto", symmetric_check=True)
+    )
+    assert len(out["candidate_rms"]) == 24 and out["warnings"]
+    out = _dump(
+        _tools.tool_register_landmarks(
+            [[0, 0, 0], [1, 0, 0], [0, 2, 0]], [[1, 2, 3], [2, 2, 3], [1, 4, 3]]
+        )
+    )
+    np.testing.assert_allclose(np.asarray(out["matrix"])[:3, 3], [1, 2, 3], atol=1e-12)
+    plane = _dump(_tools.tool_find_symmetry_plane(path))
+    assert plane["share"] > 0.9 and len(plane["normal"]) == 3
+    out = _dump(_tools.tool_auto_align(path, str(tmp_path / "aligned.vtk")))
+    assert out["mode"] == "face" and len(out["matrix"]) == 4
+    out = _dump(_tools.tool_mirror(path, str(tmp_path / "m.vtk"), plane="auto"))
+    assert out["plane"]["share"] > 0.9
+    out = _dump(_tools.tool_deviation(path, path, register=True))
+    assert out["registered"]
+
+
 def test_estimate_normals_tool(tmp_path):
     src = str(tmp_path / "s.vtu")
     meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))

@@ -99,6 +99,12 @@ def _report(res):
     report["histogram_edges"] = [float(x) for x in res["histogram_edges"]]
     report["histogram_counts"] = [int(x) for x in res["histogram_counts"]]
     report["warnings"] = [str(w) for w in res["warnings"]]
+    if res.get("registered"):
+        report["registered"] = True
+        report["matrix"] = (
+            np.asarray(res["matrix"], dtype=np.float64).reshape(4, 4).tolist()
+        )
+        report["registration_rms"] = float(res["registration_rms"])
     return report
 
 
@@ -113,6 +119,7 @@ def deviation(
     max_normal_angle: float = 90.0,
     reference_region: str | None = None,
     attach: bool = True,
+    register: bool = False,
     return_report: bool = False,
 ):
     """Signed deviation of every point of ``scan`` from ``reference``.
@@ -131,6 +138,11 @@ def deviation(
         skipped (180 turns it off). Not used against a primitive.
     :param reference_region: restrict the reference surface to a ``Cell`` region.
     :param attach: attach the Float64 point data ``deviation:distance``.
+    :param register: register the scan to a reference surface first
+        (``register_rigid`` with ``initial="auto"``, point-to-plane and adaptive
+        trimming, within ``reference_region``); the scan returned is then the
+        registered one and the report adds ``registered``, ``matrix`` (4x4) and
+        ``registration_rms``. Refused against a primitive.
     :param return_report: also return the report.
     :returns: ``scan`` with ``deviation:distance``; with ``return_report``
         ``(mesh, report)``.
@@ -150,6 +162,7 @@ def deviation(
         max_normal_angle=float(max_normal_angle),
         reference_region=reference_region or "",
         attach=bool(attach),
+        register=bool(register),
     )
     if _is_mesh(reference) and patch is None:
         res = _core.deviation(scan, reference, **kwargs)

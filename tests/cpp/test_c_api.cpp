@@ -7319,6 +7319,83 @@ TEST(CApi, RegisterRigid) {
     mio_mesh_free(target);
 }
 
+TEST(CApi, RegisterRigidExLandmarksSymmetryAutoAlign) {
+    mio_mesh* target = capi_cube_surface();
+    mio_mesh* source = mio_mesh_create();
+    const std::vector<double> pts = {0.01,  -0.02, 0.03, 1.01, -0.02, 0.03,  1.01, 0.98,
+                                     0.03,  0.01,  0.98, 0.03, 0.01,  -0.02, 1.03, 1.01,
+                                     -0.02, 1.03,  1.01, 0.98, 1.03,  0.01,  0.98, 1.03};
+    ASSERT_EQ(mio_mesh_set_points(source, MIO_FLOAT64, 8, 3, pts.data()), MIO_OK);
+    mio_registration_ex_opts ex;
+    mio_registration_ex_opts_init(&ex);
+    EXPECT_EQ(ex.base.max_iterations, 50);
+    EXPECT_EQ(ex.symmetric_tolerance, 0.05);
+    ex.initial_mode = MIO_REGISTER_INITIAL_AUTO;
+    ex.symmetric_check = 1;
+    mio_registration_report rep;
+    ASSERT_EQ(mio_register_rigid_ex(source, target, &ex, &rep), MIO_OK) << mio_last_error();
+    EXPECT_LT(rep.rms, 1e-8);
+    EXPECT_EQ(rep.num_candidates, 24);
+    EXPECT_GE(rep.chosen_candidate, 0);
+    std::vector<double> cands(24, -1.0);
+    EXPECT_EQ(mio_register_rigid_candidates(cands.data(), 24), 24);
+    EXPECT_GE(cands[0], 0.0);
+    EXPECT_GE(rep.num_warnings, 1);  // a cube is symmetric
+    EXPECT_GT(mio_register_rigid_warnings(nullptr, 0), 0);
+    ex.initial_mode = 5;
+    EXPECT_EQ(mio_register_rigid_ex(source, target, &ex, &rep), MIO_ERR_INVALID_ARG);
+
+    const double src[9] = {0, 0, 0, 1, 0, 0, 0, 2, 0};
+    const double dst[9] = {1, 2, 3, 2, 2, 3, 1, 4, 3};
+    double m[16], res[3], rms = -1.0;
+    ASSERT_EQ(mio_register_landmarks(src, dst, nullptr, 3, m, res, &rms), MIO_OK)
+        << mio_last_error();
+    EXPECT_NEAR(m[3], 1.0, 1e-12);
+    EXPECT_NEAR(m[7], 2.0, 1e-12);
+    EXPECT_LT(rms, 1e-12);
+    EXPECT_EQ(mio_register_landmarks(src, dst, nullptr, 2, m, nullptr, nullptr),
+              MIO_ERR_INVALID_ARG);
+
+    mio_symmetry_plane_opts so;
+    mio_symmetry_plane_opts_init(&so);
+    EXPECT_EQ(so.min_share, 0.9);
+    mio_symmetry_plane_report sr;
+    ASSERT_EQ(mio_find_symmetry_plane(target, &so, &sr), MIO_OK) << mio_last_error();
+    EXPECT_GT(sr.share, 0.9);
+    // A cube is symmetric about its diagonal planes too: any unit normal will do.
+    EXPECT_NEAR(
+        sr.normal[0] * sr.normal[0] + sr.normal[1] * sr.normal[1] + sr.normal[2] * sr.normal[2],
+        1.0, 1e-12);
+    EXPECT_EQ(mio_find_symmetry_plane(nullptr, &so, &sr), MIO_ERR_INVALID_ARG);
+
+    mio_auto_align_opts ao;
+    mio_auto_align_opts_init(&ao);
+    EXPECT_EQ(ao.subdivisions, 3);
+    mio_auto_align_report ar;
+    mio_mesh* aligned = mio_auto_align(source, &ao, &ar);
+    EXPECT_EQ(aligned, nullptr);  // a cloud has no faces to vote
+    aligned = mio_auto_align(target, &ao, &ar);
+    ASSERT_NE(aligned, nullptr) << mio_last_error();
+    EXPECT_EQ(ar.mode, MIO_AUTO_ALIGN_FACE);
+    EXPECT_GT(ar.share, 0.9);
+    mio_mesh_free(aligned);
+
+    mio_deviation_opts dopt;
+    mio_deviation_opts_init(&dopt);
+    EXPECT_EQ(dopt.register_first, 0);
+    dopt.register_first = 1;
+    mio_deviation_report drep;
+    mio_mesh* measured = mio_deviation(source, target, &dopt, &drep);
+    ASSERT_NE(measured, nullptr) << mio_last_error();
+    EXPECT_EQ(drep.registered, 1);
+    double dm[16];
+    EXPECT_EQ(mio_deviation_matrix(dm), 1);
+    EXPECT_EQ(dm[15], 1.0);
+    mio_mesh_free(measured);
+    mio_mesh_free(source);
+    mio_mesh_free(target);
+}
+
 TEST(CApi, EstimateNormals) {
     mio_mesh* m = capi_cube_surface();  // 8 corners: every fit spans a plane
     mio_point_normals_opts opts;

@@ -170,6 +170,7 @@
 #include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -1973,6 +1974,9 @@ py::dict core_deviation_dict(meshioplusplus::DeviationResult&& rR) {
     out["suggested_range"] = rR.mSuggestedRange;
     out["num_without_normal"] = rR.mNumWithoutNormal;
     out["warnings"] = rR.mWarnings;
+    out["registered"] = rR.mRegistered;
+    out["matrix"] = std::vector<double>(rR.mMatrix.begin(), rR.mMatrix.end());
+    out["registration_rms"] = rR.mRegistrationRms;
     return out;
 }
 
@@ -3808,7 +3812,7 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pyscan, py::object pyref, std::int64_t primitive_type,
            std::vector<double> primitive_params, double tolerance, std::int64_t bins,
            double range_min, double range_max, double max_normal_angle,
-           const std::string& reference_region, bool attach) {
+           const std::string& reference_region, bool attach, bool do_register) {
             meshioplusplus_py::PyMeshRefs refs, refs_b;
             meshioplusplus::Mesh scan = meshioplusplus_py::py_to_mesh(
                 pyscan, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
@@ -3820,6 +3824,7 @@ PYBIND11_MODULE(_core, m) {
             o.mMaxNormalAngleDeg = max_normal_angle;
             o.mReferenceRegion = reference_region;
             o.mAttach = attach;
+            o.mRegister = do_register;
             meshioplusplus::DeviationResult r;
             if (pyref.is_none()) {
                 if (primitive_params.size() != 10)
@@ -3841,7 +3846,7 @@ PYBIND11_MODULE(_core, m) {
         py::arg("primitive_params") = std::vector<double>(), py::arg("tolerance") = 0.0,
         py::arg("bins") = 20, py::arg("range_min") = 0.0, py::arg("range_max") = 0.0,
         py::arg("max_normal_angle") = 90.0, py::arg("reference_region") = std::string(),
-        py::arg("attach") = true);
+        py::arg("attach") = true, py::arg("register") = false);
 
     // deviation_regions (roadmap 7.4.3): the connected regions beyond
     // +-tolerance of a measured surface. Returns {mesh, regions, ...}.
@@ -3871,7 +3876,8 @@ PYBIND11_MODULE(_core, m) {
                 d["extreme"] = rec.mExtreme;
                 d["mean"] = rec.mMean;
                 d["volume"] = rec.mVolume;
-                d["centroid"] = py::make_tuple(rec.mCentroid[0], rec.mCentroid[1], rec.mCentroid[2]);
+                d["centroid"] =
+                    py::make_tuple(rec.mCentroid[0], rec.mCentroid[1], rec.mCentroid[2]);
                 d["bounds"] = py::make_tuple(rec.mBounds[0], rec.mBounds[1], rec.mBounds[2],
                                              rec.mBounds[3], rec.mBounds[4], rec.mBounds[5]);
                 regions.append(d);
@@ -5502,8 +5508,7 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("patch_data") = "segment:patch", py::arg("tolerance") = 1e-3,
         py::arg("relative") = true, py::arg("min_inlier_fraction") = 0.9,
         py::arg("types") = meshioplusplus::kFitAllTypes, py::arg("max_iterations") = 50,
-        py::arg("region") = std::string(),
-        py::arg("seeds") = std::vector<std::array<double, 3>>(),
+        py::arg("region") = std::string(), py::arg("seeds") = std::vector<std::array<double, 3>>(),
         py::arg("feature_angle") = 30.0, py::arg("rim_angle") = 15.0,
         py::arg("output_region") = "fit:feature", py::arg("used_points") = "auto");
 
@@ -6510,7 +6515,9 @@ PYBIND11_MODULE(_core, m) {
         "register_rigid",
         [](py::object pysource, py::object pytarget, const std::string& method,
            std::int64_t max_iterations, double tolerance, double max_distance,
-           std::array<double, 16> initial) {
+           std::array<double, 16> initial, const std::string& initial_mode, bool symmetric_check,
+           double symmetric_tolerance, const std::string& source_region,
+           const std::string& target_region, double adaptive_trim) {
             auto source_in = core_mesh_in(pysource, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs_s = source_in.mRefs;
             auto& source = source_in.mMesh;
@@ -6523,6 +6530,12 @@ PYBIND11_MODULE(_core, m) {
             options.mTolerance = tolerance;
             options.mMaxDistance = max_distance;
             options.mInitial = initial;
+            options.mInitialMode = meshioplusplus::registration_initial_from_name(initial_mode);
+            options.mSymmetricCheck = symmetric_check;
+            options.mSymmetricTolerance = symmetric_tolerance;
+            options.mSourceRegion = source_region;
+            options.mTargetRegion = target_region;
+            options.mAdaptiveTrim = adaptive_trim;
             const meshioplusplus::RegistrationResult r =
                 core_nogil([&] { return meshioplusplus::register_rigid(source, target, options); });
             py::dict out;
@@ -6532,12 +6545,98 @@ PYBIND11_MODULE(_core, m) {
             out["iterations"] = r.mIterations;
             out["num_pairs"] = r.mNumPairs;
             out["converged"] = r.mConverged;
+            out["num_rejected"] = r.mNumRejected;
+            out["candidate_rms"] = r.mCandidateRms;
+            out["chosen_candidate"] = r.mChosenCandidate;
+            out["warnings"] = r.mWarnings;
             return out;
         },
         py::arg("source"), py::arg("target"), py::arg("method") = "point_to_point",
         py::arg("max_iterations") = 50, py::arg("tolerance") = 1e-10, py::arg("max_distance") = 0.0,
-        py::arg("initial") =
-            std::array<double, 16>{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1});
+        py::arg("initial") = std::array<double, 16>{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1},
+        py::arg("initial_mode") = "matrix", py::arg("symmetric_check") = false,
+        py::arg("symmetric_tolerance") = 0.05, py::arg("source_region") = std::string(),
+        py::arg("target_region") = std::string(), py::arg("adaptive_trim") = 0.0);
+
+    // Landmark registration (roadmap 7.3.2): the weighted Horn solve on picked
+    // pairs. {matrix, residuals, rms}.
+    m.def(
+        "register_landmarks",
+        [](std::vector<std::array<double, 3>> source, std::vector<std::array<double, 3>> target,
+           std::vector<double> weights) {
+            const meshioplusplus::LandmarkResult r =
+                meshioplusplus::register_landmarks(source, target, weights);
+            py::dict out;
+            out["matrix"] = std::vector<double>(r.mMatrix.begin(), r.mMatrix.end());
+            out["residuals"] = r.mResiduals;
+            out["rms"] = r.mRms;
+            return out;
+        },
+        py::arg("source"), py::arg("target"), py::arg("weights") = std::vector<double>());
+
+    // Symmetry plane (roadmap 7.3.6). {origin, normal, rms, share, ...}.
+    m.def(
+        "find_symmetry_plane",
+        [](py::object pymesh, std::array<double, 3> seed_origin, std::array<double, 3> seed_normal,
+           double tolerance, double min_share, std::int64_t max_samples,
+           std::int64_t max_iterations) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& mesh = cpp_in.mMesh;
+            meshioplusplus::SymmetryPlaneOptions o;
+            o.mSeedOrigin = seed_origin;
+            o.mSeedNormal = seed_normal;
+            o.mTolerance = tolerance;
+            o.mMinShare = min_share;
+            o.mMaxSamples = max_samples;
+            o.mMaxIterations = max_iterations;
+            const meshioplusplus::SymmetryPlaneResult r =
+                core_nogil([&] { return meshioplusplus::find_symmetry_plane(mesh, o); });
+            py::dict out;
+            out["origin"] = std::vector<double>(r.mOrigin.begin(), r.mOrigin.end());
+            out["normal"] = std::vector<double>(r.mNormal.begin(), r.mNormal.end());
+            out["rms"] = r.mRms;
+            out["share"] = r.mShare;
+            out["tolerance"] = r.mTolerance;
+            out["candidate_rms"] = r.mCandidateRms;
+            out["chosen_candidate"] = r.mChosenCandidate;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("seed_origin") = std::array<double, 3>{0, 0, 0},
+        py::arg("seed_normal") = std::array<double, 3>{0, 0, 0}, py::arg("tolerance") = 0.0,
+        py::arg("min_share") = 0.9, py::arg("max_samples") = 4000, py::arg("max_iterations") = 50);
+
+    // Auto-align from the scan alone (roadmap 7.3.5). {mesh, matrix, mode, ...}.
+    m.def(
+        "auto_align",
+        [](py::object pymesh, double angle_tolerance, std::int64_t subdivisions,
+           const std::string& region, bool rotate_vector_data) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::AutoAlignOptions o;
+            o.mAngleToleranceDeg = angle_tolerance;
+            o.mSubdivisions = subdivisions;
+            o.mRegion = region;
+            o.mRotateVectorData = rotate_vector_data;
+            meshioplusplus::AutoAlignResult r =
+                core_nogil([&] { return meshioplusplus::auto_align(mesh, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["matrix"] = std::vector<double>(r.mMatrix.begin(), r.mMatrix.end());
+            out["mode"] = r.mMode;
+            out["primary"] = std::vector<double>(r.mPrimary.begin(), r.mPrimary.end());
+            out["secondary"] = std::vector<double>(r.mSecondary.begin(), r.mSecondary.end());
+            out["share"] = r.mShare;
+            out["face_share"] = r.mFaceShare;
+            out["axis_share"] = r.mAxisShare;
+            out["opening_area"] = r.mOpeningArea;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("angle_tolerance") = 10.0, py::arg("subdivisions") = 3,
+        py::arg("region") = std::string(), py::arg("rotate_vector_data") = false);
 
     // Point-cloud normals by local plane fits. {mesh, counters}. See
     // operations/point_normals.hpp.

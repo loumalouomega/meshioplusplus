@@ -275,7 +275,8 @@
       {"name": "Require", "kind": "flag", "default": true},
       {"name": "Bins", "kind": "number", "default": 20.0},
       {"name": "MaxNormalAngle", "kind": "number", "default": 90.0},
-      {"name": "ReferenceRegion", "kind": "text", "default": ""}
+      {"name": "ReferenceRegion", "kind": "text", "default": ""},
+      {"name": "Register", "kind": "flag", "default": false}
     ]},
     {"op": "DeviationRegions", "keys": [
       {"name": "Tolerance", "kind": "number", "default": 0.0},
@@ -435,6 +436,23 @@
       {"name": "MaxIterations", "kind": "number", "default": 50.0},
       {"name": "Tolerance", "kind": "number", "default": 1e-10},
       {"name": "MaxDistance", "kind": "number", "default": 0.0},
+      {"name": "RotateData", "kind": "flag", "default": false},
+      {"name": "Initial", "kind": "text", "default": "identity"},
+      {"name": "SymmetricCheck", "kind": "flag", "default": false},
+      {"name": "SourceRegion", "kind": "text", "default": ""},
+      {"name": "TargetRegion", "kind": "text", "default": ""},
+      {"name": "AdaptiveTrim", "kind": "number", "default": 0.0}
+    ]},
+    {"op": "RegisterLandmarks", "note": "The rigid motion laying picked points onto their targets, applied (roadmap 7.3.2).", "keys": [
+      {"name": "SourcePoints"},
+      {"name": "TargetPoints"},
+      {"name": "Weights"},
+      {"name": "RotateData", "kind": "flag", "default": false}
+    ]},
+    {"op": "AutoAlign", "note": "Pose a scan on its largest flat face, or a cylinder on its axis (roadmap 7.3.5).", "keys": [
+      {"name": "AngleTolerance", "kind": "number", "default": 10.0},
+      {"name": "Subdivisions", "kind": "number", "default": 3.0},
+      {"name": "Region", "kind": "text", "default": ""},
       {"name": "RotateData", "kind": "flag", "default": false}
     ]},
     {"op": "ConvertCoordinates", "keys": [
@@ -931,6 +949,7 @@
     {"op": "Mirror", "keys": [
       {"name": "Point"},
       {"name": "Normal"},
+      {"name": "Plane", "kind": "text", "default": ""},
       {"name": "KeepOriginal", "kind": "flag", "default": false},
       {"name": "Weld", "kind": "flag", "default": true},
       {"name": "Tolerance", "kind": "number", "default": 1e-09},

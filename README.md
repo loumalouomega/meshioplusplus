@@ -374,7 +374,7 @@ annotated = meshioplusplus.attach_quality(mesh)   # metrics as cell_data
 
 `meshioplusplus.find_intersections(mesh)` finds where a surface intersects itself, or with a second surface where two parts interpenetrate, by exact triangle–triangle tests: the cell pairs, the crossing segments as a line mesh and `intersections:count` per cell; the `find-intersections` CLI verb exits 1 when anything intersects. `meshioplusplus.thickness(mesh)` measures the wall thickness (or, outward, the clearance to the same or a second part) at every facet by a ray along its normal, into `thickness:distance`. See `doc/find_intersections.md` and `doc/thickness.md`.
 
-`meshioplusplus.deviation(scan, reference)` measures a scan against its intended geometry: the signed distance of every scan point to a reference surface (positive outside it, excess material), with a far-side rule so a thin wall is not measured to its back face, or to a fitted primitive (`patch=` of a mesh `fit_primitives` wrote), and the report an inspection reads: min, max, mean, RMS, sigma, percentiles, a histogram, the share within a tolerance and a suggested colour range; `deviation_regions` turns the map into the connected regions of excess and missing material, with their areas and volumes, as named cell regions, `exaggerate` displaces the scan along its normals for a figure, and `colorize` bakes any field into PLY and glTF vertex colours, banded or continuous ([deviation](doc/deviation.md), [colorize](doc/colorize.md)).
+`meshioplusplus.deviation(scan, reference)` measures a scan against its intended geometry: the signed distance of every scan point to a reference surface (positive outside it, excess material), with a far-side rule so a thin wall is not measured to its back face, or to a fitted primitive (`patch=` of a mesh `fit_primitives` wrote), and the report an inspection reads: min, max, mean, RMS, sigma, percentiles, a histogram, the share within a tolerance and a suggested colour range (`register=True` registers the scan first); `deviation_regions` turns the map into the connected regions of excess and missing material, with their areas and volumes, as named cell regions, `exaggerate` displaces the scan along its normals for a figure, and `colorize` bakes any field into PLY and glTF vertex colours, banded or continuous ([deviation](doc/deviation.md), [colorize](doc/colorize.md)).
 
 #### Reordering / renumbering
 
@@ -728,13 +728,15 @@ u_r, u_theta, u_z = out.point_data["U"].T
 
 #### Rigid registration (ICP)
 
-**`meshioplusplus.register_rigid(source, target)`** finds the rotation and translation laying a scan onto its design (or one run's mesh onto another's) by iterative closest points, point-to-point or point-to-plane, and returns the 4 × 4 matrix `transform` applies. See [rigid registration](doc/registration.md).
+**`meshioplusplus.register_rigid(source, target)`** finds the rotation and translation laying a scan onto its design (or one run's mesh onto another's) by iterative closest points, point-to-point or point-to-plane, and returns the 4 × 4 matrix `transform` applies. `initial="auto"` needs no start (the best of the 24 candidates laying the two principal frames onto each other), `source_region` keeps a fixture out of the fit and `adaptive_trim` drops far pairs. `register_landmarks` solves picked point pairs, `auto_align` poses a scan on its largest flat face or a cylinder on its axis without a nominal, and `find_symmetry_plane` finds the plane a part is symmetric about, which `mirror(plane="auto")` reflects across. See [rigid registration](doc/registration.md).
 
 <!--pytest-codeblocks:skip-->
 
 ```python
-matrix, report = meshioplusplus.register_rigid(scan, design, method="point_to_plane")
+matrix, report = meshioplusplus.register_rigid(scan, design, method="point_to_plane", initial="auto")
 aligned = meshioplusplus.transform(scan, matrix=matrix)
+posed = meshioplusplus.auto_align(scan)
+plane = meshioplusplus.find_symmetry_plane(design)
 ```
 
 #### Point-cloud normals

@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `deviation`, `deviation-regions`, `exaggerate`, `colorize`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `reconstruct`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `deviation`, `deviation-regions`, `exaggerate`, `colorize`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `reconstruct`, `register`, `register-landmarks`, `auto-align`, `symmetry-plane`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -126,7 +126,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `check-tetrahedra` | `check_tetrahedra`'s report: `num_tetrahedra`, `num_inverted`, `num_degenerate`, `num_overlaps`, `min_volume`, `max_volume`, `valid` and `warnings` |
 | `find-intersections` | `find_intersections`'s counts, `truncated`, `clean`, `pairs` (a list of `[cell_a, cell_b]`) and `warnings` |
 | `thickness` | `thickness`'s report (`direction`, the counts, `min`, `max`, `mean`, `min_cell`, `min_point`, `max_distance`, `warnings`), plus `threshold` and `passed` with `--min` |
-| `deviation` | `deviation`'s report (the counts, `min`, `max`, `mean`, `rms`, `sigma`, `percentiles`, `histogram_edges`, `histogram_counts`, `share_within`, `suggested_range`, `warnings`), plus `min_share` and `passed` with `--min-share` |
+| `deviation` | `deviation`'s report (the counts, `min`, `max`, `mean`, `rms`, `sigma`, `percentiles`, `histogram_edges`, `histogram_counts`, `share_within`, `suggested_range`, `warnings`), plus `min_share` and `passed` with `--min-share`, and `registered`, `matrix` and `registration_rms` with `--register` |
 | `diff` | `diff`'s report plus `equal` (the exit-code decision); the Python CLI adds its `sets` section |
 | `convert` | `input`, `output`, `num_points`, `num_cells`, `cell_blocks`, the data names and `num_regions`; for a sequence, `mode`, `num_steps` and `num_files` |
 | `agglomerate` | `cells_in`, `cells_out`, `num_faces_merged` and `num_rejected` |
@@ -156,12 +156,15 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `hull` | `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
 | `point-normals` | `output`, `num_degenerate`, `num_components` |
 | `reconstruct` | `output`, `num_samples`, `spacing`, `cell_size`, `max_distance`, `num_lattice_points`, `num_undefined`, `num_triangles`, `num_components`, `estimated_normals` |
-| `register` | `output` (with `--output`), `matrix` (4 rows of 4), `initial_rms`, `rms`, `iterations`, `num_pairs`, `converged` |
+| `register` | `output` (with `--output`), `matrix` (4 rows of 4), `initial_rms`, `rms`, `iterations`, `num_pairs`, `converged`, `num_rejected`, `candidate_rms`, `chosen_candidate`, `warnings` |
+| `register-landmarks` | `output` (with `--mesh` and `--output`), `matrix` (4 rows of 4), `residuals`, `rms` |
+| `auto-align` | `matrix` (4 rows of 4), `mode`, `primary`, `secondary`, `share`, `face_share`, `axis_share`, `opening_area`, `warnings` |
+| `symmetry-plane` | `origin`, `normal`, `rms`, `share`, `tolerance`, `candidate_rms`, `chosen_candidate`, `warnings` |
 | `delaunay` | `output`, `num_triangles`, `num_duplicates`, `num_boundary` |
 | `mesh-cad-surface` | `mesh_cad_surface`'s report: the counts, the open, non-manifold and misoriented edges, the extreme angles and edge lengths, `tolerance`, `max_edge_gap`, `faces` (`status`, `reason`, counts and extremes per face, `below_bound`, `bound_deg`, `min_input_angle_deg` and `corners`), `warnings`, `num_refinement_points`, `num_faces_below_bound`, `num_smoothed`, `angle_histogram` and `num_curved_straightened` |
 | `boundary-layer` | `boundary_layer`'s report: the cell counts by type, `num_shrunk`, `num_collapsed`, `num_not_visible`, `num_fewer_layers`, `num_front_crossings`, `min_scaled_jacobian`, the thickness range, `cap_closed` and `warnings` |
 | `extrude`, `revolve` | the sweep's report: the cell counts by type, `num_flipped`, `min_scaled_jacobian`, `warnings`; `revolve` adds `num_on_axis` and `full` |
-| `mirror` | `num_flipped_cells`, `num_points_on_plane`, `num_dropped_cells`, `num_dropped_sides`, `warnings` |
+| `mirror` | `num_flipped_cells`, `num_points_on_plane`, `num_dropped_cells`, `num_dropped_sides`, `warnings`, and with `--plane auto` `plane` (the `symmetry-plane` report) |
 | `tetrahedralize` | `tetrahedralize`'s report: `num_tetrahedra`, `num_points`, `num_new_points`, `num_regions`, `num_boundary_triangles`, `boundary_preserved`, `hausdorff_to_surface`, the dihedral range, `volume`, `backend` and `warnings` |
 | `cut`, `cut-quadrature` | `cut_level_set`'s report (`num_cells`, `num_cut_cells`, `num_uncut_cells`, `num_pieces`, `dimension`, `measure`) or `cut_quadrature`'s (`num_rules`, `num_points`, `sum_weights`, `dimension`), with `selection`, `backend` and `warnings` |
 | `remesh-quads` | `remesh_quads`'s report: `num_quads`, `num_triangles`, `num_points`, `min_scaled_jacobian`, `mean_scaled_jacobian`, `hausdorff_to_surface`, `backend` and `warnings` |
@@ -328,6 +331,7 @@ meshioplusplus deviation [options] SCAN REFERENCE [OUTFILE]
 | `--range LO,HI` | | Histogram range (default `+-max |d|`) |
 | `--max-normal-angle DEG` | | The far-side rule: skip reference triangles facing away by more (default 90; 180 turns it off) |
 | `--reference-region R` | | Measure against only this named cell region of `REFERENCE` |
+| `--register` | | Register the scan to `REFERENCE` first (an automatic start, point-to-plane ICP, adaptive trimming); `OUTFILE` is then the registered scan |
 | `--json` | | Print the report as JSON |
 | `--input-format FORMAT` | `-i` | Force the format of `SCAN` |
 | `--reference-format FORMAT` | | Force the format of `REFERENCE` |
@@ -1874,16 +1878,76 @@ meshioplusplus register [options] SOURCE TARGET
 | `--max-iterations N` | Iteration cap (default `50`) |
 | `--tolerance T` | Stop below this rotation (radians) and relative motion (default `1e-10`) |
 | `--max-distance D` | Drop pairs farther apart than `D` (default `0`: keep all) |
+| `--initial identity\|auto` | The start: the identity (default), or `auto`, the best of the 24 principal-frame candidates ([a global start](/registration#a-global-start)) |
+| `--symmetric-check` | With `--initial auto`, warn when the part looks symmetric |
+| `--source-region R` / `--target-region R` | Pair only this cell region of the source / match only this one of the target |
+| `--adaptive-trim K` | Drop pairs beyond `K` median pair distances at each iteration (default `0`: off) |
 | `--rotate-data` | Rotate vector and tensor data of the written source too |
-| `--json` | Emit the report: `output`, `matrix`, `initial_rms`, `rms`, `iterations`, `num_pairs`, `converged` |
+| `--json` | Emit the report: `output`, `matrix`, `initial_rms`, `rms`, `iterations`, `num_pairs`, `converged`, `num_rejected`, `candidate_rms`, `chosen_candidate`, `warnings` |
 | `--input-format-source` / `--input-format-target` / `--output-format` (`-o`) | Force formats |
 
 Both CLIs print the same JSON.
 
 ```sh
 meshioplusplus register scan.ply design.stl --method point_to_plane --output aligned.vtu
+meshioplusplus register scan.ply design.stl --method point_to_plane --initial auto --adaptive-trim 3
 meshioplusplus register run2.vtu run1.vtu --json
 ```
+
+---
+
+## meshioplusplus register-landmarks
+
+The rigid motion laying picked points onto their targets ([landmarks](/registration#landmarks)), printed as a 4 × 4 matrix; with `--mesh` and `--output`, that mesh moved by it is written too.
+
+```
+meshioplusplus register-landmarks [options] "x,y,z;x,y,z;..." "x,y,z;x,y,z;..."
+```
+
+| Option | Description |
+|--------|-------------|
+| `--weights w,w,...` | One non-negative weight per pair |
+| `--mesh PATH` / `--output PATH` | A mesh to move, and where to write it |
+| `--output-format` (`-o`) | Force the output format |
+| `--json` | Emit the report: `output`, `matrix`, `residuals`, `rms` |
+
+---
+
+## meshioplusplus auto-align
+
+Pose a scan from itself alone ([auto-align](/registration#auto-align-from-the-scan-alone)): on its largest flat face, or a cylindrical part on the end of its axis, lowest point at z = 0.
+
+```
+meshioplusplus auto-align [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--angle-tolerance DEG` | Degrees within which a normal agrees with a direction (default `10`) |
+| `--subdivisions N` | The Gauss-sphere icosahedron's splits (default `3`, 642 bins) |
+| `--region R` | Only this cell region votes |
+| `--rotate-data` | Rotate vector and tensor data too |
+| `--json` | Emit the report: `matrix`, `mode`, `primary`, `secondary`, `share`, `face_share`, `axis_share`, `opening_area`, `warnings` |
+| `-i/--input-format` / `-o/--output-format` | Force formats |
+
+---
+
+## meshioplusplus symmetry-plane
+
+The plane a mesh or point cloud is most nearly symmetric about ([the symmetry plane](/registration#the-symmetry-plane)); refused below `--min-share`.
+
+```
+meshioplusplus symmetry-plane [options] INFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--seed-origin x,y,z` / `--seed-normal x,y,z` | A seed plane tried beside the three principal planes (both or neither) |
+| `--tolerance T` | A mirrored sample this close counts as symmetric (default `0`: 0.005 of the diagonal) |
+| `--min-share S` | Refuse a plane with a smaller share (default `0.9`) |
+| `--max-samples N` | Samples of the fine fit (default `4000`) |
+| `--json` | Emit the report: `origin`, `normal`, `rms`, `share`, `tolerance`, `candidate_rms`, `chosen_candidate`, `warnings` |
+| `-i/--input-format` | Force the input format |
 
 ---
 
@@ -2971,6 +3035,7 @@ meshioplusplus mirror INFILE OUTFILE [options]
 |--------|-------------|
 | `--origin=x,y,z` | a point of the plane (`0,0,0`) |
 | `--normal=x,y,z` | the plane's normal (`1,0,0`) |
+| `--plane auto` | the mesh's own symmetry plane (`symmetry-plane`); `--origin` and `--normal` are ignored |
 | `--keep-original` | write the input followed by its image |
 | `--no-weld` | with `--keep-original`, duplicate the points on the plane rather than share them |
 | `--tolerance T` | on the plane: a fraction of the bounding-box diagonal (1e-9) |

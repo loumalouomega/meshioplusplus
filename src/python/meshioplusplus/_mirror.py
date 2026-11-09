@@ -45,6 +45,7 @@ def mirror(
     weld: bool = True,
     tolerance: float = 1e-9,
     reflect_vector_data: bool = False,
+    plane=None,
     return_report: bool = False,
 ):
     """Reflect a mesh across the plane through ``origin`` with ``normal``.
@@ -62,6 +63,9 @@ def mirror(
         bounding-box diagonal.
     :param reflect_vector_data: reflect float 3-column (vector) and 9-column
         (tensor) point and cell data on the reflected copies.
+    :param plane: ``"auto"`` mirrors across the mesh's own symmetry plane
+        (``find_symmetry_plane``; ``origin`` and ``normal`` are then ignored),
+        and the report adds ``plane``.
     :param return_report: also return the report.
     :returns: the mirrored mesh, or ``(mesh, report)`` with
         ``num_flipped_cells``, ``num_points_on_plane``, ``num_dropped_cells``,
@@ -78,6 +82,16 @@ def mirror(
             "meshio++: mirror: needs the compiled C++ core "
             "(meshioplusplus._core); it has no numpy twin"
         ) from exc
+    found = None
+    if plane is not None:
+        if plane != "auto":
+            raise ValueError(
+                f"meshio++: mirror: unknown plane {plane!r} (expected None or 'auto')"
+            )
+        from ._registration import find_symmetry_plane
+
+        found = find_symmetry_plane(mesh)
+        origin, normal = found["origin"], found["normal"]
     res = _core.mirror(
         mesh,
         origin=_vector(origin, "origin"),
@@ -92,4 +106,6 @@ def mirror(
         return out
     report = {k: int(res[k]) for k in _REPORT_INTS}
     report["warnings"] = [str(w) for w in res["warnings"]]
+    if found is not None:
+        report["plane"] = found
     return out, report

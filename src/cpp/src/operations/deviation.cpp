@@ -28,6 +28,8 @@
 
 // Project includes
 #include "meshioplusplus/operations/deviation.hpp"
+#include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
@@ -219,6 +221,27 @@ void dev_attach(const Mesh& rScan, const std::vector<double>& rDist,
 DeviationResult deviation(const Mesh& rScan, const Mesh& rReference,
                           const DeviationOptions& rOptions) {
     dev_check_options(rOptions);
+    if (rOptions.mRegister) {
+        RegistrationOptions reg;
+        reg.mMethod = RegistrationMethod::PointToPlane;
+        reg.mInitialMode = RegistrationInitial::Auto;
+        reg.mAdaptiveTrim = 3.0;
+        reg.mTargetRegion = rOptions.mReferenceRegion;
+        const RegistrationResult r = register_rigid(rScan, rReference, reg);
+        const Mesh moved = transform(rScan, transform_from_matrix(r.mMatrix.data()), true);
+        DeviationOptions plain = rOptions;
+        plain.mRegister = false;
+        DeviationResult out = deviation(moved, rReference, plain);
+        out.mRegistered = true;
+        out.mMatrix = r.mMatrix;
+        out.mRegistrationRms = r.mRms;
+        if (!r.mConverged)
+            out.mWarnings.push_back("the registration did not converge in " +
+                                    std::to_string(r.mIterations) + " iterations");
+        for (const std::string& w : r.mWarnings)
+            out.mWarnings.push_back("registration: " + w);
+        return out;
+    }
     const detail::TriangleSoup soup =
         detail::build_triangle_soup(rReference, rOptions.mReferenceRegion);
     DeviationResult result;
@@ -280,6 +303,9 @@ DeviationResult deviation_to_primitive(const Mesh& rScan, std::int64_t Type,
                                        const std::array<double, 10>& rParams,
                                        const DeviationOptions& rOptions) {
     dev_check_options(rOptions);
+    if (rOptions.mRegister)
+        throw std::invalid_argument(std::string(kDevPrefix) +
+                                    "register needs a reference surface, not a primitive");
     if (Type < 1 || Type > 5)
         throw std::invalid_argument(std::string(kDevPrefix) + "unknown primitive type " +
                                     std::to_string(Type) +
@@ -415,12 +441,15 @@ DeviationRegionsResult deviation_regions(const Mesh& rMesh,
             r.mArea += carea[ci];
             r.mVolume += cval[ci] * carea[ci];
             cen = detail::vec3_add(cen, detail::vec3_scale(ccen[ci], carea[ci]));
-            r.mExtreme = r.mSign > 0 ? std::max(r.mExtreme, cval[ci]) : std::min(r.mExtreme, cval[ci]);
+            r.mExtreme =
+                r.mSign > 0 ? std::max(r.mExtreme, cval[ci]) : std::min(r.mExtreme, cval[ci]);
             const std::size_t f = static_cast<std::size_t>(ring_of[ci]);
             for (std::int64_t q = rings.mStart[f]; q < rings.mStart[f + 1]; ++q)
                 for (std::size_t i = 0; i < 3; ++i) {
                     const double x =
-                        xyz[static_cast<std::size_t>(rings.mNodes[static_cast<std::size_t>(q)]) * 3 + i];
+                        xyz[static_cast<std::size_t>(rings.mNodes[static_cast<std::size_t>(q)]) *
+                                3 +
+                            i];
                     lo[i] = std::min(lo[i], x);
                     hi[i] = std::max(hi[i], x);
                 }
@@ -503,10 +532,9 @@ ExaggerateResult exaggerate(const Mesh& rMesh, const ExaggerateOptions& rOptions
             absd.push_back(std::fabs(d[p]));
     }
     const double clamp =
-        rOptions.mClamp > 0.0 ? rOptions.mClamp
-                              : (absd.empty() ? 0.0
-                                              : dev_round_up_2sig(
-                                                    detail::render_percentile(absd, 95.0)));
+        rOptions.mClamp > 0.0
+            ? rOptions.mClamp
+            : (absd.empty() ? 0.0 : dev_round_up_2sig(detail::render_percentile(absd, 95.0)));
     result.mClamp = clamp;
     for (double& v : d)
         if (std::isfinite(v))
@@ -535,8 +563,8 @@ ExaggerateResult exaggerate(const Mesh& rMesh, const ExaggerateOptions& rOptions
             double sw = 0.0, sv = 0.0;
             grid.ForEachIn27(grid.KeyOf(pts[p].data()), [&](const std::vector<std::int64_t>& rIds) {
                 for (std::int64_t q : rIds) {
-                    const double dist2 =
-                        detail::vec3_norm_sq(detail::vec3_sub(pts[static_cast<std::size_t>(q)], pts[p]));
+                    const double dist2 = detail::vec3_norm_sq(
+                        detail::vec3_sub(pts[static_cast<std::size_t>(q)], pts[p]));
                     if (dist2 >= r2)
                         continue;
                     const double w = 1.0 - dist2 / r2;
@@ -566,7 +594,8 @@ ExaggerateResult exaggerate(const Mesh& rMesh, const ExaggerateOptions& rOptions
     NDArray out = NDArray::Uninit(DType::Float64, {n, dim});
     for (std::size_t p = 0; p < n; ++p)
         for (std::size_t k = 0; k < dim; ++k)
-            out.As<double>()[p * dim + k] = k < 3 ? moved[p][k] : detail::read_double(rMesh.Points(), p * dim + k);
+            out.As<double>()[p * dim + k] =
+                k < 3 ? moved[p][k] : detail::read_double(rMesh.Points(), p * dim + k);
     result.mMesh.AssignPoints(std::move(out));
     return result;
 }

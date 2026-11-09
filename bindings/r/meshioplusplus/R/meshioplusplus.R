@@ -823,18 +823,94 @@ mio_laplacian_eigenmodes <- function(mesh, num_modes = 10, tolerance = 1e-8,
 #' @param max_iterations The iteration cap.
 #' @param tolerance Stop below this rotation (radians) and relative motion.
 #' @param max_distance Drop pairs farther apart than this; 0 keeps all.
-#' @param initial A starting 4 x 4 matrix, or `NULL` for the identity.
+#' @param initial A starting 4 x 4 matrix, `NULL` for the identity, or
+#'   `"auto"`: the best of the 24 principal-frame candidates (roadmap 7.3.1).
+#' @param symmetric_check With `initial = "auto"`, warn on a symmetric part.
+#' @param source_region,target_region Cell regions restricting the pairs
+#'   (roadmap 7.3.3); `""` for all.
+#' @param adaptive_trim Drop pairs beyond this multiple of the median pair
+#'   distance at each iteration; 0 keeps them.
 #' @return A list of `matrix`, `initial_rms`, `rms`, `iterations`,
-#'   `num_pairs` and `converged`.
+#'   `num_pairs`, `converged`, `num_rejected`, `chosen_candidate` (0-based,
+#'   -1 without `"auto"`), `candidate_rms` and `warnings`.
 #' @export
 mio_register_rigid <- function(source, target, method = "point_to_point",
                                max_iterations = 50, tolerance = 1e-10,
-                               max_distance = 0, initial = NULL) {
-  .Call(
+                               max_distance = 0, initial = NULL, symmetric_check = FALSE,
+                               source_region = "", target_region = "", adaptive_trim = 0) {
+  mode <- "matrix"
+  if (is.character(initial)) {
+    mode <- initial
+    initial <- NULL
+  }
+  res <- .Call(
     R_mio_register_rigid, source, target, as.character(method),
     as.numeric(max_iterations), as.numeric(tolerance), as.numeric(max_distance),
-    if (is.null(initial)) NULL else as.numeric(initial)
+    if (is.null(initial)) NULL else as.numeric(initial), as.character(mode),
+    as.logical(symmetric_check), as.character(source_region), as.character(target_region),
+    as.numeric(adaptive_trim)
   )
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Landmark registration
+#'
+#' The rigid motion laying picked points onto their targets: the weighted
+#' Horn solve in closed form (roadmap 7.3.2). See `doc/registration.md`.
+#'
+#' @param source,target `n x 3` matrices of picked points, `n >= 3`, the
+#'   sources not collinear.
+#' @param weights `NULL`, or `n` non-negative weights.
+#' @return A list of `matrix` (4 x 4), `residuals` and `rms`.
+#' @export
+mio_register_landmarks <- function(source, target, weights = NULL) {
+  .Call(R_mio_register_landmarks, as.matrix(source), as.matrix(target),
+        if (is.null(weights)) NULL else as.numeric(weights))
+}
+
+#' Symmetry plane of a mesh
+#'
+#' Each principal plane through the centroid (and an optional seed) is
+#' mirrored, registered back by ICP and read off the reflection-motion
+#' product (roadmap 7.3.6). See `doc/registration.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param seed `NULL`, or `list(origin, normal)`.
+#' @param tolerance A sample within this of the surface counts as symmetric;
+#'   0 takes 0.005 of the diagonal.
+#' @param min_share Refuse a plane below this share.
+#' @param max_samples The samples of the fine fit.
+#' @return A list of `origin`, `normal`, `rms`, `share`, `tolerance` and
+#'   `chosen_candidate`.
+#' @export
+mio_find_symmetry_plane <- function(mesh, seed = NULL, tolerance = 0, min_share = 0.9,
+                                    max_samples = 4000) {
+  .Call(R_mio_find_symmetry_plane, mesh,
+        if (is.null(seed)) NULL else as.numeric(seed[[1]]),
+        if (is.null(seed)) NULL else as.numeric(seed[[2]]),
+        as.numeric(tolerance), as.numeric(min_share), as.numeric(max_samples))
+}
+
+#' Pose a scan from itself alone
+#'
+#' On its largest flat face, or a cylindrical part on the end of its axis,
+#' from an area-weighted histogram of its facet normals (roadmap 7.3.5). See
+#' `doc/registration.md`.
+#'
+#' @param mesh A `mio_mesh` with surface cells.
+#' @param angle_tolerance Degrees within which a normal agrees, in (0, 45).
+#' @param subdivisions The Gauss-sphere icosahedron's splits (0 to 5).
+#' @param region A voting cell region; `""` for all.
+#' @param rotate_vector_data Rotate vector and tensor point data too.
+#' @return A list of `mesh`, `matrix`, `mode` (`"face"` or `"axis"`),
+#'   `primary`, `secondary`, `share`, `face_share`, `axis_share` and
+#'   `opening_area`.
+#' @export
+mio_auto_align <- function(mesh, angle_tolerance = 10, subdivisions = 3, region = "",
+                           rotate_vector_data = FALSE) {
+  .Call(R_mio_auto_align, mesh, as.numeric(angle_tolerance), as.numeric(subdivisions),
+        as.character(region), as.logical(rotate_vector_data))
 }
 
 #' Normals of a point cloud by local plane fits
@@ -3494,6 +3570,9 @@ mio_thickness <- function(mesh, other = NULL, direction = "auto", max_distance =
 #' @param range `c(lo, hi)` of the histogram, or `NULL` for `+-max|d|`.
 #' @param max_normal_angle The far-side rule's angle in degrees (180: off).
 #' @param reference_region Named cell region of the reference.
+#' @param register Register the scan to the reference first (roadmap 7.4.1):
+#'   `mesh` is then the registered scan, and the list adds `registered`,
+#'   `matrix` and `registration_rms`.
 #' @return A list: `mesh` (with the `deviation:distance` point data),
 #'   `num_points`, `num_measured`, `min`, `max`, `mean`, `rms`, `sigma`,
 #'   `percentiles` (p1, p5, p50, p95, p99), `histogram_edges`,
@@ -3502,7 +3581,7 @@ mio_thickness <- function(mesh, other = NULL, direction = "auto", max_distance =
 #' @export
 mio_deviation <- function(scan, reference = NULL, type = NULL, params = NULL, tolerance = 0,
                           bins = 20, range = NULL, max_normal_angle = 90,
-                          reference_region = "") {
+                          reference_region = "", register = FALSE) {
   types <- c("plane", "sphere", "cylinder", "cone", "torus")
   ptype <- 0
   if (is.null(reference)) {
@@ -3513,7 +3592,7 @@ mio_deviation <- function(scan, reference = NULL, type = NULL, params = NULL, to
   res <- .Call(R_mio_deviation, scan, reference, as.numeric(ptype),
                if (is.null(params)) NULL else as.numeric(params), as.numeric(tolerance),
                as.numeric(bins), rng[1], rng[2], as.numeric(max_normal_angle),
-               as.character(reference_region))
+               as.character(reference_region), as.logical(register))
   names(res$percentiles) <- c("p1", "p5", "p50", "p95", "p99")
   res$warnings <- mio_split_warnings_(res$warnings)
   res

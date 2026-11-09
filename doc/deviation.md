@@ -27,6 +27,10 @@ Against a surface, each scan point's distance is the distance to the nearest ref
 
 Against a primitive, the distance is the signed orthogonal distance `fit_primitives` takes its residuals from: along a plane's normal, away from a sphere's centre or a cylinder's, cone's or torus' axis. `max_normal_angle` and `reference_region` do not apply.
 
+## Registering first
+
+`register=True` lays the scan onto the reference before measuring it, so a scan in its scanner's frame needs no manual pre-alignment: [`register_rigid`](./registration.md) with `initial="auto"` (the best of the 24 principal-frame candidates), point-to-plane ICP and adaptive trimming at three median pair distances, restricted to `reference_region`. The scan returned is then the registered one (its vector and tensor point data, `normals` among them, rotated with it), and the report adds `registered`, `matrix` (4 × 4, scan onto reference) and `registration_rms`; the registration's warnings join the report's. A scan of a symmetric part may register in a symmetric pose, which a deviation report cannot tell from the right one. Against a primitive there is nothing to register to, and `register=True` is refused by name.
+
 ## What comes back
 
 The scan, bit-identical, with the Float64 point data `deviation:distance` (NaN for a point no accepted triangle reaches; `attach=False` leaves it off), and a report over the measured points:
@@ -42,6 +46,7 @@ The scan, bit-identical, with the Float64 point data `deviation:distance` (NaN f
 | `suggested_range` | the 95th percentile of `|d|`, rounded up to two significant figures: a colour range a deviation map reads well with |
 | `num_without_normal` | points measured without the far-side rule |
 | `warnings` | what the run could not do |
+| `registered`, `matrix`, `registration_rms` | with `register=True` only |
 
 Deterministic: each point's answer is a total-order minimum and the statistics are summed in point order, so the result is the same on every parallel backend and thread count.
 
@@ -71,7 +76,7 @@ The measurement runs in the compiled core and has no numpy twin. Without the cor
 ```sh
 meshioplusplus deviation SCAN REFERENCE [OUT] [--patch ID] [--tolerance T] [--min-share S]
                          [--bins N] [--range LO,HI] [--max-normal-angle DEG]
-                         [--reference-region R] [--json]
+                         [--reference-region R] [--register] [--json]
 ```
 
 ```sh
@@ -79,12 +84,12 @@ meshioplusplus deviation-regions IN OUT --tolerance T [--field F] [--prefix P] [
 meshioplusplus exaggerate IN OUT [--field F] [--scale S] [--clamp C] [--smooth-fraction F] [--json]
 ```
 
-`OUT` writes the scan with `deviation:distance`. With `--patch`, `REFERENCE` is a mesh [`fit-primitives`](/fit_primitives) wrote and the scan is measured against that patch label's primitive. `--min-share S` with a `--tolerance` exits with status 1 when the share within tolerance is below `S`.
+`OUT` writes the scan with `deviation:distance` (with `--register`, the registered scan). With `--patch`, `REFERENCE` is a mesh [`fit-primitives`](/fit_primitives) wrote and the scan is measured against that patch label's primitive. `--min-share S` with a `--tolerance` exits with status 1 when the share within tolerance is below `S`.
 
 ## Pipeline
 
 ```json
-{ "Op": "Deviation", "Reference": "nominal.stl", "Patch": -1, "Tolerance": 0, "MinShare": 0, "Require": true, "Bins": 20, "MaxNormalAngle": 90, "ReferenceRegion": "" }
+{ "Op": "Deviation", "Reference": "nominal.stl", "Patch": -1, "Tolerance": 0, "MinShare": 0, "Require": true, "Bins": 20, "MaxNormalAngle": 90, "ReferenceRegion": "", "Register": false }
 ```
 
 ```json
@@ -92,8 +97,8 @@ meshioplusplus exaggerate IN OUT [--field F] [--scale S] [--clamp C] [--smooth-f
 { "Op": "Exaggerate", "Field": "deviation:distance", "Scale": 10, "Clamp": 0, "SmoothFraction": 0.01 }
 ```
 
-`deviation:distance` flows on with the mesh. `Patch` of 0 or more measures against that patch of a fitted reference. With `Tolerance` and `MinShare`, a share below `MinShare` stops the pipeline unless `"Require": false`; the step reports `NumMeasured`, `Min`, `Max`, `Mean`, `Rms`, `Sigma` and `ShareWithin`. `DeviationRegions` writes the regions and reports `NumExcess`, `NumMissing` and `NumDropped`; `Exaggerate` reports `NumMoved` and `Clamp`. See [pipelines](/pipeline).
+`deviation:distance` flows on with the mesh. `Patch` of 0 or more measures against that patch of a fitted reference. With `Tolerance` and `MinShare`, a share below `MinShare` stops the pipeline unless `"Require": false`; the step reports `NumMeasured`, `Min`, `Max`, `Mean`, `Rms`, `Sigma` and `ShareWithin`, and with `Register` also `RegistrationRms`. `DeviationRegions` writes the regions and reports `NumExcess`, `NumMissing` and `NumDropped`; `Exaggerate` reports `NumMoved` and `Clamp`. See [pipelines](/pipeline).
 
 ## Bindings
 
-C: `mio_deviation(scan, reference, &opts, &report)` and `mio_deviation_primitive(scan, type, params, &opts, &report)` with `mio_deviation_opts` (88 bytes, initialized by `mio_deviation_opts_init`) and `mio_deviation_report` (176 bytes), both with reserved tails; `mio_deviation_histogram(counts, edges, capacity)` copies the last call's histogram and `mio_deviation_warnings` its warnings. Fortran `mio_deviation(scan, reference[, tolerance, bins, range_min, range_max, max_normal_angle, reference_region, report])` and `mio_deviation_primitive(scan, ptype, params[, ...])`, Julia `deviation(scan, reference; ...)` and `deviation(scan, type, params; ...)`, R `mio_deviation(scan, reference, type, params, ...)`, Octave/MATLAB `mio.deviation(scan, 'reference', ref, ...)` or `mio.deviation(scan, 'type', t, 'params', p)`, WASM `deviation(scan, {reference | primitive: {type, params}, tolerance, bins, range, maxNormalAngle, referenceRegion})` and the MCP tool `deviation` (with an optional `output_path`, `patch` and a `min_share` gate). `deviation_regions`: C `mio_deviation_regions(mesh, &opts, &report)` (`mio_deviation_regions_opts`, 64 bytes; `mio_deviation_regions_report`, 72 bytes) with `mio_deviation_region_get(index, &info)` (`mio_deviation_region_info`, 136 bytes), `mio_deviation_region_name` and `mio_deviation_regions_warnings`; Fortran `mio_deviation_regions(mesh, tolerance[, field, prefix, min_area, report])` and `mio_deviation_region(index)` (1-based), Julia `deviation_regions(mesh, tolerance; ...)`, R `mio_deviation_regions(mesh, tolerance, ...)`, Octave/MATLAB `mio.deviation_regions(mesh, tolerance, ...)` (a struct array of regions), WASM `deviationRegions(mesh, {tolerance, field, prefix, minArea})` and the MCP tool `deviation_regions`. `exaggerate`: C `mio_exaggerate(mesh, &opts, &report)` (`mio_exaggerate_opts` and `mio_exaggerate_report`, 64 bytes each, `mio_exaggerate_warnings`), Fortran `mio_exaggerate(mesh[, field, scale, clamp, smooth_fraction, report])`, Julia `exaggerate(mesh; ...)`, R `mio_exaggerate(mesh, ...)`, Octave/MATLAB `mio.exaggerate(mesh, ...)`, WASM `exaggerate(mesh, {field, scale, clamp, smoothFraction})` and the MCP tool `exaggerate`.
+C: `mio_deviation(scan, reference, &opts, &report)` and `mio_deviation_primitive(scan, type, params, &opts, &report)` with `mio_deviation_opts` (88 bytes, initialized by `mio_deviation_opts_init`; `register_first`) and `mio_deviation_report` (176 bytes; `registered`, `registration_rms`), both with reserved tails; `mio_deviation_histogram(counts, edges, capacity)` copies the last call's histogram, `mio_deviation_matrix(matrix)` its registration and `mio_deviation_warnings` its warnings. Fortran `mio_deviation(scan, reference[, tolerance, bins, range_min, range_max, max_normal_angle, reference_region, report, register_first])` and `mio_deviation_primitive(scan, ptype, params[, ...])`, Julia `deviation(scan, reference; ...)` and `deviation(scan, type, params; ...)`, R `mio_deviation(scan, reference, type, params, ...)`, Octave/MATLAB `mio.deviation(scan, 'reference', ref, ...)` or `mio.deviation(scan, 'type', t, 'params', p)`, WASM `deviation(scan, {reference | primitive: {type, params}, tolerance, bins, range, maxNormalAngle, referenceRegion, register})` and the MCP tool `deviation` (with an optional `output_path`, `patch`, `register` and a `min_share` gate). Julia, R and Octave/MATLAB take `register` too. `deviation_regions`: C `mio_deviation_regions(mesh, &opts, &report)` (`mio_deviation_regions_opts`, 64 bytes; `mio_deviation_regions_report`, 72 bytes) with `mio_deviation_region_get(index, &info)` (`mio_deviation_region_info`, 136 bytes), `mio_deviation_region_name` and `mio_deviation_regions_warnings`; Fortran `mio_deviation_regions(mesh, tolerance[, field, prefix, min_area, report])` and `mio_deviation_region(index)` (1-based), Julia `deviation_regions(mesh, tolerance; ...)`, R `mio_deviation_regions(mesh, tolerance, ...)`, Octave/MATLAB `mio.deviation_regions(mesh, tolerance, ...)` (a struct array of regions), WASM `deviationRegions(mesh, {tolerance, field, prefix, minArea})` and the MCP tool `deviation_regions`. `exaggerate`: C `mio_exaggerate(mesh, &opts, &report)` (`mio_exaggerate_opts` and `mio_exaggerate_report`, 64 bytes each, `mio_exaggerate_warnings`), Fortran `mio_exaggerate(mesh[, field, scale, clamp, smooth_fraction, report])`, Julia `exaggerate(mesh; ...)`, R `mio_exaggerate(mesh, ...)`, Octave/MATLAB `mio.exaggerate(mesh, ...)`, WASM `exaggerate(mesh, {field, scale, clamp, smoothFraction})` and the MCP tool `exaggerate`.

@@ -394,6 +394,21 @@ def _dvec(step, key):
     return [float(e) for e in v]
 
 
+def _registration_initial(step):
+    """``Initial`` as ``register_rigid``'s ``initial``."""
+    v = _text(step, "Initial", "identity")
+    if v not in ("identity", "auto"):
+        raise _err("RegisterRigid", "Initial must be 'identity' or 'auto'")
+    return "auto" if v == "auto" else None
+
+
+def _int_number(op, step, key, default):
+    v = _number(step, key, default)
+    if float(int(v)) != v:
+        raise _err(op, f"{key} must be an integer")
+    return int(v)
+
+
 def _fit_seeds(op, step):
     """``Seeds`` as ``(x, y, z)`` triples, or ``None``."""
     v = _dvec(step, "Seeds")
@@ -1152,6 +1167,9 @@ def _apply_step(mesh, step, steps, warnings):
     elif op == "Mirror":
         from ._mirror import mirror
 
+        plane = _text(step, "Plane", "")
+        if plane not in ("", "auto"):
+            raise _err(op, "Plane must be '' or 'auto'")
         mesh, report = mirror(
             mesh,
             _vec3(step, "Point") if "Point" in step else (0.0, 0.0, 0.0),
@@ -1160,8 +1178,11 @@ def _apply_step(mesh, step, steps, warnings):
             weld=_flag(step, "Weld", True),
             tolerance=_number(step, "Tolerance", 1e-9),
             reflect_vector_data=_flag(step, "ReflectData", False),
+            plane=plane or None,
             return_report=True,
         )
+        if plane:
+            entry["SymmetryShare"] = float(report["plane"]["share"])
         entry.update(
             NumFlippedCells=float(report["num_flipped_cells"]),
             NumPointsOnPlane=float(report["num_points_on_plane"]),
@@ -1738,8 +1759,11 @@ def _apply_step(mesh, step, steps, warnings):
             bins=int(_number(step, "Bins", 20.0)),
             max_normal_angle=_number(step, "MaxNormalAngle", 90.0),
             reference_region=_text(step, "ReferenceRegion", ""),
+            register=_flag(step, "Register", False),
             return_report=True,
         )
+        if rep.get("registered"):
+            entry["RegistrationRms"] = float(rep["registration_rms"])
         min_share = _number(step, "MinShare", 0.0)
         if (
             tol > 0.0
@@ -2064,10 +2088,17 @@ def _apply_step(mesh, step, steps, warnings):
             max_iterations=int(iters),
             tolerance=_number(step, "Tolerance", 1e-10),
             max_distance=_number(step, "MaxDistance", 0.0),
+            initial=_registration_initial(step),
+            symmetric_check=_flag(step, "SymmetricCheck", False),
+            source_region=_text(step, "SourceRegion", ""),
+            target_region=_text(step, "TargetRegion", ""),
+            adaptive_trim=_number(step, "AdaptiveTrim", 0.0),
         )
         mesh = transform(
             mesh, matrix=matrix, rotate_vector_data=_flag(step, "RotateData", False)
         )
+        entry["NumRejected"] = float(report["num_rejected"])
+        warnings.extend(f"register_rigid: {w}" for w in report["warnings"])
         entry["InitialRms"] = float(report["initial_rms"])
         entry["Rms"] = float(report["rms"])
         entry["Iterations"] = float(report["iterations"])
@@ -2077,6 +2108,37 @@ def _apply_step(mesh, step, steps, warnings):
                 "register_rigid: no convergence within MaxIterations; the transform is "
                 "the last iterate"
             )
+    elif op == "RegisterLandmarks":
+        from ._registration import register_landmarks
+        from ._transform import transform
+
+        src, dst = _dvec(step, "SourcePoints"), _dvec(step, "TargetPoints")
+        if not src or not dst or len(src) % 3 or len(dst) != len(src):
+            raise _err(op, "SourcePoints and TargetPoints hold as many x, y, z triples")
+        weights = _dvec(step, "Weights")
+        matrix, report = register_landmarks(
+            [src[k : k + 3] for k in range(0, len(src), 3)],
+            [dst[k : k + 3] for k in range(0, len(dst), 3)],
+            weights or None,
+        )
+        mesh = transform(
+            mesh, matrix=matrix, rotate_vector_data=_flag(step, "RotateData", False)
+        )
+        entry["Rms"] = float(report["rms"])
+    elif op == "AutoAlign":
+        from ._registration import auto_align
+
+        mesh, report = auto_align(
+            mesh,
+            angle_tolerance=_number(step, "AngleTolerance", 10.0),
+            subdivisions=_int_number(op, step, "Subdivisions", 3.0),
+            region=_text(step, "Region", ""),
+            rotate_vector_data=_flag(step, "RotateData", False),
+            return_report=True,
+        )
+        entry["Share"] = float(report["share"])
+        entry["AxisMode"] = 1.0 if report["mode"] == "axis" else 0.0
+        warnings.extend(f"auto_align: {w}" for w in report["warnings"])
     elif op == "EstimateNormals":
         from ._point_normals import estimate_normals
 

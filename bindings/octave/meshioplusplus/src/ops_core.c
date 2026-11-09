@@ -1241,41 +1241,153 @@ static mxArray *O_mio_laplacian_eigenmodes(const mxArray **a) {
 /* --- registration, point clouds, hulls ----------------------------------- */
 
 /* register_rigid(source, target, method, max_iterations, tolerance,
- *                max_distance, initial) */
+ *                max_distance, initial, initial_mode, symmetric_check,
+ *                source_region, target_region, adaptive_trim) */
 static mxArray *O_mio_register_rigid(const mxArray **a) {
-    mio_registration_opts opts;
-    mio_registration_opts_init(&opts);
+    mio_registration_ex_opts opts;
+    mio_registration_ex_opts_init(&opts);
     const char *m = mio_o_string(a[2], "method");
     if (strcmp(m, "point_to_plane") == 0) {
-        opts.method = MIO_REGISTER_POINT_TO_PLANE;
+        opts.base.method = MIO_REGISTER_POINT_TO_PLANE;
     } else if (strcmp(m, "point_to_point") != 0) {
         mio_o_error("register_rigid", "`method` must be \"point_to_point\" or \"point_to_plane\"");
     }
-    opts.max_iterations = (int64_t)mio_o_double(a[3], "max_iterations");
-    opts.tolerance = mio_o_double(a[4], "tolerance");
-    opts.max_distance = mio_o_double(a[5], "max_distance");
+    opts.base.max_iterations = (int64_t)mio_o_double(a[3], "max_iterations");
+    opts.base.tolerance = mio_o_double(a[4], "tolerance");
+    opts.base.max_distance = mio_o_double(a[5], "max_distance");
     if (!mio_o_is_null(a[6])) {
         double x[16];
         oc_vec_exact(a[6], x, 16, "register_rigid", "`initial` must be a 4 x 4 matrix");
         /* Octave stores column-major: element (i, j) at j * 4 + i */
         for (int i = 0; i < 4; ++i)
-            for (int j = 0; j < 4; ++j) opts.initial[4 * i + j] = x[j * 4 + i];
+            for (int j = 0; j < 4; ++j) opts.base.initial[4 * i + j] = x[j * 4 + i];
     }
+    const char *im = mio_o_string(a[7], "initial");
+    if (strcmp(im, "auto") == 0) {
+        opts.initial_mode = MIO_REGISTER_INITIAL_AUTO;
+    } else if (strcmp(im, "matrix") != 0) {
+        mio_o_error("register_rigid", "`initial` must be a 4 x 4 matrix, [] or \"auto\"");
+    }
+    opts.symmetric_check = mio_o_bool(a[8], "symmetric_check");
+    opts.source_region = mio_o_opt_string(a[9]);
+    opts.target_region = mio_o_opt_string(a[10]);
+    opts.adaptive_trim = mio_o_double(a[11], "adaptive_trim");
     mio_registration_report rep;
-    if (mio_register_rigid(mio_o_mesh(a[0]), mio_o_mesh(a[1]), &opts, &rep) != MIO_OK)
+    if (mio_register_rigid_ex(mio_o_mesh(a[0]), mio_o_mesh(a[1]), &opts, &rep) != MIO_OK)
         mio_o_fail("register_rigid");
     mxArray *mat = mio_o_matrix(4, 4);
     double *dst = mxGetPr(mat);
     for (int i = 0; i < 4; ++i)
         for (int j = 0; j < 4; ++j) dst[j * 4 + i] = rep.matrix[4 * i + j];
-    const char *keys[] = {"matrix", "initial_rms", "rms", "iterations", "num_pairs", "converged"};
+    mxArray *cands = mio_o_column(rep.num_candidates);
+    if (rep.num_candidates > 0)
+        mio_register_rigid_candidates(mxGetPr(cands), rep.num_candidates);
+    mxArray *w = mio_o_getbuffer(mio_register_rigid_warnings, "register_rigid");
+    const char *keys[] = {"matrix",       "initial_rms",      "rms",          "iterations",
+                          "num_pairs",    "converged",        "num_rejected", "chosen_candidate",
+                          "candidate_rms", "warnings"};
     mxArray *values[] = {mat,
                          mio_o_scalar(rep.initial_rms),
                          mio_o_scalar(rep.rms),
                          mio_o_scalar((double)rep.iterations),
                          mio_o_scalar((double)rep.num_pairs),
-                         mio_o_logical(rep.converged != 0)};
+                         mio_o_logical(rep.converged != 0),
+                         mio_o_scalar((double)rep.num_rejected),
+                         mio_o_scalar((double)rep.chosen_candidate),
+                         cands,
+                         w};
+    return mio_o_struct(10, keys, values);
+}
+
+/* register_landmarks(source, target, weights): n x 3 matrices, weights [] or n. */
+static mxArray *O_mio_register_landmarks(const mxArray **a) {
+    int64_t ns = 0, cs = 0, nt = 0, ct = 0;
+    double *src = mio_o_rows_to_c(a[0], &ns, &cs, 0.0, "source");
+    double *dst = mio_o_rows_to_c(a[1], &nt, &ct, 0.0, "target");
+    if (cs != 3 || ct != 3 || ns != nt)
+        mio_o_error("register_landmarks", "`source` and `target` must be n x 3 matrices");
+    const double *w = NULL;
+    if (!mio_o_is_null(a[2])) {
+        size_t nw = 0;
+        w = mio_o_doubles(a[2], &nw, "weights");
+        if ((int64_t)nw != ns)
+            mio_o_error("register_landmarks", "`weights` must have one entry per pair");
+    }
+    mxArray *res = mio_o_column(ns);
+    double m[16], rms = 0.0;
+    if (mio_register_landmarks(src, dst, w, ns, m, ns > 0 ? mxGetPr(res) : NULL, &rms) != MIO_OK)
+        mio_o_fail("register_landmarks");
+    mxArray *mat = mio_o_matrix(4, 4);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) mxGetPr(mat)[j * 4 + i] = m[4 * i + j];
+    const char *keys[] = {"matrix", "residuals", "rms"};
+    mxArray *values[] = {mat, res, mio_o_scalar(rms)};
+    return mio_o_struct(3, keys, values);
+}
+
+/* find_symmetry_plane(mesh, seed_origin, seed_normal, tolerance, min_share,
+ *                     max_samples) */
+static mxArray *O_mio_find_symmetry_plane(const mxArray **a) {
+    mio_symmetry_plane_opts opts;
+    mio_symmetry_plane_opts_init(&opts);
+    if (!mio_o_is_null(a[1]) || !mio_o_is_null(a[2])) {
+        mio_o_vecn(a[1], opts.seed_origin, 3, "seed origin");
+        mio_o_vecn(a[2], opts.seed_normal, 3, "seed normal");
+    }
+    opts.tolerance = mio_o_double(a[3], "tolerance");
+    opts.min_share = mio_o_double(a[4], "min_share");
+    opts.max_samples = (int64_t)mio_o_double(a[5], "max_samples");
+    mio_symmetry_plane_report r;
+    if (mio_find_symmetry_plane(mio_o_mesh(a[0]), &opts, &r) != MIO_OK)
+        mio_o_fail("find_symmetry_plane");
+    mxArray *o = mio_o_matrix(1, 3);
+    mxArray *nn = mio_o_matrix(1, 3);
+    for (int k = 0; k < 3; ++k) {
+        mxGetPr(o)[k] = r.origin[k];
+        mxGetPr(nn)[k] = r.normal[k];
+    }
+    const char *keys[] = {"origin", "normal", "rms", "share", "tolerance", "chosen_candidate"};
+    mxArray *values[] = {o,
+                         nn,
+                         mio_o_scalar(r.rms),
+                         mio_o_scalar(r.share),
+                         mio_o_scalar(r.tolerance),
+                         mio_o_scalar((double)r.chosen_candidate)};
     return mio_o_struct(6, keys, values);
+}
+
+/* auto_align(mesh, angle_tolerance, subdivisions, region, rotate_vector_data) */
+static mxArray *O_mio_auto_align(const mxArray **a) {
+    mio_auto_align_opts opts;
+    mio_auto_align_opts_init(&opts);
+    opts.angle_tolerance = mio_o_double(a[1], "angle_tolerance");
+    opts.subdivisions = (int64_t)mio_o_double(a[2], "subdivisions");
+    opts.region = mio_o_opt_string(a[3]);
+    opts.rotate_vector_data = mio_o_bool(a[4], "rotate_vector_data");
+    mio_auto_align_report r;
+    mio_mesh *out = mio_auto_align(mio_o_mesh(a[0]), &opts, &r);
+    if (out == NULL) mio_o_fail("auto_align");
+    mxArray *mat = mio_o_matrix(4, 4);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) mxGetPr(mat)[j * 4 + i] = r.matrix[4 * i + j];
+    mxArray *pr = mio_o_matrix(1, 3);
+    mxArray *se = mio_o_matrix(1, 3);
+    for (int k = 0; k < 3; ++k) {
+        mxGetPr(pr)[k] = r.primary[k];
+        mxGetPr(se)[k] = r.secondary[k];
+    }
+    const char *keys[] = {"mesh",  "matrix",     "mode",       "primary",     "secondary",
+                          "share", "face_share", "axis_share", "opening_area"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mat,
+                         mio_o_str(r.mode == MIO_AUTO_ALIGN_AXIS ? "axis" : "face"),
+                         pr,
+                         se,
+                         mio_o_scalar(r.share),
+                         mio_o_scalar(r.face_share),
+                         mio_o_scalar(r.axis_share),
+                         mio_o_scalar(r.opening_area)};
+    return mio_o_struct(9, keys, values);
 }
 
 /* estimate_normals(mesh, k, orientation, viewpoint, record_variation) */
@@ -1484,7 +1596,10 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_untangle, 5),
     MIO_O_ENTRY(mio_morph, 7),
     MIO_O_ENTRY(mio_laplacian_eigenmodes, 4),
-    MIO_O_ENTRY(mio_register_rigid, 7),
+    MIO_O_ENTRY(mio_register_rigid, 12),
+    MIO_O_ENTRY(mio_register_landmarks, 3),
+    MIO_O_ENTRY(mio_find_symmetry_plane, 6),
+    MIO_O_ENTRY(mio_auto_align, 5),
     MIO_O_ENTRY(mio_estimate_normals, 5),
     MIO_O_ENTRY(mio_reconstruct_surface, 9),
     MIO_O_ENTRY(mio_convex_hull, 2),

@@ -1071,34 +1071,45 @@ function _deviation_result(ptr, report)
      histogram_edges=edges, histogram_counts=counts,
      num_outside_range=Int(r.num_outside_range), share_within=r.share_within,
      suggested_range=r.suggested_range, num_without_normal=Int(r.num_without_normal),
-     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')),
+     registered=r.registered != 0, registration_rms=r.registration_rms,
+     matrix=_deviation_matrix())
+end
+
+function _deviation_matrix()
+    m = zeros(Cdouble, 16)
+    ccall(_sym(:mio_deviation_matrix), Int64, (Ptr{Cdouble},), m)
+    [m[4 * (i - 1) + j] for i in 1:4, j in 1:4]
 end
 
 """
     deviation(scan, reference; tolerance=0.0, bins=20, range=nothing,
-              max_normal_angle=90.0, reference_region="")
+              max_normal_angle=90.0, reference_region="", register=false)
     deviation(scan, type, params; tolerance=0.0, bins=20, range=nothing)
         -> (; mesh, num_points, num_measured, min, max, mean, rms, sigma, percentiles,
               histogram_edges, histogram_counts, num_outside_range, share_within,
-              suggested_range, num_without_normal, warnings)
+              suggested_range, num_without_normal, warnings, registered,
+              registration_rms, matrix)
 
 The signed deviation of every point of `scan` from the surface `reference`
 (positive outside it), or from a fitted primitive `type` (`"plane"`,
 `"sphere"`, `"cylinder"`, `"cone"`, `"torus"`) with its ten `fit:patch_params`
 entries (roadmap 7.4). `mesh` comes back with the `deviation:distance` point
-data. `max_normal_angle` is the far-side rule (180 turns it off). See
+data. `max_normal_angle` is the far-side rule (180 turns it off). `register`
+registers the scan first (`register_rigid` with `initial="auto"`); `mesh` is
+then the registered scan and `matrix` the motion (roadmap 7.4.1). See
 `doc/deviation.md`.
 """
 function deviation(scan::Mesh, reference::Mesh; tolerance::Real=0.0, bins::Integer=20,
                    range=nothing, max_normal_angle::Real=90.0,
-                   reference_region::AbstractString="")
+                   reference_region::AbstractString="", register::Bool=false)
     lo, hi = range === nothing ? (0.0, 0.0) : (Float64(range[1]), Float64(range[2]))
     report = Ref{_CDeviationReport}()
     rr = Vector{UInt8}(codeunits(String(reference_region) * "\0"))
     ptr = GC.@preserve rr begin
         opts = _CDeviationOpts(Cdouble(tolerance), Int64(bins), lo, hi,
                                Cdouble(max_normal_angle), Cstring(pointer(rr)), Int32(1),
-                               Int32(0), (0, 0, 0, 0))
+                               register ? Int32(1) : Int32(0), (0, 0, 0, 0))
         ccall(_sym(:mio_deviation), Ptr{Cvoid},
               (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CDeviationOpts}, Ref{_CDeviationReport}),
               _handle(scan), _handle(reference), Ref(opts), report)
@@ -4480,33 +4491,145 @@ end
 
 """
     register_rigid(source, target; method="point_to_point", max_iterations=50,
-                   tolerance=1e-10, max_distance=0.0, initial=nothing)
-        -> (; matrix, initial_rms, rms, iterations, num_pairs, converged)
+                   tolerance=1e-10, max_distance=0.0, initial=nothing,
+                   symmetric_check=false, symmetric_tolerance=0.05, source_region="",
+                   target_region="", adaptive_trim=0.0)
+        -> (; matrix, initial_rms, rms, iterations, num_pairs, converged, num_rejected,
+              candidate_rms, chosen_candidate, warnings)
 
 Rigid registration by iterative closest points: `matrix` (4x4, `matrix[i, j]`
 row `i`) lays `source`'s points onto `target` (its surface when it has surface
 cells, else its points); apply it with `transform(source; matrix=...)`.
-`initial` is a starting 4x4 matrix. See `doc/registration.md`.
+`initial` is a starting 4x4 matrix, or `"auto"`: the best of the 24
+principal-frame candidates (roadmap 7.3.1; `chosen_candidate` is 0-based).
+`source_region`/`target_region` restrict the pairs to cell regions and
+`adaptive_trim` drops pairs beyond that multiple of the median pair distance
+(7.3.3). See `doc/registration.md`.
 """
 function register_rigid(source::Mesh, target::Mesh; method::AbstractString="point_to_point",
                         max_iterations::Integer=50, tolerance::Real=1e-10,
-                        max_distance::Real=0.0, initial=nothing)
+                        max_distance::Real=0.0, initial=nothing, symmetric_check::Bool=false,
+                        symmetric_tolerance::Real=0.05, source_region::AbstractString="",
+                        target_region::AbstractString="", adaptive_trim::Real=0.0)
     meth = method == "point_to_point" ? Int32(0) : method == "point_to_plane" ? Int32(1) :
            throw(ArgumentError("meshio++: register_rigid: method must be \"point_to_point\" or \"point_to_plane\""))
+    mode = Int32(0)
+    if initial isa AbstractString
+        initial == "auto" ||
+            throw(ArgumentError("meshio++: register_rigid: initial must be a 4x4 matrix, nothing or \"auto\""))
+        mode = Int32(1)
+        initial = nothing
+    end
     start = initial === nothing ? Matrix{Float64}(I4) : Matrix{Float64}(initial)
     size(start) == (4, 4) || throw(ArgumentError("meshio++: register_rigid: initial must be 4x4"))
     flat = ntuple(k -> start[(k - 1) ÷ 4 + 1, (k - 1) % 4 + 1], 16)
-    opts = _CRegistrationOpts(meth, Int32(0), Int64(max_iterations), Float64(tolerance),
+    base = _CRegistrationOpts(meth, Int32(0), Int64(max_iterations), Float64(tolerance),
                               Float64(max_distance), flat, ntuple(_ -> Int64(0), 4))
     rep = Ref{_CRegistrationReport}()
-    st = ccall(_sym(:mio_register_rigid), Cint,
-               (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CRegistrationOpts}, Ref{_CRegistrationReport}),
-               _handle(source), _handle(target), Ref(opts), rep)
+    sr = Vector{UInt8}(codeunits(String(source_region) * "\0"))
+    tr = Vector{UInt8}(codeunits(String(target_region) * "\0"))
+    st = GC.@preserve sr tr begin
+        opts = _CRegistrationExOpts(base, mode, symmetric_check ? Int32(1) : Int32(0),
+                                    Cdouble(symmetric_tolerance), Cdouble(adaptive_trim),
+                                    Cstring(pointer(sr)), Cstring(pointer(tr)),
+                                    ntuple(_ -> Int64(0), 4))
+        ccall(_sym(:mio_register_rigid_ex), Cint,
+              (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CRegistrationExOpts}, Ref{_CRegistrationReport}),
+              _handle(source), _handle(target), Ref(opts), rep)
+    end
     _check(st)
     r = rep[]
     matrix = [r.matrix[4 * (i - 1) + j] for i in 1:4, j in 1:4]
+    cands = zeros(Cdouble, Int(r.num_candidates))
+    ccall(_sym(:mio_register_rigid_candidates), Int64, (Ptr{Cdouble}, Int64), cands,
+          length(cands))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_register_rigid_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
     (matrix=matrix, initial_rms=r.initial_rms, rms=r.rms, iterations=Int(r.iterations),
-     num_pairs=Int(r.num_pairs), converged=r.converged != 0)
+     num_pairs=Int(r.num_pairs), converged=r.converged != 0,
+     num_rejected=Int(r.num_rejected), candidate_rms=cands,
+     chosen_candidate=Int(r.chosen_candidate),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    register_landmarks(source_points, target_points; weights=nothing)
+        -> (; matrix, residuals, rms)
+
+The rigid motion laying picked points (rows of `n x 3` matrices, `n >= 3`, not
+collinear) onto their targets: the weighted Horn solve (roadmap 7.3.2).
+"""
+function register_landmarks(source_points::AbstractMatrix{<:Real},
+                            target_points::AbstractMatrix{<:Real}; weights=nothing)
+    n = size(source_points, 1)
+    (size(source_points, 2) == 3 && size(target_points) == (n, 3)) ||
+        throw(ArgumentError("meshio++: register_landmarks: points must be n x 3 matrices"))
+    src = Cdouble.(vec(permutedims(source_points)))
+    dst = Cdouble.(vec(permutedims(target_points)))
+    w = weights === nothing ? C_NULL : Cdouble.(collect(weights))
+    m = zeros(Cdouble, 16)
+    res = zeros(Cdouble, max(n, 1))
+    rms = Ref{Cdouble}(0.0)
+    st = ccall(_sym(:mio_register_landmarks), Cint,
+               (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Int64, Ptr{Cdouble}, Ptr{Cdouble},
+                Ref{Cdouble}), src, dst, w, n, m, res, rms)
+    _check(st)
+    (matrix=[m[4 * (i - 1) + j] for i in 1:4, j in 1:4], residuals=res[1:n], rms=rms[])
+end
+
+"""
+    find_symmetry_plane(m; seed=nothing, tolerance=0.0, min_share=0.9, max_samples=4000,
+                        max_iterations=50) -> (; origin, normal, rms, share, tolerance,
+                                                chosen_candidate)
+
+The plane `m` is most nearly symmetric about (roadmap 7.3.6): each principal
+plane (and `seed`, an `(origin, normal)` pair) is mirrored, registered back by
+ICP and read off the reflection-motion product. Refuses a plane below
+`min_share`. See `doc/registration.md`.
+"""
+function find_symmetry_plane(m::Mesh; seed=nothing, tolerance::Real=0.0,
+                             min_share::Real=0.9, max_samples::Integer=4000,
+                             max_iterations::Integer=50)
+    so, sn = seed === nothing ? ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)) :
+             (Tuple(Float64.(seed[1])), Tuple(Float64.(seed[2])))
+    opts = _CSymmetryPlaneOpts(so, sn, Cdouble(tolerance), Cdouble(min_share),
+                               Int64(max_samples), Int64(max_iterations), ntuple(_ -> Int64(0), 4))
+    rep = Ref{_CSymmetryPlaneReport}()
+    st = ccall(_sym(:mio_find_symmetry_plane), Cint,
+               (Ptr{Cvoid}, Ref{_CSymmetryPlaneOpts}, Ref{_CSymmetryPlaneReport}),
+               _handle(m), Ref(opts), rep)
+    _check(st)
+    r = rep[]
+    (origin=collect(r.origin), normal=collect(r.normal), rms=r.rms, share=r.share,
+     tolerance=r.tolerance, chosen_candidate=Int(r.chosen_candidate))
+end
+
+"""
+    auto_align(m; angle_tolerance=10.0, subdivisions=3, region="", rotate_vector_data=false)
+        -> (; mesh, matrix, mode, primary, secondary, share, face_share, axis_share,
+              opening_area)
+
+Pose a scan from itself alone (roadmap 7.3.5): on its largest flat face
+(`mode == "face"`) or a cylinder on the end of its axis (`"axis"`), from an
+area-weighted histogram of its facet normals. See `doc/registration.md`.
+"""
+function auto_align(m::Mesh; angle_tolerance::Real=10.0, subdivisions::Integer=3,
+                    region::AbstractString="", rotate_vector_data::Bool=false)
+    rg = Vector{UInt8}(codeunits(String(region) * "\0"))
+    rep = Ref{_CAutoAlignReport}()
+    ptr = GC.@preserve rg begin
+        opts = _CAutoAlignOpts(Cdouble(angle_tolerance), Int64(subdivisions), Cstring(pointer(rg)),
+                               rotate_vector_data ? Int32(1) : Int32(0), Int32(0),
+                               ntuple(_ -> Int64(0), 4))
+        ccall(_sym(:mio_auto_align), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CAutoAlignOpts}, Ref{_CAutoAlignReport}), _handle(m), Ref(opts), rep)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    (mesh=out, matrix=[r.matrix[4 * (i - 1) + j] for i in 1:4, j in 1:4],
+     mode=r.mode == 1 ? "axis" : "face", primary=collect(r.primary),
+     secondary=collect(r.secondary), share=r.share, face_share=r.face_share,
+     axis_share=r.axis_share, opening_area=r.opening_area)
 end
 
 const I4 = [1.0 0.0 0.0 0.0; 0.0 1.0 0.0 0.0; 0.0 0.0 1.0 0.0; 0.0 0.0 0.0 1.0]

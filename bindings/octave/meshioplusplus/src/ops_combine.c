@@ -403,8 +403,8 @@ static mxArray *O_mio_thickness(const mxArray **a) {
 }
 
 /* deviation(scan, reference, type, params, tolerance, bins, range_min,
- * range_max, max_normal_angle, reference_region); reference [] measures
- * against the primitive (type 1-5, ten params). */
+ * range_max, max_normal_angle, reference_region, register); reference []
+ * measures against the primitive (type 1-5, ten params). */
 static mxArray *O_mio_deviation(const mxArray **a) {
     mio_deviation_opts opts;
     mio_deviation_opts_init(&opts);
@@ -414,6 +414,7 @@ static mxArray *O_mio_deviation(const mxArray **a) {
     opts.range_max = mio_o_double(a[7], "range_max");
     opts.max_normal_angle = mio_o_double(a[8], "max_normal_angle");
     opts.reference_region = mio_o_opt_string(a[9]);
+    opts.register_first = mio_o_bool(a[10], "register");
     mio_deviation_report r;
     mio_mesh *out;
     if (mio_o_is_null(a[1])) {
@@ -443,7 +444,13 @@ static mxArray *O_mio_deviation(const mxArray **a) {
                            "rms",           "sigma",             "percentiles",
                            "histogram_edges", "histogram_counts", "num_outside_range",
                            "share_within",  "suggested_range",   "num_without_normal",
-                           "warnings"};
+                           "warnings",      "registered",        "matrix",
+                           "registration_rms"};
+    mxArray *mat = mio_o_matrix(4, 4);
+    double dm[16];
+    mio_deviation_matrix(dm);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) mxGetPr(mat)[j * 4 + i] = dm[4 * i + j];
     mxArray *v[] = {mio_o_wrap_mesh(out),
                     mio_o_scalar((double)r.num_points),
                     mio_o_scalar((double)r.num_measured),
@@ -459,8 +466,11 @@ static mxArray *O_mio_deviation(const mxArray **a) {
                     mio_o_scalar(r.share_within),
                     mio_o_scalar(r.suggested_range),
                     mio_o_scalar((double)r.num_without_normal),
-                    w};
-    return mio_o_struct(16, names, v);
+                    w,
+                    mio_o_logical(r.registered != 0),
+                    mat,
+                    mio_o_scalar(r.registration_rms)};
+    return mio_o_struct(19, names, v);
 }
 
 /* deviation_regions(mesh, tolerance, field, prefix, min_area); `regions` is an
@@ -1580,7 +1590,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_mirror, 7),
     MIO_O_ENTRY(mio_find_intersections, 6),
     MIO_O_ENTRY(mio_thickness, 7),
-    MIO_O_ENTRY(mio_deviation, 10),
+    MIO_O_ENTRY(mio_deviation, 11),
     MIO_O_ENTRY(mio_deviation_regions, 5),
     MIO_O_ENTRY(mio_exaggerate, 5),
     MIO_O_ENTRY(mio_colorize, 9),

@@ -4200,7 +4200,10 @@ typedef struct mio_registration_report {
     int64_t num_pairs;    /**< pairs kept at the end */
     int32_t converged;    /**< nonzero unless max_iterations ran out first */
     int32_t reserved_pad; /**< zero */
-    int64_t reserved[4];  /**< zero; room for additive growth */
+    int64_t num_rejected;     /**< source points left out of the pairs at the end */
+    int64_t chosen_candidate; /**< MIO_REGISTER_INITIAL_AUTO: the candidate refined; else -1 */
+    int64_t num_candidates;   /**< see mio_register_rigid_candidates() */
+    int64_t num_warnings;     /**< see mio_register_rigid_warnings() */
 } mio_registration_report;
 
 /** Initialize registration options (see mio_registration_opts). */
@@ -4218,6 +4221,124 @@ MIO_API void mio_registration_opts_init(mio_registration_opts* opts);
 MIO_API mio_status mio_register_rigid(const mio_mesh* source, const mio_mesh* target,
                                       const mio_registration_opts* opts,
                                       mio_registration_report* report);
+
+/** mio_registration_ex_opts.initial_mode: start from base.initial. */
+#define MIO_REGISTER_INITIAL_MATRIX 0
+/** mio_registration_ex_opts.initial_mode: the best of the 24 principal-frame candidates. */
+#define MIO_REGISTER_INITIAL_AUTO 1
+
+/**
+ * Options for mio_register_rigid_ex (roadmap 7.3.1, 7.3.3): the base options
+ * plus the automatic start, regions and adaptive trimming. 264 bytes;
+ * initialize through mio_registration_ex_opts_init().
+ */
+typedef struct mio_registration_ex_opts {
+    mio_registration_opts base;
+    int32_t initial_mode;       /**< MIO_REGISTER_INITIAL_* (init: _MATRIX) */
+    int32_t symmetric_check;    /**< with _AUTO: warn on a symmetric part (init: 0) */
+    double symmetric_tolerance; /**< relative trimmed-RMS margin (init: 0.05) */
+    double adaptive_trim;       /**< drop pairs beyond this x median distance; 0 off */
+    const char* source_region;  /**< cell region of the source; NULL or "" for all */
+    const char* target_region;  /**< cell region of the target; NULL or "" for all */
+    int64_t reserved[4];        /**< must be zero */
+} mio_registration_ex_opts;
+
+MIO_API void mio_registration_ex_opts_init(mio_registration_ex_opts* opts);
+/** mio_register_rigid with the options of mio_registration_ex_opts. */
+MIO_API mio_status mio_register_rigid_ex(const mio_mesh* source, const mio_mesh* target,
+                                         const mio_registration_ex_opts* opts,
+                                         mio_registration_report* report);
+/**
+ * Copy up to `capacity` candidate trimmed RMS values of this thread's last
+ * register_rigid call into `out` (nullable). Returns the number of
+ * candidates (24 with MIO_REGISTER_INITIAL_AUTO, else 0), or -1 on failure.
+ */
+MIO_API int64_t mio_register_rigid_candidates(double* out, int64_t capacity);
+/** The warnings of this thread's last register_rigid call; string rule 5. */
+MIO_API int64_t mio_register_rigid_warnings(char* buf, int64_t buflen);
+
+/**
+ * Landmark registration (roadmap 7.3.2): the weighted Horn solve laying `n`
+ * source points onto their targets (`3n` doubles each, xyz interleaved).
+ * `weights` (n, non-negative) and `residuals` (n, out) are nullable.
+ * Fewer than three pairs, or collinear source points, are refused.
+ */
+MIO_API mio_status mio_register_landmarks(const double* source, const double* target,
+                                          const double* weights, int64_t n, double matrix[16],
+                                          double* residuals, double* rms);
+
+/** Options of mio_find_symmetry_plane; initialise with mio_symmetry_plane_opts_init. 112 bytes. */
+typedef struct mio_symmetry_plane_opts {
+    double seed_origin[3];  /**< a seed plane's point (init: 0) */
+    double seed_normal[3];  /**< its normal; zero tries no seed (init: 0) */
+    double tolerance;       /**< the share's distance; 0 takes 0.005 of the diagonal */
+    double min_share;       /**< refuse a plane below this share (init: 0.9) */
+    int64_t max_samples;    /**< fine-fit samples (init: 4000) */
+    int64_t max_iterations; /**< per ICP run (init: 50) */
+    int64_t reserved[4];
+} mio_symmetry_plane_opts;
+
+/** What mio_find_symmetry_plane found. 128 bytes. */
+typedef struct mio_symmetry_plane_report {
+    double origin[3];         /**< the centroid projected onto the plane */
+    double normal[3];         /**< unit, its largest-magnitude component positive */
+    double rms;               /**< mirrored samples to the surface */
+    double share;             /**< share within tolerance */
+    double tolerance;         /**< the tolerance applied */
+    int64_t chosen_candidate; /**< 0 to 2 the principal planes, 3 the seed */
+    int64_t num_candidates;
+    int64_t num_warnings;     /**< see mio_find_symmetry_plane_warnings() */
+    int64_t reserved[4];
+} mio_symmetry_plane_report;
+
+MIO_API void mio_symmetry_plane_opts_init(mio_symmetry_plane_opts* opts);
+/** The symmetry plane of a mesh or cloud (roadmap 7.3.6; doc/registration.md). */
+MIO_API mio_status mio_find_symmetry_plane(const mio_mesh* mesh,
+                                           const mio_symmetry_plane_opts* opts,
+                                           mio_symmetry_plane_report* report);
+/** The warnings of this thread's last find_symmetry_plane call; string rule 5. */
+MIO_API int64_t mio_find_symmetry_plane_warnings(char* buf, int64_t buflen);
+
+/** mio_auto_align_report.mode: laid on its largest flat face. */
+#define MIO_AUTO_ALIGN_FACE 0
+/** mio_auto_align_report.mode: stood on the end of its axis. */
+#define MIO_AUTO_ALIGN_AXIS 1
+
+/** Options of mio_auto_align; initialise with mio_auto_align_opts_init. 64 bytes. */
+typedef struct mio_auto_align_opts {
+    double angle_tolerance;     /**< degrees in (0, 45) (init: 10) */
+    int64_t subdivisions;       /**< Gauss-sphere icosahedron splits, 0 to 5 (init: 3) */
+    const char* region;         /**< voting cell region; NULL or "" for all */
+    int32_t rotate_vector_data; /**< rotate vector and tensor point data (init: 0) */
+    int32_t reserved32;
+    int64_t reserved[4];
+} mio_auto_align_opts;
+
+/** How mio_auto_align posed the mesh. 256 bytes. */
+typedef struct mio_auto_align_report {
+    double matrix[16];   /**< row-major 4x4: input onto aligned coordinates */
+    int32_t mode;        /**< MIO_AUTO_ALIGN_FACE or _AXIS */
+    int32_t reserved32;
+    double primary[3];   /**< input direction sent to -Z (face) or +Z (axis) */
+    double secondary[3]; /**< input direction sent to +X */
+    double share;        /**< the chosen pose's agreeing area share */
+    double face_share;
+    double axis_share;
+    double opening_area; /**< the opening's area added to the histogram */
+    int64_t num_warnings; /**< see mio_auto_align_warnings() */
+    int64_t reserved[4];
+} mio_auto_align_report;
+
+MIO_API void mio_auto_align_opts_init(mio_auto_align_opts* opts);
+/**
+ * Pose a scan from itself alone (roadmap 7.3.5): on its largest flat face, or a
+ * cylinder on its axis. Returns the moved mesh (free with mio_mesh_free), or
+ * NULL on failure. See doc/registration.md.
+ */
+MIO_API mio_mesh* mio_auto_align(const mio_mesh* mesh, const mio_auto_align_opts* opts,
+                                 mio_auto_align_report* report);
+/** The warnings of this thread's last auto_align call; string rule 5. */
+MIO_API int64_t mio_auto_align_warnings(char* buf, int64_t buflen);
 
 /** mio_point_normals_opts.orientation: propagate along a spanning tree, then outward. */
 #define MIO_NORMALS_CONSISTENT 0
@@ -7674,7 +7795,7 @@ typedef struct mio_deviation_opts {
     double max_normal_angle;      /**< far-side rule, degrees; 180 turns it off (init: 90) */
     const char* reference_region; /**< Cell region of the reference; NULL or "" for all */
     int32_t attach;               /**< attach deviation:distance (init: 1) */
-    int32_t reserved32;
+    int32_t register_first;       /**< register the scan first (mio_deviation only; init: 0) */
     int64_t reserved[4];
 } mio_deviation_opts;
 
@@ -7694,7 +7815,9 @@ typedef struct mio_deviation_report {
     double suggested_range;     /**< p95 of |d| rounded up to two significant figures */
     int64_t num_bins;           /**< see mio_deviation_histogram() */
     int64_t num_warnings;       /**< see mio_deviation_warnings() */
-    int64_t reserved[4];
+    int64_t registered;         /**< nonzero with register_first; see mio_deviation_matrix() */
+    double registration_rms;    /**< the registration's final RMS pair distance */
+    int64_t reserved[2];
 } mio_deviation_report;
 
 MIO_API void mio_deviation_opts_init(mio_deviation_opts* opts);
@@ -7728,6 +7851,12 @@ MIO_API mio_mesh* mio_deviation_primitive(const mio_mesh* scan, int32_t type,
 MIO_API int64_t mio_deviation_histogram(int64_t* counts, double* edges, int64_t capacity);
 /** The warnings of this thread's last deviation call; string rule 5. */
 MIO_API int64_t mio_deviation_warnings(char* buf, int64_t buflen);
+/**
+ * Copy the registration of this thread's last deviation call (row-major 4x4,
+ * scan onto reference; the identity without register_first) into `matrix`.
+ * Returns 1 when it registered, 0 when not, -1 on failure.
+ */
+MIO_API int64_t mio_deviation_matrix(double matrix[16]);
 
 /** Options of mio_deviation_regions; initialise with mio_deviation_regions_opts_init. 64 bytes. */
 typedef struct mio_deviation_regions_opts {

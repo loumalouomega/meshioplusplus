@@ -95,6 +95,12 @@ struct DeviationOptions {
     std::string mReferenceRegion;
     /// Attach `deviation:distance` to the returned scan.
     bool mAttach = true;
+    /// Register the scan to the reference first (`deviation` only): the
+    /// automatic start, point-to-plane ICP and adaptive trimming at three
+    /// median pair distances (`register_rigid`, roadmap 7.3.1 and 7.3.3),
+    /// restricted to `mReferenceRegion`. The returned scan is then the
+    /// registered one, its vector and tensor point data rotated with it.
+    bool mRegister = false;
 };
 
 /// The measured scan and its statistics.
@@ -121,6 +127,12 @@ struct DeviationResult {
     /// Points measured without the far-side rule (no normal to compare).
     std::int64_t mNumWithoutNormal = 0;
     std::vector<std::string> mWarnings;
+    /// With `mRegister`: the registration applied (row-major 4x4, scan
+    /// coordinates onto the reference's; the identity otherwise) and its
+    /// final RMS pair distance.
+    bool mRegistered = false;
+    std::array<double, 16> mMatrix{{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}};
+    double mRegistrationRms = 0.0;
 };
 
 /**
@@ -163,14 +175,14 @@ struct DeviationRegionsOptions {
 
 /// One connected region beyond tolerance.
 struct DeviationRegionRecord {
-    std::string mName;               ///< its cell region's name
-    std::int64_t mSign = 0;          ///< +1 excess material, -1 missing material
+    std::string mName;       ///< its cell region's name
+    std::int64_t mSign = 0;  ///< +1 excess material, -1 missing material
     std::int64_t mNumCells = 0;
     double mArea = 0.0;
-    double mExtreme = 0.0;           ///< the largest (excess) or least (missing) cell value
-    double mMean = 0.0;              ///< area-weighted mean deviation
-    double mVolume = 0.0;            ///< the signed volume estimate, the sum of d * area
-    std::array<double, 3> mCentroid{{0.0, 0.0, 0.0}};  ///< area-weighted
+    double mExtreme = 0.0;  ///< the largest (excess) or least (missing) cell value
+    double mMean = 0.0;     ///< area-weighted mean deviation
+    double mVolume = 0.0;   ///< the signed volume estimate, the sum of d * area
+    std::array<double, 3> mCentroid{{0.0, 0.0, 0.0}};               ///< area-weighted
     std::array<double, 6> mBounds{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};  ///< lo x, y, z, hi x, y, z
 };
 
@@ -198,8 +210,8 @@ struct DeviationRegionsResult {
  * @throws std::invalid_argument on a bad option, a missing or non-scalar
  *         field, or a volume block.
  */
-MESHIOPLUSPLUS_API DeviationRegionsResult deviation_regions(
-    const Mesh& rMesh, const DeviationRegionsOptions& rOptions);
+MESHIOPLUSPLUS_API DeviationRegionsResult
+deviation_regions(const Mesh& rMesh, const DeviationRegionsOptions& rOptions);
 
 /// Options of `exaggerate`.
 struct ExaggerateOptions {

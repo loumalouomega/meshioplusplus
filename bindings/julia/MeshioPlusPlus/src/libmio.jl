@@ -1100,7 +1100,7 @@ struct _CDeviationOpts
     max_normal_angle::Cdouble
     reference_region::Cstring
     attach::Int32
-    reserved32::Int32
+    register_first::Int32
     reserved::NTuple{4,Int64}
 end
 
@@ -1120,7 +1120,9 @@ struct _CDeviationReport
     suggested_range::Cdouble
     num_bins::Int64
     num_warnings::Int64
-    reserved::NTuple{4,Int64}
+    registered::Int64
+    registration_rms::Cdouble
+    reserved::NTuple{2,Int64}
 end
 
 """Mirror of C `mio_deviation_regions_opts` (roadmap 7.4.3)."""
@@ -2046,6 +2048,70 @@ struct _CRegistrationReport
     num_pairs::Int64
     converged::Int32
     reserved_pad::Int32
+    num_rejected::Int64
+    chosen_candidate::Int64
+    num_candidates::Int64
+    num_warnings::Int64
+end
+
+"""Mirror of C `mio_registration_ex_opts` (roadmap 7.3)."""
+struct _CRegistrationExOpts
+    base::_CRegistrationOpts
+    initial_mode::Int32
+    symmetric_check::Int32
+    symmetric_tolerance::Cdouble
+    adaptive_trim::Cdouble
+    source_region::Cstring
+    target_region::Cstring
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_symmetry_plane_opts` (roadmap 7.3.6)."""
+struct _CSymmetryPlaneOpts
+    seed_origin::NTuple{3,Cdouble}
+    seed_normal::NTuple{3,Cdouble}
+    tolerance::Cdouble
+    min_share::Cdouble
+    max_samples::Int64
+    max_iterations::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_symmetry_plane_report`."""
+struct _CSymmetryPlaneReport
+    origin::NTuple{3,Cdouble}
+    normal::NTuple{3,Cdouble}
+    rms::Cdouble
+    share::Cdouble
+    tolerance::Cdouble
+    chosen_candidate::Int64
+    num_candidates::Int64
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_auto_align_opts` (roadmap 7.3.5)."""
+struct _CAutoAlignOpts
+    angle_tolerance::Cdouble
+    subdivisions::Int64
+    region::Cstring
+    rotate_vector_data::Int32
+    reserved32::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_auto_align_report`."""
+struct _CAutoAlignReport
+    matrix::NTuple{16,Cdouble}
+    mode::Int32
+    reserved32::Int32
+    primary::NTuple{3,Cdouble}
+    secondary::NTuple{3,Cdouble}
+    share::Cdouble
+    face_share::Cdouble
+    axis_share::Cdouble
+    opening_area::Cdouble
+    num_warnings::Int64
     reserved::NTuple{4,Int64}
 end
 
@@ -2513,6 +2579,16 @@ function _check_abi_layout()
         error("meshio++: mio_registration_opts layout mismatch ($(sizeof(_CRegistrationOpts)) bytes)")
     sizeof(_CRegistrationReport) == 200 ||
         error("meshio++: mio_registration_report layout mismatch ($(sizeof(_CRegistrationReport)) bytes)")
+    (sizeof(_CRegistrationExOpts) == 264 && fieldoffset(_CRegistrationExOpts, 6) == 216) ||
+        error("meshio++: mio_registration_ex_opts layout mismatch ($(sizeof(_CRegistrationExOpts)) bytes)")
+    sizeof(_CSymmetryPlaneOpts) == 112 ||
+        error("meshio++: mio_symmetry_plane_opts layout mismatch ($(sizeof(_CSymmetryPlaneOpts)) bytes)")
+    sizeof(_CSymmetryPlaneReport) == 128 ||
+        error("meshio++: mio_symmetry_plane_report layout mismatch ($(sizeof(_CSymmetryPlaneReport)) bytes)")
+    sizeof(_CAutoAlignOpts) == 64 ||
+        error("meshio++: mio_auto_align_opts layout mismatch ($(sizeof(_CAutoAlignOpts)) bytes)")
+    (sizeof(_CAutoAlignReport) == 256 && fieldoffset(_CAutoAlignReport, 4) == 136) ||
+        error("meshio++: mio_auto_align_report layout mismatch ($(sizeof(_CAutoAlignReport)) bytes)")
     sizeof(_CPointNormalsOpts) == 72 ||
         error("meshio++: mio_point_normals_opts layout mismatch ($(sizeof(_CPointNormalsOpts)) bytes)")
     sizeof(_CReconstructSurfaceOpts) == 96 ||

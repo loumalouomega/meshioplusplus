@@ -3,7 +3,8 @@
 \title{Signed deviation of a scan from a reference}
 \usage{
 mio_deviation(scan, reference = NULL, type = NULL, params = NULL, tolerance = 0,
-  bins = 20, range = NULL, max_normal_angle = 90, reference_region = "")
+  bins = 20, range = NULL, max_normal_angle = 90, reference_region = "",
+  register = FALSE)
 }
 \arguments{
 \item{scan}{A point cloud or surface mesh.}
@@ -15,6 +16,8 @@ mio_deviation(scan, reference = NULL, type = NULL, params = NULL, tolerance = 0,
 \item{range}{\code{c(lo, hi)} of the histogram, or \code{NULL} for \code{+-max|d|}.}
 \item{max_normal_angle}{The far-side rule's angle in degrees (180: off).}
 \item{reference_region}{Named cell region of the reference.}
+
+\item{register}{Register the scan to the reference first (roadmap 7.4.1): \code{mesh} is then the registered scan, and the list adds \code{registered}, \code{matrix} and \code{registration_rms}.}
 }
 \value{
 A list: \code{mesh} (with the \code{deviation:distance} point data),

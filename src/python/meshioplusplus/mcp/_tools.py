@@ -52,6 +52,7 @@ from .. import (
     agglomerate,
     annulus,
     attach_quality,
+    auto_align,
     ball,
     boundary_layer,
     box,
@@ -109,6 +110,7 @@ from .. import (
     fichera,
     find_interface,
     find_intersections,
+    find_symmetry_plane,
     fit_cad,
     fit_primitives,
     geo_sphere,
@@ -166,6 +168,7 @@ from .. import (
     refine,
     refine_patches,
     region_adjacency,
+    register_landmarks,
     register_rigid,
     remesh,
     remesh_quads,
@@ -883,6 +886,7 @@ def tool_deviation(
     range_max=None,
     max_normal_angle=90.0,
     reference_region="",
+    register=False,
 ):
     """Signed deviation of every point of a scan from a reference surface
     (or, with ``patch``, from that patch's fitted primitive in a mesh
@@ -906,6 +910,7 @@ def tool_deviation(
         max_normal_angle=max_normal_angle,
         reference_region=reference_region,
         attach=output_path is not None,
+        register=bool(register),
         return_report=True,
     )
     if min_share is not None:
@@ -4285,9 +4290,18 @@ def tool_register_rigid(
     source_format=None,
     target_format=None,
     output_format=None,
+    initial="identity",
+    symmetric_check=False,
+    source_region="",
+    target_region="",
+    adaptive_trim=0.0,
 ):
     """The rigid motion laying one mesh or point cloud onto another (ICP); with
     output_path, also the moved source."""
+    if initial not in ("identity", "auto"):
+        raise ValueError(
+            f"meshio++: register_rigid: initial must be 'identity' or 'auto', not {initial!r}"
+        )
     source = _load(source_path, source_format)
     matrix, report = register_rigid(
         source,
@@ -4296,6 +4310,11 @@ def tool_register_rigid(
         max_iterations=int(max_iterations),
         tolerance=float(tolerance),
         max_distance=float(max_distance),
+        initial="auto" if initial == "auto" else None,
+        symmetric_check=bool(symmetric_check),
+        source_region=source_region,
+        target_region=target_region,
+        adaptive_trim=float(adaptive_trim),
     )
     out = {"matrix": [[float(v) for v in row] for row in matrix]}
     out.update(report)
@@ -4303,6 +4322,80 @@ def tool_register_rigid(
         moved = transform(source, matrix=matrix, rotate_vector_data=bool(rotate_data))
         out["output_path"] = _store(moved, output_path, output_format)
     return _json_safe(out)
+
+
+def tool_register_landmarks(
+    source_points,
+    target_points,
+    weights=None,
+    input_path=None,
+    output_path=None,
+    input_format=None,
+    output_format=None,
+    rotate_data=False,
+):
+    """The rigid motion laying picked points onto their targets (the weighted
+    Horn solve); with input_path and output_path, also the moved mesh."""
+    matrix, report = register_landmarks(source_points, target_points, weights)
+    out = {"matrix": [[float(v) for v in row] for row in matrix]}
+    out.update(report)
+    if input_path and output_path:
+        moved = transform(
+            _load(input_path, input_format),
+            matrix=matrix,
+            rotate_vector_data=bool(rotate_data),
+        )
+        out["output_path"] = _store(moved, output_path, output_format)
+    return _json_safe(out)
+
+
+def tool_find_symmetry_plane(
+    input_path,
+    input_format=None,
+    seed_origin=None,
+    seed_normal=None,
+    tolerance=0.0,
+    min_share=0.9,
+    max_samples=4000,
+):
+    """The plane a mesh or point cloud is most nearly symmetric about."""
+    if (seed_origin is None) != (seed_normal is None):
+        raise ValueError(
+            "meshio++: find_symmetry_plane: seed_origin and seed_normal go together"
+        )
+    seed = None if seed_origin is None else (seed_origin, seed_normal)
+    return _json_safe(
+        find_symmetry_plane(
+            _load(input_path, input_format),
+            seed=seed,
+            tolerance=float(tolerance),
+            min_share=float(min_share),
+            max_samples=int(max_samples),
+        )
+    )
+
+
+def tool_auto_align(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    angle_tolerance=10.0,
+    subdivisions=3,
+    region="",
+    rotate_vector_data=False,
+):
+    """Pose a scan on its largest flat face, or a cylinder on its axis."""
+    out, report = auto_align(
+        _load(input_path, input_format),
+        angle_tolerance=float(angle_tolerance),
+        subdivisions=int(subdivisions),
+        region=region,
+        rotate_vector_data=bool(rotate_vector_data),
+        return_report=True,
+    )
+    report["matrix"] = [[float(v) for v in row] for row in report["matrix"]]
+    return _json_safe(_result(_store(out, output_path, output_format), out, **report))
 
 
 def tool_estimate_normals(
@@ -5466,11 +5559,13 @@ def tool_mirror(
     weld=True,
     tolerance=1e-9,
     reflect_vector_data=False,
+    plane=None,
 ):
     """Reflect a mesh across a plane with every cell right side out. Returns
     num_flipped_cells, num_points_on_plane, num_dropped_cells,
-    num_dropped_sides and warnings alongside the mesh summary."""
-    return _run_op(mirror, locals())
+    num_dropped_sides and warnings alongside the mesh summary; with
+    plane="auto" the mesh's own symmetry plane, reported as plane."""
+    return _json_safe(_run_op(mirror, locals()))
 
 
 def tool_tetrahedralize(
@@ -7329,6 +7424,26 @@ TOOL_REGISTRY = OrderedDict(
                 "wraps": ("register_rigid",),
                 "gated": None,
             },
+        ),
+        (
+            "register_landmarks",
+            {
+                "fn": tool_register_landmarks,
+                "wraps": ("register_landmarks",),
+                "gated": None,
+            },
+        ),
+        (
+            "find_symmetry_plane",
+            {
+                "fn": tool_find_symmetry_plane,
+                "wraps": ("find_symmetry_plane",),
+                "gated": None,
+            },
+        ),
+        (
+            "auto_align",
+            {"fn": tool_auto_align, "wraps": ("auto_align",), "gated": None},
         ),
         (
             "estimate_normals",

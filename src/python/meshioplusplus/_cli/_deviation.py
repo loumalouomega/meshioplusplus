@@ -88,6 +88,12 @@ def add_args(parser):
         default="",
         help="named cell region of the reference",
     )
+    parser.add_argument(
+        "--register",
+        action="store_true",
+        help="register the scan to the reference first (an automatic start, "
+        "point-to-plane ICP, adaptive trimming); the written scan is the registered one",
+    )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
 
 
@@ -110,6 +116,7 @@ def deviation_cmd(args):
         max_normal_angle=args.max_normal_angle,
         reference_region=args.reference_region,
         attach=args.outfile is not None,
+        register=args.register,
         return_report=True,
     )
     if args.outfile is not None:

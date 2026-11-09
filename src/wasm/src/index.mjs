@@ -284,7 +284,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   mirror: (mesh: Mesh, options?: {origin?: number[], normal?: number[], keepOriginal?: boolean, weld?: boolean, tolerance?: number, reflectVectorData?: boolean}) => {mesh: Mesh, numFlippedCells: number, numPointsOnPlane: number, numDroppedCells: number, numDroppedSides: number, warnings: string[]},
  *   findIntersections: (mesh: Mesh, options?: {other?: Mesh, region?: string, regionOther?: string, segments?: boolean, maxPairs?: number}) => {mesh: Mesh, other: Mesh|null, segments: Mesh|null, pairs: Int32Array, numPairs: number, numTrianglePairs: number, numCoplanar: number, numSegments: number, numCellsA: number, numCellsB: number, truncated: boolean, clean: boolean, warnings: string[]},
  *   thickness: (mesh: Mesh, options?: {other?: Mesh, direction?: string, maxDistance?: number, threshold?: number, region?: string, regionOther?: string}) => {mesh: Mesh, direction: string, numCells: number, numHit: number, numMissed: number, numBelow: number, min: number, max: number, mean: number, minCell: number, minPoint: Float64Array, maxDistance: number, warnings: string[]},
- *   deviation: (scan: Mesh, options?: {reference?: Mesh, primitive?: {type: string, params: number[]}, tolerance?: number, bins?: number, range?: number[], maxNormalAngle?: number, referenceRegion?: string}) => {mesh: Mesh, numPoints: number, numMeasured: number, min: number, max: number, mean: number, rms: number, sigma: number, percentiles: {p1: number, p5: number, p50: number, p95: number, p99: number}, histogramEdges: Float64Array, histogramCounts: Float64Array, numOutsideRange: number, shareWithin: number, suggestedRange: number, numWithoutNormal: number, warnings: string[]},
+ *   deviation: (scan: Mesh, options?: {reference?: Mesh, primitive?: {type: string, params: number[]}, tolerance?: number, bins?: number, range?: number[], maxNormalAngle?: number, referenceRegion?: string, register?: boolean}) => {mesh: Mesh, numPoints: number, numMeasured: number, min: number, max: number, mean: number, rms: number, sigma: number, percentiles: {p1: number, p5: number, p50: number, p95: number, p99: number}, histogramEdges: Float64Array, histogramCounts: Float64Array, numOutsideRange: number, shareWithin: number, suggestedRange: number, numWithoutNormal: number, warnings: string[], registered: boolean, matrix: number[], registrationRms: number},
  *   deviationRegions: (mesh: Mesh, options: {tolerance: number, field?: string, prefix?: string, minArea?: number}) => {mesh: Mesh, regions: {name: string, sign: number, numCells: number, area: number, extreme: number, mean: number, volume: number, centroid: Float64Array, bounds: Float64Array}[], numExcess: number, numMissing: number, numDropped: number, warnings: string[]},
  *   exaggerate: (mesh: Mesh, options?: {field?: string, scale?: number, clamp?: number, smoothFraction?: number}) => {mesh: Mesh, clamp: number, radius: number, numMoved: number, warnings: string[]},
  *   colorize: (mesh: Mesh, options: {field: string, cmap?: string, vmin?: number, vmax?: number, symmetric?: boolean, steps?: number, nanColor?: string, component?: number}) => {mesh: Mesh, vmin: number, vmax: number, location: string},
@@ -378,7 +378,10 @@ export class MeshioPlusPlusLoadError extends Error {
  *   untangle: (mesh: Mesh, options?: {fixBoundary?: boolean, frozen?: ArrayLike<number>, rings?: number, smooth?: boolean, maxSweeps?: number}) => {mesh: Mesh, numInvertedBefore: number, numInvertedAfter: number, minQualityBefore: number, minQualityAfter: number, sweeps: number, moves: number},
  *   morph: (mesh: Mesh, options: {array: string, fixBoundary?: boolean, constrainedArray?: string, constrained?: ArrayLike<number>, stiffening?: number, steps?: number, allowInverted?: boolean, tolerance?: number, maxIterations?: number}) => {mesh: Mesh, numConstrained: number, numFree: number, numInverted: number, iterations: number, maxDisplacement: number, converged: boolean},
  *   laplacianEigenmodes: (mesh: Mesh, options?: {numModes?: number, tolerance?: number, maxIterations?: number}) => {mesh: Mesh, eigenvalues: number[], iterations: number, maxResidual: number, converged: boolean},
- *   registerRigid: (source: Mesh, target: Mesh, options?: {method?: 'point_to_point'|'point_to_plane', maxIterations?: number, tolerance?: number, maxDistance?: number, initial?: ArrayLike<number>}) => {matrix: number[], initialRms: number, rms: number, iterations: number, numPairs: number, converged: boolean},
+ *   registerRigid: (source: Mesh, target: Mesh, options?: {method?: 'point_to_point'|'point_to_plane', maxIterations?: number, tolerance?: number, maxDistance?: number, initial?: ArrayLike<number>|'auto', symmetricCheck?: boolean, symmetricTolerance?: number, sourceRegion?: string, targetRegion?: string, adaptiveTrim?: number}) => {matrix: number[], initialRms: number, rms: number, iterations: number, numPairs: number, converged: boolean, numRejected: number, candidateRms: Float64Array, chosenCandidate: number, warnings: string[]},
+ *   registerLandmarks: (source: ArrayLike<number>, target: ArrayLike<number>, weights?: ArrayLike<number>) => {matrix: number[], residuals: Float64Array, rms: number},
+ *   findSymmetryPlane: (mesh: Mesh, options?: {seedOrigin?: number[], seedNormal?: number[], tolerance?: number, minShare?: number, maxSamples?: number, maxIterations?: number}) => {origin: number[], normal: number[], rms: number, share: number, tolerance: number, candidateRms: Float64Array, chosenCandidate: number, warnings: string[]},
+ *   autoAlign: (mesh: Mesh, options?: {angleTolerance?: number, subdivisions?: number, region?: string, rotateVectorData?: boolean}) => {mesh: Mesh, matrix: number[], mode: 'face'|'axis', primary: number[], secondary: number[], share: number, faceShare: number, axisShare: number, openingArea: number, warnings: string[]},
  *   estimateNormals: (mesh: Mesh, options?: {k?: number, orientation?: 'consistent'|'viewpoint'|'none', viewpoint?: ArrayLike<number>, recordVariation?: boolean}) => {mesh: Mesh, numDegenerate: number, numComponents: number},
  *   reconstructSurface: (mesh: Mesh, options?: {normals?: string, k?: number, cellSize?: number, resolution?: number, maxDistance?: number, estimateNormals?: boolean, normalsK?: number, maxCells?: number}) => {mesh: Mesh, numSamples: number, spacing: number, cellSize: number, maxDistance: number, numLatticePoints: number, numUndefined: number, numTriangles: number, numComponents: number, estimatedNormals: boolean},
  *   remeshQuads: (mesh: Mesh, options?: {targetFaces?: number, backend?: string, sharp?: boolean, boundary?: boolean, adaptive?: boolean, dominant?: boolean, seed?: number, maxCells?: number}) => {mesh: Mesh, numQuads: number, numTriangles: number, numPoints: number, minScaledJacobian: number, meanScaledJacobian: number, hausdorffToSurface: number, backend: string},
@@ -1310,9 +1313,19 @@ export async function loadMeshioPlusPlus(
         laplacianEigenmodes: (mesh, options = {}) => Module.laplacianEigenmodes(mesh, options),
         registerRigid: (source, target, options = {}) => {
             const o = { ...options };
-            if (o.initial !== undefined) o.initial = Array.from(o.initial);
+            if (o.initial !== undefined && typeof o.initial !== 'string') o.initial = Array.from(o.initial);
             return Module.registerRigid(source, target, o);
         },
+        registerLandmarks: (source, target, weights) =>
+            Module.registerLandmarks(Array.from(source, Number), Array.from(target, Number),
+                weights === undefined || weights === null ? null : Array.from(weights, Number)),
+        findSymmetryPlane: (mesh, options = {}) => {
+            const o = { ...options };
+            if (o.seedOrigin !== undefined) o.seedOrigin = Array.from(o.seedOrigin, Number);
+            if (o.seedNormal !== undefined) o.seedNormal = Array.from(o.seedNormal, Number);
+            return Module.findSymmetryPlane(mesh, o);
+        },
+        autoAlign: (mesh, options = {}) => Module.autoAlign(mesh, options),
         estimateNormals: (mesh, options = {}) => {
             const o = { ...options };
             if (o.viewpoint !== undefined) o.viewpoint = Array.from(o.viewpoint);

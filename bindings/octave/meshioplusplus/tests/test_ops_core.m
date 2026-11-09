@@ -564,6 +564,21 @@ function t_spectral_registration()
     rs = mio.register_rigid(moved, m, 'initial', eye(4));
     expect_equal(rs.matrix(1, 4), -0.05, 1e-6);
     expect_error(@() mio.register_rigid(m, m, 'initial', eye(3)), '4 x 4');
+    % The automatic start, landmarks, the symmetry plane and auto-align
+    % (roadmap 7.3).
+    ra = mio.register_rigid(moved, m, 'initial', 'auto', 'symmetric_check', true);
+    assert(ra.rms < 1e-6);
+    expect_equal(numel(ra.candidate_rms), 24);
+    expect_error(@() mio.register_rigid(m, m, 'initial', 'guess'), 'initial');
+    lm = mio.register_landmarks([0 0 0; 1 0 0; 0 2 0], [1 2 3; 2 2 3; 1 4 3]);
+    expect_equal(lm.matrix(1:3, 4), [1; 2; 3], 1e-12);
+    expect_error(@() mio.register_landmarks([0 0 0; 1 0 0], [0 0 0; 1 0 0]));
+    sp = mio.find_symmetry_plane(m);
+    assert(sp.share > 0.9);
+    al = mio.auto_align(m);
+    assert(strcmp(al.mode, 'face'));
+    dv = mio.deviation(moved, 'reference', m, 'register', true);
+    assert(dv.registered);
 
     nn = mio.estimate_normals(m, 'k', 3);
     expect_equal(nn.num_degenerate, 0);

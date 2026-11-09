@@ -337,6 +337,40 @@ CASES = [
         lambda f: ["register", f["moved"], f["grid"], "--json"],
     ),
     (
+        "register_auto",
+        lambda f: [
+            "register",
+            f["sphere_big"],
+            f["sphere_a"],
+            "--initial",
+            "auto",
+            "--symmetric-check",
+            "--adaptive-trim",
+            "3",
+            "--json",
+        ],
+    ),
+    (
+        "register_landmarks",
+        lambda f: [
+            "register-landmarks",
+            "0,0,0;1,0,0;0,2,0",
+            "1,2,3;2,2,3;1,4,3",
+            "--json",
+        ],
+    ),
+    ("symmetry_plane", lambda f: ["symmetry-plane", f["sphere_a"], "--json"]),
+    (
+        "deviation_register",
+        lambda f: [
+            "deviation",
+            f["sphere_b"],
+            f["sphere_a"],
+            "--register",
+            "--json",
+        ],
+    ),
+    (
         "find_intersections_clean",
         lambda f: ["find-intersections", f["sphere_a"], "--json"],
     ),
@@ -500,6 +534,21 @@ WRITING = [
             "--keep-original",
             "--json",
         ],
+    ),
+    (
+        "mirror_auto",
+        lambda f, out: [
+            "mirror",
+            f["sphere_a"],
+            out + ".vtu",
+            "--plane",
+            "auto",
+            "--json",
+        ],
+    ),
+    (
+        "auto_align",
+        lambda f, out: ["auto-align", f["sphere_b"], out + ".vtu", "--json"],
     ),
     (
         "feature_edges",

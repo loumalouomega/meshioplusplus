@@ -90,7 +90,7 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Other", "Direction", "MaxDistance", "Min", "Region", "RegionOther", "Require"}},
         {"Deviation",
          {"Reference", "Patch", "Tolerance", "MinShare", "Require", "Bins", "MaxNormalAngle",
-          "ReferenceRegion"}},
+          "ReferenceRegion", "Register"}},
         {"DeviationRegions", {"Tolerance", "Field", "Prefix", "MinArea"}},
         {"Exaggerate", {"Field", "Scale", "Clamp", "SmoothFraction"}},
         {"Colorize",
@@ -125,7 +125,12 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Array", "FixBoundary", "ConstrainedArray", "Stiffening", "Steps", "AllowInverted",
           "Tolerance", "MaxIterations"}},
         {"RegisterRigid",
-         {"Target", "Method", "MaxIterations", "Tolerance", "MaxDistance", "RotateData"}},
+         {"Target", "Method", "MaxIterations", "Tolerance", "MaxDistance", "RotateData", "Initial",
+          "SymmetricCheck", "SourceRegion", "TargetRegion", "AdaptiveTrim"}},
+        // The rigid motion laying picked points onto their targets, applied (roadmap 7.3.2).
+        {"RegisterLandmarks", {"SourcePoints", "TargetPoints", "Weights", "RotateData"}},
+        // Pose a scan on its largest flat face, or a cylinder on its axis (roadmap 7.3.5).
+        {"AutoAlign", {"AngleTolerance", "Subdivisions", "Region", "RotateData"}},
         {"ConvertCoordinates",
          {"System", "Axis", "Origin", "Reference", "Arrays", "Inverse", "RecordCoordinates"}},
         {"GeodesicDistance",
@@ -235,7 +240,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Extrude", {"Direction", "NumLayers", "Ratio", "Offsets", "RecordLayers", "MaxCells"}},
         {"Revolve",
          {"Axis", "AxisPoint", "Angle", "NumLayers", "Tolerance", "RecordLayers", "MaxCells"}},
-        {"Mirror", {"Point", "Normal", "KeepOriginal", "Weld", "Tolerance", "ReflectData"}},
+        {"Mirror",
+         {"Point", "Normal", "Plane", "KeepOriginal", "Weld", "Tolerance", "ReflectData"}},
         // Tetrahedra filling the closed triangle surface (roadmap 6.7).
         {"Tetrahedralize",
          {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},

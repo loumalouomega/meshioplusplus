@@ -278,6 +278,7 @@ OP_TABLE = {
         "Bins",
         "MaxNormalAngle",
         "ReferenceRegion",
+        "Register",
     ),
     "DeviationRegions": (
         "Tolerance",
@@ -435,6 +436,25 @@ OP_TABLE = {
         "MaxIterations",
         "Tolerance",
         "MaxDistance",
+        "RotateData",
+        "Initial",
+        "SymmetricCheck",
+        "SourceRegion",
+        "TargetRegion",
+        "AdaptiveTrim",
+    ),
+    # The rigid motion laying picked points onto their targets, applied (roadmap 7.3.2).
+    "RegisterLandmarks": (
+        "SourcePoints",
+        "TargetPoints",
+        "Weights",
+        "RotateData",
+    ),
+    # Pose a scan on its largest flat face, or a cylinder on its axis (roadmap 7.3.5).
+    "AutoAlign": (
+        "AngleTolerance",
+        "Subdivisions",
+        "Region",
         "RotateData",
     ),
     "ConvertCoordinates": (
@@ -925,6 +945,7 @@ OP_TABLE = {
     "Mirror": (
         "Point",
         "Normal",
+        "Plane",
         "KeepOriginal",
         "Weld",
         "Tolerance",

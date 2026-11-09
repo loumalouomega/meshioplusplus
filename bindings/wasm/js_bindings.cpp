@@ -137,6 +137,7 @@
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/cut.hpp"
+#include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -5450,9 +5451,9 @@ val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double
         // Roadmap 7.1: {region, seeds: [[x, y, z], ...], featureAngle,
         // rimAngle, outputRegion, usedPoints}.
         if (!rExtra.isUndefined() && !rExtra.isNull()) {
-            check_settings_keys(rExtra, "the fitPrimitives options",
-                                {"region", "seeds", "featureAngle", "rimAngle", "outputRegion",
-                                 "usedPoints"});
+            check_settings_keys(
+                rExtra, "the fitPrimitives options",
+                {"region", "seeds", "featureAngle", "rimAngle", "outputRegion", "usedPoints"});
             if (rExtra.hasOwnProperty("region"))
                 options.mRegion = rExtra["region"].as<std::string>();
             if (rExtra.hasOwnProperty("seeds")) {
@@ -5463,8 +5464,8 @@ val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double
                     if (p["length"].as<unsigned>() != 3)
                         throw std::invalid_argument(
                             "meshio++: fit_primitives: a seed is [x, y, z]");
-                    options.mSeeds.push_back({p[0].as<double>(), p[1].as<double>(),
-                                              p[2].as<double>()});
+                    options.mSeeds.push_back(
+                        {p[0].as<double>(), p[1].as<double>(), p[2].as<double>()});
                 }
             }
             if (rExtra.hasOwnProperty("featureAngle"))
@@ -7410,12 +7411,27 @@ val register_rigid_js(const val& rSource, const val& rTarget, const val& rOption
             if (rOptions.hasOwnProperty("maxDistance"))
                 options.mMaxDistance = rOptions["maxDistance"].as<double>();
             if (rOptions.hasOwnProperty("initial")) {
-                const std::vector<double> m =
-                    emscripten::vecFromJSArray<double>(rOptions["initial"]);
-                if (m.size() != 16)
-                    throw std::invalid_argument("registerRigid: initial takes 16 numbers");
-                std::copy(m.begin(), m.end(), options.mInitial.begin());
+                if (rOptions["initial"].isString()) {
+                    options.mInitialMode = meshioplusplus::registration_initial_from_name(
+                        rOptions["initial"].as<std::string>());
+                } else {
+                    const std::vector<double> m =
+                        emscripten::vecFromJSArray<double>(rOptions["initial"]);
+                    if (m.size() != 16)
+                        throw std::invalid_argument("registerRigid: initial takes 16 numbers");
+                    std::copy(m.begin(), m.end(), options.mInitial.begin());
+                }
             }
+            if (rOptions.hasOwnProperty("symmetricCheck"))
+                options.mSymmetricCheck = rOptions["symmetricCheck"].as<bool>();
+            if (rOptions.hasOwnProperty("symmetricTolerance"))
+                options.mSymmetricTolerance = rOptions["symmetricTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("sourceRegion"))
+                options.mSourceRegion = rOptions["sourceRegion"].as<std::string>();
+            if (rOptions.hasOwnProperty("targetRegion"))
+                options.mTargetRegion = rOptions["targetRegion"].as<std::string>();
+            if (rOptions.hasOwnProperty("adaptiveTrim"))
+                options.mAdaptiveTrim = rOptions["adaptiveTrim"].as<double>();
         }
         const meshioplusplus::RegistrationResult r =
             meshioplusplus::register_rigid(val_to_mesh(rSource), val_to_mesh(rTarget), options);
@@ -7429,6 +7445,146 @@ val register_rigid_js(const val& rSource, const val& rTarget, const val& rOption
         out.set("iterations", static_cast<double>(r.mIterations));
         out.set("numPairs", static_cast<double>(r.mNumPairs));
         out.set("converged", r.mConverged);
+        out.set("numRejected", static_cast<double>(r.mNumRejected));
+        out.set("candidateRms", float64_array_from(r.mCandidateRms.data(), r.mCandidateRms.size()));
+        out.set("chosenCandidate", static_cast<double>(r.mChosenCandidate));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+namespace {
+
+val js_reg_matrix(const std::array<double, 16>& rM) {
+    val matrix = val::array();
+    for (std::size_t k = 0; k < 16; ++k)
+        matrix.call<void>("push", rM[k]);
+    return matrix;
+}
+
+std::vector<std::array<double, 3>> js_reg_points(const val& rPts, const char* pWhat) {
+    const std::vector<double> flat = emscripten::vecFromJSArray<double>(rPts);
+    if (flat.size() % 3 != 0)
+        throw std::invalid_argument(std::string("meshio++: registerLandmarks: ") + pWhat +
+                                    " must be flat xyz triples");
+    std::vector<std::array<double, 3>> out(flat.size() / 3);
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = {flat[3 * i], flat[3 * i + 1], flat[3 * i + 2]};
+    return out;
+}
+
+}  // namespace
+
+/**
+ * @brief Landmark registration (roadmap 7.3.2): flat xyz arrays of picked
+ * source and target points, optional `weights`. Returns
+ * `{matrix, residuals, rms}`.
+ */
+val register_landmarks_js(const val& rSource, const val& rTarget, const val& rWeights) {
+    return with_js_errors([&]() -> val {
+        std::vector<double> w;
+        if (!rWeights.isUndefined() && !rWeights.isNull())
+            w = emscripten::vecFromJSArray<double>(rWeights);
+        const meshioplusplus::LandmarkResult r = meshioplusplus::register_landmarks(
+            js_reg_points(rSource, "source"), js_reg_points(rTarget, "target"), w);
+        val out = val::object();
+        out.set("matrix", js_reg_matrix(r.mMatrix));
+        out.set("residuals", float64_array_from(r.mResiduals.data(), r.mResiduals.size()));
+        out.set("rms", r.mRms);
+        return out;
+    });
+}
+
+/**
+ * @brief The symmetry plane (roadmap 7.3.6). @p rOptions is
+ * `{seedOrigin, seedNormal, tolerance, minShare, maxSamples, maxIterations}`.
+ */
+val find_symmetry_plane_js(const val& rMesh, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SymmetryPlaneOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the findSymmetryPlane options",
+                                {"seedOrigin", "seedNormal", "tolerance", "minShare", "maxSamples",
+                                 "maxIterations"});
+            if (rOptions.hasOwnProperty("seedOrigin"))
+                o.mSeedOrigin = prim_js_vec3(rOptions["seedOrigin"], {{0.0, 0.0, 0.0}}, false);
+            if (rOptions.hasOwnProperty("seedNormal"))
+                o.mSeedNormal = prim_js_vec3(rOptions["seedNormal"], {{0.0, 0.0, 0.0}}, false);
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("minShare"))
+                o.mMinShare = rOptions["minShare"].as<double>();
+            if (rOptions.hasOwnProperty("maxSamples"))
+                o.mMaxSamples = static_cast<std::int64_t>(rOptions["maxSamples"].as<double>());
+            if (rOptions.hasOwnProperty("maxIterations"))
+                o.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+        }
+        const meshioplusplus::SymmetryPlaneResult r =
+            meshioplusplus::find_symmetry_plane(val_to_mesh(rMesh), o);
+        val out = val::object();
+        val origin = val::array(), normal = val::array();
+        for (std::size_t k = 0; k < 3; ++k) {
+            origin.call<void>("push", r.mOrigin[k]);
+            normal.call<void>("push", r.mNormal[k]);
+        }
+        out.set("origin", origin);
+        out.set("normal", normal);
+        out.set("rms", r.mRms);
+        out.set("share", r.mShare);
+        out.set("tolerance", r.mTolerance);
+        out.set("candidateRms", float64_array_from(r.mCandidateRms.data(), r.mCandidateRms.size()));
+        out.set("chosenCandidate", static_cast<double>(r.mChosenCandidate));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/**
+ * @brief Auto-align from the scan alone (roadmap 7.3.5). @p rOptions is
+ * `{angleTolerance, subdivisions, region, rotateVectorData}`.
+ */
+val auto_align_js(const val& rMesh, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::AutoAlignOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the autoAlign options",
+                                {"angleTolerance", "subdivisions", "region", "rotateVectorData"});
+            if (rOptions.hasOwnProperty("angleTolerance"))
+                o.mAngleToleranceDeg = rOptions["angleTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("subdivisions"))
+                o.mSubdivisions = static_cast<std::int64_t>(rOptions["subdivisions"].as<double>());
+            if (rOptions.hasOwnProperty("region"))
+                o.mRegion = rOptions["region"].as<std::string>();
+            if (rOptions.hasOwnProperty("rotateVectorData"))
+                o.mRotateVectorData = rOptions["rotateVectorData"].as<bool>();
+        }
+        meshioplusplus::AutoAlignResult r = meshioplusplus::auto_align(val_to_mesh(rMesh), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("matrix", js_reg_matrix(r.mMatrix));
+        out.set("mode", r.mMode);
+        val pr = val::array(), se = val::array();
+        for (std::size_t k = 0; k < 3; ++k) {
+            pr.call<void>("push", r.mPrimary[k]);
+            se.call<void>("push", r.mSecondary[k]);
+        }
+        out.set("primary", pr);
+        out.set("secondary", se);
+        out.set("share", r.mShare);
+        out.set("faceShare", r.mFaceShare);
+        out.set("axisShare", r.mAxisShare);
+        out.set("openingArea", r.mOpeningArea);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
         return out;
     });
 }
@@ -9012,7 +9168,7 @@ val deviation_js(const val& rScanObj, const val& rOptions) {
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
             check_settings_keys(rOptions, "the deviation options",
                                 {"reference", "primitive", "tolerance", "bins", "range",
-                                 "maxNormalAngle", "referenceRegion"});
+                                 "maxNormalAngle", "referenceRegion", "register"});
             if (rOptions.hasOwnProperty("reference"))
                 reference = rOptions["reference"];
             if (rOptions.hasOwnProperty("primitive"))
@@ -9032,6 +9188,8 @@ val deviation_js(const val& rScanObj, const val& rOptions) {
                 o.mMaxNormalAngleDeg = rOptions["maxNormalAngle"].as<double>();
             if (rOptions.hasOwnProperty("referenceRegion"))
                 o.mReferenceRegion = rOptions["referenceRegion"].as<std::string>();
+            if (rOptions.hasOwnProperty("register"))
+                o.mRegister = rOptions["register"].as<bool>();
         }
         const meshioplusplus::Mesh scan = val_to_mesh(rScanObj);
         meshioplusplus::DeviationResult r;
@@ -9084,6 +9242,9 @@ val deviation_js(const val& rScanObj, const val& rOptions) {
         for (const std::string& w : r.mWarnings)
             warnings.call<void>("push", w);
         out.set("warnings", warnings);
+        out.set("registered", r.mRegistered);
+        out.set("matrix", js_reg_matrix(r.mMatrix));
+        out.set("registrationRms", r.mRegistrationRms);
         return out;
     });
 }
@@ -9172,9 +9333,9 @@ val colorize_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
         meshioplusplus::ColorizeOptions o;
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
-            check_settings_keys(rOptions, "the colorize options",
-                                {"field", "cmap", "vmin", "vmax", "symmetric", "steps",
-                                 "nanColor", "component"});
+            check_settings_keys(
+                rOptions, "the colorize options",
+                {"field", "cmap", "vmin", "vmax", "symmetric", "steps", "nanColor", "component"});
             if (rOptions.hasOwnProperty("field"))
                 o.mField = rOptions["field"].as<std::string>();
             if (rOptions.hasOwnProperty("cmap"))
@@ -10243,6 +10404,9 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("morph", &morph_js);
     emscripten::function("laplacianEigenmodes", &laplacian_eigenmodes_js);
     emscripten::function("registerRigid", &register_rigid_js);
+    emscripten::function("registerLandmarks", &register_landmarks_js);
+    emscripten::function("findSymmetryPlane", &find_symmetry_plane_js);
+    emscripten::function("autoAlign", &auto_align_js);
     emscripten::function("estimateNormals", &estimate_normals_js);
     emscripten::function("reconstructSurface", &reconstruct_surface_js);
     emscripten::function("remeshQuads", &remesh_quads_js);

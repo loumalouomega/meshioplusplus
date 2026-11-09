@@ -87,6 +87,7 @@
 #include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -1121,11 +1122,24 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         o.mWeld = pipe_flag(rStep, "Weld", o.mWeld);
         o.mTolerance = pipe_number(rStep, "Tolerance", o.mTolerance);
         o.mReflectVectorData = pipe_flag(rStep, "ReflectData", o.mReflectVectorData);
+        const std::string plane = pipe_text(rStep, "Plane", "");
+        if (!plane.empty() && plane != "auto")
+            throw std::invalid_argument(pipe_err(rStep, "Plane must be '' or 'auto'"));
+        double share = 0.0;
+        if (plane == "auto") {
+            const SymmetryPlaneResult sp = find_symmetry_plane(mesh);
+            o.mOrigin = sp.mOrigin;
+            o.mNormal = sp.mNormal;
+            share = sp.mShare;
+        }
         MirrorResult r = mirror(mesh, o);
-        pipe_push_step(rReport, rStep,
-                       {{"NumFlippedCells", static_cast<double>(r.mNumFlippedCells)},
-                        {"NumPointsOnPlane", static_cast<double>(r.mNumPointsOnPlane)},
-                        {"NumDroppedCells", static_cast<double>(r.mNumDroppedCells)}});
+        std::vector<std::pair<std::string, double>> counters{
+            {"NumFlippedCells", static_cast<double>(r.mNumFlippedCells)},
+            {"NumPointsOnPlane", static_cast<double>(r.mNumPointsOnPlane)},
+            {"NumDroppedCells", static_cast<double>(r.mNumDroppedCells)}};
+        if (plane == "auto")
+            counters.emplace_back("SymmetryShare", share);
+        pipe_push_step(rReport, rStep, std::move(counters));
         return std::move(r.mMesh);
     }
 
@@ -1937,6 +1951,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mBins = static_cast<std::int64_t>(pipe_number(rStep, "Bins", 20.0));
         opts.mMaxNormalAngleDeg = pipe_number(rStep, "MaxNormalAngle", 90.0);
         opts.mReferenceRegion = pipe_text(rStep, "ReferenceRegion", "");
+        opts.mRegister = pipe_flag(rStep, "Register", false);
         const std::string ref_path = pipe_text(rStep, "Reference", "");
         if (ref_path.empty())
             throw std::invalid_argument("meshio++: pipeline: Deviation needs a Reference");
@@ -1969,14 +1984,17 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             throw std::runtime_error(
                 "meshio++: pipeline: Deviation failed: the share within Tolerance is below "
                 "MinShare");
-        pipe_push_step(rReport, rStep,
-                       {{"NumMeasured", static_cast<double>(dr.mNumMeasured)},
-                        {"Min", dr.mMin},
-                        {"Max", dr.mMax},
-                        {"Mean", dr.mMean},
-                        {"Rms", dr.mRms},
-                        {"Sigma", dr.mSigma},
-                        {"ShareWithin", dr.mShareWithin}});
+        std::vector<std::pair<std::string, double>> counters{
+            {"NumMeasured", static_cast<double>(dr.mNumMeasured)},
+            {"Min", dr.mMin},
+            {"Max", dr.mMax},
+            {"Mean", dr.mMean},
+            {"Rms", dr.mRms},
+            {"Sigma", dr.mSigma},
+            {"ShareWithin", dr.mShareWithin}};
+        if (dr.mRegistered)
+            counters.emplace_back("RegistrationRms", dr.mRegistrationRms);
+        pipe_push_step(rReport, rStep, std::move(counters));
         return std::move(dr.mMesh);
     }
     if (op == "DeviationRegions") {
@@ -2309,7 +2327,18 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             throw std::invalid_argument(pipe_err(rStep, "'MaxIterations' must be an integer"));
         opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-10);
         opts.mMaxDistance = pipe_number(rStep, "MaxDistance", 0.0);
+        const std::string initial = pipe_text(rStep, "Initial", "identity");
+        if (initial == "auto")
+            opts.mInitialMode = RegistrationInitial::Auto;
+        else if (initial != "identity")
+            throw std::invalid_argument(pipe_err(rStep, "Initial must be 'identity' or 'auto'"));
+        opts.mSymmetricCheck = pipe_flag(rStep, "SymmetricCheck", false);
+        opts.mSourceRegion = pipe_text(rStep, "SourceRegion", "");
+        opts.mTargetRegion = pipe_text(rStep, "TargetRegion", "");
+        opts.mAdaptiveTrim = pipe_number(rStep, "AdaptiveTrim", 0.0);
         const RegistrationResult rr = register_rigid(mesh, pipe_read_extra(target), opts);
+        for (const std::string& w : rr.mWarnings)
+            rReport.mWarnings.push_back("register_rigid: " + w);
         if (!rr.mConverged)
             rReport.mWarnings.push_back(
                 "register_rigid: no convergence within MaxIterations; the transform is the last "
@@ -2317,11 +2346,45 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         Mesh moved = transform(mesh, transform_from_matrix(rr.mMatrix.data()),
                                pipe_flag(rStep, "RotateData", false));
         pipe_push_step(rReport, rStep,
-                       {{"InitialRms", rr.mInitialRms},
+                       {{"NumRejected", static_cast<double>(rr.mNumRejected)},
+                        {"InitialRms", rr.mInitialRms},
                         {"Rms", rr.mRms},
                         {"Iterations", static_cast<double>(rr.mIterations)},
                         {"Converged", rr.mConverged ? 1.0 : 0.0}});
         return moved;
+    }
+    if (op == "RegisterLandmarks") {
+        const std::vector<double> src = pipe_dvec(rStep, "SourcePoints");
+        const std::vector<double> dst = pipe_dvec(rStep, "TargetPoints");
+        if (src.empty() || src.size() % 3 != 0 || dst.size() != src.size())
+            throw std::invalid_argument(
+                pipe_err(rStep, "SourcePoints and TargetPoints hold as many x, y, z triples"));
+        std::vector<std::array<double, 3>> sp, tp;
+        for (std::size_t k = 0; k + 2 < src.size(); k += 3) {
+            sp.push_back({src[k], src[k + 1], src[k + 2]});
+            tp.push_back({dst[k], dst[k + 1], dst[k + 2]});
+        }
+        const LandmarkResult lr = register_landmarks(sp, tp, pipe_dvec(rStep, "Weights"));
+        Mesh moved = transform(mesh, transform_from_matrix(lr.mMatrix.data()),
+                               pipe_flag(rStep, "RotateData", false));
+        pipe_push_step(rReport, rStep, {{"Rms", lr.mRms}});
+        return moved;
+    }
+    if (op == "AutoAlign") {
+        AutoAlignOptions opts;
+        opts.mAngleToleranceDeg = pipe_number(rStep, "AngleTolerance", 10.0);
+        const double sub = pipe_number(rStep, "Subdivisions", 3.0);
+        opts.mSubdivisions = static_cast<std::int64_t>(sub);
+        if (static_cast<double>(opts.mSubdivisions) != sub)
+            throw std::invalid_argument(pipe_err(rStep, "Subdivisions must be an integer"));
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        opts.mRotateVectorData = pipe_flag(rStep, "RotateData", false);
+        AutoAlignResult ar = auto_align(mesh, opts);
+        for (const std::string& w : ar.mWarnings)
+            rReport.mWarnings.push_back("auto_align: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"Share", ar.mShare}, {"AxisMode", ar.mMode == "axis" ? 1.0 : 0.0}});
+        return std::move(ar.mMesh);
     }
     if (op == "EstimateNormals") {
         PointNormalsOptions opts;

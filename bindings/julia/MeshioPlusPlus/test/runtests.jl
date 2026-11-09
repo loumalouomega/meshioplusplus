@@ -2129,6 +2129,21 @@ end
     @test rr.converged && rr.rms < 1e-12
     @test isapprox(rr.matrix, [1.0 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]; atol=1e-12)
     @test_throws ArgumentError register_rigid(cube, cube; method="affine")
+    ra = register_rigid(cube, cube; initial="auto", symmetric_check=true)
+    @test ra.rms < 1e-8 && length(ra.candidate_rms) == 24 && ra.chosen_candidate >= 0
+    @test !isempty(ra.warnings)  # a cube is symmetric
+    @test_throws ArgumentError register_rigid(cube, cube; initial="guess")
+    lm = register_landmarks([0.0 0 0; 1 0 0; 0 2 0], [1.0 2 3; 2 2 3; 1 4 3])
+    @test isapprox(lm.matrix[1:3, 4], [1.0, 2.0, 3.0]; atol=1e-12) && lm.rms < 1e-12
+    @test_throws MeshioError register_landmarks([0.0 0 0; 1 0 0], [0.0 0 0; 1 0 0])
+    sp = find_symmetry_plane(cube)
+    @test sp.share > 0.9 && isapprox(sum(abs2, sp.normal), 1.0; atol=1e-12)
+    al = auto_align(cube)
+    @test al.mode == "face" && al.share > 0.9
+    close(al.mesh)
+    dv = deviation(cube, cube; register=true)
+    @test dv.registered && size(dv.matrix) == (4, 4)
+    close(dv.mesh)
     nn = estimate_normals(cube; k=3)
     @test nn.num_degenerate == 0 && nn.num_components == 1
     close(nn.mesh)

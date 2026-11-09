@@ -274,7 +274,12 @@ if TYPE_CHECKING:
     from ._refine import refine
     from ._refine_patches import refine_patches
     from ._region_ops import edit_regions
-    from ._registration import register_rigid
+    from ._registration import (
+        auto_align,
+        find_symmetry_plane,
+        register_landmarks,
+        register_rigid,
+    )
     from ._remesh import remesh
     from ._remesh_quads import remesh_quads, remesh_quads_backends
     from ._remesh_volume import remesh_volume
@@ -370,6 +375,9 @@ _LAZY_ATTRS = {
     "prepare_metric": "_metric",
     "untangle": "_untangle",
     "register_rigid": "_registration",
+    "register_landmarks": "_registration",
+    "find_symmetry_plane": "_registration",
+    "auto_align": "_registration",
     "convert_coordinates": "_coordinates",
     "write_graph": "_adjacency",
     "clean": "_clean",
@@ -753,6 +761,9 @@ __all__ = [
     "prepare_metric",
     "untangle",
     "register_rigid",
+    "register_landmarks",
+    "find_symmetry_plane",
+    "auto_align",
     "convert_coordinates",
     "refine",
     "undo_green",

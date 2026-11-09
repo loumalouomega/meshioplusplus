@@ -5775,6 +5775,23 @@ step('registerRigid of the cube onto itself', () => {
     assert.throws(() => m.registerRigid(cubeSurface, cubeSurface, { method: 'affine' }));
 });
 
+step('alignment beyond local ICP (roadmap 7.3)', () => {
+    const a = m.registerRigid(cubeSurface, cubeSurface, { initial: 'auto', symmetricCheck: true });
+    assert.equal(a.candidateRms.length, 24);
+    assert.ok(a.chosenCandidate >= 0 && a.warnings.length >= 1);
+    assert.throws(() => m.registerRigid(cubeSurface, cubeSurface, { initial: 'guess' }));
+    const l = m.registerLandmarks([0, 0, 0, 1, 0, 0, 0, 2, 0], [1, 2, 3, 2, 2, 3, 1, 4, 3]);
+    assert.ok(Math.abs(l.matrix[3] - 1) < 1e-12 && l.rms < 1e-12);
+    assert.throws(() => m.registerLandmarks([0, 0, 0, 1, 0, 0], [0, 0, 0, 1, 0, 0]));
+    const p = m.findSymmetryPlane(cubeSurface);
+    assert.ok(p.share > 0.9 && p.normal.length === 3);
+    const al = m.autoAlign(cubeSurface);
+    assert.equal(al.mode, 'face');
+    assert.equal(al.matrix.length, 16);
+    const d = m.deviation(cubeSurface, { reference: cubeSurface, register: true });
+    assert.ok(d.registered && d.matrix.length === 16);
+});
+
 step('estimateNormals of the cube corners', () => {
     const r = m.estimateNormals(cubeSurface, { k: 3 });
     assert.equal(r.numDegenerate, 0);
