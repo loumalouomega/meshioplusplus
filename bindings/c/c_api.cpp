@@ -83,6 +83,7 @@
 #include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/auto_align.hpp"
+#include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -2739,6 +2740,114 @@ mio_mesh* mio_slice_ex(const mio_mesh* mesh, const double* origin, const double*
         opts.mChain = chain != 0;
         opts.mMinLength = min_length;
         return new mio_mesh{meshioplusplus::slice(mesh->mMesh, opts)};
+    });
+}
+
+}  // extern "C"
+
+namespace {
+
+struct CapiFitCurvesLast {
+    std::vector<meshioplusplus::SketchPiece> mPieces;
+    std::vector<std::array<double, 16>> mFrames;
+    std::string mWarnings;
+};
+CapiFitCurvesLast& capi_fit_curves_last() {
+    thread_local CapiFitCurvesLast last;
+    return last;
+}
+
+}  // namespace
+
+extern "C" {
+
+static_assert(sizeof(mio_fit_curves_opts) == 88, "mio_fit_curves_opts layout");
+static_assert(sizeof(mio_fit_curves_report) == 96, "mio_fit_curves_report layout");
+static_assert(sizeof(mio_sketch_piece) == 104, "mio_sketch_piece layout");
+
+void mio_fit_curves_opts_init(mio_fit_curves_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_fit_curves_opts{};
+    opts->min_arc_points = 4;
+    opts->min_arc_sweep = 5.0;
+}
+
+mio_mesh* mio_fit_curves(const mio_mesh* sections, const mio_fit_curves_opts* opts,
+                         mio_fit_curves_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_fit_curves_last() = CapiFitCurvesLast{};
+        capi_require(sections, "meshio++: fit_curves: sections is NULL");
+        mio_fit_curves_opts o;
+        mio_fit_curves_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::FitCurvesOptions options;
+        options.mTolerance = o.tolerance;
+        options.mSnapAngleDeg = o.snap_angle;
+        options.mNormal = {o.normal[0], o.normal[1], o.normal[2]};
+        options.mMinArcPoints = o.min_arc_points;
+        options.mMinArcSweepDeg = o.min_arc_sweep;
+        meshioplusplus::FitCurvesResult r = meshioplusplus::fit_curves(sections->mMesh, options);
+        CapiFitCurvesLast& last = capi_fit_curves_last();
+        last.mPieces = r.mPieces;
+        last.mFrames = r.mFrames;
+        for (const std::string& w : r.mWarnings)
+            last.mWarnings += (last.mWarnings.empty() ? "" : "\n") + w;
+        if (report) {
+            *report = mio_fit_curves_report{};
+            report->num_pieces = static_cast<int64_t>(r.mPieces.size());
+            report->num_lines = r.mNumLines;
+            report->num_arcs = r.mNumArcs;
+            report->num_circles = r.mNumCircles;
+            report->num_frames = static_cast<int64_t>(r.mFrames.size());
+            report->max_residual = r.mMaxResidual;
+            report->tolerance = r.mTolerance;
+            report->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_status mio_fit_curves_piece(int64_t index, mio_sketch_piece* piece) {
+    return guarded([&]() -> mio_status {
+        const auto& pieces = capi_fit_curves_last().mPieces;
+        if (!piece || index < 0 || static_cast<std::size_t>(index) >= pieces.size())
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: fit_curves: piece index out of range");
+        const meshioplusplus::SketchPiece& p = pieces[static_cast<std::size_t>(index)];
+        *piece = mio_sketch_piece{};
+        piece->type = static_cast<int32_t>(p.mType);
+        for (std::size_t k = 0; k < 2; ++k) {
+            piece->start[k] = p.mStart[k];
+            piece->end[k] = p.mEnd[k];
+            piece->centre[k] = p.mCentre[k];
+        }
+        piece->radius = p.mRadius;
+        piece->sweep = p.mSweepDeg;
+        piece->residual = p.mResidual;
+        piece->num_points = p.mNumPoints;
+        piece->chain = p.mChain;
+        piece->frame = p.mFrame;
+        return MIO_OK;
+    });
+}
+
+mio_status mio_fit_curves_frame(int64_t index, double frame[16]) {
+    return guarded([&]() -> mio_status {
+        const auto& frames = capi_fit_curves_last().mFrames;
+        if (!frame || index < 0 || static_cast<std::size_t>(index) >= frames.size())
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: fit_curves: frame index out of range");
+        std::copy(frames[static_cast<std::size_t>(index)].begin(),
+                  frames[static_cast<std::size_t>(index)].end(), frame);
+        return MIO_OK;
+    });
+}
+
+int64_t mio_fit_curves_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_fit_curves_last().mWarnings, buf, buflen);
     });
 }
 

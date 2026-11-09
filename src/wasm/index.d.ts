@@ -3067,6 +3067,44 @@ export interface MeshioPlusPlusModule {
   ): Mesh;
 
   /**
+   * Lines, arcs and circles from the chains of a chained line mesh (roadmap
+   * 7.6.2), each piece in its frame's 2-D coordinates; `frames` are row-major
+   * 4x4 (columns e1, e2, normal, origin). See doc/fit_curves.md.
+   * @throws {Error} on a mesh that is not a chained line mesh.
+   */
+  fitCurves(
+    sections: Mesh,
+    options?: {
+      tolerance?: number;
+      snapAngle?: number;
+      normal?: ArrayLike<number>;
+      minArcPoints?: number;
+      minArcSweep?: number;
+    },
+  ): {
+    mesh: Mesh;
+    pieces: Array<{
+      type: 'line' | 'arc' | 'circle';
+      start: number[];
+      end: number[];
+      centre: number[];
+      radius: number;
+      sweep: number;
+      residual: number;
+      numPoints: number;
+      chain: number;
+      frame: number;
+    }>;
+    frames: Float64Array[];
+    numLines: number;
+    numArcs: number;
+    numCircles: number;
+    maxResidual: number;
+    tolerance: number;
+    warnings: string[];
+  };
+
+  /**
    * Chained sections of a surface at the parallel planes `n . x = offsets[k]`
    * (`n` the unit `direction`), merged into one line mesh with the
    * `section:offset`, `section:chain` and `section:closed` cell data (roadmap

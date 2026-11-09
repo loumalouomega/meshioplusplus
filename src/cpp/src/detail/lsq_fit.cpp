@@ -18,6 +18,7 @@
 // Dense helpers for fit_primitives. See lsq_fit.hpp.
 
 // System includes
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <utility>
@@ -216,6 +217,78 @@ void lsq_levenberg_marquardt(std::vector<double>& rTheta, const std::vector<doub
         if (before - cost <= 1e-14 * before)
             break;
     }
+}
+
+bool lsq_circle_kasa(const std::vector<double>& rX, const std::vector<double>& rY, double& rCx,
+                     double& rCy, double& rR) {
+    double a[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, b[3] = {0, 0, 0};
+    for (std::size_t p = 0; p < rX.size(); ++p) {
+        const double x = rX[p], y = rY[p], r[3] = {x, y, 1.0};
+        const double rhs = -(x * x + y * y);
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j)
+                a[i * 3 + j] += r[i] * r[j];
+            b[i] += r[i] * rhs;
+        }
+    }
+    // Solve the 3x3 normal equations by Cramer's rule.
+    auto det3 = [](const double* q) {
+        return q[0] * (q[4] * q[8] - q[5] * q[7]) - q[1] * (q[3] * q[8] - q[5] * q[6]) +
+               q[2] * (q[3] * q[7] - q[4] * q[6]);
+    };
+    const double d0 = det3(a);
+    if (!(std::fabs(d0) > 0.0))
+        return false;
+    double sol[3];
+    for (int k = 0; k < 3; ++k) {
+        double q[9];
+        std::copy(a, a + 9, q);
+        for (int i = 0; i < 3; ++i)
+            q[i * 3 + k] = b[i];
+        sol[k] = det3(q) / d0;
+    }
+    const double cx = -sol[0] / 2.0, cy = -sol[1] / 2.0;
+    const double r2 = cx * cx + cy * cy - sol[2];
+    if (!(r2 > 0.0) || !std::isfinite(r2))
+        return false;
+    rCx = cx;
+    rCy = cy;
+    rR = std::sqrt(r2);
+    return true;
+}
+
+bool lsq_circle_geometric(const std::vector<double>& rX, const std::vector<double>& rY, double& rCx,
+                          double& rCy, double& rR, int MaxIterations) {
+    double cx = rCx, cy = rCy, r = rR;
+    for (int it = 0; it < MaxIterations; ++it) {
+        std::vector<double> a(9, 0.0), g(3, 0.0);
+        for (std::size_t p = 0; p < rX.size(); ++p) {
+            const double dx = rX[p] - cx, dy = rY[p] - cy;
+            const double d = std::sqrt(dx * dx + dy * dy);
+            if (!(d > 0.0))
+                continue;
+            const double j[3] = {-dx / d, -dy / d, -1.0};
+            const double res = d - r;
+            for (int i = 0; i < 3; ++i) {
+                g[static_cast<std::size_t>(i)] -= j[i] * res;
+                for (int k = 0; k < 3; ++k)
+                    a[static_cast<std::size_t>(i * 3 + k)] += j[i] * j[k];
+            }
+        }
+        if (!lsq_solve(a, g, 3))
+            return it > 0 ? (rCx = cx, rCy = cy, rR = r, true) : false;
+        cx += g[0];
+        cy += g[1];
+        r += g[2];
+        if (!(std::isfinite(cx) && std::isfinite(cy) && std::isfinite(r)))
+            return false;
+        if (std::fabs(g[0]) + std::fabs(g[1]) + std::fabs(g[2]) <= 1e-15 * std::fabs(r))
+            break;
+    }
+    rCx = cx;
+    rCy = cy;
+    rR = std::fabs(r);
+    return true;
 }
 
 }  // namespace detail

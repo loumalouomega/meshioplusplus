@@ -112,6 +112,9 @@ from .. import (
     find_intersections,
     find_symmetry_plane,
     fit_cad,
+)
+from .. import fit_curves as _fit_curves_op
+from .. import (
     fit_primitives,
     geo_sphere,
     geodesic_distance,
@@ -1797,6 +1800,32 @@ def tool_slice(
 ):
     """Planar cross-section (one topological dimension below the input)."""
     return _run_op(_slice_op, locals(), report=False)
+
+
+def tool_fit_curves(
+    input_path,
+    output_path=None,
+    input_format=None,
+    output_format=None,
+    tolerance=0.0,
+    snap_angle=0.0,
+    normal=None,
+    min_arc_points=4,
+    min_arc_sweep=5.0,
+):
+    """Lines, arcs and circles from a chained line mesh (a sketch)."""
+    out, report = _fit_curves_op(
+        _load(input_path, input_format),
+        tolerance=float(tolerance),
+        snap_angle=float(snap_angle),
+        normal=normal,
+        min_arc_points=int(min_arc_points),
+        min_arc_sweep=float(min_arc_sweep),
+        return_report=True,
+    )
+    if output_path:
+        report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
 
 
 def tool_sections(
@@ -7256,6 +7285,10 @@ TOOL_REGISTRY = OrderedDict(
         ("crop", {"fn": tool_crop, "wraps": ("crop",), "gated": None}),
         ("slice", {"fn": tool_slice, "wraps": ("slice",), "gated": None}),
         ("sections", {"fn": tool_sections, "wraps": ("sections",), "gated": None}),
+        (
+            "fit_curves",
+            {"fn": tool_fit_curves, "wraps": ("fit_curves",), "gated": None},
+        ),
         (
             "isosurface",
             {"fn": tool_isosurface, "wraps": ("isosurface",), "gated": None},

@@ -1311,6 +1311,23 @@ def _apply_step(mesh, step, steps, warnings):
             warnings.append(
                 "the section is empty; the plane misses the mesh -- move or flip it"
             )
+    elif op == "FitCurves":
+        from ._fit_curves import fit_curves
+
+        mesh, rep = fit_curves(
+            mesh,
+            tolerance=_number(step, "Tolerance", 0.0),
+            snap_angle=_number(step, "SnapAngle", 0.0),
+            normal=_vec3(step, "Normal") if "Normal" in step else None,
+            min_arc_points=_int_number(op, step, "MinArcPoints", 4.0),
+            min_arc_sweep=_number(step, "MinArcSweep", 5.0),
+            return_report=True,
+        )
+        entry["NumLines"] = float(rep["num_lines"])
+        entry["NumArcs"] = float(rep["num_arcs"])
+        entry["NumCircles"] = float(rep["num_circles"])
+        entry["MaxResidual"] = float(rep["max_residual"])
+        warnings.extend(f"fit_curves: {w}" for w in rep["warnings"])
     elif op == "Sections":
         from ._slice import sections
 

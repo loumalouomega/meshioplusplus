@@ -78,6 +78,7 @@ module meshioplusplus
     public :: mio_deviation, mio_deviation_primitive, mio_deviation_report
     public :: mio_register_landmarks, mio_find_symmetry_plane, mio_symmetry_plane_report
     public :: mio_auto_align, mio_auto_align_report, mio_sections
+    public :: mio_fit_curves, mio_fit_curves_report, mio_fit_curves_piece, mio_sketch_piece
     public :: mio_deviation_regions, mio_deviation_regions_report, mio_deviation_region_info
     public :: mio_deviation_region
     public :: mio_exaggerate, mio_exaggerate_report, mio_colorize, mio_colorize_report
@@ -1588,6 +1589,44 @@ module meshioplusplus
         type(c_ptr) :: source_region = c_null_ptr
         type(c_ptr) :: target_region = c_null_ptr
         integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_curves_opts` (88 bytes; roadmap 7.6.2).
+    type, bind(c) :: mio_fit_curves_opts_t
+        real(c_double) :: tolerance = 0.0_c_double
+        real(c_double) :: snap_angle = 0.0_c_double
+        real(c_double) :: normal(3) = 0.0_c_double
+        integer(c_int64_t) :: min_arc_points = 4
+        real(c_double) :: min_arc_sweep = 5.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_fit_curves_report` (96 bytes): what `mio_fit_curves` found.
+    type, bind(c) :: mio_fit_curves_report
+        integer(c_int64_t) :: num_pieces = 0
+        integer(c_int64_t) :: num_lines = 0
+        integer(c_int64_t) :: num_arcs = 0
+        integer(c_int64_t) :: num_circles = 0
+        integer(c_int64_t) :: num_frames = 0
+        real(c_double) :: max_residual = 0.0_c_double
+        real(c_double) :: tolerance = 0.0_c_double
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_sketch_piece` (104 bytes): `type` 1 line, 2 arc, 3 circle; 2-D in its frame.
+    type, bind(c) :: mio_sketch_piece
+        integer(c_int32_t) :: type = 0
+        integer(c_int32_t) :: reserved32 = 0
+        real(c_double) :: start(2) = 0.0_c_double
+        real(c_double) :: end(2) = 0.0_c_double
+        real(c_double) :: centre(2) = 0.0_c_double
+        real(c_double) :: radius = 0.0_c_double
+        real(c_double) :: sweep = 0.0_c_double
+        real(c_double) :: residual = 0.0_c_double
+        integer(c_int64_t) :: num_points = 0
+        integer(c_int64_t) :: chain = 0
+        integer(c_int64_t) :: frame = 0
     end type
 
     !> Interop mirror of C `mio_symmetry_plane_opts` (112 bytes; roadmap 7.3.6).
@@ -4221,6 +4260,22 @@ module meshioplusplus
             real(c_double), intent(out) :: matrix(16)
             type(c_ptr), value :: residuals
             real(c_double), intent(out) :: rms
+            integer(c_int) :: r
+        end function
+
+        function c_mio_fit_curves(h, opts, report) bind(c, name="mio_fit_curves") result(out)
+            import :: c_ptr, mio_fit_curves_opts_t, mio_fit_curves_report
+            type(c_ptr), value :: h
+            type(mio_fit_curves_opts_t), intent(in) :: opts
+            type(mio_fit_curves_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_fit_curves_piece(index, piece) bind(c, name="mio_fit_curves_piece") &
+                result(r)
+            import :: c_int, c_int64_t, mio_sketch_piece
+            integer(c_int64_t), value :: index
+            type(mio_sketch_piece), intent(out) :: piece
             integer(c_int) :: r
         end function
 
@@ -8590,6 +8645,52 @@ contains
         end if
         call clear_status(stat, errmsg)
     end function
+
+    !> Lines, arcs and circles from the chains of a chained line mesh (roadmap
+    !> 7.6.2; doc/fit_curves.md); read the pieces with `mio_fit_curves_piece`.
+    function mio_fit_curves(sections, tolerance, snap_angle, normal, min_arc_points, &
+                            min_arc_sweep, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: sections
+        real(real64), intent(in), optional :: tolerance, snap_angle, normal(3), min_arc_sweep
+        integer, intent(in), optional :: min_arc_points
+        type(mio_fit_curves_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_fit_curves_opts_t) :: opts
+        type(mio_fit_curves_report) :: rep
+        type(mio_sketch_piece) :: probe
+        if (c_sizeof(opts) /= 88_c_size_t .or. c_sizeof(rep) /= 96_c_size_t .or. &
+            c_sizeof(probe) /= 104_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: fit_curves layout mismatch'
+            error stop 1
+        end if
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(snap_angle)) opts%snap_angle = real(snap_angle, c_double)
+        if (present(normal)) opts%normal = real(normal, c_double)
+        if (present(min_arc_points)) opts%min_arc_points = int(min_arc_points, c_int64_t)
+        if (present(min_arc_sweep)) opts%min_arc_sweep = real(min_arc_sweep, c_double)
+        out%handle = c_mio_fit_curves(sections%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('fit_curves', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Piece `index` (1-based) of this thread's last `mio_fit_curves` call.
+    subroutine mio_fit_curves_piece(index, piece, stat, errmsg)
+        integer, intent(in) :: index
+        type(mio_sketch_piece), intent(out) :: piece
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        if (c_mio_fit_curves_piece(int(index - 1, c_int64_t), piece) /= 0) then
+            call handle_failure('fit_curves', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end subroutine
 
     !> Chained sections of a surface at parallel planes `n . x = offsets(k)`
     !> (`n` the unit `direction`), merged into one line mesh with section:offset,

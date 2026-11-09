@@ -231,6 +231,58 @@ SEXP R_mio_slice(SEXP mesh, SEXP origin, SEXP normal, SEXP record_parent_ids, SE
     return mio_r_wrap_mesh(out);
 }
 
+/* fit_curves(sections, tolerance, snap_angle, normal, min_arc_points,
+ * min_arc_sweep): the pieces as columns (type names; chain and frame as the
+ * 0-based ids of the data). */
+SEXP R_mio_fit_curves(SEXP sections, SEXP tolerance, SEXP snap_angle, SEXP normal,
+                      SEXP min_arc_points, SEXP min_arc_sweep) {
+    mio_fit_curves_opts opts;
+    mio_fit_curves_opts_init(&opts);
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.snap_angle = mio_r_double(snap_angle, "snap_angle");
+    mio_r_vec3(normal, opts.normal, "normal");
+    opts.min_arc_points = (int64_t)mio_r_double(min_arc_points, "min_arc_points");
+    opts.min_arc_sweep = mio_r_double(min_arc_sweep, "min_arc_sweep");
+    mio_fit_curves_report r;
+    mio_mesh *out = mio_fit_curves(mio_r_mesh(sections), &opts, &r);
+    if (out == NULL) mio_r_fail("fit_curves");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const R_xlen_t n = (R_xlen_t)r.num_pieces;
+    static const char *const kCols[] = {"start_x", "start_y", "end_x",   "end_y",
+                                        "centre_x", "centre_y", "radius", "sweep",
+                                        "residual", "num_points", "chain", "frame"};
+    SEXP pieces = PROTECT(Rf_allocVector(VECSXP, 13));
+    SEXP pnames = PROTECT(Rf_allocVector(STRSXP, 13));
+    SEXP types = PROTECT(Rf_allocVector(STRSXP, n));
+    SET_VECTOR_ELT(pieces, 0, types);
+    SET_STRING_ELT(pnames, 0, Rf_mkChar("type"));
+    for (int c = 0; c < 12; ++c) {
+        SET_VECTOR_ELT(pieces, c + 1, Rf_allocVector(REALSXP, n));
+        SET_STRING_ELT(pnames, c + 1, Rf_mkChar(kCols[c]));
+    }
+    static const char *const kTypes[] = {"line", "arc", "circle"};
+    for (R_xlen_t i = 0; i < n; ++i) {
+        mio_sketch_piece p;
+        if (mio_fit_curves_piece((int64_t)i, &p) != MIO_OK) mio_r_fail("fit_curves");
+        SET_STRING_ELT(types, i, Rf_mkChar(kTypes[(p.type >= 1 && p.type <= 3) ? p.type - 1 : 0]));
+        const double v[12] = {p.start[0],  p.start[1], p.end[0], p.end[1],
+                              p.centre[0], p.centre[1], p.radius, p.sweep,
+                              p.residual,  (double)p.num_points, (double)p.chain,
+                              (double)p.frame};
+        for (int c = 0; c < 12; ++c) REAL(VECTOR_ELT(pieces, c + 1))[i] = v[c];
+    }
+    Rf_setAttrib(pieces, R_NamesSymbol, pnames);
+    SEXP warnings = PROTECT(mio_r_getbuffer(mio_fit_curves_warnings, "fit_curves"));
+    const char *keys[] = {"mesh",     "pieces",       "num_lines", "num_arcs",
+                          "num_circles", "max_residual", "tolerance", "warnings"};
+    const SEXP values[] = {mo, pieces, NULL, NULL, NULL, NULL, NULL, warnings};
+    const double numbers[] = {(double)r.num_lines, (double)r.num_arcs, (double)r.num_circles,
+                              r.max_residual, r.tolerance};
+    SEXP res = mio_r_report_list(8, keys, values, numbers);
+    UNPROTECT(5);
+    return res;
+}
+
 SEXP R_mio_sections(SEXP mesh, SEXP direction, SEXP offsets, SEXP min_length,
                     SEXP record_parent_ids) {
     double d[3];

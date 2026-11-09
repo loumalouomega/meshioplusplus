@@ -141,6 +141,7 @@ if TYPE_CHECKING:
     from ._feature_edges import feature_edges
     from ._find_intersections import find_intersections
     from ._fit_cad import fit_cad
+    from ._fit_curves import fit_curves
     from ._fit_primitives import fit_primitives
     from ._geodesic import geodesic_distance
     from ._gpu import (
@@ -558,6 +559,7 @@ _LAZY_ATTRS = {
     "extract_skin": "_skin",
     "slice": "_slice",
     "sections": "_slice",
+    "fit_curves": "_fit_curves",
     "smooth": "_smooth",
     "sniff_format": "_sniff",
     "sobolev_deform": "_sobolev_deform",
@@ -739,6 +741,7 @@ __all__ = [
     "error_size",
     "slice",
     "sections",
+    "fit_curves",
     "isosurface",
     "transform",
     "clean",

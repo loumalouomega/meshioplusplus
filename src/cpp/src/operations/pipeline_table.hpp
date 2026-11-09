@@ -41,6 +41,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "FeatureAngle"}},
         {"Partition", {"Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"}},
         {"Slice", {"Point", "Normal", "RecordParentIds", "Chain", "MinLength"}},
+        // Lines, arcs and circles from chained sections (roadmap 7.6.2).
+        {"FitCurves", {"Tolerance", "SnapAngle", "Normal", "MinArcPoints", "MinArcSweep"}},
         // Chained line sections of a surface at parallel planes (roadmap 7.6.1).
         {"Sections", {"Direction", "Offsets", "MinLength", "RecordParentIds"}},
         {"Section", {"Point", "Normal", "RecordParentIds", "Chain", "MinLength"}},

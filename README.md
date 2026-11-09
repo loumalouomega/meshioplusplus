@@ -726,6 +726,17 @@ out = meshioplusplus.convert_coordinates(rotor, "cylindrical", arrays=["U"])
 u_r, u_theta, u_z = out.point_data["U"].T
 ```
 
+#### Sections to sketches
+
+**`meshioplusplus.sections(scan, direction, offsets)`** cuts a surface at parallel planes and walks each section into ordered polylines (`slice(chain=True)` for one plane), and **`fit_curves`** turns them into lines, arcs and circles within a tolerance, in the section plane's 2-D frame, stored on the mesh as the `sketch:*` data a drawing or a CAD profile reads. See [chained sections](doc/slice.md#chained-sections) and [fit curves](doc/fit_curves.md).
+
+<!--pytest-codeblocks:skip-->
+
+```python
+profile = meshioplusplus.sections(scan, direction=(0, 0, 1), offsets=[2.0])
+sketch, report = meshioplusplus.fit_curves(profile, tolerance=0.01, return_report=True)
+```
+
 #### Rigid registration (ICP)
 
 **`meshioplusplus.register_rigid(source, target)`** finds the rotation and translation laying a scan onto its design (or one run's mesh onto another's) by iterative closest points, point-to-point or point-to-plane, and returns the 4 × 4 matrix `transform` applies. `initial="auto"` needs no start (the best of the 24 candidates laying the two principal frames onto each other), `source_region` keeps a fixture out of the fit and `adaptive_trim` drops far pairs. `register_landmarks` solves picked point pairs, `auto_align` poses a scan on its largest flat face or a cylinder on its axis without a nominal, and `find_symmetry_plane` finds the plane a part is symmetric about, which `mirror(plane="auto")` reflects across. See [rigid registration](doc/registration.md).

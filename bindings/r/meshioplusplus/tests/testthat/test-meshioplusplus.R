@@ -2255,6 +2255,12 @@ test_that("find_intersections and thickness", {
   ss <- mio_sections(a, c(0, 0, 1), c(-0.5, 0.5))
   expect_gt(mio_num_points(ss), 0)
   mio_release(ss)
+  ch <- mio_slice(a, c(0, 0, 0.1), c(0, 0, 1), chain = TRUE)
+  fc <- mio_fit_curves(ch)
+  expect_equal(fc$num_circles, 1)
+  expect_equal(fc$pieces$type[1], "circle")
+  mio_release(fc$mesh)
+  mio_release(ch)
 })
 
 test_that("deviation", {

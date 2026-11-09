@@ -2541,6 +2541,11 @@ end # testset
     ss = sections(a, [0.0, 0.0, 1.0], [-0.5, 0.5])
     @test num_points(ss) > 0
     close(ss)
+    ch = slice(a, [0.0, 0.0, 0.1], [0.0, 0.0, 1.0]; chain=true)
+    fc = fit_curves(ch)
+    @test fc.num_circles == 1 && fc.pieces[1].type == "circle" && size(fc.frames[1]) == (4, 4)
+    close(fc.mesh)
+    close(ch)
 end
 
 @testset "operations: deviation" begin

@@ -88,6 +88,7 @@
 #include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/auto_align.hpp"
+#include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -1414,6 +1415,27 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             rReport.mWarnings.push_back(
                 "the section is empty; the plane misses the mesh -- move or flip it");
         return section;
+    }
+    if (op == "FitCurves") {
+        FitCurvesOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        opts.mSnapAngleDeg = pipe_number(rStep, "SnapAngle", 0.0);
+        if (pipe_find(rStep, "Normal"))
+            pipe_vec3(rStep, "Normal", opts.mNormal.data());
+        const double pts = pipe_number(rStep, "MinArcPoints", 4.0);
+        opts.mMinArcPoints = static_cast<std::int64_t>(pts);
+        if (static_cast<double>(opts.mMinArcPoints) != pts)
+            throw std::invalid_argument(pipe_err(rStep, "MinArcPoints must be an integer"));
+        opts.mMinArcSweepDeg = pipe_number(rStep, "MinArcSweep", 5.0);
+        FitCurvesResult fr = fit_curves(mesh, opts);
+        for (const std::string& w : fr.mWarnings)
+            rReport.mWarnings.push_back("fit_curves: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumLines", static_cast<double>(fr.mNumLines)},
+                        {"NumArcs", static_cast<double>(fr.mNumArcs)},
+                        {"NumCircles", static_cast<double>(fr.mNumCircles)},
+                        {"MaxResidual", fr.mMaxResidual}});
+        return std::move(fr.mMesh);
     }
     if (op == "Sections") {
         SectionsOptions opts;

@@ -138,6 +138,7 @@
 #include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/auto_align.hpp"
+#include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -3991,6 +3992,70 @@ val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool r
         options.mChain = Chain;
         options.mMinLength = MinLength;
         return mesh_to_val(meshioplusplus::slice(val_to_mesh(rMeshObj), options));
+    });
+}
+
+/**
+ * @brief Lines, arcs and circles from chained sections (roadmap 7.6.2).
+ * @p rOptions is `{tolerance, snapAngle, normal, minArcPoints, minArcSweep}`.
+ */
+val fit_curves_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::FitCurvesOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(
+                rOptions, "the fitCurves options",
+                {"tolerance", "snapAngle", "normal", "minArcPoints", "minArcSweep"});
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("snapAngle"))
+                o.mSnapAngleDeg = rOptions["snapAngle"].as<double>();
+            if (rOptions.hasOwnProperty("normal"))
+                o.mNormal = prim_js_vec3(rOptions["normal"], {{0.0, 0.0, 0.0}}, false);
+            if (rOptions.hasOwnProperty("minArcPoints"))
+                o.mMinArcPoints = static_cast<std::int64_t>(rOptions["minArcPoints"].as<double>());
+            if (rOptions.hasOwnProperty("minArcSweep"))
+                o.mMinArcSweepDeg = rOptions["minArcSweep"].as<double>();
+        }
+        meshioplusplus::FitCurvesResult r = meshioplusplus::fit_curves(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        val pieces = val::array();
+        for (const meshioplusplus::SketchPiece& p : r.mPieces) {
+            val d = val::object();
+            d.set("type", std::string(meshioplusplus::sketch_piece_type_name(p.mType)));
+            val st = val::array(), en = val::array(), ce = val::array();
+            for (std::size_t k = 0; k < 2; ++k) {
+                st.call<void>("push", p.mStart[k]);
+                en.call<void>("push", p.mEnd[k]);
+                ce.call<void>("push", p.mCentre[k]);
+            }
+            d.set("start", st);
+            d.set("end", en);
+            d.set("centre", ce);
+            d.set("radius", p.mRadius);
+            d.set("sweep", p.mSweepDeg);
+            d.set("residual", p.mResidual);
+            d.set("numPoints", static_cast<double>(p.mNumPoints));
+            d.set("chain", static_cast<double>(p.mChain));
+            d.set("frame", static_cast<double>(p.mFrame));
+            pieces.call<void>("push", d);
+        }
+        out.set("pieces", pieces);
+        val frames = val::array();
+        for (const auto& f : r.mFrames)
+            frames.call<void>("push", float64_array_from(f.data(), 16));
+        out.set("frames", frames);
+        out.set("numLines", static_cast<double>(r.mNumLines));
+        out.set("numArcs", static_cast<double>(r.mNumArcs));
+        out.set("numCircles", static_cast<double>(r.mNumCircles));
+        out.set("maxResidual", r.mMaxResidual);
+        out.set("tolerance", r.mTolerance);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
     });
 }
 
@@ -10334,6 +10399,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("undoGreen", &undo_green_js);
     emscripten::function("slice", &slice_js);
     emscripten::function("sections", &sections_js);
+    emscripten::function("fitCurves", &fit_curves_js);
     emscripten::function("isosurface", &isosurface_js);
     emscripten::function("grid", &grid_js);
     emscripten::function("rectangle", &rectangle_js);

@@ -171,6 +171,7 @@
 #include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/auto_align.hpp"
+#include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -3092,6 +3093,56 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("origin"), py::arg("normal"), py::arg("record_parent_ids") = false,
         py::arg("chain") = false, py::arg("min_length") = 0.0);
+
+    // Lines, arcs and circles from chained sections (roadmap 7.6.2).
+    m.def(
+        "fit_curves",
+        [](py::object pymesh, double tolerance, double snap_angle, std::array<double, 3> normal,
+           std::int64_t min_arc_points, double min_arc_sweep) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::FitCurvesOptions o;
+            o.mTolerance = tolerance;
+            o.mSnapAngleDeg = snap_angle;
+            o.mNormal = normal;
+            o.mMinArcPoints = min_arc_points;
+            o.mMinArcSweepDeg = min_arc_sweep;
+            meshioplusplus::FitCurvesResult r =
+                core_nogil([&] { return meshioplusplus::fit_curves(mesh, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            py::list pieces;
+            for (const meshioplusplus::SketchPiece& p : r.mPieces) {
+                py::dict d;
+                d["type"] = meshioplusplus::sketch_piece_type_name(p.mType);
+                d["start"] = py::make_tuple(p.mStart[0], p.mStart[1]);
+                d["end"] = py::make_tuple(p.mEnd[0], p.mEnd[1]);
+                d["centre"] = py::make_tuple(p.mCentre[0], p.mCentre[1]);
+                d["radius"] = p.mRadius;
+                d["sweep"] = p.mSweepDeg;
+                d["residual"] = p.mResidual;
+                d["num_points"] = p.mNumPoints;
+                d["chain"] = p.mChain;
+                d["frame"] = p.mFrame;
+                pieces.append(d);
+            }
+            out["pieces"] = pieces;
+            py::list frames;
+            for (const auto& f : r.mFrames)
+                frames.append(std::vector<double>(f.begin(), f.end()));
+            out["frames"] = frames;
+            out["num_lines"] = r.mNumLines;
+            out["num_arcs"] = r.mNumArcs;
+            out["num_circles"] = r.mNumCircles;
+            out["max_residual"] = r.mMaxResidual;
+            out["tolerance"] = r.mTolerance;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("tolerance") = 0.0, py::arg("snap_angle") = 0.0,
+        py::arg("normal") = std::array<double, 3>{0, 0, 0}, py::arg("min_arc_points") = 4,
+        py::arg("min_arc_sweep") = 5.0);
 
     // Chained sections at parallel planes (roadmap 7.6.1).
     m.def(

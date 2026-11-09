@@ -605,6 +605,9 @@ function t_intersections()
     assert(mio.num_points(ch) > 0);
     ss = mio.sections(a, [0 0 1], [-0.5 0.5]);
     assert(mio.num_points(ss) > 0);
+    fc = mio.fit_curves(ch);
+    expect_equal(fc.num_circles, 1);
+    expect_equal(fc.pieces(1).type, 'circle');
 end
 
 function t_capabilities()

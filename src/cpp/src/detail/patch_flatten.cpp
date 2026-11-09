@@ -214,38 +214,15 @@ bool patch_flatten(int Kind, const std::vector<PatchVec>& rPts,
     PatchVec e1, e2;
     pf_frame(axis, e1, e2);
     // The circle the points' projections fit (Kasa): x^2 + y^2 + D x + E y + F = 0.
-    double a[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0}, b[3] = {0, 0, 0};
-    for (const PatchVec& p : rPts) {
-        const PatchVec d = vec3_sub(p, c);
-        const double x = vec3_dot(d, e1), y = vec3_dot(d, e2), r[3] = {x, y, 1.0};
-        const double rhs = -(x * x + y * y);
-        for (int i = 0; i < 3; ++i) {
-            for (int j = 0; j < 3; ++j)
-                a[i * 3 + j] += r[i] * r[j];
-            b[i] += r[i] * rhs;
-        }
+    std::vector<double> xs(rPts.size()), ys(rPts.size());
+    for (std::size_t i = 0; i < rPts.size(); ++i) {
+        const PatchVec d = vec3_sub(rPts[i], c);
+        xs[i] = vec3_dot(d, e1);
+        ys[i] = vec3_dot(d, e2);
     }
-    // Solve the 3x3 normal equations by Cramer's rule.
-    auto det3 = [](const double* q) {
-        return q[0] * (q[4] * q[8] - q[5] * q[7]) - q[1] * (q[3] * q[8] - q[5] * q[6]) +
-               q[2] * (q[3] * q[7] - q[4] * q[6]);
-    };
-    const double d0 = det3(a);
-    if (!(std::fabs(d0) > 0.0))
+    double cx = 0.0, cy = 0.0, radius = 0.0;
+    if (!lsq_circle_kasa(xs, ys, cx, cy, radius))
         return false;
-    double sol[3];
-    for (int k = 0; k < 3; ++k) {
-        double q[9];
-        std::copy(a, a + 9, q);
-        for (int i = 0; i < 3; ++i)
-            q[i * 3 + k] = b[i];
-        sol[k] = det3(q) / d0;
-    }
-    const double cx = -sol[0] / 2.0, cy = -sol[1] / 2.0;
-    const double r2 = cx * cx + cy * cy - sol[2];
-    if (!(r2 > 0.0) || !std::isfinite(r2))
-        return false;
-    const double radius = std::sqrt(r2);
     const PatchVec origin = vec3_add(vec3_add(c, vec3_scale(e1, cx)), vec3_scale(e2, cy));
     std::vector<double> theta(n);
     for (std::size_t i = 0; i < n; ++i) {
@@ -404,8 +381,8 @@ std::vector<std::int64_t> patch_split_until_flat(const std::vector<PatchVec>& rP
 }
 
 std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
-                                       const std::vector<PatchTri>& rTris,
-                                       std::size_t MinTriangles, std::size_t& rNumPieces) {
+                                       const std::vector<PatchTri>& rTris, std::size_t MinTriangles,
+                                       std::size_t& rNumPieces) {
     rNumPieces = 0;
     const std::size_t nt = rTris.size();
     if (nt < 2 || nt < 2 * MinTriangles)
@@ -435,7 +412,8 @@ std::vector<std::int64_t> patch_bisect(const std::vector<PatchVec>& rPts,
         const PatchVec d = vec3_sub(centroids[t], mean);
         for (int i = 0; i < 3; ++i)
             for (int j = 0; j < 3; ++j)
-                m[i * 3 + j] += areas[t] * d[static_cast<std::size_t>(i)] * d[static_cast<std::size_t>(j)];
+                m[i * 3 + j] +=
+                    areas[t] * d[static_cast<std::size_t>(i)] * d[static_cast<std::size_t>(j)];
     }
     lsq_sym3_eigen(m, w, v);
     const PatchVec e{v[6], v[7], v[8]};

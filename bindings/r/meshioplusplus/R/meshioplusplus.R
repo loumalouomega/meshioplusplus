@@ -1401,6 +1401,32 @@ mio_slice <- function(mesh, origin, normal, record_parent_ids = FALSE, chain = F
 #' @param record_parent_ids Attach `slice:parent_cell`.
 #' @return A `mio_mesh`.
 #' @export
+#' Lines, arcs and circles from chained sections
+#'
+#' Each chain of a chained line mesh (`mio_slice(chain = TRUE)` or
+#' `mio_sections()`) split into the runs a line or a circular arc explains
+#' within `tolerance`, in its plane's 2-D frame (roadmap 7.6.2). See
+#' `doc/fit_curves.md`.
+#'
+#' @param sections A chained line mesh.
+#' @param tolerance The largest residual; 0 takes 1e-3 of the diagonal.
+#' @param snap_angle Snap lines within this many degrees of the axes or diagonals.
+#' @param normal The sketch normal; zeros take it from the points.
+#' @param min_arc_points,min_arc_sweep An arc spans at least this many points and degrees.
+#' @return A list: `mesh` (with `sketch:piece` and the `sketch:*` field data),
+#'   `pieces` (a data frame: type, start, end, centre, radius, sweep, residual,
+#'   num_points, chain, frame), `num_lines`, `num_arcs`, `num_circles`,
+#'   `max_residual`, `tolerance` and `warnings`.
+#' @export
+mio_fit_curves <- function(sections, tolerance = 0, snap_angle = 0, normal = c(0, 0, 0),
+                           min_arc_points = 4, min_arc_sweep = 5) {
+  res <- .Call(R_mio_fit_curves, sections, as.numeric(tolerance), as.numeric(snap_angle),
+               as.numeric(normal), as.numeric(min_arc_points), as.numeric(min_arc_sweep))
+  res$pieces <- as.data.frame(res$pieces, stringsAsFactors = FALSE)
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
 mio_sections <- function(mesh, direction, offsets, min_length = 0, record_parent_ids = FALSE) {
   .Call(R_mio_sections, mesh, as.numeric(direction), as.numeric(offsets),
         as.numeric(min_length), isTRUE(record_parent_ids))

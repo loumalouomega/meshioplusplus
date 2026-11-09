@@ -294,6 +294,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean, options?: {chain?: boolean, minLength?: number}) => Mesh,
+ *   fitCurves: (sections: Mesh, options?: {tolerance?: number, snapAngle?: number, normal?: number[], minArcPoints?: number, minArcSweep?: number}) => {mesh: Mesh, pieces: Array<{type: string, start: number[], end: number[], centre: number[], radius: number, sweep: number, residual: number, numPoints: number, chain: number, frame: number}>, frames: Float64Array[], numLines: number, numArcs: number, numCircles: number, maxResidual: number, tolerance: number, warnings: string[]},
  *   sections: (mesh: Mesh, direction: number[], offsets: ArrayLike<number>, options?: {minLength?: number, recordParentIds?: boolean}) => Mesh,
  *   isosurface: (mesh: Mesh, array: string, isovalues: number|number[], component?: number, recordParentIds?: boolean) => Mesh,
  *   grid: (dims: number[], origin?: number[], spacing?: number[], maxCells?: number) => Mesh,
@@ -854,6 +855,11 @@ export async function loadMeshioPlusPlus(
         slice: (mesh, origin, normal, recordParentIds = false, options = {}) =>
             Module.slice(mesh, origin, normal, recordParentIds, Boolean(options.chain),
                 Number(options.minLength ?? 0)),
+        fitCurves: (sections, options = {}) => {
+            const o = { ...options };
+            if (o.normal !== undefined) o.normal = Array.from(o.normal, Number);
+            return Module.fitCurves(sections, o);
+        },
         sections: (mesh, direction, offsets, options = {}) =>
             Module.sections(mesh, Array.from(direction, Number), Array.from(offsets, Number),
                 Number(options.minLength ?? 0), Boolean(options.recordParentIds)),

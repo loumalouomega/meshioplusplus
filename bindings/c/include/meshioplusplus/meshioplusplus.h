@@ -1327,6 +1327,64 @@ MIO_API mio_mesh* mio_slice(const mio_mesh* mesh, const double* origin, const do
 MIO_API mio_mesh* mio_slice_ex(const mio_mesh* mesh, const double* origin, const double* normal,
                                int record_parent_ids, int chain, double min_length);
 
+/** mio_sketch_piece.type (roadmap 7.6.2). */
+#define MIO_SKETCH_LINE 1
+#define MIO_SKETCH_ARC 2
+#define MIO_SKETCH_CIRCLE 3
+
+/** Options of mio_fit_curves; initialise with mio_fit_curves_opts_init. 88 bytes. */
+typedef struct mio_fit_curves_opts {
+    double tolerance;       /**< largest residual; 0 takes 1e-3 of the diagonal (init: 0) */
+    double snap_angle;      /**< snap lines within this many degrees, below 22.5 (init: 0) */
+    double normal[3];       /**< the sketch normal; zero takes it from the points (init: 0) */
+    int64_t min_arc_points; /**< an arc spans at least this many points (init: 4) */
+    double min_arc_sweep;   /**< and at least this many degrees (init: 5) */
+    int64_t reserved[4];
+} mio_fit_curves_opts;
+
+/** What mio_fit_curves found. 96 bytes. */
+typedef struct mio_fit_curves_report {
+    int64_t num_pieces; /**< see mio_fit_curves_piece() */
+    int64_t num_lines;
+    int64_t num_arcs;
+    int64_t num_circles;
+    int64_t num_frames; /**< see mio_fit_curves_frame() */
+    double max_residual;
+    double tolerance;   /**< the tolerance applied */
+    int64_t num_warnings;
+    int64_t reserved[4];
+} mio_fit_curves_report;
+
+/** One sketch piece, in its frame's 2-D coordinates. 104 bytes. */
+typedef struct mio_sketch_piece {
+    int32_t type;      /**< MIO_SKETCH_LINE, _ARC or _CIRCLE */
+    int32_t reserved32;
+    double start[2];
+    double end[2];
+    double centre[2];  /**< arcs and circles */
+    double radius;     /**< arcs and circles */
+    double sweep;      /**< degrees, counter-clockwise positive; a circle 360 */
+    double residual;   /**< the largest distance of its chain points */
+    int64_t num_points;
+    int64_t chain;
+    int64_t frame;
+} mio_sketch_piece;
+
+MIO_API void mio_fit_curves_opts_init(mio_fit_curves_opts* opts);
+/**
+ * Lines, arcs and circles from the chains of a chained line mesh (roadmap
+ * 7.6.2; doc/fit_curves.md). Returns the input with sketch:piece cell data and
+ * the sketch:* field data (free with mio_mesh_free), or NULL.
+ */
+MIO_API mio_mesh* mio_fit_curves(const mio_mesh* sections, const mio_fit_curves_opts* opts,
+                                 mio_fit_curves_report* report);
+/** Piece `index` of this thread's last mio_fit_curves call. */
+MIO_API mio_status mio_fit_curves_piece(int64_t index, mio_sketch_piece* piece);
+/** Frame `index` of that call: row-major 4x4, columns e1, e2, normal, origin. */
+MIO_API mio_status mio_fit_curves_frame(int64_t index, double frame[16]);
+/** The warnings of that call; string rule 5. */
+MIO_API int64_t mio_fit_curves_warnings(char* buf, int64_t buflen);
+
 /**
  * Chained sections of a surface at `n_offsets` parallel planes `n . x =
  * offsets[k]` (`n` the unit `direction`), merged into one line mesh with the

@@ -545,6 +545,29 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    @_forward(_tools.tool_fit_curves)
+    def fit_curves(
+        input_path: str,
+        output_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        tolerance: float = 0.0,
+        snap_angle: float = 0.0,
+        normal: Optional[List[float]] = None,
+        min_arc_points: int = 4,
+        min_arc_sweep: float = 5.0,
+    ) -> dict:
+        """Lines, arcs and circles from a chained line mesh (slice with chain,
+        or sections): each chain split into the runs a line or a circular arc
+        explains within tolerance (0: 1e-3 of the diagonal), in its section
+        plane's 2-D frame; snap_angle snaps lines onto the axes or diagonals.
+        Reports pieces (type, start, end, centre, radius, sweep, residual,
+        num_points, chain, frame), frames (4x4: e1, e2, normal, origin
+        columns), num_lines, num_arcs, num_circles, max_residual, tolerance
+        and warnings; output_path writes the mesh with sketch:piece and the
+        sketch:* field data."""
+
+    @server.tool()
     @_forward(_tools.tool_sections)
     def sections(
         input_path: str,

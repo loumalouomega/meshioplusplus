@@ -2072,6 +2072,44 @@ struct _CRegistrationExOpts
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_fit_curves_opts` (roadmap 7.6.2)."""
+struct _CFitCurvesOpts
+    tolerance::Cdouble
+    snap_angle::Cdouble
+    normal::NTuple{3,Cdouble}
+    min_arc_points::Int64
+    min_arc_sweep::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_fit_curves_report`."""
+struct _CFitCurvesReport
+    num_pieces::Int64
+    num_lines::Int64
+    num_arcs::Int64
+    num_circles::Int64
+    num_frames::Int64
+    max_residual::Cdouble
+    tolerance::Cdouble
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_sketch_piece`."""
+struct _CSketchPiece
+    type::Int32
+    reserved32::Int32
+    start::NTuple{2,Cdouble}
+    stop::NTuple{2,Cdouble}
+    centre::NTuple{2,Cdouble}
+    radius::Cdouble
+    sweep::Cdouble
+    residual::Cdouble
+    num_points::Int64
+    chain::Int64
+    frame::Int64
+end
+
 """Mirror of C `mio_symmetry_plane_opts` (roadmap 7.3.6)."""
 struct _CSymmetryPlaneOpts
     seed_origin::NTuple{3,Cdouble}
@@ -2589,6 +2627,9 @@ function _check_abi_layout()
         error("meshio++: mio_registration_report layout mismatch ($(sizeof(_CRegistrationReport)) bytes)")
     (sizeof(_CRegistrationExOpts) == 264 && fieldoffset(_CRegistrationExOpts, 6) == 216) ||
         error("meshio++: mio_registration_ex_opts layout mismatch ($(sizeof(_CRegistrationExOpts)) bytes)")
+    (sizeof(_CFitCurvesOpts) == 88 && sizeof(_CFitCurvesReport) == 96 &&
+     sizeof(_CSketchPiece) == 104 && fieldoffset(_CSketchPiece, 9) == 80) ||
+        error("meshio++: mio_fit_curves layout mismatch")
     sizeof(_CSymmetryPlaneOpts) == 112 ||
         error("meshio++: mio_symmetry_plane_opts layout mismatch ($(sizeof(_CSymmetryPlaneOpts)) bytes)")
     sizeof(_CSymmetryPlaneReport) == 128 ||

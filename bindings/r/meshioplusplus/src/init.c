@@ -93,6 +93,7 @@ extern SEXP R_mio_crop_plane(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_predicate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_slice(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_sections(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_fit_curves(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_isosurface(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_gradient(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_hessian(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -360,6 +361,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_crop_predicate, 5),
                                               CALLDEF(R_mio_slice, 6),
                                               CALLDEF(R_mio_sections, 5),
+                                              CALLDEF(R_mio_fit_curves, 6),
                                               CALLDEF(R_mio_isosurface, 5),
                                               CALLDEF(R_mio_gradient, 8),
                                               CALLDEF(R_mio_hessian, 6),

@@ -226,6 +226,59 @@ static mxArray *O_mio_slice(const mxArray **a) {
     return mio_o_wrap_mesh(out);
 }
 
+/* fit_curves(sections, tolerance, snap_angle, normal, min_arc_points,
+ * min_arc_sweep): `pieces` is an n x 1 struct array. */
+static mxArray *O_mio_fit_curves(const mxArray **a) {
+    mio_fit_curves_opts opts;
+    mio_fit_curves_opts_init(&opts);
+    opts.tolerance = mio_o_double(a[1], "tolerance");
+    opts.snap_angle = mio_o_double(a[2], "snap_angle");
+    mio_o_vec3(a[3], opts.normal, "normal");
+    opts.min_arc_points = (int64_t)mio_o_double(a[4], "min_arc_points");
+    opts.min_arc_sweep = mio_o_double(a[5], "min_arc_sweep");
+    mio_fit_curves_report r;
+    mio_mesh *out = mio_fit_curves(mio_o_mesh(a[0]), &opts, &r);
+    if (out == NULL) mio_o_fail("fit_curves");
+    static const char *const kFields[] = {"type",     "start",    "end",        "centre",
+                                          "radius",   "sweep",    "residual",   "num_points",
+                                          "chain",    "frame"};
+    static const char *const kTypes[] = {"line", "arc", "circle"};
+    mxArray *pieces = mxCreateStructMatrix((mwSize)r.num_pieces, 1, 10, kFields);
+    for (int64_t i = 0; i < r.num_pieces; ++i) {
+        mio_sketch_piece p;
+        if (mio_fit_curves_piece(i, &p) != MIO_OK) mio_o_fail("fit_curves");
+        mxArray *st = mio_o_matrix(1, 2), *en = mio_o_matrix(1, 2), *ce = mio_o_matrix(1, 2);
+        for (int k = 0; k < 2; ++k) {
+            mxGetPr(st)[k] = p.start[k];
+            mxGetPr(en)[k] = p.end[k];
+            mxGetPr(ce)[k] = p.centre[k];
+        }
+        mxSetField(pieces, (mwIndex)i, "type",
+                   mio_o_str(kTypes[(p.type >= 1 && p.type <= 3) ? p.type - 1 : 0]));
+        mxSetField(pieces, (mwIndex)i, "start", st);
+        mxSetField(pieces, (mwIndex)i, "end", en);
+        mxSetField(pieces, (mwIndex)i, "centre", ce);
+        mxSetField(pieces, (mwIndex)i, "radius", mio_o_scalar(p.radius));
+        mxSetField(pieces, (mwIndex)i, "sweep", mio_o_scalar(p.sweep));
+        mxSetField(pieces, (mwIndex)i, "residual", mio_o_scalar(p.residual));
+        mxSetField(pieces, (mwIndex)i, "num_points", mio_o_scalar((double)p.num_points));
+        mxSetField(pieces, (mwIndex)i, "chain", mio_o_scalar((double)p.chain));
+        mxSetField(pieces, (mwIndex)i, "frame", mio_o_scalar((double)p.frame));
+    }
+    mxArray *w = mio_o_getbuffer(mio_fit_curves_warnings, "fit_curves");
+    const char *keys[] = {"mesh",        "pieces",       "num_lines", "num_arcs",
+                          "num_circles", "max_residual", "tolerance", "warnings"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         pieces,
+                         mio_o_scalar((double)r.num_lines),
+                         mio_o_scalar((double)r.num_arcs),
+                         mio_o_scalar((double)r.num_circles),
+                         mio_o_scalar(r.max_residual),
+                         mio_o_scalar(r.tolerance),
+                         w};
+    return mio_o_struct(8, keys, values);
+}
+
 /* sections(mesh, direction, offsets, min_length, record_parent_ids) */
 static mxArray *O_mio_sections(const mxArray **a) {
     double d[3];
@@ -1584,6 +1637,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_crop_plane, 5),
     MIO_O_ENTRY(mio_slice, 6),
     MIO_O_ENTRY(mio_sections, 5),
+    MIO_O_ENTRY(mio_fit_curves, 6),
     MIO_O_ENTRY(mio_isosurface, 5),
     MIO_O_ENTRY(mio_gradient, 8),
     MIO_O_ENTRY(mio_hessian, 6),

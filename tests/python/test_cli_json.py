@@ -276,6 +276,14 @@ def files(tmp_path_factory):
     except NotImplementedError:  # pragma: no cover - a core-less build
         mio.write(paths["sphere_dev"], mio.icosa_sphere(1.02, 2))
     mio.write(paths["sphere_b"], mio.icosa_sphere(1.0, 2, center=(1.0, 0.0, 0.0)))
+    paths["chained"] = str(d / "chained.vtu")
+    try:
+        mio.write(
+            paths["chained"],
+            mio.slice(mio.icosa_sphere(1.0, 2), (0, 0, 0.2), (0, 0, 1), chain=True),
+        )
+    except NotImplementedError:  # pragma: no cover - a core-less build
+        pass
     paths["dir"] = str(d)
     return paths
 
@@ -387,6 +395,7 @@ CASES = [
         ],
     ),
     ("thickness", lambda f: ["thickness", f["sphere_a"], "--json"]),
+    ("fit_curves", lambda f: ["fit-curves", f["chained"], "--json"]),
     (
         "thickness_sphere",
         lambda f: [

@@ -375,6 +375,12 @@ _VERBS = (
         "Planar cross-section of a mesh (volume -> surface, surface -> lines)",
     ),
     _Verb(
+        "fit-curves",
+        "_fit_curves",
+        "fit_curves_cmd",
+        "Lines, arcs and circles from chained sections (a sketch)",
+    ),
+    _Verb(
         "sections",
         "_slice",
         "sections_cmd",

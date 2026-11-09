@@ -333,6 +333,49 @@ function slice(m::Mesh, origin::AbstractVector{<:Real}, normal::AbstractVector{<
 end
 
 """
+    fit_curves(sections; tolerance=0.0, snap_angle=0.0, normal=nothing, min_arc_points=4,
+               min_arc_sweep=5.0)
+        -> (; mesh, pieces, frames, num_lines, num_arcs, num_circles, max_residual, tolerance,
+              warnings)
+
+Lines, arcs and circles from the chains of a chained line mesh (roadmap 7.6.2):
+each piece is `(; type, start, stop, centre, radius, sweep, residual, num_points,
+chain, frame)` in its frame's 2-D coordinates (`chain` and `frame` 0-based);
+`frames` are 4 x 4 (columns e1, e2, normal, origin). See `doc/fit_curves.md`.
+"""
+function fit_curves(sections::Mesh; tolerance::Real=0.0, snap_angle::Real=0.0, normal=nothing,
+                    min_arc_points::Integer=4, min_arc_sweep::Real=5.0)
+    n = normal === nothing ? (0.0, 0.0, 0.0) : (Float64(normal[1]), Float64(normal[2]), Float64(normal[3]))
+    opts = _CFitCurvesOpts(Cdouble(tolerance), Cdouble(snap_angle), n, Int64(min_arc_points),
+                           Cdouble(min_arc_sweep), ntuple(_ -> Int64(0), 4))
+    rep = Ref{_CFitCurvesReport}()
+    ptr = ccall(_sym(:mio_fit_curves), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CFitCurvesOpts}, Ref{_CFitCurvesReport}), _handle(sections),
+                Ref(opts), rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    names = ("line", "arc", "circle")
+    pieces = map(0:(r.num_pieces - 1)) do i
+        p = Ref{_CSketchPiece}()
+        _check(ccall(_sym(:mio_fit_curves_piece), Cint, (Int64, Ref{_CSketchPiece}), i, p))
+        q = p[]
+        (type=names[q.type], start=collect(q.start), stop=collect(q.stop), centre=collect(q.centre),
+         radius=q.radius, sweep=q.sweep, residual=q.residual, num_points=Int(q.num_points),
+         chain=Int(q.chain), frame=Int(q.frame))
+    end
+    frames = map(0:(r.num_frames - 1)) do i
+        f = zeros(Cdouble, 16)
+        _check(ccall(_sym(:mio_fit_curves_frame), Cint, (Int64, Ptr{Cdouble}), i, f))
+        [f[4 * (a - 1) + b] for a in 1:4, b in 1:4]
+    end
+    text = _getstring((buf, n) -> ccall(_sym(:mio_fit_curves_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    (mesh=out, pieces=pieces, frames=frames, num_lines=Int(r.num_lines), num_arcs=Int(r.num_arcs),
+     num_circles=Int(r.num_circles), max_residual=r.max_residual, tolerance=r.tolerance,
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
     sections(mesh, direction, offsets; min_length=0.0, record_parent_ids=false) -> Mesh
 
 Chained sections of a surface at the parallel planes `n . x = offsets[k]` (`n`

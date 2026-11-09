@@ -63,6 +63,13 @@
       {"name": "Chain", "kind": "flag", "default": false},
       {"name": "MinLength", "kind": "number", "default": 0.0}
     ]},
+    {"op": "FitCurves", "note": "Lines, arcs and circles from chained sections (roadmap 7.6.2).", "keys": [
+      {"name": "Tolerance", "kind": "number", "default": 0.0},
+      {"name": "SnapAngle", "kind": "number", "default": 0.0},
+      {"name": "Normal"},
+      {"name": "MinArcPoints", "kind": "number", "default": 4.0},
+      {"name": "MinArcSweep", "kind": "number", "default": 5.0}
+    ]},
     {"op": "Sections", "note": "Chained line sections of a surface at parallel planes (roadmap 7.6.1).", "keys": [
       {"name": "Direction"},
       {"name": "Offsets"},

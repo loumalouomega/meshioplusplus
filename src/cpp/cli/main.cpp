@@ -147,6 +147,7 @@
 #include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/auto_align.hpp"
+#include "meshioplusplus/operations/fit_curves.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -5417,6 +5418,100 @@ int cmd_slice(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// fit-curves: lines, arcs and circles from chained sections (roadmap 7.6.2).
+int cmd_fit_curves(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"tolerance", {}, true},
+                                          {"snap-angle", {}, true},
+                                          {"normal", {}, true},
+                                          {"min-arc-points", {}, true},
+                                          {"min-arc-sweep", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.empty() || p.positionals.size() > 2)
+        throw std::runtime_error("fit-curves requires INFILE and an optional OUTFILE");
+    meshioplusplus::FitCurvesOptions o;
+    cli_opt_double(p, "tolerance", o.mTolerance);
+    cli_opt_double(p, "snap-angle", o.mSnapAngleDeg);
+    if (has_opt(p, "normal")) {
+        const auto n = parse_doubles(opt_value(p, "normal"));
+        if (n.size() != 3)
+            throw std::runtime_error("fit-curves: --normal expects 'x,y,z'");
+        o.mNormal = {n[0], n[1], n[2]};
+    }
+    cli_opt_int64(p, "min-arc-points", o.mMinArcPoints);
+    cli_opt_double(p, "min-arc-sweep", o.mMinArcSweepDeg);
+    meshioplusplus::FitCurvesResult r = meshioplusplus::fit_curves(
+        read_mesh_cli(p.positionals[0], opt_value(p, "input-format")), o);
+    if (p.positionals.size() == 2)
+        write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Key("pieces");
+        json.BeginArray();
+        for (const meshioplusplus::SketchPiece& s : r.mPieces) {
+            json.BeginObject();
+            json.Field("type", std::string(meshioplusplus::sketch_piece_type_name(s.mType)));
+            cli_numbers_json(json, "start", {s.mStart[0], s.mStart[1]});
+            cli_numbers_json(json, "end", {s.mEnd[0], s.mEnd[1]});
+            cli_numbers_json(json, "centre", {s.mCentre[0], s.mCentre[1]});
+            json.Field("radius", s.mRadius);
+            json.Field("sweep", s.mSweepDeg);
+            json.Field("residual", s.mResidual);
+            json.Field("num_points", s.mNumPoints);
+            json.Field("chain", s.mChain);
+            json.Field("frame", s.mFrame);
+            json.EndObject();
+        }
+        json.EndArray();
+        json.Key("frames");
+        json.BeginArray();
+        for (const auto& f : r.mFrames) {
+            json.BeginArray();
+            for (int row = 0; row < 4; ++row) {
+                json.BeginArray();
+                for (int col = 0; col < 4; ++col)
+                    json.Number(f[static_cast<std::size_t>(4 * row + col)]);
+                json.EndArray();
+            }
+            json.EndArray();
+        }
+        json.EndArray();
+        cli_names_json(json, "warnings", r.mWarnings);
+        json.Field("num_lines", r.mNumLines);
+        json.Field("num_arcs", r.mNumArcs);
+        json.Field("num_circles", r.mNumCircles);
+        json.Field("max_residual", r.mMaxResidual);
+        json.Field("tolerance", r.mTolerance);
+        json.EndObject();
+        return 0;
+    }
+    char line[256];
+    meshioplusplus::detail::snprintf_c(
+        line, sizeof(line),
+        "%lld line(s), %lld arc(s), %lld circle(s); max residual %.6g (tolerance %.6g)\n",
+        static_cast<long long>(r.mNumLines), static_cast<long long>(r.mNumArcs),
+        static_cast<long long>(r.mNumCircles), r.mMaxResidual, r.mTolerance);
+    std::cout << line;
+    for (const meshioplusplus::SketchPiece& s : r.mPieces) {
+        meshioplusplus::detail::snprintf_c(
+            line, sizeof(line), "  chain %lld %s: (%.9g, %.9g) -> (%.9g, %.9g)",
+            static_cast<long long>(s.mChain), meshioplusplus::sketch_piece_type_name(s.mType),
+            s.mStart[0], s.mStart[1], s.mEnd[0], s.mEnd[1]);
+        std::cout << line;
+        if (s.mType != meshioplusplus::SketchPieceType::Line) {
+            meshioplusplus::detail::snprintf_c(line, sizeof(line),
+                                               " centre (%.9g, %.9g) radius %.9g sweep %.6g",
+                                               s.mCentre[0], s.mCentre[1], s.mRadius, s.mSweepDeg);
+            std::cout << line;
+        }
+        std::cout << "\n";
+    }
+    for (const std::string& w : r.mWarnings)
+        std::cout << "warning: " << w << "\n";
+    return 0;
+}
+
 // sections: chained line sections of a surface at parallel planes (roadmap 7.6.1).
 int cmd_sections(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
@@ -9514,6 +9609,9 @@ const CliVerb kCliVerbs[] = {
     {"slice", nullptr,
      "  slice                   Planar cross-section (volume->surface, surface->lines)\n",
      &cmd_slice},
+    {"fit-curves", nullptr,
+     "  fit-curves              Lines, arcs and circles from chained sections (a sketch)\n",
+     &cmd_fit_curves},
     {"sections", nullptr,
      "  sections                Chained line sections of a surface at parallel planes\n",
      &cmd_sections},

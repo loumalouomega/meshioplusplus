@@ -154,6 +154,8 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/auto_align.hpp"
+#include "meshioplusplus/operations/fit_curves.hpp"
+#include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
@@ -816,6 +818,13 @@ MIO_ABI_LAYOUT(meshioplusplus::RegistrationResult, 232, 8);
 static_assert(offsetof(meshioplusplus::RegistrationResult, mCandidateRms) == 176,
               "RegistrationResult::mCandidateRms moved");
 MIO_ABI_LAYOUT(meshioplusplus::SymmetryPlaneOptions, 80, 8);
+// Unreleased ABI 43 (roadmap 7.6.1, 7.6.2): `mChain` and `mMinLength` grow
+// SliceOptions from 56 to 64 bytes; sections' and fit_curves' structs are new.
+MIO_ABI_LAYOUT(meshioplusplus::SliceOptions, 64, 8);
+static_assert(offsetof(meshioplusplus::SliceOptions, mChain) == 49, "SliceOptions::mChain moved");
+MIO_ABI_LAYOUT(meshioplusplus::SectionsOptions, 64, 8);
+MIO_ABI_LAYOUT(meshioplusplus::FitCurvesOptions, 56, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SketchPiece, 104, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SymmetryPlaneResult, 128, 8);
 MIO_ABI_LAYOUT(meshioplusplus::LandmarkResult, 160, 8);
 MIO_ABI_LAYOUT(meshioplusplus::AutoAlignOptions, 56, 8);

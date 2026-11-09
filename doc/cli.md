@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `deviation`, `deviation-regions`, `exaggerate`, `colorize`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `reconstruct`, `register`, `register-landmarks`, `auto-align`, `symmetry-plane`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `deviation`, `deviation-regions`, `exaggerate`, `colorize`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `reconstruct`, `fit-curves`, `register`, `register-landmarks`, `auto-align`, `symmetry-plane`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -157,6 +157,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `point-normals` | `output`, `num_degenerate`, `num_components` |
 | `reconstruct` | `output`, `num_samples`, `spacing`, `cell_size`, `max_distance`, `num_lattice_points`, `num_undefined`, `num_triangles`, `num_components`, `estimated_normals` |
 | `register` | `output` (with `--output`), `matrix` (4 rows of 4), `initial_rms`, `rms`, `iterations`, `num_pairs`, `converged`, `num_rejected`, `candidate_rms`, `chosen_candidate`, `warnings` |
+| `fit-curves` | `pieces` (`type`, `start`, `end`, `centre`, `radius`, `sweep`, `residual`, `num_points`, `chain`, `frame`), `frames` (4 rows of 4 each), `num_lines`, `num_arcs`, `num_circles`, `max_residual`, `tolerance`, `warnings` |
 | `register-landmarks` | `output` (with `--mesh` and `--output`), `matrix` (4 rows of 4), `residuals`, `rms` |
 | `auto-align` | `matrix` (4 rows of 4), `mode`, `primary`, `secondary`, `share`, `face_share`, `axis_share`, `opening_area`, `warnings` |
 | `symmetry-plane` | `origin`, `normal`, `rms`, `share`, `tolerance`, `candidate_rms`, `chosen_candidate`, `warnings` |
@@ -670,6 +671,8 @@ meshioplusplus slice [options] INFILE OUTFILE
 | `--chain` | Walk a surface's line section into polylines, with `section:chain` and `section:closed` cell data ([chained sections](/slice#chained-sections)) |
 | `--min-length L` | With `--chain`, drop chains shorter than `L` |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+`meshioplusplus fit-curves IN [OUT] [--tolerance T] [--snap-angle DEG] [--normal x,y,z] [--min-arc-points N] [--min-arc-sweep DEG] [--json]` (both CLIs) fits lines, arcs and circles to a chained section ([fit curves](/fit_curves)).
 
 `meshioplusplus sections IN OUT --offsets=a,b,... [--direction x,y,z] [--min-length L] [--record-parent-ids]` (both CLIs) slices a surface at the planes `n . x = offsets[k]` and merges the chained sections, with `section:offset` cell data.
 

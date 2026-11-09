@@ -5993,6 +5993,9 @@ step('findIntersections and thickness (roadmap 3.1.2, 3.1.4)', () => {
     assert.ok('section:chain' in ch.cell_data);
     const ss = m.sections(a, [0, 0, 1], [-0.5, 0.5]);
     assert.ok('section:offset' in ss.cell_data);
+    const fc = m.fitCurves(ch);
+    assert.equal(fc.numCircles, 1);
+    assert.equal(fc.pieces[0].type, 'circle');
 });
 
 step('deviation (roadmap 7.4)', () => {

@@ -8570,6 +8570,24 @@ TEST(CApi, ChainedSliceAndSections) {
     EXPECT_GE(mio_mesh_cell_data_num_blocks(all, "section:offset"), 1);
     mio_mesh_free(all);
     EXPECT_EQ(mio_sections(s, n, offs, 0, 0.0, 0), nullptr);
+    // A sphere's chained section at z = 0.1 is one circle (roadmap 7.6.2).
+    loop = mio_slice_ex(s, o, n, 0, 1, 0.0);
+    mio_fit_curves_opts fo;
+    mio_fit_curves_opts_init(&fo);
+    EXPECT_EQ(fo.min_arc_points, 4);
+    mio_fit_curves_report fr;
+    mio_mesh* sk = mio_fit_curves(loop, &fo, &fr);
+    ASSERT_NE(sk, nullptr) << mio_last_error();
+    EXPECT_EQ(fr.num_circles, 1);
+    mio_sketch_piece piece;
+    ASSERT_EQ(mio_fit_curves_piece(0, &piece), MIO_OK);
+    EXPECT_EQ(piece.type, MIO_SKETCH_CIRCLE);
+    double frame[16];
+    EXPECT_EQ(mio_fit_curves_frame(0, frame), MIO_OK);
+    EXPECT_EQ(mio_fit_curves_piece(5, &piece), MIO_ERR_INVALID_ARG);
+    EXPECT_EQ(mio_fit_curves(s, &fo, &fr), nullptr);  // triangles, not lines
+    mio_mesh_free(sk);
+    mio_mesh_free(loop);
     mio_mesh_free(s);
 }
 

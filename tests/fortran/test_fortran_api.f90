@@ -2595,6 +2595,20 @@ contains
                                  [-0.5_real64, 0.5_real64], stat=ierr)
             call check(ierr == 0, 'sections of the sphere')
             if (ierr == 0) call thick%free()
+            block
+                type(mio_mesh) :: sec, sk
+                type(mio_fit_curves_report) :: frep
+                type(mio_sketch_piece) :: piece
+                sec = sa%slice([0.0_real64, 0.0_real64, 0.1_real64], &
+                               [0.0_real64, 0.0_real64, 1.0_real64], chain=.true., stat=ierr)
+                sk = mio_fit_curves(sec, report=frep, stat=ierr)
+                call check(ierr == 0 .and. frep%num_circles == 1_int64, &
+                           'fit_curves finds the circle')
+                call mio_fit_curves_piece(1, piece, stat=ierr)
+                call check(ierr == 0 .and. piece%type == 3, 'the first piece is a circle')
+                call sk%free()
+                call sec%free()
+            end block
             call sb%free()
             call sa%free()
         end block
