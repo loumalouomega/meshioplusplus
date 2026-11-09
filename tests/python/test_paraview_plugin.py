@@ -209,3 +209,79 @@ def test_polygon_n_and_1d_meshes_are_read(tmp_path, case):
         "points": len(expected.points),
         "cells": sum(len(b) for b in expected.cells),
     }
+
+
+_NAMES = """
+src, state = args
+pxm = servermanager.ProxyManager()
+names = {}
+for group, name in (
+    ("sources", "MeshioPlusPlusReader"),
+    ("sources", "meshio++ reader"),
+    ("writers", "MeshioPlusPlusWriter"),
+    ("writers", "meshio++ Writer"),
+):
+    names[name] = pxm.GetPrototypeProxy(group, name) is not None
+# A state file saved with the old reader name loads into the alias, which
+# paraview.simple names after its label, "meshio++ reader (old name)".
+reader = meshioreaderoldname(FileName=src)
+pvs.SaveState(state)
+pvs.Delete(reader)
+pvs.LoadState(state)
+loaded = [p for p in pvs.GetSources().values() if p.GetXMLName() == "meshio++ reader"]
+loaded[0].UpdatePipeline()
+names["state_cells"] = servermanager.Fetch(loaded[0]).GetNumberOfCells()
+# Opening a .vtu in a script picks ParaView's own reader, not this one.
+names["vtu_reader"] = pvs.OpenDataFile(src).GetXMLName()
+print(json.dumps(names))
+"""
+
+
+def test_stable_names_and_old_aliases(tmp_path):
+    """roadmap 6.10.2: stable proxy names; the old ones still load a state."""
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+        [("tetra", [[0, 1, 2, 3]])],
+    )
+    src = tmp_path / "in.vtu"
+    meshioplusplus.write(src, mesh)
+    seen = _run_pvpython(tmp_path, _NAMES, src, tmp_path / "state.pvsm")
+    assert seen.pop("vtu_reader") != "MeshioPlusPlusReader"
+    assert seen == {
+        "MeshioPlusPlusReader": True,
+        "meshio++ reader": True,
+        "MeshioPlusPlusWriter": True,
+        "meshio++ Writer": True,
+        "state_cells": 1,
+    }
+
+
+def _capability(flag):
+    from meshioplusplus import _core
+
+    return bool(getattr(_core, flag, False))
+
+
+@pytest.mark.parametrize(
+    "ext, flag",
+    [(".xdmf", "__has_hdf5__"), (".exo", "__has_netcdf__"), (".cgns", "__has_hdf5__")],
+)
+def test_hdf5_and_netcdf_formats_through_the_plugin(tmp_path, ext, flag):
+    """roadmap 6.10.1: XDMF, Exodus and CGNS go through the plugin in CI."""
+    if not _capability(flag):
+        if _REQUIRED:
+            pytest.fail(f"this build has no {flag.strip('_')}")
+        pytest.skip(f"this build has no {flag.strip('_')}")
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]]),
+        [("tetra", [[0, 1, 2, 3], [1, 2, 3, 4]])],
+        point_data={"u": np.arange(5.0)},
+    )
+    src = tmp_path / f"in{ext}"
+    meshioplusplus.write(src, mesh)
+    expected = meshioplusplus.read(src)
+    seen = _run_pvpython(tmp_path, _COUNTS, src)
+    assert seen == {
+        "points": len(expected.points),
+        "cells": sum(len(b) for b in expected.cells),
+    }

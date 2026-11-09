@@ -37,6 +37,12 @@ The plugin runs inside ParaView's own Python, so meshio++ must be installed for 
 
 From `pvpython` or `pvbatch`, `paraview.simple.LoadPlugin(path, ns=globals())` loads it and defines `meshioreader` and `meshioWriter`.
 
+## Proxy names
+
+The reader and the writer are the server-manager proxies `MeshioPlusPlusReader` (group `sources`) and `MeshioPlusPlusWriter` (group `writers`): stable identifiers that state files and `servermanager.ProxyManager()` lookups use. `paraview.simple` names its functions after their labels, `meshio++ reader` and `meshio++ Writer`, so scripts keep calling `meshioreader(...)` and `meshioWriter(...)`. The names the plugin used before, `meshio++ reader` and `meshio++ Writer`, stay registered as aliases (labelled "(old name)", without a file-dialog entry), so a state file saved with them still loads.
+
+The reader registers every extension meshio++ knows, `.vtu` and the other formats ParaView reads itself included. In the GUI, ParaView then asks which reader to open such a file with and can remember the answer as the default for that extension; `paraview.simple.OpenDataFile` keeps picking ParaView's own reader for those extensions (CI checks this for `.vtu`), so call `meshioreader(FileName=...)` to read one through meshio++.
+
 ## Usage
 
 After loading, every extension meshio++ knows appears in ParaView's file dialogs. The reader's **FileFormat** property picks the format explicitly (`automatic` infers it from the file), and the file is exposed as a `vtkUnstructuredGrid` with its point, cell and field data. The writer saves an unstructured grid through `meshioplusplus.write`, choosing the format from the file name.
@@ -61,4 +67,4 @@ The plugin file declares the ParaView proxies and nothing else. The conversions 
 
 ## Testing
 
-`tests/python/test_paraview_payload.py` tests the conversions with the PyPI `vtk` wheel and no ParaView. `tests/python/test_paraview_plugin.py` runs `pvpython` in a subprocess: it loads the plugin, reads files through the reader (wedges must have positive volumes in ParaView's `CellSize`, `polygon5` blocks and 1-D meshes must keep their cells), writes them back through the writer, and reads the result with meshio++. It is skipped when `pvpython` is absent or runs a different Python than the build under test; CI runs it in its `paraview-plugin` job against conda-forge ParaView.
+`tests/python/test_paraview_payload.py` tests the conversions with the PyPI `vtk` wheel and no ParaView. `tests/python/test_paraview_plugin.py` runs `pvpython` in a subprocess: it loads the plugin, reads files through the reader (wedges must have positive volumes in ParaView's `CellSize`, `polygon5` blocks and 1-D meshes must keep their cells), writes them back through the writer, and reads the result with meshio++. It is skipped when `pvpython` is absent or runs a different Python than the build under test; CI runs it in its `paraview-plugin` job against conda-forge ParaView, with HDF5 and netCDF on so XDMF, Exodus and CGNS files go through the plugin too, together with `tests/python/test_pvd_paraview.py`, the ParaView-side checks of the `.pvd` and `.pvtu` files meshio++ writes.
