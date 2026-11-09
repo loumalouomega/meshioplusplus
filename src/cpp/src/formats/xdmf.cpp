@@ -15,8 +15,8 @@
 //
 //
 // System includes
+#include <algorithm>
 #include <cstdint>
-#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -224,9 +224,10 @@ NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
                 else
                     out[i++] = static_cast<T>(detail::strtoull_token(tok));
             }
-            if (i * sizeof(T) < a.Nbytes())
-                std::memset(reinterpret_cast<unsigned char*>(out) + i * sizeof(T), 0,
-                            a.Nbytes() - i * sizeof(T));
+            // The rest of a short item stays zero; Size() keeps a rank-0 item's one element.
+            const std::size_t n = a.Size();
+            if (i < n)
+                std::fill(out + i, out + n, T{});  // NOSONAR(cpp:S3519): i < n, the size
         });
         return a;
     }
