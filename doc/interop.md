@@ -70,7 +70,6 @@ It does **not** govern *derived* arrays. VTK's `offsets` and `celltypes` have no
 | Cause | Where |
 |---|---|
 | connectivity is not `int64` (VTK's `vtkIdType`) | PyVista |
-| a `wedge` block — meshio's node order (the gmsh Prism) differs from VTK's | PyVista |
 | points are not `(P, 3)`; a 2-D mesh is padded with zeros | both |
 | points are not `float64` | trimesh |
 | any array that is not C-contiguous, or is `bool` (widened to `uint8`) | all |
@@ -97,7 +96,7 @@ The blocks are turned into the VTK 9 `connectivity` / `offsets` / `celltypes` tr
 | meshio++ | PyVista | Notes |
 |---|---|---|
 | `points` | `grid.points` | shared for `float32`/`float64` `(P, 3)`; a 2-D mesh is padded |
-| cell blocks | `connectivity`/`offsets`/`celltypes` | in block order; `wedge` is reordered |
+| cell blocks | `connectivity`/`offsets`/`celltypes` | in block order, in meshio++'s node order, which is VTK's (the linear wedge too) |
 | ragged `polygon` blocks | `VTK_POLYGON` with per-row offsets | supported |
 | `polyhedron`, `custom`, unmapped types | — | **dropped**, warned by name |
 | `point_data` / `cell_data` | `grid.point_data` / `grid.cell_data` | shared where dtype/contiguity allow |

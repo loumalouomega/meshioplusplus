@@ -22,9 +22,8 @@
  * implementations, ported from `src/meshio/_vtk_common.py`.
  *
  * Holds the meshio-type <-> VTK-cell-type-id maps (`meshio_to_vtk_type`/
- * `vtk_to_meshio_type`), the one node-order quirk that differs between the
- * two conventions (`meshio_to_vtk_order`/`vtk_to_meshio_order`, for the
- * linear wedge), and `is_special_cell`, which flags the cell types whose
+ * `vtk_to_meshio_type`), the node-order hooks between the two conventions
+ * (`meshio_to_vtk_order`/`vtk_to_meshio_order`, identity for every type), and `is_special_cell`, which flags the cell types whose
  * per-cell node count is not fixed (`"polygon"` and the VTK_LAGRANGE_* and
  * VTK_BEZIER_* families) and therefore need the offsets-based reconstruction in
  * `detail/vtk_cells.hpp` rather than a plain fixed-width connectivity slice.
@@ -99,17 +98,17 @@ inline const std::unordered_map<std::string, int>& meshio_to_vtk_type() {
  * @brief Node-index permutation applied when writing a meshio cell block's
  * connectivity out in VTK order.
  *
- * Only the linear `"wedge"` differs between the two conventions (meshio/gmsh
- * prism ordering vs. `vtkWedge`'s); every other supported type has identical
- * ordering, signaled by returning an empty vector (callers should treat
- * empty as "no permutation needed", not as an error).
+ * No supported type differs: an empty vector means "no permutation needed",
+ * not an error. The linear `"wedge"` used to be permuted `[0,2,1,3,5,4]`,
+ * after the `vtkWedge` documentation; VTK's own reference element, face
+ * table, Jacobian and verdict volume agree with the Gmsh prism instead, so
+ * the permutation turned every wedge inside out (removed in ABI 44). The
+ * function stays as the one place a future difference would go.
  * @param meshio_type The meshio cell-type name.
  * @return `result[j]` = the meshio-order index to place at VTK-order
  *         position `j`; empty if the ordering is already identical.
  */
-inline std::vector<int> meshio_to_vtk_order(const std::string& rMeshioType) {
-    if (rMeshioType == "wedge")
-        return {0, 2, 1, 3, 5, 4};
+inline std::vector<int> meshio_to_vtk_order(const std::string& /*rMeshioType*/) {
     return {};
 }
 
@@ -177,16 +176,13 @@ inline const std::unordered_map<int, std::string>& vtk_to_meshio_type() {
  * @brief Inverse of `meshio_to_vtk_order`, applied when reading VTK
  * connectivity back into meshio order.
  *
- * Only the linear wedge (VTK type id 13) differs; its permutation
- * `[0,2,1,3,5,4]` happens to be its own inverse, so the same literal serves
- * both directions. Empty means no permutation needed.
+ * No supported type differs (see `meshio_to_vtk_order`). Empty means no
+ * permutation needed.
  * @param vtk_type The VTK cell type id being read.
  * @return `result[j]` = the VTK-order index to place at meshio-order
  *         position `j`; empty if the ordering is already identical.
  */
-inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
-    if (vtk_type == 13)
-        return {0, 2, 1, 3, 5, 4};
+inline std::vector<int> vtk_to_meshio_order(int /*vtk_type*/) {
     return {};
 }
 

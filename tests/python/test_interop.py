@@ -207,15 +207,17 @@ def test_vtk_payload_derived_arrays_are_not_notes():
     assert any("offsets/celltypes" in d for d in payload.derived)
 
 
-def test_vtk_payload_wedge_is_reordered():
-    """meshio's wedge node order differs from VTK's, which forces a copy."""
+def test_vtk_payload_wedge_keeps_its_order():
+    """meshio++'s wedge (Gmsh's prism) is VTK's wedge: no permutation, so the
+    connectivity is shared (roadmap 1.1; test_vtk_wedge_orientation.py checks
+    the sign against VTK)."""
     mesh = Mesh(
         np.zeros((6, 3)),
         [("wedge", np.array([[0, 1, 2, 3, 4, 5]], dtype=np.int64))],
     )
     payload = _interop._to_vtk_payload(mesh)
-    assert payload.connectivity.tolist() == [0, 2, 1, 3, 5, 4]
-    assert payload.shared["connectivity"] is False
+    assert payload.connectivity.tolist() == [0, 1, 2, 3, 4, 5]
+    assert payload.shared["connectivity"] is True
 
 
 def test_vtk_payload_pads_2d_points():

@@ -69,20 +69,23 @@ meshio_to_vtk_type = {v: k for k, v in vtk_to_meshio_type.items()}
 
 
 def vtk_to_meshio_order(vtk_type, dtype=int):
-    # meshio uses the same node ordering as VTK for most cell types. However, for the
-    # linear wedge, the ordering of the gmsh Prism [1] is adopted since this is found in
-    # most codes (Abaqus, Ansys, Nastran,...). In the vtkWedge [2], the normal of the
-    # (0,1,2) triangle points outwards, while in gmsh this normal points inwards.
-    # [1] http://gmsh.info/doc/texinfo/gmsh.html#Node-ordering
-    # [2] https://vtk.org/doc/nightly/html/classvtkWedge.html
-    if vtk_type == 13:
-        return np.array([0, 2, 1, 3, 5, 4], dtype=dtype)
+    """Node permutation from VTK's order into meshio++'s, or ``None`` (identity).
+
+    No type supported here differs. The linear wedge used to be permuted with
+    ``[0, 2, 1, 3, 5, 4]``, after the ``vtkWedge`` documentation's statement
+    that its (0, 1, 2) face's normal points outward; VTK's own reference
+    element ``(0,0,0), (1,0,0), (0,1,0)`` / ``(0,0,1), (1,0,1), (0,1,1)``, its
+    face table (base face ``[0, 2, 1]``), its interpolation Jacobian and the
+    verdict volume ParaView's Mesh Quality reports all agree with Gmsh's prism
+    instead, so the permutation turned every wedge inside out. The functions
+    stay as the one place a future difference would go.
+    """
     return None
 
 
 def meshio_to_vtk_order(meshio_type, dtype=int):
-    if meshio_type == "wedge":
-        return np.array([0, 2, 1, 3, 5, 4], dtype=dtype)
+    """Node permutation from meshio++'s order into VTK's, or ``None`` (identity);
+    see :func:`vtk_to_meshio_order`."""
     return None
 
 

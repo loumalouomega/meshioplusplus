@@ -127,7 +127,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 43
+#define MESHIOPLUSPLUS_ABI_VERSION 44
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -23661,9 +23661,9 @@ MESHIOPLUSPLUS_API MeshMetadata read_vti_metadata(const std::string& rPath,
  *   used by the VTU reader) — zero-copy-friendly block reconstruction when
  *   the connectivity is contiguous and node order is identity.
  *
- * Cell types are shared with VTU (see vtu.hpp / doc/formats/vtk.md); only
- * `wedge` needs a node-order permutation relative to VTK (`[0,2,1,3,5,4]`,
- * self-inverse) — every other type uses natural order.
+ * Cell types are shared with VTU (see vtu.hpp / doc/formats/vtk.md); every
+ * type, the linear `wedge` included, uses meshio++'s natural node order,
+ * which is VTK's.
  *
  * `_cpp_ok(mesh)` (Python-side gate, not in this header) skips the C++ write
  * path for meshes with polyhedron cells or any 2-component vector data,
@@ -23687,8 +23687,7 @@ namespace meshioplusplus {
  * `CELLS`/`CELL_TYPES` (4.2) or `CELLS`/`OFFSETS`/`CONNECTIVITY` (5.1)
  * blocks, then `POINT_DATA`/`CELL_DATA` `SCALARS`/`VECTORS`/`TENSORS`/
  * `FIELD` sections. Binary output is always big-endian regardless of host.
- * `wedge` cells are permuted `[0,2,1,3,5,4]` to VTK's node order; every other
- * type is written in meshio++'s natural order.
+ * Every type is written in meshio++'s natural node order, which is VTK's.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
@@ -42746,9 +42745,8 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
  * implementations, ported from `src/meshio/_vtk_common.py`.
  *
  * Holds the meshio-type <-> VTK-cell-type-id maps (`meshio_to_vtk_type`/
- * `vtk_to_meshio_type`), the one node-order quirk that differs between the
- * two conventions (`meshio_to_vtk_order`/`vtk_to_meshio_order`, for the
- * linear wedge), and `is_special_cell`, which flags the cell types whose
+ * `vtk_to_meshio_type`), the node-order hooks between the two conventions
+ * (`meshio_to_vtk_order`/`vtk_to_meshio_order`, identity for every type), and `is_special_cell`, which flags the cell types whose
  * per-cell node count is not fixed (`"polygon"` and the VTK_LAGRANGE_* and
  * VTK_BEZIER_* families) and therefore need the offsets-based reconstruction in
  * `detail/vtk_cells.hpp` rather than a plain fixed-width connectivity slice.
@@ -42823,17 +42821,17 @@ inline const std::unordered_map<std::string, int>& meshio_to_vtk_type() {
  * @brief Node-index permutation applied when writing a meshio cell block's
  * connectivity out in VTK order.
  *
- * Only the linear `"wedge"` differs between the two conventions (meshio/gmsh
- * prism ordering vs. `vtkWedge`'s); every other supported type has identical
- * ordering, signaled by returning an empty vector (callers should treat
- * empty as "no permutation needed", not as an error).
+ * No supported type differs: an empty vector means "no permutation needed",
+ * not an error. The linear `"wedge"` used to be permuted `[0,2,1,3,5,4]`,
+ * after the `vtkWedge` documentation; VTK's own reference element, face
+ * table, Jacobian and verdict volume agree with the Gmsh prism instead, so
+ * the permutation turned every wedge inside out (removed in ABI 44). The
+ * function stays as the one place a future difference would go.
  * @param meshio_type The meshio cell-type name.
  * @return `result[j]` = the meshio-order index to place at VTK-order
  *         position `j`; empty if the ordering is already identical.
  */
-inline std::vector<int> meshio_to_vtk_order(const std::string& rMeshioType) {
-    if (rMeshioType == "wedge")
-        return {0, 2, 1, 3, 5, 4};
+inline std::vector<int> meshio_to_vtk_order(const std::string& /*rMeshioType*/) {
     return {};
 }
 
@@ -42901,16 +42899,13 @@ inline const std::unordered_map<int, std::string>& vtk_to_meshio_type() {
  * @brief Inverse of `meshio_to_vtk_order`, applied when reading VTK
  * connectivity back into meshio order.
  *
- * Only the linear wedge (VTK type id 13) differs; its permutation
- * `[0,2,1,3,5,4]` happens to be its own inverse, so the same literal serves
- * both directions. Empty means no permutation needed.
+ * No supported type differs (see `meshio_to_vtk_order`). Empty means no
+ * permutation needed.
  * @param vtk_type The VTK cell type id being read.
  * @return `result[j]` = the VTK-order index to place at meshio-order
  *         position `j`; empty if the ordering is already identical.
  */
-inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
-    if (vtk_type == 13)
-        return {0, 2, 1, 3, 5, 4};
+inline std::vector<int> vtk_to_meshio_order(int /*vtk_type*/) {
     return {};
 }
 
@@ -230501,43 +230496,39 @@ constexpr const char* kCutPrefix = "meshio++: cut: ";
 
 /// A cuttable cell type: its CutCells family (cutcells::cell::type's value),
 /// topological dimension, corner count, node count when the level set may be
-/// quadratic on it (0: linear only), its corners' VTK type, and whether its
-/// meshio corner order differs from VTK's (the wedge).
+/// quadratic on it (0: linear only) and its corners' VTK type. meshio++'s
+/// corner order is VTK's for every family.
 struct CutKind {
     int mFamily = 0;
     int mTdim = 0;
     int mCorners = 0;
     int mQuadraticNodes = 0;
     int mVtk = 0;
-    bool mWedge = false;
 };
 
 std::optional<CutKind> cut_kind(const std::string& rType) {
     // cutcells::cell::type: interval 1, triangle 2, tetrahedron 3,
     // quadrilateral 4, hexahedron 5, prism 6, pyramid 7.
     if (rType == "line" || rType == "line3")
-        return CutKind{1, 1, 2, 0, 3, false};
+        return CutKind{1, 1, 2, 0, 3};
     if (rType == "triangle" || rType == "triangle7")
-        return CutKind{2, 2, 3, 0, 5, false};
+        return CutKind{2, 2, 3, 0, 5};
     if (rType == "triangle6")
-        return CutKind{2, 2, 3, 6, 5, false};
+        return CutKind{2, 2, 3, 6, 5};
     if (rType == "quad" || rType == "quad8" || rType == "quad9")
-        return CutKind{4, 2, 4, 0, 9, false};
+        return CutKind{4, 2, 4, 0, 9};
     if (rType == "tetra")
-        return CutKind{3, 3, 4, 0, 10, false};
+        return CutKind{3, 3, 4, 0, 10};
     if (rType == "tetra10")
-        return CutKind{3, 3, 4, 10, 10, false};
+        return CutKind{3, 3, 4, 10, 10};
     if (rType == "hexahedron" || rType == "hexahedron20" || rType == "hexahedron27")
-        return CutKind{5, 3, 8, 0, 12, false};
+        return CutKind{5, 3, 8, 0, 12};
     if (rType == "wedge" || rType == "wedge15" || rType == "wedge18")
-        return CutKind{6, 3, 6, 0, 13, true};
+        return CutKind{6, 3, 6, 0, 13};
     if (rType == "pyramid" || rType == "pyramid13" || rType == "pyramid14")
-        return CutKind{7, 3, 5, 0, 14, false};
+        return CutKind{7, 3, 5, 0, 14};
     return std::nullopt;
 }
-
-/// meshio wedge corners -> VTK order (meshio_to_vtk_order("wedge")); its own inverse.
-constexpr int kCutWedgeOrder[6] = {0, 2, 1, 3, 5, 4};
 
 /// Per CutCells family, VTK corner j is Basix corner kCutVtkToBasix[f][j] and
 /// back (cutcells::cell::vtk_to_basix_vertex_permutation; each is its own
@@ -230845,9 +230836,8 @@ CutInput cut_prepare(const Mesh& rMesh, const CutOptions& rOptions) {
         for (std::size_t c = 0; c < nc; ++c) {
             int corner[8];
             for (int v = 0; v < kind->mCorners; ++v) {
-                const int src = kind->mWedge ? kCutWedgeOrder[v] : v;
                 const std::int64_t node =
-                    detail::read_int(r_c, c * npc + static_cast<std::size_t>(src));
+                    detail::read_int(r_c, c * npc + static_cast<std::size_t>(v));
                 if (node < 0 || static_cast<std::size_t>(node) >= np)
                     cut_fail("a '" + cells.Type() + "' cell names node " + std::to_string(node) +
                              " of " + std::to_string(np));
@@ -231323,10 +231313,8 @@ CutLevelSetResult cut_level_set(const Mesh& rMesh, const CutOptions& rOptions) {
                 const int begin = cm._offset[static_cast<std::size_t>(c)];
                 const int count = cm._offset[static_cast<std::size_t>(c) + 1] - begin;
                 for (int j = 0; j < count; ++j) {
-                    // meshio position j <- VTK position (the wedge's swap) <- Basix position.
-                    const int vtk = fam == 6 ? kCutWedgeOrder[j] : j;
-                    const int src =
-                        count == cut_family_corners(fam) ? kCutVtkToBasix[fam][vtk] : vtk;
+                    // meshio position j = VTK position <- Basix position.
+                    const int src = count == cut_family_corners(fam) ? kCutVtkToBasix[fam][j] : j;
                     pieces.mConn.push_back(cm._connectivity[static_cast<std::size_t>(begin + src)]);
                 }
                 pieces.mOffsets.push_back(static_cast<std::int64_t>(pieces.mConn.size()));

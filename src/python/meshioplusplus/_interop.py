@@ -402,8 +402,8 @@ def _vtk_block_conn(cell_block):
         n, k = data.shape
         counts = np.full(n, k, dtype=np.int64)
         if perm is not None:
-            # `wedge` is the one type whose meshio (gmsh Prism) node order
-            # differs from VTK's; a permutation is always a copy.
+            # A permutation into VTK's node order is always a copy (no type
+            # needs one today; see _vtk_common.vtk_to_meshio_order).
             flat = np.ascontiguousarray(data[:, perm], dtype=np.int64).reshape(-1)
             return (
                 flat,

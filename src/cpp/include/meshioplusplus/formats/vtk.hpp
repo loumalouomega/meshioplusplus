@@ -44,9 +44,9 @@
  *   used by the VTU reader) — zero-copy-friendly block reconstruction when
  *   the connectivity is contiguous and node order is identity.
  *
- * Cell types are shared with VTU (see vtu.hpp / doc/formats/vtk.md); only
- * `wedge` needs a node-order permutation relative to VTK (`[0,2,1,3,5,4]`,
- * self-inverse) — every other type uses natural order.
+ * Cell types are shared with VTU (see vtu.hpp / doc/formats/vtk.md); every
+ * type, the linear `wedge` included, uses meshio++'s natural node order,
+ * which is VTK's.
  *
  * `_cpp_ok(mesh)` (Python-side gate, not in this header) skips the C++ write
  * path for meshes with polyhedron cells or any 2-component vector data,
@@ -72,8 +72,7 @@ namespace meshioplusplus {
  * `CELLS`/`CELL_TYPES` (4.2) or `CELLS`/`OFFSETS`/`CONNECTIVITY` (5.1)
  * blocks, then `POINT_DATA`/`CELL_DATA` `SCALARS`/`VECTORS`/`TENSORS`/
  * `FIELD` sections. Binary output is always big-endian regardless of host.
- * `wedge` cells are permuted `[0,2,1,3,5,4]` to VTK's node order; every other
- * type is written in meshio++'s natural order.
+ * Every type is written in meshio++'s natural node order, which is VTK's.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write

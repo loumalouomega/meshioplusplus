@@ -67,6 +67,40 @@ double tcut_measure(const mio::Mesh& rMesh, int Dim) {
     return s;
 }
 
+/// Linear wedges of `rMesh` whose base triangle (0,1,2) does not turn towards
+/// their top (3,4,5): inside out in meshio++'s order, which is VTK's.
+int tcut_inverted_wedges(const mio::Mesh& rMesh) {
+    int bad = 0;
+    const auto& r_p = rMesh.Points();
+    const std::size_t pd = rMesh.PointDim();
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cells = rMesh.Cells(b);
+        if (cells.Type() != "wedge")
+            continue;
+        for (std::size_t c = 0; c < cells.NumCells(); ++c) {
+            double x[6][3] = {};
+            for (int v = 0; v < 6; ++v) {
+                const auto node =
+                    mio::detail::read_int(cells.Conn(), 6 * c + static_cast<std::size_t>(v));
+                for (std::size_t k = 0; k < pd && k < 3; ++k)
+                    x[v][k] =
+                        mio::detail::read_double(r_p, pd * static_cast<std::size_t>(node) + k);
+            }
+            double e1[3], e2[3], up[3];
+            for (int k = 0; k < 3; ++k) {
+                e1[k] = x[1][k] - x[0][k];
+                e2[k] = x[2][k] - x[0][k];
+                up[k] = (x[3][k] + x[4][k] + x[5][k] - x[0][k] - x[1][k] - x[2][k]) / 3.0;
+            }
+            const double n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+                                 e1[0] * e2[1] - e1[1] * e2[0]};
+            if (n[0] * up[0] + n[1] * up[1] + n[2] * up[2] <= 0.0)
+                ++bad;
+        }
+    }
+    return bad;
+}
+
 /// The unit cube as six pyramids around its centre.
 mio::Mesh tcut_pyramids() {
     mio::Mesh m;
@@ -152,6 +186,8 @@ TEST(Cut, APlaneCutGivesExactMeasuresOnEveryFamily) {
                 EXPECT_NEAR(in.mMeasure, 0.3, 1e-12);
                 EXPECT_NEAR(tcut_measure(in.mMesh, dim), 0.3, 1e-12);
             }
+            // Whole wedges and wedge pieces keep meshio++'s (VTK's) orientation.
+            EXPECT_EQ(tcut_inverted_wedges(in.mMesh), 0);
             EXPECT_EQ(in.mDimension, dim);
             EXPECT_EQ(in.mBackend, "lut");
             EXPECT_GT(in.mNumCutCells, 0);
