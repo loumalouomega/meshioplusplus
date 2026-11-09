@@ -162,6 +162,8 @@
 #include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/thickness.hpp"
+#include "meshioplusplus/operations/deviation.hpp"
+#include "meshioplusplus/operations/colorize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/mmg.hpp"
@@ -9951,6 +9953,326 @@ int64_t mio_thickness_warnings(char* buf, int64_t buflen) {
         if (buflen < 0)
             throw std::invalid_argument("meshio++: negative warnings buffer length");
         return copy_string(capi_thickness_warnings(), buf, buflen);
+    });
+}
+
+}  // extern "C"
+
+namespace {
+
+/// The histogram and warnings of this thread's last deviation call.
+struct CapiDeviationLast {
+    std::vector<std::int64_t> mCounts;
+    std::vector<double> mEdges;
+    std::string mWarnings;
+};
+CapiDeviationLast& capi_deviation_last() {
+    thread_local CapiDeviationLast last;
+    return last;
+}
+
+meshioplusplus::DeviationOptions capi_deviation_options(const mio_deviation_opts* pOpts) {
+    mio_deviation_opts defaults;
+    mio_deviation_opts_init(&defaults);
+    const mio_deviation_opts& r = pOpts ? *pOpts : defaults;
+    meshioplusplus::DeviationOptions o;
+    o.mTolerance = r.tolerance;
+    o.mBins = r.bins;
+    o.mRangeMin = r.range_min;
+    o.mRangeMax = r.range_max;
+    o.mMaxNormalAngleDeg = r.max_normal_angle;
+    if (r.reference_region)
+        o.mReferenceRegion = r.reference_region;
+    o.mAttach = r.attach != 0;
+    return o;
+}
+
+mio_mesh* capi_deviation_finish(meshioplusplus::DeviationResult&& rR,
+                                mio_deviation_report* pReport) {
+    CapiDeviationLast& last = capi_deviation_last();
+    last.mCounts = rR.mHistogramCounts;
+    last.mEdges = rR.mHistogramEdges;
+    capi_fi_join(rR.mWarnings, last.mWarnings);
+    if (pReport) {
+        *pReport = mio_deviation_report{};
+        pReport->num_points = rR.mNumPoints;
+        pReport->num_measured = rR.mNumMeasured;
+        pReport->num_outside_range = rR.mNumOutsideRange;
+        pReport->num_without_normal = rR.mNumWithoutNormal;
+        pReport->min = rR.mMin;
+        pReport->max = rR.mMax;
+        pReport->mean = rR.mMean;
+        pReport->rms = rR.mRms;
+        pReport->sigma = rR.mSigma;
+        for (std::size_t k = 0; k < 5; ++k)
+            pReport->percentiles[k] = rR.mPercentiles[k];
+        pReport->share_within = rR.mShareWithin;
+        pReport->suggested_range = rR.mSuggestedRange;
+        pReport->num_bins = static_cast<int64_t>(rR.mHistogramCounts.size());
+        pReport->num_warnings = static_cast<int64_t>(rR.mWarnings.size());
+    }
+    return new mio_mesh{std::move(rR.mMesh)};
+}
+
+}  // namespace
+
+extern "C" {
+
+static_assert(sizeof(mio_deviation_opts) == 88, "mio_deviation_opts layout");
+static_assert(offsetof(mio_deviation_opts, reserved) == 56, "mio_deviation_opts layout");
+static_assert(sizeof(mio_deviation_report) == 176, "mio_deviation_report layout");
+static_assert(offsetof(mio_deviation_report, num_warnings) == 136, "mio_deviation_report layout");
+
+void mio_deviation_opts_init(mio_deviation_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_deviation_opts{};
+    opts->bins = 20;
+    opts->max_normal_angle = 90.0;
+    opts->attach = 1;
+}
+
+mio_mesh* mio_deviation(const mio_mesh* scan, const mio_mesh* reference,
+                        const mio_deviation_opts* opts, mio_deviation_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_deviation_last() = CapiDeviationLast{};
+        if (!scan || !reference)
+            throw std::invalid_argument("meshio++: deviation: scan or reference is NULL");
+        return capi_deviation_finish(
+            meshioplusplus::deviation(scan->mMesh, reference->mMesh, capi_deviation_options(opts)),
+            report);
+    });
+}
+
+mio_mesh* mio_deviation_primitive(const mio_mesh* scan, int32_t type, const double params[10],
+                                  const mio_deviation_opts* opts, mio_deviation_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_deviation_last() = CapiDeviationLast{};
+        if (!scan || !params)
+            throw std::invalid_argument("meshio++: deviation: scan or params is NULL");
+        std::array<double, 10> p{};
+        std::copy(params, params + 10, p.begin());
+        return capi_deviation_finish(meshioplusplus::deviation_to_primitive(
+                                         scan->mMesh, type, p, capi_deviation_options(opts)),
+                                     report);
+    });
+}
+
+int64_t mio_deviation_histogram(int64_t* counts, double* edges, int64_t capacity) {
+    return capi_guarded_count([&]() -> int64_t {
+        if (capacity < 0)
+            throw std::invalid_argument("meshio++: negative histogram capacity");
+        const CapiDeviationLast& last = capi_deviation_last();
+        const std::size_t n = last.mCounts.size();
+        const std::size_t take = std::min(n, static_cast<std::size_t>(capacity));
+        if (counts)
+            std::copy(last.mCounts.begin(),
+                      last.mCounts.begin() + static_cast<std::ptrdiff_t>(take), counts);
+        if (edges && !last.mEdges.empty())
+            std::copy(last.mEdges.begin(),
+                      last.mEdges.begin() + static_cast<std::ptrdiff_t>(take + (take > 0 ? 1 : 0)),
+                      edges);
+        return static_cast<int64_t>(n);
+    });
+}
+
+int64_t mio_deviation_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_deviation_last().mWarnings, buf, buflen);
+    });
+}
+
+}  // extern "C"
+
+namespace {
+
+/// The regions and warnings of this thread's last mio_deviation_regions call.
+struct CapiDeviationRegionsLast {
+    std::vector<meshioplusplus::DeviationRegionRecord> mRegions;
+    std::string mWarnings;
+};
+CapiDeviationRegionsLast& capi_deviation_regions_last() {
+    thread_local CapiDeviationRegionsLast last;
+    return last;
+}
+std::string& capi_exaggerate_warnings() {
+    thread_local std::string warnings;
+    return warnings;
+}
+
+const meshioplusplus::DeviationRegionRecord& capi_deviation_region(int64_t Index) {
+    const auto& regions = capi_deviation_regions_last().mRegions;
+    if (Index < 0 || static_cast<std::size_t>(Index) >= regions.size())
+        throw std::invalid_argument("meshio++: deviation_regions: region index " +
+                                    std::to_string(Index) + " out of range");
+    return regions[static_cast<std::size_t>(Index)];
+}
+
+}  // namespace
+
+extern "C" {
+
+static_assert(sizeof(mio_deviation_regions_opts) == 64, "mio_deviation_regions_opts layout");
+static_assert(sizeof(mio_deviation_regions_report) == 72, "mio_deviation_regions_report layout");
+static_assert(sizeof(mio_deviation_region_info) == 136, "mio_deviation_region_info layout");
+static_assert(offsetof(mio_deviation_region_info, bounds) == 72,
+              "mio_deviation_region_info layout");
+
+void mio_deviation_regions_opts_init(mio_deviation_regions_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_deviation_regions_opts{};
+}
+
+mio_mesh* mio_deviation_regions(const mio_mesh* mesh, const mio_deviation_regions_opts* opts,
+                                mio_deviation_regions_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_deviation_regions_last() = CapiDeviationRegionsLast{};
+        if (!mesh || !opts)
+            throw std::invalid_argument("meshio++: deviation_regions: mesh or opts is NULL");
+        meshioplusplus::DeviationRegionsOptions o;
+        o.mTolerance = opts->tolerance;
+        o.mMinArea = opts->min_area;
+        if (opts->field)
+            o.mField = opts->field;
+        if (opts->prefix)
+            o.mPrefix = opts->prefix;
+        meshioplusplus::DeviationRegionsResult r =
+            meshioplusplus::deviation_regions(mesh->mMesh, o);
+        CapiDeviationRegionsLast& last = capi_deviation_regions_last();
+        capi_fi_join(r.mWarnings, last.mWarnings);
+        if (report) {
+            *report = mio_deviation_regions_report{};
+            report->num_regions = static_cast<int64_t>(r.mRegions.size());
+            report->num_excess = r.mNumExcess;
+            report->num_missing = r.mNumMissing;
+            report->num_dropped = r.mNumDropped;
+            report->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+        }
+        last.mRegions = std::move(r.mRegions);
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_status mio_deviation_region_get(int64_t index, mio_deviation_region_info* info) {
+    return guarded([&]() -> mio_status {
+        if (!info)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: deviation_regions: info is NULL");
+        const meshioplusplus::DeviationRegionRecord& g = capi_deviation_region(index);
+        *info = mio_deviation_region_info{};
+        info->sign = g.mSign;
+        info->num_cells = g.mNumCells;
+        info->area = g.mArea;
+        info->extreme = g.mExtreme;
+        info->mean = g.mMean;
+        info->volume = g.mVolume;
+        for (std::size_t k = 0; k < 3; ++k)
+            info->centroid[k] = g.mCentroid[k];
+        for (std::size_t k = 0; k < 6; ++k)
+            info->bounds[k] = g.mBounds[k];
+        return MIO_OK;
+    });
+}
+
+int64_t mio_deviation_region_name(int64_t index, char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative name buffer length");
+        return copy_string(capi_deviation_region(index).mName, buf, buflen);
+    });
+}
+
+static_assert(sizeof(mio_exaggerate_opts) == 64, "mio_exaggerate_opts layout");
+static_assert(sizeof(mio_exaggerate_report) == 64, "mio_exaggerate_report layout");
+static_assert(sizeof(mio_colorize_opts) == 96, "mio_colorize_opts layout");
+static_assert(offsetof(mio_colorize_opts, symmetric) == 56, "mio_colorize_opts layout");
+static_assert(sizeof(mio_colorize_report) == 56, "mio_colorize_report layout");
+
+void mio_exaggerate_opts_init(mio_exaggerate_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_exaggerate_opts{};
+    opts->scale = 10.0;
+    opts->smooth_fraction = 0.01;
+}
+
+mio_mesh* mio_exaggerate(const mio_mesh* mesh, const mio_exaggerate_opts* opts,
+                         mio_exaggerate_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_exaggerate_warnings().clear();
+        if (!mesh)
+            throw std::invalid_argument("meshio++: exaggerate: mesh is NULL");
+        mio_exaggerate_opts defaults;
+        mio_exaggerate_opts_init(&defaults);
+        const mio_exaggerate_opts& r = opts ? *opts : defaults;
+        meshioplusplus::ExaggerateOptions o;
+        if (r.field)
+            o.mField = r.field;
+        o.mScale = r.scale;
+        o.mClamp = r.clamp;
+        o.mSmoothFraction = r.smooth_fraction;
+        meshioplusplus::ExaggerateResult res = meshioplusplus::exaggerate(mesh->mMesh, o);
+        capi_fi_join(res.mWarnings, capi_exaggerate_warnings());
+        if (report) {
+            *report = mio_exaggerate_report{};
+            report->clamp = res.mClamp;
+            report->radius = res.mRadius;
+            report->num_moved = res.mNumMoved;
+            report->num_warnings = static_cast<int64_t>(res.mWarnings.size());
+        }
+        return new mio_mesh{std::move(res.mMesh)};
+    });
+}
+
+int64_t mio_exaggerate_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_exaggerate_warnings(), buf, buflen);
+    });
+}
+
+void mio_colorize_opts_init(mio_colorize_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_colorize_opts{};
+    opts->component = -1;
+}
+
+mio_mesh* mio_colorize(const mio_mesh* mesh, const mio_colorize_opts* opts,
+                       mio_colorize_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        if (!mesh || !opts || !opts->field)
+            throw std::invalid_argument("meshio++: colorize: mesh, opts or opts->field is NULL");
+        meshioplusplus::ColorizeOptions o;
+        o.mField = opts->field;
+        if (opts->cmap)
+            o.mCmap = opts->cmap;
+        o.mVMin = opts->vmin;
+        o.mVMax = opts->vmax;
+        if (opts->nan_color)
+            o.mNanColor = opts->nan_color;
+        o.mSteps = opts->steps;
+        o.mComponent = opts->component;
+        o.mSymmetric = opts->symmetric != 0;
+        meshioplusplus::ColorizeResult r = meshioplusplus::colorize(mesh->mMesh, o);
+        if (report) {
+            *report = mio_colorize_report{};
+            report->vmin = r.mVMin;
+            report->vmax = r.mVMax;
+            report->location = r.mLocation == "cell" ? 1 : 0;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_deviation_regions_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_deviation_regions_last().mWarnings, buf, buflen);
     });
 }
 

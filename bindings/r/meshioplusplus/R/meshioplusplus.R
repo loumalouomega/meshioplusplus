@@ -3460,6 +3460,121 @@ mio_thickness <- function(mesh, other = NULL, direction = "auto", max_distance =
   res
 }
 
+#' Signed deviation of a scan from a reference
+#'
+#' The signed distance of every point of `scan` to the surface `reference`
+#' (positive outside it, excess material), or, with `reference = NULL`, to a
+#' fitted primitive `type` with its ten `fit:patch_params` entries (roadmap
+#' 7.4), and the statistics an inspection reads from it.
+#'
+#' @param scan A point cloud or surface mesh.
+#' @param reference A surface mesh, or `NULL` for a primitive.
+#' @param type `"plane"`, `"sphere"`, `"cylinder"`, `"cone"` or `"torus"`.
+#' @param params The primitive's ten parameters.
+#' @param tolerance Report the share within `+-tolerance` (0: none).
+#' @param bins Histogram bins.
+#' @param range `c(lo, hi)` of the histogram, or `NULL` for `+-max|d|`.
+#' @param max_normal_angle The far-side rule's angle in degrees (180: off).
+#' @param reference_region Named cell region of the reference.
+#' @return A list: `mesh` (with the `deviation:distance` point data),
+#'   `num_points`, `num_measured`, `min`, `max`, `mean`, `rms`, `sigma`,
+#'   `percentiles` (p1, p5, p50, p95, p99), `histogram_edges`,
+#'   `histogram_counts`, `num_outside_range`, `share_within`,
+#'   `suggested_range`, `num_without_normal` and `warnings`.
+#' @export
+mio_deviation <- function(scan, reference = NULL, type = NULL, params = NULL, tolerance = 0,
+                          bins = 20, range = NULL, max_normal_angle = 90,
+                          reference_region = "") {
+  types <- c("plane", "sphere", "cylinder", "cone", "torus")
+  ptype <- 0
+  if (is.null(reference)) {
+    if (is.null(type) || !(type %in% types)) stop("`type` must name a primitive")
+    ptype <- match(type, types)
+  }
+  rng <- if (is.null(range)) c(0, 0) else as.numeric(range)
+  res <- .Call(R_mio_deviation, scan, reference, as.numeric(ptype),
+               if (is.null(params)) NULL else as.numeric(params), as.numeric(tolerance),
+               as.numeric(bins), rng[1], rng[2], as.numeric(max_normal_angle),
+               as.character(reference_region))
+  names(res$percentiles) <- c("p1", "p5", "p50", "p95", "p99")
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Excess and missing-material regions beyond a deviation tolerance
+#'
+#' The connected regions (cells joined across shared edges) of a measured
+#' surface whose deviation, the mean of each cell's corners' `field` values,
+#' lies beyond `+tolerance` (excess) or `-tolerance` (missing material)
+#' (roadmap 7.4.3), written as named cell regions with the `deviation:region`
+#' cell data.
+#'
+#' @param mesh A surface carrying `field` (see [mio_deviation()]).
+#' @param tolerance The threshold, positive.
+#' @param field The signed deviation point data.
+#' @param prefix Region names are `<prefix>excess_<k>` and `<prefix>missing_<k>`.
+#' @param min_area Drop regions smaller than this area.
+#' @return A list: `mesh`, per region (largest `|volume|` first) `name`, `sign`,
+#'   `num_cells`, `area`, `extreme`, `mean`, `volume`, `centroid` (n x 3) and
+#'   `bounds` (n x 6), then `num_excess`, `num_missing`, `num_dropped` and
+#'   `warnings`.
+#' @export
+mio_deviation_regions <- function(mesh, tolerance, field = "deviation:distance",
+                                  prefix = "deviation:", min_area = 0) {
+  res <- .Call(R_mio_deviation_regions, mesh, as.numeric(tolerance), as.character(field),
+               as.character(prefix), as.numeric(min_area))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Exaggerate a deviation map for a figure
+#'
+#' A copy of the surface `mesh` with each point displaced along its normal by
+#' `scale` times its deviation, clamped to `+-clamp` (0: the suggested colour
+#' range) and smoothed over `smooth_fraction` of the bounding-box diagonal
+#' (roadmap 7.4.4).
+#'
+#' @param mesh A surface carrying `field`.
+#' @param field The signed deviation point data.
+#' @param scale Displacement per unit deviation.
+#' @param clamp Clamp the deviation first (0: automatic).
+#' @param smooth_fraction Smoothing radius as a fraction of the diagonal.
+#' @return A list: `mesh`, `clamp`, `radius`, `num_moved` and `warnings`.
+#' @export
+mio_exaggerate <- function(mesh, field = "deviation:distance", scale = 10, clamp = 0,
+                           smooth_fraction = 0.01) {
+  res <- .Call(R_mio_exaggerate, mesh, as.character(field), as.numeric(scale),
+               as.numeric(clamp), as.numeric(smooth_fraction))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Bake a field into red, green and blue colours
+#'
+#' Maps `field` through a colormap into the UInt8 data `red`, `green` and
+#' `blue` on the field's location (roadmap 7.4.4); `steps` of 2 or more bands
+#' the map at fixed steps.
+#'
+#' @param mesh A mesh carrying `field` as point or cell data.
+#' @param field The array to colour by.
+#' @param cmap A colormap name.
+#' @param vmin,vmax The range; `NULL` takes the field's min and max.
+#' @param symmetric With the automatic range, `+-max|v|`.
+#' @param steps Bands at fixed steps (0: continuous).
+#' @param nan_color `"#rrggbb"` for a non-finite value.
+#' @param component Colour by this 1-based component (`NULL`: the magnitude).
+#' @return A list: `mesh`, `vmin`, `vmax` and `location` (`"point"` or `"cell"`).
+#' @export
+mio_colorize <- function(mesh, field, cmap = "viridis", vmin = NULL, vmax = NULL,
+                         symmetric = FALSE, steps = 0, nan_color = "#808080",
+                         component = NULL) {
+  if (is.null(vmin) != is.null(vmax)) stop("give both `vmin` and `vmax`, or neither")
+  .Call(R_mio_colorize, mesh, as.character(field), as.character(cmap),
+        if (is.null(vmin)) 0 else as.numeric(vmin), if (is.null(vmax)) 0 else as.numeric(vmax),
+        isTRUE(symmetric), as.numeric(steps), as.character(nan_color),
+        if (is.null(component)) -1 else as.numeric(component) - 1)
+}
+
 mio_split_warnings_ <- function(text) {
   if (nzchar(text)) strsplit(text, "\n", fixed = TRUE)[[1]] else character(0)
 }

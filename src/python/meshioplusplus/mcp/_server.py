@@ -1905,6 +1905,101 @@ def _register_operations(server: FastMCP) -> None:
         cell data."""
 
     @server.tool()
+    @_forward(_tools.tool_deviation)
+    def deviation(
+        input_path: str,
+        reference_path: str,
+        output_path: Optional[str] = None,
+        file_format: Optional[str] = None,
+        reference_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        patch: Optional[int] = None,
+        tolerance: float = 0.0,
+        min_share: Optional[float] = None,
+        bins: int = 20,
+        range_min: Optional[float] = None,
+        range_max: Optional[float] = None,
+        max_normal_angle: float = 90.0,
+        reference_region: str = "",
+    ) -> dict:
+        """Signed deviation of every point of a scan (input_path) from a
+        reference surface (reference_path): positive outside it (excess
+        material), negative inside (missing material). With patch, measure
+        against that patch label's fitted primitive of a mesh fit_primitives
+        wrote instead. max_normal_angle is the far-side rule: a reference
+        triangle whose normal turns away from the scan point's by more is
+        skipped, so a thin wall is not measured to its back face (180 turns
+        it off). Reports num_points, num_measured, min, max, mean, rms, sigma,
+        percentiles (p1, p5, p50, p95, p99), histogram_edges and
+        histogram_counts (bins over range_min..range_max, default +-max|d|),
+        num_outside_range, share_within (within +-tolerance), suggested_range,
+        num_without_normal and warnings; with min_share also passed. Pass
+        output_path to write the scan with deviation:distance point data."""
+
+    @server.tool()
+    @_forward(_tools.tool_deviation_regions)
+    def deviation_regions(
+        input_path: str,
+        output_path: str,
+        tolerance: float,
+        file_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        field: str = "deviation:distance",
+        prefix: str = "deviation:",
+        min_area: float = 0.0,
+    ) -> dict:
+        """Connected regions (cells joined across shared edges) of a measured
+        surface whose deviation, the mean of each cell's corners' field
+        values, lies beyond +tolerance (excess material) or -tolerance
+        (missing material). Each is written as the cell region
+        <prefix>excess_<k> or <prefix>missing_<k>, with the cell data
+        deviation:region. Reports regions (name, sign, num_cells, area,
+        extreme, mean, volume, centroid, bounds; largest |volume| first),
+        num_excess, num_missing, num_dropped (below min_area) and warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_exaggerate)
+    def exaggerate(
+        input_path: str,
+        output_path: str,
+        file_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        field: str = "deviation:distance",
+        scale: float = 10.0,
+        clamp: float = 0.0,
+        smooth_fraction: float = 0.01,
+    ) -> dict:
+        """A copy of a measured surface with each point displaced along its
+        angle-weighted normal by scale times its deviation (field), clamped
+        to +-clamp (0: the 95th percentile of |d| rounded up to two
+        significant figures) and averaged over the points within
+        smooth_fraction of the bounding-box diagonal: a mesh for a figure or
+        an animation. Reports clamp, radius, num_moved and warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_colorize)
+    def colorize(
+        input_path: str,
+        output_path: str,
+        field: str,
+        file_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        cmap: str = "viridis",
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
+        symmetric: bool = False,
+        steps: int = 0,
+        nan_color: str = "#808080",
+        component: Optional[int] = None,
+    ) -> dict:
+        """Bake a point or cell data field into UInt8 red, green and blue data
+        through a colormap (viridis, coolwarm, turbo, ...): the vertex or face
+        colours a PLY file carries and glTF takes with color_by "rgb". vmin
+        and vmax set the range (default the field's min and max; symmetric
+        +-max|v|), steps of 2 or more bands it at fixed steps, nan_color
+        colours non-finite values. Reports vmin, vmax and location."""
+
+    @server.tool()
     def render_mesh(
         input_path: str,
         output_path: Optional[str] = None,

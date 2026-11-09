@@ -261,6 +261,38 @@
       {"name": "RegionOther", "kind": "text", "default": ""},
       {"name": "Require", "kind": "flag", "default": true}
     ]},
+    {"op": "Deviation", "keys": [
+      {"name": "Reference", "kind": "text", "default": ""},
+      {"name": "Patch", "kind": "number", "default": -1.0},
+      {"name": "Tolerance", "kind": "number", "default": 0.0},
+      {"name": "MinShare", "kind": "number", "default": 0.0},
+      {"name": "Require", "kind": "flag", "default": true},
+      {"name": "Bins", "kind": "number", "default": 20.0},
+      {"name": "MaxNormalAngle", "kind": "number", "default": 90.0},
+      {"name": "ReferenceRegion", "kind": "text", "default": ""}
+    ]},
+    {"op": "DeviationRegions", "keys": [
+      {"name": "Tolerance", "kind": "number", "default": 0.0},
+      {"name": "Field", "kind": "text", "default": "deviation:distance"},
+      {"name": "Prefix", "kind": "text", "default": "deviation:"},
+      {"name": "MinArea", "kind": "number", "default": 0.0}
+    ]},
+    {"op": "Exaggerate", "keys": [
+      {"name": "Field", "kind": "text", "default": "deviation:distance"},
+      {"name": "Scale", "kind": "number", "default": 10.0},
+      {"name": "Clamp", "kind": "number", "default": 0.0},
+      {"name": "SmoothFraction", "kind": "number", "default": 0.01}
+    ]},
+    {"op": "Colorize", "keys": [
+      {"name": "Field", "kind": "text", "default": ""},
+      {"name": "Cmap", "kind": "text", "default": "viridis"},
+      {"name": "VMin", "kind": "number", "default": 0.0},
+      {"name": "VMax", "kind": "number", "default": 0.0},
+      {"name": "Symmetric", "kind": "flag", "default": false},
+      {"name": "Steps", "kind": "number", "default": 0.0},
+      {"name": "NanColor", "kind": "text", "default": "#808080"},
+      {"name": "Component", "kind": "number", "default": -1.0}
+    ]},
     {"op": "Snapshot", "keys": [
       {"name": "Path", "kind": "text", "default": ""},
       {"name": "Width"},

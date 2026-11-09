@@ -7626,6 +7626,186 @@ MIO_API mio_mesh* mio_thickness(const mio_mesh* mesh, const mio_mesh* target,
 /** The warnings of this thread's last mio_thickness call; string rule 5. */
 MIO_API int64_t mio_thickness_warnings(char* buf, int64_t buflen);
 
+/* ---- deviation (roadmap 7.4) --------------------------------------------- */
+
+/** Options of mio_deviation; initialise with mio_deviation_opts_init. 88 bytes. */
+typedef struct mio_deviation_opts {
+    double tolerance;             /**< report the share within +-tolerance when > 0 (init: 0) */
+    int64_t bins;                 /**< histogram bins, at least 1 (init: 20) */
+    double range_min;             /**< histogram range; range_min >= range_max takes */
+    double range_max;             /**<   +-max|d| (init: 0, 0) */
+    double max_normal_angle;      /**< far-side rule, degrees; 180 turns it off (init: 90) */
+    const char* reference_region; /**< Cell region of the reference; NULL or "" for all */
+    int32_t attach;               /**< attach deviation:distance (init: 1) */
+    int32_t reserved32;
+    int64_t reserved[4];
+} mio_deviation_opts;
+
+/** What mio_deviation measured. 176 bytes. */
+typedef struct mio_deviation_report {
+    int64_t num_points;         /**< scan points */
+    int64_t num_measured;       /**< points with a finite distance */
+    int64_t num_outside_range;  /**< measured points outside the histogram range */
+    int64_t num_without_normal; /**< points measured without the far-side rule */
+    double min;                 /**< statistics over the measured points */
+    double max;
+    double mean;
+    double rms;
+    double sigma;               /**< population standard deviation */
+    double percentiles[5];      /**< the 1st, 5th, 50th, 95th and 99th percentiles */
+    double share_within;        /**< share within +-tolerance (NaN without one) */
+    double suggested_range;     /**< p95 of |d| rounded up to two significant figures */
+    int64_t num_bins;           /**< see mio_deviation_histogram() */
+    int64_t num_warnings;       /**< see mio_deviation_warnings() */
+    int64_t reserved[4];
+} mio_deviation_report;
+
+MIO_API void mio_deviation_opts_init(mio_deviation_opts* opts);
+
+/**
+ * The signed deviation of every point of `scan` from the surface `reference`
+ * (positive outside it), and its statistics. See doc/deviation.md.
+ *
+ * @param opts   options, or NULL for the mio_deviation_opts_init() defaults.
+ * @param report out, nullable.
+ * @return `scan` with the point data deviation:distance (free with
+ *         mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_deviation(const mio_mesh* scan, const mio_mesh* reference,
+                                const mio_deviation_opts* opts, mio_deviation_report* report);
+/**
+ * The signed deviation of every point of `scan` from a fitted primitive:
+ * `type` 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus, and its ten
+ * fit:patch_params entries. The far-side rule and reference_region are unused.
+ */
+MIO_API mio_mesh* mio_deviation_primitive(const mio_mesh* scan, int32_t type,
+                                          const double params[10],
+                                          const mio_deviation_opts* opts,
+                                          mio_deviation_report* report);
+/**
+ * Copy the histogram of this thread's last mio_deviation or
+ * mio_deviation_primitive call: up to `capacity` counts into `counts` and
+ * `capacity + 1` edges into `edges` (either nullable). Returns the number of
+ * bins, or -1 on failure.
+ */
+MIO_API int64_t mio_deviation_histogram(int64_t* counts, double* edges, int64_t capacity);
+/** The warnings of this thread's last deviation call; string rule 5. */
+MIO_API int64_t mio_deviation_warnings(char* buf, int64_t buflen);
+
+/** Options of mio_deviation_regions; initialise with mio_deviation_regions_opts_init. 64 bytes. */
+typedef struct mio_deviation_regions_opts {
+    double tolerance;   /**< cells beyond +-tolerance are excess or missing (required, > 0) */
+    double min_area;    /**< drop regions smaller than this (init: 0) */
+    const char* field;  /**< the signed deviation point data; NULL: "deviation:distance" */
+    const char* prefix; /**< region name prefix; NULL: "deviation:" */
+    int64_t reserved[4];
+} mio_deviation_regions_opts;
+
+/** What mio_deviation_regions found. 72 bytes. */
+typedef struct mio_deviation_regions_report {
+    int64_t num_regions;  /**< see mio_deviation_region_get() */
+    int64_t num_excess;
+    int64_t num_missing;
+    int64_t num_dropped;  /**< regions below min_area */
+    int64_t num_warnings; /**< see mio_deviation_regions_warnings() */
+    int64_t reserved[4];
+} mio_deviation_regions_report;
+
+/** One region of this thread's last mio_deviation_regions call. 136 bytes. */
+typedef struct mio_deviation_region_info {
+    int64_t sign;       /**< +1 excess material, -1 missing material */
+    int64_t num_cells;
+    double area;
+    double extreme;     /**< the largest (excess) or least (missing) cell value */
+    double mean;        /**< area-weighted mean deviation */
+    double volume;      /**< signed volume estimate, the sum of d * area */
+    double centroid[3];
+    double bounds[6];   /**< lo x, y, z, hi x, y, z */
+    int64_t reserved[2];
+} mio_deviation_region_info;
+
+MIO_API void mio_deviation_regions_opts_init(mio_deviation_regions_opts* opts);
+/**
+ * The connected regions (cells joined across shared edges) of a measured
+ * surface whose deviation lies beyond +-tolerance, written as the named cell
+ * regions <prefix>excess_<k> and <prefix>missing_<k> with the cell data
+ * deviation:region (roadmap 7.4.3). See doc/deviation.md.
+ * @return the mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_deviation_regions(const mio_mesh* mesh,
+                                        const mio_deviation_regions_opts* opts,
+                                        mio_deviation_regions_report* report);
+/** Region `index` (0-based, largest |volume| first) of this thread's last
+ *  mio_deviation_regions call into `info`; MIO_OK, or an error past the end. */
+MIO_API mio_status mio_deviation_region_get(int64_t index, mio_deviation_region_info* info);
+/** Its name; string rule 5. */
+MIO_API int64_t mio_deviation_region_name(int64_t index, char* buf, int64_t buflen);
+/** The warnings of this thread's last mio_deviation_regions call; string rule 5. */
+MIO_API int64_t mio_deviation_regions_warnings(char* buf, int64_t buflen);
+
+/** Options of mio_exaggerate; initialise with mio_exaggerate_opts_init. 64 bytes. */
+typedef struct mio_exaggerate_opts {
+    const char* field;      /**< signed deviation point data; NULL: "deviation:distance" */
+    double scale;           /**< displacement per unit deviation (init: 10) */
+    double clamp;           /**< clamp to +-clamp first; 0: the suggested range (init: 0) */
+    double smooth_fraction; /**< smoothing radius over the diagonal (init: 0.01) */
+    int64_t reserved[4];
+} mio_exaggerate_opts;
+
+/** What mio_exaggerate did. 64 bytes. */
+typedef struct mio_exaggerate_report {
+    double clamp;         /**< the clamp applied */
+    double radius;        /**< the smoothing radius applied */
+    int64_t num_moved;    /**< points with a normal and a finite deviation */
+    int64_t num_warnings; /**< see mio_exaggerate_warnings() */
+    int64_t reserved[4];
+} mio_exaggerate_report;
+
+MIO_API void mio_exaggerate_opts_init(mio_exaggerate_opts* opts);
+/**
+ * A copy of the surface `mesh` with each point displaced along its normal by
+ * `scale` times its clamped, smoothed deviation (roadmap 7.4.4), for a
+ * figure; the input is not changed. See doc/deviation.md.
+ */
+MIO_API mio_mesh* mio_exaggerate(const mio_mesh* mesh, const mio_exaggerate_opts* opts,
+                                 mio_exaggerate_report* report);
+/** The warnings of this thread's last mio_exaggerate call; string rule 5. */
+MIO_API int64_t mio_exaggerate_warnings(char* buf, int64_t buflen);
+
+/* ---- colorize (roadmap 7.4.4) ---------------------------------------------- */
+
+/** Options of mio_colorize; initialise with mio_colorize_opts_init. 96 bytes. */
+typedef struct mio_colorize_opts {
+    const char* field;     /**< the point or cell data to colour by (required) */
+    const char* cmap;      /**< a colormap name; NULL: "viridis" */
+    double vmin;           /**< the range; vmin >= vmax takes the field's min and max */
+    double vmax;           /**<   (init: 0, 0) */
+    const char* nan_color; /**< "#rrggbb" for a non-finite value; NULL: "#808080" */
+    int64_t steps;         /**< bands at fixed steps; 0 or 1 continuous (init: 0) */
+    int64_t component;     /**< colour by this component; -1 the magnitude (init: -1) */
+    int32_t symmetric;     /**< automatic range +-max|v| (init: 0) */
+    int32_t reserved32;
+    int64_t reserved[4];
+} mio_colorize_opts;
+
+/** What mio_colorize used. 56 bytes. */
+typedef struct mio_colorize_report {
+    double vmin;
+    double vmax;
+    int32_t location; /**< 0: point data, 1: cell data */
+    int32_t reserved32;
+    int64_t reserved[4];
+} mio_colorize_report;
+
+MIO_API void mio_colorize_opts_init(mio_colorize_opts* opts);
+/**
+ * Bake a field into the UInt8 data red, green and blue through a colormap
+ * (banded with steps), on the field's location: the vertex or face colours
+ * PLY carries. See doc/colorize.md.
+ */
+MIO_API mio_mesh* mio_colorize(const mio_mesh* mesh, const mio_colorize_opts* opts,
+                               mio_colorize_report* report);
+
 /** "Any" in a mio_region_selector, "inherit" in mio_edit_regions. */
 #define MIO_REGION_ANY (-2)
 

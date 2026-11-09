@@ -265,6 +265,16 @@ def files(tmp_path_factory):
     paths["sphere_a"] = str(d / "sphere_a.vtu")
     paths["sphere_b"] = str(d / "sphere_b.vtu")
     mio.write(paths["sphere_a"], mio.icosa_sphere(1.0, 2))
+    paths["sphere_big"] = str(d / "sphere_big.vtu")
+    mio.write(paths["sphere_big"], mio.icosa_sphere(1.02, 2))
+    paths["sphere_dev"] = str(d / "sphere_dev.vtu")
+    try:
+        mio.write(
+            paths["sphere_dev"],
+            mio.deviation(mio.icosa_sphere(1.02, 2), mio.icosa_sphere(1.0, 2)),
+        )
+    except NotImplementedError:  # pragma: no cover - a core-less build
+        mio.write(paths["sphere_dev"], mio.icosa_sphere(1.02, 2))
     mio.write(paths["sphere_b"], mio.icosa_sphere(1.0, 2, center=(1.0, 0.0, 0.0)))
     paths["dir"] = str(d)
     return paths
@@ -358,6 +368,34 @@ CASES = [
         ],
     ),
     (
+        "deviation",
+        lambda f: [
+            "deviation",
+            f["sphere_big"],
+            f["sphere_a"],
+            "--tolerance",
+            "0.05",
+            "--bins",
+            "8",
+            "--json",
+        ],
+    ),
+    (
+        "deviation_gate",
+        lambda f: [
+            "deviation",
+            f["sphere_big"],
+            f["sphere_a"],
+            "--tolerance",
+            "0.001",
+            "--min-share",
+            "0.5",
+            "--max-normal-angle",
+            "180",
+            "--json",
+        ],
+    ),
+    (
         "periodic",
         lambda f: [
             "periodic",
@@ -390,6 +428,41 @@ CASES = [
 
 # Verbs that write a file: each CLI gets its own output path.
 WRITING = [
+    (
+        "exaggerate",
+        lambda f, out: [
+            "exaggerate",
+            f["sphere_dev"],
+            out + ".vtu",
+            "--scale",
+            "5",
+            "--json",
+        ],
+    ),
+    (
+        "colorize",
+        lambda f, out: [
+            "colorize",
+            f["sphere_dev"],
+            out + ".vtu",
+            "--field",
+            "deviation:distance",
+            "--steps",
+            "4",
+            "--json",
+        ],
+    ),
+    (
+        "deviation_regions",
+        lambda f, out: [
+            "deviation-regions",
+            f["sphere_dev"],
+            out + ".vtu",
+            "--tolerance",
+            "0.01",
+            "--json",
+        ],
+    ),
     (
         "extrude",
         lambda f, out: [

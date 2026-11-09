@@ -1051,6 +1051,179 @@ function thickness(m::Mesh, other::Union{Mesh,Nothing}=nothing;
      warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
 end
 
+const _DEVIATION_TYPES = Dict("plane" => Int32(1), "sphere" => Int32(2), "cylinder" => Int32(3),
+                               "cone" => Int32(4), "torus" => Int32(5))
+
+function _deviation_result(ptr, report)
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_deviation_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    r = report[]
+    nb = Int(r.num_bins)
+    counts = zeros(Int64, nb)
+    edges = zeros(Cdouble, nb + 1)
+    ccall(_sym(:mio_deviation_histogram), Int64, (Ptr{Int64}, Ptr{Cdouble}, Int64),
+          counts, edges, nb)
+    (mesh=out, num_points=Int(r.num_points), num_measured=Int(r.num_measured),
+     min=r.min, max=r.max, mean=r.mean, rms=r.rms, sigma=r.sigma,
+     percentiles=(p1=r.percentiles[1], p5=r.percentiles[2], p50=r.percentiles[3],
+                  p95=r.percentiles[4], p99=r.percentiles[5]),
+     histogram_edges=edges, histogram_counts=counts,
+     num_outside_range=Int(r.num_outside_range), share_within=r.share_within,
+     suggested_range=r.suggested_range, num_without_normal=Int(r.num_without_normal),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    deviation(scan, reference; tolerance=0.0, bins=20, range=nothing,
+              max_normal_angle=90.0, reference_region="")
+    deviation(scan, type, params; tolerance=0.0, bins=20, range=nothing)
+        -> (; mesh, num_points, num_measured, min, max, mean, rms, sigma, percentiles,
+              histogram_edges, histogram_counts, num_outside_range, share_within,
+              suggested_range, num_without_normal, warnings)
+
+The signed deviation of every point of `scan` from the surface `reference`
+(positive outside it), or from a fitted primitive `type` (`"plane"`,
+`"sphere"`, `"cylinder"`, `"cone"`, `"torus"`) with its ten `fit:patch_params`
+entries (roadmap 7.4). `mesh` comes back with the `deviation:distance` point
+data. `max_normal_angle` is the far-side rule (180 turns it off). See
+`doc/deviation.md`.
+"""
+function deviation(scan::Mesh, reference::Mesh; tolerance::Real=0.0, bins::Integer=20,
+                   range=nothing, max_normal_angle::Real=90.0,
+                   reference_region::AbstractString="")
+    lo, hi = range === nothing ? (0.0, 0.0) : (Float64(range[1]), Float64(range[2]))
+    report = Ref{_CDeviationReport}()
+    rr = Vector{UInt8}(codeunits(String(reference_region) * "\0"))
+    ptr = GC.@preserve rr begin
+        opts = _CDeviationOpts(Cdouble(tolerance), Int64(bins), lo, hi,
+                               Cdouble(max_normal_angle), Cstring(pointer(rr)), Int32(1),
+                               Int32(0), (0, 0, 0, 0))
+        ccall(_sym(:mio_deviation), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CDeviationOpts}, Ref{_CDeviationReport}),
+              _handle(scan), _handle(reference), Ref(opts), report)
+    end
+    _deviation_result(ptr, report)
+end
+
+function deviation(scan::Mesh, type::AbstractString, params::AbstractVector{<:Real};
+                   tolerance::Real=0.0, bins::Integer=20, range=nothing)
+    haskey(_DEVIATION_TYPES, type) ||
+        throw(ArgumentError("meshio++: deviation: unknown primitive type $(repr(type))"))
+    length(params) == 10 ||
+        throw(ArgumentError("meshio++: deviation: a primitive takes ten parameters"))
+    lo, hi = range === nothing ? (0.0, 0.0) : (Float64(range[1]), Float64(range[2]))
+    report = Ref{_CDeviationReport}()
+    p = Cdouble.(collect(params))
+    opts = _CDeviationOpts(Cdouble(tolerance), Int64(bins), lo, hi, 90.0, Cstring(C_NULL),
+                           Int32(1), Int32(0), (0, 0, 0, 0))
+    ptr = ccall(_sym(:mio_deviation_primitive), Ptr{Cvoid},
+                (Ptr{Cvoid}, Int32, Ptr{Cdouble}, Ref{_CDeviationOpts}, Ref{_CDeviationReport}),
+                _handle(scan), _DEVIATION_TYPES[type], p, Ref(opts), report)
+    _deviation_result(ptr, report)
+end
+
+"""
+    deviation_regions(mesh, tolerance; field="deviation:distance", prefix="deviation:",
+                      min_area=0.0)
+        -> (; mesh, regions, num_excess, num_missing, num_dropped, warnings)
+
+The connected regions of a measured surface beyond `+-tolerance` (roadmap
+7.4.3): excess and missing material, written as named cell regions with the
+`deviation:region` cell data (0-based region indices, -1 within tolerance).
+Each of `regions` (largest `|volume|` first) is `(; name, sign, num_cells,
+area, extreme, mean, volume, centroid, bounds)`. See `doc/deviation.md`.
+"""
+function deviation_regions(m::Mesh, tolerance::Real; field::AbstractString="deviation:distance",
+                           prefix::AbstractString="deviation:", min_area::Real=0.0)
+    report = Ref{_CDeviationRegionsReport}()
+    fb = Vector{UInt8}(codeunits(String(field) * "\0"))
+    pb = Vector{UInt8}(codeunits(String(prefix) * "\0"))
+    ptr = GC.@preserve fb pb begin
+        opts = _CDeviationRegionsOpts(Cdouble(tolerance), Cdouble(min_area),
+                                      Cstring(pointer(fb)), Cstring(pointer(pb)), (0, 0, 0, 0))
+        ccall(_sym(:mio_deviation_regions), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CDeviationRegionsOpts}, Ref{_CDeviationRegionsReport}),
+              _handle(m), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = report[]
+    regions = map(0:(Int(r.num_regions) - 1)) do k
+        info = Ref{_CDeviationRegionInfo}()
+        ccall(_sym(:mio_deviation_region_get), Cint, (Int64, Ref{_CDeviationRegionInfo}), k, info)
+        name = _getstring((buf, n) -> ccall(_sym(:mio_deviation_region_name), Int64,
+                                            (Int64, Ptr{UInt8}, Int64), k, buf, n))
+        g = info[]
+        (name=name, sign=Int(g.sign), num_cells=Int(g.num_cells), area=g.area,
+         extreme=g.extreme, mean=g.mean, volume=g.volume, centroid=collect(g.centroid),
+         bounds=collect(g.bounds))
+    end
+    text = _getstring((buf, n) -> ccall(_sym(:mio_deviation_regions_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    (mesh=out, regions=regions, num_excess=Int(r.num_excess), num_missing=Int(r.num_missing),
+     num_dropped=Int(r.num_dropped),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    exaggerate(mesh; field="deviation:distance", scale=10.0, clamp=0.0, smooth_fraction=0.01)
+        -> (; mesh, clamp, radius, num_moved, warnings)
+
+A copy of the surface `mesh` with each point displaced along its normal by
+`scale` times its clamped, smoothed deviation (roadmap 7.4.4), for a figure.
+See `doc/deviation.md`.
+"""
+function exaggerate(m::Mesh; field::AbstractString="deviation:distance", scale::Real=10.0,
+                    clamp::Real=0.0, smooth_fraction::Real=0.01)
+    report = Ref{_CExaggerateReport}()
+    fb = Vector{UInt8}(codeunits(String(field) * "\0"))
+    ptr = GC.@preserve fb begin
+        opts = _CExaggerateOpts(Cstring(pointer(fb)), Cdouble(scale), Cdouble(clamp),
+                                Cdouble(smooth_fraction), (0, 0, 0, 0))
+        ccall(_sym(:mio_exaggerate), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CExaggerateOpts}, Ref{_CExaggerateReport}),
+              _handle(m), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_exaggerate_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    r = report[]
+    (mesh=out, clamp=r.clamp, radius=r.radius, num_moved=Int(r.num_moved),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    colorize(mesh, field; cmap="viridis", vmin=nothing, vmax=nothing, symmetric=false,
+             steps=0, nan_color="#808080", component=nothing) -> (; mesh, vmin, vmax, location)
+
+Bake `field` into the UInt8 data `red`, `green` and `blue` through a colormap
+(`steps` of 2 or more bands it at fixed steps; roadmap 7.4.4), on the field's
+location (`"point"` or `"cell"`). See `doc/colorize.md`.
+"""
+function colorize(m::Mesh, field::AbstractString; cmap::AbstractString="viridis",
+                  vmin=nothing, vmax=nothing, symmetric::Bool=false, steps::Integer=0,
+                  nan_color::AbstractString="#808080", component=nothing)
+    (vmin === nothing) == (vmax === nothing) ||
+        throw(ArgumentError("meshio++: colorize: give both vmin and vmax, or neither"))
+    lo, hi = vmin === nothing ? (0.0, 0.0) : (Float64(vmin), Float64(vmax))
+    report = Ref{_CColorizeReport}()
+    fb = Vector{UInt8}(codeunits(String(field) * "\0"))
+    cb = Vector{UInt8}(codeunits(String(cmap) * "\0"))
+    nb = Vector{UInt8}(codeunits(String(nan_color) * "\0"))
+    ptr = GC.@preserve fb cb nb begin
+        opts = _CColorizeOpts(Cstring(pointer(fb)), Cstring(pointer(cb)), lo, hi,
+                              Cstring(pointer(nb)), Int64(steps),
+                              component === nothing ? Int64(-1) : Int64(component),
+                              Int32(symmetric), Int32(0), (0, 0, 0, 0))
+        ccall(_sym(:mio_colorize), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CColorizeOpts}, Ref{_CColorizeReport}), _handle(m), Ref(opts),
+              report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = report[]
+    (mesh=out, vmin=r.vmin, vmax=r.vmax, location=r.location == 1 ? "cell" : "point")
+end
+
 """
     has_netgen() -> Bool
 

@@ -4181,3 +4181,158 @@ SEXP R_mio_select(SEXP mesh, SEXP name, SEXP kind, SEXP tag, SEXP mode, SEXP bou
     UNPROTECT(1);
     return res;
 }
+
+SEXP R_mio_deviation(SEXP scan, SEXP reference, SEXP ptype, SEXP params, SEXP tolerance,
+                     SEXP bins, SEXP range_min, SEXP range_max, SEXP max_normal_angle,
+                     SEXP reference_region) {
+    mio_deviation_opts opts;
+    mio_deviation_opts_init(&opts);
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.bins = (int64_t)mio_r_double(bins, "bins");
+    opts.range_min = mio_r_double(range_min, "range_min");
+    opts.range_max = mio_r_double(range_max, "range_max");
+    opts.max_normal_angle = mio_r_double(max_normal_angle, "max_normal_angle");
+    opts.reference_region = mio_r_opt_string(reference_region);
+    mio_deviation_report r;
+    mio_mesh *out;
+    if (reference == R_NilValue) {
+        if (!Rf_isReal(params) || XLENGTH(params) != 10)
+            Rf_error("`params` must be ten numbers");
+        out = mio_deviation_primitive(mio_r_mesh(scan), (int32_t)mio_r_double(ptype, "type"),
+                                      REAL(params), &opts, &r);
+    } else {
+        out = mio_deviation(mio_r_mesh(scan), mio_r_mesh(reference), &opts, &r);
+    }
+    if (out == NULL) mio_r_fail("deviation");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP pct = PROTECT(Rf_allocVector(REALSXP, 5));
+    for (int k = 0; k < 5; ++k)
+        REAL(pct)[k] = r.percentiles[k];
+    const int64_t nb = r.num_bins;
+    SEXP counts = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)nb));
+    SEXP edges = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)(nb + 1)));
+    int64_t *tmp = (int64_t *)R_alloc((size_t)(nb > 0 ? nb : 1), sizeof(int64_t));
+    mio_deviation_histogram(tmp, REAL(edges), nb);
+    for (int64_t k = 0; k < nb; ++k)
+        REAL(counts)[k] = (double)tmp[k];
+    SEXP warnings = PROTECT(mio_r_getbuffer(mio_deviation_warnings, "deviation"));
+    const char *names[] = {"mesh",          "num_points",        "num_measured",
+                           "min",           "max",               "mean",
+                           "rms",           "sigma",             "percentiles",
+                           "histogram_edges", "histogram_counts", "num_outside_range",
+                           "share_within",  "suggested_range",   "num_without_normal",
+                           "warnings"};
+    const SEXP values[] = {mo,   NULL, NULL,  NULL,   NULL, NULL, NULL, NULL,
+                           pct,  edges, counts, NULL, NULL, NULL, NULL, warnings};
+    const double numbers[] = {(double)r.num_points,
+                              (double)r.num_measured,
+                              r.min,
+                              r.max,
+                              r.mean,
+                              r.rms,
+                              r.sigma,
+                              (double)r.num_outside_range,
+                              r.share_within,
+                              r.suggested_range,
+                              (double)r.num_without_normal};
+    SEXP res = mio_r_report_list(16, names, values, numbers);
+    UNPROTECT(5);
+    return res;
+}
+
+SEXP R_mio_deviation_regions(SEXP mesh, SEXP tolerance, SEXP field, SEXP prefix,
+                             SEXP min_area) {
+    mio_deviation_regions_opts opts;
+    mio_deviation_regions_opts_init(&opts);
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.min_area = mio_r_double(min_area, "min_area");
+    opts.field = mio_r_opt_string(field);
+    opts.prefix = mio_r_opt_string(prefix);
+    mio_deviation_regions_report r;
+    mio_mesh *out = mio_deviation_regions(mio_r_mesh(mesh), &opts, &r);
+    if (out == NULL) mio_r_fail("deviation_regions");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const R_xlen_t n = (R_xlen_t)r.num_regions;
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, n));
+    SEXP sign = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP ncells = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP area = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP extreme = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP mean = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP volume = PROTECT(Rf_allocVector(REALSXP, n));
+    SEXP centroid = PROTECT(Rf_allocMatrix(REALSXP, (int)n, 3));
+    SEXP bounds = PROTECT(Rf_allocMatrix(REALSXP, (int)n, 6));
+    for (R_xlen_t k = 0; k < n; ++k) {
+        mio_deviation_region_info g;
+        if (mio_deviation_region_get((int64_t)k, &g) != MIO_OK) mio_r_fail("deviation_regions");
+        char buf[512];
+        mio_deviation_region_name((int64_t)k, buf, (int64_t)sizeof(buf));
+        SET_STRING_ELT(names, k, Rf_mkChar(buf));
+        REAL(sign)[k] = (double)g.sign;
+        REAL(ncells)[k] = (double)g.num_cells;
+        REAL(area)[k] = g.area;
+        REAL(extreme)[k] = g.extreme;
+        REAL(mean)[k] = g.mean;
+        REAL(volume)[k] = g.volume;
+        for (int c = 0; c < 3; ++c)
+            REAL(centroid)[k + (R_xlen_t)c * n] = g.centroid[c];
+        for (int c = 0; c < 6; ++c)
+            REAL(bounds)[k + (R_xlen_t)c * n] = g.bounds[c];
+    }
+    SEXP warnings = PROTECT(mio_r_getbuffer(mio_deviation_regions_warnings, "deviation_regions"));
+    const char *keys[] = {"mesh",    "name",   "sign",     "num_cells",  "area",
+                          "extreme", "mean",   "volume",   "centroid",   "bounds",
+                          "num_excess", "num_missing", "num_dropped", "warnings"};
+    const SEXP values[] = {mo,   names, sign,     ncells, area, extreme, mean,
+                           volume, centroid, bounds, NULL, NULL, NULL, warnings};
+    const double numbers[] = {(double)r.num_excess, (double)r.num_missing,
+                              (double)r.num_dropped};
+    SEXP res = mio_r_report_list(14, keys, values, numbers);
+    UNPROTECT(11);
+    return res;
+}
+
+SEXP R_mio_exaggerate(SEXP mesh, SEXP field, SEXP scale, SEXP clamp, SEXP smooth_fraction) {
+    mio_exaggerate_opts opts;
+    mio_exaggerate_opts_init(&opts);
+    opts.field = mio_r_opt_string(field);
+    opts.scale = mio_r_double(scale, "scale");
+    opts.clamp = mio_r_double(clamp, "clamp");
+    opts.smooth_fraction = mio_r_double(smooth_fraction, "smooth_fraction");
+    mio_exaggerate_report r;
+    mio_mesh *out = mio_exaggerate(mio_r_mesh(mesh), &opts, &r);
+    if (out == NULL) mio_r_fail("exaggerate");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP warnings = PROTECT(mio_r_getbuffer(mio_exaggerate_warnings, "exaggerate"));
+    const char *names[] = {"mesh", "clamp", "radius", "num_moved", "warnings"};
+    const SEXP values[] = {mo, NULL, NULL, NULL, warnings};
+    const double numbers[] = {r.clamp, r.radius, (double)r.num_moved};
+    SEXP res = mio_r_report_list(5, names, values, numbers);
+    UNPROTECT(2);
+    return res;
+}
+
+SEXP R_mio_colorize(SEXP mesh, SEXP field, SEXP cmap, SEXP vmin, SEXP vmax, SEXP symmetric,
+                    SEXP steps, SEXP nan_color, SEXP component) {
+    mio_colorize_opts opts;
+    mio_colorize_opts_init(&opts);
+    opts.field = mio_r_string(field, "field");
+    opts.cmap = mio_r_opt_string(cmap);
+    opts.vmin = mio_r_double(vmin, "vmin");
+    opts.vmax = mio_r_double(vmax, "vmax");
+    opts.symmetric = Rf_asLogical(symmetric) == TRUE ? 1 : 0;
+    opts.steps = (int64_t)mio_r_double(steps, "steps");
+    opts.nan_color = mio_r_opt_string(nan_color);
+    opts.component = (int64_t)mio_r_double(component, "component");
+    mio_colorize_report r;
+    mio_mesh *out = mio_colorize(mio_r_mesh(mesh), &opts, &r);
+    if (out == NULL) mio_r_fail("colorize");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP loc = PROTECT(Rf_mkString(r.location == 1 ? "cell" : "point"));
+    const char *names[] = {"mesh", "vmin", "vmax", "location"};
+    const SEXP values[] = {mo, NULL, NULL, loc};
+    const double numbers[] = {r.vmin, r.vmax};
+    SEXP res = mio_r_report_list(4, names, values, numbers);
+    UNPROTECT(2);
+    return res;
+}

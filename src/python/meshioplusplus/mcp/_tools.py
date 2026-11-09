@@ -64,6 +64,7 @@ from .. import (
     check_tetrahedra,
     circle,
     clean,
+    colorize,
     compute_bandwidth,
     compute_curvature,
     compute_normals,
@@ -90,6 +91,8 @@ from .. import (
     decimate,
     decimate_volume,
     delaunay_2d,
+    deviation,
+    deviation_regions,
     diff,
     discretize_levelset,
     disk,
@@ -98,6 +101,7 @@ from .. import (
     error_size,
     estimate_error,
     estimate_normals,
+    exaggerate,
     extract_skin,
     extract_surface,
     extrude,
@@ -861,6 +865,143 @@ def tool_thickness(
         report["passed"] = bool(report["num_below"] == 0)
     if output_path is not None:
         report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_deviation(
+    input_path,
+    reference_path,
+    output_path=None,
+    file_format=None,
+    reference_format=None,
+    output_format=None,
+    patch=None,
+    tolerance=0.0,
+    min_share=None,
+    bins=20,
+    range_min=None,
+    range_max=None,
+    max_normal_angle=90.0,
+    reference_region="",
+):
+    """Signed deviation of every point of a scan from a reference surface
+    (or, with ``patch``, from that patch's fitted primitive in a mesh
+    ``fit_primitives`` wrote) and its statistics; with ``min_share``, also
+    whether the share within ``tolerance`` reaches it. Pass ``output_path``
+    to write the scan with ``deviation:distance`` point data."""
+    scan = _load(input_path, file_format)
+    reference = _load(reference_path, reference_format)
+    rng = None
+    if range_min is not None or range_max is not None:
+        if range_min is None or range_max is None:
+            raise ValueError("meshio++: deviation: give both range_min and range_max")
+        rng = (float(range_min), float(range_max))
+    out, report = deviation(
+        scan,
+        reference,
+        patch=patch,
+        tolerance=tolerance,
+        bins=bins,
+        range=rng,
+        max_normal_angle=max_normal_angle,
+        reference_region=reference_region,
+        attach=output_path is not None,
+        return_report=True,
+    )
+    if min_share is not None:
+        report["min_share"] = float(min_share)
+        report["passed"] = bool(
+            float(tolerance) > 0.0 and report["share_within"] >= float(min_share)
+        )
+    if output_path is not None:
+        report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_deviation_regions(
+    input_path,
+    output_path,
+    tolerance,
+    file_format=None,
+    output_format=None,
+    field="deviation:distance",
+    prefix="deviation:",
+    min_area=0.0,
+):
+    """Connected excess and missing-material regions of a measured surface
+    (one carrying ``deviation:distance``) beyond ``+-tolerance``, written as
+    named cell regions; the report lists each region's area, extreme and mean
+    deviation, signed volume, centroid and bounds, largest volume first."""
+    mesh = _load(input_path, file_format)
+    out, report = deviation_regions(
+        mesh,
+        tolerance,
+        field=field,
+        prefix=prefix,
+        min_area=min_area,
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_exaggerate(
+    input_path,
+    output_path,
+    file_format=None,
+    output_format=None,
+    field="deviation:distance",
+    scale=10.0,
+    clamp=0.0,
+    smooth_fraction=0.01,
+):
+    """Points displaced along their normals by ``scale`` times their clamped,
+    smoothed deviation, written to ``output_path`` (a mesh for a figure; the
+    measured scan is not changed)."""
+    mesh = _load(input_path, file_format)
+    out, report = exaggerate(
+        mesh,
+        field=field,
+        scale=scale,
+        clamp=clamp,
+        smooth_fraction=smooth_fraction,
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_colorize(
+    input_path,
+    output_path,
+    field,
+    file_format=None,
+    output_format=None,
+    cmap="viridis",
+    vmin=None,
+    vmax=None,
+    symmetric=False,
+    steps=0,
+    nan_color="#808080",
+    component=None,
+):
+    """A field baked into UInt8 ``red``/``green``/``blue`` data through a
+    colormap (``steps`` bands it), written to ``output_path``: the vertex or
+    face colours PLY carries; glTF takes them with ``color_by="rgb"``."""
+    mesh = _load(input_path, file_format)
+    out, report = colorize(
+        mesh,
+        field,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        symmetric=symmetric,
+        steps=steps,
+        nan_color=nan_color,
+        component=component,
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
     return _json_safe(report)
 
 
@@ -3268,6 +3409,12 @@ def tool_fit_primitives(
                 "rms": float(fd["fit:patch_rms"][i]),
                 "max": float(fd["fit:patch_max"][i]),
                 "fraction": float(fd["fit:patch_fraction"][i]),
+                "form_error": float(fd["fit:patch_form_error"][i]),
+                "diameter_min": float(fd["fit:patch_diameter_min"][i]),
+                "diameter_max": float(fd["fit:patch_diameter_max"][i]),
+                "length": float(fd["fit:patch_length"][i]),
+                "arc_deg": float(fd["fit:patch_arc"][i]),
+                "extent": [float(x) for x in fd["fit:patch_extent"][i]],
             }
         )
     return _result(
@@ -3319,12 +3466,6 @@ def tool_refine_patches(
         mesh,
         tolerance=tolerance,
         relative=relative,
-                "form_error": float(fd["fit:patch_form_error"][i]),
-                "diameter_min": float(fd["fit:patch_diameter_min"][i]),
-                "diameter_max": float(fd["fit:patch_diameter_max"][i]),
-                "length": float(fd["fit:patch_length"][i]),
-                "arc_deg": float(fd["fit:patch_arc"][i]),
-                "extent": [float(x) for x in fd["fit:patch_extent"][i]],
         normal_weight=normal_weight,
         epsilon=epsilon,
         feature_angle=feature_angle,
@@ -7103,6 +7244,26 @@ TOOL_REGISTRY = OrderedDict(
         (
             "thickness",
             {"fn": tool_thickness, "wraps": ("thickness",), "gated": None},
+        ),
+        (
+            "deviation",
+            {"fn": tool_deviation, "wraps": ("deviation",), "gated": None},
+        ),
+        (
+            "deviation_regions",
+            {
+                "fn": tool_deviation_regions,
+                "wraps": ("deviation_regions",),
+                "gated": None,
+            },
+        ),
+        (
+            "exaggerate",
+            {"fn": tool_exaggerate, "wraps": ("exaggerate",), "gated": None},
+        ),
+        (
+            "colorize",
+            {"fn": tool_colorize, "wraps": ("colorize",), "gated": None},
         ),
         ("repair", {"fn": tool_repair, "wraps": ("repair",), "gated": None}),
         (

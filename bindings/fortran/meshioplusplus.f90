@@ -75,6 +75,10 @@ module meshioplusplus
     public :: mio_mirror, mio_mirror_report
     public :: mio_find_intersections, mio_find_intersections_report
     public :: mio_thickness, mio_thickness_report
+    public :: mio_deviation, mio_deviation_primitive, mio_deviation_report
+    public :: mio_deviation_regions, mio_deviation_regions_report, mio_deviation_region_info
+    public :: mio_deviation_region
+    public :: mio_exaggerate, mio_exaggerate_report, mio_colorize, mio_colorize_report
     public :: mio_tetrahedralize, mio_tetrahedralize_report, mio_has_netgen
     public :: mio_tet_mesher_count, mio_tet_mesher_name, mio_tetrahedralize_backend_name
     public :: mio_remesh_quads, mio_remesh_quads_report, mio_quad_remesher_count
@@ -865,6 +869,113 @@ module meshioplusplus
         real(c_double) :: min_point(3) = 0.0_c_double
         real(c_double) :: max_distance = 0.0_c_double
         integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_deviation_opts` (88 bytes; roadmap 7.4).
+    type, bind(c) :: mio_deviation_opts_t
+        real(c_double) :: tolerance = 0.0_c_double
+        integer(c_int64_t) :: bins = 20
+        real(c_double) :: range_min = 0.0_c_double
+        real(c_double) :: range_max = 0.0_c_double
+        real(c_double) :: max_normal_angle = 90.0_c_double
+        type(c_ptr) :: reference_region = c_null_ptr
+        integer(c_int32_t) :: attach = 1
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_deviation_report` (176 bytes): what `mio_deviation` measured;
+    !> `percentiles` are the 1st, 5th, 50th, 95th and 99th.
+    type, bind(c) :: mio_deviation_report
+        integer(c_int64_t) :: num_points = 0
+        integer(c_int64_t) :: num_measured = 0
+        integer(c_int64_t) :: num_outside_range = 0
+        integer(c_int64_t) :: num_without_normal = 0
+        real(c_double) :: min = 0.0_c_double
+        real(c_double) :: max = 0.0_c_double
+        real(c_double) :: mean = 0.0_c_double
+        real(c_double) :: rms = 0.0_c_double
+        real(c_double) :: sigma = 0.0_c_double
+        real(c_double) :: percentiles(5) = 0.0_c_double
+        real(c_double) :: share_within = 0.0_c_double
+        real(c_double) :: suggested_range = 0.0_c_double
+        integer(c_int64_t) :: num_bins = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_deviation_regions_opts` (64 bytes; roadmap 7.4.3).
+    type, bind(c) :: mio_deviation_regions_opts_t
+        real(c_double) :: tolerance = 0.0_c_double
+        real(c_double) :: min_area = 0.0_c_double
+        type(c_ptr) :: field = c_null_ptr
+        type(c_ptr) :: prefix = c_null_ptr
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_deviation_regions_report` (72 bytes).
+    type, bind(c) :: mio_deviation_regions_report
+        integer(c_int64_t) :: num_regions = 0
+        integer(c_int64_t) :: num_excess = 0
+        integer(c_int64_t) :: num_missing = 0
+        integer(c_int64_t) :: num_dropped = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_deviation_region_info` (136 bytes): one region; `sign` +1 excess,
+    !> -1 missing material, `bounds` lo x, y, z then hi x, y, z.
+    type, bind(c) :: mio_deviation_region_info
+        integer(c_int64_t) :: sign = 0
+        integer(c_int64_t) :: num_cells = 0
+        real(c_double) :: area = 0.0_c_double
+        real(c_double) :: extreme = 0.0_c_double
+        real(c_double) :: mean = 0.0_c_double
+        real(c_double) :: volume = 0.0_c_double
+        real(c_double) :: centroid(3) = 0.0_c_double
+        real(c_double) :: bounds(6) = 0.0_c_double
+        integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> Interop mirror of C `mio_exaggerate_opts` (64 bytes; roadmap 7.4.4).
+    type, bind(c) :: mio_exaggerate_opts_t
+        type(c_ptr) :: field = c_null_ptr
+        real(c_double) :: scale = 10.0_c_double
+        real(c_double) :: clamp = 0.0_c_double
+        real(c_double) :: smooth_fraction = 0.01_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_exaggerate_report` (64 bytes).
+    type, bind(c) :: mio_exaggerate_report
+        real(c_double) :: clamp = 0.0_c_double
+        real(c_double) :: radius = 0.0_c_double
+        integer(c_int64_t) :: num_moved = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_colorize_opts` (96 bytes; roadmap 7.4.4).
+    type, bind(c) :: mio_colorize_opts_t
+        type(c_ptr) :: field = c_null_ptr
+        type(c_ptr) :: cmap = c_null_ptr
+        real(c_double) :: vmin = 0.0_c_double
+        real(c_double) :: vmax = 0.0_c_double
+        type(c_ptr) :: nan_color = c_null_ptr
+        integer(c_int64_t) :: steps = 0
+        integer(c_int64_t) :: component = -1
+        integer(c_int32_t) :: symmetric = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_colorize_report` (56 bytes): `location` 0 point data, 1 cell data.
+    type, bind(c) :: mio_colorize_report
+        real(c_double) :: vmin = 0.0_c_double
+        real(c_double) :: vmax = 0.0_c_double
+        integer(c_int32_t) :: location = 0
+        integer(c_int32_t) :: reserved32 = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
@@ -5876,6 +5987,61 @@ module meshioplusplus
             type(c_ptr), value :: mesh, target
             type(mio_thickness_opts_t), intent(in) :: opts
             type(mio_thickness_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_deviation(scan, reference, opts, report) &
+                bind(c, name="mio_deviation") result(h)
+            import :: c_ptr, mio_deviation_opts_t, mio_deviation_report
+            type(c_ptr), value :: scan, reference
+            type(mio_deviation_opts_t), intent(in) :: opts
+            type(mio_deviation_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_deviation_primitive(scan, ptype, params, opts, report) &
+                bind(c, name="mio_deviation_primitive") result(h)
+            import :: c_ptr, c_int32_t, c_double, mio_deviation_opts_t, mio_deviation_report
+            type(c_ptr), value :: scan
+            integer(c_int32_t), value :: ptype
+            real(c_double), intent(in) :: params(10)
+            type(mio_deviation_opts_t), intent(in) :: opts
+            type(mio_deviation_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_deviation_regions(mesh, opts, report) &
+                bind(c, name="mio_deviation_regions") result(h)
+            import :: c_ptr, mio_deviation_regions_opts_t, mio_deviation_regions_report
+            type(c_ptr), value :: mesh
+            type(mio_deviation_regions_opts_t), intent(in) :: opts
+            type(mio_deviation_regions_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_deviation_region_get(index, info) &
+                bind(c, name="mio_deviation_region_get") result(st)
+            import :: c_int64_t, c_int, mio_deviation_region_info
+            integer(c_int64_t), value :: index
+            type(mio_deviation_region_info), intent(out) :: info
+            integer(c_int) :: st
+        end function
+
+        function c_mio_exaggerate(mesh, opts, report) &
+                bind(c, name="mio_exaggerate") result(h)
+            import :: c_ptr, mio_exaggerate_opts_t, mio_exaggerate_report
+            type(c_ptr), value :: mesh
+            type(mio_exaggerate_opts_t), intent(in) :: opts
+            type(mio_exaggerate_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_colorize(mesh, opts, report) &
+                bind(c, name="mio_colorize") result(h)
+            import :: c_ptr, mio_colorize_opts_t, mio_colorize_report
+            type(c_ptr), value :: mesh
+            type(mio_colorize_opts_t), intent(in) :: opts
+            type(mio_colorize_report), intent(out) :: report
             type(c_ptr) :: h
         end function
 
@@ -16687,6 +16853,226 @@ contains
         end if
         if (present(report)) report = rep
         call clear_status(stat, errmsg)
+    end function
+
+    !> The deviation options of the optional arguments (shared by both forms).
+    subroutine deviation_fill_opts(opts, buf, tolerance, bins, range_min, range_max, &
+                                   max_normal_angle, reference_region)
+        type(mio_deviation_opts_t), intent(inout) :: opts
+        character(kind=c_char, len=STRBUF_LEN), target, intent(inout) :: buf
+        real(real64), intent(in), optional :: tolerance, range_min, range_max, max_normal_angle
+        integer, intent(in), optional :: bins
+        character(*), intent(in), optional :: reference_region
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(bins)) opts%bins = int(bins, c_int64_t)
+        if (present(range_min)) opts%range_min = real(range_min, c_double)
+        if (present(range_max)) opts%range_max = real(range_max, c_double)
+        if (present(max_normal_angle)) opts%max_normal_angle = real(max_normal_angle, c_double)
+        if (present(reference_region)) then
+            buf = trim(reference_region)//c_null_char
+            opts%reference_region = c_loc(buf(1:1))
+        end if
+    end subroutine
+
+    !> The signed deviation of every point of `scan` from the surface
+    !> `reference` (roadmap 7.4.1): positive outside it, negative inside, with
+    !> the far-side rule at `max_normal_angle` degrees (90; 180 turns it off).
+    !> Returns `scan` with the `deviation:distance` point data; `report` holds
+    !> the statistics (see doc/deviation.md).
+    function mio_deviation(scan, reference, tolerance, bins, range_min, range_max, &
+                           max_normal_angle, reference_region, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: scan, reference
+        real(real64), intent(in), optional :: tolerance, range_min, range_max, max_normal_angle
+        integer, intent(in), optional :: bins
+        character(*), intent(in), optional :: reference_region
+        type(mio_deviation_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_deviation_opts_t) :: opts
+        type(mio_deviation_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf
+        if (c_sizeof(opts) /= 88_c_size_t .or. c_sizeof(rep) /= 176_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: deviation layout mismatch'
+            error stop 1
+        end if
+        call deviation_fill_opts(opts, buf, tolerance, bins, range_min, range_max, &
+                                 max_normal_angle, reference_region)
+        out%handle = c_mio_deviation(scan%handle, reference%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('deviation', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The signed deviation of every point of `scan` from a fitted primitive
+    !> (roadmap 7.4.2): `ptype` 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus,
+    !> and its ten `fit:patch_params` entries.
+    function mio_deviation_primitive(scan, ptype, params, tolerance, bins, range_min, &
+                                     range_max, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: scan
+        integer, intent(in) :: ptype
+        real(real64), intent(in) :: params(10)
+        real(real64), intent(in), optional :: tolerance, range_min, range_max
+        integer, intent(in), optional :: bins
+        type(mio_deviation_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_deviation_opts_t) :: opts
+        type(mio_deviation_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf
+        real(c_double) :: p(10)
+        if (c_sizeof(opts) /= 88_c_size_t .or. c_sizeof(rep) /= 176_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: deviation layout mismatch'
+            error stop 1
+        end if
+        call deviation_fill_opts(opts, buf, tolerance, bins, range_min, range_max)
+        p = real(params, c_double)
+        out%handle = c_mio_deviation_primitive(scan%handle, int(ptype, c_int32_t), p, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('deviation', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The connected regions of a measured surface (one carrying
+    !> `deviation:distance`) beyond +-`tolerance` (roadmap 7.4.3), written as
+    !> named cell regions with the `deviation:region` cell data; read each with
+    !> `mio_deviation_region` (1-based, largest |volume| first).
+    function mio_deviation_regions(mesh, tolerance, field, prefix, min_area, report, stat, &
+                                   errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in) :: tolerance
+        character(*), intent(in), optional :: field, prefix
+        real(real64), intent(in), optional :: min_area
+        type(mio_deviation_regions_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_deviation_regions_opts_t) :: opts
+        type(mio_deviation_regions_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf_a, buf_b
+        if (c_sizeof(opts) /= 64_c_size_t .or. c_sizeof(rep) /= 72_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: deviation_regions layout mismatch'
+            error stop 1
+        end if
+        opts%tolerance = real(tolerance, c_double)
+        if (present(min_area)) opts%min_area = real(min_area, c_double)
+        if (present(field)) then
+            buf_a = trim(field)//c_null_char
+            opts%field = c_loc(buf_a(1:1))
+        end if
+        if (present(prefix)) then
+            buf_b = trim(prefix)//c_null_char
+            opts%prefix = c_loc(buf_b(1:1))
+        end if
+        out%handle = c_mio_deviation_regions(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('deviation_regions', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> A copy of the surface `mesh` with each point displaced along its normal
+    !> by `scale` times its clamped, smoothed deviation (roadmap 7.4.4).
+    function mio_exaggerate(mesh, field, scale, clamp, smooth_fraction, report, stat, &
+                            errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in), optional :: field
+        real(real64), intent(in), optional :: scale, clamp, smooth_fraction
+        type(mio_exaggerate_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_exaggerate_opts_t) :: opts
+        type(mio_exaggerate_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf
+        if (c_sizeof(opts) /= 64_c_size_t .or. c_sizeof(rep) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: exaggerate layout mismatch'
+            error stop 1
+        end if
+        if (present(field)) then
+            buf = trim(field)//c_null_char
+            opts%field = c_loc(buf(1:1))
+        end if
+        if (present(scale)) opts%scale = real(scale, c_double)
+        if (present(clamp)) opts%clamp = real(clamp, c_double)
+        if (present(smooth_fraction)) opts%smooth_fraction = real(smooth_fraction, c_double)
+        out%handle = c_mio_exaggerate(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('exaggerate', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Bake `field` into the UInt8 data red, green and blue through a colormap
+    !> (`steps` bands it; roadmap 7.4.4).
+    function mio_colorize(mesh, field, cmap, vmin, vmax, symmetric, steps, nan_color, &
+                          component, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: field
+        character(*), intent(in), optional :: cmap, nan_color
+        real(real64), intent(in), optional :: vmin, vmax
+        logical, intent(in), optional :: symmetric
+        integer, intent(in), optional :: steps, component
+        type(mio_colorize_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_colorize_opts_t) :: opts
+        type(mio_colorize_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf_f, buf_c, buf_n
+        if (c_sizeof(opts) /= 96_c_size_t .or. c_sizeof(rep) /= 56_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: colorize layout mismatch'
+            error stop 1
+        end if
+        buf_f = trim(field)//c_null_char
+        opts%field = c_loc(buf_f(1:1))
+        if (present(cmap)) then
+            buf_c = trim(cmap)//c_null_char
+            opts%cmap = c_loc(buf_c(1:1))
+        end if
+        if (present(nan_color)) then
+            buf_n = trim(nan_color)//c_null_char
+            opts%nan_color = c_loc(buf_n(1:1))
+        end if
+        if (present(vmin)) opts%vmin = real(vmin, c_double)
+        if (present(vmax)) opts%vmax = real(vmax, c_double)
+        if (present(symmetric)) then
+            if (symmetric) opts%symmetric = 1
+        end if
+        if (present(steps)) opts%steps = int(steps, c_int64_t)
+        if (present(component)) opts%component = int(component, c_int64_t)
+        out%handle = c_mio_colorize(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('colorize', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Region `index` (1-based) of this thread's last `mio_deviation_regions`.
+    function mio_deviation_region(index, stat) result(info)
+        integer, intent(in) :: index
+        integer, intent(out), optional :: stat
+        type(mio_deviation_region_info) :: info
+        integer(c_int) :: st
+        if (c_sizeof(info) /= 136_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: deviation_region_info layout mismatch'
+            error stop 1
+        end if
+        st = c_mio_deviation_region_get(int(index - 1, c_int64_t), info)
+        if (present(stat)) stat = int(st)
     end function
 
     !> Fill the closed, manifold, consistently oriented triangle surface `mesh`

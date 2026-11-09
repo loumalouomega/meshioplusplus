@@ -102,6 +102,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/find_intersections.hpp"
 #include "meshioplusplus/operations/thickness.hpp"
+#include "meshioplusplus/operations/deviation.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/mmg.hpp"
@@ -410,6 +411,10 @@ static_assert(offsetof(meshioplusplus::FindIntersectionsOptions, mMaxPairs) == 7
 MIO_ABI_LAYOUT(meshioplusplus::ThicknessOptions, 96, 8);
 static_assert(offsetof(meshioplusplus::ThicknessOptions, mRegion) == 24,
               "ThicknessOptions::mRegion moved");
+// Unreleased ABI 42: deviation's options (roadmap 7.4), a new header.
+MIO_ABI_LAYOUT(meshioplusplus::DeviationOptions, 80, 8);
+static_assert(offsetof(meshioplusplus::DeviationOptions, mReferenceRegion) == 40,
+              "DeviationOptions::mReferenceRegion moved");
 MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 304, 8);
 // ABI 36: `mHexGrading` (roadmap 3.1.4.3) in the padding after `mPillow`.
 MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 376, 8);

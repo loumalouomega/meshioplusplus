@@ -14331,6 +14331,28 @@ struct SurfaceProjection {
 MESHIOPLUSPLUS_API std::vector<SurfaceProjection> query_surface_projections(
     const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints);
 
+/// Which soup triangles query @p Query (an index into the points) may land
+/// on; see `query_surface_projections_filtered`.
+using TriangleFilter = std::function<bool(std::size_t Query, std::int64_t Triangle)>;
+
+/**
+ * @brief `query_surface_projections` over only the triangles @p rAccept
+ * accepts for each query, and only within @p MaxDistance.
+ *
+ * The nearest accepted triangle under the same total order (distance squared,
+ * then triangle id), so the result does not depend on the accelerator's visit
+ * order either; a filter that accepts everything gives exactly what
+ * `query_surface_projections` gives. A query whose every accepted triangle is
+ * farther than @p MaxDistance (or that has none) comes back with `mFound`
+ * false. `deviation`'s far-side rule (a nearest triangle whose normal turns
+ * away from the query's is skipped, so a thin wall is not measured to its back
+ * face) and `thickness`'s sphere method (the facet's own neighbourhood
+ * excluded) are its callers.
+ */
+MESHIOPLUSPLUS_API std::vector<SurfaceProjection> query_surface_projections_filtered(
+    const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints, const TriangleFilter& rAccept,
+    double MaxDistance);
+
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/surface_distance.hpp =====
@@ -18189,6 +18211,8 @@ struct GltfWriteOptions {
     /// Source unit -> metres, carried as the node scale.
     double mScale = 1.0;
     /// A point_data or cell_data array to bake into `COLOR_0`; empty disables.
+    /// `"rgb"` (when no array has that name) takes the UInt8 `red`, `green`
+    /// and `blue` channels `colorize` bakes, as they are.
     std::string mColorBy;
     /// The component to colour by; the magnitude when unset.
     std::optional<int> mComponent;
@@ -26182,6 +26206,83 @@ MESHIOPLUSPLUS_API CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpt
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/clean.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/colorize.hpp =====
+/**
+ * @file operations/colorize.hpp
+ * @brief Bake a scalar field into 8-bit RGB colours through a colormap
+ * (roadmap 7.4.4), so a deviation map (or any field) travels as the vertex
+ * or face colours PLY viewers, MeshLab and glTF (`color_by="rgb"`) read.
+ *
+ * The field's values `v` map to `t = (v - vmin) / (vmax - vmin)`, clamped to
+ * `[0, 1]` (`detail::color_param`: a degenerate range maps to the middle),
+ * then through the colormap's 256-entry table (`detail::colormap_lookup`).
+ * With `mSteps` of 2 or more the colours are **banded**: `t` is replaced by
+ * the centre of the equal band it falls in, so the map reads as `mSteps`
+ * flat colours at fixed steps (the last band holds `t = 1`). A non-finite
+ * value takes `mNanColor`.
+ *
+ * The colours are written as three UInt8 arrays named `red`, `green` and
+ * `blue` beside the field, on its location (point data for a point field,
+ * cell data for a cell field): the names PLY's vertex and face colour
+ * properties take, which the PLY writer writes as `uchar` properties under
+ * those names. Points, cells and every other array are unchanged.
+ *
+ * @see doc/colorize.md
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The UInt8 colour channels `colorize` writes.
+inline constexpr const char* kColorRedName = "red";
+inline constexpr const char* kColorGreenName = "green";
+inline constexpr const char* kColorBlueName = "blue";
+
+/// Options of `colorize`.
+struct ColorizeOptions {
+    /// The point or cell data to colour by (required). A vector field is
+    /// reduced to its magnitude unless `mComponent` picks one entry.
+    std::string mField;
+    /// A colormap name (`detail::colormap_names()`: viridis, coolwarm, turbo, ...).
+    std::string mCmap = "viridis";
+    /// The range; when `mVMin >= mVMax` (the default) the field's finite
+    /// minimum and maximum (a symmetric `+-max |v|` with `mSymmetric`).
+    double mVMin = 0.0;
+    double mVMax = 0.0;
+    /// With the automatic range: `+-max |v|`, so zero sits mid-map (a
+    /// deviation map's natural range).
+    bool mSymmetric = false;
+    /// Bands: 0 or 1 is continuous, 2 or more bands at fixed steps.
+    std::int64_t mSteps = 0;
+    /// The colour of a non-finite value.
+    std::string mNanColor = "#808080";
+    /// Colour by this component of a vector field (-1: the magnitude).
+    std::int64_t mComponent = -1;
+};
+
+/// The coloured mesh and the range used.
+struct ColorizeResult {
+    Mesh mMesh;
+    double mVMin = 0.0;
+    double mVMax = 0.0;
+    /// "point" or "cell": where the colours were written.
+    std::string mLocation;
+};
+
+/**
+ * @brief Bake @p rOptions.mField into `red`, `green` and `blue` UInt8 data.
+ * @throws std::invalid_argument on a missing field, an unknown colormap, a
+ *         bad colour, component or step count.
+ */
+MESHIOPLUSPLUS_API ColorizeResult colorize(const Mesh& rMesh, const ColorizeOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/colorize.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/conservative_interpolate.hpp =====
 /**
  * @file conservative_interpolate.hpp
@@ -28138,6 +28239,228 @@ MESHIOPLUSPLUS_API DecimateVolumeResult decimate_volume(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/decimate_volume.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/deviation.hpp =====
+/**
+ * @file operations/deviation.hpp
+ * @brief Deviation analysis of a scan against its intended geometry: the
+ * signed distance of every scan point to a reference surface or to a fitted
+ * primitive, and the statistics an inspection reads from it (roadmap 7.4).
+ *
+ * ### The distance
+ *
+ * Against a reference **surface** (`deviation`), each scan point's distance is
+ * the signed distance to the nearest reference triangle, signed by the
+ * angle-weighted pseudonormal of the feature it lands on, as
+ * `distance_to_surface` signs it: positive outside the reference (excess
+ * material), negative inside (missing material).
+ *
+ * **The far-side rule.** A scan point's nearest reference triangle may be the
+ * back face of a thin wall. With `mMaxNormalAngleDeg` below 180, a reference
+ * triangle whose unit normal turns away from the scan point's own normal by
+ * more than that angle is skipped inside the nearest-triangle search
+ * (`detail::query_surface_projections_filtered`), so the answer is the nearest
+ * triangle that faces the same way, still under the (distance squared,
+ * triangle id) order. A scan point's normal is its `normals` point data when
+ * the scan carries one, else the angle-weighted normal of the scan's own
+ * triangles at it; a point with neither (a bare cloud, an orphan) is measured
+ * without the rule.
+ *
+ * Against a fitted **primitive** (`deviation_to_primitive`), the distance is
+ * the analytic signed orthogonal distance of `detail::primitive_signed_distance`
+ * (positive along the primitive's normal), with no reference mesh and no
+ * alignment.
+ *
+ * ### What comes back
+ *
+ * The scan, bit-identical, with the Float64 point data `deviation:distance`
+ * (NaN for a point no accepted triangle reaches), and a report over the
+ * measured points: min, max, mean, RMS, the population standard deviation,
+ * the 1st, 5th, 50th, 95th and 99th percentiles (linear interpolation between
+ * order statistics), a histogram of `mBins` equal bins over the range, the
+ * share within `+-mTolerance`, and a suggested colour range: the 95th
+ * percentile of `|d|` rounded up to two significant figures.
+ *
+ * Deterministic: each point's answer is a total-order minimum and the
+ * statistics are summed in point order, so the result is identical across
+ * parallel backends and thread counts.
+ *
+ * @see doc/deviation.md
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Point data (Float64): each scan point's signed deviation.
+inline constexpr const char* kDeviationDistanceName = "deviation:distance";
+
+/// Options of `deviation` and `deviation_to_primitive`.
+struct DeviationOptions {
+    /// The share within `+-mTolerance` is reported when positive (NaN otherwise).
+    double mTolerance = 0.0;
+    /// Number of histogram bins, at least 1.
+    std::int64_t mBins = 20;
+    /// The histogram range; when `mRangeMin >= mRangeMax` (the default), the
+    /// symmetric range `+-max |d|`. Values outside it are counted in
+    /// `mNumOutsideRange`, not in a bin.
+    double mRangeMin = 0.0;
+    double mRangeMax = 0.0;
+    /// The far-side rule's angle, degrees in `[0, 180]`; 180 turns it off.
+    double mMaxNormalAngleDeg = 90.0;
+    /// Restrict the reference surface to this named `Cell` region.
+    std::string mReferenceRegion;
+    /// Attach `deviation:distance` to the returned scan.
+    bool mAttach = true;
+};
+
+/// The measured scan and its statistics.
+struct DeviationResult {
+    /// The scan, bit-identical, with `deviation:distance` when asked for.
+    Mesh mMesh;
+    std::int64_t mNumPoints = 0;    ///< scan points
+    std::int64_t mNumMeasured = 0;  ///< of those, points with a finite distance
+    double mMin = 0.0;              ///< the statistics, over the measured points
+    double mMax = 0.0;
+    double mMean = 0.0;
+    double mRms = 0.0;
+    double mSigma = 0.0;  ///< population standard deviation about the mean
+    /// The 1st, 5th, 50th, 95th and 99th percentiles.
+    std::array<double, 5> mPercentiles{{0.0, 0.0, 0.0, 0.0, 0.0}};
+    /// The histogram: `mBins + 1` edges and `mBins` counts.
+    std::vector<double> mHistogramEdges;
+    std::vector<std::int64_t> mHistogramCounts;
+    std::int64_t mNumOutsideRange = 0;  ///< measured points outside the range
+    /// The share of measured points within `+-mTolerance` (NaN without one).
+    double mShareWithin = 0.0;
+    /// The 95th percentile of `|d|`, rounded up to two significant figures.
+    double mSuggestedRange = 0.0;
+    /// Points measured without the far-side rule (no normal to compare).
+    std::int64_t mNumWithoutNormal = 0;
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief The signed deviation of every point of @p rScan from the surface
+ * @p rReference.
+ * @param rScan a point cloud or a surface (its points are measured).
+ * @param rReference a surface mesh (triangles, quads, polygons).
+ * @throws std::invalid_argument on a bad option, a volume or higher-order
+ *         reference block or an unknown region.
+ */
+MESHIOPLUSPLUS_API DeviationResult deviation(const Mesh& rScan, const Mesh& rReference,
+                                             const DeviationOptions& rOptions = {});
+
+/**
+ * @brief The signed deviation of every point of @p rScan from a fitted
+ * primitive: `Type` 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus, and its
+ * ten `fit:patch_params` entries.
+ * @throws std::invalid_argument on an unknown type or non-finite parameters.
+ */
+MESHIOPLUSPLUS_API DeviationResult deviation_to_primitive(const Mesh& rScan, std::int64_t Type,
+                                                          const std::array<double, 10>& rParams,
+                                                          const DeviationOptions& rOptions = {});
+
+/// Cell data (Int64): the index of each cell's deviation region in
+/// `DeviationRegionsResult::mRegions`, -1 for a cell within tolerance.
+inline constexpr const char* kDeviationRegionName = "deviation:region";
+
+/// Options of `deviation_regions`.
+struct DeviationRegionsOptions {
+    /// A cell beyond `+mTolerance` is excess material, beyond `-mTolerance`
+    /// missing material; positive and finite.
+    double mTolerance = 0.0;
+    /// The point data holding the signed deviation (`deviation` writes it).
+    std::string mField = kDeviationDistanceName;
+    /// Region names are `<prefix>excess_<k>` and `<prefix>missing_<k>`.
+    std::string mPrefix = "deviation:";
+    /// Drop regions smaller than this area (0 keeps every one).
+    double mMinArea = 0.0;
+};
+
+/// One connected region beyond tolerance.
+struct DeviationRegionRecord {
+    std::string mName;               ///< its cell region's name
+    std::int64_t mSign = 0;          ///< +1 excess material, -1 missing material
+    std::int64_t mNumCells = 0;
+    double mArea = 0.0;
+    double mExtreme = 0.0;           ///< the largest (excess) or least (missing) cell value
+    double mMean = 0.0;              ///< area-weighted mean deviation
+    double mVolume = 0.0;            ///< the signed volume estimate, the sum of d * area
+    std::array<double, 3> mCentroid{{0.0, 0.0, 0.0}};  ///< area-weighted
+    std::array<double, 6> mBounds{{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};  ///< lo x, y, z, hi x, y, z
+};
+
+/// What `deviation_regions` found.
+struct DeviationRegionsResult {
+    /// The input with one named cell region per record and `deviation:region`.
+    Mesh mMesh;
+    /// Largest `|mVolume|` first (ties: the region holding the lower cell).
+    std::vector<DeviationRegionRecord> mRegions;
+    std::int64_t mNumExcess = 0;
+    std::int64_t mNumMissing = 0;
+    std::int64_t mNumDropped = 0;  ///< regions below `mMinArea`
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief The connected regions (cells joined across shared edges) of a
+ * measured surface whose deviation lies beyond `+-mTolerance`: excess and
+ * missing material, each with its area, extreme and mean deviation, signed
+ * volume estimate, centroid and bounding box, written as named cell regions
+ * (roadmap 7.4.3).
+ *
+ * A cell's deviation is the mean of its corners' values of `mField` (corners
+ * with NaN are left out; a cell with none finite is within tolerance).
+ * @throws std::invalid_argument on a bad option, a missing or non-scalar
+ *         field, or a volume block.
+ */
+MESHIOPLUSPLUS_API DeviationRegionsResult deviation_regions(
+    const Mesh& rMesh, const DeviationRegionsOptions& rOptions);
+
+/// Options of `exaggerate`.
+struct ExaggerateOptions {
+    /// The signed deviation point data to exaggerate.
+    std::string mField = kDeviationDistanceName;
+    /// Points move along their normals by `mScale * d`.
+    double mScale = 10.0;
+    /// `d` is clamped to `+-mClamp` first; 0 (the default) clamps at the 95th
+    /// percentile of `|d|` rounded up to two significant figures, the colour
+    /// range `deviation` suggests.
+    double mClamp = 0.0;
+    /// `d` is then averaged over the points within this fraction of the
+    /// bounding-box diagonal (weights `1 - (r / R)^2`), so scan noise does not
+    /// become fur; 0 leaves it unsmoothed.
+    double mSmoothFraction = 0.01;
+};
+
+/// The exaggerated mesh.
+struct ExaggerateResult {
+    Mesh mMesh;
+    double mClamp = 0.0;         ///< the clamp applied
+    double mRadius = 0.0;        ///< the smoothing radius applied
+    std::int64_t mNumMoved = 0;  ///< points with a normal and a finite deviation
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief A copy of the surface @p rMesh with each point displaced along its
+ * angle-weighted unit normal by `mScale` times its clamped, smoothed
+ * deviation (roadmap 7.4.4): a mesh for a figure or an animation, the
+ * measured scan left untouched. Connectivity and data are unchanged.
+ * @throws std::invalid_argument on a missing or non-scalar field, a
+ *         non-finite scale or a negative clamp or fraction.
+ */
+MESHIOPLUSPLUS_API ExaggerateResult exaggerate(const Mesh& rMesh,
+                                               const ExaggerateOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/deviation.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/diff.hpp =====
 /**
  * @file operations/diff.hpp
@@ -29151,7 +29474,24 @@ find_intersections(const Mesh& rA, const Mesh& rB, const FindIntersectionsOption
  *  - `fit:patch_rms`, `fit:patch_max` (Float64): the accepted fit's residuals,
  *    or the best attempt's;
  *  - `fit:patch_fraction` (Float64): the share of points within tolerance;
- *  - `fit:patch_tolerance` (Float64): the absolute tolerance applied.
+ *  - `fit:patch_tolerance` (Float64): the absolute tolerance applied;
+ *  - `fit:patch_form_error` (Float64): the peak-to-peak form error, the largest
+ *    positive minus the largest negative signed orthogonal distance of the
+ *    patch's points (flatness, sphericity, cylindricity under the least-squares
+ *    reference);
+ *  - `fit:patch_diameter_min`, `fit:patch_diameter_max` (Float64): a sphere's
+ *    or cylinder's smallest and largest diameter the points reach (twice their
+ *    least and largest radial distance);
+ *  - `fit:patch_length` (Float64): a cylinder's or cone's axial length, the
+ *    points' extent along the axis;
+ *  - `fit:patch_arc` (Float64): a cylinder's or cone's arc span in degrees,
+ *    360 less the largest angular gap between the points about the axis (360
+ *    when that gap is at most twice the median one);
+ *  - `fit:patch_extent` (Float64, `(m, 2)`): a plane's two in-plane principal
+ *    extents, largest first.
+ *
+ * A value that does not apply to the patch's type (or a patch of type none) is
+ * NaN.
  *
  * Patches are fitted in parallel, each serially, so the output is
  * byte-identical on every backend and thread count. The numpy twin follows the
@@ -29172,6 +29512,19 @@ inline constexpr const char* kFitTypeName = "fit:type";
 inline constexpr const char* kFitRmsName = "fit:rms";
 /// Cell data (Float64): the largest distance of the cell's patch to its fit.
 inline constexpr const char* kFitMaxName = "fit:max";
+
+/// Field data (Float64): each patch's peak-to-peak form error.
+inline constexpr const char* kFitPatchFormErrorName = "fit:patch_form_error";
+/// Field data (Float64): a sphere's or cylinder's smallest diameter.
+inline constexpr const char* kFitPatchDiameterMinName = "fit:patch_diameter_min";
+/// Field data (Float64): a sphere's or cylinder's largest diameter.
+inline constexpr const char* kFitPatchDiameterMaxName = "fit:patch_diameter_max";
+/// Field data (Float64): a cylinder's or cone's axial length.
+inline constexpr const char* kFitPatchLengthName = "fit:patch_length";
+/// Field data (Float64): a cylinder's or cone's arc span in degrees.
+inline constexpr const char* kFitPatchArcName = "fit:patch_arc";
+/// Field data (Float64, `(m, 2)`): a plane's two in-plane extents.
+inline constexpr const char* kFitPatchExtentName = "fit:patch_extent";
 
 /// The values of `fit:type` and `fit:patch_type`.
 enum class FitPrimitiveType : std::int32_t {
@@ -49447,6 +49800,56 @@ struct GeometryUtils {
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/geometry_utils.hpp =====
+// ===== begin src/cpp/src/detail/hex_color.hpp =====
+/**
+ * @file detail/hex_color.hpp
+ * @brief `#rrggbb` to an 8-bit RGB triple, the colour syntax every writer that
+ * takes a `nan_color` accepts (`gltf`, `colorize`).
+ *
+ * A **core-private** header (the `crease_edges.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ */
+
+// System includes
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief Parse `#rrggbb` (either case).
+ * @param rPrefix prepended to the error message, which names the option.
+ * @throws std::invalid_argument on anything else.
+ */
+inline Rgb parse_hex_color(const std::string& rText, const std::string& rPrefix) {
+    auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9')
+            return c - '0';
+        if (c >= 'a' && c <= 'f')
+            return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F')
+            return c - 'A' + 10;
+        return -1;
+    };
+    bool ok = rText.size() == 7 && rText[0] == '#';
+    for (std::size_t i = 1; ok && i < 7; ++i)
+        ok = hex(rText[i]) >= 0;
+    if (!ok)
+        throw std::invalid_argument(rPrefix + "nan_color '" + rText +
+                                    "' is not a '#rrggbb' colour");
+    auto byte = [&](std::size_t i) {
+        return static_cast<std::uint8_t>(hex(rText[i]) * 16 + hex(rText[i + 1]));
+    };
+    return Rgb{byte(1), byte(3), byte(5)};
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/hex_color.hpp =====
 // ===== begin src/cpp/src/detail/hex_dual_schemes.hpp =====
 /**
  * @file detail/hex_dual_schemes.hpp
@@ -52004,6 +52407,7 @@ void predicates_two_product(double A, double B, double& rX, double& rY);
  */
 
 // System includes
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -52031,6 +52435,40 @@ bool primitive_project(std::int64_t Type, const double* pParams, const double* p
 bool primitive_normal(std::int64_t Type, const double* pParams, const double* pP, double* pOut);
 
 /// One patch fitted the way `fit_primitives` fits it.
+/**
+ * @brief The signed distance from @p pP to a primitive: positive on the side
+ * its normal points to (along a plane's normal; away from a sphere's centre,
+ * a cylinder's, cone's or torus' axis or a torus' tube centre), with the same
+ * expressions `fit_primitives` takes its residuals from.
+ * @return the distance, or NaN for any other type.
+ */
+double primitive_signed_distance(std::int64_t Type, const double* pParams, const double* pP);
+
+/// The form error and extremes of a patch's points under a fitted primitive.
+/// A value that does not apply to the type is NaN.
+struct PrimitiveFormMetrics {
+    double mFormError;    ///< peak-to-peak signed distance (max - min)
+    double mDiameterMin;  ///< sphere, cylinder: twice the least radial distance
+    double mDiameterMax;  ///< sphere, cylinder: twice the largest radial distance
+    double mLength;       ///< cylinder, cone: the points' extent along the axis
+    double mArcDeg;       ///< cylinder, cone: the angular span about the axis
+    double mExtent[2];    ///< plane: the two in-plane principal extents, largest first
+};
+
+/**
+ * @brief The form error and extremes of @p N points @p pPts (three per point)
+ * under the primitive (@p Type, @p pParams).
+ *
+ * The arc span is 360 less the largest angular gap between consecutive points
+ * about the axis, or 360 when that gap is at most twice the median gap (a
+ * closed tessellation, whose gaps are all alike), angles within 1e-9 degrees
+ * of each other counting once (the rims of a tessellated cylinder share them). The plane's extents
+ * are those of the points along the two larger principal directions of their scatter. Everything is
+ * NaN for a type of 0 or for no points.
+ */
+PrimitiveFormMetrics primitive_form_metrics(std::int64_t Type, const double* pParams,
+                                            const double* pPts, std::size_t N);
+
 struct PrimitiveFit {
     std::int64_t mType = 0;  ///< 0 when no type is accepted
     double mParams[kPrimitiveParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -58802,6 +59240,13 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FindIntersections", {"Other", "Region", "RegionOther", "Require", "AttachFlags"}},
         {"Thickness",
          {"Other", "Direction", "MaxDistance", "Min", "Region", "RegionOther", "Require"}},
+        {"Deviation",
+         {"Reference", "Patch", "Tolerance", "MinShare", "Require", "Bins", "MaxNormalAngle",
+          "ReferenceRegion"}},
+        {"DeviationRegions", {"Tolerance", "Field", "Prefix", "MinArea"}},
+        {"Exaggerate", {"Field", "Scale", "Clamp", "SmoothFraction"}},
+        {"Colorize",
+         {"Field", "Cmap", "VMin", "VMax", "Symmetric", "Steps", "NanColor", "Component"}},
         {"Snapshot",
          {"Path", "Width", "Height", "Supersample", "Cols", "Rows", "Encoding", "ColorDepth",
           "PngCompress", "View", "Azimuth", "Elevation", "Roll", "Perspective", "Fov", "Zoom",
@@ -102996,8 +103441,11 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
 // ===== end src/cpp/src/detail/primitive_constraints.cpp =====
 // ===== begin src/cpp/src/detail/primitive_geom.cpp =====
 #include <cmath>
+#include <cstddef>
+#include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <vector>
 
 // Project includes (private, not installed)
 
@@ -103169,6 +103617,145 @@ bool primitive_normal(std::int64_t Type, const double* pParams, const double* pP
         default:
             return false;
     }
+}
+
+double primitive_signed_distance(std::int64_t Type, const double* pParams, const double* pP) {
+    const double* x = pParams;
+    const double* d = pParams + 3;
+    const double v[3] = {pP[0] - x[0], pP[1] - x[1], pP[2] - x[2]};
+    switch (Type) {
+        case 1:
+            return detail::MathUtils::Dot(v, d);
+        case 2:
+            return std::sqrt(detail::MathUtils::Dot(v, v)) - pParams[6];
+        case 3:
+        case 4:
+        case 5: {
+            const double h = detail::MathUtils::Dot(v, d);
+            const double r[3] = {v[0] - h * d[0], v[1] - h * d[1], v[2] - h * d[2]};
+            const double rho = std::sqrt(detail::MathUtils::Dot(r, r));
+            if (Type == 3)
+                return rho - pParams[6];
+            if (Type == 4) {
+                const double a = pParams[8] * kPgPi / 180.0;
+                return rho * std::cos(a) - h * std::sin(a);
+            }
+            const double radial = rho - pParams[6];
+            return std::sqrt(radial * radial + h * h) - pParams[7];
+        }
+        default:
+            return std::numeric_limits<double>::quiet_NaN();
+    }
+}
+
+PrimitiveFormMetrics primitive_form_metrics(std::int64_t Type, const double* pParams,
+                                            const double* pPts, std::size_t N) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    PrimitiveFormMetrics m{nan, nan, nan, nan, nan, {nan, nan}};
+    if (Type < 1 || Type > 5 || N == 0)
+        return m;
+    double lo = std::numeric_limits<double>::infinity();
+    double hi = -lo;
+    for (std::size_t i = 0; i < N; ++i) {
+        const double s = primitive_signed_distance(Type, pParams, pPts + 3 * i);
+        lo = s < lo ? s : lo;
+        hi = s > hi ? s : hi;
+    }
+    m.mFormError = hi - lo;
+    const double* x = pParams;
+    const double* d = pParams + 3;
+    if (Type == 1) {
+        // The in-plane principal directions of the points' scatter.
+        double mean[3] = {0.0, 0.0, 0.0};
+        for (std::size_t i = 0; i < N; ++i)
+            for (int k = 0; k < 3; ++k)
+                mean[k] += pPts[3 * i + static_cast<std::size_t>(k)];
+        for (int k = 0; k < 3; ++k)
+            mean[k] /= static_cast<double>(N);
+        double cov[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+        for (std::size_t i = 0; i < N; ++i) {
+            const double q[3] = {pPts[3 * i] - mean[0], pPts[3 * i + 1] - mean[1],
+                                 pPts[3 * i + 2] - mean[2]};
+            for (int a = 0; a < 3; ++a)
+                for (int b = 0; b < 3; ++b)
+                    cov[a * 3 + b] += q[a] * q[b];
+        }
+        double w[3], vec[9];
+        detail::lsq_sym3_eigen(cov, w, vec);
+        for (int e = 0; e < 2; ++e) {
+            const double* u = vec + 3 * (2 - e);  // largest eigenvalue first
+            double a = std::numeric_limits<double>::infinity(), b = -a;
+            for (std::size_t i = 0; i < N; ++i) {
+                const double t = detail::MathUtils::Dot(pPts + 3 * i, u);
+                a = t < a ? t : a;
+                b = t > b ? t : b;
+            }
+            m.mExtent[e] = b - a;
+        }
+        return m;
+    }
+    if (Type == 2) {
+        double rlo = std::numeric_limits<double>::infinity(), rhi = 0.0;
+        for (std::size_t i = 0; i < N; ++i) {
+            const double* p = pPts + 3 * i;
+            const double v[3] = {p[0] - x[0], p[1] - x[1], p[2] - x[2]};
+            const double r = std::sqrt(detail::MathUtils::Dot(v, v));
+            rlo = r < rlo ? r : rlo;
+            rhi = r > rhi ? r : rhi;
+        }
+        m.mDiameterMin = 2.0 * rlo;
+        m.mDiameterMax = 2.0 * rhi;
+        return m;
+    }
+    if (Type == 5)
+        return m;
+    // Cylinder and cone: heights, radial distances and angles about the axis.
+    double e1[3], e2[3];
+    detail::lsq_frame(d, e1, e2);
+    double hlo = std::numeric_limits<double>::infinity(), hhi = -hlo;
+    double rlo = hlo, rhi = 0.0;
+    std::vector<double> angle;
+    angle.reserve(N);
+    for (std::size_t i = 0; i < N; ++i) {
+        const double* p = pPts + 3 * i;
+        const double v[3] = {p[0] - x[0], p[1] - x[1], p[2] - x[2]};
+        const double h = detail::MathUtils::Dot(v, d);
+        const double r[3] = {v[0] - h * d[0], v[1] - h * d[1], v[2] - h * d[2]};
+        const double rho = std::sqrt(detail::MathUtils::Dot(r, r));
+        hlo = h < hlo ? h : hlo;
+        hhi = h > hhi ? h : hhi;
+        rlo = rho < rlo ? rho : rlo;
+        rhi = rho > rhi ? rho : rhi;
+        if (rho > 0.0) {
+            double a = std::atan2(detail::MathUtils::Dot(r, e2), detail::MathUtils::Dot(r, e1)) *
+                       180.0 / kPgPi;
+            angle.push_back(a < 0.0 ? a + 360.0 : a);
+        }
+    }
+    m.mLength = hhi - hlo;
+    if (Type == 3) {
+        m.mDiameterMin = 2.0 * rlo;
+        m.mDiameterMax = 2.0 * rhi;
+    }
+    // Points on several rims share their angles: keep one of each.
+    std::sort(angle.begin(), angle.end());
+    angle.erase(
+        std::unique(angle.begin(), angle.end(), [](double A, double B) { return B - A <= 1e-9; }),
+        angle.end());
+    if (angle.size() >= 2) {
+        std::vector<double> gap(angle.size());
+        for (std::size_t i = 0; i + 1 < angle.size(); ++i)
+            gap[i] = angle[i + 1] - angle[i];
+        gap.back() = angle.front() + 360.0 - angle.back();
+        const double largest = *std::max_element(gap.begin(), gap.end());
+        std::vector<double> sorted = gap;
+        std::nth_element(sorted.begin(),
+                         sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2),
+                         sorted.end());
+        const double median = sorted[sorted.size() / 2];
+        m.mArcDeg = largest <= 2.0 * median ? 360.0 : 360.0 - largest;
+    }
+    return m;
 }
 
 }  // namespace detail
@@ -111162,8 +111749,12 @@ double sd_box_lb2(const Vec3& rLo, const Vec3& rHi, const Vec3& rQ) {
     return sum;
 }
 
-SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
-                                      const Vec3& rQueryPoint, double Limit2) {
+// The walk, for every triangle @p rAccept accepts (a filter only drops
+// candidates, so every pruning bound stays valid).
+template <class Accept>
+SdNearestTriangle sd_nearest_triangle_if(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
+                                         const Vec3& rQueryPoint, double Limit2,
+                                         const Accept& rAccept) {
     double best_d2 = std::numeric_limits<double>::infinity();
     std::int64_t best_tri = -1;
     PointTriangleHit best_hit;
@@ -111189,6 +111780,8 @@ SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const Triangl
             MIO_SD_COUNT(g_sd_triangles, static_cast<std::uint64_t>(rNode.mCount));
             for (std::int64_t k = 0; k < rNode.mCount; ++k) {
                 const std::int64_t t = order[static_cast<std::size_t>(rNode.mBegin + k)];
+                if (!rAccept(t))
+                    continue;
                 const std::size_t ti = static_cast<std::size_t>(t);
                 const PointTriangleHit hit = closest_point_on_triangle(
                     rQueryPoint, rSoup.mCorners[ti * 3 + 0], rSoup.mCorners[ti * 3 + 1],
@@ -111222,7 +111815,18 @@ SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const Triangl
         if (!(lb_near > cut))
             stack[top++] = {near, lb_near};
     }
+    // A cut at Limit2 still lets a farther leaf's triangle win; the callers
+    // that pass a finite limit check the distance themselves.
     return {best_tri, best_hit};
+}
+
+struct SdAcceptAll {
+    constexpr bool operator()(std::int64_t) const { return true; }
+};
+
+SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
+                                      const Vec3& rQueryPoint, double Limit2) {
+    return sd_nearest_triangle_if(rQuery, rSoup, rQueryPoint, Limit2, SdAcceptAll{});
 }
 
 // The pseudonormal of the FEATURE a hit landed on, not of the nearest
@@ -111406,6 +112010,36 @@ std::vector<SurfaceProjection> query_surface_projections(const DistanceQuery& rQ
 #ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
     sd_report_probes("query_surface_projections");
 #endif
+    return out;
+}
+
+std::vector<SurfaceProjection> query_surface_projections_filtered(const DistanceQuery& rQuery,
+                                                                  const std::vector<Vec3>& rPoints,
+                                                                  const TriangleFilter& rAccept,
+                                                                  double MaxDistance) {
+    const TriangleSoup& soup = *rQuery.mpSoup;
+    const std::size_t n = rPoints.size();
+    std::vector<SurfaceProjection> out(n);
+    const double limit2 = MaxDistance < std::numeric_limits<double>::infinity()
+                              ? MaxDistance * MaxDistance
+                              : std::numeric_limits<double>::infinity();
+    parallel_for(n, [&](std::size_t p) {
+        const auto accept = [&](std::int64_t T) { return rAccept(p, T); };
+        const SdNearestTriangle found =
+            sd_nearest_triangle_if(rQuery, soup, rPoints[p], limit2, accept);
+        SurfaceProjection& res = out[p];
+        if (found.mTri < 0 || found.mHit.mDistanceSq > limit2) {
+            res.mFound = false;
+            return;
+        }
+        res.mFound = true;
+        res.mPoint = found.mHit.mPoint;
+        res.mDistance = std::sqrt(found.mHit.mDistanceSq);
+        res.mTriangle = found.mTri;
+        res.mSourceCell = soup.mSourceCell[static_cast<std::size_t>(found.mTri)];
+        res.mFeature = found.mHit.mFeature;
+        res.mNormal = sd_feature_normal(rQuery, soup, found.mTri, found.mHit.mFeature);
+    });
     return out;
 }
 
@@ -144116,25 +144750,7 @@ double gltf_scalarize(const detail::DoubleView& rArray, std::size_t Row, std::si
 }
 
 detail::Rgb gltf_parse_color(const std::string& rText) {
-    auto hex = [](char c) -> int {
-        if (c >= '0' && c <= '9')
-            return c - '0';
-        if (c >= 'a' && c <= 'f')
-            return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F')
-            return c - 'A' + 10;
-        return -1;
-    };
-    bool ok = rText.size() == 7 && rText[0] == '#';
-    for (std::size_t i = 1; ok && i < 7; ++i)
-        ok = hex(rText[i]) >= 0;
-    if (!ok)
-        throw std::invalid_argument(std::string(kGltfPrefix) + "nan_color '" + rText +
-                                    "' is not a '#rrggbb' colour");
-    auto byte = [&](std::size_t i) {
-        return static_cast<std::uint8_t>(hex(rText[i]) * 16 + hex(rText[i + 1]));
-    };
-    return detail::Rgb{byte(1), byte(3), byte(5)};
+    return detail::parse_hex_color(rText, kGltfPrefix);
 }
 
 float gltf_linear(std::uint8_t Byte) {
@@ -144152,10 +144768,18 @@ struct GltfColorPlan {
     double mHi = 1.0;
     const std::uint8_t* mpTable = nullptr;
     detail::Rgb mNan{128, 128, 128};
+    // `color_by="rgb"`: the colours baked into red/green/blue data, per point
+    // or per global cell, taken as they are.
+    std::vector<detail::Rgb> mRgb;
 
     // The three linear floats of vertex @p rKey.
     std::array<float, 3> Color(const GltfVertexKey& rKey) const {
-        const double v = mValues[static_cast<std::size_t>(mCellMode ? rKey.mCell : rKey.mPoint)];
+        const std::size_t at = static_cast<std::size_t>(mCellMode ? rKey.mCell : rKey.mPoint);
+        if (!mRgb.empty()) {
+            const detail::Rgb& c = mRgb[at];
+            return {gltf_linear(c.mR), gltf_linear(c.mG), gltf_linear(c.mB)};
+        }
+        const double v = mValues[at];
         detail::Rgb c = mNan;
         if (std::isfinite(v))
             c = detail::colormap_lookup(mpTable, detail::color_param(v, mLo, mHi));
@@ -144261,8 +144885,24 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
         if (rOpt.mVMin.has_value() && rOpt.mVMax.has_value() && *rOpt.mVMin > *rOpt.mVMax)
             throw std::invalid_argument(std::string(kGltfPrefix) + "vmin must not exceed vmax");
     }
-    const bool color_point = color_active && rMesh.HasPointData(rOpt.mColorBy);
-    const bool color_cell = color_active && !color_point && rMesh.HasCellData(rOpt.mColorBy);
+    // color_by "rgb" (with no array of that name) takes the red, green and
+    // blue channels `colorize` bakes, on points or cells.
+    const bool color_rgb = color_active && rOpt.mColorBy == "rgb" && !rMesh.HasPointData("rgb") &&
+                           !rMesh.HasCellData("rgb");
+    auto has_rgb = [&](bool Point) {
+        for (const char* pName : {"red", "green", "blue"})
+            if (Point ? !rMesh.HasPointData(pName) : !rMesh.HasCellData(pName))
+                return false;
+        return true;
+    };
+    const bool color_point = color_active && (color_rgb ? has_rgb(true)
+                                                        : rMesh.HasPointData(rOpt.mColorBy));
+    const bool color_cell = color_active && !color_point &&
+                            (color_rgb ? has_rgb(false) : rMesh.HasCellData(rOpt.mColorBy));
+    if (color_rgb && !color_point && !color_cell)
+        throw std::invalid_argument(std::string(kGltfPrefix) +
+                                    "color_by 'rgb' needs red, green and blue point or cell data "
+                                    "(colorize writes them)");
     if (color_active && !color_point && !color_cell)
         throw std::invalid_argument(std::string(kGltfPrefix) + "color_by array '" + rOpt.mColorBy +
                                     "' is in neither point_data nor cell_data (available: " +
@@ -144360,7 +145000,28 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
         color.mCellMode = color_cell;
         color.mpTable = table;
         color.mNan = nan_color;
-        if (color_point) {
+        if (color_rgb) {
+            auto chan = [](const NDArray& rA, std::size_t I) {
+                const double v = detail::read_double(rA, I);
+                return static_cast<std::uint8_t>(std::isfinite(v) ? std::max(0.0, std::min(255.0, v))
+                                                                  : 0.0);
+            };
+            if (color_point) {
+                const NDArray& r = rMesh.PointData("red");
+                const NDArray& g = rMesh.PointData("green");
+                const NDArray& b = rMesh.PointData("blue");
+                for (std::size_t p = 0; p < n; ++p)
+                    color.mRgb.push_back({chan(r, p), chan(g, p), chan(b, p)});
+            } else {
+                for (std::size_t blk = 0; blk < rMesh.NumCellBlocks(); ++blk) {
+                    const NDArray& r = rMesh.CellData("red", blk);
+                    const NDArray& g = rMesh.CellData("green", blk);
+                    const NDArray& b = rMesh.CellData("blue", blk);
+                    for (std::size_t c = 0; c < rMesh.Cells(blk).NumCells(); ++c)
+                        color.mRgb.push_back({chan(r, c), chan(g, c), chan(b, c)});
+                }
+            }
+        } else if (color_point) {
             const NDArray& arr = rMesh.PointData(rOpt.mColorBy);
             const std::size_t ncomp = n == 0 ? 0 : arr.Size() / n;
             color.mValues.assign(n, std::nan(""));
@@ -144390,6 +145051,8 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
         for (const GltfNodeBuilders& nb : builders)
             for (const GltfPrimBuilder* pb : {&nb.mTriangles, &nb.mLines, &nb.mPoints})
                 for (const GltfVertexKey& k : pb->mVertices) {
+                    if (color_rgb)
+                        break;
                     const double v =
                         color.mValues[static_cast<std::size_t>(color_cell ? k.mCell : k.mPoint)];
                     if (!std::isfinite(v))
@@ -220677,6 +221340,153 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/clean.cpp =====
+// ===== begin src/cpp/src/operations/colorize.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kColPrefix = "meshio++: colorize: ";
+
+// One scalar per row: a component, or the magnitude of the row.
+double col_scalar(const NDArray& rA, std::size_t Row, std::size_t NComp, std::int64_t Component) {
+    if (NComp <= 1)
+        return detail::read_double(rA, Row);
+    if (Component >= 0)
+        return detail::read_double(rA, Row * NComp + static_cast<std::size_t>(Component));
+    double sum = 0.0;
+    for (std::size_t k = 0; k < NComp; ++k) {
+        const double v = detail::read_double(rA, Row * NComp + k);
+        sum += v * v;
+    }
+    return std::sqrt(sum);
+}
+
+// The values of one array (a point array, or one cell block), scalarized.
+void col_values(const NDArray& rA, std::size_t Rows, std::int64_t Component,
+                std::vector<double>& rOut) {
+    const std::size_t ncomp = Rows == 0 ? 1 : rA.Size() / Rows;
+    if (Component >= 0 && static_cast<std::size_t>(Component) >= ncomp && ncomp > 1)
+        throw std::invalid_argument(std::string(kColPrefix) + "component " +
+                                    std::to_string(Component) + " is out of range (the field has " +
+                                    std::to_string(ncomp) + ")");
+    for (std::size_t r = 0; r < Rows; ++r)
+        rOut.push_back(col_scalar(rA, r, ncomp, Component));
+}
+
+}  // namespace
+
+ColorizeResult colorize(const Mesh& rMesh, const ColorizeOptions& rOptions) {
+    if (rOptions.mField.empty())
+        throw std::invalid_argument(std::string(kColPrefix) + "name the field to colour by");
+    if (rOptions.mSteps < 0)
+        throw std::invalid_argument(std::string(kColPrefix) + "steps must be >= 0");
+    if (!std::isfinite(rOptions.mVMin) || !std::isfinite(rOptions.mVMax))
+        throw std::invalid_argument(std::string(kColPrefix) + "vmin and vmax must be finite");
+    const std::uint8_t* table = detail::colormap_table(rOptions.mCmap);
+    const detail::Rgb nan_color = detail::parse_hex_color(rOptions.mNanColor, kColPrefix);
+    const bool point = rMesh.HasPointData(rOptions.mField);
+    if (!point && !rMesh.HasCellData(rOptions.mField))
+        throw std::invalid_argument(std::string(kColPrefix) + "no point or cell data named '" +
+                                    rOptions.mField + "'");
+
+    // Every value, point order or block-major cell order.
+    std::vector<double> values;
+    std::vector<std::size_t> block_rows;
+    if (point) {
+        col_values(rMesh.PointData(rOptions.mField), rMesh.NumPoints(), rOptions.mComponent,
+                   values);
+    } else {
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const std::size_t nc = rMesh.Cells(b).NumCells();
+            col_values(rMesh.CellData(rOptions.mField, b), nc, rOptions.mComponent, values);
+            block_rows.push_back(nc);
+        }
+    }
+
+    ColorizeResult result;
+    double lo = rOptions.mVMin, hi = rOptions.mVMax;
+    if (!(lo < hi)) {
+        bool seen = false;
+        double amax = 0.0;
+        for (double v : values) {
+            if (!std::isfinite(v))
+                continue;
+            lo = seen ? std::min(lo, v) : v;
+            hi = seen ? std::max(hi, v) : v;
+            amax = std::max(amax, std::fabs(v));
+            seen = true;
+        }
+        if (!seen)
+            lo = hi = 0.0;
+        if (rOptions.mSymmetric) {
+            lo = -amax;
+            hi = amax;
+        }
+    }
+    result.mVMin = lo;
+    result.mVMax = hi;
+
+    const std::size_t n = values.size();
+    NDArray red = NDArray::Uninit(DType::UInt8, {n});
+    NDArray green = NDArray::Uninit(DType::UInt8, {n});
+    NDArray blue = NDArray::Uninit(DType::UInt8, {n});
+    const std::int64_t steps = rOptions.mSteps;
+    for (std::size_t i = 0; i < n; ++i) {
+        detail::Rgb c = nan_color;
+        if (std::isfinite(values[i])) {
+            double t = detail::color_param(values[i], lo, hi);
+            if (steps >= 2) {
+                const double s = static_cast<double>(steps);
+                double band = std::floor(t * s);
+                band = band >= s ? s - 1.0 : band;
+                t = (band + 0.5) / s;
+            }
+            c = detail::colormap_lookup(table, t);
+        }
+        red.As<std::uint8_t>()[i] = c.mR;
+        green.As<std::uint8_t>()[i] = c.mG;
+        blue.As<std::uint8_t>()[i] = c.mB;
+    }
+
+    result.mMesh = detail::clone_mesh(rMesh);
+    if (point) {
+        result.mLocation = "point";
+        result.mMesh.AddPointData(kColorRedName, std::move(red));
+        result.mMesh.AddPointData(kColorGreenName, std::move(green));
+        result.mMesh.AddPointData(kColorBlueName, std::move(blue));
+        return result;
+    }
+    result.mLocation = "cell";
+    const NDArray* channels[3] = {&red, &green, &blue};
+    const char* names[3] = {kColorRedName, kColorGreenName, kColorBlueName};
+    for (int ch = 0; ch < 3; ++ch) {
+        std::vector<NDArray> blocks;
+        std::size_t offset = 0;
+        for (std::size_t nc : block_rows) {
+            NDArray a = NDArray::Uninit(DType::UInt8, {nc});
+            for (std::size_t r = 0; r < nc; ++r)
+                a.As<std::uint8_t>()[r] = channels[ch]->As<std::uint8_t>()[offset + r];
+            offset += nc;
+            blocks.push_back(std::move(a));
+        }
+        result.mMesh.AddCellData(names[ch], std::move(blocks));
+    }
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/colorize.cpp =====
 // ===== begin src/cpp/src/operations/conservative_interpolate.cpp =====
 #include <algorithm>
 #include <array>
@@ -227334,6 +228144,548 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/decimate_volume.cpp =====
+// ===== begin src/cpp/src/operations/deviation.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kDevPrefix = "meshio++: deviation: ";
+constexpr double kDevPi = 3.14159265358979323846;
+
+void dev_check_options(const DeviationOptions& rOptions) {
+    if (!(rOptions.mTolerance >= 0.0) || !std::isfinite(rOptions.mTolerance))
+        throw std::invalid_argument(std::string(kDevPrefix) + "tolerance must be finite and >= 0");
+    if (rOptions.mBins < 1)
+        throw std::invalid_argument(std::string(kDevPrefix) + "bins must be >= 1");
+    if (!std::isfinite(rOptions.mRangeMin) || !std::isfinite(rOptions.mRangeMax))
+        throw std::invalid_argument(std::string(kDevPrefix) + "the range must be finite");
+    if (!(rOptions.mMaxNormalAngleDeg >= 0.0 && rOptions.mMaxNormalAngleDeg <= 180.0))
+        throw std::invalid_argument(std::string(kDevPrefix) +
+                                    "max_normal_angle must lie in [0, 180] degrees");
+}
+
+std::vector<detail::Vec3> dev_points(const Mesh& rScan) {
+    const NDArray& pts = rScan.Points();
+    const std::size_t n = rScan.NumPoints();
+    const std::size_t dim = n > 0 ? pts.Size() / n : 3;
+    std::vector<detail::Vec3> out(n);
+    parallel_for(n, [&](std::size_t p) {
+        out[p] = detail::read_point(pts, dim, static_cast<std::int64_t>(p));
+    });
+    return out;
+}
+
+// One unit normal per scan point: its `normals` point data, else the
+// angle-weighted normal of the scan's own surface cells; zero where neither.
+std::vector<detail::Vec3> dev_point_normals(const Mesh& rScan) {
+    const std::size_t n = rScan.NumPoints();
+    std::vector<detail::Vec3> out(n, detail::Vec3{0.0, 0.0, 0.0});
+    if (rScan.HasPointData("normals")) {
+        const NDArray& a = rScan.PointData("normals");
+        if (a.Ndim() == 2 && detail::cols(a) == 3 && detail::rows(a) == n) {
+            for (std::size_t p = 0; p < n; ++p) {
+                const detail::Vec3 v{detail::read_double(a, p * 3),
+                                     detail::read_double(a, p * 3 + 1),
+                                     detail::read_double(a, p * 3 + 2)};
+                const double len = detail::vec3_norm(v);
+                if (len > 0.0 && std::isfinite(len))
+                    out[p] = detail::vec3_scale(v, 1.0 / len);
+            }
+            return out;
+        }
+    }
+    bool has_surface = false;
+    for (std::size_t b = 0; b < rScan.NumCellBlocks(); ++b) {
+        const std::string t = rScan.Cells(b).Type();
+        has_surface = has_surface || t == "triangle" || t == "quad" || t.rfind("polygon", 0) == 0;
+    }
+    if (!has_surface)
+        return out;
+    detail::TriangleSoup soup;
+    try {
+        soup = detail::build_triangle_soup(rScan, "");
+    } catch (const std::invalid_argument&) {
+        return out;  // a volume or higher-order block: no surface normals
+    }
+    const std::vector<detail::Vec3> fn = detail::soup_face_normals(soup);
+    const std::vector<detail::Vec3> vn =
+        detail::accumulate_vertex_normals(soup, fn, SdfPseudonormalWeight::Angle);
+    for (std::size_t p = 0; p < n && p < vn.size(); ++p) {
+        const double len = detail::vec3_norm(vn[p]);
+        if (len > 0.0 && std::isfinite(len))
+            out[p] = detail::vec3_scale(vn[p], 1.0 / len);
+    }
+    return out;
+}
+
+// The 95th percentile rounded up to two significant figures.
+double dev_round_up_2sig(double V) {
+    if (!(V > 0.0) || !std::isfinite(V))
+        return 0.0;
+    const double mag = std::pow(10.0, std::floor(std::log10(V)) - 1.0);
+    return std::ceil(V / mag - 1e-9) * mag;
+}
+
+// The statistics of the per-point distances (NaN = not measured), in point order.
+void dev_summarize(const std::vector<double>& rDist, const DeviationOptions& rOptions,
+                   DeviationResult& rOut) {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    rOut.mNumPoints = static_cast<std::int64_t>(rDist.size());
+    std::vector<double> d;
+    d.reserve(rDist.size());
+    for (double v : rDist)
+        if (std::isfinite(v))
+            d.push_back(v);
+    const std::size_t m = d.size();
+    rOut.mNumMeasured = static_cast<std::int64_t>(m);
+    rOut.mHistogramEdges.assign(static_cast<std::size_t>(rOptions.mBins) + 1, 0.0);
+    rOut.mHistogramCounts.assign(static_cast<std::size_t>(rOptions.mBins), 0);
+    if (m == 0) {
+        rOut.mMin = rOut.mMax = rOut.mMean = rOut.mRms = rOut.mSigma = nan;
+        rOut.mPercentiles.fill(nan);
+        rOut.mShareWithin = nan;
+        rOut.mSuggestedRange = 0.0;
+        rOut.mWarnings.emplace_back("no scan point was measured");
+        return;
+    }
+    double lo = d[0], hi = d[0], sum = 0.0, sum2 = 0.0, amax = 0.0;
+    std::size_t within = 0;
+    for (double v : d) {
+        lo = v < lo ? v : lo;
+        hi = v > hi ? v : hi;
+        sum += v;
+        sum2 += v * v;
+        amax = std::fabs(v) > amax ? std::fabs(v) : amax;
+        within += std::fabs(v) <= rOptions.mTolerance ? 1 : 0;
+    }
+    const double mean = sum / static_cast<double>(m);
+    double var = 0.0;
+    for (double v : d)
+        var += (v - mean) * (v - mean);
+    rOut.mMin = lo;
+    rOut.mMax = hi;
+    rOut.mMean = mean;
+    rOut.mRms = std::sqrt(sum2 / static_cast<double>(m));
+    rOut.mSigma = std::sqrt(var / static_cast<double>(m));
+    rOut.mShareWithin =
+        rOptions.mTolerance > 0.0 ? static_cast<double>(within) / static_cast<double>(m) : nan;
+    std::vector<double> sorted = d;
+    std::sort(sorted.begin(), sorted.end());
+    const double ps[5] = {1.0, 5.0, 50.0, 95.0, 99.0};
+    for (std::size_t k = 0; k < 5; ++k)
+        rOut.mPercentiles[k] = detail::render_percentile(sorted, ps[k]);
+    std::vector<double> absd(m);
+    for (std::size_t i = 0; i < m; ++i)
+        absd[i] = std::fabs(d[i]);
+    rOut.mSuggestedRange = dev_round_up_2sig(detail::render_percentile(absd, 95.0));
+
+    double r0 = rOptions.mRangeMin, r1 = rOptions.mRangeMax;
+    if (!(r0 < r1)) {
+        r0 = -amax;
+        r1 = amax;
+        if (!(r1 > r0)) {  // every distance is zero
+            r0 = -1.0;
+            r1 = 1.0;
+        }
+    }
+    const std::size_t bins = static_cast<std::size_t>(rOptions.mBins);
+    const double width = (r1 - r0) / static_cast<double>(bins);
+    for (std::size_t k = 0; k <= bins; ++k)
+        rOut.mHistogramEdges[k] = k == bins ? r1 : r0 + width * static_cast<double>(k);
+    for (double v : d) {
+        if (v < r0 || v > r1) {
+            ++rOut.mNumOutsideRange;
+            continue;
+        }
+        std::size_t k = static_cast<std::size_t>((v - r0) / width);
+        k = k >= bins ? bins - 1 : k;  // the last edge belongs to the last bin
+        ++rOut.mHistogramCounts[k];
+    }
+}
+
+void dev_attach(const Mesh& rScan, const std::vector<double>& rDist,
+                const DeviationOptions& rOptions, DeviationResult& rOut) {
+    rOut.mMesh = detail::clone_mesh(rScan);
+    if (!rOptions.mAttach)
+        return;
+    NDArray a = NDArray::Uninit(DType::Float64, {rDist.size()});
+    std::copy(rDist.begin(), rDist.end(), a.As<double>());
+    rOut.mMesh.AddPointData(kDeviationDistanceName, std::move(a));
+}
+
+}  // namespace
+
+DeviationResult deviation(const Mesh& rScan, const Mesh& rReference,
+                          const DeviationOptions& rOptions) {
+    dev_check_options(rOptions);
+    const detail::TriangleSoup soup =
+        detail::build_triangle_soup(rReference, rOptions.mReferenceRegion);
+    DeviationResult result;
+    if (soup.NumTriangles() == 0)
+        throw std::invalid_argument(std::string(kDevPrefix) +
+                                    "the reference has no surface cells to measure against");
+    const detail::SurfaceEdgeRuns runs = detail::surface_edge_runs(soup);
+    SurfaceDistanceOptions sd;
+    const detail::DistanceQuery query = detail::build_distance_query_from_runs(soup, sd, runs);
+
+    const std::vector<detail::Vec3> pts = dev_points(rScan);
+    const std::size_t n = pts.size();
+    const bool rule = rOptions.mMaxNormalAngleDeg < 180.0;
+    std::vector<detail::Vec3> qn;
+    std::vector<detail::Vec3> tn;
+    if (rule) {
+        qn = dev_point_normals(rScan);
+        tn.resize(soup.NumTriangles());
+        for (std::size_t t = 0; t < tn.size(); ++t) {
+            const double len = detail::vec3_norm(query.mFaceNormal[t]);
+            tn[t] = len > 0.0 ? detail::vec3_scale(query.mFaceNormal[t], 1.0 / len)
+                              : detail::Vec3{0.0, 0.0, 0.0};
+        }
+        for (const detail::Vec3& v : qn)
+            result.mNumWithoutNormal += (v[0] == 0.0 && v[1] == 0.0 && v[2] == 0.0) ? 1 : 0;
+        if (result.mNumWithoutNormal > 0)
+            result.mWarnings.push_back(std::to_string(result.mNumWithoutNormal) +
+                                       " scan point(s) have no normal and were measured "
+                                       "without the far-side rule");
+    }
+    const double cos_max = std::cos(rOptions.mMaxNormalAngleDeg * kDevPi / 180.0);
+    const detail::TriangleFilter accept = [&](std::size_t Q, std::int64_t T) {
+        if (!rule)
+            return true;
+        const detail::Vec3& a = qn[Q];
+        if (a[0] == 0.0 && a[1] == 0.0 && a[2] == 0.0)
+            return true;
+        const detail::Vec3& b = tn[static_cast<std::size_t>(T)];
+        if (b[0] == 0.0 && b[1] == 0.0 && b[2] == 0.0)
+            return true;
+        return detail::vec3_dot(a, b) >= cos_max;
+    };
+    const std::vector<detail::SurfaceProjection> hits = detail::query_surface_projections_filtered(
+        query, pts, accept, std::numeric_limits<double>::infinity());
+    std::vector<double> dist(n, std::numeric_limits<double>::quiet_NaN());
+    parallel_for(n, [&](std::size_t p) {
+        const detail::SurfaceProjection& h = hits[p];
+        if (!h.mFound)
+            return;
+        const double side = detail::vec3_dot(detail::vec3_sub(pts[p], h.mPoint), h.mNormal);
+        dist[p] = side < 0.0 ? -h.mDistance : h.mDistance;
+    });
+    dev_summarize(dist, rOptions, result);
+    dev_attach(rScan, dist, rOptions, result);
+    return result;
+}
+
+DeviationResult deviation_to_primitive(const Mesh& rScan, std::int64_t Type,
+                                       const std::array<double, 10>& rParams,
+                                       const DeviationOptions& rOptions) {
+    dev_check_options(rOptions);
+    if (Type < 1 || Type > 5)
+        throw std::invalid_argument(std::string(kDevPrefix) + "unknown primitive type " +
+                                    std::to_string(Type) +
+                                    " (1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus)");
+    for (double v : rParams)
+        if (!std::isfinite(v))
+            throw std::invalid_argument(std::string(kDevPrefix) +
+                                        "the primitive's parameters must be finite");
+    const std::vector<detail::Vec3> pts = dev_points(rScan);
+    std::vector<double> dist(pts.size());
+    parallel_for(pts.size(), [&](std::size_t p) {
+        dist[p] = detail::primitive_signed_distance(Type, rParams.data(), pts[p].data());
+    });
+    DeviationResult result;
+    dev_summarize(dist, rOptions, result);
+    dev_attach(rScan, dist, rOptions, result);
+    return result;
+}
+
+DeviationRegionsResult deviation_regions(const Mesh& rMesh,
+                                         const DeviationRegionsOptions& rOptions) {
+    if (!(rOptions.mTolerance > 0.0) || !std::isfinite(rOptions.mTolerance))
+        throw std::invalid_argument(std::string(kDevPrefix) +
+                                    "deviation_regions: tolerance must be finite and > 0");
+    if (!(rOptions.mMinArea >= 0.0) || !std::isfinite(rOptions.mMinArea))
+        throw std::invalid_argument(std::string(kDevPrefix) +
+                                    "deviation_regions: min_area must be finite and >= 0");
+    if (!rMesh.HasPointData(rOptions.mField))
+        throw std::invalid_argument(std::string(kDevPrefix) + "deviation_regions: no point data '" +
+                                    rOptions.mField + "' (run deviation first)");
+    const NDArray& field = rMesh.PointData(rOptions.mField);
+    const std::size_t np = rMesh.NumPoints();
+    if (field.Size() != np)
+        throw std::invalid_argument(std::string(kDevPrefix) + "deviation_regions: '" +
+                                    rOptions.mField + "' must hold one value per point");
+    std::vector<double> value(np);
+    for (std::size_t p = 0; p < np; ++p)
+        value[p] = detail::read_double(field, p);
+
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t ncells = static_cast<std::size_t>(detail::total_cells(bases));
+    std::vector<std::uint8_t> all(ncells, 1);
+    const detail::SurfaceRings rings =
+        detail::surface_rings(rMesh, all, "meshio++: deviation: deviation_regions: ");
+    const std::vector<double> xyz = detail::surface_xyz(rMesh);
+
+    // Per cell: its class (+1, -1, 0), value, area and area-weighted centroid.
+    std::vector<std::int8_t> cls(ncells, 0);
+    std::vector<double> cval(ncells, 0.0), carea(ncells, 0.0);
+    std::vector<detail::Vec3> ccen(ncells, detail::Vec3{0.0, 0.0, 0.0});
+    std::vector<std::int64_t> ring_of(ncells, -1);
+    for (std::size_t f = 0; f < rings.NumFaces(); ++f)
+        ring_of[static_cast<std::size_t>(rings.mCell[f])] = static_cast<std::int64_t>(f);
+    parallel_for(rings.NumFaces(), [&](std::size_t f) {
+        const std::size_t c = static_cast<std::size_t>(rings.mCell[f]);
+        const std::int64_t* ring = rings.mNodes.data() + rings.mStart[f];
+        const std::size_t size = static_cast<std::size_t>(rings.mStart[f + 1] - rings.mStart[f]);
+        double sum = 0.0;
+        std::size_t finite = 0;
+        for (std::size_t k = 0; k < size; ++k) {
+            const double v = value[static_cast<std::size_t>(ring[k])];
+            if (std::isfinite(v)) {
+                sum += v;
+                ++finite;
+            }
+        }
+        const double v = finite ? sum / static_cast<double>(finite) : 0.0;
+        cval[c] = v;
+        cls[c] = !finite ? 0 : (v > rOptions.mTolerance ? 1 : (v < -rOptions.mTolerance ? -1 : 0));
+        double area = 0.0;
+        detail::Vec3 cen{0.0, 0.0, 0.0};
+        const double* a = &xyz[static_cast<std::size_t>(ring[0]) * 3];
+        for (std::size_t k = 1; k + 1 < size; ++k) {
+            const double* b = &xyz[static_cast<std::size_t>(ring[k]) * 3];
+            const double* d = &xyz[static_cast<std::size_t>(ring[k + 1]) * 3];
+            const double t = detail::GeometryUtils::TriangleArea(a, b, d);
+            area += t;
+            for (std::size_t i = 0; i < 3; ++i)
+                cen[i] += t * (a[i] + b[i] + d[i]) / 3.0;
+        }
+        carea[c] = area;
+        ccen[c] = area > 0.0 ? detail::vec3_scale(cen, 1.0 / area) : cen;
+    });
+
+    // Components of each class over the edge-sharing dual graph, in ascending
+    // cell order.
+    const detail::DualGraphCsr graph = detail::build_facet_dual_graph(rMesh, ncells, true);
+    std::vector<std::int64_t> comp(ncells, -1);
+    std::vector<std::vector<std::int64_t>> members;
+    for (std::size_t seed = 0; seed < ncells; ++seed) {
+        if (cls[seed] == 0 || comp[seed] >= 0)
+            continue;
+        const std::int64_t id = static_cast<std::int64_t>(members.size());
+        members.emplace_back();
+        std::vector<std::int64_t> stack{static_cast<std::int64_t>(seed)};
+        comp[seed] = id;
+        while (!stack.empty()) {
+            const std::int64_t c = stack.back();
+            stack.pop_back();
+            members.back().push_back(c);
+            for (std::int64_t e = graph.mXadj[static_cast<std::size_t>(c)];
+                 e < graph.mXadj[static_cast<std::size_t>(c) + 1]; ++e) {
+                const std::int64_t n = graph.mAdjncy[static_cast<std::size_t>(e)];
+                if (comp[static_cast<std::size_t>(n)] < 0 &&
+                    cls[static_cast<std::size_t>(n)] == cls[seed]) {
+                    comp[static_cast<std::size_t>(n)] = id;
+                    stack.push_back(n);
+                }
+            }
+        }
+        std::sort(members.back().begin(), members.back().end());
+    }
+
+    DeviationRegionsResult result;
+    struct DevComp {
+        DeviationRegionRecord mRec;
+        std::int64_t mFirst;
+        std::size_t mIndex;
+    };
+    std::vector<DevComp> comps;
+    for (std::size_t k = 0; k < members.size(); ++k) {
+        DeviationRegionRecord r;
+        r.mSign = cls[static_cast<std::size_t>(members[k][0])];
+        r.mNumCells = static_cast<std::int64_t>(members[k].size());
+        double lo[3] = {std::numeric_limits<double>::infinity(),
+                        std::numeric_limits<double>::infinity(),
+                        std::numeric_limits<double>::infinity()};
+        double hi[3] = {-lo[0], -lo[1], -lo[2]};
+        r.mExtreme = cval[static_cast<std::size_t>(members[k][0])];
+        detail::Vec3 cen{0.0, 0.0, 0.0};
+        for (std::int64_t c : members[k]) {
+            const std::size_t ci = static_cast<std::size_t>(c);
+            r.mArea += carea[ci];
+            r.mVolume += cval[ci] * carea[ci];
+            cen = detail::vec3_add(cen, detail::vec3_scale(ccen[ci], carea[ci]));
+            r.mExtreme = r.mSign > 0 ? std::max(r.mExtreme, cval[ci]) : std::min(r.mExtreme, cval[ci]);
+            const std::size_t f = static_cast<std::size_t>(ring_of[ci]);
+            for (std::int64_t q = rings.mStart[f]; q < rings.mStart[f + 1]; ++q)
+                for (std::size_t i = 0; i < 3; ++i) {
+                    const double x =
+                        xyz[static_cast<std::size_t>(rings.mNodes[static_cast<std::size_t>(q)]) * 3 + i];
+                    lo[i] = std::min(lo[i], x);
+                    hi[i] = std::max(hi[i], x);
+                }
+        }
+        r.mMean = r.mArea > 0.0 ? r.mVolume / r.mArea : 0.0;
+        if (r.mArea > 0.0)
+            cen = detail::vec3_scale(cen, 1.0 / r.mArea);
+        r.mCentroid = cen;
+        r.mBounds = {lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]};
+        if (r.mArea < rOptions.mMinArea) {
+            ++result.mNumDropped;
+            continue;
+        }
+        comps.push_back({std::move(r), members[k][0], k});
+    }
+    std::sort(comps.begin(), comps.end(), [](const DevComp& rA, const DevComp& rB) {
+        const double a = std::fabs(rA.mRec.mVolume), b = std::fabs(rB.mRec.mVolume);
+        return a != b ? a > b : rA.mFirst < rB.mFirst;
+    });
+
+    Mesh& out = result.mMesh;
+    out = detail::clone_mesh(rMesh);
+    std::vector<std::int64_t> region_of(ncells, -1);
+    for (std::size_t i = 0; i < comps.size(); ++i) {
+        DeviationRegionRecord& r = comps[i].mRec;
+        const bool excess = r.mSign > 0;
+        r.mName = rOptions.mPrefix + (excess ? "excess_" : "missing_") +
+                  std::to_string(excess ? result.mNumExcess++ : result.mNumMissing++);
+        const std::vector<std::int64_t>& cells = members[comps[i].mIndex];
+        NDArray entries = NDArray::Uninit(DType::Int64, {cells.size()});
+        std::copy(cells.begin(), cells.end(), entries.As<std::int64_t>());
+        for (std::int64_t c : cells)
+            region_of[static_cast<std::size_t>(c)] = static_cast<std::int64_t>(i);
+        for (std::size_t k = out.NumRegions(); k-- > 0;)
+            if (out.Region(k).mKind == RegionKind::Cell && out.Region(k).mName == r.mName)
+                out.RemoveRegion(k);
+        meshioplusplus::Region region(r.mName, RegionKind::Cell, std::move(entries));
+        region.Canonicalize();
+        out.AddRegion(std::move(region));
+        result.mRegions.push_back(std::move(r));
+    }
+    std::vector<NDArray> blocks;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const std::size_t base = static_cast<std::size_t>(bases[b]);
+        const std::size_t nc = rMesh.Cells(b).NumCells();
+        NDArray a = NDArray::Uninit(DType::Int64, {nc});
+        std::copy(region_of.begin() + static_cast<std::ptrdiff_t>(base),
+                  region_of.begin() + static_cast<std::ptrdiff_t>(base + nc), a.As<std::int64_t>());
+        blocks.push_back(std::move(a));
+    }
+    out.AddCellData(kDeviationRegionName, std::move(blocks));
+    if (comps.empty())
+        result.mWarnings.emplace_back("no cell lies beyond the tolerance");
+    return result;
+}
+
+ExaggerateResult exaggerate(const Mesh& rMesh, const ExaggerateOptions& rOptions) {
+    if (!std::isfinite(rOptions.mScale))
+        throw std::invalid_argument(std::string(kDevPrefix) + "exaggerate: scale must be finite");
+    if (!(rOptions.mClamp >= 0.0) || !std::isfinite(rOptions.mClamp))
+        throw std::invalid_argument(std::string(kDevPrefix) +
+                                    "exaggerate: clamp must be finite and >= 0");
+    if (!(rOptions.mSmoothFraction >= 0.0) || !std::isfinite(rOptions.mSmoothFraction))
+        throw std::invalid_argument(std::string(kDevPrefix) +
+                                    "exaggerate: smooth_fraction must be finite and >= 0");
+    if (!rMesh.HasPointData(rOptions.mField))
+        throw std::invalid_argument(std::string(kDevPrefix) + "exaggerate: no point data '" +
+                                    rOptions.mField + "' (run deviation first)");
+    const NDArray& field = rMesh.PointData(rOptions.mField);
+    const std::size_t n = rMesh.NumPoints();
+    if (field.Size() != n)
+        throw std::invalid_argument(std::string(kDevPrefix) + "exaggerate: '" + rOptions.mField +
+                                    "' must hold one value per point");
+    ExaggerateResult result;
+    std::vector<double> d(n);
+    std::vector<double> absd;
+    for (std::size_t p = 0; p < n; ++p) {
+        d[p] = detail::read_double(field, p);
+        if (std::isfinite(d[p]))
+            absd.push_back(std::fabs(d[p]));
+    }
+    const double clamp =
+        rOptions.mClamp > 0.0 ? rOptions.mClamp
+                              : (absd.empty() ? 0.0
+                                              : dev_round_up_2sig(
+                                                    detail::render_percentile(absd, 95.0)));
+    result.mClamp = clamp;
+    for (double& v : d)
+        if (std::isfinite(v))
+            v = std::max(-clamp, std::min(clamp, v));
+
+    const std::vector<detail::Vec3> pts = dev_points(rMesh);
+    // The smoothing radius: a fraction of the bounding-box diagonal.
+    detail::Vec3 lo{0.0, 0.0, 0.0}, hi{0.0, 0.0, 0.0};
+    for (std::size_t p = 0; p < n; ++p)
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] = p == 0 ? pts[p][k] : std::min(lo[k], pts[p][k]);
+            hi[k] = p == 0 ? pts[p][k] : std::max(hi[k], pts[p][k]);
+        }
+    const double radius = rOptions.mSmoothFraction * detail::vec3_norm(detail::vec3_sub(hi, lo));
+    result.mRadius = radius;
+    std::vector<double> smooth = d;
+    if (radius > 0.0 && n > 0) {
+        detail::SpatialGrid grid(radius);
+        for (std::size_t p = 0; p < n; ++p)
+            if (std::isfinite(d[p]))
+                grid.Insert(grid.KeyOf(pts[p].data()), static_cast<std::int64_t>(p));
+        const double r2 = radius * radius;
+        parallel_for(n, [&](std::size_t p) {
+            if (!std::isfinite(d[p]))
+                return;
+            double sw = 0.0, sv = 0.0;
+            grid.ForEachIn27(grid.KeyOf(pts[p].data()), [&](const std::vector<std::int64_t>& rIds) {
+                for (std::int64_t q : rIds) {
+                    const double dist2 =
+                        detail::vec3_norm_sq(detail::vec3_sub(pts[static_cast<std::size_t>(q)], pts[p]));
+                    if (dist2 >= r2)
+                        continue;
+                    const double w = 1.0 - dist2 / r2;
+                    sw += w;
+                    sv += w * d[static_cast<std::size_t>(q)];
+                }
+                return true;
+            });
+            smooth[p] = sw > 0.0 ? sv / sw : d[p];
+        });
+    }
+
+    const std::vector<detail::Vec3> nrm = dev_point_normals(rMesh);
+    std::vector<detail::Vec3> moved = pts;
+    for (std::size_t p = 0; p < n; ++p) {
+        const detail::Vec3& u = nrm[p];
+        if (!std::isfinite(smooth[p]) || (u[0] == 0.0 && u[1] == 0.0 && u[2] == 0.0))
+            continue;
+        moved[p] = detail::vec3_add(pts[p], detail::vec3_scale(u, rOptions.mScale * smooth[p]));
+        ++result.mNumMoved;
+    }
+    if (result.mNumMoved < static_cast<std::int64_t>(n))
+        result.mWarnings.push_back(std::to_string(static_cast<std::int64_t>(n) - result.mNumMoved) +
+                                   " point(s) without a normal or a deviation were not moved");
+    result.mMesh = detail::clone_mesh(rMesh);
+    const std::size_t dim = n > 0 ? rMesh.Points().Size() / n : 3;
+    NDArray out = NDArray::Uninit(DType::Float64, {n, dim});
+    for (std::size_t p = 0; p < n; ++p)
+        for (std::size_t k = 0; k < dim; ++k)
+            out.As<double>()[p * dim + k] = k < 3 ? moved[p][k] : detail::read_double(rMesh.Points(), p * dim + k);
+    result.mMesh.AssignPoints(std::move(out));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/deviation.cpp =====
 // ===== begin src/cpp/src/operations/diff.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -231761,6 +233113,7 @@ struct FpOutcome {
     double mMax = std::numeric_limits<double>::quiet_NaN();
     double mFraction = 0.0;
     double mTol = 0.0;
+    detail::PrimitiveFormMetrics mForm{};
 };
 
 // How far the facets' centres lie from a fitted surface (the parameters in
@@ -232012,6 +233365,13 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
             }
         }
         outcome[r] = fp_fit_patch(patch, rOptions);
+        // Form error and extremes, in the world frame the parameters are in.
+        std::vector<double> world(patch.mPts);
+        for (std::size_t i = 0; i < verts.size(); ++i)
+            for (int k = 0; k < 3; ++k)
+                world[i * 3 + static_cast<std::size_t>(k)] += patch.mShift[k];
+        outcome[r].mForm = detail::primitive_form_metrics(outcome[r].mType, outcome[r].mParams,
+                                                          world.data(), verts.size());
     });
 
     FitPrimitivesResult result;
@@ -232080,6 +233440,22 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     NDArray pmax = NDArray::Uninit(DType::Float64, {m});
     NDArray pfrac = NDArray::Uninit(DType::Float64, {m});
     NDArray ptol = NDArray::Uninit(DType::Float64, {m});
+    NDArray pform = NDArray::Uninit(DType::Float64, {m});
+    NDArray pdmin = NDArray::Uninit(DType::Float64, {m});
+    NDArray pdmax = NDArray::Uninit(DType::Float64, {m});
+    NDArray plen = NDArray::Uninit(DType::Float64, {m});
+    NDArray parc = NDArray::Uninit(DType::Float64, {m});
+    NDArray pext = NDArray::Uninit(DType::Float64, {m, 2});
+    for (std::size_t r = 0; r < m; ++r) {
+        const detail::PrimitiveFormMetrics& f = outcome[r].mForm;
+        pform.As<double>()[r] = f.mFormError;
+        pdmin.As<double>()[r] = f.mDiameterMin;
+        pdmax.As<double>()[r] = f.mDiameterMax;
+        plen.As<double>()[r] = f.mLength;
+        parc.As<double>()[r] = f.mArcDeg;
+        pext.As<double>()[r * 2] = f.mExtent[0];
+        pext.As<double>()[r * 2 + 1] = f.mExtent[1];
+    }
     for (std::size_t r = 0; r < m; ++r) {
         pid.As<std::int64_t>()[r] = ids[r];
         ptype.As<std::int64_t>()[r] = outcome[r].mType;
@@ -232097,6 +233473,12 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     out.AddFieldData("fit:patch_max", std::move(pmax));
     out.AddFieldData("fit:patch_fraction", std::move(pfrac));
     out.AddFieldData("fit:patch_tolerance", std::move(ptol));
+    out.AddFieldData(kFitPatchFormErrorName, std::move(pform));
+    out.AddFieldData(kFitPatchDiameterMinName, std::move(pdmin));
+    out.AddFieldData(kFitPatchDiameterMaxName, std::move(pdmax));
+    out.AddFieldData(kFitPatchLengthName, std::move(plen));
+    out.AddFieldData(kFitPatchArcName, std::move(parc));
+    out.AddFieldData(kFitPatchExtentName, std::move(pext));
     return result;
 }
 
@@ -256251,6 +257633,95 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"Max", tr.mMax},
                         {"Mean", tr.mMean}});
         return std::move(tr.mMesh);
+    }
+    if (op == "Deviation") {
+        // deviation:distance flows on; with Tolerance and MinShare, a share
+        // within tolerance below MinShare stops the pipeline unless Require
+        // is false.
+        DeviationOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        opts.mBins = static_cast<std::int64_t>(pipe_number(rStep, "Bins", 20.0));
+        opts.mMaxNormalAngleDeg = pipe_number(rStep, "MaxNormalAngle", 90.0);
+        opts.mReferenceRegion = pipe_text(rStep, "ReferenceRegion", "");
+        const std::string ref_path = pipe_text(rStep, "Reference", "");
+        if (ref_path.empty())
+            throw std::invalid_argument("meshio++: pipeline: Deviation needs a Reference");
+        const Mesh ref = pipe_read_extra(ref_path);
+        const double patch = pipe_number(rStep, "Patch", -1.0);
+        DeviationResult dr;
+        if (patch >= 0.0) {
+            if (!ref.HasFieldData("fit:patch_params") || !ref.HasFieldData("fit:patch_id"))
+                throw std::invalid_argument(
+                    "meshio++: pipeline: Deviation: the Reference carries no fit:patch_params");
+            const NDArray& ids = ref.FieldData("fit:patch_id");
+            std::size_t row = ids.Size();
+            for (std::size_t r = 0; r < ids.Size(); ++r)
+                if (detail::read_int(ids, r) == static_cast<std::int64_t>(patch))
+                    row = r;
+            if (row == ids.Size())
+                throw std::invalid_argument("meshio++: pipeline: Deviation: no fitted patch " +
+                                            std::to_string(static_cast<std::int64_t>(patch)));
+            std::array<double, 10> params{};
+            for (std::size_t k = 0; k < 10; ++k)
+                params[k] = detail::read_double(ref.FieldData("fit:patch_params"), row * 10 + k);
+            dr = deviation_to_primitive(
+                mesh, detail::read_int(ref.FieldData("fit:patch_type"), row), params, opts);
+        } else {
+            dr = deviation(mesh, ref, opts);
+        }
+        const double min_share = pipe_number(rStep, "MinShare", 0.0);
+        if (opts.mTolerance > 0.0 && min_share > 0.0 && pipe_flag(rStep, "Require", true) &&
+            !(dr.mShareWithin >= min_share))
+            throw std::runtime_error(
+                "meshio++: pipeline: Deviation failed: the share within Tolerance is below "
+                "MinShare");
+        pipe_push_step(rReport, rStep,
+                       {{"NumMeasured", static_cast<double>(dr.mNumMeasured)},
+                        {"Min", dr.mMin},
+                        {"Max", dr.mMax},
+                        {"Mean", dr.mMean},
+                        {"Rms", dr.mRms},
+                        {"Sigma", dr.mSigma},
+                        {"ShareWithin", dr.mShareWithin}});
+        return std::move(dr.mMesh);
+    }
+    if (op == "DeviationRegions") {
+        DeviationRegionsOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        opts.mField = pipe_text(rStep, "Field", kDeviationDistanceName);
+        opts.mPrefix = pipe_text(rStep, "Prefix", "deviation:");
+        opts.mMinArea = pipe_number(rStep, "MinArea", 0.0);
+        DeviationRegionsResult rr = deviation_regions(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumExcess", static_cast<double>(rr.mNumExcess)},
+                        {"NumMissing", static_cast<double>(rr.mNumMissing)},
+                        {"NumDropped", static_cast<double>(rr.mNumDropped)}});
+        return std::move(rr.mMesh);
+    }
+    if (op == "Exaggerate") {
+        ExaggerateOptions opts;
+        opts.mField = pipe_text(rStep, "Field", kDeviationDistanceName);
+        opts.mScale = pipe_number(rStep, "Scale", 10.0);
+        opts.mClamp = pipe_number(rStep, "Clamp", 0.0);
+        opts.mSmoothFraction = pipe_number(rStep, "SmoothFraction", 0.01);
+        ExaggerateResult er = exaggerate(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumMoved", static_cast<double>(er.mNumMoved)}, {"Clamp", er.mClamp}});
+        return std::move(er.mMesh);
+    }
+    if (op == "Colorize") {
+        ColorizeOptions opts;
+        opts.mField = pipe_text(rStep, "Field", "");
+        opts.mCmap = pipe_text(rStep, "Cmap", "viridis");
+        opts.mVMin = pipe_number(rStep, "VMin", 0.0);
+        opts.mVMax = pipe_number(rStep, "VMax", 0.0);
+        opts.mSymmetric = pipe_flag(rStep, "Symmetric", false);
+        opts.mSteps = static_cast<std::int64_t>(pipe_number(rStep, "Steps", 0.0));
+        opts.mNanColor = pipe_text(rStep, "NanColor", "#808080");
+        opts.mComponent = static_cast<std::int64_t>(pipe_number(rStep, "Component", -1.0));
+        ColorizeResult cr = colorize(mesh, opts);
+        pipe_push_step(rReport, rStep, {{"VMin", cr.mVMin}, {"VMax", cr.mVMax}});
+        return std::move(cr.mMesh);
     }
     if (op == "EditRegions") {
         // One edit per step: a pipeline value is flat, and a list of edits is

@@ -130,6 +130,7 @@ export reorder, convert_cells, subdivide, agglomerate, tet_to_poly, poly_to_tet,
 export boundary_layer
 export extrude, revolve, mirror
 export find_intersections, thickness
+export deviation, deviation_regions, exaggerate, colorize
 export tetrahedralize, has_netgen, tetrahedralize_backends
 export remesh_quads, remesh_quads_backends
 export cut_level_set, cut_quadrature, has_cutcells

@@ -5964,6 +5964,26 @@ step('findIntersections and thickness (roadmap 3.1.2, 3.1.4)', () => {
     assert.throws(() => m.thickness(a, { direction: 'sideways' }), /direction/);
 });
 
+step('deviation (roadmap 7.4)', () => {
+    const ref = m.icosaSphere(1, 3);
+    const scan = m.icosaSphere(1.01, 3);
+    const d = m.deviation(scan, { reference: ref, tolerance: 0.02 });
+    assert.ok(Math.abs(d.mean - 0.01) < 1e-9);
+    assert.equal(d.shareWithin, 1);
+    assert.equal(d.histogramCounts.length, 20);
+    const p = m.deviation(scan, { primitive: { type: 'sphere', params: [0, 0, 0, 0, 0, 0, 1, 0, 0, 0] } });
+    assert.ok(Math.abs(p.mean - 0.01) < 1e-12);
+    assert.throws(() => m.deviation(scan, { bogus: 1 }), /bogus/);
+    assert.throws(() => m.deviation(scan), /reference/);
+    const g = m.deviationRegions(d.mesh, { tolerance: 0.005 });
+    assert.equal(g.numExcess, 1);
+    assert.equal(g.regions[0].name, 'deviation:excess_0');
+    const e = m.exaggerate(d.mesh, { scale: 20 });
+    assert.ok(e.numMoved > 0);
+    const c = m.colorize(d.mesh, { field: 'deviation:distance', steps: 4 });
+    assert.equal(c.location, 'point');
+});
+
 step('selectRegion writes one named region', () => {
     const box = m.box([2, 2, 2], [2, 2, 2]);
     const left = m.selectRegion(box, 'left', {

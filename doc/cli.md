@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `reconstruct`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `deviation`, `deviation-regions`, `exaggerate`, `colorize`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `reconstruct`, `register`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -126,6 +126,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `check-tetrahedra` | `check_tetrahedra`'s report: `num_tetrahedra`, `num_inverted`, `num_degenerate`, `num_overlaps`, `min_volume`, `max_volume`, `valid` and `warnings` |
 | `find-intersections` | `find_intersections`'s counts, `truncated`, `clean`, `pairs` (a list of `[cell_a, cell_b]`) and `warnings` |
 | `thickness` | `thickness`'s report (`direction`, the counts, `min`, `max`, `mean`, `min_cell`, `min_point`, `max_distance`, `warnings`), plus `threshold` and `passed` with `--min` |
+| `deviation` | `deviation`'s report (the counts, `min`, `max`, `mean`, `rms`, `sigma`, `percentiles`, `histogram_edges`, `histogram_counts`, `share_within`, `suggested_range`, `warnings`), plus `min_share` and `passed` with `--min-share` |
 | `diff` | `diff`'s report plus `equal` (the exit-code decision); the Python CLI adds its `sets` section |
 | `convert` | `input`, `output`, `num_points`, `num_cells`, `cell_blocks`, the data names and `num_regions`; for a sequence, `mode`, `num_steps` and `num_files` |
 | `agglomerate` | `cells_in`, `cells_out`, `num_faces_merged` and `num_rejected` |
@@ -309,6 +310,85 @@ meshioplusplus thickness [options] INFILE [OUTFILE]
 | `--json` | | Print the report as JSON |
 | `--input-format FORMAT` | `-i` | Force input format |
 | `--output-format FORMAT` | `-o` | Force output format of `OUTFILE`, which carries `thickness:distance` and `thickness:hit_cell` |
+
+## meshioplusplus deviation
+
+[Signed deviation](./deviation.md) of every point of a scan from a reference surface, or from a fitted primitive, and its statistics.
+
+```
+meshioplusplus deviation [options] SCAN REFERENCE [OUTFILE]
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--patch ID` | | Measure against this patch label's fitted primitive of `REFERENCE`, a mesh `fit-primitives` wrote |
+| `--tolerance T` | | Report the share of points within `+-T` |
+| `--min-share S` | | With `--tolerance`, exit **1** when the share within it is below `S` |
+| `--bins N` | | Histogram bins (default 20) |
+| `--range LO,HI` | | Histogram range (default `+-max |d|`) |
+| `--max-normal-angle DEG` | | The far-side rule: skip reference triangles facing away by more (default 90; 180 turns it off) |
+| `--reference-region R` | | Measure against only this named cell region of `REFERENCE` |
+| `--json` | | Print the report as JSON |
+| `--input-format FORMAT` | `-i` | Force the format of `SCAN` |
+| `--reference-format FORMAT` | | Force the format of `REFERENCE` |
+| `--output-format FORMAT` | `-o` | Force output format of `OUTFILE`, which carries `deviation:distance` |
+
+## meshioplusplus exaggerate
+
+A copy of a measured surface with each point [moved along its normal](./deviation.md#exaggerated-maps) by a scaled, clamped, smoothed deviation, for a figure.
+
+```
+meshioplusplus exaggerate [options] INFILE OUTFILE
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--field F` | | The signed deviation point data (default `deviation:distance`) |
+| `--scale S` | | Displacement per unit deviation (default 10) |
+| `--clamp C` | | Clamp the deviation to `+-C` first (default 0: the suggested colour range) |
+| `--smooth-fraction F` | | Smooth over this fraction of the bounding-box diagonal (default 0.01; 0 off) |
+| `--json` | | Print the report as JSON |
+| `--input-format FORMAT` | `-i` | Force input format |
+| `--output-format FORMAT` | `-o` | Force output format |
+
+## meshioplusplus colorize
+
+[Bake a field into colours](./colorize.md): UInt8 `red`, `green` and `blue` data through a colormap.
+
+```
+meshioplusplus colorize [options] INFILE OUTFILE --field F
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--field F` | | The point or cell data to colour by (required) |
+| `--cmap NAME` | | A colormap (default `viridis`) |
+| `--vmin V`, `--vmax V` | | The range (default: the field's min and max) |
+| `--symmetric` | | With the automatic range, `+-max |v|` |
+| `--steps N` | | Bands at fixed steps (default 0: continuous) |
+| `--nan-color #rrggbb` | | The colour of a non-finite value (default `#808080`) |
+| `--component K` | | Colour by this 0-based component (default: the magnitude) |
+| `--json` | | Print the report as JSON |
+| `--input-format FORMAT` | `-i` | Force input format |
+| `--output-format FORMAT` | `-o` | Force output format |
+
+## meshioplusplus deviation-regions
+
+The [connected excess and missing-material regions](./deviation.md#excess-and-missing-material) of a measured surface beyond a tolerance, written as named cell regions.
+
+```
+meshioplusplus deviation-regions [options] INFILE OUTFILE --tolerance T
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--tolerance T` | | Cells beyond `+-T` are excess or missing material (required) |
+| `--field F` | | The signed deviation point data (default `deviation:distance`) |
+| `--prefix P` | | Region names are `<P>excess_<k>` and `<P>missing_<k>` (default `deviation:`) |
+| `--min-area A` | | Drop regions smaller than `A` |
+| `--json` | | Print the report as JSON |
+| `--input-format FORMAT` | `-i` | Force input format |
+| `--output-format FORMAT` | `-o` | Force output format |
 
 ---
 

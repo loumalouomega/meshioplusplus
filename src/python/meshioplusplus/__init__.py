@@ -116,6 +116,7 @@ if TYPE_CHECKING:
     from ._check_conformity import check_conformity
     from ._check_tetrahedra import check_tetrahedra
     from ._clean import clean
+    from ._colorize import colorize
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
     from ._coordinates import convert_coordinates
@@ -131,6 +132,7 @@ if TYPE_CHECKING:
     from ._dataset import DatasetEntry, DatasetManifest
     from ._decimate import decimate
     from ._decimate_volume import decimate_volume
+    from ._deviation import deviation, deviation_regions, exaggerate
     from ._diff import diff, meshes_equal
     from ._eigenmodes import laplacian_eigenmodes
     from ._error import estimate_error
@@ -391,6 +393,10 @@ _LAZY_ATTRS = {
     "check_tetrahedra": "_check_tetrahedra",
     "find_intersections": "_find_intersections",
     "thickness": "_thickness",
+    "deviation": "_deviation",
+    "deviation_regions": "_deviation",
+    "exaggerate": "_deviation",
+    "colorize": "_colorize",
     "decimate": "_decimate",
     "decimate_volume": "_decimate_volume",
     "diff": "_diff",
@@ -701,6 +707,10 @@ __all__ = [
     "check_tetrahedra",
     "find_intersections",
     "thickness",
+    "deviation",
+    "deviation_regions",
+    "exaggerate",
+    "colorize",
     "sniff_format",
     "reorder",
     "compute_bandwidth",

@@ -170,6 +170,10 @@ extern SEXP R_mio_revolve(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_mirror(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_find_intersections(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_thickness(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_deviation(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_deviation_regions(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_exaggerate(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_colorize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_project_to_cad(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_meshes_equal(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_diff(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -411,6 +415,10 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_mirror, 7),
                                               CALLDEF(R_mio_find_intersections, 6),
                                               CALLDEF(R_mio_thickness, 7),
+                                              CALLDEF(R_mio_deviation, 10),
+                                              CALLDEF(R_mio_deviation_regions, 5),
+                                              CALLDEF(R_mio_exaggerate, 5),
+                                              CALLDEF(R_mio_colorize, 9),
                                               CALLDEF(R_mio_project_to_cad, 6),
                                               CALLDEF(R_mio_meshes_equal, 5),
                                               CALLDEF(R_mio_diff, 5),

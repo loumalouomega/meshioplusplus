@@ -215,6 +215,8 @@
 #include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/thickness.hpp"
+#include "meshioplusplus/operations/deviation.hpp"
+#include "meshioplusplus/operations/colorize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/mmg.hpp"
@@ -1946,6 +1948,32 @@ void core_def_decimate(py::module_& rM, const char* pName, const char* pCountKey
         py::arg("max_error") = -1.0, py::arg("placement") = "optimal",
         py::arg("preserve_boundary") = PreserveBoundary, py::arg("preserve_features") = true,
         py::arg("feature_angle") = 30.0, py::arg("frozen") = py::none());
+}
+
+/// The dict `deviation` and its relatives return.
+py::dict core_deviation_dict(meshioplusplus::DeviationResult&& rR) {
+    py::dict out;
+    out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(rR.mMesh));
+    out["num_points"] = rR.mNumPoints;
+    out["num_measured"] = rR.mNumMeasured;
+    out["min"] = rR.mMin;
+    out["max"] = rR.mMax;
+    out["mean"] = rR.mMean;
+    out["rms"] = rR.mRms;
+    out["sigma"] = rR.mSigma;
+    py::dict pct;
+    const int levels[5] = {1, 5, 50, 95, 99};
+    for (std::size_t k = 0; k < 5; ++k)
+        pct[py::str("p" + std::to_string(levels[k]))] = rR.mPercentiles[k];
+    out["percentiles"] = pct;
+    out["histogram_edges"] = rR.mHistogramEdges;
+    out["histogram_counts"] = rR.mHistogramCounts;
+    out["num_outside_range"] = rR.mNumOutsideRange;
+    out["share_within"] = rR.mShareWithin;
+    out["suggested_range"] = rR.mSuggestedRange;
+    out["num_without_normal"] = rR.mNumWithoutNormal;
+    out["warnings"] = rR.mWarnings;
+    return out;
 }
 
 }  // namespace
@@ -3770,6 +3798,152 @@ PYBIND11_MODULE(_core, m) {
         py::arg("max_distance") = 0.0, py::arg("threshold") = 0.0,
         py::arg("region") = std::string(), py::arg("region_target") = std::string(),
         py::arg("attach") = true);
+
+    // deviation (roadmap 7.4.1, 7.4.2): the signed distance of every scan
+    // point to a reference surface, or to a fitted primitive when `reference`
+    // is None and `primitive_type` is set, and its statistics. Returns a dict
+    // {mesh, num_measured, min, max, mean, rms, sigma, percentiles, ...}.
+    m.def(
+        "deviation",
+        [](py::object pyscan, py::object pyref, std::int64_t primitive_type,
+           std::vector<double> primitive_params, double tolerance, std::int64_t bins,
+           double range_min, double range_max, double max_normal_angle,
+           const std::string& reference_region, bool attach) {
+            meshioplusplus_py::PyMeshRefs refs, refs_b;
+            meshioplusplus::Mesh scan = meshioplusplus_py::py_to_mesh(
+                pyscan, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::DeviationOptions o;
+            o.mTolerance = tolerance;
+            o.mBins = bins;
+            o.mRangeMin = range_min;
+            o.mRangeMax = range_max;
+            o.mMaxNormalAngleDeg = max_normal_angle;
+            o.mReferenceRegion = reference_region;
+            o.mAttach = attach;
+            meshioplusplus::DeviationResult r;
+            if (pyref.is_none()) {
+                if (primitive_params.size() != 10)
+                    throw std::invalid_argument(
+                        "meshio++: deviation: a primitive takes ten parameters");
+                std::array<double, 10> params{};
+                std::copy(primitive_params.begin(), primitive_params.end(), params.begin());
+                r = core_nogil([&] {
+                    return meshioplusplus::deviation_to_primitive(scan, primitive_type, params, o);
+                });
+            } else {
+                meshioplusplus::Mesh ref = meshioplusplus_py::py_to_mesh(
+                    pyref, refs_b, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+                r = core_nogil([&] { return meshioplusplus::deviation(scan, ref, o); });
+            }
+            return core_deviation_dict(std::move(r));
+        },
+        py::arg("scan"), py::arg("reference") = py::none(), py::arg("primitive_type") = 0,
+        py::arg("primitive_params") = std::vector<double>(), py::arg("tolerance") = 0.0,
+        py::arg("bins") = 20, py::arg("range_min") = 0.0, py::arg("range_max") = 0.0,
+        py::arg("max_normal_angle") = 90.0, py::arg("reference_region") = std::string(),
+        py::arg("attach") = true);
+
+    // deviation_regions (roadmap 7.4.3): the connected regions beyond
+    // +-tolerance of a measured surface. Returns {mesh, regions, ...}.
+    m.def(
+        "deviation_regions",
+        [](py::object pymesh, double tolerance, const std::string& field, const std::string& prefix,
+           double min_area) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::DeviationRegionsOptions o;
+            o.mTolerance = tolerance;
+            o.mField = field;
+            o.mPrefix = prefix;
+            o.mMinArea = min_area;
+            meshioplusplus::DeviationRegionsResult r =
+                core_nogil([&] { return meshioplusplus::deviation_regions(mesh, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            py::list regions;
+            for (const meshioplusplus::DeviationRegionRecord& rec : r.mRegions) {
+                py::dict d;
+                d["name"] = rec.mName;
+                d["sign"] = rec.mSign;
+                d["num_cells"] = rec.mNumCells;
+                d["area"] = rec.mArea;
+                d["extreme"] = rec.mExtreme;
+                d["mean"] = rec.mMean;
+                d["volume"] = rec.mVolume;
+                d["centroid"] = py::make_tuple(rec.mCentroid[0], rec.mCentroid[1], rec.mCentroid[2]);
+                d["bounds"] = py::make_tuple(rec.mBounds[0], rec.mBounds[1], rec.mBounds[2],
+                                             rec.mBounds[3], rec.mBounds[4], rec.mBounds[5]);
+                regions.append(d);
+            }
+            out["regions"] = regions;
+            out["num_excess"] = r.mNumExcess;
+            out["num_missing"] = r.mNumMissing;
+            out["num_dropped"] = r.mNumDropped;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("tolerance"), py::arg("field") = "deviation:distance",
+        py::arg("prefix") = "deviation:", py::arg("min_area") = 0.0);
+
+    // exaggerate (roadmap 7.4.4): points displaced along their normals by a
+    // scaled, clamped, smoothed deviation. Returns {mesh, clamp, radius, ...}.
+    m.def(
+        "exaggerate",
+        [](py::object pymesh, const std::string& field, double scale, double clamp,
+           double smooth_fraction) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::ExaggerateOptions o;
+            o.mField = field;
+            o.mScale = scale;
+            o.mClamp = clamp;
+            o.mSmoothFraction = smooth_fraction;
+            meshioplusplus::ExaggerateResult r =
+                core_nogil([&] { return meshioplusplus::exaggerate(mesh, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["clamp"] = r.mClamp;
+            out["radius"] = r.mRadius;
+            out["num_moved"] = r.mNumMoved;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("field") = "deviation:distance", py::arg("scale") = 10.0,
+        py::arg("clamp") = 0.0, py::arg("smooth_fraction") = 0.01);
+
+    // colorize (roadmap 7.4.4): a field baked into UInt8 red/green/blue data
+    // through a colormap. Returns {mesh, vmin, vmax, location}.
+    m.def(
+        "colorize",
+        [](py::object pymesh, const std::string& field, const std::string& cmap, double vmin,
+           double vmax, bool symmetric, std::int64_t steps, const std::string& nan_color,
+           std::int64_t component) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::ColorizeOptions o;
+            o.mField = field;
+            o.mCmap = cmap;
+            o.mVMin = vmin;
+            o.mVMax = vmax;
+            o.mSymmetric = symmetric;
+            o.mSteps = steps;
+            o.mNanColor = nan_color;
+            o.mComponent = component;
+            meshioplusplus::ColorizeResult r =
+                core_nogil([&] { return meshioplusplus::colorize(mesh, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["vmin"] = r.mVMin;
+            out["vmax"] = r.mVMax;
+            out["location"] = r.mLocation;
+            return out;
+        },
+        py::arg("mesh"), py::arg("field"), py::arg("cmap") = "viridis", py::arg("vmin") = 0.0,
+        py::arg("vmax") = 0.0, py::arg("symmetric") = false, py::arg("steps") = 0,
+        py::arg("nan_color") = "#808080", py::arg("component") = -1);
 
     // Tetrahedra filling a closed triangle surface (roadmap 6.7): through
     // Netgen, its triangles kept, or the native octree backend, its boundary

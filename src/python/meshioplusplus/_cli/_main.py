@@ -85,6 +85,31 @@ _VERBS = (
         "Wall thickness or clearance per facet, by a ray along its normal",
     ),
     _Verb(
+        "deviation",
+        "_deviation",
+        "deviation_cmd",
+        "Signed deviation of a scan from a reference surface or fitted primitive, "
+        "with its statistics",
+    ),
+    _Verb(
+        "deviation-regions",
+        "_deviation_regions",
+        "deviation_regions_cmd",
+        "Connected excess and missing-material regions beyond a deviation tolerance",
+    ),
+    _Verb(
+        "exaggerate",
+        "_exaggerate",
+        "exaggerate_cmd",
+        "Points displaced along their normals by a scaled deviation, for a figure",
+    ),
+    _Verb(
+        "colorize",
+        "_colorize",
+        "colorize_cmd",
+        "Bake a field into red/green/blue colours through a colormap (PLY, glTF)",
+    ),
+    _Verb(
         "feature-edges",
         "_feature_edges",
         "feature_edges_cmd",

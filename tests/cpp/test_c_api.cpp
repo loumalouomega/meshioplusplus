@@ -5493,7 +5493,8 @@ TEST(CApi, OctreeMeshTetrahedraAndCastellatedCells) {
     EXPECT_GE(report.num_collapsed, 0);
     EXPECT_GE(report.num_reordered, 0);
     EXPECT_EQ(report.num_overlaps, 0);
-    EXPECT_GE(report.num_caps_removed + report.num_split + report.num_slivers + report.num_untangled, 0);
+    EXPECT_GE(
+        report.num_caps_removed + report.num_split + report.num_slivers + report.num_untangled, 0);
     std::int64_t nc = 0, npc = 0;
     ASSERT_EQ(mio_mesh_cell_block_info(tets, 0, &nc, &npc, nullptr), MIO_OK);
     EXPECT_EQ(nc, report.num_tetrahedra);
@@ -8524,6 +8525,76 @@ TEST(CApi, FindIntersectionsAndThickness) {
     EXPECT_GE(mio_thickness_warnings(nullptr, 0), 0);
     mio_mesh_free(b);
     mio_mesh_free(a);
+}
+
+TEST(CApi, Deviation) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = 3;
+    mio_mesh* ref = mio_icosa_sphere(&g);
+    ASSERT_NE(ref, nullptr) << mio_last_error();
+    g.radius = 1.01;
+    mio_mesh* scan = mio_icosa_sphere(&g);
+    ASSERT_NE(scan, nullptr) << mio_last_error();
+
+    mio_deviation_opts o;
+    mio_deviation_opts_init(&o);
+    EXPECT_EQ(o.bins, 20);
+    EXPECT_DOUBLE_EQ(o.max_normal_angle, 90.0);
+    EXPECT_EQ(o.attach, 1);
+    o.tolerance = 0.02;
+    mio_deviation_report rep{};
+    rep.reserved[0] = 7;
+    mio_mesh* out = mio_deviation(scan, ref, &o, &rep);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(rep.reserved[0], 0);
+    EXPECT_EQ(rep.num_measured, rep.num_points);
+    EXPECT_NEAR(rep.mean, 0.01, 1e-9);
+    EXPECT_DOUBLE_EQ(rep.share_within, 1.0);
+    EXPECT_EQ(rep.num_bins, 20);
+    std::vector<int64_t> counts(20);
+    std::vector<double> edges(21);
+    EXPECT_EQ(mio_deviation_histogram(counts.data(), edges.data(), 20), 20);
+    int64_t total = 0;
+    for (int64_t c : counts)
+        total += c;
+    EXPECT_EQ(total, rep.num_measured - rep.num_outside_range);
+    mio_mesh_free(out);
+
+    const double sphere[10] = {0, 0, 0, 0, 0, 0, 1.0, 0, 0, 0};
+    out = mio_deviation_primitive(scan, 2, sphere, nullptr, &rep);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_NEAR(rep.mean, 0.01, 1e-12);
+    mio_mesh_free(out);
+    EXPECT_EQ(mio_deviation_primitive(scan, 9, sphere, nullptr, &rep), nullptr);
+    o.bins = 0;
+    EXPECT_EQ(mio_deviation(scan, ref, &o, nullptr), nullptr);
+    EXPECT_EQ(mio_deviation(nullptr, ref, nullptr, nullptr), nullptr);
+    EXPECT_GE(mio_deviation_warnings(nullptr, 0), 0);
+
+    out = mio_deviation(scan, ref, nullptr, nullptr);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    mio_deviation_regions_opts ro;
+    mio_deviation_regions_opts_init(&ro);
+    EXPECT_EQ(mio_deviation_regions(out, &ro, nullptr), nullptr);  // tolerance 0
+    ro.tolerance = 0.005;
+    mio_deviation_regions_report rr{};
+    mio_mesh* regs = mio_deviation_regions(out, &ro, &rr);
+    ASSERT_NE(regs, nullptr) << mio_last_error();
+    EXPECT_EQ(rr.num_regions, 1);
+    EXPECT_EQ(rr.num_excess, 1);
+    mio_deviation_region_info info{};
+    EXPECT_EQ(mio_deviation_region_get(0, &info), MIO_OK);
+    EXPECT_EQ(info.sign, 1);
+    EXPECT_GT(info.area, 12.0);
+    char name[64];
+    EXPECT_GT(mio_deviation_region_name(0, name, sizeof(name)), 0);
+    EXPECT_STREQ(name, "deviation:excess_0");
+    EXPECT_NE(mio_deviation_region_get(1, &info), MIO_OK);
+    mio_mesh_free(regs);
+    mio_mesh_free(out);
+    mio_mesh_free(scan);
+    mio_mesh_free(ref);
 }
 
 // --- provider plugins (roadmap 4.7.3) --------------------------------------------------

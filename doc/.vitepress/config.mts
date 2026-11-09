@@ -120,6 +120,8 @@ export default defineConfig({
               { text: "Tetrahedron check", link: "/check_tetrahedra" },
               { text: "Intersections", link: "/find_intersections" },
               { text: "Wall thickness and clearance", link: "/thickness" },
+              { text: "Deviation analysis", link: "/deviation" },
+              { text: "Colorize", link: "/colorize" },
               { text: "Select (named regions)", link: "/select" },
               { text: "Segment (smooth patches)", link: "/segment" },
               { text: "Refine patches", link: "/refine_patches" },

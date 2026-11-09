@@ -34,6 +34,7 @@ from ._agglomerate import agglomerate
 from ._check_conformity import check_conformity
 from ._check_tetrahedra import check_tetrahedra
 from ._clean import clean
+from ._colorize import colorize
 from ._convert_cells import convert_cells
 from ._crop import crop
 from ._curvature import compute_curvature
@@ -43,6 +44,7 @@ from ._data_condition import data_condition
 from ._data_manage import data_drop, data_keep, data_rename
 from ._decimate import decimate
 from ._decimate_volume import decimate_volume
+from ._deviation import deviation, deviation_regions, exaggerate
 from ._error import estimate_error
 from ._error_size import error_size
 from ._feature_edges import feature_edges
@@ -1702,6 +1704,83 @@ def _apply_step(mesh, step, steps, warnings):
         entry["Min"] = float(rep["min"])
         entry["Max"] = float(rep["max"])
         entry["Mean"] = float(rep["mean"])
+    elif op == "Deviation":
+        # deviation:distance flows on; with Tolerance and MinShare, a share
+        # within tolerance below MinShare stops the pipeline unless Require is
+        # false.
+        ref_path = _text(step, "Reference", "")
+        if not ref_path:
+            raise ValueError("meshio++: pipeline: Deviation needs a Reference")
+        patch = _number(step, "Patch", -1.0)
+        tol = _number(step, "Tolerance", 0.0)
+        mesh, rep = deviation(
+            mesh,
+            read(ref_path),
+            patch=int(patch) if patch >= 0.0 else None,
+            tolerance=tol,
+            bins=int(_number(step, "Bins", 20.0)),
+            max_normal_angle=_number(step, "MaxNormalAngle", 90.0),
+            reference_region=_text(step, "ReferenceRegion", ""),
+            return_report=True,
+        )
+        min_share = _number(step, "MinShare", 0.0)
+        if (
+            tol > 0.0
+            and min_share > 0.0
+            and _flag(step, "Require", True)
+            and not rep["share_within"] >= min_share
+        ):
+            raise RuntimeError(
+                "meshio++: pipeline: Deviation failed: the share within Tolerance is "
+                "below MinShare"
+            )
+        entry["NumMeasured"] = float(rep["num_measured"])
+        entry["Min"] = float(rep["min"])
+        entry["Max"] = float(rep["max"])
+        entry["Mean"] = float(rep["mean"])
+        entry["Rms"] = float(rep["rms"])
+        entry["Sigma"] = float(rep["sigma"])
+        entry["ShareWithin"] = float(rep["share_within"])
+    elif op == "DeviationRegions":
+        mesh, rep = deviation_regions(
+            mesh,
+            _number(step, "Tolerance", 0.0),
+            field=_text(step, "Field", "deviation:distance"),
+            prefix=_text(step, "Prefix", "deviation:"),
+            min_area=_number(step, "MinArea", 0.0),
+            return_report=True,
+        )
+        entry["NumExcess"] = float(rep["num_excess"])
+        entry["NumMissing"] = float(rep["num_missing"])
+        entry["NumDropped"] = float(rep["num_dropped"])
+    elif op == "Exaggerate":
+        mesh, rep = exaggerate(
+            mesh,
+            field=_text(step, "Field", "deviation:distance"),
+            scale=_number(step, "Scale", 10.0),
+            clamp=_number(step, "Clamp", 0.0),
+            smooth_fraction=_number(step, "SmoothFraction", 0.01),
+            return_report=True,
+        )
+        entry["NumMoved"] = float(rep["num_moved"])
+        entry["Clamp"] = float(rep["clamp"])
+    elif op == "Colorize":
+        lo, hi = _number(step, "VMin", 0.0), _number(step, "VMax", 0.0)
+        comp = int(_number(step, "Component", -1.0))
+        mesh, rep = colorize(
+            mesh,
+            _text(step, "Field", ""),
+            cmap=_text(step, "Cmap", "viridis"),
+            vmin=lo if lo < hi else None,
+            vmax=hi if lo < hi else None,
+            symmetric=_flag(step, "Symmetric", False),
+            steps=int(_number(step, "Steps", 0.0)),
+            nan_color=_text(step, "NanColor", "#808080"),
+            component=None if comp < 0 else comp,
+            return_report=True,
+        )
+        entry["VMin"] = float(rep["vmin"])
+        entry["VMax"] = float(rep["vmax"])
     elif op == "EditRegions":
         kind = _text(step, "Kind", "") or None
         edit = {

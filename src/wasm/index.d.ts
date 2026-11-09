@@ -874,6 +874,142 @@ export interface ThicknessResult {
   warnings: string[];
 }
 
+/** Options of `deviation` (doc/deviation.md): a `reference` or a `primitive`. */
+export interface DeviationOptions {
+  /** The reference surface. */
+  reference?: Mesh;
+  /** A fitted primitive instead: its type and ten `fit:patch_params` entries. */
+  primitive?: {
+    type: 'plane' | 'sphere' | 'cylinder' | 'cone' | 'torus';
+    params: number[];
+  };
+  /** Report the share within +-tolerance (default 0: none). */
+  tolerance?: number;
+  /** Histogram bins (default 20). */
+  bins?: number;
+  /** `[lo, hi]` of the histogram (default: +-max|d|). */
+  range?: [number, number];
+  /** The far-side rule's angle in degrees (default 90; 180 turns it off). */
+  maxNormalAngle?: number;
+  /** Measure against only this named cell region of the reference. */
+  referenceRegion?: string;
+}
+
+/** What `deviation` returns. */
+export interface DeviationResult {
+  /** The scan with the `deviation:distance` point data (NaN where unmeasured). */
+  mesh: Mesh;
+  numPoints: number;
+  numMeasured: number;
+  min: number;
+  max: number;
+  mean: number;
+  rms: number;
+  /** Population standard deviation about the mean. */
+  sigma: number;
+  percentiles: { p1: number; p5: number; p50: number; p95: number; p99: number };
+  /** `bins + 1` edges. */
+  histogramEdges: Float64Array;
+  /** `bins` counts. */
+  histogramCounts: Float64Array;
+  numOutsideRange: number;
+  /** The share within +-tolerance (NaN without one). */
+  shareWithin: number;
+  /** The 95th percentile of |d|, rounded up to two significant figures. */
+  suggestedRange: number;
+  numWithoutNormal: number;
+  warnings: string[];
+}
+
+/** Options of `deviationRegions` (doc/deviation.md). */
+export interface DeviationRegionsOptions {
+  /** Cells beyond +-tolerance are excess or missing material (required, > 0). */
+  tolerance: number;
+  /** The signed deviation point data (default `deviation:distance`). */
+  field?: string;
+  /** Region names are `<prefix>excess_<k>` and `<prefix>missing_<k>` (default `deviation:`). */
+  prefix?: string;
+  /** Drop regions smaller than this area (default 0). */
+  minArea?: number;
+}
+
+/** One region `deviationRegions` found. */
+export interface DeviationRegion {
+  name: string;
+  /** +1 excess, -1 missing material. */
+  sign: number;
+  numCells: number;
+  area: number;
+  extreme: number;
+  mean: number;
+  /** The signed volume estimate, the sum of d * area. */
+  volume: number;
+  centroid: Float64Array;
+  /** lo x, y, z, hi x, y, z. */
+  bounds: Float64Array;
+}
+
+/** What `deviationRegions` returns. */
+export interface DeviationRegionsResult {
+  /** The mesh with one cell region per region and `deviation:region`. */
+  mesh: Mesh;
+  /** Largest |volume| first. */
+  regions: DeviationRegion[];
+  numExcess: number;
+  numMissing: number;
+  numDropped: number;
+  warnings: string[];
+}
+
+/** Options of `exaggerate` (doc/deviation.md). */
+export interface ExaggerateOptions {
+  /** The signed deviation point data (default `deviation:distance`). */
+  field?: string;
+  /** Displacement per unit deviation (default 10). */
+  scale?: number;
+  /** Clamp the deviation first (default 0: the suggested colour range). */
+  clamp?: number;
+  /** Smoothing radius over the bounding-box diagonal (default 0.01). */
+  smoothFraction?: number;
+}
+
+/** What `exaggerate` returns. */
+export interface ExaggerateResult {
+  mesh: Mesh;
+  clamp: number;
+  radius: number;
+  numMoved: number;
+  warnings: string[];
+}
+
+/** Options of `colorize` (doc/colorize.md). */
+export interface ColorizeOptions {
+  /** The point or cell data to colour by (required). */
+  field: string;
+  /** A colormap name (default `viridis`). */
+  cmap?: string;
+  /** The range (default: the field's min and max). */
+  vmin?: number;
+  vmax?: number;
+  /** With the automatic range, +-max|v|. */
+  symmetric?: boolean;
+  /** Bands at fixed steps (default 0: continuous). */
+  steps?: number;
+  /** `#rrggbb` for a non-finite value (default `#808080`). */
+  nanColor?: string;
+  /** Colour by this 0-based component (default -1: the magnitude). */
+  component?: number;
+}
+
+/** What `colorize` returns. */
+export interface ColorizeResult {
+  /** The mesh with UInt8 `red`, `green` and `blue` data. */
+  mesh: Mesh;
+  vmin: number;
+  vmax: number;
+  location: 'point' | 'cell';
+}
+
 /** Options of `tetrahedralize` (doc/tetrahedralize.md). */
 export interface TetrahedralizeOptions {
   /**
@@ -3854,6 +3990,35 @@ export interface MeshioPlusPlusModule {
    * region or direction, or a negative distance.
    */
   thickness(mesh: Mesh, options?: ThicknessOptions): ThicknessResult;
+
+  /**
+   * Signed deviation of every scan point from a reference surface (positive
+   * outside it) or a fitted primitive, and its statistics (roadmap 7.4).
+   * @throws {Error} on a bad option, a volume or higher-order reference block,
+   * or an unknown region or primitive type.
+   */
+  deviation(scan: Mesh, options?: DeviationOptions): DeviationResult;
+
+  /**
+   * The connected excess and missing-material regions beyond +-tolerance of
+   * a measured surface, written as named cell regions (roadmap 7.4.3).
+   * @throws {Error} on a bad option, a missing field or a volume block.
+   */
+  deviationRegions(mesh: Mesh, options: DeviationRegionsOptions): DeviationRegionsResult;
+
+  /**
+   * A copy of a measured surface with each point displaced along its normal
+   * by a scaled, clamped, smoothed deviation (roadmap 7.4.4).
+   * @throws {Error} on a missing field or a bad option.
+   */
+  exaggerate(mesh: Mesh, options?: ExaggerateOptions): ExaggerateResult;
+
+  /**
+   * Bake a field into UInt8 red, green and blue data through a colormap
+   * (roadmap 7.4.4).
+   * @throws {Error} on a missing field, an unknown colormap or a bad option.
+   */
+  colorize(mesh: Mesh, options: ColorizeOptions): ColorizeResult;
 
   /**
    * Fill a closed, manifold, consistently oriented triangle surface with

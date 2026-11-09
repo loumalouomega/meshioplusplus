@@ -76,6 +76,8 @@
 #include "meshioplusplus/operations/check_tetrahedra.hpp"
 #include "meshioplusplus/operations/find_intersections.hpp"
 #include "meshioplusplus/operations/thickness.hpp"
+#include "meshioplusplus/operations/deviation.hpp"
+#include "meshioplusplus/operations/colorize.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
@@ -1902,6 +1904,95 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"Max", tr.mMax},
                         {"Mean", tr.mMean}});
         return std::move(tr.mMesh);
+    }
+    if (op == "Deviation") {
+        // deviation:distance flows on; with Tolerance and MinShare, a share
+        // within tolerance below MinShare stops the pipeline unless Require
+        // is false.
+        DeviationOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        opts.mBins = static_cast<std::int64_t>(pipe_number(rStep, "Bins", 20.0));
+        opts.mMaxNormalAngleDeg = pipe_number(rStep, "MaxNormalAngle", 90.0);
+        opts.mReferenceRegion = pipe_text(rStep, "ReferenceRegion", "");
+        const std::string ref_path = pipe_text(rStep, "Reference", "");
+        if (ref_path.empty())
+            throw std::invalid_argument("meshio++: pipeline: Deviation needs a Reference");
+        const Mesh ref = pipe_read_extra(ref_path);
+        const double patch = pipe_number(rStep, "Patch", -1.0);
+        DeviationResult dr;
+        if (patch >= 0.0) {
+            if (!ref.HasFieldData("fit:patch_params") || !ref.HasFieldData("fit:patch_id"))
+                throw std::invalid_argument(
+                    "meshio++: pipeline: Deviation: the Reference carries no fit:patch_params");
+            const NDArray& ids = ref.FieldData("fit:patch_id");
+            std::size_t row = ids.Size();
+            for (std::size_t r = 0; r < ids.Size(); ++r)
+                if (detail::read_int(ids, r) == static_cast<std::int64_t>(patch))
+                    row = r;
+            if (row == ids.Size())
+                throw std::invalid_argument("meshio++: pipeline: Deviation: no fitted patch " +
+                                            std::to_string(static_cast<std::int64_t>(patch)));
+            std::array<double, 10> params{};
+            for (std::size_t k = 0; k < 10; ++k)
+                params[k] = detail::read_double(ref.FieldData("fit:patch_params"), row * 10 + k);
+            dr = deviation_to_primitive(
+                mesh, detail::read_int(ref.FieldData("fit:patch_type"), row), params, opts);
+        } else {
+            dr = deviation(mesh, ref, opts);
+        }
+        const double min_share = pipe_number(rStep, "MinShare", 0.0);
+        if (opts.mTolerance > 0.0 && min_share > 0.0 && pipe_flag(rStep, "Require", true) &&
+            !(dr.mShareWithin >= min_share))
+            throw std::runtime_error(
+                "meshio++: pipeline: Deviation failed: the share within Tolerance is below "
+                "MinShare");
+        pipe_push_step(rReport, rStep,
+                       {{"NumMeasured", static_cast<double>(dr.mNumMeasured)},
+                        {"Min", dr.mMin},
+                        {"Max", dr.mMax},
+                        {"Mean", dr.mMean},
+                        {"Rms", dr.mRms},
+                        {"Sigma", dr.mSigma},
+                        {"ShareWithin", dr.mShareWithin}});
+        return std::move(dr.mMesh);
+    }
+    if (op == "DeviationRegions") {
+        DeviationRegionsOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        opts.mField = pipe_text(rStep, "Field", kDeviationDistanceName);
+        opts.mPrefix = pipe_text(rStep, "Prefix", "deviation:");
+        opts.mMinArea = pipe_number(rStep, "MinArea", 0.0);
+        DeviationRegionsResult rr = deviation_regions(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumExcess", static_cast<double>(rr.mNumExcess)},
+                        {"NumMissing", static_cast<double>(rr.mNumMissing)},
+                        {"NumDropped", static_cast<double>(rr.mNumDropped)}});
+        return std::move(rr.mMesh);
+    }
+    if (op == "Exaggerate") {
+        ExaggerateOptions opts;
+        opts.mField = pipe_text(rStep, "Field", kDeviationDistanceName);
+        opts.mScale = pipe_number(rStep, "Scale", 10.0);
+        opts.mClamp = pipe_number(rStep, "Clamp", 0.0);
+        opts.mSmoothFraction = pipe_number(rStep, "SmoothFraction", 0.01);
+        ExaggerateResult er = exaggerate(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumMoved", static_cast<double>(er.mNumMoved)}, {"Clamp", er.mClamp}});
+        return std::move(er.mMesh);
+    }
+    if (op == "Colorize") {
+        ColorizeOptions opts;
+        opts.mField = pipe_text(rStep, "Field", "");
+        opts.mCmap = pipe_text(rStep, "Cmap", "viridis");
+        opts.mVMin = pipe_number(rStep, "VMin", 0.0);
+        opts.mVMax = pipe_number(rStep, "VMax", 0.0);
+        opts.mSymmetric = pipe_flag(rStep, "Symmetric", false);
+        opts.mSteps = static_cast<std::int64_t>(pipe_number(rStep, "Steps", 0.0));
+        opts.mNanColor = pipe_text(rStep, "NanColor", "#808080");
+        opts.mComponent = static_cast<std::int64_t>(pipe_number(rStep, "Component", -1.0));
+        ColorizeResult cr = colorize(mesh, opts);
+        pipe_push_step(rReport, rStep, {{"VMin", cr.mVMin}, {"VMax", cr.mVMax}});
+        return std::move(cr.mMesh);
     }
     if (op == "EditRegions") {
         // One edit per step: a pipeline value is flat, and a list of edits is

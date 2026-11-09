@@ -1075,6 +1075,111 @@ struct _CThicknessReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_deviation_opts` (roadmap 7.4)."""
+struct _CDeviationOpts
+    tolerance::Cdouble
+    bins::Int64
+    range_min::Cdouble
+    range_max::Cdouble
+    max_normal_angle::Cdouble
+    reference_region::Cstring
+    attach::Int32
+    reserved32::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_deviation_report`."""
+struct _CDeviationReport
+    num_points::Int64
+    num_measured::Int64
+    num_outside_range::Int64
+    num_without_normal::Int64
+    min::Cdouble
+    max::Cdouble
+    mean::Cdouble
+    rms::Cdouble
+    sigma::Cdouble
+    percentiles::NTuple{5,Cdouble}
+    share_within::Cdouble
+    suggested_range::Cdouble
+    num_bins::Int64
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_deviation_regions_opts` (roadmap 7.4.3)."""
+struct _CDeviationRegionsOpts
+    tolerance::Cdouble
+    min_area::Cdouble
+    field::Cstring
+    prefix::Cstring
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_deviation_regions_report`."""
+struct _CDeviationRegionsReport
+    num_regions::Int64
+    num_excess::Int64
+    num_missing::Int64
+    num_dropped::Int64
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_deviation_region_info`."""
+struct _CDeviationRegionInfo
+    sign::Int64
+    num_cells::Int64
+    area::Cdouble
+    extreme::Cdouble
+    mean::Cdouble
+    volume::Cdouble
+    centroid::NTuple{3,Cdouble}
+    bounds::NTuple{6,Cdouble}
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_exaggerate_opts` (roadmap 7.4.4)."""
+struct _CExaggerateOpts
+    field::Cstring
+    scale::Cdouble
+    clamp::Cdouble
+    smooth_fraction::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_exaggerate_report`."""
+struct _CExaggerateReport
+    clamp::Cdouble
+    radius::Cdouble
+    num_moved::Int64
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_colorize_opts` (roadmap 7.4.4)."""
+struct _CColorizeOpts
+    field::Cstring
+    cmap::Cstring
+    vmin::Cdouble
+    vmax::Cdouble
+    nan_color::Cstring
+    steps::Int64
+    component::Int64
+    symmetric::Int32
+    reserved32::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_colorize_report`."""
+struct _CColorizeReport
+    vmin::Cdouble
+    vmax::Cdouble
+    location::Int32
+    reserved32::Int32
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_mirror_opts` (roadmap 3.2.5)."""
 struct _CMirrorOpts
     origin::NTuple{3,Cdouble}
@@ -2245,6 +2350,21 @@ function _check_abi_layout()
         error("meshio++: mio_thickness_opts layout mismatch ($(sizeof(_CThicknessOpts)) bytes)")
     (sizeof(_CThicknessReport) == 144 && fieldoffset(_CThicknessReport, 13) == 104) ||
         error("meshio++: mio_thickness_report layout mismatch ($(sizeof(_CThicknessReport)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CDeviationOpts) == 88 &&
+                                 fieldoffset(_CDeviationOpts, 9) == 56)) ||
+        error("meshio++: mio_deviation_opts layout mismatch ($(sizeof(_CDeviationOpts)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || sizeof(_CDeviationRegionsOpts) == 64) ||
+        error("meshio++: mio_deviation_regions_opts layout mismatch")
+    (sizeof(_CDeviationRegionsReport) == 72 && sizeof(_CDeviationRegionInfo) == 136 &&
+     fieldoffset(_CDeviationRegionInfo, 8) == 72) ||
+        error("meshio++: mio_deviation_regions report layout mismatch")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CExaggerateOpts) == 64 && sizeof(_CColorizeOpts) == 96 &&
+                                 fieldoffset(_CColorizeOpts, 8) == 56)) ||
+        error("meshio++: mio_exaggerate_opts / mio_colorize_opts layout mismatch")
+    (sizeof(_CExaggerateReport) == 64 && sizeof(_CColorizeReport) == 56) ||
+        error("meshio++: mio_exaggerate_report / mio_colorize_report layout mismatch")
+    (sizeof(_CDeviationReport) == 176 && fieldoffset(_CDeviationReport, 14) == 136) ||
+        error("meshio++: mio_deviation_report layout mismatch ($(sizeof(_CDeviationReport)) bytes)")
     (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CTetrahedralizeOpts) == 80 &&
                                  fieldoffset(_CTetrahedralizeOpts, 5) == 32 &&
                                  fieldoffset(_CTetrahedralizeOpts, 8) == 48 &&

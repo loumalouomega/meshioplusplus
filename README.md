@@ -153,6 +153,7 @@ meshioplusplus transform  in.vtu out.vtu --translate 1,2,3   # affine transform
 meshioplusplus mirror     half.vtu whole.vtu --keep-original  # reflect, cells right side out
 meshioplusplus find-intersections skin.stl flags.vtu --segments cuts.vtu  # self-intersections
 meshioplusplus thickness  shell.stl measured.vtu --min 1.5   # wall thickness per facet
+meshioplusplus deviation  scan.ply nominal.stl dev.vtu --tolerance 0.05  # scan vs nominal
 meshioplusplus extrude    profile.vtu slab.vtu --num-layers 4  # sweep a surface into a volume
 meshioplusplus clean      in.vtu out.vtu --weld              # weld / prune / de-dup
 meshioplusplus crop       in.vtu out.vtu --bbox 0,0,0,1,1,1  # subset by region
@@ -372,6 +373,8 @@ annotated = meshioplusplus.attach_quality(mesh)   # metrics as cell_data
 `meshioplusplus.check_tetrahedra(mesh)` counts the inverted, degenerate and overlapping tetrahedra of a mesh (the check behind the volume fix of `octree_mesh`), without changing it; the `check-tetrahedra` CLI verb exits 1 when any is found and 2 when it could not run, and the `CheckTetrahedra` pipeline step gates on it ([tetrahedron check](doc/check_tetrahedra.md)).
 
 `meshioplusplus.find_intersections(mesh)` finds where a surface intersects itself, or with a second surface where two parts interpenetrate, by exact triangle–triangle tests: the cell pairs, the crossing segments as a line mesh and `intersections:count` per cell; the `find-intersections` CLI verb exits 1 when anything intersects. `meshioplusplus.thickness(mesh)` measures the wall thickness (or, outward, the clearance to the same or a second part) at every facet by a ray along its normal, into `thickness:distance`. See `doc/find_intersections.md` and `doc/thickness.md`.
+
+`meshioplusplus.deviation(scan, reference)` measures a scan against its intended geometry: the signed distance of every scan point to a reference surface (positive outside it, excess material), with a far-side rule so a thin wall is not measured to its back face, or to a fitted primitive (`patch=` of a mesh `fit_primitives` wrote), and the report an inspection reads: min, max, mean, RMS, sigma, percentiles, a histogram, the share within a tolerance and a suggested colour range; `deviation_regions` turns the map into the connected regions of excess and missing material, with their areas and volumes, as named cell regions, `exaggerate` displaces the scan along its normals for a figure, and `colorize` bakes any field into PLY and glTF vertex colours, banded or continuous ([deviation](doc/deviation.md), [colorize](doc/colorize.md)).
 
 #### Reordering / renumbering
 

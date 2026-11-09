@@ -4294,6 +4294,52 @@ def test_find_intersections_and_thickness_tools(tmp_path):
         _tools.tool_thickness(str(a), direction="sideways")
 
 
+def test_deviation_tool(tmp_path):
+    """Roadmap 7.4: the deviation tool reports the statistics, against a
+    surface and against a fitted patch, and gates on min_share."""
+    from meshioplusplus import _core
+
+    if not hasattr(_core, "deviation"):
+        pytest.skip("core predates deviation")
+    ref, scan, fitted = (
+        tmp_path / "ref.vtu",
+        tmp_path / "scan.vtu",
+        tmp_path / "fit.vtu",
+    )
+    meshioplusplus.write(ref, meshioplusplus.icosa_sphere(1.0, 3))
+    meshioplusplus.write(scan, meshioplusplus.icosa_sphere(1.01, 3))
+    meshioplusplus.write(
+        fitted,
+        meshioplusplus.fit_primitives(
+            meshioplusplus.icosa_sphere(1.0, 3), patch_data=""
+        ),
+    )
+    out = tmp_path / "dev.vtu"
+    report = _tools.tool_deviation(
+        str(scan), str(ref), str(out), tolerance=0.02, min_share=1.0
+    )
+    assert report["passed"] is True
+    assert report["mean"] == pytest.approx(0.01, abs=1e-9)
+    assert "deviation:distance" in meshioplusplus.read(out).point_data
+    report = _tools.tool_deviation(str(scan), str(fitted), patch=0)
+    assert report["mean"] == pytest.approx(0.01, abs=1e-3)
+    json.dumps(report)
+    with pytest.raises(ValueError, match="range_min"):
+        _tools.tool_deviation(str(scan), str(ref), range_min=0.0)
+    regs = tmp_path / "regs.vtu"
+    report = _tools.tool_deviation_regions(str(out), str(regs), 0.005)
+    assert report["num_excess"] == 1
+    assert report["regions"][0]["name"] == "deviation:excess_0"
+    json.dumps(report)
+    big = tmp_path / "big.vtu"
+    report = _tools.tool_exaggerate(str(out), str(big), scale=20.0)
+    assert report["num_moved"] > 0 and big.exists()
+    col = tmp_path / "col.ply"
+    report = _tools.tool_colorize(str(out), str(col), "deviation:distance", steps=4)
+    assert report["location"] == "point"
+    assert "red" in meshioplusplus.read(col).point_data
+
+
 def test_cut_tools(tmp_path):
     from meshioplusplus import _core
 

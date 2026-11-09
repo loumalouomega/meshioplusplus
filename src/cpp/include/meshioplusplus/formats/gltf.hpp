@@ -118,6 +118,8 @@ struct GltfWriteOptions {
     /// Source unit -> metres, carried as the node scale.
     double mScale = 1.0;
     /// A point_data or cell_data array to bake into `COLOR_0`; empty disables.
+    /// `"rgb"` (when no array has that name) takes the UInt8 `red`, `green`
+    /// and `blue` channels `colorize` bakes, as they are.
     std::string mColorBy;
     /// The component to colour by; the magnitude when unset.
     std::optional<int> mComponent;

@@ -2584,6 +2584,55 @@ contains
             call sa%free()
         end block
 
+        ! deviation (roadmap 7.4.1, 7.4.2).
+        block
+            type(mio_mesh) :: ref, scan, dev
+            type(mio_deviation_report) :: drep
+            real(real64) :: sphere(10)
+            ref = mio_icosa_sphere(subdivisions=3, stat=ierr)
+            scan = mio_icosa_sphere(radius=1.01_real64, subdivisions=3, stat=ierr)
+            dev = mio_deviation(scan, ref, tolerance=0.02_real64, report=drep, stat=ierr)
+            call check(ierr == 0 .and. abs(drep%mean - 0.01_real64) < 1e-9_real64 .and. &
+                       drep%share_within == 1.0_real64, 'deviation of an offset sphere')
+            if (ierr == 0) call dev%free()
+            sphere = 0.0_real64
+            sphere(7) = 1.0_real64
+            dev = mio_deviation_primitive(scan, 2, sphere, report=drep, stat=ierr)
+            call check(ierr == 0 .and. abs(drep%mean - 0.01_real64) < 1e-12_real64, &
+                       'deviation from a sphere primitive')
+            if (ierr == 0) call dev%free()
+            dev = mio_deviation(scan, ref, bins=0, stat=ierr)
+            call check(ierr /= 0, 'deviation refuses zero bins')
+            block
+                type(mio_mesh) :: measured, regs
+                type(mio_deviation_regions_report) :: rrep
+                type(mio_deviation_region_info) :: info
+                integer :: ist
+                measured = mio_deviation(scan, ref, stat=ierr)
+                regs = mio_deviation_regions(measured, 0.005_real64, report=rrep, stat=ierr)
+                call check(ierr == 0 .and. rrep%num_excess == 1_int64 .and. &
+                           rrep%num_missing == 0_int64, 'one excess region on an offset sphere')
+                info = mio_deviation_region(1, stat=ist)
+                call check(ist == 0 .and. info%sign == 1_int64, 'the region is excess material')
+                block
+                    type(mio_mesh) :: big, coloured
+                    type(mio_exaggerate_report) :: erep
+                    type(mio_colorize_report) :: crep
+                    big = mio_exaggerate(measured, scale=20.0_real64, report=erep, stat=ierr)
+                    call check(ierr == 0 .and. erep%num_moved > 0_int64, 'exaggerate moves points')
+                    if (ierr == 0) call big%free()
+                    coloured = mio_colorize(measured, 'deviation:distance', steps=4, &
+                                            report=crep, stat=ierr)
+                    call check(ierr == 0 .and. crep%location == 0, 'colorize colours the points')
+                    if (ierr == 0) call coloured%free()
+                end block
+                if (ierr == 0) call regs%free()
+                call measured%free()
+            end block
+            call scan%free()
+            call ref%free()
+        end block
+
         ! The unit cube as a closed, outward-wound triangle surface.
         pts = reshape([0d0, 0d0, 0d0, 1d0, 0d0, 0d0, 1d0, 1d0, 0d0, 0d0, 1d0, 0d0, &
                        0d0, 0d0, 1d0, 1d0, 0d0, 1d0, 1d0, 1d0, 1d0, 0d0, 1d0, 1d0], [3, 8])

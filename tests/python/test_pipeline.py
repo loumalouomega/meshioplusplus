@@ -1523,3 +1523,58 @@ def test_find_intersections_and_thickness_steps_agree_in_both_engines(tmp_path):
             meshioplusplus.run_pipeline(bad)
         with pytest.raises(RuntimeError, match="failed"):
             _core.run_pipeline_json(json.dumps(bad))
+
+
+def test_deviation_step_agrees_in_both_engines(tmp_path):
+    """``Deviation`` (roadmap 7.4): the same statistics and array from the Python
+    and the C++ engine, against a surface and a fitted primitive, the gate firing."""
+    if not hasattr(_core, "deviation"):
+        pytest.skip("core predates deviation")
+    ref = tmp_path / "ref.vtu"
+    meshioplusplus.write(ref, meshioplusplus.icosa_sphere(1.0, 3), compression=None)
+    fitted = tmp_path / "fitted.vtu"
+    meshioplusplus.write(
+        fitted,
+        meshioplusplus.fit_primitives(
+            meshioplusplus.icosa_sphere(1.0, 3), patch_data=""
+        ),
+        compression=None,
+    )
+    steps = [
+        {"Op": "Generate", "Shape": "icosa_sphere", "Radius": 1.01, "Subdivisions": 3},
+        {"Op": "Deviation", "Reference": str(ref), "Tolerance": 0.02, "MinShare": 1.0},
+        {"Op": "Deviation", "Reference": str(fitted), "Patch": 0},
+        {"Op": "DeviationRegions", "Tolerance": 0.005},
+    ]
+    py_out, cpp_out = tmp_path / "py.vtu", tmp_path / "cpp.vtu"
+    settings = {"Version": 1, "Operations": steps, "Output": {"Path": str(py_out)}}
+    py_report = meshioplusplus.run_pipeline(settings)
+    settings["Output"]["Path"] = str(cpp_out)
+    cpp_report = _core.run_pipeline_json(json.dumps(settings))
+    for k in (1, 2, 3):
+        assert py_report["steps"][k] == pytest.approx(
+            cpp_report["steps"][k], nan_ok=True
+        )
+    assert py_report["steps"][3]["NumExcess"] == 1
+    assert py_report["steps"][1]["Mean"] == pytest.approx(0.01, abs=1e-9)
+    assert py_report["steps"][2]["Mean"] == pytest.approx(0.01, abs=1e-6)
+    built = meshioplusplus.read(py_out)
+    assert meshioplusplus.meshes_equal(built, meshioplusplus.read(cpp_out))
+    assert "deviation:distance" in built.point_data
+    bad = {
+        "Version": 1,
+        "Operations": [
+            steps[0],
+            {
+                "Op": "Deviation",
+                "Reference": str(ref),
+                "Tolerance": 0.005,
+                "MinShare": 0.5,
+            },
+        ],
+        "Output": {"Path": str(tmp_path / "x.vtu")},
+    }
+    with pytest.raises(RuntimeError, match="failed"):
+        meshioplusplus.run_pipeline(bad)
+    with pytest.raises(RuntimeError, match="failed"):
+        _core.run_pipeline_json(json.dumps(bad))

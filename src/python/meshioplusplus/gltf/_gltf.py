@@ -419,8 +419,26 @@ def _render(
     if color_active:
         table = colormap_table(cmap)
         nan_rgb = _parse_color(nan_color)
-    color_point = color_active and color_by in mesh.point_data
-    color_cell = color_active and not color_point and color_by in mesh.cell_data
+    # color_by "rgb" (with no array of that name) takes the red, green and
+    # blue channels ``colorize`` bakes, on points or cells
+    color_rgb = (
+        color_active
+        and color_by == "rgb"
+        and "rgb" not in mesh.point_data
+        and "rgb" not in mesh.cell_data
+    )
+    rgb_names = ("red", "green", "blue")
+    if color_rgb:
+        color_point = all(k in mesh.point_data for k in rgb_names)
+        color_cell = not color_point and all(k in mesh.cell_data for k in rgb_names)
+        if not color_point and not color_cell:
+            raise ValueError(
+                f"{_PREFIX}color_by 'rgb' needs red, green and blue point or cell "
+                "data (colorize writes them)"
+            )
+    else:
+        color_point = color_active and color_by in mesh.point_data
+        color_cell = color_active and not color_point and color_by in mesh.cell_data
     if color_active and not color_point and not color_cell:
         avail = sorted(set(mesh.point_data) | set(mesh.cell_data))
         raise ValueError(
@@ -519,8 +537,27 @@ def _render(
 
     # colour values and their range over the exported vertices
     values = None
+    rgb_values = None
     lo_v = hi_v = 0.0
-    if color_active:
+
+    def _chan(v):
+        v = float(v)
+        return int(min(255.0, max(0.0, v))) if math.isfinite(v) else 0
+
+    if color_rgb:
+        if color_point:
+            chans = [np.asarray(mesh.point_data[k]).reshape(-1) for k in rgb_names]
+            rgb_values = [tuple(_chan(c[p]) for c in chans) for p in range(n)]
+        else:
+            rgb_values = []
+            for b in range(len(mesh.cells)):
+                chans = [
+                    np.asarray(mesh.cell_data[k][b]).reshape(-1) for k in rgb_names
+                ]
+                rgb_values.extend(
+                    tuple(_chan(c[r]) for c in chans) for r in range(len(chans[0]))
+                )
+    elif color_active:
         if color_point:
             arr = np.asarray(mesh.point_data[color_by])
             ncomp = 0 if n == 0 else arr.size // n
@@ -563,6 +600,9 @@ def _render(
             raise ValueError(f"{_PREFIX}vmin must not exceed vmax")
 
     def vertex_color(key):
+        if rgb_values is not None:
+            rgb = rgb_values[key[2] if color_cell else key[0]]
+            return _linear(rgb[0]), _linear(rgb[1]), _linear(rgb[2])
         v = values[key[2] if color_cell else key[0]]
         rgb = nan_rgb
         if math.isfinite(v):

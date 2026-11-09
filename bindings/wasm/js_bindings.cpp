@@ -198,6 +198,8 @@
 #include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/find_intersections.hpp"
 #include "meshioplusplus/operations/thickness.hpp"
+#include "meshioplusplus/operations/deviation.hpp"
+#include "meshioplusplus/operations/colorize.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
@@ -8712,9 +8714,9 @@ val extrude_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
         meshioplusplus::ExtrudeOptions o;
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
-            check_settings_keys(rOptions, "the extrude options",
-                                {"direction", "numLayers", "ratio", "offsets", "recordLayers",
-                                 "maxCells"});
+            check_settings_keys(
+                rOptions, "the extrude options",
+                {"direction", "numLayers", "ratio", "offsets", "recordLayers", "maxCells"});
             if (rOptions.hasOwnProperty("direction"))
                 o.mDirection = js_vec3(rOptions["direction"], "extrude: direction");
             if (rOptions.hasOwnProperty("numLayers"))
@@ -8772,9 +8774,9 @@ val mirror_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
         meshioplusplus::MirrorOptions o;
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
-            check_settings_keys(rOptions, "the mirror options",
-                                {"origin", "normal", "keepOriginal", "weld", "tolerance",
-                                 "reflectVectorData"});
+            check_settings_keys(
+                rOptions, "the mirror options",
+                {"origin", "normal", "keepOriginal", "weld", "tolerance", "reflectVectorData"});
             if (rOptions.hasOwnProperty("origin"))
                 o.mOrigin = js_vec3(rOptions["origin"], "mirror: origin");
             if (rOptions.hasOwnProperty("normal"))
@@ -8944,6 +8946,208 @@ val find_intersections_js(const val& rMeshObj, const val& rOptions) {
         for (const std::string& w : r.mWarnings)
             warnings.call<void>("push", w);
         out.set("warnings", warnings);
+        return out;
+    });
+}
+
+// deviation (roadmap 7.4): the signed deviation of every scan point from a
+// reference surface ({reference}) or a fitted primitive ({primitive: {type,
+// params}}); options {tolerance, bins, range: [lo, hi], maxNormalAngle,
+// referenceRegion}, all optional but one of reference and primitive.
+val deviation_js(const val& rScanObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DeviationOptions o;
+        val reference = val::undefined();
+        val primitive = val::undefined();
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the deviation options",
+                                {"reference", "primitive", "tolerance", "bins", "range",
+                                 "maxNormalAngle", "referenceRegion"});
+            if (rOptions.hasOwnProperty("reference"))
+                reference = rOptions["reference"];
+            if (rOptions.hasOwnProperty("primitive"))
+                primitive = rOptions["primitive"];
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("bins"))
+                o.mBins = static_cast<std::int64_t>(rOptions["bins"].as<double>());
+            if (rOptions.hasOwnProperty("range")) {
+                const val rng = rOptions["range"];
+                if (rng["length"].as<int>() != 2)
+                    throw std::invalid_argument("meshio++: deviation: range is [lo, hi]");
+                o.mRangeMin = rng[0].as<double>();
+                o.mRangeMax = rng[1].as<double>();
+            }
+            if (rOptions.hasOwnProperty("maxNormalAngle"))
+                o.mMaxNormalAngleDeg = rOptions["maxNormalAngle"].as<double>();
+            if (rOptions.hasOwnProperty("referenceRegion"))
+                o.mReferenceRegion = rOptions["referenceRegion"].as<std::string>();
+        }
+        const meshioplusplus::Mesh scan = val_to_mesh(rScanObj);
+        meshioplusplus::DeviationResult r;
+        if (!primitive.isUndefined() && !primitive.isNull()) {
+            static const char* const kTypes[] = {"plane", "sphere", "cylinder", "cone", "torus"};
+            const std::string t = primitive["type"].as<std::string>();
+            std::int64_t type = 0;
+            for (std::int64_t k = 0; k < 5; ++k)
+                if (t == kTypes[k])
+                    type = k + 1;
+            if (type == 0)
+                throw std::invalid_argument("meshio++: deviation: unknown primitive type '" + t +
+                                            "'");
+            const val p = primitive["params"];
+            if (p["length"].as<int>() != 10)
+                throw std::invalid_argument("meshio++: deviation: a primitive takes ten params");
+            std::array<double, 10> params{};
+            for (int k = 0; k < 10; ++k)
+                params[static_cast<std::size_t>(k)] = p[k].as<double>();
+            r = meshioplusplus::deviation_to_primitive(scan, type, params, o);
+        } else {
+            if (reference.isUndefined() || reference.isNull())
+                throw std::invalid_argument(
+                    "meshio++: deviation: give a reference mesh or a primitive");
+            r = meshioplusplus::deviation(scan, val_to_mesh(reference), o);
+        }
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numPoints", static_cast<double>(r.mNumPoints));
+        out.set("numMeasured", static_cast<double>(r.mNumMeasured));
+        out.set("min", r.mMin);
+        out.set("max", r.mMax);
+        out.set("mean", r.mMean);
+        out.set("rms", r.mRms);
+        out.set("sigma", r.mSigma);
+        val pct = val::object();
+        const char* const levels[5] = {"p1", "p5", "p50", "p95", "p99"};
+        for (std::size_t k = 0; k < 5; ++k)
+            pct.set(levels[k], r.mPercentiles[k]);
+        out.set("percentiles", pct);
+        out.set("histogramEdges",
+                float64_array_from(r.mHistogramEdges.data(), r.mHistogramEdges.size()));
+        std::vector<double> counts(r.mHistogramCounts.begin(), r.mHistogramCounts.end());
+        out.set("histogramCounts", float64_array_from(counts.data(), counts.size()));
+        out.set("numOutsideRange", static_cast<double>(r.mNumOutsideRange));
+        out.set("shareWithin", r.mShareWithin);
+        out.set("suggestedRange", r.mSuggestedRange);
+        out.set("numWithoutNormal", static_cast<double>(r.mNumWithoutNormal));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+// deviationRegions (roadmap 7.4.3): the connected regions beyond +-tolerance
+// of a measured surface; options {tolerance (required), field, prefix,
+// minArea}.
+val deviation_regions_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DeviationRegionsOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the deviationRegions options",
+                                {"tolerance", "field", "prefix", "minArea"});
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("field"))
+                o.mField = rOptions["field"].as<std::string>();
+            if (rOptions.hasOwnProperty("prefix"))
+                o.mPrefix = rOptions["prefix"].as<std::string>();
+            if (rOptions.hasOwnProperty("minArea"))
+                o.mMinArea = rOptions["minArea"].as<double>();
+        }
+        meshioplusplus::DeviationRegionsResult r =
+            meshioplusplus::deviation_regions(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        val regions = val::array();
+        for (const meshioplusplus::DeviationRegionRecord& g : r.mRegions) {
+            val e = val::object();
+            e.set("name", g.mName);
+            e.set("sign", static_cast<double>(g.mSign));
+            e.set("numCells", static_cast<double>(g.mNumCells));
+            e.set("area", g.mArea);
+            e.set("extreme", g.mExtreme);
+            e.set("mean", g.mMean);
+            e.set("volume", g.mVolume);
+            e.set("centroid", float64_array_from(g.mCentroid.data(), 3));
+            e.set("bounds", float64_array_from(g.mBounds.data(), 6));
+            regions.call<void>("push", e);
+        }
+        out.set("regions", regions);
+        out.set("numExcess", static_cast<double>(r.mNumExcess));
+        out.set("numMissing", static_cast<double>(r.mNumMissing));
+        out.set("numDropped", static_cast<double>(r.mNumDropped));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+// exaggerate (roadmap 7.4.4): {field, scale, clamp, smoothFraction}.
+val exaggerate_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ExaggerateOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the exaggerate options",
+                                {"field", "scale", "clamp", "smoothFraction"});
+            if (rOptions.hasOwnProperty("field"))
+                o.mField = rOptions["field"].as<std::string>();
+            if (rOptions.hasOwnProperty("scale"))
+                o.mScale = rOptions["scale"].as<double>();
+            if (rOptions.hasOwnProperty("clamp"))
+                o.mClamp = rOptions["clamp"].as<double>();
+            if (rOptions.hasOwnProperty("smoothFraction"))
+                o.mSmoothFraction = rOptions["smoothFraction"].as<double>();
+        }
+        meshioplusplus::ExaggerateResult r = meshioplusplus::exaggerate(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("clamp", r.mClamp);
+        out.set("radius", r.mRadius);
+        out.set("numMoved", static_cast<double>(r.mNumMoved));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+// colorize (roadmap 7.4.4): {field (required), cmap, vmin, vmax, symmetric,
+// steps, nanColor, component}.
+val colorize_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ColorizeOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the colorize options",
+                                {"field", "cmap", "vmin", "vmax", "symmetric", "steps",
+                                 "nanColor", "component"});
+            if (rOptions.hasOwnProperty("field"))
+                o.mField = rOptions["field"].as<std::string>();
+            if (rOptions.hasOwnProperty("cmap"))
+                o.mCmap = rOptions["cmap"].as<std::string>();
+            if (rOptions.hasOwnProperty("vmin"))
+                o.mVMin = rOptions["vmin"].as<double>();
+            if (rOptions.hasOwnProperty("vmax"))
+                o.mVMax = rOptions["vmax"].as<double>();
+            if (rOptions.hasOwnProperty("symmetric"))
+                o.mSymmetric = rOptions["symmetric"].as<bool>();
+            if (rOptions.hasOwnProperty("steps"))
+                o.mSteps = static_cast<std::int64_t>(rOptions["steps"].as<double>());
+            if (rOptions.hasOwnProperty("nanColor"))
+                o.mNanColor = rOptions["nanColor"].as<std::string>();
+            if (rOptions.hasOwnProperty("component"))
+                o.mComponent = static_cast<std::int64_t>(rOptions["component"].as<double>());
+        }
+        meshioplusplus::ColorizeResult r = meshioplusplus::colorize(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("vmin", r.mVMin);
+        out.set("vmax", r.mVMax);
+        out.set("location", r.mLocation);
         return out;
     });
 }
@@ -9951,6 +10155,10 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("mirror", &mirror_js);
     emscripten::function("findIntersections", &find_intersections_js);
     emscripten::function("thickness", &thickness_js);
+    emscripten::function("deviation", &deviation_js);
+    emscripten::function("deviationRegions", &deviation_regions_js);
+    emscripten::function("exaggerate", &exaggerate_js);
+    emscripten::function("colorize", &colorize_js);
     emscripten::function("tetrahedralize", &tetrahedralize_js);
     emscripten::function("hasNetgen", &has_netgen_js);
     emscripten::function("hasMmg", &has_mmg_js);

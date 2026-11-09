@@ -2514,3 +2514,25 @@ end # testset
     @test isapprox(t.min, 2.0; atol=0.05)
     @test_throws ArgumentError thickness(a; direction="sideways")
 end
+
+@testset "operations: deviation" begin
+    ref = icosa_sphere(; subdivisions=3)
+    scan = icosa_sphere(; radius=1.01, subdivisions=3)
+    d = deviation(scan, ref; tolerance=0.02)
+    @test isapprox(d.mean, 0.01; atol=1e-9)
+    @test d.share_within == 1.0
+    @test length(d.histogram_counts) == 20
+    @test length(d.histogram_edges) == 21
+    @test sum(d.histogram_counts) == d.num_measured - d.num_outside_range
+    p = deviation(scan, "sphere", [0, 0, 0, 0, 0, 0, 1.0, 0, 0, 0])
+    @test isapprox(p.mean, 0.01; atol=1e-12)
+    @test_throws ArgumentError deviation(scan, "blob", zeros(10))
+    g = deviation_regions(deviation(scan, ref).mesh, 0.005)
+    @test g.num_excess == 1
+    @test g.regions[1].sign == 1
+    @test g.regions[1].name == "deviation:excess_0"
+    e = exaggerate(deviation(scan, ref).mesh; scale=20.0)
+    @test e.num_moved > 0
+    c = colorize(deviation(scan, ref).mesh, "deviation:distance"; steps=4)
+    @test c.location == "point"
+end
