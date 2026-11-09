@@ -65,6 +65,7 @@
 #include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/formats/dolfin.hpp"
+#include "meshioplusplus/formats/dxf.hpp"
 #include "meshioplusplus/formats/ensight.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
@@ -540,6 +541,9 @@ const std::vector<RegistryRow>& registry_rows() {
              [](const std::string& path, const ReadOptions& opts) {
                  return meshioplusplus::read_gltf(path, GltfReadOptions{}, opts);
              }},
+        // DXF R2000 drawings (roadmap 7.6.4): LINE/ARC/CIRCLE/LWPOLYLINE/SPLINE in,
+        // a line mesh or a fit_curves sketch out.
+        {.mName = "dxf", .mRead = meshioplusplus::read_dxf, .mWrite = meshioplusplus::write_dxf},
         {.mName = "svg",
          .mRead = [](const std::string& path) { return meshioplusplus::read_svg(path); },
          .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_svg(p, mm); },
@@ -966,6 +970,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".su2", "su2"},
         {".glb", "gltf"},
         {".gltf", "gltf"},
+        {".dxf", "dxf"},
         {".svg", "svg"},
         {".tikz", "tikz"},
         // .node/.ele stay with tetgen for backward compatibility (3D pairs

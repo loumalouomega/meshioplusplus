@@ -81,6 +81,7 @@
 #include "meshioplusplus/formats/exodus.hpp"
 #endif
 #include "meshioplusplus/formats/dex.hpp"
+#include "meshioplusplus/formats/dxf.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/flux.hpp"
 #include "meshioplusplus/formats/freefem.hpp"
@@ -7625,6 +7626,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("path"), py::arg("mesh"), py::arg("faces") = "auto", py::arg("tolerance") = 0.0);
     core_def_write(m, "off_write", &meshioplusplus::write_off);
     core_def_read(m, "off_read", "off", &meshioplusplus::read_off);
+    core_def_write(m, "dxf_write", &meshioplusplus::write_dxf);
+    core_def_read(m, "dxf_read", "dxf", &meshioplusplus::read_dxf);
 
     // OBJ writer / reader.
     core_def_write(m, "obj_write", &meshioplusplus::write_obj);

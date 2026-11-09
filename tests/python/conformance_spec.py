@@ -1546,6 +1546,18 @@ SPEC: dict[str, dict] = {
         "regions": [],
         "note": "SU2 holds volume cells and boundary markers: a volume region has no slot (separate meshes are `NZONE` zones, `su2:zone`), and data arrays are not stored.",
     },
+    "dxf": {
+        "cells": {"line": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A drawing exchange file: a line mesh is written as one `LINE` per "
+        "segment, a `fit_curves` sketch as `LINE`, `ARC` and `CIRCLE` entities, and "
+        "only the drawing comes back (`dxf:entity`, `dxf:type`). Vertex cells are "
+        "skipped and surface or volume cells are refused by name.",
+    },
     "svg": {
         "cells": {"line": "exact", "triangle": "exact", "quad": "exact"},
         "points": "exact",

@@ -330,6 +330,7 @@ export default defineConfig({
           { text: "code_aster", link: "/formats/code_aster" },
           { text: "dex", link: "/formats/dex" },
           { text: "dolfin-xml", link: "/formats/dolfin" },
+          { text: "dxf", link: "/formats/dxf" },
           { text: "elmer", link: "/formats/elmer" },
           { text: "ensight", link: "/formats/ensight" },
           { text: "exodus", link: "/formats/exodus" },
