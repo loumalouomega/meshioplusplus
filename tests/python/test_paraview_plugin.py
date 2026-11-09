@@ -475,3 +475,18 @@ def test_gmsh_p3_triangles_reach_paraview(tmp_path):
     assert meshioplusplus.read(src).cells[0].type == "triangle10"
     seen = _run_pvpython(tmp_path, _COUNTS, src)
     assert seen == {"points": 10, "cells": 1}
+
+
+_REMESH = """
+sphere = pvs.Sphere(ThetaResolution=64, PhiResolution=64)
+f = meshioRemeshsurface(Input=sphere, NumClusters=500)
+f.UpdatePipeline()
+print(json.dumps({"points": servermanager.Fetch(f).GetNumberOfPoints()}))
+"""
+
+
+def test_remesh_filter_in_paraview(tmp_path):
+    """roadmap 6.9: remesh with 500 clusters on ParaView's sphere gives about
+    500 points."""
+    seen = _run_pvpython(tmp_path, _REMESH)
+    assert 400 <= seen["points"] <= 600

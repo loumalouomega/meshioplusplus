@@ -98,6 +98,30 @@ With **RegionsAsBlocks** the reader outputs a `vtkPartitionedDataSetCollection` 
 
 The model steps (`MeshCadSurface`, `FitCad`, `ProjectToCad`, the IGA steps) are reachable only within one run of the filter, since a CAD model cannot travel through VTK; `Split` and a fanned-out `Partition`, which write a file per piece, need `run_pipeline` instead.
 
+## Dedicated filters
+
+The operations ParaView has no equivalent for are filters of their own under *Filters → meshio++*, each a thin proxy over the [Pipeline filter](#the-meshio-pipeline-filter) with typed properties: one per key of its [pipeline step](./pipeline.md), with the kind and default `tools/pipeline_steps.json` gives it (`_pipeline_table.KEY_DEFAULTS`), and an **ExtraKeys** JSON object for the keys that take a list (`Refine`'s `Cells`, `Tetrahedralize`'s sizes, MMG's options, ...). Only the properties that differ from their defaults reach the step.
+
+| Filter | Operation |
+| --- | --- |
+| Remesh (surface), Remesh Volume, Tetrahedralize, Octree Mesh, Boundary Layer, Optimize Volume, Decimate Volume | [`remesh`](./remesh.md), [`remesh_volume`](./remesh_volume.md), [`tetrahedralize`](./tetrahedralize.md), [`octree_mesh`](./octree_mesh.md), [`boundary_layer`](./boundary_layer.md), [`optimize_volume`](./optimize_volume.md), [`decimate_volume`](./decimate_volume.md) |
+| Refine, Agglomerate, Tetrahedra to Polyhedra, Polyhedra to Tetrahedra | `refine` with its selectors, `agglomerate`, `tet_to_poly`, `poly_to_tet` |
+| Hessian, Estimate Error, Error Size, Adapt (MMG) | the adaptation chain; Adapt needs the MMG add-on |
+| Repair, Find Intersections, Thickness, Check Conformity, Select | [`repair`](./repair.md), [`find_intersections`](./find_intersections.md), [`thickness`](./thickness.md), `check_conformity`, [`select`](./select.md) |
+| Region Adjacency, Find Interface, Reorder | the interface tools and `reorder` |
+
+Five more call their function directly, since they are not one in-memory pipeline step:
+
+| Filter | Operation |
+| --- | --- |
+| Partition | `partition` with **GhostLayers**: one partition per piece in a `vtkPartitionedDataSet` (the pipeline step writes a file per piece). |
+| Conservative Interpolate | `conservative_interpolate`, the **Source** input's data onto the **Input** (two inputs), with **OnConflict**. |
+| Shrinkwrap | `shrinkwrap`, the **Input**'s points onto the **Target** surface. |
+| Undo Green | `undo_green`, the **Input** (a `refine` output) with its green cells restored from **Coarse**. |
+| Match Periodic Nodes, Contact Pairs | `match_periodic_nodes` as a `periodic:master` point array (-1 off the slave region); `contact_pairs`, the slave points as vertices carrying `contact:gap`, `contact:normal`, `contact:master_cell` and the rest. |
+
+Not wrapped, because ParaView has them natively (check per release): slice, contour, gradient, clip, threshold, extract surface, clean, merge blocks, transform, reflect, extrusion, surface decimation, smoothing, normals, curvature, mesh quality, integrate variables, resampling, calculator, point and cell data conversion, tessellation, subdivision, Delaunay 3D, redistribution, feature edges, Hausdorff distance and connectivity. The [Pipeline filter](#the-meshio-pipeline-filter) still reaches every pipeline operation, these included.
+
 ## What crosses into ParaView
 
 The reader hands ParaView the mesh's points (padded to three columns when the mesh is 1-D or 2-D), its cells, and its point, cell and field data, in one vectorised pass with no per-cell Python loop:
@@ -120,4 +144,4 @@ The plugin file declares the ParaView proxies and nothing else. The conversions 
 
 ## Testing
 
-`tests/python/test_paraview_payload.py` tests the conversions with the PyPI `vtk` wheel and no ParaView. `tests/python/test_paraview_plugin.py` runs `pvpython` in a subprocess: it loads the plugin, reads files through the reader (wedges must have positive volumes in ParaView's `CellSize`, `polygon5` blocks and 1-D meshes must keep their cells), writes them back through the writer, and reads the result with meshio++. It is skipped when `pvpython` is absent or runs a different Python than the build under test; CI runs it in its `paraview-plugin` job against conda-forge ParaView, with HDF5 and netCDF on so XDMF, Exodus and CGNS files go through the plugin too, together with `tests/python/test_pvd_paraview.py`, the ParaView-side checks of the `.pvd` and `.pvtu` files meshio++ writes.
+`tests/python/test_paraview_payload.py` tests the conversions with the PyPI `vtk` wheel and no ParaView, and `tests/python/test_paraview_plugin_algorithms.py` runs the plugin's reader, writer and filters through a VTK pipeline on that wheel, with stand-ins for ParaView's `smproxy` decorators. `tests/python/test_paraview_plugin.py` runs `pvpython` in a subprocess: it loads the plugin, reads files through the reader (wedges must have positive volumes in ParaView's `CellSize`, `polygon5` blocks and 1-D meshes must keep their cells), writes them back through the writer, and reads the result with meshio++. It is skipped when `pvpython` is absent or runs a different Python than the build under test; CI runs it in its `paraview-plugin` job against conda-forge ParaView, with HDF5 and netCDF on so XDMF, Exodus and CGNS files go through the plugin too, together with `tests/python/test_pvd_paraview.py`, the ParaView-side checks of the `.pvd` and `.pvtu` files meshio++ writes.

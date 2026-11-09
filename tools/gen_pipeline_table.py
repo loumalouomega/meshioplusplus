@@ -77,6 +77,25 @@ def python_table(spec):
     for op, keys in spec["v2_extra_keys"].items():
         out.append(f'    "{op}": {_py_keys([{"name": k} for k in keys])},')
     out.append("}")
+    out.append("")
+    out.append("# Each step's keys with a kind ('number', 'flag', 'text') and default,")
+    out.append("# in order: what the ParaView plugin's filters expose as properties.")
+    out.append("KEY_DEFAULTS = {")
+    for st in spec["steps"] + spec["v2_steps"]:
+        rows = []
+        for k in st["keys"]:
+            if "kind" not in k:
+                continue
+            default = k["default"]
+            text = json.dumps(default) if isinstance(default, str) else repr(default)
+            rows.append(f'("{k["name"]}", "{k["kind"]}", {text})')
+        if len(rows) == 1:
+            out.append(f'    "{st["op"]}": ({rows[0]},),')
+        elif rows:
+            out.append(f'    "{st["op"]}": (')
+            out += [f"        {row}," for row in rows]
+            out.append("    ),")
+    out.append("}")
     return "\n".join(out) + "\n"
 
 

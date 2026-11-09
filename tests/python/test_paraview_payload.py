@@ -708,3 +708,57 @@ def test_fixed_order_high_cells_reach_vtk():
     sizes.Update()
     area = sizes.GetOutput().GetCellData().GetArray("Area").GetValue(0)
     assert area == pytest.approx(0.5)
+
+
+# --------------------------------------------------------------------------- #
+# dedicated filters (roadmap 6.9)                                             #
+# --------------------------------------------------------------------------- #
+def test_every_step_filter_is_a_pipeline_step():
+    from meshioplusplus._pipeline_table import OP_TABLE
+
+    for op, label in _paraview.STEP_FILTERS:
+        assert op in OP_TABLE, op
+        keys = [k for k, _, _ in _paraview.step_keys(op)]
+        assert set(keys) <= set(OP_TABLE[op]), op
+
+
+def test_step_from_properties_passes_what_differs():
+    step = _paraview.step_from_properties(
+        "Remesh",
+        {"NumClusters": 500.0, "PreserveBoundary": 1, "Metric": "isotropic"},
+        '{"Gradation": 0.2}',
+    )
+    assert step == {"Op": "Remesh", "NumClusters": 500, "Gradation": 0.2}
+    assert _paraview.step_from_properties("Refine", {"Levels": 1.0}) == {"Op": "Refine"}
+    with pytest.raises(ValueError, match="JSON object"):
+        _paraview.step_from_properties("Refine", {}, "[1]")
+
+
+def test_periodic_master_array():
+    square = meshioplusplus.rectangle((4, 4))
+    out = _paraview.with_periodic_master(square, "xmin", "xmax", (1.0, 0.0, 0.0))
+    master = out.point_data["periodic:master"]
+    slaves = np.flatnonzero(master >= 0)
+    assert len(slaves) == 5
+    np.testing.assert_allclose(square.points[slaves, 0], 0.0)
+    np.testing.assert_allclose(square.points[master[slaves], 0], 1.0)
+
+
+def test_contact_points_carry_the_pairs():
+    from meshioplusplus._regions import Region
+
+    square = meshioplusplus.rectangle((4, 4))
+    probes = np.array([[0.2, 0.3, 0.1], [0.7, 0.6, 0.2]])
+    n = len(square.points)
+    mesh = meshioplusplus.Mesh(
+        np.vstack([square.points, probes]),
+        square.cells,
+        regions=[
+            Region("probe", "point", [n, n + 1]),
+            Region("plate", "cell", list(range(len(square.cells[0])))),
+        ],
+    )
+    out = _paraview.contact_points(mesh, "probe", "plate")
+    assert [(b.type, len(b)) for b in out.cells] == [("vertex", 2)]
+    np.testing.assert_allclose(out.points, probes)
+    assert "contact:gap" in out.point_data

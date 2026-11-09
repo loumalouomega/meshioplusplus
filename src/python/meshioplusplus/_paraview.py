@@ -1022,3 +1022,122 @@ def fill_grid_with_report(grid, mesh, report, op=FILTER_OP):
     text = json.dumps(report, separators=(",", ":"), default=str)
     grid.GetFieldData().AddArray(_field_array(REPORT_KEY, [text], notes))
     return notes
+
+
+# --------------------------------------------------------------------------- #
+# dedicated filters (roadmap 6.9)                                             #
+# --------------------------------------------------------------------------- #
+#: The filters that are one settings-pipeline step each: ``(op, label)``.
+#: Each is a thin proxy over the Pipeline filter, its typed properties the
+#: step's keys with their kinds and defaults (``_pipeline_table.KEY_DEFAULTS``,
+#: generated from ``tools/pipeline_steps.json``); keys with no simple kind
+#: go in its ExtraKeys JSON. Operations ParaView has natively are not here.
+STEP_FILTERS = (
+    ("Remesh", "Remesh (surface)"),
+    ("RemeshVolume", "Remesh Volume"),
+    ("Tetrahedralize", "Tetrahedralize"),
+    ("OctreeMesh", "Octree Mesh"),
+    ("BoundaryLayer", "Boundary Layer"),
+    ("OptimizeVolume", "Optimize Volume"),
+    ("DecimateVolume", "Decimate Volume"),
+    ("Refine", "Refine"),
+    ("Agglomerate", "Agglomerate"),
+    ("TetToPoly", "Tetrahedra to Polyhedra"),
+    ("PolyToTet", "Polyhedra to Tetrahedra"),
+    ("Hessian", "Hessian"),
+    ("EstimateError", "Estimate Error"),
+    ("ErrorSize", "Error Size"),
+    ("Adapt", "Adapt (MMG)"),
+    ("Repair", "Repair"),
+    ("FindIntersections", "Find Intersections"),
+    ("Thickness", "Thickness"),
+    ("CheckConformity", "Check Conformity"),
+    ("Select", "Select"),
+    ("RegionAdjacency", "Region Adjacency"),
+    ("FindInterface", "Find Interface"),
+    ("Reorder", "Reorder"),
+)
+
+
+def step_keys(op):
+    """``((key, kind, default), ...)`` of a pipeline step's typed keys."""
+    from ._pipeline_table import KEY_DEFAULTS
+
+    return KEY_DEFAULTS.get(op, ())
+
+
+def step_from_properties(op, values, extra=""):
+    """The pipeline step a dedicated filter runs: ``{"Op": op, ...}`` with
+    each property whose value differs from the key's default (a whole number
+    for a key whose default is one) and the ExtraKeys JSON object."""
+    step = {"Op": op}
+    for key, kind, default in step_keys(op):
+        if key not in values:
+            continue
+        value = values[key]
+        if kind == "flag":
+            value = bool(value)
+        elif kind == "number":
+            value = float(value)
+            if isinstance(default, int) and value.is_integer():
+                value = int(value)
+        if value != default:
+            step[key] = value
+    if extra and extra.strip():
+        more = json.loads(extra)
+        if not isinstance(more, dict):
+            raise ValueError(f"{op}: ExtraKeys must be a JSON object, not {more!r}")
+        step.update(more)
+    return step
+
+
+def partition_pieces(mesh, nparts=2, ghost_layers=0, **kwargs):
+    """``meshioplusplus.partition``'s pieces, with their ghost layers (which
+    the in-memory pipeline step cannot give: it writes one file per piece)."""
+    from ._partition import partition
+
+    return partition(mesh, int(nparts), ghost_layers=int(ghost_layers), **kwargs)
+
+
+def fill_partitioned(output, meshes, op=FILTER_OP):
+    """A ``vtkPartitionedDataSet`` with one partition per mesh."""
+    output.SetNumberOfPartitions(0)
+    for index, mesh in enumerate(meshes):
+        output.SetPartition(index, grid_from_mesh(mesh, op))
+    return output
+
+
+def with_periodic_master(mesh, slave, master, translate=(0.0, 0.0, 0.0), atol=1e-8):
+    """``mesh`` with a ``periodic:master`` point array: the master node each
+    node of the ``slave`` region maps onto (``match_periodic_nodes``), -1 for
+    any other node."""
+    from ._periodic import match_periodic_nodes
+
+    pairs = match_periodic_nodes(
+        mesh, slave, master, translate=tuple(translate), atol=atol
+    )
+    master_of = np.full(len(mesh.points), -1, dtype=np.int64)
+    pairs = np.asarray(pairs, dtype=np.int64).reshape(-1, 2)
+    master_of[pairs[:, 0]] = pairs[:, 1]
+    out = mesh.copy() if hasattr(mesh, "copy") else mesh
+    out.point_data["periodic:master"] = master_of
+    return out
+
+
+def contact_points(mesh, slave_points, master_cells, tolerance=0.0):
+    """The ``slave_points`` region's points as vertices, carrying
+    ``contact_pairs``' arrays (gap, normal, closest point, master cell, ...)
+    for the ``master_cells`` region."""
+    from ._interfaces import contact_pairs
+    from ._mesh import Mesh
+
+    result = contact_pairs(mesh, slave_points, master_cells, tolerance=tolerance)
+    ids = np.asarray(result["slave_point"], dtype=np.int64).reshape(-1)
+    points = np.asarray(mesh.points)[ids]
+    data = {}
+    for name, values in result.items():
+        a = np.asarray(values)
+        if a.shape[:1] == (len(ids),) and a.dtype != object:
+            data[f"contact:{name}"] = a
+    vertices = np.arange(len(ids), dtype=np.int64).reshape(-1, 1)
+    return Mesh(points, [("vertex", vertices)], point_data=data)

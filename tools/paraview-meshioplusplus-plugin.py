@@ -11,6 +11,8 @@ labels, which keep the spellings scripts already use (``meshioreader``,
 so state files saved with them still load.
 """
 
+import html
+
 from paraview.util.vtkAlgorithm import (
     VTKPythonAlgorithmBase,
     smdomain,
@@ -21,6 +23,7 @@ from paraview.util.vtkAlgorithm import (
 from vtkmodules.vtkCommonCore import vtkDataArraySelection
 from vtkmodules.vtkCommonDataModel import (
     vtkDataObject,
+    vtkPartitionedDataSet,
     vtkPartitionedDataSetCollection,
     vtkUnstructuredGrid,
 )
@@ -521,7 +524,9 @@ class MeshioPlusPlusWriter(VTKPythonAlgorithmBase):
         self.Update()
 
 
-@smproxy.filter(name="MeshioPlusPlusPipeline", label="meshio++ Pipeline")
+@smproxy.filter(
+    name="MeshioPlusPlusPipeline", label="meshio++ Pipeline", support_reload=False
+)
 @smhint.xml('<ShowInMenu category="meshio++"/>')
 @smproperty.input(name="Input", port_index=0)
 @smdomain.datatype(
@@ -558,6 +563,364 @@ class MeshioPlusPlusPipeline(VTKPythonAlgorithmBase):
         _paraview.fill_grid_with_report(
             vtkUnstructuredGrid.GetData(outInfoVec), mesh, report
         )
+        return 1
+
+
+# --------------------------------------------------------------------------- #
+# Dedicated filters (roadmap 6.9): thin proxies with typed properties.        #
+# --------------------------------------------------------------------------- #
+_DATASETS = ["vtkDataSet", "vtkCompositeDataSet"]
+
+
+def _setter(key, kind):
+    def setter(self, value):
+        if self._values.get(key) != value:
+            self._values[key] = value
+            self.Modified()
+
+    setter.__name__ = "Set" + key
+    setter.__qualname__ = setter.__name__
+    return setter
+
+
+def _typed_property(key, kind, default):
+    """The decorators of one step key's property."""
+    if kind == "flag":
+        return [
+            smproperty.intvector(name=key, default_values=str(int(bool(default)))),
+            smdomain.xml('<BooleanDomain name="bool"/>'),
+        ]
+    if kind == "number":
+        return [smproperty.doublevector(name=key, default_values=str(float(default)))]
+    # ParaView writes the attribute as given, so a default such as "<" (a
+    # comparison) is escaped here.
+    return [
+        smproperty.stringvector(
+            name=key,
+            number_of_elements="1",
+            default_values=html.escape(str(default), quote=True),
+        )
+    ]
+
+
+def _step_filter(op, label):
+    """A filter running the one pipeline step `op` on its input."""
+
+    def __init__(self):
+        VTKPythonAlgorithmBase.__init__(
+            self,
+            nInputPorts=1,
+            nOutputPorts=1,
+            inputType="vtkDataObject",
+            outputType="vtkUnstructuredGrid",
+        )
+        self._values = {}
+        self._extra = ""
+
+    def SetExtraKeys(self, text):
+        # Any other key of the step, as a JSON object.
+        if self._extra != text:
+            self._extra = text
+            self.Modified()
+
+    def RequestData(self, request, inInfoVec, outInfoVec):
+        mesh = _paraview.mesh_from_data_object(
+            vtkDataObject.GetData(inInfoVec[0]), _paraview.FILTER_OP
+        )
+        step = _paraview.step_from_properties(op, self._values, self._extra)
+        mesh, report = _paraview.run_operations(mesh, [step])
+        _paraview.fill_grid_with_report(
+            vtkUnstructuredGrid.GetData(outInfoVec), mesh, report
+        )
+        return 1
+
+    namespace = {"__init__": __init__, "RequestData": RequestData}
+    for key, kind, default in _paraview.step_keys(op):
+        method = _setter(key, kind)
+        for decorate in reversed(_typed_property(key, kind, default)):
+            method = decorate(method)
+        namespace[method.__name__] = method
+    namespace["SetExtraKeys"] = smproperty.stringvector(
+        name="ExtraKeys", number_of_elements="1", default_values=""
+    )(SetExtraKeys)
+    cls = type("MeshioPlusPlus" + op, (VTKPythonAlgorithmBase,), namespace)
+    cls.__doc__ = f"The settings pipeline's {op} step (doc/pipeline.md)."
+    # Applied bottom-up, as the decorator stacks below are: smproxy.filter
+    # renders the proxy's XML, so it comes last.
+    decorated = smdomain.datatype(dataTypes=_DATASETS, composite_data_supported=True)(
+        cls
+    )
+    decorated = smproperty.input(name="Input", port_index=0)(decorated)
+    decorated = smhint.xml('<ShowInMenu category="meshio++"/>')(decorated)
+    decorated = smproxy.filter(
+        name=cls.__name__, label=f"meshio++ {label}", support_reload=False
+    )(decorated)
+    globals()[cls.__name__] = decorated
+
+
+for _op, _label in _paraview.STEP_FILTERS:
+    _step_filter(_op, _label)
+
+
+def _mesh_in(inInfoVec, port):
+    return _paraview.mesh_from_data_object(
+        vtkDataObject.GetData(inInfoVec[port]), _paraview.FILTER_OP
+    )
+
+
+@smproxy.filter(
+    name="MeshioPlusPlusPartition", label="meshio++ Partition", support_reload=False
+)
+@smhint.xml('<ShowInMenu category="meshio++"/>')
+@smproperty.input(name="Input", port_index=0)
+@smdomain.datatype(dataTypes=_DATASETS, composite_data_supported=True)
+class MeshioPlusPlusPartition(VTKPythonAlgorithmBase):
+    """partition(): one partition per piece, with its ghost layers."""
+
+    def __init__(self):
+        VTKPythonAlgorithmBase.__init__(
+            self,
+            nInputPorts=1,
+            nOutputPorts=1,
+            inputType="vtkDataObject",
+            outputType="vtkPartitionedDataSet",
+        )
+        self._nparts, self._ghosts, self._method = 2, 0, "auto"
+
+    @smproperty.intvector(name="Nparts", default_values="2")
+    def SetNparts(self, value):
+        if self._nparts != int(value):
+            self._nparts = int(value)
+            self.Modified()
+
+    @smproperty.intvector(name="GhostLayers", default_values="0")
+    def SetGhostLayers(self, value):
+        if self._ghosts != int(value):
+            self._ghosts = int(value)
+            self.Modified()
+
+    @smproperty.stringvector(
+        name="Method", number_of_elements="1", default_values="auto"
+    )
+    def SetMethod(self, value):
+        if self._method != value:
+            self._method = value
+            self.Modified()
+
+    def RequestData(self, request, inInfoVec, outInfoVec):
+        pieces = _paraview.partition_pieces(
+            _mesh_in(inInfoVec, 0), self._nparts, self._ghosts, method=self._method
+        )
+        _paraview.fill_partitioned(vtkPartitionedDataSet.GetData(outInfoVec), pieces)
+        return 1
+
+
+class _TwoInputs(VTKPythonAlgorithmBase):
+    """A filter of two meshes, the second on port 1."""
+
+    def __init__(self):
+        VTKPythonAlgorithmBase.__init__(
+            self,
+            nInputPorts=2,
+            nOutputPorts=1,
+            inputType="vtkDataObject",
+            outputType="vtkUnstructuredGrid",
+        )
+
+    def _run(self, first, second):
+        raise NotImplementedError
+
+    def RequestData(self, request, inInfoVec, outInfoVec):
+        mesh, report = self._run(_mesh_in(inInfoVec, 0), _mesh_in(inInfoVec, 1))
+        _paraview.fill_grid_with_report(
+            vtkUnstructuredGrid.GetData(outInfoVec), mesh, report
+        )
+        return 1
+
+
+@smproxy.filter(
+    name="MeshioPlusPlusConservativeInterpolate",
+    label="meshio++ Conservative Interpolate",
+    support_reload=False,
+)
+@smhint.xml('<ShowInMenu category="meshio++"/>')
+@smproperty.input(name="Source", port_index=1)
+@smdomain.datatype(dataTypes=_DATASETS, composite_data_supported=True)
+@smproperty.input(name="Input", port_index=0)
+@smdomain.datatype(dataTypes=_DATASETS, composite_data_supported=True)
+class MeshioPlusPlusConservativeInterpolate(_TwoInputs):
+    """conservative_interpolate(): Source's data onto Input, mass-preserving."""
+
+    def __init__(self):
+        _TwoInputs.__init__(self)
+        self._on_conflict = "error"
+
+    @smproperty.stringvector(
+        name="OnConflict", number_of_elements="1", default_values="error"
+    )
+    def SetOnConflict(self, value):
+        # An array the target already has: error, overwrite or suffix.
+        if self._on_conflict != value:
+            self._on_conflict = value
+            self.Modified()
+
+    def _run(self, target, source):
+        out = meshioplusplus.conservative_interpolate(
+            source, target, on_conflict=self._on_conflict
+        )
+        return out, {}
+
+
+@smproxy.filter(
+    name="MeshioPlusPlusShrinkwrap", label="meshio++ Shrinkwrap", support_reload=False
+)
+@smhint.xml('<ShowInMenu category="meshio++"/>')
+@smproperty.input(name="Target", port_index=1)
+@smdomain.datatype(dataTypes=_DATASETS, composite_data_supported=True)
+@smproperty.input(name="Input", port_index=0)
+@smdomain.datatype(dataTypes=_DATASETS, composite_data_supported=True)
+class MeshioPlusPlusShrinkwrap(_TwoInputs):
+    """shrinkwrap(): Input's points moved onto the Target surface."""
+
+    def __init__(self):
+        _TwoInputs.__init__(self)
+        self._offset = 0.0
+
+    @smproperty.doublevector(name="Offset", default_values="0.0")
+    def SetOffset(self, value):
+        if self._offset != float(value):
+            self._offset = float(value)
+            self.Modified()
+
+    def _run(self, mesh, target):
+        return meshioplusplus.shrinkwrap(
+            mesh, target, offset=self._offset, return_report=True
+        )
+
+
+@smproxy.filter(
+    name="MeshioPlusPlusUndoGreen", label="meshio++ Undo Green", support_reload=False
+)
+@smhint.xml('<ShowInMenu category="meshio++"/>')
+@smproperty.input(name="Coarse", port_index=1)
+@smdomain.datatype(dataTypes=_DATASETS, composite_data_supported=True)
+@smproperty.input(name="Input", port_index=0)
+@smdomain.datatype(dataTypes=_DATASETS, composite_data_supported=True)
+class MeshioPlusPlusUndoGreen(_TwoInputs):
+    """undo_green(): Input (a refine output) with its green cells restored
+    from Coarse, the mesh it was refined from."""
+
+    def _run(self, fine, coarse):
+        return meshioplusplus.undo_green(coarse, fine, return_report=True)
+
+
+@smproxy.filter(
+    name="MeshioPlusPlusPeriodicNodes",
+    label="meshio++ Match Periodic Nodes",
+    support_reload=False,
+)
+@smhint.xml('<ShowInMenu category="meshio++"/>')
+@smproperty.input(name="Input", port_index=0)
+@smdomain.datatype(dataTypes=_DATASETS, composite_data_supported=True)
+class MeshioPlusPlusPeriodicNodes(VTKPythonAlgorithmBase):
+    """match_periodic_nodes(): a periodic:master point array."""
+
+    def __init__(self):
+        VTKPythonAlgorithmBase.__init__(
+            self,
+            nInputPorts=1,
+            nOutputPorts=1,
+            inputType="vtkDataObject",
+            outputType="vtkUnstructuredGrid",
+        )
+        self._slave, self._master = "", ""
+        self._translate = (0.0, 0.0, 0.0)
+        self._atol = 1e-8
+
+    @smproperty.stringvector(name="Slave", number_of_elements="1", default_values="")
+    def SetSlave(self, value):
+        if self._slave != value:
+            self._slave = value
+            self.Modified()
+
+    @smproperty.stringvector(name="Master", number_of_elements="1", default_values="")
+    def SetMaster(self, value):
+        if self._master != value:
+            self._master = value
+            self.Modified()
+
+    @smproperty.doublevector(name="Translate", default_values=[0.0, 0.0, 0.0])
+    def SetTranslate(self, x, y, z):
+        if self._translate != (x, y, z):
+            self._translate = (x, y, z)
+            self.Modified()
+
+    @smproperty.doublevector(name="Atol", default_values="1e-08")
+    def SetAtol(self, value):
+        if self._atol != float(value):
+            self._atol = float(value)
+            self.Modified()
+
+    def RequestData(self, request, inInfoVec, outInfoVec):
+        mesh = _paraview.with_periodic_master(
+            _mesh_in(inInfoVec, 0),
+            self._slave,
+            self._master,
+            self._translate,
+            self._atol,
+        )
+        _paraview.fill_grid(vtkUnstructuredGrid.GetData(outInfoVec), mesh)
+        return 1
+
+
+@smproxy.filter(
+    name="MeshioPlusPlusContactPairs",
+    label="meshio++ Contact Pairs",
+    support_reload=False,
+)
+@smhint.xml('<ShowInMenu category="meshio++"/>')
+@smproperty.input(name="Input", port_index=0)
+@smdomain.datatype(dataTypes=_DATASETS, composite_data_supported=True)
+class MeshioPlusPlusContactPairs(VTKPythonAlgorithmBase):
+    """contact_pairs(): the slave points, with their gap, normal and master."""
+
+    def __init__(self):
+        VTKPythonAlgorithmBase.__init__(
+            self,
+            nInputPorts=1,
+            nOutputPorts=1,
+            inputType="vtkDataObject",
+            outputType="vtkUnstructuredGrid",
+        )
+        self._slave, self._master, self._tolerance = "", "", 0.0
+
+    @smproperty.stringvector(
+        name="SlavePoints", number_of_elements="1", default_values=""
+    )
+    def SetSlavePoints(self, value):
+        if self._slave != value:
+            self._slave = value
+            self.Modified()
+
+    @smproperty.stringvector(
+        name="MasterCells", number_of_elements="1", default_values=""
+    )
+    def SetMasterCells(self, value):
+        if self._master != value:
+            self._master = value
+            self.Modified()
+
+    @smproperty.doublevector(name="Tolerance", default_values="0.0")
+    def SetTolerance(self, value):
+        if self._tolerance != float(value):
+            self._tolerance = float(value)
+            self.Modified()
+
+    def RequestData(self, request, inInfoVec, outInfoVec):
+        points = _paraview.contact_points(
+            _mesh_in(inInfoVec, 0), self._slave, self._master, self._tolerance
+        )
+        _paraview.fill_grid(vtkUnstructuredGrid.GetData(outInfoVec), points)
         return 1
 
 

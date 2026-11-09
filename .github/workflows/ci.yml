@@ -1922,7 +1922,7 @@ jobs:
         env:
           MESHIOPLUSPLUS_REQUIRE_PVPYTHON: "1"
         # The source tree is src/-laid-out, so this imports the installed package.
-        run: xvfb-run -a python -m pytest tests/python/test_paraview_plugin.py tests/python/test_pvd_paraview.py tests/python/test_paraview_payload.py -v
+        run: xvfb-run -a python -m pytest tests/python/test_paraview_plugin.py tests/python/test_pvd_paraview.py tests/python/test_paraview_payload.py tests/python/test_paraview_plugin_algorithms.py tests/python/test_lagrange_gmsh_order.py -v
 
   # --------------------------------------------------------------------------
   # glTF output against the Khronos glTF-Validator (the `gltf-validator` npm
