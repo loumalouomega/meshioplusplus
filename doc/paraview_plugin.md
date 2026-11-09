@@ -1,6 +1,6 @@
 # ParaView Plugin
 
-meshio++ ships a ParaView Python plugin (`tools/paraview-meshioplusplus-plugin.py`) with a reader and a writer, so ParaView can open any file meshio++ reads and save to any format it writes, without converting first.
+meshio++ ships a ParaView Python plugin (`tools/paraview-meshioplusplus-plugin.py`): a reader and a writer, so ParaView can open any file meshio++ reads and save to any format it writes without converting first, and filters that bring the meshing and analysis operations ParaView has no equivalent for, plus one that runs any [settings pipeline](./pipeline.md).
 
 ## Installation
 
@@ -57,7 +57,7 @@ The reader registers every extension meshio++ knows, `.vtu` and the other format
 
 ## Usage
 
-After loading, every extension meshio++ knows appears in ParaView's file dialogs. The reader's **FileFormat** property picks the format explicitly (`automatic` infers it from the file), and the file is exposed as a `vtkUnstructuredGrid` with its point, cell and field data. The writer saves an unstructured grid through `meshioplusplus.write`, choosing the format from the file name.
+After loading, every extension meshio++ knows appears in ParaView's file dialogs. The reader exposes a file as a `vtkUnstructuredGrid` with its point, cell and field data (or, with **RegionsAsBlocks**, a collection of its regions), and the writer saves any dataset through `meshioplusplus.write`. Their properties are below; the filters are under *Filters → meshio++*.
 
 ## Reader properties
 
@@ -152,7 +152,11 @@ The plugin file declares the ParaView proxies and nothing else. The conversions 
 
 ## Limitations
 
-- Optional format dependencies (`h5py`, `netCDF4`, ...) must be installed in ParaView's Python as well.
+- Optional format dependencies (`h5py`, `netCDF4`, ...) must be installed in ParaView's Python as well; the bundle carries meshio++'s compiled HDF5 and netCDF support where its wheel has it, not the Python packages.
+- A `pyramid14` block and a `hexahedron1331` block are dropped with a warning: VTK has no 14-node pyramid, and an order-10 hexahedron has no Gmsh element to check its node order against. A `custom` block is dropped likewise.
+- A file series is timed as [sequences](./sequences.md) time one, so a number in the file names (`out_0003.vtu`) wins over the time stored in each file.
+- Side regions, which VTK has no `(cell, facet)` concept for, cross as field arrays: ParaView carries them through a pipeline but cannot show them; *RegionsAsBlocks* shows them as blocks of facets.
+- The writer holds every step of a series-format output until the last one arrives (one-file-per-step formats are written as each step comes).
 
 ## Testing
 

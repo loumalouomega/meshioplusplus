@@ -1013,15 +1013,7 @@ def view_backends():
 def roadmap_map():
     columns = [
         (
-            "§1 correctness debts",
-            [
-                ("plugin: wedges inside out", "S"),
-                ("plugin: polygonN blocks dropped", "S"),
-            ],
-            [],
-        ),
-        (
-            "§2 format reach",
+            "§1 format reach",
             [
                 ("route runs (.odb · .t16 · DPF)", "S"),
                 ("reader checks awaiting a licence", "S"),
@@ -1030,7 +1022,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§3 quality",
+            "§2 quality",
             [
                 ("OSS-Fuzz submission", "S"),
                 ("CalculiX validators in CI", "S"),
@@ -1041,7 +1033,7 @@ def roadmap_map():
             [],
         ),
         (
-            "§4 ecosystem reach",
+            "§3 ecosystem reach",
             [
                 ("registries (calendar-bound)", "S"),
                 ("Rust bindings over the C API", "M"),
@@ -1057,7 +1049,7 @@ def roadmap_map():
             [(6, 7)],
         ),
         (
-            "§5 performance",
+            "§4 performance",
             [
                 ("harness: missing rows", "M"),
                 ("wheel runtimes: CI probe", "S"),
@@ -1066,21 +1058,6 @@ def roadmap_map():
                 ("sequences: read-ahead, fields only", "M"),
             ],
             [(0, 1)],
-        ),
-        (
-            "§6 ParaView plugin",
-            [
-                ("payload layer (closes §1)", "S"),
-                ("polyhedra · higher order", "M"),
-                ("time steps in and out", "M"),
-                ("read options · regions", "M"),
-                ("writer inputs and options", "M"),
-                ("Pipeline filter", "M"),
-                ("dedicated filters", "L"),
-                ("CI coverage · stable names", "S"),
-                ("bundle per ParaView Python", "M"),
-            ],
-            [(0, 1), (5, 6)],
         ),
     ]
     per_row = 4

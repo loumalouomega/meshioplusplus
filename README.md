@@ -1370,14 +1370,12 @@ The same bridge is two public functions, usable from Blender's scripting console
 <img alt="gmsh paraview" src="https://nschloe.github.io/meshio/gmsh-paraview.png" width="60%">
 *A Gmsh file opened with ParaView.*
 
-If you have downloaded a binary version of ParaView, you may proceed as follows.
+The ParaView plugin opens every format meshio++ reads and saves to every format it writes, with time steps, array selection, named regions (as arrays or as blocks), polyhedra and higher-order cells; and it brings the meshing and analysis operations ParaView has no equivalent for as filters under *Filters → meshio++*, plus one filter that runs any [settings pipeline](https://loumalouomega.github.io/meshioplusplus/pipeline).
 
-- Install meshio++ for the Python major version that ParaView uses (check `pvpython --version`)
-- Open ParaView
-- Find the file `paraview-meshioplusplus-plugin.py` of your meshio++ installation (on Linux: `~/.local/share/paraview-5.9/plugins/`) and load it under _Tools / Manage Plugins / Load New_
-- _Optional:_ Activate _Auto Load_
+- **The self-contained bundle** (any ParaView, Kitware's binaries included): download `meshioplusplus-paraview-<version>-<platform>-cp<XY>.zip` from the [release](https://github.com/loumalouomega/meshioplusplus/releases) matching your ParaView's Python (`pvpython -c "import sys; print(sys.version)"`), unzip it anywhere, and load `paraview-meshioplusplus-plugin.py` from it under _Tools / Manage Plugins / Load New_ (tick _Auto Load_). Nothing is installed.
+- **Into ParaView's own Python** (a conda-forge or system ParaView): `pip install "meshioplusplus[all]"` for that Python, then load `<prefix>/share/meshioplusplus/paraview/paraview-meshioplusplus-plugin.py`.
 
-You can now open all meshio++-supported files in ParaView.
+See [the ParaView plugin docs](https://loumalouomega.github.io/meshioplusplus/paraview_plugin).
 
 </details>
 
