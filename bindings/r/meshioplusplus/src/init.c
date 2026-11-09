@@ -209,7 +209,7 @@ extern SEXP R_mio_poly_to_tet(SEXP, SEXP);
 extern SEXP R_mio_blend_steps(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_tessellate(SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_decimate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_decimate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_decimate_volume(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition_labels(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -470,7 +470,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_blend_steps, 4),
                                               CALLDEF(R_mio_refine, 11),
                                               CALLDEF(R_mio_tessellate, 5),
-                                              CALLDEF(R_mio_decimate, 9),
+                                              CALLDEF(R_mio_decimate, 12),
                                               CALLDEF(R_mio_decimate_volume, 9),
                                               CALLDEF(R_mio_partition, 9),
                                               CALLDEF(R_mio_partition_labels, 8),

@@ -8698,6 +8698,21 @@ struct DecimateOptions {
     /// length `NumPoints()`, where a non-zero entry pins that vertex. Unioned
     /// with the boundary/feature pins, never subtracted from them.
     std::vector<std::uint8_t> mFrozen;
+
+    /// The largest distance the result may lie from the input, a fourth
+    /// stopping criterion (roadmap 7.8.5): the run keeps the fewest faces
+    /// whose two-sided sample distance (the input's vertices to the result,
+    /// the result's vertices and 2 x 2 face samples per triangle to the
+    /// input, as `hausdorff_distance` measures) is at most this on
+    /// `mCoverage` of the samples. Negative means unset; it replaces the other three.
+    double mMaxDeviation = -1.0;
+
+    /// The share of samples `mMaxDeviation` must hold for, in `(0, 1]`.
+    double mCoverage = 0.999;
+
+    /// At most this many faces, a cap on any criterion (alone, it is
+    /// `mTargetFaces`). Negative means unset.
+    std::int64_t mMaxFaces = -1;
 };
 
 /// The result of `decimate`: the decimated mesh, the index maps, and what the
@@ -8733,6 +8748,15 @@ struct DecimateResult {
     /// The largest quadric error among the committed collapses (`0.0` when
     /// nothing collapsed).
     double mMaxErrorApplied = 0.0;
+
+    /// With `mMaxDeviation`: the `mCoverage` quantile of the two-sided sample
+    /// distances of the result, and whether it is within `mMaxDeviation`
+    /// (false when `mMaxFaces` forbade it); 0 and true otherwise.
+    double mDeviation = 0.0;
+    bool mDeviationMet = true;
+
+    /// The decimation runs `mMaxDeviation` or `mMaxFaces` took (0: one plain run).
+    std::int64_t mRounds = 0;
 };
 
 /**
@@ -8741,9 +8765,15 @@ struct DecimateResult {
  * @param rOptions Stopping criterion, placement, pinning policy, frozen mask.
  * @return The decimated all-triangle mesh, the point/cell index maps, and the
  *         collapse/rejection summary.
+ * With `mMaxDeviation`, a deterministic search on the face count: the
+ * input's own face count (or `mMaxFaces`), the count the quadric bound
+ * `mMaxError = mMaxDeviation^2` reaches, then bisection to within 1% of the
+ * fewest faces that keep the deviation, each candidate a full run measured
+ * two-sided; the result is the lightest that passed. With `mMaxFaces` alone or
+ * beside another criterion, a run over the cap is redone at the cap.
  * @throws std::invalid_argument when not exactly one stopping criterion is
- *         set, on a criterion out of range, on a mis-sized `mFrozen` mask, and
- *         on any block outside the surface scope: 3D volume cells (use
+ *         set (`mMaxFaces` alone counts as one), on a criterion out of range, on a mis-sized
+ * `mFrozen` mask, and on any block outside the surface scope: 3D volume cells (use
  *         `extract_surface` first), higher-order cells (linearize first),
  *         ragged polygon/polyhedron blocks, and `line`/`vertex` blocks.
  */
@@ -51080,6 +51110,61 @@ struct GeometryUtils {
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/geometry_utils.hpp =====
+// ===== begin src/cpp/src/detail/hausdorff_samples.hpp =====
+/**
+ * @file detail/hausdorff_samples.hpp
+ * @brief Every sample distance `hausdorff_distance` reduces, kept rather than
+ * reduced: the distance of each sample of A to B, then of each sample of B to
+ * A, sampled and measured exactly as `hausdorff_distance` does (so the largest
+ * is its Hausdorff distance). `decimate`'s `max_deviation` takes a quantile of
+ * them (roadmap 7.8.5).
+ *
+ * A **core-private** header: no installed header names it.
+ */
+
+// System includes
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// The unsigned sample distances A to B then B to A (`FaceSamples` as
+/// `HausdorffOptions::mFaceSamples`).
+std::vector<double> hausdorff_sample_distances(const Mesh& rA, const Mesh& rB,
+                                               std::int64_t FaceSamples);
+
+/**
+ * @brief The same against one fixed reference, its samples and its distance
+ * query built once: `Distances(rOther)` is
+ * `hausdorff_sample_distances(rOther, rReference, FaceSamples)` when
+ * `ReferenceFaceSamples == FaceSamples`; a dense reference (a mesh being
+ * decimated) is sampled well enough at its vertices (`ReferenceFaceSamples`
+ * 0) while the coarse other side keeps its face samples.
+ */
+class HausdorffSampler {
+public:
+    HausdorffSampler(const Mesh& rReference, std::int64_t ReferenceFaceSamples,
+                     std::int64_t FaceSamples);
+    ~HausdorffSampler();
+    HausdorffSampler(const HausdorffSampler&) = delete;
+    HausdorffSampler& operator=(const HausdorffSampler&) = delete;
+
+    std::vector<double> Distances(const Mesh& rOther) const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
+
+/// The @p Coverage quantile of @p Values (the smallest value at least that
+/// share of them do not exceed); 0 for none.
+double coverage_quantile(std::vector<double> Values, double Coverage);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/hausdorff_samples.hpp =====
 // ===== begin src/cpp/src/detail/hex_color.hpp =====
 /**
  * @file detail/hex_color.hpp
@@ -61008,7 +61093,7 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "RecordHierarchy"}},
         {"Decimate",
          {"Ratio", "TargetFaces", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
-          "FeatureAngle"}},
+          "FeatureAngle", "MaxDeviation", "Coverage", "MaxFaces"}},
         {"DecimateVolume",
          {"Ratio", "TargetCells", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
           "FeatureAngle"}},
@@ -232738,7 +232823,9 @@ DecimatePlacement decimate_placement_from_name(const std::string& rName) {
                                 "' (expected 'optimal', 'midpoint' or 'endpoint')");
 }
 
-DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
+namespace {
+
+DecimateResult decim_core(const Mesh& rMesh, const DecimateOptions& rOptions) {
     detail::DecimStop stop =
         detail::decim_resolve_stop(rOptions.mTargetRatio, rOptions.mTargetFaces, rOptions.mMaxError,
                                    kDecimPrefix, "target_faces");
@@ -233002,6 +233089,142 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
                                 detail::CellMapKind::FirstChild, "decimate");
 
     return result;
+}
+
+std::int64_t decim_num_faces(const Mesh& rMesh) {
+    std::int64_t n = 0;
+    for (const auto cb : rMesh.CellRange())
+        n += static_cast<std::int64_t>(cb.NumCells());
+    return n;
+}
+
+// The input's triangulated face count: a quad is two, a polygon n - 2.
+std::int64_t decim_input_faces(const Mesh& rMesh) {
+    std::int64_t n = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        if (!cb.IsRagged()) {
+            n += static_cast<std::int64_t>(cb.NumCells()) *
+                 std::max<std::int64_t>(static_cast<std::int64_t>(cb.NodesPerCell()) - 2, 0);
+            continue;
+        }
+        for (std::size_t c = 0; c < cb.NumCells(); ++c)
+            n += std::max<std::int64_t>(static_cast<std::int64_t>(cb.RowSize(c)) - 2, 0);
+    }
+    return n;
+}
+
+// max_deviation and max_faces (roadmap 7.8.5): see decimate.hpp.
+DecimateResult decim_bounded(const Mesh& rMesh, const DecimateOptions& rOptions) {
+    const DecimateOptions& o = rOptions;
+    const bool deviation = o.mMaxDeviation >= 0.0;
+    const int others = (o.mTargetRatio >= 0.0 ? 1 : 0) + (o.mTargetFaces >= 0 ? 1 : 0) +
+                       (o.mMaxError >= 0.0 ? 1 : 0);
+    if (std::isnan(o.mMaxDeviation) || (deviation && !std::isfinite(o.mMaxDeviation)))
+        throw std::invalid_argument(std::string(kDecimPrefix) + "max_deviation must be finite");
+    if (deviation && others > 0)
+        throw std::invalid_argument(std::string(kDecimPrefix) +
+                                    "max_deviation replaces target_ratio, target_faces and "
+                                    "max_error; set only one");
+    if (!(o.mCoverage > 0.0 && o.mCoverage <= 1.0))
+        throw std::invalid_argument(std::string(kDecimPrefix) + "coverage must be in (0, 1]");
+    const auto at_faces = [&](std::int64_t Faces) {
+        DecimateOptions t = o;
+        t.mTargetRatio = -1.0;
+        t.mMaxError = -1.0;
+        t.mMaxDeviation = -1.0;
+        t.mMaxFaces = -1;
+        t.mTargetFaces = Faces;
+        return decim_core(rMesh, t);
+    };
+    const std::int64_t cap = o.mMaxFaces;
+    if (!deviation) {
+        if (others > 1)
+            throw std::invalid_argument(
+                std::string(kDecimPrefix) +
+                "exactly one of target_ratio, target_faces, max_error must be set");
+        if (others == 0 || o.mTargetFaces >= 0) {
+            DecimateResult r = at_faces(o.mTargetFaces >= 0 ? std::min(o.mTargetFaces, cap) : cap);
+            r.mRounds = 1;
+            return r;
+        }
+        DecimateOptions t = o;
+        t.mMaxFaces = -1;
+        DecimateResult r = decim_core(rMesh, t);
+        r.mRounds = 1;
+        if (decim_num_faces(r.mMesh) > cap) {
+            r = at_faces(cap);
+            r.mRounds = 2;
+        }
+        return r;
+    }
+    // The deviation search.
+    const double limit = o.mMaxDeviation;
+    std::int64_t rounds = 0;
+    // The input at its vertices, the coarser result with 2 x 2 face samples.
+    const detail::HausdorffSampler sampler(rMesh, 0, 2);
+    const auto measure = [&](const DecimateResult& rR) {
+        ++rounds;
+        return detail::coverage_quantile(sampler.Distances(rR.mMesh), o.mCoverage);
+    };
+    const std::int64_t n0 = decim_input_faces(rMesh);
+    const std::int64_t hi0 = cap >= 0 ? std::min(cap, n0) : n0;
+    DecimateResult best = at_faces(hi0);
+    double best_dev = measure(best);
+    if (best_dev > limit) {
+        best.mDeviation = best_dev;
+        best.mDeviationMet = false;
+        best.mRounds = rounds;
+        return best;
+    }
+    std::int64_t hi = std::min(hi0, decim_num_faces(best.mMesh));
+    std::int64_t lo = 0;
+    {
+        // The quadric bound: a collapse whose error is at most limit^2 keeps
+        // its vertex within limit of every plane it absorbed.
+        DecimateOptions t = o;
+        t.mMaxDeviation = -1.0;
+        t.mMaxFaces = -1;
+        t.mMaxError = limit * limit;
+        DecimateResult q = decim_core(rMesh, t);
+        const std::int64_t nq = decim_num_faces(q.mMesh);
+        if (nq < hi) {
+            const double d = measure(q);
+            if (d <= limit) {
+                best = std::move(q);
+                best_dev = d;
+                hi = nq;
+            } else {
+                lo = nq;
+            }
+        }
+    }
+    while (hi - lo > std::max<std::int64_t>(1, hi / 100) && rounds < 40) {
+        const std::int64_t mid = lo + (hi - lo) / 2;
+        DecimateResult r = at_faces(mid);
+        const std::int64_t got = decim_num_faces(r.mMesh);
+        const double d = measure(r);
+        if (d <= limit && got < hi) {
+            best = std::move(r);
+            best_dev = d;
+            hi = got;
+        } else if (d <= limit) {
+            hi = mid;  // the run stopped short of mid: nothing lighter here
+        } else {
+            lo = mid;
+        }
+    }
+    best.mDeviation = best_dev;
+    best.mDeviationMet = true;
+    best.mRounds = rounds;
+    return best;
+}
+
+}  // namespace
+
+DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
+    if (rOptions.mMaxDeviation < 0.0 && rOptions.mMaxFaces < 0)
+        return decim_core(rMesh, rOptions);
+    return decim_bounded(rMesh, rOptions);
 }
 
 }  // namespace meshioplusplus
@@ -241255,9 +241478,11 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/gradient.cpp =====
 // ===== begin src/cpp/src/operations/hausdorff.cpp =====
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -241381,6 +241606,57 @@ detail::DistanceQuery hd_query(const detail::TriangleSoup& rSoup, double CellSiz
 }
 
 }  // namespace
+
+namespace detail {
+
+struct HausdorffSampler::Impl {
+    TriangleSoup mSoup;
+    std::vector<Vec3> mSamples;
+    DistanceQuery mQuery;
+    std::int64_t mFaceSamples = 0;
+};
+
+HausdorffSampler::HausdorffSampler(const Mesh& rReference, std::int64_t ReferenceFaceSamples,
+                                   std::int64_t FaceSamples)
+    : mpImpl(std::make_unique<Impl>()) {
+    if (FaceSamples < 0 || ReferenceFaceSamples < 0)
+        throw std::invalid_argument(std::string(kHdPrefix) + "face samples must be >= 0");
+    mpImpl->mSoup = hd_soup(rReference, "", "B");
+    mpImpl->mSamples = hd_samples(mpImpl->mSoup, ReferenceFaceSamples);
+    mpImpl->mQuery = hd_query(mpImpl->mSoup, 0.0);
+    mpImpl->mFaceSamples = FaceSamples;
+}
+
+HausdorffSampler::~HausdorffSampler() = default;
+
+std::vector<double> HausdorffSampler::Distances(const Mesh& rOther) const {
+    const TriangleSoup sa = hd_soup(rOther, "", "A");
+    const std::vector<Vec3> pa = hd_samples(sa, mpImpl->mFaceSamples);
+    std::vector<double> out;
+    out.reserve(pa.size() + mpImpl->mSamples.size());
+    for (const ClosestPointHit& r_h : query_closest_points(mpImpl->mQuery, pa))
+        out.push_back(r_h.mDistance);
+    for (const ClosestPointHit& r_h : query_closest_points(hd_query(sa, 0.0), mpImpl->mSamples))
+        out.push_back(r_h.mDistance);
+    return out;
+}
+
+std::vector<double> hausdorff_sample_distances(const Mesh& rA, const Mesh& rB,
+                                               std::int64_t FaceSamples) {
+    return HausdorffSampler(rB, FaceSamples, FaceSamples).Distances(rA);
+}
+
+double coverage_quantile(std::vector<double> Values, double Coverage) {
+    if (Values.empty())
+        return 0.0;
+    const double want = std::ceil(Coverage * static_cast<double>(Values.size()));
+    std::size_t k = want < 1.0 ? 0 : static_cast<std::size_t>(want) - 1;
+    k = std::min(k, Values.size() - 1);
+    std::nth_element(Values.begin(), Values.begin() + static_cast<std::ptrdiff_t>(k), Values.end());
+    return Values[k];
+}
+
+}  // namespace detail
 
 HausdorffResult hausdorff_distance(const Mesh& rA, const Mesh& rB,
                                    const HausdorffOptions& rOptions) {
@@ -260933,8 +261209,8 @@ OfsV3 ofs_face_normal(const std::vector<double>& rX, const OfsFace& rF) {
 
 // The points moved by Distance along the offset directions; the counts go
 // into rResult.
-std::vector<double> ofs_move(const OfsSurface& rS, const detail::OffsetNormals& rN,
-                             double Distance, OffsetSurfaceResult& rResult) {
+std::vector<double> ofs_move(const OfsSurface& rS, const detail::OffsetNormals& rN, double Distance,
+                             OffsetSurfaceResult& rResult) {
     std::vector<double> y = rS.mX;
     const std::size_t np = rS.mX.size() / 3;
     for (std::size_t p = 0; p < np; ++p) {
@@ -260966,8 +261242,7 @@ void ofs_warn(OffsetSurfaceResult& rResult, const char* pOp) {
                                     " point(s) have no direction every face around them sees; "
                                     "they moved by the distance alone");
     if (rResult.mNumFolded > 0)
-        rResult.mWarnings.push_back(std::string(pOp) + ": " +
-                                    std::to_string(rResult.mNumFolded) +
+        rResult.mWarnings.push_back(std::string(pOp) + ": " + std::to_string(rResult.mNumFolded) +
                                     " face(s) turned over: the offset is deeper than a concave "
                                     "region's radius");
 }
@@ -261107,9 +261382,9 @@ OffsetSurfaceResult thicken(const Mesh& rMesh, const ThickenOptions& rOptions) {
     const detail::OffsetNormals n =
         detail::offset_normals(s.mX, s.mFaces, 1.0, rOptions.mSmoothIterations);
     OffsetSurfaceResult result;
-    const double hi = rOptions.mSide == ThickenSide::Outward ? t
+    const double hi = rOptions.mSide == ThickenSide::Outward  ? t
                       : rOptions.mSide == ThickenSide::Inward ? 0.0
-                                                               : 0.5 * t;
+                                                              : 0.5 * t;
     const double lo = hi - t;
     const std::vector<double> upper = hi == 0.0 ? s.mX : ofs_move(s, n, hi, result);
     const std::vector<double> lower = lo == 0.0 ? s.mX : ofs_move(s, n, lo, result);
@@ -264980,16 +265255,35 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mTargetFaces =
             faces < 0.0 ? static_cast<std::int64_t>(-1) : static_cast<std::int64_t>(faces);
         opts.mMaxError = pipe_number(rStep, "MaxError", -1.0);
-        if (opts.mTargetRatio < 0.0 && opts.mTargetFaces < 0 && opts.mMaxError < 0.0)
+        opts.mMaxDeviation = pipe_number(rStep, "MaxDeviation", -1.0);
+        opts.mCoverage = pipe_number(rStep, "Coverage", 0.999);
+        const double max_faces = pipe_number(rStep, "MaxFaces", -1.0);
+        opts.mMaxFaces =
+            max_faces < 0.0 ? static_cast<std::int64_t>(-1) : static_cast<std::int64_t>(max_faces);
+        const bool bounded = opts.mMaxDeviation >= 0.0 || opts.mMaxFaces >= 0;
+        if (opts.mTargetRatio < 0.0 && opts.mTargetFaces < 0 && opts.mMaxError < 0.0 && !bounded)
             opts.mTargetRatio = 0.5;  // a usable pipeline-chip default
         opts.mPlacement = decimate_placement_from_name(pipe_text(rStep, "Placement", "optimal"));
         opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
         opts.mPreserveFeatures = pipe_flag(rStep, "PreserveFeatures", true);
         opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
         auto result = decimate(mesh, opts);
-        pipe_push_step(rReport, rStep,
-                       {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
-                        {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
+        if (!bounded) {
+            pipe_push_step(rReport, rStep,
+                           {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
+                            {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
+        } else {
+            pipe_push_step(rReport, rStep,
+                           {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
+                            {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)},
+                            {"Deviation", result.mDeviation},
+                            {"DeviationMet", result.mDeviationMet ? 1.0 : 0.0},
+                            {"Rounds", static_cast<double>(result.mRounds)}});
+            if (!result.mDeviationMet)
+                rReport.mWarnings.push_back(
+                    "decimate: max_faces forbids max_deviation; the step's Deviation is what "
+                    "the result keeps");
+        }
         return std::move(result.mMesh);
     }
     if (op == "DecimateVolume") {

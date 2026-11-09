@@ -2496,14 +2496,17 @@ end
 
 """
     decimate(mesh; ratio=-1.0, target_faces=-1, max_error=-1.0, placement="optimal",
-             preserve_boundary=true, preserve_features=true, feature_angle=30.0)
+             preserve_boundary=true, preserve_features=true, feature_angle=30.0,
+             max_deviation=-1.0, coverage=0.999, max_faces=-1)
         -> (; mesh, point_map, cell_maps, faces_removed, points_removed,
-              collapses_rejected, max_error_applied)
+              collapses_rejected, max_error_applied, deviation, deviation_met, rounds)
 
 Reduce a **surface** mesh's face count by greedy quadric-error-metric edge
 collapse — the inverse of [`refine`](@ref). Exactly one of `ratio` (fraction of
-faces to KEEP), `target_faces` and `max_error` must be set; a negative value
-means "unset".
+faces to KEEP), `target_faces`, `max_error` and `max_deviation` (the largest
+two-sided distance from the input on a `coverage` share of samples, roadmap
+7.8.5) must be set; a negative value means "unset". `max_faces` caps any of
+them (alone, it is the target).
 
 A 3-D volume mesh fails by name (extract the surface first), as do
 higher-order, ragged and line/vertex blocks. `frozen` is an optional vector
@@ -2514,7 +2517,8 @@ name. See `doc/decimate.md`.
 function decimate(m::Mesh; ratio::Real=-1.0, target_faces::Integer=-1,
                   max_error::Real=-1.0, placement::AbstractString="optimal",
                   preserve_boundary::Bool=true, preserve_features::Bool=true,
-                  feature_angle::Real=30.0, frozen=nothing)
+                  feature_angle::Real=30.0, frozen=nothing, max_deviation::Real=-1.0,
+                  coverage::Real=0.999, max_faces::Integer=-1)
     placement_c = Vector{UInt8}(codeunits(String(placement)))
     push!(placement_c, 0x00)
     ids = frozen === nothing ? Int64[] : Vector{Int64}(vec(collect(frozen))) .- Int64(1)
@@ -2525,7 +2529,10 @@ function decimate(m::Mesh; ratio::Real=-1.0, target_faces::Integer=-1,
                               preserve_features ? Int32(1) : Int32(0),
                               Cdouble(feature_angle),
                               isempty(ids) ? Ptr{Int64}(C_NULL) : pointer(ids),
-                              Int64(length(ids)), (Int64(0), Int64(0), Int64(0), Int64(0)))
+                              Int64(length(ids)),
+                              max_deviation >= 0 ? Cdouble(max_deviation) : Cdouble(0),
+                              Cdouble(coverage), max_faces > 0 ? Int64(max_faces) : Int64(0),
+                              (Int64(0),))
         _check_ptr(ccall(_sym(:mio_decimate_ex), Ptr{Cvoid},
                          (Ptr{Cvoid}, Ref{_CDecimateOpts}), _handle(m), Ref(opts)))
     end
@@ -2537,11 +2544,16 @@ function decimate(m::Mesh; ratio::Real=-1.0, target_faces::Integer=-1,
         pr = ccall(_sym(:mio_decimate_result_points_removed), Int64, (Ptr{Cvoid},), result)
         cr = ccall(_sym(:mio_decimate_result_collapses_rejected), Int64, (Ptr{Cvoid},), result)
         me = ccall(_sym(:mio_decimate_result_max_error_applied), Cdouble, (Ptr{Cvoid},), result)
+        met = Ref{Int32}(0)
+        rounds = Ref{Int64}(0)
+        dev = ccall(_sym(:mio_decimate_result_deviation), Cdouble,
+                    (Ptr{Cvoid}, Ref{Int32}, Ref{Int64}), result, met, rounds)
         out = Mesh(_check_ptr(ccall(_sym(:mio_decimate_result_take_mesh), Ptr{Cvoid},
                                     (Ptr{Cvoid},), result)))
         (mesh=out, point_map=pm, cell_maps=cm, faces_removed=Int(fr),
          points_removed=Int(pr), collapses_rejected=Int(cr),
-         max_error_applied=Float64(me))
+         max_error_applied=Float64(me), deviation=Float64(dev), deviation_met=met[] != 0,
+         rounds=Int(rounds[]))
     finally
         ccall(_sym(:mio_decimate_result_free), Cvoid, (Ptr{Cvoid},), result)
     end

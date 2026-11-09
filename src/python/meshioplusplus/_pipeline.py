@@ -1250,8 +1250,18 @@ def _apply_step(mesh, step, steps, warnings):
         ratio = _number(step, "Ratio", -1.0)
         target_faces = _number(step, "TargetFaces", -1.0)
         max_error = _number(step, "MaxError", -1.0)
-        if ratio < 0.0 and target_faces < 0.0 and max_error < 0.0:
+        max_deviation = _number(step, "MaxDeviation", -1.0)
+        max_faces = _number(step, "MaxFaces", -1.0)
+        bounded = max_deviation >= 0.0 or max_faces >= 0.0
+        if ratio < 0.0 and target_faces < 0.0 and max_error < 0.0 and not bounded:
             ratio = 0.5  # a usable pipeline default (the C++ engine's rule)
+        extra = {}
+        if bounded:
+            extra = {
+                "max_deviation": max_deviation if max_deviation >= 0.0 else None,
+                "coverage": _number(step, "Coverage", 0.999),
+                "max_faces": int(max_faces) if max_faces >= 0.0 else None,
+            }
         mesh, report = decimate(
             mesh,
             ratio=ratio if ratio >= 0.0 else None,
@@ -1262,9 +1272,19 @@ def _apply_step(mesh, step, steps, warnings):
             preserve_features=_flag(step, "PreserveFeatures", True),
             feature_angle=_number(step, "FeatureAngle", 30.0),
             return_report=True,
+            **extra,
         )
         entry["FacesRemoved"] = report["faces_removed"]
         entry["CollapsesRejected"] = report["collapses_rejected"]
+        if bounded:
+            entry["Deviation"] = float(report["deviation"])
+            entry["DeviationMet"] = 1.0 if report["deviation_met"] else 0.0
+            entry["Rounds"] = float(report["rounds"])
+            if not report["deviation_met"]:
+                warnings.append(
+                    "decimate: max_faces forbids max_deviation; the step's Deviation is "
+                    "what the result keeps"
+                )
     elif op == "DecimateVolume":
         ratio = _number(step, "Ratio", -1.0)
         target_cells = _number(step, "TargetCells", -1.0)

@@ -166,7 +166,10 @@ mio_decimate(
   preserve_boundary = TRUE,
   preserve_features = TRUE,
   feature_angle = 30,
-  frozen = NULL
+  frozen = NULL,
+  max_deviation = -1,
+  coverage = 0.999,
+  max_faces = -1
 )
 
 mio_decimate_volume(
@@ -248,6 +251,12 @@ convention).}
 
 \item{guard_inversion}{Reject any move that would flip a cell's signed
 measure.}
+
+\item{max_deviation}{For \code{mio_decimate()}, the largest two-sided distance the result may lie from the input on a \code{coverage} share of samples (roadmap 7.8.5): the lightest mesh within it. Negative is unset; it replaces the other criteria.}
+
+\item{coverage}{For \code{mio_decimate()}, the share of samples \code{max_deviation} holds for.}
+
+\item{max_faces}{For \code{mio_decimate()}, at most this many faces, a cap on any criterion (alone, the target). Negative is unset.}
 
 \item{frozen}{For \code{mio_smooth()}, \code{mio_decimate()} and \code{mio_decimate_volume()}, an optional vector of
 1-based point ids to pin outright (unioned with the boundary/feature pins

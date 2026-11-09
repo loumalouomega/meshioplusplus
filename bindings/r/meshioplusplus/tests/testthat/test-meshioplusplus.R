@@ -1630,6 +1630,11 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   mio_release(ho$mesh)
   expect_error(mio_thicken(m, 0.1, side = "sideways"), "side")
   expect_error(mio_offset_surface(m, NaN), "finite")
+  dv <- mio_decimate(m, max_deviation = 1e-9)
+  expect_true(dv$deviation_met)
+  expect_lte(dv$deviation, 1e-9)
+  mio_release(dv$mesh)
+  expect_error(mio_decimate(m, max_deviation = 0.1, ratio = 0.5), "max_deviation")
   ms <- mio_measure(m, '{"elements": [
     {"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},
     {"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],

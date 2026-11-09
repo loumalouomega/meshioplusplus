@@ -5221,12 +5221,16 @@ export interface MeshioPlusPlusModule {
     featureAngle?: number,
     frozen?: number[] | Int32Array | null,
     returnMaps?: boolean,
+    bounds?: { maxDeviation?: number; coverage?: number; maxFaces?: number },
   ): {
     mesh: Mesh;
     facesRemoved: number;
     pointsRemoved: number;
     collapsesRejected: number;
     maxErrorApplied: number;
+    deviation?: number;
+    deviationMet?: boolean;
+    rounds?: number;
     pointMap?: Int32Array;
     cellMaps?: Int32Array[];
   };

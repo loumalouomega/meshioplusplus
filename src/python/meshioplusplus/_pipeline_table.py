@@ -42,6 +42,9 @@ OP_TABLE = {
         "PreserveBoundary",
         "PreserveFeatures",
         "FeatureAngle",
+        "MaxDeviation",
+        "Coverage",
+        "MaxFaces",
     ),
     "DecimateVolume": (
         "Ratio",

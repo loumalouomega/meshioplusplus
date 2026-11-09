@@ -1464,6 +1464,24 @@ program test_fortran_api
         ! Exactly one stopping criterion is required.
         bad = fan%decimate(stat=st)
         call check(st /= 0, 'decimate rejects a missing criterion')
+        block
+            type(mio_mesh) :: capped
+            real(real64) :: dev
+            logical :: met
+            integer(int64) :: nround
+            ! Roadmap 7.8.5: a deviation the fan's flat interior meets exactly.
+            capped = fan%decimate(max_deviation=1e-9_real64, deviation=dev, &
+                                  deviation_met=met, rounds=nround, stat=st)
+            call check(st == 0 .and. met .and. dev <= 1e-9_real64 .and. nround >= 1_int64, &
+                       'decimate holds max_deviation')
+            if (st == 0) call capped%free()
+            capped = fan%decimate(max_faces=2_int64, stat=st)
+            call check(st == 0, 'decimate takes max_faces alone')
+            if (st == 0) then
+                call check(capped%cell_block_num_cells(1) <= 2_int64, 'max_faces caps the fan')
+                call capped%free()
+            end if
+        end block
         ! A volume mesh is out of scope by name.
         bad = m%decimate(ratio=0.5_real64, stat=st)
         call check(st /= 0, 'decimate rejects a volume mesh')

@@ -5168,6 +5168,9 @@ def tool_decimate(
     preserve_boundary=True,
     preserve_features=True,
     feature_angle=30.0,
+    max_deviation=None,
+    coverage=0.999,
+    max_faces=None,
 ):
     """Reduce a surface mesh's face count (exactly one stopping criterion)."""
     return _run_op(decimate, locals())

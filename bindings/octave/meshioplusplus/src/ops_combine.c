@@ -1457,6 +1457,12 @@ static mxArray *O_mio_decimate(const mxArray **a) {
     int64_t n_frozen = 0;
     opts.frozen = mio_o_ids_0based(a[8], &n_frozen, "frozen");
     opts.num_frozen = n_frozen;
+    /* Roadmap 7.8.5: negative is unset, as the other criteria. */
+    const double dev_limit = mio_o_double(a[9], "max_deviation");
+    opts.max_deviation = dev_limit < 0.0 ? 0.0 : dev_limit;
+    opts.coverage = mio_o_double(a[10], "coverage");
+    const int64_t cap = mio_o_int64(a[11], "max_faces");
+    opts.max_faces = cap < 0 ? 0 : cap;
 
     mio_decimate_result *r = mio_decimate_ex(mio_o_mesh(a[0]), &opts);
     if (r == NULL) mio_o_fail("decimate");
@@ -1469,14 +1475,20 @@ static mxArray *O_mio_decimate(const mxArray **a) {
     mxArray *pr = mio_o_scalar((double)mio_decimate_result_points_removed(r));
     mxArray *cr = mio_o_scalar((double)mio_decimate_result_collapses_rejected(r));
     mxArray *me = mio_o_scalar(mio_decimate_result_max_error_applied(r));
+    int32_t met = 1;
+    int64_t rounds = 0;
+    mxArray *dv = mio_o_scalar(mio_decimate_result_deviation(r, &met, &rounds));
+    mxArray *dm = mio_o_logical(met != 0);
+    mxArray *rd = mio_o_scalar((double)rounds);
     mio_mesh *out = mio_decimate_result_take_mesh(r);
     mio_decimate_result_free(r);
     if (out == NULL) mio_o_fail("decimate take_mesh");
     const char *names[] = {"mesh",           "point_map",          "cell_maps",
                            "faces_removed",  "points_removed",     "collapses_rejected",
-                           "max_error_applied"};
-    mxArray *values[] = {mio_o_wrap_mesh(out), pm, cm, fr, pr, cr, me};
-    return mio_o_struct(7, names, values);
+                           "max_error_applied", "deviation",       "deviation_met",
+                           "rounds"};
+    mxArray *values[] = {mio_o_wrap_mesh(out), pm, cm, fr, pr, cr, me, dv, dm, rd};
+    return mio_o_struct(10, names, values);
 }
 
 /* decimate_volume(mesh, ratio, target_cells, max_error, placement,
@@ -1642,7 +1654,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_poly_to_tet, 2),
     MIO_O_ENTRY(mio_refine, 11),
     MIO_O_ENTRY(mio_tessellate, 5),
-    MIO_O_ENTRY(mio_decimate, 9),
+    MIO_O_ENTRY(mio_decimate, 12),
     MIO_O_ENTRY(mio_decimate_volume, 9),
     MIO_O_ENTRY(mio_partition, 9),
     MIO_O_ENTRY(mio_partition_labels, 8),

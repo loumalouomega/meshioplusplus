@@ -3914,10 +3914,17 @@ def _register_operations(server: FastMCP) -> None:
         preserve_boundary: bool = True,
         preserve_features: bool = True,
         feature_angle: float = 30.0,
+        max_deviation: Optional[float] = None,
+        coverage: float = 0.999,
+        max_faces: Optional[int] = None,
     ) -> dict:
         """Decimate a surface mesh by quadric edge collapse. Give exactly one
         stopping criterion: ratio (fraction of faces to KEEP), target_faces,
-        or max_error. Reports faces/points removed and rejections."""
+        max_error, or max_deviation (the largest two-sided distance from the
+        input on a coverage share of samples: the lightest mesh within it);
+        max_faces caps any of them (alone, it is the target). Reports
+        faces/points removed and rejections, with max_deviation or max_faces
+        also deviation, deviation_met and rounds."""
 
     @server.tool()
     @_forward(_tools.tool_decimate_volume)

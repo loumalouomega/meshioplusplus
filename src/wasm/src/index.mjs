@@ -415,7 +415,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   polyToTet: (mesh: Mesh, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[], numExactTets: number, numFannedCells: number},
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean,
  *            options?: object, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
- *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
+ *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean, bounds?: {maxDeviation?: number, coverage?: number, maxFaces?: number}) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, deviation?: number, deviationMet?: boolean, rounds?: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
  *   decimateVolume: (mesh: Mesh, ratio?: number, targetCells?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean) => {mesh: Mesh, tetsRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
  *   partition: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, recordIds?: boolean, ghostLayers?: number, weightsKey?: string, returnMaps?: boolean) => {partId: number, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
  *   partitionLabels: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, weightsKey?: string) => number[][],
@@ -1465,6 +1465,7 @@ export async function loadMeshioPlusPlus(
             featureAngle = 30,
             frozen = null,
             returnMaps = false,
+            bounds = {},
         ) =>
             Module.decimate(
                 mesh,
@@ -1477,6 +1478,7 @@ export async function loadMeshioPlusPlus(
                 featureAngle,
                 frozen,
                 returnMaps,
+                bounds ?? {},
             ),
         // Tetrahedral VOLUME decimation (decimate's tet-edge-collapse sibling).
         // Exactly one of ratio / targetCells / maxError must be non-negative.

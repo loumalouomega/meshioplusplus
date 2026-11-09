@@ -53,6 +53,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/hausdorff_samples.hpp"
 #include "../detail/decimate_shared.hpp"
 #include "../detail/slot_runs.hpp"
 #include "../detail/surface_rings.hpp"
@@ -230,7 +231,9 @@ DecimatePlacement decimate_placement_from_name(const std::string& rName) {
                                 "' (expected 'optimal', 'midpoint' or 'endpoint')");
 }
 
-DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
+namespace {
+
+DecimateResult decim_core(const Mesh& rMesh, const DecimateOptions& rOptions) {
     detail::DecimStop stop =
         detail::decim_resolve_stop(rOptions.mTargetRatio, rOptions.mTargetFaces, rOptions.mMaxError,
                                    kDecimPrefix, "target_faces");
@@ -494,6 +497,142 @@ DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
                                 detail::CellMapKind::FirstChild, "decimate");
 
     return result;
+}
+
+std::int64_t decim_num_faces(const Mesh& rMesh) {
+    std::int64_t n = 0;
+    for (const auto cb : rMesh.CellRange())
+        n += static_cast<std::int64_t>(cb.NumCells());
+    return n;
+}
+
+// The input's triangulated face count: a quad is two, a polygon n - 2.
+std::int64_t decim_input_faces(const Mesh& rMesh) {
+    std::int64_t n = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        if (!cb.IsRagged()) {
+            n += static_cast<std::int64_t>(cb.NumCells()) *
+                 std::max<std::int64_t>(static_cast<std::int64_t>(cb.NodesPerCell()) - 2, 0);
+            continue;
+        }
+        for (std::size_t c = 0; c < cb.NumCells(); ++c)
+            n += std::max<std::int64_t>(static_cast<std::int64_t>(cb.RowSize(c)) - 2, 0);
+    }
+    return n;
+}
+
+// max_deviation and max_faces (roadmap 7.8.5): see decimate.hpp.
+DecimateResult decim_bounded(const Mesh& rMesh, const DecimateOptions& rOptions) {
+    const DecimateOptions& o = rOptions;
+    const bool deviation = o.mMaxDeviation >= 0.0;
+    const int others = (o.mTargetRatio >= 0.0 ? 1 : 0) + (o.mTargetFaces >= 0 ? 1 : 0) +
+                       (o.mMaxError >= 0.0 ? 1 : 0);
+    if (std::isnan(o.mMaxDeviation) || (deviation && !std::isfinite(o.mMaxDeviation)))
+        throw std::invalid_argument(std::string(kDecimPrefix) + "max_deviation must be finite");
+    if (deviation && others > 0)
+        throw std::invalid_argument(std::string(kDecimPrefix) +
+                                    "max_deviation replaces target_ratio, target_faces and "
+                                    "max_error; set only one");
+    if (!(o.mCoverage > 0.0 && o.mCoverage <= 1.0))
+        throw std::invalid_argument(std::string(kDecimPrefix) + "coverage must be in (0, 1]");
+    const auto at_faces = [&](std::int64_t Faces) {
+        DecimateOptions t = o;
+        t.mTargetRatio = -1.0;
+        t.mMaxError = -1.0;
+        t.mMaxDeviation = -1.0;
+        t.mMaxFaces = -1;
+        t.mTargetFaces = Faces;
+        return decim_core(rMesh, t);
+    };
+    const std::int64_t cap = o.mMaxFaces;
+    if (!deviation) {
+        if (others > 1)
+            throw std::invalid_argument(
+                std::string(kDecimPrefix) +
+                "exactly one of target_ratio, target_faces, max_error must be set");
+        if (others == 0 || o.mTargetFaces >= 0) {
+            DecimateResult r = at_faces(o.mTargetFaces >= 0 ? std::min(o.mTargetFaces, cap) : cap);
+            r.mRounds = 1;
+            return r;
+        }
+        DecimateOptions t = o;
+        t.mMaxFaces = -1;
+        DecimateResult r = decim_core(rMesh, t);
+        r.mRounds = 1;
+        if (decim_num_faces(r.mMesh) > cap) {
+            r = at_faces(cap);
+            r.mRounds = 2;
+        }
+        return r;
+    }
+    // The deviation search.
+    const double limit = o.mMaxDeviation;
+    std::int64_t rounds = 0;
+    // The input at its vertices, the coarser result with 2 x 2 face samples.
+    const detail::HausdorffSampler sampler(rMesh, 0, 2);
+    const auto measure = [&](const DecimateResult& rR) {
+        ++rounds;
+        return detail::coverage_quantile(sampler.Distances(rR.mMesh), o.mCoverage);
+    };
+    const std::int64_t n0 = decim_input_faces(rMesh);
+    const std::int64_t hi0 = cap >= 0 ? std::min(cap, n0) : n0;
+    DecimateResult best = at_faces(hi0);
+    double best_dev = measure(best);
+    if (best_dev > limit) {
+        best.mDeviation = best_dev;
+        best.mDeviationMet = false;
+        best.mRounds = rounds;
+        return best;
+    }
+    std::int64_t hi = std::min(hi0, decim_num_faces(best.mMesh));
+    std::int64_t lo = 0;
+    {
+        // The quadric bound: a collapse whose error is at most limit^2 keeps
+        // its vertex within limit of every plane it absorbed.
+        DecimateOptions t = o;
+        t.mMaxDeviation = -1.0;
+        t.mMaxFaces = -1;
+        t.mMaxError = limit * limit;
+        DecimateResult q = decim_core(rMesh, t);
+        const std::int64_t nq = decim_num_faces(q.mMesh);
+        if (nq < hi) {
+            const double d = measure(q);
+            if (d <= limit) {
+                best = std::move(q);
+                best_dev = d;
+                hi = nq;
+            } else {
+                lo = nq;
+            }
+        }
+    }
+    while (hi - lo > std::max<std::int64_t>(1, hi / 100) && rounds < 40) {
+        const std::int64_t mid = lo + (hi - lo) / 2;
+        DecimateResult r = at_faces(mid);
+        const std::int64_t got = decim_num_faces(r.mMesh);
+        const double d = measure(r);
+        if (d <= limit && got < hi) {
+            best = std::move(r);
+            best_dev = d;
+            hi = got;
+        } else if (d <= limit) {
+            hi = mid;  // the run stopped short of mid: nothing lighter here
+        } else {
+            lo = mid;
+        }
+    }
+    best.mDeviation = best_dev;
+    best.mDeviationMet = true;
+    best.mRounds = rounds;
+    return best;
+}
+
+}  // namespace
+
+DecimateResult decimate(const Mesh& rMesh, const DecimateOptions& rOptions) {
+    if (rOptions.mMaxDeviation < 0.0 && rOptions.mMaxFaces < 0)
+        return decim_core(rMesh, rOptions);
+    return decim_bounded(rMesh, rOptions);
 }
 
 }  // namespace meshioplusplus

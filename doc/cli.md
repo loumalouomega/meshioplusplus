@@ -1091,6 +1091,9 @@ meshioplusplus decimate [options] INFILE OUTFILE
 | `--ratio R` | Fraction of the (triangulated) faces to KEEP, in (0, 1] |
 | `--target-faces N` | Absolute face count to stop at (within one collapse) |
 | `--max-error E` | Collapse only while the cheapest quadric error is at most `E` |
+| `--max-deviation D` | The lightest mesh whose two-sided sample distance from the input is at most `D` on the `--coverage` share (roadmap 7.8.5) |
+| `--coverage C` | The share of samples `--max-deviation` holds for (default `0.999`) |
+| `--max-faces N` | At most `N` faces, a cap on any criterion (alone, the target) |
 | `--placement P` | `optimal` (default), `midpoint`, or `endpoint` |
 | `--no-preserve-boundary` | Allow boundary vertices to collapse (the outline may change) |
 | `--no-preserve-features` | Allow sharp corners/creases to collapse |
@@ -1098,7 +1101,7 @@ meshioplusplus decimate [options] INFILE OUTFILE
 | `--quiet` (`-q`) | Do not print the collapse summary |
 | `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
-Exactly one of `--ratio`, `--target-faces` and `--max-error` must be given. Surface meshes only: `quad`/`polygon` blocks are triangulated first (the output is all-triangle), and a volume mesh is an error — run `extract-surface` first. Boundary and feature vertices are pinned by default, and the link condition plus a normal-flip guard reject any collapse that would change topology or fold the surface.
+Exactly one of `--ratio`, `--target-faces`, `--max-error` and `--max-deviation` must be given (`--max-faces` alone counts as one; see [deviation-bounded decimation](decimate.md#deviation-bounded-decimation)). Surface meshes only: `quad`/`polygon` blocks are triangulated first (the output is all-triangle), and a volume mesh is an error — run `extract-surface` first. Boundary and feature vertices are pinned by default, and the link condition plus a normal-flip guard reject any collapse that would change topology or fold the surface.
 
 **Examples:**
 
@@ -1106,6 +1109,7 @@ Exactly one of `--ratio`, `--target-faces` and `--max-error` must be given. Surf
 meshioplusplus decimate scan.stl coarse.stl --ratio 0.25
 meshioplusplus decimate skin.vtu coarse.vtu --target-faces 5000
 meshioplusplus decimate skin.vtu coarse.vtu --max-error 1e-6 --placement midpoint
+meshioplusplus decimate scan.stl light.stl --max-deviation 0.05 --max-faces 50000
 meshioplusplus decimate open_patch.vtu out.vtu --ratio 0.1 --no-preserve-features -q
 ```
 

@@ -3089,12 +3089,16 @@ mio_tessellate <- function(mesh, levels = 2, curved = TRUE, fields = TRUE,
 #' @export
 mio_decimate <- function(mesh, ratio = -1, target_faces = -1, max_error = -1,
                          placement = "optimal", preserve_boundary = TRUE,
-                         preserve_features = TRUE, feature_angle = 30, frozen = NULL) {
-  .Call(
+                         preserve_features = TRUE, feature_angle = 30, frozen = NULL,
+                         max_deviation = -1, coverage = 0.999, max_faces = -1) {
+  res <- .Call(
     R_mio_decimate, mesh, as.numeric(ratio), as.numeric(target_faces),
     as.numeric(max_error), as.character(placement), isTRUE(preserve_boundary),
-    isTRUE(preserve_features), as.numeric(feature_angle), frozen
+    isTRUE(preserve_features), as.numeric(feature_angle), frozen,
+    as.numeric(max_deviation), as.numeric(coverage), as.numeric(max_faces)
   )
+  res$deviation_met <- res$deviation_met != 0
+  res
 }
 
 #' @rdname mio_extract_surface

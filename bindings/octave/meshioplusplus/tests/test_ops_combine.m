@@ -296,6 +296,9 @@ function t_decimate()
     expect_equal(df.points_removed, 0);
     % An out-of-range frozen id fails by name (0-based internally).
     expect_error(@() mio.decimate(f, 'target_faces', 1, 'frozen', 999), 'frozen node id 998');
+    dv = mio.decimate(f, 'max_deviation', 1e-9);
+    expect_equal(dv.deviation_met, true);
+    expect_error(@() mio.decimate(f, 'max_deviation', 0.1, 'ratio', 0.5), 'max_deviation');
 end
 
 function t_error_size()

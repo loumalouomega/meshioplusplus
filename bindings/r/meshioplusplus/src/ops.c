@@ -3247,7 +3247,8 @@ SEXP R_mio_tessellate(SEXP mesh, SEXP levels, SEXP curved, SEXP fields, SEXP rec
 
 SEXP R_mio_decimate(SEXP mesh, SEXP target_ratio, SEXP target_faces, SEXP max_error,
                     SEXP placement, SEXP preserve_boundary, SEXP preserve_features,
-                    SEXP feature_angle, SEXP frozen) {
+                    SEXP feature_angle, SEXP frozen, SEXP max_deviation, SEXP coverage,
+                    SEXP max_faces) {
     mio_decimate_opts opts;
     R_xlen_t n_frozen = 0;
 
@@ -3261,6 +3262,12 @@ SEXP R_mio_decimate(SEXP mesh, SEXP target_ratio, SEXP target_faces, SEXP max_er
     opts.feature_angle = mio_r_double(feature_angle, "feature_angle");
     opts.frozen = r_ids_0based(frozen, &n_frozen);
     opts.num_frozen = (int64_t)n_frozen;
+    /* Roadmap 7.8.5: negative is unset, as the other criteria. */
+    const double dev_limit = mio_r_double(max_deviation, "max_deviation");
+    opts.max_deviation = dev_limit < 0.0 ? 0.0 : dev_limit;
+    opts.coverage = mio_r_double(coverage, "coverage");
+    const int64_t cap = mio_r_int64(max_faces, "max_faces");
+    opts.max_faces = cap < 0 ? 0 : cap;
 
     mio_decimate_result *r = mio_decimate_ex(mio_r_mesh(mesh), &opts);
     if (r == NULL) mio_r_fail("decimate");
@@ -3269,10 +3276,16 @@ SEXP R_mio_decimate(SEXP mesh, SEXP target_ratio, SEXP target_faces, SEXP max_er
         mio_decimate_result_free(r);
         mio_r_fail("decimate maps");
     }
+    int32_t met = 1;
+    int64_t rounds = 0;
+    const double dev = mio_decimate_result_deviation(r, &met, &rounds);
     const double numbers[] = {(double)mio_decimate_result_faces_removed(r),
                               (double)mio_decimate_result_points_removed(r),
                               (double)mio_decimate_result_collapses_rejected(r),
-                              mio_decimate_result_max_error_applied(r)};
+                              mio_decimate_result_max_error_applied(r),
+                              dev,
+                              (double)met,
+                              (double)rounds};
     mio_mesh *out = mio_decimate_result_take_mesh(r);
     mio_decimate_result_free(r);
     if (out == NULL) {
@@ -3282,9 +3295,10 @@ SEXP R_mio_decimate(SEXP mesh, SEXP target_ratio, SEXP target_faces, SEXP max_er
     SEXP mo = PROTECT(mio_r_wrap_mesh(out));
     const char *names[] = {"mesh",           "point_map",          "cell_maps",
                            "faces_removed",  "points_removed",     "collapses_rejected",
-                           "max_error_applied"};
-    const SEXP values[] = {mo, pm, cm, NULL, NULL, NULL, NULL};
-    SEXP res = mio_r_report_list(7, names, values, numbers);
+                           "max_error_applied", "deviation",       "deviation_met",
+                           "rounds"};
+    const SEXP values[] = {mo, pm, cm, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+    SEXP res = mio_r_report_list(10, names, values, numbers);
     UNPROTECT(3);
     return res;
 }

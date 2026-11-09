@@ -245,3 +245,39 @@ def test_offset_mcp_tools(tmp_path):
         _tools.tool_thicken(str(src), str(tmp_path / "t.vtu"), 0.1)["num_rim_quads"]
         == 0
     )
+
+
+def test_decimate_max_deviation_holds_on_the_coverage():
+    s = mp.icosa_sphere(1.0, 4)
+    out, rep = mp.decimate(s, max_deviation=0.01, return_report=True)
+    assert rep["deviation_met"] is True
+    assert rep["deviation"] <= 0.01
+    assert rep["rounds"] > 1
+    assert len(out.cells[0].data) < len(s.cells[0].data) // 2
+    h = mp.hausdorff_distance(out, s, face_samples=2)
+    assert h["distance"] < 0.03
+    capped, rep = mp.decimate(s, max_deviation=1e-6, max_faces=200, return_report=True)
+    assert rep["deviation_met"] is False
+    assert len(capped.cells[0].data) <= 202
+    alone = mp.decimate(s, max_faces=300)
+    assert len(alone.cells[0].data) <= 302
+    with pytest.raises(ValueError, match="max_deviation"):
+        mp.decimate(s, ratio=0.5, max_deviation=0.01)
+
+
+def test_decimate_bounds_in_both_pipeline_engines(tmp_path):
+    src = tmp_path / "s.vtu"
+    mp.write(src, mp.icosa_sphere(1.0, 3))
+    settings = {
+        "Version": 1,
+        "Input": {"Path": str(src)},
+        "Operations": [{"Op": "Decimate", "MaxDeviation": 0.01}],
+        "Output": {"Path": str(tmp_path / "py.vtu")},
+    }
+    rep = mp.run_pipeline(settings)
+    assert rep["steps"][0]["DeviationMet"] == 1.0
+    settings["Output"]["Path"] = str(tmp_path / "cpp.vtu")
+    cpp = _core.run_pipeline_json(__import__("json").dumps(settings))
+    assert cpp["steps"][0]["Rounds"] == rep["steps"][0]["Rounds"]
+    a, b = mp.read(str(tmp_path / "py.vtu")), mp.read(str(tmp_path / "cpp.vtu"))
+    np.testing.assert_array_equal(a.points, b.points)

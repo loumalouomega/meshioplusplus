@@ -2404,7 +2404,10 @@ module meshioplusplus
         real(c_double) :: feature_angle = 30.0_c_double
         type(c_ptr) :: frozen = c_null_ptr
         integer(c_int64_t) :: num_frozen = 0
-        integer(c_int64_t) :: reserved(4) = 0
+        real(c_double) :: max_deviation = 0     ! roadmap 7.8.5; 0 = unset
+        real(c_double) :: coverage = 0          ! 0 = 0.999
+        integer(c_int64_t) :: max_faces = 0     ! 0 = unset
+        integer(c_int64_t) :: reserved(1) = 0
     end type
 
     !> Interop mirror of C `mio_decimate_volume_opts`. Field order and types
@@ -5278,6 +5281,15 @@ module meshioplusplus
                 bind(c, name="mio_decimate_result_max_error_applied") result(v)
             import :: c_ptr, c_double
             type(c_ptr), value :: r
+            real(c_double) :: v
+        end function
+
+        function c_mio_decimate_result_deviation(r, met, rounds) &
+                bind(c, name="mio_decimate_result_deviation") result(v)
+            import :: c_ptr, c_double, c_int32_t, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int32_t), intent(out) :: met
+            integer(c_int64_t), intent(out) :: rounds
             real(c_double) :: v
         end function
 
@@ -14583,7 +14595,9 @@ contains
     function mesh_decimate(self, ratio, target_faces, max_error, placement, &
                            preserve_boundary, preserve_features, feature_angle, &
                            faces_removed, points_removed, collapses_rejected, &
-                           max_error_applied, point_map, stat, errmsg, frozen) result(out)
+                           max_error_applied, point_map, stat, errmsg, frozen, &
+                           max_deviation, coverage, max_faces, deviation, deviation_met, &
+                           rounds) result(out)
         class(mio_mesh), intent(in) :: self
         real(real64), intent(in), optional :: ratio
         integer(int64), intent(in), optional :: target_faces
@@ -14602,9 +14616,19 @@ contains
         !> 1-based point ids to pin outright. Shifted to the C API's 0-based
         !> numbering inside.
         integer(int64), intent(in), optional :: frozen(:)
+        !> Roadmap 7.8.5: the largest two-sided distance from the input on a
+        !> `coverage` share of samples (the lightest mesh within it), and a
+        !> face cap; `deviation`, `deviation_met` and `rounds` report them.
+        real(real64), intent(in), optional :: max_deviation, coverage
+        integer(int64), intent(in), optional :: max_faces
+        real(real64), intent(out), optional :: deviation
+        logical, intent(out), optional :: deviation_met
+        integer(int64), intent(out), optional :: rounds
         type(mio_mesh) :: out
         type(c_ptr) :: res, cdata
-        integer(c_int64_t) :: nlen
+        integer(c_int64_t) :: nlen, nrounds
+        integer(c_int32_t) :: met
+        real(c_double) :: dev
         integer(c_int) :: s, dt
         integer(c_int64_t), pointer :: fp(:)
         type(mio_decimate_opts_t) :: opts
@@ -14636,12 +14660,19 @@ contains
             opts%frozen = c_loc(frozen_ids(1))
             opts%num_frozen = int(size(frozen), c_int64_t)
         end if
+        if (present(max_deviation)) opts%max_deviation = real(max_deviation, c_double)
+        if (present(coverage)) opts%coverage = real(coverage, c_double)
+        if (present(max_faces)) opts%max_faces = int(max_faces, c_int64_t)
 
         res = c_mio_decimate_ex(self%handle, opts)
         if (.not. c_associated(res)) then
             call handle_failure('decimate', mio_error_message(), stat, errmsg)
             return
         end if
+        dev = c_mio_decimate_result_deviation(res, met, nrounds)
+        if (present(deviation)) deviation = real(dev, real64)
+        if (present(deviation_met)) deviation_met = met /= 0
+        if (present(rounds)) rounds = int(nrounds, int64)
         if (present(faces_removed)) faces_removed = int(c_mio_decimate_result_faces_removed(res), int64)
         if (present(points_removed)) points_removed = int(c_mio_decimate_result_points_removed(res), int64)
         if (present(collapses_rejected)) then

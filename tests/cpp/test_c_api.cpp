@@ -9016,3 +9016,41 @@ TEST(CApi, OffsetThickenAndHollowASphere) {
     mio_mesh_free(grown);
     mio_mesh_free(s);
 }
+
+TEST(CApi, DecimateMaxDeviationAndMaxFaces) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = 3;
+    mio_mesh* s = mio_icosa_sphere(&g);
+    ASSERT_NE(s, nullptr) << mio_last_error();
+    mio_decimate_opts o;
+    mio_decimate_opts_init(&o);
+    EXPECT_EQ(o.max_deviation, 0.0);
+    EXPECT_EQ(o.max_faces, 0);
+    o.max_deviation = 0.01;
+    mio_decimate_result* r = mio_decimate_ex(s, &o);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+    int32_t met = 0;
+    int64_t rounds = 0;
+    const double dev = mio_decimate_result_deviation(r, &met, &rounds);
+    EXPECT_EQ(met, 1);
+    EXPECT_LE(dev, 0.01);
+    EXPECT_GT(rounds, 1);
+    mio_decimate_result_free(r);
+    mio_decimate_opts_init(&o);
+    o.max_faces = 100;
+    r = mio_decimate_ex(s, &o);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+    const mio_mesh* out = mio_decimate_result_mesh(r);
+    int64_t ncells = 0, npc = 0;
+    int32_t ragged = 0;
+    ASSERT_EQ(mio_mesh_cell_block_info(out, 0, &ncells, &npc, &ragged), MIO_OK);
+    EXPECT_LE(ncells, 102);
+    mio_decimate_result_free(r);
+    // max_deviation beside another criterion is refused.
+    mio_decimate_opts_init(&o);
+    o.max_deviation = 0.01;
+    o.target_ratio = 0.5;
+    EXPECT_EQ(mio_decimate_ex(s, &o), nullptr);
+    mio_mesh_free(s);
+}

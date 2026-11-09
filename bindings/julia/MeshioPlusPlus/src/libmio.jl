@@ -241,7 +241,10 @@ struct _CDecimateOpts
     feature_angle::Cdouble
     frozen::Ptr{Int64}
     num_frozen::Int64
-    reserved::NTuple{4,Int64}
+    max_deviation::Cdouble  # roadmap 7.8.5; 0 = unset
+    coverage::Cdouble       # 0 = 0.999
+    max_faces::Int64        # 0 = unset
+    reserved::NTuple{1,Int64}
 end
 
 """

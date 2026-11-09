@@ -692,10 +692,14 @@ def decimate(
     feature_angle=30.0,
     frozen=None,
     return_report=False,
+    max_deviation=None,
+    coverage=0.999,
+    max_faces=None,
 ):
     """Decimate a surface mesh by quadric-error-metric edge collapse.
 
-    Exactly one of ``ratio``, ``target_faces``, ``max_error`` must be given.
+    Exactly one of ``ratio``, ``target_faces``, ``max_error`` and
+    ``max_deviation`` must be given (``max_faces`` alone counts as one).
     The output is all-triangle: ``quad``/``polygon`` blocks are triangulated
     first, and the block structure stays 1:1 with the input.
 
@@ -718,7 +722,15 @@ def decimate(
         name of one of ``mesh.point_sets``.
     :param return_report: also return the run summary dict
         (``faces_removed``, ``points_removed``, ``collapses_rejected``,
-        ``max_error_applied``).
+        ``max_error_applied``; with ``max_deviation`` or ``max_faces`` also
+        ``deviation``, ``deviation_met`` and ``rounds``).
+    :param max_deviation: the largest distance the result may lie from the
+        input (roadmap 7.8.5): the fewest faces whose two-sided sample
+        distance is at most this on ``coverage`` of the samples, found by a
+        deterministic search over full runs. C++ core only.
+    :param coverage: the share of samples ``max_deviation`` holds for.
+    :param max_faces: at most this many faces, a cap on any criterion.
+        C++ core only.
     :returns: the decimated mesh, or ``(mesh, report)`` if ``return_report``.
     :raises ValueError: when not exactly one stopping criterion is given, and
         on any block outside the surface scope (volume, higher-order, ragged,
@@ -742,6 +754,22 @@ def decimate(
     target_ratio = -1.0 if ratio is None else float(ratio)
     faces = -1 if target_faces is None else int(target_faces)
     error = -1.0 if max_error is None else float(max_error)
+    if max_deviation is not None or max_faces is not None:
+        return _decimate_bounded(
+            mesh,
+            target_ratio,
+            faces,
+            error,
+            placement,
+            preserve_boundary,
+            preserve_features,
+            feature_angle,
+            frozen,
+            -1.0 if max_deviation is None else float(max_deviation),
+            float(coverage),
+            -1 if max_faces is None else int(max_faces),
+            return_report,
+        )
 
     out = None
     point_map = None
@@ -801,3 +829,61 @@ def decimate(
             "decimate",
         )
     return (out, report) if return_report else out
+
+
+def _decimate_bounded(
+    mesh,
+    target_ratio,
+    faces,
+    error,
+    placement,
+    preserve_boundary,
+    preserve_features,
+    feature_angle,
+    frozen,
+    max_deviation,
+    coverage,
+    max_faces,
+    return_report,
+):
+    """``decimate`` with ``max_deviation`` / ``max_faces``: the C++ core's
+    search, which the numpy twin does not reproduce."""
+    try:
+        from . import _core
+
+        core = _core.decimate_bounded
+    except (ImportError, AttributeError):
+        raise NotImplementedError(
+            "meshio++: decimate: max_deviation and max_faces need the compiled "
+            "C++ core (meshioplusplus._core)"
+        ) from None
+    res = core(
+        mesh,
+        target_ratio,
+        faces,
+        error,
+        placement,
+        bool(preserve_boundary),
+        bool(preserve_features),
+        float(feature_angle),
+        None if frozen is None else np.asarray(frozen, dtype=np.int64),
+        max_deviation,
+        coverage,
+        max_faces,
+    )
+    out = res["mesh"]
+    if not return_report:
+        return out
+    report = {
+        k: res[k]
+        for k in (
+            "faces_removed",
+            "points_removed",
+            "collapses_rejected",
+            "max_error_applied",
+            "deviation",
+            "deviation_met",
+            "rounds",
+        )
+    }
+    return out, report

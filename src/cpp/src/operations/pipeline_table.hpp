@@ -35,7 +35,7 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "RecordHierarchy"}},
         {"Decimate",
          {"Ratio", "TargetFaces", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
-          "FeatureAngle"}},
+          "FeatureAngle", "MaxDeviation", "Coverage", "MaxFaces"}},
         {"DecimateVolume",
          {"Ratio", "TargetCells", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
           "FeatureAngle"}},

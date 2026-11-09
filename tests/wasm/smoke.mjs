@@ -1248,6 +1248,8 @@ step('decimate: collapses a refined cube skin, pinning its creases', () => {
     assert.equal(out.mesh.cells.length, 1);
     assert.equal(out.mesh.cells[0].type, 'triangle');
     assert.ok(out.mesh.cells[0].data.length / 3 < 48);
+    const bounded = m.decimate(skin, -1, -1, -1, 'optimal', true, true, 30, null, false, { maxDeviation: 0.05 });
+    assert.ok(bounded.deviationMet && bounded.deviation <= 0.05 && bounded.rounds >= 1);
     assert.ok(out.facesRemoved > 0);
     assert.ok(out.pointsRemoved > 0);
     assert.ok(out.collapsesRejected >= 0);

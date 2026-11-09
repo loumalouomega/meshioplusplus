@@ -2595,7 +2595,18 @@ typedef struct mio_decimate_opts {
     const int64_t* frozen;
     /** Length of `frozen`; ignored when `frozen` is NULL. */
     int64_t num_frozen;
-    int64_t reserved[4]; /**< must be zero; room for additive growth */
+    /**
+     * The largest distance the result may lie from the input (roadmap 7.8.5):
+     * positive replaces the three criteria above (leave them unset) and keeps
+     * the fewest faces whose two-sided sample distance holds on `coverage`;
+     * 0 = unset. See mio_decimate_result_deviation.
+     */
+    double max_deviation;
+    /** The share of samples max_deviation holds for, in (0, 1]; 0 = 0.999. */
+    double coverage;
+    /** At most this many faces, a cap on any criterion (alone, target_faces); 0 = unset. */
+    int64_t max_faces;
+    int64_t reserved[1]; /**< must be zero; room for additive growth */
 } mio_decimate_opts;
 
 /** Zero-initialize decimate options (every field its mio_decimate default). */
@@ -2672,6 +2683,15 @@ MIO_API int64_t mio_decimate_result_collapses_rejected(const mio_decimate_result
 MIO_API double mio_decimate_result_max_error_applied(const mio_decimate_result* result);
 
 /** Free a decimate result (and the mesh it still owns). */
+/**
+ * With max_deviation: the coverage quantile of the result's two-sided sample
+ * distances, `*met` nonzero when it is within max_deviation (zero when
+ * max_faces forbade it); 0 and met otherwise. `*rounds` is the decimation
+ * runs max_deviation or max_faces took. Either out-param may be NULL.
+ * @return the deviation, or -1 on error.
+ */
+MIO_API double mio_decimate_result_deviation(const mio_decimate_result* result, int32_t* met,
+                                             int64_t* rounds);
 MIO_API void mio_decimate_result_free(mio_decimate_result* result);
 
 /**

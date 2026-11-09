@@ -1359,16 +1359,35 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mTargetFaces =
             faces < 0.0 ? static_cast<std::int64_t>(-1) : static_cast<std::int64_t>(faces);
         opts.mMaxError = pipe_number(rStep, "MaxError", -1.0);
-        if (opts.mTargetRatio < 0.0 && opts.mTargetFaces < 0 && opts.mMaxError < 0.0)
+        opts.mMaxDeviation = pipe_number(rStep, "MaxDeviation", -1.0);
+        opts.mCoverage = pipe_number(rStep, "Coverage", 0.999);
+        const double max_faces = pipe_number(rStep, "MaxFaces", -1.0);
+        opts.mMaxFaces =
+            max_faces < 0.0 ? static_cast<std::int64_t>(-1) : static_cast<std::int64_t>(max_faces);
+        const bool bounded = opts.mMaxDeviation >= 0.0 || opts.mMaxFaces >= 0;
+        if (opts.mTargetRatio < 0.0 && opts.mTargetFaces < 0 && opts.mMaxError < 0.0 && !bounded)
             opts.mTargetRatio = 0.5;  // a usable pipeline-chip default
         opts.mPlacement = decimate_placement_from_name(pipe_text(rStep, "Placement", "optimal"));
         opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
         opts.mPreserveFeatures = pipe_flag(rStep, "PreserveFeatures", true);
         opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
         auto result = decimate(mesh, opts);
-        pipe_push_step(rReport, rStep,
-                       {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
-                        {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
+        if (!bounded) {
+            pipe_push_step(rReport, rStep,
+                           {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
+                            {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
+        } else {
+            pipe_push_step(rReport, rStep,
+                           {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
+                            {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)},
+                            {"Deviation", result.mDeviation},
+                            {"DeviationMet", result.mDeviationMet ? 1.0 : 0.0},
+                            {"Rounds", static_cast<double>(result.mRounds)}});
+            if (!result.mDeviationMet)
+                rReport.mWarnings.push_back(
+                    "decimate: max_faces forbids max_deviation; the step's Deviation is what "
+                    "the result keeps");
+        }
         return std::move(result.mMesh);
     }
     if (op == "DecimateVolume") {

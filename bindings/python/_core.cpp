@@ -3001,6 +3001,46 @@ PYBIND11_MODULE(_core, m) {
         },
         [](const meshioplusplus::DecimateResult& rR) { return rR.mFacesRemoved; });
 
+    // decimate with max_deviation / coverage / max_faces (roadmap 7.8.5): the
+    // same dict plus deviation, deviation_met and rounds. Core-only.
+    m.def(
+        "decimate_bounded",
+        [](py::object pymesh, double target_ratio, std::int64_t target_faces, double max_error,
+           const std::string& placement, bool preserve_boundary, bool preserve_features,
+           double feature_angle, py::object frozen, double max_deviation, double coverage,
+           std::int64_t max_faces) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            meshioplusplus::DecimateOptions options;
+            options.mTargetRatio = target_ratio;
+            options.mTargetFaces = target_faces;
+            options.mMaxError = max_error;
+            options.mPlacement = meshioplusplus::decimate_placement_from_name(placement);
+            options.mPreserveBoundary = preserve_boundary;
+            options.mPreserveFeatures = preserve_features;
+            options.mFeatureAngleDeg = feature_angle;
+            options.mMaxDeviation = max_deviation;
+            options.mCoverage = coverage;
+            options.mMaxFaces = max_faces;
+            core_frozen_flags(options.mFrozen, frozen, cpp.NumPoints(), "decimate");
+            auto r = core_nogil([&] { return meshioplusplus::decimate(cpp, options); });
+            py::dict out = core_mesh_maps_dict(r);
+            out["faces_removed"] = r.mFacesRemoved;
+            out["points_removed"] = r.mPointsRemoved;
+            out["collapses_rejected"] = r.mCollapsesRejected;
+            out["max_error_applied"] = r.mMaxErrorApplied;
+            out["deviation"] = r.mDeviation;
+            out["deviation_met"] = r.mDeviationMet;
+            out["rounds"] = r.mRounds;
+            return out;
+        },
+        py::arg("mesh"), py::arg("target_ratio") = -1.0, py::arg("target_faces") = -1,
+        py::arg("max_error") = -1.0, py::arg("placement") = "optimal",
+        py::arg("preserve_boundary") = true, py::arg("preserve_features") = true,
+        py::arg("feature_angle") = 30.0, py::arg("frozen") = py::none(),
+        py::arg("max_deviation") = -1.0, py::arg("coverage") = 0.999, py::arg("max_faces") = -1);
+
     // Quadric-error-metric tet-edge collapse volume decimation. Returns a dict
     // {mesh, point_map, cell_maps, tets_removed, points_removed,
     // collapses_rejected, max_error_applied}. See operations/decimate_volume.hpp.

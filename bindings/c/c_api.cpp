@@ -321,6 +321,9 @@ struct mio_decimate_result {
     int64_t mPointsRemoved = 0;
     int64_t mCollapsesRejected = 0;
     double mMaxErrorApplied = 0.0;
+    double mDeviation = 0.0;
+    bool mDeviationMet = true;
+    int64_t mRounds = 0;
 };
 
 struct mio_decimate_volume_result {
@@ -3932,6 +3935,9 @@ mio_decimate_result* capi_decimate(const mio_mesh* pMesh,
     out->mPointsRemoved = r.mPointsRemoved;
     out->mCollapsesRejected = r.mCollapsesRejected;
     out->mMaxErrorApplied = r.mMaxErrorApplied;
+    out->mDeviation = r.mDeviation;
+    out->mDeviationMet = r.mDeviationMet;
+    out->mRounds = r.mRounds;
     return out;
 }
 
@@ -3970,11 +3976,22 @@ mio_decimate_result* mio_decimate_ex(const mio_mesh* mesh, const mio_decimate_op
             opts->max_error, opts->placement, opts->preserve_boundary, opts->preserve_features,
             opts->feature_angle);
         options.mFrozen = capi_frozen_mask(mesh, opts->frozen, opts->num_frozen, "decimate");
+        // The roadmap 7.8.5 fields read zero as unset, as the reserved tail was.
+        if (opts->max_deviation != 0.0)
+            options.mMaxDeviation = opts->max_deviation;
+        if (opts->coverage != 0.0)
+            options.mCoverage = opts->coverage;
+        if (opts->max_faces > 0)
+            options.mMaxFaces = opts->max_faces;
         return capi_decimate(mesh, options);
     });
 }
 
 static_assert(sizeof(mio_decimate_opts) == 96, "mio_decimate_opts grew outside its reserved tail");
+static_assert(offsetof(mio_decimate_opts, max_deviation) == 64 &&
+                  offsetof(mio_decimate_opts, coverage) == 72 &&
+                  offsetof(mio_decimate_opts, max_faces) == 80,
+              "mio_decimate_opts layout");
 
 const mio_mesh* mio_decimate_result_mesh(const mio_decimate_result* result) {
     return capi_result_mesh(result);
@@ -4023,6 +4040,18 @@ double mio_decimate_result_max_error_applied(const mio_decimate_result* result) 
     return guarded_ptr(-1.0, [&]() -> double {
         capi_require(result, "meshio++: result is NULL");
         return result->mMaxErrorApplied;
+    });
+}
+
+double mio_decimate_result_deviation(const mio_decimate_result* result, int32_t* met,
+                                     int64_t* rounds) {
+    return guarded_ptr(-1.0, [&]() -> double {
+        capi_require(result, "meshio++: result is NULL");
+        if (met)
+            *met = result->mDeviationMet ? 1 : 0;
+        if (rounds)
+            *rounds = result->mRounds;
+        return result->mDeviation;
     });
 }
 

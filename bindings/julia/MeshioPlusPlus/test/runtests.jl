@@ -1030,6 +1030,10 @@ end
     close(d.mesh)
 
     @test_throws MeshioError decimate(fan; target_faces=1, frozen=[999])
+    dv = decimate(fan; max_deviation=1e-9)
+    @test dv.deviation_met && dv.deviation <= 1e-9 && dv.rounds >= 1
+    close(dv.mesh)
+    @test_throws MeshioError decimate(fan; max_deviation=0.1, ratio=0.5)
     close(fan)
 end
 

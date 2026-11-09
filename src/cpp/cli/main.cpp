@@ -47,6 +47,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -7581,6 +7582,11 @@ template <class TOptions, class TOp, class TRemoved>
 int cli_decimate(const std::vector<std::string>& rArgs, const char* pVerb, const char* pCountOpt,
                  std::int64_t TOptions::*pCount, const char* pBoundaryFlag, bool BoundaryNegated,
                  const char* pUnit, const char* pRemovedLabel, TOp&& rOp, TRemoved&& rRemoved) {
+    // decimate alone takes max_deviation, coverage and max_faces (roadmap 7.8.5).
+    constexpr bool kBounded = std::is_same_v<TOptions, meshioplusplus::DecimateOptions>;
+    std::vector<cli_opt_spec> bounded;
+    if constexpr (kBounded)
+        bounded = {{"max-deviation", {}, true}, {"coverage", {}, true}, {"max-faces", {}, true}};
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
                                          {{"ratio", {}, true},
                                           {pCountOpt, {}, true},
@@ -7589,14 +7595,16 @@ int cli_decimate(const std::vector<std::string>& rArgs, const char* pVerb, const
                                           {"feature-angle", {}, true},
                                           {pBoundaryFlag, {}, false},
                                           {"no-preserve-features", {}, false},
-                                          {"quiet", {"-q"}, false}}}));
+                                          {"quiet", {"-q"}, false}},
+                                         bounded}));
     if (p.positionals.size() != 2)
         throw std::runtime_error(std::string(pVerb) + " requires exactly INFILE and OUTFILE");
     const int num_set = (has_opt(p, "ratio") ? 1 : 0) + (has_opt(p, pCountOpt) ? 1 : 0) +
-                        (has_opt(p, "max-error") ? 1 : 0);
-    if (num_set != 1)
+                        (has_opt(p, "max-error") ? 1 : 0) + (has_opt(p, "max-deviation") ? 1 : 0);
+    if (num_set != 1 && !(num_set == 0 && has_opt(p, "max-faces")))
         throw std::runtime_error(std::string(pVerb) + ": give exactly one of --ratio, --" +
-                                 pCountOpt + " or --max-error");
+                                 pCountOpt + " or --max-error" +
+                                 (kBounded ? " or --max-deviation (or --max-faces alone)" : ""));
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
 
     TOptions options;
@@ -7609,6 +7617,11 @@ int cli_decimate(const std::vector<std::string>& rArgs, const char* pVerb, const
     options.mFeatureAngleDeg = meshioplusplus::detail::stod_c(opt_value(p, "feature-angle", "30"));
     options.mPreserveBoundary = has_flag(p, pBoundaryFlag) != BoundaryNegated;
     options.mPreserveFeatures = !has_flag(p, "no-preserve-features");
+    if constexpr (kBounded) {
+        cli_opt_double(p, "max-deviation", options.mMaxDeviation);
+        cli_opt_double(p, "coverage", options.mCoverage);
+        cli_opt_int64(p, "max-faces", options.mMaxFaces);
+    }
 
     auto r = rOp(mesh, options);
     if (!has_flag(p, "quiet")) {
@@ -7620,6 +7633,13 @@ int cli_decimate(const std::vector<std::string>& rArgs, const char* pVerb, const
         std::cout << "  points removed:           " << r.mPointsRemoved << "\n";
         std::cout << "  collapses rejected:       " << r.mCollapsesRejected << "\n";
         std::cout << "  max error applied:        " << r.mMaxErrorApplied << "\n";
+        if constexpr (kBounded) {
+            if (has_opt(p, "max-deviation") || has_opt(p, "max-faces")) {
+                std::cout << "  deviation:                " << r.mDeviation
+                          << (r.mDeviationMet ? "" : " (max-faces forbids max-deviation)") << "\n";
+                std::cout << "  rounds:                   " << r.mRounds << "\n";
+            }
+        }
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     return 0;

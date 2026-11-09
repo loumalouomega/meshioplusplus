@@ -37,7 +37,10 @@
       {"name": "Placement", "kind": "text", "default": "optimal"},
       {"name": "PreserveBoundary", "kind": "flag", "default": true},
       {"name": "PreserveFeatures", "kind": "flag", "default": true},
-      {"name": "FeatureAngle", "kind": "number", "default": 30.0}
+      {"name": "FeatureAngle", "kind": "number", "default": 30.0},
+      {"name": "MaxDeviation", "kind": "number", "default": -1.0},
+      {"name": "Coverage", "kind": "number", "default": 0.999},
+      {"name": "MaxFaces", "kind": "number", "default": -1.0}
     ]},
     {"op": "DecimateVolume", "keys": [
       {"name": "Ratio", "kind": "number", "default": -1.0},

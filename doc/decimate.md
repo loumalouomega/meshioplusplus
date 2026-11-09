@@ -14,6 +14,9 @@ coarse = meshioplusplus.decimate(mesh, ratio=0.25)
 coarse = meshioplusplus.decimate(mesh, target_faces=5000)
 coarse = meshioplusplus.decimate(mesh, max_error=1e-6)
 
+# or the lightest mesh within 0.05 of the scan, at most 50,000 faces
+coarse = meshioplusplus.decimate(mesh, max_deviation=0.05, max_faces=50_000)
+
 coarse, report = meshioplusplus.decimate(mesh, ratio=0.25, return_report=True)
 print(report["faces_removed"], report["collapses_rejected"])
 ```
@@ -23,6 +26,7 @@ Both CLIs expose it as a verb:
 ```bash
 meshioplusplus decimate scan.stl coarse.stl --ratio 0.25
 meshioplusplus decimate scan.stl coarse.stl --target-faces 5000 --placement midpoint
+meshioplusplus decimate scan.stl coarse.stl --max-deviation 0.05 --max-faces 50000
 ```
 
 ![A refined sphere before and after decimation to a quarter of its faces](/images/decimate_before_after.png)
@@ -44,15 +48,21 @@ Everything else raises **by name** rather than guessing:
 
 ## Stopping criteria
 
-Exactly one of the three must be given:
+Exactly one of the four must be given (`max_faces` alone counts as one):
 
 | criterion | meaning |
 |---|---|
 | `ratio` | fraction of the (triangulated) faces to KEEP, in `(0, 1]` |
 | `target_faces` | absolute face count to stop at |
 | `max_error` | collapse only while the cheapest candidate's quadric error is at most this (squared mesh units) |
+| `max_deviation` | the largest distance the result may lie from the input, held two-sided on a `coverage` share of samples (default 0.999): the lightest mesh within it (roadmap 7.8.5; C++ core only) |
+| `max_faces` | at most this many faces: a cap on any of the above, and alone the target (C++ core only) |
 
 A collapse removes one or two faces, so `ratio`/`target_faces` land **within one collapse** of the request. When pinning leaves no collapsible edge before the target is reached, the run warns and returns normally — the report tells the truth.
+
+### Deviation-bounded decimation
+
+`max_error` bounds a quadric error in squared units, not a distance a user can state; `max_deviation` is that distance. The core searches the face count deterministically: a run at the input's own face count (or `max_faces`, when that is lower), a run with `max_error = max_deviation²` (a collapse within that quadric keeps its vertex within `max_deviation` of every plane it absorbed, a cheap first guess), then bisection over full runs to within 1% of the fewest faces that keep the deviation. Each candidate is measured two-sided as [`hausdorff_distance`](/hausdorff) measures (the input's vertices to the result, the result's vertices and 2 × 2 face samples per triangle to the input, the input's distance query built once), and the `coverage` quantile of all those sample distances must be at most `max_deviation`; the result is the lightest candidate that passed. The report adds `deviation` (that quantile), `deviation_met` and `rounds` (the runs it took). When `max_faces` forbids the deviation, the result is the run at the cap with `deviation_met` false (the pipeline step warns). A 20,000-face sphere decimated within 0.005 takes about 13 runs; the result's measured Hausdorff distance stays within a few times the bound on the remaining 0.1% (`tests/cpp/test_decimate.cpp`). The numpy twin does not reproduce the search and raises `NotImplementedError` naming the core.
 
 ## Placement, and how data follows
 
@@ -85,9 +95,10 @@ Setup is parallel with a fixed floating-point order (each vertex sums its quadri
 
 ## Other language surfaces
 
-- **C API** — `mio_decimate(...)` returning an opaque `mio_decimate_result` (mesh borrow/take, zero-copy point/cell maps, counter getters); `mio_decimate_opts`/`mio_decimate_ex` add `frozen`/`num_frozen` (0-based point ids, range-checked), the same `mio_refine_opts`/`_ex` pattern `mio_smooth_ex` uses. Unlike `mio_smooth_ex`, there is no "all defaults" fast path (a stopping criterion is always required), so `mio_decimate_ex(mesh, NULL)` is an error rather than `mio_decimate`'s own defaults.
-- **Fortran** — `coarse = m%decimate(ratio=0.25_real64, faces_removed=n, ..., frozen=ids)` with optional counter out-args, a 1-based `point_map`, and a 1-based `frozen` point-id array (shifted to 0-based across the ABI).
-- **WASM** — `decimate(mesh, ratio, targetFaces, maxError, placement, preserveBoundary, preserveFeatures, featureAngle, frozen, returnMaps)` → `{mesh, facesRemoved, pointsRemoved, collapsesRejected, maxErrorApplied}` (`frozen`: an optional array of 0-based point ids to pin outright; an out-of-range id throws naming it; `returnMaps`: also attaches `pointMap`/`cellMaps`), also available as a `convertSurfaceOps` pipeline op (`{op: "decimate"}`, defaulting to `ratio: 0.5`).
-- **CLI** — the `decimate` verb in both the Python and the native CLI (see [CLI](/cli)).
+- **C API** — `mio_decimate(...)` returning an opaque `mio_decimate_result` (mesh borrow/take, zero-copy point/cell maps, counter getters); `mio_decimate_opts`/`mio_decimate_ex` add `frozen`/`num_frozen` (0-based point ids, range-checked) and `max_deviation`, `coverage` and `max_faces` (zero unset, from the reserved tail; `mio_decimate_result_deviation` reads the deviation, whether it was met and the rounds), the same `mio_refine_opts`/`_ex` pattern `mio_smooth_ex` uses. Unlike `mio_smooth_ex`, there is no "all defaults" fast path (a stopping criterion is always required), so `mio_decimate_ex(mesh, NULL)` is an error rather than `mio_decimate`'s own defaults.
+- **Fortran** — `coarse = m%decimate(ratio=0.25_real64, faces_removed=n, ..., frozen=ids, max_deviation=, coverage=, max_faces=, deviation=, deviation_met=, rounds=)` with optional counter out-args, a 1-based `point_map`, and a 1-based `frozen` point-id array (shifted to 0-based across the ABI).
+- **WASM** — `decimate(mesh, ratio, targetFaces, maxError, placement, preserveBoundary, preserveFeatures, featureAngle, frozen, returnMaps, bounds)` → `{mesh, facesRemoved, pointsRemoved, collapsesRejected, maxErrorApplied}`, with `deviation`, `deviationMet` and `rounds` when `bounds` (`{maxDeviation, coverage, maxFaces}`) sets one (`frozen`: an optional array of 0-based point ids to pin outright; an out-of-range id throws naming it; `returnMaps`: also attaches `pointMap`/`cellMaps`), also available as a `convertSurfaceOps` pipeline op (`{op: "decimate"}`, defaulting to `ratio: 0.5`).
+- **CLI** — the `decimate` verb in both the Python and the native CLI (see [CLI](/cli)), with `--max-deviation`, `--coverage` and `--max-faces`.
+- **Julia, R, Octave/MATLAB** — `max_deviation`, `coverage` and `max_faces` keywords, the report gaining `deviation`, `deviation_met` and `rounds`; the `Decimate` [pipeline](/pipeline) step's `MaxDeviation`, `Coverage` and `MaxFaces` keys (counters `Deviation`, `DeviationMet`, `Rounds`); the MCP tool `decimate`'s `max_deviation`, `coverage` and `max_faces`.
 
 The returned maps make the result composable: `point_map` sends every input point to its **survivor's** output index (collapsed points map to the survivor, not −1 — usable for remapping external per-point arrays), and the per-input-block `cell_maps` send each input cell to its first surviving triangle (−1 when none survived).

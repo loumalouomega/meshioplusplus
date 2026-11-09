@@ -8568,13 +8568,26 @@ val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& 
  * `frozen` is an optional array of 0-based point ids to pin outright. Returns
  * an object `{mesh, facesRemoved, pointsRemoved, collapsesRejected,
  * maxErrorApplied}`, plus `pointMap`/`cellMaps` when `returnMaps` is set.
+ * `rBounded` is `{maxDeviation, coverage, maxFaces}` (roadmap 7.8.5), adding
+ * `deviation`, `deviationMet` and `rounds` when either bound is set.
  */
 val decimate_js(const val& rMeshObj, double ratio, double targetFaces, double maxError,
                 const std::string& rPlacement, bool preserveBoundary, bool preserveFeatures,
-                double featureAngle, const val& rFrozen, bool returnMaps) {
+                double featureAngle, const val& rFrozen, bool returnMaps, const val& rBounded) {
     return with_js_errors([&]() -> val {
         Mesh mesh = val_to_mesh(rMeshObj);
         meshioplusplus::DecimateOptions options;
+        // Roadmap 7.8.5: `{maxDeviation, coverage, maxFaces}`.
+        if (!rBounded.isUndefined() && !rBounded.isNull()) {
+            check_settings_keys(rBounded, "the decimate bounds",
+                                {"maxDeviation", "coverage", "maxFaces"});
+            if (rBounded.hasOwnProperty("maxDeviation"))
+                options.mMaxDeviation = rBounded["maxDeviation"].as<double>();
+            if (rBounded.hasOwnProperty("coverage"))
+                options.mCoverage = rBounded["coverage"].as<double>();
+            if (rBounded.hasOwnProperty("maxFaces"))
+                options.mMaxFaces = static_cast<std::int64_t>(rBounded["maxFaces"].as<double>());
+        }
         options.mTargetRatio = ratio;
         options.mTargetFaces = targetFaces < 0.0 ? static_cast<std::int64_t>(-1)
                                                  : static_cast<std::int64_t>(targetFaces);
@@ -8591,6 +8604,11 @@ val decimate_js(const val& rMeshObj, double ratio, double targetFaces, double ma
         out.set("pointsRemoved", static_cast<double>(r.mPointsRemoved));
         out.set("collapsesRejected", static_cast<double>(r.mCollapsesRejected));
         out.set("maxErrorApplied", r.mMaxErrorApplied);
+        if (options.mMaxDeviation >= 0.0 || options.mMaxFaces >= 0) {
+            out.set("deviation", r.mDeviation);
+            out.set("deviationMet", r.mDeviationMet);
+            out.set("rounds", static_cast<double>(r.mRounds));
+        }
         if (returnMaps) {
             out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
             out.set("cellMaps", cell_maps_to_val(r.mCellMaps));

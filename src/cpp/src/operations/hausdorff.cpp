@@ -18,9 +18,11 @@
 // hausdorff_distance. See operations/hausdorff.hpp for the contract.
 
 // System includes
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -35,6 +37,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/hausdorff_samples.hpp"
 #include "../detail/surface_edge_runs.hpp"
 
 namespace meshioplusplus {
@@ -152,6 +155,57 @@ detail::DistanceQuery hd_query(const detail::TriangleSoup& rSoup, double CellSiz
 }
 
 }  // namespace
+
+namespace detail {
+
+struct HausdorffSampler::Impl {
+    TriangleSoup mSoup;
+    std::vector<Vec3> mSamples;
+    DistanceQuery mQuery;
+    std::int64_t mFaceSamples = 0;
+};
+
+HausdorffSampler::HausdorffSampler(const Mesh& rReference, std::int64_t ReferenceFaceSamples,
+                                   std::int64_t FaceSamples)
+    : mpImpl(std::make_unique<Impl>()) {
+    if (FaceSamples < 0 || ReferenceFaceSamples < 0)
+        throw std::invalid_argument(std::string(kHdPrefix) + "face samples must be >= 0");
+    mpImpl->mSoup = hd_soup(rReference, "", "B");
+    mpImpl->mSamples = hd_samples(mpImpl->mSoup, ReferenceFaceSamples);
+    mpImpl->mQuery = hd_query(mpImpl->mSoup, 0.0);
+    mpImpl->mFaceSamples = FaceSamples;
+}
+
+HausdorffSampler::~HausdorffSampler() = default;
+
+std::vector<double> HausdorffSampler::Distances(const Mesh& rOther) const {
+    const TriangleSoup sa = hd_soup(rOther, "", "A");
+    const std::vector<Vec3> pa = hd_samples(sa, mpImpl->mFaceSamples);
+    std::vector<double> out;
+    out.reserve(pa.size() + mpImpl->mSamples.size());
+    for (const ClosestPointHit& r_h : query_closest_points(mpImpl->mQuery, pa))
+        out.push_back(r_h.mDistance);
+    for (const ClosestPointHit& r_h : query_closest_points(hd_query(sa, 0.0), mpImpl->mSamples))
+        out.push_back(r_h.mDistance);
+    return out;
+}
+
+std::vector<double> hausdorff_sample_distances(const Mesh& rA, const Mesh& rB,
+                                               std::int64_t FaceSamples) {
+    return HausdorffSampler(rB, FaceSamples, FaceSamples).Distances(rA);
+}
+
+double coverage_quantile(std::vector<double> Values, double Coverage) {
+    if (Values.empty())
+        return 0.0;
+    const double want = std::ceil(Coverage * static_cast<double>(Values.size()));
+    std::size_t k = want < 1.0 ? 0 : static_cast<std::size_t>(want) - 1;
+    k = std::min(k, Values.size() - 1);
+    std::nth_element(Values.begin(), Values.begin() + static_cast<std::ptrdiff_t>(k), Values.end());
+    return Values[k];
+}
+
+}  // namespace detail
 
 HausdorffResult hausdorff_distance(const Mesh& rA, const Mesh& rB,
                                    const HausdorffOptions& rOptions) {
