@@ -625,7 +625,10 @@ const OgCase kOgCases[] = {
     {"curvature", og_curvature, 0x57e791c665c3c096ull},
     {"normals", og_normals, 0xdd92696ea89a5ad9ull},
     {"segment", og_segment, 0x5ea31eda31330c87ull},
-    {"fit_primitives", og_fit_primitives, 0xe2a91ebe3058024aull},
+    // Re-recorded for roadmap 7.1.2 and 7.1.3: the form, extreme and trimming
+    // columns joined the table; with `mExtendedReport` off it is still
+    // 0xe2a91ebe3058024a, so the fitted values did not move.
+    {"fit_primitives", og_fit_primitives, 0x099a8b8049a8c086ull},
     {"agglomerate", og_agglomerate, 0x7c40650413522165ull},
     {"split", og_split, 0x258b588246f2ea38ull},
     {"undo_green", og_undo_green, 0x994d7afcbc6f56d9ull},
