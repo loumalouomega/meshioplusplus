@@ -20,7 +20,7 @@ The field's values `v` map to `t = (v - vmin) / (vmax - vmin)`, clamped to `[0, 
 
 ## What comes back
 
-The input, with three UInt8 arrays named `red`, `green` and `blue` beside the field, on its location: point data for a point field, cell data for a cell field. Points, cells and every other array are unchanged. Those are the names PLY's vertex and face colour properties take, and the PLY writer writes them as `uchar` properties under them; the glTF writer takes them as `COLOR_0` with `color_by="rgb"`. The report gives the `vmin` and `vmax` used and the `location`.
+The input, with three UInt8 arrays named `red`, `green` and `blue` beside the field, on its location: point data for a point field, cell data for a cell field. Points, cells and every other array are unchanged. Those are the names PLY's vertex and face colour properties take, and the PLY writer writes them as `uchar` properties under them; the glTF writer takes them as `COLOR_0` with `color_by="rgb"`. The report gives the `vmin` and `vmax` used and the `location`. A build with the NATIVE or KRATOS mesh backend keeps every integer array as Int64 ([mesh backends](./cpp_backends.md)), so there the three arrays hold the same 0 to 255 values as Int64; the Python package always uses the MESHIO backend and its arrays are UInt8.
 
 ## Core only
 

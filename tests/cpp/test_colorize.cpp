@@ -24,6 +24,7 @@
 #include <gtest/gtest.h>
 
 #include "meshioplusplus/detail/colormap.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/colorize.hpp"
 #include "mesh_fixtures.hpp"
 
@@ -57,14 +58,17 @@ TEST(Colorize, ContinuousColoursFollowTheColormap) {
     EXPECT_EQ(r.mLocation, "point");
     EXPECT_DOUBLE_EQ(r.mVMin, 0.0);
     EXPECT_DOUBLE_EQ(r.mVMax, 9.0);
-    const std::uint8_t* red = r.mMesh.PointData(kColorRedName).As<std::uint8_t>();
-    const std::uint8_t* green = r.mMesh.PointData(kColorGreenName).As<std::uint8_t>();
+    // read_int: the NATIVE backend stores every integer array as Int64.
+    const NDArray& red = r.mMesh.PointData(kColorRedName);
+    const NDArray& green = r.mMesh.PointData(kColorGreenName);
     const detail::Rgb lo = detail::colormap_lookup(detail::colormap_table("viridis"), 0.0);
     const detail::Rgb hi = detail::colormap_lookup(detail::colormap_table("viridis"), 1.0);
-    EXPECT_EQ(red[0], lo.mR);
-    EXPECT_EQ(green[9], hi.mG);
-    EXPECT_EQ(red[10], 128);  // NaN: the nan colour
-    EXPECT_EQ(r.mMesh.PointData(kColorRedName).Dtype(), DType::UInt8);
+    EXPECT_EQ(detail::read_int(red, 0), lo.mR);
+    EXPECT_EQ(detail::read_int(green, 9), hi.mG);
+    EXPECT_EQ(detail::read_int(red, 10), 128);  // NaN: the nan colour
+#if defined(MESHIOPLUSPLUS_MESH_BACKEND_MESHIO)
+    EXPECT_EQ(red.Dtype(), DType::UInt8);
+#endif
 }
 
 TEST(Colorize, BandsGiveFlatSteps) {
@@ -74,9 +78,9 @@ TEST(Colorize, BandsGiveFlatSteps) {
     const ColorizeResult r = colorize(col_line(), o);
     std::set<std::tuple<int, int, int>> seen;
     for (int i = 0; i < 10; ++i)
-        seen.insert({r.mMesh.PointData(kColorRedName).As<std::uint8_t>()[i],
-                     r.mMesh.PointData(kColorGreenName).As<std::uint8_t>()[i],
-                     r.mMesh.PointData(kColorBlueName).As<std::uint8_t>()[i]});
+        seen.insert({static_cast<int>(detail::read_int(r.mMesh.PointData(kColorRedName), i)),
+                     static_cast<int>(detail::read_int(r.mMesh.PointData(kColorGreenName), i)),
+                     static_cast<int>(detail::read_int(r.mMesh.PointData(kColorBlueName), i))});
     EXPECT_EQ(seen.size(), 3u);
 }
 
