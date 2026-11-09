@@ -212195,8 +212195,8 @@ void write_wkt(const std::string& rPath, const Mesh& rMesh) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/wkt.cpp =====
 // ===== begin src/cpp/src/formats/xdmf.cpp =====
+#include <algorithm>
 #include <cstdint>
-#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -212386,9 +212386,10 @@ NDArray read_data_item(const pugi::xml_node& rItem, const fs::path& rBaseDir) {
                 else
                     out[i++] = static_cast<T>(detail::strtoull_token(tok));
             }
-            if (i * sizeof(T) < a.Nbytes())
-                std::memset(reinterpret_cast<unsigned char*>(out) + i * sizeof(T), 0,
-                            a.Nbytes() - i * sizeof(T));
+            // The rest of a short item stays zero; Size() keeps a rank-0 item's one element.
+            const std::size_t n = a.Size();
+            if (i < n)
+                std::fill(out + i, out + n, T{});  // NOSONAR(cpp:S3519): i < n, the size
         });
         return a;
     }
@@ -286547,12 +286548,11 @@ namespace {
 /// dlopen runs) does not wait on itself; the flag makes that nested call return
 /// at once. Allocated and never freed, like providers_state(), so a provider
 /// query during static destruction still finds it.
-std::recursive_mutex& plugin_scan_mutex() {  // NOSONAR(cpp:S8462): see above
-    static std::recursive_mutex* const s_mutex =
-        new std::recursive_mutex;  // NOSONAR(cpp:S8462,cpp:S8474): see above
+std::recursive_mutex& plugin_scan_mutex() {                 // NOSONAR(cpp:S8462): see above
+    static auto* const s_mutex = new std::recursive_mutex;  // NOSONAR(cpp:S8462,cpp:S8474)
     return *s_mutex;
 }
-bool g_plugins_scan_started = false;        // guarded by the scan mutex
+bool g_plugins_scan_started = false;           // guarded by the scan mutex
 std::atomic<bool> g_plugins_scan_done{false};  // the lock-free fast path
 
 using PluginAbiFn = int (*)();
@@ -286713,8 +286713,8 @@ void register_builtin_providers() noexcept {
     // thread passes straight through.
     if (g_plugins_scan_done.load())
         return;
-    const std::lock_guard<std::recursive_mutex> scan_lock(
-        plugin_scan_mutex());  // NOSONAR(cpp:S8462): re-entered by a plugin, see above
+    // Recursive on purpose: re-entered by a plugin, see plugin_scan_mutex().
+    const std::lock_guard scan_lock(plugin_scan_mutex());  // NOSONAR(cpp:S8462)
     if (g_plugins_scan_started)
         return;  // done meanwhile, or this thread's own plugin is asking
     g_plugins_scan_started = true;
