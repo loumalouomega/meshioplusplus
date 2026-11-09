@@ -92,6 +92,7 @@
 #include "meshioplusplus/operations/offset_surface.hpp"
 #include "meshioplusplus/operations/constrain_primitives.hpp"
 #include "meshioplusplus/operations/fit_cad_loop.hpp"
+#include "meshioplusplus/operations/profile_solid.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -3160,6 +3161,102 @@ static_assert(sizeof(mio_face_support_opts) == 64, "mio_face_support_opts layout
 static_assert(sizeof(mio_face_support_report) == 64, "mio_face_support_report layout");
 static_assert(sizeof(mio_fit_cad_iterate_opts) == 112, "mio_fit_cad_iterate_opts layout");
 static_assert(sizeof(mio_fit_cad_iterate_report) == 96, "mio_fit_cad_iterate_report layout");
+
+static_assert(sizeof(mio_profile_feature) == 96, "mio_profile_feature layout");
+static_assert(sizeof(mio_profile_solid_report) == 64, "mio_profile_solid_report layout");
+
+static std::string& capi_profile_warnings() {
+    thread_local std::string last;
+    return last;
+}
+
+void mio_profile_feature_init(mio_profile_feature* feature) {
+    if (!feature)
+        return;
+    *feature = mio_profile_feature{};
+    feature->angle_deg = 360.0;
+    feature->axis_direction[2] = 1.0;
+}
+
+int64_t mio_profile_features_from_text(const char* text, mio_profile_feature* out,
+                                       int64_t capacity) {
+    return capi_guarded_count([&]() -> int64_t {
+        capi_require(text, "meshio++: profile_solid: text is NULL");
+        const std::vector<meshioplusplus::ProfileFeature> feats =
+            meshioplusplus::profile_features_from_text(text);
+        for (std::size_t k = 0; k < feats.size() && static_cast<int64_t>(k) < capacity && out;
+             ++k) {
+            mio_profile_feature& r_o = out[k];
+            mio_profile_feature_init(&r_o);
+            r_o.kind = static_cast<int32_t>(feats[k].mKind);
+            r_o.symmetric = feats[k].mSymmetric ? 1 : 0;
+            r_o.distance = feats[k].mDistance;
+            r_o.angle_deg = feats[k].mAngleDeg;
+            r_o.radius = feats[k].mRadius;
+            for (int c = 0; c < 3; ++c) {
+                r_o.axis_origin[c] = feats[k].mAxisOrigin[c];
+                r_o.axis_direction[c] = feats[k].mAxisDirection[c];
+            }
+        }
+        return static_cast<int64_t>(feats.size());
+    });
+}
+
+mio_mesh* mio_profile_solid(const mio_mesh* sketch, const mio_profile_feature* features,
+                            int64_t num_features, const char* step_path, const char* provider,
+                            double deflection, const mio_mesh* scan,
+                            mio_profile_solid_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_profile_warnings().clear();
+        capi_require(sketch, "meshio++: profile_solid: sketch is NULL");
+        if (num_features < 0 || (num_features > 0 && !features))
+            throw std::invalid_argument("meshio++: profile_solid: features is NULL");
+        meshioplusplus::ProfileSolidOptions o;
+        o.mProvider = provider ? provider : "";
+        o.mDeflection = deflection;
+        for (int64_t k = 0; k < num_features; ++k) {
+            const mio_profile_feature& r_f = features[k];
+            if (r_f.kind < MIO_PROFILE_EXTRUDE || r_f.kind > MIO_PROFILE_SHELL)
+                throw std::invalid_argument("meshio++: profile_solid: a feature kind is 0 to 4");
+            meshioplusplus::ProfileFeature f;
+            f.mKind = static_cast<meshioplusplus::ProfileFeatureKind>(r_f.kind);
+            f.mSymmetric = r_f.symmetric != 0;
+            f.mDistance = r_f.distance;
+            f.mAngleDeg = r_f.angle_deg;
+            f.mRadius = r_f.radius;
+            for (int c = 0; c < 3; ++c) {
+                f.mAxisOrigin[c] = r_f.axis_origin[c];
+                f.mAxisDirection[c] = r_f.axis_direction[c];
+            }
+            o.mFeatures.push_back(f);
+        }
+        meshioplusplus::ProfileSolidResult r = meshioplusplus::profile_solid(
+            sketch->mMesh, step_path ? step_path : "", o, scan ? &scan->mMesh : nullptr);
+        for (const std::string& w : r.mWarnings)
+            capi_profile_warnings() += (capi_profile_warnings().empty() ? "" : "\n") + w;
+        if (report) {
+            *report = mio_profile_solid_report{};
+            report->volume = r.mVolume;
+            report->area = r.mArea;
+            report->num_faces = r.mNumFaces;
+            report->valid = r.mValid ? 1 : 0;
+            report->num_warnings = static_cast<int32_t>(r.mWarnings.size());
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_profile_solid_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_profile_warnings(), buf, buflen);
+    });
+}
+
+int32_t mio_has_profile_solid_provider(void) {
+    return meshioplusplus::profile_solid_provider() ? 1 : 0;
+}
 
 void mio_constrain_primitives_opts_init(mio_constrain_primitives_opts* opts) {
     if (!opts)

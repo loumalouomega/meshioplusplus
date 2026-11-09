@@ -33,14 +33,15 @@ OCCT_URL="https://github.com/Open-Cascade-SAS/OCCT.git"
 
 # Only the toolkits the core links (CMakeLists.txt's _mio_occt_libs): every
 # module is off and these are named, which pulls in their dependency closure
-# (modelling data and algorithms, shape healing, booleans, primitives) and
+# (modelling data and algorithms, shape healing, booleans, primitives, and the
+# fillets, chamfers and offsets profile_solid uses, roadmap 7.7.4) and
 # nothing else -- no visualisation, OCAF, Draw, or third-party library. From
 # 7.8 the STEP and IGES toolkits are TKDESTEP and TKDEIGES, which sit on XCAF:
 # their closure reaches TKService, which needs the X11 headers on Linux
 # (libx11-dev), though nothing opens a display.
 case "$OCCT_VERSION" in
-    7.6.*) OCCT_TOOLKITS="TKSTEP TKIGES TKMesh TKBool TKPrim" ;;
-    *) OCCT_TOOLKITS="TKDESTEP TKDEIGES TKMesh TKBool TKPrim" ;;
+    7.6.*) OCCT_TOOLKITS="TKSTEP TKIGES TKMesh TKBool TKPrim TKFillet TKOffset" ;;
+    *) OCCT_TOOLKITS="TKDESTEP TKDEIGES TKMesh TKBool TKPrim TKFillet TKOffset" ;;
 esac
 
 # occt_source <download-dir> <source-dir>: the commit-verified clone of the

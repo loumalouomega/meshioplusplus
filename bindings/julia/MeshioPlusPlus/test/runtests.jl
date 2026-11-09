@@ -2035,6 +2035,7 @@ end
     close(it.mesh)
     @test_throws ArgumentError fit_cad_iterate(cube; part_class="plastic")
     @test_throws MeshioError constrain_primitives(cube)
+    @test_throws MeshioError profile_solid(cube, "extrude:1")
     ms = measure(cube, """{"elements": [
         {"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},
         {"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],

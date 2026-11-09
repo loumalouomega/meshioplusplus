@@ -138,3 +138,46 @@ def constrain_primitives_cmd(args):
         "relation(s) unmet"
     )
     return 0
+
+
+def add_profile_args(parser):
+    parser.add_argument("sketch", type=str, help="a fit_curves sketch")
+    parser.add_argument("outfile", type=str)
+    parser.add_argument("--input-format", "-i", type=str, default=None)
+    parser.add_argument("--output-format", "-o", type=str, default=None)
+    parser.add_argument(
+        "--features",
+        type=str,
+        required=True,
+        help="';'-separated: extrude:D[:symmetric], revolve:OX,OY,OZ:DX,DY,DZ[:ANGLE], "
+        "fillet:R, chamfer:D, shell:W",
+    )
+    parser.add_argument("--step", type=str, default=None)
+    parser.add_argument("--scan", type=str, default=None)
+    parser.add_argument("--provider", type=str, default="")
+    parser.add_argument("--deflection", type=float, default=0.0)
+    parser.add_argument("--json", action="store_true", help="emit the report as JSON")
+
+
+def profile_solid_cmd(args):
+    from .._profile_solid import profile_solid
+
+    scan = read(args.scan, file_format=args.input_format) if args.scan else None
+    out, r = profile_solid(
+        read(args.sketch, file_format=args.input_format),
+        args.features,
+        args.step,
+        provider=args.provider,
+        deflection=args.deflection,
+        scan=scan,
+        return_report=True,
+    )
+    write(args.outfile, out, file_format=args.output_format)
+    if args.json:
+        emit_json(r)
+        return 0
+    note = "" if r["valid"] else " (not a valid solid)"
+    print(f"{r['num_faces']} face(s), volume {r['volume']!r}{note} [{r['provider']}]")
+    for w in r["warnings"]:
+        print(f"warning: {w}")
+    return 0

@@ -3148,6 +3148,8 @@ contains
                     call check(ierr /= 0, 'fit_cad_iterate refuses an unknown part class')
                     marked = mio_constrain_primitives(sq, stat=ierr)
                     call check(ierr /= 0, 'constrain_primitives needs a fitted skin')
+                    marked = mio_profile_solid(sq, 'extrude:1', stat=ierr)
+                    call check(ierr /= 0, 'profile_solid needs a sketch')
                 end block
             end block
         end block

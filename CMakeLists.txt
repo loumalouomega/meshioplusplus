@@ -447,7 +447,7 @@ if(MESHIOPLUSPLUS_WITH_OCCT AND OpenCASCADE_FOUND)
   # one of build/build-wasm-deps.sh --full) records none on its targets, and
   # IGES reading needs TKBool's BRepFill.
   set(_mio_occt_libs TKernel TKMath TKG2d TKG3d TKBRep TKGeomBase TKGeomAlgo TKTopAlgo
-                     TKShHealing TKBO TKBool TKMesh TKPrim)
+                     TKShHealing TKBO TKBool TKMesh TKPrim TKFillet TKOffset)
   if(TARGET TKDESTEP)
     list(APPEND _mio_occt_libs TKDESTEP TKXSBase)
   else()

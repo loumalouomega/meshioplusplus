@@ -226,6 +226,28 @@ static mxArray *O_mio_slice(const mxArray **a) {
     return mio_o_wrap_mesh(out);
 }
 
+/* profile_solid(sketch, features, step_path, scan, provider, deflection)
+ * (roadmap 7.7.4); features in their text form, scan a mesh or []. */
+static mxArray *O_mio_profile_solid(const mxArray **a) {
+    const char *text = mio_o_string(a[1], "features");
+    const int64_t n = mio_profile_features_from_text(text, NULL, 0);
+    if (n < 0) mio_o_fail("profile_solid");
+    mio_profile_feature *feats =
+        (mio_profile_feature *)mxMalloc((size_t)(n > 0 ? n : 1) * sizeof(mio_profile_feature));
+    if (mio_profile_features_from_text(text, feats, n) < 0) mio_o_fail("profile_solid");
+    mio_profile_solid_report r;
+    mio_mesh *out = mio_profile_solid(mio_o_mesh(a[0]), feats, n, mio_o_opt_string(a[2]),
+                                      mio_o_opt_string(a[4]), mio_o_double(a[5], "deflection"),
+                                      mio_o_is_null(a[3]) ? NULL : mio_o_mesh(a[3]), &r);
+    if (out == NULL) mio_o_fail("profile_solid");
+    mxArray *w = mio_o_getbuffer(mio_profile_solid_warnings, "profile_solid");
+    const char *keys[] = {"mesh", "volume", "area", "num_faces", "valid", "warnings"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),           mio_o_scalar(r.volume),
+                         mio_o_scalar(r.area),           mio_o_scalar((double)r.num_faces),
+                         mio_o_logical(r.valid != 0),    w};
+    return mio_o_struct(6, keys, values);
+}
+
 /* A flat double vector of (a, b, kind) triples as int64; NULL when empty. */
 static const int64_t *oc_triples(const mxArray *a, int64_t *n) {
     *n = 0;
@@ -1972,6 +1994,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_clip, 5),
     MIO_O_ENTRY(mio_offset_surface, 3),
     MIO_O_ENTRY(mio_constrain_primitives, 7),
+    MIO_O_ENTRY(mio_profile_solid, 6),
     MIO_O_ENTRY(mio_face_support, 6),
     MIO_O_ENTRY(mio_fit_cad_iterate, 11),
     MIO_O_ENTRY(mio_thicken, 4),

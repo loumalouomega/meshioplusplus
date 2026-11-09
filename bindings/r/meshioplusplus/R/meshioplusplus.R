@@ -1421,6 +1421,31 @@ mio_clip <- function(mesh, origin, normal, keep_below = TRUE, cap = TRUE) {
   res
 }
 
+#' Extrude or revolve a sketch into a solid
+#'
+#' A `mio_fit_curves` sketch built into a solid by features applied in order,
+#' through a CAD provider (OpenCASCADE; roadmap 7.7.4): `features` in text
+#' form, `;`-separated: `extrude:D[:symmetric]` (0 runs to `scan`'s extent),
+#' `revolve:OX,OY,OZ:DX,DY,DZ[:ANGLE]`, `fillet:R`, `chamfer:D`, `shell:W`.
+#' See `doc/profile_solid.md`.
+#'
+#' @param sketch A sketch.
+#' @param features The features.
+#' @param step_path Where the solid goes as STEP (`NULL`: nowhere).
+#' @param scan A scan for an extrusion to its extent, or `NULL`.
+#' @param provider The provider (`""`: the first).
+#' @param deflection The tessellation's deflection (`0`: `1e-3` of the diagonal).
+#' @return A list: `mesh`, `volume`, `area`, `num_faces`, `valid` and `warnings`.
+#' @export
+mio_profile_solid <- function(sketch, features, step_path = NULL, scan = NULL, provider = "",
+                              deflection = 0) {
+  r <- .Call(R_mio_profile_solid, sketch, as.character(features), step_path, scan,
+             as.character(provider), as.numeric(deflection))
+  r$valid <- r$valid != 0
+  r$warnings <- mio_split_warnings_(r$warnings)
+  r
+}
+
 mio_relations_ <- c("coaxial", "parallel", "perpendicular", "equal_radius")
 
 # A list of list(a, b, relation) (or a data frame of patch_a, patch_b,

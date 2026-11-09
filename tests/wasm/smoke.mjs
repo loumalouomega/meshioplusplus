@@ -5718,6 +5718,7 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.ok(it.targetMet && it.rounds.length === 1);
     assert.equal(m.faceSupport(it.mesh, cubeSurface).numMeasured, 6);
     assert.throws(() => m.constrainPrimitives(cubeSurface), /fit_primitives/);
+    assert.throws(() => m.profileSolid(cubeSurface, 'extrude:1'), /sketch/);
     const ri = m.removeIslands(cubeSurface);
     assert.equal(ri.numComponents, 1);
     assert.throws(() => m.removeIslands(cubeSurface, { connectivity: 'face' }), /connectivity/);

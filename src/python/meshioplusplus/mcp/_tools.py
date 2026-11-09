@@ -177,6 +177,10 @@ from .. import (
     poly_to_tet,
     power_spectrum,
     prepare_metric,
+)
+from .. import profile_solid as _profile_solid_op
+from .. import profile_solid_providers as _profile_solid_providers
+from .. import (
     project_to_cad,
     proximity_graph,
     read,
@@ -1887,6 +1891,36 @@ def tool_clip(
         return_report=True,
     )
     report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_profile_solid(
+    input_path,
+    output_path,
+    features,
+    step_path=None,
+    scan_path=None,
+    provider="",
+    deflection=0.0,
+    input_format=None,
+    output_format=None,
+):
+    """A sketch extruded or revolved into a solid through a CAD provider."""
+    step = str(_resolve(step_path, for_write=True)) if step_path else None
+    scan = _load(scan_path, input_format) if scan_path else None
+    out, report = _profile_solid_op(
+        _load(input_path, input_format),
+        features,
+        step,
+        provider=provider,
+        deflection=float(deflection),
+        scan=scan,
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    report["providers"] = _profile_solid_providers()
+    if step:
+        report["step_path"] = step
     return _json_safe(report)
 
 
@@ -7716,6 +7750,18 @@ TOOL_REGISTRY = OrderedDict(
             {"fn": tool_flip_normals, "wraps": ("flip_normals",), "gated": None},
         ),
         ("clip", {"fn": tool_clip, "wraps": ("clip",), "gated": None}),
+        (
+            "profile_solid",
+            {
+                "fn": tool_profile_solid,
+                "wraps": (
+                    "profile_solid",
+                    "profile_solid_providers",
+                    "profile_features_from_text",
+                ),
+                "gated": None,
+            },
+        ),
         (
             "constrain_primitives",
             {

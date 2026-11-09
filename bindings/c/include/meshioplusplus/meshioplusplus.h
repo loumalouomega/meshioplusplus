@@ -1547,6 +1547,65 @@ MIO_API int64_t mio_measure_warnings(char* buf, int64_t buflen);
 
 /* ---- roadmap 7.7: closing the reverse-engineering loop ---------------- */
 
+/** A profile-solid feature's kind (roadmap 7.7.4). */
+typedef enum mio_profile_feature_kind {
+    MIO_PROFILE_EXTRUDE = 0,
+    MIO_PROFILE_REVOLVE = 1,
+    MIO_PROFILE_FILLET = 2,
+    MIO_PROFILE_CHAMFER = 3,
+    MIO_PROFILE_SHELL = 4
+} mio_profile_feature_kind;
+
+/** One feature of mio_profile_solid; mio_profile_feature_init. 96 bytes. */
+typedef struct mio_profile_feature {
+    int32_t kind;             /**< a mio_profile_feature_kind */
+    int32_t symmetric;        /**< extrude: half each way */
+    double distance;          /**< extrude length (0: to the scan's extent); chamfer; shell wall */
+    double angle_deg;         /**< revolve (init 360) */
+    double radius;            /**< fillet */
+    double axis_origin[3];    /**< revolve axis */
+    double axis_direction[3]; /**< (init 0, 0, 1) */
+    int64_t reserved[2];
+} mio_profile_feature;
+
+/** What mio_profile_solid built. 64 bytes. */
+typedef struct mio_profile_solid_report {
+    double volume;
+    double area;
+    int64_t num_faces;
+    int32_t valid; /**< the provider's own check of the solid */
+    int32_t num_warnings;
+    int64_t reserved[4];
+} mio_profile_solid_report;
+
+MIO_API void mio_profile_feature_init(mio_profile_feature* feature);
+/**
+ * Features from their text form (`extrude:D[:symmetric]`,
+ * `revolve:OX,OY,OZ:DX,DY,DZ[:ANGLE]`, `fillet:R`, `chamfer:D`, `shell:W`,
+ * `;`-separated) into `out`, at most `capacity` of them (`out` may be NULL
+ * with capacity 0 to count). Returns how many the text holds, or -1 on a
+ * malformed text (see mio_last_error()).
+ */
+MIO_API int64_t mio_profile_features_from_text(const char* text, mio_profile_feature* out,
+                                               int64_t capacity);
+/**
+ * Build a solid from a fit_curves sketch by features applied in order: an
+ * extrusion or a revolution first, then fillets, chamfers or a shell (roadmap
+ * 7.7.4; doc/profile_solid.md), through the named profile-solid provider
+ * (NULL or "": the first; "occt" with OpenCASCADE). `scan` (may be NULL) sets
+ * an extrusion of 0 to its extent; `step_path` (NULL or "": none) receives
+ * the solid as STEP. Returns its tessellation, or NULL (MIO_ERR_UNSUPPORTED
+ * without a provider). `report` may be NULL.
+ */
+MIO_API mio_mesh* mio_profile_solid(const mio_mesh* sketch, const mio_profile_feature* features,
+                                    int64_t num_features, const char* step_path,
+                                    const char* provider, double deflection, const mio_mesh* scan,
+                                    mio_profile_solid_report* report);
+/** The warnings of this thread's last mio_profile_solid call; string rule 5. */
+MIO_API int64_t mio_profile_solid_warnings(char* buf, int64_t buflen);
+/** Whether a profile-solid provider is registered (1) or not (0). */
+MIO_API int32_t mio_has_profile_solid_provider(void);
+
 /** A relation between two fitted primitives (roadmap 7.7.3). */
 typedef enum mio_primitive_relation {
     MIO_RELATION_COAXIAL = 0,

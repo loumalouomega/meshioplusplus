@@ -364,6 +364,10 @@ The freeform modes are `mio_fit_cad3` (v17.12.0) with `mio_fit_cad_opts_ex2` (`f
 
 The C report carries `num_bspline`, `num_fillet`, `num_helical`, `num_variable_fillet`, `num_blend`, `num_rounded_thread` and `num_split_patches`, and `mio_fit_cad_ex`'s extended report (`mio_fit_cad_report_ex`, v17.2.0, as `mio_fit_cad_report` has no room left) `num_vertex_blend`, `num_chamfer`, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`; Fortran's, Julia's and R's results carry all of them (`freeform`, `freeform_degree`, `freeform_max_control`, `freeform_split`, `fillets`, `threads`, `merge_faces` and `backend` are their options; a zero-filled C struct keeps `freeform_split`, `fillets`, `threads` and `merge_faces` off, `mio_fit_cad_opts_init` turns them on, and `backend` 0 is auto), and `report_ex.backend` (Julia's and R's `backend`, Fortran's `used_native`) names the engine. The MCP server's `fit_cad` tool takes the same options plus `segment_method`, `segment_tolerance`, `curvature_tolerance`, `min_patch_cells`, `fit_tolerance` and `cad_json_output_path`, and reports `backend` and `occt_available`. In the browser, `fitCad(mesh, {stepPath, mergeFaces, backend, ...})` runs the native backend in the lean artifact, and the [full WASM artifact](/wasm#lean-and-full-builds) links OpenCASCADE, with the same options and report in camelCase and the solid's B-rep as `info`; `backend: 'occt'` throws by name in the lean one.
 
+## From sketches instead
+
+When a scan is a turned or prismatic part, fitting its faces one by one is the long way round: [`profile_solid`](/profile_solid) builds the solid from a sketch that [`fit_curves`](/fit_curves) fitted to a section, by extrusion or revolution and then fillets, chamfers or a shell, through the same OpenCASCADE kernel, and [`deviation`](/deviation) compares it to the scan.
+
 ## Measured and parked
 
 Each of these was tried, or considered and left out, for a reason stated here, and says when it is worth measuring again.

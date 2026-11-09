@@ -98,6 +98,7 @@
 #include "meshioplusplus/operations/offset_surface.hpp"
 #include "meshioplusplus/operations/constrain_primitives.hpp"
 #include "meshioplusplus/operations/fit_cad_loop.hpp"
+#include "meshioplusplus/operations/profile_solid.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -1483,6 +1484,25 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumCapTriangles", static_cast<double>(cr.mNumCapTriangles)},
                         {"NumLoops", static_cast<double>(cr.mNumLoops)}});
         return std::move(cr.mMesh);
+    }
+    if (op == "ProfileSolid") {
+        ProfileSolidOptions o;
+        o.mFeatures = profile_features_from_text(pipe_text(rStep, "Features", ""));
+        o.mProvider = pipe_text(rStep, "Provider", "");
+        o.mDeflection = pipe_number(rStep, "Deflection", 0.0);
+        const std::string scan_path = pipe_text(rStep, "Scan", "");
+        Mesh scan;
+        if (!scan_path.empty())
+            scan = pipe_read_extra(scan_path);
+        ProfileSolidResult r = profile_solid(mesh, pipe_text(rStep, "Step", ""), o,
+                                             scan_path.empty() ? nullptr : &scan);
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back("profile_solid: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"Volume", r.mVolume},
+                        {"NumFaces", static_cast<double>(r.mNumFaces)},
+                        {"Valid", r.mValid ? 1.0 : 0.0}});
+        return std::move(r.mMesh);
     }
     if (op == "ConstrainPrimitives") {
         ConstrainPrimitivesOptions o;

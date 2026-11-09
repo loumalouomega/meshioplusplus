@@ -157,6 +157,7 @@
 #include "meshioplusplus/operations/offset_surface.hpp"
 #include "meshioplusplus/operations/constrain_primitives.hpp"
 #include "meshioplusplus/operations/fit_cad_loop.hpp"
+#include "meshioplusplus/operations/profile_solid.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -5635,6 +5636,52 @@ meshioplusplus::PrimitiveRelation cli_relation(const std::string& rText) {
             meshioplusplus::primitive_relation_from_name(rText.substr(j + 1))};
 }
 
+// profile-solid: a sketch extruded or revolved, then filleted, chamfered or
+// shelled, through a CAD provider (roadmap 7.7.4).
+int cmd_profile_solid(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"features", {}, true},
+                                          {"step", {}, true},
+                                          {"scan", {}, true},
+                                          {"provider", {}, true},
+                                          {"deflection", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("profile-solid requires SKETCH and OUTFILE");
+    if (!has_opt(p, "features"))
+        throw std::runtime_error("profile-solid requires --features, e.g. 'extrude:10;fillet:0.5'");
+    meshioplusplus::ProfileSolidOptions o;
+    o.mFeatures = meshioplusplus::profile_features_from_text(opt_value(p, "features"));
+    o.mProvider = opt_value(p, "provider");
+    cli_opt_double(p, "deflection", o.mDeflection);
+    const std::string fmt = opt_value(p, "input-format");
+    const Mesh sketch = read_mesh_cli(p.positionals[0], fmt);
+    Mesh scan;
+    const bool has_scan = has_opt(p, "scan");
+    if (has_scan)
+        scan = read_mesh_cli(opt_value(p, "scan"), fmt);
+    meshioplusplus::ProfileSolidResult r =
+        meshioplusplus::profile_solid(sketch, opt_value(p, "step"), o, has_scan ? &scan : nullptr);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("volume", r.mVolume);
+        json.Field("area", r.mArea);
+        json.Field("num_faces", r.mNumFaces);
+        json.Field("valid", r.mValid);
+        json.Field("provider", r.mProvider);
+        cli_names_json(json, "warnings", r.mWarnings);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mNumFaces << " face(s), volume " << r.mVolume
+              << (r.mValid ? "" : " (not a valid solid)") << " [" << r.mProvider << "]\n";
+    for (const std::string& w : r.mWarnings)
+        std::cout << "warning: " << w << "\n";
+    return 0;
+}
+
 // constrain-primitives: fitted primitives under control (roadmap 7.7.3).
 int cmd_constrain_primitives(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
@@ -10212,6 +10259,9 @@ const CliVerb kCliVerbs[] = {
      "  thicken                 Turn a surface into a closed shell of a thickness\n", &cmd_thicken},
     {"hollow", nullptr, "  hollow                  Give a closed surface an inner wall\n",
      &cmd_hollow},
+    {"profile-solid", nullptr,
+     "  profile-solid           Extrude or revolve a sketch into a solid (a CAD provider)\n",
+     &cmd_profile_solid},
     {"constrain-primitives", nullptr,
      "  constrain-primitives    Fit related primitives together under control\n",
      &cmd_constrain_primitives},

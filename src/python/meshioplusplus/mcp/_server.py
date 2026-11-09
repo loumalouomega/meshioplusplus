@@ -596,6 +596,31 @@ def _register_operations(server: FastMCP) -> None:
         num_loops, num_open_chains and warnings."""
 
     @server.tool()
+    @_forward(_tools.tool_profile_solid)
+    def profile_solid(
+        input_path: str,
+        output_path: str,
+        features: Union[str, List[dict]],
+        step_path: Optional[str] = None,
+        scan_path: Optional[str] = None,
+        provider: str = "",
+        deflection: float = 0.0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Build a solid from a fit_curves sketch (input_path) by features
+        applied in order, through a CAD provider (OpenCASCADE): first an
+        extrusion ({"kind": "extrude", "distance": d}, 0 runs to scan_path's
+        extent, "symmetric" half each way) or a revolution ({"kind":
+        "revolve", "axis_origin", "axis_direction", "angle"}), then fillets
+        ({"kind": "fillet", "radius"}), chamfers ({"kind": "chamfer",
+        "distance"}) or a shell ({"kind": "shell", "distance": wall}) on
+        every edge; features may also be text such as
+        "extrude:10;fillet:0.5". Writes the tessellation (output_path) and
+        STEP (step_path). Reports volume, area, num_faces, valid, provider,
+        providers and warnings."""
+
+    @server.tool()
     @_forward(_tools.tool_constrain_primitives)
     def constrain_primitives(
         input_path: str,

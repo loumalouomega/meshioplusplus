@@ -36493,6 +36493,134 @@ MESHIOPLUSPLUS_API Mesh solid_torus(double MajorRadius = 1.0, double MinorRadius
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/primitives.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/profile_solid.hpp =====
+/**
+ * @file operations/profile_solid.hpp
+ * @brief Profile solids through a CAD provider (roadmap 7.7.4): a closed
+ * `fit_curves` sketch extruded along its plane's normal or revolved about an
+ * axis, then filleted, chamfered or shelled, written as STEP and tessellated.
+ *
+ * The design (`doc/profile_solid.md`): the smallest scripted API, a list of
+ * features applied in order to one sketch, and no more. The sketch is a line
+ * mesh with `fit_curves`' `sketch:*` field data; its pieces (lines, arcs,
+ * circles) are chained into closed loops in world coordinates, the outer loop
+ * the one of largest area, the others holes. The first feature makes the
+ * solid (`Extrude` or `Revolve`); the rest modify it (`Fillet` and `Chamfer`
+ * round or bevel every edge, `Shell` hollows it to a wall, removing the face
+ * the extrusion ended at). The core chains the loops, and a named provider
+ * (`add_profile_solid_provider`; OpenCASCADE's is `"occt"`) builds the solid,
+ * writes it and tessellates it. Without a provider the call throws
+ * `Unsupported`, naming the add-on. The interactive parametric modeller
+ * (sketch constraints, a feature history with rebuilds) is out (roadmap
+ * non-goals).
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+enum class ProfileFeatureKind : std::int32_t {
+    Extrude = 0,  ///< along the sketch's normal by `mDistance` (0: to the scan's extent)
+    Revolve = 1,  ///< about `mAxisOrigin`, `mAxisDirection` by `mAngleDeg`
+    Fillet = 2,   ///< every edge rounded by `mRadius`
+    Chamfer = 3,  ///< every edge bevelled by `mDistance`
+    Shell = 4     ///< hollowed to the wall `mDistance`, the end face removed
+};
+
+/// `"extrude"`, `"revolve"`, `"fillet"`, `"chamfer"` or `"shell"`.
+MESHIOPLUSPLUS_API ProfileFeatureKind profile_feature_from_name(const std::string& rName);
+
+struct ProfileFeature {
+    ProfileFeatureKind mKind = ProfileFeatureKind::Extrude;
+    double mDistance = 0.0;   ///< extrude length (negative: against the normal); chamfer; wall
+    bool mSymmetric = false;  ///< extrude half each way
+    double mAngleDeg = 360.0;
+    std::array<double, 3> mAxisOrigin{0.0, 0.0, 0.0};
+    std::array<double, 3> mAxisDirection{0.0, 0.0, 1.0};
+    double mRadius = 0.0;
+};
+
+/**
+ * @brief Features from their text form, `;`-separated, as the CLIs and the
+ * pipeline take them: `extrude:D` (`extrude:D:symmetric`), `revolve:OX,OY,OZ:
+ * DX,DY,DZ[:ANGLE]`, `fillet:R`, `chamfer:D`, `shell:W`.
+ * @throws std::invalid_argument naming the item it cannot read.
+ */
+MESHIOPLUSPLUS_API std::vector<ProfileFeature> profile_features_from_text(const std::string& rText);
+
+struct ProfileSolidOptions {
+    std::vector<ProfileFeature> mFeatures;
+    /// The provider by name; empty takes the first registered.
+    std::string mProvider;
+    /// The tessellation's chordal deflection; at most 0 takes `1e-3` of the
+    /// sketch's (or the scan's) diagonal.
+    double mDeflection = 0.0;
+};
+
+/// One piece of a chained loop, in world coordinates.
+struct ProfilePiece {
+    std::int32_t mType = 1;  ///< 1 line, 2 arc (from start to end about the normal), 3 circle
+    std::array<double, 3> mStart{}, mEnd{}, mCentre{};
+    double mRadius = 0.0;
+    double mSweepDeg = 0.0;  ///< an arc's sweep, counter-clockwise about the normal positive
+};
+
+/// What a provider is asked to build.
+struct ProfileSolidRequest {
+    /// The closed loops, the outer one first, each piece's end the next's start.
+    std::vector<std::vector<ProfilePiece>> mLoops;
+    std::array<double, 3> mOrigin{}, mNormal{};  ///< the sketch plane
+    std::vector<ProfileFeature> mFeatures;       ///< extrusions to the extent resolved
+    std::string mStepPath;                       ///< empty: no file
+    double mDeflection = 0.0;
+};
+
+struct ProfileSolidResult {
+    Mesh mMesh;  ///< the solid's tessellation
+    double mVolume = 0.0;
+    double mArea = 0.0;
+    std::int64_t mNumFaces = 0;
+    bool mValid = false;  ///< the provider's own check of the solid
+    std::string mProvider;
+    std::vector<std::string> mWarnings;
+};
+
+struct ProfileSolidProvider {
+    std::string mName;
+    std::function<ProfileSolidResult(const ProfileSolidRequest&)> mBuild;
+};
+
+/// Register a provider under its name (a second with the name replaces it).
+MESHIOPLUSPLUS_API void add_profile_solid_provider(ProfileSolidProvider Provider);
+MESHIOPLUSPLUS_API void remove_profile_solid_provider(const std::string& rName) noexcept;
+/// The provider by name, or the first when empty; null when none.
+MESHIOPLUSPLUS_API std::shared_ptr<const ProfileSolidProvider> profile_solid_provider(
+    const std::string& rName = {}) noexcept;
+MESHIOPLUSPLUS_API std::vector<std::string> profile_solid_provider_names();
+
+/**
+ * @brief Build a profile solid from a sketch (see the file comment); @p pScan,
+ * when given, sets an `Extrude` of distance 0 to the scan's extent along the
+ * sketch's normal.
+ * @throws Unsupported without a provider; std::invalid_argument on a mesh
+ * without a sketch, loops that do not close, no feature or a first feature
+ * that is not `Extrude` or `Revolve`, or a value out of range.
+ */
+MESHIOPLUSPLUS_API ProfileSolidResult profile_solid(const Mesh& rSketch,
+                                                    const std::string& rStepPath,
+                                                    const ProfileSolidOptions& rOptions,
+                                                    const Mesh* pScan = nullptr);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/profile_solid.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/project_to_cad.hpp =====
 /**
  * @file project_to_cad.hpp
@@ -42946,6 +43074,12 @@ BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs);
 Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double Deflection,
                      double Angular);
 
+/// Write @p rShape as AP214 STEP (millimetres) under the product name
+/// @p pProduct, with a header free of time stamps; throws WriteError naming
+/// @p pPrefix.
+void occt_write_step(const TopoDS_Shape& rShape, const std::string& rPath, const char* pProduct,
+                     const char* pPrefix);
+
 /// The printers a messenger holds, named through its accessor: OpenCASCADE 8.0
 /// deprecates the typedef `Message_SequenceOfPrinters`, and no header includes it.
 using OcctPrinters = std::remove_cvref_t<decltype(std::declval<Message_Messenger&>().Printers())>;
@@ -43029,7 +43163,11 @@ namespace meshioplusplus::providers {
 /// The OpenCASCADE CAD kernel, ready to register.
 CadKernelProvider make_occt_provider();
 
-/// Registers it as the CAD kernel (the add-on's module init calls this).
+/// Its profile solids (roadmap 7.7.4; providers/occt/profile_solid_occt.cpp).
+ProfileSolidProvider make_occt_profile_provider();
+
+/// Registers it as the CAD kernel and the "occt" profile-solid provider (the
+/// add-on's module init calls this).
 void register_occt();
 
 }  // namespace meshioplusplus::providers
@@ -61505,6 +61643,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FlipNormals", {"Region"}},
         // Cut by a plane, keep a side and cap it (roadmap 7.8.3).
         {"Clip", {"Origin", "Normal", "Keep", "Cap"}},
+        // A sketch extruded or revolved into a solid through a CAD provider (roadmap 7.7.4).
+        {"ProfileSolid", {"Features", "Step", "Scan", "Provider", "Deflection"}},
         // Fitted primitives together under control (roadmap 7.7.3).
         {"ConstrainPrimitives",
          {"FaceTolerance", "AngleTolerance", "DistanceTolerance", "MinFraction", "Force",
@@ -266606,6 +266746,25 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumLoops", static_cast<double>(cr.mNumLoops)}});
         return std::move(cr.mMesh);
     }
+    if (op == "ProfileSolid") {
+        ProfileSolidOptions o;
+        o.mFeatures = profile_features_from_text(pipe_text(rStep, "Features", ""));
+        o.mProvider = pipe_text(rStep, "Provider", "");
+        o.mDeflection = pipe_number(rStep, "Deflection", 0.0);
+        const std::string scan_path = pipe_text(rStep, "Scan", "");
+        Mesh scan;
+        if (!scan_path.empty())
+            scan = pipe_read_extra(scan_path);
+        ProfileSolidResult r = profile_solid(mesh, pipe_text(rStep, "Step", ""), o,
+                                             scan_path.empty() ? nullptr : &scan);
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back("profile_solid: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"Volume", r.mVolume},
+                        {"NumFaces", static_cast<double>(r.mNumFaces)},
+                        {"Valid", r.mValid ? 1.0 : 0.0}});
+        return std::move(r.mMesh);
+    }
     if (op == "ConstrainPrimitives") {
         ConstrainPrimitivesOptions o;
         o.mFaceTolerance = pipe_number(rStep, "FaceTolerance", 0.0);
@@ -272926,6 +273085,289 @@ Mesh plate_with_hole(double Radius, double Size, std::int64_t Nt, std::int64_t N
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/primitives.cpp =====
+// ===== begin src/cpp/src/operations/profile_solid.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+[[noreturn]] void ps_fail(const std::string& rWhy) {
+    throw std::invalid_argument("meshio++: profile_solid: " + rWhy);
+}
+
+double ps_diagonal(const Mesh& rMesh) {
+    const NDArray& p = rMesh.Points();
+    std::vector<Vec3> pts(rMesh.NumPoints());
+    for (std::size_t i = 0; i < pts.size(); ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            pts[i][k] = detail::read_double(p, 3 * i + k);
+    return pts.empty()
+               ? 0.0
+               : detail::BoundingBoxUtils::Diagonal(detail::BoundingBoxUtils::FromPoints(pts));
+}
+
+// The area a loop encloses, in its plane (signed by the normal).
+double ps_loop_area(const std::vector<ProfilePiece>& rLoop, const Vec3& rNormal) {
+    Vec3 sum{0.0, 0.0, 0.0};
+    const auto add = [&](const Vec3& rA, const Vec3& rB) {
+        sum = detail::vec3_add(sum, detail::vec3_cross(rA, rB));
+    };
+    for (const ProfilePiece& r_p : rLoop) {
+        if (r_p.mType == 3)
+            return std::acos(-1.0) * r_p.mRadius * r_p.mRadius;
+        if (r_p.mType == 1) {
+            add(r_p.mStart, r_p.mEnd);
+            continue;
+        }
+        // An arc, by 32 chords.
+        const Vec3 u = detail::vec3_sub(r_p.mStart, r_p.mCentre);
+        const Vec3 w = detail::vec3_cross(rNormal, u);
+        Vec3 prev = r_p.mStart;
+        for (int k = 1; k <= 32; ++k) {
+            const double t = r_p.mSweepDeg * std::acos(-1.0) / 180.0 * k / 32.0;
+            const Vec3 q =
+                detail::vec3_add(r_p.mCentre, detail::vec3_add(detail::vec3_scale(u, std::cos(t)),
+                                                               detail::vec3_scale(w, std::sin(t))));
+            add(prev, q);
+            prev = q;
+        }
+    }
+    return 0.5 * detail::vec3_dot(sum, rNormal);
+}
+
+}  // namespace
+
+ProfileFeatureKind profile_feature_from_name(const std::string& rName) {
+    if (rName == "extrude")
+        return ProfileFeatureKind::Extrude;
+    if (rName == "revolve")
+        return ProfileFeatureKind::Revolve;
+    if (rName == "fillet")
+        return ProfileFeatureKind::Fillet;
+    if (rName == "chamfer")
+        return ProfileFeatureKind::Chamfer;
+    if (rName == "shell")
+        return ProfileFeatureKind::Shell;
+    ps_fail("a feature is extrude, revolve, fillet, chamfer or shell, not '" + rName + "'");
+}
+
+std::vector<ProfileFeature> profile_features_from_text(const std::string& rText) {
+    const auto split = [](const std::string& rS, char Sep) {
+        std::vector<std::string> out;
+        std::size_t at = 0;
+        while (at <= rS.size()) {
+            const std::size_t end = std::min(rS.find(Sep, at), rS.size());
+            out.push_back(rS.substr(at, end - at));
+            at = end + 1;
+        }
+        return out;
+    };
+    std::vector<ProfileFeature> out;
+    for (const std::string& r_item : split(rText, ';')) {
+        if (r_item.empty())
+            continue;
+        const std::vector<std::string> parts = split(r_item, ':');
+        const auto number = [&](const std::string& rS) {
+            const char* end = nullptr;
+            const double v = detail::parse_double(rS.c_str(), end);
+            if (rS.empty() || end != rS.c_str() + rS.size())
+                ps_fail("cannot read '" + rS + "' in the feature '" + r_item + "'");
+            return v;
+        };
+        const auto vec3 = [&](const std::string& rS) {
+            const std::vector<std::string> c = split(rS, ',');
+            if (c.size() != 3)
+                ps_fail("'" + rS + "' in the feature '" + r_item + "' is not x,y,z");
+            return std::array<double, 3>{number(c[0]), number(c[1]), number(c[2])};
+        };
+        ProfileFeature f;
+        f.mKind = profile_feature_from_name(parts[0]);
+        switch (f.mKind) {
+            case ProfileFeatureKind::Extrude:
+                if (parts.size() < 2 || parts.size() > 3 ||
+                    (parts.size() == 3 && parts[2] != "symmetric"))
+                    ps_fail("an extrusion is extrude:D or extrude:D:symmetric, not '" + r_item +
+                            "'");
+                f.mDistance = number(parts[1]);
+                f.mSymmetric = parts.size() == 3;
+                break;
+            case ProfileFeatureKind::Revolve:
+                if (parts.size() < 3 || parts.size() > 4)
+                    ps_fail("a revolution is revolve:OX,OY,OZ:DX,DY,DZ[:ANGLE], not '" + r_item +
+                            "'");
+                f.mAxisOrigin = vec3(parts[1]);
+                f.mAxisDirection = vec3(parts[2]);
+                if (parts.size() == 4)
+                    f.mAngleDeg = number(parts[3]);
+                break;
+            case ProfileFeatureKind::Fillet:
+                if (parts.size() != 2)
+                    ps_fail("a fillet is fillet:R, not '" + r_item + "'");
+                f.mRadius = number(parts[1]);
+                break;
+            case ProfileFeatureKind::Chamfer:
+            case ProfileFeatureKind::Shell:
+                if (parts.size() != 2)
+                    ps_fail("'" + r_item + "' takes one distance");
+                f.mDistance = number(parts[1]);
+                break;
+        }
+        out.push_back(f);
+    }
+    return out;
+}
+
+ProfileSolidResult profile_solid(const Mesh& rSketch, const std::string& rStepPath,
+                                 const ProfileSolidOptions& rOptions, const Mesh* pScan) {
+    if (!detail::has_sketch(rSketch))
+        ps_fail("the mesh carries no sketch (run fit_curves on a chained section first)");
+    const std::vector<ProfileFeature>& feats = rOptions.mFeatures;
+    if (feats.empty() || (feats[0].mKind != ProfileFeatureKind::Extrude &&
+                          feats[0].mKind != ProfileFeatureKind::Revolve))
+        ps_fail("the first feature is extrude or revolve");
+    for (std::size_t k = 0; k < feats.size(); ++k) {
+        const ProfileFeature& f = feats[k];
+        if (k > 0 &&
+            (f.mKind == ProfileFeatureKind::Extrude || f.mKind == ProfileFeatureKind::Revolve))
+            ps_fail("only the first feature makes the solid");
+        if (!std::isfinite(f.mDistance) || !std::isfinite(f.mRadius) || !std::isfinite(f.mAngleDeg))
+            ps_fail("a feature's value is not finite");
+        if (f.mKind == ProfileFeatureKind::Revolve &&
+            (!(f.mAngleDeg > 0.0) || f.mAngleDeg > 360.0 ||
+             detail::vec3_norm(
+                 Vec3{f.mAxisDirection[0], f.mAxisDirection[1], f.mAxisDirection[2]}) == 0.0))
+            ps_fail("a revolve needs an angle in (0, 360] and an axis direction");
+        if (f.mKind == ProfileFeatureKind::Fillet && !(f.mRadius > 0.0))
+            ps_fail("a fillet needs a positive radius");
+        if ((f.mKind == ProfileFeatureKind::Chamfer || f.mKind == ProfileFeatureKind::Shell) &&
+            !(f.mDistance > 0.0))
+            ps_fail("a chamfer or a shell needs a positive distance");
+    }
+
+    // The pieces, chained into closed loops.
+    const std::vector<detail::SketchWorldPiece> pieces =
+        detail::sketch_world_pieces(rSketch, "meshio++: profile_solid: ");
+    if (pieces.empty())
+        ps_fail("the sketch has no piece");
+    ProfileSolidRequest req;
+    req.mNormal = pieces[0].mNormal;
+    req.mOrigin = pieces[0].mOrigin;
+    const double diag = ps_diagonal(rSketch);
+    const double tol = 1e-6 * std::max(diag, 1.0);
+    std::vector<char> used(pieces.size(), 0);
+    const auto as_piece = [](const detail::SketchWorldPiece& rW, bool Reverse) {
+        ProfilePiece p;
+        p.mType = static_cast<std::int32_t>(rW.mType);
+        p.mStart = Reverse ? rW.mEnd : rW.mStart;
+        p.mEnd = Reverse ? rW.mStart : rW.mEnd;
+        p.mCentre = rW.mCentre;
+        p.mRadius = rW.mRadius;
+        p.mSweepDeg = Reverse ? -rW.mSweepDeg : rW.mSweepDeg;
+        return p;
+    };
+    const Vec3 n{req.mNormal[0], req.mNormal[1], req.mNormal[2]};
+    for (std::size_t s = 0; s < pieces.size(); ++s) {
+        if (used[s])
+            continue;
+        used[s] = 1;
+        std::vector<ProfilePiece> loop{as_piece(pieces[s], false)};
+        if (pieces[s].mType == 3) {
+            req.mLoops.push_back(std::move(loop));
+            continue;
+        }
+        const auto close = [&](const std::array<double, 3>& rA, const std::array<double, 3>& rB) {
+            return detail::vec3_norm(detail::vec3_sub(Vec3{rA[0], rA[1], rA[2]},
+                                                      Vec3{rB[0], rB[1], rB[2]})) <= tol;
+        };
+        while (!close(loop.back().mEnd, loop.front().mStart)) {
+            bool found = false;
+            for (std::size_t q = 0; q < pieces.size() && !found; ++q) {
+                if (used[q] || pieces[q].mType == 3)
+                    continue;
+                if (close(pieces[q].mStart, loop.back().mEnd)) {
+                    loop.push_back(as_piece(pieces[q], false));
+                    used[q] = found = true;
+                } else if (close(pieces[q].mEnd, loop.back().mEnd)) {
+                    loop.push_back(as_piece(pieces[q], true));
+                    used[q] = found = true;
+                }
+            }
+            if (!found)
+                ps_fail("the sketch's pieces do not close into loops");
+        }
+        req.mLoops.push_back(std::move(loop));
+    }
+    // The outer loop (the largest) first, wound counter-clockwise about the
+    // normal; the holes clockwise.
+    std::vector<double> area(req.mLoops.size());
+    for (std::size_t l = 0; l < req.mLoops.size(); ++l)
+        area[l] = ps_loop_area(req.mLoops[l], n);
+    std::size_t outer = 0;
+    for (std::size_t l = 1; l < area.size(); ++l)
+        if (std::fabs(area[l]) > std::fabs(area[outer]))
+            outer = l;
+    std::swap(req.mLoops[0], req.mLoops[outer]);
+    std::swap(area[0], area[outer]);
+    for (std::size_t l = 0; l < req.mLoops.size(); ++l) {
+        const bool want_positive = l == 0;
+        if ((area[l] > 0.0) != want_positive && req.mLoops[l][0].mType != 3) {
+            std::vector<ProfilePiece>& r_loop = req.mLoops[l];
+            std::reverse(r_loop.begin(), r_loop.end());
+            for (ProfilePiece& r_p : r_loop) {
+                std::swap(r_p.mStart, r_p.mEnd);
+                r_p.mSweepDeg = -r_p.mSweepDeg;
+            }
+        }
+    }
+
+    // An extrusion of 0 runs to the scan's extent along the normal.
+    req.mFeatures = feats;
+    ProfileFeature& first = req.mFeatures[0];
+    if (first.mKind == ProfileFeatureKind::Extrude && first.mDistance == 0.0) {
+        if (!pScan)
+            ps_fail("an extrusion of 0 runs to the scan's extent: pass the scan");
+        const NDArray& p = pScan->Points();
+        double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+        for (std::size_t i = 0; i < pScan->NumPoints(); ++i) {
+            const Vec3 q{detail::read_double(p, 3 * i) - req.mOrigin[0],
+                         detail::read_double(p, 3 * i + 1) - req.mOrigin[1],
+                         detail::read_double(p, 3 * i + 2) - req.mOrigin[2]};
+            const double h = detail::vec3_dot(q, n);
+            lo = std::min(lo, h);
+            hi = std::max(hi, h);
+        }
+        first.mDistance = std::fabs(hi) >= std::fabs(lo) ? hi : lo;
+        if (!(std::fabs(first.mDistance) > tol))
+            ps_fail("the scan does not extend off the sketch's plane");
+    }
+    req.mStepPath = rStepPath;
+    req.mDeflection = rOptions.mDeflection > 0.0 ? rOptions.mDeflection
+                                                 : 1e-3 * (pScan ? ps_diagonal(*pScan) : diag);
+    const std::shared_ptr<const ProfileSolidProvider> provider =
+        profile_solid_provider(rOptions.mProvider);
+    if (!provider || !provider->mBuild)
+        throw Unsupported(
+            "meshio++: profile_solid: no profile-solid provider" +
+            (rOptions.mProvider.empty() ? std::string() : " named '" + rOptions.mProvider + "'") +
+            " is registered; it needs OpenCASCADE (a build with MESHIOPLUSPLUS_WITH_OCCT, or the "
+            "meshioplusplus-occt package)");
+    ProfileSolidResult result = provider->mBuild(req);
+    result.mProvider = provider->mName;
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/profile_solid.cpp =====
 // ===== begin src/cpp/src/operations/project_to_cad.cpp =====
 #include <algorithm>
 #include <array>
@@ -298597,6 +299039,8 @@ namespace providers {
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
 /// The OpenCASCADE provider this build compiled in (providers/occt/).
 CadKernelProvider make_occt_provider();
+/// Its profile solids (roadmap 7.7.4).
+ProfileSolidProvider make_occt_profile_provider();
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_NETGEN
 /// The Netgen provider this build compiled in (providers/netgen/).
@@ -298644,6 +299088,10 @@ struct ProvidersState {
     /// The quad remeshers (roadmap 7.7.3), by name, and every one ever added.
     std::map<std::string, std::shared_ptr<const QuadRemesherProvider>> mQuad;
     std::vector<std::shared_ptr<const QuadRemesherProvider>> mQuadRetained;
+    /// The profile-solid providers (roadmap 7.7.4), by name, and every one ever added.
+    std::map<std::string, std::shared_ptr<const ProfileSolidProvider>> mProfile;
+    std::vector<std::shared_ptr<const ProfileSolidProvider>> mProfileRetained;
+    bool mProfileBuiltinDone = false;
     bool mExternalDone = false;
 };
 
@@ -298756,6 +299204,43 @@ std::shared_ptr<const QuadRemesherProvider> quad_remesher(const std::string& rNa
     const std::lock_guard<std::mutex> lock(r_state.mMutex);
     const auto it = r_state.mQuad.find(rName);
     return it == r_state.mQuad.end() ? nullptr : it->second;
+}
+
+void add_profile_solid_provider(ProfileSolidProvider Provider) {
+    ProvidersState& r_state = providers_state();
+    auto p_new = std::make_shared<const ProfileSolidProvider>(std::move(Provider));
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    if (t_loading_plugin && r_state.mProfile.count(p_new->mName))
+        return;
+    r_state.mProfileRetained.push_back(p_new);
+    r_state.mProfile[p_new->mName] = std::move(p_new);
+}
+
+void remove_profile_solid_provider(const std::string& rName) noexcept {
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    r_state.mProfile.erase(rName);
+}
+
+std::shared_ptr<const ProfileSolidProvider> profile_solid_provider(
+    const std::string& rName) noexcept {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    if (rName.empty())
+        return r_state.mProfile.empty() ? nullptr : r_state.mProfile.begin()->second;
+    const auto it = r_state.mProfile.find(rName);
+    return it == r_state.mProfile.end() ? nullptr : it->second;
+}
+
+std::vector<std::string> profile_solid_provider_names() {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    std::vector<std::string> names;
+    for (const auto& r_entry : r_state.mProfile)
+        names.push_back(r_entry.first);
+    return names;
 }
 
 std::vector<std::string> quad_remesher_names() {
@@ -298920,6 +299405,18 @@ static void register_compiled_in_providers() noexcept {
     (void)install;
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
     install(r_state.mCad, [] { return providers::make_occt_provider(); });
+    if (!r_state.mProfileBuiltinDone) {
+        r_state.mProfileBuiltinDone = true;
+        try {
+            auto p_new = std::make_shared<const ProfileSolidProvider>(
+                providers::make_occt_profile_provider());
+            if (!r_state.mProfile.count(p_new->mName)) {
+                r_state.mProfileRetained.push_back(p_new);
+                r_state.mProfile[p_new->mName] = std::move(p_new);
+            }
+        } catch (...) {
+        }
+    }
 #else
     r_state.mCad.mBuiltinDone = true;
 #endif
@@ -304083,35 +304580,9 @@ void fc_face_deviation(const std::vector<double>& rSkinXyz,
                                      : std::numeric_limits<double>::quiet_NaN();
 }
 
+// The solid as STEP: occt_brep's writer, under fit_cad's product name.
 void fc_write_step(const TopoDS_Shape& rShape, const std::string& rPath) {
-    const std::string base = rPath.substr(rPath.find_last_of("/\\") + 1);
-    STEPControl_Writer writer;
-    Interface_Static::SetCVal("write.step.schema", "AP214IS");
-    Interface_Static::SetCVal("write.step.unit", "MM");
-    if (writer.Transfer(rShape, STEPControl_AsIs) != IFSelect_RetDone)
-        throw WriteError(std::string(kFcPrefix) +
-                         "OpenCASCADE could not transfer the solid to STEP");
-    // The product is otherwise named "Open CASCADE STEP translator <version>
-    // <counter>", which makes the bytes depend on how many files this process
-    // wrote before.
-    const FcHandle<StepData_StepModel> model = writer.Model();
-    for (int i = 1; i <= model->NbEntities(); ++i) {
-        const FcHandle<StepBasic_Product> product =
-            FcHandle<StepBasic_Product>::DownCast(model->Value(i));
-        if (product.IsNull())
-            continue;
-        product->SetId(new TCollection_HAsciiString("meshio++ fit_cad"));
-        product->SetName(new TCollection_HAsciiString("meshio++ fit_cad"));
-    }
-    APIHeaderSection_MakeHeader header(model);
-    header.SetName(new TCollection_HAsciiString(base.c_str()));
-    header.SetTimeStamp(new TCollection_HAsciiString("1970-01-01T00:00:00"));
-    header.SetOriginatingSystem(new TCollection_HAsciiString("meshio++"));
-    header.SetAuthorisation(new TCollection_HAsciiString(""));
-    header.SetAuthorValue(1, new TCollection_HAsciiString(""));
-    header.SetOrganizationValue(1, new TCollection_HAsciiString(""));
-    if (writer.Write(rPath.c_str()) != IFSelect_RetDone)
-        throw WriteError(std::string(kFcPrefix) + "cannot write '" + rPath + "'");
+    detail::occt_write_step(rShape, rPath, "meshio++ fit_cad", kFcPrefix);
 }
 
 gp_Pnt fc_pnt(const detail::PatchVec& rV) { return gp_Pnt(rV[0], rV[1], rV[2]); }
@@ -306811,6 +307282,11 @@ FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 #include <IFSelect_ReturnStatus.hxx>
 #include <IGESControl_Reader.hxx>
 #include <Interface_Static.hxx>
+#include <TCollection_HAsciiString.hxx>
+#include <StepData_StepModel.hxx>
+#include <StepBasic_Product.hxx>
+#include <STEPControl_Writer.hxx>
+#include <APIHeaderSection_MakeHeader.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
 #include <ShapeAnalysis_ShapeTolerance.hxx>
@@ -307659,6 +308135,40 @@ Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double D
     return mesh;
 }
 
+// The shape as AP214 STEP in millimetres, its product named @p pProduct and
+// its header free of time stamps and counters, so the bytes depend on the
+// shape alone (fit_cad's writer, shared with profile_solid).
+void occt_write_step(const TopoDS_Shape& rShape, const std::string& rPath, const char* pProduct,
+                     const char* pPrefix) {
+    const std::string base = rPath.substr(rPath.find_last_of("/\\") + 1);
+    STEPControl_Writer writer;
+    Interface_Static::SetCVal("write.step.schema", "AP214IS");
+    Interface_Static::SetCVal("write.step.unit", "MM");
+    if (writer.Transfer(rShape, STEPControl_AsIs) != IFSelect_RetDone)
+        throw WriteError(std::string(pPrefix) + "OpenCASCADE could not transfer the solid to STEP");
+    // The product is otherwise named "Open CASCADE STEP translator <version>
+    // <counter>", which makes the bytes depend on how many files this process
+    // wrote before.
+    const opencascade::handle<StepData_StepModel> model = writer.Model();
+    for (int i = 1; i <= model->NbEntities(); ++i) {
+        const opencascade::handle<StepBasic_Product> product =
+            opencascade::handle<StepBasic_Product>::DownCast(model->Value(i));
+        if (product.IsNull())
+            continue;
+        product->SetId(new TCollection_HAsciiString(pProduct));
+        product->SetName(new TCollection_HAsciiString(pProduct));
+    }
+    APIHeaderSection_MakeHeader header(model);
+    header.SetName(new TCollection_HAsciiString(base.c_str()));
+    header.SetTimeStamp(new TCollection_HAsciiString("1970-01-01T00:00:00"));
+    header.SetOriginatingSystem(new TCollection_HAsciiString("meshio++"));
+    header.SetAuthorisation(new TCollection_HAsciiString(""));
+    header.SetAuthorValue(1, new TCollection_HAsciiString(""));
+    header.SetOrganizationValue(1, new TCollection_HAsciiString(""));
+    if (writer.Write(rPath.c_str()) != IFSelect_RetDone)
+        throw WriteError(std::string(pPrefix) + "cannot write '" + rPath + "'");
+}
+
 }  // namespace meshioplusplus::detail
 
 #endif  // MESHIOPLUSPLUS_HAS_OCCT
@@ -307749,6 +308259,7 @@ CadKernelProvider make_occt_provider() {
 
 void register_occt() {
     register_cad_kernel(make_occt_provider());
+    add_profile_solid_provider(make_occt_profile_provider());
 }
 
 }  // namespace providers
@@ -307757,4 +308268,226 @@ void register_occt() {
 
 #endif  // MESHIOPLUSPLUS_HAS_OCCT
 // ===== end src/cpp/providers/occt/occt_provider.cpp =====
+// ===== begin src/cpp/providers/occt/profile_solid_occt.cpp =====
+#ifdef MESHIOPLUSPLUS_HAS_OCCT
+
+// System includes
+#include <cmath>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// External includes (OpenCASCADE)
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepCheck_Analyzer.hxx>
+#include <BRepFilletAPI_MakeChamfer.hxx>
+#include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepGProp.hxx>
+#include <BRepOffsetAPI_MakeThickSolid.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
+#include <BRep_Tool.hxx>
+#include <GC_MakeArcOfCircle.hxx>
+#include <GC_MakeSegment.hxx>
+#include <GProp_GProps.hxx>
+#include <Geom_Circle.hxx>
+#include <Geom_Plane.hxx>
+#include <Geom_Surface.hxx>
+#include <Standard_Failure.hxx>
+#include <TopExp.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopTools_IndexedMapOfShape.hxx>
+#include <TopTools_ListOfShape.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
+#include <TopoDS_Wire.hxx>
+#include <TopLoc_Location.hxx>
+#include <gp_Ax1.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Circ.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Pnt.hxx>
+#include <gp_Trsf.hxx>
+#include <gp_Vec.hxx>
+
+// Project includes
+
+// Project includes (private, not installed)
+#include "detail/library_lock.hpp"
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kPsoPrefix = "meshio++: profile_solid: ";
+
+gp_Pnt pso_pnt(const std::array<double, 3>& rP) {
+    return gp_Pnt(rP[0], rP[1], rP[2]);
+}
+
+// A loop as an OpenCASCADE wire.
+TopoDS_Wire pso_wire(const std::vector<ProfilePiece>& rLoop, const gp_Dir& rNormal) {
+    BRepBuilderAPI_MakeWire wire;
+    for (const ProfilePiece& r_p : rLoop) {
+        TopoDS_Edge edge;
+        if (r_p.mType == 1) {
+            edge = BRepBuilderAPI_MakeEdge(pso_pnt(r_p.mStart), pso_pnt(r_p.mEnd)).Edge();
+        } else if (r_p.mType == 3) {
+            const gp_Circ circ(gp_Ax2(pso_pnt(r_p.mCentre), rNormal), r_p.mRadius);
+            edge = BRepBuilderAPI_MakeEdge(circ).Edge();
+        } else {
+            // An arc from start to end, counter-clockwise about the normal for
+            // a positive sweep.
+            const gp_Dir axis = r_p.mSweepDeg >= 0.0 ? rNormal : rNormal.Reversed();
+            const gp_Circ circ(gp_Ax2(pso_pnt(r_p.mCentre), axis), r_p.mRadius);
+            edge =
+                BRepBuilderAPI_MakeEdge(
+                    GC_MakeArcOfCircle(circ, pso_pnt(r_p.mStart), pso_pnt(r_p.mEnd), true).Value())
+                    .Edge();
+        }
+        wire.Add(edge);
+        if (!wire.IsDone())
+            throw std::invalid_argument(std::string(kPsoPrefix) +
+                                        "OpenCASCADE could not chain a loop's edges");
+    }
+    return wire.Wire();
+}
+
+ProfileSolidResult pso_build(const ProfileSolidRequest& rReq) {
+    detail::LibraryLock lock;
+    detail::OcctQuiet quiet;
+    try {
+        const gp_Dir normal(rReq.mNormal[0], rReq.mNormal[1], rReq.mNormal[2]);
+        // The face: the outer loop with the holes.
+        const TopoDS_Wire outer = pso_wire(rReq.mLoops[0], normal);
+        BRepBuilderAPI_MakeFace make_face(outer, true);
+        for (std::size_t l = 1; l < rReq.mLoops.size(); ++l) {
+            TopoDS_Wire hole = pso_wire(rReq.mLoops[l], normal);
+            make_face.Add(TopoDS::Wire(hole.Reversed()));
+        }
+        if (!make_face.IsDone())
+            throw std::invalid_argument(std::string(kPsoPrefix) +
+                                        "OpenCASCADE could not make the profile's face");
+        const TopoDS_Face face = make_face.Face();
+
+        TopoDS_Shape shape;
+        TopoDS_Shape end_face;  // the face an extrusion ends at, for a shell
+        ProfileSolidResult result;
+        for (std::size_t k = 0; k < rReq.mFeatures.size(); ++k) {
+            const ProfileFeature& f = rReq.mFeatures[k];
+            switch (f.mKind) {
+                case ProfileFeatureKind::Extrude: {
+                    const double d = f.mDistance;
+                    if (f.mSymmetric) {
+                        gp_Trsf shift;
+                        shift.SetTranslation(gp_Vec(normal) * (-0.5 * d));
+                        const TopoDS_Shape moved = face.Moved(TopLoc_Location(shift));
+                        BRepPrimAPI_MakePrism prism(moved, gp_Vec(normal) * d);
+                        shape = prism.Shape();
+                        end_face = prism.LastShape();
+                    } else {
+                        BRepPrimAPI_MakePrism prism(face, gp_Vec(normal) * d);
+                        shape = prism.Shape();
+                        end_face = prism.LastShape();
+                    }
+                    break;
+                }
+                case ProfileFeatureKind::Revolve: {
+                    const gp_Ax1 axis(
+                        pso_pnt(f.mAxisOrigin),
+                        gp_Dir(f.mAxisDirection[0], f.mAxisDirection[1], f.mAxisDirection[2]));
+                    const double angle = f.mAngleDeg * std::acos(-1.0) / 180.0;
+                    BRepPrimAPI_MakeRevol revol(face, axis, angle);
+                    shape = revol.Shape();
+                    end_face = f.mAngleDeg < 360.0 ? revol.LastShape() : TopoDS_Shape();
+                    break;
+                }
+                case ProfileFeatureKind::Fillet: {
+                    BRepFilletAPI_MakeFillet fillet(shape);
+                    TopTools_IndexedMapOfShape edges;
+                    TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+                    for (int e = 1; e <= edges.Extent(); ++e)
+                        fillet.Add(f.mRadius, TopoDS::Edge(edges(e)));
+                    fillet.Build();
+                    if (!fillet.IsDone())
+                        throw std::invalid_argument(std::string(kPsoPrefix) +
+                                                    "OpenCASCADE could not fillet every edge "
+                                                    "by that radius");
+                    shape = fillet.Shape();
+                    end_face = TopoDS_Shape();
+                    break;
+                }
+                case ProfileFeatureKind::Chamfer: {
+                    BRepFilletAPI_MakeChamfer chamfer(shape);
+                    TopTools_IndexedMapOfShape edges;
+                    TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+                    for (int e = 1; e <= edges.Extent(); ++e)
+                        chamfer.Add(f.mDistance, TopoDS::Edge(edges(e)));
+                    chamfer.Build();
+                    if (!chamfer.IsDone())
+                        throw std::invalid_argument(std::string(kPsoPrefix) +
+                                                    "OpenCASCADE could not chamfer every edge "
+                                                    "by that distance");
+                    shape = chamfer.Shape();
+                    end_face = TopoDS_Shape();
+                    break;
+                }
+                case ProfileFeatureKind::Shell: {
+                    TopTools_ListOfShape removed;
+                    if (!end_face.IsNull())
+                        removed.Append(end_face);
+                    BRepOffsetAPI_MakeThickSolid thick;
+                    thick.MakeThickSolidByJoin(shape, removed, -f.mDistance, 1e-6);
+                    if (!thick.IsDone())
+                        throw std::invalid_argument(std::string(kPsoPrefix) +
+                                                    "OpenCASCADE could not shell the solid to "
+                                                    "that wall");
+                    shape = thick.Shape();
+                    end_face = TopoDS_Shape();
+                    break;
+                }
+            }
+        }
+        GProp_GProps volume, area;
+        BRepGProp::VolumeProperties(shape, volume);
+        BRepGProp::SurfaceProperties(shape, area);
+        result.mVolume = std::fabs(volume.Mass());
+        result.mArea = area.Mass();
+        TopTools_IndexedMapOfShape faces;
+        TopExp::MapShapes(shape, TopAbs_FACE, faces);
+        result.mNumFaces = faces.Extent();
+        result.mValid = BRepCheck_Analyzer(shape).IsValid();
+        if (!result.mValid)
+            result.mWarnings.push_back("OpenCASCADE's check rejects the solid");
+        if (!rReq.mStepPath.empty())
+            detail::occt_write_step(shape, rReq.mStepPath, "meshio++ profile_solid", kPsoPrefix);
+        const detail::OcctNurbs nurbs = detail::occt_nurbs(shape);
+        result.mMesh = detail::occt_tessellate(nurbs.mShape, nurbs.mInfo, rReq.mDeflection, 0.3);
+        return result;
+    } catch (const Standard_Failure& rErr) {
+        throw std::invalid_argument(std::string(kPsoPrefix) +
+                                    "OpenCASCADE failed: " + rErr.GetMessageString());
+    }
+}
+
+}  // namespace
+
+namespace providers {
+
+ProfileSolidProvider make_occt_profile_provider() {
+    ProfileSolidProvider provider;
+    provider.mName = "occt";
+    provider.mBuild = pso_build;
+    return provider;
+}
+
+}  // namespace providers
+
+}  // namespace meshioplusplus
+
+#endif  // MESHIOPLUSPLUS_HAS_OCCT
+// ===== end src/cpp/providers/occt/profile_solid_occt.cpp =====
 #endif  // MESHIOPLUSPLUS_IMPLEMENTATION

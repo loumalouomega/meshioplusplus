@@ -382,6 +382,13 @@ _VERBS = (
         add_args="add_islands_args",
     ),
     _Verb(
+        "profile-solid",
+        "_fit_cad_loop",
+        "profile_solid_cmd",
+        "Extrude or revolve a sketch into a solid (a CAD provider)",
+        add_args="add_profile_args",
+    ),
+    _Verb(
         "constrain-primitives",
         "_fit_cad_loop",
         "constrain_primitives_cmd",

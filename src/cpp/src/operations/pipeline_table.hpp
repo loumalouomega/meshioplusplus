@@ -105,6 +105,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"FlipNormals", {"Region"}},
         // Cut by a plane, keep a side and cap it (roadmap 7.8.3).
         {"Clip", {"Origin", "Normal", "Keep", "Cap"}},
+        // A sketch extruded or revolved into a solid through a CAD provider (roadmap 7.7.4).
+        {"ProfileSolid", {"Features", "Step", "Scan", "Provider", "Deflection"}},
         // Fitted primitives together under control (roadmap 7.7.3).
         {"ConstrainPrimitives",
          {"FaceTolerance", "AngleTolerance", "DistanceTolerance", "MinFraction", "Force",

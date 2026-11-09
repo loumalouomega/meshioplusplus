@@ -9131,3 +9131,23 @@ TEST(CApi, TheReverseEngineeringLoop) {
     mio_mesh_free(solid);
     mio_mesh_free(box);
 }
+
+TEST(CApi, ProfileSolidFeaturesAndRefusals) {
+    mio_profile_feature f[3];
+    EXPECT_EQ(mio_profile_features_from_text("extrude:2:symmetric;fillet:0.1", f, 3), 2);
+    EXPECT_EQ(f[0].kind, MIO_PROFILE_EXTRUDE);
+    EXPECT_EQ(f[0].symmetric, 1);
+    EXPECT_EQ(f[0].distance, 2.0);
+    EXPECT_EQ(f[1].kind, MIO_PROFILE_FILLET);
+    EXPECT_EQ(f[1].radius, 0.1);
+    EXPECT_EQ(mio_profile_features_from_text("revolve:0,0,0:0,0,1", nullptr, 0), 1);
+    EXPECT_EQ(mio_profile_features_from_text("loft:1", f, 3), -1);
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    mio_mesh* s = mio_icosa_sphere(&g);
+    mio_profile_solid_report r;
+    EXPECT_EQ(mio_profile_solid(s, f, 2, nullptr, nullptr, 0.0, nullptr, &r), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("sketch"), std::string::npos);
+    EXPECT_EQ(mio_has_profile_solid_provider() == 0 || mio_has_profile_solid_provider() == 1, true);
+    mio_mesh_free(s);
+}

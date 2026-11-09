@@ -1865,6 +1865,23 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumSplit"] = float(rep["num_split"])
         entry["NumCapTriangles"] = float(rep["num_cap_triangles"])
         entry["NumLoops"] = float(rep["num_loops"])
+    elif op == "ProfileSolid":
+        from ._profile_solid import profile_solid
+
+        scan_path = _text(step, "Scan", "")
+        mesh, rep = profile_solid(
+            mesh,
+            _text(step, "Features", ""),
+            _text(step, "Step", "") or None,
+            provider=_text(step, "Provider", ""),
+            deflection=_number(step, "Deflection", 0.0),
+            scan=read(scan_path) if scan_path else None,
+            return_report=True,
+        )
+        warnings.extend(f"profile_solid: {w}" for w in rep["warnings"])
+        entry["Volume"] = float(rep["volume"])
+        entry["NumFaces"] = float(rep["num_faces"])
+        entry["Valid"] = 1.0 if rep["valid"] else 0.0
     elif op == "ConstrainPrimitives":
         from ._fit_cad_loop import constrain_primitives
 

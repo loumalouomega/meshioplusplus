@@ -431,7 +431,7 @@ solid = meshioplusplus.fit_cad(fit, "part_cad.step")         # trimmed and check
 meshioplusplus.fit_cad(meshioplusplus.read("bracket.stl"), "bracket.step")  # raw skin, one face per surface
 ```
 
-**`meshioplusplus.face_support(solid, scan)`** says how much of each face of a fitted solid the scan supports (measured, partial or inferred, `repair`'s fills counting as unmeasured), **`fit_cad_iterate(scan)`** segments, fits and builds in rounds towards a target share within tolerance, re-segmenting the worst faces finer, and **`constrain_primitives(skin)`** relates fitted primitives under control (forced and forbidden relations, tolerances, a report of every relation with its residual). See [closing the CAD loop](doc/fit_cad_loop.md) and [constraining primitives](doc/constrain_primitives.md).
+**`meshioplusplus.face_support(solid, scan)`** says how much of each face of a fitted solid the scan supports (measured, partial or inferred, `repair`'s fills counting as unmeasured), **`fit_cad_iterate(scan)`** segments, fits and builds in rounds towards a target share within tolerance, re-segmenting the worst faces finer, and **`constrain_primitives(skin)`** relates fitted primitives under control (forced and forbidden relations, tolerances, a report of every relation with its residual). See [closing the CAD loop](doc/fit_cad_loop.md) and [constraining primitives](doc/constrain_primitives.md). **`profile_solid(sketch, features)`** extrudes or revolves a `fit_curves` sketch into a solid and fillets, chamfers or shells it, through OpenCASCADE, written as STEP ([profile solids](doc/profile_solid.md)).
 
 <!--pytest-codeblocks:skip-->
 

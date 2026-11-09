@@ -88,6 +88,7 @@ module meshioplusplus
     public :: mio_offset_surface, mio_thicken, mio_hollow, mio_offset_report
     public :: mio_constrain_primitives, mio_constrain_primitives_report, mio_constrain_primitives_relation
     public :: mio_face_support, mio_face_support_report, mio_fit_cad_iterate, mio_fit_cad_iterate_report
+    public :: mio_profile_solid, mio_profile_solid_report
     public :: mio_deviation_regions, mio_deviation_regions_report, mio_deviation_region_info
     public :: mio_deviation_region
     public :: mio_exaggerate, mio_exaggerate_report, mio_colorize, mio_colorize_report
@@ -1659,6 +1660,28 @@ module meshioplusplus
         integer(c_int64_t) :: num_open_chains = 0
         integer(c_int64_t) :: num_warnings = 0
         integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> Interop mirror of C `mio_profile_feature` (96 bytes; roadmap 7.7.4).
+    type, bind(c) :: mio_profile_feature_t
+        integer(c_int32_t) :: kind = 0
+        integer(c_int32_t) :: symmetric = 0
+        real(c_double) :: distance = 0
+        real(c_double) :: angle_deg = 360
+        real(c_double) :: radius = 0
+        real(c_double) :: axis_origin(3) = 0
+        real(c_double) :: axis_direction(3) = [0.0_c_double, 0.0_c_double, 1.0_c_double]
+        integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> Interop mirror of C `mio_profile_solid_report` (64 bytes).
+    type, bind(c) :: mio_profile_solid_report
+        real(c_double) :: volume = 0
+        real(c_double) :: area = 0
+        integer(c_int64_t) :: num_faces = 0
+        integer(c_int32_t) :: valid = 0
+        integer(c_int32_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_constrain_primitives_opts` (96 bytes; roadmap 7.7.3).
@@ -4462,6 +4485,28 @@ module meshioplusplus
             real(c_double), intent(in) :: origin(3), normal(3)
             integer(c_int32_t), value :: keep_below, cap
             type(mio_clip_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_profile_features_from_text(text, out, capacity) &
+                bind(c, name="mio_profile_features_from_text") result(n)
+            import :: c_char, c_int64_t, mio_profile_feature_t
+            character(kind=c_char), dimension(*), intent(in) :: text
+            type(mio_profile_feature_t), intent(inout) :: out(*)
+            integer(c_int64_t), value :: capacity
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_profile_solid(h, feats, n, step, provider, deflection, scan, report) &
+                bind(c, name="mio_profile_solid") result(out)
+            import :: c_ptr, c_char, c_int64_t, c_double, mio_profile_feature_t, &
+                      mio_profile_solid_report
+            type(c_ptr), value :: h, scan
+            type(mio_profile_feature_t), intent(in) :: feats(*)
+            integer(c_int64_t), value :: n
+            character(kind=c_char), dimension(*), intent(in) :: step, provider
+            real(c_double), value :: deflection
+            type(mio_profile_solid_report), intent(out) :: report
             type(c_ptr) :: out
         end function
 
@@ -9083,6 +9128,56 @@ contains
                                 kb, cp, rep)
         if (.not. c_associated(out%handle)) then
             call handle_failure('clip', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Build a fit_curves sketch into a solid by `features` (text, ';'-separated:
+    !> 'extrude:D[:symmetric]', 'revolve:OX,OY,OZ:DX,DY,DZ[:ANGLE]', 'fillet:R',
+    !> 'chamfer:D', 'shell:W') through a CAD provider (roadmap 7.7.4).
+    function mio_profile_solid(sketch, features, step_path, scan, provider, deflection, report, &
+                               stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: sketch
+        character(*), intent(in) :: features
+        character(*), intent(in), optional :: step_path, provider
+        type(mio_mesh), intent(in), optional :: scan
+        real(real64), intent(in), optional :: deflection
+        type(mio_profile_solid_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_profile_feature_t), allocatable :: feats(:)
+        type(mio_profile_feature_t) :: probe(1)
+        type(mio_profile_solid_report) :: rep
+        integer(c_int64_t) :: n
+        type(c_ptr) :: scan_h
+        real(c_double) :: defl
+        character(:), allocatable :: step, prov
+        if (c_sizeof(probe(1)) /= 96_c_size_t .or. c_sizeof(rep) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: profile_solid layout mismatch'
+            error stop 1
+        end if
+        n = c_mio_profile_features_from_text(c_str(features), probe, 0_c_int64_t)
+        if (n < 0) then
+            call handle_failure('profile_solid', mio_error_message(), stat, errmsg)
+            return
+        end if
+        allocate (feats(max(n, 1_c_int64_t)))
+        n = c_mio_profile_features_from_text(c_str(features), feats, n)
+        step = ''
+        if (present(step_path)) step = step_path
+        prov = ''
+        if (present(provider)) prov = provider
+        defl = 0
+        if (present(deflection)) defl = real(deflection, c_double)
+        scan_h = c_null_ptr
+        if (present(scan)) scan_h = scan%handle
+        out%handle = c_mio_profile_solid(sketch%handle, feats, n, c_str(step), c_str(prov), defl, &
+                                         scan_h, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('profile_solid', mio_error_message(), stat, errmsg)
             return
         end if
         if (present(report)) report = rep

@@ -183,6 +183,7 @@
 #include "meshioplusplus/operations/offset_surface.hpp"
 #include "meshioplusplus/operations/constrain_primitives.hpp"
 #include "meshioplusplus/operations/fit_cad_loop.hpp"
+#include "meshioplusplus/operations/profile_solid.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -3144,6 +3145,65 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("origin"), py::arg("normal"), py::arg("record_parent_ids") = false,
         py::arg("chain") = false, py::arg("min_length") = 0.0);
+
+    // Roadmap 7.7.4: a profile solid through a provider. `features` is a list
+    // of dicts: kind ("extrude", "revolve", "fillet", "chamfer", "shell"),
+    // distance, symmetric, angle, axis_origin, axis_direction, radius.
+    m.def(
+        "profile_solid",
+        [](py::object pysketch, py::list features, const std::string& step_path,
+           const std::string& provider, double deflection, py::object pyscan) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh sketch = meshioplusplus_py::py_to_mesh(pysketch, refs, true, true);
+            meshioplusplus::ProfileSolidOptions o;
+            o.mProvider = provider;
+            o.mDeflection = deflection;
+            for (const py::handle item : features) {
+                const py::dict d = py::reinterpret_borrow<py::dict>(item);
+                meshioplusplus::ProfileFeature f;
+                for (const auto& [key, value] : d) {
+                    const std::string k = py::str(key);
+                    if (k == "kind")
+                        f.mKind = meshioplusplus::profile_feature_from_name(py::str(value));
+                    else if (k == "distance")
+                        f.mDistance = value.cast<double>();
+                    else if (k == "symmetric")
+                        f.mSymmetric = value.cast<bool>();
+                    else if (k == "angle")
+                        f.mAngleDeg = value.cast<double>();
+                    else if (k == "axis_origin")
+                        f.mAxisOrigin = value.cast<std::array<double, 3>>();
+                    else if (k == "axis_direction")
+                        f.mAxisDirection = value.cast<std::array<double, 3>>();
+                    else if (k == "radius")
+                        f.mRadius = value.cast<double>();
+                    else
+                        throw py::value_error("profile_solid: a feature has no key '" + k + "'");
+                }
+                o.mFeatures.push_back(f);
+            }
+            meshioplusplus::Mesh scan;
+            const bool has_scan = !pyscan.is_none();
+            if (has_scan)
+                scan = meshioplusplus_py::py_to_mesh(pyscan, refs, true, true);
+            meshioplusplus::ProfileSolidResult r = core_nogil([&] {
+                return meshioplusplus::profile_solid(sketch, step_path, o,
+                                                     has_scan ? &scan : nullptr);
+            });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["volume"] = r.mVolume;
+            out["area"] = r.mArea;
+            out["num_faces"] = r.mNumFaces;
+            out["valid"] = r.mValid;
+            out["provider"] = r.mProvider;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("sketch"), py::arg("features"), py::arg("step_path") = "", py::arg("provider") = "",
+        py::arg("deflection") = 0.0, py::arg("scan") = py::none());
+    m.def("profile_solid_provider_names",
+          [] { return meshioplusplus::profile_solid_provider_names(); });
 
     // Roadmap 7.7.3: constrain fitted primitives under control. `force` and
     // `forbid` are lists of (patch_a, patch_b, relation name).

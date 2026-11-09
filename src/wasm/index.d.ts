@@ -3098,6 +3098,25 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * Build a `fit_curves` sketch into a solid by features in text form
+   * (`'extrude:10;fillet:0.5'`) through a CAD provider (roadmap 7.7.4); the
+   * full artifact carries OpenCASCADE, the lean one throws naming it.
+   */
+  profileSolid(
+    sketch: Mesh,
+    features: string,
+    options?: { stepPath?: string; scan?: Mesh; provider?: string; deflection?: number },
+  ): {
+    mesh: Mesh;
+    volume: number;
+    area: number;
+    numFaces: number;
+    valid: boolean;
+    provider: string;
+    warnings: string[];
+  };
+
+  /**
    * Fit related primitives of a fitted skin together under control (roadmap
    * 7.7.3); relations are `[patchA, patchB, 'coaxial' | 'parallel' |
    * 'perpendicular' | 'equal_radius']`.

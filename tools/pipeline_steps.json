@@ -319,6 +319,13 @@
       {"name": "Keep", "kind": "text", "default": "below"},
       {"name": "Cap", "kind": "flag", "default": true}
     ]},
+    {"op": "ProfileSolid", "note": "A sketch extruded or revolved into a solid through a CAD provider (roadmap 7.7.4).", "keys": [
+      {"name": "Features", "kind": "text", "default": ""},
+      {"name": "Step", "kind": "text", "default": ""},
+      {"name": "Scan", "kind": "text", "default": ""},
+      {"name": "Provider", "kind": "text", "default": ""},
+      {"name": "Deflection", "kind": "number", "default": 0.0}
+    ]},
     {"op": "ConstrainPrimitives", "note": "Fitted primitives together under control (roadmap 7.7.3).", "keys": [
       {"name": "FaceTolerance", "kind": "number", "default": 0.0},
       {"name": "AngleTolerance", "kind": "number", "default": -1.0},

@@ -252,6 +252,32 @@ SEXP R_mio_clip(SEXP mesh, SEXP origin, SEXP normal, SEXP keep_below, SEXP cap) 
     return res;
 }
 
+/* profile_solid(sketch, features, step_path, scan, provider, deflection)
+ * (roadmap 7.7.4); features in their text form, scan a mesh or NULL. */
+SEXP R_mio_profile_solid(SEXP sketch, SEXP features, SEXP step_path, SEXP scan, SEXP provider,
+                         SEXP deflection) {
+    const char *text = mio_r_string(features, "features");
+    const int64_t n = mio_profile_features_from_text(text, NULL, 0);
+    if (n < 0) mio_r_fail("profile_solid");
+    mio_profile_feature *feats =
+        (mio_profile_feature *)R_alloc((size_t)(n > 0 ? n : 1), sizeof(mio_profile_feature));
+    if (mio_profile_features_from_text(text, feats, n) < 0) mio_r_fail("profile_solid");
+    mio_profile_solid_report r;
+    mio_mesh *out = mio_profile_solid(mio_r_mesh(sketch), feats, n, mio_r_opt_string(step_path),
+                                      mio_r_opt_string(provider),
+                                      mio_r_double(deflection, "deflection"),
+                                      Rf_isNull(scan) ? NULL : mio_r_mesh(scan), &r);
+    if (out == NULL) mio_r_fail("profile_solid");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP w = PROTECT(mio_r_getbuffer(mio_profile_solid_warnings, "profile_solid"));
+    const char *names[] = {"mesh", "volume", "area", "num_faces", "valid", "warnings"};
+    const SEXP values[] = {mo, NULL, NULL, NULL, NULL, w};
+    const double numbers[] = {r.volume, r.area, (double)r.num_faces, (double)r.valid};
+    SEXP res = mio_r_report_list(6, names, values, numbers);
+    UNPROTECT(2);
+    return res;
+}
+
 /* A flat numeric vector of (a, b, kind) triples as int64; NULL when empty. */
 static const int64_t *r_triples(SEXP v, int64_t *n) {
     *n = 0;

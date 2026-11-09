@@ -2136,6 +2136,28 @@ struct _CClipReport
     reserved::NTuple{3,Int64}
 end
 
+"""Mirror of C `mio_profile_feature` (roadmap 7.7.4)."""
+struct _CProfileFeature
+    kind::Int32
+    symmetric::Int32
+    distance::Cdouble
+    angle_deg::Cdouble
+    radius::Cdouble
+    axis_origin::NTuple{3,Cdouble}
+    axis_direction::NTuple{3,Cdouble}
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_profile_solid_report`."""
+struct _CProfileSolidReport
+    volume::Cdouble
+    area::Cdouble
+    num_faces::Int64
+    valid::Int32
+    num_warnings::Int32
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_constrain_primitives_opts` (roadmap 7.7.3)."""
 struct _CConstrainPrimitivesOpts
     face_tolerance::Cdouble
@@ -2807,6 +2829,8 @@ function _check_abi_layout()
     sizeof(_CClipReport) == 72 || error("meshio++: mio_clip_report layout mismatch")
     sizeof(_COffsetReport) == 64 || error("meshio++: mio_offset_report layout mismatch")
     sizeof(_CConstrainPrimitivesOpts) == 96 || error("meshio++: mio_constrain_primitives_opts layout mismatch")
+    sizeof(_CProfileFeature) == 96 || error("meshio++: mio_profile_feature layout mismatch")
+    sizeof(_CProfileSolidReport) == 64 || error("meshio++: mio_profile_solid_report layout mismatch")
     sizeof(_CConstrainPrimitivesReport) == 64 || error("meshio++: mio_constrain_primitives_report layout mismatch")
     sizeof(_CFaceSupportOpts) == 64 || error("meshio++: mio_face_support_opts layout mismatch")
     sizeof(_CFaceSupportReport) == 64 || error("meshio++: mio_face_support_report layout mismatch")

@@ -268,6 +268,11 @@ if TYPE_CHECKING:
         tube,
         uv_sphere,
     )
+    from ._profile_solid import (
+        profile_features_from_text,
+        profile_solid,
+        profile_solid_providers,
+    )
     from ._project_to_cad import project_to_cad
     from ._proximity import (
         BistrideHierarchy,
@@ -573,6 +578,9 @@ _LAZY_ATTRS = {
     "measure": "_measure",
     "remove_islands": "_remove_islands",
     "offset_surface": "_offset_surface",
+    "profile_solid": "_profile_solid",
+    "profile_solid_providers": "_profile_solid",
+    "profile_features_from_text": "_profile_solid",
     "constrain_primitives": "_fit_cad_loop",
     "face_support": "_fit_cad_loop",
     "fit_cad_iterate": "_fit_cad_loop",
@@ -773,6 +781,9 @@ __all__ = [
     "align_datums",
     "remove_islands",
     "offset_surface",
+    "profile_solid",
+    "profile_solid_providers",
+    "profile_features_from_text",
     "constrain_primitives",
     "face_support",
     "fit_cad_iterate",

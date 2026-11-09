@@ -1748,35 +1748,9 @@ void fc_face_deviation(const std::vector<double>& rSkinXyz,
                                      : std::numeric_limits<double>::quiet_NaN();
 }
 
+// The solid as STEP: occt_brep's writer, under fit_cad's product name.
 void fc_write_step(const TopoDS_Shape& rShape, const std::string& rPath) {
-    const std::string base = rPath.substr(rPath.find_last_of("/\\") + 1);
-    STEPControl_Writer writer;
-    Interface_Static::SetCVal("write.step.schema", "AP214IS");
-    Interface_Static::SetCVal("write.step.unit", "MM");
-    if (writer.Transfer(rShape, STEPControl_AsIs) != IFSelect_RetDone)
-        throw WriteError(std::string(kFcPrefix) +
-                         "OpenCASCADE could not transfer the solid to STEP");
-    // The product is otherwise named "Open CASCADE STEP translator <version>
-    // <counter>", which makes the bytes depend on how many files this process
-    // wrote before.
-    const FcHandle<StepData_StepModel> model = writer.Model();
-    for (int i = 1; i <= model->NbEntities(); ++i) {
-        const FcHandle<StepBasic_Product> product =
-            FcHandle<StepBasic_Product>::DownCast(model->Value(i));
-        if (product.IsNull())
-            continue;
-        product->SetId(new TCollection_HAsciiString("meshio++ fit_cad"));
-        product->SetName(new TCollection_HAsciiString("meshio++ fit_cad"));
-    }
-    APIHeaderSection_MakeHeader header(model);
-    header.SetName(new TCollection_HAsciiString(base.c_str()));
-    header.SetTimeStamp(new TCollection_HAsciiString("1970-01-01T00:00:00"));
-    header.SetOriginatingSystem(new TCollection_HAsciiString("meshio++"));
-    header.SetAuthorisation(new TCollection_HAsciiString(""));
-    header.SetAuthorValue(1, new TCollection_HAsciiString(""));
-    header.SetOrganizationValue(1, new TCollection_HAsciiString(""));
-    if (writer.Write(rPath.c_str()) != IFSelect_RetDone)
-        throw WriteError(std::string(kFcPrefix) + "cannot write '" + rPath + "'");
+    detail::occt_write_step(rShape, rPath, "meshio++ fit_cad", kFcPrefix);
 }
 
 gp_Pnt fc_pnt(const detail::PatchVec& rV) { return gp_Pnt(rV[0], rV[1], rV[2]); }

@@ -147,6 +147,7 @@
 #include "meshioplusplus/operations/offset_surface.hpp"
 #include "meshioplusplus/operations/constrain_primitives.hpp"
 #include "meshioplusplus/operations/fit_cad_loop.hpp"
+#include "meshioplusplus/operations/profile_solid.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -4030,6 +4031,46 @@ val clip_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, const v
         out.set("numCapTriangles", static_cast<double>(r.mNumCapTriangles));
         out.set("numLoops", static_cast<double>(r.mNumLoops));
         out.set("numOpenChains", static_cast<double>(r.mNumOpenChains));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/// Roadmap 7.7.4: `rFeatures` in text form; `rOptions` `{stepPath, scan,
+/// provider, deflection}`.
+val profile_solid_js(const val& rSketch, const std::string& rFeatures, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ProfileSolidOptions o;
+        o.mFeatures = meshioplusplus::profile_features_from_text(rFeatures);
+        std::string step;
+        meshioplusplus::Mesh scan;
+        bool has_scan = false;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the profile options",
+                                {"stepPath", "scan", "provider", "deflection"});
+            if (rOptions.hasOwnProperty("stepPath"))
+                step = rOptions["stepPath"].as<std::string>();
+            if (rOptions.hasOwnProperty("provider"))
+                o.mProvider = rOptions["provider"].as<std::string>();
+            if (rOptions.hasOwnProperty("deflection"))
+                o.mDeflection = rOptions["deflection"].as<double>();
+            if (rOptions.hasOwnProperty("scan") && !rOptions["scan"].isNull()) {
+                scan = val_to_mesh(rOptions["scan"]);
+                has_scan = true;
+            }
+        }
+        meshioplusplus::ProfileSolidResult r = meshioplusplus::profile_solid(
+            val_to_mesh(rSketch), step, o, has_scan ? &scan : nullptr);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("volume", r.mVolume);
+        out.set("area", r.mArea);
+        out.set("numFaces", static_cast<double>(r.mNumFaces));
+        out.set("valid", r.mValid);
+        out.set("provider", r.mProvider);
         val warnings = val::array();
         for (const std::string& w : r.mWarnings)
             warnings.call<void>("push", w);
@@ -10855,6 +10896,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("flipNormals", &flip_normals_js);
     emscripten::function("clip", &clip_js);
     emscripten::function("offsetSurface", &offset_surface_js);
+    emscripten::function("profileSolid", &profile_solid_js);
     emscripten::function("constrainPrimitives", &constrain_primitives_js);
     emscripten::function("faceSupport", &face_support_js);
     emscripten::function("fitCadIterate", &fit_cad_iterate_js);

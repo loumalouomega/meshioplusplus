@@ -356,6 +356,39 @@ function clip(m::Mesh, origin, normal; keep_below::Bool=true, cap::Bool=true)
      warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
 end
 
+"""
+    profile_solid(sketch, features; step_path="", scan=nothing, provider="", deflection=0.0)
+        -> (; mesh, volume, area, num_faces, valid, warnings)
+
+Build a `fit_curves` sketch into a solid by `features` (text,
+`;`-separated: `extrude:D[:symmetric]`, `revolve:OX,OY,OZ:DX,DY,DZ[:ANGLE]`,
+`fillet:R`, `chamfer:D`, `shell:W`) through a CAD provider (OpenCASCADE;
+roadmap 7.7.4). See `doc/profile_solid.md`.
+"""
+function profile_solid(sketch::Mesh, features::AbstractString; step_path::AbstractString="",
+                       scan::Union{Mesh,Nothing}=nothing, provider::AbstractString="",
+                       deflection::Real=0.0)
+    text = String(features)
+    n = ccall(_sym(:mio_profile_features_from_text), Int64,
+              (Cstring, Ptr{_CProfileFeature}, Int64), text, C_NULL, 0)
+    n < 0 && _check_ptr(C_NULL)
+    feats = Vector{_CProfileFeature}(undef, max(n, 1))
+    ccall(_sym(:mio_profile_features_from_text), Int64,
+          (Cstring, Ptr{_CProfileFeature}, Int64), text, feats, n)
+    rep = Ref{_CProfileSolidReport}()
+    ptr = ccall(_sym(:mio_profile_solid), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ptr{_CProfileFeature}, Int64, Cstring, Cstring, Cdouble, Ptr{Cvoid},
+                 Ref{_CProfileSolidReport}),
+                _handle(sketch), feats, n, String(step_path), String(provider),
+                Float64(deflection), scan === nothing ? C_NULL : _handle(scan), rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    text_w = _getstring((buf, k) -> ccall(_sym(:mio_profile_solid_warnings), Int64,
+                                          (Ptr{UInt8}, Int64), buf, k))
+    (mesh=out, volume=r.volume, area=r.area, num_faces=Int(r.num_faces), valid=r.valid != 0,
+     warnings=isempty(text_w) ? String[] : String.(Base.split(text_w, '\n')))
+end
+
 const _RELATIONS = ("coaxial", "parallel", "perpendicular", "equal_radius")
 
 # (a, b, relation name) tuples as int64 triples.

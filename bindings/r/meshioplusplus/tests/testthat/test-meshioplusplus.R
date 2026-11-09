@@ -1648,6 +1648,8 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   mio_release(it$mesh)
   expect_error(mio_fit_cad_iterate(m, part_class = "plastic"), "part_class")
   expect_error(mio_constrain_primitives(m), "fit_primitives")
+  expect_error(mio_profile_solid(m, "extrude:1"), "sketch")
+  expect_error(mio_profile_solid(m, "loft:1"), "feature")
   ms <- mio_measure(m, '{"elements": [
     {"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},
     {"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],
