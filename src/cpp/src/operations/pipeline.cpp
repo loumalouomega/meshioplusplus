@@ -1926,6 +1926,14 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mThreshold = pipe_number(rStep, "Min", 0.0);
         opts.mRegion = pipe_text(rStep, "Region", "");
         opts.mRegionTarget = pipe_text(rStep, "RegionOther", "");
+        opts.mMethod = thickness_method_from_name(pipe_text(rStep, "Method", "ray"));
+        opts.mConeAngleDeg = pipe_number(rStep, "ConeAngle", 15.0);
+        const double rays = pipe_number(rStep, "ConeRays", 16.0);
+        opts.mConeRays = static_cast<std::int64_t>(rays);
+        if (static_cast<double>(opts.mConeRays) != rays)
+            throw std::invalid_argument(pipe_err(rStep, "ConeRays must be an integer"));
+        opts.mTwoSided = pipe_flag(rStep, "TwoSided", false);
+        opts.mMaxNormalDeviationDeg = pipe_number(rStep, "MaxNormalDeviation", 90.0);
         const std::string other_path = pipe_text(rStep, "Other", "");
         ThicknessResult tr = other_path.empty()
                                  ? thickness(mesh, opts)
@@ -1939,7 +1947,9 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumBelow", static_cast<double>(tr.mNumBelow)},
                         {"Min", tr.mMin},
                         {"Max", tr.mMax},
-                        {"Mean", tr.mMean}});
+                        {"Mean", tr.mMean},
+                        {"P2", tr.mP2},
+                        {"P95", tr.mP95}});
         return std::move(tr.mMesh);
     }
     if (op == "Deviation") {

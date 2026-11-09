@@ -409,9 +409,17 @@ MIO_ABI_LAYOUT(meshioplusplus::MirrorOptions, 72, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FindIntersectionsOptions, 80, 8);
 static_assert(offsetof(meshioplusplus::FindIntersectionsOptions, mMaxPairs) == 72,
               "FindIntersectionsOptions::mMaxPairs moved");
-MIO_ABI_LAYOUT(meshioplusplus::ThicknessOptions, 96, 8);
+// Unreleased ABI 43 (roadmap 7.5): `mTwoSided` in the padding after
+// `mAttach`, then the method and its options, 96 -> 120 bytes.
+MIO_ABI_LAYOUT(meshioplusplus::ThicknessOptions, 120, 8);
 static_assert(offsetof(meshioplusplus::ThicknessOptions, mRegion) == 24,
               "ThicknessOptions::mRegion moved");
+static_assert(offsetof(meshioplusplus::ThicknessOptions, mTwoSided) == 89,
+              "ThicknessOptions::mTwoSided moved");
+static_assert(offsetof(meshioplusplus::ThicknessOptions, mMethod) == 92,
+              "ThicknessOptions::mMethod moved");
+static_assert(offsetof(meshioplusplus::ThicknessOptions, mMaxNormalDeviationDeg) == 112,
+              "ThicknessOptions::mMaxNormalDeviationDeg moved");
 // Unreleased ABI 42: deviation's options (roadmap 7.4), a new header.
 MIO_ABI_LAYOUT(meshioplusplus::DeviationOptions, 80, 8);
 static_assert(offsetof(meshioplusplus::DeviationOptions, mReferenceRegion) == 40,

@@ -19,7 +19,8 @@ __all__ = ["thickness"]
 _PREFIX = "meshio++: thickness: "
 _DIRECTIONS = ("auto", "inward", "outward")
 _REPORT_INTS = ("num_cells", "num_hit", "num_missed", "num_below", "min_cell")
-_REPORT_FLOATS = ("min", "max", "mean", "max_distance")
+_REPORT_FLOATS = ("min", "max", "mean", "max_distance", "p2", "p95")
+_METHODS = ("ray", "sphere", "cone")
 
 
 def _non_negative(value, name: str) -> float:
@@ -29,6 +30,13 @@ def _non_negative(value, name: str) -> float:
             f"{_PREFIX}{name} must be finite and non-negative, got {value!r}"
         )
     return v
+
+
+def _method(value) -> str:
+    m = str(value).lower()
+    if m not in _METHODS:
+        raise ValueError(f"{_PREFIX}method must be one of {_METHODS}, got {value!r}")
+    return m
 
 
 def thickness(
@@ -41,6 +49,11 @@ def thickness(
     region: str | None = None,
     region_other: str | None = None,
     attach: bool = True,
+    method: str = "ray",
+    cone_angle: float = 15.0,
+    cone_rays: int = 16,
+    two_sided: bool = False,
+    max_normal_deviation: float = 90.0,
     return_report: bool = False,
 ):
     """Measure the wall thickness or clearance of each facet of ``mesh``.
@@ -60,12 +73,25 @@ def thickness(
         (``other``, else ``mesh``).
     :param attach: attach the cell data ``thickness:distance`` (Float64, NaN
         for a miss) and ``thickness:hit_cell`` (Int64, -1 for a miss).
+    :param method: ``"ray"`` (one ray along the normal), ``"sphere"`` (twice
+        the distance from the ray's midpoint to the nearest surface outside the
+        facet's one-ring: the perpendicular distance where the walls diverge)
+        or ``"cone"`` (the shortest of ``cone_rays`` rays within
+        ``cone_angle`` degrees of the normal: a chamfer's narrow spot).
+    :param cone_angle: the cone's half-angle in degrees, in (0, 90).
+    :param cone_rays: the cone's rays, the central one included.
+    :param two_sided: rays both ways along the normal, either face of every
+        triangle counting (a scan's winding is unreliable); with
+        ``max_distance`` 0 the ray is then a fifth of the diagonal.
+    :param max_normal_deviation: step over triangles more edge-on to the ray
+        than this, in degrees in (0, 90]; 90 accepts any facing the right way.
     :param return_report: also return the report.
     :returns: ``mesh``, bit-identical but for the two arrays; with
         ``return_report`` ``(mesh, report)``, where ``report`` has
-        ``direction``, ``num_cells``, ``num_hit``, ``num_missed``,
-        ``num_below``, ``min``, ``max``, ``mean``, ``min_cell``,
-        ``min_point``, ``max_distance`` and ``warnings``.
+        ``direction``, ``method``, ``num_cells``, ``num_hit``, ``num_missed``,
+        ``num_below``, ``min``, ``max``, ``mean``, ``p2``, ``p95`` (the 2nd and
+        95th percentiles of the hits), ``min_cell``, ``min_point``,
+        ``max_distance`` and ``warnings``.
     :raises ValueError: for a volume, polyhedron or higher-order block, an
         unknown region, an unknown direction or a negative distance.
     """
@@ -90,11 +116,16 @@ def thickness(
         region=region or "",
         region_target=region_other or "",
         attach=bool(attach),
+        method=_method(method),
+        cone_angle=float(cone_angle),
+        cone_rays=int(cone_rays),
+        two_sided=bool(two_sided),
+        max_normal_deviation=float(max_normal_deviation),
     )
     out = res["mesh"]
     if not return_report:
         return out
-    report = {"direction": str(res["direction"])}
+    report = {"direction": str(res["direction"]), "method": str(res["method"])}
     report.update({k: int(res[k]) for k in _REPORT_INTS})
     report.update({k: float(res[k]) for k in _REPORT_FLOATS})
     report["min_point"] = tuple(float(c) for c in res["min_point"])

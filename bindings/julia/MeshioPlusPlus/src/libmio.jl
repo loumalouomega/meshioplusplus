@@ -1070,13 +1070,17 @@ struct _CThicknessOpts
     threshold::Cdouble
     direction::Int32
     attach::Int32
-    reserved::NTuple{4,Int64}
+    method::Int32
+    two_sided::Int32
+    cone_angle::Cdouble
+    cone_rays::Int64
+    max_normal_deviation::Cdouble
 end
 
 """Mirror of C `mio_thickness_report`."""
 struct _CThicknessReport
     direction::Int32
-    reserved32::Int32
+    method::Int32
     num_cells::Int64
     num_hit::Int64
     num_missed::Int64
@@ -1088,7 +1092,9 @@ struct _CThicknessReport
     min_point::NTuple{3,Cdouble}
     max_distance::Cdouble
     num_warnings::Int64
-    reserved::NTuple{4,Int64}
+    p2::Cdouble
+    p95::Cdouble
+    reserved::NTuple{2,Int64}
 end
 
 """Mirror of C `mio_deviation_opts` (roadmap 7.4)."""
@@ -2431,9 +2437,11 @@ function _check_abi_layout()
         error("meshio++: mio_find_intersections_report layout mismatch " *
               "($(sizeof(_CFindIntersectionsReport)) bytes)")
     (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CThicknessOpts) == 72 &&
-                                 fieldoffset(_CThicknessOpts, 7) == 40)) ||
+                                 fieldoffset(_CThicknessOpts, 7) == 40 &&
+                                 fieldoffset(_CThicknessOpts, 11) == 64)) ||
         error("meshio++: mio_thickness_opts layout mismatch ($(sizeof(_CThicknessOpts)) bytes)")
-    (sizeof(_CThicknessReport) == 144 && fieldoffset(_CThicknessReport, 13) == 104) ||
+    (sizeof(_CThicknessReport) == 144 && fieldoffset(_CThicknessReport, 13) == 104 &&
+     fieldoffset(_CThicknessReport, 14) == 112) ||
         error("meshio++: mio_thickness_report layout mismatch ($(sizeof(_CThicknessReport)) bytes)")
     (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CDeviationOpts) == 88 &&
                                  fieldoffset(_CDeviationOpts, 9) == 56)) ||

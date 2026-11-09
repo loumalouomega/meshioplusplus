@@ -73,6 +73,34 @@ def add_args(parser):
         default="",
         help="named cell region of the target surface (--other, else the input)",
     )
+    parser.add_argument(
+        "--method",
+        choices=("ray", "sphere", "cone"),
+        default="ray",
+        help="one ray, the sphere at its midpoint, or a cone of rays (default: ray)",
+    )
+    parser.add_argument(
+        "--cone-angle",
+        type=float,
+        default=15.0,
+        metavar="DEG",
+        help="the cone's half-angle (default: 15)",
+    )
+    parser.add_argument(
+        "--cone-rays", type=int, default=16, help="the cone's rays (default: 16)"
+    )
+    parser.add_argument(
+        "--two-sided",
+        action="store_true",
+        help="rays both ways, either face of a triangle counting (scan winding)",
+    )
+    parser.add_argument(
+        "--max-normal-deviation",
+        type=float,
+        default=90.0,
+        metavar="DEG",
+        help="step over faces more edge-on to the ray than this (default: 90)",
+    )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
 
 
@@ -90,6 +118,11 @@ def thickness_cmd(args):
         region=args.region,
         region_other=args.region_other,
         attach=args.outfile is not None,
+        method=args.method,
+        cone_angle=args.cone_angle,
+        cone_rays=args.cone_rays,
+        two_sided=args.two_sided,
+        max_normal_deviation=args.max_normal_deviation,
         return_report=True,
     )
     if args.outfile is not None:
@@ -103,13 +136,13 @@ def thickness_cmd(args):
         emit_json(obj)
     else:
         print(
-            f"{r['direction']} rays from {r['num_cells']} cells: {r['num_hit']} hit, "
+            f"{r['direction']} {r['method']} from {r['num_cells']} cells: {r['num_hit']} hit, "
             f"{r['num_missed']} missed"
         )
         if r["num_hit"] > 0:
             print(
                 f"  min {r['min']:.9g} (cell {r['min_cell']}), max {r['max']:.9g}, "
-                f"mean {r['mean']:.9g}"
+                f"mean {r['mean']:.9g}, p2 {r['p2']:.6g}, p95 {r['p95']:.6g}"
             )
         if args.min is not None:
             print(

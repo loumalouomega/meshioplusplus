@@ -844,6 +844,11 @@ def tool_thickness(
     min_thickness=None,
     region="",
     region_other="",
+    method="ray",
+    cone_angle=15.0,
+    cone_rays=16,
+    two_sided=False,
+    max_normal_deviation=90.0,
 ):
     """Wall thickness (inward) or clearance (outward, the default against
     ``other_path``) per facet by a ray along its normal; with
@@ -861,6 +866,11 @@ def tool_thickness(
         region=region,
         region_other=region_other,
         attach=output_path is not None,
+        method=method,
+        cone_angle=cone_angle,
+        cone_rays=cone_rays,
+        two_sided=two_sided,
+        max_normal_deviation=max_normal_deviation,
         return_report=True,
     )
     if min_thickness is not None:

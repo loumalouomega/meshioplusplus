@@ -268,6 +268,11 @@ OP_TABLE = {
         "Region",
         "RegionOther",
         "Require",
+        "Method",
+        "ConeAngle",
+        "ConeRays",
+        "TwoSided",
+        "MaxNormalDeviation",
     ),
     "Deviation": (
         "Reference",

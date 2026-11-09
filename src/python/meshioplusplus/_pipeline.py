@@ -1729,6 +1729,11 @@ def _apply_step(mesh, step, steps, warnings):
             threshold=threshold,
             region=_text(step, "Region", ""),
             region_other=_text(step, "RegionOther", ""),
+            method=_text(step, "Method", "ray"),
+            cone_angle=_number(step, "ConeAngle", 15.0),
+            cone_rays=_int_number(op, step, "ConeRays", 16.0),
+            two_sided=_flag(step, "TwoSided", False),
+            max_normal_deviation=_number(step, "MaxNormalDeviation", 90.0),
             return_report=True,
         )
         if threshold > 0.0 and _flag(step, "Require", True) and rep["num_below"] > 0:
@@ -1742,6 +1747,8 @@ def _apply_step(mesh, step, steps, warnings):
         entry["Min"] = float(rep["min"])
         entry["Max"] = float(rep["max"])
         entry["Mean"] = float(rep["mean"])
+        entry["P2"] = float(rep["p2"])
+        entry["P95"] = float(rep["p95"])
     elif op == "Deviation":
         # deviation:distance flows on; with Tolerance and MinShare, a share
         # within tolerance below MinShare stops the pipeline unless Require is

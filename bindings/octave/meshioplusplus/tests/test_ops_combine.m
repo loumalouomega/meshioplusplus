@@ -597,6 +597,10 @@ function t_intersections()
     expect_equal(size(t.min_point), [1, 3]);
     assert(t.min_cell >= 1);
     expect_error(@() mio.thickness(a, 'direction', 'sideways'), 'direction');
+    ts = mio.thickness(a, 'method', 'cone', 'two_sided', true);
+    expect_equal(ts.method, 'cone');
+    assert(ts.p2 <= ts.p95);
+    expect_error(@() mio.thickness(a, 'method', 'laser'), 'method');
 end
 
 function t_capabilities()

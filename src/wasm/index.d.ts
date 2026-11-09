@@ -853,6 +853,15 @@ export interface ThicknessOptions {
   region?: string;
   /** Reach only this named cell region of the target. */
   regionOther?: string;
+  /** `'ray'` (default), `'sphere'` or `'cone'` (roadmap 7.5.1). */
+  method?: 'ray' | 'sphere' | 'cone';
+  /** The cone's half-angle in degrees and its rays. */
+  coneAngle?: number;
+  coneRays?: number;
+  /** Rays both ways, either face of a triangle counting (roadmap 7.5.2). */
+  twoSided?: boolean;
+  /** Step over triangles more edge-on to the ray than this, degrees. */
+  maxNormalDeviation?: number;
 }
 
 /** What `thickness` returns. */
@@ -872,6 +881,10 @@ export interface ThicknessResult {
   minPoint: Float64Array;
   maxDistance: number;
   warnings: string[];
+  /** The method used, and the 2nd and 95th percentiles of the hits. */
+  method: string;
+  p2: number;
+  p95: number;
 }
 
 /** Options of `deviation` (doc/deviation.md): a `reference` or a `primitive`. */

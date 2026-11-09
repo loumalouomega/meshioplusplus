@@ -9373,7 +9373,8 @@ val thickness_js(const val& rMeshObj, const val& rOptions) {
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
             check_settings_keys(
                 rOptions, "the thickness options",
-                {"other", "direction", "maxDistance", "threshold", "region", "regionOther"});
+                {"other", "direction", "maxDistance", "threshold", "region", "regionOther",
+                 "method", "coneAngle", "coneRays", "twoSided", "maxNormalDeviation"});
             if (rOptions.hasOwnProperty("other"))
                 other = rOptions["other"];
             if (rOptions.hasOwnProperty("direction")) {
@@ -9394,6 +9395,17 @@ val thickness_js(const val& rMeshObj, const val& rOptions) {
                 o.mRegion = rOptions["region"].as<std::string>();
             if (rOptions.hasOwnProperty("regionOther"))
                 o.mRegionTarget = rOptions["regionOther"].as<std::string>();
+            if (rOptions.hasOwnProperty("method"))
+                o.mMethod = meshioplusplus::thickness_method_from_name(
+                    rOptions["method"].as<std::string>());
+            if (rOptions.hasOwnProperty("coneAngle"))
+                o.mConeAngleDeg = rOptions["coneAngle"].as<double>();
+            if (rOptions.hasOwnProperty("coneRays"))
+                o.mConeRays = static_cast<std::int64_t>(rOptions["coneRays"].as<double>());
+            if (rOptions.hasOwnProperty("twoSided"))
+                o.mTwoSided = rOptions["twoSided"].as<bool>();
+            if (rOptions.hasOwnProperty("maxNormalDeviation"))
+                o.mMaxNormalDeviationDeg = rOptions["maxNormalDeviation"].as<double>();
         }
         const bool two = !other.isUndefined() && !other.isNull();
         const meshioplusplus::Mesh mesh = val_to_mesh(rMeshObj);
@@ -9419,6 +9431,12 @@ val thickness_js(const val& rMeshObj, const val& rOptions) {
         for (const std::string& w : r.mWarnings)
             warnings.call<void>("push", w);
         out.set("warnings", warnings);
+        out.set("method",
+                std::string(r.mMethod == meshioplusplus::ThicknessMethod::Sphere ? "sphere"
+                            : r.mMethod == meshioplusplus::ThicknessMethod::Cone ? "cone"
+                                                                                 : "ray"));
+        out.set("p2", r.mP2);
+        out.set("p95", r.mP95);
         return out;
     });
 }

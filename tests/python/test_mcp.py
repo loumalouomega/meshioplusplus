@@ -2274,6 +2274,13 @@ def test_register_rigid_tool(tmp_path):
     np.testing.assert_allclose(moved.points, target.points, atol=1e-8)
 
 
+def test_thickness_methods_tool(tmp_path):
+    path = str(tmp_path / "s.vtk")
+    meshioplusplus.write(path, meshioplusplus.icosa_sphere(1.0, 2))
+    out = _dump(_tools.tool_thickness(path, method="sphere", two_sided=True))
+    assert out["method"] == "sphere" and out["p2"] <= out["p95"]
+
+
 def test_alignment_tools(tmp_path):
     box = meshioplusplus.box((3, 2, 1), size=(3.0, 2.0, 1.0))
     surf = meshioplusplus.extract_surface(box)

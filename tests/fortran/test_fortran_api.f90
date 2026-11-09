@@ -2580,6 +2580,12 @@ contains
             if (ierr == 0) call thick%free()
             thick = mio_thickness(sa, direction='sideways', stat=ierr)
             call check(ierr /= 0, 'thickness refuses an unknown direction')
+            thick = mio_thickness(sa, method='sphere', two_sided=.true., report=trep, stat=ierr)
+            call check(ierr == 0 .and. trep%method == 1 .and. trep%p2 <= trep%p95, &
+                       'thickness by the sphere method')
+            if (ierr == 0) call thick%free()
+            thick = mio_thickness(sa, method='laser', stat=ierr)
+            call check(ierr /= 0, 'thickness refuses an unknown method')
             call sb%free()
             call sa%free()
         end block

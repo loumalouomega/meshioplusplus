@@ -5985,6 +5985,10 @@ step('findIntersections and thickness (roadmap 3.1.2, 3.1.4)', () => {
     assert.equal(t.numMissed, 0);
     assert.ok(Math.abs(t.min - 2) < 0.05);
     assert.throws(() => m.thickness(a, { direction: 'sideways' }), /direction/);
+    const ts = m.thickness(a, { method: 'cone', coneAngle: 20, coneRays: 8, twoSided: true });
+    assert.equal(ts.method, 'cone');
+    assert.ok(ts.p2 <= ts.p95);
+    assert.throws(() => m.thickness(a, { method: 'laser' }), /method/);
 });
 
 step('deviation (roadmap 7.4)', () => {

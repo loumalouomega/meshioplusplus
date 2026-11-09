@@ -388,6 +388,33 @@ CASES = [
     ),
     ("thickness", lambda f: ["thickness", f["sphere_a"], "--json"]),
     (
+        "thickness_sphere",
+        lambda f: [
+            "thickness",
+            f["sphere_a"],
+            "--method",
+            "sphere",
+            "--two-sided",
+            "--max-normal-deviation",
+            "60",
+            "--json",
+        ],
+    ),
+    (
+        "thickness_cone",
+        lambda f: [
+            "thickness",
+            f["sphere_a"],
+            "--method",
+            "cone",
+            "--cone-angle",
+            "20",
+            "--cone-rays",
+            "8",
+            "--json",
+        ],
+    ),
+    (
         "thickness_clearance",
         lambda f: [
             "thickness",

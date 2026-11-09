@@ -125,7 +125,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `check-conformity` | `check_conformity`'s report: `dimension`, the six counts, `conforming`, `interface_mode` and `warnings` |
 | `check-tetrahedra` | `check_tetrahedra`'s report: `num_tetrahedra`, `num_inverted`, `num_degenerate`, `num_overlaps`, `min_volume`, `max_volume`, `valid` and `warnings` |
 | `find-intersections` | `find_intersections`'s counts, `truncated`, `clean`, `pairs` (a list of `[cell_a, cell_b]`) and `warnings` |
-| `thickness` | `thickness`'s report (`direction`, the counts, `min`, `max`, `mean`, `min_cell`, `min_point`, `max_distance`, `warnings`), plus `threshold` and `passed` with `--min` |
+| `thickness` | `thickness`'s report (`direction`, `method`, the counts, `min`, `max`, `mean`, `p2`, `p95`, `min_cell`, `min_point`, `max_distance`, `warnings`), plus `threshold` and `passed` with `--min` |
 | `deviation` | `deviation`'s report (the counts, `min`, `max`, `mean`, `rms`, `sigma`, `percentiles`, `histogram_edges`, `histogram_counts`, `share_within`, `suggested_range`, `warnings`), plus `min_share` and `passed` with `--min-share`, and `registered`, `matrix` and `registration_rms` with `--register` |
 | `diff` | `diff`'s report plus `equal` (the exit-code decision); the Python CLI adds its `sets` section |
 | `convert` | `input`, `output`, `num_points`, `num_cells`, `cell_blocks`, the data names and `num_regions`; for a sequence, `mode`, `num_steps` and `num_files` |
@@ -310,6 +310,10 @@ meshioplusplus thickness [options] INFILE [OUTFILE]
 | `--min T` | | Count the facets below `T`; exit **1** when there are any |
 | `--region R` | | Measure only this named cell region |
 | `--region-other R` | | Reach only this named cell region of the target |
+| `--method ray\|sphere\|cone` | | One ray, twice the ray midpoint's distance to the nearest other surface, or the shortest of a cone of rays ([beyond one ray](/thickness#beyond-one-ray); default `ray`) |
+| `--cone-angle DEG` / `--cone-rays N` | | The cone's half-angle (default 15) and rays (default 16) |
+| `--two-sided` | | Rays both ways along the normal, either face of a triangle counting (a scan's winding); the ray is then a fifth of the diagonal by default |
+| `--max-normal-deviation DEG` | | Step over faces more edge-on to the ray than this (default 90) |
 | `--json` | | Print the report as JSON |
 | `--input-format FORMAT` | `-i` | Force input format |
 | `--output-format FORMAT` | `-o` | Force output format of `OUTFILE`, which carries `thickness:distance` and `thickness:hit_cell` |

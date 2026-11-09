@@ -174,7 +174,8 @@ extern SEXP R_mio_extrude(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_revolve(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_mirror(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_find_intersections(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_thickness(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_thickness(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+                            SEXP);
 extern SEXP R_mio_deviation(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                             SEXP);
 extern SEXP R_mio_deviation_regions(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -423,7 +424,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_revolve, 8),
                                               CALLDEF(R_mio_mirror, 7),
                                               CALLDEF(R_mio_find_intersections, 6),
-                                              CALLDEF(R_mio_thickness, 7),
+                                              CALLDEF(R_mio_thickness, 12),
                                               CALLDEF(R_mio_deviation, 11),
                                               CALLDEF(R_mio_deviation_regions, 5),
                                               CALLDEF(R_mio_exaggerate, 5),

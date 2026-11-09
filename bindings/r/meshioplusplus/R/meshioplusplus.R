@@ -3546,10 +3546,13 @@ mio_find_intersections <- function(mesh, other = NULL, region = "", region_other
 #'   when nothing was hit), `min_point`, `max_distance` and `warnings`.
 #' @export
 mio_thickness <- function(mesh, other = NULL, direction = "auto", max_distance = 0,
-                          threshold = 0, region = "", region_other = "") {
+                          threshold = 0, region = "", region_other = "", method = "ray",
+                          cone_angle = 15, cone_rays = 16, two_sided = FALSE,
+                          max_normal_deviation = 90) {
   res <- .Call(R_mio_thickness, mesh, other, as.character(direction),
                as.numeric(max_distance), as.numeric(threshold), as.character(region),
-               as.character(region_other))
+               as.character(region_other), as.character(method), as.numeric(cone_angle),
+               as.numeric(cone_rays), as.logical(two_sided), as.numeric(max_normal_deviation))
   res$warnings <- mio_split_warnings_(res$warnings)
   res
 }

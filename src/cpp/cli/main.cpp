@@ -1853,6 +1853,11 @@ int cmd_thickness(const std::vector<std::string>& rArgs) {
                                           {"min", {}, true},
                                           {"region", {}, true},
                                           {"region-other", {}, true},
+                                          {"method", {}, true},
+                                          {"cone-angle", {}, true},
+                                          {"cone-rays", {}, true},
+                                          {"two-sided", {}, false},
+                                          {"max-normal-deviation", {}, true},
                                           {"json", {}, false}}}));
     if (p.positionals.empty() || p.positionals.size() > 2)
         throw std::runtime_error("thickness requires INFILE and an optional OUTFILE");
@@ -1870,6 +1875,12 @@ int cmd_thickness(const std::vector<std::string>& rArgs) {
         o.mThreshold = meshioplusplus::detail::stod_c(opt_value(p, "min"));
     o.mRegion = opt_value(p, "region");
     o.mRegionTarget = opt_value(p, "region-other");
+    if (has_opt(p, "method"))
+        o.mMethod = meshioplusplus::thickness_method_from_name(opt_value(p, "method"));
+    cli_opt_double(p, "cone-angle", o.mConeAngleDeg);
+    cli_opt_int64(p, "cone-rays", o.mConeRays);
+    o.mTwoSided = has_flag(p, "two-sided");
+    cli_opt_double(p, "max-normal-deviation", o.mMaxNormalDeviationDeg);
     o.mAttach = p.positionals.size() == 2;
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::ThicknessResult r;
@@ -1897,6 +1908,12 @@ int cmd_thickness(const std::vector<std::string>& rArgs) {
         json.Field("max", r.mMax);
         json.Field("mean", r.mMean);
         json.Field("max_distance", r.mMaxDistance);
+        json.Field("method",
+                   std::string(r.mMethod == meshioplusplus::ThicknessMethod::Sphere ? "sphere"
+                               : r.mMethod == meshioplusplus::ThicknessMethod::Cone ? "cone"
+                                                                                    : "ray"));
+        json.Field("p2", r.mP2);
+        json.Field("p95", r.mP95);
         json.Key("min_point");
         json.BeginArray();
         for (double v : r.mMinPoint)
@@ -1914,11 +1931,18 @@ int cmd_thickness(const std::vector<std::string>& rArgs) {
             meshioplusplus::detail::snprintf_c(buf, sizeof(buf), "%.9g", v);
             return std::string(buf);
         };
-        std::cout << dir << " rays from " << r.mNumCells << " cells: " << r.mNumHit << " hit, "
-                  << r.mNumMissed << " missed\n";
-        if (r.mNumHit > 0)
+        const char* meth = r.mMethod == meshioplusplus::ThicknessMethod::Sphere ? "sphere"
+                           : r.mMethod == meshioplusplus::ThicknessMethod::Cone ? "cone"
+                                                                                : "ray";
+        std::cout << dir << " " << meth << " from " << r.mNumCells << " cells: " << r.mNumHit
+                  << " hit, " << r.mNumMissed << " missed\n";
+        if (r.mNumHit > 0) {
+            char pct[64];
+            meshioplusplus::detail::snprintf_c(pct, sizeof(pct), ", p2 %.6g, p95 %.6g", r.mP2,
+                                               r.mP95);
             std::cout << "  min " << g(r.mMin) << " (cell " << r.mMinCell << "), max " << g(r.mMax)
-                      << ", mean " << g(r.mMean) << "\n";
+                      << ", mean " << g(r.mMean) << pct << "\n";
+        }
         if (has_min) {
             char lim[32];
             meshioplusplus::detail::snprintf_c(lim, sizeof(lim), "%g", o.mThreshold);

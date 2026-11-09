@@ -7738,6 +7738,13 @@ typedef enum mio_thickness_direction {
     MIO_THICKNESS_OUTWARD = 2  /**< along the normal, across a gap */
 } mio_thickness_direction;
 
+/** mio_thickness_opts.method (roadmap 7.5.1). */
+typedef enum mio_thickness_method {
+    MIO_THICKNESS_RAY = 0,    /**< one ray along the normal */
+    MIO_THICKNESS_SPHERE = 1, /**< twice the ray midpoint's distance to the nearest other surface */
+    MIO_THICKNESS_CONE = 2    /**< the shortest of a fan of rays within cone_angle */
+} mio_thickness_method;
+
 /** Options of mio_thickness; initialise with mio_thickness_opts_init. 72 bytes. */
 typedef struct mio_thickness_opts {
     const char* region;        /**< Cell region measured; NULL or "" for all */
@@ -7746,13 +7753,17 @@ typedef struct mio_thickness_opts {
     double threshold;          /**< count hits below it when positive (init: 0) */
     int32_t direction;         /**< a mio_thickness_direction (init: AUTO) */
     int32_t attach;            /**< attach thickness:distance and :hit_cell (init: 1) */
-    int64_t reserved[4];
+    int32_t method;            /**< a mio_thickness_method (init: RAY) */
+    int32_t two_sided;         /**< rays both ways, either face counting (init: 0) */
+    double cone_angle;         /**< MIO_THICKNESS_CONE: half-angle, degrees (init: 15) */
+    int64_t cone_rays;         /**< MIO_THICKNESS_CONE: rays of the fan (init: 16) */
+    double max_normal_deviation; /**< step over more edge-on faces, degrees (init: 90) */
 } mio_thickness_opts;
 
 /** What mio_thickness measured. 144 bytes. */
 typedef struct mio_thickness_report {
     int32_t direction;     /**< the direction the rays ran: INWARD or OUTWARD */
-    int32_t reserved32;
+    int32_t method;        /**< the mio_thickness_method used */
     int64_t num_cells;     /**< cells measured */
     int64_t num_hit;       /**< rays that reached a wall */
     int64_t num_missed;    /**< rays that did not */
@@ -7764,7 +7775,9 @@ typedef struct mio_thickness_report {
     double min_point[3];   /**< where its ray started */
     double max_distance;   /**< the ray length used */
     int64_t num_warnings;  /**< see mio_thickness_warnings() */
-    int64_t reserved[4];
+    double p2;             /**< the 2nd percentile of the hit distances */
+    double p95;            /**< the 95th percentile */
+    int64_t reserved[2];
 } mio_thickness_report;
 
 MIO_API void mio_thickness_opts_init(mio_thickness_opts* opts);

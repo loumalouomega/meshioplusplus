@@ -361,7 +361,8 @@ static mxArray *O_mio_find_intersections(const mxArray **a) {
 }
 
 /* thickness(mesh, other, direction, max_distance, threshold, region,
- * region_other). `min_point` is a 1 x 3 row (one point). */
+ * region_other, method, cone_angle, cone_rays, two_sided,
+ * max_normal_deviation). `min_point` is a 1 x 3 row (one point). */
 static mxArray *O_mio_thickness(const mxArray **a) {
     mio_thickness_opts opts;
     mio_thickness_opts_init(&opts);
@@ -378,6 +379,19 @@ static mxArray *O_mio_thickness(const mxArray **a) {
     opts.threshold = mio_o_double(a[4], "threshold");
     opts.region = mio_o_opt_string(a[5]);
     opts.region_target = mio_o_opt_string(a[6]);
+    const char *meth = mio_o_string(a[7], "method");
+    if (strcmp(meth, "ray") == 0)
+        opts.method = MIO_THICKNESS_RAY;
+    else if (strcmp(meth, "sphere") == 0)
+        opts.method = MIO_THICKNESS_SPHERE;
+    else if (strcmp(meth, "cone") == 0)
+        opts.method = MIO_THICKNESS_CONE;
+    else
+        mio_o_error("thickness", "`method` must be 'ray', 'sphere' or 'cone'");
+    opts.cone_angle = mio_o_double(a[8], "cone_angle");
+    opts.cone_rays = (int64_t)mio_o_double(a[9], "cone_rays");
+    opts.two_sided = mio_o_bool(a[10], "two_sided");
+    opts.max_normal_deviation = mio_o_double(a[11], "max_normal_deviation");
     const mio_mesh *target = mio_o_is_null(a[1]) ? NULL : mio_o_mesh(a[1]);
     mio_thickness_report r;
     mio_mesh *out = mio_thickness(mio_o_mesh(a[0]), target, &opts, &r);
@@ -385,7 +399,8 @@ static mxArray *O_mio_thickness(const mxArray **a) {
     mxArray *w = mio_o_getbuffer(mio_thickness_warnings, "thickness");
     const char *names[] = {"mesh",      "direction", "num_cells",    "num_hit",  "num_missed",
                            "num_below", "min",       "max",          "mean",     "min_cell",
-                           "min_point", "max_distance", "warnings"};
+                           "min_point", "max_distance", "warnings", "method", "p2", "p95"};
+    static const char *const kMethods[] = {"ray", "sphere", "cone"};
     mxArray *v[] = {mio_o_wrap_mesh(out),
                     mio_o_str(r.direction == MIO_THICKNESS_OUTWARD ? "outward" : "inward"),
                     mio_o_scalar((double)r.num_cells),
@@ -398,8 +413,11 @@ static mxArray *O_mio_thickness(const mxArray **a) {
                     mio_o_scalar(r.min_cell < 0 ? 0.0 : (double)(r.min_cell + 1)),
                     mio_o_row3(r.min_point),
                     mio_o_scalar(r.max_distance),
-                    w};
-    return mio_o_struct(13, names, v);
+                    w,
+                    mio_o_str(kMethods[r.method >= 0 && r.method <= 2 ? r.method : 0]),
+                    mio_o_scalar(r.p2),
+                    mio_o_scalar(r.p95)};
+    return mio_o_struct(16, names, v);
 }
 
 /* deviation(scan, reference, type, params, tolerance, bins, range_min,
@@ -1589,7 +1607,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_revolve, 8),
     MIO_O_ENTRY(mio_mirror, 7),
     MIO_O_ENTRY(mio_find_intersections, 6),
-    MIO_O_ENTRY(mio_thickness, 7),
+    MIO_O_ENTRY(mio_thickness, 12),
     MIO_O_ENTRY(mio_deviation, 11),
     MIO_O_ENTRY(mio_deviation_regions, 5),
     MIO_O_ENTRY(mio_exaggerate, 5),

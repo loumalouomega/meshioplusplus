@@ -42,6 +42,28 @@
  * A cell's own triangles are never hit. A ray that finds nothing within
  * `mMaxDistance` is a miss: its distance is NaN and its hit cell -1.
  *
+ * ### Beyond one ray (roadmap 7.5)
+ *
+ *  - **`ThicknessMethod::Sphere`**: from the ray's midpoint, the distance to
+ *    the nearest target triangle outside the facet's one-ring (the triangles
+ *    sharing a vertex with it), doubled, and never more than the ray: exact
+ *    between parallel walls like the ray, and where the faces diverge the
+ *    perpendicular distance to the opposite face rather than the ray's
+ *    1/cos longer one. A miss of the ray is a miss here too.
+ *  - **`ThicknessMethod::Cone`**: the shortest hit of a fixed fan of
+ *    `mConeRays` rays within `mConeAngleDeg` of the normal (the central ray,
+ *    then a Fibonacci spiral in the facet's frame), which finds the narrow
+ *    spot of a chamfer or a tapered rib.
+ *  - **`mTwoSided`**: scan winding is unreliable, so rays run both ways along
+ *    the normal line and either face of every triangle counts; the shorter
+ *    hit wins. With `mMaxDistance` 0 the ray is then a fifth of the diagonal.
+ *  - **`mMaxNormalDeviationDeg`**: a triangle more edge-on to the ray than
+ *    this is stepped over (a cone ray grazing a convex edge); 90, the
+ *    default, accepts any triangle facing the right way.
+ *
+ * The report adds the 2nd and 95th percentiles of the hit distances, the
+ * range a colour map is set from.
+ *
  * ### What comes back
  *
  * The input, bit-identical, with the distance and the cell it reached as
@@ -83,6 +105,13 @@ enum class ThicknessDirection : std::int32_t {
     Outward = 2,  ///< along the normal, across a gap
 };
 
+/// How `thickness` measures from a facet.
+enum class ThicknessMethod : std::int32_t {
+    Ray = 0,     ///< one ray along the normal
+    Sphere = 1,  ///< twice the distance from the ray's midpoint to the nearest other surface
+    Cone = 2,    ///< the shortest of a fan of rays within the cone angle
+};
+
 /// Options for `thickness`.
 struct ThicknessOptions {
     ThicknessDirection mDirection = ThicknessDirection::Auto;
@@ -98,6 +127,16 @@ struct ThicknessOptions {
     std::string mRegionTarget;
     /// Attach `thickness:distance` and `thickness:hit_cell`.
     bool mAttach = true;
+    /// Rays both ways along the normal, either face of a triangle counting.
+    bool mTwoSided = false;
+    ThicknessMethod mMethod = ThicknessMethod::Ray;
+    /// `Cone`: the half-angle in degrees, in (0, 90).
+    double mConeAngleDeg = 15.0;
+    /// `Cone`: the rays of the fan, the central one included; at least 1.
+    std::int64_t mConeRays = 16;
+    /// Step over triangles more edge-on to the ray than this, in degrees in
+    /// (0, 90]; 90 accepts any triangle facing the right way.
+    double mMaxNormalDeviationDeg = 90.0;
 };
 
 /// The measured mesh and the summary.
@@ -117,7 +156,14 @@ struct ThicknessResult {
     std::array<double, 3> mMinPoint{{0.0, 0.0, 0.0}};  ///< where its ray started
     double mMaxDistance = 0.0;                         ///< the ray length used
     std::vector<std::string> mWarnings;
+    ThicknessMethod mMethod = ThicknessMethod::Ray;  ///< the method used
+    /// The 2nd and 95th percentiles of the hit distances (0 when none).
+    double mP2 = 0.0;
+    double mP95 = 0.0;
 };
+
+/** @brief `"ray"`, `"sphere"` or `"cone"`; anything else throws naming them. */
+MESHIOPLUSPLUS_API ThicknessMethod thickness_method_from_name(const std::string& rName);
 
 /**
  * @brief Measure the wall thickness (or, outward, the clearance) of the

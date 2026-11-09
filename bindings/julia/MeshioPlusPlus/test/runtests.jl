@@ -2531,6 +2531,10 @@ end # testset
     @test t.num_missed == 0
     @test isapprox(t.min, 2.0; atol=0.05)
     @test_throws ArgumentError thickness(a; direction="sideways")
+    ts = thickness(a; method="sphere", two_sided=true)
+    @test ts.method == "sphere" && ts.p2 <= ts.p95
+    close(ts.mesh)
+    @test_throws ArgumentError thickness(a; method="laser")
 end
 
 @testset "operations: deviation" begin

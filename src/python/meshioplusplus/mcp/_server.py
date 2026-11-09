@@ -1889,6 +1889,11 @@ def _register_operations(server: FastMCP) -> None:
         min_thickness: Optional[float] = None,
         region: str = "",
         region_other: str = "",
+        method: str = "ray",
+        cone_angle: float = 15.0,
+        cone_rays: int = 16,
+        two_sided: bool = False,
+        max_normal_deviation: float = 90.0,
     ) -> dict:
         """Wall thickness or clearance per facet of a surface, by a ray from
         each cell's centroid along its normal.
@@ -1897,9 +1902,16 @@ def _register_operations(server: FastMCP) -> None:
         "outward" at the next wall facing the ray (clearance); "auto" is
         inward for one surface and outward against other_path. The surface
         must be consistently oriented with outward normals. max_distance
-        bounds the ray (0 = the bounding-box diagonal). Reports direction,
-        num_cells, num_hit, num_missed, num_below (below min_thickness), min,
-        max, mean, min_cell, min_point, max_distance and warnings; with
+        bounds the ray (0 = the bounding-box diagonal). method "sphere" reads
+        twice the distance from the ray's midpoint to the nearest other
+        surface (the perpendicular distance where walls diverge), "cone" the
+        shortest of cone_rays rays within cone_angle degrees (a chamfer's
+        narrow spot); two_sided casts both ways with either face counting (a
+        scan's unreliable winding; the ray is then a fifth of the diagonal by
+        default) and max_normal_deviation steps over faces more edge-on than
+        that. Reports direction, method, num_cells, num_hit, num_missed,
+        num_below (below min_thickness), min, max, mean, p2, p95, min_cell,
+        min_point, max_distance and warnings; with
         min_thickness also threshold and passed. Pass output_path to write the
         mesh with thickness:distance (NaN for a miss) and thickness:hit_cell
         cell data."""

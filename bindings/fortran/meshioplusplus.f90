@@ -868,14 +868,19 @@ module meshioplusplus
         real(c_double) :: threshold = 0.0_c_double
         integer(c_int32_t) :: direction = 0
         integer(c_int32_t) :: attach = 1
-        integer(c_int64_t) :: reserved(4) = 0
+        integer(c_int32_t) :: method = 0
+        integer(c_int32_t) :: two_sided = 0
+        real(c_double) :: cone_angle = 15.0_c_double
+        integer(c_int64_t) :: cone_rays = 16
+        real(c_double) :: max_normal_deviation = 90.0_c_double
     end type
 
     !> `mio_thickness_report` (144 bytes): what `mio_thickness` measured;
-    !> `direction` is 1 (inward) or 2 (outward).
+    !> `direction` is 1 (inward) or 2 (outward), `method` 0 ray, 1 sphere,
+    !> 2 cone; `p2` and `p95` the percentiles of the hits.
     type, bind(c) :: mio_thickness_report
         integer(c_int32_t) :: direction = 0
-        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int32_t) :: method = 0
         integer(c_int64_t) :: num_cells = 0
         integer(c_int64_t) :: num_hit = 0
         integer(c_int64_t) :: num_missed = 0
@@ -887,7 +892,9 @@ module meshioplusplus
         real(c_double) :: min_point(3) = 0.0_c_double
         real(c_double) :: max_distance = 0.0_c_double
         integer(c_int64_t) :: num_warnings = 0
-        integer(c_int64_t) :: reserved(4) = 0
+        real(c_double) :: p2 = 0.0_c_double
+        real(c_double) :: p95 = 0.0_c_double
+        integer(c_int64_t) :: reserved(2) = 0
     end type
 
     !> Interop mirror of C `mio_deviation_opts` (88 bytes; roadmap 7.4).
@@ -17132,11 +17139,17 @@ contains
     !> the `thickness:distance` (NaN for a miss) and `thickness:hit_cell` cell
     !> data; `report` is the C report, so its `min_cell` is 0-based (-1: none).
     function mio_thickness(mesh, other, direction, max_distance, threshold, region, &
-                           region_other, report, stat, errmsg) result(out)
+                           region_other, report, stat, errmsg, method, cone_angle, &
+                           cone_rays, two_sided, max_normal_deviation) result(out)
         type(mio_mesh), intent(in) :: mesh
         type(mio_mesh), intent(in), optional :: other
         character(*), intent(in), optional :: direction, region, region_other
         real(real64), intent(in), optional :: max_distance, threshold
+        !> 'ray', 'sphere' or 'cone' (roadmap 7.5).
+        character(*), intent(in), optional :: method
+        real(real64), intent(in), optional :: cone_angle, max_normal_deviation
+        integer, intent(in), optional :: cone_rays
+        logical, intent(in), optional :: two_sided
         type(mio_thickness_report), intent(out), optional :: report
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
@@ -17166,6 +17179,27 @@ contains
         end if
         if (present(max_distance)) opts%max_distance = real(max_distance, c_double)
         if (present(threshold)) opts%threshold = real(threshold, c_double)
+        if (present(method)) then
+            select case (trim(method))
+            case ('ray')
+                opts%method = 0
+            case ('sphere')
+                opts%method = 1
+            case ('cone')
+                opts%method = 2
+            case default
+                call handle_failure('thickness', "method must be 'ray', 'sphere' or 'cone'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(cone_angle)) opts%cone_angle = real(cone_angle, c_double)
+        if (present(cone_rays)) opts%cone_rays = int(cone_rays, c_int64_t)
+        if (present(max_normal_deviation)) &
+            opts%max_normal_deviation = real(max_normal_deviation, c_double)
+        if (present(two_sided)) then
+            if (two_sided) opts%two_sided = 1
+        end if
         if (present(region)) then
             buf_a = trim(region)//c_null_char
             opts%region = c_loc(buf_a(1:1))

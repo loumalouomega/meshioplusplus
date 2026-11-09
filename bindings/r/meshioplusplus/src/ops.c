@@ -1970,7 +1970,8 @@ SEXP R_mio_find_intersections(SEXP mesh, SEXP other, SEXP region, SEXP region_ot
 }
 
 SEXP R_mio_thickness(SEXP mesh, SEXP other, SEXP direction, SEXP max_distance, SEXP threshold,
-                     SEXP region, SEXP region_other) {
+                     SEXP region, SEXP region_other, SEXP method, SEXP cone_angle,
+                     SEXP cone_rays, SEXP two_sided, SEXP max_normal_deviation) {
     mio_thickness_opts opts;
     mio_thickness_opts_init(&opts);
     const char *dir = mio_r_string(direction, "direction");
@@ -1982,6 +1983,15 @@ SEXP R_mio_thickness(SEXP mesh, SEXP other, SEXP direction, SEXP max_distance, S
     opts.threshold = mio_r_double(threshold, "threshold");
     opts.region = mio_r_opt_string(region);
     opts.region_target = mio_r_opt_string(region_other);
+    const char *meth = mio_r_string(method, "method");
+    if (strcmp(meth, "ray") == 0) opts.method = MIO_THICKNESS_RAY;
+    else if (strcmp(meth, "sphere") == 0) opts.method = MIO_THICKNESS_SPHERE;
+    else if (strcmp(meth, "cone") == 0) opts.method = MIO_THICKNESS_CONE;
+    else Rf_error("`method` must be 'ray', 'sphere' or 'cone'");
+    opts.cone_angle = mio_r_double(cone_angle, "cone_angle");
+    opts.cone_rays = (int64_t)mio_r_double(cone_rays, "cone_rays");
+    opts.two_sided = mio_r_bool(two_sided, "two_sided");
+    opts.max_normal_deviation = mio_r_double(max_normal_deviation, "max_normal_deviation");
     const mio_mesh *target = other == R_NilValue ? NULL : mio_r_mesh(other);
     mio_thickness_report r;
     mio_mesh *out = mio_thickness(mio_r_mesh(mesh), target, &opts, &r);
@@ -1993,11 +2003,14 @@ SEXP R_mio_thickness(SEXP mesh, SEXP other, SEXP direction, SEXP max_distance, S
     for (int k = 0; k < 3; ++k)
         REAL(min_point)[k] = r.min_point[k];
     SEXP warnings = PROTECT(mio_r_getbuffer(mio_thickness_warnings, "thickness"));
+    static const char *const kMethods[] = {"ray", "sphere", "cone"};
+    SEXP meth_name = PROTECT(Rf_mkString(kMethods[r.method >= 0 && r.method <= 2 ? r.method : 0]));
     const char *names[] = {"mesh",     "direction", "num_cells",    "num_hit",  "num_missed",
                            "num_below", "min",      "max",          "mean",     "min_cell",
-                           "min_point", "max_distance", "warnings"};
+                           "min_point", "max_distance", "warnings", "method", "p2", "p95"};
     const SEXP values[] = {mo,   dir_name, NULL,      NULL, NULL, NULL,    NULL,
-                           NULL, NULL,      NULL,      min_point,  NULL,    warnings};
+                           NULL, NULL,      NULL,      min_point,  NULL,    warnings,
+                           meth_name, NULL, NULL};
     const double numbers[] = {(double)r.num_cells,
                               (double)r.num_hit,
                               (double)r.num_missed,
@@ -2006,9 +2019,11 @@ SEXP R_mio_thickness(SEXP mesh, SEXP other, SEXP direction, SEXP max_distance, S
                               r.max,
                               r.mean,
                               r.min_cell < 0 ? 0.0 : (double)(r.min_cell + 1),
-                              r.max_distance};
-    SEXP res = mio_r_report_list(13, names, values, numbers);
-    UNPROTECT(4);
+                              r.max_distance,
+                              r.p2,
+                              r.p95};
+    SEXP res = mio_r_report_list(16, names, values, numbers);
+    UNPROTECT(5);
     return res;
 }
 

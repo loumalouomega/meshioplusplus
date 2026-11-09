@@ -265,7 +265,12 @@
       {"name": "Min", "kind": "number", "default": 0.0},
       {"name": "Region", "kind": "text", "default": ""},
       {"name": "RegionOther", "kind": "text", "default": ""},
-      {"name": "Require", "kind": "flag", "default": true}
+      {"name": "Require", "kind": "flag", "default": true},
+      {"name": "Method", "kind": "text", "default": "ray"},
+      {"name": "ConeAngle", "kind": "number", "default": 15.0},
+      {"name": "ConeRays", "kind": "number", "default": 16.0},
+      {"name": "TwoSided", "kind": "flag", "default": false},
+      {"name": "MaxNormalDeviation", "kind": "number", "default": 90.0}
     ]},
     {"op": "Deviation", "keys": [
       {"name": "Reference", "kind": "text", "default": ""},

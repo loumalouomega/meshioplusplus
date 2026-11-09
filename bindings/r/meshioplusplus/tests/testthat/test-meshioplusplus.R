@@ -2245,6 +2245,10 @@ test_that("find_intersections and thickness", {
   expect_equal(t$num_missed, 0)
   expect_lt(abs(t$min - 2), 0.05)
   expect_error(mio_thickness(a, direction = "sideways"), "direction")
+  ts <- mio_thickness(a, method = "sphere", two_sided = TRUE)
+  expect_equal(ts$method, "sphere")
+  expect_lte(ts$p2, ts$p95)
+  expect_error(mio_thickness(a, method = "laser"), "method")
 })
 
 test_that("deviation", {

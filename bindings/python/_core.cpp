@@ -3751,7 +3751,8 @@ PYBIND11_MODULE(_core, m) {
         "thickness",
         [](py::object pymesh, py::object pyother, const std::string& direction, double max_distance,
            double threshold, const std::string& region, const std::string& region_target,
-           bool attach) {
+           bool attach, const std::string& method, double cone_angle, std::int64_t cone_rays,
+           bool two_sided, double max_normal_deviation) {
             meshioplusplus_py::PyMeshRefs refs, refs_b;
             meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
                 pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
@@ -3777,6 +3778,11 @@ PYBIND11_MODULE(_core, m) {
             o.mRegion = region;
             o.mRegionTarget = region_target;
             o.mAttach = attach;
+            o.mMethod = meshioplusplus::thickness_method_from_name(method);
+            o.mConeAngleDeg = cone_angle;
+            o.mConeRays = cone_rays;
+            o.mTwoSided = two_sided;
+            o.mMaxNormalDeviationDeg = max_normal_deviation;
             meshioplusplus::ThicknessResult r = core_nogil([&] {
                 return two ? meshioplusplus::thickness(mesh, other, o)
                            : meshioplusplus::thickness(mesh, o);
@@ -3796,12 +3802,19 @@ PYBIND11_MODULE(_core, m) {
             out["min_point"] = py::make_tuple(r.mMinPoint[0], r.mMinPoint[1], r.mMinPoint[2]);
             out["max_distance"] = r.mMaxDistance;
             out["warnings"] = r.mWarnings;
+            out["method"] = r.mMethod == meshioplusplus::ThicknessMethod::Sphere ? "sphere"
+                            : r.mMethod == meshioplusplus::ThicknessMethod::Cone ? "cone"
+                                                                                 : "ray";
+            out["p2"] = r.mP2;
+            out["p95"] = r.mP95;
             return out;
         },
         py::arg("mesh"), py::arg("other") = py::none(), py::arg("direction") = "auto",
         py::arg("max_distance") = 0.0, py::arg("threshold") = 0.0,
         py::arg("region") = std::string(), py::arg("region_target") = std::string(),
-        py::arg("attach") = true);
+        py::arg("attach") = true, py::arg("method") = "ray", py::arg("cone_angle") = 15.0,
+        py::arg("cone_rays") = 16, py::arg("two_sided") = false,
+        py::arg("max_normal_deviation") = 90.0);
 
     // deviation (roadmap 7.4.1, 7.4.2): the signed distance of every scan
     // point to a reference surface, or to a fitted primitive when `reference`

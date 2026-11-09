@@ -10120,9 +10120,12 @@ static_assert(sizeof(mio_find_intersections_report) == 96, "mio_find_intersectio
 static_assert(offsetof(mio_find_intersections_report, num_warnings) == 56,
               "mio_find_intersections_report layout");
 static_assert(sizeof(mio_thickness_opts) == 72, "mio_thickness_opts layout");
-static_assert(offsetof(mio_thickness_opts, reserved) == 40, "mio_thickness_opts layout");
+static_assert(offsetof(mio_thickness_opts, method) == 40, "mio_thickness_opts layout");
+static_assert(offsetof(mio_thickness_opts, max_normal_deviation) == 64,
+              "mio_thickness_opts layout");
 static_assert(sizeof(mio_thickness_report) == 144, "mio_thickness_report layout");
 static_assert(offsetof(mio_thickness_report, num_warnings) == 104, "mio_thickness_report layout");
+static_assert(offsetof(mio_thickness_report, p2) == 112, "mio_thickness_report layout");
 
 void mio_find_intersections_opts_init(mio_find_intersections_opts* opts) {
     if (!opts)
@@ -10237,6 +10240,10 @@ void mio_thickness_opts_init(mio_thickness_opts* opts) {
     *opts = mio_thickness_opts{};
     opts->direction = MIO_THICKNESS_AUTO;
     opts->attach = 1;
+    opts->method = MIO_THICKNESS_RAY;
+    opts->cone_angle = 15.0;
+    opts->cone_rays = 16;
+    opts->max_normal_deviation = 90.0;
 }
 
 mio_mesh* mio_thickness(const mio_mesh* mesh, const mio_mesh* target,
@@ -10260,6 +10267,14 @@ mio_mesh* mio_thickness(const mio_mesh* mesh, const mio_mesh* target,
         if (rOpts.region_target)
             o.mRegionTarget = rOpts.region_target;
         o.mAttach = rOpts.attach != 0;
+        if (rOpts.method < MIO_THICKNESS_RAY || rOpts.method > MIO_THICKNESS_CONE)
+            throw std::invalid_argument("meshio++: thickness: unknown method " +
+                                        std::to_string(rOpts.method));
+        o.mMethod = static_cast<meshioplusplus::ThicknessMethod>(rOpts.method);
+        o.mTwoSided = rOpts.two_sided != 0;
+        o.mConeAngleDeg = rOpts.cone_angle;
+        o.mConeRays = rOpts.cone_rays;
+        o.mMaxNormalDeviationDeg = rOpts.max_normal_deviation;
         meshioplusplus::ThicknessResult r =
             target ? meshioplusplus::thickness(mesh->mMesh, target->mMesh, o)
                    : meshioplusplus::thickness(mesh->mMesh, o);
@@ -10279,6 +10294,9 @@ mio_mesh* mio_thickness(const mio_mesh* mesh, const mio_mesh* target,
                 report->min_point[k] = r.mMinPoint[static_cast<std::size_t>(k)];
             report->max_distance = r.mMaxDistance;
             report->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+            report->method = static_cast<int32_t>(r.mMethod);
+            report->p2 = r.mP2;
+            report->p95 = r.mP95;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

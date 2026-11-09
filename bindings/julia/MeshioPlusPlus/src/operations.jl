@@ -1009,33 +1009,43 @@ end
 
 const _THICKNESS_DIRECTIONS = Dict("auto" => Int32(0), "inward" => Int32(1),
                                    "outward" => Int32(2))
+const _THICKNESS_METHODS = Dict("ray" => Int32(0), "sphere" => Int32(1), "cone" => Int32(2))
 
 """
     thickness(mesh, other=nothing; direction="auto", max_distance=0.0, threshold=0.0,
-              region="", region_other="")
-        -> (; mesh, direction, num_cells, num_hit, num_missed, num_below, min, max, mean,
-              min_cell, min_point, max_distance, warnings)
+              region="", region_other="", method="ray", cone_angle=15.0, cone_rays=16,
+              two_sided=false, max_normal_deviation=90.0)
+        -> (; mesh, direction, method, num_cells, num_hit, num_missed, num_below, min, max,
+              mean, p2, p95, min_cell, min_point, max_distance, warnings)
 
 Wall thickness or clearance per facet of the surface `mesh`, by a ray from each
 cell's centroid along its normal (roadmap 3.1.4): `direction` `"inward"` stops
 at the far side of the wall, `"outward"` at the next wall facing the ray, and
 `"auto"` is inward for one surface, outward against `other`. `mesh` comes back
 with the `thickness:distance` (NaN for a miss) and `thickness:hit_cell` cell
-data; `min_cell` is **1-based** (0: no hit). See `doc/thickness.md`.
+data; `min_cell` is **1-based** (0: no hit). `method` `"sphere"` or `"cone"`,
+`two_sided` and `max_normal_deviation` are roadmap 7.5's methods and scan-safe
+hits. See `doc/thickness.md`.
 """
 function thickness(m::Mesh, other::Union{Mesh,Nothing}=nothing;
                    direction::AbstractString="auto", max_distance::Real=0.0,
                    threshold::Real=0.0, region::AbstractString="",
-                   region_other::AbstractString="")
+                   region_other::AbstractString="", method::AbstractString="ray",
+                   cone_angle::Real=15.0, cone_rays::Integer=16, two_sided::Bool=false,
+                   max_normal_deviation::Real=90.0)
     haskey(_THICKNESS_DIRECTIONS, direction) ||
         throw(ArgumentError("meshio++: thickness: direction must be auto, inward or outward"))
+    haskey(_THICKNESS_METHODS, method) ||
+        throw(ArgumentError("meshio++: thickness: method must be ray, sphere or cone"))
     report = Ref{_CThicknessReport}()
     ra = Vector{UInt8}(codeunits(String(region) * "\0"))
     rb = Vector{UInt8}(codeunits(String(region_other) * "\0"))
     ptr = GC.@preserve ra rb begin
         opts = _CThicknessOpts(Cstring(pointer(ra)), Cstring(pointer(rb)), Cdouble(max_distance),
                                Cdouble(threshold), _THICKNESS_DIRECTIONS[direction], Int32(1),
-                               (0, 0, 0, 0))
+                               _THICKNESS_METHODS[method], two_sided ? Int32(1) : Int32(0),
+                               Cdouble(cone_angle), Int64(cone_rays),
+                               Cdouble(max_normal_deviation))
         ccall(_sym(:mio_thickness), Ptr{Cvoid},
               (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CThicknessOpts}, Ref{_CThicknessReport}),
               _handle(m), other === nothing ? C_NULL : _handle(other), Ref(opts), report)
@@ -1044,9 +1054,10 @@ function thickness(m::Mesh, other::Union{Mesh,Nothing}=nothing;
     text = _getstring((buf, n) -> ccall(_sym(:mio_thickness_warnings), Int64,
                                         (Ptr{UInt8}, Int64), buf, n))
     r = report[]
-    (mesh=out, direction=r.direction == 2 ? "outward" : "inward", num_cells=Int(r.num_cells),
+    (mesh=out, direction=r.direction == 2 ? "outward" : "inward",
+     method=("ray", "sphere", "cone")[r.method + 1], num_cells=Int(r.num_cells),
      num_hit=Int(r.num_hit), num_missed=Int(r.num_missed), num_below=Int(r.num_below),
-     min=r.min, max=r.max, mean=r.mean, min_cell=r.min_cell < 0 ? 0 : Int(r.min_cell) + 1,
+     min=r.min, max=r.max, mean=r.mean, p2=r.p2, p95=r.p95, min_cell=r.min_cell < 0 ? 0 : Int(r.min_cell) + 1,
      min_point=collect(r.min_point), max_distance=r.max_distance,
      warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
 end

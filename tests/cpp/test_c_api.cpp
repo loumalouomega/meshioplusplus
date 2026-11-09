@@ -8617,6 +8617,20 @@ TEST(CApi, FindIntersectionsAndThickness) {
     EXPECT_NEAR(tr.min, 2.0, 0.02);
     EXPECT_EQ(mio_mesh_cell_data_num_blocks(thick, "thickness:distance"), 1);
     mio_mesh_free(thick);
+    // The sphere method and two-sided rays (roadmap 7.5).
+    EXPECT_EQ(t.method, MIO_THICKNESS_RAY);
+    EXPECT_EQ(t.cone_rays, 16);
+    EXPECT_EQ(t.max_normal_deviation, 90.0);
+    t.method = MIO_THICKNESS_SPHERE;
+    t.two_sided = 1;
+    thick = mio_thickness(a, nullptr, &t, &tr);
+    ASSERT_NE(thick, nullptr) << mio_last_error();
+    EXPECT_EQ(tr.method, MIO_THICKNESS_SPHERE);
+    EXPECT_LE(tr.p2, tr.p95);
+    mio_mesh_free(thick);
+    t.method = 9;
+    EXPECT_EQ(mio_thickness(a, nullptr, &t, &tr), nullptr);
+    mio_thickness_opts_init(&t);
     t.direction = 7;
     EXPECT_EQ(mio_thickness(a, nullptr, &t, &tr), nullptr);
     EXPECT_GE(mio_thickness_warnings(nullptr, 0), 0);
