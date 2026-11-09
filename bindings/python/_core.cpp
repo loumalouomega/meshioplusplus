@@ -173,6 +173,7 @@
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/fit_curves.hpp"
+#include "meshioplusplus/operations/silhouette.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -3094,6 +3095,43 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("origin"), py::arg("normal"), py::arg("record_parent_ids") = false,
         py::arg("chain") = false, py::arg("min_length") = 0.0);
+
+    // The outline of a part along a direction (roadmap 7.6.3).
+    m.def(
+        "silhouette",
+        [](py::object pymesh, std::array<double, 3> normal, double clearance, double round_angle,
+           std::int64_t arc_segments, bool extrude, const std::string& region,
+           double merge_tolerance) {
+            meshioplusplus_py::PyMeshRefs refs;
+            meshioplusplus::Mesh mesh = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::SilhouetteOptions o;
+            o.mNormal = normal;
+            o.mClearance = clearance;
+            o.mRoundAngleDeg = round_angle;
+            o.mArcSegments = arc_segments;
+            o.mExtrude = extrude;
+            o.mRegion = region;
+            o.mMergeTolerance = merge_tolerance;
+            meshioplusplus::SilhouetteResult r =
+                core_nogil([&] { return meshioplusplus::silhouette(mesh, o); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_loops"] = r.mNumLoops;
+            out["num_outer"] = r.mNumOuter;
+            out["num_holes"] = r.mNumHoles;
+            out["num_triangles"] = r.mNumTriangles;
+            out["area"] = r.mArea;
+            out["perimeter"] = r.mPerimeter;
+            out["min_height"] = r.mMinHeight;
+            out["max_height"] = r.mMaxHeight;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("normal") = std::array<double, 3>{0, 0, 1},
+        py::arg("clearance") = 0.0, py::arg("round_angle") = 180.0, py::arg("arc_segments") = 64,
+        py::arg("extrude") = false, py::arg("region") = std::string(),
+        py::arg("merge_tolerance") = 1e-9);
 
     // Lines, arcs and circles from chained sections (roadmap 7.6.2).
     m.def(

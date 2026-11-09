@@ -8588,6 +8588,26 @@ TEST(CApi, ChainedSliceAndSections) {
     EXPECT_EQ(mio_fit_curves(s, &fo, &fr), nullptr);  // triangles, not lines
     mio_mesh_free(sk);
     mio_mesh_free(loop);
+    // The sphere's outline along z is one loop (roadmap 7.6.3).
+    mio_silhouette_opts so;
+    mio_silhouette_opts_init(&so);
+    EXPECT_EQ(so.arc_segments, 64);
+    EXPECT_EQ(so.normal[2], 1.0);
+    mio_silhouette_report sr;
+    mio_mesh* outline = mio_silhouette(s, &so, &sr);
+    ASSERT_NE(outline, nullptr) << mio_last_error();
+    EXPECT_EQ(sr.num_loops, 1);
+    EXPECT_EQ(sr.num_holes, 0);
+    EXPECT_GT(sr.area, 2.9);
+    mio_mesh_free(outline);
+    so.extrude = 1;
+    so.clearance = 0.1;
+    mio_mesh* prism = mio_silhouette(s, &so, &sr);
+    ASSERT_NE(prism, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_silhouette_warnings(nullptr, 0), 0);
+    mio_mesh_free(prism);
+    so.arc_segments = 2;
+    EXPECT_EQ(mio_silhouette(s, &so, &sr), nullptr);
     mio_mesh_free(s);
 }
 

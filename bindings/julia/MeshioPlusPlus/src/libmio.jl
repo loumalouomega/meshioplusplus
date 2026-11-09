@@ -2095,6 +2095,33 @@ struct _CFitCurvesReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_silhouette_opts` (roadmap 7.6.3)."""
+struct _CSilhouetteOpts
+    normal::NTuple{3,Cdouble}
+    clearance::Cdouble
+    round_angle::Cdouble
+    arc_segments::Int64
+    extrude::Int32
+    reserved32::Int32
+    merge_tolerance::Cdouble
+    region::Cstring
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_silhouette_report`."""
+struct _CSilhouetteReport
+    num_loops::Int64
+    num_outer::Int64
+    num_holes::Int64
+    num_triangles::Int64
+    area::Cdouble
+    perimeter::Cdouble
+    min_height::Cdouble
+    max_height::Cdouble
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_sketch_piece`."""
 struct _CSketchPiece
     type::Int32
@@ -2630,6 +2657,9 @@ function _check_abi_layout()
     (sizeof(_CFitCurvesOpts) == 88 && sizeof(_CFitCurvesReport) == 96 &&
      sizeof(_CSketchPiece) == 104 && fieldoffset(_CSketchPiece, 9) == 80) ||
         error("meshio++: mio_fit_curves layout mismatch")
+    (sizeof(_CSilhouetteOpts) == 104 && fieldoffset(_CSilhouetteOpts, 9) == 64 &&
+     sizeof(_CSilhouetteReport) == 104) ||
+        error("meshio++: mio_silhouette layout mismatch")
     sizeof(_CSymmetryPlaneOpts) == 112 ||
         error("meshio++: mio_symmetry_plane_opts layout mismatch ($(sizeof(_CSymmetryPlaneOpts)) bytes)")
     sizeof(_CSymmetryPlaneReport) == 128 ||

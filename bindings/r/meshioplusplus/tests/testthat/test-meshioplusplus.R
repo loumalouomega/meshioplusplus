@@ -2261,6 +2261,12 @@ test_that("find_intersections and thickness", {
   expect_equal(fc$pieces$type[1], "circle")
   mio_release(fc$mesh)
   mio_release(ch)
+  sil <- mio_silhouette(a, clearance = 0.05)
+  expect_equal(sil$num_loops, 1)
+  expect_equal(sil$num_holes, 0)
+  expect_gt(sil$area, 0)
+  mio_release(sil$mesh)
+  expect_error(mio_silhouette(a, arc_segments = 2), "arc_segments")
 })
 
 test_that("deviation", {

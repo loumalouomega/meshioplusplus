@@ -1401,6 +1401,36 @@ mio_slice <- function(mesh, origin, normal, record_parent_ids = FALSE, chain = F
 #' @param record_parent_ids Attach `slice:parent_cell`.
 #' @return A `mio_mesh`.
 #' @export
+#' The outline of a part along a direction
+#'
+#' The surface (or a volume mesh's skin) projected onto the plane normal to
+#' `normal` and unioned exactly, as closed chains with its holes, ready for
+#' `mio_fit_curves()`; `clearance` offsets it, and `extrude = TRUE` returns the
+#' closed surface of the prism over it instead (roadmap 7.6.3). See
+#' `doc/silhouette.md`.
+#'
+#' @param mesh A surface or volume mesh.
+#' @param normal The viewing direction.
+#' @param clearance Grows the outline by this distance (negative shrinks it).
+#' @param round_angle Corners turning by less than this many degrees are rounded.
+#' @param arc_segments Polygon sides of a full turn of arc.
+#' @param extrude Return the prism's closed triangle surface.
+#' @param region Restrict to this cell region of a surface.
+#' @param merge_tolerance Projected points this close, relative to the box diagonal, are one.
+#' @return A list: `mesh`, `num_loops`, `num_outer`, `num_holes`,
+#'   `num_triangles`, `area`, `perimeter`, `min_height`, `max_height` and
+#'   `warnings`.
+#' @export
+mio_silhouette <- function(mesh, normal = c(0, 0, 1), clearance = 0, round_angle = 180,
+                           arc_segments = 64, extrude = FALSE, region = NULL,
+                           merge_tolerance = 1e-9) {
+  res <- .Call(R_mio_silhouette, mesh, as.numeric(normal), as.numeric(clearance),
+               as.numeric(round_angle), as.numeric(arc_segments), as.logical(extrude), region,
+               as.numeric(merge_tolerance))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
 #' Lines, arcs and circles from chained sections
 #'
 #' Each chain of a chained line mesh (`mio_slice(chain = TRUE)` or

@@ -231,6 +231,36 @@ SEXP R_mio_slice(SEXP mesh, SEXP origin, SEXP normal, SEXP record_parent_ids, SE
     return mio_r_wrap_mesh(out);
 }
 
+/* silhouette(mesh, normal, clearance, round_angle, arc_segments, extrude,
+ * region, merge_tolerance) (roadmap 7.6.3). */
+SEXP R_mio_silhouette(SEXP mesh, SEXP normal, SEXP clearance, SEXP round_angle, SEXP arc_segments,
+                      SEXP extrude, SEXP region, SEXP merge_tolerance) {
+    mio_silhouette_opts opts;
+    mio_silhouette_opts_init(&opts);
+    mio_r_vec3(normal, opts.normal, "normal");
+    opts.clearance = mio_r_double(clearance, "clearance");
+    opts.round_angle = mio_r_double(round_angle, "round_angle");
+    opts.arc_segments = (int64_t)mio_r_double(arc_segments, "arc_segments");
+    opts.extrude = mio_r_bool(extrude, "extrude");
+    opts.region = mio_r_opt_string(region);
+    opts.merge_tolerance = mio_r_double(merge_tolerance, "merge_tolerance");
+    mio_silhouette_report r;
+    mio_mesh *out = mio_silhouette(mio_r_mesh(mesh), &opts, &r);
+    if (out == NULL) mio_r_fail("silhouette");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP w = PROTECT(mio_r_getbuffer(mio_silhouette_warnings, "silhouette"));
+    const char *names[] = {"mesh",      "num_loops",  "num_outer",  "num_holes",
+                           "num_triangles", "area",   "perimeter",  "min_height",
+                           "max_height", "warnings"};
+    const SEXP values[] = {mo, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, w};
+    const double numbers[] = {(double)r.num_loops, (double)r.num_outer,     (double)r.num_holes,
+                              (double)r.num_triangles, r.area, r.perimeter, r.min_height,
+                              r.max_height};
+    SEXP res = mio_r_report_list(10, names, values, numbers);
+    UNPROTECT(2);
+    return res;
+}
+
 /* fit_curves(sections, tolerance, snap_angle, normal, min_arc_points,
  * min_arc_sweep): the pieces as columns (type names; chain and frame as the
  * 0-based ids of the data). */

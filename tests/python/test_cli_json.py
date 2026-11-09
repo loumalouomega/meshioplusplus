@@ -397,6 +397,18 @@ CASES = [
     ("thickness", lambda f: ["thickness", f["sphere_a"], "--json"]),
     ("fit_curves", lambda f: ["fit-curves", f["chained"], "--json"]),
     (
+        "silhouette",
+        lambda f: [
+            "silhouette",
+            f["sphere_a"],
+            "--normal",
+            "1,2,3",
+            "--clearance",
+            "0.05",
+            "--json",
+        ],
+    ),
+    (
         "thickness_sphere",
         lambda f: [
             "thickness",

@@ -1385,6 +1385,47 @@ MIO_API mio_status mio_fit_curves_frame(int64_t index, double frame[16]);
 /** The warnings of that call; string rule 5. */
 MIO_API int64_t mio_fit_curves_warnings(char* buf, int64_t buflen);
 
+/** Options of mio_silhouette; initialise with mio_silhouette_opts_init. 104 bytes. */
+typedef struct mio_silhouette_opts {
+    double normal[3];       /**< the viewing direction (init: 0, 0, 1) */
+    double clearance;       /**< > 0 grows the outline, < 0 shrinks it (init: 0) */
+    double round_angle;     /**< corners turning less than this many degrees are rounded (init: 180) */
+    int64_t arc_segments;   /**< polygon sides of a full turn of arc, at least 4 (init: 64) */
+    int32_t extrude;        /**< nonzero: the prism's closed triangle surface (init: 0) */
+    int32_t reserved32;
+    double merge_tolerance; /**< relative to the projected box's diagonal (init: 1e-9) */
+    /** Restrict to this named cell region of a surface; NULL or "" takes all. */
+    const char* region;
+    int64_t reserved[4];
+} mio_silhouette_opts;
+
+/** What mio_silhouette found. 104 bytes. */
+typedef struct mio_silhouette_report {
+    int64_t num_loops;
+    int64_t num_outer;
+    int64_t num_holes;
+    int64_t num_triangles; /**< projected triangles of non-zero area */
+    double area;           /**< of the outline's region */
+    double perimeter;      /**< the loops' total length */
+    double min_height;     /**< along the normal */
+    double max_height;
+    int64_t num_warnings;
+    int64_t reserved[4];
+} mio_silhouette_report;
+
+MIO_API void mio_silhouette_opts_init(mio_silhouette_opts* opts);
+/**
+ * The outline of a surface (or a volume mesh's skin) seen along a direction,
+ * with its holes, optionally offset by a clearance or made a prism (roadmap
+ * 7.6.3; doc/silhouette.md). Returns a chained line mesh (section:chain,
+ * section:closed, section:offset, silhouette:hole) or the prism (free with
+ * mio_mesh_free), or NULL.
+ */
+MIO_API mio_mesh* mio_silhouette(const mio_mesh* mesh, const mio_silhouette_opts* opts,
+                                 mio_silhouette_report* report);
+/** The warnings of this thread's last mio_silhouette call; string rule 5. */
+MIO_API int64_t mio_silhouette_warnings(char* buf, int64_t buflen);
+
 /**
  * Chained sections of a surface at `n_offsets` parallel planes `n . x =
  * offsets[k]` (`n` the unit `direction`), merged into one line mesh with the

@@ -192,6 +192,7 @@ from .. import sections as _sections_op
 from .. import segment
 from .. import select as _select_op
 from .. import shrinkwrap
+from .. import silhouette as _silhouette_op
 from .. import slice as _slice_op
 from .. import smooth
 from .. import snapshot as _snapshot_fn
@@ -1800,6 +1801,36 @@ def tool_slice(
 ):
     """Planar cross-section (one topological dimension below the input)."""
     return _run_op(_slice_op, locals(), report=False)
+
+
+def tool_silhouette(
+    input_path,
+    output_path=None,
+    input_format=None,
+    output_format=None,
+    normal=None,
+    clearance=0.0,
+    round_angle=180.0,
+    arc_segments=64,
+    extrude=False,
+    region=None,
+    merge_tolerance=1e-9,
+):
+    """The outline of a part along a direction, optionally offset or a prism."""
+    out, report = _silhouette_op(
+        _load(input_path, input_format),
+        (0.0, 0.0, 1.0) if normal is None else normal,
+        clearance=float(clearance),
+        round_angle=float(round_angle),
+        arc_segments=int(arc_segments),
+        extrude=bool(extrude),
+        region=region,
+        merge_tolerance=float(merge_tolerance),
+        return_report=True,
+    )
+    if output_path:
+        report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
 
 
 def tool_fit_curves(
@@ -7285,6 +7316,10 @@ TOOL_REGISTRY = OrderedDict(
         ("crop", {"fn": tool_crop, "wraps": ("crop",), "gated": None}),
         ("slice", {"fn": tool_slice, "wraps": ("slice",), "gated": None}),
         ("sections", {"fn": tool_sections, "wraps": ("sections",), "gated": None}),
+        (
+            "silhouette",
+            {"fn": tool_silhouette, "wraps": ("silhouette",), "gated": None},
+        ),
         (
             "fit_curves",
             {"fn": tool_fit_curves, "wraps": ("fit_curves",), "gated": None},

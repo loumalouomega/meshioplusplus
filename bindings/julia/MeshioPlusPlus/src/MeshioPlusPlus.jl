@@ -123,7 +123,7 @@ export sample_distance, distance_to_surface, surface_watertight_check, compute_s
 export compute_curvature, compute_normals, feature_edges, hausdorff_distance, check_quality
 export segment, select_region, fit_primitives, refine_patches, fit_cad, has_occt
 export repair, shrinkwrap, sobolev_deform, geodesic_distance, parameterize, convert_coordinates,
-       convex_hull, delaunay_2d, estimate_normals, reconstruct_surface, register_rigid, register_landmarks, sections, fit_curves,
+       convex_hull, delaunay_2d, estimate_normals, reconstruct_surface, register_rigid, register_landmarks, sections, fit_curves, silhouette,
        find_symmetry_plane, auto_align, laplacian_eigenmodes, morph,
        untangle, prepare_metric
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth

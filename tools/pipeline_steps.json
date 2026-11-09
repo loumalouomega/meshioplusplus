@@ -63,6 +63,15 @@
       {"name": "Chain", "kind": "flag", "default": false},
       {"name": "MinLength", "kind": "number", "default": 0.0}
     ]},
+    {"op": "Silhouette", "note": "The outline of a part along a direction (roadmap 7.6.3).", "keys": [
+      {"name": "Normal"},
+      {"name": "Clearance", "kind": "number", "default": 0.0},
+      {"name": "RoundAngle", "kind": "number", "default": 180.0},
+      {"name": "ArcSegments", "kind": "number", "default": 64.0},
+      {"name": "Extrude", "kind": "flag", "default": false},
+      {"name": "Region", "kind": "text", "default": ""},
+      {"name": "MergeTolerance", "kind": "number", "default": 1e-09}
+    ]},
     {"op": "FitCurves", "note": "Lines, arcs and circles from chained sections (roadmap 7.6.2).", "keys": [
       {"name": "Tolerance", "kind": "number", "default": 0.0},
       {"name": "SnapAngle", "kind": "number", "default": 0.0},

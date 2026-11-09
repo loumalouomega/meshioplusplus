@@ -38878,6 +38878,93 @@ MESHIOPLUSPLUS_API ShrinkwrapResult shrinkwrap(const Mesh& rMesh, const Mesh& rT
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/shrinkwrap.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/silhouette.hpp =====
+/**
+ * @file operations/silhouette.hpp
+ * @brief The outline of a part seen along a direction (roadmap 7.6.3): its
+ * surface projected onto a plane, unioned, as closed chains with its holes,
+ * optionally offset by a clearance or made a prism (a nest, a jig, a foam
+ * insert).
+ *
+ * The surface's triangles (quads and polygons fanned, a volume mesh's skin)
+ * are projected onto the plane through the origin normal to `mNormal`, in
+ * the frame `lsq_frame` completes it to, and their union is found exactly
+ * (`detail/planar_union.hpp`): the candidate edges are the surface's
+ * boundary edges and its contour generators, split where they cross, and
+ * the region's boundary is walked into loops, outer boundaries
+ * counter-clockwise about the normal and holes clockwise.
+ *
+ * `mClearance` > 0 grows the outline by that distance (a loose fit) and < 0
+ * shrinks it (a press fit): the Minkowski sum or difference with a disk,
+ * through the same union, of the region and a strip along its boundary. A
+ * corner the offset opens is rounded with an arc (polygonal,
+ * `mArcSegments` a full turn, its sides tangent to the true arc so the
+ * offset is never less than the clearance) when it turns by less than
+ * `mRoundAngleDeg`, and kept sharp (a mitre, bevelled beyond four times the
+ * clearance) otherwise.
+ *
+ * The outline is a chained line mesh in the plane at the part's lowest
+ * point along the normal: the Int64 cell data `section:chain` and
+ * `section:closed` and the Float64 `section:offset` that `fit_curves`
+ * reads, and `silhouette:hole` (1 for a hole). With `mExtrude`, the result is
+ * instead the closed triangle surface of the prism over the outline from the
+ * part's lowest to its highest point along the normal, outward wound. Both
+ * carry the field data `silhouette:normal` and `silhouette:extent` (the
+ * lowest and highest heights).
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The Int64 cell data marking a silhouette's holes (1) and outer loops (0).
+inline constexpr const char* kSilhouetteHoleName = "silhouette:hole";
+/// The Float64 field data: the unit viewing direction.
+inline constexpr const char* kSilhouetteNormalName = "silhouette:normal";
+/// The Float64 field data: the lowest and highest heights along the normal.
+inline constexpr const char* kSilhouetteExtentName = "silhouette:extent";
+
+struct SilhouetteOptions {
+    std::array<double, 3> mNormal{0.0, 0.0, 1.0};  ///< the viewing direction
+    double mClearance = 0.0;                       ///< > 0 grows the outline, < 0 shrinks it
+    double mRoundAngleDeg = 180.0;                 ///< corners turning less than this are rounded
+    std::int64_t mArcSegments = 64;                ///< polygon sides of a full turn of arc
+    bool mExtrude = false;                         ///< a prism instead of the outline
+    std::string mRegion;                           ///< restrict to this cell region
+    /// Points closer than this times the projected box's diagonal are one.
+    double mMergeTolerance = 1e-9;
+};
+
+struct SilhouetteResult {
+    Mesh mMesh;
+    std::int64_t mNumLoops = 0;
+    std::int64_t mNumOuter = 0;
+    std::int64_t mNumHoles = 0;
+    std::int64_t mNumTriangles = 0;  ///< projected triangles of non-zero area
+    double mArea = 0.0;              ///< of the outline's region
+    double mPerimeter = 0.0;         ///< the loops' total length
+    double mMinHeight = 0.0;         ///< along the normal
+    double mMaxHeight = 0.0;
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief The outline of @p rMesh along `rOptions.mNormal` (see the file comment).
+ * @throws std::invalid_argument on a zero normal, a non-finite clearance or
+ *         angle, fewer than 4 arc segments, a line or point mesh, an unknown
+ *         region, or coordinates the exact predicates cannot hold.
+ */
+MESHIOPLUSPLUS_API SilhouetteResult silhouette(const Mesh& rMesh,
+                                               const SilhouetteOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/silhouette.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/slice.hpp =====
 /**
  * @file slice.hpp
@@ -52676,6 +52763,85 @@ inline void patch_output_write(
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/patch_output.hpp =====
+// ===== begin src/cpp/src/detail/planar_union.hpp =====
+/**
+ * @file detail/planar_union.hpp
+ * @brief The region a soup of planar triangles covers, minus the region
+ * another covers, as triangles and boundary loops (roadmap 7.6.3: the
+ * silhouette of a surface, and its offset).
+ *
+ *  - **Candidate edges.** An edge two triangles of one soup share, lying on
+ *    either side of it, is inside that soup's region; every other edge (on
+ *    one triangle, on two on the same side, on three or more) may be on its
+ *    boundary. For the projection of a surface these are its boundary edges
+ *    and the edges where the surface turns from facing the plane to facing
+ *    away: the contour generators. Triangles of zero area are left out.
+ *  - **Crossings.** The candidate edges of both soups are split where they
+ *    meet (`cdt2d_find_crossings`, exact): at the endpoint one touches the
+ *    other at, at the endpoints of a collinear overlap, and at the crossing
+ *    point of a proper crossing (computed in double from the exact
+ *    orientations), until none is left.
+ *  - **Coverage.** The split edges are the constraints of a planar CDT
+ *    (`detail/cdt2d.hpp`). Coverage is constant across an unconstrained edge,
+ *    so each component of triangles joined by unconstrained edges is decided
+ *    once: outside the hull when it reaches the super triangle, else by its
+ *    largest triangle's centroid, tested exactly (`orient2d`) against the
+ *    triangles of each soup found through a uniform bucket grid. A component
+ *    is covered when some triangle of the first soup holds the point and none
+ *    of the second does.
+ *  - **Loops.** The covered triangles' edges whose other side is not covered,
+ *    walked with the covered side on the left, turning round each vertex
+ *    through the covered triangles only (so two loops touching at a point
+ *    stay two loops): outer boundaries counter-clockwise, holes clockwise.
+ *    Each loop starts at its lowest point id, and loops are ordered by it.
+ *
+ * Points closer than the merge tolerance are merged into the first (in
+ * input order, the first soup's before the second's). Sequential, and the
+ * output depends on the input alone, so it is deterministic.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Planar triangles over shared points, in any orientation.
+struct PlanarSoup {
+    std::vector<std::array<double, 2>> mPoints;
+    std::vector<std::array<std::int64_t, 3>> mTriangles;
+};
+
+/// A covered region: triangles (counter-clockwise) and boundary loops.
+struct PlanarRegion {
+    bool mOk = true;
+    std::string mWhy;  ///< why not, when not
+    std::vector<std::array<double, 2>> mPoints;
+    std::vector<std::array<std::int64_t, 3>> mTriangles;
+    /// Closed polylines, the last point not repeated, the region on the left.
+    std::vector<std::vector<std::int64_t>> mLoops;
+};
+
+/**
+ * @brief The region `rAdd` covers minus the region `rSubtract` covers.
+ * @param MergeTolerance points closer than this are one point (0: only
+ *        points at exactly the same place).
+ */
+PlanarRegion planar_region(const PlanarSoup& rAdd, const PlanarSoup& rSubtract,
+                           double MergeTolerance);
+
+/// Twice the signed area of a closed loop (positive counter-clockwise).
+double planar_loop_twice_area(const std::vector<std::array<double, 2>>& rPoints,
+                              const std::vector<std::int64_t>& rLoop);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/planar_union.hpp =====
 // ===== begin src/cpp/src/detail/png_write.hpp =====
 /**
  * @file detail/png_write.hpp
@@ -60022,6 +60188,10 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "FeatureAngle"}},
         {"Partition", {"Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"}},
         {"Slice", {"Point", "Normal", "RecordParentIds", "Chain", "MinLength"}},
+        // The outline of a part along a direction (roadmap 7.6.3).
+        {"Silhouette",
+         {"Normal", "Clearance", "RoundAngle", "ArcSegments", "Extrude", "Region",
+          "MergeTolerance"}},
         // Lines, arcs and circles from chained sections (roadmap 7.6.2).
         {"FitCurves", {"Tolerance", "SnapAngle", "Normal", "MinArcPoints", "MinArcSweep"}},
         // Chained line sections of a surface at parallel planes (roadmap 7.6.1).
@@ -102596,6 +102766,477 @@ double polyline_signed_distance_2d(const PlanarSkin& rSkin, const Vec3& rP, bool
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/planar_skin.cpp =====
+// ===== begin src/cpp/src/detail/planar_union.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+using PuVec2 = std::array<double, 2>;
+using PuSeg = std::array<std::int64_t, 2>;
+using PuTri = std::array<std::int64_t, 3>;
+
+constexpr int kPuMaxRounds = 32;
+
+// The merged point set: a point within the tolerance of an earlier one is that
+// one (the lowest id when several are), found through a grid of the
+// tolerance's size; with no tolerance only exact coincidence merges.
+class PuPoints {
+public:
+    explicit PuPoints(double Tolerance) : mTol(Tolerance) {}
+
+    std::int64_t Add(const PuVec2& rP) {
+        if (!(mTol > 0.0)) {
+            const auto it = mExact.find(rP);
+            if (it != mExact.end())
+                return it->second;
+            const auto id = static_cast<std::int64_t>(mXy.size());
+            mExact.emplace(rP, id);
+            mXy.push_back(rP);
+            return id;
+        }
+        const GridKey k{grid_quantize(rP[0], mTol), grid_quantize(rP[1], mTol), 0};
+        std::int64_t best = -1;
+        for (std::int64_t dx = -1; dx <= 1; ++dx)
+            for (std::int64_t dy = -1; dy <= 1; ++dy) {
+                const auto it = mGrid.find(GridKey{k.x + dx, k.y + dy, 0});
+                if (it == mGrid.end())
+                    continue;
+                for (const std::int64_t id : it->second) {
+                    const PuVec2& q = mXy[static_cast<std::size_t>(id)];
+                    const double ex = q[0] - rP[0], ey = q[1] - rP[1];
+                    if (ex * ex + ey * ey <= mTol * mTol && (best < 0 || id < best))
+                        best = id;
+                }
+            }
+        if (best >= 0)
+            return best;
+        const auto id = static_cast<std::int64_t>(mXy.size());
+        mGrid[k].push_back(id);
+        mXy.push_back(rP);
+        return id;
+    }
+
+    const PuVec2& operator[](std::int64_t I) const { return mXy[static_cast<std::size_t>(I)]; }
+    const std::vector<PuVec2>& All() const { return mXy; }
+
+private:
+    double mTol;
+    std::vector<PuVec2> mXy;
+    std::map<PuVec2, std::int64_t> mExact;
+    std::unordered_map<GridKey, std::vector<std::int64_t>, GridKeyHash> mGrid;
+};
+
+std::uint64_t pu_key(std::int64_t A, std::int64_t B) {
+    return (static_cast<std::uint64_t>(A) << 32) ^ static_cast<std::uint64_t>(B);
+}
+
+// A soup's non-degenerate triangles over merged ids, counter-clockwise, and
+// its candidate boundary edges (see the file comment), appended to rSegs.
+std::vector<PuTri> pu_soup(const PlanarSoup& rSoup, PuPoints& rPts, std::vector<PuSeg>& rSegs) {
+    std::vector<std::int64_t> id(rSoup.mPoints.size());
+    for (std::size_t i = 0; i < rSoup.mPoints.size(); ++i)
+        id[i] = rPts.Add(rSoup.mPoints[i]);
+    std::vector<PuTri> tris;
+    struct PuEdgeUse {
+        int mCount = 0;
+        int mLeft = 0;   // triangles on the left of min -> max
+        int mRight = 0;  // and on its right
+    };
+    std::map<PuSeg, PuEdgeUse> uses;
+    for (const PuTri& r_t : rSoup.mTriangles) {
+        PuTri t{};
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::int64_t v = r_t[k];
+            if (v < 0 || v >= static_cast<std::int64_t>(id.size()))
+                return {};
+            t[k] = id[static_cast<std::size_t>(v)];
+        }
+        if (t[0] == t[1] || t[1] == t[2] || t[0] == t[2])
+            continue;
+        const double o = orient2d(rPts[t[0]].data(), rPts[t[1]].data(), rPts[t[2]].data());
+        if (o == 0.0)
+            continue;
+        if (o < 0.0)
+            std::swap(t[1], t[2]);
+        tris.push_back(t);
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::int64_t x = t[k], y = t[(k + 1) % 3];
+            PuEdgeUse& r_u = uses[PuSeg{std::min(x, y), std::max(x, y)}];
+            ++r_u.mCount;
+            // The triangle is on the left of x -> y.
+            if (x < y)
+                ++r_u.mLeft;
+            else
+                ++r_u.mRight;
+        }
+    }
+    for (const auto& [seg, use] : uses)
+        if (!(use.mCount == 2 && use.mLeft == 1 && use.mRight == 1))
+            rSegs.push_back(seg);
+    return tris;
+}
+
+// The parameter of point rQ along the segment rA -> rB, on its dominant axis.
+double pu_param(const PuVec2& rA, const PuVec2& rB, const PuVec2& rQ) {
+    const std::size_t ax = std::fabs(rB[0] - rA[0]) >= std::fabs(rB[1] - rA[1]) ? 0 : 1;
+    return (rQ[ax] - rA[ax]) / (rB[ax] - rA[ax]);
+}
+
+bool pu_opposite(double A, double B) {
+    return (A > 0.0 && B < 0.0) || (A < 0.0 && B > 0.0);
+}
+
+// Splits two meeting segments: at a touching endpoint, at a collinear
+// overlap's endpoints, or at a proper crossing's point.
+void pu_split_pair(const PuSeg& rP, const PuSeg& rQ, PuPoints& rPts,
+                   std::vector<std::int64_t>& rSplitP, std::vector<std::int64_t>& rSplitQ) {
+    const PuVec2 p0 = rPts[rP[0]], p1 = rPts[rP[1]], q0 = rPts[rQ[0]], q1 = rPts[rQ[1]];
+    const double o1 = orient2d(p0.data(), p1.data(), q0.data());
+    const double o2 = orient2d(p0.data(), p1.data(), q1.data());
+    const double o3 = orient2d(q0.data(), q1.data(), p0.data());
+    const double o4 = orient2d(q0.data(), q1.data(), p1.data());
+    auto inside = [](const PuVec2& rA, const PuVec2& rB, const PuVec2& rX) {
+        const double t = pu_param(rA, rB, rX);
+        return t > 0.0 && t < 1.0;
+    };
+    if (pu_opposite(o1, o2) && pu_opposite(o3, o4)) {
+        const double t = o3 / (o3 - o4);
+        const std::int64_t x =
+            rPts.Add(PuVec2{p0[0] + t * (p1[0] - p0[0]), p0[1] + t * (p1[1] - p0[1])});
+        rSplitP.push_back(x);
+        rSplitQ.push_back(x);
+        return;
+    }
+    if (o1 == 0.0 && rQ[0] != rP[0] && rQ[0] != rP[1] && inside(p0, p1, q0))
+        rSplitP.push_back(rQ[0]);
+    if (o2 == 0.0 && rQ[1] != rP[0] && rQ[1] != rP[1] && inside(p0, p1, q1))
+        rSplitP.push_back(rQ[1]);
+    if (o3 == 0.0 && rP[0] != rQ[0] && rP[0] != rQ[1] && inside(q0, q1, p0))
+        rSplitQ.push_back(rP[0]);
+    if (o4 == 0.0 && rP[1] != rQ[0] && rP[1] != rQ[1] && inside(q0, q1, p1))
+        rSplitQ.push_back(rP[1]);
+}
+
+// A uniform bucket grid over a soup's triangles, for the coverage test.
+class PuCover {
+public:
+    PuCover(const std::vector<PuTri>& rTris, const PuPoints& rPts) : mTris(rTris), mPts(rPts) {
+        if (mTris.empty())
+            return;
+        double extent = 0.0;
+        std::vector<std::array<double, 4>> boxes(mTris.size());
+        for (std::size_t i = 0; i < mTris.size(); ++i) {
+            std::array<double, 4> b{rPts[mTris[i][0]][0], rPts[mTris[i][0]][1],
+                                    rPts[mTris[i][0]][0], rPts[mTris[i][0]][1]};
+            for (std::size_t k = 1; k < 3; ++k) {
+                const PuVec2& r_p = rPts[mTris[i][k]];
+                b[0] = std::min(b[0], r_p[0]);
+                b[1] = std::min(b[1], r_p[1]);
+                b[2] = std::max(b[2], r_p[0]);
+                b[3] = std::max(b[3], r_p[1]);
+            }
+            extent += std::max(b[2] - b[0], b[3] - b[1]);
+            boxes[i] = b;
+        }
+        double cell = extent / static_cast<double>(mTris.size());
+        if (!(cell > 0.0) || !std::isfinite(cell))
+            cell = 1.0;
+        std::vector<GridKey> lo(mTris.size()), hi(mTris.size());
+        for (std::size_t i = 0; i < mTris.size(); ++i) {
+            lo[i] = GridKey{grid_quantize(boxes[i][0], cell), grid_quantize(boxes[i][1], cell), 0};
+            hi[i] = GridKey{grid_quantize(boxes[i][2], cell), grid_quantize(boxes[i][3], cell), 0};
+        }
+        mTable = build_bucket_table(cell, lo, hi);
+    }
+
+    bool Covers(const PuVec2& rP) const {
+        if (mTris.empty())
+            return false;
+        const double xyz[3] = {rP[0], rP[1], 0.0};
+        BucketView ids(nullptr, 0);
+        if (!mTable.Find(mTable.KeyOf(xyz), ids))
+            return false;
+        for (const std::int64_t i : ids) {
+            const PuTri& r_t = mTris[static_cast<std::size_t>(i)];
+            const double* a = mPts[r_t[0]].data();
+            const double* b = mPts[r_t[1]].data();
+            const double* c = mPts[r_t[2]].data();
+            if (orient2d(a, b, rP.data()) >= 0.0 && orient2d(b, c, rP.data()) >= 0.0 &&
+                orient2d(c, a, rP.data()) >= 0.0)
+                return true;
+        }
+        return false;
+    }
+
+private:
+    const std::vector<PuTri>& mTris;
+    const PuPoints& mPts;
+    BucketTable mTable;
+};
+
+PlanarRegion pu_fail(const std::string& rWhy) {
+    PlanarRegion r;
+    r.mOk = false;
+    r.mWhy = rWhy;
+    return r;
+}
+
+}  // namespace
+
+double planar_loop_twice_area(const std::vector<std::array<double, 2>>& rPoints,
+                              const std::vector<std::int64_t>& rLoop) {
+    double a = 0.0;
+    for (std::size_t i = 0; i < rLoop.size(); ++i) {
+        const auto& r_p = rPoints[static_cast<std::size_t>(rLoop[i])];
+        const auto& r_q = rPoints[static_cast<std::size_t>(rLoop[(i + 1) % rLoop.size()])];
+        a += r_p[0] * r_q[1] - r_q[0] * r_p[1];
+    }
+    return a;
+}
+
+PlanarRegion planar_region(const PlanarSoup& rAdd, const PlanarSoup& rSubtract,
+                           double MergeTolerance) {
+    for (const PlanarSoup* p_s : {&rAdd, &rSubtract})
+        for (const PuVec2& r_p : p_s->mPoints)
+            if (!cdt2d_in_range(r_p[0]) || !cdt2d_in_range(r_p[1]))
+                return pu_fail(
+                    "a projected coordinate is outside the range the exact predicates "
+                    "hold for (zero, or a magnitude in [2^-128, 2^128])");
+    PuPoints pts(MergeTolerance);
+    std::vector<PuSeg> segs;
+    const std::vector<PuTri> add = pu_soup(rAdd, pts, segs);
+    const std::vector<PuTri> sub = pu_soup(rSubtract, pts, segs);
+    std::sort(segs.begin(), segs.end());
+    segs.erase(std::unique(segs.begin(), segs.end()), segs.end());
+    if (add.empty())
+        return {};
+
+    // Split the candidate edges where they meet, until none does.
+    for (int round = 0;; ++round) {
+        const auto crossings = cdt2d_find_crossings(pts.All(), segs);
+        if (crossings.empty())
+            break;
+        if (round == kPuMaxRounds)
+            return pu_fail("the projected edges still cross after " + std::to_string(kPuMaxRounds) +
+                           " rounds of splitting");
+        std::vector<std::vector<std::int64_t>> splits(segs.size());
+        for (const auto& r_c : crossings)
+            pu_split_pair(
+                segs[static_cast<std::size_t>(r_c[0])], segs[static_cast<std::size_t>(r_c[1])], pts,
+                splits[static_cast<std::size_t>(r_c[0])], splits[static_cast<std::size_t>(r_c[1])]);
+        std::vector<PuSeg> next;
+        next.reserve(segs.size() + 2 * crossings.size());
+        for (std::size_t s = 0; s < segs.size(); ++s) {
+            const PuSeg& r_s = segs[s];
+            std::vector<std::pair<double, std::int64_t>> along{{0.0, r_s[0]}, {1.0, r_s[1]}};
+            for (const std::int64_t x : splits[s])
+                if (x != r_s[0] && x != r_s[1])
+                    along.emplace_back(pu_param(pts[r_s[0]], pts[r_s[1]], pts[x]), x);
+            std::sort(along.begin(), along.end());
+            for (std::size_t k = 1; k < along.size(); ++k) {
+                const std::int64_t a = along[k - 1].second, b = along[k].second;
+                if (a != b)
+                    next.push_back(PuSeg{std::min(a, b), std::max(a, b)});
+            }
+        }
+        std::sort(next.begin(), next.end());
+        next.erase(std::unique(next.begin(), next.end()), next.end());
+        segs = std::move(next);
+    }
+
+    // The constrained triangulation of the split edges.
+    std::vector<std::int64_t> used;
+    for (const PuSeg& r_s : segs)
+        used.insert(used.end(), r_s.begin(), r_s.end());
+    std::sort(used.begin(), used.end());
+    used.erase(std::unique(used.begin(), used.end()), used.end());
+    if (used.size() < 3)
+        return {};
+    double lo_u = pts[used[0]][0], lo_v = pts[used[0]][1], hi_u = lo_u, hi_v = lo_v;
+    std::vector<Cdt2d::Vec2> batch;
+    batch.reserve(used.size());
+    for (const std::int64_t i : used) {
+        const PuVec2& r_p = pts[i];
+        lo_u = std::min(lo_u, r_p[0]);
+        lo_v = std::min(lo_v, r_p[1]);
+        hi_u = std::max(hi_u, r_p[0]);
+        hi_v = std::max(hi_v, r_p[1]);
+        batch.push_back(r_p);
+    }
+    Cdt2d cdt(lo_u, lo_v, hi_u, hi_v);
+    const std::vector<std::int64_t> vid = cdt.InsertBatch(batch);
+    std::unordered_map<std::int64_t, std::int64_t> vertex_of;
+    for (std::size_t i = 0; i < used.size(); ++i)
+        vertex_of.emplace(used[i], vid[i]);
+    for (const PuSeg& r_s : segs) {
+        const Cdt2dStatus st = cdt.InsertSegment(vertex_of.at(r_s[0]), vertex_of.at(r_s[1]));
+        if (st != Cdt2dStatus::Ok)
+            return pu_fail(std::string("the planar triangulation refused an edge (") +
+                           cdt2d_status_name(st) + ")");
+    }
+
+    // Components of triangles joined across unconstrained edges.
+    const std::vector<Cdt2d::Tri> tris = cdt.AllTriangles();
+    std::unordered_map<std::uint64_t, std::int64_t> tri_of;  // directed edge -> triangle
+    tri_of.reserve(3 * tris.size());
+    for (std::size_t t = 0; t < tris.size(); ++t)
+        for (std::size_t k = 0; k < 3; ++k)
+            tri_of.emplace(pu_key(tris[t][k], tris[t][(k + 1) % 3]), static_cast<std::int64_t>(t));
+    std::unordered_set<std::uint64_t> constrained;
+    for (const auto& r_e : cdt.ConstrainedEdges())
+        constrained.insert(pu_key(r_e[0], r_e[1]));
+    std::vector<std::int64_t> comp(tris.size(), -1);
+    std::vector<char> comp_super;
+    std::vector<std::int64_t> comp_best;
+    std::vector<double> comp_area;
+    for (std::size_t seed = 0; seed < tris.size(); ++seed) {
+        if (comp[seed] >= 0)
+            continue;
+        const auto c = static_cast<std::int64_t>(comp_super.size());
+        comp_super.push_back(0);
+        comp_best.push_back(-1);
+        comp_area.push_back(-1.0);
+        std::vector<std::size_t> stack{seed};
+        comp[seed] = c;
+        while (!stack.empty()) {
+            const std::size_t t = stack.back();
+            stack.pop_back();
+            const Cdt2d::Tri& r_t = tris[t];
+            if (r_t[0] < Cdt2d::kFirstVertex || r_t[1] < Cdt2d::kFirstVertex ||
+                r_t[2] < Cdt2d::kFirstVertex) {
+                comp_super[static_cast<std::size_t>(c)] = 1;
+            } else {
+                const double a = orient2d(cdt.Point(r_t[0]).data(), cdt.Point(r_t[1]).data(),
+                                          cdt.Point(r_t[2]).data());
+                if (a > comp_area[static_cast<std::size_t>(c)]) {
+                    comp_area[static_cast<std::size_t>(c)] = a;
+                    comp_best[static_cast<std::size_t>(c)] = static_cast<std::int64_t>(t);
+                }
+            }
+            for (std::size_t k = 0; k < 3; ++k) {
+                const std::int64_t x = r_t[k], y = r_t[(k + 1) % 3];
+                if (constrained.count(pu_key(std::min(x, y), std::max(x, y))))
+                    continue;
+                const auto it = tri_of.find(pu_key(y, x));
+                if (it == tri_of.end() || comp[static_cast<std::size_t>(it->second)] >= 0)
+                    continue;
+                comp[static_cast<std::size_t>(it->second)] = c;
+                stack.push_back(static_cast<std::size_t>(it->second));
+            }
+        }
+    }
+    const PuCover cover_add(add, pts), cover_sub(sub, pts);
+    std::vector<char> comp_covered(comp_super.size(), 0);
+    for (std::size_t c = 0; c < comp_super.size(); ++c) {
+        if (comp_super[c] || comp_best[c] < 0)
+            continue;
+        const Cdt2d::Tri& r_t = tris[static_cast<std::size_t>(comp_best[c])];
+        PuVec2 g{0.0, 0.0};
+        for (const std::int64_t v : r_t) {
+            g[0] += cdt.Point(v)[0] / 3.0;
+            g[1] += cdt.Point(v)[1] / 3.0;
+        }
+        comp_covered[c] = cover_add.Covers(g) && !cover_sub.Covers(g) ? 1 : 0;
+    }
+    auto covered = [&](std::int64_t T) {
+        return comp_covered[static_cast<std::size_t>(comp[static_cast<std::size_t>(T)])] != 0;
+    };
+
+    // The boundary half-edges, walked into loops with the region on the left.
+    std::vector<std::pair<PuSeg, std::int64_t>> boundary;  // (x -> y), its triangle
+    for (std::size_t t = 0; t < tris.size(); ++t) {
+        if (!covered(static_cast<std::int64_t>(t)))
+            continue;
+        for (std::size_t k = 0; k < 3; ++k) {
+            const std::int64_t x = tris[t][k], y = tris[t][(k + 1) % 3];
+            const auto it = tri_of.find(pu_key(y, x));
+            if (it == tri_of.end() || !covered(it->second))
+                boundary.push_back({PuSeg{x, y}, static_cast<std::int64_t>(t)});
+        }
+    }
+    std::sort(boundary.begin(), boundary.end());
+    std::unordered_map<std::uint64_t, std::size_t> boundary_index;
+    for (std::size_t i = 0; i < boundary.size(); ++i)
+        boundary_index.emplace(pu_key(boundary[i].first[0], boundary[i].first[1]), i);
+    auto next_of = [&](std::size_t I) -> std::int64_t {
+        const std::int64_t y = boundary[I].first[1];
+        std::int64_t cur = boundary[I].second;
+        for (std::size_t guard = 0; guard <= tris.size(); ++guard) {
+            const Cdt2d::Tri& r_t = tris[static_cast<std::size_t>(cur)];
+            const std::size_t at = r_t[0] == y ? 0 : (r_t[1] == y ? 1 : 2);
+            const std::int64_t w = r_t[(at + 1) % 3];
+            const auto it = tri_of.find(pu_key(w, y));
+            if (it == tri_of.end() || !covered(it->second)) {
+                const auto b = boundary_index.find(pu_key(y, w));
+                return b == boundary_index.end() ? -1 : static_cast<std::int64_t>(b->second);
+            }
+            cur = it->second;
+        }
+        return -1;
+    };
+    std::vector<char> walked(boundary.size(), 0);
+    std::vector<std::vector<std::int64_t>> loops;
+    for (std::size_t s = 0; s < boundary.size(); ++s) {
+        if (walked[s])
+            continue;
+        std::vector<std::int64_t> loop;
+        std::int64_t i = static_cast<std::int64_t>(s);
+        while (i >= 0 && !walked[static_cast<std::size_t>(i)]) {
+            walked[static_cast<std::size_t>(i)] = 1;
+            loop.push_back(boundary[static_cast<std::size_t>(i)].first[0]);
+            i = next_of(static_cast<std::size_t>(i));
+        }
+        if (i != static_cast<std::int64_t>(s))
+            return pu_fail("a boundary loop of the covered region does not close");
+        const auto first = std::min_element(loop.begin(), loop.end());
+        std::rotate(loop.begin(), first, loop.end());
+        loops.push_back(std::move(loop));
+    }
+    std::sort(loops.begin(), loops.end());
+
+    // Compact the vertices used, in ascending triangulation id.
+    PlanarRegion out;
+    std::vector<std::int64_t> keep;
+    for (std::size_t t = 0; t < tris.size(); ++t)
+        if (covered(static_cast<std::int64_t>(t)))
+            keep.insert(keep.end(), tris[t].begin(), tris[t].end());
+    std::sort(keep.begin(), keep.end());
+    keep.erase(std::unique(keep.begin(), keep.end()), keep.end());
+    std::unordered_map<std::int64_t, std::int64_t> new_id;
+    for (std::size_t i = 0; i < keep.size(); ++i) {
+        new_id.emplace(keep[i], static_cast<std::int64_t>(i));
+        out.mPoints.push_back(cdt.Point(keep[i]));
+    }
+    for (std::size_t t = 0; t < tris.size(); ++t)
+        if (covered(static_cast<std::int64_t>(t)))
+            out.mTriangles.push_back(
+                PuTri{new_id.at(tris[t][0]), new_id.at(tris[t][1]), new_id.at(tris[t][2])});
+    for (auto& r_l : loops) {
+        for (std::int64_t& r_v : r_l)
+            r_v = new_id.at(r_v);
+        out.mLoops.push_back(std::move(r_l));
+    }
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/planar_union.cpp =====
 // ===== begin src/cpp/src/detail/png_write.cpp =====
 #include <algorithm>
 #include <array>
@@ -132879,8 +133520,8 @@ void write_dolfin(const std::string& rPath, const Mesh& rMesh) {
 #include <cstdint>
 #include <cstdio>
 #include <map>
-#include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -133391,12 +134032,9 @@ void write_dxf(const std::string& rPath, const Mesh& rMesh) {
 }
 
 Mesh read_dxf(const std::string& rPath) {
-    auto in = detail::make_classic_ifstream(rPath, std::ios::binary);
-    if (!in)
-        throw ReadError("meshio++: dxf: cannot open '" + rPath + "'");
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    const std::string text = ss.str();
+    const detail::FileSource source =
+        detail::open_source(rPath, "meshio++: dxf: cannot open '" + rPath + "'");
+    const std::string_view text(source.Data(), source.Size());
     std::vector<std::string> lines;
     {
         std::size_t a = 0;
@@ -133404,7 +134042,7 @@ Mesh read_dxf(const std::string& rPath) {
             std::size_t b = text.find('\n', a);
             if (b == std::string::npos)
                 b = text.size();
-            lines.push_back(text.substr(a, b - a));
+            lines.emplace_back(text.substr(a, b - a));
             a = b + 1;
         }
     }
@@ -260612,6 +261250,29 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                 "the section is empty; the plane misses the mesh -- move or flip it");
         return section;
     }
+    if (op == "Silhouette") {
+        SilhouetteOptions opts;
+        if (pipe_find(rStep, "Normal"))
+            pipe_vec3(rStep, "Normal", opts.mNormal.data());
+        opts.mClearance = pipe_number(rStep, "Clearance", 0.0);
+        opts.mRoundAngleDeg = pipe_number(rStep, "RoundAngle", 180.0);
+        const double segs = pipe_number(rStep, "ArcSegments", 64.0);
+        opts.mArcSegments = static_cast<std::int64_t>(segs);
+        if (static_cast<double>(opts.mArcSegments) != segs)
+            throw std::invalid_argument(pipe_err(rStep, "ArcSegments must be an integer"));
+        opts.mExtrude = pipe_flag(rStep, "Extrude", false);
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        opts.mMergeTolerance = pipe_number(rStep, "MergeTolerance", 1e-9);
+        SilhouetteResult sr = silhouette(mesh, opts);
+        for (const std::string& w : sr.mWarnings)
+            rReport.mWarnings.push_back("silhouette: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumLoops", static_cast<double>(sr.mNumLoops)},
+                        {"NumHoles", static_cast<double>(sr.mNumHoles)},
+                        {"Area", sr.mArea},
+                        {"Perimeter", sr.mPerimeter}});
+        return std::move(sr.mMesh);
+    }
     if (op == "FitCurves") {
         FitCurvesOptions opts;
         opts.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
@@ -282594,6 +283255,343 @@ ShrinkwrapResult shrinkwrap(const Mesh& rMesh, const Mesh& rTarget,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/shrinkwrap.cpp =====
+// ===== begin src/cpp/src/operations/silhouette.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+using SilVec2 = std::array<double, 2>;
+using SilTri = std::array<std::int64_t, 3>;
+
+constexpr const char* kSilPrefix = "meshio++: silhouette: ";
+constexpr double kSilPi = 3.14159265358979323846;
+constexpr double kSilMitreLimit = 4.0;  // a mitre longer than this many clearances is bevelled
+
+[[noreturn]] void sil_refuse(const std::string& rWhy) {
+    throw std::invalid_argument(std::string(kSilPrefix) + rWhy);
+}
+
+SilVec2 sil_rotate(const SilVec2& rV, double Angle) {
+    const double c = std::cos(Angle), s = std::sin(Angle);
+    return {rV[0] * c - rV[1] * s, rV[0] * s + rV[1] * c};
+}
+
+SilVec2 sil_at(const SilVec2& rP, const SilVec2& rDir, double R) {
+    return {rP[0] + R * rDir[0], rP[1] + R * rDir[1]};
+}
+
+// Appends a triangle over three new points.
+void sil_push(detail::PlanarSoup& rSoup, const SilVec2& rA, const SilVec2& rB, const SilVec2& rC) {
+    const auto n = static_cast<std::int64_t>(rSoup.mPoints.size());
+    rSoup.mPoints.push_back(rA);
+    rSoup.mPoints.push_back(rB);
+    rSoup.mPoints.push_back(rC);
+    rSoup.mTriangles.push_back(SilTri{n, n + 1, n + 2});
+}
+
+// The strip a clearance of |R| sweeps along the region's boundary on one
+// side (Sigma +1: outside, the right of each loop edge; -1: inside): a
+// rectangle per edge and, at each corner the offset opens, an arc fan whose
+// sides are tangent to the true arc, or a mitre (bevelled past the limit).
+detail::PlanarSoup sil_offset_strip(const detail::PlanarRegion& rRegion, double R, double Sigma,
+                                    double RoundRad, std::int64_t ArcSegments) {
+    detail::PlanarSoup strip;
+    const auto& pts = rRegion.mPoints;
+    for (const auto& r_loop : rRegion.mLoops) {
+        const std::size_t n = r_loop.size();
+        if (n < 3)
+            continue;
+        for (std::size_t i = 0; i < n; ++i) {
+            const SilVec2& a = pts[static_cast<std::size_t>(r_loop[(i + n - 1) % n])];
+            const SilVec2& b = pts[static_cast<std::size_t>(r_loop[i])];
+            const SilVec2& c = pts[static_cast<std::size_t>(r_loop[(i + 1) % n])];
+            const double l1 = std::hypot(b[0] - a[0], b[1] - a[1]);
+            const double l2 = std::hypot(c[0] - b[0], c[1] - b[1]);
+            if (!(l1 > 0.0) || !(l2 > 0.0))
+                continue;
+            const SilVec2 e1{(b[0] - a[0]) / l1, (b[1] - a[1]) / l1};
+            const SilVec2 e2{(c[0] - b[0]) / l2, (c[1] - b[1]) / l2};
+            const SilVec2 s1{Sigma * e1[1], -Sigma * e1[0]};
+            const SilVec2 s2{Sigma * e2[1], -Sigma * e2[0]};
+            // The edge b -> c's rectangle.
+            sil_push(strip, b, c, sil_at(c, s2, R));
+            sil_push(strip, b, sil_at(c, s2, R), sil_at(b, s2, R));
+            // The corner at b opens on the offset side when the loop turns
+            // towards the other side there.
+            const double cross = e1[0] * e2[1] - e1[1] * e2[0];
+            const double dot = e1[0] * e2[0] + e1[1] * e2[1];
+            if (!(Sigma * cross > 0.0))
+                continue;
+            const double phi = std::atan2(std::fabs(cross), dot);
+            const SilVec2 p0 = sil_at(b, s1, R), p1 = sil_at(b, s2, R);
+            if (phi < RoundRad) {
+                const double turn = cross > 0.0 ? 1.0 : -1.0;
+                const auto k = std::max<std::int64_t>(
+                    1, static_cast<std::int64_t>(
+                           std::ceil(phi / (2.0 * kSilPi) * static_cast<double>(ArcSegments))));
+                const double step = phi / static_cast<double>(k);
+                const double rr = R / std::cos(step / 2.0);
+                SilVec2 prev = p0;
+                for (std::int64_t j = 0; j < k; ++j) {
+                    const SilVec2 q =
+                        sil_at(b, sil_rotate(s1, turn * (static_cast<double>(j) + 0.5) * step), rr);
+                    sil_push(strip, b, prev, q);
+                    prev = q;
+                }
+                sil_push(strip, b, prev, p1);
+            } else if (1.0 / std::cos(phi / 2.0) <= kSilMitreLimit) {
+                const double d = 1.0 + s1[0] * s2[0] + s1[1] * s2[1];
+                const SilVec2 m{b[0] + R * (s1[0] + s2[0]) / d, b[1] + R * (s1[1] + s2[1]) / d};
+                sil_push(strip, b, p0, m);
+                sil_push(strip, b, m, p1);
+            } else {
+                sil_push(strip, b, p0, p1);
+            }
+        }
+    }
+    return strip;
+}
+
+detail::PlanarSoup sil_soup_of(const detail::PlanarRegion& rRegion) {
+    return detail::PlanarSoup{rRegion.mPoints, rRegion.mTriangles};
+}
+
+void sil_append(detail::PlanarSoup& rInto, const detail::PlanarSoup& rFrom) {
+    const auto base = static_cast<std::int64_t>(rInto.mPoints.size());
+    rInto.mPoints.insert(rInto.mPoints.end(), rFrom.mPoints.begin(), rFrom.mPoints.end());
+    for (const SilTri& r_t : rFrom.mTriangles)
+        rInto.mTriangles.push_back(SilTri{r_t[0] + base, r_t[1] + base, r_t[2] + base});
+}
+
+NDArray sil_int64(const std::vector<std::int64_t>& rValues) {
+    NDArray out = NDArray::Uninit(DType::Int64, {rValues.size()});
+    std::copy(rValues.begin(), rValues.end(), out.As<std::int64_t>());
+    return out;
+}
+
+NDArray sil_doubles(const std::vector<double>& rValues) {
+    NDArray out = NDArray::Uninit(DType::Float64, {rValues.size()});
+    std::copy(rValues.begin(), rValues.end(), out.As<double>());
+    return out;
+}
+
+}  // namespace
+
+SilhouetteResult silhouette(const Mesh& rMesh, const SilhouetteOptions& rOptions) {
+    const double nn = detail::vec3_norm(rOptions.mNormal);
+    if (!(nn > 0.0) || !std::isfinite(nn))
+        sil_refuse("the normal must be a non-zero finite vector");
+    if (!std::isfinite(rOptions.mClearance))
+        sil_refuse("the clearance must be finite");
+    if (!std::isfinite(rOptions.mRoundAngleDeg) || rOptions.mRoundAngleDeg < 0.0)
+        sil_refuse("round_angle must be a finite angle of at least 0 degrees");
+    if (rOptions.mArcSegments < 4)
+        sil_refuse("arc_segments must be at least 4");
+    if (!std::isfinite(rOptions.mMergeTolerance) || rOptions.mMergeTolerance < 0.0)
+        sil_refuse("merge_tolerance must be finite and not negative");
+
+    bool volume = false;
+    for (const auto cb : rMesh.CellRange())
+        volume = volume || cb.IsPolyhedron() ||
+                 cell_type_dimension(cell_type_from_name(std::string(cb.Type()))) == 3;
+    if (volume && !rOptions.mRegion.empty())
+        sil_refuse(
+            "a region selects surface cells; a volume mesh is outlined through its skin "
+            "(extract_skin first, then the region)");
+    const detail::TriangleSoup soup = volume ? detail::build_triangle_soup(extract_skin(rMesh), "")
+                                             : detail::build_triangle_soup(rMesh, rOptions.mRegion);
+    if (soup.NumTriangles() == 0)
+        sil_refuse("the mesh has no surface cells to project (triangles, quads or polygons)");
+
+    const detail::Vec3 n = detail::vec3_scale(rOptions.mNormal, 1.0 / nn);
+    detail::Vec3 e1{}, e2{};
+    detail::lsq_frame(n.data(), e1.data(), e2.data());
+
+    // Project the points the triangles use.
+    detail::PlanarSoup add;
+    add.mPoints.resize(soup.mPoints.size());
+    std::vector<char> used(soup.mPoints.size(), 0);
+    for (const auto& r_t : soup.mVertices)
+        for (const std::int64_t v : r_t)
+            used[static_cast<std::size_t>(v)] = 1;
+    SilhouetteResult result;
+    bool first = true;
+    double lo_u = 0, lo_v = 0, hi_u = 0, hi_v = 0;
+    for (std::size_t i = 0; i < soup.mPoints.size(); ++i) {
+        const detail::Vec3& r_p = soup.mPoints[i];
+        add.mPoints[i] = {detail::vec3_dot(r_p, e1), detail::vec3_dot(r_p, e2)};
+        if (!used[i])
+            continue;
+        const double h = detail::vec3_dot(r_p, n);
+        if (first) {
+            result.mMinHeight = result.mMaxHeight = h;
+            lo_u = hi_u = add.mPoints[i][0];
+            lo_v = hi_v = add.mPoints[i][1];
+            first = false;
+        }
+        result.mMinHeight = std::min(result.mMinHeight, h);
+        result.mMaxHeight = std::max(result.mMaxHeight, h);
+        lo_u = std::min(lo_u, add.mPoints[i][0]);
+        hi_u = std::max(hi_u, add.mPoints[i][0]);
+        lo_v = std::min(lo_v, add.mPoints[i][1]);
+        hi_v = std::max(hi_v, add.mPoints[i][1]);
+    }
+    if (!std::isfinite(result.mMinHeight) || !std::isfinite(result.mMaxHeight))
+        sil_refuse("the mesh has non-finite coordinates");
+    add.mTriangles.assign(soup.mVertices.begin(), soup.mVertices.end());
+    for (const SilTri& r_t : add.mTriangles)
+        if (detail::orient2d(add.mPoints[static_cast<std::size_t>(r_t[0])].data(),
+                             add.mPoints[static_cast<std::size_t>(r_t[1])].data(),
+                             add.mPoints[static_cast<std::size_t>(r_t[2])].data()) != 0.0)
+            ++result.mNumTriangles;
+    const double diagonal = std::hypot(hi_u - lo_u, hi_v - lo_v);
+    const double tol = rOptions.mMergeTolerance * diagonal;
+
+    detail::PlanarRegion region = detail::planar_region(add, detail::PlanarSoup{}, tol);
+    if (!region.mOk)
+        sil_refuse(region.mWhy);
+    if (rOptions.mClearance != 0.0 && !region.mLoops.empty()) {
+        const double r = std::fabs(rOptions.mClearance);
+        const double sigma = rOptions.mClearance > 0.0 ? 1.0 : -1.0;
+        const detail::PlanarSoup strip = sil_offset_strip(
+            region, r, sigma, rOptions.mRoundAngleDeg * kSilPi / 180.0, rOptions.mArcSegments);
+        detail::PlanarSoup base = sil_soup_of(region);
+        if (sigma > 0.0) {
+            sil_append(base, strip);
+            region = detail::planar_region(base, detail::PlanarSoup{}, tol);
+        } else {
+            region = detail::planar_region(base, strip, tol);
+        }
+        if (!region.mOk)
+            sil_refuse("offsetting by the clearance: " + region.mWhy);
+        if (region.mLoops.empty())
+            result.mWarnings.push_back("the clearance removes the whole outline");
+    }
+    if (region.mTriangles.empty() && rOptions.mClearance == 0.0)
+        result.mWarnings.push_back("the surface projects to no area along the normal");
+
+    for (const SilTri& r_t : region.mTriangles)
+        result.mArea +=
+            0.5 * detail::orient2d(region.mPoints[static_cast<std::size_t>(r_t[0])].data(),
+                                   region.mPoints[static_cast<std::size_t>(r_t[1])].data(),
+                                   region.mPoints[static_cast<std::size_t>(r_t[2])].data());
+    for (const auto& r_loop : region.mLoops) {
+        ++result.mNumLoops;
+        if (detail::planar_loop_twice_area(region.mPoints, r_loop) < 0.0)
+            ++result.mNumHoles;
+        else
+            ++result.mNumOuter;
+        for (std::size_t i = 0; i < r_loop.size(); ++i) {
+            const SilVec2& a = region.mPoints[static_cast<std::size_t>(r_loop[i])];
+            const SilVec2& b =
+                region.mPoints[static_cast<std::size_t>(r_loop[(i + 1) % r_loop.size()])];
+            result.mPerimeter += std::hypot(b[0] - a[0], b[1] - a[1]);
+        }
+    }
+
+    // The output: the outline at the lowest height, or the prism.
+    auto lift = [&](const SilVec2& rP, double H) {
+        detail::Vec3 q{};
+        for (std::size_t k = 0; k < 3; ++k)
+            q[k] = rP[0] * e1[k] + rP[1] * e2[k] + H * n[k];
+        return q;
+    };
+    Mesh& out = result.mMesh;
+    std::vector<double> xyz;
+    if (!rOptions.mExtrude) {
+        std::unordered_map<std::int64_t, std::int64_t> id_of;
+        std::vector<std::int64_t> conn, chain, closed, hole;
+        std::int64_t k = 0;
+        for (const auto& r_loop : region.mLoops) {
+            const std::int64_t is_hole =
+                detail::planar_loop_twice_area(region.mPoints, r_loop) < 0.0 ? 1 : 0;
+            auto id = [&](std::int64_t V) {
+                const auto it = id_of.find(V);
+                if (it != id_of.end())
+                    return it->second;
+                const auto nid = static_cast<std::int64_t>(id_of.size());
+                id_of.emplace(V, nid);
+                const detail::Vec3 q =
+                    lift(region.mPoints[static_cast<std::size_t>(V)], result.mMinHeight);
+                xyz.insert(xyz.end(), q.begin(), q.end());
+                return nid;
+            };
+            for (std::size_t i = 0; i < r_loop.size(); ++i) {
+                const std::int64_t a = id(r_loop[i]);
+                const std::int64_t b = id(r_loop[(i + 1) % r_loop.size()]);
+                conn.push_back(a);
+                conn.push_back(b);
+                chain.push_back(k);
+                closed.push_back(1);
+                hole.push_back(is_hole);
+            }
+            ++k;
+        }
+        NDArray p = NDArray::Uninit(DType::Float64, {xyz.size() / 3, std::size_t{3}});
+        std::copy(xyz.begin(), xyz.end(), p.As<double>());
+        out.AssignPoints(std::move(p));
+        NDArray c = NDArray::Uninit(DType::Int64, {conn.size() / 2, std::size_t{2}});
+        std::copy(conn.begin(), conn.end(), c.As<std::int64_t>());
+        out.AddCellBlock("line", std::move(c));
+        std::vector<NDArray> b_chain, b_closed, b_offset, b_hole;
+        b_chain.push_back(sil_int64(chain));
+        b_closed.push_back(sil_int64(closed));
+        b_offset.push_back(sil_doubles(std::vector<double>(chain.size(), result.mMinHeight)));
+        b_hole.push_back(sil_int64(hole));
+        out.AddCellData(kSectionChainName, std::move(b_chain));
+        out.AddCellData(kSectionClosedName, std::move(b_closed));
+        out.AddCellData(kSectionOffsetName, std::move(b_offset));
+        out.AddCellData(kSilhouetteHoleName, std::move(b_hole));
+    } else {
+        if (!(result.mMaxHeight > result.mMinHeight))
+            result.mWarnings.push_back(
+                "the part is flat along the normal: the prism has no height");
+        const auto m = static_cast<std::int64_t>(region.mPoints.size());
+        for (const double h : {result.mMinHeight, result.mMaxHeight})
+            for (const SilVec2& r_p : region.mPoints) {
+                const detail::Vec3 q = lift(r_p, h);
+                xyz.insert(xyz.end(), q.begin(), q.end());
+            }
+        std::vector<std::int64_t> conn;
+        for (const SilTri& r_t : region.mTriangles) {
+            conn.insert(conn.end(), {r_t[0], r_t[2], r_t[1]});
+            conn.insert(conn.end(), {r_t[0] + m, r_t[1] + m, r_t[2] + m});
+        }
+        for (const auto& r_loop : region.mLoops)
+            for (std::size_t i = 0; i < r_loop.size(); ++i) {
+                const std::int64_t a = r_loop[i], b = r_loop[(i + 1) % r_loop.size()];
+                conn.insert(conn.end(), {a, b, b + m});
+                conn.insert(conn.end(), {a, b + m, a + m});
+            }
+        NDArray p = NDArray::Uninit(DType::Float64, {xyz.size() / 3, std::size_t{3}});
+        std::copy(xyz.begin(), xyz.end(), p.As<double>());
+        out.AssignPoints(std::move(p));
+        NDArray c = NDArray::Uninit(DType::Int64, {conn.size() / 3, std::size_t{3}});
+        std::copy(conn.begin(), conn.end(), c.As<std::int64_t>());
+        out.AddCellBlock("triangle", std::move(c));
+    }
+    out.AddFieldData(kSilhouetteNormalName, sil_doubles({n[0], n[1], n[2]}));
+    out.AddFieldData(kSilhouetteExtentName, sil_doubles({result.mMinHeight, result.mMaxHeight}));
+    if (rMesh.HasFieldData(detail::kLengthUnitName))
+        out.AddFieldData(detail::kLengthUnitName, rMesh.FieldData(detail::kLengthUnitName));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/silhouette.cpp =====
 // ===== begin src/cpp/src/operations/slice.cpp =====
 #include <cmath>
 #include <cstddef>

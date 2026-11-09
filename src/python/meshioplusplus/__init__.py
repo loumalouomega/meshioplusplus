@@ -306,6 +306,7 @@ if TYPE_CHECKING:
         write_sequence,
     )
     from ._shrinkwrap import shrinkwrap
+    from ._silhouette import silhouette
     from ._skin import extract_skin
     from ._slice import sections, slice
     from ._smooth import smooth
@@ -561,6 +562,7 @@ _LAZY_ATTRS = {
     "slice": "_slice",
     "sections": "_slice",
     "fit_curves": "_fit_curves",
+    "silhouette": "_silhouette",
     "smooth": "_smooth",
     "sniff_format": "_sniff",
     "sobolev_deform": "_sobolev_deform",
@@ -744,6 +746,7 @@ __all__ = [
     "slice",
     "sections",
     "fit_curves",
+    "silhouette",
     "isosurface",
     "transform",
     "clean",

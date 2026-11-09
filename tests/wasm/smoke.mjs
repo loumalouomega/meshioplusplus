@@ -5996,6 +5996,11 @@ step('findIntersections and thickness (roadmap 3.1.2, 3.1.4)', () => {
     const fc = m.fitCurves(ch);
     assert.equal(fc.numCircles, 1);
     assert.equal(fc.pieces[0].type, 'circle');
+    const sil = m.silhouette(a, { clearance: 0.05 });
+    assert.equal(sil.numLoops, 1);
+    assert.equal(sil.numHoles, 0);
+    assert.ok('section:chain' in sil.mesh.cell_data);
+    assert.throws(() => m.silhouette(a, { arcSegments: 2 }), /arc_segments/);
 });
 
 step('deviation (roadmap 7.4)', () => {

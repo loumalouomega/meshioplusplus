@@ -2599,6 +2599,7 @@ contains
                 type(mio_mesh) :: sec, sk
                 type(mio_fit_curves_report) :: frep
                 type(mio_sketch_piece) :: piece
+                type(mio_silhouette_report) :: srep
                 sec = sa%slice([0.0_real64, 0.0_real64, 0.1_real64], &
                                [0.0_real64, 0.0_real64, 1.0_real64], chain=.true., stat=ierr)
                 sk = mio_fit_curves(sec, report=frep, stat=ierr)
@@ -2606,6 +2607,10 @@ contains
                            'fit_curves finds the circle')
                 call mio_fit_curves_piece(1, piece, stat=ierr)
                 call check(ierr == 0 .and. piece%type == 3, 'the first piece is a circle')
+                call sk%free()
+                sk = mio_silhouette(sa, clearance=0.05_real64, report=srep, stat=ierr)
+                call check(ierr == 0 .and. srep%num_loops == 1_int64 .and. &
+                           srep%num_holes == 0_int64, 'silhouette outlines the sphere')
                 call sk%free()
                 call sec%free()
             end block

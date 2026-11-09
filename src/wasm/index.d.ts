@@ -3067,6 +3067,37 @@ export interface MeshioPlusPlusModule {
   ): Mesh;
 
   /**
+   * The outline of a surface (or a volume mesh's skin) seen along `normal`,
+   * with its holes: a chained line mesh `fitCurves` reads, offset by
+   * `clearance` (> 0 grows it), or with `extrude` the closed surface of the
+   * prism over it (roadmap 7.6.3). See doc/silhouette.md.
+   * @throws {Error} on a bad option or a mesh with no surface cells.
+   */
+  silhouette(
+    mesh: Mesh,
+    options?: {
+      normal?: ArrayLike<number>;
+      clearance?: number;
+      roundAngle?: number;
+      arcSegments?: number;
+      extrude?: boolean;
+      region?: string;
+      mergeTolerance?: number;
+    },
+  ): {
+    mesh: Mesh;
+    numLoops: number;
+    numOuter: number;
+    numHoles: number;
+    numTriangles: number;
+    area: number;
+    perimeter: number;
+    minHeight: number;
+    maxHeight: number;
+    warnings: string[];
+  };
+
+  /**
    * Lines, arcs and circles from the chains of a chained line mesh (roadmap
    * 7.6.2), each piece in its frame's 2-D coordinates; `frames` are row-major
    * 4x4 (columns e1, e2, normal, origin). See doc/fit_curves.md.

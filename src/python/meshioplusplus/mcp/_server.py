@@ -545,6 +545,31 @@ def _register_operations(server: FastMCP) -> None:
         )
 
     @server.tool()
+    @_forward(_tools.tool_silhouette)
+    def silhouette(
+        input_path: str,
+        output_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        normal: Optional[List[float]] = None,
+        clearance: float = 0.0,
+        round_angle: float = 180.0,
+        arc_segments: int = 64,
+        extrude: bool = False,
+        region: Optional[str] = None,
+        merge_tolerance: float = 1e-9,
+    ) -> dict:
+        """The outline of a surface (or a volume mesh's skin) seen along normal
+        (default 0,0,1): projected and unioned exactly, as closed loops with
+        its holes, in the plane at the part's lowest point. clearance > 0
+        grows it (a loose fit), < 0 shrinks it (a press fit), corners turning
+        by less than round_angle rounded with arcs; extrude returns the closed
+        surface of the prism over it instead (a nest or a jig). Reports
+        num_loops, num_outer, num_holes, num_triangles, area, perimeter,
+        min_height, max_height and warnings; output_path writes the chained
+        line mesh (ready for fit_curves) or the prism."""
+
+    @server.tool()
     @_forward(_tools.tool_fit_curves)
     def fit_curves(
         input_path: str,

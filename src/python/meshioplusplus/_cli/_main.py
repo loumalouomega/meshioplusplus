@@ -375,6 +375,12 @@ _VERBS = (
         "Planar cross-section of a mesh (volume -> surface, surface -> lines)",
     ),
     _Verb(
+        "silhouette",
+        "_silhouette",
+        "silhouette_cmd",
+        "The outline of a part along a direction, optionally offset or a prism",
+    ),
+    _Verb(
         "fit-curves",
         "_fit_curves",
         "fit_curves_cmd",

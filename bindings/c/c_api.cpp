@@ -84,6 +84,7 @@
 #include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/fit_curves.hpp"
+#include "meshioplusplus/operations/silhouette.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -2756,6 +2757,10 @@ CapiFitCurvesLast& capi_fit_curves_last() {
     thread_local CapiFitCurvesLast last;
     return last;
 }
+std::string& capi_silhouette_warnings() {
+    thread_local std::string last;
+    return last;
+}
 
 }  // namespace
 
@@ -2848,6 +2853,64 @@ int64_t mio_fit_curves_warnings(char* buf, int64_t buflen) {
         if (buflen < 0)
             throw std::invalid_argument("meshio++: negative warnings buffer length");
         return copy_string(capi_fit_curves_last().mWarnings, buf, buflen);
+    });
+}
+
+static_assert(sizeof(mio_silhouette_opts) == 104, "mio_silhouette_opts layout");
+static_assert(sizeof(mio_silhouette_report) == 104, "mio_silhouette_report layout");
+
+void mio_silhouette_opts_init(mio_silhouette_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_silhouette_opts{};
+    opts->normal[2] = 1.0;
+    opts->round_angle = 180.0;
+    opts->arc_segments = 64;
+    opts->merge_tolerance = 1e-9;
+}
+
+mio_mesh* mio_silhouette(const mio_mesh* mesh, const mio_silhouette_opts* opts,
+                         mio_silhouette_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_silhouette_warnings().clear();
+        capi_require(mesh, "meshio++: silhouette: mesh is NULL");
+        mio_silhouette_opts o;
+        mio_silhouette_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::SilhouetteOptions options;
+        options.mNormal = {o.normal[0], o.normal[1], o.normal[2]};
+        options.mClearance = o.clearance;
+        options.mRoundAngleDeg = o.round_angle;
+        options.mArcSegments = o.arc_segments;
+        options.mExtrude = o.extrude != 0;
+        options.mMergeTolerance = o.merge_tolerance;
+        if (o.region != nullptr)
+            options.mRegion = o.region;
+        meshioplusplus::SilhouetteResult r = meshioplusplus::silhouette(mesh->mMesh, options);
+        for (const std::string& w : r.mWarnings)
+            capi_silhouette_warnings() += (capi_silhouette_warnings().empty() ? "" : "\n") + w;
+        if (report) {
+            *report = mio_silhouette_report{};
+            report->num_loops = r.mNumLoops;
+            report->num_outer = r.mNumOuter;
+            report->num_holes = r.mNumHoles;
+            report->num_triangles = r.mNumTriangles;
+            report->area = r.mArea;
+            report->perimeter = r.mPerimeter;
+            report->min_height = r.mMinHeight;
+            report->max_height = r.mMaxHeight;
+            report->num_warnings = static_cast<int64_t>(r.mWarnings.size());
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_silhouette_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_silhouette_warnings(), buf, buflen);
     });
 }
 

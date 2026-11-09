@@ -729,7 +729,7 @@ u_r, u_theta, u_z = out.point_data["U"].T
 
 #### Sections to sketches
 
-**`meshioplusplus.sections(scan, direction, offsets)`** cuts a surface at parallel planes and walks each section into ordered polylines (`slice(chain=True)` for one plane), and **`fit_curves`** turns them into lines, arcs and circles within a tolerance, in the section plane's 2-D frame, stored on the mesh as the `sketch:*` data a drawing or a CAD profile reads; the [DXF](doc/formats/dxf.md) writer emits that sketch as the entities every CAD sketcher, laser cutter and CNC post-processor imports. See [chained sections](doc/slice.md#chained-sections) and [fit curves](doc/fit_curves.md).
+**`meshioplusplus.sections(scan, direction, offsets)`** cuts a surface at parallel planes and walks each section into ordered polylines (`slice(chain=True)` for one plane), and **`fit_curves`** turns them into lines, arcs and circles within a tolerance, in the section plane's 2-D frame, stored on the mesh as the `sketch:*` data a drawing or a CAD profile reads; the [DXF](doc/formats/dxf.md) writer emits that sketch as the entities every CAD sketcher, laser cutter and CNC post-processor imports. **`silhouette`** outlines a part along a direction, holes included, grown or shrunk by a clearance or extruded into a nest or a foam insert ([silhouette](doc/silhouette.md)). See [chained sections](doc/slice.md#chained-sections) and [fit curves](doc/fit_curves.md).
 
 <!--pytest-codeblocks:skip-->
 
@@ -737,6 +737,8 @@ u_r, u_theta, u_z = out.point_data["U"].T
 profile = meshioplusplus.sections(scan, direction=(0, 0, 1), offsets=[2.0])
 sketch, report = meshioplusplus.fit_curves(profile, tolerance=0.01, return_report=True)
 meshioplusplus.write("profile.dxf", sketch)  # LINE, ARC and CIRCLE entities, 1:1
+
+nest = meshioplusplus.silhouette(scan, (0, 0, 1), clearance=0.5)  # the outline, 0.5 of play
 ```
 
 #### Rigid registration (ICP)

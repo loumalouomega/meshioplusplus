@@ -226,6 +226,37 @@ static mxArray *O_mio_slice(const mxArray **a) {
     return mio_o_wrap_mesh(out);
 }
 
+/* silhouette(mesh, normal, clearance, round_angle, arc_segments, extrude,
+ * region, merge_tolerance) (roadmap 7.6.3). */
+static mxArray *O_mio_silhouette(const mxArray **a) {
+    mio_silhouette_opts opts;
+    mio_silhouette_opts_init(&opts);
+    mio_o_vec3(a[1], opts.normal, "normal");
+    opts.clearance = mio_o_double(a[2], "clearance");
+    opts.round_angle = mio_o_double(a[3], "round_angle");
+    opts.arc_segments = (int64_t)mio_o_double(a[4], "arc_segments");
+    opts.extrude = mio_o_bool(a[5], "extrude");
+    opts.region = mio_o_opt_string(a[6]);
+    opts.merge_tolerance = mio_o_double(a[7], "merge_tolerance");
+    mio_silhouette_report r;
+    mio_mesh *out = mio_silhouette(mio_o_mesh(a[0]), &opts, &r);
+    if (out == NULL) mio_o_fail("silhouette");
+    mxArray *w = mio_o_getbuffer(mio_silhouette_warnings, "silhouette");
+    const char *keys[] = {"mesh",      "num_loops", "num_outer",  "num_holes",  "num_triangles",
+                          "area",      "perimeter", "min_height", "max_height", "warnings"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mio_o_scalar((double)r.num_loops),
+                         mio_o_scalar((double)r.num_outer),
+                         mio_o_scalar((double)r.num_holes),
+                         mio_o_scalar((double)r.num_triangles),
+                         mio_o_scalar(r.area),
+                         mio_o_scalar(r.perimeter),
+                         mio_o_scalar(r.min_height),
+                         mio_o_scalar(r.max_height),
+                         w};
+    return mio_o_struct(10, keys, values);
+}
+
 /* fit_curves(sections, tolerance, snap_angle, normal, min_arc_points,
  * min_arc_sweep): `pieces` is an n x 1 struct array. */
 static mxArray *O_mio_fit_curves(const mxArray **a) {
@@ -1638,6 +1669,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_slice, 6),
     MIO_O_ENTRY(mio_sections, 5),
     MIO_O_ENTRY(mio_fit_curves, 6),
+    MIO_O_ENTRY(mio_silhouette, 8),
     MIO_O_ENTRY(mio_isosurface, 5),
     MIO_O_ENTRY(mio_gradient, 8),
     MIO_O_ENTRY(mio_hessian, 6),

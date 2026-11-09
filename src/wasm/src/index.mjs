@@ -294,6 +294,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean, options?: {chain?: boolean, minLength?: number}) => Mesh,
+ *   silhouette: (mesh: Mesh, options?: {normal?: number[], clearance?: number, roundAngle?: number, arcSegments?: number, extrude?: boolean, region?: string, mergeTolerance?: number}) => {mesh: Mesh, numLoops: number, numOuter: number, numHoles: number, numTriangles: number, area: number, perimeter: number, minHeight: number, maxHeight: number, warnings: string[]},
  *   fitCurves: (sections: Mesh, options?: {tolerance?: number, snapAngle?: number, normal?: number[], minArcPoints?: number, minArcSweep?: number}) => {mesh: Mesh, pieces: Array<{type: string, start: number[], end: number[], centre: number[], radius: number, sweep: number, residual: number, numPoints: number, chain: number, frame: number}>, frames: Float64Array[], numLines: number, numArcs: number, numCircles: number, maxResidual: number, tolerance: number, warnings: string[]},
  *   sections: (mesh: Mesh, direction: number[], offsets: ArrayLike<number>, options?: {minLength?: number, recordParentIds?: boolean}) => Mesh,
  *   isosurface: (mesh: Mesh, array: string, isovalues: number|number[], component?: number, recordParentIds?: boolean) => Mesh,
@@ -855,6 +856,11 @@ export async function loadMeshioPlusPlus(
         slice: (mesh, origin, normal, recordParentIds = false, options = {}) =>
             Module.slice(mesh, origin, normal, recordParentIds, Boolean(options.chain),
                 Number(options.minLength ?? 0)),
+        silhouette: (mesh, options = {}) => {
+            const o = { ...options };
+            if (o.normal !== undefined) o.normal = Array.from(o.normal, Number);
+            return Module.silhouette(mesh, o);
+        },
         fitCurves: (sections, options = {}) => {
             const o = { ...options };
             if (o.normal !== undefined) o.normal = Array.from(o.normal, Number);

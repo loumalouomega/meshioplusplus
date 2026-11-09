@@ -608,6 +608,11 @@ function t_intersections()
     fc = mio.fit_curves(ch);
     expect_equal(fc.num_circles, 1);
     expect_equal(fc.pieces(1).type, 'circle');
+    sil = mio.silhouette(a, 'clearance', 0.05);
+    expect_equal(sil.num_loops, 1);
+    expect_equal(sil.num_holes, 0);
+    assert(sil.area > 0);
+    expect_error(@() mio.silhouette(a, 'arc_segments', 2), 'arc_segments');
 end
 
 function t_capabilities()

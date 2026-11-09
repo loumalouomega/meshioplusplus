@@ -193,6 +193,7 @@ export default defineConfig({
               { text: "Crop (bbox / half-space / predicate)", link: "/crop" },
               { text: "Slicing / cross-sections", link: "/slice" },
               { text: "Lines, arcs and circles from sections", link: "/fit_curves" },
+              { text: "Silhouette outlines", link: "/silhouette" },
               { text: "Isosurfaces / contours", link: "/isosurface" },
               { text: "Level-set cutting (CutCells)", link: "/cut" },
               { text: "Regular grids / voxelize", link: "/voxelize" },

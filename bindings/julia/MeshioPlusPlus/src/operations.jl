@@ -333,6 +333,41 @@ function slice(m::Mesh, origin::AbstractVector{<:Real}, normal::AbstractVector{<
 end
 
 """
+    silhouette(m, normal=(0, 0, 1); clearance=0.0, round_angle=180.0, arc_segments=64,
+               extrude=false, region="", merge_tolerance=1e-9)
+        -> (; mesh, num_loops, num_outer, num_holes, num_triangles, area, perimeter,
+              min_height, max_height, warnings)
+
+The outline of a surface (or a volume mesh's skin) seen along `normal`, with its
+holes: a chained line mesh `fit_curves` reads, offset by `clearance` (> 0 grows it)
+or, with `extrude=true`, the closed surface of the prism over it (roadmap 7.6.3).
+See `doc/silhouette.md`.
+"""
+function silhouette(m::Mesh, normal=(0.0, 0.0, 1.0); clearance::Real=0.0, round_angle::Real=180.0,
+                    arc_segments::Integer=64, extrude::Bool=false, region::AbstractString="",
+                    merge_tolerance::Real=1e-9)
+    n = (Float64(normal[1]), Float64(normal[2]), Float64(normal[3]))
+    region_c = Vector{UInt8}(codeunits(String(region) * "\0"))
+    rep = Ref{_CSilhouetteReport}()
+    ptr = GC.@preserve region_c begin
+        opts = _CSilhouetteOpts(n, Cdouble(clearance), Cdouble(round_angle), Int64(arc_segments),
+                                Int32(extrude), Int32(0), Cdouble(merge_tolerance),
+                                Cstring(pointer(region_c)), ntuple(_ -> Int64(0), 4))
+        ccall(_sym(:mio_silhouette), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CSilhouetteOpts}, Ref{_CSilhouetteReport}), _handle(m), Ref(opts),
+              rep)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    text = _getstring((buf, n) -> ccall(_sym(:mio_silhouette_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    (mesh=out, num_loops=Int(r.num_loops), num_outer=Int(r.num_outer),
+     num_holes=Int(r.num_holes), num_triangles=Int(r.num_triangles), area=r.area,
+     perimeter=r.perimeter, min_height=r.min_height, max_height=r.max_height,
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
     fit_curves(sections; tolerance=0.0, snap_angle=0.0, normal=nothing, min_arc_points=4,
                min_arc_sweep=5.0)
         -> (; mesh, pieces, frames, num_lines, num_arcs, num_circles, max_residual, tolerance,

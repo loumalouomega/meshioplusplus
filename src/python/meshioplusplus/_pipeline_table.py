@@ -67,6 +67,16 @@ OP_TABLE = {
         "Chain",
         "MinLength",
     ),
+    # The outline of a part along a direction (roadmap 7.6.3).
+    "Silhouette": (
+        "Normal",
+        "Clearance",
+        "RoundAngle",
+        "ArcSegments",
+        "Extrude",
+        "Region",
+        "MergeTolerance",
+    ),
     # Lines, arcs and circles from chained sections (roadmap 7.6.2).
     "FitCurves": (
         "Tolerance",

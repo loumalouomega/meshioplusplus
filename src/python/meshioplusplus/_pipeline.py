@@ -1311,6 +1311,25 @@ def _apply_step(mesh, step, steps, warnings):
             warnings.append(
                 "the section is empty; the plane misses the mesh -- move or flip it"
             )
+    elif op == "Silhouette":
+        from ._silhouette import silhouette
+
+        mesh, rep = silhouette(
+            mesh,
+            _vec3(step, "Normal") if "Normal" in step else (0.0, 0.0, 1.0),
+            clearance=_number(step, "Clearance", 0.0),
+            round_angle=_number(step, "RoundAngle", 180.0),
+            arc_segments=_int_number(op, step, "ArcSegments", 64.0),
+            extrude=_flag(step, "Extrude", False),
+            region=_text(step, "Region", ""),
+            merge_tolerance=_number(step, "MergeTolerance", 1e-9),
+            return_report=True,
+        )
+        entry["NumLoops"] = float(rep["num_loops"])
+        entry["NumHoles"] = float(rep["num_holes"])
+        entry["Area"] = float(rep["area"])
+        entry["Perimeter"] = float(rep["perimeter"])
+        warnings.extend(f"silhouette: {w}" for w in rep["warnings"])
     elif op == "FitCurves":
         from ._fit_curves import fit_curves
 

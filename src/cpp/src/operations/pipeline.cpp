@@ -89,6 +89,7 @@
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/fit_curves.hpp"
+#include "meshioplusplus/operations/silhouette.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -1415,6 +1416,29 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             rReport.mWarnings.push_back(
                 "the section is empty; the plane misses the mesh -- move or flip it");
         return section;
+    }
+    if (op == "Silhouette") {
+        SilhouetteOptions opts;
+        if (pipe_find(rStep, "Normal"))
+            pipe_vec3(rStep, "Normal", opts.mNormal.data());
+        opts.mClearance = pipe_number(rStep, "Clearance", 0.0);
+        opts.mRoundAngleDeg = pipe_number(rStep, "RoundAngle", 180.0);
+        const double segs = pipe_number(rStep, "ArcSegments", 64.0);
+        opts.mArcSegments = static_cast<std::int64_t>(segs);
+        if (static_cast<double>(opts.mArcSegments) != segs)
+            throw std::invalid_argument(pipe_err(rStep, "ArcSegments must be an integer"));
+        opts.mExtrude = pipe_flag(rStep, "Extrude", false);
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        opts.mMergeTolerance = pipe_number(rStep, "MergeTolerance", 1e-9);
+        SilhouetteResult sr = silhouette(mesh, opts);
+        for (const std::string& w : sr.mWarnings)
+            rReport.mWarnings.push_back("silhouette: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumLoops", static_cast<double>(sr.mNumLoops)},
+                        {"NumHoles", static_cast<double>(sr.mNumHoles)},
+                        {"Area", sr.mArea},
+                        {"Perimeter", sr.mPerimeter}});
+        return std::move(sr.mMesh);
     }
     if (op == "FitCurves") {
         FitCurvesOptions opts;

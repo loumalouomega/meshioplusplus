@@ -148,6 +148,7 @@
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/fit_curves.hpp"
+#include "meshioplusplus/operations/silhouette.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -5418,6 +5419,64 @@ int cmd_slice(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// silhouette: the outline of a part along a direction (roadmap 7.6.3).
+int cmd_silhouette(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"normal", {}, true},
+                                          {"clearance", {}, true},
+                                          {"round-angle", {}, true},
+                                          {"arc-segments", {}, true},
+                                          {"extrude", {}, false},
+                                          {"region", {}, true},
+                                          {"merge-tolerance", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.empty() || p.positionals.size() > 2)
+        throw std::runtime_error("silhouette requires INFILE and an optional OUTFILE");
+    meshioplusplus::SilhouetteOptions o;
+    if (has_opt(p, "normal")) {
+        const auto n = parse_doubles(opt_value(p, "normal"));
+        if (n.size() != 3)
+            throw std::runtime_error("silhouette: --normal expects 'x,y,z'");
+        o.mNormal = {n[0], n[1], n[2]};
+    }
+    cli_opt_double(p, "clearance", o.mClearance);
+    cli_opt_double(p, "round-angle", o.mRoundAngleDeg);
+    cli_opt_int64(p, "arc-segments", o.mArcSegments);
+    o.mExtrude = has_flag(p, "extrude");
+    cli_opt_string(p, "region", o.mRegion);
+    cli_opt_double(p, "merge-tolerance", o.mMergeTolerance);
+    meshioplusplus::SilhouetteResult r = meshioplusplus::silhouette(
+        read_mesh_cli(p.positionals[0], opt_value(p, "input-format")), o);
+    if (p.positionals.size() == 2)
+        write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("num_loops", r.mNumLoops);
+        json.Field("num_outer", r.mNumOuter);
+        json.Field("num_holes", r.mNumHoles);
+        json.Field("num_triangles", r.mNumTriangles);
+        json.Field("area", r.mArea);
+        json.Field("perimeter", r.mPerimeter);
+        json.Field("min_height", r.mMinHeight);
+        json.Field("max_height", r.mMaxHeight);
+        cli_names_json(json, "warnings", r.mWarnings);
+        json.EndObject();
+        return 0;
+    }
+    char line[256];
+    meshioplusplus::detail::snprintf_c(
+        line, sizeof(line),
+        "%lld loop(s): %lld outer, %lld hole(s); area %.9g, perimeter %.9g; heights %.9g to "
+        "%.9g\n",
+        static_cast<long long>(r.mNumLoops), static_cast<long long>(r.mNumOuter),
+        static_cast<long long>(r.mNumHoles), r.mArea, r.mPerimeter, r.mMinHeight, r.mMaxHeight);
+    std::cout << line;
+    for (const std::string& w : r.mWarnings)
+        std::cout << "warning: " << w << "\n";
+    return 0;
+}
+
 // fit-curves: lines, arcs and circles from chained sections (roadmap 7.6.2).
 int cmd_fit_curves(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
@@ -9609,6 +9668,10 @@ const CliVerb kCliVerbs[] = {
     {"slice", nullptr,
      "  slice                   Planar cross-section (volume->surface, surface->lines)\n",
      &cmd_slice},
+    {"silhouette", nullptr,
+     "  silhouette              The outline of a part along a direction, optionally offset or a "
+     "prism\n",
+     &cmd_silhouette},
     {"fit-curves", nullptr,
      "  fit-curves              Lines, arcs and circles from chained sections (a sketch)\n",
      &cmd_fit_curves},

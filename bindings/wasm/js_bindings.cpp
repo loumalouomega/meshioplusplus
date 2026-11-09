@@ -139,6 +139,7 @@
 #include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/fit_curves.hpp"
+#include "meshioplusplus/operations/silhouette.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -3992,6 +3993,52 @@ val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool r
         options.mChain = Chain;
         options.mMinLength = MinLength;
         return mesh_to_val(meshioplusplus::slice(val_to_mesh(rMeshObj), options));
+    });
+}
+
+/**
+ * @brief The outline of a part along a direction (roadmap 7.6.3). @p rOptions
+ * is `{normal, clearance, roundAngle, arcSegments, extrude, region,
+ * mergeTolerance}`.
+ */
+val silhouette_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SilhouetteOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the silhouette options",
+                                {"normal", "clearance", "roundAngle", "arcSegments", "extrude",
+                                 "region", "mergeTolerance"});
+            if (rOptions.hasOwnProperty("normal"))
+                o.mNormal = prim_js_vec3(rOptions["normal"], {{0.0, 0.0, 1.0}}, false);
+            if (rOptions.hasOwnProperty("clearance"))
+                o.mClearance = rOptions["clearance"].as<double>();
+            if (rOptions.hasOwnProperty("roundAngle"))
+                o.mRoundAngleDeg = rOptions["roundAngle"].as<double>();
+            if (rOptions.hasOwnProperty("arcSegments"))
+                o.mArcSegments = static_cast<std::int64_t>(rOptions["arcSegments"].as<double>());
+            if (rOptions.hasOwnProperty("extrude"))
+                o.mExtrude = rOptions["extrude"].as<bool>();
+            if (rOptions.hasOwnProperty("region"))
+                o.mRegion = rOptions["region"].as<std::string>();
+            if (rOptions.hasOwnProperty("mergeTolerance"))
+                o.mMergeTolerance = rOptions["mergeTolerance"].as<double>();
+        }
+        meshioplusplus::SilhouetteResult r = meshioplusplus::silhouette(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numLoops", static_cast<double>(r.mNumLoops));
+        out.set("numOuter", static_cast<double>(r.mNumOuter));
+        out.set("numHoles", static_cast<double>(r.mNumHoles));
+        out.set("numTriangles", static_cast<double>(r.mNumTriangles));
+        out.set("area", r.mArea);
+        out.set("perimeter", r.mPerimeter);
+        out.set("minHeight", r.mMinHeight);
+        out.set("maxHeight", r.mMaxHeight);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
     });
 }
 
@@ -10400,6 +10447,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("slice", &slice_js);
     emscripten::function("sections", &sections_js);
     emscripten::function("fitCurves", &fit_curves_js);
+    emscripten::function("silhouette", &silhouette_js);
     emscripten::function("isosurface", &isosurface_js);
     emscripten::function("grid", &grid_js);
     emscripten::function("rectangle", &rectangle_js);

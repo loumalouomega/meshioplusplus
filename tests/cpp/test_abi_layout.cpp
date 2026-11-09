@@ -155,6 +155,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/fit_curves.hpp"
+#include "meshioplusplus/operations/silhouette.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
@@ -824,6 +825,7 @@ MIO_ABI_LAYOUT(meshioplusplus::SliceOptions, 64, 8);
 static_assert(offsetof(meshioplusplus::SliceOptions, mChain) == 49, "SliceOptions::mChain moved");
 MIO_ABI_LAYOUT(meshioplusplus::SectionsOptions, 64, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FitCurvesOptions, 56, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SilhouetteOptions, 96, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SketchPiece, 104, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SymmetryPlaneResult, 128, 8);
 MIO_ABI_LAYOUT(meshioplusplus::LandmarkResult, 160, 8);

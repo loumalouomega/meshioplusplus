@@ -79,6 +79,7 @@ module meshioplusplus
     public :: mio_register_landmarks, mio_find_symmetry_plane, mio_symmetry_plane_report
     public :: mio_auto_align, mio_auto_align_report, mio_sections
     public :: mio_fit_curves, mio_fit_curves_report, mio_fit_curves_piece, mio_sketch_piece
+    public :: mio_silhouette, mio_silhouette_report
     public :: mio_deviation_regions, mio_deviation_regions_report, mio_deviation_region_info
     public :: mio_deviation_region
     public :: mio_exaggerate, mio_exaggerate_report, mio_colorize, mio_colorize_report
@@ -1610,6 +1611,33 @@ module meshioplusplus
         integer(c_int64_t) :: num_frames = 0
         real(c_double) :: max_residual = 0.0_c_double
         real(c_double) :: tolerance = 0.0_c_double
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_silhouette_opts` (104 bytes; roadmap 7.6.3).
+    type, bind(c) :: mio_silhouette_opts_t
+        real(c_double) :: normal(3) = [0.0_c_double, 0.0_c_double, 1.0_c_double]
+        real(c_double) :: clearance = 0.0_c_double
+        real(c_double) :: round_angle = 180.0_c_double
+        integer(c_int64_t) :: arc_segments = 64
+        integer(c_int32_t) :: extrude = 0
+        integer(c_int32_t) :: reserved32 = 0
+        real(c_double) :: merge_tolerance = 1.0e-9_c_double
+        type(c_ptr) :: region = c_null_ptr
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_silhouette_report` (104 bytes): what `mio_silhouette` found.
+    type, bind(c) :: mio_silhouette_report
+        integer(c_int64_t) :: num_loops = 0
+        integer(c_int64_t) :: num_outer = 0
+        integer(c_int64_t) :: num_holes = 0
+        integer(c_int64_t) :: num_triangles = 0
+        real(c_double) :: area = 0.0_c_double
+        real(c_double) :: perimeter = 0.0_c_double
+        real(c_double) :: min_height = 0.0_c_double
+        real(c_double) :: max_height = 0.0_c_double
         integer(c_int64_t) :: num_warnings = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
@@ -4268,6 +4296,14 @@ module meshioplusplus
             type(c_ptr), value :: h
             type(mio_fit_curves_opts_t), intent(in) :: opts
             type(mio_fit_curves_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_silhouette(h, opts, report) bind(c, name="mio_silhouette") result(out)
+            import :: c_ptr, mio_silhouette_opts_t, mio_silhouette_report
+            type(c_ptr), value :: h
+            type(mio_silhouette_opts_t), intent(in) :: opts
+            type(mio_silhouette_report), intent(out) :: report
             type(c_ptr) :: out
         end function
 
@@ -8673,6 +8709,48 @@ contains
         out%handle = c_mio_fit_curves(sections%handle, opts, rep)
         if (.not. c_associated(out%handle)) then
             call handle_failure('fit_curves', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The outline of a surface (or a volume mesh's skin) seen along `normal`,
+    !> with its holes, optionally offset by `clearance` or made a prism
+    !> (`extrude`) (roadmap 7.6.3; doc/silhouette.md).
+    function mio_silhouette(mesh, normal, clearance, round_angle, arc_segments, extrude, &
+                            region, merge_tolerance, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in), optional :: normal(3), clearance, round_angle, merge_tolerance
+        integer, intent(in), optional :: arc_segments
+        logical, intent(in), optional :: extrude
+        character(*), intent(in), optional :: region
+        type(mio_silhouette_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_silhouette_opts_t) :: opts
+        type(mio_silhouette_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: region_buf
+        if (c_sizeof(opts) /= 104_c_size_t .or. c_sizeof(rep) /= 104_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: silhouette layout mismatch'
+            error stop 1
+        end if
+        if (present(normal)) opts%normal = real(normal, c_double)
+        if (present(clearance)) opts%clearance = real(clearance, c_double)
+        if (present(round_angle)) opts%round_angle = real(round_angle, c_double)
+        if (present(arc_segments)) opts%arc_segments = int(arc_segments, c_int64_t)
+        if (present(extrude)) then
+            if (extrude) opts%extrude = 1
+        end if
+        if (present(merge_tolerance)) opts%merge_tolerance = real(merge_tolerance, c_double)
+        if (present(region)) then
+            region_buf = trim(region)//c_null_char
+            opts%region = c_loc(region_buf(1:1))
+        end if
+        out%handle = c_mio_silhouette(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('silhouette', mio_error_message(), stat, errmsg)
             return
         end if
         if (present(report)) report = rep

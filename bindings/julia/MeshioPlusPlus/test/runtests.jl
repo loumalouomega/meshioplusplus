@@ -2546,6 +2546,9 @@ end # testset
     @test fc.num_circles == 1 && fc.pieces[1].type == "circle" && size(fc.frames[1]) == (4, 4)
     close(fc.mesh)
     close(ch)
+    sil = silhouette(a; clearance=0.05)
+    @test sil.num_loops == 1 && sil.num_holes == 0 && sil.area > 0
+    close(sil.mesh)
 end
 
 @testset "operations: deviation" begin
