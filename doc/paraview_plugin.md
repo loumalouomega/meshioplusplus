@@ -47,6 +47,19 @@ The reader registers every extension meshio++ knows, `.vtu` and the other format
 
 After loading, every extension meshio++ knows appears in ParaView's file dialogs. The reader's **FileFormat** property picks the format explicitly (`automatic` infers it from the file), and the file is exposed as a `vtkUnstructuredGrid` with its point, cell and field data. The writer saves an unstructured grid through `meshioplusplus.write`, choosing the format from the file name.
 
+## Reader properties
+
+| Property | What it does |
+| --- | --- |
+| **FileFormat** | The format, or `automatic` to infer it from the file name. |
+| **PointArrays**, **CellArrays** | Checkboxes filled from [`read_metadata`](./selective_read.md); an unticked array is not read (`read(arrays=...)`, which formats with a selective path never materialise). Only a changed selection is passed on. |
+| **PointsOnly** | Geometry only: points and cells, no data arrays (`read(points_only=True)`). |
+| **Piece** | One piece of a partitioned file (`pvtu`, `pvtp`, `pvd`, VTKHDF, MFEM, Elmer); `-1`, the default, reads every piece. |
+| **Ghosts** | `keep` or `drop` the ghost cells of a partitioned file ([selective reads](./selective_read.md)). |
+| **Deflection**, **AngularDeflection** | The tessellation of a [STEP](./formats/step.md#reading) or IGES file: a length (0 takes 1e-3 of the bounding-box diagonal) and an angle in radians (0.5). |
+| **AddOns** | Information only: whether the OpenCASCADE, Netgen and MMG add-ons are loaded (`occt: yes`, ...), so a STEP read that fails for want of OpenCASCADE explains itself. |
+| **Refresh** | Plans the time steps again (see below). |
+
 ## Time steps
 
 A file that holds several steps (every format [`read_metadata`](./sequences.md) reports `time_values` for: XDMF, Exodus, VTKHDF, CalculiX `frd`, ...) shows them on ParaView's time toolbar, and each time reads its step: the last step at or before the time asked for. Selecting a file series in the file dialog (`out_0.vtu`, `out_1.vtu`, ...) opens it as one reader with a step per file, timed as [sequences](./sequences.md) time a series: a number in the file name, else the file's own `meshio:time`, else its position. The plan of steps is cached per file and its size and modification time, so *File → Reload Files* on a rewritten file plans it again, and the reader's **Refresh** button drops every cached plan.

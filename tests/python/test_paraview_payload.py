@@ -420,3 +420,49 @@ def test_series_path_and_one_file_per_step(tmp_path):
     np.testing.assert_allclose(
         _paraview.time_values(_paraview.time_plan(written)), [0, 1, 2]
     )
+
+
+# --------------------------------------------------------------------------- #
+# read options and status (roadmap 6.5)                                       #
+# --------------------------------------------------------------------------- #
+def test_read_kwargs_pass_only_what_differs():
+    assert _paraview.read_kwargs(["u", "v"], ["c"]) == {}
+    assert _paraview.read_kwargs(["u", "v"], ["c"], ["u", "v"], ["c"]) == {}
+    assert _paraview.read_kwargs(["u", "v"], ["c"], ["u"], ["c"]) == {
+        "arrays": ["c", "u"]
+    }
+    assert _paraview.read_kwargs(["u"], ["c"], [], []) == {"arrays": []}
+    assert _paraview.read_kwargs(points_only=True, piece=2, ghosts="drop") == {
+        "points_only": True,
+        "piece": 2,
+        "ghosts": "drop",
+    }
+    assert _paraview.read_kwargs(piece=-1) == {}
+    with pytest.raises(ValueError, match="ghosts"):
+        _paraview.read_kwargs(ghosts="only")
+
+
+def test_an_unticked_array_is_not_read(tmp_path):
+    mesh = _step_meshes()[0][1]
+    mesh.point_data["v"] = np.arange(4.0)
+    path = tmp_path / "m.vtu"
+    meshioplusplus.write(path, mesh)
+    meta = _paraview.metadata(path)
+    assert sorted(meta["point_data_names"]) == ["u", "v"]
+    kwargs = _paraview.read_kwargs(meta["point_data_names"], [], ["v"], [])
+    plan = _paraview.time_plan([path])
+    back = _paraview.read_step(plan, 0, **kwargs)
+    assert list(back.point_data) == ["v"]
+
+
+def test_cad_formats_are_recognised():
+    assert _paraview.cad_format("part.STEP") == "step"
+    assert _paraview.cad_format("part.igs") == "iges"
+    assert _paraview.cad_format("part.vtu") is None
+    assert _paraview.cad_format("part.dat", "step") == "step"
+
+
+def test_addon_status_names_the_three_addons():
+    status = _paraview.addon_status()
+    assert set(status) == {"occt", "netgen", "mmg"}
+    assert all(isinstance(v, bool) for v in status.values())

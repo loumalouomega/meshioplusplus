@@ -339,3 +339,34 @@ def test_time_steps_in_and_out(tmp_path):
     assert seen["times"] == [0.0, 0.5, 2.0]
     assert seen["u"] == [20.0] * 4
     assert meshioplusplus.read_metadata(dst)["time_values"] == [0.0, 0.5, 2.0]
+
+
+_ARRAYS = """
+src = args[0]
+reader = meshioreader(FileName=src)
+reader.UpdatePipelineInformation()
+offered = sorted(reader.PointArrays.Available)
+reader.PointArrays = ["v"]
+reader.UpdatePipeline()
+grid = servermanager.Fetch(reader)
+names = [grid.GetPointData().GetArrayName(i)
+         for i in range(grid.GetPointData().GetNumberOfArrays())]
+print(json.dumps({"offered": offered, "read": names,
+                  "addons": list(reader.GetProperty("AddOns"))}))
+"""
+
+
+def test_an_unticked_array_is_absent(tmp_path):
+    """roadmap 6.5: the array checkboxes come from read_metadata, and an
+    unticked array is absent from the fetched dataset."""
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+        [("tetra", [[0, 1, 2, 3]])],
+        point_data={"u": np.arange(4.0), "v": np.ones(4)},
+    )
+    src = tmp_path / "in.vtu"
+    meshioplusplus.write(src, mesh)
+    seen = _run_pvpython(tmp_path, _ARRAYS, src)
+    assert seen["offered"] == ["u", "v"]
+    assert seen["read"] == ["v"]
+    assert sorted(a.split(":")[0] for a in seen["addons"]) == ["mmg", "netgen", "occt"]

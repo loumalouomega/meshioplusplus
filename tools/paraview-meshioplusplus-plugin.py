@@ -18,6 +18,7 @@ from paraview.util.vtkAlgorithm import (
     smproperty,
     smproxy,
 )
+from vtkmodules.vtkCommonCore import vtkDataArraySelection
 from vtkmodules.vtkCommonDataModel import vtkDataObject, vtkUnstructuredGrid
 
 import meshioplusplus
@@ -27,6 +28,21 @@ paraview_plugin_version = meshioplusplus.__version__
 _formats = meshioplusplus.formats()
 meshio_extensions = [ext[1:] for ext in _formats["extensions"]]
 meshio_input_filetypes = ["automatic"] + _formats["readable"]
+
+
+def _modified_callback(algorithm):
+    """An observer that marks ``algorithm`` modified (an array selection
+    changed), holding it weakly so the observer keeps no cycle alive."""
+    import weakref
+
+    ref = weakref.ref(algorithm)
+
+    def mark(*args):
+        target = ref()
+        if target is not None:
+            target.Modified()
+
+    return mark
 
 
 def _alias(proxy, name, decorator):
@@ -60,6 +76,15 @@ class MeshioPlusPlusReader(VTKPythonAlgorithmBase):
         )
         self._filenames = []
         self._file_format = None
+        self._points_only = False
+        self._piece = -1
+        self._ghosts = "keep"
+        self._deflection = 0.0
+        self._angular_deflection = 0.5
+        self._point_arrays = vtkDataArraySelection()
+        self._cell_arrays = vtkDataArraySelection()
+        for selection in (self._point_arrays, self._cell_arrays):
+            selection.AddObserver("ModifiedEvent", _modified_callback(self))
 
     # Repeatable, so ParaView hands over a whole file series (out_0.vtu,
     # out_1.vtu, ...) as one reader; a script may still pass one string.
@@ -107,6 +132,73 @@ class MeshioPlusPlusReader(VTKPythonAlgorithmBase):
             self._file_format = file_format
             self.Modified()
 
+    @smproperty.dataarrayselection(name="PointArrays")
+    def GetPointArraySelection(self):
+        return self._point_arrays
+
+    @smproperty.dataarrayselection(name="CellArrays")
+    def GetCellArraySelection(self):
+        return self._cell_arrays
+
+    @smproperty.intvector(name="PointsOnly", default_values="0")
+    @smdomain.xml('<BooleanDomain name="bool"/>')
+    def SetPointsOnly(self, value):
+        if self._points_only != bool(value):
+            self._points_only = bool(value)
+            self.Modified()
+
+    @smproperty.intvector(name="Piece", default_values="-1")
+    def SetPiece(self, value):
+        # -1 reads every piece of a partitioned file (pvtu, pvd, VTKHDF, ...).
+        if self._piece != int(value):
+            self._piece = int(value)
+            self.Modified()
+
+    @smproperty.stringvector(name="GhostsInfo", information_only="1")
+    def GetGhostPolicies(self):
+        return list(_paraview.GHOST_POLICIES)
+
+    @smproperty.stringvector(
+        name="Ghosts", number_of_elements="1", default_values="keep"
+    )
+    @smdomain.xml(
+        """
+        <StringListDomain name="list">
+            <RequiredProperties>
+                <Property name="GhostsInfo" function="StringInfo"/>
+            </RequiredProperties>
+        </StringListDomain>
+        """
+    )
+    def SetGhosts(self, value):
+        if self._ghosts != value:
+            self._ghosts = value
+            self.Modified()
+
+    @smproperty.doublevector(name="Deflection", default_values="0.0")
+    def SetDeflection(self, value):
+        # STEP and IGES: the chordal deflection, a length; 0 takes 1e-3 of
+        # the bounding-box diagonal.
+        if self._deflection != float(value):
+            self._deflection = float(value)
+            self.Modified()
+
+    @smproperty.doublevector(name="AngularDeflection", default_values="0.5")
+    def SetAngularDeflection(self, value):
+        # STEP and IGES: the angular deflection, in radians.
+        if self._angular_deflection != float(value):
+            self._angular_deflection = float(value)
+            self.Modified()
+
+    @smproperty.stringvector(name="AddOns", information_only="1")
+    def GetAddOns(self):
+        # Which add-ons are loaded, e.g. "occt: no": a STEP read without
+        # OpenCASCADE fails, and this says why.
+        return [
+            f"{name}: {'yes' if ok else 'no'}"
+            for name, ok in _paraview.addon_status().items()
+        ]
+
     @smproperty.xml(
         """<Property name="Refresh" command="Refresh" panel_widget="command_button">
              <Documentation>Plan the file's time steps again.</Documentation>
@@ -140,7 +232,39 @@ class MeshioPlusPlusReader(VTKPythonAlgorithmBase):
         if times:
             info.Append(executive.TIME_RANGE(), times[0])
             info.Append(executive.TIME_RANGE(), times[-1])
+        if self._filenames:
+            meta = _paraview.metadata(self._filenames[0], self._file_format)
+            for selection, key in (
+                (self._point_arrays, "point_data_names"),
+                (self._cell_arrays, "cell_data_names"),
+            ):
+                for name in meta.get(key, []):
+                    if not selection.ArrayExists(name):
+                        selection.AddArray(name)
         return 1
+
+    def _read_kwargs(self):
+        def ticked(selection):
+            return [
+                selection.GetArrayName(i)
+                for i in range(selection.GetNumberOfArrays())
+                if selection.ArrayIsEnabled(selection.GetArrayName(i))
+            ]
+
+        def names(selection):
+            return [
+                selection.GetArrayName(i) for i in range(selection.GetNumberOfArrays())
+            ]
+
+        return _paraview.read_kwargs(
+            names(self._point_arrays),
+            names(self._cell_arrays),
+            ticked(self._point_arrays),
+            ticked(self._cell_arrays),
+            points_only=self._points_only,
+            piece=self._piece,
+            ghosts=self._ghosts,
+        )
 
     def RequestData(self, request, inInfoVec, outInfoVec):
         executive = self.GetExecutive()
@@ -151,7 +275,14 @@ class MeshioPlusPlusReader(VTKPythonAlgorithmBase):
         if times and info.Has(executive.UPDATE_TIME_STEP()):
             t = info.Get(executive.UPDATE_TIME_STEP())
         index = _paraview.step_index(times, t)
-        mesh = _paraview.read_step(plan, index, self._file_format)
+        mesh = _paraview.read_step(
+            plan,
+            index,
+            self._file_format,
+            deflection=self._deflection,
+            angular_deflection=self._angular_deflection,
+            **self._read_kwargs(),
+        )
         output = vtkUnstructuredGrid.GetData(outInfoVec)
         _paraview.fill_grid(output, mesh)
         if times:

@@ -497,11 +497,24 @@ def step_index(times, t):
     return min(max(i, 0), len(times) - 1)
 
 
-def read_step(plan, index, file_format=None, **read_kwargs):
-    """Read step ``index`` of ``plan``."""
-    from ._helpers import read
+def read_step(
+    plan, index, file_format=None, deflection=0.0, angular_deflection=0.5, **read_kwargs
+):
+    """Read step ``index`` of ``plan`` with ``meshioplusplus.read``'s keywords.
+
+    A STEP or IGES file is triangulated at ``deflection`` and
+    ``angular_deflection`` (their readers' defaults are these), then filtered
+    as ``read`` filters (``points_only``, ``arrays``).
+    """
+    from ._helpers import _apply_read_filter, read
 
     entry = plan[index]
+    cad = cad_format(entry["path"], file_format)
+    if cad is not None:
+        mesh = read_cad(entry["path"], cad, deflection, angular_deflection)
+        return _apply_read_filter(
+            mesh, read_kwargs.get("points_only", False), read_kwargs.get("arrays")
+        )
     return read(
         entry["path"],
         file_format=file_format or None,
@@ -539,3 +552,91 @@ def write_one_step(template, index, count, time, mesh, file_format=None, **kwarg
     mesh.field_data[TIME_KEY] = _time_array(time)
     write(out, mesh, file_format=file_format or None, **kwargs)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# read options and status (roadmap 6.5)                                       #
+# --------------------------------------------------------------------------- #
+#: The values of the reader's Ghosts property, ``read``'s ``ghosts``.
+GHOST_POLICIES = ("keep", "drop")
+#: The formats the tessellation options reach (``step.read``, ``iges.read``).
+CAD_FORMATS = ("step", "iges")
+_METADATA: dict = {}
+
+
+def metadata(path, file_format=None):
+    """``read_metadata(path)``, cached per file identity as the plans are."""
+    from ._helpers import read_metadata
+
+    key = _plan_key([str(path)], file_format)
+    if key not in _METADATA:
+        _METADATA[key] = read_metadata(str(path), file_format)
+    return _METADATA[key]
+
+
+def read_kwargs(
+    point_names=(),
+    cell_names=(),
+    point_enabled=None,
+    cell_enabled=None,
+    points_only=False,
+    piece=-1,
+    ghosts="keep",
+):
+    """``meshioplusplus.read`` keywords for the reader's properties.
+
+    ``point_enabled``/``cell_enabled`` are the ticked names (``None``: all);
+    ``arrays=`` is passed only when one is unticked, so a format that cannot
+    filter its arrays is not asked to. ``piece`` below 0 reads every piece.
+    """
+    kwargs = {}
+    if points_only:
+        kwargs["points_only"] = True
+    point_on = list(point_names) if point_enabled is None else list(point_enabled)
+    cell_on = list(cell_names) if cell_enabled is None else list(cell_enabled)
+    every = set(point_names) | set(cell_names)
+    wanted = {n for n in point_on if n in point_names} | {
+        n for n in cell_on if n in cell_names
+    }
+    if wanted != every:
+        kwargs["arrays"] = sorted(wanted)
+    if piece is not None and piece >= 0:
+        kwargs["piece"] = int(piece)
+    if ghosts not in GHOST_POLICIES:
+        raise ValueError(f"ghosts must be one of {GHOST_POLICIES}, not {ghosts!r}")
+    if ghosts != "keep":
+        kwargs["ghosts"] = ghosts
+    return kwargs
+
+
+def cad_format(path, file_format=None):
+    """``"step"`` or ``"iges"`` when ``path`` is one (by format or extension),
+    else ``None``."""
+    import pathlib
+
+    from ._helpers import formats
+
+    if file_format:
+        return file_format if file_format in CAD_FORMATS else None
+    fmts = formats()["extensions"].get(pathlib.Path(str(path)).suffix.lower(), [])
+    return next((f for f in fmts if f in CAD_FORMATS), None)
+
+
+def read_cad(path, fmt, deflection=0.0, angular_deflection=0.5):
+    """A STEP or IGES file triangulated at the given deflections."""
+    import importlib
+
+    module = importlib.import_module(f"meshioplusplus.{fmt}")
+    return module.read(
+        str(path), deflection=deflection, angular_deflection=angular_deflection
+    )
+
+
+def addon_status():
+    """Which add-ons this meshio++ has: ``{"occt", "netgen", "mmg"}`` -> bool.
+    A failed STEP read in ParaView is explained by the first."""
+    from ._fit_cad import has_occt
+    from ._mmg import has_mmg
+    from ._tetrahedralize import has_netgen
+
+    return {"occt": has_occt(), "netgen": has_netgen(), "mmg": has_mmg()}
