@@ -2715,15 +2715,20 @@ mio_hausdorff_distance <- function(a, b, face_samples = 0, region_a = "", region
 #'   `num_unorientable`, `num_vertices_split`, `num_holes_detected`,
 #'   `num_holes_filled`, `num_holes_skipped`, `num_faces_added`,
 #'   `num_points_added`, `points_welded`.
+#' @param fill_style How a hole is filled (roadmap 7.8.6): `"fan"` (one
+#'   centroid point), `"flat"` (minimum-area, refined, membrane-faired) or
+#'   `"curved"` (thin-plate-faired, continuing the surface's curvature).
 #' @export
 mio_repair <- function(mesh, fix_orientation = TRUE, orient_outward = TRUE,
                        fill_holes = TRUE, split_non_manifold = TRUE,
                        max_hole_edges = 10, weld_tolerance = 0.0,
-                       record_provenance = FALSE) {
+                       record_provenance = FALSE, fill_style = "fan") {
+  style <- match(fill_style, c("fan", "flat", "curved"))
+  if (is.na(style)) stop("meshio++: repair: fill_style must be fan, flat or curved")
   .Call(
     R_mio_repair, mesh, isTRUE(fix_orientation), isTRUE(orient_outward),
     isTRUE(fill_holes), isTRUE(split_non_manifold), as.numeric(max_hole_edges),
-    as.numeric(weld_tolerance), isTRUE(record_provenance)
+    as.numeric(weld_tolerance), isTRUE(record_provenance), as.integer(style - 1L)
   )
 }
 

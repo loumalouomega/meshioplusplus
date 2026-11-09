@@ -443,7 +443,8 @@
       {"name": "SplitNonManifold", "kind": "flag", "default": true},
       {"name": "MaxHoleEdges", "kind": "number", "default": 10},
       {"name": "WeldTolerance", "kind": "number", "default": 0.0},
-      {"name": "RecordProvenance", "kind": "flag", "default": false}
+      {"name": "RecordProvenance", "kind": "flag", "default": false},
+      {"name": "FillStyle", "kind": "text", "default": "fan"}
     ]},
     {"op": "SobolevDeform", "keys": [
       {"name": "Array", "kind": "text", "default": ""},

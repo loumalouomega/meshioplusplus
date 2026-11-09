@@ -2871,6 +2871,7 @@ def _register_operations(server: FastMCP) -> None:
         max_hole_edges: int = 10,
         weld_tolerance: float = 0.0,
         record_provenance: bool = False,
+        fill_style: str = "fan",
     ) -> dict:
         """Repair a surface mesh's orientation, holes and pinched vertices --
         the three defects `clean` does not touch (it welds, drops degenerate
@@ -2899,7 +2900,12 @@ def _register_operations(server: FastMCP) -> None:
         nested cavities are not detected, so every closed component is
         oriented outward on its own. Point, Cell and Side regions survive (a
         split copy joins its source's; an edge a flip renumbers is found again
-        by its nodes)."""
+        by its nodes).
+
+        fill_style picks how a hole is filled: "fan" (one centroid point,
+        the default), "flat" (minimum-area, refined to the rim's edge
+        density, membrane-faired) or "curved" (thin-plate-faired, continuing
+        the surface's curvature; roadmap 7.8.6)."""
 
     @server.tool()
     @_forward(_tools.tool_shrinkwrap)

@@ -1350,7 +1350,7 @@ SEXP R_mio_hausdorff_distance(SEXP a, SEXP b, SEXP face_samples, SEXP region_a,
 
 SEXP R_mio_repair(SEXP mesh, SEXP fix_orientation, SEXP orient_outward, SEXP fill_holes,
                   SEXP split_non_manifold, SEXP max_hole_edges, SEXP weld_tolerance,
-                  SEXP record_provenance) {
+                  SEXP record_provenance, SEXP fill_style) {
     mio_repair_opts opts;
     mio_repair_report report;
     mio_mesh *out;
@@ -1363,6 +1363,7 @@ SEXP R_mio_repair(SEXP mesh, SEXP fix_orientation, SEXP orient_outward, SEXP fil
     opts.max_hole_edges = (int64_t)mio_r_double(max_hole_edges, "max_hole_edges");
     opts.weld_tolerance = mio_r_double(weld_tolerance, "weld_tolerance");
     opts.record_provenance = mio_r_bool(record_provenance, "record_provenance") ? 1 : 0;
+    opts.fill_style = mio_r_int(fill_style, "fill_style"); /* roadmap 7.8.6 */
 
     out = mio_repair(mio_r_mesh(mesh), &opts, &report);
     if (out == NULL) mio_r_fail("repair");

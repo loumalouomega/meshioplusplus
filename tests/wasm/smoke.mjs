@@ -1642,6 +1642,9 @@ step('repair rewinds, fills and splits a surface', () => {
     const open = m.repair(holed, true, true, false);
     assert.equal(open.numHolesDetected, 0);
     assert.equal(open.qualityAfter.boundaryEdges, 3);
+    const flat = m.repair(holed, true, true, true, true, 10, 0, false, 'flat');
+    assert.equal(flat.numFacesAdded, 1);
+    assert.throws(() => m.repair(holed, true, true, true, true, 10, 0, false, 'smooth'), /fill_style/);
     // A volume input is refused by name.
     assert.throws(() => m.repair(cube), /extract_surface/);
 });

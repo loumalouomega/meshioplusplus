@@ -1493,6 +1493,10 @@ test_that("repair rewinds, fills and splits a surface", {
   on.exit(mio_release(g$mesh), add = TRUE)
   expect_equal(g$num_holes_detected, 0)
   expect_equal(g$quality_after$boundary_edges, 3)
+  fl <- mio_repair(h, fill_style = "flat")
+  on.exit(mio_release(fl$mesh), add = TRUE)
+  expect_equal(fl$num_faces_added, 1)
+  expect_error(mio_repair(h, fill_style = "smooth"), "fill_style")
 })
 
 test_that("shrinkwrap projects points onto a target surface", {

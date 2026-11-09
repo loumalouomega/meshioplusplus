@@ -2086,6 +2086,7 @@ def _apply_step(mesh, step, steps, warnings):
             weld_tolerance=_number(step, "WeldTolerance", 0.0),
             record_provenance=_flag(step, "RecordProvenance", False),
             return_report=True,
+            fill_style=_text(step, "FillStyle", "fan"),
         )
         entry["NumFlipped"] = report["num_flipped"]
         entry["NumComponents"] = report["num_components"]

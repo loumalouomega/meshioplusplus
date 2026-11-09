@@ -2349,6 +2349,10 @@ end
     @test h2.num_holes_detected == 0
     @test h2.quality_after.boundary_edges == 3
     close(h2.mesh)
+    h3 = repair(holed; fill_style="flat")
+    @test h3.num_faces_added == 1 && h3.num_points_added == 0
+    close(h3.mesh)
+    @test_throws ArgumentError repair(holed; fill_style="smooth")
     close(holed)
 
     # Shrinkwrap three points onto the z = 0 square with an offset; a float

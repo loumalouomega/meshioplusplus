@@ -3667,6 +3667,14 @@ contains
         filled = holed%repair(fill_holes=.false., num_holes_filled=nholes, stat=ierr)
         call check(ierr == 0 .and. nholes == 0_int64, 'repair honours fill_holes=.false.')
         call filled%free()
+        ! Roadmap 7.8.6: the flat fill of a triangular hole is one triangle.
+        filled = holed%repair(fill_style='flat', num_faces_added=nfaces, num_points_added=npts, &
+                              watertight_after=wt, stat=ierr)
+        call check(ierr == 0 .and. nfaces == 1_int64 .and. npts == 0_int64 .and. wt, &
+                   'repair fills flat')
+        if (ierr == 0) call filled%free()
+        filled = holed%repair(fill_style='smooth', stat=ierr)
+        call check(ierr /= 0, 'repair refuses an unknown fill_style')
         call holed%free()
 
         ! Shrinkwrap three points onto a z = 0 square, offset 0.25, one point

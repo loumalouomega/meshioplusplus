@@ -1873,7 +1873,7 @@ struct _CRepairOpts
     fill_holes::Int32
     split_non_manifold::Int32
     record_provenance::Int32
-    reserved_pad::Int32
+    fill_style::Int32  # roadmap 7.8.6: 0 fan, 1 flat, 2 curved
     max_hole_edges::Int64
     weld_tolerance::Cdouble
     reserved::NTuple{5,Int64}

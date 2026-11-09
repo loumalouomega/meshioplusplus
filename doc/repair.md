@@ -41,7 +41,11 @@ Each traceable boundary loop of at most `max_hole_edges` edges (`<= 0` means no 
 
 A loop through a vertex whose boundary degree is not two cannot be traced; it is counted in `num_holes_detected` and `num_holes_skipped` and left open, never guessed at. This is the case `split_non_manifold` usually turns into two traceable loops.
 
-The fill is flat and unsmoothed: it closes the surface, it does not reconstruct what was missing.
+The default fill (`fill_style="fan"`) is flat and unsmoothed: it closes the surface, it does not reconstruct what was missing.
+
+## Faired fills
+
+`fill_style="flat"` and `"curved"` (roadmap 7.8.6) fill a hole after Liepa (2003): the minimum-area triangulation of the loop (dynamic programming over its vertices, O(n³) in the loop's length, ties to the lowest split vertex), refined to the rim's edge density (a triangle is split at its centroid while √2 times the centroid's distance to each corner exceeds both the centroid's spacing and that corner's, a rim vertex's spacing the mean length of its surface edges; after each pass the patch's interior edges are flipped to the Delaunay criterion), then faired with the rim fixed. `"flat"` solves the membrane (each new point the mean of its neighbours, the uniform Laplacian); `"curved"` the thin plate (the umbrella vectors of the new points and of the rim, whose rings run into the surrounding surface, minimised in least squares), so the patch continues the surface's curvature. Both systems are solved by the core's conjugate gradients (`detail/sparse_solve.hpp`); the patch is the core-private `detail/hole_fill.hpp`. A hole cut at the pole of a sphere is closed by a curved patch whose points lie within 1% of the radius (`tests/cpp/test_repair.cpp`, `tests/python/test_scan_edit.py`). The added points take the mean of their loop's `point_data` rows, as a centroid does; `num_points_added` counts them. A triangular hole is one triangle in either style. `max_hole_edges` still bounds the loops filled, so a scan's larger holes need it raised (or `0`).
 
 ## Bowties: split, not merged
 
@@ -59,14 +63,14 @@ Nothing is attached unless `record_provenance=True`, which adds two Int64 arrays
 
 | Array | Location | Meaning |
 | --- | --- | --- |
-| `repair:parent_point` | point | the input point each output point came from; `-1` for a hole centroid |
+| `repair:parent_point` | point | the input point each output point came from; `-1` for a hole centroid or a point a faired fill added |
 | `repair:hole` | cell | `-1` for an input triangle, the hole's ordinal for a fill triangle |
 
 ## Output shape
 
 All-triangle at the surface, with blocks 1:1 with the input (a quad block becomes a triangle block of twice the rows). Lower-dimensional blocks — the boundary `line` blocks a gmsh surface routinely carries — ride along verbatim. Fill triangles land in **one trailing `triangle` block**, added only when there is one, so an already-closed input keeps its block count.
 
-Points are the originals, then the split copies, then the hole centroids. `point_data` copies inherit their source's row and centroids get the mean of their loop's rows, dtype preserved; the fill block's `cell_data` rows are NaN for float arrays and 0 for integer ones. Point and Cell regions survive — a split copy joins its source's regions — and so do Side regions (since v16.27.0): rewinding a triangle renumbers its edges, so each edge is found again by its nodes.
+Points are the originals, then the split copies, then the hole centroids (or a faired fill's points, hole by hole). `point_data` copies inherit their source's row and centroids get the mean of their loop's rows, dtype preserved; the fill block's `cell_data` rows are NaN for float arrays and 0 for integer ones. Point and Cell regions survive — a split copy joins its source's regions — and so do Side regions (since v16.27.0): rewinding a triangle renumbers its edges, so each edge is found again by its nodes.
 
 ## No numpy fallback
 
@@ -74,7 +78,7 @@ Points are the originals, then the split copies, then the hole centroids. `point
 
 ## Pipeline
 
-`Repair` is a settings-pipeline step, with the keys `FixOrientation`, `OrientOutward`, `FillHoles`, `SplitNonManifold`, `MaxHoleEdges`, `WeldTolerance` and `RecordProvenance`. The report carries the counters, and two warnings say what could not be fixed: an unorientable component, and non-manifold edges that remain.
+`Repair` is a settings-pipeline step, with the keys `FixOrientation`, `OrientOutward`, `FillHoles`, `SplitNonManifold`, `MaxHoleEdges`, `WeldTolerance`, `RecordProvenance` and `FillStyle` (`"fan"`). The report carries the counters, and two warnings say what could not be fixed: an unorientable component, and non-manifold edges that remain.
 
 ## CLI
 
@@ -83,7 +87,7 @@ meshioplusplus repair IN OUT \
     [--no-fix-orientation] [--no-orient-outward] \
     [--no-fill-holes] [--no-split-non-manifold] \
     [--max-hole-edges N] [--weld-tolerance T] \
-    [--record-provenance] [--quiet]
+    [--record-provenance] [--fill-style fan|flat|curved] [--quiet]
 ```
 
 Both CLIs produce byte-identical files. See the [CLI reference](/cli).
@@ -94,6 +98,7 @@ Both CLIs produce byte-identical files. See the [CLI reference](/cli).
 mio_repair_opts opts;
 mio_repair_opts_init(&opts);
 opts.max_hole_edges = 0;                /* no limit */
+opts.fill_style = MIO_REPAIR_FILL_CURVED; /* roadmap 7.8.6 */
 mio_repair_report report;
 mio_mesh* out = mio_repair(mesh, &opts, &report);
 report.num_flipped;
@@ -121,4 +126,4 @@ const r = mod.repair(mesh);
 r.mesh; r.numFlipped; r.qualityAfter.watertight;
 ```
 
-The index maps the C++ result carries (`mPointMap`, `mCellMaps`) are not exposed on the flat ABI — the same gap [`smooth`](/smooth)'s frozen mask has.
+Every binding takes `fill_style` (`fill_style=` in Fortran, Julia and R, `'fill_style'` in Octave/MATLAB, the trailing `fillStyle` in WASM, `--fill-style` in both CLIs, `fill_style` in the MCP tool). The index maps the C++ result carries (`mPointMap`, `mCellMaps`) are not exposed on the flat ABI — the same gap [`smooth`](/smooth)'s frozen mask has.

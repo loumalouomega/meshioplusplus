@@ -4511,6 +4511,7 @@ export interface MeshioPlusPlusModule {
     maxHoleEdges?: number,
     weldTolerance?: number,
     recordProvenance?: boolean,
+    fillStyle?: 'fan' | 'flat' | 'curved',
   ): {
     mesh: Mesh;
     qualityBefore: SurfaceQualityInfo;

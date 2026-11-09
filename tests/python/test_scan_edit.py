@@ -281,3 +281,49 @@ def test_decimate_bounds_in_both_pipeline_engines(tmp_path):
     assert cpp["steps"][0]["Rounds"] == rep["steps"][0]["Rounds"]
     a, b = mp.read(str(tmp_path / "py.vtu")), mp.read(str(tmp_path / "cpp.vtu"))
     np.testing.assert_array_equal(a.points, b.points)
+
+
+def holed_sphere(level=4, zcut=0.93):
+    s = mp.icosa_sphere(1.0, level)
+    t = s.cells[0].data
+    keep = s.points[t].mean(axis=1)[:, 2] < zcut
+    return mp.Mesh(s.points, [("triangle", t[keep])])
+
+
+@pytest.mark.parametrize("style", ["fan", "flat", "curved"])
+def test_repair_fill_styles_close_a_sphere(style):
+    holed = holed_sphere()
+    out, rep = mp.repair(
+        holed,
+        max_hole_edges=0,
+        split_non_manifold=False,
+        fill_style=style,
+        return_report=True,
+    )
+    assert rep["num_holes_filled"] == 1
+    assert rep["quality_after"]["watertight"]
+    added = out.points[len(holed.points) :]
+    radius = np.linalg.norm(added, axis=1)
+    if style == "curved":
+        assert len(added) > 1
+        np.testing.assert_allclose(radius, 1.0, atol=0.01)
+    if style == "flat":
+        assert len(added) > 1
+
+
+def test_repair_fill_style_in_both_pipeline_engines(tmp_path):
+    src = tmp_path / "h.vtu"
+    mp.write(src, holed_sphere(3))
+    settings = {
+        "Version": 1,
+        "Input": {"Path": str(src)},
+        "Operations": [{"Op": "Repair", "MaxHoleEdges": 0, "FillStyle": "curved"}],
+        "Output": {"Path": str(tmp_path / "py.vtu")},
+    }
+    mp.run_pipeline(settings)
+    settings["Output"]["Path"] = str(tmp_path / "cpp.vtu")
+    _core.run_pipeline_json(__import__("json").dumps(settings))
+    a, b = mp.read(str(tmp_path / "py.vtu")), mp.read(str(tmp_path / "cpp.vtu"))
+    np.testing.assert_array_equal(a.points, b.points)
+    with pytest.raises(ValueError, match="fill_style"):
+        mp.repair(holed_sphere(2), fill_style="smooth")

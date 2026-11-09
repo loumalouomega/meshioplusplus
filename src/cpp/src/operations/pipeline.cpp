@@ -2369,6 +2369,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mMaxHoleEdges = static_cast<std::int64_t>(pipe_number(rStep, "MaxHoleEdges", 10));
         opts.mWeldTolerance = pipe_number(rStep, "WeldTolerance", 0.0);
         opts.mRecordProvenance = pipe_flag(rStep, "RecordProvenance", false);
+        opts.mFillStyle = repair_fill_style_from_name(pipe_text(rStep, "FillStyle", "fan"));
         RepairResult rr = repair(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumFlipped", static_cast<double>(rr.mNumFlipped)},

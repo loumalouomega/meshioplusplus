@@ -455,6 +455,7 @@ OP_TABLE = {
         "MaxHoleEdges",
         "WeldTolerance",
         "RecordProvenance",
+        "FillStyle",
     ),
     "SobolevDeform": (
         "Array",

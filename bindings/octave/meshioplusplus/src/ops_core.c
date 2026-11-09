@@ -1303,7 +1303,7 @@ static mxArray *O_mio_hausdorff_distance(const mxArray **a) {
 }
 
 /* repair(mesh, fix_orientation, orient_outward, fill_holes, split_non_manifold,
- *        max_hole_edges, weld_tolerance, record_provenance) */
+ *        max_hole_edges, weld_tolerance, record_provenance, fill_style) */
 static mxArray *O_mio_repair(const mxArray **a) {
     mio_repair_opts opts;
     mio_repair_report report;
@@ -1316,6 +1316,7 @@ static mxArray *O_mio_repair(const mxArray **a) {
     opts.max_hole_edges = (int64_t)mio_o_double(a[5], "max_hole_edges");
     opts.weld_tolerance = mio_o_double(a[6], "weld_tolerance");
     opts.record_provenance = mio_o_bool(a[7], "record_provenance") ? 1 : 0;
+    opts.fill_style = mio_o_int(a[8], "fill_style"); /* roadmap 7.8.6 */
 
     mio_mesh *out = mio_repair(mio_o_mesh(a[0]), &opts, &report);
     if (out == NULL) mio_o_fail("repair");
@@ -1866,7 +1867,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_split_interface, 3),
     MIO_O_ENTRY(mio_check_quality, 4),
     MIO_O_ENTRY(mio_hausdorff_distance, 5),
-    MIO_O_ENTRY(mio_repair, 8),
+    MIO_O_ENTRY(mio_repair, 9),
     MIO_O_ENTRY(mio_shrinkwrap, 9),
     MIO_O_ENTRY(mio_sobolev_deform, 8),
     MIO_O_ENTRY(mio_prepare_metric, 8),

@@ -5878,6 +5878,21 @@ TEST(CApi, RepairRewindsAndClosesThroughTheFlatAbi) {
     EXPECT_EQ(report.num_faces_added, 3);
     EXPECT_EQ(report.num_points_added, 1);
     EXPECT_NE(report.quality_after.watertight, 0);
+    // Roadmap 7.8.6: the flat fill of the triangular hole is the one
+    // triangle over its loop; an unknown style is refused.
+    mio_repair_opts flat;
+    mio_repair_opts_init(&flat);
+    EXPECT_EQ(flat.fill_style, MIO_REPAIR_FILL_FAN);
+    flat.fill_style = MIO_REPAIR_FILL_CURVED;
+    mio_repair_report faired;
+    mio_mesh* curved = mio_repair(holed, &flat, &faired);
+    ASSERT_NE(curved, nullptr) << mio_last_error();
+    EXPECT_EQ(faired.num_faces_added, 1);
+    EXPECT_EQ(faired.num_points_added, 0);
+    EXPECT_NE(faired.quality_after.watertight, 0);
+    mio_mesh_free(curved);
+    flat.fill_style = 7;
+    EXPECT_EQ(mio_repair(holed, &flat, &faired), nullptr);
     EXPECT_EQ(mio_mesh_num_points(filled), 7);
     EXPECT_EQ(mio_mesh_num_cell_blocks(filled), 2);
     mio_mesh_free(filled);

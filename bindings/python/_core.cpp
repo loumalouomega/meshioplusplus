@@ -6543,11 +6543,12 @@ PYBIND11_MODULE(_core, m) {
         "repair",
         [](py::object pymesh, bool fix_orientation, bool orient_outward, bool fill_holes,
            bool split_non_manifold, std::int64_t max_hole_edges, double weld_tolerance,
-           bool record_provenance) {
+           bool record_provenance, const std::string& fill_style) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
             meshioplusplus::RepairOptions options;
+            options.mFillStyle = meshioplusplus::repair_fill_style_from_name(fill_style);
             options.mFixOrientation = fix_orientation;
             options.mOrientOutward = orient_outward;
             options.mFillHoles = fill_holes;
@@ -6586,7 +6587,7 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("fix_orientation") = true, py::arg("orient_outward") = true,
         py::arg("fill_holes") = true, py::arg("split_non_manifold") = true,
         py::arg("max_hole_edges") = 10, py::arg("weld_tolerance") = 0.0,
-        py::arg("record_provenance") = false);
+        py::arg("record_provenance") = false, py::arg("fill_style") = "fan");
 
     // Shrinkwrap: one projection of the source's points onto the target
     // surface. {mesh, quality (of the target), counters}. See

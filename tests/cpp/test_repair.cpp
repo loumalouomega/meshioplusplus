@@ -22,6 +22,7 @@
 // touched.
 
 // System includes
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <random>
@@ -33,6 +34,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/surface_distance.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "mesh_fixtures.hpp"
@@ -483,4 +485,51 @@ TEST(Repair, IsDeterministicAcrossRuns) {
     ASSERT_EQ(ca.Size(), cb.Size());
     for (std::size_t i = 0; i < ca.Size(); ++i)
         EXPECT_EQ(detail::read_int(ca, i), detail::read_int(cb, i));
+}
+
+// Faired hole filling (roadmap 7.8.6): a hole cut in a sphere, filled curved,
+// lies on the sphere to 1% of its radius; flat lies nearer the hole's plane.
+TEST(Repair, CurvedFillContinuesASphere) {
+    using namespace meshioplusplus;
+    const Mesh s = icosa_sphere(1.0, 4);
+    // Drop the cells near the north pole: a round hole.
+    const double* p = s.Points().As<double>();
+    const std::int64_t* t = s.Cells(0).Conn().As<std::int64_t>();
+    std::vector<std::int64_t> kept;
+    for (std::size_t c = 0; c < s.Cells(0).NumCells(); ++c) {
+        double z = 0.0;
+        for (int k = 0; k < 3; ++k)
+            z += p[3 * t[3 * c + k] + 2] / 3.0;
+        if (z < 0.93)
+            kept.insert(kept.end(), t + 3 * c, t + 3 * c + 3);
+    }
+    Mesh holed;
+    holed.AssignPoints(s.Points());
+    NDArray conn = NDArray::Uninit(DType::Int64, {kept.size() / 3, 3});
+    std::copy(kept.begin(), kept.end(), conn.As<std::int64_t>());
+    holed.AddCellBlock("triangle", std::move(conn));
+    RepairOptions o;
+    o.mMaxHoleEdges = 0;
+    o.mSplitNonManifold = false;
+    for (const RepairFillStyle style :
+         {RepairFillStyle::Fan, RepairFillStyle::Flat, RepairFillStyle::Curved}) {
+        o.mFillStyle = style;
+        const RepairResult r = repair(holed, o);
+        EXPECT_EQ(r.mNumHolesFilled, 1);
+        EXPECT_EQ(r.mQualityAfter.mBoundaryEdges, 0) << int(style);
+        EXPECT_EQ(r.mQualityAfter.mInconsistentPairs, 0) << int(style);
+        const double* q = r.mMesh.Points().As<double>();
+        double worst = 0.0;
+        for (std::size_t i = holed.NumPoints(); i < r.mMesh.NumPoints(); ++i)
+            worst =
+                std::max(worst, std::abs(std::hypot(q[3 * i], q[3 * i + 1], q[3 * i + 2]) - 1.0));
+        if (style == RepairFillStyle::Curved) {
+            EXPECT_GT(r.mNumPointsAdded, 1);
+            EXPECT_LT(worst, 0.01);
+        }
+        if (style == RepairFillStyle::Flat)
+            EXPECT_GT(r.mNumPointsAdded, 1);
+    }
+    EXPECT_EQ(repair_fill_style_from_name("curved"), RepairFillStyle::Curved);
+    EXPECT_THROW(repair_fill_style_from_name("smooth"), std::invalid_argument);
 }

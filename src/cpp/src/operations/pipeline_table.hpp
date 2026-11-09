@@ -134,7 +134,7 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "GridFloor"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
-          "WeldTolerance", "RecordProvenance"}},
+          "WeldTolerance", "RecordProvenance", "FillStyle"}},
         {"SobolevDeform",
          {"Array", "LengthScale", "FixedPointsArray", "FixBoundary", "RecordFiltered",
           "MaxIterations", "Tolerance"}},

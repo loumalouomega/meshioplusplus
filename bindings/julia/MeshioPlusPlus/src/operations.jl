@@ -4579,7 +4579,7 @@ _quality_tuple(q::_CSurfaceQuality) =
 
 """
     repair(m; fix_orientation=true, orient_outward=true, fill_holes=true,
-           split_non_manifold=true, max_hole_edges=10, weld_tolerance=0.0,
+           split_non_manifold=true, max_hole_edges=10, weld_tolerance=0.0, fill_style="fan",
            record_provenance=false)
         -> (; mesh, quality_before, quality_after, num_flipped, num_components,
              largest_component, num_oriented_outward, num_unorientable,
@@ -4597,13 +4597,16 @@ See `doc/repair.md`.
 function repair(m::Mesh; fix_orientation::Bool=true, orient_outward::Bool=true,
                 fill_holes::Bool=true, split_non_manifold::Bool=true,
                 max_hole_edges::Integer=10, weld_tolerance::Real=0.0,
-                record_provenance::Bool=false)
+                record_provenance::Bool=false, fill_style::AbstractString="fan")
+    style = fill_style == "fan" ? Int32(0) : fill_style == "flat" ? Int32(1) :
+            fill_style == "curved" ? Int32(2) :
+            throw(ArgumentError("meshio++: repair: fill_style must be fan, flat or curved"))
     report = Ref{_CRepairReport}()
     opts = _CRepairOpts(fix_orientation ? Int32(1) : Int32(0),
                         orient_outward ? Int32(1) : Int32(0),
                         fill_holes ? Int32(1) : Int32(0),
                         split_non_manifold ? Int32(1) : Int32(0),
-                        record_provenance ? Int32(1) : Int32(0), Int32(0),
+                        record_provenance ? Int32(1) : Int32(0), style,
                         Int64(max_hole_edges), Float64(weld_tolerance),
                         (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
     ptr = ccall(_sym(:mio_repair), Ptr{Cvoid},

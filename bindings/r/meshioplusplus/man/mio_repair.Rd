@@ -12,7 +12,8 @@ mio_repair(
   split_non_manifold = TRUE,
   max_hole_edges = 10,
   weld_tolerance = 0,
-  record_provenance = FALSE
+  record_provenance = FALSE,
+  fill_style = "fan"
 )
 }
 \arguments{
@@ -33,6 +34,10 @@ mio_repair(
 \code{0} (the default) skips the weld.}
 
 \item{record_provenance}{Attach \code{repair:parent_point} and \code{repair:hole}.}
+
+\item{fill_style}{How a hole is filled (roadmap 7.8.6): \code{"fan"} (one
+centroid point), \code{"flat"} (minimum-area, refined, membrane-faired) or
+\code{"curved"} (thin-plate-faired, continuing the surface's curvature).}
 }
 \value{
 A list of \code{mesh}, \code{quality_before}, \code{quality_after} (each a list of

@@ -1418,7 +1418,7 @@ module meshioplusplus
         integer(c_int32_t) :: fill_holes = 1
         integer(c_int32_t) :: split_non_manifold = 1
         integer(c_int32_t) :: record_provenance = 0
-        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int32_t) :: fill_style = 0  ! roadmap 7.8.6: 0 fan, 1 flat, 2 curved
         integer(c_int64_t) :: max_hole_edges = 10
         real(c_double) :: weld_tolerance = 0.0_c_double
         integer(c_int64_t) :: reserved(5) = 0
@@ -11376,7 +11376,7 @@ contains
                          num_faces_added, num_points_added, num_vertices_split, &
                          num_oriented_outward, num_unorientable, points_welded, &
                          watertight_before, watertight_after, inconsistent_pairs_after, &
-                         boundary_edges_after, stat, errmsg) result(out)
+                         boundary_edges_after, stat, errmsg, fill_style) result(out)
         class(mio_mesh), intent(in) :: self
         logical, intent(in), optional :: fix_orientation, orient_outward, fill_holes
         logical, intent(in), optional :: split_non_manifold, record_provenance
@@ -11392,6 +11392,8 @@ contains
         integer(int64), intent(out), optional :: inconsistent_pairs_after, boundary_edges_after
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        !> 'fan' (the default), 'flat' or 'curved' (roadmap 7.8.6).
+        character(*), intent(in), optional :: fill_style
         type(mio_mesh) :: out
         type(c_ptr) :: res
         type(mio_repair_opts_t) :: opts
@@ -11415,6 +11417,20 @@ contains
         end if
         if (present(max_hole_edges)) opts%max_hole_edges = int(max_hole_edges, c_int64_t)
         if (present(weld_tolerance)) opts%weld_tolerance = real(weld_tolerance, c_double)
+        if (present(fill_style)) then
+            select case (fill_style)
+            case ('fan')
+                opts%fill_style = 0
+            case ('flat')
+                opts%fill_style = 1
+            case ('curved')
+                opts%fill_style = 2
+            case default
+                call handle_failure('repair', 'meshio++: repair: fill_style must be fan, ' // &
+                                    'flat or curved', stat, errmsg)
+                return
+            end select
+        end if
 
         res = c_mio_repair(self%handle, opts, report)
         if (.not. c_associated(res)) then

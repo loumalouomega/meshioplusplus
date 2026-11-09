@@ -385,7 +385,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   adjacency: (mesh: Mesh, kind?: 'node'|'clique'|'cell') => {indptr: Int32Array, indices: Int32Array},
  *   writeGraph: (mesh: Mesh, path: string, kind?: 'node'|'clique'|'cell', format?: 'metis'|'scotch') => {format: string, numVertices: number, numEdges: number, maxDegree: number},
  *   matchPeriodicNodes: (mesh: Mesh, slave: string | {name: string, kind?: string, dim?: number, tag?: number}, master: string | {name: string, kind?: string, dim?: number, tag?: number}, matrix: ArrayLike<number>, atol?: number, requireComplete?: boolean) => {slave: Int32Array, master: Int32Array, unmatched: Int32Array, numFixed: number, maxResidual: number},
- *   repair: (mesh: Mesh, fixOrientation?: boolean, orientOutward?: boolean, fillHoles?: boolean, splitNonManifold?: boolean, maxHoleEdges?: number, weldTolerance?: number, recordProvenance?: boolean) => {mesh: Mesh, qualityBefore: object, qualityAfter: object, numFlipped: number, numComponents: number, largestComponent: number, numOrientedOutward: number, numUnorientable: number, numVerticesSplit: number, numHolesDetected: number, numHolesFilled: number, numHolesSkipped: number, numFacesAdded: number, numPointsAdded: number, pointsWelded: number},
+ *   repair: (mesh: Mesh, fixOrientation?: boolean, orientOutward?: boolean, fillHoles?: boolean, splitNonManifold?: boolean, maxHoleEdges?: number, weldTolerance?: number, recordProvenance?: boolean, fillStyle?: string) => {mesh: Mesh, qualityBefore: object, qualityAfter: object, numFlipped: number, numComponents: number, largestComponent: number, numOrientedOutward: number, numUnorientable: number, numVerticesSplit: number, numHolesDetected: number, numHolesFilled: number, numHolesSkipped: number, numFacesAdded: number, numPointsAdded: number, pointsWelded: number},
  *   shrinkwrap: (mesh: Mesh, target: Mesh, offset?: number, maxDistance?: number, weights?: string, targetRegion?: string, normalWeight?: string, recordDistance?: boolean, recordClosestCell?: boolean) => {mesh: Mesh, quality: object, numProjected: number, numMissed: number, numSkipped: number, maxDisplacement: number},
  *   prepareMetric: (mesh: Mesh, options: {arrays: string[], output?: string, targetVertices?: number, norm?: number, hmin?: number, hmax?: number, gradation?: number, maxSweeps?: number}) => {mesh: Mesh, complexityBefore: number, complexityAfter: number, numGraded: number, sweeps: number},
  *   untangle: (mesh: Mesh, options?: {fixBoundary?: boolean, frozen?: ArrayLike<number>, rings?: number, smooth?: boolean, maxSweeps?: number}) => {mesh: Mesh, numInvertedBefore: number, numInvertedAfter: number, minQualityBefore: number, minQualityAfter: number, sweeps: number, moves: number},
@@ -1332,9 +1332,10 @@ export async function loadMeshioPlusPlus(
             maxHoleEdges = 10,
             weldTolerance = 0,
             recordProvenance = false,
+            fillStyle = 'fan',
         ) =>
             Module.repair(mesh, fixOrientation, orientOutward, fillHoles, splitNonManifold,
-                maxHoleEdges, weldTolerance, recordProvenance),
+                maxHoleEdges, weldTolerance, recordProvenance, fillStyle ?? 'fan'),
         shrinkwrap: (
             mesh,
             target,

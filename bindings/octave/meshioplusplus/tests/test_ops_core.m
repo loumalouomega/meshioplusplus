@@ -315,6 +315,9 @@ function t_repair()
     g = mio.repair(h, 'fill_holes', false);
     expect_equal(g.num_holes_detected, 0);
     expect_equal(g.quality_after.boundary_edges, 3);
+    fl = mio.repair(h, 'fill_style', 'flat');
+    expect_equal(fl.num_faces_added, 1);
+    expect_error(@() mio.repair(h, 'fill_style', 'smooth'), 'fill_style');
 end
 
 function t_shrinkwrap()

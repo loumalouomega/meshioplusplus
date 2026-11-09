@@ -4914,6 +4914,7 @@ int cmd_repair(const std::vector<std::string>& rArgs) {
                                           {"max-hole-edges", {}, true},
                                           {"weld-tolerance", {}, true},
                                           {"record-provenance", {}, false},
+                                          {"fill-style", {}, true},
                                           {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("repair requires exactly INFILE and OUTFILE");
@@ -4927,6 +4928,9 @@ int cmd_repair(const std::vector<std::string>& rArgs) {
     cli_opt_int64(p, "max-hole-edges", options.mMaxHoleEdges);
     cli_opt_double(p, "weld-tolerance", options.mWeldTolerance);
     options.mRecordProvenance = has_flag(p, "record-provenance");
+    if (has_opt(p, "fill-style"))
+        options.mFillStyle =
+            meshioplusplus::repair_fill_style_from_name(opt_value(p, "fill-style"));
 
     meshioplusplus::RepairResult r = meshioplusplus::repair(mesh, options);
 

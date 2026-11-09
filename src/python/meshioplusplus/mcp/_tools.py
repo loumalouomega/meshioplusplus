@@ -4322,6 +4322,7 @@ def tool_repair(
     max_hole_edges=10,
     weld_tolerance=0.0,
     record_provenance=False,
+    fill_style="fan",
 ):
     """Repair a surface mesh's orientation, holes and pinched vertices -- the
     three defects `clean` does not touch. Triangles are rewound so neighbours
@@ -4341,6 +4342,7 @@ def tool_repair(
         weld_tolerance=weld_tolerance,
         record_provenance=record_provenance,
         return_report=True,
+        fill_style=fill_style,
     )
     return _result(
         _store(out, output_path, output_format),

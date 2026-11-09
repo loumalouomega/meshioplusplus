@@ -7441,6 +7441,7 @@ mio_mesh* mio_compute_normals(const mio_mesh* mesh, const mio_normals_opts* opts
 }
 
 static_assert(sizeof(mio_repair_opts) == 80, "mio_repair_opts grew outside its reserved tail");
+static_assert(offsetof(mio_repair_opts, fill_style) == 20, "mio_repair_opts layout");
 static_assert(sizeof(mio_repair_report) == 272, "mio_repair_report grew outside its reserved tail");
 static_assert(sizeof(mio_shrinkwrap_opts) == 96,
               "mio_shrinkwrap_opts grew outside its reserved tail");
@@ -7473,6 +7474,10 @@ mio_mesh* mio_repair(const mio_mesh* mesh, const mio_repair_opts* opts, mio_repa
             options.mRecordProvenance = opts->record_provenance != 0;
             options.mMaxHoleEdges = opts->max_hole_edges;
             options.mWeldTolerance = opts->weld_tolerance;
+            if (opts->fill_style < MIO_REPAIR_FILL_FAN || opts->fill_style > MIO_REPAIR_FILL_CURVED)
+                throw std::invalid_argument(
+                    "meshio++: repair: fill_style is 0 fan, 1 flat or 2 curved");
+            options.mFillStyle = static_cast<meshioplusplus::RepairFillStyle>(opts->fill_style);
         }
         meshioplusplus::RepairResult r = meshioplusplus::repair(mesh->mMesh, options);
         if (report) {

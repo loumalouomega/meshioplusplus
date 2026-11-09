@@ -4106,6 +4106,13 @@ typedef struct mio_normals_report {
 MIO_API mio_mesh* mio_compute_normals(const mio_mesh* mesh, const mio_normals_opts* opts,
                                       mio_normals_report* report);
 
+/** How mio_repair fills a hole (roadmap 7.8.6; doc/repair.md). */
+typedef enum mio_repair_fill_style {
+    MIO_REPAIR_FILL_FAN = 0,   /**< one centroid point and a fan (the default) */
+    MIO_REPAIR_FILL_FLAT = 1,  /**< minimum-area, refined, membrane-faired (Liepa 2003) */
+    MIO_REPAIR_FILL_CURVED = 2 /**< the same, thin-plate-faired: continues the curvature */
+} mio_repair_fill_style;
+
 /**
  * Options for mio_repair.
  *
@@ -4122,7 +4129,7 @@ typedef struct mio_repair_opts {
     int32_t fill_holes; /**< nonzero (the default) fan-fills boundary loops */
     int32_t split_non_manifold; /**< nonzero (the default) duplicates bowtie vertices */
     int32_t record_provenance;  /**< nonzero attaches repair:parent_point and repair:hole */
-    int32_t reserved_pad;       /**< must be zero; keeps the int64 tail aligned */
+    int32_t fill_style; /**< a mio_repair_fill_style (roadmap 7.8.6; was a zero pad: 0 is the fan) */
     int64_t max_hole_edges;     /**< longest loop still filled (default 10); <= 0 means no limit */
     double weld_tolerance; /**< weld coincident points within this first; 0 (the default) skips */
     int64_t reserved[5];   /**< must be zero; room for additive growth */

@@ -7489,9 +7489,10 @@ val write_graph_js(const val& rMeshObj, const std::string& rPath, const std::str
  */
 val repair_js(const val& rMeshObj, bool fixOrientation, bool orientOutward, bool fillHoles,
               bool splitNonManifold, double maxHoleEdges, double weldTolerance,
-              bool recordProvenance) {
+              bool recordProvenance, const std::string& rFillStyle) {
     return with_js_errors([&]() -> val {
         meshioplusplus::RepairOptions options;
+        options.mFillStyle = meshioplusplus::repair_fill_style_from_name(rFillStyle);
         options.mFixOrientation = fixOrientation;
         options.mOrientOutward = orientOutward;
         options.mFillHoles = fillHoles;
