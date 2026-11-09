@@ -285,3 +285,19 @@ def test_hdf5_and_netcdf_formats_through_the_plugin(tmp_path, ext, flag):
         "points": len(expected.points),
         "cells": sum(len(b) for b in expected.cells),
     }
+
+
+def test_polyhedra_reach_paraview(tmp_path):
+    """roadmap 6.2: a VTU of polyhedra has the cell count meshioplusplus.read
+    gives, and the writer writes the polyhedra back."""
+    src = REPO / "tests" / "python" / "meshes" / "vtu" / "two_pieces_polyhedron.vtu"
+    if src.read_bytes().startswith(b"version https://git-lfs"):
+        pytest.skip("LFS content not fetched")
+    dst = tmp_path / "out.vtu"
+    seen = _run_pvpython(tmp_path, _SCRIPT, src, dst)
+    mesh = meshioplusplus.read(src)
+    assert seen["cells"] == sum(len(b) for b in mesh.cells)
+    back = meshioplusplus.read(dst)
+    assert sorted((b.type, len(b)) for b in back.cells) == sorted(
+        (b.type, len(b)) for b in mesh.cells
+    )

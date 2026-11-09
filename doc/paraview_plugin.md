@@ -54,6 +54,7 @@ The reader hands ParaView the mesh's points (padded to three columns when the me
 - Every cell keeps meshio++'s node order, which is VTK's: a linear `wedge` (Gmsh's prism) is VTK's wedge as it stands, so every wedge ParaView shows has a positive volume and a wedge made or edited in ParaView is written the right way out (meshio++'s VTK writers used to permute it, which turned it inside out; see the [changelog](https://github.com/loumalouomega/meshioplusplus/blob/main/CHANGELOG.md)).
 - A block of uniform n-gons (`polygon3`, `polygon5`, ..., the boundary blocks the OpenFOAM, Fluent and CGNS readers produce) is a `VTK_POLYGON` block.
 - The writer keeps the grid's cell order: each run of consecutive cells of one type (and, for polygons, one size) becomes a cell block, so a mixed grid can come back as several blocks of one type rather than one block per type.
+- Polyhedra cross in both directions. A `polyhedron<n>` block becomes `VTK_POLYHEDRON` cells, whose points are the distinct nodes of their faces, with the faces set through `SetPolyhedralCells` on VTK 9.4 and later or the face stream `SetCells` took before (the same `set_cells` serves `to_pyvista`); the writer reads either back, one `polyhedron<n>` block per run of equal point count.
 - A point or cell array meshio++ cannot hold (a `vtkStringArray`, say) is skipped with a warning naming it; a string array of field data (the QA records of ParaView's Exodus reader) is kept as a string array.
 
 ## Architecture: the payload layer
@@ -62,7 +63,6 @@ The plugin file declares the ParaView proxies and nothing else. The conversions 
 
 ## Limitations
 
-- Polyhedron blocks are skipped by the reader (the legacy cell layout the plugin builds has no face stream); a message on ParaView's output names each skipped block.
 - Optional format dependencies (`h5py`, `netCDF4`, ...) must be installed in ParaView's Python as well.
 
 ## Testing

@@ -81,15 +81,105 @@ def _field_array(name, raw, notes):
     return _vtk_array(a, name)
 
 
+def legacy_face_stream(face_connectivity, face_offsets, face_location_offsets):
+    """Polyhedron faces in VTK's pre-9.4 layout: ``(faces, face_locations)``.
+
+    ``faces`` holds, per polyhedron, ``nfaces, n0, ids..., n1, ids...``;
+    ``face_locations[c]`` is where cell ``c``'s entry starts, ``-1`` for a cell
+    that is not a polyhedron. Built from the payload's cell-array layout
+    without a loop per cell.
+    """
+    from ._ragged import ragged_gather
+
+    loc = np.asarray(face_location_offsets, dtype=np.int64)
+    per_cell = np.diff(loc)
+    poly = per_cell > 0
+    sizes = np.diff(np.asarray(face_offsets, dtype=np.int64))
+    tokens = np.zeros(len(sizes) + 1, dtype=np.int64)
+    np.cumsum(1 + sizes, out=tokens[1:])
+    before = np.cumsum(poly) - poly  # polyhedra ahead of each cell
+    start = before + tokens[loc[:-1]]
+    out = np.empty(int(poly.sum()) + int(tokens[-1]), dtype=np.int64)
+    out[start[poly]] = per_cell[poly]
+    cell_of_face = np.repeat(np.arange(len(per_cell), dtype=np.int64), per_cell)
+    face_at = before[cell_of_face] + 1 + tokens[:-1]
+    out[face_at] = sizes
+    out[ragged_gather(face_at + 1, sizes)[0]] = face_connectivity
+    return out, np.where(poly, start, -1).astype(np.int64)
+
+
+def faces_from_legacy_stream(faces, face_locations):
+    """The inverse of :func:`legacy_face_stream`: ``(face_connectivity,
+    face_offsets, face_location_offsets)``. One loop over the polyhedra, which
+    only a VTK older than 9.4 needs."""
+    faces = np.asarray(faces, dtype=np.int64)
+    where = np.asarray(face_locations, dtype=np.int64)
+    conn, sizes, per_cell = [], [], np.zeros(len(where), dtype=np.int64)
+    for c in np.flatnonzero(where >= 0):
+        at = int(where[c])
+        per_cell[c] = faces[at]
+        at += 1
+        for _ in range(int(faces[at - 1])):
+            n = int(faces[at])
+            conn.append(faces[at + 1 : at + 1 + n])
+            sizes.append(n)
+            at += 1 + n
+    face_offsets = np.zeros(len(sizes) + 1, dtype=np.int64)
+    np.cumsum(sizes, out=face_offsets[1:])
+    locations = np.zeros(len(where) + 1, dtype=np.int64)
+    np.cumsum(per_cell, out=locations[1:])
+    flat = np.concatenate(conn) if conn else np.empty(0, dtype=np.int64)
+    return flat, face_offsets, locations
+
+
+def set_cells(grid, payload, legacy=None):
+    """Set ``payload``'s cells on the ``vtkUnstructuredGrid`` ``grid``.
+
+    Polyhedra go through ``SetPolyhedralCells`` (VTK 9.4 and later) or, on an
+    older VTK or with ``legacy=True``, the face stream ``SetCells`` took
+    before. ``to_pyvista`` sets its cells here too.
+    """
+    from vtkmodules.util.numpy_support import numpy_to_vtk
+    from vtkmodules.vtkCommonCore import VTK_UNSIGNED_CHAR
+    from vtkmodules.vtkCommonDataModel import vtkCellArray
+
+    cells = vtkCellArray()
+    cells.SetData(_id_array(payload.offsets), _id_array(payload.connectivity))
+    types = numpy_to_vtk(
+        np.ascontiguousarray(payload.celltypes, dtype=np.uint8),
+        deep=False,
+        array_type=VTK_UNSIGNED_CHAR,
+    )
+    if not payload.has_polyhedra:
+        grid.SetCells(types, cells)
+        return
+    if legacy is None:
+        legacy = not hasattr(grid, "SetPolyhedralCells")
+    if legacy:
+        stream, where = legacy_face_stream(
+            payload.face_connectivity,
+            payload.face_offsets,
+            payload.face_location_offsets,
+        )
+        grid.SetCells(types, cells, _id_array(where), _id_array(stream))
+        return
+    faces = vtkCellArray()
+    faces.SetData(_id_array(payload.face_offsets), _id_array(payload.face_connectivity))
+    locations = vtkCellArray()
+    locations.SetData(
+        _id_array(payload.face_location_offsets),
+        _id_array(np.arange(len(payload.face_offsets) - 1, dtype=np.int64)),
+    )
+    grid.SetPolyhedralCells(types, cells, locations, faces)
+
+
 def fill_grid(grid, mesh, op=READER_OP):
     """Fill the ``vtkUnstructuredGrid`` ``grid`` from ``mesh``, in place.
 
     The plugin's reader passes the grid ParaView hands it; :func:`grid_from_mesh`
     passes a new one. Returns the payload's notes, already emitted.
     """
-    from vtkmodules.util.numpy_support import numpy_to_vtk
-    from vtkmodules.vtkCommonCore import VTK_UNSIGNED_CHAR, vtkPoints
-    from vtkmodules.vtkCommonDataModel import vtkCellArray
+    from vtkmodules.vtkCommonCore import vtkPoints
 
     from ._interop import _emit, _to_vtk_payload
 
@@ -100,14 +190,7 @@ def fill_grid(grid, mesh, op=READER_OP):
     points.SetData(_vtk_array(payload.points))
     grid.SetPoints(points)
 
-    cells = vtkCellArray()
-    cells.SetData(_id_array(payload.offsets), _id_array(payload.connectivity))
-    types = numpy_to_vtk(
-        np.ascontiguousarray(payload.celltypes, dtype=np.uint8),
-        deep=False,
-        array_type=VTK_UNSIGNED_CHAR,
-    )
-    grid.SetCells(types, cells)
+    set_cells(grid, payload)
 
     for name, values in payload.point_data.items():
         grid.GetPointData().AddArray(_vtk_array(values, name))
@@ -183,6 +266,123 @@ def _arrays(attributes, what, notes):
     return out
 
 
+def _cell_array(cell_array):
+    """``(offsets, connectivity)`` of a ``vtkCellArray``, int64."""
+    return (
+        _numpy(cell_array.GetOffsetsArray()).astype(np.int64, copy=False),
+        _numpy(cell_array.GetConnectivityArray()).astype(np.int64, copy=False),
+    )
+
+
+def _polyhedron_faces(grid):
+    """``(face_connectivity, face_offsets, location_offsets, location_ids)`` of
+    a grid's polyhedra, or ``None``; either VTK API."""
+    if hasattr(grid, "GetPolyhedronFaces"):
+        faces = grid.GetPolyhedronFaces()
+        locations = grid.GetPolyhedronFaceLocations()
+        if faces is None or locations is None:
+            return None
+        face_offsets, face_conn = _cell_array(faces)
+        loc_offsets, loc_ids = _cell_array(locations)
+        return face_conn, face_offsets, loc_offsets, loc_ids
+    stream, where = grid.GetFaces(), grid.GetFaceLocations()
+    if stream is None or where is None:
+        return None
+    flat, offsets, locations = faces_from_legacy_stream(_numpy(stream), _numpy(where))
+    return flat, offsets, locations, np.arange(len(offsets) - 1, dtype=np.int64)
+
+
+def _polyhedron_blocks(first, last, npts, faces, cell_flat):
+    """Cell blocks of the polyhedra ``first:last`` (a run of the grid), one per
+    run of equal point count, so the cells keep their order (the VTU reader's
+    ``polyhedron<n>`` names)."""
+    from ._mesh import CellBlock
+    from ._ragged import CsrRows, ragged_gather
+
+    face_conn, face_offsets, loc_offsets, loc_ids = faces
+    blocks, data = [], {}
+    counts = npts[first:last]
+    bounds = np.concatenate(
+        [[0], np.flatnonzero(counts[1:] != counts[:-1]) + 1, [len(counts)]]
+    )
+    for a, b in zip(bounds[:-1], bounds[1:]):
+        cells = np.arange(first + a, first + b)
+        per_cell = loc_offsets[cells + 1] - loc_offsets[cells]
+        face_ids = loc_ids[ragged_gather(loc_offsets[cells], per_cell)[0]]
+        sizes = face_offsets[face_ids + 1] - face_offsets[face_ids]
+        flat = face_conn[ragged_gather(face_offsets[face_ids], sizes)[0]]
+        offsets = np.zeros(len(sizes) + 1, dtype=np.int64)
+        np.cumsum(sizes, out=offsets[1:])
+        cell_faces = np.zeros(len(cells) + 1, dtype=np.int64)
+        np.cumsum(per_cell, out=cell_faces[1:])
+        blocks.append(
+            CellBlock(
+                f"polyhedron{counts[a]}", CsrRows.from_csr(flat, offsets, cell_faces)
+            )
+        )
+        for name, values in cell_flat.items():
+            data.setdefault(name, []).append(values[cells])
+    return blocks, data
+
+
+def _cell_types_array(grid):
+    """The grid's cell types as a data array: ``GetCellTypes()`` from VTK 9.6
+    (where ``GetCellTypesArray`` is deprecated), which before took a
+    ``vtkCellTypes`` to fill and returned nothing."""
+    try:
+        types = grid.GetCellTypes()
+    except TypeError:
+        types = None
+    if types is None or not hasattr(types, "GetNumberOfTuples"):
+        types = grid.GetCellTypesArray()
+    return types
+
+
+def cells_from_grid(grid, cell_flat):
+    """``(cells, cell_data)`` of a ``vtkUnstructuredGrid``, in its cell order.
+
+    ``cell_flat`` holds the grid's cell arrays, one value per cell. A run of
+    consecutive cells of one type (and, for polygons, one size; for polyhedra,
+    one point count) becomes a cell block, so the blocks' cells, laid end to
+    end, are the grid's in its order. ``from_pyvista`` reads its cells
+    here too.
+    """
+    from ._vtk_common import vtk_cells_from_data
+
+    if not grid.GetNumberOfCells():
+        return [], {}
+    types = _numpy(_cell_types_array(grid)).astype(np.uint8)
+    offsets, connectivity = _cell_array(grid.GetCells())
+    poly = types == 42  # VTK_POLYHEDRON
+    if not poly.any():
+        # vtk_cells_from_data takes END offsets (the VTU convention); a VTK 9
+        # cell array's offsets start at 0 and have num_cells + 1 entries.
+        return vtk_cells_from_data(connectivity, offsets[1:], types, cell_flat)
+
+    faces = _polyhedron_faces(grid)
+    npts = np.diff(offsets)
+    bounds = np.concatenate(
+        [[0], np.flatnonzero(poly[1:] != poly[:-1]) + 1, [len(types)]]
+    )
+    cells, cell_data = [], {}
+    for first, last in zip(bounds[:-1], bounds[1:]):
+        part = {name: v[first:last] for name, v in cell_flat.items()}
+        if poly[first]:
+            blocks, data = _polyhedron_blocks(first, last, npts, faces, cell_flat)
+        else:
+            lo, hi = offsets[first], offsets[last]
+            blocks, data = vtk_cells_from_data(
+                connectivity[lo:hi],
+                offsets[first + 1 : last + 1] - lo,
+                types[first:last],
+                part,
+            )
+        cells += blocks
+        for name in cell_flat:
+            cell_data.setdefault(name, []).extend(data.get(name, []))
+    return cells, cell_data
+
+
 def mesh_from_grid(grid, op=WRITER_OP):
     """A mesh from a ``vtkUnstructuredGrid``, cells in the grid's order.
 
@@ -192,7 +392,6 @@ def mesh_from_grid(grid, op=WRITER_OP):
     """
     from ._interop import _emit
     from ._mesh import Mesh
-    from ._vtk_common import vtk_cells_from_data
 
     notes: list = []
     if grid.GetPoints() is not None and grid.GetNumberOfPoints():
@@ -204,18 +403,7 @@ def mesh_from_grid(grid, op=WRITER_OP):
     cell_flat = _arrays(grid.GetCellData(), "cell_data", notes)
     field_data = _arrays(grid.GetFieldData(), "field_data", notes)
 
-    if grid.GetNumberOfCells():
-        types = _numpy(grid.GetCellTypesArray()).astype(np.uint8)
-        cell_array = grid.GetCells()
-        offsets = _numpy(cell_array.GetOffsetsArray()).astype(np.int64)
-        connectivity = _numpy(cell_array.GetConnectivityArray()).astype(np.int64)
-        # vtk_cells_from_data takes END offsets (the VTU convention); a VTK 9
-        # cell array's offsets start at 0 and have num_cells + 1 entries.
-        cells, cell_data = vtk_cells_from_data(
-            connectivity, offsets[1:], types, cell_flat
-        )
-    else:
-        cells, cell_data = [], {}
+    cells, cell_data = cells_from_grid(grid, cell_flat)
 
     _emit(op, notes)
     return Mesh(

@@ -16,7 +16,7 @@ is then read row by row as any other list. Writing into a row (``rows[i][0] =
 
 import numpy as np
 
-__all__ = ["CsrFaces", "CsrRows", "csr_of"]
+__all__ = ["CsrFaces", "CsrRows", "csr_of", "polyhedron_csr", "ragged_gather"]
 
 
 def _dropping(name):
@@ -119,3 +119,38 @@ class CsrRows(_Tracked):
 def csr_of(data):
     """The CSR arrays a ragged block's ``data`` still carries, or ``None``."""
     return data.csr() if isinstance(data, CsrRows) else None
+
+
+def ragged_gather(starts, counts):
+    """Indices of segments laid end to end, without a loop per segment.
+
+    ``concatenate([arange(s, s + n) for s, n in zip(starts, counts)])``, and
+    each index's position within its segment. The gather behind a CSR's rows
+    (``flat[ragged_gather(offsets[rows], sizes[rows])[0]]``).
+    """
+    counts = np.asarray(counts, dtype=np.int64)
+    off = np.repeat(np.cumsum(counts) - counts, counts)
+    within = np.arange(int(counts.sum()), dtype=np.int64) - off
+    return np.repeat(np.asarray(starts, dtype=np.int64), counts) + within, within
+
+
+def polyhedron_csr(data):
+    """``(flat, offsets, face_offsets)`` of a polyhedron block, all int64.
+
+    The arrays a block read from the core carries (:func:`csr_of`), or the
+    same arrays built from its lists of faces: face ``f`` is
+    ``flat[offsets[f]:offsets[f + 1]]`` and cell ``c`` has the faces
+    ``face_offsets[c]`` to ``face_offsets[c + 1]``.
+    """
+    csr = csr_of(data)
+    if csr is not None and csr[2] is not None:
+        return csr
+    faces = [np.asarray(f, dtype=np.int64).reshape(-1) for cell in data for f in cell]
+    sizes = np.fromiter((len(f) for f in faces), dtype=np.int64, count=len(faces))
+    per_cell = np.fromiter((len(c) for c in data), dtype=np.int64, count=len(data))
+    flat = np.concatenate(faces) if faces else np.empty(0, dtype=np.int64)
+    offsets = np.zeros(len(sizes) + 1, dtype=np.int64)
+    np.cumsum(sizes, out=offsets[1:])
+    face_offsets = np.zeros(len(per_cell) + 1, dtype=np.int64)
+    np.cumsum(per_cell, out=face_offsets[1:])
+    return flat, offsets, face_offsets

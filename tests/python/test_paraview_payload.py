@@ -179,3 +179,118 @@ def test_empty_mesh():
     assert grid.GetNumberOfCells() == 0
     back = _paraview.mesh_from_grid(grid)
     assert len(back.cells) == 0
+
+
+# --------------------------------------------------------------------------- #
+# polyhedra (roadmap 6.2)                                                     #
+# --------------------------------------------------------------------------- #
+#: The tetrahedron (0, 1, 3, 4) of the cube below, faces outward.
+_TET_FACES = [[0, 3, 1], [0, 1, 4], [1, 3, 4], [0, 4, 3]]
+#: A unit cube's six faces, outward.
+_CUBE_FACES = [
+    [0, 3, 2, 1],
+    [4, 5, 6, 7],
+    [0, 1, 5, 4],
+    [1, 2, 6, 5],
+    [2, 3, 7, 6],
+    [3, 0, 4, 7],
+]
+
+
+def _polyhedra_mesh():
+    """Polyhedra of 4 and 8 points around a tetrahedron, with cell data."""
+    points = np.array(
+        [
+            [0.0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+        ]
+    )
+    tet = [np.array(f) for f in _TET_FACES]
+    cube = [np.array(f) for f in _CUBE_FACES]
+    return meshioplusplus.Mesh(
+        points,
+        [
+            ("polyhedron4", [tet, tet]),
+            ("tetra", [[1, 2, 3, 6]]),
+            ("polyhedron8", [cube]),
+        ],
+        cell_data={"c": [np.array([1.0, 2.0]), np.array([3.0]), np.array([4.0])]},
+    )
+
+
+def _assert_same_cells(back, mesh):
+    assert [(b.type, len(b)) for b in back.cells] == [
+        (b.type, len(b)) for b in mesh.cells
+    ]
+    for got, want in zip(back.cells, mesh.cells):
+        if want.type.startswith("polyhedron"):
+            assert [[f.tolist() for f in c] for c in got.data] == [
+                [np.asarray(f).tolist() for f in c] for c in want.data
+            ]
+        else:
+            np.testing.assert_array_equal(got.data, want.data)
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["vtk94", "legacy"])
+def test_polyhedra_round_trip(legacy):
+    """Both of VTK's polyhedron APIs: SetPolyhedralCells (9.4 and later) and
+    the face stream SetCells took before."""
+    from vtkmodules.vtkCommonDataModel import vtkUnstructuredGrid
+
+    mesh = _polyhedra_mesh()
+    if legacy:
+        from meshioplusplus._interop import _to_vtk_payload
+
+        grid = vtkUnstructuredGrid()
+        grid.SetPoints(_paraview.grid_from_mesh(mesh).GetPoints())
+        payload = _to_vtk_payload(mesh)
+        try:
+            _paraview.set_cells(grid, payload, legacy=True)
+        except TypeError:
+            pytest.skip("this VTK has no legacy face-stream SetCells")
+        grid.GetCellData().AddArray(_paraview._vtk_array(payload.cell_data["c"], "c"))
+    else:
+        grid = _paraview.grid_from_mesh(mesh)
+    assert grid.GetNumberOfCells() == 4
+    volumes = _vtk_volumes(grid)
+    np.testing.assert_allclose(volumes, [1 / 6, 1 / 6, 1 / 6, 1.0])
+    back = _paraview.mesh_from_grid(grid)
+    _assert_same_cells(back, mesh)
+    assert [c.tolist() for c in back.cell_data["c"]] == [[1.0, 2.0], [3.0], [4.0]]
+
+
+def test_legacy_face_stream_round_trip():
+    from meshioplusplus._interop import _to_vtk_payload
+
+    payload = _to_vtk_payload(_polyhedra_mesh())
+    stream, where = _paraview.legacy_face_stream(
+        payload.face_connectivity, payload.face_offsets, payload.face_location_offsets
+    )
+    tet = [4] + sum(([3] + f for f in _TET_FACES), [])
+    assert stream[:17].tolist() == tet
+    assert stream[17:34].tolist() == tet
+    assert where.tolist() == [0, 17, -1, 34]
+    assert stream[34] == 6 and stream[35] == 4
+    flat, offsets, locations = _paraview.faces_from_legacy_stream(stream, where)
+    np.testing.assert_array_equal(flat, payload.face_connectivity)
+    np.testing.assert_array_equal(offsets, payload.face_offsets)
+    np.testing.assert_array_equal(locations, payload.face_location_offsets)
+
+
+def test_polyhedron_fixture_keeps_its_cells():
+    """The roadmap's probe: a two-piece VTU of polyhedra has the cell count
+    meshioplusplus.read gives once through the plugin's conversions."""
+    path = MESHES / "vtu" / "two_pieces_polyhedron.vtu"
+    if path.read_bytes().startswith(b"version https://git-lfs"):
+        pytest.skip("LFS content not fetched")
+    mesh = meshioplusplus.read(path)
+    grid = _paraview.grid_from_mesh(mesh)
+    assert grid.GetNumberOfCells() == sum(len(b) for b in mesh.cells)
+    back = _paraview.mesh_from_grid(grid)
+    assert sum(len(b) for b in back.cells) == sum(len(b) for b in mesh.cells)

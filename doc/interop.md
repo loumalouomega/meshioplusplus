@@ -98,7 +98,8 @@ The blocks are turned into the VTK 9 `connectivity` / `offsets` / `celltypes` tr
 | `points` | `grid.points` | shared for `float32`/`float64` `(P, 3)`; a 2-D mesh is padded |
 | cell blocks | `connectivity`/`offsets`/`celltypes` | in block order, in meshio++'s node order, which is VTK's (the linear wedge too) |
 | ragged `polygon` blocks | `VTK_POLYGON` with per-row offsets | supported |
-| `polyhedron`, `custom`, unmapped types | — | **dropped**, warned by name |
+| `polyhedron<n>` | `VTK_POLYHEDRON` cells and their faces (`SetPolyhedralCells` on VTK 9.4 and later, the legacy face stream before) | both ways |
+| `custom`, unmapped types | — | **dropped**, warned by name |
 | `point_data` / `cell_data` | `grid.point_data` / `grid.cell_data` | shared where dtype/contiguity allow |
 | `Point` / `Cell` regions | `region:<name>` int8 masks + a sidecar | see below |
 | `Side` regions | — | **dropped**: VTK has no `(cell, local facet)` concept |
