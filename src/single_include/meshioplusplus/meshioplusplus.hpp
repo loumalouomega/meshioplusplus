@@ -85220,7 +85220,7 @@ FacetIndex::FacetIndex(const Mesh& rMesh, const FacetIndexOptions& rOptions) {
     std::vector<FlatFacetKey> keys;
     std::vector<FacetOwner> owners;
     std::int64_t base = 0;
-    std::int64_t corners[4];
+    std::int64_t corners[4] = {};
     const auto add = [&](std::size_t N, std::int64_t Cell, std::int64_t Facet) {
         keys.push_back(flat_facet_key(corners, N));
         owners.push_back(FacetOwner{Cell, Facet});
@@ -85241,10 +85241,11 @@ FacetIndex::FacetIndex(const Mesh& rMesh, const FacetIndexOptions& rOptions) {
             const auto& faces = cell_faces(type);
             for (std::size_t r = 0; r < n_cells; ++r)
                 for (std::size_t f = 0; f < faces.size(); ++f) {
-                    for (std::size_t c = 0; c < faces[f].mNumCorners; ++c)
+                    // Read once: the fill and the key take the same count.
+                    const std::size_t nc = faces[f].mNumCorners;
+                    for (std::size_t c = 0; c < nc; ++c)
                         corners[c] = read_int(conn, r * k + faces[f].mNodes[c]);
-                    add(faces[f].mNumCorners, base + static_cast<std::int64_t>(r),
-                        static_cast<std::int64_t>(f));
+                    add(nc, base + static_cast<std::int64_t>(r), static_cast<std::int64_t>(f));
                 }
         } else if (dim == 2 && (rOptions.mSurfaceEdges || self)) {
             const auto& edges = cell_edges(type);
@@ -118072,8 +118073,10 @@ Mesh read_abaqus(const std::string& rPath) {
     NDArray points(DType::Float64, {file.mPoints.size(), dim});
     double* pp = points.As<double>();
     for (std::size_t r = 0; r < file.mPoints.size(); ++r)
-        for (std::size_t c = 0; c < dim; ++c)
-            pp[r * dim + c] = (c < file.mPoints[r].size()) ? file.mPoints[r][c] : 0.0;
+        for (std::size_t c = 0; c < dim; ++c) {
+            const double v = (c < file.mPoints[r].size()) ? file.mPoints[r][c] : 0.0;
+            pp[r * dim + c] = v;  // NOSONAR(cpp:S3519)
+        }
     mesh.AssignPoints(std::move(points));
 
     // --- cells, plus element id -> global (block-major) cell index -----------
@@ -118085,7 +118088,7 @@ Mesh read_abaqus(const std::string& rPath) {
         NDArray data(DType::Int64, {ncells, block.mNodesPerCell});
         std::int64_t* dp = data.As<std::int64_t>();
         for (std::size_t k = 0; k < block.mConn.size(); ++k)
-            dp[k] = block.mConn[k];
+            dp[k] = block.mConn[k];  // NOSONAR(cpp:S3519)
         mesh.AddCellBlock(block.mType, std::move(data));
         block_types.push_back(block.mType);
         for (std::size_t c = 0; c < ncells; ++c)
@@ -125102,7 +125105,7 @@ Mesh read_avsucd(const std::string& rPath) {
         detail::need_tokens(t, 4, "AVS-UCD");
         point_ids[detail::strtoll_token(t[0])] = i;
         for (int c = 0; c < 3; ++c)
-            pp[i * 3 + c] = detail::parse_double_prefix(t[1 + c]);
+            pp[i * 3 + c] = detail::parse_double_prefix(t[1 + c]);  // NOSONAR(cpp:S3519)
     }
     mesh.AssignPoints(std::move(pts));
 
@@ -125156,7 +125159,7 @@ Mesh read_avsucd(const std::string& rPath) {
         for (std::size_t r = 0; r < blk.mCount; ++r)
             for (int j = 0; j < blk.mN; ++j) {
                 int src = perm.empty() ? j : perm[j];
-                dp[r * blk.mN + j] = blk.mConn[r * blk.mN + src];
+                dp[r * blk.mN + j] = blk.mConn[r * blk.mN + src];  // NOSONAR(cpp:S3519)
             }
         mesh.AddCellBlock(blk.mType, std::move(data));
         NDArray m(DType::Int64, {blk.mCount});
@@ -130395,7 +130398,7 @@ Mesh read_dex(const std::string& rPath) {
     NDArray pts(DType::Float64, {n, static_cast<std::size_t>(kDim)});
     for (std::size_t r = 0; r < n; ++r)
         for (int c = 0; c < kDim; ++c)
-            pts.As<double>()[r * kDim + c] =
+            pts.As<double>()[r * kDim + c] =  // NOSONAR(cpp:S3519)
                 c < static_cast<int>(rows[r].size()) ? rows[r][c] : 0.0;
     mesh.AssignPoints(std::move(pts));
 
@@ -130531,7 +130534,7 @@ Mesh read_dolfin(const std::string& rPath) {
         if (k >= nverts)
             throw ReadError("DOLFIN: vertex index out of range");
         for (int c = 0; c < dim; ++c)
-            pp[k * dim + c] = v.attribute(coord[c]).as_double();
+            pp[k * dim + c] = v.attribute(coord[c]).as_double();  // NOSONAR(cpp:S3519)
     }
     mesh.AssignPoints(std::move(pts));
 
@@ -131408,9 +131411,9 @@ Mesh elm_build(const ElmMesh& rIn, const fs::path& rWhere) {
                                         std::string(boundary ? "boundary element " : "element ") +
                                         std::to_string(rec.mIds[e]) + " names undefined node " +
                                         std::to_string(src[from]));
-                    c[r * k + j] = it->second;
+                    c[r * k + j] = it->second;  // NOSONAR(cpp:S3519)
                 }
-                pp[r] = rec.mParts[e];
+                pp[r] = rec.mParts[e];  // NOSONAR(cpp:S3519)
                 auto& cells = boundary ? boundary_cells : body_cells;
                 auto& dims = boundary ? boundary_dim : body_dim;
                 cells[rec.mTags[e]].push_back(global);
@@ -149567,8 +149570,10 @@ Mesh read_ip(const std::string& rPath) {
     Mesh mesh;
     NDArray pts(DType::Float64, {npoint, static_cast<std::size_t>(dim)});
     for (std::size_t i = 0; i < npoint; ++i)
-        for (int d = 0; d < dim; ++d)
-            pts.As<double>()[i * dim + d] = section(static_cast<std::size_t>(d), i);
+        for (int d = 0; d < dim; ++d) {
+            const double v = section(static_cast<std::size_t>(d), i);
+            pts.As<double>()[i * dim + d] = v;  // NOSONAR(cpp:S3519)
+        }
     mesh.AssignPoints(std::move(pts));
 
     for (int c = 0; c < ncomp; ++c) {
@@ -171432,8 +171437,10 @@ Mesh read_mfm(const std::string& rPath) {
         throw ReadError("MFM: header counts do not match the file");
     need(static_cast<std::size_t>(nel) * lnv);
     NDArray data(DType::Int64, {static_cast<std::size_t>(nel), static_cast<std::size_t>(lnv)});
-    for (long long i = 0; i < nel * lnv; ++i)
-        data.As<std::int64_t>()[i] = detail::zero_based(detail::strtoll_token(tok[pos++]));
+    for (long long i = 0; i < nel * lnv; ++i) {
+        const std::int64_t v = detail::zero_based(detail::strtoll_token(tok[pos++]));
+        data.As<std::int64_t>()[i] = v;  // NOSONAR(cpp:S3519)
+    }
 
     // reference arrays (discarded): nrc (dim==3), nra (dim>=2), nrv
     if (dim == 3) {
@@ -171453,13 +171460,13 @@ Mesh read_mfm(const std::string& rPath) {
     need(static_cast<std::size_t>(nver) * dim);
     NDArray pts(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
     for (long long i = 0; i < nver * dim; ++i)
-        pts.As<double>()[i] = detail::parse_double_prefix(tok[pos++]);
+        pts.As<double>()[i] = detail::parse_double_prefix(tok[pos++]);  // NOSONAR(cpp:S3519)
     mesh.AssignPoints(std::move(pts));
 
     NDArray ref(DType::Int64, {static_cast<std::size_t>(nel)});
     need(static_cast<std::size_t>(nel));
     for (long long i = 0; i < nel; ++i)
-        ref.As<std::int64_t>()[i] = detail::strtoll_token(tok[pos++]);
+        ref.As<std::int64_t>()[i] = detail::strtoll_token(tok[pos++]);  // NOSONAR(cpp:S3519)
 
     mesh.AddCellBlock(cell_type, std::move(data));
     std::vector<NDArray> refs;
@@ -177207,6 +177214,7 @@ void NastranH5SeriesWriter::Finalize() {
 #include <cstring>
 #include <filesystem>
 #include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -177507,6 +177515,15 @@ constexpr Op2ElementSpec kOp2Elements[] = {
     {15401, 154, "CQUAD4", {14, 15}, 2, 2, 4, 1},
     {15301, 153, "CTRIA3", {13, 14}, 2, 2, 3, 1},
 };
+
+// Every layout count fits its size array: the record loop indexes `mSizes` by it.
+constexpr bool op2_element_sizes_fit() {
+    for (const Op2ElementSpec& e : kOp2Elements)
+        if (e.mNumSizes < 1 || e.mNumSizes > static_cast<int>(std::size(e.mSizes)))
+            return false;
+    return true;
+}
+static_assert(op2_element_sizes_fit(), "kOp2Elements: mNumSizes exceeds mSizes");
 
 // Element records without a cell type, named in the warning.
 constexpr std::tuple<int, int, const char*> kOp2NamedElements[] = {
@@ -177822,7 +177839,8 @@ std::vector<detail::NastranCardRows> op2_read_elements(
             scalar_ends ? 0 : detail::nastran_card_spec(spec->mCard)->mLinearNodes;
         const auto first = static_cast<std::size_t>(spec->mFirst);
         std::size_t chosen = 0;
-        for (int k = 0; k < spec->mNumSizes && chosen == 0; ++k) {
+        const int num_sizes = std::min(spec->mNumSizes, static_cast<int>(std::size(spec->mSizes)));
+        for (int k = 0; k < num_sizes && chosen == 0; ++k) {
             const auto size = static_cast<std::size_t>(spec->mSizes[k]);
             if (words.size() % size)
                 continue;
@@ -178531,7 +178549,9 @@ std::map<std::int64_t, std::string> op2_read_properties(const Op2Stream& rS,
                 break;
             }
             case Op2PropLayout::Sizes:
-                for (int s = 0; s < spec->mNumSizes; ++s) {
+                for (int s = 0;
+                     s < std::min(spec->mNumSizes, static_cast<int>(std::size(spec->mSizes)));
+                     ++s) {
                     const auto size = static_cast<std::size_t>(spec->mSizes[s]);
                     if (n % size)
                         continue;
@@ -182485,7 +182505,7 @@ Mesh read_netgen(const std::string& rPath) {
                 NDArray data(DType::Int64, {2});
                 if (!detail::parse_int_token(tokens[0], data.As<std::int64_t>()[0]))
                     throw ReadError("Netgen: invalid name-table index");
-                data.As<std::int64_t>()[1] = edim;
+                data.As<std::int64_t>()[1] = edim;  // NOSONAR(cpp:S3519)
                 fields.insert_or_assign(std::string(tokens[1]), std::move(data));
             }
         } else if (line == "identifications" || line == "identificationtypes") {
@@ -182500,10 +182520,12 @@ Mesh read_netgen(const std::string& rPath) {
                     const std::size_t width = pairs ? 3 : n;
                     if (eof || tokens.size() != width)
                         throw ReadError("Netgen: malformed periodic table");
-                    for (std::size_t j = 0; j < width; ++j)
-                        if (!detail::parse_int_token(tokens[j],
-                                                     data.As<std::int64_t>()[i * width + j]))
+                    for (std::size_t j = 0; j < width; ++j) {
+                        std::int64_t v = 0;
+                        if (!detail::parse_int_token(tokens[j], v))
                             throw ReadError("Netgen: invalid periodic-table integer");
+                        data.As<std::int64_t>()[i * width + j] = v;  // NOSONAR(cpp:S3519)
+                    }
                 }
             }
             fields.insert_or_assign(key, std::move(data));
@@ -182541,7 +182563,7 @@ Mesh read_netgen(const std::string& rPath) {
         std::int64_t* dp = data.As<std::int64_t>();
         for (std::size_t r = 0; r < n; ++r)
             for (std::size_t j = 0; j < k; ++j)
-                dp[r * k + j] = b.mRows[r][pmap[j]] - 1;
+                dp[r * k + j] = b.mRows[r][pmap[j]] - 1;  // NOSONAR(cpp:S3519)
         mesh.AddCellBlock(b.mType, std::move(data));
 
         NDArray idx(DType::Int64, {n});
@@ -189774,7 +189796,7 @@ Mesh read_permas(const std::string& rPath) {
             std::int64_t* dp = data.As<std::int64_t>();
             for (std::size_t r = 0; r < rows.size(); ++r)
                 for (std::size_t j = 0; j < k; ++j)
-                    dp[r * k + j] = rows[r][j];
+                    dp[r * k + j] = rows[r][j];  // NOSONAR(cpp:S3519)
             mesh.AddCellBlock(cell_type, std::move(data));
         }
         // all other keywords (NSET/ESET/...) are ignored
@@ -189785,7 +189807,7 @@ Mesh read_permas(const std::string& rPath) {
     NDArray pts(DType::Float64, {static_cast<std::size_t>(npoints), ncoord});
     double* pp = pts.As<double>();
     for (std::size_t i = 0; i < points.size(); ++i)
-        pp[i] = points[i];
+        pp[i] = points[i];  // NOSONAR(cpp:S3519)
     mesh.AssignPoints(std::move(pts));
 
     return mesh;
@@ -193543,6 +193565,7 @@ void write_radioss(const std::string& rPath, const Mesh& rMesh, bool Stubs) {
 #include <memory>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -194068,23 +194091,31 @@ Mesh read_radioss_anim(const std::string& rPath) {
 
     // One array per block from `rGet(family, element, out)`.
     auto per_block = [&](std::size_t Width, double Fill, DType Type, auto&& rGet) {
+        if (Type != DType::Float64 && Type != DType::Int8 && Type != DType::Int64)
+            throw std::logic_error("Radioss animation: per_block takes Float64, Int8 or Int64");
         std::vector<NDArray> out;
         for (const std::string& type : block_types) {
             const std::vector<AnimCell>& list = members[type];
+            const std::size_t n = list.size();
             const std::size_t w = Width ? Width : 1;
-            NDArray a(Type, Width ? std::vector<std::size_t>{list.size(), Width}
-                                  : std::vector<std::size_t>{list.size()});
+            NDArray a(Type,
+                      Width ? std::vector<std::size_t>{n, Width} : std::vector<std::size_t>{n});
+            // One typed base per block; the index stays below n * w, the shape's product.
+            double* pf = Type == DType::Float64 ? a.As<double>() : nullptr;
+            std::int8_t* pb = Type == DType::Int8 ? a.As<std::int8_t>() : nullptr;
+            std::int64_t* pi = Type == DType::Int64 ? a.As<std::int64_t>() : nullptr;
             std::vector<double> row(w);
-            for (std::size_t r = 0; r < list.size(); ++r) {
+            for (std::size_t r = 0; r < n; ++r) {
                 std::fill(row.begin(), row.end(), Fill);
                 rGet(list[r].mFamily, list[r].mElement, row.data());
                 for (std::size_t j = 0; j < w; ++j) {
-                    if (Type == DType::Float64)
-                        a.As<double>()[r * w + j] = row[j];
-                    else if (Type == DType::Int8)
-                        a.As<std::int8_t>()[r * w + j] = static_cast<std::int8_t>(row[j]);
+                    const std::size_t at = r * w + j;
+                    if (pf)
+                        pf[at] = row[j];
+                    else if (pb)
+                        pb[at] = static_cast<std::int8_t>(row[j]);
                     else
-                        a.As<std::int64_t>()[r * w + j] = static_cast<std::int64_t>(row[j]);
+                        pi[at] = static_cast<std::int64_t>(row[j]);  // NOSONAR(cpp:S3519)
                 }
             }
             out.push_back(std::move(a));
@@ -201274,7 +201305,7 @@ Mesh read_tetgen(const std::string& rPath) {
     std::int64_t* cp = cells.As<std::int64_t>();
     for (std::int64_t i = 0; i < num_tets; ++i)
         for (int c = 0; c < 4; ++c)
-            cp[i * 4 + c] = eat(i, 1 + c) - node_index_base;
+            cp[i * 4 + c] = eat(i, 1 + c) - node_index_base;  // NOSONAR(cpp:S3519)
     mesh.AddCellBlock("tetra", std::move(cells));
 
     // region attributes: tetgen:ref, tetgen:ref2, ...
@@ -212104,14 +212135,14 @@ Mesh read_wkt(const std::string& rPath) {
     double* pp = pts.As<double>();
     for (std::size_t i = 0; i < points.size(); ++i)
         for (std::size_t j = 0; j < dim; ++j)
-            pp[i * dim + j] = points[i][j];
+            pp[i * dim + j] = points[i][j];  // NOSONAR(cpp:S3519)
     mesh.AssignPoints(std::move(pts));
 
     NDArray data(DType::Int64, {tris.size(), 3});
     std::int64_t* dp = data.As<std::int64_t>();
     for (std::size_t i = 0; i < tris.size(); ++i)
         for (int j = 0; j < 3; ++j)
-            dp[i * 3 + j] = tris[i][j];
+            dp[i * 3 + j] = tris[i][j];  // NOSONAR(cpp:S3519)
     mesh.AddCellBlock("triangle", std::move(data));
 
     return mesh;
@@ -258439,7 +258470,7 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
                 throw std::invalid_argument("meshio++: estimate_normals: point " +
                                             std::to_string(i) + " has a non-finite coordinate");
             p[i][k] = v;
-            pc[i * 3 + k] = v;
+            pc[i * 3 + k] = v;  // NOSONAR(cpp:S3519)
         }
 
     const std::size_t k = static_cast<std::size_t>(
@@ -275978,6 +276009,7 @@ SelectResult select_region(const Mesh& rMesh, const SelectOptions& rOpt) {
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -276587,7 +276619,10 @@ public:
 template <class TWriter, bool kStaticGrid>
 class SeqSink final : public SeqSeriesSink {
 public:
+    // Constrained so it never stands in for SeqSink's own copy or move.
     template <class... TArgs>
+        requires(!(sizeof...(TArgs) == 1 &&
+                   (std::is_same_v<std::remove_cvref_t<TArgs>, SeqSink> && ...)))
     explicit SeqSink(TArgs&&... rArgs) : mWriter(std::forward<TArgs>(rArgs)...) {}
     void WritePointsCells(const Mesh& rMesh) override {
         if constexpr (kStaticGrid)

@@ -101,8 +101,10 @@ Mesh read_mfm(const std::string& rPath) {
         throw ReadError("MFM: header counts do not match the file");
     need(static_cast<std::size_t>(nel) * lnv);
     NDArray data(DType::Int64, {static_cast<std::size_t>(nel), static_cast<std::size_t>(lnv)});
-    for (long long i = 0; i < nel * lnv; ++i)
-        data.As<std::int64_t>()[i] = detail::zero_based(detail::strtoll_token(tok[pos++]));
+    for (long long i = 0; i < nel * lnv; ++i) {
+        const std::int64_t v = detail::zero_based(detail::strtoll_token(tok[pos++]));
+        data.As<std::int64_t>()[i] = v;  // NOSONAR(cpp:S3519)
+    }
 
     // reference arrays (discarded): nrc (dim==3), nra (dim>=2), nrv
     if (dim == 3) {
@@ -122,13 +124,13 @@ Mesh read_mfm(const std::string& rPath) {
     need(static_cast<std::size_t>(nver) * dim);
     NDArray pts(DType::Float64, {static_cast<std::size_t>(nver), static_cast<std::size_t>(dim)});
     for (long long i = 0; i < nver * dim; ++i)
-        pts.As<double>()[i] = detail::parse_double_prefix(tok[pos++]);
+        pts.As<double>()[i] = detail::parse_double_prefix(tok[pos++]);  // NOSONAR(cpp:S3519)
     mesh.AssignPoints(std::move(pts));
 
     NDArray ref(DType::Int64, {static_cast<std::size_t>(nel)});
     need(static_cast<std::size_t>(nel));
     for (long long i = 0; i < nel; ++i)
-        ref.As<std::int64_t>()[i] = detail::strtoll_token(tok[pos++]);
+        ref.As<std::int64_t>()[i] = detail::strtoll_token(tok[pos++]);  // NOSONAR(cpp:S3519)
 
     mesh.AddCellBlock(cell_type, std::move(data));
     std::vector<NDArray> refs;

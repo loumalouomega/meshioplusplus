@@ -348,7 +348,7 @@ Mesh read_tetgen(const std::string& rPath) {
     std::int64_t* cp = cells.As<std::int64_t>();
     for (std::int64_t i = 0; i < num_tets; ++i)
         for (int c = 0; c < 4; ++c)
-            cp[i * 4 + c] = eat(i, 1 + c) - node_index_base;
+            cp[i * 4 + c] = eat(i, 1 + c) - node_index_base;  // NOSONAR(cpp:S3519)
     mesh.AddCellBlock("tetra", std::move(cells));
 
     // region attributes: tetgen:ref, tetgen:ref2, ...

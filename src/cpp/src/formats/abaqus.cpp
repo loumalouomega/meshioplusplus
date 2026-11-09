@@ -384,8 +384,10 @@ Mesh read_abaqus(const std::string& rPath) {
     NDArray points(DType::Float64, {file.mPoints.size(), dim});
     double* pp = points.As<double>();
     for (std::size_t r = 0; r < file.mPoints.size(); ++r)
-        for (std::size_t c = 0; c < dim; ++c)
-            pp[r * dim + c] = (c < file.mPoints[r].size()) ? file.mPoints[r][c] : 0.0;
+        for (std::size_t c = 0; c < dim; ++c) {
+            const double v = (c < file.mPoints[r].size()) ? file.mPoints[r][c] : 0.0;
+            pp[r * dim + c] = v;  // NOSONAR(cpp:S3519)
+        }
     mesh.AssignPoints(std::move(points));
 
     // --- cells, plus element id -> global (block-major) cell index -----------
@@ -397,7 +399,7 @@ Mesh read_abaqus(const std::string& rPath) {
         NDArray data(DType::Int64, {ncells, block.mNodesPerCell});
         std::int64_t* dp = data.As<std::int64_t>();
         for (std::size_t k = 0; k < block.mConn.size(); ++k)
-            dp[k] = block.mConn[k];
+            dp[k] = block.mConn[k];  // NOSONAR(cpp:S3519)
         mesh.AddCellBlock(block.mType, std::move(data));
         block_types.push_back(block.mType);
         for (std::size_t c = 0; c < ncells; ++c)

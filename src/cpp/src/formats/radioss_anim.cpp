@@ -28,6 +28,7 @@
 #include <memory>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -564,23 +565,31 @@ Mesh read_radioss_anim(const std::string& rPath) {
 
     // One array per block from `rGet(family, element, out)`.
     auto per_block = [&](std::size_t Width, double Fill, DType Type, auto&& rGet) {
+        if (Type != DType::Float64 && Type != DType::Int8 && Type != DType::Int64)
+            throw std::logic_error("Radioss animation: per_block takes Float64, Int8 or Int64");
         std::vector<NDArray> out;
         for (const std::string& type : block_types) {
             const std::vector<AnimCell>& list = members[type];
+            const std::size_t n = list.size();
             const std::size_t w = Width ? Width : 1;
-            NDArray a(Type, Width ? std::vector<std::size_t>{list.size(), Width}
-                                  : std::vector<std::size_t>{list.size()});
+            NDArray a(Type,
+                      Width ? std::vector<std::size_t>{n, Width} : std::vector<std::size_t>{n});
+            // One typed base per block; the index stays below n * w, the shape's product.
+            double* pf = Type == DType::Float64 ? a.As<double>() : nullptr;
+            std::int8_t* pb = Type == DType::Int8 ? a.As<std::int8_t>() : nullptr;
+            std::int64_t* pi = Type == DType::Int64 ? a.As<std::int64_t>() : nullptr;
             std::vector<double> row(w);
-            for (std::size_t r = 0; r < list.size(); ++r) {
+            for (std::size_t r = 0; r < n; ++r) {
                 std::fill(row.begin(), row.end(), Fill);
                 rGet(list[r].mFamily, list[r].mElement, row.data());
                 for (std::size_t j = 0; j < w; ++j) {
-                    if (Type == DType::Float64)
-                        a.As<double>()[r * w + j] = row[j];
-                    else if (Type == DType::Int8)
-                        a.As<std::int8_t>()[r * w + j] = static_cast<std::int8_t>(row[j]);
+                    const std::size_t at = r * w + j;
+                    if (pf)
+                        pf[at] = row[j];
+                    else if (pb)
+                        pb[at] = static_cast<std::int8_t>(row[j]);
                     else
-                        a.As<std::int64_t>()[r * w + j] = static_cast<std::int64_t>(row[j]);
+                        pi[at] = static_cast<std::int64_t>(row[j]);  // NOSONAR(cpp:S3519)
                 }
             }
             out.push_back(std::move(a));

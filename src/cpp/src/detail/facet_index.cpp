@@ -42,7 +42,7 @@ FacetIndex::FacetIndex(const Mesh& rMesh, const FacetIndexOptions& rOptions) {
     std::vector<FlatFacetKey> keys;
     std::vector<FacetOwner> owners;
     std::int64_t base = 0;
-    std::int64_t corners[4];
+    std::int64_t corners[4] = {};
     const auto add = [&](std::size_t N, std::int64_t Cell, std::int64_t Facet) {
         keys.push_back(flat_facet_key(corners, N));
         owners.push_back(FacetOwner{Cell, Facet});
@@ -63,10 +63,11 @@ FacetIndex::FacetIndex(const Mesh& rMesh, const FacetIndexOptions& rOptions) {
             const auto& faces = cell_faces(type);
             for (std::size_t r = 0; r < n_cells; ++r)
                 for (std::size_t f = 0; f < faces.size(); ++f) {
-                    for (std::size_t c = 0; c < faces[f].mNumCorners; ++c)
+                    // Read once: the fill and the key take the same count.
+                    const std::size_t nc = faces[f].mNumCorners;
+                    for (std::size_t c = 0; c < nc; ++c)
                         corners[c] = read_int(conn, r * k + faces[f].mNodes[c]);
-                    add(faces[f].mNumCorners, base + static_cast<std::int64_t>(r),
-                        static_cast<std::int64_t>(f));
+                    add(nc, base + static_cast<std::int64_t>(r), static_cast<std::int64_t>(f));
                 }
         } else if (dim == 2 && (rOptions.mSurfaceEdges || self)) {
             const auto& edges = cell_edges(type);

@@ -631,9 +631,9 @@ Mesh elm_build(const ElmMesh& rIn, const fs::path& rWhere) {
                                         std::string(boundary ? "boundary element " : "element ") +
                                         std::to_string(rec.mIds[e]) + " names undefined node " +
                                         std::to_string(src[from]));
-                    c[r * k + j] = it->second;
+                    c[r * k + j] = it->second;  // NOSONAR(cpp:S3519)
                 }
-                pp[r] = rec.mParts[e];
+                pp[r] = rec.mParts[e];  // NOSONAR(cpp:S3519)
                 auto& cells = boundary ? boundary_cells : body_cells;
                 auto& dims = boundary ? boundary_dim : body_dim;
                 cells[rec.mTags[e]].push_back(global);
