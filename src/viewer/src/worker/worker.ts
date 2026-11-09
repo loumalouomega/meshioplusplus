@@ -329,6 +329,9 @@ async function handle(request: Request): Promise<void> {
             // One staged file at a time; the previous session's bytes go now.
             if (session) unlink(m, session.path);
             session = null;
+            // A file of the same name stages at the same path, so the fitted
+            // surface is keyed on more than the path: drop it.
+            featureSurface = null;
 
             // The extension is how the format is inferred, so the original
             // name has to survive -- but a path separator in it would escape
