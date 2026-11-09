@@ -2819,7 +2819,7 @@ function _check_abi_layout()
     (sizeof(_CFitCurvesOpts) == 88 && sizeof(_CFitCurvesReport) == 96 &&
      sizeof(_CSketchPiece) == 104 && fieldoffset(_CSketchPiece, 9) == 80) ||
         error("meshio++: mio_fit_curves layout mismatch")
-    (sizeof(_CSilhouetteOpts) == 104 && fieldoffset(_CSilhouetteOpts, 9) == 64 &&
+    (sizeof(_CSilhouetteOpts) == 104 && fieldoffset(_CSilhouetteOpts, 8) == 64 &&
      sizeof(_CSilhouetteReport) == 104) ||
         error("meshio++: mio_silhouette layout mismatch")
     sizeof(_CStepElementsReport) == 88 || error("meshio++: mio_step_elements_report layout mismatch")
