@@ -3981,6 +3981,8 @@ export interface MeshioPlusPlusModule {
       outputRegion?: string;
       /** Sigma trimming (roadmap 7.1.2; default `auto`). */
       usedPoints?: 'auto' | 'all' | '3sigma' | '2sigma' | '1sigma';
+      /** Roadmap 7.1.4: the reference planes, spheres and cylinders are refitted under. */
+      criterion?: 'least_squares' | 'minimum_zone' | 'min_circumscribed' | 'max_inscribed';
     },
   ): {
     mesh: Mesh;

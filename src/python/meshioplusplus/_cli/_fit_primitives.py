@@ -82,6 +82,13 @@ def add_args(parser):
         default="auto",
         help="sigma trimming (default: auto, 3sigma with --region or --seed)",
     )
+    parser.add_argument(
+        "--criterion",
+        type=str,
+        choices=("least_squares", "minimum_zone", "min_circumscribed", "max_inscribed"),
+        default="least_squares",
+        help="the reference planes, spheres and cylinders are refitted under",
+    )
     parser.add_argument("--json", action="store_true", help="emit the counts as JSON")
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="suppress the summary"
@@ -107,6 +114,7 @@ def fit_primitives_cmd(args):
         rim_angle=args.rim_angle,
         output_region=args.output_region,
         used_points=args.used_points,
+        criterion=args.criterion,
     )
     write(args.outfile, out, file_format=args.output_format)
     if args.json:

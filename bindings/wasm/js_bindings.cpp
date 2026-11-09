@@ -5614,11 +5614,14 @@ val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double
                                             name + "'");
         }
         // Roadmap 7.1: {region, seeds: [[x, y, z], ...], featureAngle,
-        // rimAngle, outputRegion, usedPoints}.
+        // rimAngle, outputRegion, usedPoints, criterion}.
         if (!rExtra.isUndefined() && !rExtra.isNull()) {
-            check_settings_keys(
-                rExtra, "the fitPrimitives options",
-                {"region", "seeds", "featureAngle", "rimAngle", "outputRegion", "usedPoints"});
+            check_settings_keys(rExtra, "the fitPrimitives options",
+                                {"region", "seeds", "featureAngle", "rimAngle", "outputRegion",
+                                 "usedPoints", "criterion"});
+            if (rExtra.hasOwnProperty("criterion"))
+                options.mCriterion =
+                    meshioplusplus::fit_criterion_from_name(rExtra["criterion"].as<std::string>());
             if (rExtra.hasOwnProperty("region"))
                 options.mRegion = rExtra["region"].as<std::string>();
             if (rExtra.hasOwnProperty("seeds")) {

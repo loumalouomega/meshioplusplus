@@ -575,7 +575,7 @@ static mxArray *O_mio_segment(const mxArray **a) {
 
 /* fit_primitives(mesh, patch_data, tolerance, relative, min_inlier_fraction,
  *                types, max_iterations, region, seeds, feature_angle,
- *                rim_angle, output_region, used_points) -- `types` the bit
+ *                rim_angle, output_region, used_points, criterion) -- `types` the bit
  * mask and `seeds` the flat x, y, z list the .m wrapper builds. */
 static mxArray *O_mio_fit_primitives(const mxArray **a) {
     mio_fit_primitives_ex_opts opts;
@@ -600,6 +600,7 @@ static mxArray *O_mio_fit_primitives(const mxArray **a) {
     opts.rim_angle = mio_o_double(a[10], "rim_angle");
     opts.output_region = mio_o_opt_string(a[11]);
     opts.used_points = (int32_t)mio_o_int(a[12], "used_points");
+    opts.criterion = (int32_t)mio_o_int(a[13], "criterion");
 
     mio_mesh *out = mio_fit_primitives_ex(mio_o_mesh(a[0]), &opts, &report);
     if (out == NULL) mio_o_fail("fit_primitives");
@@ -1703,7 +1704,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_compute_normals, 7),
     MIO_O_ENTRY(mio_feature_edges, 7),
     MIO_O_ENTRY(mio_segment, 9),
-    MIO_O_ENTRY(mio_fit_primitives, 13),
+    MIO_O_ENTRY(mio_fit_primitives, 14),
     MIO_O_ENTRY(mio_has_occt, 0),
     MIO_O_ENTRY(mio_refine_patches, 13),
     MIO_O_ENTRY(mio_fit_cad, 46),

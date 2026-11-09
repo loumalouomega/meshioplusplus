@@ -175,7 +175,8 @@
       {"name": "FeatureAngle", "kind": "number", "default": 30.0},
       {"name": "RimAngle", "kind": "number", "default": 15.0},
       {"name": "OutputRegion", "kind": "text", "default": "fit:feature"},
-      {"name": "UsedPoints", "kind": "text", "default": "auto"}
+      {"name": "UsedPoints", "kind": "text", "default": "auto"},
+      {"name": "Criterion", "kind": "text", "default": "least_squares"}
     ]},
     {"op": "FitCad", "keys": [
       {"name": "Path", "kind": "text", "default": ""},

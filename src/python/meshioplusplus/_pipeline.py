@@ -1523,6 +1523,7 @@ def _apply_step(mesh, step, steps, warnings):
             rim_angle=_number(step, "RimAngle", 15.0),
             output_region=_text(step, "OutputRegion", "fit:feature"),
             used_points=_text(step, "UsedPoints", "auto"),
+            criterion=_text(step, "Criterion", "least_squares"),
         )
         entry["NumPatches"] = report["num_patches"]
         for t in TYPES[1:]:

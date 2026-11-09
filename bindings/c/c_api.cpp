@@ -8634,6 +8634,8 @@ extern "C" {
 static_assert(sizeof(mio_fit_primitives_ex_opts) == 192, "mio_fit_primitives_ex_opts layout");
 static_assert(offsetof(mio_fit_primitives_ex_opts, used_points) == 136,
               "mio_fit_primitives_ex_opts layout");
+static_assert(offsetof(mio_fit_primitives_ex_opts, criterion) == 140,
+              "mio_fit_primitives_ex_opts layout");
 
 mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primitives_opts* opts,
                              mio_fit_primitives_report* report) {
@@ -8680,6 +8682,10 @@ mio_mesh* mio_fit_primitives_ex(const mio_mesh* mesh, const mio_fit_primitives_e
             throw std::invalid_argument("meshio++: fit_primitives: unknown used_points " +
                                         std::to_string(r.used_points));
         options.mUsedPoints = static_cast<meshioplusplus::FitUsedPoints>(r.used_points);
+        if (r.criterion < MIO_FIT_LEAST_SQUARES || r.criterion > MIO_FIT_MAX_INSCRIBED)
+            throw std::invalid_argument("meshio++: fit_primitives: unknown criterion " +
+                                        std::to_string(r.criterion));
+        options.mCriterion = static_cast<meshioplusplus::FitCriterion>(r.criterion);
         return capi_fit_primitives_run(mesh, options, report);
     });
 }

@@ -183,6 +183,7 @@ OP_TABLE = {
         "RimAngle",
         "OutputRegion",
         "UsedPoints",
+        "Criterion",
     ),
     "FitCad": (
         "Path",

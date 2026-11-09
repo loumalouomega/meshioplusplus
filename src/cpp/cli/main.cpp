@@ -2391,7 +2391,8 @@ int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
                                           {"feature-angle", {}, true},
                                           {"rim-angle", {}, true},
                                           {"output-region", {}, true},
-                                          {"used-points", {}, true}},
+                                          {"used-points", {}, true},
+                                          {"criterion", {}, true}},
                                          report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("fit-primitives requires exactly INFILE and OUTFILE");
@@ -2431,6 +2432,8 @@ int cmd_fit_primitives(const std::vector<std::string>& rArgs) {
             throw std::runtime_error(
                 "fit-primitives: --used-points must be auto, all, 3sigma, 2sigma or 1sigma");
     }
+    if (has_opt(p, "criterion"))
+        options.mCriterion = meshioplusplus::fit_criterion_from_name(opt_value(p, "criterion"));
     meshioplusplus::FitPrimitivesResult r = meshioplusplus::fit_primitives(mesh, options);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     if (has_flag(p, "json")) {

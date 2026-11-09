@@ -3083,6 +3083,11 @@ contains
             if (ierr == 0) call fitted%free()
             fitted = seg%fit_primitives(used_points='5sigma', stat=ierr)
             call check(ierr /= 0, 'fit_primitives refuses an unknown used_points')
+            fitted = seg%fit_primitives(criterion='minimum_zone', num_plane=nplane, stat=ierr)
+            call check(ierr == 0 .and. nplane == 6_int64, 'fit_primitives takes the minimum zone')
+            if (ierr == 0) call fitted%free()
+            fitted = seg%fit_primitives(criterion='chebyshev', stat=ierr)
+            call check(ierr /= 0, 'fit_primitives refuses an unknown criterion')
         end block
 
         ! refine_patches (v17.11.0): six planes are already one patch each.

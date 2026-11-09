@@ -17,7 +17,8 @@ mio_fit_primitives(
   feature_angle = 30,
   rim_angle = 15,
   output_region = "fit:feature",
-  used_points = "auto"
+  used_points = "auto",
+  criterion = "least_squares"
 )
 }
 \arguments{
@@ -49,6 +50,10 @@ the facet nearest each, written as the cell region `output_region`.}
 
 \item{used_points}{`"auto"`, `"all"`, `"3sigma"`, `"2sigma"` or `"1sigma"`:
 sigma trimming (roadmap 7.1.2); `"auto"` is `"3sigma"` with a region or seeds.}
+
+\item{criterion}{`"least_squares"`, `"minimum_zone"`, `"min_circumscribed"` or
+`"max_inscribed"`: the reference planes, spheres and cylinders are refitted
+under (roadmap 7.1.4).}
 }
 \value{
 A list of `mesh` (with cell data `fit:type`, `fit:rms`, `fit:max`

@@ -2468,6 +2468,7 @@ def _register_operations(server: FastMCP) -> None:
         rim_angle: float = 15.0,
         output_region: str = "fit:feature",
         used_points: str = "auto",
+        criterion: str = "least_squares",
     ) -> dict:
         """Fit a plane, sphere, cylinder, cone or torus to each patch of a
         surface and report how well it fits -- a recovered radius, axis or
@@ -2493,7 +2494,11 @@ def _register_operations(server: FastMCP) -> None:
         one patch and writes its cells as the cell region output_region
         (num_feature_cells). used_points "3sigma"/"2sigma"/"1sigma" refits on
         the points within k RMS distances until the set stops changing;
-        "auto" is "3sigma" with a region or seeds, "all" otherwise."""
+        "auto" is "3sigma" with a region or seeds, "all" otherwise.
+        criterion "minimum_zone" (the narrowest zone holding every point, as
+        GD&T form tolerances are defined), "min_circumscribed" or
+        "max_inscribed" (a shaft's or a hole's envelope) refits planes,
+        spheres and cylinders under that reference."""
 
     @server.tool()
     @_forward(_tools.tool_refine_patches)

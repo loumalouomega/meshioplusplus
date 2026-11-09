@@ -1667,6 +1667,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                     "meshio++: pipeline: FitPrimitives: UsedPoints must be auto, all, 3sigma, "
                     "2sigma or 1sigma");
         }
+        opts.mCriterion = fit_criterion_from_name(pipe_text(rStep, "Criterion", "least_squares"));
         FitPrimitivesResult fr = fit_primitives(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumPatches", static_cast<double>(fr.mNumPatches)},

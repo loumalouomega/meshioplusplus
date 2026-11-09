@@ -103,6 +103,21 @@ Every point weighs the same in a least-squares fit, so a scan's stray points, a 
 
 Every fit reports `fit:patch_sigma`, the RMS orthogonal distance of the points it used, and `fit:patch_num_used` and `fit:patch_num_rejected` (0 with `"all"`); the form error and extremes are over the points used.
 
+## Minimum-zone and envelope fits
+
+GD&T form tolerances are defined against the narrowest zone that holds every point (ISO 1101; ISO 12781 flatness, 12181 roundness, 12180 cylindricity), not against the least-squares surface, which reports a wider zone. `criterion` picks the reference (roadmap 7.1.4):
+
+| `criterion` | Reference | Applies to |
+|---|---|---|
+| `"least_squares"` (default) | the least-squares fit, as before | every type |
+| `"minimum_zone"` | the narrowest zone: two parallel planes, two concentric spheres, two coaxial cylinders | plane, sphere, cylinder |
+| `"min_circumscribed"` | the smallest enclosing sphere or cylinder (a shaft's envelope) | sphere, cylinder |
+| `"max_inscribed"` | the largest sphere or cylinder no point lies inside (a hole's envelope) | sphere, cylinder |
+
+After a patch's least-squares fit is accepted (the acceptance is unchanged), a plane, sphere or cylinder is refitted under the criterion on the points used, by a sequence of linear programmes from the least-squares start (Carr and Ferreira 1995; Shunmugam 1986): each round linearises the distances in the surface's parameters (a plane's normal tilt and offset; a sphere's centre; a cylinder's axis point and tilt) and solves the criterion's linear programme within a trust region, keeping a step when the criterion's exact value improves and shrinking the region otherwise, until it is below `1e-14` of the points' extent. The linear programmes are solved exactly by the core's own dense two-phase simplex (Bland's rule, `detail/dense_lp`), on their dual, which has one row per parameter and one column per point; there is no solver dependency and no randomness. `fit:patch_params` then holds the criterion's surface (a plane's mid-zone point and normal; the zone's middle radius, or the envelope's), and the form columns are measured against it, so `fit:patch_form_error` is the minimum zone's width; the residual columns (`fit:patch_rms`, `fit:patch_max`, `fit:patch_fraction`) stay the least-squares fit's. A cone or torus, or a plane under an envelope criterion, keeps its least-squares fit with a warning. C++ core only: the numpy twin raises `NotImplementedError` naming the core.
+
+The minimum-zone flatness of points drawn between two parallel planes 0.1 apart, with points on both, is 0.1 to `1e-12`, and the minimum circumscribed cylinder of points on a circle with two opposite bumps of 0.01 has radius 1.01 (`tests/cpp/test_dense_lp.cpp`).
+
 ### Form error and extremes
 
 The last five columns are what a metrology report carries beside the fit. The signed distance is positive on the side the surface's normal points to (along a plane's normal, away from a sphere's centre or a cylinder's, cone's or torus's axis), so the form error is the width of the zone between two offsets of the least-squares surface that holds every point. The arc span counts angles within 1e-9 degrees as one (the rims of a tessellated cylinder share them) and reads 360 when the largest gap is at most twice the median gap, as on a closed tessellation, whose gaps are all alike; a half cylinder reads 180. A value that does not apply to the type, or to a patch of type none, is NaN. The MCP tool reports them per patch as `form_error`, `diameter_min`, `diameter_max`, `length`, `arc_deg` and `extent`.

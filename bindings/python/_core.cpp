@@ -5582,11 +5582,12 @@ PYBIND11_MODULE(_core, m) {
            double min_inlier_fraction, std::uint32_t types, std::int64_t max_iterations,
            const std::string& region, const std::vector<std::array<double, 3>>& seeds,
            double feature_angle, double rim_angle, const std::string& output_region,
-           const std::string& used_points) {
+           const std::string& used_points, const std::string& criterion) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
             meshioplusplus::FitPrimitivesOptions options;
+            options.mCriterion = meshioplusplus::fit_criterion_from_name(criterion);
             options.mPatchData = patch_data;
             options.mTolerance = tolerance;
             options.mRelative = relative;
@@ -5634,7 +5635,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("types") = meshioplusplus::kFitAllTypes, py::arg("max_iterations") = 50,
         py::arg("region") = std::string(), py::arg("seeds") = std::vector<std::array<double, 3>>(),
         py::arg("feature_angle") = 30.0, py::arg("rim_angle") = 15.0,
-        py::arg("output_region") = "fit:feature", py::arg("used_points") = "auto");
+        py::arg("output_region") = "fit:feature", py::arg("used_points") = "auto",
+        py::arg("criterion") = "least_squares");
 
     // Variational shape approximation of a segmentation. See
     // operations/refine_patches.hpp.

@@ -29774,6 +29774,25 @@ enum class FitUsedPoints : std::int32_t {
     Sigma1 = 4,
 };
 
+/// The reference a fit is measured against (roadmap 7.1.4).
+enum class FitCriterion : std::int32_t {
+    /// The least-squares fit, as before roadmap 7.1.4.
+    LeastSquares = 0,
+    /// The narrowest zone holding every point (two parallel planes, two
+    /// concentric spheres, two coaxial cylinders): the Chebyshev reference
+    /// GD&T form tolerances are defined against.
+    MinimumZone = 1,
+    /// The smallest enclosing sphere or cylinder (a shaft's envelope).
+    MinCircumscribed = 2,
+    /// The largest sphere or cylinder no point lies inside (a hole's envelope).
+    MaxInscribed = 3,
+};
+
+/// `FitCriterion` from `"least_squares"`, `"minimum_zone"`,
+/// `"min_circumscribed"` or `"max_inscribed"`.
+/// @throws std::invalid_argument on any other name.
+MESHIOPLUSPLUS_API FitCriterion fit_criterion_from_name(const std::string& rName);
+
 /// What `fit_primitives` fits and accepts.
 struct FitPrimitivesOptions {
     /// The cell-data label naming each cell's patch; empty fits the whole
@@ -29819,6 +29838,13 @@ struct FitPrimitivesOptions {
     /// Which points the fit uses (roadmap 7.1.2): `Auto` is `Sigma3` in the
     /// region and seed modes and `All` in the patch mode.
     FitUsedPoints mUsedPoints = FitUsedPoints::Auto;
+    /// The reference (roadmap 7.1.4): after the least-squares fit is
+    /// accepted, a plane, sphere or cylinder patch is refitted under it on the
+    /// points used (`detail/zone_fit.hpp`); the parameters and the form
+    /// columns are then the criterion's, the residual columns the
+    /// least-squares fit's. A plane takes only the minimum zone; a cone or
+    /// torus keeps its least-squares fit, with a warning.
+    FitCriterion mCriterion = FitCriterion::LeastSquares;
 };
 
 /// The annotated mesh and how many patches took each type.
@@ -46615,6 +46641,71 @@ std::size_t decim_compact_points(const std::vector<std::uint8_t>& rAlive,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/decimate_shared.hpp =====
+// ===== begin src/cpp/src/detail/dense_lp.hpp =====
+/**
+ * @file detail/dense_lp.hpp
+ * @brief A small dense linear-programme solver (roadmap 7.1.4): the two-phase
+ * simplex method on a dense tableau, Bland's rule throughout, so it neither
+ * cycles nor depends on anything but its input.
+ *
+ *  - `dense_lp_equality` solves `min c.y` subject to `A y = b`, `y >= 0`:
+ *    phase one minimises the sum of one artificial variable per row (each
+ *    row first scaled so its right-hand side is not negative), phase two the
+ *    objective, the artificials kept out of the basis. It returns the
+ *    optimum, its value and the duals of the equality rows (from the
+ *    artificial columns' reduced costs).
+ *  - `dense_lp_inequality` solves `min c.x` subject to `A x <= b` with `x`
+ *    free through its dual, `max -b.y` subject to `A^T y = -c`, `y >= 0`:
+ *    the tableau has one row per variable of `x` and one column per
+ *    constraint, which suits the fits it serves (a handful of variables, a
+ *    constraint per measured point). `x` is the dual's duals.
+ *
+ * A pivot element must exceed `1e-12` times its column's largest entry, and
+ * a reduced cost below `-1e-12` times the objective's scale enters; on a
+ * tie the lowest index wins. Sequential and deterministic.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+namespace meshioplusplus {
+namespace detail {
+
+enum class DenseLpStatus : int {
+    Optimal = 0,
+    Infeasible = 1,
+    Unbounded = 2,
+    IterationLimit = 3,
+};
+
+struct DenseLpResult {
+    DenseLpStatus mStatus = DenseLpStatus::Infeasible;
+    std::vector<double> mX;      ///< the optimum
+    std::vector<double> mDuals;  ///< `dense_lp_equality`: one per equality row
+    double mObjective = 0.0;
+    std::int64_t mPivots = 0;
+};
+
+/**
+ * @brief `min c.y` subject to `A y = b`, `y >= 0`.
+ * @param rA row-major, `b.size()` rows of `c.size()` entries.
+ */
+DenseLpResult dense_lp_equality(const std::vector<double>& rC, const std::vector<double>& rA,
+                                const std::vector<double>& rB, std::int64_t MaxPivots = 1000000);
+
+/**
+ * @brief `min c.x` subject to `A x <= b`, `x` free.
+ * @param rA row-major, `b.size()` rows of `c.size()` entries.
+ */
+DenseLpResult dense_lp_inequality(const std::vector<double>& rC, const std::vector<double>& rA,
+                                  const std::vector<double>& rB, std::int64_t MaxPivots = 1000000);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/dense_lp.hpp =====
 // ===== begin src/cpp/src/detail/drawing.hpp =====
 /**
  * @file detail/drawing.hpp
@@ -58117,6 +58208,72 @@ inline WeldMap weld_keep_first(const std::vector<double>& rXyz, std::size_t N, s
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/weld.hpp =====
+// ===== begin src/cpp/src/detail/zone_fit.hpp =====
+/**
+ * @file detail/zone_fit.hpp
+ * @brief Minimum-zone and envelope fits of a plane, sphere or cylinder
+ * (roadmap 7.1.4): the Chebyshev references GD&T form tolerances are defined
+ * against (ISO 1101; ISO 12781 flatness, 12181 roundness, 12180
+ * cylindricity) and the envelope references of a shaft and a hole.
+ *
+ *  - **Minimum zone**: the narrowest zone holding every point, between two
+ *    parallel planes, two concentric spheres or two coaxial cylinders.
+ *  - **Minimum circumscribed**: the smallest sphere or cylinder enclosing
+ *    every point (a shaft's envelope).
+ *  - **Maximum inscribed**: the largest sphere or cylinder no point lies
+ *    inside (a hole's envelope).
+ *
+ * From a start (the least-squares fit), each round linearises the distances
+ * in the surface's parameters (a plane's normal tilt and offset; a sphere's
+ * centre; a cylinder's axis point and tilt, in the frame `lsq_frame` gives
+ * its axis) and solves the linear programme of the criterion within a trust
+ * region by `dense_lp_inequality` (Carr and Ferreira 1995; Shunmugam 1986: a
+ * sequence of linear programmes); a step is kept when the criterion's exact
+ * value improves, else the region shrinks, until it is below `1e-14` of the
+ * points' extent or 200 rounds pass. Deterministic and serial.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+namespace meshioplusplus {
+namespace detail {
+
+enum class ZoneCriterion : int {
+    MinimumZone = 1,
+    MinCircumscribed = 2,
+    MaxInscribed = 3,
+};
+
+struct ZoneFitResult {
+    bool mOk = false;
+    std::string mWhy;  ///< why not, when not
+    /// The fit table's ten parameters (`fit:patch_params` layout): a plane's
+    /// mid-zone point and unit normal; a sphere's centre and radius; a
+    /// cylinder's axis point nearest the points' mean, unit axis and radius.
+    /// The radius is the zone's middle, or the envelope's.
+    std::array<double, 10> mParams{};
+    /// The zone's width (minimum zone), or the envelope's radius.
+    double mValue = 0.0;
+    std::int64_t mRounds = 0;
+};
+
+/**
+ * @brief Refit a plane (type 1, minimum zone only), sphere (2) or cylinder
+ * (3) to @p N points (`pPts`, 3 each) under @p Criterion, from the fit-table
+ * parameters @p pStart.
+ */
+ZoneFitResult zone_fit(std::int64_t Type, const double* pStart, const double* pPts, std::size_t N,
+                       ZoneCriterion Criterion);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/zone_fit.hpp =====
 // ===== begin src/cpp/src/formats/abaqus_face.hpp =====
 /**
  * @file formats/abaqus_face.hpp
@@ -60353,7 +60510,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "Component", "Seed", "FeatureAngle", "NormalTolerance"}},
         {"FitPrimitives",
          {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations",
-          "Region", "Seeds", "FeatureAngle", "RimAngle", "OutputRegion", "UsedPoints"}},
+          "Region", "Seeds", "FeatureAngle", "RimAngle", "OutputRegion", "UsedPoints",
+          "Criterion"}},
         {"FitCad",
          {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
           "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets", "Threads",
@@ -84509,6 +84667,221 @@ void skyline_solve(const SkylineMatrix& rLd, double* pB) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/dense_chol.cpp =====
+// ===== begin src/cpp/src/detail/dense_lp.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kLpEps = 1e-12;
+
+// The tableau: rows 0..m-1 the constraints, row m the reduced costs; the last
+// column the right-hand side (the objective row holds minus the objective).
+struct LpTableau {
+    std::size_t mRows = 0;
+    std::size_t mCols = 0;  // without the right-hand side
+    std::vector<double> mT;
+    std::vector<std::size_t> mBasis;
+
+    double& At(std::size_t R, std::size_t C) { return mT[R * (mCols + 1) + C]; }
+    double Rhs(std::size_t R) const { return mT[R * (mCols + 1) + mCols]; }
+
+    void Pivot(std::size_t P, std::size_t Q) {
+        const std::size_t w = mCols + 1;
+        const double piv = mT[P * w + Q];
+        for (std::size_t c = 0; c < w; ++c)
+            mT[P * w + c] /= piv;
+        for (std::size_t r = 0; r <= mRows; ++r) {
+            if (r == P)
+                continue;
+            const double f = mT[r * w + Q];
+            if (f == 0.0)
+                continue;
+            for (std::size_t c = 0; c < w; ++c)
+                mT[r * w + c] -= f * mT[P * w + c];
+            mT[r * w + Q] = 0.0;
+        }
+        mBasis[P] = Q;
+    }
+
+    // Bland's rule: the lowest allowed column with a negative reduced cost
+    // enters; the leaving row by the minimum ratio, the lowest basic index on
+    // a tie. Returns false at the optimum; sets rUnbounded when a column
+    // enters that nothing bounds.
+    bool Step(std::size_t Allowed, double CostEps, double PivEps, bool& rUnbounded) {
+        std::size_t q = Allowed;
+        for (std::size_t c = 0; c < Allowed; ++c)
+            if (At(mRows, c) < -CostEps) {
+                q = c;
+                break;
+            }
+        if (q == Allowed)
+            return false;
+        std::size_t p = mRows;
+        double best = 0.0;
+        for (std::size_t r = 0; r < mRows; ++r) {
+            const double a = At(r, q);
+            if (!(a > PivEps))
+                continue;
+            const double ratio = Rhs(r) / a;
+            if (p == mRows || ratio < best || (ratio == best && mBasis[r] < mBasis[p])) {
+                p = r;
+                best = ratio;
+            }
+        }
+        if (p == mRows) {
+            rUnbounded = true;
+            return false;
+        }
+        Pivot(p, q);
+        return true;
+    }
+};
+
+}  // namespace
+
+DenseLpResult dense_lp_equality(const std::vector<double>& rC, const std::vector<double>& rA,
+                                const std::vector<double>& rB, std::int64_t MaxPivots) {
+    DenseLpResult out;
+    const std::size_t n = rC.size(), m = rB.size();
+    if (rA.size() != n * m)
+        return out;
+    double scale_a = 0.0, scale_c = 1.0, scale_b = 1.0;
+    for (const double v : rA)
+        scale_a = std::max(scale_a, std::fabs(v));
+    for (const double v : rC)
+        scale_c = std::max(scale_c, std::fabs(v));
+    for (const double v : rB)
+        scale_b = std::max(scale_b, std::fabs(v));
+    const double piv_eps = kLpEps * std::max(scale_a, 1e-300);
+
+    LpTableau t;
+    t.mRows = m;
+    t.mCols = n + m;
+    t.mT.assign((m + 1) * (n + m + 1), 0.0);
+    t.mBasis.resize(m);
+    std::vector<double> sign(m, 1.0);
+    for (std::size_t r = 0; r < m; ++r) {
+        sign[r] = rB[r] < 0.0 ? -1.0 : 1.0;
+        for (std::size_t c = 0; c < n; ++c)
+            t.At(r, c) = sign[r] * rA[r * n + c];
+        t.At(r, n + r) = 1.0;
+        t.At(r, n + m) = sign[r] * rB[r];
+        t.mBasis[r] = n + r;
+    }
+    // Phase one: minimise the artificials' sum.
+    for (std::size_t c = 0; c <= n + m; ++c) {
+        if (c >= n && c < n + m)
+            continue;
+        double s = 0.0;
+        for (std::size_t r = 0; r < m; ++r)
+            s += t.At(r, c);
+        t.At(m, c) = -s;
+    }
+    bool unbounded = false;
+    while (t.Step(n, kLpEps, piv_eps, unbounded)) {
+        if (++out.mPivots > MaxPivots) {
+            out.mStatus = DenseLpStatus::IterationLimit;
+            return out;
+        }
+    }
+    if (-t.Rhs(m) > kLpEps * scale_b * static_cast<double>(std::max<std::size_t>(m, 1))) {
+        out.mStatus = DenseLpStatus::Infeasible;
+        return out;
+    }
+    // Drive the artificials still basic (at zero) out where a column allows.
+    for (std::size_t r = 0; r < m; ++r) {
+        if (t.mBasis[r] < n)
+            continue;
+        for (std::size_t c = 0; c < n; ++c)
+            if (std::fabs(t.At(r, c)) > piv_eps) {
+                t.Pivot(r, c);
+                break;
+            }
+    }
+    // Phase two: the objective, the artificials kept out.
+    for (std::size_t c = 0; c <= n + m; ++c) {
+        double z = c < n ? rC[c] : 0.0;
+        for (std::size_t r = 0; r < m; ++r) {
+            const std::size_t b = t.mBasis[r];
+            if (b < n)
+                z -= rC[b] * t.At(r, c);
+        }
+        t.At(m, c) = z;
+    }
+    unbounded = false;
+    while (t.Step(n, kLpEps * scale_c, piv_eps, unbounded)) {
+        if (++out.mPivots > MaxPivots) {
+            out.mStatus = DenseLpStatus::IterationLimit;
+            return out;
+        }
+    }
+    if (unbounded) {
+        out.mStatus = DenseLpStatus::Unbounded;
+        return out;
+    }
+    out.mStatus = DenseLpStatus::Optimal;
+    out.mX.assign(n, 0.0);
+    for (std::size_t r = 0; r < m; ++r)
+        if (t.mBasis[r] < n)
+            out.mX[t.mBasis[r]] = t.Rhs(r);
+    out.mObjective = 0.0;
+    for (std::size_t c = 0; c < n; ++c)
+        out.mObjective += rC[c] * out.mX[c];
+    // The duals: an artificial column's reduced cost is minus its row's dual.
+    out.mDuals.assign(m, 0.0);
+    for (std::size_t r = 0; r < m; ++r)
+        out.mDuals[r] = -sign[r] * t.At(m, n + r);
+    return out;
+}
+
+DenseLpResult dense_lp_inequality(const std::vector<double>& rC, const std::vector<double>& rA,
+                                  const std::vector<double>& rB, std::int64_t MaxPivots) {
+    const std::size_t k = rC.size(), m = rB.size();
+    DenseLpResult out;
+    if (rA.size() != k * m)
+        return out;
+    // The dual: min b.y subject to A^T y = -c, y >= 0.
+    std::vector<double> at(k * m);
+    for (std::size_t r = 0; r < m; ++r)
+        for (std::size_t c = 0; c < k; ++c)
+            at[c * m + r] = rA[r * k + c];
+    std::vector<double> rhs(k);
+    for (std::size_t c = 0; c < k; ++c)
+        rhs[c] = -rC[c];
+    const DenseLpResult dual = dense_lp_equality(rB, at, rhs, MaxPivots);
+    out.mPivots = dual.mPivots;
+    if (dual.mStatus == DenseLpStatus::Infeasible) {
+        out.mStatus = DenseLpStatus::Unbounded;
+        return out;
+    }
+    if (dual.mStatus == DenseLpStatus::Unbounded) {
+        out.mStatus = DenseLpStatus::Infeasible;
+        return out;
+    }
+    if (dual.mStatus != DenseLpStatus::Optimal) {
+        out.mStatus = dual.mStatus;
+        return out;
+    }
+    out.mStatus = DenseLpStatus::Optimal;
+    out.mX = dual.mDuals;
+    out.mObjective = 0.0;
+    for (std::size_t c = 0; c < k; ++c)
+        out.mObjective += rC[c] * out.mX[c];
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/dense_lp.cpp =====
 // ===== begin src/cpp/src/detail/dual_graph.cpp =====
 #include <algorithm>
 #include <array>
@@ -120580,6 +120953,314 @@ std::string zlib_inflate(std::string_view In, int WindowBits, std::size_t* pCons
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/zlib_inflate.cpp =====
+// ===== begin src/cpp/src/detail/zone_fit.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+using ZfV3 = std::array<double, 3>;
+
+double zf_dot(const ZfV3& rA, const ZfV3& rB) {
+    return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
+}
+
+ZfV3 zf_unit(ZfV3 V) {
+    const double l = std::sqrt(zf_dot(V, V));
+    if (l > 0.0)
+        for (double& r_x : V)
+            r_x /= l;
+    return V;
+}
+
+// The fit table's sign: the largest-magnitude component positive.
+ZfV3 zf_canonical(ZfV3 V) {
+    std::size_t big = 0;
+    for (std::size_t k = 1; k < 3; ++k)
+        if (std::fabs(V[k]) > std::fabs(V[big]))
+            big = k;
+    if (V[big] < 0.0)
+        for (double& r_x : V)
+            r_x = -r_x;
+    return V;
+}
+
+// The surface's current geometry: a point (plane point, sphere centre,
+// cylinder axis point) and a direction (plane normal, cylinder axis).
+struct ZfState {
+    ZfV3 mPoint{};
+    ZfV3 mDir{0.0, 0.0, 1.0};
+};
+
+struct ZfProblem {
+    std::int64_t mType = 0;
+    ZoneCriterion mCriterion = ZoneCriterion::MinimumZone;
+    const double* mPts = nullptr;
+    std::size_t mN = 0;
+    double mExtent = 1.0;
+
+    ZfV3 P(std::size_t I) const { return {mPts[3 * I], mPts[3 * I + 1], mPts[3 * I + 2]}; }
+
+    // The signed distance of point I from the plane, or its radius about the
+    // centre or the axis.
+    double Dist(const ZfState& rS, std::size_t I) const {
+        const ZfV3 w{mPts[3 * I] - rS.mPoint[0], mPts[3 * I + 1] - rS.mPoint[1],
+                     mPts[3 * I + 2] - rS.mPoint[2]};
+        if (mType == 1)
+            return zf_dot(w, rS.mDir);
+        if (mType == 2)
+            return std::sqrt(zf_dot(w, w));
+        const double h = zf_dot(w, rS.mDir);
+        return std::sqrt(std::max(0.0, zf_dot(w, w) - h * h));
+    }
+
+    // The criterion's exact value, to minimise.
+    double Objective(const ZfState& rS) const {
+        double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+        for (std::size_t i = 0; i < mN; ++i) {
+            const double d = Dist(rS, i);
+            lo = std::min(lo, d);
+            hi = std::max(hi, d);
+        }
+        if (mCriterion == ZoneCriterion::MinimumZone)
+            return hi - lo;
+        return mCriterion == ZoneCriterion::MinCircumscribed ? hi : -lo;
+    }
+
+    // The number of geometric step variables.
+    std::size_t NumGeo() const { return mType == 1 ? 2 : (mType == 2 ? 3 : 4); }
+
+    // The linearised distance of point I: d0 + g . step (step in lengths).
+    double Linear(const ZfState& rS, std::size_t I, const ZfV3& rU, const ZfV3& rV,
+                  double* pGrad) const {
+        const ZfV3 w{mPts[3 * I] - rS.mPoint[0], mPts[3 * I + 1] - rS.mPoint[1],
+                     mPts[3 * I + 2] - rS.mPoint[2]};
+        if (mType == 1) {
+            // Tilting the normal by (a, b) / extent about the point.
+            pGrad[0] = zf_dot(w, rU) / mExtent;
+            pGrad[1] = zf_dot(w, rV) / mExtent;
+            return zf_dot(w, rS.mDir);
+        }
+        if (mType == 2) {
+            const double r = std::sqrt(zf_dot(w, w));
+            for (std::size_t k = 0; k < 3; ++k)
+                pGrad[k] = r > 0.0 ? -w[k] / r : 0.0;
+            return r;
+        }
+        const double h = zf_dot(w, rS.mDir);
+        ZfV3 q{w[0] - h * rS.mDir[0], w[1] - h * rS.mDir[1], w[2] - h * rS.mDir[2]};
+        const double rho = std::sqrt(zf_dot(q, q));
+        const ZfV3 e = rho > 0.0 ? ZfV3{q[0] / rho, q[1] / rho, q[2] / rho} : ZfV3{0.0, 0.0, 0.0};
+        const double eu = zf_dot(e, rU), ev = zf_dot(e, rV);
+        pGrad[0] = -eu;  // moving the axis point
+        pGrad[1] = -ev;
+        pGrad[2] = -h * eu / mExtent;  // tilting the axis
+        pGrad[3] = -h * ev / mExtent;
+        return rho;
+    }
+
+    ZfState Apply(const ZfState& rS, const ZfV3& rU, const ZfV3& rV, const double* pStep,
+                  double Offset) const {
+        ZfState n = rS;
+        if (mType == 1) {
+            for (std::size_t k = 0; k < 3; ++k)
+                n.mDir[k] = rS.mDir[k] + (pStep[0] * rU[k] + pStep[1] * rV[k]) / mExtent;
+            n.mDir = zf_unit(n.mDir);
+            for (std::size_t k = 0; k < 3; ++k)
+                n.mPoint[k] = rS.mPoint[k] + Offset * rS.mDir[k];
+        } else if (mType == 2) {
+            for (std::size_t k = 0; k < 3; ++k)
+                n.mPoint[k] = rS.mPoint[k] + pStep[k];
+        } else {
+            for (std::size_t k = 0; k < 3; ++k) {
+                n.mPoint[k] = rS.mPoint[k] + pStep[0] * rU[k] + pStep[1] * rV[k];
+                n.mDir[k] = rS.mDir[k] + (pStep[2] * rU[k] + pStep[3] * rV[k]) / mExtent;
+            }
+            n.mDir = zf_unit(n.mDir);
+        }
+        return n;
+    }
+};
+
+}  // namespace
+
+ZoneFitResult zone_fit(std::int64_t Type, const double* pStart, const double* pPts, std::size_t N,
+                       ZoneCriterion Criterion) {
+    ZoneFitResult out;
+    if (Type < 1 || Type > 3) {
+        out.mWhy = "a minimum-zone or envelope fit applies to planes, spheres and cylinders";
+        return out;
+    }
+    if (Type == 1 && Criterion != ZoneCriterion::MinimumZone) {
+        out.mWhy = "a plane has a minimum zone, not an envelope";
+        return out;
+    }
+    if (N < 4) {
+        out.mWhy = "too few points";
+        return out;
+    }
+    ZfProblem pb;
+    pb.mType = Type;
+    pb.mCriterion = Criterion;
+    pb.mPts = pPts;
+    pb.mN = N;
+    ZfV3 lo{pPts[0], pPts[1], pPts[2]}, hi = lo, mean{0.0, 0.0, 0.0};
+    for (std::size_t i = 0; i < N; ++i)
+        for (std::size_t k = 0; k < 3; ++k) {
+            lo[k] = std::min(lo[k], pPts[3 * i + k]);
+            hi[k] = std::max(hi[k], pPts[3 * i + k]);
+            mean[k] += pPts[3 * i + k] / static_cast<double>(N);
+        }
+    const ZfV3 ext{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+    pb.mExtent = std::sqrt(zf_dot(ext, ext));
+    if (!(pb.mExtent > 0.0) || !std::isfinite(pb.mExtent)) {
+        out.mWhy = "the points have no extent";
+        return out;
+    }
+    ZfState s;
+    s.mPoint = {pStart[0], pStart[1], pStart[2]};
+    if (Type != 2)
+        s.mDir = zf_unit({pStart[3], pStart[4], pStart[5]});
+    const ZfV3 start_dir = s.mDir;
+    double f = pb.Objective(s);
+    double trust = 0.1 * pb.mExtent;
+    const std::size_t g = pb.NumGeo();
+    // Variables: the geometric step, then (plane) the offset and the width,
+    // or (minimum zone) the inner and outer radius, or the envelope radius.
+    const std::size_t nrad = Criterion == ZoneCriterion::MinimumZone ? 2 : 1;
+    const std::size_t k = g + nrad;
+    std::vector<double> grad(g);
+    for (std::int64_t round = 0; round < 200 && trust > 1e-14 * pb.mExtent; ++round) {
+        ++out.mRounds;
+        ZfV3 u{}, v{};
+        lsq_frame(s.mDir.data(), u.data(), v.data());
+        std::vector<double> c(k, 0.0), a, b;
+        a.reserve((2 * N + 2 * g) * k);
+        // Minimum zone: minimise outer - inner (a plane: the width, with the
+        // offset as the "inner" variable and lo = offset - w/2 recast as
+        // inner <= d <= outer); envelopes: minimise R, or maximise it.
+        if (Criterion == ZoneCriterion::MinimumZone) {
+            c[g] = -1.0;
+            c[g + 1] = 1.0;
+        } else {
+            c[g] = Criterion == ZoneCriterion::MinCircumscribed ? 1.0 : -1.0;
+        }
+        for (std::size_t i = 0; i < N; ++i) {
+            const double d0 = pb.Linear(s, i, u, v, grad.data());
+            const bool upper = Criterion != ZoneCriterion::MaxInscribed;
+            const bool lower = Criterion != ZoneCriterion::MinCircumscribed;
+            if (upper) {  // d0 + grad.step <= outer
+                for (std::size_t j = 0; j < g; ++j)
+                    a.push_back(grad[j]);
+                if (Criterion == ZoneCriterion::MinimumZone) {
+                    a.push_back(0.0);
+                    a.push_back(-1.0);
+                } else {
+                    a.push_back(-1.0);
+                }
+                b.push_back(-d0);
+            }
+            if (lower) {  // inner <= d0 + grad.step
+                for (std::size_t j = 0; j < g; ++j)
+                    a.push_back(-grad[j]);
+                a.push_back(1.0);
+                if (Criterion == ZoneCriterion::MinimumZone)
+                    a.push_back(0.0);
+                b.push_back(d0);
+            }
+        }
+        for (std::size_t j = 0; j < g; ++j)
+            for (const double sgn : {1.0, -1.0}) {
+                for (std::size_t q = 0; q < k; ++q)
+                    a.push_back(q == j ? sgn : 0.0);
+                b.push_back(trust);
+            }
+        const DenseLpResult lp = dense_lp_inequality(c, a, b);
+        if (lp.mStatus != DenseLpStatus::Optimal) {
+            trust *= 0.25;
+            continue;
+        }
+        // A plane's offset: the zone's middle moves by (inner + outer) / 2.
+        const double offset = Type == 1 ? 0.5 * (lp.mX[g] + lp.mX[g + 1]) : 0.0;
+        const ZfState cand = pb.Apply(s, u, v, lp.mX.data(), offset);
+        const double fc = pb.Objective(cand);
+        double step = 0.0;
+        for (std::size_t j = 0; j < g; ++j)
+            step = std::max(step, std::fabs(lp.mX[j]));
+        if (fc < f) {
+            s = cand;
+            f = fc;
+            if (step < 1e-14 * pb.mExtent)
+                break;
+        } else {
+            trust = std::min(trust, step) * 0.25;
+        }
+    }
+
+    // The fit table's parameters.
+    double dlo = std::numeric_limits<double>::infinity(), dhi = -dlo;
+    if (Type == 1) {
+        if (zf_dot(s.mDir, start_dir) < 0.0)
+            for (double& r_x : s.mDir)
+                r_x = -r_x;
+        for (std::size_t i = 0; i < N; ++i) {
+            const ZfV3 p = pb.P(i);
+            const double d = zf_dot({p[0] - mean[0], p[1] - mean[1], p[2] - mean[2]}, s.mDir);
+            dlo = std::min(dlo, d);
+            dhi = std::max(dhi, d);
+        }
+        const double mid = 0.5 * (dlo + dhi);
+        for (std::size_t q = 0; q < 3; ++q) {
+            out.mParams[q] = mean[q] + mid * s.mDir[q];
+            out.mParams[3 + q] = s.mDir[q];
+        }
+        out.mValue = dhi - dlo;
+        out.mOk = true;
+        return out;
+    }
+    if (Type == 3) {
+        s.mDir = zf_canonical(s.mDir);
+        const double t =
+            zf_dot({mean[0] - s.mPoint[0], mean[1] - s.mPoint[1], mean[2] - s.mPoint[2]}, s.mDir);
+        for (std::size_t q = 0; q < 3; ++q)
+            s.mPoint[q] += t * s.mDir[q];
+    }
+    for (std::size_t i = 0; i < N; ++i) {
+        const double d = pb.Dist(s, i);
+        dlo = std::min(dlo, d);
+        dhi = std::max(dhi, d);
+    }
+    for (std::size_t q = 0; q < 3; ++q) {
+        out.mParams[q] = s.mPoint[q];
+        out.mParams[3 + q] = Type == 3 ? s.mDir[q] : 0.0;
+    }
+    if (Criterion == ZoneCriterion::MinimumZone) {
+        out.mParams[6] = 0.5 * (dlo + dhi);
+        out.mValue = dhi - dlo;
+    } else if (Criterion == ZoneCriterion::MinCircumscribed) {
+        out.mParams[6] = dhi;
+        out.mValue = dhi;
+    } else {
+        out.mParams[6] = dlo;
+        out.mValue = dlo;
+    }
+    out.mOk = true;
+    return out;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/zone_fit.cpp =====
 // ===== begin src/cpp/src/file_source.cpp =====
 #include <cstdlib>
 #include <filesystem>
@@ -237663,6 +238344,8 @@ struct FpOutcome {
     // trimming measures residuals against.
     std::int64_t mTryType = 0;
     double mTryParams[kFpParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    // Why the criterion's refit (roadmap 7.1.4) kept the least-squares fit.
+    std::string mZoneWhy;
 };
 
 // How far the facets' centres lie from a fitted surface (the parameters in
@@ -238127,6 +238810,21 @@ PrimitiveFit fit_primitive_samples(const std::vector<double>& rPts,
 
 }  // namespace detail
 
+FitCriterion fit_criterion_from_name(const std::string& rName) {
+    if (rName == "least_squares")
+        return FitCriterion::LeastSquares;
+    if (rName == "minimum_zone")
+        return FitCriterion::MinimumZone;
+    if (rName == "min_circumscribed")
+        return FitCriterion::MinCircumscribed;
+    if (rName == "max_inscribed")
+        return FitCriterion::MaxInscribed;
+    throw std::invalid_argument(
+        "meshio++: fit_primitives: criterion must be 'least_squares', "
+        "'minimum_zone', 'min_circumscribed' or 'max_inscribed', not '" +
+        rName + "'");
+}
+
 FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions& rOptions) {
     if (!(rOptions.mTolerance > 0.0) || !std::isfinite(rOptions.mTolerance))
         throw std::invalid_argument(std::string(kFpPrefix) +
@@ -238142,6 +238840,9 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
         throw std::invalid_argument(std::string(kFpPrefix) + "max_iterations must be >= 1");
     if (rOptions.mUsedPoints < FitUsedPoints::Auto || rOptions.mUsedPoints > FitUsedPoints::Sigma1)
         throw std::invalid_argument(std::string(kFpPrefix) + "unknown used_points");
+    if (rOptions.mCriterion < FitCriterion::LeastSquares ||
+        rOptions.mCriterion > FitCriterion::MaxInscribed)
+        throw std::invalid_argument(std::string(kFpPrefix) + "unknown criterion");
     if (!(rOptions.mFeatureAngleDeg >= 0.0 && rOptions.mFeatureAngleDeg <= 180.0) ||
         !(rOptions.mRimAngleDeg >= 0.0 && rOptions.mRimAngleDeg <= 180.0))
         throw std::invalid_argument(std::string(kFpPrefix) +
@@ -238272,7 +238973,8 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
         } else {
             outcome[r] = fp_fit_patch_trimmed(patch, fit_opts, trim_k, used);
         }
-        if (!rOptions.mExtendedReport)
+        const bool zone = rOptions.mCriterion != FitCriterion::LeastSquares;
+        if (!rOptions.mExtendedReport && !zone)
             return;
         // Sigma, form error and extremes over the points used, in the world
         // frame the parameters are in.
@@ -238284,6 +238986,24 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
                                     patch.mShift[k]);
         const std::size_t nused = world.size() / 3;
         FpOutcome& o = outcome[r];
+        // The criterion's refit of the accepted fit (roadmap 7.1.4).
+        if (zone && o.mType > 0) {
+            if (o.mType <= 3) {
+                const detail::ZoneFitResult z =
+                    detail::zone_fit(o.mType, o.mParams, world.data(), nused,
+                                     static_cast<detail::ZoneCriterion>(rOptions.mCriterion));
+                if (z.mOk)
+                    for (std::size_t k = 0; k < kFpParams; ++k)
+                        o.mParams[k] = z.mParams[k];
+                else
+                    o.mZoneWhy = z.mWhy;
+            } else {
+                o.mZoneWhy =
+                    "a minimum-zone or envelope fit applies to planes, spheres and cylinders";
+            }
+        }
+        if (!rOptions.mExtendedReport)
+            return;
         if (o.mType > 0 && nused > 0) {
             double sum = 0.0;
             for (std::size_t i = 0; i < nused; ++i) {
@@ -238354,6 +239074,10 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     out.AddCellData(kFitRmsName, std::move(rms_blocks));
     out.AddCellData(kFitMaxName, std::move(max_blocks));
 
+    for (std::size_t r = 0; r < m; ++r)
+        if (!outcome[r].mZoneWhy.empty())
+            result.mWarnings.push_back("patch " + std::to_string(ids[r]) + ": " +
+                                       outcome[r].mZoneWhy + "; kept the least-squares fit");
     NDArray pid = NDArray::Uninit(DType::Int64, {m});
     NDArray ptype = NDArray::Uninit(DType::Int64, {m});
     NDArray params = NDArray::Uninit(DType::Float64, {m, kFpParams});
@@ -262337,6 +263061,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                     "meshio++: pipeline: FitPrimitives: UsedPoints must be auto, all, 3sigma, "
                     "2sigma or 1sigma");
         }
+        opts.mCriterion = fit_criterion_from_name(pipe_text(rStep, "Criterion", "least_squares"));
         FitPrimitivesResult fr = fit_primitives(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumPatches", static_cast<double>(fr.mNumPatches)},

@@ -766,6 +766,9 @@ _REPORT_KEYS = (
     "num_feature_cells",
 )
 
+#: ``criterion`` values: the reference a fit is measured against (roadmap 7.1.4).
+CRITERIA = ("least_squares", "minimum_zone", "min_circumscribed", "max_inscribed")
+
 #: ``used_points`` values: which points a fit uses (roadmap 7.1.2).
 USED_POINTS = ("auto", "all", "3sigma", "2sigma", "1sigma")
 
@@ -803,6 +806,7 @@ def fit_primitives(
     rim_angle: float = 15.0,
     output_region: str = "fit:feature",
     used_points: str = "auto",
+    criterion: str = "least_squares",
 ):
     """Fit a plane, sphere, cylinder, cone or torus to each patch of a surface.
 
@@ -832,6 +836,13 @@ def fit_primitives(
         refit on the points within k times the RMS distance of the points kept
         until the set stops changing (roadmap 7.1.2). ``"auto"`` is ``"3sigma"``
         with a region or seeds, ``"all"`` otherwise.
+    :param criterion: the reference (roadmap 7.1.4): ``"least_squares"``, or
+        ``"minimum_zone"`` (the narrowest zone holding every point, which GD&T
+        form tolerances are defined against), ``"min_circumscribed"`` or
+        ``"max_inscribed"`` (a shaft's or a hole's envelope): an accepted plane,
+        sphere or cylinder is refitted under it, its parameters and form
+        columns then the criterion's. A plane takes only the minimum zone; a
+        cone or torus keeps its least-squares fit, with a warning.
     :returns: the input with cell data ``fit:type`` (-1 no patch, 0 none,
         1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus), ``fit:rms`` and
         ``fit:max``, and per-patch field data ``fit:patch_id``,
@@ -843,6 +854,10 @@ def fit_primitives(
         (degrees) and ``fit:patch_extent`` (``(m, 2)``), NaN where they do not
         apply. With ``return_report``, ``(mesh, report)``.
     """
+    if criterion not in CRITERIA:
+        raise ValueError(
+            f"{_PREFIX}criterion must be one of {CRITERIA}, got {criterion!r}"
+        )
     if used_points not in USED_POINTS:
         raise ValueError(
             f"{_PREFIX}used_points must be one of {USED_POINTS}, got {used_points!r}"
@@ -888,6 +903,7 @@ def fit_primitives(
             rim_angle=float(rim_angle),
             output_region=str(output_region),
             used_points=str(used_points),
+            criterion=str(criterion),
         )
         out = res["mesh"]
         report = {k: int(res[k]) for k in _REPORT_KEYS}
@@ -897,11 +913,11 @@ def fit_primitives(
             raise
         out = None
     if out is None:
-        if seeds or resolved != "all":
+        if seeds or resolved != "all" or criterion != "least_squares":
             raise NotImplementedError(
-                f"{_PREFIX}seeds and sigma trimming need the compiled C++ core "
-                "(meshioplusplus._core); the numpy twin fits patches and regions with "
-                "used_points='all'"
+                f"{_PREFIX}seeds, sigma trimming and the minimum-zone and envelope "
+                "criteria need the compiled C++ core (meshioplusplus._core); the numpy "
+                "twin fits patches and regions with used_points='all' by least squares"
             )
         out, report = _fit_primitives_py(mesh, opts)
     return (out, report) if return_report else out

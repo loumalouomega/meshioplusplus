@@ -6233,6 +6233,15 @@ typedef enum mio_fit_used_points {
     MIO_FIT_USED_SIGMA1 = 4
 } mio_fit_used_points;
 
+/** mio_fit_primitives_ex_opts.criterion: the reference a fit is measured
+ *  against (roadmap 7.1.4). */
+typedef enum mio_fit_criterion {
+    MIO_FIT_LEAST_SQUARES = 0,     /**< the least-squares fit (the default) */
+    MIO_FIT_MINIMUM_ZONE = 1,      /**< the narrowest zone holding every point */
+    MIO_FIT_MIN_CIRCUMSCRIBED = 2, /**< the smallest enclosing sphere or cylinder */
+    MIO_FIT_MAX_INSCRIBED = 3,     /**< the largest sphere or cylinder no point is inside */
+} mio_fit_criterion;
+
 /**
  * mio_fit_primitives with roadmap 7.1's region and seed modes and sigma
  * trimming, which the fixed struct above has no room for. Initialise with
@@ -6247,7 +6256,7 @@ typedef struct mio_fit_primitives_ex_opts {
     double rim_angle;             /**< seed growth: peel rim faces turning more (init: 15) */
     const char* output_region;    /**< seed growth: the region written; NULL: "fit:feature" */
     int32_t used_points;          /**< a mio_fit_used_points (init: AUTO) */
-    int32_t reserved32;
+    int32_t criterion;            /**< a mio_fit_criterion (init: LEAST_SQUARES; roadmap 7.1.4) */
     int64_t reserved[6];
 } mio_fit_primitives_ex_opts;
 

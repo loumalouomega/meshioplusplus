@@ -3974,7 +3974,8 @@ end
                    min_inlier_fraction=0.9,
                    types=("plane", "sphere", "cylinder", "cone", "torus"),
                    max_iterations=50, region="", seeds=nothing, feature_angle=30.0,
-                   rim_angle=15.0, output_region="fit:feature", used_points="auto")
+                   rim_angle=15.0, output_region="fit:feature", used_points="auto",
+                   criterion="least_squares")
         -> (; mesh, num_patches, num_plane, num_sphere, num_cylinder, num_cone,
              num_torus, num_unfitted, num_feature_cells, warnings)
 
@@ -3984,7 +3985,9 @@ data `fit:type`, `fit:rms`, `fit:max` and per-patch field data `fit:patch_*`.
 `patch_data=""` fits the whole surface as one patch. `region` fits a named cell
 region, `seeds` (a vector of 3-vectors) grows and fits a feature from each and
 writes its cells as `output_region`, and `used_points` (`"auto"`, `"all"`,
-`"3sigma"`, `"2sigma"`, `"1sigma"`) trims outliers (roadmap 7.1.1, 7.1.2). See
+`"3sigma"`, `"2sigma"`, `"1sigma"`) trims outliers (roadmap 7.1.1, 7.1.2);
+`criterion` (`"minimum_zone"`, `"min_circumscribed"`, `"max_inscribed"`) refits
+planes, spheres and cylinders under that reference (roadmap 7.1.4). See
 `doc/fit_primitives.md`.
 """
 function fit_primitives(m::Mesh; patch_data::AbstractString="segment:patch",
@@ -3994,10 +3997,15 @@ function fit_primitives(m::Mesh; patch_data::AbstractString="segment:patch",
                         max_iterations::Integer=50, region::AbstractString="",
                         seeds=nothing, feature_angle::Real=30.0, rim_angle::Real=15.0,
                         output_region::AbstractString="fit:feature",
-                        used_points::AbstractString="auto")
+                        used_points::AbstractString="auto",
+                        criterion::AbstractString="least_squares")
     used = findfirst(==(String(used_points)), ("auto", "all", "3sigma", "2sigma", "1sigma"))
     used === nothing &&
         throw(ArgumentError("meshio++: fit_primitives: unknown used_points $(used_points)"))
+    crit = findfirst(==(String(criterion)),
+                     ("least_squares", "minimum_zone", "min_circumscribed", "max_inscribed"))
+    crit === nothing &&
+        throw(ArgumentError("meshio++: fit_primitives: unknown criterion $(criterion)"))
     flat = seeds === nothing ? Cdouble[] : Cdouble[Float64(x) for s in seeds for x in s]
     length(flat) % 3 == 0 ||
         throw(ArgumentError("meshio++: fit_primitives: seeds must be 3-vectors"))
@@ -4019,7 +4027,7 @@ function fit_primitives(m::Mesh; patch_data::AbstractString="segment:patch",
                                      isempty(flat) ? Ptr{Cdouble}(C_NULL) : pointer(flat),
                                      Int64(length(flat) ÷ 3), Float64(feature_angle),
                                      Float64(rim_angle), Cstring(pointer(out_c)),
-                                     Int32(used - 1), Int32(0), ntuple(_ -> Int64(0), 6))
+                                     Int32(used - 1), Int32(crit - 1), ntuple(_ -> Int64(0), 6))
         ccall(_sym(:mio_fit_primitives_ex), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_CFitPrimitivesExOpts}, Ptr{_CFitPrimitivesReport}),
               _handle(m), Ref(opts), report)

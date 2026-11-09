@@ -9,7 +9,9 @@ function r = fit_primitives(mesh, varargin)
 %   below 'feature_angle' (30), peeling rim faces turning more than
 %   'rim_angle' (15), written as the cell region 'output_region'
 %   ('fit:feature'), and 'used_points' ('auto', 'all', '3sigma', '2sigma',
-%   '1sigma') trims outliers.
+%   '1sigma') trims outliers. 'criterion' ('least_squares'; 'minimum_zone',
+%   'min_circumscribed', 'max_inscribed') refits planes, spheres and cylinders
+%   under that reference (roadmap 7.1.4).
 %   Returns a struct: mesh (with cell data 'fit:type', 'fit:rms', 'fit:max'
 %   and field data 'fit:patch_*'), num_patches, num_plane, num_sphere,
 %   num_cylinder, num_cone, num_torus, num_unfitted, num_feature_cells and
@@ -19,11 +21,18 @@ function r = fit_primitives(mesh, varargin)
         'relative', true, 'min_inlier_fraction', 0.9, ...
         'types', {'plane', 'sphere', 'cylinder', 'cone', 'torus'}, 'max_iterations', 50, ...
         'region', '', 'seeds', [], 'feature_angle', 30, 'rim_angle', 15, ...
-        'output_region', 'fit:feature', 'used_points', 'auto'}, 'mio.fit_primitives');
+        'output_region', 'fit:feature', 'used_points', 'auto', ...
+        'criterion', 'least_squares'}, 'mio.fit_primitives');
     used = find(strcmp({'auto', 'all', '3sigma', '2sigma', '1sigma'}, o.used_points));
     if isempty(used)
         error('meshioplusplus:argument', 'meshio++: fit_primitives: unknown used_points %s', ...
             o.used_points);
+    end
+    crit = find(strcmp({'least_squares', 'minimum_zone', 'min_circumscribed', 'max_inscribed'}, ...
+        o.criterion));
+    if isempty(crit)
+        error('meshioplusplus:argument', 'meshio++: fit_primitives: unknown criterion %s', ...
+            o.criterion);
     end
     seeds = [];
     if ~isempty(o.seeds)
@@ -35,7 +44,7 @@ function r = fit_primitives(mesh, varargin)
         types_mask(o.types, 'fit_primitives'), double(o.max_iterations), ...
         mio.internal.str(o.region, 'region'), seeds, double(o.feature_angle), ...
         double(o.rim_angle), mio.internal.str(o.output_region, 'output_region'), ...
-        double(used - 1));
+        double(used - 1), double(crit - 1));
     if isfield(r, 'warnings')
         if isempty(r.warnings)
             r.warnings = cell(0, 1);

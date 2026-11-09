@@ -1503,6 +1503,7 @@ meshioplusplus fit-primitives [options] INFILE OUTFILE
 | `--rim-angle DEG` | Seed growth: rim faces turning more from the fit are peeled (default `15`) |
 | `--output-region NAME` | Seed growth: the cell region written (default `fit:feature`) |
 | `--used-points MODE` | `auto` (default), `all`, `3sigma`, `2sigma` or `1sigma`: sigma trimming |
+| `--criterion NAME` | `least_squares` (default), `minimum_zone`, `min_circumscribed` or `max_inscribed`: the reference planes, spheres and cylinders are refitted under ([fit primitives](/fit_primitives#minimum-zone-and-envelope-fits)) |
 | `--json`, `-q/--quiet` | Machine-readable counts, or no summary |
 
 ```sh

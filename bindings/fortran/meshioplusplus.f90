@@ -413,7 +413,7 @@ module meshioplusplus
         real(c_double) :: rim_angle = 15.0_c_double
         type(c_ptr) :: output_region = c_null_ptr
         integer(c_int32_t) :: used_points = 0
-        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int32_t) :: criterion = 0
         integer(c_int64_t) :: reserved(6) = 0
     end type
 
@@ -9621,7 +9621,7 @@ contains
                                  num_plane, num_sphere, num_cylinder, num_cone, num_torus, &
                                  num_unfitted, stat, errmsg, region, seeds, feature_angle, &
                                  rim_angle, output_region, used_points, &
-                                 num_feature_cells) result(out)
+                                 num_feature_cells, criterion) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: patch_data
         real(real64), intent(in), optional :: tolerance, min_inlier_fraction
@@ -9632,7 +9632,7 @@ contains
         integer(int64), intent(out), optional :: num_cylinder, num_cone, num_torus, num_unfitted
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
-        character(*), intent(in), optional :: region, output_region, used_points
+        character(*), intent(in), optional :: region, output_region, used_points, criterion
         real(real64), intent(in), optional :: seeds(:, :)
         real(real64), intent(in), optional :: feature_angle, rim_angle
         integer(int64), intent(out), optional :: num_feature_cells
@@ -9691,6 +9691,23 @@ contains
                 call handle_failure('fit_primitives', &
                                     "used_points must be auto, all, 3sigma, 2sigma or 1sigma", &
                                     stat, errmsg)
+                return
+            end select
+        end if
+        if (present(criterion)) then
+            select case (trim(criterion))
+            case ('least_squares')
+                xopts%criterion = 0
+            case ('minimum_zone')
+                xopts%criterion = 1
+            case ('min_circumscribed')
+                xopts%criterion = 2
+            case ('max_inscribed')
+                xopts%criterion = 3
+            case default
+                call handle_failure('fit_primitives', &
+                                    "criterion must be least_squares, minimum_zone, "// &
+                                    "min_circumscribed or max_inscribed", stat, errmsg)
                 return
             end select
         end if

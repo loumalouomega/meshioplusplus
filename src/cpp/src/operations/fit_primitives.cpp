@@ -42,6 +42,7 @@
 #include "../detail/crease_edges.hpp"
 #include "../detail/primitive_grow.hpp"
 #include "../detail/lsq_fit.hpp"
+#include "../detail/zone_fit.hpp"
 #include "../detail/primitive_geom.hpp"
 #include "../detail/surface_rings.hpp"
 #include "../detail/math_utils.hpp"
@@ -503,6 +504,8 @@ struct FpOutcome {
     // trimming measures residuals against.
     std::int64_t mTryType = 0;
     double mTryParams[kFpParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    // Why the criterion's refit (roadmap 7.1.4) kept the least-squares fit.
+    std::string mZoneWhy;
 };
 
 // How far the facets' centres lie from a fitted surface (the parameters in
@@ -967,6 +970,21 @@ PrimitiveFit fit_primitive_samples(const std::vector<double>& rPts,
 
 }  // namespace detail
 
+FitCriterion fit_criterion_from_name(const std::string& rName) {
+    if (rName == "least_squares")
+        return FitCriterion::LeastSquares;
+    if (rName == "minimum_zone")
+        return FitCriterion::MinimumZone;
+    if (rName == "min_circumscribed")
+        return FitCriterion::MinCircumscribed;
+    if (rName == "max_inscribed")
+        return FitCriterion::MaxInscribed;
+    throw std::invalid_argument(
+        "meshio++: fit_primitives: criterion must be 'least_squares', "
+        "'minimum_zone', 'min_circumscribed' or 'max_inscribed', not '" +
+        rName + "'");
+}
+
 FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions& rOptions) {
     if (!(rOptions.mTolerance > 0.0) || !std::isfinite(rOptions.mTolerance))
         throw std::invalid_argument(std::string(kFpPrefix) +
@@ -982,6 +1000,9 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
         throw std::invalid_argument(std::string(kFpPrefix) + "max_iterations must be >= 1");
     if (rOptions.mUsedPoints < FitUsedPoints::Auto || rOptions.mUsedPoints > FitUsedPoints::Sigma1)
         throw std::invalid_argument(std::string(kFpPrefix) + "unknown used_points");
+    if (rOptions.mCriterion < FitCriterion::LeastSquares ||
+        rOptions.mCriterion > FitCriterion::MaxInscribed)
+        throw std::invalid_argument(std::string(kFpPrefix) + "unknown criterion");
     if (!(rOptions.mFeatureAngleDeg >= 0.0 && rOptions.mFeatureAngleDeg <= 180.0) ||
         !(rOptions.mRimAngleDeg >= 0.0 && rOptions.mRimAngleDeg <= 180.0))
         throw std::invalid_argument(std::string(kFpPrefix) +
@@ -1112,7 +1133,8 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
         } else {
             outcome[r] = fp_fit_patch_trimmed(patch, fit_opts, trim_k, used);
         }
-        if (!rOptions.mExtendedReport)
+        const bool zone = rOptions.mCriterion != FitCriterion::LeastSquares;
+        if (!rOptions.mExtendedReport && !zone)
             return;
         // Sigma, form error and extremes over the points used, in the world
         // frame the parameters are in.
@@ -1124,6 +1146,24 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
                                     patch.mShift[k]);
         const std::size_t nused = world.size() / 3;
         FpOutcome& o = outcome[r];
+        // The criterion's refit of the accepted fit (roadmap 7.1.4).
+        if (zone && o.mType > 0) {
+            if (o.mType <= 3) {
+                const detail::ZoneFitResult z =
+                    detail::zone_fit(o.mType, o.mParams, world.data(), nused,
+                                     static_cast<detail::ZoneCriterion>(rOptions.mCriterion));
+                if (z.mOk)
+                    for (std::size_t k = 0; k < kFpParams; ++k)
+                        o.mParams[k] = z.mParams[k];
+                else
+                    o.mZoneWhy = z.mWhy;
+            } else {
+                o.mZoneWhy =
+                    "a minimum-zone or envelope fit applies to planes, spheres and cylinders";
+            }
+        }
+        if (!rOptions.mExtendedReport)
+            return;
         if (o.mType > 0 && nused > 0) {
             double sum = 0.0;
             for (std::size_t i = 0; i < nused; ++i) {
@@ -1194,6 +1234,10 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     out.AddCellData(kFitRmsName, std::move(rms_blocks));
     out.AddCellData(kFitMaxName, std::move(max_blocks));
 
+    for (std::size_t r = 0; r < m; ++r)
+        if (!outcome[r].mZoneWhy.empty())
+            result.mWarnings.push_back("patch " + std::to_string(ids[r]) + ": " +
+                                       outcome[r].mZoneWhy + "; kept the least-squares fit");
     NDArray pid = NDArray::Uninit(DType::Int64, {m});
     NDArray ptype = NDArray::Uninit(DType::Int64, {m});
     NDArray params = NDArray::Uninit(DType::Float64, {m, kFpParams});

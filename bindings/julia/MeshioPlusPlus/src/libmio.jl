@@ -801,7 +801,7 @@ struct _CFitPrimitivesExOpts
     rim_angle::Cdouble
     output_region::Cstring
     used_points::Int32
-    reserved32::Int32
+    criterion::Int32
     reserved::NTuple{6,Int64}
 end
 

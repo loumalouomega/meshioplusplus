@@ -1997,6 +1997,10 @@ end
     @test seg.num_feature_edges == 12
     fit = fit_primitives(seg.mesh)
     @test fit.num_plane == 6
+    mz = fit_primitives(seg.mesh; criterion="minimum_zone")
+    @test mz.num_plane == 6
+    close(mz.mesh)
+    @test_throws ArgumentError fit_primitives(seg.mesh; criterion="chebyshev")
     step_path = joinpath(mktempdir(), "elements.step")
     el = write_step_elements(step_path, fit.mesh)
     @test el.num_planes == 6 && isfile(step_path)

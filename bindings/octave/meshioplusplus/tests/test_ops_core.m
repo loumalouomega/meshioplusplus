@@ -385,6 +385,9 @@ function t_feature_segment()
     expect_equal(sg.num_patches, 6);
     fp = mio.fit_primitives(sg.mesh);
     expect_equal(fp.num_plane, 6);
+    mz = mio.fit_primitives(sg.mesh, 'criterion', 'minimum_zone');
+    expect_equal(mz.num_plane, 6);
+    expect_error(@() mio.fit_primitives(sg.mesh, 'criterion', 'chebyshev'), 'criterion');
     step_path = [tempname() '.step'];
     el = mio.write_step_elements(step_path, fp.mesh);
     expect_equal(el.num_planes, 6);

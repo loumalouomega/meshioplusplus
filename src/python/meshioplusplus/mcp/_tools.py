@@ -3501,6 +3501,7 @@ def tool_fit_primitives(
     rim_angle=15.0,
     output_region="fit:feature",
     used_points="auto",
+    criterion="least_squares",
 ):
     """Fit a plane, sphere, cylinder, cone or torus to each patch of a surface;
     written with cell data fit:type / fit:rms / fit:max and per-patch field
@@ -3523,6 +3524,7 @@ def tool_fit_primitives(
         rim_angle=rim_angle,
         output_region=output_region,
         used_points=used_points,
+        criterion=criterion,
     )
     fd = out.field_data
     patches = []

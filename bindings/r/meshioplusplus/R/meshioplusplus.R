@@ -1975,6 +1975,9 @@ mio_select <- function(mesh, name, kind = "cell", box = NULL, plane = NULL, sphe
 #' @param output_region Seed growth: the cell region written.
 #' @param used_points `"auto"`, `"all"`, `"3sigma"`, `"2sigma"` or `"1sigma"`:
 #'   sigma trimming (roadmap 7.1.2); `"auto"` is `"3sigma"` with a region or seeds.
+#' @param criterion `"least_squares"`, `"minimum_zone"`, `"min_circumscribed"` or
+#'   `"max_inscribed"`: the reference planes, spheres and cylinders are refitted
+#'   under (roadmap 7.1.4).
 #' @return A list of `mesh` (with cell data `fit:type`, `fit:rms`, `fit:max`
 #'   and field data `fit:patch_*`), `num_patches`, `num_plane`, `num_sphere`,
 #'   `num_cylinder`, `num_cone`, `num_torus`, `num_unfitted`,
@@ -1985,9 +1988,13 @@ mio_fit_primitives <- function(mesh, patch_data = "segment:patch", tolerance = 1
                                types = c("plane", "sphere", "cylinder", "cone", "torus"),
                                max_iterations = 50, region = "", seeds = NULL,
                                feature_angle = 30, rim_angle = 15,
-                               output_region = "fit:feature", used_points = "auto") {
+                               output_region = "fit:feature", used_points = "auto",
+                               criterion = "least_squares") {
   used <- match(used_points, c("auto", "all", "3sigma", "2sigma", "1sigma"))
   if (is.na(used)) stop("meshio++: fit_primitives: unknown used_points ", used_points)
+  crit <- match(criterion, c("least_squares", "minimum_zone", "min_circumscribed",
+                             "max_inscribed"))
+  if (is.na(crit)) stop("meshio++: fit_primitives: unknown criterion ", criterion)
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -2000,7 +2007,7 @@ mio_fit_primitives <- function(mesh, patch_data = "segment:patch", tolerance = 1
     as.numeric(max_iterations), as.character(region),
     if (is.null(seeds)) NULL else as.numeric(t(as.matrix(seeds))),
     as.numeric(feature_angle), as.numeric(rim_angle), as.character(output_region),
-    as.numeric(used - 1)
+    as.numeric(used - 1), as.numeric(crit - 1)
   ) -> res
   res$warnings <- mio_split_warnings_(res$warnings)
   res

@@ -5696,6 +5696,10 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.equal(sg.numPatches, 6);
     const fp = m.fitPrimitives(sg.mesh);
     assert.equal(fp.numPlane, 6);
+    const mz = m.fitPrimitives(sg.mesh, 'segment:patch', 1e-3, true, 0.9, undefined, 50, {
+        criterion: 'minimum_zone',
+    });
+    assert.equal(mz.numPlane, 6);
     const el = m.writeStepElements('/elements.step', fp.mesh);
     assert.equal(el.numPlanes, 6);
     assert.ok(m.FS.readFile('/elements.step', { encoding: 'utf8' }).includes('SHELL_BASED_SURFACE_MODEL'));

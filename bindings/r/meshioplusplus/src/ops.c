@@ -611,7 +611,7 @@ SEXP R_mio_segment(SEXP mesh, SEXP feature_angle, SEXP normal_tolerance,
 SEXP R_mio_fit_primitives(SEXP mesh, SEXP patch_data, SEXP tolerance, SEXP relative,
                           SEXP min_inlier_fraction, SEXP types, SEXP max_iterations,
                           SEXP region, SEXP seeds, SEXP feature_angle, SEXP rim_angle,
-                          SEXP output_region, SEXP used_points) {
+                          SEXP output_region, SEXP used_points, SEXP criterion) {
     mio_fit_primitives_ex_opts opts;
     mio_fit_primitives_report report;
     mio_mesh *out;
@@ -634,6 +634,7 @@ SEXP R_mio_fit_primitives(SEXP mesh, SEXP patch_data, SEXP tolerance, SEXP relat
     opts.rim_angle = mio_r_double(rim_angle, "rim_angle");
     opts.output_region = mio_r_opt_string(output_region);
     opts.used_points = (int32_t)mio_r_int(used_points, "used_points");
+    opts.criterion = (int32_t)mio_r_int(criterion, "criterion");
 
     out = mio_fit_primitives_ex(mio_r_mesh(mesh), &opts, &report);
     if (out == NULL) mio_r_fail("fit_primitives");

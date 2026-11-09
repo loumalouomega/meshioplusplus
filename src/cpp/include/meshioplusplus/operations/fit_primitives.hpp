@@ -180,6 +180,25 @@ enum class FitUsedPoints : std::int32_t {
     Sigma1 = 4,
 };
 
+/// The reference a fit is measured against (roadmap 7.1.4).
+enum class FitCriterion : std::int32_t {
+    /// The least-squares fit, as before roadmap 7.1.4.
+    LeastSquares = 0,
+    /// The narrowest zone holding every point (two parallel planes, two
+    /// concentric spheres, two coaxial cylinders): the Chebyshev reference
+    /// GD&T form tolerances are defined against.
+    MinimumZone = 1,
+    /// The smallest enclosing sphere or cylinder (a shaft's envelope).
+    MinCircumscribed = 2,
+    /// The largest sphere or cylinder no point lies inside (a hole's envelope).
+    MaxInscribed = 3,
+};
+
+/// `FitCriterion` from `"least_squares"`, `"minimum_zone"`,
+/// `"min_circumscribed"` or `"max_inscribed"`.
+/// @throws std::invalid_argument on any other name.
+MESHIOPLUSPLUS_API FitCriterion fit_criterion_from_name(const std::string& rName);
+
 /// What `fit_primitives` fits and accepts.
 struct FitPrimitivesOptions {
     /// The cell-data label naming each cell's patch; empty fits the whole
@@ -225,6 +244,13 @@ struct FitPrimitivesOptions {
     /// Which points the fit uses (roadmap 7.1.2): `Auto` is `Sigma3` in the
     /// region and seed modes and `All` in the patch mode.
     FitUsedPoints mUsedPoints = FitUsedPoints::Auto;
+    /// The reference (roadmap 7.1.4): after the least-squares fit is
+    /// accepted, a plane, sphere or cylinder patch is refitted under it on the
+    /// points used (`detail/zone_fit.hpp`); the parameters and the form
+    /// columns are then the criterion's, the residual columns the
+    /// least-squares fit's. A plane takes only the minimum zone; a cone or
+    /// torus keeps its least-squares fit, with a warning.
+    FitCriterion mCriterion = FitCriterion::LeastSquares;
 };
 
 /// The annotated mesh and how many patches took each type.

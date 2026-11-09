@@ -319,5 +319,30 @@ def test_the_twin_fits_a_region_and_refuses_seeds(monkeypatch):
 
     monkeypatch.setattr(mod, "core_op_declined", lambda exc, op: True)
     monkeypatch.setattr(_core, "fit_primitives", declined)
-    with pytest.raises(NotImplementedError, match="seeds and sigma trimming"):
+    with pytest.raises(NotImplementedError, match="seeds, sigma trimming"):
         mio.fit_primitives(mesh, seeds=[(1.0, 0.0, 1.0)])
+
+
+def test_minimum_zone_and_envelopes():
+    """Roadmap 7.1.4: the minimum zone is narrower than least squares, the
+    envelopes bracket the least-squares radius."""
+    _core = pytest.importorskip("meshioplusplus._core")
+    if not hasattr(_core, "fit_primitives"):
+        pytest.skip("needs the C++ core")
+    seg = mio.segment(mio.icosa_sphere(2.0, 3), method="primitive")
+    fits = {
+        c: mio.fit_primitives(seg, criterion=c)
+        for c in ("least_squares", "minimum_zone", "min_circumscribed", "max_inscribed")
+    }
+
+    def radius(m):
+        return float(m.field_data["fit:patch_params"][0, 6])
+
+    def form(m):
+        return float(m.field_data["fit:patch_form_error"][0])
+
+    assert radius(fits["min_circumscribed"]) == pytest.approx(2.0, abs=1e-9)
+    assert radius(fits["max_inscribed"]) <= radius(fits["least_squares"]) + 1e-12
+    assert form(fits["minimum_zone"]) <= form(fits["least_squares"]) + 1e-12
+    with pytest.raises(ValueError, match="criterion"):
+        mio.fit_primitives(seg, criterion="chebyshev")
