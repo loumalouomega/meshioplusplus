@@ -106,8 +106,10 @@ Mesh read_ip(const std::string& rPath) {
     Mesh mesh;
     NDArray pts(DType::Float64, {npoint, static_cast<std::size_t>(dim)});
     for (std::size_t i = 0; i < npoint; ++i)
-        for (int d = 0; d < dim; ++d)
-            pts.As<double>()[i * dim + d] = section(static_cast<std::size_t>(d), i);
+        for (int d = 0; d < dim; ++d) {
+            const double v = section(static_cast<std::size_t>(d), i);
+            pts.As<double>()[i * dim + d] = v;  // NOSONAR(cpp:S3519)
+        }
     mesh.AssignPoints(std::move(pts));
 
     for (int c = 0; c < ncomp; ++c) {

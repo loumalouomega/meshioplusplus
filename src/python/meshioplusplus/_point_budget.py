@@ -441,7 +441,7 @@ def select_points(
     first_local = None
     if method in ("farthest", "grid"):
         if start is None:
-            first_local = rng.randrange(m)  # NOSONAR(python:S2245): see above
+            first_local = rng.randrange(m)
         else:
             start = int(start)
             pos = int(np.searchsorted(candidates, start))
@@ -475,9 +475,7 @@ def select_points(
         schema["grid"] = spec.to_dict()
         schema["num_representatives"] = int(len(reps))
     else:
-        order = np.asarray(
-            rng.sample(range(m), count), dtype=np.int64  # NOSONAR(python:S2245)
-        )
+        order = np.asarray(rng.sample(range(m), count), dtype=np.int64)
     return PointBudget(candidates[order], method, count, schema)
 
 

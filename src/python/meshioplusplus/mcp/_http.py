@@ -271,7 +271,7 @@ def serve(
     info = app.state.meshioplusplus
     # The address uvicorn serves, plain HTTP: the default host is loopback,
     # and a non-loopback one gets the warning below.
-    url = f"http://{host}:{port}"  # NOSONAR(python:S5332): see above
+    url = f"http://{host}:{port}"
     print(f"meshio++ companion process at {url}")
     print(
         f"  dataset manager: connect to {url}"

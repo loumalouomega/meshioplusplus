@@ -141,7 +141,7 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
                 throw std::invalid_argument("meshio++: estimate_normals: point " +
                                             std::to_string(i) + " has a non-finite coordinate");
             p[i][k] = v;
-            pc[i * 3 + k] = v;
+            pc[i * 3 + k] = v;  // NOSONAR(cpp:S3519)
         }
 
     const std::size_t k = static_cast<std::size_t>(

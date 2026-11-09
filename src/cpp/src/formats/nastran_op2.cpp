@@ -25,6 +25,7 @@
 #include <cstring>
 #include <filesystem>
 #include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -338,6 +339,15 @@ constexpr Op2ElementSpec kOp2Elements[] = {
     {15401, 154, "CQUAD4", {14, 15}, 2, 2, 4, 1},
     {15301, 153, "CTRIA3", {13, 14}, 2, 2, 3, 1},
 };
+
+// Every layout count fits its size array: the record loop indexes `mSizes` by it.
+constexpr bool op2_element_sizes_fit() {
+    for (const Op2ElementSpec& e : kOp2Elements)
+        if (e.mNumSizes < 1 || e.mNumSizes > static_cast<int>(std::size(e.mSizes)))
+            return false;
+    return true;
+}
+static_assert(op2_element_sizes_fit(), "kOp2Elements: mNumSizes exceeds mSizes");
 
 // Element records without a cell type, named in the warning.
 constexpr std::tuple<int, int, const char*> kOp2NamedElements[] = {
@@ -653,7 +663,8 @@ std::vector<detail::NastranCardRows> op2_read_elements(
             scalar_ends ? 0 : detail::nastran_card_spec(spec->mCard)->mLinearNodes;
         const auto first = static_cast<std::size_t>(spec->mFirst);
         std::size_t chosen = 0;
-        for (int k = 0; k < spec->mNumSizes && chosen == 0; ++k) {
+        const int num_sizes = std::min(spec->mNumSizes, static_cast<int>(std::size(spec->mSizes)));
+        for (int k = 0; k < num_sizes && chosen == 0; ++k) {
             const auto size = static_cast<std::size_t>(spec->mSizes[k]);
             if (words.size() % size)
                 continue;
@@ -1362,7 +1373,9 @@ std::map<std::int64_t, std::string> op2_read_properties(const Op2Stream& rS,
                 break;
             }
             case Op2PropLayout::Sizes:
-                for (int s = 0; s < spec->mNumSizes; ++s) {
+                for (int s = 0;
+                     s < std::min(spec->mNumSizes, static_cast<int>(std::size(spec->mSizes)));
+                     ++s) {
                     const auto size = static_cast<std::size_t>(spec->mSizes[s]);
                     if (n % size)
                         continue;

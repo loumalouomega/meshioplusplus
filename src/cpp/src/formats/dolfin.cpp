@@ -98,7 +98,7 @@ Mesh read_dolfin(const std::string& rPath) {
         if (k >= nverts)
             throw ReadError("DOLFIN: vertex index out of range");
         for (int c = 0; c < dim; ++c)
-            pp[k * dim + c] = v.attribute(coord[c]).as_double();
+            pp[k * dim + c] = v.attribute(coord[c]).as_double();  // NOSONAR(cpp:S3519)
     }
     mesh.AssignPoints(std::move(pts));
 

@@ -522,7 +522,7 @@ class JobManager:
             os.path.join(directory, BEST_CHECKPOINT),
             os.path.join(directory, "final.mdlus"),
         ):
-            if candidate and os.path.isfile(candidate):  # NOSONAR: confined above
+            if candidate and os.path.isfile(candidate):
                 return candidate
         raise ValueError(f"{_ERR}job '{job_id}' has no checkpoint yet")
 
