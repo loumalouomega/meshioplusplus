@@ -32,6 +32,16 @@ paraview_plugin_version = meshioplusplus.__version__
 _formats = meshioplusplus.formats()
 meshio_extensions = [ext[1:] for ext in _formats["extensions"]]
 meshio_input_filetypes = ["automatic"] + _formats["readable"]
+meshio_output_filetypes = ["automatic"] + _formats["writable"]
+
+
+def _paraview_version():
+    """This ParaView's version, for the written file's provenance."""
+    try:
+        from paraview.modules.vtkRemotingCore import vtkPVVersion
+    except ImportError:
+        return "(unknown version)"
+    return vtkPVVersion.GetPVVersionFull()
 
 
 def _modified_callback(algorithm):
@@ -329,12 +339,21 @@ class MeshioPlusPlusReader(VTKPythonAlgorithmBase):
     support_reload=False,
 )
 @smproperty.input(name="Input", port_index=0)
-@smdomain.datatype(dataTypes=["vtkUnstructuredGrid"], composite_data_supported=False)
+@smdomain.datatype(
+    dataTypes=["vtkDataSet", "vtkCompositeDataSet"], composite_data_supported=True
+)
 class MeshioPlusPlusWriter(VTKPythonAlgorithmBase):
     def __init__(self):
+        # Any dataset (poly data, image data, ...) or a composite one, whose
+        # leaves are merged with their block names as cell regions.
         VTKPythonAlgorithmBase.__init__(
-            self, nInputPorts=1, nOutputPorts=0, inputType="vtkUnstructuredGrid"
+            self, nInputPorts=1, nOutputPorts=0, inputType="vtkDataObject"
         )
+        self._file_format = None
+        self._encoding = "default"
+        self._codec = "none"
+        self._float_format = ""
+        self._provenance = True
         self._filename = None
         self._all_steps = False
         self._times = []
@@ -347,6 +366,104 @@ class MeshioPlusPlusWriter(VTKPythonAlgorithmBase):
         if self._filename != filename:
             self._filename = filename
             self.Modified()
+
+    @smproperty.stringvector(name="WriteFormatInfo", information_only="1")
+    def GetWriteFormats(self):
+        return meshio_output_filetypes
+
+    @smproperty.stringvector(name="FileFormat", number_of_elements="1")
+    @smdomain.xml(
+        """
+        <StringListDomain name="list">
+            <RequiredProperties>
+                <Property name="WriteFormatInfo" function="StringInfo"/>
+            </RequiredProperties>
+        </StringListDomain>
+        """
+    )
+    def SetFileFormat(self, file_format):
+        file_format = None if file_format == "automatic" else file_format
+        if self._file_format != file_format:
+            self._file_format = file_format
+            self.Modified()
+
+    @smproperty.stringvector(name="EncodingInfo", information_only="1")
+    def GetEncodings(self):
+        return list(_paraview.ENCODINGS)
+
+    @smproperty.stringvector(
+        name="Encoding", number_of_elements="1", default_values="default"
+    )
+    @smdomain.xml(
+        """
+        <StringListDomain name="list">
+            <RequiredProperties>
+                <Property name="EncodingInfo" function="StringInfo"/>
+            </RequiredProperties>
+        </StringListDomain>
+        """
+    )
+    def SetEncoding(self, value):
+        if self._encoding != value:
+            self._encoding = value
+            self.Modified()
+
+    @smproperty.stringvector(name="CodecInfo", information_only="1")
+    def GetCodecs(self):
+        return list(_paraview.CODECS)
+
+    @smproperty.stringvector(
+        name="Codec", number_of_elements="1", default_values="none"
+    )
+    @smdomain.xml(
+        """
+        <StringListDomain name="list">
+            <RequiredProperties>
+                <Property name="CodecInfo" function="StringInfo"/>
+            </RequiredProperties>
+        </StringListDomain>
+        """
+    )
+    def SetCodec(self, value):
+        if self._codec != value:
+            self._codec = value
+            self.Modified()
+
+    @smproperty.stringvector(
+        name="FloatFormat", number_of_elements="1", default_values=""
+    )
+    def SetFloatFormat(self, value):
+        # A printf-style float format for text formats, e.g. ".6e".
+        if self._float_format != (value or ""):
+            self._float_format = value or ""
+            self.Modified()
+
+    @smproperty.intvector(name="Provenance", default_values="1")
+    @smdomain.xml('<BooleanDomain name="bool"/>')
+    def SetProvenance(self, value):
+        # Record ParaView as the source in the file's provenance block.
+        if self._provenance != bool(value):
+            self._provenance = bool(value)
+            self.Modified()
+
+    def _write_kwargs(self):
+        return _paraview.write_kwargs(
+            self._filename,
+            self._file_format,
+            self._encoding,
+            self._codec,
+            self._float_format,
+        )
+
+    def _provenance_scope(self):
+        return _paraview.provenance_scope(
+            f"ParaView {_paraview_version()}" if self._provenance else None,
+            self._filename,
+            self._file_format,
+            self._encoding,
+            self._codec,
+            self._float_format,
+        )
 
     @smproperty.intvector(name="WriteTimeSteps", default_values="0")
     @smdomain.xml('<BooleanDomain name="bool"/>')
@@ -371,19 +488,22 @@ class MeshioPlusPlusWriter(VTKPythonAlgorithmBase):
         return 1
 
     def RequestData(self, request, inInfoVec, outInfoVec):
-        mesh = _paraview.mesh_from_grid(vtkUnstructuredGrid.GetData(inInfoVec[0]))
+        mesh = _paraview.mesh_from_data_object(vtkDataObject.GetData(inInfoVec[0]))
+        kwargs = self._write_kwargs()
         if len(self._times) < 2:
-            meshioplusplus.write(self._filename, mesh)
+            with self._provenance_scope():
+                meshioplusplus.write(self._filename, mesh, **kwargs)
             return 1
         # Every step, one pass of the pipeline each (CONTINUE_EXECUTING): a
         # one-file-per-step format is written as each step arrives; a format
         # holding a series in one file is written once the last one has.
-        target = _paraview.series_path(self._filename)
+        target = _paraview.series_path(self._filename, self._file_format)
         t, n = self._times[self._index], len(self._times)
         if target == str(self._filename):
             self._steps.append((t, mesh))
         else:
-            _paraview.write_one_step(target, self._index, n, t, mesh)
+            with self._provenance_scope():
+                _paraview.write_one_step(target, self._index, n, t, mesh, **kwargs)
         executive = self.GetExecutive()
         if self._index + 1 < n:
             self._index += 1
@@ -391,7 +511,8 @@ class MeshioPlusPlusWriter(VTKPythonAlgorithmBase):
             return 1
         request.Remove(executive.CONTINUE_EXECUTING())
         if self._steps:
-            meshioplusplus.write_sequence(self._filename, self._steps)
+            with self._provenance_scope():
+                meshioplusplus.write_sequence(self._filename, self._steps, **kwargs)
         self._index, self._steps = 0, []
         return 1
 

@@ -823,3 +823,167 @@ def fill_collection(collection, mesh, op=READER_OP):
         assembly.AddDataSetIndex(node, index)
     collection.SetDataAssembly(assembly)
     return collection
+
+
+# --------------------------------------------------------------------------- #
+# the writer's inputs and options (roadmap 6.7)                               #
+# --------------------------------------------------------------------------- #
+#: The writer's Encoding and Codec values: the pipeline's Output keys.
+ENCODINGS = ("default", "ascii", "binary", "raw_appended")
+CODECS = ("none", "zlib", "lz4", "zstd", "lzf")
+
+
+def write_kwargs(
+    path, file_format=None, encoding="default", codec="none", float_format=""
+):
+    """``meshioplusplus.write`` keywords for the writer's properties.
+
+    Encoding, codec and float format go through the settings pipeline's
+    ``Output`` mapping (``_pipeline._write_kwargs_from``, over
+    ``mcp._tools._variant_kwargs``, the one owner of each format's spelling),
+    so a combination the format cannot take is refused by name.
+    """
+    from ._pipeline import _write_kwargs_from
+
+    out = {"Encoding": encoding}
+    if file_format:
+        out["Format"] = file_format
+    if codec and codec != "none":
+        out["Codec"] = codec
+    if float_format:
+        out["FloatFormat"] = float_format
+    kwargs = _write_kwargs_from(out, path)
+    if file_format:
+        kwargs["file_format"] = file_format
+    return kwargs
+
+
+def provenance_scope(
+    source, path, file_format=None, encoding="", codec="", float_format=""
+):
+    """A provenance scope naming ``source`` (e.g. ``"ParaView 6.1.0"``) as
+    where the written mesh came from, or a null context for ``None``."""
+    import contextlib
+    import pathlib
+
+    from . import _provenance
+    from ._helpers import _write_format_for_path
+
+    if not source:
+        return contextlib.nullcontext()
+
+    @contextlib.contextmanager
+    def _scope():
+        with _provenance.scope(_provenance.Mode.BEST_EFFORT) as s:
+            _provenance.set_source(source, "paraview")
+            fmt = file_format or _write_format_for_path(pathlib.Path(str(path))) or ""
+            _provenance.set_target(
+                fmt,
+                "" if encoding == "default" else encoding,
+                "" if codec == "none" else codec,
+                float_format,
+            )
+            yield s
+
+    return _scope()
+
+
+def _leaves(data_object):
+    """``[(name, vtkDataSet)]`` of a dataset or the leaves of a composite one,
+    named by the composite's NAME metadata (``block_<i>`` without one)."""
+    from vtkmodules.vtkCommonDataModel import vtkCompositeDataSet, vtkDataSet
+
+    if isinstance(data_object, vtkDataSet):
+        return [(None, data_object)]
+    leaves = []
+    iterator = data_object.NewIterator()
+    iterator.UnRegister(None)
+    iterator.InitTraversal()
+    while not iterator.IsDoneWithTraversal():
+        leaf = iterator.GetCurrentDataObject()
+        if isinstance(leaf, vtkDataSet) and leaf.GetNumberOfPoints():
+            name = None
+            meta = (
+                iterator.GetCurrentMetaData() if iterator.HasCurrentMetaData() else None
+            )
+            if meta is not None and meta.Has(vtkCompositeDataSet.NAME()):
+                name = meta.Get(vtkCompositeDataSet.NAME())
+            leaves.append((name or f"block_{len(leaves)}", leaf))
+        iterator.GoToNextItem()
+    return leaves
+
+
+def _unstructured(dataset):
+    """``dataset`` as a ``vtkUnstructuredGrid``: itself, or through
+    ``vtkAppendFilter`` (poly data, image data, structured grids, ...)."""
+    from vtkmodules.vtkCommonDataModel import vtkUnstructuredGrid
+    from vtkmodules.vtkFiltersCore import vtkAppendFilter
+
+    if isinstance(dataset, vtkUnstructuredGrid):
+        return dataset
+    append = vtkAppendFilter()
+    append.AddInputData(dataset)
+    append.Update()
+    return append.GetOutput()
+
+
+def _blocks_by_source(mesh, source):
+    """Cut each cell block into its runs of one source leaf, so each leaf's
+    cells are whole blocks (a format such as Gmsh 4.1 records a group per
+    block). Consecutive pieces of a block keep every cell's global index, so
+    the regions need no remapping. Returns ``(mesh, source per new block)``."""
+    from ._mesh import CellBlock
+
+    cells, cell_data, new_source = [], {name: [] for name in mesh.cell_data}, []
+    for b, block in enumerate(mesh.cells):
+        sid = np.asarray(source[b]).reshape(-1)
+        cuts = np.concatenate([[0], np.flatnonzero(np.diff(sid)) + 1, [len(sid)]])
+        for start, stop in zip(cuts[:-1], cuts[1:]):
+            cells.append(CellBlock(block.type, block.data[start:stop]))
+            new_source.append(sid[start:stop])
+            for name, values in mesh.cell_data.items():
+                cell_data[name].append(np.asarray(values[b])[start:stop])
+    if len(cells) == len(mesh.cells):
+        return mesh, source
+    mesh.cells = cells
+    mesh.cell_data = cell_data
+    return mesh, new_source
+
+
+def mesh_from_data_object(data_object, op=WRITER_OP):
+    """A mesh from any ``vtkDataSet`` or composite dataset.
+
+    A composite's leaves are merged with :func:`meshioplusplus.merge` (as the
+    Blender export merges objects), and each leaf's cells become a cell
+    region named after its block, so a multiblock written to Gmsh has one
+    physical group per block.
+    """
+    from ._merge import merge
+    from ._regions import Region
+
+    leaves = _leaves(data_object)
+    if not leaves:
+        from ._mesh import Mesh
+
+        return Mesh(np.zeros((0, 3)), [])
+    meshes = [mesh_from_grid(_unstructured(ds), op) for _, ds in leaves]
+    if leaves[0][0] is None:
+        return meshes[0]
+    if len(meshes) == 1:
+        merged = meshes[0]
+        source = [np.zeros(len(b), dtype=np.int64) for b in merged.cells]
+    else:
+        merged = merge(meshes)
+        source = merged.cell_data.pop("source_mesh_id")
+    merged, source = _blocks_by_source(merged, source)
+    ids = np.concatenate([np.asarray(s).reshape(-1) for s in source])
+    dims = np.concatenate(
+        [np.full(len(b), b.dim, dtype=np.int64) for b in merged.cells]
+    )
+    regions = list(merged.regions)
+    for i, (name, _) in enumerate(leaves):
+        entries = np.flatnonzero(ids == i)
+        dim = int(dims[entries].max()) if len(entries) else -1
+        regions.append(Region(name, "cell", entries, dim, i + 1))
+    merged.regions = regions
+    return merged

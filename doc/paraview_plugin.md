@@ -61,6 +61,21 @@ After loading, every extension meshio++ knows appears in ParaView's file dialogs
 | **AddOns** | Information only: whether the OpenCASCADE, Netgen and MMG add-ons are loaded (`occt: yes`, ...), so a STEP read that fails for want of OpenCASCADE explains itself. |
 | **Refresh** | Plans the time steps again (see below). |
 
+## Writer properties
+
+The writer takes any dataset ParaView makes, not only unstructured grids: poly data, image data and structured grids become unstructured through `vtkAppendFilter`, and a composite dataset (a multiblock, a partitioned collection) has its leaves merged with [`merge`](./merge.md), as the [Blender add-on](./blender.md)'s export merges objects, each leaf's cells a cell region named after its block (whole cell blocks of their own, so a format such as Gmsh 4.1 keeps one physical group per block).
+
+| Property | What it does |
+| --- | --- |
+| **FileFormat** | The format, or `automatic` to infer it from the file name. |
+| **Encoding** | `default`, `ascii`, `binary` or `raw_appended`. |
+| **Codec** | `none`, `zlib`, `lz4`, `zstd` (the VTK XML formats' block codecs) or `lzf` (PCD). |
+| **FloatFormat** | A printf-style float format for the text formats, e.g. `.6e`. |
+| **Provenance** | On by default: the file's [provenance](./provenance.md) block names ParaView and its version as the source, with the target format and the options above. |
+| **WriteTimeSteps** | Every time step rather than the current one (see below). |
+
+Encoding, codec and float format take the [settings pipeline](./pipeline.md)'s `Output` mapping, so each format's spelling has one owner and a combination the format cannot take (an ASCII file with a codec, say) is refused by name.
+
 ## Time steps
 
 A file that holds several steps (every format [`read_metadata`](./sequences.md) reports `time_values` for: XDMF, Exodus, VTKHDF, CalculiX `frd`, ...) shows them on ParaView's time toolbar, and each time reads its step: the last step at or before the time asked for. Selecting a file series in the file dialog (`out_0.vtu`, `out_1.vtu`, ...) opens it as one reader with a step per file, timed as [sequences](./sequences.md) time a series: a number in the file name, else the file's own `meshio:time`, else its position. The plan of steps is cached per file and its size and modification time, so *File → Reload Files* on a rewritten file plans it again, and the reader's **Refresh** button drops every cached plan.

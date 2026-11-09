@@ -404,3 +404,32 @@ def test_regions_as_blocks_in_paraview(tmp_path):
     assert seen["class"] == "vtkPartitionedDataSetCollection"
     assert seen["blocks"]["solid"] == 2
     assert seen["blocks"]["bottom"] == 1
+
+
+_SOURCES = """
+stl, msh, vtu = args
+sphere = pvs.Sphere()
+meshioWriter(Input=sphere, FileName=stl).UpdatePipeline()
+left = pvs.UnstructuredCellTypes()
+right = pvs.UnstructuredCellTypes()
+group = pvs.GroupDatasets(Input=[left, right])
+group.BlockNames = ["left", "right"]
+meshioWriter(Input=group, FileName=msh).UpdatePipeline()
+meshioWriter(Input=sphere, FileName=vtu, Encoding="ascii").UpdatePipeline()
+print(json.dumps({"sphere": servermanager.Fetch(sphere).GetNumberOfCells()}))
+"""
+
+
+def test_writer_inputs_and_options(tmp_path):
+    """roadmap 6.7: ParaView's Sphere() source writes to .stl, a two-block
+    multiblock writes .msh with a physical group per block, Encoding reaches
+    the writer, and the file names ParaView as its source."""
+    stl, msh, vtu = (tmp_path / n for n in ("sphere.stl", "blocks.msh", "s.vtu"))
+    seen = _run_pvpython(tmp_path, _SOURCES, stl, msh, vtu)
+    assert sum(len(b) for b in meshioplusplus.read(stl).cells) == seen["sphere"]
+    names = {r.name for r in meshioplusplus.read(msh).regions if r.kind == "cell"}
+    assert {"left", "right"} <= names
+    assert b'format="ascii"' in vtu.read_bytes()
+    assert any(
+        "ParaView" in line for line in meshioplusplus.read_metadata(vtu)["provenance"]
+    )

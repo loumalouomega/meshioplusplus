@@ -559,3 +559,107 @@ def test_regions_as_blocks(tmp_path):
 def test_region_pieces_of_a_mesh_without_regions():
     mesh = _step_meshes()[0][1]
     assert [(g, n) for g, n, _ in _paraview.region_pieces(mesh)] == [("mesh", "mesh")]
+
+
+# --------------------------------------------------------------------------- #
+# the writer's inputs and options (roadmap 6.7)                               #
+# --------------------------------------------------------------------------- #
+def _lz4_available():
+    from meshioplusplus import _core
+
+    if getattr(_core, "__has_lz4__", False):
+        return True
+    try:
+        import lz4.block  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def test_write_kwargs_go_through_the_pipeline_mapping(tmp_path):
+    vtu = tmp_path / "x.vtu"
+    assert _paraview.write_kwargs(vtu) == {}
+    assert _paraview.write_kwargs(vtu, codec="lz4") == {
+        "binary": True,
+        "compression": "lz4",
+    }
+    assert _paraview.write_kwargs(vtu, encoding="ascii", float_format=".6e") == {
+        "binary": False,
+        "float_fmt": ".6e",
+    }
+    assert _paraview.write_kwargs(tmp_path / "x.dat", "vtu", "binary") == {
+        "binary": True,
+        "file_format": "vtu",
+    }
+    with pytest.raises(ValueError, match="ascii"):
+        _paraview.write_kwargs(vtu, encoding="ascii", codec="zlib")
+
+
+def test_lz4_reaches_the_vtu_header(tmp_path):
+    """The roadmap's probe: Codec=lz4 puts vtkLZ4DataCompressor in the header."""
+    if not _lz4_available():
+        pytest.skip("no lz4 in this build")
+    path = tmp_path / "x.vtu"
+    meshioplusplus.write(
+        path, _wedge_mesh(), **_paraview.write_kwargs(path, codec="lz4")
+    )
+    assert b"vtkLZ4DataCompressor" in path.read_bytes()[:400]
+
+
+def test_provenance_names_paraview(tmp_path):
+    path = tmp_path / "x.vtu"
+    with _paraview.provenance_scope("ParaView 6.1.0", path):
+        meshioplusplus.write(path, _wedge_mesh())
+    lines = meshioplusplus.read_metadata(path)["provenance"]
+    assert any("ParaView 6.1.0" in line for line in lines)
+    with _paraview.provenance_scope(None, path):
+        meshioplusplus.write(path, _wedge_mesh())
+    assert not any(
+        "ParaView" in line for line in meshioplusplus.read_metadata(path)["provenance"]
+    )
+
+
+def test_poly_data_input():
+    """The roadmap's probe without ParaView: a sphere source (poly data)
+    becomes triangles."""
+    sphere = vtk.vtkSphereSource()
+    sphere.Update()
+    mesh = _paraview.mesh_from_data_object(sphere.GetOutput())
+    assert [(b.type, len(b)) for b in mesh.cells] == [
+        ("triangle", sphere.GetOutput().GetNumberOfCells())
+    ]
+    assert mesh.regions == []
+
+
+def _block(offset):
+    return _paraview.grid_from_mesh(
+        meshioplusplus.Mesh(
+            np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]) + offset,
+            [("tetra", [[0, 1, 2, 3]])],
+            cell_data={"c": [np.array([offset])]},
+        )
+    )
+
+
+def test_a_multiblock_becomes_one_mesh_with_a_region_per_block(tmp_path):
+    """The roadmap's probe: a two-block multiblock writes .msh with two
+    physical groups."""
+    blocks = vtk.vtkMultiBlockDataSet()
+    for i, name in enumerate(["left", "right"]):
+        blocks.SetBlock(i, _block(2.0 * i))
+        blocks.GetMetaData(i).Set(vtk.vtkCompositeDataSet.NAME(), name)
+    mesh = _paraview.mesh_from_data_object(blocks)
+    assert [(b.type, len(b)) for b in mesh.cells] == [("tetra", 1), ("tetra", 1)]
+    assert [(r.name, r.kind, list(r.entries)) for r in mesh.regions] == [
+        ("left", "cell", [0]),
+        ("right", "cell", [1]),
+    ]
+    assert [list(c) for c in mesh.cell_data["c"]] == [[0.0], [2.0]]
+    path = tmp_path / "blocks.msh"
+    meshioplusplus.write(path, mesh)
+    groups = {
+        r.name: len(r.entries)
+        for r in meshioplusplus.read(path).regions
+        if r.kind == "cell" and r.dim == 3
+    }
+    assert groups == {"left": 1, "right": 1}
