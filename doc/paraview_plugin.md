@@ -41,12 +41,24 @@ From `pvpython` or `pvbatch`, `paraview.simple.LoadPlugin(path, ns=globals())` l
 
 After loading, every extension meshio++ knows appears in ParaView's file dialogs. The reader's **FileFormat** property picks the format explicitly (`automatic` infers it from the file), and the file is exposed as a `vtkUnstructuredGrid` with its point, cell and field data. The writer saves an unstructured grid through `meshioplusplus.write`, choosing the format from the file name.
 
+## What crosses into ParaView
+
+The reader hands ParaView the mesh's points (padded to three columns when the mesh is 1-D or 2-D), its cells, and its point, cell and field data, in one vectorised pass with no per-cell Python loop:
+
+- Every cell keeps meshio++'s node order, which is VTK's: a linear `wedge` (Gmsh's prism) is VTK's wedge as it stands, so every wedge ParaView shows has a positive volume and a wedge made or edited in ParaView is written the right way out (meshio++'s VTK writers used to permute it, which turned it inside out; see the [changelog](https://github.com/loumalouomega/meshioplusplus/blob/main/CHANGELOG.md)).
+- A block of uniform n-gons (`polygon3`, `polygon5`, ..., the boundary blocks the OpenFOAM, Fluent and CGNS readers produce) is a `VTK_POLYGON` block.
+- The writer keeps the grid's cell order: each run of consecutive cells of one type (and, for polygons, one size) becomes a cell block, so a mixed grid can come back as several blocks of one type rather than one block per type.
+- A point or cell array meshio++ cannot hold (a `vtkStringArray`, say) is skipped with a warning naming it; a string array of field data (the QA records of ParaView's Exodus reader) is kept as a string array.
+
+## Architecture: the payload layer
+
+The plugin file declares the ParaView proxies and nothing else. The conversions live in `meshioplusplus._paraview`, which is the [Blender add-on](./blender.md#architecture-the-pure-payload-layer)'s pattern: the mesh-to-VTK direction is the payload `to_pyvista` uses (`_interop._to_vtk_payload`), the VTK-to-mesh direction is the VTU reader's `_vtk_common.vtk_cells_from_data`, and the two VTK adapters over them (`grid_from_mesh`, `mesh_from_grid`) import VTK inside each function. They need VTK but not ParaView, so `tests/python/test_paraview_payload.py` runs them with the PyPI `vtk` wheel in the default test matrix.
+
 ## Limitations
 
 - Polyhedron blocks are skipped by the reader (the legacy cell layout the plugin builds has no face stream); a message on ParaView's output names each skipped block.
-- The writer groups cells by VTK type and node count, so a mesh's cell order is not preserved across a write.
 - Optional format dependencies (`h5py`, `netCDF4`, ...) must be installed in ParaView's Python as well.
 
 ## Testing
 
-`tests/python/test_paraview_plugin.py` runs `pvpython` in a subprocess: it loads the plugin, reads a file through the reader, writes it back through the writer, and reads the result with meshio++. It is skipped when `pvpython` is absent or runs a different Python than the build under test; CI runs it in its `paraview-plugin` job against conda-forge ParaView.
+`tests/python/test_paraview_payload.py` tests the conversions with the PyPI `vtk` wheel and no ParaView. `tests/python/test_paraview_plugin.py` runs `pvpython` in a subprocess: it loads the plugin, reads files through the reader (wedges must have positive volumes in ParaView's `CellSize`, `polygon5` blocks and 1-D meshes must keep their cells), writes them back through the writer, and reads the result with meshio++. It is skipped when `pvpython` is absent or runs a different Python than the build under test; CI runs it in its `paraview-plugin` job against conda-forge ParaView.

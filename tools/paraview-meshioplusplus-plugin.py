@@ -1,6 +1,10 @@
-import sys
+"""meshio++ in ParaView: a reader and a writer of unstructured grids.
 
-import numpy as np
+Only the proxy declarations live here; every conversion is in
+``meshioplusplus._paraview``, which is tested without ParaView. See
+doc/paraview_plugin.md.
+"""
+
 from paraview.util.vtkAlgorithm import (
     VTKPythonAlgorithmBase,
     smdomain,
@@ -8,18 +12,15 @@ from paraview.util.vtkAlgorithm import (
     smproperty,
     smproxy,
 )
-from vtkmodules.numpy_interface import dataset_adapter as dsa
-from vtkmodules.util.numpy_support import vtk_to_numpy
 from vtkmodules.vtkCommonDataModel import vtkUnstructuredGrid
 
 import meshioplusplus
+from meshioplusplus import _paraview
 
 paraview_plugin_version = meshioplusplus.__version__
-vtk_to_meshio_type = meshioplusplus._vtk_common.vtk_to_meshio_type
-meshio_to_vtk_type = meshioplusplus._vtk_common.meshio_to_vtk_type
-meshio_input_filetypes = list(meshioplusplus._helpers.reader_map.keys())
-meshio_extensions = [ext[1:] for ext in meshioplusplus.extension_to_filetypes.keys()]
-meshio_input_filetypes = ["automatic"] + meshio_input_filetypes
+_formats = meshioplusplus.formats()
+meshio_extensions = [ext[1:] for ext in _formats["extensions"]]
+meshio_input_filetypes = ["automatic"] + _formats["readable"]
 
 
 @smproxy.reader(
@@ -70,59 +71,8 @@ class MeshioReader(VTKPythonAlgorithmBase):
             self.Modified()
 
     def RequestData(self, request, inInfoVec, outInfoVec):
-        output = dsa.WrapDataObject(vtkUnstructuredGrid.GetData(outInfoVec))
-
-        # Use meshio++ to read the mesh
         mesh = meshioplusplus.read(self._filename, self._file_format)
-        points, cells = mesh.points, mesh.cells
-
-        # Points
-        if points.shape[1] == 2:
-            points = np.hstack([points, np.zeros((len(points), 1))])
-        output.SetPoints(points)
-
-        # Cells, in VTK's legacy (count, ids...) layout. Ragged polygon rows
-        # are written one by one; a block VTK has no id for (polyhedra, which
-        # need a face stream) is skipped with a message rather than failing
-        # the whole read.
-        cell_types, cell_offsets, cell_conn, kept = [], [], [], []
-        size = 0
-        for block in cells:
-            vtk_type = meshio_to_vtk_type.get(block.type)
-            if vtk_type is None or block.type.startswith("polyhedron"):
-                print(
-                    f"meshio++ reader: skipping '{block.type}' cells", file=sys.stderr
-                )
-                kept.append(False)
-                continue
-            kept.append(True)
-            for row in block.data:
-                row = np.asarray(row, dtype=np.int64)
-                cell_types.append(vtk_type)
-                cell_offsets.append(size)
-                cell_conn.append(len(row))
-                cell_conn.extend(row.tolist())
-                size += 1 + len(row)
-        output.SetCells(
-            np.asarray(cell_types, dtype=np.ubyte),
-            np.asarray(cell_offsets, dtype=np.int64),
-            np.asarray(cell_conn, dtype=np.int64),
-        )
-
-        # Point data
-        for name, array in mesh.point_data.items():
-            output.PointData.append(array, name)
-
-        # Cell data, for the blocks that became cells
-        for name, data in mesh.cell_data.items():
-            parts = [np.asarray(d) for d, k in zip(data, kept) if k]
-            if parts:
-                output.CellData.append(np.concatenate(parts), name)
-
-        # Field data
-        for name, array in mesh.field_data.items():
-            output.FieldData.append(array, name)
-
+        _paraview.fill_grid(vtkUnstructuredGrid.GetData(outInfoVec), mesh)
         return 1
 
 
@@ -149,62 +99,8 @@ class MeshioWriter(VTKPythonAlgorithmBase):
             self.Modified()
 
     def RequestData(self, request, inInfoVec, outInfoVec):
-        mesh = dsa.WrapDataObject(vtkUnstructuredGrid.GetData(inInfoVec[0]))
-
-        # Read points
-        points = np.asarray(mesh.GetPoints())
-
-        # Cells, grouped by (VTK type, node count) in first-seen order: a
-        # meshio++ cell block is one type with one row length.
-        grid = mesh.VTKObject
-        types = (
-            vtk_to_numpy(grid.GetCellTypesArray()) if grid.GetNumberOfCells() else []
-        )
-        array = grid.GetCells()
-        offsets = vtk_to_numpy(array.GetOffsetsArray())
-        conn = vtk_to_numpy(array.GetConnectivityArray())
-        groups = {}
-        for c, vtk_type in enumerate(types):
-            row = conn[offsets[c] : offsets[c + 1]]
-            groups.setdefault((int(vtk_type), len(row)), []).append((c, row))
-        cells, members = [], []
-        for (vtk_type, _), rows in groups.items():
-            cells.append(
-                meshioplusplus.CellBlock(
-                    vtk_to_meshio_type[vtk_type], np.array([r for _, r in rows])
-                )
-            )
-            members.append(np.array([c for c, _ in rows]))
-
-        # Read point and field data
-        # Adapted from test/legacy_reader.py
-        def _read_data(data):
-            out = {}
-            for i in range(data.VTKObject.GetNumberOfArrays()):
-                name = data.VTKObject.GetArrayName(i)
-                array = np.asarray(data.GetArray(i))
-                out[name] = array
-            return out
-
-        point_data = _read_data(mesh.GetPointData())
-        field_data = _read_data(mesh.GetFieldData())
-
-        # Cell data, split the same way as the cells
-        cell_data = {
-            name: [array[m] for m in members]
-            for name, array in _read_data(mesh.GetCellData()).items()
-        }
-
-        meshioplusplus.write(
-            self._filename,
-            meshioplusplus.Mesh(
-                points,
-                cells,
-                point_data=point_data,
-                cell_data=cell_data,
-                field_data=field_data,
-            ),
-        )
+        grid = vtkUnstructuredGrid.GetData(inInfoVec[0])
+        meshioplusplus.write(self._filename, _paraview.mesh_from_grid(grid))
         return 1
 
     def Write(self):

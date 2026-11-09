@@ -21,14 +21,6 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 
 ---
 
-## 1. Correctness debts {#correctness-debts}
-
-*Admission: behaviour that loses data, mis-orients cells, does not terminate on valid input or fails silently, whatever the size of the fix. The item was found while auditing the ParaView plugin for [§6](#paraview-plugin) (November 2026), and closes with its payload layer (6.1). Its twin, 1.1 (wedges inside out), closed when the audit turned out to have it backwards: VTK's own reference wedge is Gmsh's prism, and the permutation meshio++ applied on the way to VTK was the defect, removed from the library (ABI 44).*
-
-- **1.2 The ParaView plugin drops `polygonN` blocks and 1-D points.** A block of uniform n-gons is named `polygon3`, `polygon5`, ... (the boundary blocks the OpenFOAM, Fluent and CGNS readers produce), and the reader looks the name up in `meshio_to_vtk_type`, which knows only `polygon`: the block is skipped with one line on standard error, and its cell data with it. The reader also pads only two-column points to three, so a 1-D mesh reaches `SetPoints` with one column. `_interop._vtk_type_id` maps every `polygon*` name to `VTK_POLYGON` and `_to_vtk_payload` pads points of any width, so the payload layer of 6.1 closes this. Probe: a mesh with a `polygon5` block, and a 1-D line mesh, read through the plugin with the cell counts `meshioplusplus.read` gives. **S**
-
----
-
 ## 2. Format reach {#format-reach}
 
 *Admission: a format a simulation or physics-ML workflow actually exchanges; a shipped format's missing half is not a roadmap item, because every registered format reads and writes ([decisions](#non-goals-and-decisions-taken)). "Exchanges" means a file that crosses a tool boundary in a real pipeline (mesher → solver, solver → post-processor, solver → training set), not a format that merely exists. Every item names the consumer on the other side of the file.*
@@ -177,9 +169,8 @@ The sanitizer leg, the reader fuzzing, the format conformance matrix, the proper
 
 ## 6. ParaView plugin {#paraview-plugin}
 
-*Admission: bringing what the library does into ParaView, where much of its output is post-processed. An item mirrors a library feature through the public Python API and never re-implements one, and an operation ParaView already has natively is not wrapped. Audited in November 2026 against `tools/paraview-meshioplusplus-plugin.py`, a reader and a writer of unstructured grids in about 200 lines ([ParaView plugin](./paraview_plugin.md)). The [Blender add-on](./blender.md) is the pattern: its import toggles, export format choice, pure payload layer and bundled zips are mirrored below. Its remaining defect is [§1](#correctness-debts).*
+*Admission: bringing what the library does into ParaView, where much of its output is post-processed. An item mirrors a library feature through the public Python API and never re-implements one, and an operation ParaView already has natively is not wrapped. Audited in November 2026 against `tools/paraview-meshioplusplus-plugin.py`, a reader and a writer of unstructured grids in about 200 lines ([ParaView plugin](./paraview_plugin.md)). The [Blender add-on](./blender.md) is the pattern: its import toggles, export format choice, pure payload layer and bundled zips are mirrored below.*
 
-- **6.1 A pure payload layer.** Move the conversion out of the plugin into `meshioplusplus._paraview`, built on `_interop._to_vtk_payload` (vectorised, every `polygon*` mapped, points of any width padded) and `_vtk_common.vtk_cells_from_data` (cells split into runs in their original order), and test it in the default CI matrix without ParaView, as `_blender.py`'s payload is ([architecture](./blender.md#architecture-the-pure-payload-layer)); the plugin keeps only the VTK calls. It closes 1.2, removes the per-cell Python loops of both directions (about 2 s and 150 MB of lists for a million tetrahedra, estimated), keeps the cell order across a write (a limitation the plugin page lists today), and skips string and other non-numeric arrays with a warning where `np.asarray` returns `None` for them now (verify first on ParaView's Exodus output, which carries QA records). Probe: the payload tests fail on today's `polygonN` handling. **S**
 - **6.2 Polyhedra, both ways.** The reader skips polyhedron blocks (the legacy cell layout it builds has no face stream), and so does `_to_vtk_payload`, which drops them for `to_pyvista` too. Build the face stream from the CSR rows the [polyhedron kernel](./polyhedra.md) already holds, and read it back in the writer; fixing the shared payload fixes `to_pyvista` with it. VTK's polyhedron API changed in 9.4, so gate per version and test per ParaView release. Probe: `tests/python/meshes/vtu/two_pieces_polyhedron.vtu` has the same cell count through the plugin as through `meshioplusplus.read`. **M**
 - **6.3 Higher-order cells.**
   - **6.3.1 Lagrange and Bézier degrees.** Pass `HigherOrderDegrees` for the arbitrary-order VTK Lagrange and Bézier cells and the rational weights of the Bézier ones ([cell types](./cell_types.md)), which the plugin drops today. **S**
@@ -219,7 +210,7 @@ After the installed-header pass (November 2026, ABI 42: the last three items, wi
 
 ## 8. SonarCloud findings {#sonarcloud-findings}
 
-*Admission: what SonarCloud's rules report beyond duplication, grouped by rule so a rule can be closed in one pass. A finding is either fixed, or shown to be a false positive and the rule narrowed for that pattern ([static analysis](./static_analysis.md#false-positives)), so the next scan does not report it again; a finding confirmed as a defect that loses data or crashes moves to [§1](#correctness-debts). The live list is on [sonarcloud.io](https://sonarcloud.io/project/issues?id=loumalouomega_meshioplusplus).*
+*Admission: what SonarCloud's rules report beyond duplication, grouped by rule so a rule can be closed in one pass. A finding is either fixed, or shown to be a false positive and the rule narrowed for that pattern ([static analysis](./static_analysis.md#false-positives)), so the next scan does not report it again; a finding confirmed as a defect that loses data or crashes opens a *Correctness debts* section at the top, as [how this file works](#how-this-file-works) says. The live list is on [sonarcloud.io](https://sonarcloud.io/project/issues?id=loumalouomega_meshioplusplus).*
 
 The first analysis ran on the default *Sonar way* profile, with no coverage: 416,477 lines; 110 code smells (maintainability A); 226 bugs (reliability E, 121 of them blocker); 46 vulnerabilities (security E). The SonarCloud pass (November 2026, ABI 41) worked every item of the list it made, from the 376 issues the scan of `60825af` held, and closed them in code where the behaviour stays the same:
 
@@ -307,12 +298,11 @@ Recorded so they are not re-proposed as gaps.
 
 Open work only; what shipped is in `CHANGELOG.md`.
 
-1. **Correctness debts ([§1](#correctness-debts))** — 1.2 closes with the ParaView plugin's payload layer (6.1), a few days' work, so take it first.
-2. **Format reach ([§2](#format-reach))** — the checks against the vendor tools, as licences or files the tools wrote appear; they are what is left of reader and writer parity.
-3. **The OSS-Fuzz submission ([§3](#quality-of-implementation)) and registration ([4.1](#ecosystem-reach))** — calendar-bound, so start them early and let them run alongside everything else; the dataset manager's thumbnails (4.6) needs no decision first and can run beside them. Code cleaning (3.4) and Clang-Tidy (3.5) also run alongside everything: take 3.4's items in the order SonarCloud's duplication report gives, and 3.5's stages in order.
-4. **Performance ([§5](#performance))** — the harness first (5.1), since every other item shows its numbers on it; then the wheels' remaining parallel-runtime checks (5.2; the Linux wheels build the THREADS backend since v19.1, so the parallel items reach pip users); then the rest by measured payoff.
-5. **The ParaView plugin ([§6](#paraview-plugin))** — the payload layer and CI (6.1, 6.10), then time steps, read options and regions (6.4 to 6.6), then the writer (6.7), then the Pipeline filter (6.8), whose `apply_operations` has landed; the dedicated filters and the bundle last.
-6. **Split Python packages on Windows ([4.7](#ecosystem-reach)) and the CLI plugins (4.8)** — the MSVC recipe for the static libraries (4.7.1), then plugins through a shared core DLL (4.7.2); the Linux and macOS plugin archive (4.8.1) needs neither and can go first, the Polyscope plugin (4.8.2) after it.
-7. **The embeddable MCP server (4.9)** — its design pass (4.9.1) before any code, since it decides whether the Python server's sandbox and sanitizer move into the core.
-8. **Code duplication ([§7](#code-duplication))** — no open item; rerun `tools/dup_report.py` alongside everything, like 3.4, and list what it finds there.
-9. **SonarCloud findings ([§8](#sonarcloud-findings))** — the next scan's counts first (8.1), then the coverage gate (8.2); the viewer's rebuild (8.3) goes with the next WebAssembly build.
+1. **Format reach ([§2](#format-reach))** — the checks against the vendor tools, as licences or files the tools wrote appear; they are what is left of reader and writer parity.
+2. **The OSS-Fuzz submission ([§3](#quality-of-implementation)) and registration ([4.1](#ecosystem-reach))** — calendar-bound, so start them early and let them run alongside everything else; the dataset manager's thumbnails (4.6) needs no decision first and can run beside them. Code cleaning (3.4) and Clang-Tidy (3.5) also run alongside everything: take 3.4's items in the order SonarCloud's duplication report gives, and 3.5's stages in order.
+3. **Performance ([§5](#performance))** — the harness first (5.1), since every other item shows its numbers on it; then the wheels' remaining parallel-runtime checks (5.2; the Linux wheels build the THREADS backend since v19.1, so the parallel items reach pip users); then the rest by measured payoff.
+4. **The ParaView plugin ([§6](#paraview-plugin))** — CI (6.10), then time steps, read options and regions (6.4 to 6.6), then the writer (6.7), then the Pipeline filter (6.8), whose `apply_operations` has landed; the dedicated filters and the bundle last.
+5. **Split Python packages on Windows ([4.7](#ecosystem-reach)) and the CLI plugins (4.8)** — the MSVC recipe for the static libraries (4.7.1), then plugins through a shared core DLL (4.7.2); the Linux and macOS plugin archive (4.8.1) needs neither and can go first, the Polyscope plugin (4.8.2) after it.
+6. **The embeddable MCP server (4.9)** — its design pass (4.9.1) before any code, since it decides whether the Python server's sandbox and sanitizer move into the core.
+7. **Code duplication ([§7](#code-duplication))** — no open item; rerun `tools/dup_report.py` alongside everything, like 3.4, and list what it finds there.
+8. **SonarCloud findings ([§8](#sonarcloud-findings))** — the next scan's counts first (8.1), then the coverage gate (8.2); the viewer's rebuild (8.3) goes with the next WebAssembly build.

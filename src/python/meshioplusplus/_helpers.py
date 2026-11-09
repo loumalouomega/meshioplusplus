@@ -201,9 +201,7 @@ def formats() -> dict:
     — all sorted, and the extension keys carry their leading dot.
 
     Public because a file dialog needs exactly this and the registries backing
-    it are private. Reaching into ``_helpers.reader_map`` is what
-    ``tools/paraview-meshioplusplus-plugin.py`` does, with nothing to catch a
-    rename; the Blender add-on calls this instead.
+    it are private; the Blender add-on and the ParaView plugin call it.
     """
     return {
         "readable": sorted(reader_map),
