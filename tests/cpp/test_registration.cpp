@@ -25,6 +25,7 @@
 
 #include <gtest/gtest.h>
 
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "mesh_fixtures.hpp"
 
@@ -288,7 +289,7 @@ TEST(RegistrationAuto, LargeRotationRegistersBackFromThePrincipalFrames) {
     std::vector<RgV> pts;
     const Mesh target = rg_bracket(&pts);
     const auto motion = rg_motion(150.0 * 3.14159265358979323846 / 180.0, {2.0, -1.0, 0.5});
-    Mesh source = target;
+    Mesh source = detail::clone_mesh(target);
     source.AssignPoints(rg_mesh(rg_moved(pts, motion)).Points());
     RegistrationOptions o;
     o.mMethod = RegistrationMethod::PointToPlane;
@@ -315,7 +316,7 @@ TEST(RegistrationAuto, SymmetricCheckWarnsOnABox) {
     std::vector<std::array<std::int64_t, 3>> tris;
     rg_box({0, 0, 0}, {3, 2, 1}, 6, pts, tris);
     const Mesh target = rg_tri_mesh(pts, tris);
-    Mesh source = target;
+    Mesh source = detail::clone_mesh(target);
     source.AssignPoints(rg_mesh(rg_moved(pts, rg_motion(1.0, {0.5, 0, 0}))).Points());
     RegistrationOptions o;
     o.mInitialMode = RegistrationInitial::Auto;
@@ -494,7 +495,7 @@ TEST(AutoAlign, TubeStandsOnItsAxisAndAnOpenTrayOnItsOpening) {
 TEST(DeviationRegister, ScanIsRegisteredBeforeItIsMeasured) {
     std::vector<RgV> pts;
     const Mesh reference = rg_bracket(&pts);
-    Mesh scan = reference;
+    Mesh scan = detail::clone_mesh(reference);
     scan.AssignPoints(rg_mesh(rg_moved(pts, rg_motion(2.5, {1, 2, 3}))).Points());
     DeviationOptions o;
     o.mTolerance = 1e-6;

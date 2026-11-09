@@ -34,6 +34,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/slice.hpp"
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/marching.hpp"
@@ -56,7 +57,7 @@ NDArray slc_int64(const std::vector<std::int64_t>& rValues) {
 // The line section @p rSection walked into chains (slice.hpp's contract).
 Mesh slc_chain(const Mesh& rSection, double MinLength) {
     if (rSection.NumCellBlocks() == 0)
-        return rSection;
+        return detail::clone_mesh(rSection);
     if (rSection.NumCellBlocks() != 1 || rSection.Cells(0).Type() != "line")
         throw std::invalid_argument(
             "meshio++: slice: chain needs a line section; slice a surface mesh (a volume's "

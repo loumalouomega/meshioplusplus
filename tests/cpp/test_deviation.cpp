@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/operations/deviation.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
 #include "mesh_fixtures.hpp"
@@ -55,7 +56,7 @@ Mesh dev_box_skin(const std::array<double, 3>& rLo, const std::array<double, 3>&
 }
 
 Mesh dev_scaled(const Mesh& rMesh, double S) {
-    Mesh out = rMesh;
+    Mesh out = detail::clone_mesh(rMesh);
     NDArray pts = NDArray::Uninit(DType::Float64, rMesh.Points().Shape());
     for (std::size_t i = 0; i < pts.Size(); ++i)
         pts.As<double>()[i] = S * rMesh.Points().As<double>()[i];
