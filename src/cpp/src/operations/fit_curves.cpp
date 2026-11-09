@@ -41,6 +41,9 @@ namespace {
 
 using FcV2 = std::array<double, 2>;
 constexpr double kFcPi = 3.14159265358979323846;
+// An arc or a circle steps at most this far between its points (30 degrees,
+// a twelve-sided tessellation); a coarser one is a polygon, its sides lines.
+constexpr double kFcMaxArcStep = kFcPi / 6.0 + 1e-9;
 constexpr const char* kFcPrefix = "meshio++: fit_curves: ";
 
 // A fitted run of chain points [mI, mJ]: a line (point and unit direction) or
@@ -115,6 +118,18 @@ double fc_sweep(const std::vector<FcV2>& rP, std::size_t I, std::size_t J, const
     return total;
 }
 
+// The largest angle, about the centre, between consecutive points I..J: a
+// sampled arc steps a little at a time, a polygon's corners a lot (a
+// rectangle's four corners lie on one circle, ninety degrees apart).
+double fc_max_step(const std::vector<FcV2>& rP, std::size_t I, std::size_t J, const FcV2& rC) {
+    double most = 0.0;
+    for (std::size_t k = I; k < J; ++k) {
+        const FcV2 a = fc_sub(rP[k], rC), b = fc_sub(rP[k + 1], rC);
+        most = std::max(most, std::fabs(std::atan2(fc_cross(a, b), a[0] * b[0] + a[1] * b[1])));
+    }
+    return most;
+}
+
 bool fc_circle(const std::vector<FcV2>& rP, std::size_t I, std::size_t J, FcFit& rOut) {
     std::vector<double> xs, ys;
     for (std::size_t k = I; k <= J; ++k) {
@@ -170,7 +185,8 @@ bool fc_fit_run(const FcContext& rC, std::size_t I, std::size_t J, FcFit& rOut) 
         return false;
     FcFit arc;
     if (fc_circle(p, I, J, arc) && arc.mResidual <= rC.mTol &&
-        std::fabs(arc.mSweep) >= rC.mMinSweep && arc.mR < 1e6 * rC.mExtent) {
+        std::fabs(arc.mSweep) >= rC.mMinSweep && arc.mR < 1e6 * rC.mExtent &&
+        fc_max_step(p, I, J, arc.mC) <= kFcMaxArcStep) {
         rOut = arc;
         return true;
     }
@@ -316,7 +332,7 @@ std::vector<FcFit> fc_chain(const FcContext& rC, bool Closed) {
     if (Closed && p.size() >= rC.mMinArcPoints + 1) {
         FcFit circle;
         if (fc_circle(p, 0, m, circle) && circle.mResidual <= rC.mTol &&
-            circle.mR < 1e6 * rC.mExtent) {
+            circle.mR < 1e6 * rC.mExtent && fc_max_step(p, 0, m, circle.mC) <= kFcMaxArcStep) {
             circle.mType = SketchPieceType::Circle;
             pieces.push_back(circle);
             return pieces;

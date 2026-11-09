@@ -148,3 +148,15 @@ TEST(FitCurves, SnappingAndRefusals) {
     o.mSnapAngleDeg = 30.0;
     EXPECT_THROW(fit_curves(fc_section(fc_prism(rect)), o), std::invalid_argument);
 }
+
+TEST(FitCurves, ARectangleIsFourLinesNotACircle) {
+    // Its four corners lie on one circle; a sampled arc steps at most 30
+    // degrees a point, so the outline is four lines.
+    const Mesh box = fc_prism({{0.0, 0.0}, {2.0, 0.0}, {2.0, 1.0}, {0.0, 1.0}});
+    FitCurvesOptions o;
+    o.mTolerance = 1e-6;
+    const FitCurvesResult r = fit_curves(fc_section(box), o);
+    EXPECT_EQ(r.mNumLines, 4);
+    EXPECT_EQ(r.mNumCircles, 0);
+    EXPECT_EQ(r.mNumArcs, 0);
+}
