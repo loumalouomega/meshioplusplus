@@ -51,6 +51,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -334,6 +335,251 @@ inline std::vector<std::array<int, 3>> vtk_lattice(Shape S, int P) {
         }
     }
     return out;
+}
+
+// --- Gmsh's node order (twin of _lagrange.gmsh_lattice) -------------------------------------
+//
+// The fixed-order types beyond VTK's own (triangle10, quad16, tetra20, wedge40,
+// hexahedron64, ...) are held in Gmsh's order: the corners, each edge's
+// interior nodes in the direction listed, each face's interior nodes as an
+// element of the same family (recursively), then the volume's likewise -- a
+// prism's being the inner triangle's nodes, each with its column of nodes
+// along the third direction in Gmsh's line order. Checked against Gmsh 4.15
+// for every order it has (tests/python/test_lagrange_gmsh_order.py).
+
+using LatticeNode = std::array<int, 3>;
+
+inline LatticeNode lattice_add(LatticeNode A, const LatticeNode& rB, int Scale = 1) {
+    for (int k = 0; k < 3; ++k)
+        A[static_cast<std::size_t>(k)] += Scale * rB[static_cast<std::size_t>(k)];
+    return A;
+}
+
+/// One lattice step from `rFrom` towards `rTo` on an order-`P` cell.
+inline LatticeNode lattice_step(const LatticeNode& rFrom, const LatticeNode& rTo, int P) {
+    LatticeNode d;
+    for (std::size_t k = 0; k < 3; ++k)
+        d[k] = (rTo[k] - rFrom[k]) / P;  // exact: corners are P steps apart
+    return d;
+}
+
+inline const std::vector<std::pair<int, int>>& gmsh_edges(Shape S) {
+    static const std::vector<std::pair<int, int>> line = {{0, 1}};
+    static const std::vector<std::pair<int, int>> tri = {{0, 1}, {1, 2}, {2, 0}};
+    static const std::vector<std::pair<int, int>> quad = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+    static const std::vector<std::pair<int, int>> tet = {{0, 1}, {1, 2}, {2, 0},
+                                                         {3, 0}, {3, 2}, {3, 1}};
+    static const std::vector<std::pair<int, int>> hex = {{0, 1}, {0, 3}, {0, 4}, {1, 2},
+                                                         {1, 5}, {2, 3}, {2, 6}, {3, 7},
+                                                         {4, 5}, {4, 7}, {5, 6}, {6, 7}};
+    static const std::vector<std::pair<int, int>> wedge = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 4},
+                                                           {2, 5}, {3, 4}, {3, 5}, {4, 5}};
+    switch (S) {
+        case Shape::Line:
+            return line;
+        case Shape::Triangle:
+            return tri;
+        case Shape::Quad:
+            return quad;
+        case Shape::Tetra:
+            return tet;
+        case Shape::Hexahedron:
+            return hex;
+        case Shape::Wedge:
+            return wedge;
+    }
+    return line;
+}
+
+inline const std::vector<std::vector<int>>& gmsh_faces(Shape S) {
+    static const std::vector<std::vector<int>> none;
+    static const std::vector<std::vector<int>> tet = {{0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {3, 1, 2}};
+    static const std::vector<std::vector<int>> hex = {{0, 3, 2, 1}, {0, 1, 5, 4}, {0, 4, 7, 3},
+                                                      {1, 2, 6, 5}, {2, 3, 7, 6}, {4, 5, 6, 7}};
+    static const std::vector<std::vector<int>> wedge = {
+        {0, 2, 1}, {3, 4, 5}, {0, 1, 4, 3}, {0, 3, 5, 2}, {1, 2, 5, 4}};
+    switch (S) {
+        case Shape::Tetra:
+            return tet;
+        case Shape::Hexahedron:
+            return hex;
+        case Shape::Wedge:
+            return wedge;
+        default:
+            return none;
+    }
+}
+
+/// Each corner moved one lattice step towards each of its `rAround` corners.
+inline std::vector<LatticeNode> lattice_inset(const std::vector<LatticeNode>& rCorners, int P,
+                                              const std::vector<std::vector<int>>& rAround) {
+    std::vector<LatticeNode> out;
+    for (std::size_t k = 0; k < rCorners.size(); ++k) {
+        LatticeNode c = rCorners[k];
+        for (const int m : rAround[k])
+            c = lattice_add(c, lattice_step(rCorners[k], rCorners[static_cast<std::size_t>(m)], P));
+        out.push_back(c);
+    }
+    return out;
+}
+
+/// The two neighbours of each corner of an `N`-gon.
+inline std::vector<std::vector<int>> lattice_ring(int N) {
+    std::vector<std::vector<int>> out;
+    for (int k = 0; k < N; ++k)
+        out.push_back({(k + 1) % N, (k + N - 1) % N});
+    return out;
+}
+
+inline void gmsh_nodes(Shape S, const std::vector<LatticeNode>& rC, int P,
+                       std::vector<LatticeNode>& rOut) {
+    if (P == 0) {
+        rOut.push_back(rC[0]);
+        return;
+    }
+    rOut.insert(rOut.end(), rC.begin(), rC.end());
+    for (const auto& [a, b] : gmsh_edges(S)) {
+        const auto& ca = rC[static_cast<std::size_t>(a)];
+        const LatticeNode d = lattice_step(ca, rC[static_cast<std::size_t>(b)], P);
+        for (int t = 1; t < P; ++t)
+            rOut.push_back(lattice_add(ca, d, t));
+    }
+    for (const auto& face : gmsh_faces(S)) {
+        std::vector<LatticeNode> v;
+        for (const int i : face)
+            v.push_back(rC[static_cast<std::size_t>(i)]);
+        const int n = static_cast<int>(face.size());
+        const int order = n == 3 ? P - 3 : P - 2;
+        if (order >= 0)
+            gmsh_nodes(n == 3 ? Shape::Triangle : Shape::Quad, lattice_inset(v, P, lattice_ring(n)),
+                       order, rOut);
+    }
+    switch (S) {
+        case Shape::Triangle:
+            if (P >= 3)
+                gmsh_nodes(S, lattice_inset(rC, P, lattice_ring(3)), P - 3, rOut);
+            break;
+        case Shape::Quad:
+            if (P >= 2)
+                gmsh_nodes(S, lattice_inset(rC, P, lattice_ring(4)), P - 2, rOut);
+            break;
+        case Shape::Tetra:
+            if (P >= 4)
+                gmsh_nodes(S, lattice_inset(rC, P, {{1, 2, 3}, {0, 2, 3}, {0, 1, 3}, {0, 1, 2}}),
+                           P - 4, rOut);
+            break;
+        case Shape::Hexahedron:
+            if (P >= 2)
+                gmsh_nodes(S,
+                           lattice_inset(rC, P,
+                                         {{1, 3, 4},
+                                          {0, 2, 5},
+                                          {1, 3, 6},
+                                          {0, 2, 7},
+                                          {0, 5, 7},
+                                          {1, 4, 6},
+                                          {2, 5, 7},
+                                          {3, 4, 6}}),
+                           P - 2, rOut);
+            break;
+        case Shape::Wedge:
+            if (P >= 3) {
+                std::vector<LatticeNode> flat = {
+                    {rC[0][0], rC[0][1], 0}, {rC[1][0], rC[1][1], 0}, {rC[2][0], rC[2][1], 0}};
+                const LatticeNode dz = lattice_step(rC[0], rC[3], P);
+                std::vector<LatticeNode> column, tri;
+                gmsh_nodes(Shape::Line, {lattice_add(rC[0], dz), lattice_add(rC[3], dz, -1)}, P - 2,
+                           column);
+                gmsh_nodes(Shape::Triangle, lattice_inset(flat, P, lattice_ring(3)), P - 3, tri);
+                for (const auto& t : tri)
+                    for (const auto& z : column)
+                        rOut.push_back({t[0], t[1], z[2]});
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+/// The nodes of an order-`P` cell in Gmsh's order, in `vtk_lattice`'s frame.
+inline std::vector<LatticeNode> gmsh_lattice(Shape S, int P) {
+    std::vector<LatticeNode> c;
+    switch (S) {
+        case Shape::Line:
+            c = {{0, 0, 0}, {P, 0, 0}};
+            break;
+        case Shape::Triangle:
+            c = {{0, 0, 0}, {P, 0, 0}, {0, P, 0}};
+            break;
+        case Shape::Quad:
+            c = {{0, 0, 0}, {P, 0, 0}, {P, P, 0}, {0, P, 0}};
+            break;
+        case Shape::Tetra:
+            c = {{0, 0, 0}, {P, 0, 0}, {0, P, 0}, {0, 0, P}};
+            break;
+        case Shape::Hexahedron:
+            c = {{0, 0, 0}, {P, 0, 0}, {P, P, 0}, {0, P, 0},
+                 {0, 0, P}, {P, 0, P}, {P, P, P}, {0, P, P}};
+            break;
+        case Shape::Wedge:
+            c = {{0, 0, 0}, {P, 0, 0}, {0, P, 0}, {0, 0, P}, {P, 0, P}, {0, P, P}};
+            break;
+    }
+    std::vector<LatticeNode> out;
+    gmsh_nodes(S, c, P, out);
+    return out;
+}
+
+/// `perm` with VTK Lagrange node `j` = Gmsh node `perm[j]` (twin of
+/// `_lagrange.gmsh_to_vtk_order`).
+inline std::vector<int> gmsh_to_vtk_order(Shape S, int P) {
+    const auto gmsh = gmsh_lattice(S, P);
+    const auto vtk = vtk_lattice(S, P);
+    std::vector<int> perm(vtk.size());
+    for (std::size_t j = 0; j < vtk.size(); ++j) {
+        const auto it = std::find(gmsh.begin(), gmsh.end(), vtk[j]);
+        perm[j] = static_cast<int>(it - gmsh.begin());
+    }
+    return perm;
+}
+
+/// A fixed-order type VTK has no id of its own for, written as a VTK
+/// Lagrange cell (twin of `_vtk_common.FIXED_LAGRANGE`).
+struct FixedLagrange {
+    int mVtkType = 0;
+    Shape mShape = Shape::Line;
+    int mOrder = 0;
+};
+
+/// `rType` (`triangle10`, `hexahedron64`, ...) as a VTK Lagrange cell, for
+/// orders 3 and up whose Gmsh order was checked against Gmsh: to 10, the
+/// hexahedron and prism to 9.
+inline bool fixed_lagrange(const std::string& rType, FixedLagrange& rOut) {
+    static const std::pair<const char*, std::pair<Shape, int>> shapes[] = {
+        {"line", {Shape::Line, 68}},
+        {"triangle", {Shape::Triangle, 69}},
+        {"quad", {Shape::Quad, 70}},
+        {"tetra", {Shape::Tetra, 71}},
+        {"hexahedron", {Shape::Hexahedron, 72}},
+        {"wedge", {Shape::Wedge, 73}}};
+    for (const auto& [name, info] : shapes) {
+        const std::string prefix(name);
+        if (rType.size() <= prefix.size() || rType.compare(0, prefix.size(), prefix) != 0)
+            continue;
+        const std::string digits = rType.substr(prefix.size());
+        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 4)
+            return false;
+        const std::size_t count = static_cast<std::size_t>(std::stoi(digits));
+        const int max_order =
+            info.first == Shape::Hexahedron || info.first == Shape::Wedge ? 9 : 10;
+        for (int p = 3; p <= max_order; ++p)
+            if (num_nodes(info.first, p) == count) {
+                rOut = {info.second, info.first, p};
+                return true;
+            }
+        return false;
+    }
+    return false;
 }
 
 /// Corner weights of lattice node `rIjk` of an order-`P` cell, over the common

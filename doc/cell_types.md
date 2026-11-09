@@ -4,6 +4,10 @@ meshio++ uses its own canonical type names. Every format reader maps native elem
 
 Node ordering follows the VTK convention where available. The figures below are generated from the code's own topology tables (`_convert_cells._ELEVATE` for mid-edge nodes, `_skin._CELL_FACES` and `_refine_templates.QUAD_FACES` for face and body centres), so they cannot drift from what the readers, writers and operations actually assume; corner nodes are drawn solid, mid-edge nodes blue, face centres orange and the body centre violet. One convention is worth stating: `pyramid14` is `pyramid13` plus a base-centre node 13, the order every consumer in the core (`detail/cell_faces.hpp`, the CGNS table) uses; the gmsh reader/writer permutes both `pyramid14` and `wedge18` (gmsh's own edge-lexicographic types 14 and 13) to and from this convention, derived from gmsh's own edge/face tables and verified geometrically (every mid-edge/face-centre node lands at the exact midpoint/centroid of the corners it should).
 
+## Higher-order fixed types
+
+The fixed-order types beyond VTK's own ids, from order 3 (`line5`, `triangle10`, `quad16`, `tetra20`, `wedge40`, `hexahedron64` and their higher orders), list their nodes in [Gmsh](https://gmsh.info/doc/texinfo/gmsh.html#Node-ordering)'s order, the order the Gmsh reader hands them over in: the corners, each edge's interior nodes, each face's interior nodes as an element of the same family recursively, then the volume's likewise, except a prism's, which is the inner triangle's nodes each with its column of nodes along the third direction. `_lagrange.gmsh_lattice` (and its C++ twin in `formats/lagrange_common.hpp`) generates it; `tests/python/test_lagrange_gmsh_order.py` holds it to Gmsh 4.15's own node lists (`tools/gen_gmsh_node_order_digests.py` records them by running Gmsh). The VTK writers write these types as VTK Lagrange cells ([VTU](./formats/vtu.md#cell-types)).
+
 ## 0-D
 
 | Type | Nodes |

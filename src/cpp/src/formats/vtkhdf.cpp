@@ -49,6 +49,7 @@
 #include "meshioplusplus/vtk_common.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/ndarray_utils.hpp"
+#include "../detail/vtk_write_cell.hpp"
 #include "library_preflight.hpp"
 
 namespace meshioplusplus {
@@ -1275,13 +1276,14 @@ VtkhdfCells vtkhdf_collect(const Mesh& rMesh, const std::vector<std::size_t>& rB
             }
             continue;
         }
-        auto it = polygon ? tmap.find("polygon") : tmap.find(type);
-        if (it == tmap.end())
+        const auto vtk_type = detail::vtk_type_for_write(polygon ? std::string("polygon") : type);
+        if (!vtk_type)
             throw WriteError("meshio++: vtkhdf: cell type '" + type + "' has no VTK cell type id");
         const NDArray& conn_array = cb.Conn();
         const std::size_t k = cols(conn_array);
         const detail::Int64View conn(conn_array);
-        const std::vector<int> order = polygon ? std::vector<int>{} : meshio_to_vtk_order(type);
+        const std::vector<int> order =
+            polygon ? std::vector<int>{} : detail::vtk_order_for_write(type);
         for (std::size_t r = 0; r < nc; ++r) {
             if (!wanted(r))
                 continue;
@@ -1290,7 +1292,7 @@ VtkhdfCells vtkhdf_collect(const Mesh& rMesh, const std::vector<std::size_t>& rB
                 out.mConn.push_back(conn[r * k + col]);
             }
             out.mSizes.push_back(static_cast<I64>(k));
-            out.mTypes.push_back(it->second);
+            out.mTypes.push_back(*vtk_type);
             out.mFacesPerCell.push_back(0);
             out.mRows.push_back(rBases[bi] + r);
         }

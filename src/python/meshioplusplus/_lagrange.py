@@ -245,6 +245,121 @@ def vtk_lattice(shape, p):
     return out
 
 
+# --- Gmsh's node order -------------------------------------------------------
+# The fixed-order types beyond VTK's own (triangle10, quad16, tetra20, wedge40,
+# hexahedron64, ... up to order 10) are held in Gmsh's node order, the order
+# the Gmsh reader hands them over in: the corners, the interior nodes of each
+# edge (in the direction listed), the interior nodes of each face, each face's
+# being an element of the same family recursively, then the volume's,
+# likewise -- except a prism's, which is the inner triangle's nodes, each
+# with its column of nodes along the third direction in Gmsh's line order.
+# Checked against Gmsh 4.15 itself (`getElementProperties`, and for prisms of
+# order 3 and up, which that call does not describe, the nodes of meshed
+# prisms) for every order it has: line, triangle, quad and tetra to 10,
+# hexahedron and prism to 9 (tests/python/test_lagrange_gmsh_order.py).
+_GMSH_EDGES = {
+    "line": [(0, 1)],
+    "triangle": [(0, 1), (1, 2), (2, 0)],
+    "quad": [(0, 1), (1, 2), (2, 3), (3, 0)],
+    "tetra": [(0, 1), (1, 2), (2, 0), (3, 0), (3, 2), (3, 1)],
+    "hexahedron": [
+        (0, 1), (0, 3), (0, 4), (1, 2), (1, 5), (2, 3),
+        (2, 6), (3, 7), (4, 5), (4, 7), (5, 6), (6, 7),
+    ],  # fmt: skip
+    "wedge": [(0, 1), (0, 2), (0, 3), (1, 2), (1, 4), (2, 5), (3, 4), (3, 5), (4, 5)],
+}
+_GMSH_FACES = {
+    "tetra": [(0, 2, 1), (0, 1, 3), (0, 3, 2), (3, 1, 2)],
+    "hexahedron": [
+        (0, 3, 2, 1), (0, 1, 5, 4), (0, 4, 7, 3),
+        (1, 2, 6, 5), (2, 3, 7, 6), (4, 5, 6, 7),
+    ],  # fmt: skip
+    "wedge": [(0, 2, 1), (3, 4, 5), (0, 1, 4, 3), (0, 3, 5, 2), (1, 2, 5, 4)],
+}
+_HEX_NEIGHBOURS = (
+    (1, 3, 4), (0, 2, 5), (1, 3, 6), (0, 2, 7),
+    (0, 5, 7), (1, 4, 6), (2, 5, 7), (3, 4, 6),
+)  # fmt: skip
+
+
+def _inset(corners, p, around):
+    """Each corner moved one lattice step towards each of its ``around``
+    neighbours: the corners of the next layer in."""
+    return [
+        corners[k] + sum((corners[m] - corners[k]) // p for m in around[k])
+        for k in range(len(corners))
+    ]
+
+
+def _cycle(n):
+    return [((k + 1) % n, (k + n - 1) % n) for k in range(n)]
+
+
+def _gmsh_nodes(shape, corners, p):
+    if p == 0:
+        return [corners[0]]
+    out = list(corners)
+    for a, b in _GMSH_EDGES[shape]:
+        step = (corners[b] - corners[a]) // p
+        out += [corners[a] + step * t for t in range(1, p)]
+    for face in _GMSH_FACES.get(shape, []):
+        v = [corners[i] for i in face]
+        sub = len(face)
+        order = p - 3 if sub == 3 else p - 2
+        if order >= 0:
+            kind = "triangle" if sub == 3 else "quad"
+            out += _gmsh_nodes(kind, _inset(v, p, _cycle(sub)), order)
+    if shape in ("triangle", "quad"):
+        order = p - 3 if shape == "triangle" else p - 2
+        if order >= 0:
+            n = len(corners)
+            out += _gmsh_nodes(shape, _inset(corners, p, _cycle(n)), order)
+    elif shape == "tetra" and p >= 4:
+        around = [[m for m in range(4) if m != k] for k in range(4)]
+        out += _gmsh_nodes("tetra", _inset(corners, p, around), p - 4)
+    elif shape == "hexahedron" and p >= 2:
+        out += _gmsh_nodes("hexahedron", _inset(corners, p, _HEX_NEIGHBOURS), p - 2)
+    elif shape == "wedge" and p >= 3:
+        flat = [np.array([c[0], c[1], 0]) for c in corners[:3]]
+        dz = (corners[3] - corners[0]) // p
+        column = _gmsh_nodes("line", [corners[0] + dz, corners[3] - dz], p - 2)
+        for t in _gmsh_nodes("triangle", _inset(flat, p, _cycle(3)), p - 3):
+            out += [np.array([t[0], t[1], z[2]]) for z in column]
+    return out
+
+
+def _corner_lattice(shape, p):
+    return {
+        "line": [(0, 0, 0), (p, 0, 0)],
+        "triangle": [(0, 0, 0), (p, 0, 0), (0, p, 0)],
+        "quad": [(0, 0, 0), (p, 0, 0), (p, p, 0), (0, p, 0)],
+        "tetra": [(0, 0, 0), (p, 0, 0), (0, p, 0), (0, 0, p)],
+        "hexahedron": [
+            (0, 0, 0), (p, 0, 0), (p, p, 0), (0, p, 0),
+            (0, 0, p), (p, 0, p), (p, p, p), (0, p, p),
+        ],  # fmt: skip
+        "wedge": [(0, 0, 0), (p, 0, 0), (0, p, 0), (0, 0, p), (p, 0, p), (0, p, p)],
+    }[shape]
+
+
+def gmsh_lattice(shape, p):
+    """The nodes of an order-``p`` cell in Gmsh's order, as integer lattice
+    coordinates ``(i, j, k)`` in :func:`vtk_lattice`'s frame."""
+    corners = [np.array(c, dtype=np.int64) for c in _corner_lattice(shape, p)]
+    return [tuple(int(x) for x in n) for n in _gmsh_nodes(shape, corners, p)]
+
+
+def gmsh_to_vtk_order(shape, p):
+    """``perm`` with VTK Lagrange node ``j`` = Gmsh node ``perm[j]``: the
+    connectivity of an order-``p`` cell in Gmsh's order, ``rows[:, perm]``,
+    is the VTK Lagrange cell's."""
+    index = {ijk: n for n, ijk in enumerate(gmsh_lattice(shape, p))}
+    return np.array(
+        [index[tuple(ijk) + (0,) * (3 - len(ijk))] for ijk in vtk_lattice(shape, p)],
+        dtype=np.int64,
+    )
+
+
 def lattice_weights(shape, p, ijk):
     """``(corner, weight)`` of every corner lattice node ``ijk`` combines, over
     the common denominator ``p**3``."""

@@ -691,3 +691,20 @@ def test_blank_operations_pass_through():
     mesh = _step_meshes()[0][1]
     out, report = _paraview.run_operations(mesh, "  ")
     assert out is mesh and report == {"steps": [], "warnings": []}
+
+
+def test_fixed_order_high_cells_reach_vtk():
+    """roadmap 6.3.2: a Gmsh P3 triangle mesh (triangle10) has its cells in
+    VTK, as Lagrange triangles of the right area."""
+    from meshioplusplus._lagrange import gmsh_lattice
+
+    points = np.array(gmsh_lattice("triangle", 3), dtype=float) / 3
+    mesh = meshioplusplus.Mesh(points, [("triangle10", [list(range(10))])])
+    grid = _paraview.grid_from_mesh(mesh)
+    assert grid.GetNumberOfCells() == 1
+    assert grid.GetCellType(0) == vtk.VTK_LAGRANGE_TRIANGLE
+    sizes = vtk.vtkCellSizeFilter()
+    sizes.SetInputData(grid)
+    sizes.Update()
+    area = sizes.GetOutput().GetCellData().GetArray("Area").GetValue(0)
+    assert area == pytest.approx(0.5)

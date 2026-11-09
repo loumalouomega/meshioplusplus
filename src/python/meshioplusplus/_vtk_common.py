@@ -67,6 +67,40 @@ vtk_to_meshio_type = {
 }
 meshio_to_vtk_type = {v: k for k, v in vtk_to_meshio_type.items()}
 
+#: The fixed-order types VTK has no id of its own for (``triangle10``,
+#: ``quad16``, ``tetra20``, ``wedge40``, ``hexahedron64``, ... ) -> ``(VTK
+#: Lagrange id, shape, order)``. They are written as VTK Lagrange cells,
+#: their Gmsh node order permuted into VTK's (``_lagrange.gmsh_to_vtk_order``),
+#: and read back as the ``VTK_LAGRANGE_*`` type. Only the orders whose Gmsh
+#: order was checked against Gmsh itself: ``hexahedron1331`` (order 10) has no
+#: Gmsh type to check against and is not here.
+_LAGRANGE_IDS = {
+    "line": 68,
+    "triangle": 69,
+    "quad": 70,
+    "tetra": 71,
+    "hexahedron": 72,
+    "wedge": 73,
+}
+_MAX_ORDER = {"hexahedron": 9, "wedge": 9}
+
+
+def _fixed_lagrange_types():
+    from ._lagrange import num_nodes
+
+    out = {}
+    for shape, vtk_id in _LAGRANGE_IDS.items():
+        for p in range(3, _MAX_ORDER.get(shape, 10) + 1):
+            name = f"{shape}{num_nodes(shape, p)}"
+            # line4 is VTK's own cubic line (35), whose order is Gmsh's.
+            if name in num_nodes_per_cell and name not in meshio_to_vtk_type:
+                out[name] = (vtk_id, shape, p)
+    return out
+
+
+FIXED_LAGRANGE = _fixed_lagrange_types()
+meshio_to_vtk_type.update({k: v[0] for k, v in FIXED_LAGRANGE.items()})
+
 
 def vtk_to_meshio_order(vtk_type, dtype=int):
     """Node permutation from VTK's order into meshio++'s, or ``None`` (identity).
@@ -84,9 +118,19 @@ def vtk_to_meshio_order(vtk_type, dtype=int):
 
 
 def meshio_to_vtk_order(meshio_type, dtype=int):
-    """Node permutation from meshio++'s order into VTK's, or ``None`` (identity);
-    see :func:`vtk_to_meshio_order`."""
-    return None
+    """Node permutation from meshio++'s order into VTK's, or ``None`` (identity):
+    ``rows[:, perm]`` is the VTK connectivity. Only the fixed-order types of
+    :data:`FIXED_LAGRANGE` have one (Gmsh's order into VTK Lagrange's); see
+    :func:`vtk_to_meshio_order` for the linear wedge."""
+    fixed = FIXED_LAGRANGE.get(meshio_type)
+    if fixed is None:
+        return None
+    from ._lagrange import gmsh_to_vtk_order
+
+    perm = gmsh_to_vtk_order(fixed[1], fixed[2])
+    if (perm == np.arange(len(perm))).all():
+        return None
+    return perm.astype(dtype)
 
 
 def vtk_cells_from_data(connectivity, offsets, types, cell_data_raw):

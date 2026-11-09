@@ -40,6 +40,8 @@
 #include "../detail/typed_view.hpp"
 #include "../detail/vtk_xml_write.hpp"
 #include "../detail/vtu_decode.hpp"
+#include "../detail/vtk_hex_order.hpp"
+#include "../detail/vtk_write_cell.hpp"
 
 namespace meshioplusplus {
 
@@ -154,9 +156,10 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
     // list edges 10 and 11 in the order meshio++ holds; an older one tells VTK to
     // swap them (detail/vtk_hex_order.hpp), so a mesh with such cells says 2.2.
     bool hex_order = false;
-    for (const auto cb : rMesh.CellRange())
-        hex_order = hex_order || cb.Type() == "VTK_LAGRANGE_HEXAHEDRON" ||
-                    cb.Type() == "VTK_BEZIER_HEXAHEDRON";
+    for (const auto cb : rMesh.CellRange()) {
+        const auto vtk_type = detail::vtk_type_for_write(cb.Type());
+        hex_order = hex_order || (vtk_type && detail::vtk_hex_order_applies(*vtk_type));
+    }
     detail::vtk_xml_prolog(os, "UnstructuredGrid", hex_order ? "2.2" : "0.1", binary, codec, hsz);
     os << "<UnstructuredGrid>\n";
     // Field data belongs to the dataset, not to a piece: VTK writes it on the grid,
@@ -253,7 +256,6 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
         // Build connectivity / offsets / types (Int64) into pre-sized arrays.
         // Per-block offsets are closed-form (conn_base + (r+1)*k), so rows are
         // independent and each block fills in parallel.
-        const auto& tmap = meshio_to_vtk_type();
         std::size_t ncells = 0;
         bool any_polyhedron = false, any_ragged = false;
         for (const auto cb : rMesh.CellRange()) {
@@ -271,16 +273,16 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
             std::vector<VtuBlockRun> runs;
             std::size_t cell_base = 0, conn_base = 0;
             for (const auto cb : rMesh.CellRange()) {
-                auto it = tmap.find(cb.Type());
-                if (it == tmap.end())
+                const auto vtk_type = detail::vtk_type_for_write(cb.Type());
+                if (!vtk_type)
                     throw WriteError("Unknown cell type for VTU: " + cb.Type());
                 VtuBlockRun run;
                 run.mCellBase = cell_base;
                 run.mConnBase = conn_base;
                 run.mNumCells = cb.NumCells();
                 run.mK = cols(cb.Conn());
-                run.mType = it->second;
-                run.mOrder = meshio_to_vtk_order(cb.Type());
+                run.mType = *vtk_type;
+                run.mOrder = detail::vtk_order_for_write(cb.Type());
                 run.mpConn = std::make_unique<detail::Int64View>(cb.Conn());
                 cell_base += run.mNumCells;
                 conn_base += run.mNumCells * run.mK;
@@ -381,11 +383,11 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
                 }
                 const NDArray& conn = cb.Conn();
                 const std::size_t k = cols(conn);
-                std::vector<int> order = meshio_to_vtk_order(cb.Type());
-                auto it = tmap.find(cb.Type());
-                if (it == tmap.end())
+                std::vector<int> order = detail::vtk_order_for_write(cb.Type());
+                const auto found = detail::vtk_type_for_write(cb.Type());
+                if (!found)
                     throw WriteError("Unknown cell type for VTU: " + cb.Type());
-                const std::int64_t vtk_type = it->second;
+                const std::int64_t vtk_type = *found;
                 // Rows are independent: each one's slots and offset are closed-form.
                 const detail::Int64View cv(conn);
                 const std::size_t cbase = connectivity.size();

@@ -40,6 +40,7 @@
 #include "../detail/row_writer.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/vtk_hex_order.hpp"
+#include "../detail/vtk_write_cell.hpp"
 #include "../detail/dtype_table.hpp"
 
 namespace meshioplusplus {
@@ -251,7 +252,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
                 const NDArray& conn = cb.Conn();
                 const std::size_t nc = cb.NumCells();
                 const std::size_t k = cols(conn);
-                std::vector<int> order = meshio_to_vtk_order(cb.Type());
+                std::vector<int> order = detail::vtk_order_for_write(cb.Type());
                 const int* ord = order.empty() ? nullptr : order.data();
                 gather_be(cbuf.data() + base * 8, conn, nc, k, ord, 8);
                 base += nc * k;
@@ -265,7 +266,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             for (const auto cb : rMesh.CellRange()) {
                 const detail::Int64View conn(cb.Conn());
                 const std::size_t k = cols(cb.Conn());
-                std::vector<int> order = meshio_to_vtk_order(cb.Type());
+                std::vector<int> order = detail::vtk_order_for_write(cb.Type());
                 vtk_write_int_lines(os, cb.NumCells() * k, [&](std::size_t i) {
                     const std::size_t j = i % k;
                     const std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
@@ -282,9 +283,8 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             std::size_t bi = 0;
             bool warned = false;
             for (const auto cb : rMesh.CellRange()) {
-                const auto vt = meshio_to_vtk_type().find(std::string(cb.Type()));
-                if (vt != meshio_to_vtk_type().end() && detail::vtk_hex_order_applies(vt->second) &&
-                    !cb.IsRagged() && cb.NumCells()) {
+                const auto vt = detail::vtk_type_for_write(std::string(cb.Type()));
+                if (vt && detail::vtk_hex_order_applies(*vt) && !cb.IsRagged() && cb.NumCells()) {
                     const std::size_t k = cols(cb.Conn());
                     NDArray swapped(DType::Int64, {cb.NumCells(), k});
                     const detail::Int64View src(cb.Conn());
@@ -330,7 +330,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
                 const std::size_t nc = cb.NumCells();
                 const std::size_t k = cols(conn);
                 const std::size_t stride = k + 1;
-                std::vector<int> order = meshio_to_vtk_order(cb.Type());
+                std::vector<int> order = detail::vtk_order_for_write(cb.Type());
                 const int* ord = order.empty() ? nullptr : order.data();
                 const std::size_t block_base = p;
                 dispatch_dtype(conn.Dtype(), [&]<class T>() {
@@ -356,7 +356,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             for (const auto cb : rMesh.CellRange()) {
                 const detail::Int64View conn(conn_of(bi++, cb.Conn()));
                 const std::size_t k = cols(cb.Conn());
-                std::vector<int> order = meshio_to_vtk_order(cb.Type());
+                std::vector<int> order = detail::vtk_order_for_write(cb.Type());
                 // Each cell is its count, then its ids: k + 1 lines.
                 vtk_write_int_lines(os, cb.NumCells() * (k + 1), [&](std::size_t i) {
                     const std::size_t r = i / (k + 1);
@@ -373,15 +373,14 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
 
     // Cell types.
     os << "CELL_TYPES " << total_cells << '\n';
-    const auto& tmap = meshio_to_vtk_type();
     std::vector<std::int32_t> ctypes(total_cells);
     std::size_t ci = 0;
     for (const auto cb : rMesh.CellRange()) {
-        auto it = tmap.find(cb.Type());
-        if (it == tmap.end())
+        const auto vtk_type = detail::vtk_type_for_write(cb.Type());
+        if (!vtk_type)
             throw WriteError("Unknown cell type for VTK: " + cb.Type());
         for (std::size_t r = 0; r < cb.NumCells(); ++r)
-            ctypes[ci++] = it->second;
+            ctypes[ci++] = static_cast<std::int32_t>(*vtk_type);
     }
     if (binary) {
         write_be(os, ctypes);

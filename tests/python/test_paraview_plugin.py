@@ -462,3 +462,16 @@ def test_pipeline_filter(tmp_path, ops):
         assert seen.get("cells", 0) == 0
     else:
         assert seen == {"cells": 8}
+
+
+def test_gmsh_p3_triangles_reach_paraview(tmp_path):
+    """roadmap 6.3.2: a Gmsh P3 triangle mesh shows a non-zero cell count."""
+    from meshioplusplus._lagrange import gmsh_lattice
+
+    points = np.array(gmsh_lattice("triangle", 3), dtype=float) / 3
+    mesh = meshioplusplus.Mesh(points, [("triangle10", [list(range(10))])])
+    src = tmp_path / "p3.msh"
+    meshioplusplus.write(src, mesh)
+    assert meshioplusplus.read(src).cells[0].type == "triangle10"
+    seen = _run_pvpython(tmp_path, _COUNTS, src)
+    assert seen == {"points": 10, "cells": 1}

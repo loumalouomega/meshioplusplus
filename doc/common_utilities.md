@@ -80,6 +80,7 @@ Core-private: no installed header names them, so they change freely. The general
 | `fem_kernels.hpp`, `cell_centroids.hpp`, `predicates.hpp`, `expansion.hpp` | Tet volume, scaled-Jacobian corner factors and corner tables; per-cell centroids; exact predicates and expansion arithmetic. |
 | `facet_slots.hpp`, `slot_runs.hpp`, `dtype_table.hpp`, `ndarray_utils.hpp` | `FacetSlotUtils`; the sort-based facet and edge table; `DTypeUtils::Pick`; `NDArrayUtils` owning arrays from vectors. |
 | `typed_view.hpp` | An array's elements as `int64_t` or `double`, the dtype switch hoisted (`DoubleView`, `DoubleSink`). |
+| `vtk_write_cell.hpp`, `vtk_hex_order.hpp` | The VTK cell type and node order a VTK writer writes a block as (`vtk_type_for_write`, `vtk_order_for_write`: VTK's own types, and the fixed-order high types as VTK Lagrange cells); VTK 9.1's edge order of higher-order hexahedra across file versions. |
 | `data_plumbing.hpp`, `subset_gather.hpp`, `staged_block.hpp` | Row plumbing of the topology operations (`compact_points_by_mask`, `replicate_parent_rows`, `append_rows`); the points-and-point_data gather `build_cell_subset` and `clean` share; an unchanged block staged and emitted. |
 | `always_inline.hpp` | `MIO_ALWAYS_INLINE` and `MIO_ALWAYS_INLINE_LAMBDA`, for a share the instruction gate shows moved its caller's code generation. |
 | `text_cursor.hpp`, `chunked_parse.hpp`, `row_writer.hpp`, `open_source.hpp`, `cow_source.hpp` | Text readers' lines, tokens and numbers; numbers parsed in parallel; ASCII rows formatted in parallel and streamed in order; a reader's file through `FileSource`; copy-on-write file bytes. |
@@ -120,7 +121,8 @@ Under `src/python/meshioplusplus/`.
 | `_helpers.py` | Format dispatch and registration (`register_format`, `read`, `write`, extension lookup). |
 | `_fallback.py` | Whether a declined C++ fast path may fall back to its Python twin: `core_declined`, `core_op_declined`; `MESHIOPLUSPLUS_STRICT_CORE=1` makes every fallback an error. |
 | `_shims.py` | `plain_shims` and `vtk_xml_shims`, the read and write shims of the format packages that only try one `_core` entry point. |
-| `_common.py`, `_vtk_common.py`, `vtk/_legacy_common.py`, `vti/_vti.py` | Cell-type tables, warnings and XML helpers; the VTK cell conversions; the legacy VTK sections and writer pieces; the lattice reader and writer. |
+| `_common.py`, `_vtk_common.py`, `vtk/_legacy_common.py`, `vti/_vti.py` | Cell-type tables, warnings and XML helpers; the VTK cell conversions (with `FIXED_LAGRANGE`, the fixed-order high types written as VTK Lagrange cells); the legacy VTK sections and writer pieces; the lattice reader and writer. |
+| `_lagrange.py` (C++ twin `formats/lagrange_common.hpp`) | Arbitrary-order Lagrange cells: VTK's node lattice (`vtk_lattice`), Gmsh's (`gmsh_lattice`) and the permutation between them (`gmsh_to_vtk_order`), lattice weights and nodal interpolation. |
 | `_set_remap.py`, `_side_carry.py`, `_regions.py` | The shim-only `point_sets`/`cell_sets` carried through an operation; side regions by containment (the twin of `region_remap.cpp`); region helpers. |
 | `_data_common.py` | The data operations' shared vocabulary. |
 | `_ragged.py`, `_files.py`, `_compressed.py` | Ragged blocks that carry their CSR (`CsrRows`, `csr_of`), a polyhedron block's CSR whatever its storage (`polyhedron_csr`) and the gather of segments laid end to end (`ragged_gather`); buffer and path handling; compressed input. |
