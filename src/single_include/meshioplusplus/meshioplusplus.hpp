@@ -43471,7 +43471,7 @@ std::array<double, 6> tet_dihedral_angles(const Vec3& rA, const Vec3& rB, const 
 /**
  * @file detail/bounding_box_utils.hpp
  * @brief `BoundingBoxUtils`: axis-aligned boxes of point sets, the loop that
- * operations used to write out by hand (doc/geometry_kernels.md, roadmap §8).
+ * operations used to write out by hand (doc/geometry_kernels.md, roadmap §7).
  *
  * A Kratos-style utility class (cf. `Kratos::BoundingBox`): a plain
  * `BoundingBox3` value and static inline members. `FromPoints` starts from the
@@ -48135,7 +48135,7 @@ inline std::string drawing_join_types(const std::vector<std::string>& rSkipped) 
 /**
  * @file detail/dtype_table.hpp
  * @brief `DTypeUtils`: one value per `DType`, read from a table in enumerator
- * order instead of a ten-case `switch` (roadmap §8).
+ * order instead of a ten-case `switch` (roadmap §7).
  *
  * Every format that names element types (netCDF, HDF5, XDMF, VTK, PLY) mapped
  * a `DType` with the same ten-case switch falling back to the `Float64` entry;
@@ -49811,7 +49811,7 @@ SelectionSkin build_selection_skin(const Mesh& rMesh, const std::vector<std::uin
  * @file detail/facet_slots.hpp
  * @brief `FacetSlotUtils`: the slot bookkeeping of the facet tables that
  * `extract_surface`/`extract_skin` (`surface.cpp`) and `smooth`'s boundary
- * pass (`smooth.cpp`) each built (roadmap §8).
+ * pass (`smooth.cpp`) each built (roadmap §7).
  *
  * Both number every facet of every block they scan as one global slot range,
  * block after block, then count each facet's key with `detail::group_facets`.
@@ -51276,7 +51276,7 @@ FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
 /**
  * @file detail/math_utils.hpp
  * @brief `MathUtils`: the small vector and 3x3 algebra that operations used to
- * write out by hand (doc/geometry_kernels.md, roadmap §8).
+ * write out by hand (doc/geometry_kernels.md, roadmap §7).
  *
  * A Kratos-style utility class (`Kratos::MathUtils`): static inline members, no
  * state, called as `MathUtils::Cross(a, b)` in place of the copied block. The
@@ -51438,7 +51438,7 @@ struct MathUtils {
 /**
  * @file detail/geometry_utils.hpp
  * @brief `GeometryUtils`: per-triangle measures that operations used to write
- * out by hand (doc/geometry_kernels.md, roadmap §8).
+ * out by hand (doc/geometry_kernels.md, roadmap §7).
  *
  * A Kratos-style utility class (`Kratos::GeometryUtils`): static inline members
  * over corners already gathered as `Vec3` or as flat `double` triples. Each
@@ -53352,7 +53352,7 @@ void nastran_fill_block(const Mesh& rMesh, std::size_t B, const NastranTypeSpec&
 /**
  * @file detail/ndarray_utils.hpp
  * @brief `NDArrayUtils`: owning 1-D `NDArray`s built from `std::vector`s, the
- * helper half a dozen operations and formats each wrote out (roadmap §8).
+ * helper half a dozen operations and formats each wrote out (roadmap §7).
  *
  * A Kratos-style utility class of static inline members. A core-private
  * header (not installed): no API or ABI surface.
@@ -61541,7 +61541,7 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOp
 // ===== begin src/cpp/src/operations/pipeline_table.hpp =====
 /**
  * @file operations/pipeline_table.hpp
- * @brief The pipeline step tables (roadmap §8): every step's keys, in order.
+ * @brief The pipeline step tables (roadmap §7): every step's keys, in order.
  *
  * A **core-private** header, included by pipeline.cpp only. The Python
  * engine's twin is `_pipeline_table.py`, generated from the same spec.

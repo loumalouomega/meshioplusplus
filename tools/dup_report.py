@@ -20,7 +20,7 @@ files that are tables alone (its ``sonar.cpd.exclusions``). Windows repeated
 more than ``--max-occurrences`` times (long runs of identical table rows) are
 ignored, and so is a window made only of literals and table punctuation: once
 strings and numbers are normalised, two literal tables of the same shape match
-although no entry agrees (roadmap §8). The R binding's C sources are scanned
+although no entry agrees (roadmap §7). The R binding's C sources are scanned
 with the C++ ones, as SonarCloud scans them. Standard library only; it reads
 files and writes nothing unless ``--json`` is given.
 """
@@ -76,7 +76,7 @@ _CPP_KEYWORDS = frozenset(
 
 # What a literal table is made of once strings and numbers are normalised: a
 # window holding almost nothing else is a run of table rows, not copied code
-# (roadmap §8). One token in ten may be something else, so the windows that
+# (roadmap §7). One token in ten may be something else, so the windows that
 # straddle a table's declaration (``const T kName[] = {``) go with its rows.
 # The boolean and null literals of both languages count as literals: an option
 # table's ``{"name", {}, true},`` rows are a table, not code.

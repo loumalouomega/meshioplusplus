@@ -3,7 +3,7 @@
 
 /**
  * @file operations/pipeline_table.hpp
- * @brief The pipeline step tables (roadmap §8): every step's keys, in order.
+ * @brief The pipeline step tables (roadmap §7): every step's keys, in order.
  *
  * A **core-private** header, included by pipeline.cpp only. The Python
  * engine's twin is `_pipeline_table.py`, generated from the same spec.

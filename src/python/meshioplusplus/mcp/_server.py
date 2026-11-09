@@ -58,7 +58,7 @@ def _forward(target):
     is what the SDK turns into the tool's input schema, and its docstring the
     description, so both stay written out; only the body, ``return
     _guard(target, a=a, b=b, ...)`` with every parameter by name, is generated
-    (roadmap §8). ``functools.wraps`` keeps the signature visible through
+    (roadmap §7). ``functools.wraps`` keeps the signature visible through
     ``__wrapped__`` (mcp 2.x) and this module's globals for the string
     annotations (mcp 1.x evaluates them against the wrapper's).
     """

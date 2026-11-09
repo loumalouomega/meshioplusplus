@@ -67,7 +67,7 @@ loop = mp.slice(scan, origin=(0, 0, 2.0), normal=(0, 0, 1), chain=True)
 profiles = mp.sections(scan, direction=(0, 0, 1), offsets=[1.0, 2.0, 3.0], min_length=0.5)
 ```
 
-`sections(mesh, direction, offsets)` slices along a direction at several planes `n . x = offsets[k]` (`n` the unit direction), chains each, and merges them into one line mesh with the Float64 cell data `section:offset` and the chains numbered across all planes; the profiles [`fit_curves`](./roadmap.md#scan-metrology) and the DXF writer read. The walk is the shared `detail/polyline_chain.hpp`; the numpy twin replicates it step for step, pinned by `tests/python/test_slice.py::test_chain_matches_the_numpy_twin`.
+`sections(mesh, direction, offsets)` slices along a direction at several planes `n . x = offsets[k]` (`n` the unit direction), chains each, and merges them into one line mesh with the Float64 cell data `section:offset` and the chains numbered across all planes; the profiles [`fit_curves`](./fit_curves.md) and the DXF writer read. The walk is the shared `detail/polyline_chain.hpp`; the numpy twin replicates it step for step, pinned by `tests/python/test_slice.py::test_chain_matches_the_numpy_twin`.
 
 ## Determinism
 

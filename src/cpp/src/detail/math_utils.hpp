@@ -19,7 +19,7 @@
 /**
  * @file detail/math_utils.hpp
  * @brief `MathUtils`: the small vector and 3x3 algebra that operations used to
- * write out by hand (doc/geometry_kernels.md, roadmap §8).
+ * write out by hand (doc/geometry_kernels.md, roadmap §7).
  *
  * A Kratos-style utility class (`Kratos::MathUtils`): static inline members, no
  * state, called as `MathUtils::Cross(a, b)` in place of the copied block. The

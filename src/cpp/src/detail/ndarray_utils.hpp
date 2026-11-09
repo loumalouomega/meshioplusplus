@@ -19,7 +19,7 @@
 /**
  * @file detail/ndarray_utils.hpp
  * @brief `NDArrayUtils`: owning 1-D `NDArray`s built from `std::vector`s, the
- * helper half a dozen operations and formats each wrote out (roadmap §8).
+ * helper half a dozen operations and formats each wrote out (roadmap §7).
  *
  * A Kratos-style utility class of static inline members. A core-private
  * header (not installed): no API or ABI surface.

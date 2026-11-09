@@ -10,7 +10,7 @@ the docs and the errors give them, and for each key the kind (``number``,
 * ``src/cpp/src/operations/pipeline_table.hpp`` (``pipe_op_table()``,
   ``pipe_v2_steps()``, ``pipe_v2_extra_keys()``), which ``pipeline.cpp`` reads,
 
-so the two step tables are one list (roadmap §8).
+so the two step tables are one list (roadmap §7).
 ``tests/python/test_pipeline_spec.py`` holds the steps' option parsing in
 both languages to the spec's kinds and defaults.
 
@@ -52,7 +52,7 @@ def python_table(spec):
     out = [
         f'"""{_BANNER}',
         "",
-        "The pipeline step tables (roadmap §8). The C++ engine's twin is",
+        "The pipeline step tables (roadmap §7). The C++ engine's twin is",
         'src/cpp/src/operations/pipeline_table.hpp, generated from the same spec."""',
         "",
     ]
@@ -104,7 +104,7 @@ def cpp_table(spec):
         "",
         "/**",
         " * @file operations/pipeline_table.hpp",
-        " * @brief The pipeline step tables (roadmap §8): every step's keys, in order.",
+        " * @brief The pipeline step tables (roadmap §7): every step's keys, in order.",
         " *",
         " * A **core-private** header, included by pipeline.cpp only. The Python",
         " * engine's twin is `_pipeline_table.py`, generated from the same spec.",
