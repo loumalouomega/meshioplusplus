@@ -128,6 +128,14 @@ export class OpsPanel {
 
     // --- pipeline ---------------------------------------------------------
 
+    /** Append operations from another panel (the measuring views) and re-render once. */
+    append(specs: OpSpec[]): void {
+        if (this.busy || specs.length === 0) return;
+        this.ops.push(...specs);
+        this.renderChips();
+        this.callbacks.onChange(this.pipeline);
+    }
+
     private push(spec: OpSpec): void {
         if (this.busy) return;
         this.ops.push(spec);

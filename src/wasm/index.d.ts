@@ -1904,6 +1904,70 @@ export type OpSpec =
       sign?: SdfSign;
       location?: SdfLocation;
       band?: number;
+    }
+  | {
+      /**
+       * Fit primitives to the segment patches, or (with `seeds`, x, y, z
+       * triples) one feature grown from the facets nearest the seeds, written
+       * as patch 0 and the cell region `fit:feature` (the `FitPrimitives`
+       * pipeline step; roadmap 7.1.1).
+       */
+      op: 'fitPrimitives';
+      patchData?: string;
+      tolerance?: number;
+      relative?: boolean;
+      minInlierFraction?: number;
+      types?: string[];
+      maxIterations?: number;
+      region?: string;
+      seeds?: number[];
+      featureAngle?: number;
+      rimAngle?: number;
+      outputRegion?: string;
+      usedPoints?: string;
+      criterion?: string;
+    }
+  | {
+      /**
+       * Elements, dimensions and GD&T tolerances by a JSON spec (the text, or
+       * a path); the mesh gains its element table (the `Measure` step;
+       * roadmap 7.2).
+       */
+      op: 'measure';
+      spec: string;
+      require?: boolean;
+    }
+  | {
+      /**
+       * The signed distance of every point from a reference: a `reference`
+       * file (its fitted `patch`, or its surface), or a measured `element` of
+       * the reference's table or the mesh's own; writes `deviation:distance`
+       * (the `Deviation` step; roadmap 7.4).
+       */
+      op: 'deviation';
+      reference?: string;
+      patch?: number;
+      element?: string;
+      tolerance?: number;
+      minShare?: number;
+      require?: boolean;
+      bins?: number;
+      maxNormalAngle?: number;
+      referenceRegion?: string;
+      register?: boolean;
+    }
+  | {
+      /** Wall thickness per cell, `thickness:distance` (the `Thickness` step; roadmap 7.5). */
+      op: 'thickness';
+      method?: 'ray' | 'sphere' | 'cone';
+      direction?: 'auto' | 'inward' | 'outward';
+      maxDistance?: number;
+      min?: number;
+      region?: string;
+      coneAngle?: number;
+      coneRays?: number;
+      twoSided?: boolean;
+      maxNormalDeviation?: number;
     };
 
 /** Per-operation counters and caveats from a pipeline run. */

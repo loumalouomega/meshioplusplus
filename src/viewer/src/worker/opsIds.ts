@@ -6,14 +6,23 @@
  * small pure module shared by the client and, later, the worker, so both agree.
  *
  * Measured against the bundled block mesh (`quality`, `smooth`, `partition`
- * leave `surface:parent_cell` identical). `clean` is treated as destructive
+ * leave `surface:parent_cell` identical; `measure`, `deviation` and `thickness`
+ * only add data and regions). `clean` is treated as destructive
  * even though it can be a no-op, because it may drop degenerate or duplicate
  * cells; `refine`, `section`, `isosurface`, `voxelize` and `computeSdf` build
  * new cells.
  */
 import type { OpSpec } from './protocol';
 
-const PRESERVING: ReadonlySet<string> = new Set(['quality', 'smooth', 'partition', 'gradient']);
+const PRESERVING: ReadonlySet<string> = new Set([
+    'quality',
+    'smooth',
+    'partition',
+    'gradient',
+    'measure',
+    'deviation',
+    'thickness',
+]);
 
 export function opPreservesCellIds(op: OpSpec): boolean {
     return PRESERVING.has(op.op);

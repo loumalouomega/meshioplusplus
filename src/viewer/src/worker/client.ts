@@ -5,9 +5,11 @@
  * `__VIEWER_EMBEDDED__`, so the wheel-bundled build drops it — and with it the
  * whole WASM binary, which that build has no use for.
  */
+import type { Vector3 } from '../types';
 import type {
     ConvertResult,
     DistributiveOmit,
+    FeatureResult,
     InitResult,
     OpSpec,
     RegionsResult,
@@ -94,6 +96,17 @@ export const applyOps = (
 /** The staged file's regions and blocks, mapped onto the surface of `numSurfaceCells` cells. */
 export const getRegions = (epoch: number, numSurfaceCells: number): Promise<RegionsResult> =>
     request<RegionsResult>({ type: 'regions', epoch, numSurfaceCells });
+
+/**
+ * Fit one feature from `seed` on the surface as drawn (the staged file with
+ * `ops` applied): the measuring panel's click.
+ */
+export const fitFeature = (
+    ops: OpSpec[],
+    seed: Vector3,
+    types: string[],
+    tolerance: number
+): Promise<FeatureResult> => request<FeatureResult>({ type: 'fitFeature', ops, seed, types, tolerance });
 
 /** Convert the staged file (with `ops` applied) to another format. */
 export const convertTo = (

@@ -34,6 +34,7 @@ import type { Vector3 } from '../types';
 import { computeRegions, regionTransfer, writeWithGroups } from './regions';
 import type {
     ArraySummary,
+    FeatureResult,
     MeshMeta,
     OpReport,
     OpSpec,
@@ -45,6 +46,8 @@ import type {
 } from './protocol';
 
 type Module = Awaited<ReturnType<typeof loadMeshioPlusPlus>>;
+type MeshObject = ReturnType<Module['readMeshSelective']>;
+type PrimitiveKind = 'plane' | 'sphere' | 'cylinder' | 'cone' | 'torus';
 
 let mio: Module | null = null;
 
@@ -59,6 +62,13 @@ interface Session {
 }
 
 let session: Session | null = null;
+
+/**
+ * The surface the measuring panel fits on: the open file with the current
+ * pipeline applied, as drawn. Rebuilt only when the file or the pipeline
+ * changes, so a run of clicks reads it once.
+ */
+let featureSurface: { key: string; mesh: MeshObject } | null = null;
 
 /**
  * The dataset page's staged entry — a second, independent slot beside the
@@ -449,6 +459,7 @@ async function handle(request: Request): Promise<void> {
         case 'close': {
             if (session) unlink(m, session.path);
             session = null;
+            featureSurface = null;
             post({ id, type: 'result', kind: 'closed' });
             return;
         }
@@ -515,6 +526,13 @@ async function handle(request: Request): Promise<void> {
             return;
         }
 
+        case 'fitFeature': {
+            post({ id, type: 'progress', stage: 'fit' });
+            const result = fitFeature(m, request.ops, request.seed, request.types, request.tolerance);
+            post({ id, type: 'result', kind: 'feature', ...result }, [result.triangles.buffer as ArrayBuffer]);
+            return;
+        }
+
         case 'evictEntry': {
             if (datasetStage) removeTree(m, datasetStage.dir);
             datasetStage = null;
@@ -522,6 +540,94 @@ async function handle(request: Request): Promise<void> {
             return;
         }
     }
+}
+
+/** The drawn surface (see {@link featureSurface}), read back as a mesh. */
+function displayedSurface(m: Module, ops: OpSpec[]): MeshObject {
+    if (!session) throw new Error('no mesh is open');
+    const key = `${session.path}\n${JSON.stringify(ops)}`;
+    if (featureSurface?.key === key) return featureSurface.mesh;
+    const out = '/feature-surface.vtu';
+    try {
+        m.convertSurfaceOps(session.path, out, ops, { inFormat: session.format, outFormat: 'vtu' });
+        featureSurface = { key, mesh: m.readMeshSelective(out, { format: 'vtu' }) };
+    } finally {
+        unlink(m, out);
+    }
+    return featureSurface.mesh;
+}
+
+/** One number of a `fit:patch_*` row, NaN when the column is absent. */
+function patchValue(mesh: MeshObject, name: string, row = 0): number {
+    const column = mesh.field_data?.[name];
+    return column && column.length > row ? Number(column[row]) : NaN;
+}
+
+/** The triangles of the cells in `ids` (global, block-major), fanned, nine floats each. */
+function featureTriangles(mesh: MeshObject, ids: ArrayLike<number>): Float32Array {
+    const wanted = new Set<number>(Array.from(ids, Number));
+    const out: number[] = [];
+    const p = mesh.points;
+    const dim = mesh.dim;
+    const push = (i: number) => out.push(p[i * dim], p[i * dim + 1], dim > 2 ? p[i * dim + 2] : 0);
+    let first = 0;
+    for (const block of mesh.cells) {
+        const data = block.data;
+        // A polygon block is ragged (rowOffsets); a polyhedron cannot be a
+        // fitted surface cell and only advances the count.
+        const rows = 'rowOffsets' in block ? block.rowOffsets : null;
+        const width = 'nodesPerCell' in block ? block.nodesPerCell : 0;
+        const count = rows
+            ? rows.length - 1
+            : 'cellOffsets' in block
+              ? block.cellOffsets.length - 1
+              : data.length / Math.max(1, width);
+        if (!rows && width < 3) {
+            first += count;
+            continue;
+        }
+        for (let c = 0; c < count; ++c) {
+            if (!wanted.has(first + c)) continue;
+            const lo = rows ? rows[c] : c * width;
+            const hi = rows ? rows[c + 1] : lo + width;
+            for (let k = lo + 1; k + 1 < hi; ++k) {
+                push(Number(data[lo]));
+                push(Number(data[k]));
+                push(Number(data[k + 1]));
+            }
+        }
+        first += count;
+    }
+    return new Float32Array(out);
+}
+
+function fitFeature(
+    m: Module,
+    ops: OpSpec[],
+    seed: Vector3,
+    types: string[],
+    tolerance: number
+): FeatureResult {
+    const surface = displayedSurface(m, ops);
+    const fit = m.fitPrimitives(surface, '', tolerance, true, 0.9, types as PrimitiveKind[], 50, {
+        seeds: [seed],
+        usedPoints: '3sigma',
+    });
+    const mesh = fit.mesh;
+    const region = mesh.regions?.find((r) => r.name === 'fit:feature' && r.kind === 'cell');
+    const params = Array.from(mesh.field_data?.['fit:patch_params'] ?? [], Number).slice(0, 10);
+    return {
+        patchType: patchValue(mesh, 'fit:patch_type'),
+        params,
+        rms: patchValue(mesh, 'fit:patch_rms'),
+        sigma: patchValue(mesh, 'fit:patch_sigma'),
+        formError: patchValue(mesh, 'fit:patch_form_error'),
+        numCells: fit.numFeatureCells,
+        numUsed: patchValue(mesh, 'fit:patch_num_used'),
+        numRejected: patchValue(mesh, 'fit:patch_num_rejected'),
+        triangles: region ? featureTriangles(mesh, region.entries as ArrayLike<number>) : new Float32Array(),
+        warnings: fit.warnings ?? [],
+    };
 }
 
 self.onmessage = async (event: MessageEvent<Request>) => {

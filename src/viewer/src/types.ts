@@ -70,6 +70,41 @@ export interface GroupsState {
     groups: { id: number; name: string; list: 'regions' | 'blocks'; cells: number; visible: boolean; user: boolean }[];
 }
 
+/** The measuring mode's state (roadmap 7.9.1), for the test hook. */
+export interface MeasuringState {
+    /** Whether a plain click fits a feature. */
+    active: boolean;
+    busy: boolean;
+    /** The last fit's refusal, if it failed. */
+    error: string | null;
+    elements: {
+        name: string;
+        kind: string;
+        radius: number;
+        angleDeg: number;
+        sigma: number;
+        formError: number;
+        numCells: number;
+    }[];
+    /** The selected features' names, at most two. */
+    selected: string[];
+    /** The angle and distance between the two selected features. */
+    relation: { a: string; b: string; angleDeg: number | null; distance: number | null; what: string } | null;
+    /** The last deviation or thickness view and what its step reported. */
+    view: {
+        kind: 'deviation' | 'thickness';
+        feature: string | null;
+        tolerance: number | null;
+        method: string | null;
+        shareWithin?: number | null;
+        rms?: number | null;
+        min?: number | null;
+        max?: number | null;
+        mean?: number | null;
+        missed?: number | null;
+    } | null;
+}
+
 /** The viewing tools' state, for the test hook. */
 export interface ViewState {
     parallel: boolean;
@@ -111,4 +146,5 @@ export interface ViewerState {
     groups: GroupsState;
     view: ViewState;
     analysis: AnalysisState;
+    features: MeasuringState;
 }

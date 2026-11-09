@@ -18,6 +18,7 @@ import { Legend } from './render/legend';
 import { initPrefs } from './features/prefs';
 import { type AnalysisController, initAnalysis } from './features/analysis';
 import { type ViewController, initView } from './features/view';
+import { type MeasuringController, initMeasuring } from './features/measuring';
 import { setupOrientationCube } from './render/orientation';
 import { Renderer, SOLID_COLOR, colorKey } from './render/renderer';
 import type { RepresentationMode } from './render/renderer';
@@ -40,10 +41,10 @@ import { Visibility } from './app/visibility';
 import type { RegionsResult } from './worker/protocol';
 import { SCENE_THEMES } from './ui/theme';
 import { opsPreserveCellIds } from './worker/opsIds';
-import type { ArrayEntry, PickInfo, ScalarRange, ViewerStatus } from './types';
+import type { ArrayEntry, PickInfo, ScalarRange, Vector3, ViewerStatus } from './types';
 import type { SurfaceBuffers } from '@meshioplusplus/wasm';
 
-import type { MeshMeta, OpSpec, RenderResult } from './worker/protocol';
+import type { FeatureResult, MeshMeta, OpSpec, RenderResult } from './worker/protocol';
 
 const renderer = new Renderer($('render'));
 const theme = initTheme();
@@ -84,6 +85,15 @@ window.__viewerState = {
         measuring: false,
         measured: null,
         bookmarks: [],
+    },
+    features: {
+        active: false,
+        busy: false,
+        error: null,
+        elements: [],
+        selected: [],
+        relation: null,
+        view: null,
     },
 };
 
@@ -141,6 +151,7 @@ function show3d(
     syncConvertGroups();
     view.attachSurface();
     analysis.attachSurface();
+    measuring.attachSurface();
     surfaceOnlyPolygons =
         !!meta &&
         meta.cellBlocks.length > 0 &&
@@ -318,6 +329,7 @@ const selection: SelectionController = new SelectionController({
     onToolOn: () => {
         setInspecting(false);
         view.setMeasuring(false);
+        measuring.setActive(false);
     },
     onSaveGroup: (name, mask, color) => groups.addUserGroup(name, mask, color),
     onShowAll: () => groups.showAll(),
@@ -367,10 +379,39 @@ const view: ViewController = initView({
     onMeasureOn: () => {
         setInspecting(false);
         selection.setTool('off');
+        measuring.setActive(false);
     },
     notify: (message) => setStatus('ready', message),
     onState: (state) => {
         window.__viewerState.view = state;
+    },
+});
+
+/** Set once the worker module is loaded; the embedded page has no fit. */
+let featureFit: ((seed: Vector3, types: string[], tolerance: number) => Promise<FeatureResult>) | null = null;
+
+const measuring: MeasuringController = initMeasuring({
+    renderer,
+    picker,
+    fit: () => featureFit,
+    append: (ops) => opsPanel.append(ops),
+    colorBy: (location, name) => {
+        const entry =
+            arrays.find((a) => a.location === location && a.name === name && a.component < 0) ??
+            arrays.find((a) => a.location === location && a.name === name);
+        if (!entry) return;
+        const select = $<HTMLSelectElement>('color-by');
+        select.value = colorKey(entry);
+        select.dispatchEvent(new Event('change'));
+    },
+    onModeOn: () => {
+        setInspecting(false);
+        selection.setTool('off');
+        view.setMeasuring(false);
+    },
+    notify: (message) => setStatus('ready', message),
+    onState: (state) => {
+        window.__viewerState.features = state;
     },
 });
 
@@ -452,6 +493,7 @@ $('tool-inspect').addEventListener('click', () => {
     if (inspecting) {
         selection.setTool('off');
         view.setMeasuring(false);
+        measuring.setActive(false);
     }
 });
 $('pick-close').addEventListener('click', () => setInspecting(false));
@@ -655,6 +697,7 @@ function present(
 ): void {
     show3d(result.surface, result.meta, name, keepSelection, idsPreserved);
     opsPanel.showReport(result.report);
+    measuring.showReport(result.report);
 }
 
 let applyOpsImpl: (ops: OpSpec[]) => void = () => {};
@@ -698,8 +741,11 @@ async function boot(): Promise<void> {
         return;
     }
 
-    const { applyOps: apply, convertTo, getRegions, init, openFile } = await import('./worker/client');
+    const { applyOps: apply, convertTo, fitFeature, getRegions, init, openFile } = await import(
+        './worker/client'
+    );
     regionsFetcher = (epoch, cells) => getRegions(epoch, cells);
+    featureFit = (seed, types, tolerance) => fitFeature(opsPanel.pipeline, seed, types, tolerance);
 
     applyOpsImpl = (ops) => {
         opsPanel.setBusy(true);
@@ -718,6 +764,7 @@ async function boot(): Promise<void> {
 
     async function open(file: File): Promise<void> {
         currentFile = file;
+        measuring.reset();
         setStatus('loading', `reading ${file.name}…`);
         try {
             const result = await openFile(file, (stage) =>
