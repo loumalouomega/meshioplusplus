@@ -265,7 +265,101 @@ def files(tmp_path_factory):
     paths["sphere_a"] = str(d / "sphere_a.vtu")
     paths["sphere_b"] = str(d / "sphere_b.vtu")
     mio.write(paths["sphere_a"], mio.icosa_sphere(1.0, 2))
+    paths["sphere_big"] = str(d / "sphere_big.vtu")
+    mio.write(paths["sphere_big"], mio.icosa_sphere(1.02, 2))
+    paths["sphere_dev"] = str(d / "sphere_dev.vtu")
+    try:
+        mio.write(
+            paths["sphere_dev"],
+            mio.deviation(mio.icosa_sphere(1.02, 2), mio.icosa_sphere(1.0, 2)),
+        )
+    except NotImplementedError:  # pragma: no cover - a core-less build
+        mio.write(paths["sphere_dev"], mio.icosa_sphere(1.02, 2))
     mio.write(paths["sphere_b"], mio.icosa_sphere(1.0, 2, center=(1.0, 0.0, 0.0)))
+    paths["chained"] = str(d / "chained.vtu")
+    try:
+        mio.write(
+            paths["chained"],
+            mio.slice(mio.icosa_sphere(1.0, 2), (0, 0, 0.2), (0, 0, 1), chain=True),
+        )
+    except NotImplementedError:  # pragma: no cover - a core-less build
+        pass
+    paths["fitted"] = str(d / "fitted.vtu")
+    try:
+        mio.write(
+            paths["fitted"],
+            mio.fit_primitives(mio.segment(mio.extract_skin(mio.box((2, 2, 2))))),
+        )
+    except NotImplementedError:  # pragma: no cover - a core-less build
+        pass
+    paths["box_skin"] = str(d / "box_skin.vtu")
+    paths["box_solid"] = str(d / "box_solid.vtu")
+    try:
+        skin = mio.box_surface((3, 3, 3))
+        mio.write(paths["box_skin"], skin)
+        mio.write(paths["box_solid"], mio.fit_cad_iterate(skin, backend="native"))
+    except NotImplementedError:  # pragma: no cover - a core-less build
+        pass
+    paths["block"] = str(d / "block.vtu")
+    paths["block_spec"] = str(d / "block_spec.json")
+    paths["measured"] = str(d / "measured.vtu")
+    blk = mio.Mesh(
+        np.array(
+            [
+                [0, 0, 0],
+                [2, 0, 0],
+                [2, 3, 0],
+                [0, 3, 0],
+                [0, 0, 4],
+                [2, 0, 4],
+                [2, 3, 4],
+                [0, 3, 4],
+            ],
+            dtype=float,
+        ),
+        [
+            (
+                "quad",
+                np.array(
+                    [
+                        [0, 3, 2, 1],
+                        [4, 5, 6, 7],
+                        [0, 4, 7, 3],
+                        [1, 2, 6, 5],
+                        [0, 1, 5, 4],
+                        [3, 7, 6, 2],
+                    ]
+                ),
+            )
+        ],
+    )
+    blk.regions = [
+        mio.Region(n, "cell", np.array([k]))
+        for k, n in enumerate(["bottom", "top", "xmin", "xmax", "ymin", "ymax"])
+    ]
+    mio.write(paths["block"], blk)
+    import json as _json
+
+    with open(paths["block_spec"], "w") as f:
+        _json.dump(
+            {
+                "elements": [
+                    {"name": "A", "fit": "plane", "region": "bottom"},
+                    {"name": "B", "fit": "plane", "region": "xmax"},
+                    {"name": "C", "fit": "plane", "region": "ymin"},
+                    {"name": "T", "fit": "plane", "region": "top"},
+                ],
+                "dimensions": [{"type": "distance", "between": ["A", "T"]}],
+                "tolerances": [
+                    {"type": "perpendicularity", "feature": "B", "datum": "A"}
+                ],
+            },
+            f,
+        )
+    try:
+        mio.write(paths["measured"], mio.measure(blk, paths["block_spec"])[0])
+    except NotImplementedError:  # pragma: no cover - a core-less build
+        pass
     paths["dir"] = str(d)
     return paths
 
@@ -327,6 +421,40 @@ CASES = [
         lambda f: ["register", f["moved"], f["grid"], "--json"],
     ),
     (
+        "register_auto",
+        lambda f: [
+            "register",
+            f["sphere_big"],
+            f["sphere_a"],
+            "--initial",
+            "auto",
+            "--symmetric-check",
+            "--adaptive-trim",
+            "3",
+            "--json",
+        ],
+    ),
+    (
+        "register_landmarks",
+        lambda f: [
+            "register-landmarks",
+            "0,0,0;1,0,0;0,2,0",
+            "1,2,3;2,2,3;1,4,3",
+            "--json",
+        ],
+    ),
+    ("symmetry_plane", lambda f: ["symmetry-plane", f["sphere_a"], "--json"]),
+    (
+        "deviation_register",
+        lambda f: [
+            "deviation",
+            f["sphere_b"],
+            f["sphere_a"],
+            "--register",
+            "--json",
+        ],
+    ),
+    (
         "find_intersections_clean",
         lambda f: ["find-intersections", f["sphere_a"], "--json"],
     ),
@@ -343,6 +471,46 @@ CASES = [
         ],
     ),
     ("thickness", lambda f: ["thickness", f["sphere_a"], "--json"]),
+    ("fit_curves", lambda f: ["fit-curves", f["chained"], "--json"]),
+    (
+        "silhouette",
+        lambda f: [
+            "silhouette",
+            f["sphere_a"],
+            "--normal",
+            "1,2,3",
+            "--clearance",
+            "0.05",
+            "--json",
+        ],
+    ),
+    (
+        "thickness_sphere",
+        lambda f: [
+            "thickness",
+            f["sphere_a"],
+            "--method",
+            "sphere",
+            "--two-sided",
+            "--max-normal-deviation",
+            "60",
+            "--json",
+        ],
+    ),
+    (
+        "thickness_cone",
+        lambda f: [
+            "thickness",
+            f["sphere_a"],
+            "--method",
+            "cone",
+            "--cone-angle",
+            "20",
+            "--cone-rays",
+            "8",
+            "--json",
+        ],
+    ),
     (
         "thickness_clearance",
         lambda f: [
@@ -354,6 +522,34 @@ CASES = [
             "inward",
             "--min",
             "0.5",
+            "--json",
+        ],
+    ),
+    (
+        "deviation",
+        lambda f: [
+            "deviation",
+            f["sphere_big"],
+            f["sphere_a"],
+            "--tolerance",
+            "0.05",
+            "--bins",
+            "8",
+            "--json",
+        ],
+    ),
+    (
+        "deviation_gate",
+        lambda f: [
+            "deviation",
+            f["sphere_big"],
+            f["sphere_a"],
+            "--tolerance",
+            "0.001",
+            "--min-share",
+            "0.5",
+            "--max-normal-angle",
+            "180",
             "--json",
         ],
     ),
@@ -390,6 +586,41 @@ CASES = [
 
 # Verbs that write a file: each CLI gets its own output path.
 WRITING = [
+    (
+        "exaggerate",
+        lambda f, out: [
+            "exaggerate",
+            f["sphere_dev"],
+            out + ".vtu",
+            "--scale",
+            "5",
+            "--json",
+        ],
+    ),
+    (
+        "colorize",
+        lambda f, out: [
+            "colorize",
+            f["sphere_dev"],
+            out + ".vtu",
+            "--field",
+            "deviation:distance",
+            "--steps",
+            "4",
+            "--json",
+        ],
+    ),
+    (
+        "deviation_regions",
+        lambda f, out: [
+            "deviation-regions",
+            f["sphere_dev"],
+            out + ".vtu",
+            "--tolerance",
+            "0.01",
+            "--json",
+        ],
+    ),
     (
         "extrude",
         lambda f, out: [
@@ -429,6 +660,21 @@ WRITING = [
         ],
     ),
     (
+        "mirror_auto",
+        lambda f, out: [
+            "mirror",
+            f["sphere_a"],
+            out + ".vtu",
+            "--plane",
+            "auto",
+            "--json",
+        ],
+    ),
+    (
+        "auto_align",
+        lambda f, out: ["auto-align", f["sphere_b"], out + ".vtu", "--json"],
+    ),
+    (
         "feature_edges",
         lambda f, out: ["feature-edges", f["grid"], out + ".vtu", "--json"],
     ),
@@ -452,6 +698,115 @@ WRITING = [
             "--record-stencil",
             "--json",
         ],
+    ),
+    (
+        "measure",
+        lambda f, out: ["measure", f["block"], f["block_spec"], out + ".vtu", "--json"],
+    ),
+    (
+        "align_datums",
+        lambda f, out: [
+            "align-datums",
+            f["measured"],
+            out + ".vtu",
+            "--primary",
+            "A",
+            "--secondary",
+            "B",
+            "--origin",
+            "C",
+            "--json",
+        ],
+    ),
+    (
+        "deviation_element",
+        lambda f, out: [
+            "deviation",
+            f["block"],
+            f["measured"],
+            "--element",
+            "T",
+            "--json",
+        ],
+    ),
+    (
+        "remove_islands",
+        lambda f, out: ["remove-islands", f["sphere_a"], out + ".vtu", "--json"],
+    ),
+    (
+        "flip_normals",
+        lambda f, out: ["flip-normals", f["sphere_a"], out + ".vtu", "--json"],
+    ),
+    (
+        "clip",
+        lambda f, out: [
+            "clip",
+            f["sphere_a"],
+            out + ".vtu",
+            "--origin",
+            "0,0,0.1",
+            "--normal",
+            "0,0,1",
+            "--json",
+        ],
+    ),
+    (
+        "offset_surface",
+        lambda f, out: [
+            "offset-surface",
+            f["sphere_a"],
+            out + ".vtu",
+            "--distance",
+            "0.05",
+            "--json",
+        ],
+    ),
+    (
+        "thicken",
+        lambda f, out: [
+            "thicken",
+            f["sphere_a"],
+            out + ".vtu",
+            "--thickness",
+            "0.05",
+            "--side",
+            "both",
+            "--json",
+        ],
+    ),
+    (
+        "hollow",
+        lambda f, out: [
+            "hollow",
+            f["sphere_a"],
+            out + ".vtu",
+            "--wall",
+            "0.05",
+            "--json",
+        ],
+    ),
+    (
+        "constrain_primitives",
+        lambda f, out: ["constrain-primitives", f["fitted"], out + ".vtu", "--json"],
+    ),
+    (
+        "face_support",
+        lambda f, out: ["face-support", f["box_solid"], f["box_skin"], "--json"],
+    ),
+    (
+        "fit_cad_iterate",
+        lambda f, out: [
+            "fit-cad-iterate",
+            f["box_skin"],
+            out + ".vtu",
+            "--backend",
+            "native",
+            "--json",
+        ],
+    ),
+    (
+        "step_elements",
+        lambda f, out: ["step-elements", f["fitted"], out + ".step", "--json"],
     ),
     (
         "fit_primitives",

@@ -78,6 +78,7 @@
 
 // System includes
 #include <cstdint>
+#include <string>
 #include <vector>
 
 // Project includes
@@ -90,11 +91,21 @@ namespace meshioplusplus {
 
 /// Point data (opt-in): Int64 `(n_out,)`, the INPUT point each output point
 /// came from -- itself for an original, its source for a split copy, -1 for
-/// a hole centroid.
+/// a hole centroid or a point a faired fill added.
 inline constexpr const char* kRepairParentPointName = "repair:parent_point";
 /// Cell data (opt-in): Int64 per block, -1 for every input triangle and the
 /// hole's ordinal (0-based, in detection order) for each fill triangle.
 inline constexpr const char* kRepairHoleName = "repair:hole";
+
+/// How `repair` fills a hole (roadmap 7.8.6).
+enum class RepairFillStyle : std::int32_t {
+    Fan = 0,    ///< a fan from the loop's centroid (the default)
+    Flat = 1,   ///< minimum-area triangulation, refined, membrane-faired
+    Curved = 2  ///< the same, thin-plate-faired: it continues the surface's curvature
+};
+
+/// `"fan"`, `"flat"` or `"curved"`; anything else throws naming them.
+MESHIOPLUSPLUS_API RepairFillStyle repair_fill_style_from_name(const std::string& rName);
 
 /// What `repair` should do.
 struct RepairOptions {
@@ -115,6 +126,12 @@ struct RepairOptions {
     /// Weld coincident points within this distance FIRST (through `clean`),
     /// so two stacked-but-distinct points stop reading as a boundary. 0 = off.
     double mWeldTolerance = 0.0;
+    /// How a hole is filled (roadmap 7.8.6): `Flat` and `Curved` follow Liepa
+    /// (2003), the minimum-area triangulation of the loop refined to the
+    /// rim's edge density and faired with the rim fixed (a membrane, or a
+    /// thin plate whose rim rings run into the surface), adding points; see
+    /// `doc/repair.md`.
+    RepairFillStyle mFillStyle = RepairFillStyle::Fan;
 };
 
 /// What `repair` did.

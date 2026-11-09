@@ -1,4 +1,4 @@
-"""The read and write shims many format packages share (roadmap §8).
+"""The read and write shims many format packages share (roadmap §7).
 
 A format package whose shims only try one ``_core`` entry point and fall back
 to its Python twin builds them here::

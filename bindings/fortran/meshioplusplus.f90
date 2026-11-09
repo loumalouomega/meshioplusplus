@@ -75,6 +75,23 @@ module meshioplusplus
     public :: mio_mirror, mio_mirror_report
     public :: mio_find_intersections, mio_find_intersections_report
     public :: mio_thickness, mio_thickness_report
+    public :: mio_deviation, mio_deviation_primitive, mio_deviation_report
+    public :: mio_register_landmarks, mio_find_symmetry_plane, mio_symmetry_plane_report
+    public :: mio_auto_align, mio_auto_align_report, mio_sections
+    public :: mio_fit_curves, mio_fit_curves_report, mio_fit_curves_piece, mio_sketch_piece
+    public :: mio_silhouette, mio_silhouette_report
+    public :: mio_write_step_elements, mio_step_elements_report
+    public :: mio_measure, mio_measure_report, mio_align_datums, mio_measure_element_primitive
+    public :: mio_remove_islands, mio_remove_islands_report
+    public :: mio_flip_normals
+    public :: mio_clip, mio_clip_report
+    public :: mio_offset_surface, mio_thicken, mio_hollow, mio_offset_report
+    public :: mio_constrain_primitives, mio_constrain_primitives_report, mio_constrain_primitives_relation
+    public :: mio_face_support, mio_face_support_report, mio_fit_cad_iterate, mio_fit_cad_iterate_report
+    public :: mio_profile_solid, mio_profile_solid_report
+    public :: mio_deviation_regions, mio_deviation_regions_report, mio_deviation_region_info
+    public :: mio_deviation_region
+    public :: mio_exaggerate, mio_exaggerate_report, mio_colorize, mio_colorize_report
     public :: mio_tetrahedralize, mio_tetrahedralize_report, mio_has_netgen
     public :: mio_tet_mesher_count, mio_tet_mesher_name, mio_tetrahedralize_backend_name
     public :: mio_remesh_quads, mio_remesh_quads_report, mio_quad_remesher_count
@@ -389,7 +406,23 @@ module meshioplusplus
         integer(c_int64_t) :: num_cone = 0
         integer(c_int64_t) :: num_torus = 0
         integer(c_int64_t) :: num_unfitted = 0
-        integer(c_int64_t) :: reserved(5) = 0
+        integer(c_int64_t) :: num_feature_cells = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_primitives_ex_opts` (192 bytes; roadmap 7.1).
+    type, bind(c) :: mio_fit_primitives_ex_opts_t
+        type(mio_fit_primitives_opts_t) :: base
+        type(c_ptr) :: region = c_null_ptr
+        type(c_ptr) :: seeds = c_null_ptr
+        integer(c_int64_t) :: num_seeds = 0
+        real(c_double) :: feature_angle = 30.0_c_double
+        real(c_double) :: rim_angle = 15.0_c_double
+        type(c_ptr) :: output_region = c_null_ptr
+        integer(c_int32_t) :: used_points = 0
+        integer(c_int32_t) :: criterion = 0
+        integer(c_int64_t) :: reserved(6) = 0
     end type
 
     !> Interop mirror of C `mio_fit_cad_opts` (`types` as for fit_primitives;
@@ -846,14 +879,19 @@ module meshioplusplus
         real(c_double) :: threshold = 0.0_c_double
         integer(c_int32_t) :: direction = 0
         integer(c_int32_t) :: attach = 1
-        integer(c_int64_t) :: reserved(4) = 0
+        integer(c_int32_t) :: method = 0
+        integer(c_int32_t) :: two_sided = 0
+        real(c_double) :: cone_angle = 15.0_c_double
+        integer(c_int64_t) :: cone_rays = 16
+        real(c_double) :: max_normal_deviation = 90.0_c_double
     end type
 
     !> `mio_thickness_report` (144 bytes): what `mio_thickness` measured;
-    !> `direction` is 1 (inward) or 2 (outward).
+    !> `direction` is 1 (inward) or 2 (outward), `method` 0 ray, 1 sphere,
+    !> 2 cone; `p2` and `p95` the percentiles of the hits.
     type, bind(c) :: mio_thickness_report
         integer(c_int32_t) :: direction = 0
-        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int32_t) :: method = 0
         integer(c_int64_t) :: num_cells = 0
         integer(c_int64_t) :: num_hit = 0
         integer(c_int64_t) :: num_missed = 0
@@ -865,6 +903,117 @@ module meshioplusplus
         real(c_double) :: min_point(3) = 0.0_c_double
         real(c_double) :: max_distance = 0.0_c_double
         integer(c_int64_t) :: num_warnings = 0
+        real(c_double) :: p2 = 0.0_c_double
+        real(c_double) :: p95 = 0.0_c_double
+        integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> Interop mirror of C `mio_deviation_opts` (88 bytes; roadmap 7.4).
+    type, bind(c) :: mio_deviation_opts_t
+        real(c_double) :: tolerance = 0.0_c_double
+        integer(c_int64_t) :: bins = 20
+        real(c_double) :: range_min = 0.0_c_double
+        real(c_double) :: range_max = 0.0_c_double
+        real(c_double) :: max_normal_angle = 90.0_c_double
+        type(c_ptr) :: reference_region = c_null_ptr
+        integer(c_int32_t) :: attach = 1
+        integer(c_int32_t) :: register_first = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_deviation_report` (176 bytes): what `mio_deviation` measured;
+    !> `percentiles` are the 1st, 5th, 50th, 95th and 99th.
+    type, bind(c) :: mio_deviation_report
+        integer(c_int64_t) :: num_points = 0
+        integer(c_int64_t) :: num_measured = 0
+        integer(c_int64_t) :: num_outside_range = 0
+        integer(c_int64_t) :: num_without_normal = 0
+        real(c_double) :: min = 0.0_c_double
+        real(c_double) :: max = 0.0_c_double
+        real(c_double) :: mean = 0.0_c_double
+        real(c_double) :: rms = 0.0_c_double
+        real(c_double) :: sigma = 0.0_c_double
+        real(c_double) :: percentiles(5) = 0.0_c_double
+        real(c_double) :: share_within = 0.0_c_double
+        real(c_double) :: suggested_range = 0.0_c_double
+        integer(c_int64_t) :: num_bins = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: registered = 0
+        real(c_double) :: registration_rms = 0.0_c_double
+        integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> Interop mirror of C `mio_deviation_regions_opts` (64 bytes; roadmap 7.4.3).
+    type, bind(c) :: mio_deviation_regions_opts_t
+        real(c_double) :: tolerance = 0.0_c_double
+        real(c_double) :: min_area = 0.0_c_double
+        type(c_ptr) :: field = c_null_ptr
+        type(c_ptr) :: prefix = c_null_ptr
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_deviation_regions_report` (72 bytes).
+    type, bind(c) :: mio_deviation_regions_report
+        integer(c_int64_t) :: num_regions = 0
+        integer(c_int64_t) :: num_excess = 0
+        integer(c_int64_t) :: num_missing = 0
+        integer(c_int64_t) :: num_dropped = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_deviation_region_info` (136 bytes): one region; `sign` +1 excess,
+    !> -1 missing material, `bounds` lo x, y, z then hi x, y, z.
+    type, bind(c) :: mio_deviation_region_info
+        integer(c_int64_t) :: sign = 0
+        integer(c_int64_t) :: num_cells = 0
+        real(c_double) :: area = 0.0_c_double
+        real(c_double) :: extreme = 0.0_c_double
+        real(c_double) :: mean = 0.0_c_double
+        real(c_double) :: volume = 0.0_c_double
+        real(c_double) :: centroid(3) = 0.0_c_double
+        real(c_double) :: bounds(6) = 0.0_c_double
+        integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> Interop mirror of C `mio_exaggerate_opts` (64 bytes; roadmap 7.4.4).
+    type, bind(c) :: mio_exaggerate_opts_t
+        type(c_ptr) :: field = c_null_ptr
+        real(c_double) :: scale = 10.0_c_double
+        real(c_double) :: clamp = 0.0_c_double
+        real(c_double) :: smooth_fraction = 0.01_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_exaggerate_report` (64 bytes).
+    type, bind(c) :: mio_exaggerate_report
+        real(c_double) :: clamp = 0.0_c_double
+        real(c_double) :: radius = 0.0_c_double
+        integer(c_int64_t) :: num_moved = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_colorize_opts` (96 bytes; roadmap 7.4.4).
+    type, bind(c) :: mio_colorize_opts_t
+        type(c_ptr) :: field = c_null_ptr
+        type(c_ptr) :: cmap = c_null_ptr
+        real(c_double) :: vmin = 0.0_c_double
+        real(c_double) :: vmax = 0.0_c_double
+        type(c_ptr) :: nan_color = c_null_ptr
+        integer(c_int64_t) :: steps = 0
+        integer(c_int64_t) :: component = -1
+        integer(c_int32_t) :: symmetric = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_colorize_report` (56 bytes): `location` 0 point data, 1 cell data.
+    type, bind(c) :: mio_colorize_report
+        real(c_double) :: vmin = 0.0_c_double
+        real(c_double) :: vmax = 0.0_c_double
+        integer(c_int32_t) :: location = 0
+        integer(c_int32_t) :: reserved32 = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
@@ -1272,7 +1421,7 @@ module meshioplusplus
         integer(c_int32_t) :: fill_holes = 1
         integer(c_int32_t) :: split_non_manifold = 1
         integer(c_int32_t) :: record_provenance = 0
-        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int32_t) :: fill_style = 0  ! roadmap 7.8.6: 0 fan, 1 flat, 2 curved
         integer(c_int64_t) :: max_hole_edges = 10
         real(c_double) :: weld_tolerance = 0.0_c_double
         integer(c_int64_t) :: reserved(5) = 0
@@ -1434,6 +1583,295 @@ module meshioplusplus
         integer(c_int64_t) :: num_pairs = 0
         integer(c_int32_t) :: converged = 0
         integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: num_rejected = 0
+        integer(c_int64_t) :: chosen_candidate = -1
+        integer(c_int64_t) :: num_candidates = 0
+        integer(c_int64_t) :: num_warnings = 0
+    end type
+
+    !> Interop mirror of C `mio_registration_ex_opts` (264 bytes; roadmap 7.3).
+    type, bind(c) :: mio_registration_ex_opts_t
+        type(mio_registration_opts_t) :: base
+        integer(c_int32_t) :: initial_mode = 0
+        integer(c_int32_t) :: symmetric_check = 0
+        real(c_double) :: symmetric_tolerance = 0.05_c_double
+        real(c_double) :: adaptive_trim = 0.0_c_double
+        type(c_ptr) :: source_region = c_null_ptr
+        type(c_ptr) :: target_region = c_null_ptr
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_curves_opts` (88 bytes; roadmap 7.6.2).
+    type, bind(c) :: mio_fit_curves_opts_t
+        real(c_double) :: tolerance = 0.0_c_double
+        real(c_double) :: snap_angle = 0.0_c_double
+        real(c_double) :: normal(3) = 0.0_c_double
+        integer(c_int64_t) :: min_arc_points = 4
+        real(c_double) :: min_arc_sweep = 5.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_fit_curves_report` (96 bytes): what `mio_fit_curves` found.
+    type, bind(c) :: mio_fit_curves_report
+        integer(c_int64_t) :: num_pieces = 0
+        integer(c_int64_t) :: num_lines = 0
+        integer(c_int64_t) :: num_arcs = 0
+        integer(c_int64_t) :: num_circles = 0
+        integer(c_int64_t) :: num_frames = 0
+        real(c_double) :: max_residual = 0.0_c_double
+        real(c_double) :: tolerance = 0.0_c_double
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_silhouette_opts` (104 bytes; roadmap 7.6.3).
+    type, bind(c) :: mio_silhouette_opts_t
+        real(c_double) :: normal(3) = [0.0_c_double, 0.0_c_double, 1.0_c_double]
+        real(c_double) :: clearance = 0.0_c_double
+        real(c_double) :: round_angle = 180.0_c_double
+        integer(c_int64_t) :: arc_segments = 64
+        integer(c_int32_t) :: extrude = 0
+        integer(c_int32_t) :: reserved32 = 0
+        real(c_double) :: merge_tolerance = 1.0e-9_c_double
+        type(c_ptr) :: region = c_null_ptr
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_silhouette_report` (104 bytes): what `mio_silhouette` found.
+    type, bind(c) :: mio_silhouette_report
+        integer(c_int64_t) :: num_loops = 0
+        integer(c_int64_t) :: num_outer = 0
+        integer(c_int64_t) :: num_holes = 0
+        integer(c_int64_t) :: num_triangles = 0
+        real(c_double) :: area = 0.0_c_double
+        real(c_double) :: perimeter = 0.0_c_double
+        real(c_double) :: min_height = 0.0_c_double
+        real(c_double) :: max_height = 0.0_c_double
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_clip_report` (72 bytes; roadmap 7.8.3).
+    type, bind(c) :: mio_clip_report
+        integer(c_int64_t) :: num_kept = 0
+        integer(c_int64_t) :: num_split = 0
+        integer(c_int64_t) :: num_cap_triangles = 0
+        integer(c_int64_t) :: num_loops = 0
+        integer(c_int64_t) :: num_open_chains = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> Interop mirror of C `mio_profile_feature` (96 bytes; roadmap 7.7.4).
+    type, bind(c) :: mio_profile_feature_t
+        integer(c_int32_t) :: kind = 0
+        integer(c_int32_t) :: symmetric = 0
+        real(c_double) :: distance = 0
+        real(c_double) :: angle_deg = 360
+        real(c_double) :: radius = 0
+        real(c_double) :: axis_origin(3) = 0
+        real(c_double) :: axis_direction(3) = [0.0_c_double, 0.0_c_double, 1.0_c_double]
+        integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> Interop mirror of C `mio_profile_solid_report` (64 bytes).
+    type, bind(c) :: mio_profile_solid_report
+        real(c_double) :: volume = 0
+        real(c_double) :: area = 0
+        integer(c_int64_t) :: num_faces = 0
+        integer(c_int32_t) :: valid = 0
+        integer(c_int32_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_constrain_primitives_opts` (96 bytes; roadmap 7.7.3).
+    type, bind(c) :: mio_constrain_primitives_opts_t
+        real(c_double) :: face_tolerance = 0
+        real(c_double) :: angle_tolerance_deg = -1
+        real(c_double) :: distance_tolerance = -1
+        real(c_double) :: min_fraction = -1
+        type(c_ptr) :: force = c_null_ptr
+        integer(c_int64_t) :: num_force = 0
+        type(c_ptr) :: forbid = c_null_ptr
+        integer(c_int64_t) :: num_forbid = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_constrain_primitives_report` (64 bytes).
+    type, bind(c) :: mio_constrain_primitives_report
+        integer(c_int64_t) :: num_constrained = 0
+        integer(c_int64_t) :: num_groups = 0
+        integer(c_int64_t) :: num_relations = 0
+        integer(c_int64_t) :: num_unmet = 0
+        real(c_double) :: face_tolerance = 0
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> Interop mirror of C `mio_face_support_opts` (64 bytes; roadmap 7.7.1).
+    type, bind(c) :: mio_face_support_opts_t
+        real(c_double) :: tolerance = 0
+        real(c_double) :: measured_share = 0.9_c_double
+        real(c_double) :: inferred_share = 0.1_c_double
+        type(c_ptr) :: hole_data = c_null_ptr
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_face_support_report` (64 bytes).
+    type, bind(c) :: mio_face_support_report
+        integer(c_int64_t) :: num_measured = 0
+        integer(c_int64_t) :: num_partial = 0
+        integer(c_int64_t) :: num_inferred = 0
+        integer(c_int64_t) :: num_faces = 0
+        real(c_double) :: share_within = 0
+        real(c_double) :: tolerance = 0
+        integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_cad_iterate_opts` (112 bytes; roadmap 7.7.2).
+    type, bind(c) :: mio_fit_cad_iterate_opts_t
+        real(c_double) :: segment_tolerance = 0
+        real(c_double) :: fit_tolerance = 0
+        real(c_double) :: target_within = 0
+        real(c_double) :: target_explained = 0
+        real(c_double) :: refine_factor = 0.25_c_double
+        integer(c_int32_t) :: part_class = 0
+        integer(c_int32_t) :: backend = 0
+        integer(c_int64_t) :: max_rounds = 4
+        integer(c_int64_t) :: worst_faces = 3
+        integer(c_int64_t) :: min_patch_cells = 1
+        integer(c_int64_t) :: reserved(5) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_cad_iterate_report` (96 bytes).
+    type, bind(c) :: mio_fit_cad_iterate_report
+        integer(c_int64_t) :: num_rounds = 0
+        integer(c_int64_t) :: best_round = 0
+        integer(c_int32_t) :: target_met = 0
+        integer(c_int32_t) :: stop_reason = 0
+        real(c_double) :: target_within = 0
+        real(c_double) :: share_within = 0
+        real(c_double) :: explained = 0
+        real(c_double) :: hausdorff_max = 0
+        integer(c_int64_t) :: num_faces = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_offset_report` (64 bytes; roadmap 7.8.4).
+    type, bind(c) :: mio_offset_report
+        integer(c_int64_t) :: num_not_visible = 0
+        integer(c_int64_t) :: num_clamped = 0
+        integer(c_int64_t) :: num_folded = 0
+        integer(c_int64_t) :: num_rim_quads = 0
+        real(c_double) :: max_move = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> Interop mirror of C `mio_remove_islands_opts` (64 bytes; roadmap 7.8.1).
+    type, bind(c) :: mio_remove_islands_opts_t
+        integer(c_int32_t) :: connectivity = 0
+        integer(c_int32_t) :: relative = 1
+        real(c_double) :: min_diagonal = 0.01_c_double
+        real(c_double) :: min_area = 0.0_c_double
+        integer(c_int64_t) :: min_cells = 0
+        integer(c_int32_t) :: dry_run = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> `mio_remove_islands_report` (64 bytes).
+    type, bind(c) :: mio_remove_islands_report
+        integer(c_int64_t) :: num_components = 0
+        integer(c_int64_t) :: num_removed = 0
+        integer(c_int64_t) :: num_cells_removed = 0
+        integer(c_int64_t) :: num_points_removed = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_measure_report` (80 bytes): what `mio_measure` found (roadmap 7.2).
+    type, bind(c) :: mio_measure_report
+        integer(c_int64_t) :: num_elements = 0
+        integer(c_int64_t) :: num_dimensions = 0
+        integer(c_int64_t) :: num_tolerances = 0
+        integer(c_int64_t) :: num_fail = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(5) = 0
+    end type
+
+    !> `mio_step_elements_report` (88 bytes): what `mio_write_step_elements` wrote.
+    type, bind(c) :: mio_step_elements_report
+        integer(c_int64_t) :: num_planes = 0
+        integer(c_int64_t) :: num_spheres = 0
+        integer(c_int64_t) :: num_cylinders = 0
+        integer(c_int64_t) :: num_cones = 0
+        integer(c_int64_t) :: num_tori = 0
+        integer(c_int64_t) :: num_skipped = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_sketch_piece` (104 bytes): `type` 1 line, 2 arc, 3 circle; 2-D in its frame.
+    type, bind(c) :: mio_sketch_piece
+        integer(c_int32_t) :: type = 0
+        integer(c_int32_t) :: reserved32 = 0
+        real(c_double) :: start(2) = 0.0_c_double
+        real(c_double) :: end(2) = 0.0_c_double
+        real(c_double) :: centre(2) = 0.0_c_double
+        real(c_double) :: radius = 0.0_c_double
+        real(c_double) :: sweep = 0.0_c_double
+        real(c_double) :: residual = 0.0_c_double
+        integer(c_int64_t) :: num_points = 0
+        integer(c_int64_t) :: chain = 0
+        integer(c_int64_t) :: frame = 0
+    end type
+
+    !> Interop mirror of C `mio_symmetry_plane_opts` (112 bytes; roadmap 7.3.6).
+    type, bind(c) :: mio_symmetry_plane_opts_t
+        real(c_double) :: seed_origin(3) = 0.0_c_double
+        real(c_double) :: seed_normal(3) = 0.0_c_double
+        real(c_double) :: tolerance = 0.0_c_double
+        real(c_double) :: min_share = 0.9_c_double
+        integer(c_int64_t) :: max_samples = 4000
+        integer(c_int64_t) :: max_iterations = 50
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_symmetry_plane_report` (128 bytes): the plane `mio_find_symmetry_plane` found.
+    type, bind(c) :: mio_symmetry_plane_report
+        real(c_double) :: origin(3) = 0.0_c_double
+        real(c_double) :: normal(3) = 0.0_c_double
+        real(c_double) :: rms = 0.0_c_double
+        real(c_double) :: share = 0.0_c_double
+        real(c_double) :: tolerance = 0.0_c_double
+        integer(c_int64_t) :: chosen_candidate = 0
+        integer(c_int64_t) :: num_candidates = 0
+        integer(c_int64_t) :: num_warnings = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_auto_align_opts` (64 bytes; roadmap 7.3.5).
+    type, bind(c) :: mio_auto_align_opts_t
+        real(c_double) :: angle_tolerance = 10.0_c_double
+        integer(c_int64_t) :: subdivisions = 3
+        type(c_ptr) :: region = c_null_ptr
+        integer(c_int32_t) :: rotate_vector_data = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> `mio_auto_align_report` (256 bytes): how `mio_auto_align` posed the mesh;
+    !> `mode` 0 face, 1 axis; `matrix` row-major.
+    type, bind(c) :: mio_auto_align_report
+        real(c_double) :: matrix(16) = 0.0_c_double
+        integer(c_int32_t) :: mode = 0
+        integer(c_int32_t) :: reserved32 = 0
+        real(c_double) :: primary(3) = 0.0_c_double
+        real(c_double) :: secondary(3) = 0.0_c_double
+        real(c_double) :: share = 0.0_c_double
+        real(c_double) :: face_share = 0.0_c_double
+        real(c_double) :: axis_share = 0.0_c_double
+        real(c_double) :: opening_area = 0.0_c_double
+        integer(c_int64_t) :: num_warnings = 0
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
@@ -2063,7 +2501,10 @@ module meshioplusplus
         real(c_double) :: feature_angle = 30.0_c_double
         type(c_ptr) :: frozen = c_null_ptr
         integer(c_int64_t) :: num_frozen = 0
-        integer(c_int64_t) :: reserved(4) = 0
+        real(c_double) :: max_deviation = 0     ! roadmap 7.8.5; 0 = unset
+        real(c_double) :: coverage = 0          ! 0 = 0.999
+        integer(c_int64_t) :: max_faces = 0     ! 0 = unset
+        integer(c_int64_t) :: reserved(1) = 0
     end type
 
     !> Interop mirror of C `mio_decimate_volume_opts`. Field order and types
@@ -3366,6 +3807,27 @@ module meshioplusplus
             type(c_ptr) :: r
         end function
 
+        function c_mio_slice_ex(h, origin, normal, record_parent_ids, chain, min_length) &
+                bind(c, name="mio_slice_ex") result(r)
+            import :: c_ptr, c_int, c_double
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: origin(*), normal(*)
+            integer(c_int), value :: record_parent_ids, chain
+            real(c_double), value :: min_length
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_sections(h, direction, offsets, n_offsets, min_length, &
+                                record_parent_ids) bind(c, name="mio_sections") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_double
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: direction(*), offsets(*)
+            integer(c_int64_t), value :: n_offsets
+            real(c_double), value :: min_length
+            integer(c_int), value :: record_parent_ids
+            type(c_ptr) :: r
+        end function
+
         function c_mio_isosurface(h, array_name, isovalues, n_isovalues, component, &
                                   record_parent_ids) &
                 bind(c, name="mio_isosurface") result(r)
@@ -3515,6 +3977,15 @@ module meshioplusplus
             import :: mio_fit_primitives_opts_t
             type(mio_fit_primitives_opts_t), intent(out) :: opts
         end subroutine
+
+        function c_mio_fit_primitives_ex(h, opts, report) &
+                bind(c, name="mio_fit_primitives_ex") result(r)
+            import :: c_ptr, mio_fit_primitives_ex_opts_t, mio_fit_primitives_report_t
+            type(c_ptr), value :: h
+            type(mio_fit_primitives_ex_opts_t), intent(in) :: opts
+            type(mio_fit_primitives_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
 
         function c_mio_fit_primitives(h, opts, report) &
                 bind(c, name="mio_fit_primitives") result(r)
@@ -3969,6 +4440,229 @@ module meshioplusplus
             type(mio_eigenmode_opts_t), intent(in) :: opts
             type(mio_eigenmode_report_t), intent(out) :: report
             type(c_ptr) :: r
+        end function
+
+        function c_mio_register_rigid_ex(source, target, opts, report) &
+                bind(c, name="mio_register_rigid_ex") result(r)
+            import :: c_ptr, c_int, mio_registration_ex_opts_t, mio_registration_report_t
+            type(c_ptr), value :: source, target
+            type(mio_registration_ex_opts_t), intent(in) :: opts
+            type(mio_registration_report_t), intent(out) :: report
+            integer(c_int) :: r
+        end function
+
+        function c_mio_register_landmarks(source, target, weights, n, matrix, residuals, rms) &
+                bind(c, name="mio_register_landmarks") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_double
+            type(c_ptr), value :: source, target, weights
+            integer(c_int64_t), value :: n
+            real(c_double), intent(out) :: matrix(16)
+            type(c_ptr), value :: residuals
+            real(c_double), intent(out) :: rms
+            integer(c_int) :: r
+        end function
+
+        function c_mio_fit_curves(h, opts, report) bind(c, name="mio_fit_curves") result(out)
+            import :: c_ptr, mio_fit_curves_opts_t, mio_fit_curves_report
+            type(c_ptr), value :: h
+            type(mio_fit_curves_opts_t), intent(in) :: opts
+            type(mio_fit_curves_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_silhouette(h, opts, report) bind(c, name="mio_silhouette") result(out)
+            import :: c_ptr, mio_silhouette_opts_t, mio_silhouette_report
+            type(c_ptr), value :: h
+            type(mio_silhouette_opts_t), intent(in) :: opts
+            type(mio_silhouette_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_clip(h, origin, normal, keep_below, cap, report) &
+                bind(c, name="mio_clip") result(out)
+            import :: c_ptr, c_double, c_int32_t, mio_clip_report
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: origin(3), normal(3)
+            integer(c_int32_t), value :: keep_below, cap
+            type(mio_clip_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_profile_features_from_text(text, out, capacity) &
+                bind(c, name="mio_profile_features_from_text") result(n)
+            import :: c_char, c_int64_t, mio_profile_feature_t
+            character(kind=c_char), dimension(*), intent(in) :: text
+            type(mio_profile_feature_t), intent(inout) :: out(*)
+            integer(c_int64_t), value :: capacity
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_profile_solid(h, feats, n, step, provider, deflection, scan, report) &
+                bind(c, name="mio_profile_solid") result(out)
+            import :: c_ptr, c_char, c_int64_t, c_double, mio_profile_feature_t, &
+                      mio_profile_solid_report
+            type(c_ptr), value :: h, scan
+            type(mio_profile_feature_t), intent(in) :: feats(*)
+            integer(c_int64_t), value :: n
+            character(kind=c_char), dimension(*), intent(in) :: step, provider
+            real(c_double), value :: deflection
+            type(mio_profile_solid_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_constrain_primitives(h, opts, report) &
+                bind(c, name="mio_constrain_primitives") result(out)
+            import :: c_ptr, mio_constrain_primitives_opts_t, mio_constrain_primitives_report
+            type(c_ptr), value :: h
+            type(mio_constrain_primitives_opts_t), intent(in) :: opts
+            type(mio_constrain_primitives_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_constrain_primitives_relation(k, a, b, kind, angle, dist, forced) &
+                bind(c, name="mio_constrain_primitives_relation") result(st)
+            import :: c_int, c_int64_t, c_int32_t, c_double
+            integer(c_int64_t), value :: k
+            integer(c_int64_t), intent(out) :: a, b
+            integer(c_int32_t), intent(out) :: kind, forced
+            real(c_double), intent(out) :: angle, dist
+            integer(c_int) :: st
+        end function
+
+        function c_mio_face_support(solid, scan, opts, report) &
+                bind(c, name="mio_face_support") result(out)
+            import :: c_ptr, mio_face_support_opts_t, mio_face_support_report
+            type(c_ptr), value :: solid, scan
+            type(mio_face_support_opts_t), intent(in) :: opts
+            type(mio_face_support_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_fit_cad_iterate(scan, step_path, opts, report) &
+                bind(c, name="mio_fit_cad_iterate") result(out)
+            import :: c_ptr, c_char, mio_fit_cad_iterate_opts_t, mio_fit_cad_iterate_report
+            type(c_ptr), value :: scan
+            character(kind=c_char), dimension(*), intent(in) :: step_path
+            type(mio_fit_cad_iterate_opts_t), intent(in) :: opts
+            type(mio_fit_cad_iterate_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_offset_surface(h, distance, smooth, report) &
+                bind(c, name="mio_offset_surface") result(out)
+            import :: c_ptr, c_double, c_int32_t, mio_offset_report
+            type(c_ptr), value :: h
+            real(c_double), value :: distance
+            integer(c_int32_t), value :: smooth
+            type(mio_offset_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_thicken(h, thickness, side, smooth, report) &
+                bind(c, name="mio_thicken") result(out)
+            import :: c_ptr, c_double, c_int32_t, mio_offset_report
+            type(c_ptr), value :: h
+            real(c_double), value :: thickness
+            integer(c_int32_t), value :: side, smooth
+            type(mio_offset_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_hollow(h, wall, smooth, report) bind(c, name="mio_hollow") result(out)
+            import :: c_ptr, c_double, c_int32_t, mio_offset_report
+            type(c_ptr), value :: h
+            real(c_double), value :: wall
+            integer(c_int32_t), value :: smooth
+            type(mio_offset_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_flip_normals(h, region, n) bind(c, name="mio_flip_normals") result(out)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: region
+            integer(c_int64_t), intent(out) :: n
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_remove_islands(h, opts, report) bind(c, name="mio_remove_islands") &
+                result(out)
+            import :: c_ptr, mio_remove_islands_opts_t, mio_remove_islands_report
+            type(c_ptr), value :: h
+            type(mio_remove_islands_opts_t), intent(in) :: opts
+            type(mio_remove_islands_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_measure(h, spec, report) bind(c, name="mio_measure") result(out)
+            import :: c_ptr, c_char, mio_measure_report
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: spec
+            type(mio_measure_report), intent(out) :: report
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_measure_report_json(buf, buflen) bind(c, name="mio_measure_report_json") &
+                result(n)
+            import :: c_char, c_int64_t
+            character(c_char), intent(out) :: buf(*)
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_align_datums(h, primary, secondary, origin, matrix) &
+                bind(c, name="mio_align_datums") result(out)
+            import :: c_ptr, c_char, c_double
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: primary, secondary, origin
+            real(c_double), intent(out) :: matrix(16)
+            type(c_ptr) :: out
+        end function
+
+        function c_mio_measure_element_primitive(h, name, type, params) &
+                bind(c, name="mio_measure_element_primitive") result(s)
+            import :: c_ptr, c_char, c_int, c_int32_t, c_double
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: name
+            integer(c_int32_t), intent(out) :: type
+            real(c_double), intent(out) :: params(10)
+            integer(c_int) :: s
+        end function
+
+        function c_mio_write_step_elements(path, h, patches, n, segments, report) &
+                bind(c, name="mio_write_step_elements") result(s)
+            import :: c_ptr, c_char, c_int, c_int64_t, mio_step_elements_report
+            character(kind=c_char), dimension(*), intent(in) :: path
+            type(c_ptr), value :: h
+            integer(c_int64_t), dimension(*), intent(in) :: patches
+            integer(c_int64_t), value :: n, segments
+            type(mio_step_elements_report), intent(out) :: report
+            integer(c_int) :: s
+        end function
+
+        function c_mio_fit_curves_piece(index, piece) bind(c, name="mio_fit_curves_piece") &
+                result(r)
+            import :: c_int, c_int64_t, mio_sketch_piece
+            integer(c_int64_t), value :: index
+            type(mio_sketch_piece), intent(out) :: piece
+            integer(c_int) :: r
+        end function
+
+        function c_mio_find_symmetry_plane(h, opts, report) &
+                bind(c, name="mio_find_symmetry_plane") result(r)
+            import :: c_ptr, c_int, mio_symmetry_plane_opts_t, mio_symmetry_plane_report
+            type(c_ptr), value :: h
+            type(mio_symmetry_plane_opts_t), intent(in) :: opts
+            type(mio_symmetry_plane_report), intent(out) :: report
+            integer(c_int) :: r
+        end function
+
+        function c_mio_auto_align(h, opts, report) bind(c, name="mio_auto_align") result(out)
+            import :: c_ptr, mio_auto_align_opts_t, mio_auto_align_report
+            type(c_ptr), value :: h
+            type(mio_auto_align_opts_t), intent(in) :: opts
+            type(mio_auto_align_report), intent(out) :: report
+            type(c_ptr) :: out
         end function
 
         function c_mio_register_rigid(source, target, opts, report) &
@@ -4744,6 +5438,15 @@ module meshioplusplus
                 bind(c, name="mio_decimate_result_max_error_applied") result(v)
             import :: c_ptr, c_double
             type(c_ptr), value :: r
+            real(c_double) :: v
+        end function
+
+        function c_mio_decimate_result_deviation(r, met, rounds) &
+                bind(c, name="mio_decimate_result_deviation") result(v)
+            import :: c_ptr, c_double, c_int32_t, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int32_t), intent(out) :: met
+            integer(c_int64_t), intent(out) :: rounds
             real(c_double) :: v
         end function
 
@@ -5876,6 +6579,61 @@ module meshioplusplus
             type(c_ptr), value :: mesh, target
             type(mio_thickness_opts_t), intent(in) :: opts
             type(mio_thickness_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_deviation(scan, reference, opts, report) &
+                bind(c, name="mio_deviation") result(h)
+            import :: c_ptr, mio_deviation_opts_t, mio_deviation_report
+            type(c_ptr), value :: scan, reference
+            type(mio_deviation_opts_t), intent(in) :: opts
+            type(mio_deviation_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_deviation_primitive(scan, ptype, params, opts, report) &
+                bind(c, name="mio_deviation_primitive") result(h)
+            import :: c_ptr, c_int32_t, c_double, mio_deviation_opts_t, mio_deviation_report
+            type(c_ptr), value :: scan
+            integer(c_int32_t), value :: ptype
+            real(c_double), intent(in) :: params(10)
+            type(mio_deviation_opts_t), intent(in) :: opts
+            type(mio_deviation_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_deviation_regions(mesh, opts, report) &
+                bind(c, name="mio_deviation_regions") result(h)
+            import :: c_ptr, mio_deviation_regions_opts_t, mio_deviation_regions_report
+            type(c_ptr), value :: mesh
+            type(mio_deviation_regions_opts_t), intent(in) :: opts
+            type(mio_deviation_regions_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_deviation_region_get(index, info) &
+                bind(c, name="mio_deviation_region_get") result(st)
+            import :: c_int64_t, c_int, mio_deviation_region_info
+            integer(c_int64_t), value :: index
+            type(mio_deviation_region_info), intent(out) :: info
+            integer(c_int) :: st
+        end function
+
+        function c_mio_exaggerate(mesh, opts, report) &
+                bind(c, name="mio_exaggerate") result(h)
+            import :: c_ptr, mio_exaggerate_opts_t, mio_exaggerate_report
+            type(c_ptr), value :: mesh
+            type(mio_exaggerate_opts_t), intent(in) :: opts
+            type(mio_exaggerate_report), intent(out) :: report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_colorize(mesh, opts, report) &
+                bind(c, name="mio_colorize") result(h)
+            import :: c_ptr, mio_colorize_opts_t, mio_colorize_report
+            type(c_ptr), value :: mesh
+            type(mio_colorize_opts_t), intent(in) :: opts
+            type(mio_colorize_report), intent(out) :: report
             type(c_ptr) :: h
         end function
 
@@ -8232,22 +8990,719 @@ contains
     !> input is simplexified first (marching tetrahedra); shared cut points are
     !> deduped so the section is watertight. `record_parent_ids` (default
     !> .false.) attaches a slice:parent_cell cell_data array.
-    function mesh_slice(self, origin, normal, record_parent_ids, stat, errmsg) result(out)
+    !> `chain` (roadmap 7.6.1) walks a surface's line section into polylines
+    !> with section:chain and section:closed cell data, dropping chains shorter
+    !> than `min_length`.
+    function mesh_slice(self, origin, normal, record_parent_ids, stat, errmsg, chain, &
+                        min_length) result(out)
         class(mio_mesh), intent(in) :: self
         real(real64), intent(in) :: origin(3), normal(3)
         logical, intent(in), optional :: record_parent_ids
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: chain
+        real(real64), intent(in), optional :: min_length
         type(mio_mesh) :: out
-        integer(c_int) :: crec
+        integer(c_int) :: crec, cchain
+        real(c_double) :: cmin
         crec = 0
         if (present(record_parent_ids)) then
             if (record_parent_ids) crec = 1
         end if
-        out%handle = c_mio_slice(self%handle, real(origin, c_double), &
-                                 real(normal, c_double), crec)
+        cchain = 0
+        if (present(chain)) then
+            if (chain) cchain = 1
+        end if
+        cmin = 0.0_c_double
+        if (present(min_length)) cmin = real(min_length, c_double)
+        out%handle = c_mio_slice_ex(self%handle, real(origin, c_double), &
+                                    real(normal, c_double), crec, cchain, cmin)
         if (.not. c_associated(out%handle)) then
             call handle_failure('slice', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Lines, arcs and circles from the chains of a chained line mesh (roadmap
+    !> 7.6.2; doc/fit_curves.md); read the pieces with `mio_fit_curves_piece`.
+    function mio_fit_curves(sections, tolerance, snap_angle, normal, min_arc_points, &
+                            min_arc_sweep, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: sections
+        real(real64), intent(in), optional :: tolerance, snap_angle, normal(3), min_arc_sweep
+        integer, intent(in), optional :: min_arc_points
+        type(mio_fit_curves_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_fit_curves_opts_t) :: opts
+        type(mio_fit_curves_report) :: rep
+        type(mio_sketch_piece) :: probe
+        if (c_sizeof(opts) /= 88_c_size_t .or. c_sizeof(rep) /= 96_c_size_t .or. &
+            c_sizeof(probe) /= 104_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: fit_curves layout mismatch'
+            error stop 1
+        end if
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(snap_angle)) opts%snap_angle = real(snap_angle, c_double)
+        if (present(normal)) opts%normal = real(normal, c_double)
+        if (present(min_arc_points)) opts%min_arc_points = int(min_arc_points, c_int64_t)
+        if (present(min_arc_sweep)) opts%min_arc_sweep = real(min_arc_sweep, c_double)
+        out%handle = c_mio_fit_curves(sections%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('fit_curves', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The outline of a surface (or a volume mesh's skin) seen along `normal`,
+    !> with its holes, optionally offset by `clearance` or made a prism
+    !> (`extrude`) (roadmap 7.6.3; doc/silhouette.md).
+    function mio_silhouette(mesh, normal, clearance, round_angle, arc_segments, extrude, &
+                            region, merge_tolerance, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in), optional :: normal(3), clearance, round_angle, merge_tolerance
+        integer, intent(in), optional :: arc_segments
+        logical, intent(in), optional :: extrude
+        character(*), intent(in), optional :: region
+        type(mio_silhouette_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_silhouette_opts_t) :: opts
+        type(mio_silhouette_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: region_buf
+        if (c_sizeof(opts) /= 104_c_size_t .or. c_sizeof(rep) /= 104_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: silhouette layout mismatch'
+            error stop 1
+        end if
+        if (present(normal)) opts%normal = real(normal, c_double)
+        if (present(clearance)) opts%clearance = real(clearance, c_double)
+        if (present(round_angle)) opts%round_angle = real(round_angle, c_double)
+        if (present(arc_segments)) opts%arc_segments = int(arc_segments, c_int64_t)
+        if (present(extrude)) then
+            if (extrude) opts%extrude = 1
+        end if
+        if (present(merge_tolerance)) opts%merge_tolerance = real(merge_tolerance, c_double)
+        if (present(region)) then
+            region_buf = trim(region)//c_null_char
+            opts%region = c_loc(region_buf(1:1))
+        end if
+        out%handle = c_mio_silhouette(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('silhouette', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Cut a surface by the plane through `origin` normal to `normal`, keep
+    !> the side below (`keep_below`, default) or above, and cap the cut's
+    !> closed loops (`cap`, default) (roadmap 7.8.3).
+    function mio_clip(mesh, origin, normal, keep_below, cap, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in) :: origin(3), normal(3)
+        logical, intent(in), optional :: keep_below, cap
+        type(mio_clip_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_clip_report) :: rep
+        integer(c_int32_t) :: kb, cp
+        if (c_sizeof(rep) /= 72_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: clip layout mismatch'
+            error stop 1
+        end if
+        kb = 1
+        cp = 1
+        if (present(keep_below)) then
+            if (.not. keep_below) kb = 0
+        end if
+        if (present(cap)) then
+            if (.not. cap) cp = 0
+        end if
+        out%handle = c_mio_clip(mesh%handle, real(origin, c_double), real(normal, c_double), &
+                                kb, cp, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('clip', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Build a fit_curves sketch into a solid by `features` (text, ';'-separated:
+    !> 'extrude:D[:symmetric]', 'revolve:OX,OY,OZ:DX,DY,DZ[:ANGLE]', 'fillet:R',
+    !> 'chamfer:D', 'shell:W') through a CAD provider (roadmap 7.7.4).
+    function mio_profile_solid(sketch, features, step_path, scan, provider, deflection, report, &
+                               stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: sketch
+        character(*), intent(in) :: features
+        character(*), intent(in), optional :: step_path, provider
+        type(mio_mesh), intent(in), optional :: scan
+        real(real64), intent(in), optional :: deflection
+        type(mio_profile_solid_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_profile_feature_t), allocatable :: feats(:)
+        type(mio_profile_feature_t) :: probe(1)
+        type(mio_profile_solid_report) :: rep
+        integer(c_int64_t) :: n
+        type(c_ptr) :: scan_h
+        real(c_double) :: defl
+        character(:), allocatable :: step, prov
+        if (c_sizeof(probe(1)) /= 96_c_size_t .or. c_sizeof(rep) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: profile_solid layout mismatch'
+            error stop 1
+        end if
+        n = c_mio_profile_features_from_text(c_str(features), probe, 0_c_int64_t)
+        if (n < 0) then
+            call handle_failure('profile_solid', mio_error_message(), stat, errmsg)
+            return
+        end if
+        allocate (feats(max(n, 1_c_int64_t)))
+        n = c_mio_profile_features_from_text(c_str(features), feats, n)
+        step = ''
+        if (present(step_path)) step = step_path
+        prov = ''
+        if (present(provider)) prov = provider
+        defl = 0
+        if (present(deflection)) defl = real(deflection, c_double)
+        scan_h = c_null_ptr
+        if (present(scan)) scan_h = scan%handle
+        out%handle = c_mio_profile_solid(sketch%handle, feats, n, c_str(step), c_str(prov), defl, &
+                                         scan_h, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('profile_solid', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Fit related primitives of a fit_primitives skin together under control
+    !> (roadmap 7.7.3). `force` and `forbid` are 3 x n arrays of (patch a,
+    !> patch b, relation: 0 coaxial, 1 parallel, 2 perpendicular, 3 equal
+    !> radius); patches by segment:patch label. Read the relations applied
+    !> with mio_constrain_primitives_relation (1-based).
+    function mio_constrain_primitives(mesh, face_tolerance, angle_tolerance, distance_tolerance, &
+                                      min_fraction, force, forbid, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in), optional :: face_tolerance, angle_tolerance
+        real(real64), intent(in), optional :: distance_tolerance, min_fraction
+        integer(int64), intent(in), optional :: force(:, :), forbid(:, :)
+        type(mio_constrain_primitives_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_constrain_primitives_opts_t) :: opts
+        type(mio_constrain_primitives_report) :: rep
+        integer(c_int64_t), allocatable, target :: fo(:), fb(:)
+        if (c_sizeof(opts) /= 96_c_size_t .or. c_sizeof(rep) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: constrain_primitives layout mismatch'
+            error stop 1
+        end if
+        if (present(face_tolerance)) opts%face_tolerance = real(face_tolerance, c_double)
+        if (present(angle_tolerance)) opts%angle_tolerance_deg = real(angle_tolerance, c_double)
+        if (present(distance_tolerance)) opts%distance_tolerance = real(distance_tolerance, c_double)
+        if (present(min_fraction)) opts%min_fraction = real(min_fraction, c_double)
+        if (present(force)) then
+            if (size(force) > 0) then
+                fo = int(reshape(force, [size(force)]), c_int64_t)
+                opts%force = c_loc(fo(1))
+                opts%num_force = int(size(force, 2), c_int64_t)
+            end if
+        end if
+        if (present(forbid)) then
+            if (size(forbid) > 0) then
+                fb = int(reshape(forbid, [size(forbid)]), c_int64_t)
+                opts%forbid = c_loc(fb(1))
+                opts%num_forbid = int(size(forbid, 2), c_int64_t)
+            end if
+        end if
+        out%handle = c_mio_constrain_primitives(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('constrain_primitives', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The k-th (1-based) relation the last mio_constrain_primitives applied.
+    subroutine mio_constrain_primitives_relation(k, patch_a, patch_b, kind, angle_deg, distance, &
+                                                 forced, stat)
+        integer(int64), intent(in) :: k
+        integer(int64), intent(out) :: patch_a, patch_b
+        integer, intent(out) :: kind
+        real(real64), intent(out) :: angle_deg, distance
+        logical, intent(out) :: forced
+        integer, intent(out), optional :: stat
+        integer(c_int64_t) :: a, b
+        integer(c_int32_t) :: kd, fc
+        real(c_double) :: ang, dst
+        integer(c_int) :: st
+        st = c_mio_constrain_primitives_relation(int(k - 1_int64, c_int64_t), a, b, kd, ang, dst, fc)
+        patch_a = int(a, int64)
+        patch_b = int(b, int64)
+        kind = int(kd)
+        angle_deg = real(ang, real64)
+        distance = real(dst, real64)
+        forced = fc /= 0
+        if (present(stat)) stat = int(st)
+    end subroutine
+
+    !> Class each face of a fit_cad re-mesh by the scan's support: measured,
+    !> partial or inferred (roadmap 7.7.1).
+    function mio_face_support(solid, scan, tolerance, measured_share, inferred_share, hole_data, &
+                              report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: solid, scan
+        real(real64), intent(in), optional :: tolerance, measured_share, inferred_share
+        character(*), intent(in), optional :: hole_data
+        type(mio_face_support_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_face_support_opts_t) :: opts
+        type(mio_face_support_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: hole_buf
+        if (c_sizeof(opts) /= 64_c_size_t .or. c_sizeof(rep) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: face_support layout mismatch'
+            error stop 1
+        end if
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(measured_share)) opts%measured_share = real(measured_share, c_double)
+        if (present(inferred_share)) opts%inferred_share = real(inferred_share, c_double)
+        if (present(hole_data)) then
+            hole_buf = trim(hole_data)//c_null_char
+            opts%hole_data = c_loc(hole_buf(1:1))
+        end if
+        out%handle = c_mio_face_support(solid%handle, scan%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('face_support', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Segment, fit and build a solid in rounds towards a target (roadmap
+    !> 7.7.2); `part_class` 'any', 'analytic', 'cast' or 'freeform', `backend`
+    !> 'auto', 'occt' or 'native'. Returns the best round's solid.
+    function mio_fit_cad_iterate(scan, step_path, part_class, target_within, target_explained, &
+                                 segment_tolerance, fit_tolerance, max_rounds, worst_faces, &
+                                 refine_factor, backend, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: scan
+        character(*), intent(in), optional :: step_path, part_class, backend
+        real(real64), intent(in), optional :: target_within, target_explained
+        real(real64), intent(in), optional :: segment_tolerance, fit_tolerance, refine_factor
+        integer(int64), intent(in), optional :: max_rounds, worst_faces
+        type(mio_fit_cad_iterate_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_fit_cad_iterate_opts_t) :: opts
+        type(mio_fit_cad_iterate_report) :: rep
+        if (c_sizeof(opts) /= 112_c_size_t .or. c_sizeof(rep) /= 96_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: fit_cad_iterate layout mismatch'
+            error stop 1
+        end if
+        if (present(part_class)) then
+            select case (part_class)
+            case ('any')
+                opts%part_class = 0
+            case ('analytic')
+                opts%part_class = 1
+            case ('cast')
+                opts%part_class = 2
+            case ('freeform')
+                opts%part_class = 3
+            case default
+                call handle_failure('fit_cad_iterate', 'meshio++: fit_cad_iterate: part_class ' // &
+                                    'must be any, analytic, cast or freeform', stat, errmsg)
+                return
+            end select
+        end if
+        if (present(backend)) then
+            select case (backend)
+            case ('auto')
+                opts%backend = 0
+            case ('occt')
+                opts%backend = 1
+            case ('native')
+                opts%backend = 2
+            case default
+                call handle_failure('fit_cad_iterate', 'meshio++: fit_cad_iterate: backend ' // &
+                                    'must be auto, occt or native', stat, errmsg)
+                return
+            end select
+        end if
+        if (present(target_within)) opts%target_within = real(target_within, c_double)
+        if (present(target_explained)) opts%target_explained = real(target_explained, c_double)
+        if (present(segment_tolerance)) opts%segment_tolerance = real(segment_tolerance, c_double)
+        if (present(fit_tolerance)) opts%fit_tolerance = real(fit_tolerance, c_double)
+        if (present(refine_factor)) opts%refine_factor = real(refine_factor, c_double)
+        if (present(max_rounds)) opts%max_rounds = int(max_rounds, c_int64_t)
+        if (present(worst_faces)) opts%worst_faces = int(worst_faces, c_int64_t)
+        if (present(step_path)) then
+            out%handle = c_mio_fit_cad_iterate(scan%handle, c_str(step_path), opts, rep)
+        else
+            out%handle = c_mio_fit_cad_iterate(scan%handle, c_str(''), opts, rep)
+        end if
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('fit_cad_iterate', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Offset a triangle and quad surface along its points' offset directions
+    !> by `distance` (roadmap 7.8.4); `kind` 0 offset, 1 thicken, 2 hollow.
+    function mio_offset_kind_(mesh, kind, amount, side, smooth_iterations, report, stat, &
+                              errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        integer, intent(in) :: kind
+        real(real64), intent(in) :: amount
+        character(*), intent(in), optional :: side
+        integer, intent(in), optional :: smooth_iterations
+        type(mio_offset_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_offset_report) :: rep
+        integer(c_int32_t) :: sm, sd
+        character(*), parameter :: names(3) = [character(14) :: 'offset_surface', 'thicken', &
+                                                'hollow']
+        if (c_sizeof(rep) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: offset layout mismatch'
+            error stop 1
+        end if
+        sm = 0
+        if (present(smooth_iterations)) sm = int(smooth_iterations, c_int32_t)
+        sd = 0
+        if (present(side)) then
+            select case (side)
+            case ('inward')
+                sd = 0
+            case ('outward')
+                sd = 1
+            case ('both')
+                sd = 2
+            case default
+                call handle_failure('thicken', 'meshio++: thicken: side must be inward, ' // &
+                                    'outward or both', stat, errmsg)
+                return
+            end select
+        end if
+        select case (kind)
+        case (0)
+            out%handle = c_mio_offset_surface(mesh%handle, real(amount, c_double), sm, rep)
+        case (1)
+            out%handle = c_mio_thicken(mesh%handle, real(amount, c_double), sd, sm, rep)
+        case default
+            out%handle = c_mio_hollow(mesh%handle, real(amount, c_double), sm, rep)
+        end select
+        if (.not. c_associated(out%handle)) then
+            call handle_failure(trim(names(kind + 1)), mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Move each point of a triangle and quad surface along its offset
+    !> direction so every face's plane moves by `distance` (roadmap 7.8.4).
+    function mio_offset_surface(mesh, distance, smooth_iterations, report, stat, errmsg) &
+            result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in) :: distance
+        integer, intent(in), optional :: smooth_iterations
+        type(mio_offset_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        out = mio_offset_kind_(mesh, 0, distance, smooth_iterations=smooth_iterations, &
+                               report=report, stat=stat, errmsg=errmsg)
+    end function
+
+    !> A closed shell `thickness` thick from a surface; `side` is 'inward'
+    !> (default), 'outward' or 'both' (roadmap 7.8.4).
+    function mio_thicken(mesh, thickness, side, smooth_iterations, report, stat, errmsg) &
+            result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in) :: thickness
+        character(*), intent(in), optional :: side
+        integer, intent(in), optional :: smooth_iterations
+        type(mio_offset_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        out = mio_offset_kind_(mesh, 1, thickness, side, smooth_iterations, report, stat, errmsg)
+    end function
+
+    !> A closed surface with an inner, reversed wall `wall` inside it (roadmap 7.8.4).
+    function mio_hollow(mesh, wall, smooth_iterations, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in) :: wall
+        integer, intent(in), optional :: smooth_iterations
+        type(mio_offset_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        out = mio_offset_kind_(mesh, 2, wall, smooth_iterations=smooth_iterations, &
+                               report=report, stat=stat, errmsg=errmsg)
+    end function
+
+    !> Reverse the winding of every cell, or of the cell region `region`
+    !> (roadmap 7.8.2), with no point moved.
+    function mio_flip_normals(mesh, region, num_flipped, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in), optional :: region
+        integer(int64), intent(out), optional :: num_flipped
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int64_t) :: n
+        if (present(region)) then
+            out%handle = c_mio_flip_normals(mesh%handle, c_str(region), n)
+        else
+            out%handle = c_mio_flip_normals(mesh%handle, c_str(''), n)
+        end if
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('flip_normals', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_flipped)) num_flipped = int(n, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Remove the small connected components of `mesh` (roadmap 7.8.1):
+    !> `connectivity` 'edge' (default) or 'point'; `dry_run` labels instead.
+    function mio_remove_islands(mesh, connectivity, min_diagonal, min_area, min_cells, &
+                                relative, dry_run, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in), optional :: connectivity
+        real(real64), intent(in), optional :: min_diagonal, min_area
+        integer, intent(in), optional :: min_cells
+        logical, intent(in), optional :: relative, dry_run
+        type(mio_remove_islands_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_remove_islands_opts_t) :: opts
+        type(mio_remove_islands_report) :: rep
+        if (c_sizeof(opts) /= 64_c_size_t .or. c_sizeof(rep) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: remove_islands layout mismatch'
+            error stop 1
+        end if
+        if (present(connectivity)) then
+            select case (trim(connectivity))
+            case ('edge')
+                opts%connectivity = 0
+            case ('point')
+                opts%connectivity = 1
+            case default
+                call handle_failure('remove_islands', "connectivity must be edge or point", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(min_diagonal)) opts%min_diagonal = real(min_diagonal, c_double)
+        if (present(min_area)) opts%min_area = real(min_area, c_double)
+        if (present(min_cells)) opts%min_cells = int(min_cells, c_int64_t)
+        if (present(relative)) then
+            if (.not. relative) opts%relative = 0
+        end if
+        if (present(dry_run)) then
+            if (dry_run) opts%dry_run = 1
+        end if
+        out%handle = c_mio_remove_islands(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('remove_islands', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Measure `mesh` by the JSON spec `spec` (roadmap 7.2; doc/measure.md):
+    !> elements, dimensions and GD&T tolerances. `report_json` receives the
+    !> JSON report.
+    function mio_measure(mesh, spec, report, report_json, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: spec
+        type(mio_measure_report), intent(out), optional :: report
+        character(:), allocatable, intent(out), optional :: report_json
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_measure_report) :: rep
+        character(c_char), allocatable :: buf(:)
+        integer(c_int64_t) :: n
+        if (c_sizeof(rep) /= 80_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: measure layout mismatch'
+            error stop 1
+        end if
+        out%handle = c_mio_measure(mesh%handle, c_str(spec), rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('measure', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        if (present(report_json)) then
+            report_json = ''
+            allocate (buf(1))
+            n = c_mio_measure_report_json(buf, 0_c_int64_t)
+            if (n > 0) then
+                deallocate (buf)
+                allocate (buf(int(n) + 1))
+                n = c_mio_measure_report_json(buf, n + 1)
+                if (n > 0) report_json = from_c_buf(buf, int(n))
+            end if
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4); `matrix`
+    !> receives the 4 x 4 (row i, column j as matrix(i, j)).
+    function mio_align_datums(mesh, primary, secondary, origin, matrix, stat, errmsg) &
+            result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: primary, secondary
+        character(*), intent(in), optional :: origin
+        real(real64), intent(out), optional :: matrix(4, 4)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        real(c_double) :: m(16)
+        integer :: i, j
+        if (present(origin)) then
+            out%handle = c_mio_align_datums(mesh%handle, c_str(primary), c_str(secondary), &
+                                            c_str(origin), m)
+        else
+            out%handle = c_mio_align_datums(mesh%handle, c_str(primary), c_str(secondary), &
+                                            c_str(''), m)
+        end if
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('align_datums', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(matrix)) then
+            do i = 1, 4
+                do j = 1, 4
+                    matrix(i, j) = real(m(4 * (i - 1) + j), real64)
+                end do
+            end do
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The element `name` of a measured mesh as a fitted primitive's type and
+    !> ten parameters, for a deviation reference (roadmap 7.4.2).
+    subroutine mio_measure_element_primitive(mesh, name, type, params, stat, errmsg)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: name
+        integer, intent(out) :: type
+        real(real64), intent(out) :: params(10)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int32_t) :: t
+        real(c_double) :: p(10)
+        if (c_mio_measure_element_primitive(mesh%handle, c_str(name), t, p) /= 0) then
+            call handle_failure('measure_element_primitive', mio_error_message(), stat, errmsg)
+            return
+        end if
+        type = int(t)
+        params = real(p, real64)
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Write the fitted primitives of `mesh` (`mio_segment`, then
+    !> `mio_fit_primitives`) to a STEP file as exact geometry: bounded planes,
+    !> balls, lidded cylinders, frusta and tori (roadmap 7.6.5). `patches`
+    !> selects patch labels (all fitted ones when absent).
+    subroutine mio_write_step_elements(path, mesh, patches, segments, report, stat, errmsg)
+        character(*), intent(in) :: path
+        type(mio_mesh), intent(in) :: mesh
+        integer(int64), intent(in), optional :: patches(:)
+        integer, intent(in), optional :: segments
+        type(mio_step_elements_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_step_elements_report) :: rep
+        integer(c_int64_t), allocatable :: ids(:)
+        integer(c_int64_t) :: seg
+        if (c_sizeof(rep) /= 88_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: step_elements layout mismatch'
+            error stop 1
+        end if
+        if (present(patches)) then
+            ids = int(patches, c_int64_t)
+        else
+            allocate (ids(1))
+            ids = 0
+        end if
+        seg = 0
+        if (present(segments)) seg = int(segments, c_int64_t)
+        if (present(patches)) then
+            if (c_mio_write_step_elements(c_str(path), mesh%handle, ids, &
+                                          int(size(patches), c_int64_t), seg, rep) /= 0) then
+                call handle_failure('write_step_elements', mio_error_message(), stat, errmsg)
+                return
+            end if
+        else if (c_mio_write_step_elements(c_str(path), mesh%handle, ids, 0_c_int64_t, seg, &
+                                           rep) /= 0) then
+            call handle_failure('write_step_elements', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Piece `index` (1-based) of this thread's last `mio_fit_curves` call.
+    subroutine mio_fit_curves_piece(index, piece, stat, errmsg)
+        integer, intent(in) :: index
+        type(mio_sketch_piece), intent(out) :: piece
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        if (c_mio_fit_curves_piece(int(index - 1, c_int64_t), piece) /= 0) then
+            call handle_failure('fit_curves', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Chained sections of a surface at parallel planes `n . x = offsets(k)`
+    !> (`n` the unit `direction`), merged into one line mesh with section:offset,
+    !> section:chain and section:closed cell data (roadmap 7.6.1).
+    function mio_sections(mesh, direction, offsets, min_length, record_parent_ids, stat, &
+                          errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in) :: direction(3), offsets(:)
+        real(real64), intent(in), optional :: min_length
+        logical, intent(in), optional :: record_parent_ids
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        real(c_double) :: offs(max(1, size(offsets))), cmin
+        integer(c_int) :: crec
+        offs = 0.0_c_double
+        if (size(offsets) > 0) offs(1:size(offsets)) = real(offsets, c_double)
+        cmin = 0.0_c_double
+        if (present(min_length)) cmin = real(min_length, c_double)
+        crec = 0
+        if (present(record_parent_ids)) then
+            if (record_parent_ids) crec = 1
+        end if
+        out%handle = c_mio_sections(mesh%handle, real(direction, c_double), offs, &
+                                    int(size(offsets), c_int64_t), cmin, crec)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('sections', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)
@@ -9005,7 +10460,9 @@ contains
     function mesh_fit_primitives(self, patch_data, tolerance, relative, &
                                  min_inlier_fraction, types, max_iterations, num_patches, &
                                  num_plane, num_sphere, num_cylinder, num_cone, num_torus, &
-                                 num_unfitted, stat, errmsg) result(out)
+                                 num_unfitted, stat, errmsg, region, seeds, feature_angle, &
+                                 rim_angle, output_region, used_points, &
+                                 num_feature_cells, criterion) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: patch_data
         real(real64), intent(in), optional :: tolerance, min_inlier_fraction
@@ -9016,24 +10473,86 @@ contains
         integer(int64), intent(out), optional :: num_cylinder, num_cone, num_torus, num_unfitted
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        character(*), intent(in), optional :: region, output_region, used_points, criterion
+        real(real64), intent(in), optional :: seeds(:, :)
+        real(real64), intent(in), optional :: feature_angle, rim_angle
+        integer(int64), intent(out), optional :: num_feature_cells
         type(mio_mesh) :: out
         type(c_ptr) :: res
-        type(mio_fit_primitives_opts_t) :: opts
+        type(mio_fit_primitives_ex_opts_t) :: xopts
         type(mio_fit_primitives_report_t) :: report
-        character(kind=c_char, len=STRBUF_LEN), target :: patch_buf
+        character(kind=c_char, len=STRBUF_LEN), target :: patch_buf, region_buf, out_buf
+        real(c_double), allocatable, target :: seed_buf(:)
 
-        call c_mio_fit_primitives_opts_init(opts)
+        if (c_sizeof(xopts) /= 192_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: fit_primitives_ex layout mismatch'
+            error stop 1
+        end if
+        call c_mio_fit_primitives_opts_init(xopts%base)
         if (present(patch_data)) then
             patch_buf = trim(patch_data)//c_null_char
-            opts%patch_data = c_loc(patch_buf(1:1))
+            xopts%base%patch_data = c_loc(patch_buf(1:1))
         end if
-        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(tolerance)) xopts%base%tolerance = real(tolerance, c_double)
         if (present(min_inlier_fraction)) &
-            opts%min_inlier_fraction = real(min_inlier_fraction, c_double)
-        if (present(relative)) opts%relative = merge(1_c_int32_t, 0_c_int32_t, relative)
-        if (present(types)) opts%types = int(types, c_int32_t)
-        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int64_t)
-        res = c_mio_fit_primitives(self%handle, opts, report)
+            xopts%base%min_inlier_fraction = real(min_inlier_fraction, c_double)
+        if (present(relative)) xopts%base%relative = merge(1_c_int32_t, 0_c_int32_t, relative)
+        if (present(types)) xopts%base%types = int(types, c_int32_t)
+        if (present(max_iterations)) xopts%base%max_iterations = int(max_iterations, c_int64_t)
+        if (present(region)) then
+            region_buf = trim(region)//c_null_char
+            xopts%region = c_loc(region_buf(1:1))
+        end if
+        if (present(seeds)) then
+            ! seeds(3, n): one (x, y, z) column per seed
+            allocate (seed_buf(size(seeds)))
+            seed_buf = reshape(real(seeds, c_double), [size(seeds)])
+            xopts%seeds = c_loc(seed_buf(1))
+            xopts%num_seeds = int(size(seeds, 2), c_int64_t)
+        end if
+        if (present(feature_angle)) xopts%feature_angle = real(feature_angle, c_double)
+        if (present(rim_angle)) xopts%rim_angle = real(rim_angle, c_double)
+        if (present(output_region)) then
+            out_buf = trim(output_region)//c_null_char
+            xopts%output_region = c_loc(out_buf(1:1))
+        end if
+        if (present(used_points)) then
+            select case (trim(used_points))
+            case ('auto')
+                xopts%used_points = 0
+            case ('all')
+                xopts%used_points = 1
+            case ('3sigma')
+                xopts%used_points = 2
+            case ('2sigma')
+                xopts%used_points = 3
+            case ('1sigma')
+                xopts%used_points = 4
+            case default
+                call handle_failure('fit_primitives', &
+                                    "used_points must be auto, all, 3sigma, 2sigma or 1sigma", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(criterion)) then
+            select case (trim(criterion))
+            case ('least_squares')
+                xopts%criterion = 0
+            case ('minimum_zone')
+                xopts%criterion = 1
+            case ('min_circumscribed')
+                xopts%criterion = 2
+            case ('max_inscribed')
+                xopts%criterion = 3
+            case default
+                call handle_failure('fit_primitives', &
+                                    "criterion must be least_squares, minimum_zone, "// &
+                                    "min_circumscribed or max_inscribed", stat, errmsg)
+                return
+            end select
+        end if
+        res = c_mio_fit_primitives_ex(self%handle, xopts, report)
         if (.not. c_associated(res)) then
             call handle_failure('fit_primitives', mio_error_message(), stat, errmsg)
             return
@@ -9046,6 +10565,7 @@ contains
         if (present(num_cone)) num_cone = int(report%num_cone, int64)
         if (present(num_torus)) num_torus = int(report%num_torus, int64)
         if (present(num_unfitted)) num_unfitted = int(report%num_unfitted, int64)
+        if (present(num_feature_cells)) num_feature_cells = int(report%num_feature_cells, int64)
         call clear_status(stat, errmsg)
     end function
 
@@ -10240,7 +11760,7 @@ contains
                          num_faces_added, num_points_added, num_vertices_split, &
                          num_oriented_outward, num_unorientable, points_welded, &
                          watertight_before, watertight_after, inconsistent_pairs_after, &
-                         boundary_edges_after, stat, errmsg) result(out)
+                         boundary_edges_after, stat, errmsg, fill_style) result(out)
         class(mio_mesh), intent(in) :: self
         logical, intent(in), optional :: fix_orientation, orient_outward, fill_holes
         logical, intent(in), optional :: split_non_manifold, record_provenance
@@ -10256,6 +11776,8 @@ contains
         integer(int64), intent(out), optional :: inconsistent_pairs_after, boundary_edges_after
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        !> 'fan' (the default), 'flat' or 'curved' (roadmap 7.8.6).
+        character(*), intent(in), optional :: fill_style
         type(mio_mesh) :: out
         type(c_ptr) :: res
         type(mio_repair_opts_t) :: opts
@@ -10279,6 +11801,20 @@ contains
         end if
         if (present(max_hole_edges)) opts%max_hole_edges = int(max_hole_edges, c_int64_t)
         if (present(weld_tolerance)) opts%weld_tolerance = real(weld_tolerance, c_double)
+        if (present(fill_style)) then
+            select case (fill_style)
+            case ('fan')
+                opts%fill_style = 0
+            case ('flat')
+                opts%fill_style = 1
+            case ('curved')
+                opts%fill_style = 2
+            case default
+                call handle_failure('repair', 'meshio++: repair: fill_style must be fan, ' // &
+                                    'flat or curved', stat, errmsg)
+                return
+            end select
+        end if
 
         res = c_mio_repair(self%handle, opts, report)
         if (.not. c_associated(res)) then
@@ -10466,7 +12002,9 @@ contains
     !> (its surface when it has surface cells, else its points). `method` is
     !> 'point_to_point' (default) or 'point_to_plane'. See doc/registration.md.
     subroutine mesh_register_rigid(self, target, matrix, method, max_iterations, tolerance, &
-                                   max_distance, rms, iterations, converged, stat, errmsg)
+                                   max_distance, rms, iterations, converged, stat, errmsg, &
+                                   initial, symmetric_check, source_region, target_region, &
+                                   adaptive_trim, num_rejected)
         class(mio_mesh), intent(in) :: self
         type(mio_mesh), intent(in) :: target
         real(real64), intent(out) :: matrix(4, 4)
@@ -10478,22 +12016,52 @@ contains
         logical, intent(out), optional :: converged
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
-        type(mio_registration_opts_t) :: opts
+        !> 'matrix' (the identity) or 'auto' (the 24 principal-frame candidates).
+        character(*), intent(in), optional :: initial
+        logical, intent(in), optional :: symmetric_check
+        character(*), intent(in), optional :: source_region, target_region
+        real(real64), intent(in), optional :: adaptive_trim
+        integer(int64), intent(out), optional :: num_rejected
+        type(mio_registration_ex_opts_t) :: opts
         type(mio_registration_report_t) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: src_buf, tgt_buf
         integer(c_int) :: rc
         integer :: i, j
 
+        if (c_sizeof(opts) /= 264_c_size_t .or. c_sizeof(rep) /= 200_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: registration layout mismatch'
+            error stop 1
+        end if
         if (present(method)) then
             if (trim(method) == 'point_to_plane') then
-                opts%method = 1
+                opts%base%method = 1
             else if (trim(method) /= 'point_to_point') then
-                opts%method = -1
+                opts%base%method = -1
             end if
         end if
-        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int64_t)
-        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
-        if (present(max_distance)) opts%max_distance = real(max_distance, c_double)
-        rc = c_mio_register_rigid(self%handle, target%handle, opts, rep)
+        if (present(max_iterations)) opts%base%max_iterations = int(max_iterations, c_int64_t)
+        if (present(tolerance)) opts%base%tolerance = real(tolerance, c_double)
+        if (present(max_distance)) opts%base%max_distance = real(max_distance, c_double)
+        if (present(initial)) then
+            if (trim(initial) == 'auto') then
+                opts%initial_mode = 1
+            else if (trim(initial) /= 'matrix') then
+                opts%initial_mode = -1
+            end if
+        end if
+        if (present(symmetric_check)) then
+            if (symmetric_check) opts%symmetric_check = 1
+        end if
+        if (present(source_region)) then
+            src_buf = trim(source_region)//c_null_char
+            opts%source_region = c_loc(src_buf(1:1))
+        end if
+        if (present(target_region)) then
+            tgt_buf = trim(target_region)//c_null_char
+            opts%target_region = c_loc(tgt_buf(1:1))
+        end if
+        if (present(adaptive_trim)) opts%adaptive_trim = real(adaptive_trim, c_double)
+        rc = c_mio_register_rigid_ex(self%handle, target%handle, opts, rep)
         if (rc /= 0) then
             matrix = 0.0_real64
             call handle_failure('register_rigid', mio_error_message(), stat, errmsg)
@@ -10507,8 +12075,127 @@ contains
         if (present(rms)) rms = real(rep%rms, real64)
         if (present(iterations)) iterations = int(rep%iterations, int64)
         if (present(converged)) converged = rep%converged /= 0
+        if (present(num_rejected)) num_rejected = int(rep%num_rejected, int64)
         call clear_status(stat, errmsg)
     end subroutine
+
+    !> The rigid motion laying picked `source(3, n)` points onto `target(3, n)`
+    !> (roadmap 7.3.2): the weighted Horn solve; `matrix(i, j)` row i, column j.
+    subroutine mio_register_landmarks(src_pts, dst_pts, matrix, weights, residuals, rms, &
+                                      stat, errmsg)
+        real(real64), intent(in) :: src_pts(:, :), dst_pts(:, :)
+        real(real64), intent(out) :: matrix(4, 4)
+        real(real64), intent(in), optional :: weights(:)
+        real(real64), intent(out), optional :: residuals(:)
+        real(real64), intent(out), optional :: rms
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(c_double), allocatable, target :: s(:), t(:), w(:), res(:)
+        real(c_double) :: m(16), r
+        type(c_ptr) :: wp
+        integer :: n, i, j
+        integer(c_int) :: rc
+        n = size(src_pts, 2)
+        if (size(src_pts, 1) /= 3 .or. size(dst_pts, 1) /= 3 .or. size(dst_pts, 2) /= n) then
+            matrix = 0.0_real64
+            call handle_failure('register_landmarks', &
+                                'meshio++: register_landmarks: source and target must be (3, n)', &
+                                stat, errmsg)
+            return
+        end if
+        allocate (s(3 * max(n, 1)), t(3 * max(n, 1)), res(max(n, 1)))
+        s(1:3 * n) = reshape(real(src_pts, c_double), [3 * n])
+        t(1:3 * n) = reshape(real(dst_pts, c_double), [3 * n])
+        wp = c_null_ptr
+        if (present(weights)) then
+            allocate (w(max(n, 1)))
+            w(1:n) = real(weights(1:n), c_double)
+            wp = c_loc(w(1))
+        end if
+        rc = c_mio_register_landmarks(c_loc(s(1)), c_loc(t(1)), wp, int(n, c_int64_t), m, &
+                                      c_loc(res(1)), r)
+        if (rc /= 0) then
+            matrix = 0.0_real64
+            call handle_failure('register_landmarks', mio_error_message(), stat, errmsg)
+            return
+        end if
+        do i = 1, 4
+            do j = 1, 4
+                matrix(i, j) = real(m(4 * (i - 1) + j), real64)
+            end do
+        end do
+        if (present(residuals)) residuals(1:n) = real(res(1:n), real64)
+        if (present(rms)) rms = real(r, real64)
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> The plane `mesh` is most nearly symmetric about (roadmap 7.3.6); see
+    !> doc/registration.md. `seed_normal` zero (the default) tries no seed.
+    subroutine mio_find_symmetry_plane(mesh, report, seed_origin, seed_normal, tolerance, &
+                                       min_share, max_samples, stat, errmsg)
+        type(mio_mesh), intent(in) :: mesh
+        type(mio_symmetry_plane_report), intent(out) :: report
+        real(real64), intent(in), optional :: seed_origin(3), seed_normal(3)
+        real(real64), intent(in), optional :: tolerance, min_share
+        integer, intent(in), optional :: max_samples
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_symmetry_plane_opts_t) :: opts
+        integer(c_int) :: rc
+        if (c_sizeof(opts) /= 112_c_size_t .or. c_sizeof(report) /= 128_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: symmetry plane layout mismatch'
+            error stop 1
+        end if
+        if (present(seed_origin)) opts%seed_origin = real(seed_origin, c_double)
+        if (present(seed_normal)) opts%seed_normal = real(seed_normal, c_double)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(min_share)) opts%min_share = real(min_share, c_double)
+        if (present(max_samples)) opts%max_samples = int(max_samples, c_int64_t)
+        rc = c_mio_find_symmetry_plane(mesh%handle, opts, report)
+        if (rc /= 0) then
+            call handle_failure('find_symmetry_plane', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Pose `mesh` from itself alone (roadmap 7.3.5): on its largest flat face,
+    !> or a cylinder on its axis; see doc/registration.md.
+    function mio_auto_align(mesh, angle_tolerance, subdivisions, region, rotate_vector_data, &
+                            report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in), optional :: angle_tolerance
+        integer, intent(in), optional :: subdivisions
+        character(*), intent(in), optional :: region
+        logical, intent(in), optional :: rotate_vector_data
+        type(mio_auto_align_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_auto_align_opts_t) :: opts
+        type(mio_auto_align_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf
+        if (c_sizeof(opts) /= 64_c_size_t .or. c_sizeof(rep) /= 256_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: auto_align layout mismatch'
+            error stop 1
+        end if
+        if (present(angle_tolerance)) opts%angle_tolerance = real(angle_tolerance, c_double)
+        if (present(subdivisions)) opts%subdivisions = int(subdivisions, c_int64_t)
+        if (present(region)) then
+            buf = trim(region)//c_null_char
+            opts%region = c_loc(buf(1:1))
+        end if
+        if (present(rotate_vector_data)) then
+            if (rotate_vector_data) opts%rotate_vector_data = 1
+        end if
+        out%handle = c_mio_auto_align(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('auto_align', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
 
     !> Normals of the mesh's points by local plane fits: `normals` point data,
     !> oriented 'consistent' (default: a spanning tree, then outward),
@@ -13308,7 +14995,9 @@ contains
     function mesh_decimate(self, ratio, target_faces, max_error, placement, &
                            preserve_boundary, preserve_features, feature_angle, &
                            faces_removed, points_removed, collapses_rejected, &
-                           max_error_applied, point_map, stat, errmsg, frozen) result(out)
+                           max_error_applied, point_map, stat, errmsg, frozen, &
+                           max_deviation, coverage, max_faces, deviation, deviation_met, &
+                           rounds) result(out)
         class(mio_mesh), intent(in) :: self
         real(real64), intent(in), optional :: ratio
         integer(int64), intent(in), optional :: target_faces
@@ -13327,9 +15016,19 @@ contains
         !> 1-based point ids to pin outright. Shifted to the C API's 0-based
         !> numbering inside.
         integer(int64), intent(in), optional :: frozen(:)
+        !> Roadmap 7.8.5: the largest two-sided distance from the input on a
+        !> `coverage` share of samples (the lightest mesh within it), and a
+        !> face cap; `deviation`, `deviation_met` and `rounds` report them.
+        real(real64), intent(in), optional :: max_deviation, coverage
+        integer(int64), intent(in), optional :: max_faces
+        real(real64), intent(out), optional :: deviation
+        logical, intent(out), optional :: deviation_met
+        integer(int64), intent(out), optional :: rounds
         type(mio_mesh) :: out
         type(c_ptr) :: res, cdata
-        integer(c_int64_t) :: nlen
+        integer(c_int64_t) :: nlen, nrounds
+        integer(c_int32_t) :: met
+        real(c_double) :: dev
         integer(c_int) :: s, dt
         integer(c_int64_t), pointer :: fp(:)
         type(mio_decimate_opts_t) :: opts
@@ -13361,12 +15060,19 @@ contains
             opts%frozen = c_loc(frozen_ids(1))
             opts%num_frozen = int(size(frozen), c_int64_t)
         end if
+        if (present(max_deviation)) opts%max_deviation = real(max_deviation, c_double)
+        if (present(coverage)) opts%coverage = real(coverage, c_double)
+        if (present(max_faces)) opts%max_faces = int(max_faces, c_int64_t)
 
         res = c_mio_decimate_ex(self%handle, opts)
         if (.not. c_associated(res)) then
             call handle_failure('decimate', mio_error_message(), stat, errmsg)
             return
         end if
+        dev = c_mio_decimate_result_deviation(res, met, nrounds)
+        if (present(deviation)) deviation = real(dev, real64)
+        if (present(deviation_met)) deviation_met = met /= 0
+        if (present(rounds)) rounds = int(nrounds, int64)
         if (present(faces_removed)) faces_removed = int(c_mio_decimate_result_faces_removed(res), int64)
         if (present(points_removed)) points_removed = int(c_mio_decimate_result_points_removed(res), int64)
         if (present(collapses_rejected)) then
@@ -16636,11 +18342,17 @@ contains
     !> the `thickness:distance` (NaN for a miss) and `thickness:hit_cell` cell
     !> data; `report` is the C report, so its `min_cell` is 0-based (-1: none).
     function mio_thickness(mesh, other, direction, max_distance, threshold, region, &
-                           region_other, report, stat, errmsg) result(out)
+                           region_other, report, stat, errmsg, method, cone_angle, &
+                           cone_rays, two_sided, max_normal_deviation) result(out)
         type(mio_mesh), intent(in) :: mesh
         type(mio_mesh), intent(in), optional :: other
         character(*), intent(in), optional :: direction, region, region_other
         real(real64), intent(in), optional :: max_distance, threshold
+        !> 'ray', 'sphere' or 'cone' (roadmap 7.5).
+        character(*), intent(in), optional :: method
+        real(real64), intent(in), optional :: cone_angle, max_normal_deviation
+        integer, intent(in), optional :: cone_rays
+        logical, intent(in), optional :: two_sided
         type(mio_thickness_report), intent(out), optional :: report
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
@@ -16670,6 +18382,27 @@ contains
         end if
         if (present(max_distance)) opts%max_distance = real(max_distance, c_double)
         if (present(threshold)) opts%threshold = real(threshold, c_double)
+        if (present(method)) then
+            select case (trim(method))
+            case ('ray')
+                opts%method = 0
+            case ('sphere')
+                opts%method = 1
+            case ('cone')
+                opts%method = 2
+            case default
+                call handle_failure('thickness', "method must be 'ray', 'sphere' or 'cone'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(cone_angle)) opts%cone_angle = real(cone_angle, c_double)
+        if (present(cone_rays)) opts%cone_rays = int(cone_rays, c_int64_t)
+        if (present(max_normal_deviation)) &
+            opts%max_normal_deviation = real(max_normal_deviation, c_double)
+        if (present(two_sided)) then
+            if (two_sided) opts%two_sided = 1
+        end if
         if (present(region)) then
             buf_a = trim(region)//c_null_char
             opts%region = c_loc(buf_a(1:1))
@@ -16687,6 +18420,232 @@ contains
         end if
         if (present(report)) report = rep
         call clear_status(stat, errmsg)
+    end function
+
+    !> The deviation options of the optional arguments (shared by both forms).
+    subroutine deviation_fill_opts(opts, buf, tolerance, bins, range_min, range_max, &
+                                   max_normal_angle, reference_region)
+        type(mio_deviation_opts_t), intent(inout) :: opts
+        character(kind=c_char, len=STRBUF_LEN), target, intent(inout) :: buf
+        real(real64), intent(in), optional :: tolerance, range_min, range_max, max_normal_angle
+        integer, intent(in), optional :: bins
+        character(*), intent(in), optional :: reference_region
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(bins)) opts%bins = int(bins, c_int64_t)
+        if (present(range_min)) opts%range_min = real(range_min, c_double)
+        if (present(range_max)) opts%range_max = real(range_max, c_double)
+        if (present(max_normal_angle)) opts%max_normal_angle = real(max_normal_angle, c_double)
+        if (present(reference_region)) then
+            buf = trim(reference_region)//c_null_char
+            opts%reference_region = c_loc(buf(1:1))
+        end if
+    end subroutine
+
+    !> The signed deviation of every point of `scan` from the surface
+    !> `reference` (roadmap 7.4.1): positive outside it, negative inside, with
+    !> the far-side rule at `max_normal_angle` degrees (90; 180 turns it off).
+    !> Returns `scan` with the `deviation:distance` point data; `report` holds
+    !> the statistics (see doc/deviation.md).
+    function mio_deviation(scan, reference, tolerance, bins, range_min, range_max, &
+                           max_normal_angle, reference_region, report, stat, errmsg, &
+                           register_first) result(out)
+        type(mio_mesh), intent(in) :: scan, reference
+        real(real64), intent(in), optional :: tolerance, range_min, range_max, max_normal_angle
+        integer, intent(in), optional :: bins
+        character(*), intent(in), optional :: reference_region
+        !> Register the scan to the reference first (roadmap 7.4.1).
+        logical, intent(in), optional :: register_first
+        type(mio_deviation_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_deviation_opts_t) :: opts
+        type(mio_deviation_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf
+        if (c_sizeof(opts) /= 88_c_size_t .or. c_sizeof(rep) /= 176_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: deviation layout mismatch'
+            error stop 1
+        end if
+        call deviation_fill_opts(opts, buf, tolerance, bins, range_min, range_max, &
+                                 max_normal_angle, reference_region)
+        if (present(register_first)) then
+            if (register_first) opts%register_first = 1
+        end if
+        out%handle = c_mio_deviation(scan%handle, reference%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('deviation', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The signed deviation of every point of `scan` from a fitted primitive
+    !> (roadmap 7.4.2): `ptype` 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus,
+    !> and its ten `fit:patch_params` entries.
+    function mio_deviation_primitive(scan, ptype, params, tolerance, bins, range_min, &
+                                     range_max, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: scan
+        integer, intent(in) :: ptype
+        real(real64), intent(in) :: params(10)
+        real(real64), intent(in), optional :: tolerance, range_min, range_max
+        integer, intent(in), optional :: bins
+        type(mio_deviation_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_deviation_opts_t) :: opts
+        type(mio_deviation_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf
+        real(c_double) :: p(10)
+        if (c_sizeof(opts) /= 88_c_size_t .or. c_sizeof(rep) /= 176_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: deviation layout mismatch'
+            error stop 1
+        end if
+        call deviation_fill_opts(opts, buf, tolerance, bins, range_min, range_max)
+        p = real(params, c_double)
+        out%handle = c_mio_deviation_primitive(scan%handle, int(ptype, c_int32_t), p, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('deviation', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The connected regions of a measured surface (one carrying
+    !> `deviation:distance`) beyond +-`tolerance` (roadmap 7.4.3), written as
+    !> named cell regions with the `deviation:region` cell data; read each with
+    !> `mio_deviation_region` (1-based, largest |volume| first).
+    function mio_deviation_regions(mesh, tolerance, field, prefix, min_area, report, stat, &
+                                   errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        real(real64), intent(in) :: tolerance
+        character(*), intent(in), optional :: field, prefix
+        real(real64), intent(in), optional :: min_area
+        type(mio_deviation_regions_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_deviation_regions_opts_t) :: opts
+        type(mio_deviation_regions_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf_a, buf_b
+        if (c_sizeof(opts) /= 64_c_size_t .or. c_sizeof(rep) /= 72_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: deviation_regions layout mismatch'
+            error stop 1
+        end if
+        opts%tolerance = real(tolerance, c_double)
+        if (present(min_area)) opts%min_area = real(min_area, c_double)
+        if (present(field)) then
+            buf_a = trim(field)//c_null_char
+            opts%field = c_loc(buf_a(1:1))
+        end if
+        if (present(prefix)) then
+            buf_b = trim(prefix)//c_null_char
+            opts%prefix = c_loc(buf_b(1:1))
+        end if
+        out%handle = c_mio_deviation_regions(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('deviation_regions', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> A copy of the surface `mesh` with each point displaced along its normal
+    !> by `scale` times its clamped, smoothed deviation (roadmap 7.4.4).
+    function mio_exaggerate(mesh, field, scale, clamp, smooth_fraction, report, stat, &
+                            errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in), optional :: field
+        real(real64), intent(in), optional :: scale, clamp, smooth_fraction
+        type(mio_exaggerate_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_exaggerate_opts_t) :: opts
+        type(mio_exaggerate_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf
+        if (c_sizeof(opts) /= 64_c_size_t .or. c_sizeof(rep) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: exaggerate layout mismatch'
+            error stop 1
+        end if
+        if (present(field)) then
+            buf = trim(field)//c_null_char
+            opts%field = c_loc(buf(1:1))
+        end if
+        if (present(scale)) opts%scale = real(scale, c_double)
+        if (present(clamp)) opts%clamp = real(clamp, c_double)
+        if (present(smooth_fraction)) opts%smooth_fraction = real(smooth_fraction, c_double)
+        out%handle = c_mio_exaggerate(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('exaggerate', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Bake `field` into the UInt8 data red, green and blue through a colormap
+    !> (`steps` bands it; roadmap 7.4.4).
+    function mio_colorize(mesh, field, cmap, vmin, vmax, symmetric, steps, nan_color, &
+                          component, report, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: field
+        character(*), intent(in), optional :: cmap, nan_color
+        real(real64), intent(in), optional :: vmin, vmax
+        logical, intent(in), optional :: symmetric
+        integer, intent(in), optional :: steps, component
+        type(mio_colorize_report), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_colorize_opts_t) :: opts
+        type(mio_colorize_report) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf_f, buf_c, buf_n
+        if (c_sizeof(opts) /= 96_c_size_t .or. c_sizeof(rep) /= 56_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: colorize layout mismatch'
+            error stop 1
+        end if
+        buf_f = trim(field)//c_null_char
+        opts%field = c_loc(buf_f(1:1))
+        if (present(cmap)) then
+            buf_c = trim(cmap)//c_null_char
+            opts%cmap = c_loc(buf_c(1:1))
+        end if
+        if (present(nan_color)) then
+            buf_n = trim(nan_color)//c_null_char
+            opts%nan_color = c_loc(buf_n(1:1))
+        end if
+        if (present(vmin)) opts%vmin = real(vmin, c_double)
+        if (present(vmax)) opts%vmax = real(vmax, c_double)
+        if (present(symmetric)) then
+            if (symmetric) opts%symmetric = 1
+        end if
+        if (present(steps)) opts%steps = int(steps, c_int64_t)
+        if (present(component)) opts%component = int(component, c_int64_t)
+        out%handle = c_mio_colorize(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('colorize', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Region `index` (1-based) of this thread's last `mio_deviation_regions`.
+    function mio_deviation_region(index, stat) result(info)
+        integer, intent(in) :: index
+        integer, intent(out), optional :: stat
+        type(mio_deviation_region_info) :: info
+        integer(c_int) :: st
+        if (c_sizeof(info) /= 136_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: deviation_region_info layout mismatch'
+            error stop 1
+        end if
+        st = c_mio_deviation_region_get(int(index - 1, c_int64_t), info)
+        if (present(stat)) stat = int(st)
     end function
 
     !> Fill the closed, manifold, consistently oriented triangle surface `mesh`

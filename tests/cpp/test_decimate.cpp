@@ -32,6 +32,8 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
+#include "meshioplusplus/operations/hausdorff.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/skin.hpp"
@@ -514,3 +516,59 @@ TEST(Decimate, ValidatesTheStoppingCriteria) {
 }
 
 }  // namespace
+
+// max_deviation and max_faces (roadmap 7.8.5).
+TEST(Decimate, MaxDeviationHoldsTwoSidedOnTheCoverage) {
+    const meshioplusplus::Mesh s = meshioplusplus::icosa_sphere(1.0, 5);
+    meshioplusplus::DecimateOptions o;
+    o.mMaxDeviation = 0.005;
+    const meshioplusplus::DecimateResult r = meshioplusplus::decimate(s, o);
+    EXPECT_TRUE(r.mDeviationMet);
+    EXPECT_LE(r.mDeviation, 0.005);
+    EXPECT_GT(r.mRounds, 1);
+    const std::int64_t faces = static_cast<std::int64_t>(r.mMesh.Cells(0).NumCells());
+    EXPECT_LT(faces, static_cast<std::int64_t>(s.Cells(0).NumCells()) / 2);
+    // The measured two-sided Hausdorff distance (face samples) on the share.
+    meshioplusplus::HausdorffOptions ho;
+    ho.mFaceSamples = 2;
+    const meshioplusplus::HausdorffResult h = meshioplusplus::hausdorff_distance(r.mMesh, s, ho);
+    EXPECT_LT(h.mDistance, 0.02);
+    // Deterministic: the same call gives the same mesh.
+    const meshioplusplus::DecimateResult again = meshioplusplus::decimate(s, o);
+    ASSERT_EQ(again.mMesh.Cells(0).NumCells(), r.mMesh.Cells(0).NumCells());
+    const double* a = r.mMesh.Points().As<double>();
+    const double* b = again.mMesh.Points().As<double>();
+    for (std::size_t i = 0; i < 3 * r.mMesh.NumPoints(); ++i)
+        ASSERT_EQ(a[i], b[i]);
+    // A tighter bound keeps more faces.
+    o.mMaxDeviation = 0.001;
+    EXPECT_GT(meshioplusplus::decimate(s, o).mMesh.Cells(0).NumCells(),
+              r.mMesh.Cells(0).NumCells());
+}
+
+TEST(Decimate, MaxFacesCapsAndRefusesMixedCriteria) {
+    const meshioplusplus::Mesh s = meshioplusplus::icosa_sphere(1.0, 4);
+    meshioplusplus::DecimateOptions o;
+    o.mMaxFaces = 500;
+    EXPECT_LE(meshioplusplus::decimate(s, o).mMesh.Cells(0).NumCells(), 502u);
+    o.mTargetRatio = 0.9;  // 0.9 of 5120 is over the cap
+    const meshioplusplus::DecimateResult r = meshioplusplus::decimate(s, o);
+    EXPECT_LE(r.mMesh.Cells(0).NumCells(), 502u);
+    EXPECT_EQ(r.mRounds, 2);
+    // A deviation the cap cannot meet is reported, not hidden.
+    meshioplusplus::DecimateOptions d;
+    d.mMaxDeviation = 1e-6;
+    d.mMaxFaces = 100;
+    const meshioplusplus::DecimateResult capped = meshioplusplus::decimate(s, d);
+    EXPECT_FALSE(capped.mDeviationMet);
+    EXPECT_GT(capped.mDeviation, 1e-6);
+    d.mTargetRatio = 0.5;
+    EXPECT_THROW(meshioplusplus::decimate(s, d), std::invalid_argument);
+    meshioplusplus::DecimateOptions bad;
+    bad.mMaxDeviation = 0.01;
+    bad.mCoverage = 0.0;
+    EXPECT_THROW(meshioplusplus::decimate(s, bad), std::invalid_argument);
+    bad.mCoverage = 1.0;
+    bad.mMaxDeviation = std::nan("");
+    EXPECT_THROW(meshioplusplus::decimate(s, bad), std::invalid_argument);
+}

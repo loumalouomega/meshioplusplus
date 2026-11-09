@@ -42,6 +42,12 @@ Refinement is Levenberg-Marquardt on the orthogonal distance of every point, wit
 | `min_inlier_fraction` | `0.9` | the share of points that must be within tolerance |
 | `types` | all five | the candidates, tried in the fixed order above |
 | `max_iterations` | 50 | the Levenberg-Marquardt cap per fit |
+| `region` | none | fit this named `Cell` region as one patch ([below](#a-feature-from-a-seed-or-a-region)) |
+| `seeds` | none | grow and fit a feature from the facet nearest each point ([below](#a-feature-from-a-seed-or-a-region)) |
+| `feature_angle` | 30 | seeds: edges whose faces turn by more are not crossed |
+| `rim_angle` | 15 | seeds: rim faces turning more from the fit are peeled |
+| `output_region` | `fit:feature` | seeds: the cell region the fitted cells are written as |
+| `used_points` | `"auto"` | `"all"`, or sigma trimming with `"3sigma"`, `"2sigma"`, `"1sigma"` ([below](#robust-fits-sigma-trimming)); `"auto"` is `"3sigma"` with a region or seeds and `"all"` otherwise |
 
 Points on a tessellated analytic surface lie on it exactly, so a tessellated cylinder recovers its radius to rounding (about 1e-15) however coarse the tessellation; noise raises the residual, not the type. A patch too small for a type (fewer points than the type has parameters) skips it.
 
@@ -57,6 +63,13 @@ The input, unchanged, plus cell data `fit:type` (`int64`: -1 no patch, 0 none, 1
 | `fit:patch_rms`, `fit:patch_max` | `float64` | the accepted fit's residuals, or the best attempt's |
 | `fit:patch_fraction` | `float64` | the share of points within tolerance |
 | `fit:patch_tolerance` | `float64` | the absolute tolerance applied |
+| `fit:patch_form_error` | `float64` | the peak-to-peak form error: the largest positive minus the largest negative signed orthogonal distance of the patch's points (flatness, sphericity, cylindricity, under the least-squares reference) |
+| `fit:patch_diameter_min`, `fit:patch_diameter_max` | `float64` | sphere and cylinder: twice the smallest and the largest radial distance the points reach |
+| `fit:patch_length` | `float64` | cylinder and cone: the points' extent along the axis |
+| `fit:patch_arc` | `float64` | cylinder and cone: the arc span in degrees, 360 less the largest angular gap between the points about the axis |
+| `fit:patch_extent` | `float64`, `(m, 2)` | plane: the two in-plane principal extents, largest first |
+| `fit:patch_sigma` | `float64` | the RMS orthogonal distance of the points the fit used |
+| `fit:patch_num_used`, `fit:patch_num_rejected` | `int64` | the points the fit used, and those sigma trimming left out |
 
 `fit:patch_params` holds `x, y, z, ax, ay, az, r1, r2, angle, 0`:
 
@@ -70,12 +83,52 @@ The input, unchanged, plus cell data `fit:type` (`int64`: -1 no patch, 0 none, 1
 
 Unused entries are 0. A cylinder's or torus's axis is signed so its largest-magnitude component is positive. Patches are fitted in parallel, each serially, so the output is byte-identical on every backend and thread count; the numpy twin follows the same steps and agrees within rounding (it sums in numpy's order).
 
+## A feature from a seed or a region
+
+A metrology report measures one feature: this bore, that face. `region="name"` fits the cells of a named cell region (as [`select`](/select) writes) as one patch. `seeds=[(x, y, z), ...]` finds it: from the facet nearest each point, a region grows across smooth edges (below `feature_angle`) while one primitive of `types` explains it within the tolerance (a single type, `types=["cylinder"]`, or several for "auto"). The growth is the one [`segment`](/segment)'s primitive method runs from its own seeds (`detail/primitive_grow.hpp`, shared): a plane through the seed facet and a curved surface through its two-ring neighbourhood, each grown and trimmed to what its own refit explains, the larger kept. It is tried exactly first (the corners within 2% of the tolerance, as a CAD tessellation lies on its surfaces, which keeps a fillet's tangent faces out), and within the whole tolerance when nothing holds exactly, as a noisy scan wants. The regions of several seeds are united, so one primitive is fitted across a bore a cross hole interrupts. Then the **rim is peeled**: boundary faces whose normal turns from the fitted surface's by more than `rim_angle` go, ring by ring, so a flared bore mouth or a fillet's first strip does not bend the fit. The cells are written as the cell region `output_region` and fitted as patch 0, the usual `fit:` rows; `num_feature_cells` in the report counts them, and a seed nothing grows from leaves a warning. A relative tolerance is then a fraction of the whole surface's diagonal, not of the feature's.
+
+```python
+# the bore at (0.6, 0, 0.25): its cells only, its radius to rounding
+fit, rep = mp.fit_primitives(part, seeds=[(0.6, 0.0, 0.25)], types=["cylinder"],
+                             return_report=True)
+fit.field_data["fit:patch_params"][0][6]        # the radius
+[r for r in fit.regions if r.name == "fit:feature"]
+```
+
+The seed mode runs in the compiled core only (a discrete branch the numpy twin does not repeat, as `segment`'s primitive method); the twin fits a region with `used_points="all"`.
+
+## Robust fits: sigma trimming
+
+Every point weighs the same in a least-squares fit, so a scan's stray points, a burr or a fixture drag it. With `used_points="3sigma"` (the default for a region or seeds), `"2sigma"` or `"1sigma"`, the patch is refitted on the points within k times the RMS distance of the points kept, until that set stops changing (at most 20 rounds); 5% of gross outliers ten sigma off a noisy cylinder move the recovered radius by less than one sigma, where the plain fit moves by more. A plane or sphere fit, when that is the one type asked for, starts from a least median of squares consensus (Rousseeuw 1984): minimal subsets of 3 or 4 points drawn by a fixed stride from the points in Hilbert order, the subset with the least median squared residual kept, its inliers within 2.5 robust standard deviations. There is no random sampling, so the fit is byte-identical on every backend and thread count. The other types start from the least-squares fit, whose outliers the first round of trimming drops. The share of points within tolerance (`fit:patch_fraction`) is then over the points used, and the tolerance stays the whole patch's.
+
+Every fit reports `fit:patch_sigma`, the RMS orthogonal distance of the points it used, and `fit:patch_num_used` and `fit:patch_num_rejected` (0 with `"all"`); the form error and extremes are over the points used.
+
+## Minimum-zone and envelope fits
+
+GD&T form tolerances are defined against the narrowest zone that holds every point (ISO 1101; ISO 12781 flatness, 12181 roundness, 12180 cylindricity), not against the least-squares surface, which reports a wider zone. `criterion` picks the reference (roadmap 7.1.4):
+
+| `criterion` | Reference | Applies to |
+|---|---|---|
+| `"least_squares"` (default) | the least-squares fit, as before | every type |
+| `"minimum_zone"` | the narrowest zone: two parallel planes, two concentric spheres, two coaxial cylinders | plane, sphere, cylinder |
+| `"min_circumscribed"` | the smallest enclosing sphere or cylinder (a shaft's envelope) | sphere, cylinder |
+| `"max_inscribed"` | the largest sphere or cylinder no point lies inside (a hole's envelope) | sphere, cylinder |
+
+After a patch's least-squares fit is accepted (the acceptance is unchanged), a plane, sphere or cylinder is refitted under the criterion on the points used, by a sequence of linear programmes from the least-squares start (Carr and Ferreira 1995; Shunmugam 1986): each round linearises the distances in the surface's parameters (a plane's normal tilt and offset; a sphere's centre; a cylinder's axis point and tilt) and solves the criterion's linear programme within a trust region, keeping a step when the criterion's exact value improves and shrinking the region otherwise, until it is below `1e-14` of the points' extent. The linear programmes are solved exactly by the core's own dense two-phase simplex (Bland's rule, `detail/dense_lp`), on their dual, which has one row per parameter and one column per point; there is no solver dependency and no randomness. `fit:patch_params` then holds the criterion's surface (a plane's mid-zone point and normal; the zone's middle radius, or the envelope's), and the form columns are measured against it, so `fit:patch_form_error` is the minimum zone's width; the residual columns (`fit:patch_rms`, `fit:patch_max`, `fit:patch_fraction`) stay the least-squares fit's. A cone or torus, or a plane under an envelope criterion, keeps its least-squares fit with a warning. C++ core only: the numpy twin raises `NotImplementedError` naming the core.
+
+The minimum-zone flatness of points drawn between two parallel planes 0.1 apart, with points on both, is 0.1 to `1e-12`, and the minimum circumscribed cylinder of points on a circle with two opposite bumps of 0.01 has radius 1.01 (`tests/cpp/test_dense_lp.cpp`).
+
+### Form error and extremes
+
+The last five columns are what a metrology report carries beside the fit. The signed distance is positive on the side the surface's normal points to (along a plane's normal, away from a sphere's centre or a cylinder's, cone's or torus's axis), so the form error is the width of the zone between two offsets of the least-squares surface that holds every point. The arc span counts angles within 1e-9 degrees as one (the rims of a tessellated cylinder share them) and reads 360 when the largest gap is at most twice the median gap, as on a closed tessellation, whose gaps are all alike; a half cylinder reads 180. A value that does not apply to the type, or to a patch of type none, is NaN. The MCP tool reports them per patch as `form_error`, `diameter_min`, `diameter_max`, `length`, `arc_deg` and `extent`.
+
 ## CLI
 
 ```sh
 meshioplusplus fit-primitives IN OUT [--patch-data NAME] [--tolerance T] [--absolute] \
     [--min-inlier-fraction F] [--types plane,cylinder,...] [--max-iterations N] \
-    [--json] [--quiet]
+    [--region NAME] [--seed X,Y,Z]... [--feature-angle DEG] [--rim-angle DEG] \
+    [--output-region NAME] [--used-points auto|all|3sigma|2sigma|1sigma] [--json] [--quiet]
 ```
 
 ## Other languages
@@ -104,6 +157,10 @@ r <- mio_fit_primitives(seg, types = c("plane", "cylinder"))
 ```js
 const r = m.fitPrimitives(seg, 'segment:patch', 1e-3, true, 0.9, ['plane', 'cylinder']);
 r.mesh.field_data['fit:patch_params'];
+const bore = m.fitPrimitives(part, '', 1e-3, true, 0.9, ['cylinder'], 50,
+                             { seeds: [[0.6, 0, 0.25]], usedPoints: '3sigma' });
 ```
 
-It is also a settings-pipeline step, `{"Op": "FitPrimitives", "PatchData": "segment:patch", "Tolerance": 0.001, "Relative": true, "MinInlierFraction": 0.9, "Types": ["plane", "cylinder"], "MaxIterations": 50}` — see [pipelines](/pipeline) — and the MCP tool `fit_primitives`, whose report lists every patch's type, parameters and residuals.
+The seed, region and trimming options are `mio_fit_primitives_ex(mesh, &opts, &report)` in C (`mio_fit_primitives_ex_opts`, 192 bytes, embedding the `mio_fit_primitives_opts`; `used_points` a `mio_fit_used_points`; `mio_fit_primitives_warnings`), the optional `region`, `seeds` (`3 x n`), `feature_angle`, `rim_angle`, `output_region`, `used_points` and `num_feature_cells` arguments of the Fortran method, the keywords of the Julia function, the R arguments (`seeds` an `n x 3` matrix), the Octave/MATLAB options and the WASM function's last argument.
+
+It is also a settings-pipeline step, `{"Op": "FitPrimitives", "PatchData": "segment:patch", "Tolerance": 0.001, "Relative": true, "MinInlierFraction": 0.9, "Types": ["plane", "cylinder"], "MaxIterations": 50, "Region": "", "Seeds": [0.6, 0, 0.25], "FeatureAngle": 30, "RimAngle": 15, "OutputRegion": "fit:feature", "UsedPoints": "auto"}` (`Seeds` a flat list of x, y, z triples) — see [pipelines](/pipeline) — and the MCP tool `fit_primitives`, whose report lists every patch's type, parameters, residuals, form error and extremes, sigma and points used. `fit_cad` and `refine_patches` write the table without the roadmap 7.1 columns (`FitPrimitivesOptions::mExtendedReport` off), the table they have always carried.

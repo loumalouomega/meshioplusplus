@@ -27,6 +27,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="code-aster">`code_aster`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="dex">`dex`</span> | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | exact | `p_f64` float64 | — | — | — |
 | <span id="dolfin-xml">`dolfin-xml`</span> |  |  | ✗ |  | ✓ |  |  |  | exact | `p_f64` float64, `p_i32` int64 | `c_f64` float64, `c_i32` int64 | — | — |
+| <span id="dxf">`dxf`</span> |  | ✓ |  |  |  |  |  |  | exact | — | — | — | — |
 | <span id="elmer">`elmer`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell |
 | <span id="ensight">`ensight`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | — |
 | <span id="exodus">`exodus`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | cell, point, side |
@@ -116,6 +117,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`cae`**: The physics-ML `.npz` stores the surface of the volume cells.
 - **`cgns`**: Cell data cannot be written for the probe: it mixes cell dimensions, which a zone-wide `CellCenter` solution cannot span. Side regions are not written, and a region's cells must lie in fixed-size sections.
 - **`dex`**: DEX stores one nodal field over a node set: cells are not kept.
+- **`dxf`**: A drawing exchange file: a line mesh is written as one `LINE` per segment, a `fit_curves` sketch as `LINE`, `ARC` and `CIRCLE` entities, and only the drawing comes back (`dxf:entity`, `dxf:type`). Vertex cells are skipped and surface or volume cells are refused by name.
 - **`frd`**: Nodal, with no sets: cell data, regions and other field data are dropped with a warning, and values print at six digits (`E12.5`). No vertex or pyramid element exists. Only `frd:group` and `frd:material` come back as cell data.
 - **`gltf`**: A surface export: volume and 2-D cells come back as their triangulated skin, positions are `float32`, and `weld=True` merges the vertices split per smooth fan.
 - **`ip`**: An integration-point cloud: points and nodal values, no cells.

@@ -321,13 +321,480 @@ triangle/quad surface, a 2-D surface mesh a line mesh). Contrast
 Empty when the plane misses the geometry — not an error. See `doc/slice.md`.
 """
 function slice(m::Mesh, origin::AbstractVector{<:Real}, normal::AbstractVector{<:Real};
-               record_parent_ids::Bool=false)
+               record_parent_ids::Bool=false, chain::Bool=false, min_length::Real=0.0)
     o = Float64[origin[1], origin[2], origin[3]]
     n = Float64[normal[1], normal[2], normal[3]]
-    ptr = GC.@preserve o n ccall(_sym(:mio_slice), Ptr{Cvoid},
-                                 (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint),
+    ptr = GC.@preserve o n ccall(_sym(:mio_slice_ex), Ptr{Cvoid},
+                                 (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Cint, Cint, Cdouble),
                                  _handle(m), pointer(o), pointer(n),
-                                 record_parent_ids ? Cint(1) : Cint(0))
+                                 record_parent_ids ? Cint(1) : Cint(0),
+                                 chain ? Cint(1) : Cint(0), Cdouble(min_length))
+    Mesh(_check_ptr(ptr))
+end
+
+"""
+    clip(m, origin, normal; keep_below=true, cap=true)
+        -> (; mesh, num_kept, num_split, num_cap_triangles, num_loops, num_open_chains, warnings)
+
+Cut a surface by the plane through `origin` normal to `normal`, keep a side and
+cap the cut's closed loops (roadmap 7.8.3). See `doc/clip.md`.
+"""
+function clip(m::Mesh, origin, normal; keep_below::Bool=true, cap::Bool=true)
+    o = Cdouble[origin[1], origin[2], origin[3]]
+    n = Cdouble[normal[1], normal[2], normal[3]]
+    rep = Ref{_CClipReport}()
+    ptr = GC.@preserve o n ccall(_sym(:mio_clip), Ptr{Cvoid},
+                                 (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Int32, Int32,
+                                  Ref{_CClipReport}), _handle(m), o, n, Int32(keep_below),
+                                 Int32(cap), rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    text = _getstring((buf, k) -> ccall(_sym(:mio_clip_warnings), Int64, (Ptr{UInt8}, Int64), buf, k))
+    (mesh=out, num_kept=Int(r.num_kept), num_split=Int(r.num_split),
+     num_cap_triangles=Int(r.num_cap_triangles), num_loops=Int(r.num_loops),
+     num_open_chains=Int(r.num_open_chains),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    profile_solid(sketch, features; step_path="", scan=nothing, provider="", deflection=0.0)
+        -> (; mesh, volume, area, num_faces, valid, warnings)
+
+Build a `fit_curves` sketch into a solid by `features` (text,
+`;`-separated: `extrude:D[:symmetric]`, `revolve:OX,OY,OZ:DX,DY,DZ[:ANGLE]`,
+`fillet:R`, `chamfer:D`, `shell:W`) through a CAD provider (OpenCASCADE;
+roadmap 7.7.4). See `doc/profile_solid.md`.
+"""
+function profile_solid(sketch::Mesh, features::AbstractString; step_path::AbstractString="",
+                       scan::Union{Mesh,Nothing}=nothing, provider::AbstractString="",
+                       deflection::Real=0.0)
+    text = String(features)
+    n = ccall(_sym(:mio_profile_features_from_text), Int64,
+              (Cstring, Ptr{_CProfileFeature}, Int64), text, C_NULL, 0)
+    n < 0 && _check_ptr(C_NULL)
+    feats = Vector{_CProfileFeature}(undef, max(n, 1))
+    ccall(_sym(:mio_profile_features_from_text), Int64,
+          (Cstring, Ptr{_CProfileFeature}, Int64), text, feats, n)
+    rep = Ref{_CProfileSolidReport}()
+    ptr = ccall(_sym(:mio_profile_solid), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ptr{_CProfileFeature}, Int64, Cstring, Cstring, Cdouble, Ptr{Cvoid},
+                 Ref{_CProfileSolidReport}),
+                _handle(sketch), feats, n, String(step_path), String(provider),
+                Float64(deflection), scan === nothing ? C_NULL : _handle(scan), rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    text_w = _getstring((buf, k) -> ccall(_sym(:mio_profile_solid_warnings), Int64,
+                                          (Ptr{UInt8}, Int64), buf, k))
+    (mesh=out, volume=r.volume, area=r.area, num_faces=Int(r.num_faces), valid=r.valid != 0,
+     warnings=isempty(text_w) ? String[] : String.(Base.split(text_w, '\n')))
+end
+
+const _RELATIONS = ("coaxial", "parallel", "perpendicular", "equal_radius")
+
+# (a, b, relation name) tuples as int64 triples.
+function _relation_triples(list)
+    out = Int64[]
+    for (a, b, kind) in list
+        k = findfirst(==(String(kind)), _RELATIONS)
+        k === nothing && throw(ArgumentError(
+            "meshio++: constrain_primitives: a relation is coaxial, parallel, perpendicular or equal_radius"))
+        append!(out, (Int64(a), Int64(b), Int64(k - 1)))
+    end
+    out
+end
+
+"""
+    constrain_primitives(m; face_tolerance=0.0, angle_tolerance=-1.0, distance_tolerance=-1.0,
+                         min_fraction=-1.0, force=(), forbid=())
+        -> (; mesh, num_constrained, num_groups, face_tolerance, relations, unmet)
+
+Fit related primitives of a `fit_primitives` skin together under control
+(roadmap 7.7.3): `force` and `forbid` hold `(patch_a, patch_b, relation)`
+tuples, patches by `segment:patch` label. `relations` are named tuples
+`(; patch_a, patch_b, relation, angle_deg, distance, forced)`. See
+`doc/constrain_primitives.md`.
+"""
+function constrain_primitives(m::Mesh; face_tolerance::Real=0.0, angle_tolerance::Real=-1.0,
+                              distance_tolerance::Real=-1.0, min_fraction::Real=-1.0,
+                              force=(), forbid=())
+    fo = _relation_triples(force)
+    fb = _relation_triples(forbid)
+    rep = Ref{_CConstrainPrimitivesReport}()
+    ptr = GC.@preserve fo fb begin
+        opts = _CConstrainPrimitivesOpts(Cdouble(face_tolerance), Cdouble(angle_tolerance),
+                                         Cdouble(distance_tolerance), Cdouble(min_fraction),
+                                         isempty(fo) ? Ptr{Int64}(C_NULL) : pointer(fo),
+                                         Int64(length(fo) ÷ 3),
+                                         isempty(fb) ? Ptr{Int64}(C_NULL) : pointer(fb),
+                                         Int64(length(fb) ÷ 3), (0, 0, 0, 0))
+        ccall(_sym(:mio_constrain_primitives), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CConstrainPrimitivesOpts}, Ref{_CConstrainPrimitivesReport}),
+              _handle(m), Ref(opts), rep)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    relations = map(0:r.num_relations-1) do k
+        a = Ref{Int64}(0); b = Ref{Int64}(0); kind = Ref{Int32}(0)
+        ang = Ref{Cdouble}(0); dst = Ref{Cdouble}(0); fc = Ref{Int32}(0)
+        ccall(_sym(:mio_constrain_primitives_relation), Cint,
+              (Int64, Ref{Int64}, Ref{Int64}, Ref{Int32}, Ref{Cdouble}, Ref{Cdouble}, Ref{Int32}),
+              k, a, b, kind, ang, dst, fc)
+        (; patch_a=Int(a[]), patch_b=Int(b[]), relation=_RELATIONS[kind[] + 1],
+         angle_deg=ang[], distance=dst[], forced=fc[] != 0)
+    end
+    unmet = map(0:r.num_unmet-1) do k
+        a = Ref{Int64}(0); b = Ref{Int64}(0); kind = Ref{Int32}(0)
+        ccall(_sym(:mio_constrain_primitives_unmet), Cint,
+              (Int64, Ref{Int64}, Ref{Int64}, Ref{Int32}), k, a, b, kind)
+        (Int(a[]), Int(b[]), _RELATIONS[kind[] + 1])
+    end
+    (mesh=out, num_constrained=Int(r.num_constrained), num_groups=Int(r.num_groups),
+     face_tolerance=r.face_tolerance, relations=relations, unmet=unmet)
+end
+
+"""
+    face_support(solid, scan; tolerance=0.0, measured_share=0.9, inferred_share=0.1,
+                 hole_data="repair:hole")
+        -> (; mesh, num_measured, num_partial, num_inferred, num_faces, share_within, tolerance)
+
+Class each face of a `fit_cad` re-mesh by how much of it the scan supports
+(roadmap 7.7.1). See `doc/fit_cad_loop.md`.
+"""
+function face_support(solid::Mesh, scan::Mesh; tolerance::Real=0.0, measured_share::Real=0.9,
+                      inferred_share::Real=0.1, hole_data::AbstractString="repair:hole")
+    rep = Ref{_CFaceSupportReport}()
+    hd = String(hole_data)
+    ptr = GC.@preserve hd begin
+        opts = _CFaceSupportOpts(Cdouble(tolerance), Cdouble(measured_share),
+                                 Cdouble(inferred_share), Base.unsafe_convert(Cstring, hd),
+                                 (0, 0, 0, 0))
+        ccall(_sym(:mio_face_support), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CFaceSupportOpts}, Ref{_CFaceSupportReport}),
+              _handle(solid), _handle(scan), Ref(opts), rep)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    (mesh=out, num_measured=Int(r.num_measured), num_partial=Int(r.num_partial),
+     num_inferred=Int(r.num_inferred), num_faces=Int(r.num_faces),
+     share_within=r.share_within, tolerance=r.tolerance)
+end
+
+const _PART_CLASSES = ("any", "analytic", "cast", "freeform")
+const _STOP_REASONS = ("target", "no improvement", "rounds", "nothing to refine")
+
+"""
+    fit_cad_iterate(scan; step_path="", part_class="any", target_within=0.0,
+                    target_explained=0.0, segment_tolerance=0.0, fit_tolerance=0.0,
+                    max_rounds=4, worst_faces=3, refine_factor=0.25, backend="auto")
+        -> (; mesh, num_rounds, best_round, target_met, stop_reason, target_within,
+              share_within, explained, hausdorff_max, num_faces, rounds)
+
+Segment, fit and build a solid in rounds towards a target (roadmap 7.7.2);
+`rounds` are named tuples `(; share_within, explained, hausdorff_max,
+num_faces, num_resegmented)`. See `doc/fit_cad_loop.md`.
+"""
+function fit_cad_iterate(scan::Mesh; step_path::AbstractString="", part_class::AbstractString="any",
+                         target_within::Real=0.0, target_explained::Real=0.0,
+                         segment_tolerance::Real=0.0, fit_tolerance::Real=0.0,
+                         max_rounds::Integer=4, worst_faces::Integer=3, refine_factor::Real=0.25,
+                         backend::AbstractString="auto")
+    pc = findfirst(==(String(part_class)), _PART_CLASSES)
+    pc === nothing && throw(ArgumentError(
+        "meshio++: fit_cad_iterate: part_class must be any, analytic, cast or freeform"))
+    be = findfirst(==(String(backend)), ("auto", "occt", "native"))
+    be === nothing && throw(ArgumentError("meshio++: fit_cad_iterate: backend must be auto, occt or native"))
+    opts = _CFitCadIterateOpts(Cdouble(segment_tolerance), Cdouble(fit_tolerance),
+                               Cdouble(target_within), Cdouble(target_explained),
+                               Cdouble(refine_factor), Int32(pc - 1), Int32(be - 1),
+                               Int64(max_rounds), Int64(worst_faces), Int64(1), (0, 0, 0, 0, 0))
+    rep = Ref{_CFitCadIterateReport}()
+    ptr = ccall(_sym(:mio_fit_cad_iterate), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Ref{_CFitCadIterateOpts}, Ref{_CFitCadIterateReport}),
+                _handle(scan), String(step_path), Ref(opts), rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    rounds = map(0:r.num_rounds-1) do k
+        sw = Ref{Cdouble}(0); ex = Ref{Cdouble}(0); hm = Ref{Cdouble}(0)
+        nf = Ref{Int64}(0); nr = Ref{Int64}(0)
+        ccall(_sym(:mio_fit_cad_iterate_round), Cint,
+              (Int64, Ref{Cdouble}, Ref{Cdouble}, Ref{Cdouble}, Ref{Int64}, Ref{Int64}),
+              k, sw, ex, hm, nf, nr)
+        (; share_within=sw[], explained=ex[], hausdorff_max=hm[], num_faces=Int(nf[]),
+         num_resegmented=Int(nr[]))
+    end
+    (mesh=out, num_rounds=Int(r.num_rounds), best_round=Int(r.best_round),
+     target_met=r.target_met != 0, stop_reason=_STOP_REASONS[r.stop_reason + 1],
+     target_within=r.target_within, share_within=r.share_within, explained=r.explained,
+     hausdorff_max=r.hausdorff_max, num_faces=Int(r.num_faces), rounds=rounds)
+end
+
+# The shared tail of offset_surface, thicken and hollow.
+function _offset_result(ptr, rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    text = _getstring((buf, k) -> ccall(_sym(:mio_offset_warnings), Int64, (Ptr{UInt8}, Int64), buf, k))
+    (mesh=out, num_not_visible=Int(r.num_not_visible), num_clamped=Int(r.num_clamped),
+     num_folded=Int(r.num_folded), num_rim_quads=Int(r.num_rim_quads), max_move=r.max_move,
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    offset_surface(m, distance; smooth_iterations=0)
+        -> (; mesh, num_not_visible, num_clamped, num_folded, num_rim_quads, max_move, warnings)
+
+Move each point of a triangle and quad surface along its offset direction so
+every face's plane moves by `distance` (roadmap 7.8.4). See `doc/offset_surface.md`.
+"""
+function offset_surface(m::Mesh, distance::Real; smooth_iterations::Integer=0)
+    rep = Ref{_COffsetReport}()
+    ptr = ccall(_sym(:mio_offset_surface), Ptr{Cvoid}, (Ptr{Cvoid}, Cdouble, Int32, Ref{_COffsetReport}),
+                _handle(m), Float64(distance), Int32(smooth_iterations), rep)
+    _offset_result(ptr, rep)
+end
+
+"""
+    thicken(m, thickness; side="inward", smooth_iterations=0) -> (; mesh, ..., num_rim_quads, ...)
+
+A closed shell `thickness` thick from a surface; `side` is `"inward"`,
+`"outward"` or `"both"` (roadmap 7.8.4). See `doc/offset_surface.md`.
+"""
+function thicken(m::Mesh, thickness::Real; side::AbstractString="inward",
+                 smooth_iterations::Integer=0)
+    s = side == "inward" ? Int32(0) : side == "outward" ? Int32(1) : side == "both" ? Int32(2) :
+        throw(ArgumentError("meshio++: thicken: side must be inward, outward or both"))
+    rep = Ref{_COffsetReport}()
+    ptr = ccall(_sym(:mio_thicken), Ptr{Cvoid}, (Ptr{Cvoid}, Cdouble, Int32, Int32, Ref{_COffsetReport}),
+                _handle(m), Float64(thickness), s, Int32(smooth_iterations), rep)
+    _offset_result(ptr, rep)
+end
+
+"""
+    hollow(m, wall; smooth_iterations=0) -> (; mesh, ...)
+
+A closed surface with an inner, reversed wall `wall` inside it (roadmap 7.8.4).
+See `doc/offset_surface.md`.
+"""
+function hollow(m::Mesh, wall::Real; smooth_iterations::Integer=0)
+    rep = Ref{_COffsetReport}()
+    ptr = ccall(_sym(:mio_hollow), Ptr{Cvoid}, (Ptr{Cvoid}, Cdouble, Int32, Ref{_COffsetReport}),
+                _handle(m), Float64(wall), Int32(smooth_iterations), rep)
+    _offset_result(ptr, rep)
+end
+
+"""
+    flip_normals(m; region="") -> (; mesh, num_flipped)
+
+Reverse the winding of every cell, or of the cell region `region` (roadmap
+7.8.2), with no point moved. See `doc/flip_normals.md`.
+"""
+function flip_normals(m::Mesh; region::AbstractString="")
+    n = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_flip_normals), Ptr{Cvoid}, (Ptr{Cvoid}, Cstring, Ref{Int64}),
+                _handle(m), String(region), n)
+    (mesh=Mesh(_check_ptr(ptr)), num_flipped=Int(n[]))
+end
+
+"""
+    remove_islands(m; connectivity="edge", min_diagonal=0.01, min_area=0.0, min_cells=0,
+                   relative=true, dry_run=false)
+        -> (; mesh, num_components, num_removed, num_cells_removed, num_points_removed)
+
+Remove the small connected components of `m` (roadmap 7.8.1). See
+`doc/remove_islands.md`.
+"""
+function remove_islands(m::Mesh; connectivity::AbstractString="edge", min_diagonal::Real=0.01,
+                        min_area::Real=0.0, min_cells::Integer=0, relative::Bool=true,
+                        dry_run::Bool=false)
+    conn = connectivity == "edge" ? Int32(0) :
+           connectivity == "point" ? Int32(1) :
+           throw(ArgumentError("meshio++: remove_islands: connectivity must be edge or point"))
+    opts = _CRemoveIslandsOpts(conn, Int32(relative), Cdouble(min_diagonal), Cdouble(min_area),
+                               Int64(min_cells), Int32(dry_run), Int32(0), ntuple(_ -> Int64(0), 3))
+    rep = Ref{_CRemoveIslandsReport}()
+    ptr = ccall(_sym(:mio_remove_islands), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CRemoveIslandsOpts}, Ref{_CRemoveIslandsReport}), _handle(m),
+                Ref(opts), rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    (mesh=out, num_components=Int(r.num_components), num_removed=Int(r.num_removed),
+     num_cells_removed=Int(r.num_cells_removed), num_points_removed=Int(r.num_points_removed))
+end
+
+"""
+    measure(m, spec::AbstractString)
+        -> (; mesh, num_elements, num_dimensions, num_tolerances, num_fail, report_json, warnings)
+
+Measure `m` by the JSON spec `spec` (roadmap 7.2): elements fitted from regions,
+seeds or patches, constructed or literal; dimensions and GD&T tolerances. The
+mesh comes back with its element table; `report_json` is the full report. See
+`doc/measure.md`.
+"""
+function measure(m::Mesh, spec::AbstractString)
+    rep = Ref{_CMeasureReport}()
+    ptr = ccall(_sym(:mio_measure), Ptr{Cvoid}, (Ptr{Cvoid}, Cstring, Ref{_CMeasureReport}),
+                _handle(m), String(spec), rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    report = _getstring((buf, n) -> ccall(_sym(:mio_measure_report_json), Int64,
+                                          (Ptr{UInt8}, Int64), buf, n))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_measure_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    (mesh=out, num_elements=Int(r.num_elements), num_dimensions=Int(r.num_dimensions),
+     num_tolerances=Int(r.num_tolerances), num_fail=Int(r.num_fail), report_json=report,
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    align_datums(m, primary, secondary; origin="") -> (; mesh, matrix)
+
+The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4): `primary` sets
+Z, `secondary` X, `origin` (a point-like element or a third plane) the origin.
+`matrix` is the 4 x 4 `transform` applies.
+"""
+function align_datums(m::Mesh, primary::AbstractString, secondary::AbstractString;
+                      origin::AbstractString="")
+    mat = zeros(Cdouble, 16)
+    ptr = ccall(_sym(:mio_align_datums), Ptr{Cvoid},
+                (Ptr{Cvoid}, Cstring, Cstring, Cstring, Ptr{Cdouble}), _handle(m),
+                String(primary), String(secondary), String(origin), mat)
+    out = Mesh(_check_ptr(ptr))
+    (mesh=out, matrix=[mat[4 * (a - 1) + b] for a in 1:4, b in 1:4])
+end
+
+"""
+    measure_element_primitive(m, name) -> (; type, params)
+
+The element `name` of a measured mesh as a fitted primitive (1 plane, 2 sphere,
+3 cylinder, 4 cone) and its ten parameters, a deviation reference (roadmap 7.4.2).
+"""
+function measure_element_primitive(m::Mesh, name::AbstractString)
+    t = Ref{Int32}(0)
+    p = zeros(Cdouble, 10)
+    _check(ccall(_sym(:mio_measure_element_primitive), Cint,
+                 (Ptr{Cvoid}, Cstring, Ref{Int32}, Ptr{Cdouble}), _handle(m), String(name), t, p))
+    (type=Int(t[]), params=p)
+end
+
+"""
+    write_step_elements(path, m; patches=Int64[], segments=64)
+        -> (; num_planes, num_spheres, num_cylinders, num_cones, num_tori, num_skipped, warnings)
+
+Write the fitted primitives of `m` (`segment`, then `fit_primitives`) to a STEP
+file as exact geometry: bounded planes, balls, lidded cylinders, frusta and tori
+(roadmap 7.6.5). `patches` selects patch labels (all fitted ones when empty).
+"""
+function write_step_elements(path::AbstractString, m::Mesh; patches=Int64[], segments::Integer=64)
+    ids = Int64[Int64(p) for p in patches]
+    rep = Ref{_CStepElementsReport}()
+    GC.@preserve ids begin
+        _check(ccall(_sym(:mio_write_step_elements), Cint,
+                     (Cstring, Ptr{Cvoid}, Ptr{Int64}, Int64, Int64, Ref{_CStepElementsReport}),
+                     String(path), _handle(m), isempty(ids) ? Ptr{Int64}(C_NULL) : pointer(ids),
+                     Int64(length(ids)), Int64(segments), rep))
+    end
+    r = rep[]
+    text = _getstring((buf, n) -> ccall(_sym(:mio_write_step_elements_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    (num_planes=Int(r.num_planes), num_spheres=Int(r.num_spheres),
+     num_cylinders=Int(r.num_cylinders), num_cones=Int(r.num_cones), num_tori=Int(r.num_tori),
+     num_skipped=Int(r.num_skipped),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    silhouette(m, normal=(0, 0, 1); clearance=0.0, round_angle=180.0, arc_segments=64,
+               extrude=false, region="", merge_tolerance=1e-9)
+        -> (; mesh, num_loops, num_outer, num_holes, num_triangles, area, perimeter,
+              min_height, max_height, warnings)
+
+The outline of a surface (or a volume mesh's skin) seen along `normal`, with its
+holes: a chained line mesh `fit_curves` reads, offset by `clearance` (> 0 grows it)
+or, with `extrude=true`, the closed surface of the prism over it (roadmap 7.6.3).
+See `doc/silhouette.md`.
+"""
+function silhouette(m::Mesh, normal=(0.0, 0.0, 1.0); clearance::Real=0.0, round_angle::Real=180.0,
+                    arc_segments::Integer=64, extrude::Bool=false, region::AbstractString="",
+                    merge_tolerance::Real=1e-9)
+    n = (Float64(normal[1]), Float64(normal[2]), Float64(normal[3]))
+    region_c = Vector{UInt8}(codeunits(String(region) * "\0"))
+    rep = Ref{_CSilhouetteReport}()
+    ptr = GC.@preserve region_c begin
+        opts = _CSilhouetteOpts(n, Cdouble(clearance), Cdouble(round_angle), Int64(arc_segments),
+                                Int32(extrude), Int32(0), Cdouble(merge_tolerance),
+                                Cstring(pointer(region_c)), ntuple(_ -> Int64(0), 4))
+        ccall(_sym(:mio_silhouette), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CSilhouetteOpts}, Ref{_CSilhouetteReport}), _handle(m), Ref(opts),
+              rep)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    text = _getstring((buf, n) -> ccall(_sym(:mio_silhouette_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    (mesh=out, num_loops=Int(r.num_loops), num_outer=Int(r.num_outer),
+     num_holes=Int(r.num_holes), num_triangles=Int(r.num_triangles), area=r.area,
+     perimeter=r.perimeter, min_height=r.min_height, max_height=r.max_height,
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    fit_curves(sections; tolerance=0.0, snap_angle=0.0, normal=nothing, min_arc_points=4,
+               min_arc_sweep=5.0)
+        -> (; mesh, pieces, frames, num_lines, num_arcs, num_circles, max_residual, tolerance,
+              warnings)
+
+Lines, arcs and circles from the chains of a chained line mesh (roadmap 7.6.2):
+each piece is `(; type, start, stop, centre, radius, sweep, residual, num_points,
+chain, frame)` in its frame's 2-D coordinates (`chain` and `frame` 0-based);
+`frames` are 4 x 4 (columns e1, e2, normal, origin). See `doc/fit_curves.md`.
+"""
+function fit_curves(sections::Mesh; tolerance::Real=0.0, snap_angle::Real=0.0, normal=nothing,
+                    min_arc_points::Integer=4, min_arc_sweep::Real=5.0)
+    n = normal === nothing ? (0.0, 0.0, 0.0) : (Float64(normal[1]), Float64(normal[2]), Float64(normal[3]))
+    opts = _CFitCurvesOpts(Cdouble(tolerance), Cdouble(snap_angle), n, Int64(min_arc_points),
+                           Cdouble(min_arc_sweep), ntuple(_ -> Int64(0), 4))
+    rep = Ref{_CFitCurvesReport}()
+    ptr = ccall(_sym(:mio_fit_curves), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CFitCurvesOpts}, Ref{_CFitCurvesReport}), _handle(sections),
+                Ref(opts), rep)
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    names = ("line", "arc", "circle")
+    pieces = map(0:(r.num_pieces - 1)) do i
+        p = Ref{_CSketchPiece}()
+        _check(ccall(_sym(:mio_fit_curves_piece), Cint, (Int64, Ref{_CSketchPiece}), i, p))
+        q = p[]
+        (type=names[q.type], start=collect(q.start), stop=collect(q.stop), centre=collect(q.centre),
+         radius=q.radius, sweep=q.sweep, residual=q.residual, num_points=Int(q.num_points),
+         chain=Int(q.chain), frame=Int(q.frame))
+    end
+    frames = map(0:(r.num_frames - 1)) do i
+        f = zeros(Cdouble, 16)
+        _check(ccall(_sym(:mio_fit_curves_frame), Cint, (Int64, Ptr{Cdouble}), i, f))
+        [f[4 * (a - 1) + b] for a in 1:4, b in 1:4]
+    end
+    text = _getstring((buf, n) -> ccall(_sym(:mio_fit_curves_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    (mesh=out, pieces=pieces, frames=frames, num_lines=Int(r.num_lines), num_arcs=Int(r.num_arcs),
+     num_circles=Int(r.num_circles), max_residual=r.max_residual, tolerance=r.tolerance,
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    sections(mesh, direction, offsets; min_length=0.0, record_parent_ids=false) -> Mesh
+
+Chained sections of a surface at the parallel planes `n . x = offsets[k]` (`n`
+the unit `direction`), merged into one line mesh with the `section:offset`,
+`section:chain` and `section:closed` cell data (roadmap 7.6.1; chains 0-based).
+See `doc/slice.md`.
+"""
+function sections(m::Mesh, direction::AbstractVector{<:Real}, offsets::AbstractVector{<:Real};
+                  min_length::Real=0.0, record_parent_ids::Bool=false)
+    d = Float64[direction[1], direction[2], direction[3]]
+    offs = Float64.(collect(offsets))
+    ptr = GC.@preserve d offs ccall(_sym(:mio_sections), Ptr{Cvoid},
+                                    (Ptr{Cvoid}, Ptr{Cdouble}, Ptr{Cdouble}, Int64, Cdouble, Cint),
+                                    _handle(m), pointer(d), pointer(offs), length(offs),
+                                    Cdouble(min_length), record_parent_ids ? Cint(1) : Cint(0))
     Mesh(_check_ptr(ptr))
 end
 
@@ -1009,33 +1476,43 @@ end
 
 const _THICKNESS_DIRECTIONS = Dict("auto" => Int32(0), "inward" => Int32(1),
                                    "outward" => Int32(2))
+const _THICKNESS_METHODS = Dict("ray" => Int32(0), "sphere" => Int32(1), "cone" => Int32(2))
 
 """
     thickness(mesh, other=nothing; direction="auto", max_distance=0.0, threshold=0.0,
-              region="", region_other="")
-        -> (; mesh, direction, num_cells, num_hit, num_missed, num_below, min, max, mean,
-              min_cell, min_point, max_distance, warnings)
+              region="", region_other="", method="ray", cone_angle=15.0, cone_rays=16,
+              two_sided=false, max_normal_deviation=90.0)
+        -> (; mesh, direction, method, num_cells, num_hit, num_missed, num_below, min, max,
+              mean, p2, p95, min_cell, min_point, max_distance, warnings)
 
 Wall thickness or clearance per facet of the surface `mesh`, by a ray from each
 cell's centroid along its normal (roadmap 3.1.4): `direction` `"inward"` stops
 at the far side of the wall, `"outward"` at the next wall facing the ray, and
 `"auto"` is inward for one surface, outward against `other`. `mesh` comes back
 with the `thickness:distance` (NaN for a miss) and `thickness:hit_cell` cell
-data; `min_cell` is **1-based** (0: no hit). See `doc/thickness.md`.
+data; `min_cell` is **1-based** (0: no hit). `method` `"sphere"` or `"cone"`,
+`two_sided` and `max_normal_deviation` are roadmap 7.5's methods and scan-safe
+hits. See `doc/thickness.md`.
 """
 function thickness(m::Mesh, other::Union{Mesh,Nothing}=nothing;
                    direction::AbstractString="auto", max_distance::Real=0.0,
                    threshold::Real=0.0, region::AbstractString="",
-                   region_other::AbstractString="")
+                   region_other::AbstractString="", method::AbstractString="ray",
+                   cone_angle::Real=15.0, cone_rays::Integer=16, two_sided::Bool=false,
+                   max_normal_deviation::Real=90.0)
     haskey(_THICKNESS_DIRECTIONS, direction) ||
         throw(ArgumentError("meshio++: thickness: direction must be auto, inward or outward"))
+    haskey(_THICKNESS_METHODS, method) ||
+        throw(ArgumentError("meshio++: thickness: method must be ray, sphere or cone"))
     report = Ref{_CThicknessReport}()
     ra = Vector{UInt8}(codeunits(String(region) * "\0"))
     rb = Vector{UInt8}(codeunits(String(region_other) * "\0"))
     ptr = GC.@preserve ra rb begin
         opts = _CThicknessOpts(Cstring(pointer(ra)), Cstring(pointer(rb)), Cdouble(max_distance),
                                Cdouble(threshold), _THICKNESS_DIRECTIONS[direction], Int32(1),
-                               (0, 0, 0, 0))
+                               _THICKNESS_METHODS[method], two_sided ? Int32(1) : Int32(0),
+                               Cdouble(cone_angle), Int64(cone_rays),
+                               Cdouble(max_normal_deviation))
         ccall(_sym(:mio_thickness), Ptr{Cvoid},
               (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CThicknessOpts}, Ref{_CThicknessReport}),
               _handle(m), other === nothing ? C_NULL : _handle(other), Ref(opts), report)
@@ -1044,11 +1521,196 @@ function thickness(m::Mesh, other::Union{Mesh,Nothing}=nothing;
     text = _getstring((buf, n) -> ccall(_sym(:mio_thickness_warnings), Int64,
                                         (Ptr{UInt8}, Int64), buf, n))
     r = report[]
-    (mesh=out, direction=r.direction == 2 ? "outward" : "inward", num_cells=Int(r.num_cells),
+    (mesh=out, direction=r.direction == 2 ? "outward" : "inward",
+     method=("ray", "sphere", "cone")[r.method + 1], num_cells=Int(r.num_cells),
      num_hit=Int(r.num_hit), num_missed=Int(r.num_missed), num_below=Int(r.num_below),
-     min=r.min, max=r.max, mean=r.mean, min_cell=r.min_cell < 0 ? 0 : Int(r.min_cell) + 1,
+     min=r.min, max=r.max, mean=r.mean, p2=r.p2, p95=r.p95, min_cell=r.min_cell < 0 ? 0 : Int(r.min_cell) + 1,
      min_point=collect(r.min_point), max_distance=r.max_distance,
      warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+const _DEVIATION_TYPES = Dict("plane" => Int32(1), "sphere" => Int32(2), "cylinder" => Int32(3),
+                               "cone" => Int32(4), "torus" => Int32(5))
+
+function _deviation_result(ptr, report)
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_deviation_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    r = report[]
+    nb = Int(r.num_bins)
+    counts = zeros(Int64, nb)
+    edges = zeros(Cdouble, nb + 1)
+    ccall(_sym(:mio_deviation_histogram), Int64, (Ptr{Int64}, Ptr{Cdouble}, Int64),
+          counts, edges, nb)
+    (mesh=out, num_points=Int(r.num_points), num_measured=Int(r.num_measured),
+     min=r.min, max=r.max, mean=r.mean, rms=r.rms, sigma=r.sigma,
+     percentiles=(p1=r.percentiles[1], p5=r.percentiles[2], p50=r.percentiles[3],
+                  p95=r.percentiles[4], p99=r.percentiles[5]),
+     histogram_edges=edges, histogram_counts=counts,
+     num_outside_range=Int(r.num_outside_range), share_within=r.share_within,
+     suggested_range=r.suggested_range, num_without_normal=Int(r.num_without_normal),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')),
+     registered=r.registered != 0, registration_rms=r.registration_rms,
+     matrix=_deviation_matrix())
+end
+
+function _deviation_matrix()
+    m = zeros(Cdouble, 16)
+    ccall(_sym(:mio_deviation_matrix), Int64, (Ptr{Cdouble},), m)
+    [m[4 * (i - 1) + j] for i in 1:4, j in 1:4]
+end
+
+"""
+    deviation(scan, reference; tolerance=0.0, bins=20, range=nothing,
+              max_normal_angle=90.0, reference_region="", register=false)
+    deviation(scan, type, params; tolerance=0.0, bins=20, range=nothing)
+        -> (; mesh, num_points, num_measured, min, max, mean, rms, sigma, percentiles,
+              histogram_edges, histogram_counts, num_outside_range, share_within,
+              suggested_range, num_without_normal, warnings, registered,
+              registration_rms, matrix)
+
+The signed deviation of every point of `scan` from the surface `reference`
+(positive outside it), or from a fitted primitive `type` (`"plane"`,
+`"sphere"`, `"cylinder"`, `"cone"`, `"torus"`) with its ten `fit:patch_params`
+entries (roadmap 7.4). `mesh` comes back with the `deviation:distance` point
+data. `max_normal_angle` is the far-side rule (180 turns it off). `register`
+registers the scan first (`register_rigid` with `initial="auto"`); `mesh` is
+then the registered scan and `matrix` the motion (roadmap 7.4.1). See
+`doc/deviation.md`.
+"""
+function deviation(scan::Mesh, reference::Mesh; tolerance::Real=0.0, bins::Integer=20,
+                   range=nothing, max_normal_angle::Real=90.0,
+                   reference_region::AbstractString="", register::Bool=false)
+    lo, hi = range === nothing ? (0.0, 0.0) : (Float64(range[1]), Float64(range[2]))
+    report = Ref{_CDeviationReport}()
+    rr = Vector{UInt8}(codeunits(String(reference_region) * "\0"))
+    ptr = GC.@preserve rr begin
+        opts = _CDeviationOpts(Cdouble(tolerance), Int64(bins), lo, hi,
+                               Cdouble(max_normal_angle), Cstring(pointer(rr)), Int32(1),
+                               register ? Int32(1) : Int32(0), (0, 0, 0, 0))
+        ccall(_sym(:mio_deviation), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CDeviationOpts}, Ref{_CDeviationReport}),
+              _handle(scan), _handle(reference), Ref(opts), report)
+    end
+    _deviation_result(ptr, report)
+end
+
+function deviation(scan::Mesh, type::AbstractString, params::AbstractVector{<:Real};
+                   tolerance::Real=0.0, bins::Integer=20, range=nothing)
+    haskey(_DEVIATION_TYPES, type) ||
+        throw(ArgumentError("meshio++: deviation: unknown primitive type $(repr(type))"))
+    length(params) == 10 ||
+        throw(ArgumentError("meshio++: deviation: a primitive takes ten parameters"))
+    lo, hi = range === nothing ? (0.0, 0.0) : (Float64(range[1]), Float64(range[2]))
+    report = Ref{_CDeviationReport}()
+    p = Cdouble.(collect(params))
+    opts = _CDeviationOpts(Cdouble(tolerance), Int64(bins), lo, hi, 90.0, Cstring(C_NULL),
+                           Int32(1), Int32(0), (0, 0, 0, 0))
+    ptr = ccall(_sym(:mio_deviation_primitive), Ptr{Cvoid},
+                (Ptr{Cvoid}, Int32, Ptr{Cdouble}, Ref{_CDeviationOpts}, Ref{_CDeviationReport}),
+                _handle(scan), _DEVIATION_TYPES[type], p, Ref(opts), report)
+    _deviation_result(ptr, report)
+end
+
+"""
+    deviation_regions(mesh, tolerance; field="deviation:distance", prefix="deviation:",
+                      min_area=0.0)
+        -> (; mesh, regions, num_excess, num_missing, num_dropped, warnings)
+
+The connected regions of a measured surface beyond `+-tolerance` (roadmap
+7.4.3): excess and missing material, written as named cell regions with the
+`deviation:region` cell data (0-based region indices, -1 within tolerance).
+Each of `regions` (largest `|volume|` first) is `(; name, sign, num_cells,
+area, extreme, mean, volume, centroid, bounds)`. See `doc/deviation.md`.
+"""
+function deviation_regions(m::Mesh, tolerance::Real; field::AbstractString="deviation:distance",
+                           prefix::AbstractString="deviation:", min_area::Real=0.0)
+    report = Ref{_CDeviationRegionsReport}()
+    fb = Vector{UInt8}(codeunits(String(field) * "\0"))
+    pb = Vector{UInt8}(codeunits(String(prefix) * "\0"))
+    ptr = GC.@preserve fb pb begin
+        opts = _CDeviationRegionsOpts(Cdouble(tolerance), Cdouble(min_area),
+                                      Cstring(pointer(fb)), Cstring(pointer(pb)), (0, 0, 0, 0))
+        ccall(_sym(:mio_deviation_regions), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CDeviationRegionsOpts}, Ref{_CDeviationRegionsReport}),
+              _handle(m), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = report[]
+    regions = map(0:(Int(r.num_regions) - 1)) do k
+        info = Ref{_CDeviationRegionInfo}()
+        ccall(_sym(:mio_deviation_region_get), Cint, (Int64, Ref{_CDeviationRegionInfo}), k, info)
+        name = _getstring((buf, n) -> ccall(_sym(:mio_deviation_region_name), Int64,
+                                            (Int64, Ptr{UInt8}, Int64), k, buf, n))
+        g = info[]
+        (name=name, sign=Int(g.sign), num_cells=Int(g.num_cells), area=g.area,
+         extreme=g.extreme, mean=g.mean, volume=g.volume, centroid=collect(g.centroid),
+         bounds=collect(g.bounds))
+    end
+    text = _getstring((buf, n) -> ccall(_sym(:mio_deviation_regions_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    (mesh=out, regions=regions, num_excess=Int(r.num_excess), num_missing=Int(r.num_missing),
+     num_dropped=Int(r.num_dropped),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    exaggerate(mesh; field="deviation:distance", scale=10.0, clamp=0.0, smooth_fraction=0.01)
+        -> (; mesh, clamp, radius, num_moved, warnings)
+
+A copy of the surface `mesh` with each point displaced along its normal by
+`scale` times its clamped, smoothed deviation (roadmap 7.4.4), for a figure.
+See `doc/deviation.md`.
+"""
+function exaggerate(m::Mesh; field::AbstractString="deviation:distance", scale::Real=10.0,
+                    clamp::Real=0.0, smooth_fraction::Real=0.01)
+    report = Ref{_CExaggerateReport}()
+    fb = Vector{UInt8}(codeunits(String(field) * "\0"))
+    ptr = GC.@preserve fb begin
+        opts = _CExaggerateOpts(Cstring(pointer(fb)), Cdouble(scale), Cdouble(clamp),
+                                Cdouble(smooth_fraction), (0, 0, 0, 0))
+        ccall(_sym(:mio_exaggerate), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CExaggerateOpts}, Ref{_CExaggerateReport}),
+              _handle(m), Ref(opts), report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_exaggerate_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
+    r = report[]
+    (mesh=out, clamp=r.clamp, radius=r.radius, num_moved=Int(r.num_moved),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    colorize(mesh, field; cmap="viridis", vmin=nothing, vmax=nothing, symmetric=false,
+             steps=0, nan_color="#808080", component=nothing) -> (; mesh, vmin, vmax, location)
+
+Bake `field` into the UInt8 data `red`, `green` and `blue` through a colormap
+(`steps` of 2 or more bands it at fixed steps; roadmap 7.4.4), on the field's
+location (`"point"` or `"cell"`). See `doc/colorize.md`.
+"""
+function colorize(m::Mesh, field::AbstractString; cmap::AbstractString="viridis",
+                  vmin=nothing, vmax=nothing, symmetric::Bool=false, steps::Integer=0,
+                  nan_color::AbstractString="#808080", component=nothing)
+    (vmin === nothing) == (vmax === nothing) ||
+        throw(ArgumentError("meshio++: colorize: give both vmin and vmax, or neither"))
+    lo, hi = vmin === nothing ? (0.0, 0.0) : (Float64(vmin), Float64(vmax))
+    report = Ref{_CColorizeReport}()
+    fb = Vector{UInt8}(codeunits(String(field) * "\0"))
+    cb = Vector{UInt8}(codeunits(String(cmap) * "\0"))
+    nb = Vector{UInt8}(codeunits(String(nan_color) * "\0"))
+    ptr = GC.@preserve fb cb nb begin
+        opts = _CColorizeOpts(Cstring(pointer(fb)), Cstring(pointer(cb)), lo, hi,
+                              Cstring(pointer(nb)), Int64(steps),
+                              component === nothing ? Int64(-1) : Int64(component),
+                              Int32(symmetric), Int32(0), (0, 0, 0, 0))
+        ccall(_sym(:mio_colorize), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CColorizeOpts}, Ref{_CColorizeReport}), _handle(m), Ref(opts),
+              report)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = report[]
+    (mesh=out, vmin=r.vmin, vmax=r.vmax, location=r.location == 1 ? "cell" : "point")
 end
 
 """
@@ -2006,14 +2668,17 @@ end
 
 """
     decimate(mesh; ratio=-1.0, target_faces=-1, max_error=-1.0, placement="optimal",
-             preserve_boundary=true, preserve_features=true, feature_angle=30.0)
+             preserve_boundary=true, preserve_features=true, feature_angle=30.0,
+             max_deviation=-1.0, coverage=0.999, max_faces=-1)
         -> (; mesh, point_map, cell_maps, faces_removed, points_removed,
-              collapses_rejected, max_error_applied)
+              collapses_rejected, max_error_applied, deviation, deviation_met, rounds)
 
 Reduce a **surface** mesh's face count by greedy quadric-error-metric edge
 collapse — the inverse of [`refine`](@ref). Exactly one of `ratio` (fraction of
-faces to KEEP), `target_faces` and `max_error` must be set; a negative value
-means "unset".
+faces to KEEP), `target_faces`, `max_error` and `max_deviation` (the largest
+two-sided distance from the input on a `coverage` share of samples, roadmap
+7.8.5) must be set; a negative value means "unset". `max_faces` caps any of
+them (alone, it is the target).
 
 A 3-D volume mesh fails by name (extract the surface first), as do
 higher-order, ragged and line/vertex blocks. `frozen` is an optional vector
@@ -2024,7 +2689,8 @@ name. See `doc/decimate.md`.
 function decimate(m::Mesh; ratio::Real=-1.0, target_faces::Integer=-1,
                   max_error::Real=-1.0, placement::AbstractString="optimal",
                   preserve_boundary::Bool=true, preserve_features::Bool=true,
-                  feature_angle::Real=30.0, frozen=nothing)
+                  feature_angle::Real=30.0, frozen=nothing, max_deviation::Real=-1.0,
+                  coverage::Real=0.999, max_faces::Integer=-1)
     placement_c = Vector{UInt8}(codeunits(String(placement)))
     push!(placement_c, 0x00)
     ids = frozen === nothing ? Int64[] : Vector{Int64}(vec(collect(frozen))) .- Int64(1)
@@ -2035,7 +2701,10 @@ function decimate(m::Mesh; ratio::Real=-1.0, target_faces::Integer=-1,
                               preserve_features ? Int32(1) : Int32(0),
                               Cdouble(feature_angle),
                               isempty(ids) ? Ptr{Int64}(C_NULL) : pointer(ids),
-                              Int64(length(ids)), (Int64(0), Int64(0), Int64(0), Int64(0)))
+                              Int64(length(ids)),
+                              max_deviation >= 0 ? Cdouble(max_deviation) : Cdouble(0),
+                              Cdouble(coverage), max_faces > 0 ? Int64(max_faces) : Int64(0),
+                              (Int64(0),))
         _check_ptr(ccall(_sym(:mio_decimate_ex), Ptr{Cvoid},
                          (Ptr{Cvoid}, Ref{_CDecimateOpts}), _handle(m), Ref(opts)))
     end
@@ -2047,11 +2716,16 @@ function decimate(m::Mesh; ratio::Real=-1.0, target_faces::Integer=-1,
         pr = ccall(_sym(:mio_decimate_result_points_removed), Int64, (Ptr{Cvoid},), result)
         cr = ccall(_sym(:mio_decimate_result_collapses_rejected), Int64, (Ptr{Cvoid},), result)
         me = ccall(_sym(:mio_decimate_result_max_error_applied), Cdouble, (Ptr{Cvoid},), result)
+        met = Ref{Int32}(0)
+        rounds = Ref{Int64}(0)
+        dev = ccall(_sym(:mio_decimate_result_deviation), Cdouble,
+                    (Ptr{Cvoid}, Ref{Int32}, Ref{Int64}), result, met, rounds)
         out = Mesh(_check_ptr(ccall(_sym(:mio_decimate_result_take_mesh), Ptr{Cvoid},
                                     (Ptr{Cvoid},), result)))
         (mesh=out, point_map=pm, cell_maps=cm, faces_removed=Int(fr),
          points_removed=Int(pr), collapses_rejected=Int(cr),
-         max_error_applied=Float64(me))
+         max_error_applied=Float64(me), deviation=Float64(dev), deviation_met=met[] != 0,
+         rounds=Int(rounds[]))
     finally
         ccall(_sym(:mio_decimate_result_free), Cvoid, (Ptr{Cvoid},), result)
     end
@@ -3654,20 +4328,42 @@ end
     fit_primitives(m; patch_data="segment:patch", tolerance=1e-3, relative=true,
                    min_inlier_fraction=0.9,
                    types=("plane", "sphere", "cylinder", "cone", "torus"),
-                   max_iterations=50)
+                   max_iterations=50, region="", seeds=nothing, feature_angle=30.0,
+                   rim_angle=15.0, output_region="fit:feature", used_points="auto",
+                   criterion="least_squares")
         -> (; mesh, num_patches, num_plane, num_sphere, num_cylinder, num_cone,
-             num_torus, num_unfitted)
+             num_torus, num_unfitted, num_feature_cells, warnings)
 
 Fit a plane, sphere, cylinder, cone or torus to each patch of a surface (the
 first accepted in that order, or none). The mesh comes back unchanged plus cell
 data `fit:type`, `fit:rms`, `fit:max` and per-patch field data `fit:patch_*`.
-`patch_data=""` fits the whole surface as one patch. See `doc/fit_primitives.md`.
+`patch_data=""` fits the whole surface as one patch. `region` fits a named cell
+region, `seeds` (a vector of 3-vectors) grows and fits a feature from each and
+writes its cells as `output_region`, and `used_points` (`"auto"`, `"all"`,
+`"3sigma"`, `"2sigma"`, `"1sigma"`) trims outliers (roadmap 7.1.1, 7.1.2);
+`criterion` (`"minimum_zone"`, `"min_circumscribed"`, `"max_inscribed"`) refits
+planes, spheres and cylinders under that reference (roadmap 7.1.4). See
+`doc/fit_primitives.md`.
 """
 function fit_primitives(m::Mesh; patch_data::AbstractString="segment:patch",
                         tolerance::Real=1e-3, relative::Bool=true,
                         min_inlier_fraction::Real=0.9,
                         types=("plane", "sphere", "cylinder", "cone", "torus"),
-                        max_iterations::Integer=50)
+                        max_iterations::Integer=50, region::AbstractString="",
+                        seeds=nothing, feature_angle::Real=30.0, rim_angle::Real=15.0,
+                        output_region::AbstractString="fit:feature",
+                        used_points::AbstractString="auto",
+                        criterion::AbstractString="least_squares")
+    used = findfirst(==(String(used_points)), ("auto", "all", "3sigma", "2sigma", "1sigma"))
+    used === nothing &&
+        throw(ArgumentError("meshio++: fit_primitives: unknown used_points $(used_points)"))
+    crit = findfirst(==(String(criterion)),
+                     ("least_squares", "minimum_zone", "min_circumscribed", "max_inscribed"))
+    crit === nothing &&
+        throw(ArgumentError("meshio++: fit_primitives: unknown criterion $(criterion)"))
+    flat = seeds === nothing ? Cdouble[] : Cdouble[Float64(x) for s in seeds for x in s]
+    length(flat) % 3 == 0 ||
+        throw(ArgumentError("meshio++: fit_primitives: seeds must be 3-vectors"))
     mask = UInt32(0)
     for t in types
         k = findfirst(==(String(t)), _FIT_TYPES)
@@ -3676,20 +4372,30 @@ function fit_primitives(m::Mesh; patch_data::AbstractString="segment:patch",
     end
     report = Ref{_CFitPrimitivesReport}()
     patch_c = Vector{UInt8}(codeunits(String(patch_data) * "\0"))
-    ptr = GC.@preserve patch_c begin
-        opts = _CFitPrimitivesOpts(Cstring(pointer(patch_c)), Float64(tolerance),
+    region_c = Vector{UInt8}(codeunits(String(region) * "\0"))
+    out_c = Vector{UInt8}(codeunits(String(output_region) * "\0"))
+    ptr = GC.@preserve patch_c region_c out_c flat begin
+        base = _CFitPrimitivesOpts(Cstring(pointer(patch_c)), Float64(tolerance),
                                    Float64(min_inlier_fraction), Int32(relative), mask,
                                    Int64(max_iterations), ntuple(_ -> Int64(0), 6))
-        ccall(_sym(:mio_fit_primitives), Ptr{Cvoid},
-              (Ptr{Cvoid}, Ref{_CFitPrimitivesOpts}, Ptr{_CFitPrimitivesReport}),
+        opts = _CFitPrimitivesExOpts(base, Cstring(pointer(region_c)),
+                                     isempty(flat) ? Ptr{Cdouble}(C_NULL) : pointer(flat),
+                                     Int64(length(flat) ÷ 3), Float64(feature_angle),
+                                     Float64(rim_angle), Cstring(pointer(out_c)),
+                                     Int32(used - 1), Int32(crit - 1), ntuple(_ -> Int64(0), 6))
+        ccall(_sym(:mio_fit_primitives_ex), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CFitPrimitivesExOpts}, Ptr{_CFitPrimitivesReport}),
               _handle(m), Ref(opts), report)
     end
     r = _check_ptr(ptr)
     rep = report[]
+    text = _getstring((buf, n) -> ccall(_sym(:mio_fit_primitives_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
     (mesh=Mesh(r), num_patches=Int(rep.num_patches), num_plane=Int(rep.num_plane),
      num_sphere=Int(rep.num_sphere), num_cylinder=Int(rep.num_cylinder),
      num_cone=Int(rep.num_cone), num_torus=Int(rep.num_torus),
-     num_unfitted=Int(rep.num_unfitted))
+     num_unfitted=Int(rep.num_unfitted), num_feature_cells=Int(rep.num_feature_cells),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
 end
 
 """
@@ -4045,7 +4751,7 @@ _quality_tuple(q::_CSurfaceQuality) =
 
 """
     repair(m; fix_orientation=true, orient_outward=true, fill_holes=true,
-           split_non_manifold=true, max_hole_edges=10, weld_tolerance=0.0,
+           split_non_manifold=true, max_hole_edges=10, weld_tolerance=0.0, fill_style="fan",
            record_provenance=false)
         -> (; mesh, quality_before, quality_after, num_flipped, num_components,
              largest_component, num_oriented_outward, num_unorientable,
@@ -4063,13 +4769,16 @@ See `doc/repair.md`.
 function repair(m::Mesh; fix_orientation::Bool=true, orient_outward::Bool=true,
                 fill_holes::Bool=true, split_non_manifold::Bool=true,
                 max_hole_edges::Integer=10, weld_tolerance::Real=0.0,
-                record_provenance::Bool=false)
+                record_provenance::Bool=false, fill_style::AbstractString="fan")
+    style = fill_style == "fan" ? Int32(0) : fill_style == "flat" ? Int32(1) :
+            fill_style == "curved" ? Int32(2) :
+            throw(ArgumentError("meshio++: repair: fill_style must be fan, flat or curved"))
     report = Ref{_CRepairReport}()
     opts = _CRepairOpts(fix_orientation ? Int32(1) : Int32(0),
                         orient_outward ? Int32(1) : Int32(0),
                         fill_holes ? Int32(1) : Int32(0),
                         split_non_manifold ? Int32(1) : Int32(0),
-                        record_provenance ? Int32(1) : Int32(0), Int32(0),
+                        record_provenance ? Int32(1) : Int32(0), style,
                         Int64(max_hole_edges), Float64(weld_tolerance),
                         (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
     ptr = ccall(_sym(:mio_repair), Ptr{Cvoid},
@@ -4283,33 +4992,145 @@ end
 
 """
     register_rigid(source, target; method="point_to_point", max_iterations=50,
-                   tolerance=1e-10, max_distance=0.0, initial=nothing)
-        -> (; matrix, initial_rms, rms, iterations, num_pairs, converged)
+                   tolerance=1e-10, max_distance=0.0, initial=nothing,
+                   symmetric_check=false, symmetric_tolerance=0.05, source_region="",
+                   target_region="", adaptive_trim=0.0)
+        -> (; matrix, initial_rms, rms, iterations, num_pairs, converged, num_rejected,
+              candidate_rms, chosen_candidate, warnings)
 
 Rigid registration by iterative closest points: `matrix` (4x4, `matrix[i, j]`
 row `i`) lays `source`'s points onto `target` (its surface when it has surface
 cells, else its points); apply it with `transform(source; matrix=...)`.
-`initial` is a starting 4x4 matrix. See `doc/registration.md`.
+`initial` is a starting 4x4 matrix, or `"auto"`: the best of the 24
+principal-frame candidates (roadmap 7.3.1; `chosen_candidate` is 0-based).
+`source_region`/`target_region` restrict the pairs to cell regions and
+`adaptive_trim` drops pairs beyond that multiple of the median pair distance
+(7.3.3). See `doc/registration.md`.
 """
 function register_rigid(source::Mesh, target::Mesh; method::AbstractString="point_to_point",
                         max_iterations::Integer=50, tolerance::Real=1e-10,
-                        max_distance::Real=0.0, initial=nothing)
+                        max_distance::Real=0.0, initial=nothing, symmetric_check::Bool=false,
+                        symmetric_tolerance::Real=0.05, source_region::AbstractString="",
+                        target_region::AbstractString="", adaptive_trim::Real=0.0)
     meth = method == "point_to_point" ? Int32(0) : method == "point_to_plane" ? Int32(1) :
            throw(ArgumentError("meshio++: register_rigid: method must be \"point_to_point\" or \"point_to_plane\""))
+    mode = Int32(0)
+    if initial isa AbstractString
+        initial == "auto" ||
+            throw(ArgumentError("meshio++: register_rigid: initial must be a 4x4 matrix, nothing or \"auto\""))
+        mode = Int32(1)
+        initial = nothing
+    end
     start = initial === nothing ? Matrix{Float64}(I4) : Matrix{Float64}(initial)
     size(start) == (4, 4) || throw(ArgumentError("meshio++: register_rigid: initial must be 4x4"))
     flat = ntuple(k -> start[(k - 1) ÷ 4 + 1, (k - 1) % 4 + 1], 16)
-    opts = _CRegistrationOpts(meth, Int32(0), Int64(max_iterations), Float64(tolerance),
+    base = _CRegistrationOpts(meth, Int32(0), Int64(max_iterations), Float64(tolerance),
                               Float64(max_distance), flat, ntuple(_ -> Int64(0), 4))
     rep = Ref{_CRegistrationReport}()
-    st = ccall(_sym(:mio_register_rigid), Cint,
-               (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CRegistrationOpts}, Ref{_CRegistrationReport}),
-               _handle(source), _handle(target), Ref(opts), rep)
+    sr = Vector{UInt8}(codeunits(String(source_region) * "\0"))
+    tr = Vector{UInt8}(codeunits(String(target_region) * "\0"))
+    st = GC.@preserve sr tr begin
+        opts = _CRegistrationExOpts(base, mode, symmetric_check ? Int32(1) : Int32(0),
+                                    Cdouble(symmetric_tolerance), Cdouble(adaptive_trim),
+                                    Cstring(pointer(sr)), Cstring(pointer(tr)),
+                                    ntuple(_ -> Int64(0), 4))
+        ccall(_sym(:mio_register_rigid_ex), Cint,
+              (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CRegistrationExOpts}, Ref{_CRegistrationReport}),
+              _handle(source), _handle(target), Ref(opts), rep)
+    end
     _check(st)
     r = rep[]
     matrix = [r.matrix[4 * (i - 1) + j] for i in 1:4, j in 1:4]
+    cands = zeros(Cdouble, Int(r.num_candidates))
+    ccall(_sym(:mio_register_rigid_candidates), Int64, (Ptr{Cdouble}, Int64), cands,
+          length(cands))
+    text = _getstring((buf, n) -> ccall(_sym(:mio_register_rigid_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, n))
     (matrix=matrix, initial_rms=r.initial_rms, rms=r.rms, iterations=Int(r.iterations),
-     num_pairs=Int(r.num_pairs), converged=r.converged != 0)
+     num_pairs=Int(r.num_pairs), converged=r.converged != 0,
+     num_rejected=Int(r.num_rejected), candidate_rms=cands,
+     chosen_candidate=Int(r.chosen_candidate),
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+end
+
+"""
+    register_landmarks(source_points, target_points; weights=nothing)
+        -> (; matrix, residuals, rms)
+
+The rigid motion laying picked points (rows of `n x 3` matrices, `n >= 3`, not
+collinear) onto their targets: the weighted Horn solve (roadmap 7.3.2).
+"""
+function register_landmarks(source_points::AbstractMatrix{<:Real},
+                            target_points::AbstractMatrix{<:Real}; weights=nothing)
+    n = size(source_points, 1)
+    (size(source_points, 2) == 3 && size(target_points) == (n, 3)) ||
+        throw(ArgumentError("meshio++: register_landmarks: points must be n x 3 matrices"))
+    src = Cdouble.(vec(permutedims(source_points)))
+    dst = Cdouble.(vec(permutedims(target_points)))
+    w = weights === nothing ? C_NULL : Cdouble.(collect(weights))
+    m = zeros(Cdouble, 16)
+    res = zeros(Cdouble, max(n, 1))
+    rms = Ref{Cdouble}(0.0)
+    st = ccall(_sym(:mio_register_landmarks), Cint,
+               (Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Int64, Ptr{Cdouble}, Ptr{Cdouble},
+                Ref{Cdouble}), src, dst, w, n, m, res, rms)
+    _check(st)
+    (matrix=[m[4 * (i - 1) + j] for i in 1:4, j in 1:4], residuals=res[1:n], rms=rms[])
+end
+
+"""
+    find_symmetry_plane(m; seed=nothing, tolerance=0.0, min_share=0.9, max_samples=4000,
+                        max_iterations=50) -> (; origin, normal, rms, share, tolerance,
+                                                chosen_candidate)
+
+The plane `m` is most nearly symmetric about (roadmap 7.3.6): each principal
+plane (and `seed`, an `(origin, normal)` pair) is mirrored, registered back by
+ICP and read off the reflection-motion product. Refuses a plane below
+`min_share`. See `doc/registration.md`.
+"""
+function find_symmetry_plane(m::Mesh; seed=nothing, tolerance::Real=0.0,
+                             min_share::Real=0.9, max_samples::Integer=4000,
+                             max_iterations::Integer=50)
+    so, sn = seed === nothing ? ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)) :
+             (Tuple(Float64.(seed[1])), Tuple(Float64.(seed[2])))
+    opts = _CSymmetryPlaneOpts(so, sn, Cdouble(tolerance), Cdouble(min_share),
+                               Int64(max_samples), Int64(max_iterations), ntuple(_ -> Int64(0), 4))
+    rep = Ref{_CSymmetryPlaneReport}()
+    st = ccall(_sym(:mio_find_symmetry_plane), Cint,
+               (Ptr{Cvoid}, Ref{_CSymmetryPlaneOpts}, Ref{_CSymmetryPlaneReport}),
+               _handle(m), Ref(opts), rep)
+    _check(st)
+    r = rep[]
+    (origin=collect(r.origin), normal=collect(r.normal), rms=r.rms, share=r.share,
+     tolerance=r.tolerance, chosen_candidate=Int(r.chosen_candidate))
+end
+
+"""
+    auto_align(m; angle_tolerance=10.0, subdivisions=3, region="", rotate_vector_data=false)
+        -> (; mesh, matrix, mode, primary, secondary, share, face_share, axis_share,
+              opening_area)
+
+Pose a scan from itself alone (roadmap 7.3.5): on its largest flat face
+(`mode == "face"`) or a cylinder on the end of its axis (`"axis"`), from an
+area-weighted histogram of its facet normals. See `doc/registration.md`.
+"""
+function auto_align(m::Mesh; angle_tolerance::Real=10.0, subdivisions::Integer=3,
+                    region::AbstractString="", rotate_vector_data::Bool=false)
+    rg = Vector{UInt8}(codeunits(String(region) * "\0"))
+    rep = Ref{_CAutoAlignReport}()
+    ptr = GC.@preserve rg begin
+        opts = _CAutoAlignOpts(Cdouble(angle_tolerance), Int64(subdivisions), Cstring(pointer(rg)),
+                               rotate_vector_data ? Int32(1) : Int32(0), Int32(0),
+                               ntuple(_ -> Int64(0), 4))
+        ccall(_sym(:mio_auto_align), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CAutoAlignOpts}, Ref{_CAutoAlignReport}), _handle(m), Ref(opts), rep)
+    end
+    out = Mesh(_check_ptr(ptr))
+    r = rep[]
+    (mesh=out, matrix=[r.matrix[4 * (i - 1) + j] for i in 1:4, j in 1:4],
+     mode=r.mode == 1 ? "axis" : "face", primary=collect(r.primary),
+     secondary=collect(r.secondary), share=r.share, face_share=r.face_share,
+     axis_share=r.axis_share, opening_area=r.opening_area)
 end
 
 const I4 = [1.0 0.0 0.0 0.0; 0.0 1.0 0.0 0.0; 0.0 0.0 1.0 0.0; 0.0 0.0 0.0 1.0]

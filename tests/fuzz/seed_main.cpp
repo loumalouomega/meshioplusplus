@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Project-generated positive seeds: no Python, LFS or third-party fixture licence.
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -13,17 +14,33 @@
 
 namespace {
 
-meshioplusplus::Mesh seed_mesh(bool Surface) {
+// The seed kinds: a tetra, a triangle, and -- only for a format whose writer took
+// neither (a drawing such as DXF) -- a polyline.
+enum class SeedKind { Volume, Surface, Line };
+
+const char* seed_label(SeedKind Kind) {
+    return Kind == SeedKind::Volume ? "volume" : (Kind == SeedKind::Surface ? "surface" : "line");
+}
+
+meshioplusplus::Mesh seed_mesh(SeedKind Kind) {
     using namespace meshioplusplus;
     Mesh mesh;
     NDArray points = NDArray::Uninit(DType::Float64, {4, 3});
     const double coords[] = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1};
     std::copy(std::begin(coords), std::end(coords), points.As<double>());
     mesh.AssignPoints(std::move(points));
-    NDArray cells = NDArray::Uninit(DType::Int64, {1, Surface ? 3u : 4u});
+    if (Kind == SeedKind::Line) {
+        NDArray cells = NDArray::Uninit(DType::Int64, {3, 2});
+        const std::int64_t conn[] = {0, 1, 1, 2, 2, 3};
+        std::copy(std::begin(conn), std::end(conn), cells.As<std::int64_t>());
+        mesh.AddCellBlock("line", std::move(cells));
+        return mesh;
+    }
+    const bool surface = Kind == SeedKind::Surface;
+    NDArray cells = NDArray::Uninit(DType::Int64, {1, surface ? 3u : 4u});
     for (std::size_t i = 0; i < cells.Size(); ++i)
         cells.As<std::int64_t>()[i] = static_cast<std::int64_t>(i);
-    mesh.AddCellBlock(Surface ? "triangle" : "tetra", std::move(cells));
+    mesh.AddCellBlock(surface ? "triangle" : "tetra", std::move(cells));
     NDArray u = NDArray::Uninit(DType::Float64, {4});
     std::fill_n(u.As<double>(), 4, 1.0);
     mesh.AddPointData("u", std::move(u));
@@ -48,22 +65,25 @@ int main(int argc, char** argv) {
                 break;
             }
         }
-        for (bool surface : {false, true}) {
-            const auto dir = root / format / (surface ? "surface" : "volume");
+        bool seeded = false;
+        for (SeedKind kind : {SeedKind::Volume, SeedKind::Surface, SeedKind::Line}) {
+            if (kind == SeedKind::Line && seeded)
+                continue;
+            const std::string label = seed_label(kind);
+            const auto dir = root / format / label;
             std::filesystem::create_directories(dir);
             const auto path = dir / ("seed" + extension);
             try {
-                writer(path.string(), seed_mesh(surface));
+                writer(path.string(), seed_mesh(kind));
                 // Validate through the native reader before supplying a seed.
                 (void)meshioplusplus::registry_readers().at(format)(path.string());
+                seeded = true;
                 for (const auto& entry : std::filesystem::directory_iterator(dir)) {
                     if (entry.is_regular_file() &&
                         std::filesystem::file_size(entry.path()) <= 262144)
                         std::filesystem::copy_file(
                             entry.path(),
-                            root / format /
-                                ((surface ? "surface-" : "volume-") +
-                                 entry.path().filename().string()),
+                            root / format / (label + "-" + entry.path().filename().string()),
                             std::filesystem::copy_options::overwrite_existing);
                 }
                 // Companion-file readers need one bundle input, not separate
@@ -92,9 +112,7 @@ int main(int argc, char** argv) {
                     if (!bundle.empty()) {
                         const auto blob = meshioplusplus::fuzz_bundle_encode(bundle);
                         if (blob.size() <= 262144) {
-                            const auto out =
-                                root / format /
-                                ((surface ? "surface-" : "volume-") + std::string("bundle.miob"));
+                            const auto out = root / format / (label + "-bundle.miob");
                             std::ofstream f(out, std::ios::binary);
                             f.write(reinterpret_cast<const char*>(blob.data()),
                                     static_cast<std::streamsize>(blob.size()));
@@ -102,8 +120,7 @@ int main(int argc, char** argv) {
                     }
                 }
             } catch (const std::exception& e) {
-                std::fprintf(stderr, "seed %s (%s): %s\n", format.c_str(),
-                             surface ? "surface" : "volume", e.what());
+                std::fprintf(stderr, "seed %s (%s): %s\n", format.c_str(), label.c_str(), e.what());
             }
         }
     }

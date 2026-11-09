@@ -51,7 +51,7 @@ The unit vectors without a zero guard, the boxes seeded with ±infinity and the 
 
 ## What the binding pass shared
 
-The second duplication pass (November 2026, [roadmap §8](./roadmap.md#code-duplication)) gave the binding layers and a few operations their own helpers, each file-private and each a call in place of the block it replaced:
+The second duplication pass (November 2026, [roadmap §7](./roadmap.md#code-duplication)) gave the binding layers and a few operations their own helpers, each file-private and each a call in place of the block it replaced:
 
 | Where | Helper | Replaces |
 | --- | --- | --- |
@@ -80,7 +80,7 @@ Its second half added:
 | `bindings/r/meshioplusplus/src/util.c`, `bindings/octave/meshioplusplus/src/util.c` | `mio_r_getbuffer`, `mio_r_cstrings`; `mio_o_getbuffer`, `mio_o_row3`, `mio_o_surface_quality`, `mio_o_ids_0based` | the per-operation getter adapters, three character-vector conversions, the Octave files' own copies |
 
 
-The installed-header pass (November 2026, ABI 42, [roadmap §8](./roadmap.md#code-duplication)) closed the last three items:
+The installed-header pass (November 2026, ABI 42, [roadmap §7](./roadmap.md#code-duplication)) closed the last three items:
 
 | Where | Helper | Replaces |
 | --- | --- | --- |

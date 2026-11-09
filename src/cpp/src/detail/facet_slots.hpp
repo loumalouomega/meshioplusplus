@@ -20,7 +20,7 @@
  * @file detail/facet_slots.hpp
  * @brief `FacetSlotUtils`: the slot bookkeeping of the facet tables that
  * `extract_surface`/`extract_skin` (`surface.cpp`) and `smooth`'s boundary
- * pass (`smooth.cpp`) each built (roadmap §8).
+ * pass (`smooth.cpp`) each built (roadmap §7).
  *
  * Both number every facet of every block they scan as one global slot range,
  * block after block, then count each facet's key with `detail::group_facets`.

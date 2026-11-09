@@ -215,14 +215,426 @@ static mxArray *O_mio_crop_plane(const mxArray **a) {
     return mio_o_wrap_mesh(out);
 }
 
-/* slice(mesh, origin, normal, record_parent_ids) */
+/* slice(mesh, origin, normal, record_parent_ids, chain, min_length) */
 static mxArray *O_mio_slice(const mxArray **a) {
     double o[3], n[3];
     mio_o_vec3(a[1], o, "origin");
     mio_o_vec3(a[2], n, "normal");
-    mio_mesh *out =
-        mio_slice(mio_o_mesh(a[0]), o, n, mio_o_bool(a[3], "record_parent_ids"));
+    mio_mesh *out = mio_slice_ex(mio_o_mesh(a[0]), o, n, mio_o_bool(a[3], "record_parent_ids"),
+                                 mio_o_bool(a[4], "chain"), mio_o_double(a[5], "min_length"));
     if (out == NULL) mio_o_fail("slice");
+    return mio_o_wrap_mesh(out);
+}
+
+/* profile_solid(sketch, features, step_path, scan, provider, deflection)
+ * (roadmap 7.7.4); features in their text form, scan a mesh or []. */
+static mxArray *O_mio_profile_solid(const mxArray **a) {
+    const char *text = mio_o_string(a[1], "features");
+    const int64_t n = mio_profile_features_from_text(text, NULL, 0);
+    if (n < 0) mio_o_fail("profile_solid");
+    mio_profile_feature *feats =
+        (mio_profile_feature *)mxMalloc((size_t)(n > 0 ? n : 1) * sizeof(mio_profile_feature));
+    if (mio_profile_features_from_text(text, feats, n) < 0) mio_o_fail("profile_solid");
+    mio_profile_solid_report r;
+    mio_mesh *out = mio_profile_solid(mio_o_mesh(a[0]), feats, n, mio_o_opt_string(a[2]),
+                                      mio_o_opt_string(a[4]), mio_o_double(a[5], "deflection"),
+                                      mio_o_is_null(a[3]) ? NULL : mio_o_mesh(a[3]), &r);
+    if (out == NULL) mio_o_fail("profile_solid");
+    mxArray *w = mio_o_getbuffer(mio_profile_solid_warnings, "profile_solid");
+    const char *keys[] = {"mesh", "volume", "area", "num_faces", "valid", "warnings"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),           mio_o_scalar(r.volume),
+                         mio_o_scalar(r.area),           mio_o_scalar((double)r.num_faces),
+                         mio_o_logical(r.valid != 0),    w};
+    return mio_o_struct(6, keys, values);
+}
+
+/* A flat double vector of (a, b, kind) triples as int64; NULL when empty. */
+static const int64_t *oc_triples(const mxArray *a, int64_t *n) {
+    *n = 0;
+    if (mio_o_is_null(a)) return NULL;
+    size_t len = 0;
+    const double *x = mio_o_doubles(a, &len, "relations");
+    if (len == 0) return NULL;
+    if (len % 3 != 0) mio_o_error("constrain_primitives", "relations are (a, b, kind) triples");
+    int64_t *out = (int64_t *)mxMalloc(len * sizeof(int64_t));
+    for (size_t i = 0; i < len; ++i) out[i] = (int64_t)x[i];
+    *n = (int64_t)(len / 3);
+    return out;
+}
+
+/* constrain_primitives(mesh, face_tolerance, angle_tolerance, distance_tolerance,
+ * min_fraction, force, forbid) (roadmap 7.7.3); force and forbid flat triples. */
+static mxArray *O_mio_constrain_primitives(const mxArray **a) {
+    mio_constrain_primitives_opts opts;
+    mio_constrain_primitives_opts_init(&opts);
+    opts.face_tolerance = mio_o_double(a[1], "face_tolerance");
+    opts.angle_tolerance_deg = mio_o_double(a[2], "angle_tolerance");
+    opts.distance_tolerance = mio_o_double(a[3], "distance_tolerance");
+    opts.min_fraction = mio_o_double(a[4], "min_fraction");
+    opts.force = oc_triples(a[5], &opts.num_force);
+    opts.forbid = oc_triples(a[6], &opts.num_forbid);
+    mio_constrain_primitives_report r;
+    mio_mesh *out = mio_constrain_primitives(mio_o_mesh(a[0]), &opts, &r);
+    if (out == NULL) mio_o_fail("constrain_primitives");
+    const int64_t n = r.num_relations;
+    mxArray *pa = mio_o_column(n), *pb = mio_o_column(n), *kind = mio_o_column(n);
+    mxArray *ang = mio_o_column(n), *dst = mio_o_column(n), *fc = mio_o_column(n);
+    for (int64_t k = 0; k < n; ++k) {
+        int64_t ia = 0, ib = 0;
+        int32_t kd = 0, forced = 0;
+        double angle = 0.0, distance = 0.0;
+        mio_o_check(mio_constrain_primitives_relation(k, &ia, &ib, &kd, &angle, &distance, &forced),
+                    "constrain_primitives relation");
+        mxGetPr(pa)[k] = (double)ia;
+        mxGetPr(pb)[k] = (double)ib;
+        mxGetPr(kind)[k] = (double)kd;
+        mxGetPr(ang)[k] = angle;
+        mxGetPr(dst)[k] = distance;
+        mxGetPr(fc)[k] = (double)forced;
+    }
+    mxArray *unmet = mio_o_matrix(r.num_unmet, 3);
+    for (int64_t k = 0; k < r.num_unmet; ++k) {
+        int64_t ia = 0, ib = 0;
+        int32_t kd = 0;
+        mio_o_check(mio_constrain_primitives_unmet(k, &ia, &ib, &kd), "constrain_primitives unmet");
+        mxGetPr(unmet)[k] = (double)ia;
+        mxGetPr(unmet)[k + r.num_unmet] = (double)ib;
+        mxGetPr(unmet)[k + 2 * r.num_unmet] = (double)kd;
+    }
+    const char *keys[] = {"mesh",     "num_constrained", "num_groups", "face_tolerance",
+                          "patch_a",  "patch_b",         "relation",   "angle_deg",
+                          "distance", "forced",          "unmet"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mio_o_scalar((double)r.num_constrained),
+                         mio_o_scalar((double)r.num_groups),
+                         mio_o_scalar(r.face_tolerance),
+                         pa, pb, kind, ang, dst, fc, unmet};
+    return mio_o_struct(11, keys, values);
+}
+
+/* face_support(solid, scan, tolerance, measured_share, inferred_share, hole_data)
+ * (roadmap 7.7.1). */
+static mxArray *O_mio_face_support(const mxArray **a) {
+    mio_face_support_opts opts;
+    mio_face_support_opts_init(&opts);
+    opts.tolerance = mio_o_double(a[2], "tolerance");
+    opts.measured_share = mio_o_double(a[3], "measured_share");
+    opts.inferred_share = mio_o_double(a[4], "inferred_share");
+    opts.hole_data = mio_o_opt_string(a[5]);
+    mio_face_support_report r;
+    mio_mesh *out = mio_face_support(mio_o_mesh(a[0]), mio_o_mesh(a[1]), &opts, &r);
+    if (out == NULL) mio_o_fail("face_support");
+    const char *keys[] = {"mesh",      "num_measured", "num_partial", "num_inferred",
+                          "num_faces", "share_within", "tolerance"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),           mio_o_scalar((double)r.num_measured),
+                         mio_o_scalar((double)r.num_partial), mio_o_scalar((double)r.num_inferred),
+                         mio_o_scalar((double)r.num_faces),   mio_o_scalar(r.share_within),
+                         mio_o_scalar(r.tolerance)};
+    return mio_o_struct(7, keys, values);
+}
+
+/* fit_cad_iterate(scan, step_path, part_class, target_within, target_explained,
+ * segment_tolerance, fit_tolerance, max_rounds, worst_faces, refine_factor,
+ * backend) (roadmap 7.7.2); part_class and backend as their C enum values. */
+static mxArray *O_mio_fit_cad_iterate(const mxArray **a) {
+    mio_fit_cad_iterate_opts opts;
+    mio_fit_cad_iterate_opts_init(&opts);
+    opts.part_class = mio_o_int(a[2], "part_class");
+    opts.target_within = mio_o_double(a[3], "target_within");
+    opts.target_explained = mio_o_double(a[4], "target_explained");
+    opts.segment_tolerance = mio_o_double(a[5], "segment_tolerance");
+    opts.fit_tolerance = mio_o_double(a[6], "fit_tolerance");
+    opts.max_rounds = mio_o_int64(a[7], "max_rounds");
+    opts.worst_faces = mio_o_int64(a[8], "worst_faces");
+    opts.refine_factor = mio_o_double(a[9], "refine_factor");
+    opts.backend = mio_o_int(a[10], "backend");
+    mio_fit_cad_iterate_report r;
+    mio_mesh *out = mio_fit_cad_iterate(mio_o_mesh(a[0]), mio_o_opt_string(a[1]), &opts, &r);
+    if (out == NULL) mio_o_fail("fit_cad_iterate");
+    mxArray *share = mio_o_column(r.num_rounds), *expl = mio_o_column(r.num_rounds);
+    for (int64_t k = 0; k < r.num_rounds; ++k)
+        mio_o_check(mio_fit_cad_iterate_round(k, &mxGetPr(share)[k], &mxGetPr(expl)[k], NULL,
+                                              NULL, NULL),
+                    "fit_cad_iterate round");
+    const char *keys[] = {"mesh",          "num_rounds",    "best_round",   "target_met",
+                          "stop_reason",   "target_within", "share_within", "explained",
+                          "hausdorff_max", "num_faces",     "round_share_within",
+                          "round_explained"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mio_o_scalar((double)r.num_rounds),
+                         mio_o_scalar((double)r.best_round),
+                         mio_o_scalar((double)r.target_met),
+                         mio_o_scalar((double)r.stop_reason),
+                         mio_o_scalar(r.target_within),
+                         mio_o_scalar(r.share_within),
+                         mio_o_scalar(r.explained),
+                         mio_o_scalar(r.hausdorff_max),
+                         mio_o_scalar((double)r.num_faces),
+                         share,
+                         expl};
+    return mio_o_struct(12, keys, values);
+}
+
+/* The struct offset_surface, thicken and hollow return (roadmap 7.8.4). */
+static mxArray *mio_o_offset_struct(mio_mesh *out, const mio_offset_report *r, const char *what) {
+    if (out == NULL) mio_o_fail(what);
+    mxArray *w = mio_o_getbuffer(mio_offset_warnings, what);
+    const char *keys[] = {"mesh",          "num_not_visible", "num_clamped", "num_folded",
+                          "num_rim_quads", "max_move",        "warnings"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mio_o_scalar((double)r->num_not_visible),
+                         mio_o_scalar((double)r->num_clamped),
+                         mio_o_scalar((double)r->num_folded),
+                         mio_o_scalar((double)r->num_rim_quads),
+                         mio_o_scalar(r->max_move),
+                         w};
+    return mio_o_struct(7, keys, values);
+}
+
+/* offset_surface(mesh, distance, smooth_iterations) (roadmap 7.8.4). */
+static mxArray *O_mio_offset_surface(const mxArray **a) {
+    mio_offset_report r;
+    mio_mesh *out = mio_offset_surface(mio_o_mesh(a[0]), mio_o_double(a[1], "distance"),
+                                       mio_o_int(a[2], "smooth_iterations"), &r);
+    return mio_o_offset_struct(out, &r, "offset_surface");
+}
+
+/* thicken(mesh, thickness, side, smooth_iterations); side 0 inward, 1
+ * outward, 2 both (roadmap 7.8.4). */
+static mxArray *O_mio_thicken(const mxArray **a) {
+    mio_offset_report r;
+    mio_mesh *out = mio_thicken(mio_o_mesh(a[0]), mio_o_double(a[1], "thickness"),
+                                mio_o_int(a[2], "side"), mio_o_int(a[3], "smooth_iterations"), &r);
+    return mio_o_offset_struct(out, &r, "thicken");
+}
+
+/* hollow(mesh, wall, smooth_iterations) (roadmap 7.8.4). */
+static mxArray *O_mio_hollow(const mxArray **a) {
+    mio_offset_report r;
+    mio_mesh *out = mio_hollow(mio_o_mesh(a[0]), mio_o_double(a[1], "wall"),
+                               mio_o_int(a[2], "smooth_iterations"), &r);
+    return mio_o_offset_struct(out, &r, "hollow");
+}
+
+/* clip(mesh, origin, normal, keep_below, cap) (roadmap 7.8.3). */
+static mxArray *O_mio_clip(const mxArray **a) {
+    double o[3], n[3];
+    mio_o_vec3(a[1], o, "origin");
+    mio_o_vec3(a[2], n, "normal");
+    mio_clip_report r;
+    mio_mesh *out = mio_clip(mio_o_mesh(a[0]), o, n, mio_o_bool(a[3], "keep_below"),
+                             mio_o_bool(a[4], "cap"), &r);
+    if (out == NULL) mio_o_fail("clip");
+    mxArray *w = mio_o_getbuffer(mio_clip_warnings, "clip");
+    const char *keys[] = {"mesh",      "num_kept",        "num_split", "num_cap_triangles",
+                          "num_loops", "num_open_chains", "warnings"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mio_o_scalar((double)r.num_kept),
+                         mio_o_scalar((double)r.num_split),
+                         mio_o_scalar((double)r.num_cap_triangles),
+                         mio_o_scalar((double)r.num_loops),
+                         mio_o_scalar((double)r.num_open_chains),
+                         w};
+    return mio_o_struct(7, keys, values);
+}
+
+/* flip_normals(mesh, region) (roadmap 7.8.2). */
+static mxArray *O_mio_flip_normals(const mxArray **a) {
+    int64_t n = 0;
+    mio_mesh *out = mio_flip_normals(mio_o_mesh(a[0]), mio_o_opt_string(a[1]), &n);
+    if (out == NULL) mio_o_fail("flip_normals");
+    const char *keys[] = {"mesh", "num_flipped"};
+    mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)n)};
+    return mio_o_struct(2, keys, values);
+}
+
+/* remove_islands(mesh, connectivity, min_diagonal, min_area, min_cells,
+ * relative, dry_run) (roadmap 7.8.1). */
+static mxArray *O_mio_remove_islands(const mxArray **a) {
+    mio_remove_islands_opts opts;
+    mio_remove_islands_opts_init(&opts);
+    opts.connectivity = mio_o_int(a[1], "connectivity");
+    opts.min_diagonal = mio_o_double(a[2], "min_diagonal");
+    opts.min_area = mio_o_double(a[3], "min_area");
+    opts.min_cells = (int64_t)mio_o_double(a[4], "min_cells");
+    opts.relative = mio_o_bool(a[5], "relative");
+    opts.dry_run = mio_o_bool(a[6], "dry_run");
+    mio_remove_islands_report r;
+    mio_mesh *out = mio_remove_islands(mio_o_mesh(a[0]), &opts, &r);
+    if (out == NULL) mio_o_fail("remove_islands");
+    const char *keys[] = {"mesh", "num_components", "num_removed", "num_cells_removed",
+                          "num_points_removed"};
+    mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)r.num_components),
+                         mio_o_scalar((double)r.num_removed),
+                         mio_o_scalar((double)r.num_cells_removed),
+                         mio_o_scalar((double)r.num_points_removed)};
+    return mio_o_struct(5, keys, values);
+}
+
+/* measure(mesh, spec) (roadmap 7.2): the report as its JSON text. */
+static mxArray *O_mio_measure(const mxArray **a) {
+    mio_measure_report r;
+    mio_mesh *out = mio_measure(mio_o_mesh(a[0]), mio_o_string(a[1], "spec"), &r);
+    if (out == NULL) mio_o_fail("measure");
+    mxArray *js = mio_o_getbuffer(mio_measure_report_json, "measure");
+    mxArray *w = mio_o_getbuffer(mio_measure_warnings, "measure");
+    const char *keys[] = {"mesh",     "num_elements", "num_dimensions", "num_tolerances",
+                          "num_fail", "report_json",  "warnings"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mio_o_scalar((double)r.num_elements),
+                         mio_o_scalar((double)r.num_dimensions),
+                         mio_o_scalar((double)r.num_tolerances),
+                         mio_o_scalar((double)r.num_fail),
+                         js,
+                         w};
+    return mio_o_struct(7, keys, values);
+}
+
+/* align_datums(mesh, primary, secondary, origin) (roadmap 7.3.4). */
+static mxArray *O_mio_align_datums(const mxArray **a) {
+    double m[16];
+    mio_mesh *out = mio_align_datums(mio_o_mesh(a[0]), mio_o_string(a[1], "primary"),
+                                     mio_o_string(a[2], "secondary"), mio_o_opt_string(a[3]), m);
+    if (out == NULL) mio_o_fail("align_datums");
+    mxArray *mat = mio_o_matrix(4, 4);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) mxGetPr(mat)[i + 4 * j] = m[4 * i + j];
+    const char *keys[] = {"mesh", "matrix"};
+    mxArray *values[] = {mio_o_wrap_mesh(out), mat};
+    return mio_o_struct(2, keys, values);
+}
+
+/* measure_element_primitive(mesh, name) (roadmap 7.4.2). */
+static mxArray *O_mio_measure_element_primitive(const mxArray **a) {
+    int32_t type = 0;
+    double p[10];
+    mio_o_check(mio_measure_element_primitive(mio_o_mesh(a[0]), mio_o_string(a[1], "name"),
+                                              &type, p),
+                "measure_element_primitive");
+    mxArray *params = mio_o_matrix(1, 10);
+    for (int k = 0; k < 10; ++k) mxGetPr(params)[k] = p[k];
+    const char *keys[] = {"type", "params"};
+    mxArray *values[] = {mio_o_scalar((double)type), params};
+    return mio_o_struct(2, keys, values);
+}
+
+/* write_step_elements(path, mesh, patches, segments) (roadmap 7.6.5): patches
+ * a numeric vector of labels (empty: every fitted patch). */
+static mxArray *O_mio_write_step_elements(const mxArray **a) {
+    const mwSize n = mxIsEmpty(a[2]) ? 0 : mxGetNumberOfElements(a[2]);
+    if (n > 0 && (!mxIsDouble(a[2]) || mxIsComplex(a[2])))
+        mexErrMsgIdAndTxt("meshioplusplus:args", "write_step_elements: patches must be real numbers");
+    int64_t *ids = (int64_t *)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    for (mwSize i = 0; i < n; ++i) ids[i] = (int64_t)mxGetPr(a[2])[i];
+    mio_step_elements_report r;
+    mio_o_check(mio_write_step_elements(mio_o_string(a[0], "path"), mio_o_mesh(a[1]),
+                                        n > 0 ? ids : NULL, (int64_t)n,
+                                        (int64_t)mio_o_double(a[3], "segments"), &r),
+                "write_step_elements");
+    mxArray *w = mio_o_getbuffer(mio_write_step_elements_warnings, "write_step_elements");
+    const char *keys[] = {"num_planes", "num_spheres", "num_cylinders", "num_cones",
+                          "num_tori",   "num_skipped", "warnings"};
+    mxArray *values[] = {mio_o_scalar((double)r.num_planes),    mio_o_scalar((double)r.num_spheres),
+                         mio_o_scalar((double)r.num_cylinders), mio_o_scalar((double)r.num_cones),
+                         mio_o_scalar((double)r.num_tori),      mio_o_scalar((double)r.num_skipped),
+                         w};
+    return mio_o_struct(7, keys, values);
+}
+
+/* silhouette(mesh, normal, clearance, round_angle, arc_segments, extrude,
+ * region, merge_tolerance) (roadmap 7.6.3). */
+static mxArray *O_mio_silhouette(const mxArray **a) {
+    mio_silhouette_opts opts;
+    mio_silhouette_opts_init(&opts);
+    mio_o_vec3(a[1], opts.normal, "normal");
+    opts.clearance = mio_o_double(a[2], "clearance");
+    opts.round_angle = mio_o_double(a[3], "round_angle");
+    opts.arc_segments = (int64_t)mio_o_double(a[4], "arc_segments");
+    opts.extrude = mio_o_bool(a[5], "extrude");
+    opts.region = mio_o_opt_string(a[6]);
+    opts.merge_tolerance = mio_o_double(a[7], "merge_tolerance");
+    mio_silhouette_report r;
+    mio_mesh *out = mio_silhouette(mio_o_mesh(a[0]), &opts, &r);
+    if (out == NULL) mio_o_fail("silhouette");
+    mxArray *w = mio_o_getbuffer(mio_silhouette_warnings, "silhouette");
+    const char *keys[] = {"mesh",      "num_loops", "num_outer",  "num_holes",  "num_triangles",
+                          "area",      "perimeter", "min_height", "max_height", "warnings"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mio_o_scalar((double)r.num_loops),
+                         mio_o_scalar((double)r.num_outer),
+                         mio_o_scalar((double)r.num_holes),
+                         mio_o_scalar((double)r.num_triangles),
+                         mio_o_scalar(r.area),
+                         mio_o_scalar(r.perimeter),
+                         mio_o_scalar(r.min_height),
+                         mio_o_scalar(r.max_height),
+                         w};
+    return mio_o_struct(10, keys, values);
+}
+
+/* fit_curves(sections, tolerance, snap_angle, normal, min_arc_points,
+ * min_arc_sweep): `pieces` is an n x 1 struct array. */
+static mxArray *O_mio_fit_curves(const mxArray **a) {
+    mio_fit_curves_opts opts;
+    mio_fit_curves_opts_init(&opts);
+    opts.tolerance = mio_o_double(a[1], "tolerance");
+    opts.snap_angle = mio_o_double(a[2], "snap_angle");
+    mio_o_vec3(a[3], opts.normal, "normal");
+    opts.min_arc_points = (int64_t)mio_o_double(a[4], "min_arc_points");
+    opts.min_arc_sweep = mio_o_double(a[5], "min_arc_sweep");
+    mio_fit_curves_report r;
+    mio_mesh *out = mio_fit_curves(mio_o_mesh(a[0]), &opts, &r);
+    if (out == NULL) mio_o_fail("fit_curves");
+    static const char *const kFields[] = {"type",     "start",    "end",        "centre",
+                                          "radius",   "sweep",    "residual",   "num_points",
+                                          "chain",    "frame"};
+    static const char *const kTypes[] = {"line", "arc", "circle"};
+    mxArray *pieces = mxCreateStructMatrix((mwSize)r.num_pieces, 1, 10, kFields);
+    for (int64_t i = 0; i < r.num_pieces; ++i) {
+        mio_sketch_piece p;
+        if (mio_fit_curves_piece(i, &p) != MIO_OK) mio_o_fail("fit_curves");
+        mxArray *st = mio_o_matrix(1, 2), *en = mio_o_matrix(1, 2), *ce = mio_o_matrix(1, 2);
+        for (int k = 0; k < 2; ++k) {
+            mxGetPr(st)[k] = p.start[k];
+            mxGetPr(en)[k] = p.end[k];
+            mxGetPr(ce)[k] = p.centre[k];
+        }
+        mxSetField(pieces, (mwIndex)i, "type",
+                   mio_o_str(kTypes[(p.type >= 1 && p.type <= 3) ? p.type - 1 : 0]));
+        mxSetField(pieces, (mwIndex)i, "start", st);
+        mxSetField(pieces, (mwIndex)i, "end", en);
+        mxSetField(pieces, (mwIndex)i, "centre", ce);
+        mxSetField(pieces, (mwIndex)i, "radius", mio_o_scalar(p.radius));
+        mxSetField(pieces, (mwIndex)i, "sweep", mio_o_scalar(p.sweep));
+        mxSetField(pieces, (mwIndex)i, "residual", mio_o_scalar(p.residual));
+        mxSetField(pieces, (mwIndex)i, "num_points", mio_o_scalar((double)p.num_points));
+        mxSetField(pieces, (mwIndex)i, "chain", mio_o_scalar((double)p.chain));
+        mxSetField(pieces, (mwIndex)i, "frame", mio_o_scalar((double)p.frame));
+    }
+    mxArray *w = mio_o_getbuffer(mio_fit_curves_warnings, "fit_curves");
+    const char *keys[] = {"mesh",        "pieces",       "num_lines", "num_arcs",
+                          "num_circles", "max_residual", "tolerance", "warnings"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         pieces,
+                         mio_o_scalar((double)r.num_lines),
+                         mio_o_scalar((double)r.num_arcs),
+                         mio_o_scalar((double)r.num_circles),
+                         mio_o_scalar(r.max_residual),
+                         mio_o_scalar(r.tolerance),
+                         w};
+    return mio_o_struct(8, keys, values);
+}
+
+/* sections(mesh, direction, offsets, min_length, record_parent_ids) */
+static mxArray *O_mio_sections(const mxArray **a) {
+    double d[3];
+    mio_o_vec3(a[1], d, "direction");
+    size_t n = 0;
+    double *v = mio_o_doubles(a[2], &n, "offsets");
+    mio_mesh *out = mio_sections(mio_o_mesh(a[0]), d, v, (int64_t)n,
+                                 mio_o_double(a[3], "min_length"),
+                                 mio_o_bool(a[4], "record_parent_ids"));
+    if (out == NULL) mio_o_fail("sections");
     return mio_o_wrap_mesh(out);
 }
 
@@ -454,24 +866,40 @@ static mxArray *O_mio_segment(const mxArray **a) {
 }
 
 /* fit_primitives(mesh, patch_data, tolerance, relative, min_inlier_fraction,
- *                types, max_iterations) -- `types` the bit mask the .m
- * wrapper builds. */
+ *                types, max_iterations, region, seeds, feature_angle,
+ *                rim_angle, output_region, used_points, criterion) -- `types` the bit
+ * mask and `seeds` the flat x, y, z list the .m wrapper builds. */
 static mxArray *O_mio_fit_primitives(const mxArray **a) {
-    mio_fit_primitives_opts opts;
+    mio_fit_primitives_ex_opts opts;
     mio_fit_primitives_report report;
 
-    mio_fit_primitives_opts_init(&opts);
-    opts.patch_data = mio_o_string(a[1], "patch_data");
-    opts.tolerance = mio_o_double(a[2], "tolerance");
-    opts.relative = mio_o_bool(a[3], "relative") ? 1 : 0;
-    opts.min_inlier_fraction = mio_o_double(a[4], "min_inlier_fraction");
-    opts.types = (uint32_t)mio_o_int(a[5], "types");
-    opts.max_iterations = (int64_t)mio_o_int(a[6], "max_iterations");
+    mio_fit_primitives_ex_opts_init(&opts);
+    opts.base.patch_data = mio_o_string(a[1], "patch_data");
+    opts.base.tolerance = mio_o_double(a[2], "tolerance");
+    opts.base.relative = mio_o_bool(a[3], "relative") ? 1 : 0;
+    opts.base.min_inlier_fraction = mio_o_double(a[4], "min_inlier_fraction");
+    opts.base.types = (uint32_t)mio_o_int(a[5], "types");
+    opts.base.max_iterations = (int64_t)mio_o_int(a[6], "max_iterations");
+    opts.region = mio_o_opt_string(a[7]);
+    if (!mio_o_is_null(a[8])) {
+        size_t n = 0;
+        double *seeds = mio_o_doubles(a[8], &n, "seeds");
+        if (n % 3 != 0) mio_o_error("fit_primitives", "`seeds` must hold x, y, z triples");
+        opts.seeds = seeds;
+        opts.num_seeds = (int64_t)(n / 3);
+    }
+    opts.feature_angle = mio_o_double(a[9], "feature_angle");
+    opts.rim_angle = mio_o_double(a[10], "rim_angle");
+    opts.output_region = mio_o_opt_string(a[11]);
+    opts.used_points = (int32_t)mio_o_int(a[12], "used_points");
+    opts.criterion = (int32_t)mio_o_int(a[13], "criterion");
 
-    mio_mesh *out = mio_fit_primitives(mio_o_mesh(a[0]), &opts, &report);
+    mio_mesh *out = mio_fit_primitives_ex(mio_o_mesh(a[0]), &opts, &report);
     if (out == NULL) mio_o_fail("fit_primitives");
-    const char *names[] = {"mesh",         "num_patches", "num_plane", "num_sphere",
-                           "num_cylinder", "num_cone",    "num_torus", "num_unfitted"};
+    mxArray *w = mio_o_getbuffer(mio_fit_primitives_warnings, "fit_primitives");
+    const char *names[] = {"mesh",         "num_patches", "num_plane",    "num_sphere",
+                           "num_cylinder", "num_cone",    "num_torus",    "num_unfitted",
+                           "num_feature_cells", "warnings"};
     mxArray *values[] = {mio_o_wrap_mesh(out),
                          mio_o_scalar((double)report.num_patches),
                          mio_o_scalar((double)report.num_plane),
@@ -479,8 +907,10 @@ static mxArray *O_mio_fit_primitives(const mxArray **a) {
                          mio_o_scalar((double)report.num_cylinder),
                          mio_o_scalar((double)report.num_cone),
                          mio_o_scalar((double)report.num_torus),
-                         mio_o_scalar((double)report.num_unfitted)};
-    return mio_o_struct(8, names, values);
+                         mio_o_scalar((double)report.num_unfitted),
+                         mio_o_scalar((double)report.num_feature_cells),
+                         w};
+    return mio_o_struct(10, names, values);
 }
 
 static mxArray *O_mio_has_occt(const mxArray **a) {
@@ -1022,7 +1452,7 @@ static mxArray *O_mio_hausdorff_distance(const mxArray **a) {
 }
 
 /* repair(mesh, fix_orientation, orient_outward, fill_holes, split_non_manifold,
- *        max_hole_edges, weld_tolerance, record_provenance) */
+ *        max_hole_edges, weld_tolerance, record_provenance, fill_style) */
 static mxArray *O_mio_repair(const mxArray **a) {
     mio_repair_opts opts;
     mio_repair_report report;
@@ -1035,6 +1465,7 @@ static mxArray *O_mio_repair(const mxArray **a) {
     opts.max_hole_edges = (int64_t)mio_o_double(a[5], "max_hole_edges");
     opts.weld_tolerance = mio_o_double(a[6], "weld_tolerance");
     opts.record_provenance = mio_o_bool(a[7], "record_provenance") ? 1 : 0;
+    opts.fill_style = mio_o_int(a[8], "fill_style"); /* roadmap 7.8.6 */
 
     mio_mesh *out = mio_repair(mio_o_mesh(a[0]), &opts, &report);
     if (out == NULL) mio_o_fail("repair");
@@ -1224,41 +1655,153 @@ static mxArray *O_mio_laplacian_eigenmodes(const mxArray **a) {
 /* --- registration, point clouds, hulls ----------------------------------- */
 
 /* register_rigid(source, target, method, max_iterations, tolerance,
- *                max_distance, initial) */
+ *                max_distance, initial, initial_mode, symmetric_check,
+ *                source_region, target_region, adaptive_trim) */
 static mxArray *O_mio_register_rigid(const mxArray **a) {
-    mio_registration_opts opts;
-    mio_registration_opts_init(&opts);
+    mio_registration_ex_opts opts;
+    mio_registration_ex_opts_init(&opts);
     const char *m = mio_o_string(a[2], "method");
     if (strcmp(m, "point_to_plane") == 0) {
-        opts.method = MIO_REGISTER_POINT_TO_PLANE;
+        opts.base.method = MIO_REGISTER_POINT_TO_PLANE;
     } else if (strcmp(m, "point_to_point") != 0) {
         mio_o_error("register_rigid", "`method` must be \"point_to_point\" or \"point_to_plane\"");
     }
-    opts.max_iterations = (int64_t)mio_o_double(a[3], "max_iterations");
-    opts.tolerance = mio_o_double(a[4], "tolerance");
-    opts.max_distance = mio_o_double(a[5], "max_distance");
+    opts.base.max_iterations = (int64_t)mio_o_double(a[3], "max_iterations");
+    opts.base.tolerance = mio_o_double(a[4], "tolerance");
+    opts.base.max_distance = mio_o_double(a[5], "max_distance");
     if (!mio_o_is_null(a[6])) {
         double x[16];
         oc_vec_exact(a[6], x, 16, "register_rigid", "`initial` must be a 4 x 4 matrix");
         /* Octave stores column-major: element (i, j) at j * 4 + i */
         for (int i = 0; i < 4; ++i)
-            for (int j = 0; j < 4; ++j) opts.initial[4 * i + j] = x[j * 4 + i];
+            for (int j = 0; j < 4; ++j) opts.base.initial[4 * i + j] = x[j * 4 + i];
     }
+    const char *im = mio_o_string(a[7], "initial");
+    if (strcmp(im, "auto") == 0) {
+        opts.initial_mode = MIO_REGISTER_INITIAL_AUTO;
+    } else if (strcmp(im, "matrix") != 0) {
+        mio_o_error("register_rigid", "`initial` must be a 4 x 4 matrix, [] or \"auto\"");
+    }
+    opts.symmetric_check = mio_o_bool(a[8], "symmetric_check");
+    opts.source_region = mio_o_opt_string(a[9]);
+    opts.target_region = mio_o_opt_string(a[10]);
+    opts.adaptive_trim = mio_o_double(a[11], "adaptive_trim");
     mio_registration_report rep;
-    if (mio_register_rigid(mio_o_mesh(a[0]), mio_o_mesh(a[1]), &opts, &rep) != MIO_OK)
+    if (mio_register_rigid_ex(mio_o_mesh(a[0]), mio_o_mesh(a[1]), &opts, &rep) != MIO_OK)
         mio_o_fail("register_rigid");
     mxArray *mat = mio_o_matrix(4, 4);
     double *dst = mxGetPr(mat);
     for (int i = 0; i < 4; ++i)
         for (int j = 0; j < 4; ++j) dst[j * 4 + i] = rep.matrix[4 * i + j];
-    const char *keys[] = {"matrix", "initial_rms", "rms", "iterations", "num_pairs", "converged"};
+    mxArray *cands = mio_o_column(rep.num_candidates);
+    if (rep.num_candidates > 0)
+        mio_register_rigid_candidates(mxGetPr(cands), rep.num_candidates);
+    mxArray *w = mio_o_getbuffer(mio_register_rigid_warnings, "register_rigid");
+    const char *keys[] = {"matrix",       "initial_rms",      "rms",          "iterations",
+                          "num_pairs",    "converged",        "num_rejected", "chosen_candidate",
+                          "candidate_rms", "warnings"};
     mxArray *values[] = {mat,
                          mio_o_scalar(rep.initial_rms),
                          mio_o_scalar(rep.rms),
                          mio_o_scalar((double)rep.iterations),
                          mio_o_scalar((double)rep.num_pairs),
-                         mio_o_logical(rep.converged != 0)};
+                         mio_o_logical(rep.converged != 0),
+                         mio_o_scalar((double)rep.num_rejected),
+                         mio_o_scalar((double)rep.chosen_candidate),
+                         cands,
+                         w};
+    return mio_o_struct(10, keys, values);
+}
+
+/* register_landmarks(source, target, weights): n x 3 matrices, weights [] or n. */
+static mxArray *O_mio_register_landmarks(const mxArray **a) {
+    int64_t ns = 0, cs = 0, nt = 0, ct = 0;
+    double *src = mio_o_rows_to_c(a[0], &ns, &cs, 0.0, "source");
+    double *dst = mio_o_rows_to_c(a[1], &nt, &ct, 0.0, "target");
+    if (cs != 3 || ct != 3 || ns != nt)
+        mio_o_error("register_landmarks", "`source` and `target` must be n x 3 matrices");
+    const double *w = NULL;
+    if (!mio_o_is_null(a[2])) {
+        size_t nw = 0;
+        w = mio_o_doubles(a[2], &nw, "weights");
+        if ((int64_t)nw != ns)
+            mio_o_error("register_landmarks", "`weights` must have one entry per pair");
+    }
+    mxArray *res = mio_o_column(ns);
+    double m[16], rms = 0.0;
+    if (mio_register_landmarks(src, dst, w, ns, m, ns > 0 ? mxGetPr(res) : NULL, &rms) != MIO_OK)
+        mio_o_fail("register_landmarks");
+    mxArray *mat = mio_o_matrix(4, 4);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) mxGetPr(mat)[j * 4 + i] = m[4 * i + j];
+    const char *keys[] = {"matrix", "residuals", "rms"};
+    mxArray *values[] = {mat, res, mio_o_scalar(rms)};
+    return mio_o_struct(3, keys, values);
+}
+
+/* find_symmetry_plane(mesh, seed_origin, seed_normal, tolerance, min_share,
+ *                     max_samples) */
+static mxArray *O_mio_find_symmetry_plane(const mxArray **a) {
+    mio_symmetry_plane_opts opts;
+    mio_symmetry_plane_opts_init(&opts);
+    if (!mio_o_is_null(a[1]) || !mio_o_is_null(a[2])) {
+        mio_o_vecn(a[1], opts.seed_origin, 3, "seed origin");
+        mio_o_vecn(a[2], opts.seed_normal, 3, "seed normal");
+    }
+    opts.tolerance = mio_o_double(a[3], "tolerance");
+    opts.min_share = mio_o_double(a[4], "min_share");
+    opts.max_samples = (int64_t)mio_o_double(a[5], "max_samples");
+    mio_symmetry_plane_report r;
+    if (mio_find_symmetry_plane(mio_o_mesh(a[0]), &opts, &r) != MIO_OK)
+        mio_o_fail("find_symmetry_plane");
+    mxArray *o = mio_o_matrix(1, 3);
+    mxArray *nn = mio_o_matrix(1, 3);
+    for (int k = 0; k < 3; ++k) {
+        mxGetPr(o)[k] = r.origin[k];
+        mxGetPr(nn)[k] = r.normal[k];
+    }
+    const char *keys[] = {"origin", "normal", "rms", "share", "tolerance", "chosen_candidate"};
+    mxArray *values[] = {o,
+                         nn,
+                         mio_o_scalar(r.rms),
+                         mio_o_scalar(r.share),
+                         mio_o_scalar(r.tolerance),
+                         mio_o_scalar((double)r.chosen_candidate)};
     return mio_o_struct(6, keys, values);
+}
+
+/* auto_align(mesh, angle_tolerance, subdivisions, region, rotate_vector_data) */
+static mxArray *O_mio_auto_align(const mxArray **a) {
+    mio_auto_align_opts opts;
+    mio_auto_align_opts_init(&opts);
+    opts.angle_tolerance = mio_o_double(a[1], "angle_tolerance");
+    opts.subdivisions = (int64_t)mio_o_double(a[2], "subdivisions");
+    opts.region = mio_o_opt_string(a[3]);
+    opts.rotate_vector_data = mio_o_bool(a[4], "rotate_vector_data");
+    mio_auto_align_report r;
+    mio_mesh *out = mio_auto_align(mio_o_mesh(a[0]), &opts, &r);
+    if (out == NULL) mio_o_fail("auto_align");
+    mxArray *mat = mio_o_matrix(4, 4);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) mxGetPr(mat)[j * 4 + i] = r.matrix[4 * i + j];
+    mxArray *pr = mio_o_matrix(1, 3);
+    mxArray *se = mio_o_matrix(1, 3);
+    for (int k = 0; k < 3; ++k) {
+        mxGetPr(pr)[k] = r.primary[k];
+        mxGetPr(se)[k] = r.secondary[k];
+    }
+    const char *keys[] = {"mesh",  "matrix",     "mode",       "primary",     "secondary",
+                          "share", "face_share", "axis_share", "opening_area"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mat,
+                         mio_o_str(r.mode == MIO_AUTO_ALIGN_AXIS ? "axis" : "face"),
+                         pr,
+                         se,
+                         mio_o_scalar(r.share),
+                         mio_o_scalar(r.face_share),
+                         mio_o_scalar(r.axis_share),
+                         mio_o_scalar(r.opening_area)};
+    return mio_o_struct(9, keys, values);
 }
 
 /* estimate_normals(mesh, k, orientation, viewpoint, record_variation) */
@@ -1440,7 +1983,24 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_crop_bbox, 5),
     MIO_O_ENTRY(mio_crop_predicate, 5),
     MIO_O_ENTRY(mio_crop_plane, 5),
-    MIO_O_ENTRY(mio_slice, 4),
+    MIO_O_ENTRY(mio_slice, 6),
+    MIO_O_ENTRY(mio_sections, 5),
+    MIO_O_ENTRY(mio_fit_curves, 6),
+    MIO_O_ENTRY(mio_silhouette, 8),
+    MIO_O_ENTRY(mio_write_step_elements, 4),
+    MIO_O_ENTRY(mio_measure, 2),
+    MIO_O_ENTRY(mio_remove_islands, 7),
+    MIO_O_ENTRY(mio_flip_normals, 2),
+    MIO_O_ENTRY(mio_clip, 5),
+    MIO_O_ENTRY(mio_offset_surface, 3),
+    MIO_O_ENTRY(mio_constrain_primitives, 7),
+    MIO_O_ENTRY(mio_profile_solid, 6),
+    MIO_O_ENTRY(mio_face_support, 6),
+    MIO_O_ENTRY(mio_fit_cad_iterate, 11),
+    MIO_O_ENTRY(mio_thicken, 4),
+    MIO_O_ENTRY(mio_hollow, 3),
+    MIO_O_ENTRY(mio_align_datums, 4),
+    MIO_O_ENTRY(mio_measure_element_primitive, 2),
     MIO_O_ENTRY(mio_isosurface, 5),
     MIO_O_ENTRY(mio_gradient, 8),
     MIO_O_ENTRY(mio_hessian, 6),
@@ -1450,7 +2010,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_compute_normals, 7),
     MIO_O_ENTRY(mio_feature_edges, 7),
     MIO_O_ENTRY(mio_segment, 9),
-    MIO_O_ENTRY(mio_fit_primitives, 7),
+    MIO_O_ENTRY(mio_fit_primitives, 14),
     MIO_O_ENTRY(mio_has_occt, 0),
     MIO_O_ENTRY(mio_refine_patches, 13),
     MIO_O_ENTRY(mio_fit_cad, 46),
@@ -1460,14 +2020,17 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_split_interface, 3),
     MIO_O_ENTRY(mio_check_quality, 4),
     MIO_O_ENTRY(mio_hausdorff_distance, 5),
-    MIO_O_ENTRY(mio_repair, 8),
+    MIO_O_ENTRY(mio_repair, 9),
     MIO_O_ENTRY(mio_shrinkwrap, 9),
     MIO_O_ENTRY(mio_sobolev_deform, 8),
     MIO_O_ENTRY(mio_prepare_metric, 8),
     MIO_O_ENTRY(mio_untangle, 5),
     MIO_O_ENTRY(mio_morph, 7),
     MIO_O_ENTRY(mio_laplacian_eigenmodes, 4),
-    MIO_O_ENTRY(mio_register_rigid, 7),
+    MIO_O_ENTRY(mio_register_rigid, 12),
+    MIO_O_ENTRY(mio_register_landmarks, 3),
+    MIO_O_ENTRY(mio_find_symmetry_plane, 6),
+    MIO_O_ENTRY(mio_auto_align, 5),
     MIO_O_ENTRY(mio_estimate_normals, 5),
     MIO_O_ENTRY(mio_reconstruct_surface, 9),
     MIO_O_ENTRY(mio_convex_hull, 2),

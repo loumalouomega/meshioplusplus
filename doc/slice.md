@@ -58,6 +58,17 @@ Every section face is wound so that its Newell normal points toward the `+normal
 
 With `record_parent_ids=True`, an Int64 `slice:parent_cell` `cell_data` array records, per section cell, the **global (block-major)** index of the input cell it was cut from — mirroring `surface:parent_cell` from [surface extraction](/extract_surface). The parent's `cell_data` row is replicated onto each section cell regardless of this flag.
 
+## Chained sections
+
+A scanned part's profile is read as curves, not as a bag of segments. With `chain=True` (roadmap 7.6.1) a surface's line section comes back walked into polylines: a point's degree is the number of segments touching it, a chain runs between two points whose degree is not 2 (an end, or a branch) or, with every degree 2, round a loop. The order is canonical, so both engines and every run agree: open chains first, each started at the lowest-id end that still has an unwalked segment, then loops from their lowest point, each walk taking the segment to the lowest-id neighbour. Points at exactly one position are one point of a chain (a plane through a vertex cuts each of its edges there; the lowest id stands in), so a segment between two of them is left out. The segments are emitted in chain order and walking direction, the points renumbered in the order they are first visited, with the Int64 cell data `section:chain` (the chain's index) and `section:closed` (1 on a loop); `min_length` drops shorter chains. A volume's section is a surface and is refused by name.
+
+```python
+loop = mp.slice(scan, origin=(0, 0, 2.0), normal=(0, 0, 1), chain=True)
+profiles = mp.sections(scan, direction=(0, 0, 1), offsets=[1.0, 2.0, 3.0], min_length=0.5)
+```
+
+`sections(mesh, direction, offsets)` slices along a direction at several planes `n . x = offsets[k]` (`n` the unit direction), chains each, and merges them into one line mesh with the Float64 cell data `section:offset` and the chains numbered across all planes; the profiles [`fit_curves`](./fit_curves.md) and the DXF writer read. The walk is the shared `detail/polyline_chain.hpp`; the numpy twin replicates it step for step, pinned by `tests/python/test_slice.py::test_chain_matches_the_numpy_twin`.
+
 ## Determinism
 
 Output is byte-identical across the three mesh backends, across thread counts, and across the C++-core / numpy-fallback boundary (pinned by `tests/python/test_slice.py::test_cpp_matches_python`): the signed-distance and coordinate/`point_data` passes are parallel, and since v16.19.0 every simplex is cut in parallel too, its crossing points numbered by first-seen order over the shared sort-based facet table rather than a serial `(block, cell, ring-edge)` traversal. The crossing `t` is still computed from the sorted endpoint pair so both sides of a shared edge agree bit-for-bit.
@@ -67,6 +78,8 @@ Output is byte-identical across the three mesh backends, across thread counts, a
 ```sh
 meshioplusplus slice IN OUT --origin 0,0,0.5 --normal 0,0,1
 meshioplusplus slice part.msh section.vtu --normal=0,0,-1 --record-parent-ids
+meshioplusplus slice scan.stl profile.vtu --origin 0,0,2 --chain --min-length 0.5
+meshioplusplus sections scan.stl profiles.vtu --direction 0,0,1 --offsets=1,2,3
 ```
 
 Negative components use the `--normal=…` / `--origin=…` form (a bare `--normal -1,0,0` would be read as a new option). Available in both the Python CLI and the native `meshioplusplus` binary — see the [CLI reference](/cli#meshioplusplus-slice).

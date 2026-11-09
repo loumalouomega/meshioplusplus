@@ -1248,6 +1248,8 @@ step('decimate: collapses a refined cube skin, pinning its creases', () => {
     assert.equal(out.mesh.cells.length, 1);
     assert.equal(out.mesh.cells[0].type, 'triangle');
     assert.ok(out.mesh.cells[0].data.length / 3 < 48);
+    const bounded = m.decimate(skin, -1, -1, -1, 'optimal', true, true, 30, null, false, { maxDeviation: 0.05 });
+    assert.ok(bounded.deviationMet && bounded.deviation <= 0.05 && bounded.rounds >= 1);
     assert.ok(out.facesRemoved > 0);
     assert.ok(out.pointsRemoved > 0);
     assert.ok(out.collapsesRejected >= 0);
@@ -1640,6 +1642,9 @@ step('repair rewinds, fills and splits a surface', () => {
     const open = m.repair(holed, true, true, false);
     assert.equal(open.numHolesDetected, 0);
     assert.equal(open.qualityAfter.boundaryEdges, 3);
+    const flat = m.repair(holed, true, true, true, true, 10, 0, false, 'flat');
+    assert.equal(flat.numFacesAdded, 1);
+    assert.throws(() => m.repair(holed, true, true, true, true, 10, 0, false, 'smooth'), /fill_style/);
     // A volume input is refused by name.
     assert.throws(() => m.repair(cube), /extract_surface/);
 });
@@ -5696,8 +5701,46 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.equal(sg.numPatches, 6);
     const fp = m.fitPrimitives(sg.mesh);
     assert.equal(fp.numPlane, 6);
+    const mz = m.fitPrimitives(sg.mesh, 'segment:patch', 1e-3, true, 0.9, undefined, 50, {
+        criterion: 'minimum_zone',
+    });
+    assert.equal(mz.numPlane, 6);
+    const el = m.writeStepElements('/elements.step', fp.mesh);
+    assert.equal(el.numPlanes, 6);
+    assert.ok(m.FS.readFile('/elements.step', { encoding: 'utf8' }).includes('SHELL_BASED_SURFACE_MODEL'));
+    assert.throws(() => m.writeStepElements('/elements.step', fp.mesh, { patches: [99] }), /patch/);
+    assert.equal(m.clip(cubeSurface, [0, 0, 0.5], [0, 0, 1]).numLoops, 1);
+    assert.equal(m.flipNormals(cubeSurface).numFlipped, 12);
+    assert.equal(m.offsetSurface(cubeSurface, 0.1).numFolded, 0);
+    assert.equal(m.hollow(cubeSurface, 0.1).numRimQuads, 0);
+    assert.throws(() => m.thicken(cubeSurface, 0.1, { side: 'sideways' }), /side/);
+    const it = m.fitCadIterate(cubeSurface, { backend: 'native' });
+    assert.ok(it.targetMet && it.rounds.length === 1);
+    assert.equal(m.faceSupport(it.mesh, cubeSurface).numMeasured, 6);
+    assert.throws(() => m.constrainPrimitives(cubeSurface), /fit_primitives/);
+    assert.throws(() => m.profileSolid(cubeSurface, 'extrude:1'), /sketch/);
+    const ri = m.removeIslands(cubeSurface);
+    assert.equal(ri.numComponents, 1);
+    assert.throws(() => m.removeIslands(cubeSurface, { connectivity: 'face' }), /connectivity/);
+    const ms = m.measure(cubeSurface, {
+        elements: [
+            { name: 'A', fit: 'plane', seeds: [[0.5, 0.5, 0.0]] },
+            { name: 'B', fit: 'plane', seeds: [[1.0, 0.5, 0.5]] },
+        ],
+        tolerances: [{ type: 'perpendicularity', feature: 'B', datum: 'A', limit: 1e-9 }],
+    });
+    assert.equal(ms.numFail, 0);
+    assert.equal(ms.report.elements.length, 2);
+    assert.equal(m.alignDatums(ms.mesh, 'A', 'B').matrix.length, 16);
+    assert.equal(m.measureElementPrimitive(ms.mesh, 'A').type, 1);
     assert.throws(() => m.segment(cubeSurface, 200));
     assert.throws(() => m.fitPrimitives(sg.mesh, 'segment:patch', 1e-3, true, 0.9, ['blob']));
+    const seeded = m.fitPrimitives(sg.mesh, 'segment:patch', 1e-3, true, 0.9, ['plane'], 50,
+        { seeds: [[0.5, 0.5, 1.0]] });
+    assert.equal(seeded.numPlane, 1);
+    assert.ok(seeded.numFeatureCells > 0);
+    assert.throws(() => m.fitPrimitives(sg.mesh, 'segment:patch', 1e-3, true, 0.9, ['plane'], 50,
+        { usedPoints: '5sigma' }), /usedPoints/);
 
     // refinePatches (both artifacts): a box segmented at its creases is left
     // alone, six planes explaining all of it.
@@ -5767,6 +5810,23 @@ step('registerRigid of the cube onto itself', () => {
     assert.equal(r.matrix.length, 16);
     assert.ok(Math.abs(r.matrix[0] - 1) < 1e-12 && Math.abs(r.matrix[3]) < 1e-12);
     assert.throws(() => m.registerRigid(cubeSurface, cubeSurface, { method: 'affine' }));
+});
+
+step('alignment beyond local ICP (roadmap 7.3)', () => {
+    const a = m.registerRigid(cubeSurface, cubeSurface, { initial: 'auto', symmetricCheck: true });
+    assert.equal(a.candidateRms.length, 24);
+    assert.ok(a.chosenCandidate >= 0 && a.warnings.length >= 1);
+    assert.throws(() => m.registerRigid(cubeSurface, cubeSurface, { initial: 'guess' }));
+    const l = m.registerLandmarks([0, 0, 0, 1, 0, 0, 0, 2, 0], [1, 2, 3, 2, 2, 3, 1, 4, 3]);
+    assert.ok(Math.abs(l.matrix[3] - 1) < 1e-12 && l.rms < 1e-12);
+    assert.throws(() => m.registerLandmarks([0, 0, 0, 1, 0, 0], [0, 0, 0, 1, 0, 0]));
+    const p = m.findSymmetryPlane(cubeSurface);
+    assert.ok(p.share > 0.9 && p.normal.length === 3);
+    const al = m.autoAlign(cubeSurface);
+    assert.equal(al.mode, 'face');
+    assert.equal(al.matrix.length, 16);
+    const d = m.deviation(cubeSurface, { reference: cubeSurface, register: true });
+    assert.ok(d.registered && d.matrix.length === 16);
 });
 
 step('estimateNormals of the cube corners', () => {
@@ -5962,6 +6022,42 @@ step('findIntersections and thickness (roadmap 3.1.2, 3.1.4)', () => {
     assert.equal(t.numMissed, 0);
     assert.ok(Math.abs(t.min - 2) < 0.05);
     assert.throws(() => m.thickness(a, { direction: 'sideways' }), /direction/);
+    const ts = m.thickness(a, { method: 'cone', coneAngle: 20, coneRays: 8, twoSided: true });
+    assert.equal(ts.method, 'cone');
+    assert.ok(ts.p2 <= ts.p95);
+    assert.throws(() => m.thickness(a, { method: 'laser' }), /method/);
+    const ch = m.slice(a, [0, 0, 0.1], [0, 0, 1], false, { chain: true });
+    assert.ok('section:chain' in ch.cell_data);
+    const ss = m.sections(a, [0, 0, 1], [-0.5, 0.5]);
+    assert.ok('section:offset' in ss.cell_data);
+    const fc = m.fitCurves(ch);
+    assert.equal(fc.numCircles, 1);
+    assert.equal(fc.pieces[0].type, 'circle');
+    const sil = m.silhouette(a, { clearance: 0.05 });
+    assert.equal(sil.numLoops, 1);
+    assert.equal(sil.numHoles, 0);
+    assert.ok('section:chain' in sil.mesh.cell_data);
+    assert.throws(() => m.silhouette(a, { arcSegments: 2 }), /arc_segments/);
+});
+
+step('deviation (roadmap 7.4)', () => {
+    const ref = m.icosaSphere(1, 3);
+    const scan = m.icosaSphere(1.01, 3);
+    const d = m.deviation(scan, { reference: ref, tolerance: 0.02 });
+    assert.ok(Math.abs(d.mean - 0.01) < 1e-9);
+    assert.equal(d.shareWithin, 1);
+    assert.equal(d.histogramCounts.length, 20);
+    const p = m.deviation(scan, { primitive: { type: 'sphere', params: [0, 0, 0, 0, 0, 0, 1, 0, 0, 0] } });
+    assert.ok(Math.abs(p.mean - 0.01) < 1e-12);
+    assert.throws(() => m.deviation(scan, { bogus: 1 }), /bogus/);
+    assert.throws(() => m.deviation(scan), /reference/);
+    const g = m.deviationRegions(d.mesh, { tolerance: 0.005 });
+    assert.equal(g.numExcess, 1);
+    assert.equal(g.regions[0].name, 'deviation:excess_0');
+    const e = m.exaggerate(d.mesh, { scale: 20 });
+    assert.ok(e.numMoved > 0);
+    const c = m.colorize(d.mesh, { field: 'deviation:distance', steps: 4 });
+    assert.equal(c.location, 'point');
 });
 
 step('selectRegion writes one named region', () => {

@@ -19,7 +19,7 @@
 /**
  * @file detail/geometry_utils.hpp
  * @brief `GeometryUtils`: per-triangle measures that operations used to write
- * out by hand (doc/geometry_kernels.md, roadmap §8).
+ * out by hand (doc/geometry_kernels.md, roadmap §7).
  *
  * A Kratos-style utility class (`Kratos::GeometryUtils`): static inline members
  * over corners already gathered as `Vec3` or as flat `double` triples. Each

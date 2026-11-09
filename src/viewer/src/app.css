@@ -683,21 +683,50 @@ body.viewer #sel-front {
     display: inline-flex;
 }
 
-#measure-result > div {
+#measure-result > div,
+#features-section .sel-stats > div {
     display: flex;
     justify-content: space-between;
     gap: var(--ui-s-3);
     padding: 1px 0;
 }
 
-#measure-result span {
+#measure-result span,
+#features-section .sel-stats span {
     color: var(--ds-description-fg);
 }
 
-#measure-result b {
+#measure-result b,
+#features-section .sel-stats b {
     font-weight: 400;
     font-family: var(--ui-font-mono);
     font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+/* --- features (measuring mode) ------------------------------------------------ */
+
+.feat-item {
+    display: block;
+    width: 100%;
+    margin-top: var(--ui-s-2);
+    padding: var(--ui-s-2);
+    text-align: left;
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: 1px solid var(--ds-widget-border);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.feat-item[aria-pressed='true'] {
+    border-color: rgb(255 140 26);
+    box-shadow: inset 3px 0 0 rgb(255 140 26);
+}
+
+.feat-error {
+    color: var(--ds-error);
 }
 
 /* --- statistics ------------------------------------------------------------- */

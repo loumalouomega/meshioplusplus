@@ -68,7 +68,11 @@ extern SEXP R_mio_convex_hull(SEXP, SEXP);
 extern SEXP R_mio_delaunay_2d(SEXP);
 extern SEXP R_mio_estimate_normals(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_reconstruct_surface(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_register_rigid(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_register_rigid(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+                                 SEXP, SEXP);
+extern SEXP R_mio_register_landmarks(SEXP, SEXP, SEXP);
+extern SEXP R_mio_find_symmetry_plane(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_auto_align(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_laplacian_eigenmodes(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_morph(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_untangle(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -87,7 +91,24 @@ extern SEXP R_mio_optimize_volume(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP
 extern SEXP R_mio_crop_bbox(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_plane(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_crop_predicate(SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_slice(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_slice(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_sections(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_fit_curves(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_silhouette(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_write_step_elements(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_measure(SEXP, SEXP);
+extern SEXP R_mio_remove_islands(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_flip_normals(SEXP, SEXP);
+extern SEXP R_mio_clip(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_offset_surface(SEXP, SEXP, SEXP);
+extern SEXP R_mio_constrain_primitives(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_profile_solid(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_face_support(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_fit_cad_iterate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_thicken(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_hollow(SEXP, SEXP, SEXP);
+extern SEXP R_mio_align_datums(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_measure_element_primitive(SEXP, SEXP);
 extern SEXP R_mio_isosurface(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_gradient(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_hessian(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -99,7 +120,8 @@ extern SEXP R_mio_feature_edges(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_segment(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_select(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                          SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_fit_primitives(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_fit_primitives(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+                                 SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_refine_patches(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                                  SEXP, SEXP);
 extern SEXP R_mio_fit_cad(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
@@ -118,7 +140,7 @@ extern SEXP R_mio_contact_pairs(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_split_interface(SEXP, SEXP, SEXP);
 extern SEXP R_mio_hausdorff_distance(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_check_quality(SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_repair(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_repair(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_shrinkwrap(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_sobolev_deform(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_remesh_volume(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
@@ -169,7 +191,13 @@ extern SEXP R_mio_extrude(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_revolve(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_mirror(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_find_intersections(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_thickness(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_thickness(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+                            SEXP);
+extern SEXP R_mio_deviation(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+                            SEXP);
+extern SEXP R_mio_deviation_regions(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_exaggerate(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_colorize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_project_to_cad(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_meshes_equal(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_diff(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -185,7 +213,7 @@ extern SEXP R_mio_poly_to_tet(SEXP, SEXP);
 extern SEXP R_mio_blend_steps(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_tessellate(SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_decimate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_decimate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_decimate_volume(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition_labels(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -326,7 +354,10 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_delaunay_2d, 1),
                                               CALLDEF(R_mio_estimate_normals, 5),
                                               CALLDEF(R_mio_reconstruct_surface, 9),
-                                              CALLDEF(R_mio_register_rigid, 7),
+                                              CALLDEF(R_mio_register_rigid, 12),
+                                              CALLDEF(R_mio_register_landmarks, 3),
+                                              CALLDEF(R_mio_find_symmetry_plane, 6),
+                                              CALLDEF(R_mio_auto_align, 5),
                                               CALLDEF(R_mio_laplacian_eigenmodes, 4),
                                               CALLDEF(R_mio_morph, 7),
                                               CALLDEF(R_mio_untangle, 5),
@@ -343,7 +374,24 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_crop_bbox, 5),
                                               CALLDEF(R_mio_crop_plane, 5),
                                               CALLDEF(R_mio_crop_predicate, 5),
-                                              CALLDEF(R_mio_slice, 4),
+                                              CALLDEF(R_mio_slice, 6),
+                                              CALLDEF(R_mio_sections, 5),
+                                              CALLDEF(R_mio_fit_curves, 6),
+                                              CALLDEF(R_mio_silhouette, 8),
+                                              CALLDEF(R_mio_write_step_elements, 4),
+                                              CALLDEF(R_mio_measure, 2),
+                                              CALLDEF(R_mio_remove_islands, 7),
+                                              CALLDEF(R_mio_flip_normals, 2),
+                                              CALLDEF(R_mio_clip, 5),
+                                              CALLDEF(R_mio_offset_surface, 3),
+                                              CALLDEF(R_mio_constrain_primitives, 7),
+                                              CALLDEF(R_mio_profile_solid, 6),
+                                              CALLDEF(R_mio_face_support, 6),
+                                              CALLDEF(R_mio_fit_cad_iterate, 11),
+                                              CALLDEF(R_mio_thicken, 4),
+                                              CALLDEF(R_mio_hollow, 3),
+                                              CALLDEF(R_mio_align_datums, 4),
+                                              CALLDEF(R_mio_measure_element_primitive, 2),
                                               CALLDEF(R_mio_isosurface, 5),
                                               CALLDEF(R_mio_gradient, 8),
                                               CALLDEF(R_mio_hessian, 6),
@@ -354,7 +402,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_feature_edges, 7),
                                               CALLDEF(R_mio_segment, 9),
                                               CALLDEF(R_mio_select, 19),
-                                              CALLDEF(R_mio_fit_primitives, 7),
+                                              CALLDEF(R_mio_fit_primitives, 14),
                                               CALLDEF(R_mio_refine_patches, 13),
                                               CALLDEF(R_mio_fit_cad, 46),
                                               CALLDEF(R_mio_has_occt, 0),
@@ -369,7 +417,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_split_interface, 3),
                                               CALLDEF(R_mio_hausdorff_distance, 5),
                                               CALLDEF(R_mio_check_quality, 4),
-                                              CALLDEF(R_mio_repair, 8),
+                                              CALLDEF(R_mio_repair, 9),
                                               CALLDEF(R_mio_shrinkwrap, 9),
                                               CALLDEF(R_mio_sobolev_deform, 8),
                                               CALLDEF(R_mio_remesh_volume, 14),
@@ -410,7 +458,11 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_revolve, 8),
                                               CALLDEF(R_mio_mirror, 7),
                                               CALLDEF(R_mio_find_intersections, 6),
-                                              CALLDEF(R_mio_thickness, 7),
+                                              CALLDEF(R_mio_thickness, 12),
+                                              CALLDEF(R_mio_deviation, 11),
+                                              CALLDEF(R_mio_deviation_regions, 5),
+                                              CALLDEF(R_mio_exaggerate, 5),
+                                              CALLDEF(R_mio_colorize, 9),
                                               CALLDEF(R_mio_project_to_cad, 6),
                                               CALLDEF(R_mio_meshes_equal, 5),
                                               CALLDEF(R_mio_diff, 5),
@@ -426,7 +478,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_blend_steps, 4),
                                               CALLDEF(R_mio_refine, 11),
                                               CALLDEF(R_mio_tessellate, 5),
-                                              CALLDEF(R_mio_decimate, 9),
+                                              CALLDEF(R_mio_decimate, 12),
                                               CALLDEF(R_mio_decimate_volume, 9),
                                               CALLDEF(R_mio_partition, 9),
                                               CALLDEF(R_mio_partition_labels, 8),

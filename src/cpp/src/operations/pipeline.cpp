@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -76,6 +77,8 @@
 #include "meshioplusplus/operations/check_tetrahedra.hpp"
 #include "meshioplusplus/operations/find_intersections.hpp"
 #include "meshioplusplus/operations/thickness.hpp"
+#include "meshioplusplus/operations/deviation.hpp"
+#include "meshioplusplus/operations/colorize.hpp"
 #include "meshioplusplus/operations/region_ops.hpp"
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
@@ -85,6 +88,17 @@
 #include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/cut.hpp"
 #include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/auto_align.hpp"
+#include "meshioplusplus/operations/fit_curves.hpp"
+#include "meshioplusplus/operations/silhouette.hpp"
+#include "meshioplusplus/operations/measure.hpp"
+#include "meshioplusplus/operations/remove_islands.hpp"
+#include "meshioplusplus/operations/flip_normals.hpp"
+#include "meshioplusplus/operations/clip.hpp"
+#include "meshioplusplus/operations/offset_surface.hpp"
+#include "meshioplusplus/operations/constrain_primitives.hpp"
+#include "meshioplusplus/operations/fit_cad_loop.hpp"
+#include "meshioplusplus/operations/profile_solid.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -1119,11 +1133,24 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         o.mWeld = pipe_flag(rStep, "Weld", o.mWeld);
         o.mTolerance = pipe_number(rStep, "Tolerance", o.mTolerance);
         o.mReflectVectorData = pipe_flag(rStep, "ReflectData", o.mReflectVectorData);
+        const std::string plane = pipe_text(rStep, "Plane", "");
+        if (!plane.empty() && plane != "auto")
+            throw std::invalid_argument(pipe_err(rStep, "Plane must be '' or 'auto'"));
+        double share = 0.0;
+        if (plane == "auto") {
+            const SymmetryPlaneResult sp = find_symmetry_plane(mesh);
+            o.mOrigin = sp.mOrigin;
+            o.mNormal = sp.mNormal;
+            share = sp.mShare;
+        }
         MirrorResult r = mirror(mesh, o);
-        pipe_push_step(rReport, rStep,
-                       {{"NumFlippedCells", static_cast<double>(r.mNumFlippedCells)},
-                        {"NumPointsOnPlane", static_cast<double>(r.mNumPointsOnPlane)},
-                        {"NumDroppedCells", static_cast<double>(r.mNumDroppedCells)}});
+        std::vector<std::pair<std::string, double>> counters{
+            {"NumFlippedCells", static_cast<double>(r.mNumFlippedCells)},
+            {"NumPointsOnPlane", static_cast<double>(r.mNumPointsOnPlane)},
+            {"NumDroppedCells", static_cast<double>(r.mNumDroppedCells)}};
+        if (plane == "auto")
+            counters.emplace_back("SymmetryShare", share);
+        pipe_push_step(rReport, rStep, std::move(counters));
         return std::move(r.mMesh);
     }
 
@@ -1335,16 +1362,35 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mTargetFaces =
             faces < 0.0 ? static_cast<std::int64_t>(-1) : static_cast<std::int64_t>(faces);
         opts.mMaxError = pipe_number(rStep, "MaxError", -1.0);
-        if (opts.mTargetRatio < 0.0 && opts.mTargetFaces < 0 && opts.mMaxError < 0.0)
+        opts.mMaxDeviation = pipe_number(rStep, "MaxDeviation", -1.0);
+        opts.mCoverage = pipe_number(rStep, "Coverage", 0.999);
+        const double max_faces = pipe_number(rStep, "MaxFaces", -1.0);
+        opts.mMaxFaces =
+            max_faces < 0.0 ? static_cast<std::int64_t>(-1) : static_cast<std::int64_t>(max_faces);
+        const bool bounded = opts.mMaxDeviation >= 0.0 || opts.mMaxFaces >= 0;
+        if (opts.mTargetRatio < 0.0 && opts.mTargetFaces < 0 && opts.mMaxError < 0.0 && !bounded)
             opts.mTargetRatio = 0.5;  // a usable pipeline-chip default
         opts.mPlacement = decimate_placement_from_name(pipe_text(rStep, "Placement", "optimal"));
         opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
         opts.mPreserveFeatures = pipe_flag(rStep, "PreserveFeatures", true);
         opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
         auto result = decimate(mesh, opts);
-        pipe_push_step(rReport, rStep,
-                       {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
-                        {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
+        if (!bounded) {
+            pipe_push_step(rReport, rStep,
+                           {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
+                            {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)}});
+        } else {
+            pipe_push_step(rReport, rStep,
+                           {{"FacesRemoved", static_cast<double>(result.mFacesRemoved)},
+                            {"CollapsesRejected", static_cast<double>(result.mCollapsesRejected)},
+                            {"Deviation", result.mDeviation},
+                            {"DeviationMet", result.mDeviationMet ? 1.0 : 0.0},
+                            {"Rounds", static_cast<double>(result.mRounds)}});
+            if (!result.mDeviationMet)
+                rReport.mWarnings.push_back(
+                    "decimate: max_faces forbids max_deviation; the step's Deviation is what "
+                    "the result keeps");
+        }
         return std::move(result.mMesh);
     }
     if (op == "DecimateVolume") {
@@ -1389,6 +1435,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         pipe_vec3(rStep, "Point", opts.mOrigin.data());
         pipe_vec3(rStep, "Normal", opts.mNormal.data());
         opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        opts.mChain = pipe_flag(rStep, "Chain", false);
+        opts.mMinLength = pipe_number(rStep, "MinLength", 0.0);
         Mesh section = slice(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"SectionFaces", static_cast<double>(pipe_total_cells(section))}});
@@ -1396,6 +1444,268 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             rReport.mWarnings.push_back(
                 "the section is empty; the plane misses the mesh -- move or flip it");
         return section;
+    }
+    if (op == "RemoveIslands") {
+        RemoveIslandsOptions o;
+        o.mConnectivity = island_connectivity_from_name(pipe_text(rStep, "Connectivity", "edge"));
+        o.mMinDiagonal = pipe_number(rStep, "MinDiagonal", 0.01);
+        o.mMinArea = pipe_number(rStep, "MinArea", 0.0);
+        o.mMinCells = static_cast<std::int64_t>(pipe_number(rStep, "MinCells", 0.0));
+        o.mRelative = pipe_flag(rStep, "Relative", true);
+        o.mDryRun = pipe_flag(rStep, "DryRun", false);
+        RemoveIslandsResult rr = remove_islands(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumComponents", static_cast<double>(rr.mNumComponents)},
+                        {"NumRemoved", static_cast<double>(rr.mNumRemoved)},
+                        {"NumCellsRemoved", static_cast<double>(rr.mNumCellsRemoved)}});
+        return std::move(rr.mMesh);
+    }
+    if (op == "FlipNormals") {
+        FlipNormalsResult fr = flip_normals(mesh, pipe_text(rStep, "Region", ""));
+        pipe_push_step(rReport, rStep, {{"NumFlipped", static_cast<double>(fr.mNumFlipped)}});
+        return std::move(fr.mMesh);
+    }
+    if (op == "Clip") {
+        ClipOptions o;
+        if (pipe_find(rStep, "Origin"))
+            pipe_vec3(rStep, "Origin", o.mOrigin.data());
+        if (pipe_find(rStep, "Normal"))
+            pipe_vec3(rStep, "Normal", o.mNormal.data());
+        const std::string keep = pipe_text(rStep, "Keep", "below");
+        if (keep != "below" && keep != "above")
+            throw std::invalid_argument(pipe_err(rStep, "Keep is below or above"));
+        o.mKeepBelow = keep == "below";
+        o.mCap = pipe_flag(rStep, "Cap", true);
+        ClipResult cr = clip(mesh, o);
+        for (const std::string& w : cr.mWarnings)
+            rReport.mWarnings.push_back("clip: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumSplit", static_cast<double>(cr.mNumSplit)},
+                        {"NumCapTriangles", static_cast<double>(cr.mNumCapTriangles)},
+                        {"NumLoops", static_cast<double>(cr.mNumLoops)}});
+        return std::move(cr.mMesh);
+    }
+    if (op == "ProfileSolid") {
+        ProfileSolidOptions o;
+        o.mFeatures = profile_features_from_text(pipe_text(rStep, "Features", ""));
+        o.mProvider = pipe_text(rStep, "Provider", "");
+        o.mDeflection = pipe_number(rStep, "Deflection", 0.0);
+        const std::string scan_path = pipe_text(rStep, "Scan", "");
+        Mesh scan;
+        if (!scan_path.empty())
+            scan = pipe_read_extra(scan_path);
+        ProfileSolidResult r = profile_solid(mesh, pipe_text(rStep, "Step", ""), o,
+                                             scan_path.empty() ? nullptr : &scan);
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back("profile_solid: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"Volume", r.mVolume},
+                        {"NumFaces", static_cast<double>(r.mNumFaces)},
+                        {"Valid", r.mValid ? 1.0 : 0.0}});
+        return std::move(r.mMesh);
+    }
+    if (op == "ConstrainPrimitives") {
+        ConstrainPrimitivesOptions o;
+        o.mFaceTolerance = pipe_number(rStep, "FaceTolerance", 0.0);
+        o.mAngleToleranceDeg = pipe_number(rStep, "AngleTolerance", -1.0);
+        o.mDistanceTolerance = pipe_number(rStep, "DistanceTolerance", -1.0);
+        o.mMinFraction = pipe_number(rStep, "MinFraction", -1.0);
+        // "A:B:REL" texts separated by commas.
+        const auto relations = [&](const std::string& rText, const char* pKey) {
+            std::vector<PrimitiveRelation> out;
+            const std::string& text = rText;
+            std::size_t at = 0;
+            while (at < text.size()) {
+                std::size_t end = text.find(',', at);
+                if (end == std::string::npos)
+                    end = text.size();
+                const std::string item = text.substr(at, end - at);
+                const std::size_t i = item.find(':');
+                const std::size_t j = i == std::string::npos ? i : item.find(':', i + 1);
+                if (j == std::string::npos)
+                    throw std::invalid_argument(
+                        pipe_err(rStep, std::string(pKey) + " is A:B:RELATION, comma-separated"));
+                out.push_back({std::stoll(item.substr(0, i)),
+                               std::stoll(item.substr(i + 1, j - i - 1)),
+                               primitive_relation_from_name(item.substr(j + 1))});
+                at = end + 1;
+            }
+            return out;
+        };
+        o.mForce = relations(pipe_text(rStep, "Force", ""), "Force");
+        o.mForbid = relations(pipe_text(rStep, "Forbid", ""), "Forbid");
+        ConstrainPrimitivesResult r = constrain_primitives(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumConstrained", static_cast<double>(r.mNumConstrained)},
+                        {"NumGroups", static_cast<double>(r.mNumGroups)},
+                        {"NumRelations", static_cast<double>(r.mRelations.size())},
+                        {"NumUnmet", static_cast<double>(r.mUnmet.size())}});
+        return std::move(r.mMesh);
+    }
+    if (op == "FaceSupport") {
+        const std::string scan_path = pipe_text(rStep, "Scan", "");
+        if (scan_path.empty())
+            throw std::invalid_argument(pipe_err(rStep, "needs Scan, the scan's path"));
+        FaceSupportOptions o;
+        o.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        o.mMeasuredShare = pipe_number(rStep, "MeasuredShare", 0.9);
+        o.mInferredShare = pipe_number(rStep, "InferredShare", 0.1);
+        o.mHoleData = pipe_text(rStep, "HoleData", "repair:hole");
+        FaceSupportResult r = face_support(mesh, pipe_read_extra(scan_path), o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumMeasured", static_cast<double>(r.mNumMeasured)},
+                        {"NumPartial", static_cast<double>(r.mNumPartial)},
+                        {"NumInferred", static_cast<double>(r.mNumInferred)},
+                        {"ShareWithin", r.mShareWithin}});
+        return std::move(r.mMesh);
+    }
+    if (op == "FitCadIterate") {
+        FitCadIterateOptions o;
+        o.mPartClass = fit_cad_part_class_from_name(pipe_text(rStep, "PartClass", "any"));
+        o.mTargetWithin = pipe_number(rStep, "TargetWithin", 0.0);
+        o.mTargetExplained = pipe_number(rStep, "TargetExplained", 0.0);
+        o.mSegmentTolerance = pipe_number(rStep, "SegmentTolerance", 0.0);
+        o.mFitTolerance = pipe_number(rStep, "FitTolerance", 0.0);
+        o.mMaxRounds = static_cast<std::int64_t>(pipe_number(rStep, "MaxRounds", 4));
+        o.mWorstFaces = static_cast<std::int64_t>(pipe_number(rStep, "WorstFaces", 3));
+        o.mRefineFactor = pipe_number(rStep, "RefineFactor", 0.25);
+        const std::string backend = pipe_text(rStep, "Backend", "auto");
+        if (backend == "native")
+            o.mFitCad.mBackend = FitCadBackend::Native;
+        else if (backend == "occt")
+            o.mFitCad.mBackend = FitCadBackend::Occt;
+        else if (backend != "auto")
+            throw std::invalid_argument(pipe_err(rStep, "Backend is auto, occt or native"));
+        FitCadIterateResult r = fit_cad_iterate(mesh, pipe_text(rStep, "Step", ""), o);
+        pipe_push_step(
+            rReport, rStep,
+            {{"NumRounds", static_cast<double>(r.mRounds.size())},
+             {"BestRound", static_cast<double>(r.mBestRound)},
+             {"TargetMet", r.mTargetMet ? 1.0 : 0.0},
+             {"ShareWithin", r.mRounds[static_cast<std::size_t>(r.mBestRound)].mShareWithin}});
+        return std::move(r.mSupport.mMesh);
+    }
+    if (op == "OffsetSurface" || op == "Thicken" || op == "Hollow") {
+        const char* amount = op == "OffsetSurface" ? "Distance"
+                             : op == "Thicken"     ? "Thickness"
+                                                   : "Wall";
+        if (!pipe_find(rStep, amount))
+            throw std::invalid_argument(pipe_err(rStep, std::string("needs ") + amount));
+        const double value = pipe_number(rStep, amount, 0.0);
+        const int smooth = static_cast<int>(pipe_number(rStep, "SmoothIterations", 0.0));
+        OffsetSurfaceResult r;
+        if (op == "OffsetSurface") {
+            r = offset_surface(mesh, {value, smooth});
+        } else if (op == "Thicken") {
+            ThickenOptions o;
+            o.mThickness = value;
+            o.mSide = thicken_side_from_name(pipe_text(rStep, "Side", "inward"));
+            o.mSmoothIterations = smooth;
+            r = thicken(mesh, o);
+        } else {
+            r = hollow(mesh, value, smooth);
+        }
+        for (const std::string& w : r.mWarnings)
+            rReport.mWarnings.push_back(w);
+        pipe_push_step(rReport, rStep,
+                       {{"MaxMove", r.mMaxMove},
+                        {"NumFolded", static_cast<double>(r.mNumFolded)},
+                        {"NumRimQuads", static_cast<double>(r.mNumRimQuads)}});
+        return std::move(r.mMesh);
+    }
+    if (op == "Measure") {
+        std::string spec = pipe_text(rStep, "Spec", "");
+        const std::size_t first = spec.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos)
+            throw std::invalid_argument("meshio++: pipeline: Measure needs a Spec");
+        // Inline JSON starts with an opening brace (0x7B); anything else is a path.
+        if (spec[first] != 0x7B) {
+            auto in = detail::make_classic_ifstream(spec);
+            if (!in)
+                throw std::invalid_argument("meshio++: pipeline: Measure: cannot open '" + spec +
+                                            "'");
+            spec.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        MeasureResult mr = measure(mesh, spec);
+        for (const std::string& w : mr.mWarnings)
+            rReport.mWarnings.push_back("measure: " + w);
+        if (pipe_flag(rStep, "Require", false) && mr.mNumFail > 0)
+            throw std::runtime_error(
+                "meshio++: pipeline: Measure failed: " + std::to_string(mr.mNumFail) +
+                " dimension(s) or tolerance(s) outside their limits");
+        pipe_push_step(rReport, rStep,
+                       {{"NumElements", static_cast<double>(mr.mElements.size())},
+                        {"NumDimensions", static_cast<double>(mr.mDimensions.size())},
+                        {"NumTolerances", static_cast<double>(mr.mTolerances.size())},
+                        {"NumFail", static_cast<double>(mr.mNumFail)}});
+        return std::move(mr.mMesh);
+    }
+    if (op == "AlignDatums") {
+        AlignDatumsResult ar =
+            align_datums(mesh, pipe_text(rStep, "Primary", ""), pipe_text(rStep, "Secondary", ""),
+                         pipe_text(rStep, "Origin", ""));
+        pipe_push_step(rReport, rStep, {});
+        return std::move(ar.mMesh);
+    }
+    if (op == "Silhouette") {
+        SilhouetteOptions opts;
+        if (pipe_find(rStep, "Normal"))
+            pipe_vec3(rStep, "Normal", opts.mNormal.data());
+        opts.mClearance = pipe_number(rStep, "Clearance", 0.0);
+        opts.mRoundAngleDeg = pipe_number(rStep, "RoundAngle", 180.0);
+        const double segs = pipe_number(rStep, "ArcSegments", 64.0);
+        opts.mArcSegments = static_cast<std::int64_t>(segs);
+        if (static_cast<double>(opts.mArcSegments) != segs)
+            throw std::invalid_argument(pipe_err(rStep, "ArcSegments must be an integer"));
+        opts.mExtrude = pipe_flag(rStep, "Extrude", false);
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        opts.mMergeTolerance = pipe_number(rStep, "MergeTolerance", 1e-9);
+        SilhouetteResult sr = silhouette(mesh, opts);
+        for (const std::string& w : sr.mWarnings)
+            rReport.mWarnings.push_back("silhouette: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumLoops", static_cast<double>(sr.mNumLoops)},
+                        {"NumHoles", static_cast<double>(sr.mNumHoles)},
+                        {"Area", sr.mArea},
+                        {"Perimeter", sr.mPerimeter}});
+        return std::move(sr.mMesh);
+    }
+    if (op == "FitCurves") {
+        FitCurvesOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        opts.mSnapAngleDeg = pipe_number(rStep, "SnapAngle", 0.0);
+        if (pipe_find(rStep, "Normal"))
+            pipe_vec3(rStep, "Normal", opts.mNormal.data());
+        const double pts = pipe_number(rStep, "MinArcPoints", 4.0);
+        opts.mMinArcPoints = static_cast<std::int64_t>(pts);
+        if (static_cast<double>(opts.mMinArcPoints) != pts)
+            throw std::invalid_argument(pipe_err(rStep, "MinArcPoints must be an integer"));
+        opts.mMinArcSweepDeg = pipe_number(rStep, "MinArcSweep", 5.0);
+        FitCurvesResult fr = fit_curves(mesh, opts);
+        for (const std::string& w : fr.mWarnings)
+            rReport.mWarnings.push_back("fit_curves: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumLines", static_cast<double>(fr.mNumLines)},
+                        {"NumArcs", static_cast<double>(fr.mNumArcs)},
+                        {"NumCircles", static_cast<double>(fr.mNumCircles)},
+                        {"MaxResidual", fr.mMaxResidual}});
+        return std::move(fr.mMesh);
+    }
+    if (op == "Sections") {
+        SectionsOptions opts;
+        if (pipe_find(rStep, "Direction"))
+            pipe_vec3(rStep, "Direction", opts.mDirection.data());
+        opts.mOffsets = pipe_dvec(rStep, "Offsets");
+        if (opts.mOffsets.empty())
+            throw std::invalid_argument(pipe_err(rStep, "needs Offsets, the planes' distances"));
+        opts.mMinLength = pipe_number(rStep, "MinLength", 0.0);
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        Mesh out = sections(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"SectionCells", static_cast<double>(pipe_total_cells(out))}});
+        if (pipe_total_cells(out) == 0)
+            rReport.mWarnings.push_back("the sections are empty; no plane meets the surface");
+        return out;
     }
     if (op == "Gradient") {
         // A pure data step: geometry is untouched, so the pipeline carries the
@@ -1565,6 +1875,29 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mMaxIterations = static_cast<std::int64_t>(pipe_number(rStep, "MaxIterations", 50.0));
         if (!pipe_svec(rStep, "Types").empty())
             opts.mTypes = pipe_fit_types(rStep);
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        const std::vector<double> seeds = pipe_dvec(rStep, "Seeds");
+        if (seeds.size() % 3 != 0)
+            throw std::invalid_argument(
+                "meshio++: pipeline: FitPrimitives: Seeds holds x, y, z triples");
+        for (std::size_t k = 0; k + 2 < seeds.size(); k += 3)
+            opts.mSeeds.push_back({seeds[k], seeds[k + 1], seeds[k + 2]});
+        opts.mFeatureAngleDeg = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mRimAngleDeg = pipe_number(rStep, "RimAngle", 15.0);
+        opts.mOutputRegion = pipe_text(rStep, "OutputRegion", "fit:feature");
+        {
+            const std::string u = pipe_text(rStep, "UsedPoints", "auto");
+            opts.mUsedPoints = u == "all"      ? FitUsedPoints::All
+                               : u == "3sigma" ? FitUsedPoints::Sigma3
+                               : u == "2sigma" ? FitUsedPoints::Sigma2
+                               : u == "1sigma" ? FitUsedPoints::Sigma1
+                                               : FitUsedPoints::Auto;
+            if (u != "auto" && opts.mUsedPoints == FitUsedPoints::Auto)
+                throw std::invalid_argument(
+                    "meshio++: pipeline: FitPrimitives: UsedPoints must be auto, all, 3sigma, "
+                    "2sigma or 1sigma");
+        }
+        opts.mCriterion = fit_criterion_from_name(pipe_text(rStep, "Criterion", "least_squares"));
         FitPrimitivesResult fr = fit_primitives(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumPatches", static_cast<double>(fr.mNumPatches)},
@@ -1573,7 +1906,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumCylinder", static_cast<double>(fr.mNumCylinder)},
                         {"NumCone", static_cast<double>(fr.mNumCone)},
                         {"NumTorus", static_cast<double>(fr.mNumTorus)},
-                        {"NumUnfitted", static_cast<double>(fr.mNumUnfitted)}});
+                        {"NumUnfitted", static_cast<double>(fr.mNumUnfitted)},
+                        {"NumFeatureCells", static_cast<double>(fr.mNumFeatureCells)}});
         return std::move(fr.mMesh);
     }
     if (op == "FitCad") {
@@ -1887,6 +2221,14 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mThreshold = pipe_number(rStep, "Min", 0.0);
         opts.mRegion = pipe_text(rStep, "Region", "");
         opts.mRegionTarget = pipe_text(rStep, "RegionOther", "");
+        opts.mMethod = thickness_method_from_name(pipe_text(rStep, "Method", "ray"));
+        opts.mConeAngleDeg = pipe_number(rStep, "ConeAngle", 15.0);
+        const double rays = pipe_number(rStep, "ConeRays", 16.0);
+        opts.mConeRays = static_cast<std::int64_t>(rays);
+        if (static_cast<double>(opts.mConeRays) != rays)
+            throw std::invalid_argument(pipe_err(rStep, "ConeRays must be an integer"));
+        opts.mTwoSided = pipe_flag(rStep, "TwoSided", false);
+        opts.mMaxNormalDeviationDeg = pipe_number(rStep, "MaxNormalDeviation", 90.0);
         const std::string other_path = pipe_text(rStep, "Other", "");
         ThicknessResult tr = other_path.empty()
                                  ? thickness(mesh, opts)
@@ -1900,8 +2242,109 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumBelow", static_cast<double>(tr.mNumBelow)},
                         {"Min", tr.mMin},
                         {"Max", tr.mMax},
-                        {"Mean", tr.mMean}});
+                        {"Mean", tr.mMean},
+                        {"P2", tr.mP2},
+                        {"P95", tr.mP95}});
         return std::move(tr.mMesh);
+    }
+    if (op == "Deviation") {
+        // deviation:distance flows on; with Tolerance and MinShare, a share
+        // within tolerance below MinShare stops the pipeline unless Require
+        // is false.
+        DeviationOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        opts.mBins = static_cast<std::int64_t>(pipe_number(rStep, "Bins", 20.0));
+        opts.mMaxNormalAngleDeg = pipe_number(rStep, "MaxNormalAngle", 90.0);
+        opts.mReferenceRegion = pipe_text(rStep, "ReferenceRegion", "");
+        opts.mRegister = pipe_flag(rStep, "Register", false);
+        const std::string ref_path = pipe_text(rStep, "Reference", "");
+        const std::string element = pipe_text(rStep, "Element", "");
+        if (ref_path.empty() && element.empty())
+            throw std::invalid_argument("meshio++: pipeline: Deviation needs a Reference");
+        // An element of the Reference's table, or of the mesh's own (roadmap 7.4.2).
+        const Mesh ref = ref_path.empty() ? Mesh() : pipe_read_extra(ref_path);
+        const double patch = pipe_number(rStep, "Patch", -1.0);
+        DeviationResult dr;
+        if (!element.empty()) {
+            const auto [type, params] =
+                measure_element_primitive(measure_element(ref_path.empty() ? mesh : ref, element));
+            dr = deviation_to_primitive(mesh, type, params, opts);
+        } else if (patch >= 0.0) {
+            if (!ref.HasFieldData("fit:patch_params") || !ref.HasFieldData("fit:patch_id"))
+                throw std::invalid_argument(
+                    "meshio++: pipeline: Deviation: the Reference carries no fit:patch_params");
+            const NDArray& ids = ref.FieldData("fit:patch_id");
+            std::size_t row = ids.Size();
+            for (std::size_t r = 0; r < ids.Size(); ++r)
+                if (detail::read_int(ids, r) == static_cast<std::int64_t>(patch))
+                    row = r;
+            if (row == ids.Size())
+                throw std::invalid_argument("meshio++: pipeline: Deviation: no fitted patch " +
+                                            std::to_string(static_cast<std::int64_t>(patch)));
+            std::array<double, 10> params{};
+            for (std::size_t k = 0; k < 10; ++k)
+                params[k] = detail::read_double(ref.FieldData("fit:patch_params"), row * 10 + k);
+            dr = deviation_to_primitive(
+                mesh, detail::read_int(ref.FieldData("fit:patch_type"), row), params, opts);
+        } else {
+            dr = deviation(mesh, ref, opts);
+        }
+        const double min_share = pipe_number(rStep, "MinShare", 0.0);
+        if (opts.mTolerance > 0.0 && min_share > 0.0 && pipe_flag(rStep, "Require", true) &&
+            !(dr.mShareWithin >= min_share))
+            throw std::runtime_error(
+                "meshio++: pipeline: Deviation failed: the share within Tolerance is below "
+                "MinShare");
+        std::vector<std::pair<std::string, double>> counters{
+            {"NumMeasured", static_cast<double>(dr.mNumMeasured)},
+            {"Min", dr.mMin},
+            {"Max", dr.mMax},
+            {"Mean", dr.mMean},
+            {"Rms", dr.mRms},
+            {"Sigma", dr.mSigma},
+            {"ShareWithin", dr.mShareWithin}};
+        if (dr.mRegistered)
+            counters.emplace_back("RegistrationRms", dr.mRegistrationRms);
+        pipe_push_step(rReport, rStep, std::move(counters));
+        return std::move(dr.mMesh);
+    }
+    if (op == "DeviationRegions") {
+        DeviationRegionsOptions opts;
+        opts.mTolerance = pipe_number(rStep, "Tolerance", 0.0);
+        opts.mField = pipe_text(rStep, "Field", kDeviationDistanceName);
+        opts.mPrefix = pipe_text(rStep, "Prefix", "deviation:");
+        opts.mMinArea = pipe_number(rStep, "MinArea", 0.0);
+        DeviationRegionsResult rr = deviation_regions(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumExcess", static_cast<double>(rr.mNumExcess)},
+                        {"NumMissing", static_cast<double>(rr.mNumMissing)},
+                        {"NumDropped", static_cast<double>(rr.mNumDropped)}});
+        return std::move(rr.mMesh);
+    }
+    if (op == "Exaggerate") {
+        ExaggerateOptions opts;
+        opts.mField = pipe_text(rStep, "Field", kDeviationDistanceName);
+        opts.mScale = pipe_number(rStep, "Scale", 10.0);
+        opts.mClamp = pipe_number(rStep, "Clamp", 0.0);
+        opts.mSmoothFraction = pipe_number(rStep, "SmoothFraction", 0.01);
+        ExaggerateResult er = exaggerate(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumMoved", static_cast<double>(er.mNumMoved)}, {"Clamp", er.mClamp}});
+        return std::move(er.mMesh);
+    }
+    if (op == "Colorize") {
+        ColorizeOptions opts;
+        opts.mField = pipe_text(rStep, "Field", "");
+        opts.mCmap = pipe_text(rStep, "Cmap", "viridis");
+        opts.mVMin = pipe_number(rStep, "VMin", 0.0);
+        opts.mVMax = pipe_number(rStep, "VMax", 0.0);
+        opts.mSymmetric = pipe_flag(rStep, "Symmetric", false);
+        opts.mSteps = static_cast<std::int64_t>(pipe_number(rStep, "Steps", 0.0));
+        opts.mNanColor = pipe_text(rStep, "NanColor", "#808080");
+        opts.mComponent = static_cast<std::int64_t>(pipe_number(rStep, "Component", -1.0));
+        ColorizeResult cr = colorize(mesh, opts);
+        pipe_push_step(rReport, rStep, {{"VMin", cr.mVMin}, {"VMax", cr.mVMax}});
+        return std::move(cr.mMesh);
     }
     if (op == "EditRegions") {
         // One edit per step: a pipeline value is flat, and a list of edits is
@@ -2029,6 +2472,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mMaxHoleEdges = static_cast<std::int64_t>(pipe_number(rStep, "MaxHoleEdges", 10));
         opts.mWeldTolerance = pipe_number(rStep, "WeldTolerance", 0.0);
         opts.mRecordProvenance = pipe_flag(rStep, "RecordProvenance", false);
+        opts.mFillStyle = repair_fill_style_from_name(pipe_text(rStep, "FillStyle", "fan"));
         RepairResult rr = repair(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumFlipped", static_cast<double>(rr.mNumFlipped)},
@@ -2195,7 +2639,18 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             throw std::invalid_argument(pipe_err(rStep, "'MaxIterations' must be an integer"));
         opts.mTolerance = pipe_number(rStep, "Tolerance", 1e-10);
         opts.mMaxDistance = pipe_number(rStep, "MaxDistance", 0.0);
+        const std::string initial = pipe_text(rStep, "Initial", "identity");
+        if (initial == "auto")
+            opts.mInitialMode = RegistrationInitial::Auto;
+        else if (initial != "identity")
+            throw std::invalid_argument(pipe_err(rStep, "Initial must be 'identity' or 'auto'"));
+        opts.mSymmetricCheck = pipe_flag(rStep, "SymmetricCheck", false);
+        opts.mSourceRegion = pipe_text(rStep, "SourceRegion", "");
+        opts.mTargetRegion = pipe_text(rStep, "TargetRegion", "");
+        opts.mAdaptiveTrim = pipe_number(rStep, "AdaptiveTrim", 0.0);
         const RegistrationResult rr = register_rigid(mesh, pipe_read_extra(target), opts);
+        for (const std::string& w : rr.mWarnings)
+            rReport.mWarnings.push_back("register_rigid: " + w);
         if (!rr.mConverged)
             rReport.mWarnings.push_back(
                 "register_rigid: no convergence within MaxIterations; the transform is the last "
@@ -2203,11 +2658,45 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         Mesh moved = transform(mesh, transform_from_matrix(rr.mMatrix.data()),
                                pipe_flag(rStep, "RotateData", false));
         pipe_push_step(rReport, rStep,
-                       {{"InitialRms", rr.mInitialRms},
+                       {{"NumRejected", static_cast<double>(rr.mNumRejected)},
+                        {"InitialRms", rr.mInitialRms},
                         {"Rms", rr.mRms},
                         {"Iterations", static_cast<double>(rr.mIterations)},
                         {"Converged", rr.mConverged ? 1.0 : 0.0}});
         return moved;
+    }
+    if (op == "RegisterLandmarks") {
+        const std::vector<double> src = pipe_dvec(rStep, "SourcePoints");
+        const std::vector<double> dst = pipe_dvec(rStep, "TargetPoints");
+        if (src.empty() || src.size() % 3 != 0 || dst.size() != src.size())
+            throw std::invalid_argument(
+                pipe_err(rStep, "SourcePoints and TargetPoints hold as many x, y, z triples"));
+        std::vector<std::array<double, 3>> sp, tp;
+        for (std::size_t k = 0; k + 2 < src.size(); k += 3) {
+            sp.push_back({src[k], src[k + 1], src[k + 2]});
+            tp.push_back({dst[k], dst[k + 1], dst[k + 2]});
+        }
+        const LandmarkResult lr = register_landmarks(sp, tp, pipe_dvec(rStep, "Weights"));
+        Mesh moved = transform(mesh, transform_from_matrix(lr.mMatrix.data()),
+                               pipe_flag(rStep, "RotateData", false));
+        pipe_push_step(rReport, rStep, {{"Rms", lr.mRms}});
+        return moved;
+    }
+    if (op == "AutoAlign") {
+        AutoAlignOptions opts;
+        opts.mAngleToleranceDeg = pipe_number(rStep, "AngleTolerance", 10.0);
+        const double sub = pipe_number(rStep, "Subdivisions", 3.0);
+        opts.mSubdivisions = static_cast<std::int64_t>(sub);
+        if (static_cast<double>(opts.mSubdivisions) != sub)
+            throw std::invalid_argument(pipe_err(rStep, "Subdivisions must be an integer"));
+        opts.mRegion = pipe_text(rStep, "Region", "");
+        opts.mRotateVectorData = pipe_flag(rStep, "RotateData", false);
+        AutoAlignResult ar = auto_align(mesh, opts);
+        for (const std::string& w : ar.mWarnings)
+            rReport.mWarnings.push_back("auto_align: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"Share", ar.mShare}, {"AxisMode", ar.mMode == "axis" ? 1.0 : 0.0}});
+        return std::move(ar.mMesh);
     }
     if (op == "EstimateNormals") {
         PointNormalsOptions opts;

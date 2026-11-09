@@ -329,5 +329,27 @@ struct SurfaceProjection {
 MESHIOPLUSPLUS_API std::vector<SurfaceProjection> query_surface_projections(
     const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints);
 
+/// Which soup triangles query @p Query (an index into the points) may land
+/// on; see `query_surface_projections_filtered`.
+using TriangleFilter = std::function<bool(std::size_t Query, std::int64_t Triangle)>;
+
+/**
+ * @brief `query_surface_projections` over only the triangles @p rAccept
+ * accepts for each query, and only within @p MaxDistance.
+ *
+ * The nearest accepted triangle under the same total order (distance squared,
+ * then triangle id), so the result does not depend on the accelerator's visit
+ * order either; a filter that accepts everything gives exactly what
+ * `query_surface_projections` gives. A query whose every accepted triangle is
+ * farther than @p MaxDistance (or that has none) comes back with `mFound`
+ * false. `deviation`'s far-side rule (a nearest triangle whose normal turns
+ * away from the query's is skipped, so a thin wall is not measured to its back
+ * face) and `thickness`'s sphere method (the facet's own neighbourhood
+ * excluded) are its callers.
+ */
+MESHIOPLUSPLUS_API std::vector<SurfaceProjection> query_surface_projections_filtered(
+    const DistanceQuery& rQuery, const std::vector<Vec3>& rPoints, const TriangleFilter& rAccept,
+    double MaxDistance);
+
 }  // namespace detail
 }  // namespace meshioplusplus

@@ -462,6 +462,85 @@ def _primitive_distance(t, p, q):
     return abs(math.sqrt(radial * radial + h * h) - float(p[7]))
 
 
+def _signed_distance(t, p, pts):
+    """Signed distances of points to a fitted primitive (positive along its normal)."""
+    x = np.asarray(p[0:3], dtype=np.float64)
+    d = np.asarray(p[3:6], dtype=np.float64)
+    v = pts - x
+    if t == 1:
+        return v @ d
+    if t == 2:
+        return np.sqrt(np.einsum("ij,ij->i", v, v)) - float(p[6])
+    h = v @ d
+    r = v - h[:, None] * d
+    rho = np.sqrt(np.einsum("ij,ij->i", r, r))
+    if t == 3:
+        return rho - float(p[6])
+    if t == 4:
+        a = float(p[8]) * _PI / 180.0
+        return rho * math.cos(a) - h * math.sin(a)
+    radial = rho - float(p[6])
+    return np.sqrt(radial * radial + h * h) - float(p[7])
+
+
+_FORM_KEYS = ("form_error", "diameter_min", "diameter_max", "length", "arc")
+
+
+def form_metrics(t, p, pts):
+    """Form error and extremes of points under a primitive (``primitive_form_metrics``)."""
+    out = {k: math.nan for k in _FORM_KEYS}
+    out["extent"] = (math.nan, math.nan)
+    pts = np.asarray(pts, dtype=np.float64).reshape(-1, 3)
+    if not 1 <= t <= 5 or len(pts) == 0:
+        return out
+    s = _signed_distance(t, p, pts)
+    out["form_error"] = float(s.max() - s.min())
+    x = np.asarray(p[0:3], dtype=np.float64)
+    d = np.asarray(p[3:6], dtype=np.float64)
+    if t == 1:
+        mean = pts.sum(axis=0) / float(len(pts))
+        q = pts - mean
+        cov = q.T @ q
+        _w, vec = sym3_eigen(cov)
+        ext = []
+        for e in (2, 1):
+            proj = pts @ np.asarray(vec[e], dtype=np.float64)
+            ext.append(float(proj.max() - proj.min()))
+        out["extent"] = (ext[0], ext[1])
+        return out
+    if t == 2:
+        v = pts - x
+        r = np.sqrt(np.einsum("ij,ij->i", v, v))
+        out["diameter_min"] = 2.0 * float(r.min())
+        out["diameter_max"] = 2.0 * float(r.max())
+        return out
+    if t == 5:
+        return out
+    e1, e2 = frame(d)
+    v = pts - x
+    h = v @ d
+    r = v - h[:, None] * d
+    rho = np.sqrt(np.einsum("ij,ij->i", r, r))
+    out["length"] = float(h.max() - h.min())
+    if t == 3:
+        out["diameter_min"] = 2.0 * float(rho.min())
+        out["diameter_max"] = 2.0 * float(rho.max())
+    keep = rho > 0.0
+    ang = np.degrees(np.arctan2(r[keep] @ np.asarray(e2), r[keep] @ np.asarray(e1)))
+    ang = np.sort(np.where(ang < 0.0, ang + 360.0, ang))
+    uniq = []
+    for a in ang:
+        if not uniq or a - uniq[-1] > 1e-9:
+            uniq.append(float(a))
+    if len(uniq) >= 2:
+        gap = [uniq[i + 1] - uniq[i] for i in range(len(uniq) - 1)]
+        gap.append(uniq[0] + 360.0 - uniq[-1])
+        largest = max(gap)
+        median = sorted(gap)[len(gap) // 2]
+        out["arc"] = 360.0 if largest <= 2.0 * median else 360.0 - largest
+    return out
+
+
 def _centre_misfit(t, p, patch):
     """RMS distance of the facets' centres to a fitted primitive."""
     total = 0.0
@@ -476,7 +555,8 @@ def _fit_patch(patch, opts):
     params = np.full(10, np.nan)
     tol = opts["tolerance"] * patch["diag"] if opts["relative"] else opts["tolerance"]
     out = {"type": 0, "params": params, "rms": np.nan, "max": np.nan}
-    out.update(fraction=0.0, tol=tol)
+    out.update(fraction=0.0, tol=tol, form=form_metrics(0, params, patch["pts"]))
+    out.update(sigma=math.nan, num_used=len(patch["pts"]))
     if len(patch["pts"]) == 0 or not patch["diag"] > 0.0:
         return out
     max_it = min(opts["max_iterations"], 100000)
@@ -522,6 +602,11 @@ def _fit_patch(patch, opts):
             p = np.array(p, dtype=np.float64)
             p[0:3] += patch["shift"]
             out.update(type=best_t, params=p, rms=rms, max=mx, fraction=frac)
+            world = patch["pts"] + patch["shift"]
+            out["form"] = form_metrics(best_t, p, world)
+            out["sigma"] = float(
+                np.sqrt(np.mean(_signed_distance(best_t, p, world) ** 2))
+            )
             return out
         if not have_best or rms < out["rms"]:
             have_best = True
@@ -536,7 +621,16 @@ def _fit_primitives_py(mesh, opts):
     total = int(bases[-1]) + len(mesh.cells[-1].data) if len(mesh.cells) else 0
     label = np.zeros(total, dtype=np.int64)
     name = opts["patch_data"]
-    if name:
+    if opts.get("region"):
+        region = [
+            r for r in mesh.regions if r.name == opts["region"] and r.kind == "cell"
+        ]
+        if not region:
+            raise ValueError(f"{_PREFIX}no Cell region named '{opts['region']}'")
+        label[:] = -1
+        for r in region:
+            label[np.asarray(r.entries, dtype=np.int64).ravel()] = 0
+    elif name:
         if name not in mesh.cell_data:
             raise ValueError(
                 f"{_PREFIX}no cell data named '{name}' "
@@ -632,6 +726,20 @@ def _fit_primitives_py(mesh, opts):
     out.field_data["fit:patch_tolerance"] = np.array(
         [o["tol"] for o in rows], dtype=np.float64
     )
+    for key in _FORM_KEYS:
+        out.field_data[f"fit:patch_{key}"] = np.array(
+            [o["form"][key] for o in rows], dtype=np.float64
+        )
+    out.field_data["fit:patch_extent"] = np.array(
+        [o["form"]["extent"] for o in rows], dtype=np.float64
+    ).reshape(-1, 2)
+    out.field_data["fit:patch_sigma"] = np.array(
+        [o["sigma"] for o in rows], dtype=np.float64
+    )
+    out.field_data["fit:patch_num_used"] = np.array(
+        [o["num_used"] for o in rows], dtype=np.int64
+    )
+    out.field_data["fit:patch_num_rejected"] = np.zeros(len(rows), dtype=np.int64)
     counts = [int(np.count_nonzero(ptype == t)) for t in range(6)]
     report = {
         "num_patches": len(ids),
@@ -641,6 +749,8 @@ def _fit_primitives_py(mesh, opts):
         "num_cone": counts[4],
         "num_torus": counts[5],
         "num_unfitted": counts[0],
+        "num_feature_cells": 0,
+        "warnings": [],
     }
     return out, report
 
@@ -653,7 +763,14 @@ _REPORT_KEYS = (
     "num_cone",
     "num_torus",
     "num_unfitted",
+    "num_feature_cells",
 )
+
+#: ``criterion`` values: the reference a fit is measured against (roadmap 7.1.4).
+CRITERIA = ("least_squares", "minimum_zone", "min_circumscribed", "max_inscribed")
+
+#: ``used_points`` values: which points a fit uses (roadmap 7.1.2).
+USED_POINTS = ("auto", "all", "3sigma", "2sigma", "1sigma")
 
 
 def types_mask(types):
@@ -682,6 +799,14 @@ def fit_primitives(
     types=("plane", "sphere", "cylinder", "cone", "torus"),
     max_iterations: int = 50,
     return_report: bool = False,
+    *,
+    region: str | None = None,
+    seeds=None,
+    feature_angle: float = 30.0,
+    rim_angle: float = 15.0,
+    output_region: str = "fit:feature",
+    used_points: str = "auto",
+    criterion: str = "least_squares",
 ):
     """Fit a plane, sphere, cylinder, cone or torus to each patch of a surface.
 
@@ -698,14 +823,54 @@ def fit_primitives(
         ``cylinder``, ``cone``, ``torus``; the first accepted in that order wins.
     :param max_iterations: the Levenberg-Marquardt iteration cap per fit.
     :param return_report: also return the per-type counts.
+    :param region: fit the cells of this named ``Cell`` region as one patch
+        (roadmap 7.1.1; ``patch_data`` is then unused).
+    :param seeds: one ``(x, y, z)`` or several: from the facet nearest each,
+        grow across smooth edges (below ``feature_angle`` degrees) while one
+        primitive of ``types`` explains the region, union the regions, peel
+        boundary faces turning more than ``rim_angle`` degrees from the fit,
+        and fit the result as one patch, written as the cell region
+        ``output_region``. A relative tolerance is then a fraction of the whole
+        surface's diagonal.
+    :param used_points: ``"all"``, or ``"3sigma"``/``"2sigma"``/``"1sigma"``:
+        refit on the points within k times the RMS distance of the points kept
+        until the set stops changing (roadmap 7.1.2). ``"auto"`` is ``"3sigma"``
+        with a region or seeds, ``"all"`` otherwise.
+    :param criterion: the reference (roadmap 7.1.4): ``"least_squares"``, or
+        ``"minimum_zone"`` (the narrowest zone holding every point, which GD&T
+        form tolerances are defined against), ``"min_circumscribed"`` or
+        ``"max_inscribed"`` (a shaft's or a hole's envelope): an accepted plane,
+        sphere or cylinder is refitted under it, its parameters and form
+        columns then the criterion's. A plane takes only the minimum zone; a
+        cone or torus keeps its least-squares fit, with a warning.
     :returns: the input with cell data ``fit:type`` (-1 no patch, 0 none,
         1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus), ``fit:rms`` and
         ``fit:max``, and per-patch field data ``fit:patch_id``,
         ``fit:patch_type``, ``fit:patch_params`` (``(m, 10)``),
-        ``fit:patch_rms``, ``fit:patch_max``, ``fit:patch_fraction`` and
-        ``fit:patch_tolerance``. With ``return_report``, ``(mesh, report)``.
+        ``fit:patch_rms``, ``fit:patch_max``, ``fit:patch_fraction``,
+        ``fit:patch_tolerance``, and the form error and extremes
+        ``fit:patch_form_error``, ``fit:patch_diameter_min``,
+        ``fit:patch_diameter_max``, ``fit:patch_length``, ``fit:patch_arc``
+        (degrees) and ``fit:patch_extent`` (``(m, 2)``), NaN where they do not
+        apply. With ``return_report``, ``(mesh, report)``.
     """
+    if criterion not in CRITERIA:
+        raise ValueError(
+            f"{_PREFIX}criterion must be one of {CRITERIA}, got {criterion!r}"
+        )
+    if used_points not in USED_POINTS:
+        raise ValueError(
+            f"{_PREFIX}used_points must be one of {USED_POINTS}, got {used_points!r}"
+        )
+    if seeds is not None:
+        arr = np.asarray(seeds, dtype=np.float64)
+        seeds = [tuple(float(x) for x in row) for row in arr.reshape(-1, 3)]
+    feature_mode = bool(region) or bool(seeds)
+    resolved = used_points
+    if resolved == "auto":
+        resolved = "3sigma" if feature_mode else "all"
     opts = {
+        "region": str(region or ""),
         "patch_data": str(patch_data),
         "tolerance": float(tolerance),
         "relative": bool(relative),
@@ -732,14 +897,28 @@ def fit_primitives(
             opts["min_inlier_fraction"],
             opts["types"],
             opts["max_iterations"],
+            region=opts["region"],
+            seeds=seeds or [],
+            feature_angle=float(feature_angle),
+            rim_angle=float(rim_angle),
+            output_region=str(output_region),
+            used_points=str(used_points),
+            criterion=str(criterion),
         )
         out = res["mesh"]
         report = {k: int(res[k]) for k in _REPORT_KEYS}
+        report["warnings"] = [str(w) for w in res["warnings"]]
     except Exception as exc:
         if not core_op_declined(exc, "fit_primitives"):
             raise
         out = None
     if out is None:
+        if seeds or resolved != "all" or criterion != "least_squares":
+            raise NotImplementedError(
+                f"{_PREFIX}seeds, sigma trimming and the minimum-zone and envelope "
+                "criteria need the compiled C++ core (meshioplusplus._core); the numpy "
+                "twin fits patches and regions with used_points='all' by least squares"
+            )
         out, report = _fit_primitives_py(mesh, opts)
     return (out, report) if return_report else out
 

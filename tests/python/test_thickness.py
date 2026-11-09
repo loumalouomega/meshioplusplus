@@ -54,3 +54,52 @@ def test_open_sheet_and_errors():
         mio.thickness(mio.box())
     out = mio.thickness(mio.icosa_sphere(1.0, 1), attach=False)
     assert "thickness:distance" not in out.cell_data
+
+
+def _wedge(L=4.0, W=8.0, angle=np.radians(30.0), k=40):
+    """A closed wedge: a fine bottom (z = 0) under a top z = x tan(angle)."""
+    pts, tris = [], []
+    for i in range(k + 1):
+        for j in range(k + 1):
+            pts.append((L * i / k, W * j / k, 0.0))
+    for i in range(k):
+        for j in range(k):
+            a, b = i * (k + 1) + j, (i + 1) * (k + 1) + j
+            tris += [(a, b + 1, b), (a, a + 1, b + 1)]
+    h = L * np.tan(angle)
+    base = len(pts)
+    pts += [(0, 0, 0), (L, 0, 0), (L, 0, h), (0, W, 0), (L, W, 0), (L, W, h)]
+    a0, b0, c0, a1, b1, c1 = range(base, base + 6)
+    tris += [
+        (a0, c1, a1),
+        (a0, c0, c1),
+        (b0, b1, c1),
+        (b0, c1, c0),
+        (a0, b0, c0),
+        (a1, c1, b1),
+    ]
+    return mio.Mesh(np.array(pts, float), [("triangle", np.array(tris))])
+
+
+def test_the_sphere_and_cone_methods_on_a_wedge():
+    wedge = _wedge()
+    angle = np.radians(30.0)
+    cells = wedge.cells[0].data[: 2 * 40 * 40]
+    centroids = wedge.points[cells].mean(axis=1)
+    f = int(np.argmin(np.hypot(centroids[:, 0] - 2.0, centroids[:, 1] - 4.0)))
+    x = centroids[f, 0]
+    ray = _dist(mio.thickness(wedge))[f]
+    assert ray == pytest.approx(x * np.tan(angle), rel=1e-9)
+    out, rep = mio.thickness(wedge, method="sphere", return_report=True)
+    assert rep["method"] == "sphere"
+    assert _dist(out)[f] == pytest.approx(x * np.sin(angle), rel=0.02)
+    assert rep["p2"] <= rep["p95"]
+    cone = _dist(mio.thickness(wedge, method="cone", cone_angle=35.0, cone_rays=128))[f]
+    assert x * np.sin(angle) - 1e-9 <= cone < 1.02 * x * np.sin(angle)
+    assert np.isnan(_dist(mio.thickness(wedge, max_normal_deviation=20.0))[f])
+    with pytest.raises(ValueError, match="method"):
+        mio.thickness(wedge, method="laser")
+    two = mio.thickness(wedge, two_sided=True, return_report=True)[1]
+    assert two["max_distance"] == pytest.approx(
+        0.2 * np.linalg.norm([4.0, 8.0, 4 * np.tan(angle)])
+    )

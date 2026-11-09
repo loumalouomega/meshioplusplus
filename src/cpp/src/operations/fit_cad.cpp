@@ -140,7 +140,9 @@ const Mesh* fcn_annotate(const Mesh& rMesh, Mesh& rOwned) {
         if (rMesh.HasFieldData("fit:patch_id"))
             return &rMesh;
         log::info("fit_cad: no fit:patch_* table; running fit_primitives");
-        rOwned = fit_primitives(rMesh).mMesh;
+        FitPrimitivesOptions fit;
+        fit.mExtendedReport = false;  // the table fit_cad has always carried
+        rOwned = fit_primitives(rMesh, fit).mMesh;
         return &rOwned;
     }
     log::info(
@@ -167,6 +169,7 @@ const Mesh* fcn_annotate(const Mesh& rMesh, Mesh& rOwned) {
         diag += hi[k] > lo[k] ? (hi[k] - lo[k]) * (hi[k] - lo[k]) : 0.0;
     diag = std::sqrt(diag);
     FitPrimitivesOptions fit;
+    fit.mExtendedReport = false;  // the table fit_cad has always carried
     if (diag > 0.0) {
         fit.mTolerance = seg.mTolerance * diag;
         fit.mRelative = false;

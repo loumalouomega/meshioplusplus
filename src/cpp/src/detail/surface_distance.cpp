@@ -493,8 +493,12 @@ double sd_box_lb2(const Vec3& rLo, const Vec3& rHi, const Vec3& rQ) {
     return sum;
 }
 
-SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
-                                      const Vec3& rQueryPoint, double Limit2) {
+// The walk, for every triangle @p rAccept accepts (a filter only drops
+// candidates, so every pruning bound stays valid).
+template <class Accept>
+SdNearestTriangle sd_nearest_triangle_if(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
+                                         const Vec3& rQueryPoint, double Limit2,
+                                         const Accept& rAccept) {
     double best_d2 = std::numeric_limits<double>::infinity();
     std::int64_t best_tri = -1;
     PointTriangleHit best_hit;
@@ -520,6 +524,8 @@ SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const Triangl
             MIO_SD_COUNT(g_sd_triangles, static_cast<std::uint64_t>(rNode.mCount));
             for (std::int64_t k = 0; k < rNode.mCount; ++k) {
                 const std::int64_t t = order[static_cast<std::size_t>(rNode.mBegin + k)];
+                if (!rAccept(t))
+                    continue;
                 const std::size_t ti = static_cast<std::size_t>(t);
                 const PointTriangleHit hit = closest_point_on_triangle(
                     rQueryPoint, rSoup.mCorners[ti * 3 + 0], rSoup.mCorners[ti * 3 + 1],
@@ -553,7 +559,18 @@ SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const Triangl
         if (!(lb_near > cut))
             stack[top++] = {near, lb_near};
     }
+    // A cut at Limit2 still lets a farther leaf's triangle win; the callers
+    // that pass a finite limit check the distance themselves.
     return {best_tri, best_hit};
+}
+
+struct SdAcceptAll {
+    constexpr bool operator()(std::int64_t) const { return true; }
+};
+
+SdNearestTriangle sd_nearest_triangle(const DistanceQuery& rQuery, const TriangleSoup& rSoup,
+                                      const Vec3& rQueryPoint, double Limit2) {
+    return sd_nearest_triangle_if(rQuery, rSoup, rQueryPoint, Limit2, SdAcceptAll{});
 }
 
 // The pseudonormal of the FEATURE a hit landed on, not of the nearest
@@ -737,6 +754,36 @@ std::vector<SurfaceProjection> query_surface_projections(const DistanceQuery& rQ
 #ifdef MESHIOPLUSPLUS_SD_COUNT_PROBES
     sd_report_probes("query_surface_projections");
 #endif
+    return out;
+}
+
+std::vector<SurfaceProjection> query_surface_projections_filtered(const DistanceQuery& rQuery,
+                                                                  const std::vector<Vec3>& rPoints,
+                                                                  const TriangleFilter& rAccept,
+                                                                  double MaxDistance) {
+    const TriangleSoup& soup = *rQuery.mpSoup;
+    const std::size_t n = rPoints.size();
+    std::vector<SurfaceProjection> out(n);
+    const double limit2 = MaxDistance < std::numeric_limits<double>::infinity()
+                              ? MaxDistance * MaxDistance
+                              : std::numeric_limits<double>::infinity();
+    parallel_for(n, [&](std::size_t p) {
+        const auto accept = [&](std::int64_t T) { return rAccept(p, T); };
+        const SdNearestTriangle found =
+            sd_nearest_triangle_if(rQuery, soup, rPoints[p], limit2, accept);
+        SurfaceProjection& res = out[p];
+        if (found.mTri < 0 || found.mHit.mDistanceSq > limit2) {
+            res.mFound = false;
+            return;
+        }
+        res.mFound = true;
+        res.mPoint = found.mHit.mPoint;
+        res.mDistance = std::sqrt(found.mHit.mDistanceSq);
+        res.mTriangle = found.mTri;
+        res.mSourceCell = soup.mSourceCell[static_cast<std::size_t>(found.mTri)];
+        res.mFeature = found.mHit.mFeature;
+        res.mNormal = sd_feature_normal(rQuery, soup, found.mTri, found.mHit.mFeature);
+    });
     return out;
 }
 

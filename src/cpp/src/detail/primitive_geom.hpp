@@ -31,6 +31,7 @@
  */
 
 // System includes
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -58,6 +59,40 @@ bool primitive_project(std::int64_t Type, const double* pParams, const double* p
 bool primitive_normal(std::int64_t Type, const double* pParams, const double* pP, double* pOut);
 
 /// One patch fitted the way `fit_primitives` fits it.
+/**
+ * @brief The signed distance from @p pP to a primitive: positive on the side
+ * its normal points to (along a plane's normal; away from a sphere's centre,
+ * a cylinder's, cone's or torus' axis or a torus' tube centre), with the same
+ * expressions `fit_primitives` takes its residuals from.
+ * @return the distance, or NaN for any other type.
+ */
+double primitive_signed_distance(std::int64_t Type, const double* pParams, const double* pP);
+
+/// The form error and extremes of a patch's points under a fitted primitive.
+/// A value that does not apply to the type is NaN.
+struct PrimitiveFormMetrics {
+    double mFormError;    ///< peak-to-peak signed distance (max - min)
+    double mDiameterMin;  ///< sphere, cylinder: twice the least radial distance
+    double mDiameterMax;  ///< sphere, cylinder: twice the largest radial distance
+    double mLength;       ///< cylinder, cone: the points' extent along the axis
+    double mArcDeg;       ///< cylinder, cone: the angular span about the axis
+    double mExtent[2];    ///< plane: the two in-plane principal extents, largest first
+};
+
+/**
+ * @brief The form error and extremes of @p N points @p pPts (three per point)
+ * under the primitive (@p Type, @p pParams).
+ *
+ * The arc span is 360 less the largest angular gap between consecutive points
+ * about the axis, or 360 when that gap is at most twice the median gap (a
+ * closed tessellation, whose gaps are all alike), angles within 1e-9 degrees
+ * of each other counting once (the rims of a tessellated cylinder share them). The plane's extents
+ * are those of the points along the two larger principal directions of their scatter. Everything is
+ * NaN for a type of 0 or for no points.
+ */
+PrimitiveFormMetrics primitive_form_metrics(std::int64_t Type, const double* pParams,
+                                            const double* pPts, std::size_t N);
+
 struct PrimitiveFit {
     std::int64_t mType = 0;  ///< 0 when no type is accepted
     double mParams[kPrimitiveParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};

@@ -21,6 +21,13 @@ def add_args(parser):
         help="the plane's normal 'x,y,z' (negatives need --normal=0,0,-1)",
     )
     parser.add_argument(
+        "--plane",
+        choices=("auto",),
+        default=None,
+        help="'auto': the mesh's own symmetry plane (find_symmetry_plane); "
+        "--origin and --normal are then ignored",
+    )
+    parser.add_argument(
         "--keep-original",
         action="store_true",
         help="write the input followed by its image",
@@ -54,6 +61,7 @@ def mirror_cmd(args):
         weld=not args.no_weld,
         tolerance=args.tolerance,
         reflect_vector_data=args.reflect_data,
+        plane=args.plane,
         return_report=True,
     )
     if args.json:

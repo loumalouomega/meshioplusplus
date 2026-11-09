@@ -2274,6 +2274,38 @@ def test_register_rigid_tool(tmp_path):
     np.testing.assert_allclose(moved.points, target.points, atol=1e-8)
 
 
+def test_thickness_methods_tool(tmp_path):
+    path = str(tmp_path / "s.vtk")
+    meshioplusplus.write(path, meshioplusplus.icosa_sphere(1.0, 2))
+    out = _dump(_tools.tool_thickness(path, method="sphere", two_sided=True))
+    assert out["method"] == "sphere" and out["p2"] <= out["p95"]
+
+
+def test_alignment_tools(tmp_path):
+    box = meshioplusplus.box((3, 2, 1), size=(3.0, 2.0, 1.0))
+    surf = meshioplusplus.extract_surface(box)
+    path = str(tmp_path / "box.vtk")
+    meshioplusplus.write(path, surf)
+    out = _dump(
+        _tools.tool_register_rigid(path, path, initial="auto", symmetric_check=True)
+    )
+    assert len(out["candidate_rms"]) == 24 and out["warnings"]
+    out = _dump(
+        _tools.tool_register_landmarks(
+            [[0, 0, 0], [1, 0, 0], [0, 2, 0]], [[1, 2, 3], [2, 2, 3], [1, 4, 3]]
+        )
+    )
+    np.testing.assert_allclose(np.asarray(out["matrix"])[:3, 3], [1, 2, 3], atol=1e-12)
+    plane = _dump(_tools.tool_find_symmetry_plane(path))
+    assert plane["share"] > 0.9 and len(plane["normal"]) == 3
+    out = _dump(_tools.tool_auto_align(path, str(tmp_path / "aligned.vtk")))
+    assert out["mode"] == "face" and len(out["matrix"]) == 4
+    out = _dump(_tools.tool_mirror(path, str(tmp_path / "m.vtk"), plane="auto"))
+    assert out["plane"]["share"] > 0.9
+    out = _dump(_tools.tool_deviation(path, path, register=True))
+    assert out["registered"]
+
+
 def test_estimate_normals_tool(tmp_path):
     src = str(tmp_path / "s.vtu")
     meshioplusplus.write(src, meshioplusplus.icosa_sphere(subdivisions=2))
@@ -4294,6 +4326,52 @@ def test_find_intersections_and_thickness_tools(tmp_path):
         _tools.tool_thickness(str(a), direction="sideways")
 
 
+def test_deviation_tool(tmp_path):
+    """Roadmap 7.4: the deviation tool reports the statistics, against a
+    surface and against a fitted patch, and gates on min_share."""
+    from meshioplusplus import _core
+
+    if not hasattr(_core, "deviation"):
+        pytest.skip("core predates deviation")
+    ref, scan, fitted = (
+        tmp_path / "ref.vtu",
+        tmp_path / "scan.vtu",
+        tmp_path / "fit.vtu",
+    )
+    meshioplusplus.write(ref, meshioplusplus.icosa_sphere(1.0, 3))
+    meshioplusplus.write(scan, meshioplusplus.icosa_sphere(1.01, 3))
+    meshioplusplus.write(
+        fitted,
+        meshioplusplus.fit_primitives(
+            meshioplusplus.icosa_sphere(1.0, 3), patch_data=""
+        ),
+    )
+    out = tmp_path / "dev.vtu"
+    report = _tools.tool_deviation(
+        str(scan), str(ref), str(out), tolerance=0.02, min_share=1.0
+    )
+    assert report["passed"] is True
+    assert report["mean"] == pytest.approx(0.01, abs=1e-9)
+    assert "deviation:distance" in meshioplusplus.read(out).point_data
+    report = _tools.tool_deviation(str(scan), str(fitted), patch=0)
+    assert report["mean"] == pytest.approx(0.01, abs=1e-3)
+    json.dumps(report)
+    with pytest.raises(ValueError, match="range_min"):
+        _tools.tool_deviation(str(scan), str(ref), range_min=0.0)
+    regs = tmp_path / "regs.vtu"
+    report = _tools.tool_deviation_regions(str(out), str(regs), 0.005)
+    assert report["num_excess"] == 1
+    assert report["regions"][0]["name"] == "deviation:excess_0"
+    json.dumps(report)
+    big = tmp_path / "big.vtu"
+    report = _tools.tool_exaggerate(str(out), str(big), scale=20.0)
+    assert report["num_moved"] > 0 and big.exists()
+    col = tmp_path / "col.ply"
+    report = _tools.tool_colorize(str(out), str(col), "deviation:distance", steps=4)
+    assert report["location"] == "point"
+    assert "red" in meshioplusplus.read(col).point_data
+
+
 def test_cut_tools(tmp_path):
     from meshioplusplus import _core
 
@@ -4319,3 +4397,25 @@ def test_cut_tools(tmp_path):
     assert report["dimension"] == 2
     with pytest.raises(ValueError, match="six numbers"):
         _tools.tool_cut_level_set(str(box), str(out), planes=[[0.3, 0, 0]])
+
+
+def test_workflow_prompts_name_only_registered_tools():
+    import re
+
+    for text in (
+        _tools.prompt_measure_scan(),
+        _tools.prompt_reverse_engineer_scan(part_class="cast"),
+    ):
+        named = set(re.findall(r"`([a-z_]+)`", text))
+        tools = {n for n in named if not n.startswith(("scan", "part", "inspection"))}
+        tools -= {"cast", "analytic"}
+        missing = sorted(n for n in tools if n not in _tools.TOOL_REGISTRY)
+        assert not missing, missing
+        assert len(tools) >= 8
+
+
+def test_server_lists_the_workflow_prompts():
+    server = _server()
+    prompts = _run(server.list_prompts())
+    names = sorted(p.name for p in prompts)
+    assert names == ["measure_scan", "reverse_engineer_scan"]

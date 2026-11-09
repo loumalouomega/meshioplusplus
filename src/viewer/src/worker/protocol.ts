@@ -145,6 +145,27 @@ export type OpSpec =
           /** Octree only: the root lattice, then how many halving passes. */
           rootResolution: number;
           maxDepth: number;
+      }
+    | {
+          /**
+           * Elements, dimensions and tolerances by a JSON spec (roadmap 7.2);
+           * the mesh gains its element table, which a following `deviation`
+           * can name. The measuring panel sends one seeded element.
+           */
+          op: 'measure';
+          spec: string;
+      }
+    | {
+          /** The signed distance of every point from element `element` of the mesh's table (roadmap 7.4.2). */
+          op: 'deviation';
+          element: string;
+          tolerance: number;
+          bins: number;
+      }
+    | {
+          /** Wall thickness per cell (roadmap 7.5.1). */
+          op: 'thickness';
+          method: 'ray' | 'sphere' | 'cone';
       };
 
 export type OpName = OpSpec['op'];
@@ -262,7 +283,19 @@ export type Request =
       }
     | { id: number; type: 'previewStep'; step: number }
     | { id: number; type: 'summaryStep'; step: number }
-    | { id: number; type: 'evictEntry' };
+    | { id: number; type: 'evictEntry' }
+    /**
+     * Fit one feature from `seed` on the surface as displayed (the open file
+     * with `ops` applied): the measuring panel's click (roadmap 7.9.1).
+     */
+    | {
+          id: number;
+          type: 'fitFeature';
+          ops: OpSpec[];
+          seed: Vector3;
+          types: string[];
+          tolerance: number;
+      };
 
 export interface InitResult {
     formats: { readers: string[]; writers: string[] };
@@ -297,6 +330,23 @@ export interface ConvertResult {
     groups?: { requested: number; kept: string[] };
 }
 
+/** One feature fitted by `fitFeature`: its `fit:patch_*` row and its cells. */
+export interface FeatureResult {
+    /** `fit:patch_type`: 0 when no primitive of the asked types explains it. */
+    patchType: number;
+    /** The ten `fit:patch_params`. */
+    params: number[];
+    rms: number;
+    sigma: number;
+    formError: number;
+    numCells: number;
+    numUsed: number;
+    numRejected: number;
+    /** The feature's cells as triangles, nine floats each, for the overlay. */
+    triangles: Float32Array;
+    warnings: string[];
+}
+
 export type Response =
     | { id: number; type: 'progress'; stage: string }
     | ({ id: number; type: 'result' } & (
@@ -308,6 +358,7 @@ export type Response =
           | ({ kind: 'staged' } & StageResult)
           | ({ kind: 'summary' } & SummaryResult)
           | { kind: 'evicted' }
+          | ({ kind: 'feature' } & FeatureResult)
       ))
     | { id: number; type: 'error'; message: string };
 
@@ -366,6 +417,9 @@ export const OP_DEFAULTS: { [K in OpName]: Extract<OpSpec, { op: K }> } = {
         rootResolution: 8,
         maxDepth: 3,
     },
+    measure: { op: 'measure', spec: '{"elements": []}' },
+    deviation: { op: 'deviation', element: '', tolerance: 0.01, bins: 20 },
+    thickness: { op: 'thickness', method: 'sphere' },
 };
 
 /** Human label for a pipeline chip. */
@@ -401,5 +455,18 @@ export function describeOp(spec: OpSpec): string {
             return spec.structure === 'octree'
                 ? `sdf · octree ${spec.rootResolution}³ ×${spec.maxDepth}`
                 : `sdf · ${spec.resolution[0]}³`;
+        case 'measure': {
+            let names: string[] = [];
+            try {
+                names = (JSON.parse(spec.spec).elements ?? []).map((e: { name: string }) => e.name);
+            } catch {
+                // a path rather than JSON text
+            }
+            return names.length ? `measure · ${names.join(', ')}` : 'measure';
+        }
+        case 'deviation':
+            return `deviation · ${spec.element} ± ${spec.tolerance}`;
+        case 'thickness':
+            return `thickness · ${spec.method}`;
     }
 }

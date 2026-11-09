@@ -102,6 +102,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/find_intersections.hpp"
 #include "meshioplusplus/operations/thickness.hpp"
+#include "meshioplusplus/operations/deviation.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/operations/mmg.hpp"
@@ -152,6 +153,10 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/remesh_quads.hpp"
+#include "meshioplusplus/operations/auto_align.hpp"
+#include "meshioplusplus/operations/fit_curves.hpp"
+#include "meshioplusplus/operations/silhouette.hpp"
+#include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
@@ -407,9 +412,24 @@ MIO_ABI_LAYOUT(meshioplusplus::MirrorOptions, 72, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FindIntersectionsOptions, 80, 8);
 static_assert(offsetof(meshioplusplus::FindIntersectionsOptions, mMaxPairs) == 72,
               "FindIntersectionsOptions::mMaxPairs moved");
-MIO_ABI_LAYOUT(meshioplusplus::ThicknessOptions, 96, 8);
+// Unreleased ABI 43 (roadmap 7.5): `mTwoSided` in the padding after
+// `mAttach`, then the method and its options, 96 -> 120 bytes.
+MIO_ABI_LAYOUT(meshioplusplus::ThicknessOptions, 120, 8);
 static_assert(offsetof(meshioplusplus::ThicknessOptions, mRegion) == 24,
               "ThicknessOptions::mRegion moved");
+static_assert(offsetof(meshioplusplus::ThicknessOptions, mTwoSided) == 89,
+              "ThicknessOptions::mTwoSided moved");
+static_assert(offsetof(meshioplusplus::ThicknessOptions, mMethod) == 92,
+              "ThicknessOptions::mMethod moved");
+static_assert(offsetof(meshioplusplus::ThicknessOptions, mMaxNormalDeviationDeg) == 112,
+              "ThicknessOptions::mMaxNormalDeviationDeg moved");
+// Unreleased ABI 42: deviation's options (roadmap 7.4), a new header.
+MIO_ABI_LAYOUT(meshioplusplus::DeviationOptions, 80, 8);
+static_assert(offsetof(meshioplusplus::DeviationOptions, mReferenceRegion) == 40,
+              "DeviationOptions::mReferenceRegion moved");
+// Unreleased ABI 43: `mRegister` (roadmap 7.4.1) in the padding after `mAttach`.
+static_assert(offsetof(meshioplusplus::DeviationOptions, mRegister) == 73,
+              "DeviationOptions::mRegister moved");
 MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 304, 8);
 // ABI 36: `mHexGrading` (roadmap 3.1.4.3) in the padding after `mPillow`.
 MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 376, 8);
@@ -541,7 +561,14 @@ MIO_ABI_LAYOUT(meshioplusplus::PeriodicOptions, 144, 8);
 // SegmentOptions::mMethod and mTolerance (primitive segmentation): 96 -> 112.
 MIO_ABI_LAYOUT(meshioplusplus::SegmentOptions, 112, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TessellateOptions, 16, 8);
-MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 72, 8);
+// ABI 43 added roadmap 7.1's region and seed modes and sigma trimming
+// (mExtendedReport, mRegion, mSeeds, mFeatureAngleDeg, mRimAngleDeg,
+// mOutputRegion, mUsedPoints): 72 -> 192.
+MIO_ABI_LAYOUT(meshioplusplus::FitPrimitivesOptions, 192, 8);
+static_assert(offsetof(meshioplusplus::FitPrimitivesOptions, mSeeds) == 112,
+              "FitPrimitivesOptions::mSeeds moved");
+static_assert(offsetof(meshioplusplus::FitPrimitivesOptions, mUsedPoints) == 184,
+              "FitPrimitivesOptions::mUsedPoints moved");
 // fit_cad's options (roadmap 6.3.3), the same rule; FitCadResult embeds a Mesh.
 // ABI 27 added the freeform options (roadmap 6.3.2): 32 -> 48 bytes; ABI 28
 // added mFreeformSplit, mFillets and mThreads (roadmap 6.3.1, 6.3.2): 48 -> 56.
@@ -623,13 +650,14 @@ MIO_ABI_LAYOUT(meshioplusplus::GltfWriteOptions, 168, 8);
 MIO_ABI_LAYOUT(meshioplusplus::GltfReadOptions, 1, 1);
 
 // The v10.38.0 trio, pinned from the release that introduces them for the
-// same reason. RepairOptions: five bools, an int64 and a double (24/8).
-// ShrinkwrapOptions: two doubles, two strings, an enum with NO fixed
+// same reason. RepairOptions: five bools, an int64, a double and a RepairFillStyle (32/8;
+// roadmap 7.8.6, ABI 43). ShrinkwrapOptions: two doubles, two strings, an enum with NO fixed
 // underlying type (4 bytes -- giving SdfPseudonormalWeight one would shrink
 // this and the pin would say so), two bools and a double (96/8).
 // SobolevOptions: a string, a double, a vector, a string, two bools, an int
 // and a double (112/8). Every *Result is unpinned, embedding a `Mesh`.
-MIO_ABI_LAYOUT(meshioplusplus::RepairOptions, 24, 8);
+MIO_ABI_LAYOUT(meshioplusplus::RepairOptions, 32, 8);
+static_assert(offsetof(meshioplusplus::RepairOptions, mFillStyle) == 24, "roadmap 7.8.6");
 MIO_ABI_LAYOUT(meshioplusplus::ShrinkwrapOptions, 96, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SobolevOptions, 112, 8);
 
@@ -777,8 +805,35 @@ MIO_ABI_LAYOUT(meshioplusplus::TetrahedralizeOptions, 112, 8);
 // the exported cut_level_set() and cut_quadrature().
 MIO_ABI_LAYOUT(meshioplusplus::CutPlane, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::CutOptions, 136, 8);
-MIO_ABI_LAYOUT(meshioplusplus::RegistrationOptions, 160, 8);
-MIO_ABI_LAYOUT(meshioplusplus::RegistrationResult, 168, 8);
+// Unreleased ABI 43 (roadmap 7.3): the automatic start, regions and adaptive
+// trimming appended to the options (160 -> 248), the rejected count, the
+// candidates and warnings to the result (168 -> 232); the symmetry plane and
+// auto_align are new.
+MIO_ABI_LAYOUT(meshioplusplus::RegistrationOptions, 248, 8);
+static_assert(offsetof(meshioplusplus::RegistrationOptions, mInitialMode) == 160,
+              "RegistrationOptions::mInitialMode moved");
+static_assert(offsetof(meshioplusplus::RegistrationOptions, mSourceRegion) == 176,
+              "RegistrationOptions::mSourceRegion moved");
+static_assert(offsetof(meshioplusplus::RegistrationOptions, mAdaptiveTrim) == 240,
+              "RegistrationOptions::mAdaptiveTrim moved");
+MIO_ABI_LAYOUT(meshioplusplus::RegistrationResult, 232, 8);
+static_assert(offsetof(meshioplusplus::RegistrationResult, mCandidateRms) == 176,
+              "RegistrationResult::mCandidateRms moved");
+MIO_ABI_LAYOUT(meshioplusplus::SymmetryPlaneOptions, 80, 8);
+// Unreleased ABI 43 (roadmap 7.6.1, 7.6.2): `mChain` and `mMinLength` grow
+// SliceOptions from 56 to 64 bytes; sections' and fit_curves' structs are new.
+MIO_ABI_LAYOUT(meshioplusplus::SliceOptions, 64, 8);
+static_assert(offsetof(meshioplusplus::SliceOptions, mChain) == 49, "SliceOptions::mChain moved");
+MIO_ABI_LAYOUT(meshioplusplus::SectionsOptions, 64, 8);
+MIO_ABI_LAYOUT(meshioplusplus::FitCurvesOptions, 56, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SilhouetteOptions, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::StepElementsOptions, 32, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SketchPiece, 104, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SymmetryPlaneResult, 128, 8);
+MIO_ABI_LAYOUT(meshioplusplus::LandmarkResult, 160, 8);
+MIO_ABI_LAYOUT(meshioplusplus::AutoAlignOptions, 56, 8);
+static_assert(offsetof(meshioplusplus::AutoAlignOptions, mRegion) == 16,
+              "AutoAlignOptions::mRegion moved");
 MIO_ABI_LAYOUT(meshioplusplus::EigenmodeOptions, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ParameterizeOptions, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MorphOptions, 136, 8);

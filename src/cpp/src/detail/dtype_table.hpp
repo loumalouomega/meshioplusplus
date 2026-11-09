@@ -19,7 +19,7 @@
 /**
  * @file detail/dtype_table.hpp
  * @brief `DTypeUtils`: one value per `DType`, read from a table in enumerator
- * order instead of a ten-case `switch` (roadmap §8).
+ * order instead of a ten-case `switch` (roadmap §7).
  *
  * Every format that names element types (netCDF, HDF5, XDMF, VTK, PLY) mapped
  * a `DType` with the same ten-case switch falling back to the `Float64` entry;

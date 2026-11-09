@@ -129,6 +129,12 @@ BrepInfo occt_brep_info(const TopoDS_Shape& rNurbs);
 Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double Deflection,
                      double Angular);
 
+/// Write @p rShape as AP214 STEP (millimetres) under the product name
+/// @p pProduct, with a header free of time stamps; throws WriteError naming
+/// @p pPrefix.
+void occt_write_step(const TopoDS_Shape& rShape, const std::string& rPath, const char* pProduct,
+                     const char* pPrefix);
+
 /// The printers a messenger holds, named through its accessor: OpenCASCADE 8.0
 /// deprecates the typedef `Message_SequenceOfPrinters`, and no header includes it.
 using OcctPrinters = std::remove_cvref_t<decltype(std::declval<Message_Messenger&>().Printers())>;

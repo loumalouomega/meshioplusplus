@@ -137,6 +137,17 @@
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/cut.hpp"
+#include "meshioplusplus/operations/auto_align.hpp"
+#include "meshioplusplus/operations/fit_curves.hpp"
+#include "meshioplusplus/operations/silhouette.hpp"
+#include "meshioplusplus/operations/measure.hpp"
+#include "meshioplusplus/operations/remove_islands.hpp"
+#include "meshioplusplus/operations/flip_normals.hpp"
+#include "meshioplusplus/operations/clip.hpp"
+#include "meshioplusplus/operations/offset_surface.hpp"
+#include "meshioplusplus/operations/constrain_primitives.hpp"
+#include "meshioplusplus/operations/fit_cad_loop.hpp"
+#include "meshioplusplus/operations/profile_solid.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/morph.hpp"
@@ -198,6 +209,8 @@
 #include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/find_intersections.hpp"
 #include "meshioplusplus/operations/thickness.hpp"
+#include "meshioplusplus/operations/deviation.hpp"
+#include "meshioplusplus/operations/colorize.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
@@ -3976,7 +3989,8 @@ val crop_plane_js(const val& rMeshObj, const val& rPoint, const val& rNormal,
  * input). Returns a new mesh one dimension below the cut cells: a triangle/quad
  * surface for a volume mesh, a line mesh for a 2D surface mesh.
  */
-val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool recordParentIds) {
+val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool recordParentIds,
+             bool Chain, double MinLength) {
     return with_js_errors([&]() -> val {
         meshioplusplus::SliceOptions options;
         for (unsigned i = 0; i < 3; ++i) {
@@ -3984,7 +3998,548 @@ val slice_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, bool r
             options.mNormal[i] = rNormal[i].as<double>();
         }
         options.mRecordParentIds = recordParentIds;
+        options.mChain = Chain;
+        options.mMinLength = MinLength;
         return mesh_to_val(meshioplusplus::slice(val_to_mesh(rMeshObj), options));
+    });
+}
+
+// Defined with the parametric generators below; clip and silhouette read their
+// plane normals the same way.
+std::array<double, 3> prim_js_vec3(const val& rV, const std::array<double, 3>& rDefault,
+                                   bool PadZero);
+
+/// Cut by a plane, keep a side, cap it (roadmap 7.8.3). @p rOptions is
+/// `{keepBelow, cap}`.
+val clip_js(const val& rMeshObj, const val& rOrigin, const val& rNormal, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ClipOptions o;
+        o.mOrigin = prim_js_vec3(rOrigin, {{0.0, 0.0, 0.0}}, false);
+        o.mNormal = prim_js_vec3(rNormal, {{0.0, 0.0, 1.0}}, false);
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the clip options", {"keepBelow", "cap"});
+            if (rOptions.hasOwnProperty("keepBelow"))
+                o.mKeepBelow = rOptions["keepBelow"].as<bool>();
+            if (rOptions.hasOwnProperty("cap"))
+                o.mCap = rOptions["cap"].as<bool>();
+        }
+        meshioplusplus::ClipResult r = meshioplusplus::clip(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numKept", static_cast<double>(r.mNumKept));
+        out.set("numSplit", static_cast<double>(r.mNumSplit));
+        out.set("numCapTriangles", static_cast<double>(r.mNumCapTriangles));
+        out.set("numLoops", static_cast<double>(r.mNumLoops));
+        out.set("numOpenChains", static_cast<double>(r.mNumOpenChains));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/// Roadmap 7.7.4: `rFeatures` in text form; `rOptions` `{stepPath, scan,
+/// provider, deflection}`.
+val profile_solid_js(const val& rSketch, const std::string& rFeatures, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ProfileSolidOptions o;
+        o.mFeatures = meshioplusplus::profile_features_from_text(rFeatures);
+        std::string step;
+        meshioplusplus::Mesh scan;
+        bool has_scan = false;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the profile options",
+                                {"stepPath", "scan", "provider", "deflection"});
+            if (rOptions.hasOwnProperty("stepPath"))
+                step = rOptions["stepPath"].as<std::string>();
+            if (rOptions.hasOwnProperty("provider"))
+                o.mProvider = rOptions["provider"].as<std::string>();
+            if (rOptions.hasOwnProperty("deflection"))
+                o.mDeflection = rOptions["deflection"].as<double>();
+            if (rOptions.hasOwnProperty("scan") && !rOptions["scan"].isNull()) {
+                scan = val_to_mesh(rOptions["scan"]);
+                has_scan = true;
+            }
+        }
+        meshioplusplus::ProfileSolidResult r = meshioplusplus::profile_solid(
+            val_to_mesh(rSketch), step, o, has_scan ? &scan : nullptr);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("volume", r.mVolume);
+        out.set("area", r.mArea);
+        out.set("numFaces", static_cast<double>(r.mNumFaces));
+        out.set("valid", r.mValid);
+        out.set("provider", r.mProvider);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/// Roadmap 7.7.3: `{faceTolerance, angleTolerance, distanceTolerance,
+/// minFraction, force, forbid}`, the relations `[[a, b, 'coaxial'], ...]`.
+val constrain_primitives_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ConstrainPrimitivesOptions o;
+        const auto relations = [](const val& rList) {
+            std::vector<meshioplusplus::PrimitiveRelation> out;
+            const auto n = rList["length"].as<unsigned>();
+            for (unsigned i = 0; i < n; ++i) {
+                const val item = rList[i];
+                out.push_back(
+                    {static_cast<std::int64_t>(item[0].as<double>()),
+                     static_cast<std::int64_t>(item[1].as<double>()),
+                     meshioplusplus::primitive_relation_from_name(item[2].as<std::string>())});
+            }
+            return out;
+        };
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the constrain options",
+                                {"faceTolerance", "angleTolerance", "distanceTolerance",
+                                 "minFraction", "force", "forbid"});
+            if (rOptions.hasOwnProperty("faceTolerance"))
+                o.mFaceTolerance = rOptions["faceTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("angleTolerance"))
+                o.mAngleToleranceDeg = rOptions["angleTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("distanceTolerance"))
+                o.mDistanceTolerance = rOptions["distanceTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("minFraction"))
+                o.mMinFraction = rOptions["minFraction"].as<double>();
+            if (rOptions.hasOwnProperty("force"))
+                o.mForce = relations(rOptions["force"]);
+            if (rOptions.hasOwnProperty("forbid"))
+                o.mForbid = relations(rOptions["forbid"]);
+        }
+        meshioplusplus::ConstrainPrimitivesResult r =
+            meshioplusplus::constrain_primitives(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numConstrained", static_cast<double>(r.mNumConstrained));
+        out.set("numGroups", static_cast<double>(r.mNumGroups));
+        out.set("faceTolerance", r.mFaceTolerance);
+        val rel = val::array();
+        for (const auto& r_rec : r.mRelations) {
+            val d = val::object();
+            d.set("patchA", static_cast<double>(r_rec.mPatchA));
+            d.set("patchB", static_cast<double>(r_rec.mPatchB));
+            d.set("relation", std::string(meshioplusplus::primitive_relation_name(r_rec.mKind)));
+            d.set("angleDeg", r_rec.mAngleDeg);
+            d.set("distance", r_rec.mDistance);
+            d.set("forced", r_rec.mForced);
+            rel.call<void>("push", d);
+        }
+        out.set("relations", rel);
+        val unmet = val::array();
+        for (const auto& r_rel : r.mUnmet) {
+            val t = val::array();
+            t.call<void>("push", static_cast<double>(r_rel.mPatchA));
+            t.call<void>("push", static_cast<double>(r_rel.mPatchB));
+            t.call<void>("push", std::string(meshioplusplus::primitive_relation_name(r_rel.mKind)));
+            unmet.call<void>("push", t);
+        }
+        out.set("unmet", unmet);
+        return out;
+    });
+}
+
+/// Roadmap 7.7.1: `{tolerance, measuredShare, inferredShare, holeData}`.
+val face_support_js(const val& rSolid, const val& rScan, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::FaceSupportOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the face support options",
+                                {"tolerance", "measuredShare", "inferredShare", "holeData"});
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("measuredShare"))
+                o.mMeasuredShare = rOptions["measuredShare"].as<double>();
+            if (rOptions.hasOwnProperty("inferredShare"))
+                o.mInferredShare = rOptions["inferredShare"].as<double>();
+            if (rOptions.hasOwnProperty("holeData"))
+                o.mHoleData = rOptions["holeData"].as<std::string>();
+        }
+        meshioplusplus::FaceSupportResult r =
+            meshioplusplus::face_support(val_to_mesh(rSolid), val_to_mesh(rScan), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numMeasured", static_cast<double>(r.mNumMeasured));
+        out.set("numPartial", static_cast<double>(r.mNumPartial));
+        out.set("numInferred", static_cast<double>(r.mNumInferred));
+        out.set("shareWithin", r.mShareWithin);
+        out.set("tolerance", r.mTolerance);
+        val share = val::array();
+        for (const double v : r.mFaceShare)
+            share.call<void>("push", v);
+        out.set("faceShare", share);
+        return out;
+    });
+}
+
+/// Roadmap 7.7.2: `{stepPath, partClass, targetWithin, targetExplained,
+/// segmentTolerance, fitTolerance, maxRounds, worstFaces, refineFactor,
+/// backend}`.
+val fit_cad_iterate_js(const val& rScan, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::FitCadIterateOptions o;
+        std::string step;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(
+                rOptions, "the iterate options",
+                {"stepPath", "partClass", "targetWithin", "targetExplained", "segmentTolerance",
+                 "fitTolerance", "maxRounds", "worstFaces", "refineFactor", "backend"});
+            if (rOptions.hasOwnProperty("stepPath"))
+                step = rOptions["stepPath"].as<std::string>();
+            if (rOptions.hasOwnProperty("partClass"))
+                o.mPartClass = meshioplusplus::fit_cad_part_class_from_name(
+                    rOptions["partClass"].as<std::string>());
+            if (rOptions.hasOwnProperty("targetWithin"))
+                o.mTargetWithin = rOptions["targetWithin"].as<double>();
+            if (rOptions.hasOwnProperty("targetExplained"))
+                o.mTargetExplained = rOptions["targetExplained"].as<double>();
+            if (rOptions.hasOwnProperty("segmentTolerance"))
+                o.mSegmentTolerance = rOptions["segmentTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("fitTolerance"))
+                o.mFitTolerance = rOptions["fitTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("maxRounds"))
+                o.mMaxRounds = static_cast<std::int64_t>(rOptions["maxRounds"].as<double>());
+            if (rOptions.hasOwnProperty("worstFaces"))
+                o.mWorstFaces = static_cast<std::int64_t>(rOptions["worstFaces"].as<double>());
+            if (rOptions.hasOwnProperty("refineFactor"))
+                o.mRefineFactor = rOptions["refineFactor"].as<double>();
+            if (rOptions.hasOwnProperty("backend")) {
+                const std::string b = rOptions["backend"].as<std::string>();
+                if (b == "native")
+                    o.mFitCad.mBackend = meshioplusplus::FitCadBackend::Native;
+                else if (b == "occt")
+                    o.mFitCad.mBackend = meshioplusplus::FitCadBackend::Occt;
+                else if (b != "auto")
+                    throw std::invalid_argument("fitCadIterate: backend is auto, occt or native");
+            }
+        }
+        meshioplusplus::FitCadIterateResult r =
+            meshioplusplus::fit_cad_iterate(val_to_mesh(rScan), step, o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mSupport.mMesh));
+        val rounds = val::array();
+        for (const auto& r_r : r.mRounds) {
+            val d = val::object();
+            d.set("shareWithin", r_r.mShareWithin);
+            d.set("explained", r_r.mExplained);
+            d.set("hausdorffMax", r_r.mHausdorffMax);
+            d.set("numFaces", static_cast<double>(r_r.mNumFaces));
+            d.set("numPatches", static_cast<double>(r_r.mNumPatches));
+            rounds.call<void>("push", d);
+        }
+        out.set("rounds", rounds);
+        out.set("bestRound", static_cast<double>(r.mBestRound));
+        out.set("targetWithin", r.mTargetWithin);
+        out.set("targetMet", r.mTargetMet);
+        out.set("stopReason", r.mStopReason);
+        out.set("numMeasured", static_cast<double>(r.mSupport.mNumMeasured));
+        out.set("numInferred", static_cast<double>(r.mSupport.mNumInferred));
+        return out;
+    });
+}
+
+/// Offset, thicken or hollow a surface (roadmap 7.8.4): @p rKind is
+/// "offset", "thicken" or "hollow", @p Amount the distance, thickness or
+/// wall, @p rOptions `{side, smoothIterations}`.
+val offset_surface_js(const val& rMeshObj, const std::string& rKind, double Amount,
+                      const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        std::string side = "inward";
+        int smooth = 0;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the offset options", {"side", "smoothIterations"});
+            if (rOptions.hasOwnProperty("side"))
+                side = rOptions["side"].as<std::string>();
+            if (rOptions.hasOwnProperty("smoothIterations"))
+                smooth = rOptions["smoothIterations"].as<int>();
+        }
+        const meshioplusplus::Mesh mesh = val_to_mesh(rMeshObj);
+        meshioplusplus::OffsetSurfaceResult r;
+        if (rKind == "offset") {
+            r = meshioplusplus::offset_surface(mesh, {Amount, smooth});
+        } else if (rKind == "thicken") {
+            meshioplusplus::ThickenOptions o;
+            o.mThickness = Amount;
+            o.mSide = meshioplusplus::thicken_side_from_name(side);
+            o.mSmoothIterations = smooth;
+            r = meshioplusplus::thicken(mesh, o);
+        } else if (rKind == "hollow") {
+            r = meshioplusplus::hollow(mesh, Amount, smooth);
+        } else {
+            throw std::invalid_argument(
+                "meshio++: offsetSurface: kind is offset, thicken or hollow");
+        }
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numNotVisible", static_cast<double>(r.mNumNotVisible));
+        out.set("numClamped", static_cast<double>(r.mNumClamped));
+        out.set("numFolded", static_cast<double>(r.mNumFolded));
+        out.set("numRimQuads", static_cast<double>(r.mNumRimQuads));
+        out.set("maxMove", r.mMaxMove);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/// Reverse the winding of cells (roadmap 7.8.2): `{mesh, numFlipped}`.
+val flip_normals_js(const val& rMeshObj, const std::string& rRegion) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::FlipNormalsResult r =
+            meshioplusplus::flip_normals(val_to_mesh(rMeshObj), rRegion);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numFlipped", static_cast<double>(r.mNumFlipped));
+        return out;
+    });
+}
+
+/**
+ * @brief Remove a scan's crumbs (roadmap 7.8.1). @p rOptions is
+ * `{connectivity, minDiagonal, minArea, minCells, relative, dryRun}`.
+ */
+val remove_islands_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RemoveIslandsOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(
+                rOptions, "the removeIslands options",
+                {"connectivity", "minDiagonal", "minArea", "minCells", "relative", "dryRun"});
+            if (rOptions.hasOwnProperty("connectivity"))
+                o.mConnectivity = meshioplusplus::island_connectivity_from_name(
+                    rOptions["connectivity"].as<std::string>());
+            if (rOptions.hasOwnProperty("minDiagonal"))
+                o.mMinDiagonal = rOptions["minDiagonal"].as<double>();
+            if (rOptions.hasOwnProperty("minArea"))
+                o.mMinArea = rOptions["minArea"].as<double>();
+            if (rOptions.hasOwnProperty("minCells"))
+                o.mMinCells = static_cast<std::int64_t>(rOptions["minCells"].as<double>());
+            if (rOptions.hasOwnProperty("relative"))
+                o.mRelative = rOptions["relative"].as<bool>();
+            if (rOptions.hasOwnProperty("dryRun"))
+                o.mDryRun = rOptions["dryRun"].as<bool>();
+        }
+        meshioplusplus::RemoveIslandsResult r =
+            meshioplusplus::remove_islands(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numComponents", static_cast<double>(r.mNumComponents));
+        out.set("numRemoved", static_cast<double>(r.mNumRemoved));
+        out.set("numCellsRemoved", static_cast<double>(r.mNumCellsRemoved));
+        out.set("numPointsRemoved", static_cast<double>(r.mNumPointsRemoved));
+        return out;
+    });
+}
+
+/**
+ * @brief Elements, dimensions and GD&T (roadmap 7.2) by a JSON spec (text).
+ * Returns `{mesh, report, numFail, warnings}`, `report` the JSON text.
+ */
+val measure_js(const val& rMeshObj, const std::string& rSpec) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::MeasureResult r = meshioplusplus::measure(val_to_mesh(rMeshObj), rSpec);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("report", r.mReportJson);
+        out.set("numFail", static_cast<double>(r.mNumFail));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/// The 3-2-1 datum alignment (roadmap 7.3.4): `{mesh, matrix}` (row-major 16).
+val align_datums_js(const val& rMeshObj, const std::string& rPrimary, const std::string& rSecondary,
+                    const std::string& rOrigin) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::AlignDatumsResult r =
+            meshioplusplus::align_datums(val_to_mesh(rMeshObj), rPrimary, rSecondary, rOrigin);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("matrix", float64_array_from(r.mMatrix.data(), 16));
+        return out;
+    });
+}
+
+/// A measured element as a fitted primitive (roadmap 7.4.2): `{type, params}`.
+val measure_element_primitive_js(const val& rMeshObj, const std::string& rName) {
+    return with_js_errors([&]() -> val {
+        const auto [type, params] = meshioplusplus::measure_element_primitive(
+            meshioplusplus::measure_element(val_to_mesh(rMeshObj), rName));
+        val out = val::object();
+        out.set("type", static_cast<double>(type));
+        out.set("params", float64_array_from(params.data(), 10));
+        return out;
+    });
+}
+
+/**
+ * @brief Fitted primitives as STEP elements (roadmap 7.6.5), written to
+ * @p rPath in the virtual file system. @p rOptions is `{patches, segments}`.
+ */
+val write_step_elements_js(const std::string& rPath, const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::StepElementsOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the writeStepElements options", {"patches", "segments"});
+            if (rOptions.hasOwnProperty("patches")) {
+                for (const double v : emscripten::vecFromJSArray<double>(rOptions["patches"]))
+                    o.mPatches.push_back(static_cast<std::int64_t>(v));
+            }
+            if (rOptions.hasOwnProperty("segments"))
+                o.mSegments = static_cast<std::int64_t>(rOptions["segments"].as<double>());
+        }
+        const meshioplusplus::StepElementsResult r =
+            meshioplusplus::write_step_elements(rPath, val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("numPlanes", static_cast<double>(r.mNumPlanes));
+        out.set("numSpheres", static_cast<double>(r.mNumSpheres));
+        out.set("numCylinders", static_cast<double>(r.mNumCylinders));
+        out.set("numCones", static_cast<double>(r.mNumCones));
+        out.set("numTori", static_cast<double>(r.mNumTori));
+        out.set("numSkipped", static_cast<double>(r.mNumSkipped));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/**
+ * @brief The outline of a part along a direction (roadmap 7.6.3). @p rOptions
+ * is `{normal, clearance, roundAngle, arcSegments, extrude, region,
+ * mergeTolerance}`.
+ */
+val silhouette_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SilhouetteOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the silhouette options",
+                                {"normal", "clearance", "roundAngle", "arcSegments", "extrude",
+                                 "region", "mergeTolerance"});
+            if (rOptions.hasOwnProperty("normal"))
+                o.mNormal = prim_js_vec3(rOptions["normal"], {{0.0, 0.0, 1.0}}, false);
+            if (rOptions.hasOwnProperty("clearance"))
+                o.mClearance = rOptions["clearance"].as<double>();
+            if (rOptions.hasOwnProperty("roundAngle"))
+                o.mRoundAngleDeg = rOptions["roundAngle"].as<double>();
+            if (rOptions.hasOwnProperty("arcSegments"))
+                o.mArcSegments = static_cast<std::int64_t>(rOptions["arcSegments"].as<double>());
+            if (rOptions.hasOwnProperty("extrude"))
+                o.mExtrude = rOptions["extrude"].as<bool>();
+            if (rOptions.hasOwnProperty("region"))
+                o.mRegion = rOptions["region"].as<std::string>();
+            if (rOptions.hasOwnProperty("mergeTolerance"))
+                o.mMergeTolerance = rOptions["mergeTolerance"].as<double>();
+        }
+        meshioplusplus::SilhouetteResult r = meshioplusplus::silhouette(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numLoops", static_cast<double>(r.mNumLoops));
+        out.set("numOuter", static_cast<double>(r.mNumOuter));
+        out.set("numHoles", static_cast<double>(r.mNumHoles));
+        out.set("numTriangles", static_cast<double>(r.mNumTriangles));
+        out.set("area", r.mArea);
+        out.set("perimeter", r.mPerimeter);
+        out.set("minHeight", r.mMinHeight);
+        out.set("maxHeight", r.mMaxHeight);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/**
+ * @brief Lines, arcs and circles from chained sections (roadmap 7.6.2).
+ * @p rOptions is `{tolerance, snapAngle, normal, minArcPoints, minArcSweep}`.
+ */
+val fit_curves_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::FitCurvesOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(
+                rOptions, "the fitCurves options",
+                {"tolerance", "snapAngle", "normal", "minArcPoints", "minArcSweep"});
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("snapAngle"))
+                o.mSnapAngleDeg = rOptions["snapAngle"].as<double>();
+            if (rOptions.hasOwnProperty("normal"))
+                o.mNormal = prim_js_vec3(rOptions["normal"], {{0.0, 0.0, 0.0}}, false);
+            if (rOptions.hasOwnProperty("minArcPoints"))
+                o.mMinArcPoints = static_cast<std::int64_t>(rOptions["minArcPoints"].as<double>());
+            if (rOptions.hasOwnProperty("minArcSweep"))
+                o.mMinArcSweepDeg = rOptions["minArcSweep"].as<double>();
+        }
+        meshioplusplus::FitCurvesResult r = meshioplusplus::fit_curves(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        val pieces = val::array();
+        for (const meshioplusplus::SketchPiece& p : r.mPieces) {
+            val d = val::object();
+            d.set("type", std::string(meshioplusplus::sketch_piece_type_name(p.mType)));
+            val st = val::array(), en = val::array(), ce = val::array();
+            for (std::size_t k = 0; k < 2; ++k) {
+                st.call<void>("push", p.mStart[k]);
+                en.call<void>("push", p.mEnd[k]);
+                ce.call<void>("push", p.mCentre[k]);
+            }
+            d.set("start", st);
+            d.set("end", en);
+            d.set("centre", ce);
+            d.set("radius", p.mRadius);
+            d.set("sweep", p.mSweepDeg);
+            d.set("residual", p.mResidual);
+            d.set("numPoints", static_cast<double>(p.mNumPoints));
+            d.set("chain", static_cast<double>(p.mChain));
+            d.set("frame", static_cast<double>(p.mFrame));
+            pieces.call<void>("push", d);
+        }
+        out.set("pieces", pieces);
+        val frames = val::array();
+        for (const auto& f : r.mFrames)
+            frames.call<void>("push", float64_array_from(f.data(), 16));
+        out.set("frames", frames);
+        out.set("numLines", static_cast<double>(r.mNumLines));
+        out.set("numArcs", static_cast<double>(r.mNumArcs));
+        out.set("numCircles", static_cast<double>(r.mNumCircles));
+        out.set("maxResidual", r.mMaxResidual);
+        out.set("tolerance", r.mTolerance);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/**
+ * @brief Chained sections at parallel planes (roadmap 7.6.1): `direction`,
+ * `offsets`, `minLength`, `recordParentIds`.
+ */
+val sections_js(const val& rMeshObj, const val& rDirection, const val& rOffsets, double MinLength,
+                bool recordParentIds) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SectionsOptions o;
+        for (unsigned i = 0; i < 3; ++i)
+            o.mDirection[i] = rDirection[i].as<double>();
+        o.mOffsets = emscripten::vecFromJSArray<double>(rOffsets);
+        o.mMinLength = MinLength;
+        o.mRecordParentIds = recordParentIds;
+        return mesh_to_val(meshioplusplus::sections(val_to_mesh(rMeshObj), o));
     });
 }
 
@@ -5422,7 +5977,7 @@ val segment_js(const val& rMeshObj, double featureAngle, double normalTolerance,
  */
 val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double tolerance,
                       bool relative, double minInlierFraction, const val& rTypes,
-                      double maxIterations) {
+                      double maxIterations, const val& rExtra) {
     return with_js_errors([&]() -> val {
         static const char* const kNames[] = {"plane", "sphere", "cylinder", "cone", "torus"};
         meshioplusplus::FitPrimitivesOptions options;
@@ -5445,6 +6000,54 @@ val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double
                 throw std::invalid_argument("meshio++: fit_primitives: unknown primitive type '" +
                                             name + "'");
         }
+        // Roadmap 7.1: {region, seeds: [[x, y, z], ...], featureAngle,
+        // rimAngle, outputRegion, usedPoints, criterion}.
+        if (!rExtra.isUndefined() && !rExtra.isNull()) {
+            check_settings_keys(rExtra, "the fitPrimitives options",
+                                {"region", "seeds", "featureAngle", "rimAngle", "outputRegion",
+                                 "usedPoints", "criterion"});
+            if (rExtra.hasOwnProperty("criterion"))
+                options.mCriterion =
+                    meshioplusplus::fit_criterion_from_name(rExtra["criterion"].as<std::string>());
+            if (rExtra.hasOwnProperty("region"))
+                options.mRegion = rExtra["region"].as<std::string>();
+            if (rExtra.hasOwnProperty("seeds")) {
+                const val seeds = rExtra["seeds"];
+                const unsigned ns = seeds["length"].as<unsigned>();
+                for (unsigned k = 0; k < ns; ++k) {
+                    const val p = seeds[k];
+                    if (p["length"].as<unsigned>() != 3)
+                        throw std::invalid_argument(
+                            "meshio++: fit_primitives: a seed is [x, y, z]");
+                    options.mSeeds.push_back(
+                        {p[0].as<double>(), p[1].as<double>(), p[2].as<double>()});
+                }
+            }
+            if (rExtra.hasOwnProperty("featureAngle"))
+                options.mFeatureAngleDeg = rExtra["featureAngle"].as<double>();
+            if (rExtra.hasOwnProperty("rimAngle"))
+                options.mRimAngleDeg = rExtra["rimAngle"].as<double>();
+            if (rExtra.hasOwnProperty("outputRegion"))
+                options.mOutputRegion = rExtra["outputRegion"].as<std::string>();
+            if (rExtra.hasOwnProperty("usedPoints")) {
+                const std::string u = rExtra["usedPoints"].as<std::string>();
+                using meshioplusplus::FitUsedPoints;
+                if (u == "auto")
+                    options.mUsedPoints = FitUsedPoints::Auto;
+                else if (u == "all")
+                    options.mUsedPoints = FitUsedPoints::All;
+                else if (u == "3sigma")
+                    options.mUsedPoints = FitUsedPoints::Sigma3;
+                else if (u == "2sigma")
+                    options.mUsedPoints = FitUsedPoints::Sigma2;
+                else if (u == "1sigma")
+                    options.mUsedPoints = FitUsedPoints::Sigma1;
+                else
+                    throw std::invalid_argument(
+                        "meshio++: fit_primitives: usedPoints must be auto, all, 3sigma, "
+                        "2sigma or 1sigma");
+            }
+        }
         meshioplusplus::FitPrimitivesResult r =
             meshioplusplus::fit_primitives(val_to_mesh(rMeshObj), options);
         val out = val::object();
@@ -5456,6 +6059,11 @@ val fit_primitives_js(const val& rMeshObj, const std::string& rPatchData, double
         out.set("numCone", static_cast<double>(r.mNumCone));
         out.set("numTorus", static_cast<double>(r.mNumTorus));
         out.set("numUnfitted", static_cast<double>(r.mNumUnfitted));
+        out.set("numFeatureCells", static_cast<double>(r.mNumFeatureCells));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
         return out;
     });
 }
@@ -7094,9 +7702,10 @@ val write_graph_js(const val& rMeshObj, const std::string& rPath, const std::str
  */
 val repair_js(const val& rMeshObj, bool fixOrientation, bool orientOutward, bool fillHoles,
               bool splitNonManifold, double maxHoleEdges, double weldTolerance,
-              bool recordProvenance) {
+              bool recordProvenance, const std::string& rFillStyle) {
     return with_js_errors([&]() -> val {
         meshioplusplus::RepairOptions options;
+        options.mFillStyle = meshioplusplus::repair_fill_style_from_name(rFillStyle);
         options.mFixOrientation = fixOrientation;
         options.mOrientOutward = orientOutward;
         options.mFillHoles = fillHoles;
@@ -7358,12 +7967,27 @@ val register_rigid_js(const val& rSource, const val& rTarget, const val& rOption
             if (rOptions.hasOwnProperty("maxDistance"))
                 options.mMaxDistance = rOptions["maxDistance"].as<double>();
             if (rOptions.hasOwnProperty("initial")) {
-                const std::vector<double> m =
-                    emscripten::vecFromJSArray<double>(rOptions["initial"]);
-                if (m.size() != 16)
-                    throw std::invalid_argument("registerRigid: initial takes 16 numbers");
-                std::copy(m.begin(), m.end(), options.mInitial.begin());
+                if (rOptions["initial"].isString()) {
+                    options.mInitialMode = meshioplusplus::registration_initial_from_name(
+                        rOptions["initial"].as<std::string>());
+                } else {
+                    const std::vector<double> m =
+                        emscripten::vecFromJSArray<double>(rOptions["initial"]);
+                    if (m.size() != 16)
+                        throw std::invalid_argument("registerRigid: initial takes 16 numbers");
+                    std::copy(m.begin(), m.end(), options.mInitial.begin());
+                }
             }
+            if (rOptions.hasOwnProperty("symmetricCheck"))
+                options.mSymmetricCheck = rOptions["symmetricCheck"].as<bool>();
+            if (rOptions.hasOwnProperty("symmetricTolerance"))
+                options.mSymmetricTolerance = rOptions["symmetricTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("sourceRegion"))
+                options.mSourceRegion = rOptions["sourceRegion"].as<std::string>();
+            if (rOptions.hasOwnProperty("targetRegion"))
+                options.mTargetRegion = rOptions["targetRegion"].as<std::string>();
+            if (rOptions.hasOwnProperty("adaptiveTrim"))
+                options.mAdaptiveTrim = rOptions["adaptiveTrim"].as<double>();
         }
         const meshioplusplus::RegistrationResult r =
             meshioplusplus::register_rigid(val_to_mesh(rSource), val_to_mesh(rTarget), options);
@@ -7377,6 +8001,146 @@ val register_rigid_js(const val& rSource, const val& rTarget, const val& rOption
         out.set("iterations", static_cast<double>(r.mIterations));
         out.set("numPairs", static_cast<double>(r.mNumPairs));
         out.set("converged", r.mConverged);
+        out.set("numRejected", static_cast<double>(r.mNumRejected));
+        out.set("candidateRms", float64_array_from(r.mCandidateRms.data(), r.mCandidateRms.size()));
+        out.set("chosenCandidate", static_cast<double>(r.mChosenCandidate));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+namespace {
+
+val js_reg_matrix(const std::array<double, 16>& rM) {
+    val matrix = val::array();
+    for (std::size_t k = 0; k < 16; ++k)
+        matrix.call<void>("push", rM[k]);
+    return matrix;
+}
+
+std::vector<std::array<double, 3>> js_reg_points(const val& rPts, const char* pWhat) {
+    const std::vector<double> flat = emscripten::vecFromJSArray<double>(rPts);
+    if (flat.size() % 3 != 0)
+        throw std::invalid_argument(std::string("meshio++: registerLandmarks: ") + pWhat +
+                                    " must be flat xyz triples");
+    std::vector<std::array<double, 3>> out(flat.size() / 3);
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = {flat[3 * i], flat[3 * i + 1], flat[3 * i + 2]};
+    return out;
+}
+
+}  // namespace
+
+/**
+ * @brief Landmark registration (roadmap 7.3.2): flat xyz arrays of picked
+ * source and target points, optional `weights`. Returns
+ * `{matrix, residuals, rms}`.
+ */
+val register_landmarks_js(const val& rSource, const val& rTarget, const val& rWeights) {
+    return with_js_errors([&]() -> val {
+        std::vector<double> w;
+        if (!rWeights.isUndefined() && !rWeights.isNull())
+            w = emscripten::vecFromJSArray<double>(rWeights);
+        const meshioplusplus::LandmarkResult r = meshioplusplus::register_landmarks(
+            js_reg_points(rSource, "source"), js_reg_points(rTarget, "target"), w);
+        val out = val::object();
+        out.set("matrix", js_reg_matrix(r.mMatrix));
+        out.set("residuals", float64_array_from(r.mResiduals.data(), r.mResiduals.size()));
+        out.set("rms", r.mRms);
+        return out;
+    });
+}
+
+/**
+ * @brief The symmetry plane (roadmap 7.3.6). @p rOptions is
+ * `{seedOrigin, seedNormal, tolerance, minShare, maxSamples, maxIterations}`.
+ */
+val find_symmetry_plane_js(const val& rMesh, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SymmetryPlaneOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the findSymmetryPlane options",
+                                {"seedOrigin", "seedNormal", "tolerance", "minShare", "maxSamples",
+                                 "maxIterations"});
+            if (rOptions.hasOwnProperty("seedOrigin"))
+                o.mSeedOrigin = prim_js_vec3(rOptions["seedOrigin"], {{0.0, 0.0, 0.0}}, false);
+            if (rOptions.hasOwnProperty("seedNormal"))
+                o.mSeedNormal = prim_js_vec3(rOptions["seedNormal"], {{0.0, 0.0, 0.0}}, false);
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("minShare"))
+                o.mMinShare = rOptions["minShare"].as<double>();
+            if (rOptions.hasOwnProperty("maxSamples"))
+                o.mMaxSamples = static_cast<std::int64_t>(rOptions["maxSamples"].as<double>());
+            if (rOptions.hasOwnProperty("maxIterations"))
+                o.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+        }
+        const meshioplusplus::SymmetryPlaneResult r =
+            meshioplusplus::find_symmetry_plane(val_to_mesh(rMesh), o);
+        val out = val::object();
+        val origin = val::array(), normal = val::array();
+        for (std::size_t k = 0; k < 3; ++k) {
+            origin.call<void>("push", r.mOrigin[k]);
+            normal.call<void>("push", r.mNormal[k]);
+        }
+        out.set("origin", origin);
+        out.set("normal", normal);
+        out.set("rms", r.mRms);
+        out.set("share", r.mShare);
+        out.set("tolerance", r.mTolerance);
+        out.set("candidateRms", float64_array_from(r.mCandidateRms.data(), r.mCandidateRms.size()));
+        out.set("chosenCandidate", static_cast<double>(r.mChosenCandidate));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/**
+ * @brief Auto-align from the scan alone (roadmap 7.3.5). @p rOptions is
+ * `{angleTolerance, subdivisions, region, rotateVectorData}`.
+ */
+val auto_align_js(const val& rMesh, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::AutoAlignOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the autoAlign options",
+                                {"angleTolerance", "subdivisions", "region", "rotateVectorData"});
+            if (rOptions.hasOwnProperty("angleTolerance"))
+                o.mAngleToleranceDeg = rOptions["angleTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("subdivisions"))
+                o.mSubdivisions = static_cast<std::int64_t>(rOptions["subdivisions"].as<double>());
+            if (rOptions.hasOwnProperty("region"))
+                o.mRegion = rOptions["region"].as<std::string>();
+            if (rOptions.hasOwnProperty("rotateVectorData"))
+                o.mRotateVectorData = rOptions["rotateVectorData"].as<bool>();
+        }
+        meshioplusplus::AutoAlignResult r = meshioplusplus::auto_align(val_to_mesh(rMesh), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("matrix", js_reg_matrix(r.mMatrix));
+        out.set("mode", r.mMode);
+        val pr = val::array(), se = val::array();
+        for (std::size_t k = 0; k < 3; ++k) {
+            pr.call<void>("push", r.mPrimary[k]);
+            se.call<void>("push", r.mSecondary[k]);
+        }
+        out.set("primary", pr);
+        out.set("secondary", se);
+        out.set("share", r.mShare);
+        out.set("faceShare", r.mFaceShare);
+        out.set("axisShare", r.mAxisShare);
+        out.set("openingArea", r.mOpeningArea);
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
         return out;
     });
 }
@@ -8018,13 +8782,26 @@ val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& 
  * `frozen` is an optional array of 0-based point ids to pin outright. Returns
  * an object `{mesh, facesRemoved, pointsRemoved, collapsesRejected,
  * maxErrorApplied}`, plus `pointMap`/`cellMaps` when `returnMaps` is set.
+ * `rBounded` is `{maxDeviation, coverage, maxFaces}` (roadmap 7.8.5), adding
+ * `deviation`, `deviationMet` and `rounds` when either bound is set.
  */
 val decimate_js(const val& rMeshObj, double ratio, double targetFaces, double maxError,
                 const std::string& rPlacement, bool preserveBoundary, bool preserveFeatures,
-                double featureAngle, const val& rFrozen, bool returnMaps) {
+                double featureAngle, const val& rFrozen, bool returnMaps, const val& rBounded) {
     return with_js_errors([&]() -> val {
         Mesh mesh = val_to_mesh(rMeshObj);
         meshioplusplus::DecimateOptions options;
+        // Roadmap 7.8.5: `{maxDeviation, coverage, maxFaces}`.
+        if (!rBounded.isUndefined() && !rBounded.isNull()) {
+            check_settings_keys(rBounded, "the decimate bounds",
+                                {"maxDeviation", "coverage", "maxFaces"});
+            if (rBounded.hasOwnProperty("maxDeviation"))
+                options.mMaxDeviation = rBounded["maxDeviation"].as<double>();
+            if (rBounded.hasOwnProperty("coverage"))
+                options.mCoverage = rBounded["coverage"].as<double>();
+            if (rBounded.hasOwnProperty("maxFaces"))
+                options.mMaxFaces = static_cast<std::int64_t>(rBounded["maxFaces"].as<double>());
+        }
         options.mTargetRatio = ratio;
         options.mTargetFaces = targetFaces < 0.0 ? static_cast<std::int64_t>(-1)
                                                  : static_cast<std::int64_t>(targetFaces);
@@ -8041,6 +8818,11 @@ val decimate_js(const val& rMeshObj, double ratio, double targetFaces, double ma
         out.set("pointsRemoved", static_cast<double>(r.mPointsRemoved));
         out.set("collapsesRejected", static_cast<double>(r.mCollapsesRejected));
         out.set("maxErrorApplied", r.mMaxErrorApplied);
+        if (options.mMaxDeviation >= 0.0 || options.mMaxFaces >= 0) {
+            out.set("deviation", r.mDeviation);
+            out.set("deviationMet", r.mDeviationMet);
+            out.set("rounds", static_cast<double>(r.mRounds));
+        }
         if (returnMaps) {
             out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
             out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
@@ -8712,9 +9494,9 @@ val extrude_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
         meshioplusplus::ExtrudeOptions o;
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
-            check_settings_keys(rOptions, "the extrude options",
-                                {"direction", "numLayers", "ratio", "offsets", "recordLayers",
-                                 "maxCells"});
+            check_settings_keys(
+                rOptions, "the extrude options",
+                {"direction", "numLayers", "ratio", "offsets", "recordLayers", "maxCells"});
             if (rOptions.hasOwnProperty("direction"))
                 o.mDirection = js_vec3(rOptions["direction"], "extrude: direction");
             if (rOptions.hasOwnProperty("numLayers"))
@@ -8772,9 +9554,9 @@ val mirror_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
         meshioplusplus::MirrorOptions o;
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
-            check_settings_keys(rOptions, "the mirror options",
-                                {"origin", "normal", "keepOriginal", "weld", "tolerance",
-                                 "reflectVectorData"});
+            check_settings_keys(
+                rOptions, "the mirror options",
+                {"origin", "normal", "keepOriginal", "weld", "tolerance", "reflectVectorData"});
             if (rOptions.hasOwnProperty("origin"))
                 o.mOrigin = js_vec3(rOptions["origin"], "mirror: origin");
             if (rOptions.hasOwnProperty("normal"))
@@ -8948,6 +9730,213 @@ val find_intersections_js(const val& rMeshObj, const val& rOptions) {
     });
 }
 
+// deviation (roadmap 7.4): the signed deviation of every scan point from a
+// reference surface ({reference}) or a fitted primitive ({primitive: {type,
+// params}}); options {tolerance, bins, range: [lo, hi], maxNormalAngle,
+// referenceRegion}, all optional but one of reference and primitive.
+val deviation_js(const val& rScanObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DeviationOptions o;
+        val reference = val::undefined();
+        val primitive = val::undefined();
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the deviation options",
+                                {"reference", "primitive", "tolerance", "bins", "range",
+                                 "maxNormalAngle", "referenceRegion", "register"});
+            if (rOptions.hasOwnProperty("reference"))
+                reference = rOptions["reference"];
+            if (rOptions.hasOwnProperty("primitive"))
+                primitive = rOptions["primitive"];
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("bins"))
+                o.mBins = static_cast<std::int64_t>(rOptions["bins"].as<double>());
+            if (rOptions.hasOwnProperty("range")) {
+                const val rng = rOptions["range"];
+                if (rng["length"].as<int>() != 2)
+                    throw std::invalid_argument("meshio++: deviation: range is [lo, hi]");
+                o.mRangeMin = rng[0].as<double>();
+                o.mRangeMax = rng[1].as<double>();
+            }
+            if (rOptions.hasOwnProperty("maxNormalAngle"))
+                o.mMaxNormalAngleDeg = rOptions["maxNormalAngle"].as<double>();
+            if (rOptions.hasOwnProperty("referenceRegion"))
+                o.mReferenceRegion = rOptions["referenceRegion"].as<std::string>();
+            if (rOptions.hasOwnProperty("register"))
+                o.mRegister = rOptions["register"].as<bool>();
+        }
+        const meshioplusplus::Mesh scan = val_to_mesh(rScanObj);
+        meshioplusplus::DeviationResult r;
+        if (!primitive.isUndefined() && !primitive.isNull()) {
+            static const char* const kTypes[] = {"plane", "sphere", "cylinder", "cone", "torus"};
+            const std::string t = primitive["type"].as<std::string>();
+            std::int64_t type = 0;
+            for (std::int64_t k = 0; k < 5; ++k)
+                if (t == kTypes[k])
+                    type = k + 1;
+            if (type == 0)
+                throw std::invalid_argument("meshio++: deviation: unknown primitive type '" + t +
+                                            "'");
+            const val p = primitive["params"];
+            if (p["length"].as<int>() != 10)
+                throw std::invalid_argument("meshio++: deviation: a primitive takes ten params");
+            std::array<double, 10> params{};
+            for (int k = 0; k < 10; ++k)
+                params[static_cast<std::size_t>(k)] = p[k].as<double>();
+            r = meshioplusplus::deviation_to_primitive(scan, type, params, o);
+        } else {
+            if (reference.isUndefined() || reference.isNull())
+                throw std::invalid_argument(
+                    "meshio++: deviation: give a reference mesh or a primitive");
+            r = meshioplusplus::deviation(scan, val_to_mesh(reference), o);
+        }
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numPoints", static_cast<double>(r.mNumPoints));
+        out.set("numMeasured", static_cast<double>(r.mNumMeasured));
+        out.set("min", r.mMin);
+        out.set("max", r.mMax);
+        out.set("mean", r.mMean);
+        out.set("rms", r.mRms);
+        out.set("sigma", r.mSigma);
+        val pct = val::object();
+        const char* const levels[5] = {"p1", "p5", "p50", "p95", "p99"};
+        for (std::size_t k = 0; k < 5; ++k)
+            pct.set(levels[k], r.mPercentiles[k]);
+        out.set("percentiles", pct);
+        out.set("histogramEdges",
+                float64_array_from(r.mHistogramEdges.data(), r.mHistogramEdges.size()));
+        std::vector<double> counts(r.mHistogramCounts.begin(), r.mHistogramCounts.end());
+        out.set("histogramCounts", float64_array_from(counts.data(), counts.size()));
+        out.set("numOutsideRange", static_cast<double>(r.mNumOutsideRange));
+        out.set("shareWithin", r.mShareWithin);
+        out.set("suggestedRange", r.mSuggestedRange);
+        out.set("numWithoutNormal", static_cast<double>(r.mNumWithoutNormal));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        out.set("registered", r.mRegistered);
+        out.set("matrix", js_reg_matrix(r.mMatrix));
+        out.set("registrationRms", r.mRegistrationRms);
+        return out;
+    });
+}
+
+// deviationRegions (roadmap 7.4.3): the connected regions beyond +-tolerance
+// of a measured surface; options {tolerance (required), field, prefix,
+// minArea}.
+val deviation_regions_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DeviationRegionsOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the deviationRegions options",
+                                {"tolerance", "field", "prefix", "minArea"});
+            if (rOptions.hasOwnProperty("tolerance"))
+                o.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("field"))
+                o.mField = rOptions["field"].as<std::string>();
+            if (rOptions.hasOwnProperty("prefix"))
+                o.mPrefix = rOptions["prefix"].as<std::string>();
+            if (rOptions.hasOwnProperty("minArea"))
+                o.mMinArea = rOptions["minArea"].as<double>();
+        }
+        meshioplusplus::DeviationRegionsResult r =
+            meshioplusplus::deviation_regions(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        val regions = val::array();
+        for (const meshioplusplus::DeviationRegionRecord& g : r.mRegions) {
+            val e = val::object();
+            e.set("name", g.mName);
+            e.set("sign", static_cast<double>(g.mSign));
+            e.set("numCells", static_cast<double>(g.mNumCells));
+            e.set("area", g.mArea);
+            e.set("extreme", g.mExtreme);
+            e.set("mean", g.mMean);
+            e.set("volume", g.mVolume);
+            e.set("centroid", float64_array_from(g.mCentroid.data(), 3));
+            e.set("bounds", float64_array_from(g.mBounds.data(), 6));
+            regions.call<void>("push", e);
+        }
+        out.set("regions", regions);
+        out.set("numExcess", static_cast<double>(r.mNumExcess));
+        out.set("numMissing", static_cast<double>(r.mNumMissing));
+        out.set("numDropped", static_cast<double>(r.mNumDropped));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+// exaggerate (roadmap 7.4.4): {field, scale, clamp, smoothFraction}.
+val exaggerate_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ExaggerateOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "the exaggerate options",
+                                {"field", "scale", "clamp", "smoothFraction"});
+            if (rOptions.hasOwnProperty("field"))
+                o.mField = rOptions["field"].as<std::string>();
+            if (rOptions.hasOwnProperty("scale"))
+                o.mScale = rOptions["scale"].as<double>();
+            if (rOptions.hasOwnProperty("clamp"))
+                o.mClamp = rOptions["clamp"].as<double>();
+            if (rOptions.hasOwnProperty("smoothFraction"))
+                o.mSmoothFraction = rOptions["smoothFraction"].as<double>();
+        }
+        meshioplusplus::ExaggerateResult r = meshioplusplus::exaggerate(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("clamp", r.mClamp);
+        out.set("radius", r.mRadius);
+        out.set("numMoved", static_cast<double>(r.mNumMoved));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+// colorize (roadmap 7.4.4): {field (required), cmap, vmin, vmax, symmetric,
+// steps, nanColor, component}.
+val colorize_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ColorizeOptions o;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(
+                rOptions, "the colorize options",
+                {"field", "cmap", "vmin", "vmax", "symmetric", "steps", "nanColor", "component"});
+            if (rOptions.hasOwnProperty("field"))
+                o.mField = rOptions["field"].as<std::string>();
+            if (rOptions.hasOwnProperty("cmap"))
+                o.mCmap = rOptions["cmap"].as<std::string>();
+            if (rOptions.hasOwnProperty("vmin"))
+                o.mVMin = rOptions["vmin"].as<double>();
+            if (rOptions.hasOwnProperty("vmax"))
+                o.mVMax = rOptions["vmax"].as<double>();
+            if (rOptions.hasOwnProperty("symmetric"))
+                o.mSymmetric = rOptions["symmetric"].as<bool>();
+            if (rOptions.hasOwnProperty("steps"))
+                o.mSteps = static_cast<std::int64_t>(rOptions["steps"].as<double>());
+            if (rOptions.hasOwnProperty("nanColor"))
+                o.mNanColor = rOptions["nanColor"].as<std::string>();
+            if (rOptions.hasOwnProperty("component"))
+                o.mComponent = static_cast<std::int64_t>(rOptions["component"].as<double>());
+        }
+        meshioplusplus::ColorizeResult r = meshioplusplus::colorize(val_to_mesh(rMeshObj), o);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("vmin", r.mVMin);
+        out.set("vmax", r.mVMax);
+        out.set("location", r.mLocation);
+        return out;
+    });
+}
+
 // thickness (roadmap 3.1.4): wall thickness or clearance per facet by a ray
 // along its normal; options {other, direction ("auto" | "inward" |
 // "outward"), maxDistance, threshold, region, regionOther}, all optional.
@@ -8958,7 +9947,8 @@ val thickness_js(const val& rMeshObj, const val& rOptions) {
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
             check_settings_keys(
                 rOptions, "the thickness options",
-                {"other", "direction", "maxDistance", "threshold", "region", "regionOther"});
+                {"other", "direction", "maxDistance", "threshold", "region", "regionOther",
+                 "method", "coneAngle", "coneRays", "twoSided", "maxNormalDeviation"});
             if (rOptions.hasOwnProperty("other"))
                 other = rOptions["other"];
             if (rOptions.hasOwnProperty("direction")) {
@@ -8979,6 +9969,17 @@ val thickness_js(const val& rMeshObj, const val& rOptions) {
                 o.mRegion = rOptions["region"].as<std::string>();
             if (rOptions.hasOwnProperty("regionOther"))
                 o.mRegionTarget = rOptions["regionOther"].as<std::string>();
+            if (rOptions.hasOwnProperty("method"))
+                o.mMethod = meshioplusplus::thickness_method_from_name(
+                    rOptions["method"].as<std::string>());
+            if (rOptions.hasOwnProperty("coneAngle"))
+                o.mConeAngleDeg = rOptions["coneAngle"].as<double>();
+            if (rOptions.hasOwnProperty("coneRays"))
+                o.mConeRays = static_cast<std::int64_t>(rOptions["coneRays"].as<double>());
+            if (rOptions.hasOwnProperty("twoSided"))
+                o.mTwoSided = rOptions["twoSided"].as<bool>();
+            if (rOptions.hasOwnProperty("maxNormalDeviation"))
+                o.mMaxNormalDeviationDeg = rOptions["maxNormalDeviation"].as<double>();
         }
         const bool two = !other.isUndefined() && !other.isNull();
         const meshioplusplus::Mesh mesh = val_to_mesh(rMeshObj);
@@ -9004,6 +10005,12 @@ val thickness_js(const val& rMeshObj, const val& rOptions) {
         for (const std::string& w : r.mWarnings)
             warnings.call<void>("push", w);
         out.set("warnings", warnings);
+        out.set("method",
+                std::string(r.mMethod == meshioplusplus::ThicknessMethod::Sphere ? "sphere"
+                            : r.mMethod == meshioplusplus::ThicknessMethod::Cone ? "cone"
+                                                                                 : "ray"));
+        out.set("p2", r.mP2);
+        out.set("p95", r.mP95);
         return out;
     });
 }
@@ -9880,6 +10887,21 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("conservativeInterpolate", &conservative_interpolate_js);
     emscripten::function("undoGreen", &undo_green_js);
     emscripten::function("slice", &slice_js);
+    emscripten::function("sections", &sections_js);
+    emscripten::function("fitCurves", &fit_curves_js);
+    emscripten::function("silhouette", &silhouette_js);
+    emscripten::function("writeStepElements", &write_step_elements_js);
+    emscripten::function("measure", &measure_js);
+    emscripten::function("removeIslands", &remove_islands_js);
+    emscripten::function("flipNormals", &flip_normals_js);
+    emscripten::function("clip", &clip_js);
+    emscripten::function("offsetSurface", &offset_surface_js);
+    emscripten::function("profileSolid", &profile_solid_js);
+    emscripten::function("constrainPrimitives", &constrain_primitives_js);
+    emscripten::function("faceSupport", &face_support_js);
+    emscripten::function("fitCadIterate", &fit_cad_iterate_js);
+    emscripten::function("alignDatums", &align_datums_js);
+    emscripten::function("measureElementPrimitive", &measure_element_primitive_js);
     emscripten::function("isosurface", &isosurface_js);
     emscripten::function("grid", &grid_js);
     emscripten::function("rectangle", &rectangle_js);
@@ -9951,6 +10973,10 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("mirror", &mirror_js);
     emscripten::function("findIntersections", &find_intersections_js);
     emscripten::function("thickness", &thickness_js);
+    emscripten::function("deviation", &deviation_js);
+    emscripten::function("deviationRegions", &deviation_regions_js);
+    emscripten::function("exaggerate", &exaggerate_js);
+    emscripten::function("colorize", &colorize_js);
     emscripten::function("tetrahedralize", &tetrahedralize_js);
     emscripten::function("hasNetgen", &has_netgen_js);
     emscripten::function("hasMmg", &has_mmg_js);
@@ -9985,6 +11011,9 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("morph", &morph_js);
     emscripten::function("laplacianEigenmodes", &laplacian_eigenmodes_js);
     emscripten::function("registerRigid", &register_rigid_js);
+    emscripten::function("registerLandmarks", &register_landmarks_js);
+    emscripten::function("findSymmetryPlane", &find_symmetry_plane_js);
+    emscripten::function("autoAlign", &auto_align_js);
     emscripten::function("estimateNormals", &estimate_normals_js);
     emscripten::function("reconstructSurface", &reconstruct_surface_js);
     emscripten::function("remeshQuads", &remesh_quads_js);

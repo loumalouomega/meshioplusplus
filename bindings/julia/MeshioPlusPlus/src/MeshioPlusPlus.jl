@@ -123,13 +123,17 @@ export sample_distance, distance_to_surface, surface_watertight_check, compute_s
 export compute_curvature, compute_normals, feature_edges, hausdorff_distance, check_quality
 export segment, select_region, fit_primitives, refine_patches, fit_cad, has_occt
 export repair, shrinkwrap, sobolev_deform, geodesic_distance, parameterize, convert_coordinates,
-       convex_hull, delaunay_2d, estimate_normals, reconstruct_surface, register_rigid, laplacian_eigenmodes, morph,
+       convex_hull, delaunay_2d, estimate_normals, reconstruct_surface, register_rigid, register_landmarks, sections, fit_curves, silhouette, write_step_elements, measure, align_datums, measure_element_primitive,
+       remove_islands, flip_normals, clip, offset_surface, thicken, hollow,
+       constrain_primitives, face_support, fit_cad_iterate, profile_solid,
+       find_symmetry_plane, auto_align, laplacian_eigenmodes, morph,
        untangle, prepare_metric
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, tet_to_poly, poly_to_tet, refine, undo_green, decimate, decimate_volume, partition, partition_labels
 export boundary_layer
 export extrude, revolve, mirror
 export find_intersections, thickness
+export deviation, deviation_regions, exaggerate, colorize
 export tetrahedralize, has_netgen, tetrahedralize_backends
 export remesh_quads, remesh_quads_backends
 export cut_level_set, cut_quadrature, has_cutcells

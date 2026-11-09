@@ -43,6 +43,13 @@ def add_args(parser):
         help="attach repair:parent_point and repair:hole",
     )
     parser.add_argument(
+        "--fill-style",
+        choices=("fan", "flat", "curved"),
+        default="fan",
+        help="how a hole is filled: a centroid fan, or refined and faired as a "
+        "membrane (flat) or a thin plate (curved) (default: fan)",
+    )
+    parser.add_argument(
         "--quiet", "-q", action="store_true", help="suppress the report"
     )
 
@@ -69,6 +76,7 @@ def repair_cmd(args):
         weld_tolerance=args.weld_tolerance,
         record_provenance=args.record_provenance,
         return_report=True,
+        fill_style=args.fill_style,
     )
 
     if not args.quiet:

@@ -823,18 +823,94 @@ mio_laplacian_eigenmodes <- function(mesh, num_modes = 10, tolerance = 1e-8,
 #' @param max_iterations The iteration cap.
 #' @param tolerance Stop below this rotation (radians) and relative motion.
 #' @param max_distance Drop pairs farther apart than this; 0 keeps all.
-#' @param initial A starting 4 x 4 matrix, or `NULL` for the identity.
+#' @param initial A starting 4 x 4 matrix, `NULL` for the identity, or
+#'   `"auto"`: the best of the 24 principal-frame candidates (roadmap 7.3.1).
+#' @param symmetric_check With `initial = "auto"`, warn on a symmetric part.
+#' @param source_region,target_region Cell regions restricting the pairs
+#'   (roadmap 7.3.3); `""` for all.
+#' @param adaptive_trim Drop pairs beyond this multiple of the median pair
+#'   distance at each iteration; 0 keeps them.
 #' @return A list of `matrix`, `initial_rms`, `rms`, `iterations`,
-#'   `num_pairs` and `converged`.
+#'   `num_pairs`, `converged`, `num_rejected`, `chosen_candidate` (0-based,
+#'   -1 without `"auto"`), `candidate_rms` and `warnings`.
 #' @export
 mio_register_rigid <- function(source, target, method = "point_to_point",
                                max_iterations = 50, tolerance = 1e-10,
-                               max_distance = 0, initial = NULL) {
-  .Call(
+                               max_distance = 0, initial = NULL, symmetric_check = FALSE,
+                               source_region = "", target_region = "", adaptive_trim = 0) {
+  mode <- "matrix"
+  if (is.character(initial)) {
+    mode <- initial
+    initial <- NULL
+  }
+  res <- .Call(
     R_mio_register_rigid, source, target, as.character(method),
     as.numeric(max_iterations), as.numeric(tolerance), as.numeric(max_distance),
-    if (is.null(initial)) NULL else as.numeric(initial)
+    if (is.null(initial)) NULL else as.numeric(initial), as.character(mode),
+    as.logical(symmetric_check), as.character(source_region), as.character(target_region),
+    as.numeric(adaptive_trim)
   )
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Landmark registration
+#'
+#' The rigid motion laying picked points onto their targets: the weighted
+#' Horn solve in closed form (roadmap 7.3.2). See `doc/registration.md`.
+#'
+#' @param source,target `n x 3` matrices of picked points, `n >= 3`, the
+#'   sources not collinear.
+#' @param weights `NULL`, or `n` non-negative weights.
+#' @return A list of `matrix` (4 x 4), `residuals` and `rms`.
+#' @export
+mio_register_landmarks <- function(source, target, weights = NULL) {
+  .Call(R_mio_register_landmarks, as.matrix(source), as.matrix(target),
+        if (is.null(weights)) NULL else as.numeric(weights))
+}
+
+#' Symmetry plane of a mesh
+#'
+#' Each principal plane through the centroid (and an optional seed) is
+#' mirrored, registered back by ICP and read off the reflection-motion
+#' product (roadmap 7.3.6). See `doc/registration.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param seed `NULL`, or `list(origin, normal)`.
+#' @param tolerance A sample within this of the surface counts as symmetric;
+#'   0 takes 0.005 of the diagonal.
+#' @param min_share Refuse a plane below this share.
+#' @param max_samples The samples of the fine fit.
+#' @return A list of `origin`, `normal`, `rms`, `share`, `tolerance` and
+#'   `chosen_candidate`.
+#' @export
+mio_find_symmetry_plane <- function(mesh, seed = NULL, tolerance = 0, min_share = 0.9,
+                                    max_samples = 4000) {
+  .Call(R_mio_find_symmetry_plane, mesh,
+        if (is.null(seed)) NULL else as.numeric(seed[[1]]),
+        if (is.null(seed)) NULL else as.numeric(seed[[2]]),
+        as.numeric(tolerance), as.numeric(min_share), as.numeric(max_samples))
+}
+
+#' Pose a scan from itself alone
+#'
+#' On its largest flat face, or a cylindrical part on the end of its axis,
+#' from an area-weighted histogram of its facet normals (roadmap 7.3.5). See
+#' `doc/registration.md`.
+#'
+#' @param mesh A `mio_mesh` with surface cells.
+#' @param angle_tolerance Degrees within which a normal agrees, in (0, 45).
+#' @param subdivisions The Gauss-sphere icosahedron's splits (0 to 5).
+#' @param region A voting cell region; `""` for all.
+#' @param rotate_vector_data Rotate vector and tensor point data too.
+#' @return A list of `mesh`, `matrix`, `mode` (`"face"` or `"axis"`),
+#'   `primary`, `secondary`, `share`, `face_share`, `axis_share` and
+#'   `opening_area`.
+#' @export
+mio_auto_align <- function(mesh, angle_tolerance = 10, subdivisions = 3, region = "",
+                           rotate_vector_data = FALSE) {
+  .Call(R_mio_auto_align, mesh, as.numeric(angle_tolerance), as.numeric(subdivisions),
+        as.character(region), as.logical(rotate_vector_data))
 }
 
 #' Normals of a point cloud by local plane fits
@@ -1303,11 +1379,396 @@ mio_crop_plane <- function(mesh, point, normal, mode = "all", record_ids = FALSE
 
 #' @rdname mio_extract_surface
 #' @export
-mio_slice <- function(mesh, origin, normal, record_parent_ids = FALSE) {
+mio_slice <- function(mesh, origin, normal, record_parent_ids = FALSE, chain = FALSE,
+                      min_length = 0) {
   .Call(
     R_mio_slice, mesh, as.numeric(origin), as.numeric(normal),
-    isTRUE(record_parent_ids)
+    isTRUE(record_parent_ids), isTRUE(chain), as.numeric(min_length)
   )
+}
+
+#' Chained sections at parallel planes
+#'
+#' The sections of a surface at the planes `n . x = offsets[k]` (`n` the unit
+#' `direction`), each walked into polylines and merged into one line mesh with
+#' the `section:offset`, `section:chain` and `section:closed` cell data
+#' (roadmap 7.6.1). See `doc/slice.md`.
+#'
+#' @param mesh A surface mesh.
+#' @param direction The planes' normal.
+#' @param offsets The planes' signed distances from the origin.
+#' @param min_length Drop chains shorter than this.
+#' @param record_parent_ids Attach `slice:parent_cell`.
+#' @return A `mio_mesh`.
+#' @export
+#' Cut a surface by a plane, keep a side and cap it
+#'
+#' The plane through `origin` normal to `normal`; the side below it (or above)
+#' is kept, straddling triangles split, and the cut's closed loops capped
+#' (roadmap 7.8.3). See `doc/clip.md`.
+#'
+#' @param mesh A surface mesh.
+#' @param origin,normal The plane.
+#' @param keep_below Keep the side below (else above).
+#' @param cap Triangulate the cut's closed loops.
+#' @return A list: `mesh`, `num_kept`, `num_split`, `num_cap_triangles`,
+#'   `num_loops`, `num_open_chains` and `warnings`.
+#' @export
+mio_clip <- function(mesh, origin, normal, keep_below = TRUE, cap = TRUE) {
+  res <- .Call(R_mio_clip, mesh, as.numeric(origin), as.numeric(normal), as.logical(keep_below),
+               as.logical(cap))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Extrude or revolve a sketch into a solid
+#'
+#' A `mio_fit_curves` sketch built into a solid by features applied in order,
+#' through a CAD provider (OpenCASCADE; roadmap 7.7.4): `features` in text
+#' form, `;`-separated: `extrude:D[:symmetric]` (0 runs to `scan`'s extent),
+#' `revolve:OX,OY,OZ:DX,DY,DZ[:ANGLE]`, `fillet:R`, `chamfer:D`, `shell:W`.
+#' See `doc/profile_solid.md`.
+#'
+#' @param sketch A sketch.
+#' @param features The features.
+#' @param step_path Where the solid goes as STEP (`NULL`: nowhere).
+#' @param scan A scan for an extrusion to its extent, or `NULL`.
+#' @param provider The provider (`""`: the first).
+#' @param deflection The tessellation's deflection (`0`: `1e-3` of the diagonal).
+#' @return A list: `mesh`, `volume`, `area`, `num_faces`, `valid` and `warnings`.
+#' @export
+mio_profile_solid <- function(sketch, features, step_path = NULL, scan = NULL, provider = "",
+                              deflection = 0) {
+  r <- .Call(R_mio_profile_solid, sketch, as.character(features), step_path, scan,
+             as.character(provider), as.numeric(deflection))
+  r$valid <- r$valid != 0
+  r$warnings <- mio_split_warnings_(r$warnings)
+  r
+}
+
+mio_relations_ <- c("coaxial", "parallel", "perpendicular", "equal_radius")
+
+# A list of list(a, b, relation) (or a data frame of patch_a, patch_b,
+# relation) as flat numeric triples.
+mio_relation_triples_ <- function(x) {
+  if (is.null(x) || length(x) == 0) return(numeric(0))
+  if (is.data.frame(x)) x <- lapply(seq_len(nrow(x)), function(i) as.list(x[i, ]))
+  unlist(lapply(x, function(r) {
+    k <- match(as.character(r[[3]]), mio_relations_)
+    if (is.na(k)) stop("meshio++: constrain_primitives: a relation is coaxial, parallel, perpendicular or equal_radius")
+    c(as.numeric(r[[1]]), as.numeric(r[[2]]), k - 1)
+  }))
+}
+
+#' Constrain fitted primitives under control
+#'
+#' Fit related primitives of a `mio_fit_primitives` skin together: coaxial
+#' groups, parallel and perpendicular planes, equal radii (roadmap 7.7.3).
+#' `force` and `forbid` are lists of `list(patch_a, patch_b, relation)`
+#' (`"coaxial"`, `"parallel"`, `"perpendicular"`, `"equal_radius"`). See
+#' `doc/constrain_primitives.md`.
+#'
+#' @param mesh A fitted skin.
+#' @param face_tolerance How far a face may lie from its patch (`0`: three
+#'   times the largest patch tolerance).
+#' @param angle_tolerance,distance_tolerance,min_fraction In place of the
+#'   pass's own (negative keeps them).
+#' @param force,forbid Relations to force or forbid.
+#' @return A list: `mesh`, `num_constrained`, `num_groups`, `face_tolerance`,
+#'   `relations` (a data frame of `patch_a`, `patch_b`, `relation`,
+#'   `angle_deg`, `distance`, `forced`) and `unmet`.
+#' @export
+mio_constrain_primitives <- function(mesh, face_tolerance = 0, angle_tolerance = -1,
+                                     distance_tolerance = -1, min_fraction = -1,
+                                     force = NULL, forbid = NULL) {
+  r <- .Call(R_mio_constrain_primitives, mesh, as.numeric(face_tolerance),
+             as.numeric(angle_tolerance), as.numeric(distance_tolerance),
+             as.numeric(min_fraction), mio_relation_triples_(force),
+             mio_relation_triples_(forbid))
+  rel <- data.frame(patch_a = r$patch_a, patch_b = r$patch_b,
+                    relation = mio_relations_[r$relation + 1L], angle_deg = r$angle_deg,
+                    distance = r$distance, forced = r$forced, stringsAsFactors = FALSE)
+  u <- matrix(r$unmet, ncol = 3, byrow = TRUE)
+  unmet <- lapply(seq_len(nrow(u)), function(i)
+    list(u[i, 1], u[i, 2], mio_relations_[u[i, 3] + 1L]))
+  list(mesh = r$mesh, num_constrained = r$num_constrained, num_groups = r$num_groups,
+       face_tolerance = r$face_tolerance, relations = rel, unmet = unmet)
+}
+
+#' The scan's support of each face of a fitted solid
+#'
+#' Class each face of a `mio_fit_cad` re-mesh as measured, partial or inferred
+#' by the share of its area within `tolerance` of the scan (roadmap 7.7.1);
+#' scan cells marked by `hole_data` (`repair`'s fills) count as unmeasured.
+#' See `doc/fit_cad_loop.md`.
+#'
+#' @param solid A `fit_cad` re-mesh.
+#' @param scan The scan.
+#' @param tolerance Within this of the scan a sample is measured (`0`: `1e-3`
+#'   of the scan's diagonal).
+#' @param measured_share,inferred_share The class thresholds.
+#' @param hole_data The scan cell data marking fills.
+#' @return A list: `mesh`, `num_measured`, `num_partial`, `num_inferred`,
+#'   `num_faces`, `share_within` and `tolerance`.
+#' @export
+mio_face_support <- function(solid, scan, tolerance = 0, measured_share = 0.9,
+                             inferred_share = 0.1, hole_data = "repair:hole") {
+  .Call(R_mio_face_support, solid, scan, as.numeric(tolerance), as.numeric(measured_share),
+        as.numeric(inferred_share), as.character(hole_data))
+}
+
+#' Segment, fit and build a solid in rounds towards a target
+#'
+#' Roadmap 7.7.2: each round segments, fits and builds; it stops at the
+#' target, at no improvement or after `max_rounds`, else re-segments the
+#' worst faces' patches finer. See `doc/fit_cad_loop.md`.
+#'
+#' @param scan A closed scan.
+#' @param step_path Where the best solid goes as STEP (`NULL`: nowhere).
+#' @param part_class `"any"`, `"analytic"`, `"cast"` or `"freeform"`.
+#' @param target_within,target_explained The targets (`0`: the class's; off).
+#' @param segment_tolerance,fit_tolerance Relative tolerances (`0`: the class's).
+#' @param max_rounds,worst_faces,refine_factor The driver's budget.
+#' @param backend `"auto"`, `"occt"` or `"native"`.
+#' @return A list: `mesh` (the best solid), `num_rounds`, `best_round`,
+#'   `target_met`, `stop_reason`, `target_within`, `share_within`,
+#'   `explained`, `hausdorff_max`, `num_faces`, `round_share_within` and
+#'   `round_explained`.
+#' @export
+mio_fit_cad_iterate <- function(scan, step_path = NULL, part_class = "any", target_within = 0,
+                                target_explained = 0, segment_tolerance = 0, fit_tolerance = 0,
+                                max_rounds = 4, worst_faces = 3, refine_factor = 0.25,
+                                backend = "auto") {
+  pc <- match(part_class, c("any", "analytic", "cast", "freeform"))
+  if (is.na(pc)) stop("meshio++: fit_cad_iterate: part_class must be any, analytic, cast or freeform")
+  be <- match(backend, c("auto", "occt", "native"))
+  if (is.na(be)) stop("meshio++: fit_cad_iterate: backend must be auto, occt or native")
+  r <- .Call(R_mio_fit_cad_iterate, scan, step_path, as.integer(pc - 1L),
+             as.numeric(target_within), as.numeric(target_explained),
+             as.numeric(segment_tolerance), as.numeric(fit_tolerance), as.numeric(max_rounds),
+             as.numeric(worst_faces), as.numeric(refine_factor), as.integer(be - 1L))
+  r$target_met <- r$target_met != 0
+  r$stop_reason <- c("target", "no improvement", "rounds", "nothing to refine")[r$stop_reason + 1]
+  r
+}
+
+#' Offset a surface
+#'
+#' Move each point of a triangle and quad surface along its offset direction
+#' (the one `mio_boundary_layer` grows along) so every face's plane moves by
+#' `distance`; a cube offset by `d` is the cube grown by `d` (roadmap 7.8.4).
+#' See `doc/offset_surface.md`.
+#'
+#' @param mesh A surface mesh.
+#' @param distance Along the faces' normals; negative against them.
+#' @param smooth_iterations Smoothing passes over the directions.
+#' @return A list: `mesh`, `num_not_visible`, `num_clamped`, `num_folded`,
+#'   `num_rim_quads`, `max_move` and `warnings`.
+#' @export
+mio_offset_surface <- function(mesh, distance, smooth_iterations = 0) {
+  res <- .Call(R_mio_offset_surface, mesh, as.numeric(distance), as.integer(smooth_iterations))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Thicken a surface into a closed shell
+#'
+#' The surface offset to the two sides of a wall `thickness` thick (`side`
+#' `"inward"`, `"outward"` or `"both"`), the lower layer reversed and the
+#' boundary edges joined by quads; cell data `thicken:side` (roadmap 7.8.4).
+#'
+#' @inheritParams mio_offset_surface
+#' @param thickness The wall's thickness.
+#' @param side `"inward"`, `"outward"` or `"both"`.
+#' @return As `mio_offset_surface`.
+#' @export
+mio_thicken <- function(mesh, thickness, side = "inward", smooth_iterations = 0) {
+  s <- match(side, c("inward", "outward", "both"))
+  if (is.na(s)) stop("meshio++: thicken: side must be inward, outward or both")
+  res <- .Call(R_mio_thicken, mesh, as.numeric(thickness), as.integer(s - 1L),
+               as.integer(smooth_iterations))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Hollow a closed surface
+#'
+#' The surface with its offset by `-wall`, reversed, inside it; an open
+#' surface is refused (roadmap 7.8.4).
+#'
+#' @inheritParams mio_offset_surface
+#' @param wall The wall's thickness.
+#' @return As `mio_offset_surface`.
+#' @export
+mio_hollow <- function(mesh, wall, smooth_iterations = 0) {
+  res <- .Call(R_mio_hollow, mesh, as.numeric(wall), as.integer(smooth_iterations))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Reverse the winding of cells
+#'
+#' Every cell, or the cells of a cell region, with no point moved; Side region
+#' entries move with their cells (roadmap 7.8.2). See `doc/flip_normals.md`.
+#'
+#' @param mesh A mesh.
+#' @param region A cell region's name, or `NULL` for every cell.
+#' @return A list: `mesh` and `num_flipped`.
+#' @export
+mio_flip_normals <- function(mesh, region = NULL) {
+  .Call(R_mio_flip_normals, mesh, region)
+}
+
+#' Remove the small connected components of a mesh
+#'
+#' Drop a scan's crumbs (roadmap 7.8.1): components (by shared edges or
+#' points) whose bounding-box diagonal, area or cell count is below a
+#' threshold. See `doc/remove_islands.md`.
+#'
+#' @param mesh A mesh.
+#' @param connectivity `"edge"` or `"point"`.
+#' @param min_diagonal,min_area,min_cells The thresholds (0 off).
+#' @param relative Diagonal and area as fractions of the whole mesh's.
+#' @param dry_run Remove nothing; label `islands:component` and `islands:removed`.
+#' @return A list: `mesh`, `num_components`, `num_removed`,
+#'   `num_cells_removed` and `num_points_removed`.
+#' @export
+mio_remove_islands <- function(mesh, connectivity = "edge", min_diagonal = 0.01, min_area = 0,
+                               min_cells = 0, relative = TRUE, dry_run = FALSE) {
+  conn <- match(connectivity, c("edge", "point"))
+  if (is.na(conn)) stop("meshio++: remove_islands: connectivity must be edge or point")
+  .Call(R_mio_remove_islands, mesh, as.integer(conn - 1L), as.numeric(min_diagonal),
+        as.numeric(min_area), as.numeric(min_cells), as.logical(relative), as.logical(dry_run))
+}
+
+#' Elements, dimensions and GD&T tolerances
+#'
+#' Measure a mesh by a JSON spec (roadmap 7.2): elements fitted from regions,
+#' seeds or patches, constructed or literal; dimensions and tolerances. See
+#' `doc/measure.md`.
+#'
+#' @param mesh The scanned surface.
+#' @param spec The spec as JSON text, or the path of a JSON file.
+#' @return A list: `mesh` (with its element table), `num_elements`,
+#'   `num_dimensions`, `num_tolerances`, `num_fail`, `report_json` and
+#'   `warnings`.
+#' @export
+mio_measure <- function(mesh, spec) {
+  if (!grepl("^\\s*\\{", spec) && file.exists(spec)) {
+    spec <- paste(readLines(spec, warn = FALSE), collapse = "\n")
+  }
+  res <- .Call(R_mio_measure, mesh, as.character(spec))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' The 3-2-1 datum alignment of a measured mesh
+#'
+#' `primary` sets Z, `secondary` X, `origin` (a point-like element or a third
+#' plane) the origin (roadmap 7.3.4).
+#'
+#' @param mesh A mesh carrying an element table (`mio_measure()`).
+#' @param primary,secondary Element names.
+#' @param origin An element name, or `NULL` for the primary's point.
+#' @return A list: `mesh` and the 4 x 4 `matrix`.
+#' @export
+mio_align_datums <- function(mesh, primary, secondary, origin = NULL) {
+  .Call(R_mio_align_datums, mesh, as.character(primary), as.character(secondary), origin)
+}
+
+#' A measured element as a fitted primitive
+#'
+#' The element `name` as a primitive type (1 plane, 2 sphere, 3 cylinder, 4
+#' cone) and ten parameters, a deviation reference (roadmap 7.4.2).
+#'
+#' @param mesh A mesh carrying an element table.
+#' @param name The element's name.
+#' @return A list: `type` and `params`.
+#' @export
+mio_measure_element_primitive <- function(mesh, name) {
+  .Call(R_mio_measure_element_primitive, mesh, as.character(name))
+}
+
+#' Fitted primitives as STEP elements
+#'
+#' Write the fitted primitives of a mesh (`mio_segment()`, then
+#' `mio_fit_primitives()`) to a STEP file as exact geometry a CAD user can snap
+#' to: bounded planes, balls, lidded cylinders, frusta and tori (roadmap
+#' 7.6.5). See `doc/formats/step.md`.
+#'
+#' @param path The `.step` file to create.
+#' @param mesh A mesh carrying `segment:patch` and the `fit:patch_*` table.
+#' @param patches Patch labels to write; empty writes every fitted patch.
+#' @param segments Facets round a cylinder, cone or torus in the tessellation
+#'   the B-rep writer is given.
+#' @return A list: `num_planes`, `num_spheres`, `num_cylinders`, `num_cones`,
+#'   `num_tori`, `num_skipped` and `warnings`.
+#' @export
+mio_write_step_elements <- function(path, mesh, patches = numeric(0), segments = 64) {
+  res <- .Call(R_mio_write_step_elements, path, mesh, as.numeric(patches), as.numeric(segments))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' The outline of a part along a direction
+#'
+#' The surface (or a volume mesh's skin) projected onto the plane normal to
+#' `normal` and unioned exactly, as closed chains with its holes, ready for
+#' `mio_fit_curves()`; `clearance` offsets it, and `extrude = TRUE` returns the
+#' closed surface of the prism over it instead (roadmap 7.6.3). See
+#' `doc/silhouette.md`.
+#'
+#' @param mesh A surface or volume mesh.
+#' @param normal The viewing direction.
+#' @param clearance Grows the outline by this distance (negative shrinks it).
+#' @param round_angle Corners turning by less than this many degrees are rounded.
+#' @param arc_segments Polygon sides of a full turn of arc.
+#' @param extrude Return the prism's closed triangle surface.
+#' @param region Restrict to this cell region of a surface.
+#' @param merge_tolerance Projected points this close, relative to the box diagonal, are one.
+#' @return A list: `mesh`, `num_loops`, `num_outer`, `num_holes`,
+#'   `num_triangles`, `area`, `perimeter`, `min_height`, `max_height` and
+#'   `warnings`.
+#' @export
+mio_silhouette <- function(mesh, normal = c(0, 0, 1), clearance = 0, round_angle = 180,
+                           arc_segments = 64, extrude = FALSE, region = NULL,
+                           merge_tolerance = 1e-9) {
+  res <- .Call(R_mio_silhouette, mesh, as.numeric(normal), as.numeric(clearance),
+               as.numeric(round_angle), as.numeric(arc_segments), as.logical(extrude), region,
+               as.numeric(merge_tolerance))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Lines, arcs and circles from chained sections
+#'
+#' Each chain of a chained line mesh (`mio_slice(chain = TRUE)` or
+#' `mio_sections()`) split into the runs a line or a circular arc explains
+#' within `tolerance`, in its plane's 2-D frame (roadmap 7.6.2). See
+#' `doc/fit_curves.md`.
+#'
+#' @param sections A chained line mesh.
+#' @param tolerance The largest residual; 0 takes 1e-3 of the diagonal.
+#' @param snap_angle Snap lines within this many degrees of the axes or diagonals.
+#' @param normal The sketch normal; zeros take it from the points.
+#' @param min_arc_points,min_arc_sweep An arc spans at least this many points and degrees.
+#' @return A list: `mesh` (with `sketch:piece` and the `sketch:*` field data),
+#'   `pieces` (a data frame: type, start, end, centre, radius, sweep, residual,
+#'   num_points, chain, frame), `num_lines`, `num_arcs`, `num_circles`,
+#'   `max_residual`, `tolerance` and `warnings`.
+#' @export
+mio_fit_curves <- function(sections, tolerance = 0, snap_angle = 0, normal = c(0, 0, 0),
+                           min_arc_points = 4, min_arc_sweep = 5) {
+  res <- .Call(R_mio_fit_curves, sections, as.numeric(tolerance), as.numeric(snap_angle),
+               as.numeric(normal), as.numeric(min_arc_points), as.numeric(min_arc_sweep))
+  res$pieces <- as.data.frame(res$pieces, stringsAsFactors = FALSE)
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+mio_sections <- function(mesh, direction, offsets, min_length = 0, record_parent_ids = FALSE) {
+  .Call(R_mio_sections, mesh, as.numeric(direction), as.numeric(offsets),
+        as.numeric(min_length), isTRUE(record_parent_ids))
 }
 
 #' @rdname mio_extract_surface
@@ -1794,14 +2255,34 @@ mio_select <- function(mesh, name, kind = "cell", box = NULL, plane = NULL, sphe
 #' @param min_inlier_fraction The share of points that must be within tolerance.
 #' @param types The primitives to try.
 #' @param max_iterations The Levenberg-Marquardt iteration cap per fit.
+#' @param region Fit this named cell region as one patch (roadmap 7.1.1).
+#' @param seeds An `n x 3` matrix of seed points: grow and fit a feature from
+#'   the facet nearest each, written as the cell region `output_region`.
+#' @param feature_angle Seed growth: edges sharper than this are not crossed.
+#' @param rim_angle Seed growth: rim faces turning more from the fit are peeled.
+#' @param output_region Seed growth: the cell region written.
+#' @param used_points `"auto"`, `"all"`, `"3sigma"`, `"2sigma"` or `"1sigma"`:
+#'   sigma trimming (roadmap 7.1.2); `"auto"` is `"3sigma"` with a region or seeds.
+#' @param criterion `"least_squares"`, `"minimum_zone"`, `"min_circumscribed"` or
+#'   `"max_inscribed"`: the reference planes, spheres and cylinders are refitted
+#'   under (roadmap 7.1.4).
 #' @return A list of `mesh` (with cell data `fit:type`, `fit:rms`, `fit:max`
 #'   and field data `fit:patch_*`), `num_patches`, `num_plane`, `num_sphere`,
-#'   `num_cylinder`, `num_cone`, `num_torus` and `num_unfitted`.
+#'   `num_cylinder`, `num_cone`, `num_torus`, `num_unfitted`,
+#'   `num_feature_cells` and `warnings`.
 #' @export
 mio_fit_primitives <- function(mesh, patch_data = "segment:patch", tolerance = 1e-3,
                                relative = TRUE, min_inlier_fraction = 0.9,
                                types = c("plane", "sphere", "cylinder", "cone", "torus"),
-                               max_iterations = 50) {
+                               max_iterations = 50, region = "", seeds = NULL,
+                               feature_angle = 30, rim_angle = 15,
+                               output_region = "fit:feature", used_points = "auto",
+                               criterion = "least_squares") {
+  used <- match(used_points, c("auto", "all", "3sigma", "2sigma", "1sigma"))
+  if (is.na(used)) stop("meshio++: fit_primitives: unknown used_points ", used_points)
+  crit <- match(criterion, c("least_squares", "minimum_zone", "min_circumscribed",
+                             "max_inscribed"))
+  if (is.na(crit)) stop("meshio++: fit_primitives: unknown criterion ", criterion)
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -1811,8 +2292,13 @@ mio_fit_primitives <- function(mesh, patch_data = "segment:patch", tolerance = 1
   .Call(
     R_mio_fit_primitives, mesh, as.character(patch_data), as.numeric(tolerance),
     isTRUE(relative), as.numeric(min_inlier_fraction), as.numeric(mask),
-    as.numeric(max_iterations)
-  )
+    as.numeric(max_iterations), as.character(region),
+    if (is.null(seeds)) NULL else as.numeric(t(as.matrix(seeds))),
+    as.numeric(feature_angle), as.numeric(rim_angle), as.character(output_region),
+    as.numeric(used - 1), as.numeric(crit - 1)
+  ) -> res
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
 }
 
 #' Refine a segmentation until each patch is one surface
@@ -2360,15 +2846,20 @@ mio_hausdorff_distance <- function(a, b, face_samples = 0, region_a = "", region
 #'   `num_unorientable`, `num_vertices_split`, `num_holes_detected`,
 #'   `num_holes_filled`, `num_holes_skipped`, `num_faces_added`,
 #'   `num_points_added`, `points_welded`.
+#' @param fill_style How a hole is filled (roadmap 7.8.6): `"fan"` (one
+#'   centroid point), `"flat"` (minimum-area, refined, membrane-faired) or
+#'   `"curved"` (thin-plate-faired, continuing the surface's curvature).
 #' @export
 mio_repair <- function(mesh, fix_orientation = TRUE, orient_outward = TRUE,
                        fill_holes = TRUE, split_non_manifold = TRUE,
                        max_hole_edges = 10, weld_tolerance = 0.0,
-                       record_provenance = FALSE) {
+                       record_provenance = FALSE, fill_style = "fan") {
+  style <- match(fill_style, c("fan", "flat", "curved"))
+  if (is.na(style)) stop("meshio++: repair: fill_style must be fan, flat or curved")
   .Call(
     R_mio_repair, mesh, isTRUE(fix_orientation), isTRUE(orient_outward),
     isTRUE(fill_holes), isTRUE(split_non_manifold), as.numeric(max_hole_edges),
-    as.numeric(weld_tolerance), isTRUE(record_provenance)
+    as.numeric(weld_tolerance), isTRUE(record_provenance), as.integer(style - 1L)
   )
 }
 
@@ -2734,12 +3225,16 @@ mio_tessellate <- function(mesh, levels = 2, curved = TRUE, fields = TRUE,
 #' @export
 mio_decimate <- function(mesh, ratio = -1, target_faces = -1, max_error = -1,
                          placement = "optimal", preserve_boundary = TRUE,
-                         preserve_features = TRUE, feature_angle = 30, frozen = NULL) {
-  .Call(
+                         preserve_features = TRUE, feature_angle = 30, frozen = NULL,
+                         max_deviation = -1, coverage = 0.999, max_faces = -1) {
+  res <- .Call(
     R_mio_decimate, mesh, as.numeric(ratio), as.numeric(target_faces),
     as.numeric(max_error), as.character(placement), isTRUE(preserve_boundary),
-    isTRUE(preserve_features), as.numeric(feature_angle), frozen
+    isTRUE(preserve_features), as.numeric(feature_angle), frozen,
+    as.numeric(max_deviation), as.numeric(coverage), as.numeric(max_faces)
   )
+  res$deviation_met <- res$deviation_met != 0
+  res
 }
 
 #' @rdname mio_extract_surface
@@ -3452,12 +3947,133 @@ mio_find_intersections <- function(mesh, other = NULL, region = "", region_other
 #'   when nothing was hit), `min_point`, `max_distance` and `warnings`.
 #' @export
 mio_thickness <- function(mesh, other = NULL, direction = "auto", max_distance = 0,
-                          threshold = 0, region = "", region_other = "") {
+                          threshold = 0, region = "", region_other = "", method = "ray",
+                          cone_angle = 15, cone_rays = 16, two_sided = FALSE,
+                          max_normal_deviation = 90) {
   res <- .Call(R_mio_thickness, mesh, other, as.character(direction),
                as.numeric(max_distance), as.numeric(threshold), as.character(region),
-               as.character(region_other))
+               as.character(region_other), as.character(method), as.numeric(cone_angle),
+               as.numeric(cone_rays), as.logical(two_sided), as.numeric(max_normal_deviation))
   res$warnings <- mio_split_warnings_(res$warnings)
   res
+}
+
+#' Signed deviation of a scan from a reference
+#'
+#' The signed distance of every point of `scan` to the surface `reference`
+#' (positive outside it, excess material), or, with `reference = NULL`, to a
+#' fitted primitive `type` with its ten `fit:patch_params` entries (roadmap
+#' 7.4), and the statistics an inspection reads from it.
+#'
+#' @param scan A point cloud or surface mesh.
+#' @param reference A surface mesh, or `NULL` for a primitive.
+#' @param type `"plane"`, `"sphere"`, `"cylinder"`, `"cone"` or `"torus"`.
+#' @param params The primitive's ten parameters.
+#' @param tolerance Report the share within `+-tolerance` (0: none).
+#' @param bins Histogram bins.
+#' @param range `c(lo, hi)` of the histogram, or `NULL` for `+-max|d|`.
+#' @param max_normal_angle The far-side rule's angle in degrees (180: off).
+#' @param reference_region Named cell region of the reference.
+#' @param register Register the scan to the reference first (roadmap 7.4.1):
+#'   `mesh` is then the registered scan, and the list adds `registered`,
+#'   `matrix` and `registration_rms`.
+#' @return A list: `mesh` (with the `deviation:distance` point data),
+#'   `num_points`, `num_measured`, `min`, `max`, `mean`, `rms`, `sigma`,
+#'   `percentiles` (p1, p5, p50, p95, p99), `histogram_edges`,
+#'   `histogram_counts`, `num_outside_range`, `share_within`,
+#'   `suggested_range`, `num_without_normal` and `warnings`.
+#' @export
+mio_deviation <- function(scan, reference = NULL, type = NULL, params = NULL, tolerance = 0,
+                          bins = 20, range = NULL, max_normal_angle = 90,
+                          reference_region = "", register = FALSE) {
+  types <- c("plane", "sphere", "cylinder", "cone", "torus")
+  ptype <- 0
+  if (is.null(reference)) {
+    if (is.null(type) || !(type %in% types)) stop("`type` must name a primitive")
+    ptype <- match(type, types)
+  }
+  rng <- if (is.null(range)) c(0, 0) else as.numeric(range)
+  res <- .Call(R_mio_deviation, scan, reference, as.numeric(ptype),
+               if (is.null(params)) NULL else as.numeric(params), as.numeric(tolerance),
+               as.numeric(bins), rng[1], rng[2], as.numeric(max_normal_angle),
+               as.character(reference_region), as.logical(register))
+  names(res$percentiles) <- c("p1", "p5", "p50", "p95", "p99")
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Excess and missing-material regions beyond a deviation tolerance
+#'
+#' The connected regions (cells joined across shared edges) of a measured
+#' surface whose deviation, the mean of each cell's corners' `field` values,
+#' lies beyond `+tolerance` (excess) or `-tolerance` (missing material)
+#' (roadmap 7.4.3), written as named cell regions with the `deviation:region`
+#' cell data.
+#'
+#' @param mesh A surface carrying `field` (see [mio_deviation()]).
+#' @param tolerance The threshold, positive.
+#' @param field The signed deviation point data.
+#' @param prefix Region names are `<prefix>excess_<k>` and `<prefix>missing_<k>`.
+#' @param min_area Drop regions smaller than this area.
+#' @return A list: `mesh`, per region (largest `|volume|` first) `name`, `sign`,
+#'   `num_cells`, `area`, `extreme`, `mean`, `volume`, `centroid` (n x 3) and
+#'   `bounds` (n x 6), then `num_excess`, `num_missing`, `num_dropped` and
+#'   `warnings`.
+#' @export
+mio_deviation_regions <- function(mesh, tolerance, field = "deviation:distance",
+                                  prefix = "deviation:", min_area = 0) {
+  res <- .Call(R_mio_deviation_regions, mesh, as.numeric(tolerance), as.character(field),
+               as.character(prefix), as.numeric(min_area))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Exaggerate a deviation map for a figure
+#'
+#' A copy of the surface `mesh` with each point displaced along its normal by
+#' `scale` times its deviation, clamped to `+-clamp` (0: the suggested colour
+#' range) and smoothed over `smooth_fraction` of the bounding-box diagonal
+#' (roadmap 7.4.4).
+#'
+#' @param mesh A surface carrying `field`.
+#' @param field The signed deviation point data.
+#' @param scale Displacement per unit deviation.
+#' @param clamp Clamp the deviation first (0: automatic).
+#' @param smooth_fraction Smoothing radius as a fraction of the diagonal.
+#' @return A list: `mesh`, `clamp`, `radius`, `num_moved` and `warnings`.
+#' @export
+mio_exaggerate <- function(mesh, field = "deviation:distance", scale = 10, clamp = 0,
+                           smooth_fraction = 0.01) {
+  res <- .Call(R_mio_exaggerate, mesh, as.character(field), as.numeric(scale),
+               as.numeric(clamp), as.numeric(smooth_fraction))
+  res$warnings <- mio_split_warnings_(res$warnings)
+  res
+}
+
+#' Bake a field into red, green and blue colours
+#'
+#' Maps `field` through a colormap into the UInt8 data `red`, `green` and
+#' `blue` on the field's location (roadmap 7.4.4); `steps` of 2 or more bands
+#' the map at fixed steps.
+#'
+#' @param mesh A mesh carrying `field` as point or cell data.
+#' @param field The array to colour by.
+#' @param cmap A colormap name.
+#' @param vmin,vmax The range; `NULL` takes the field's min and max.
+#' @param symmetric With the automatic range, `+-max|v|`.
+#' @param steps Bands at fixed steps (0: continuous).
+#' @param nan_color `"#rrggbb"` for a non-finite value.
+#' @param component Colour by this 1-based component (`NULL`: the magnitude).
+#' @return A list: `mesh`, `vmin`, `vmax` and `location` (`"point"` or `"cell"`).
+#' @export
+mio_colorize <- function(mesh, field, cmap = "viridis", vmin = NULL, vmax = NULL,
+                         symmetric = FALSE, steps = 0, nan_color = "#808080",
+                         component = NULL) {
+  if (is.null(vmin) != is.null(vmax)) stop("give both `vmin` and `vmax`, or neither")
+  .Call(R_mio_colorize, mesh, as.character(field), as.character(cmap),
+        if (is.null(vmin)) 0 else as.numeric(vmin), if (is.null(vmax)) 0 else as.numeric(vmax),
+        isTRUE(symmetric), as.numeric(steps), as.character(nan_color),
+        if (is.null(component)) -1 else as.numeric(component) - 1)
 }
 
 mio_split_warnings_ <- function(text) {

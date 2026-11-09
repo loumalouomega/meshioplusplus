@@ -109,6 +109,7 @@ CadKernelProvider make_occt_provider() {
 
 void register_occt() {
     register_cad_kernel(make_occt_provider());
+    add_profile_solid_provider(make_occt_profile_provider());
 }
 
 }  // namespace providers

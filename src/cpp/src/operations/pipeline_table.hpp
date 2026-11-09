@@ -3,7 +3,7 @@
 
 /**
  * @file operations/pipeline_table.hpp
- * @brief The pipeline step tables (roadmap §8): every step's keys, in order.
+ * @brief The pipeline step tables (roadmap §7): every step's keys, in order.
  *
  * A **core-private** header, included by pipeline.cpp only. The Python
  * engine's twin is `_pipeline_table.py`, generated from the same spec.
@@ -35,13 +35,21 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "RecordHierarchy"}},
         {"Decimate",
          {"Ratio", "TargetFaces", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
-          "FeatureAngle"}},
+          "FeatureAngle", "MaxDeviation", "Coverage", "MaxFaces"}},
         {"DecimateVolume",
          {"Ratio", "TargetCells", "MaxError", "Placement", "PreserveBoundary", "PreserveFeatures",
           "FeatureAngle"}},
         {"Partition", {"Nparts", "Method", "Imbalance", "Mode", "Seed", "WeightsKey"}},
-        {"Slice", {"Point", "Normal", "RecordParentIds"}},
-        {"Section", {"Point", "Normal", "RecordParentIds"}},
+        {"Slice", {"Point", "Normal", "RecordParentIds", "Chain", "MinLength"}},
+        // The outline of a part along a direction (roadmap 7.6.3).
+        {"Silhouette",
+         {"Normal", "Clearance", "RoundAngle", "ArcSegments", "Extrude", "Region",
+          "MergeTolerance"}},
+        // Lines, arcs and circles from chained sections (roadmap 7.6.2).
+        {"FitCurves", {"Tolerance", "SnapAngle", "Normal", "MinArcPoints", "MinArcSweep"}},
+        // Chained line sections of a surface at parallel planes (roadmap 7.6.1).
+        {"Sections", {"Direction", "Offsets", "MinLength", "RecordParentIds"}},
+        {"Section", {"Point", "Normal", "RecordParentIds", "Chain", "MinLength"}},
         {"Gradient", {"Array", "Operator", "Method", "Location", "Output", "Component"}},
         {"Hessian", {"Array", "Method", "Location", "Output"}},
         {"Curvature",
@@ -59,7 +67,9 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "Radius", "Where", "Compare", "Value", "Quality", "QualityCompare", "QualityValue",
           "Component", "Seed", "FeatureAngle", "NormalTolerance"}},
         {"FitPrimitives",
-         {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations"}},
+         {"PatchData", "Tolerance", "Relative", "MinInlierFraction", "Types", "MaxIterations",
+          "Region", "Seeds", "FeatureAngle", "RimAngle", "OutputRegion", "UsedPoints",
+          "Criterion"}},
         {"FitCad",
          {"Path", "Tolerance", "ExactEdges", "Types", "MeshDeflection", "MaxDemotionRounds",
           "Freeform", "FreeformDegree", "FreeformMaxControl", "FreeformSplit", "Fillets", "Threads",
@@ -86,7 +96,44 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"CheckTetrahedra", {"ZeroVolumeFactor", "Require"}},
         {"FindIntersections", {"Other", "Region", "RegionOther", "Require", "AttachFlags"}},
         {"Thickness",
-         {"Other", "Direction", "MaxDistance", "Min", "Region", "RegionOther", "Require"}},
+         {"Other", "Direction", "MaxDistance", "Min", "Region", "RegionOther", "Require", "Method",
+          "ConeAngle", "ConeRays", "TwoSided", "MaxNormalDeviation"}},
+        // Drop the small connected components (roadmap 7.8.1).
+        {"RemoveIslands",
+         {"Connectivity", "MinDiagonal", "MinArea", "MinCells", "Relative", "DryRun"}},
+        // Reverse the winding of cells (roadmap 7.8.2).
+        {"FlipNormals", {"Region"}},
+        // Cut by a plane, keep a side and cap it (roadmap 7.8.3).
+        {"Clip", {"Origin", "Normal", "Keep", "Cap"}},
+        // A sketch extruded or revolved into a solid through a CAD provider (roadmap 7.7.4).
+        {"ProfileSolid", {"Features", "Step", "Scan", "Provider", "Deflection"}},
+        // Fitted primitives together under control (roadmap 7.7.3).
+        {"ConstrainPrimitives",
+         {"FaceTolerance", "AngleTolerance", "DistanceTolerance", "MinFraction", "Force",
+          "Forbid"}},
+        // The scan's support of each face of a fit_cad solid (roadmap 7.7.1).
+        {"FaceSupport", {"Scan", "Tolerance", "MeasuredShare", "InferredShare", "HoleData"}},
+        // Segment, fit and build a solid in rounds towards a target (roadmap 7.7.2).
+        {"FitCadIterate",
+         {"Step", "PartClass", "TargetWithin", "TargetExplained", "SegmentTolerance",
+          "FitTolerance", "MaxRounds", "WorstFaces", "RefineFactor", "Backend"}},
+        // Move a surface along its offset directions (roadmap 7.8.4).
+        {"OffsetSurface", {"Distance", "SmoothIterations"}},
+        // A closed shell of a thickness from a surface (roadmap 7.8.4).
+        {"Thicken", {"Thickness", "Side", "SmoothIterations"}},
+        // An inner wall inside a closed surface (roadmap 7.8.4).
+        {"Hollow", {"Wall", "SmoothIterations"}},
+        // Elements, dimensions and GD&T tolerances by a JSON spec (roadmap 7.2).
+        {"Measure", {"Spec", "Require"}},
+        // The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4).
+        {"AlignDatums", {"Primary", "Secondary", "Origin"}},
+        {"Deviation",
+         {"Reference", "Patch", "Element", "Tolerance", "MinShare", "Require", "Bins",
+          "MaxNormalAngle", "ReferenceRegion", "Register"}},
+        {"DeviationRegions", {"Tolerance", "Field", "Prefix", "MinArea"}},
+        {"Exaggerate", {"Field", "Scale", "Clamp", "SmoothFraction"}},
+        {"Colorize",
+         {"Field", "Cmap", "VMin", "VMax", "Symmetric", "Steps", "NanColor", "Component"}},
         {"Snapshot",
          {"Path", "Width", "Height", "Supersample", "Cols", "Rows", "Encoding", "ColorDepth",
           "PngCompress", "View", "Azimuth", "Elevation", "Roll", "Perspective", "Fov", "Zoom",
@@ -99,7 +146,7 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "GridFloor"}},
         {"Repair",
          {"FixOrientation", "OrientOutward", "FillHoles", "SplitNonManifold", "MaxHoleEdges",
-          "WeldTolerance", "RecordProvenance"}},
+          "WeldTolerance", "RecordProvenance", "FillStyle"}},
         {"SobolevDeform",
          {"Array", "LengthScale", "FixedPointsArray", "FixBoundary", "RecordFiltered",
           "MaxIterations", "Tolerance"}},
@@ -117,7 +164,12 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Array", "FixBoundary", "ConstrainedArray", "Stiffening", "Steps", "AllowInverted",
           "Tolerance", "MaxIterations"}},
         {"RegisterRigid",
-         {"Target", "Method", "MaxIterations", "Tolerance", "MaxDistance", "RotateData"}},
+         {"Target", "Method", "MaxIterations", "Tolerance", "MaxDistance", "RotateData", "Initial",
+          "SymmetricCheck", "SourceRegion", "TargetRegion", "AdaptiveTrim"}},
+        // The rigid motion laying picked points onto their targets, applied (roadmap 7.3.2).
+        {"RegisterLandmarks", {"SourcePoints", "TargetPoints", "Weights", "RotateData"}},
+        // Pose a scan on its largest flat face, or a cylinder on its axis (roadmap 7.3.5).
+        {"AutoAlign", {"AngleTolerance", "Subdivisions", "Region", "RotateData"}},
         {"ConvertCoordinates",
          {"System", "Axis", "Origin", "Reference", "Arrays", "Inverse", "RecordCoordinates"}},
         {"GeodesicDistance",
@@ -227,7 +279,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Extrude", {"Direction", "NumLayers", "Ratio", "Offsets", "RecordLayers", "MaxCells"}},
         {"Revolve",
          {"Axis", "AxisPoint", "Angle", "NumLayers", "Tolerance", "RecordLayers", "MaxCells"}},
-        {"Mirror", {"Point", "Normal", "KeepOriginal", "Weld", "Tolerance", "ReflectData"}},
+        {"Mirror",
+         {"Point", "Normal", "Plane", "KeepOriginal", "Weld", "Tolerance", "ReflectData"}},
         // Tetrahedra filling the closed triangle surface (roadmap 6.7).
         {"Tetrahedralize",
          {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},

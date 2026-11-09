@@ -228,3 +228,68 @@ TEST(Slice, ParentCellProvenance) {
             EXPECT_EQ(d[i], 0);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Chained sections (roadmap 7.6.1).
+// ---------------------------------------------------------------------------
+
+#include "../../src/cpp/src/detail/polyline_chain.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
+#include "meshioplusplus/operations/surface.hpp"
+
+using namespace meshioplusplus;
+
+TEST(PolylineChain, OpenChainsThenLoopsInCanonicalOrder) {
+    // A loop 5-6-7, an open chain 3-1-2 (segments given out of order and
+    // against the walk), and a branch at 1 with a spur 1-4.
+    const std::vector<std::array<std::int64_t, 2>> segs{{2, 1}, {6, 7}, {1, 3},
+                                                        {5, 6}, {7, 5}, {1, 4}};
+    const auto chains = meshioplusplus::detail::polyline_chains(segs, 8);
+    ASSERT_EQ(chains.size(), 4u);
+    EXPECT_EQ(chains[0].mPoints, (std::vector<std::int64_t>{1, 2}));
+    EXPECT_EQ(chains[0].mReversed, (std::vector<std::uint8_t>{1}));
+    EXPECT_EQ(chains[1].mPoints, (std::vector<std::int64_t>{1, 3}));
+    EXPECT_EQ(chains[2].mPoints, (std::vector<std::int64_t>{1, 4}));
+    EXPECT_FALSE(chains[2].mClosed);
+    EXPECT_EQ(chains[3].mPoints, (std::vector<std::int64_t>{5, 6, 7, 5}));
+    EXPECT_TRUE(chains[3].mClosed);
+}
+
+TEST(SliceChain, ASphereSectionIsOneLoopAndSectionsNumberAcrossPlanes) {
+    const Mesh sphere = icosa_sphere(1.0, 3);
+    SliceOptions o;
+    o.mOrigin = {0.0, 0.0, 0.1};
+    o.mChain = true;
+    const Mesh loop = slice(sphere, o);
+    ASSERT_EQ(loop.NumCellBlocks(), 1u);
+    const std::size_t n = loop.Cells(0).NumCells();
+    EXPECT_EQ(loop.NumPoints(), n);  // a loop: as many points as segments
+    for (std::size_t k = 0; k < n; ++k) {
+        EXPECT_EQ(loop.CellData(kSectionChainName, 0).As<std::int64_t>()[k], 0);
+        EXPECT_EQ(loop.CellData(kSectionClosedName, 0).As<std::int64_t>()[k], 1);
+        // Consecutive segments share their joint.
+        const auto* c = loop.Cells(0).Conn().As<std::int64_t>();
+        EXPECT_EQ(c[2 * k + 1], c[2 * ((k + 1) % n)]);
+    }
+    o.mMinLength = 100.0;
+    EXPECT_EQ(slice(sphere, o).Cells(0).NumCells(), 0u);
+    SectionsOptions so;
+    so.mOffsets = {-0.5, 0.0, 0.5, 2.0};
+    const Mesh all = sections(sphere, so);
+    std::int64_t top = -1;
+    std::vector<double> offs;
+    for (std::size_t b = 0; b < all.NumCellBlocks(); ++b)
+        for (std::size_t k = 0; k < all.Cells(b).NumCells(); ++k) {
+            top = std::max(top, all.CellData(kSectionChainName, b).As<std::int64_t>()[k]);
+            offs.push_back(all.CellData(kSectionOffsetName, b).As<double>()[k]);
+        }
+    EXPECT_EQ(top, 2);  // three loops; the plane at 2 misses
+    EXPECT_EQ(offs.front(), -0.5);
+    EXPECT_EQ(offs.back(), 0.5);
+    SliceOptions vol;
+    vol.mChain = true;
+    vol.mOrigin = {0.5, 0.5, 0.5};
+    EXPECT_THROW(slice(box({{2, 2, 2}}), vol), std::invalid_argument);
+    so.mOffsets.clear();
+    EXPECT_THROW(sections(sphere, so), std::invalid_argument);
+}

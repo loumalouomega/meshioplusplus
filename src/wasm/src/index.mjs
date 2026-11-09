@@ -283,13 +283,34 @@ export class MeshioPlusPlusLoadError extends Error {
  *   revolve: (mesh: Mesh, options?: {axis?: number[], axisPoint?: number[], angle?: number, numLayers?: number, tolerance?: number, recordLayers?: boolean, maxCells?: number}) => {mesh: Mesh, numCells: number, numHexahedra: number, numWedges: number, numPyramids: number, numTetrahedra: number, numQuads: number, numTriangles: number, numFlipped: number, numOnAxis: number, full: boolean, minScaledJacobian: number, warnings: string[]},
  *   mirror: (mesh: Mesh, options?: {origin?: number[], normal?: number[], keepOriginal?: boolean, weld?: boolean, tolerance?: number, reflectVectorData?: boolean}) => {mesh: Mesh, numFlippedCells: number, numPointsOnPlane: number, numDroppedCells: number, numDroppedSides: number, warnings: string[]},
  *   findIntersections: (mesh: Mesh, options?: {other?: Mesh, region?: string, regionOther?: string, segments?: boolean, maxPairs?: number}) => {mesh: Mesh, other: Mesh|null, segments: Mesh|null, pairs: Int32Array, numPairs: number, numTrianglePairs: number, numCoplanar: number, numSegments: number, numCellsA: number, numCellsB: number, truncated: boolean, clean: boolean, warnings: string[]},
- *   thickness: (mesh: Mesh, options?: {other?: Mesh, direction?: string, maxDistance?: number, threshold?: number, region?: string, regionOther?: string}) => {mesh: Mesh, direction: string, numCells: number, numHit: number, numMissed: number, numBelow: number, min: number, max: number, mean: number, minCell: number, minPoint: Float64Array, maxDistance: number, warnings: string[]},
+ *   thickness: (mesh: Mesh, options?: {other?: Mesh, direction?: string, maxDistance?: number, threshold?: number, region?: string, regionOther?: string, method?: 'ray'|'sphere'|'cone', coneAngle?: number, coneRays?: number, twoSided?: boolean, maxNormalDeviation?: number}) => {mesh: Mesh, direction: string, method: string, numCells: number, numHit: number, numMissed: number, numBelow: number, min: number, max: number, mean: number, p2: number, p95: number, minCell: number, minPoint: Float64Array, maxDistance: number, warnings: string[]},
+ *   deviation: (scan: Mesh, options?: {reference?: Mesh, primitive?: {type: string, params: number[]}, tolerance?: number, bins?: number, range?: number[], maxNormalAngle?: number, referenceRegion?: string, register?: boolean}) => {mesh: Mesh, numPoints: number, numMeasured: number, min: number, max: number, mean: number, rms: number, sigma: number, percentiles: {p1: number, p5: number, p50: number, p95: number, p99: number}, histogramEdges: Float64Array, histogramCounts: Float64Array, numOutsideRange: number, shareWithin: number, suggestedRange: number, numWithoutNormal: number, warnings: string[], registered: boolean, matrix: number[], registrationRms: number},
+ *   deviationRegions: (mesh: Mesh, options: {tolerance: number, field?: string, prefix?: string, minArea?: number}) => {mesh: Mesh, regions: {name: string, sign: number, numCells: number, area: number, extreme: number, mean: number, volume: number, centroid: Float64Array, bounds: Float64Array}[], numExcess: number, numMissing: number, numDropped: number, warnings: string[]},
+ *   exaggerate: (mesh: Mesh, options?: {field?: string, scale?: number, clamp?: number, smoothFraction?: number}) => {mesh: Mesh, clamp: number, radius: number, numMoved: number, warnings: string[]},
+ *   colorize: (mesh: Mesh, options: {field: string, cmap?: string, vmin?: number, vmax?: number, symmetric?: boolean, steps?: number, nanColor?: string, component?: number}) => {mesh: Mesh, vmin: number, vmax: number, location: string},
  *   tetrahedralize: (mesh: Mesh, options?: {backend?: 'auto' | 'netgen' | 'octree', maxSize?: number, maxVolume?: number, grading?: number, optimizeSteps?: number, maxCells?: number, faceArray?: string}) => {mesh: Mesh, numTetrahedra: number, numPoints: number, numNewPoints: number, numRegions: number, numBoundaryTriangles: number, boundaryPreserved: boolean, hausdorffToSurface: number, minDihedralDeg: number, maxDihedralDeg: number, volume: number, backend: string, warnings: string[]},
  *   projectToCad: (mesh: Mesh, info: object, options?: {faceArray?: string, edgeArray?: string, maxDistance?: number, trimSamples?: number}) => {mesh: Mesh, numProjected: number, numOnEdges: number, numOnCurves: number, numCorners: number, numAmbiguous: number, numTooFar: number, numFailed: number, numOutsideTrim: number, maxMove: number, outsideTrim: number[], warnings: string[]},
  *   cropBbox: (mesh: Mesh, lo: number[], hi: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   cropPlane: (mesh: Mesh, point: number[], normal: number[], mode?: string, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   cropPredicate: (mesh: Mesh, array: string, compare?: string, value?: number, recordIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
- *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean) => Mesh,
+ *   slice: (mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean, options?: {chain?: boolean, minLength?: number}) => Mesh,
+ *   clip: (mesh: Mesh, origin: number[], normal: number[], options?: {keepBelow?: boolean, cap?: boolean}) => {mesh: Mesh, numKept: number, numSplit: number, numCapTriangles: number, numLoops: number, numOpenChains: number, warnings: string[]},
+ *   profileSolid: (sketch: Mesh, features: string, options?: {stepPath?: string, scan?: Mesh, provider?: string, deflection?: number}) => {mesh: Mesh, volume: number, area: number, numFaces: number, valid: boolean, provider: string, warnings: string[]},
+ *   constrainPrimitives: (mesh: Mesh, options?: {faceTolerance?: number, angleTolerance?: number, distanceTolerance?: number, minFraction?: number, force?: Array<[number, number, string]>, forbid?: Array<[number, number, string]>}) => {mesh: Mesh, numConstrained: number, numGroups: number, faceTolerance: number, relations: Array<{patchA: number, patchB: number, relation: string, angleDeg: number, distance: number, forced: boolean}>, unmet: Array<[number, number, string]>},
+ *   faceSupport: (solid: Mesh, scan: Mesh, options?: {tolerance?: number, measuredShare?: number, inferredShare?: number, holeData?: string}) => {mesh: Mesh, numMeasured: number, numPartial: number, numInferred: number, shareWithin: number, tolerance: number, faceShare: number[]},
+ *   fitCadIterate: (scan: Mesh, options?: {stepPath?: string, partClass?: string, targetWithin?: number, targetExplained?: number, segmentTolerance?: number, fitTolerance?: number, maxRounds?: number, worstFaces?: number, refineFactor?: number, backend?: string}) => {mesh: Mesh, rounds: Array<{shareWithin: number, explained: number, hausdorffMax: number, numFaces: number, numPatches: number}>, bestRound: number, targetWithin: number, targetMet: boolean, stopReason: string, numMeasured: number, numInferred: number},
+ *   offsetSurface: (mesh: Mesh, distance: number, options?: {smoothIterations?: number}) => {mesh: Mesh, numNotVisible: number, numClamped: number, numFolded: number, numRimQuads: number, maxMove: number, warnings: string[]},
+ *   thicken: (mesh: Mesh, thickness: number, options?: {side?: string, smoothIterations?: number}) => {mesh: Mesh, numNotVisible: number, numClamped: number, numFolded: number, numRimQuads: number, maxMove: number, warnings: string[]},
+ *   hollow: (mesh: Mesh, wall: number, options?: {smoothIterations?: number}) => {mesh: Mesh, numNotVisible: number, numClamped: number, numFolded: number, numRimQuads: number, maxMove: number, warnings: string[]},
+ *   flipNormals: (mesh: Mesh, region?: string) => {mesh: Mesh, numFlipped: number},
+ *   removeIslands: (mesh: Mesh, options?: {connectivity?: string, minDiagonal?: number, minArea?: number, minCells?: number, relative?: boolean, dryRun?: boolean}) => {mesh: Mesh, numComponents: number, numRemoved: number, numCellsRemoved: number, numPointsRemoved: number},
+ *   measure: (mesh: Mesh, spec: object | string) => {mesh: Mesh, report: object, numFail: number, warnings: string[]},
+ *   alignDatums: (mesh: Mesh, primary: string, secondary: string, origin?: string) => {mesh: Mesh, matrix: Float64Array},
+ *   measureElementPrimitive: (mesh: Mesh, name: string) => {type: number, params: Float64Array},
+ *   writeStepElements: (path: string, mesh: Mesh, options?: {patches?: number[], segments?: number}) => {numPlanes: number, numSpheres: number, numCylinders: number, numCones: number, numTori: number, numSkipped: number, warnings: string[]},
+ *   silhouette: (mesh: Mesh, options?: {normal?: number[], clearance?: number, roundAngle?: number, arcSegments?: number, extrude?: boolean, region?: string, mergeTolerance?: number}) => {mesh: Mesh, numLoops: number, numOuter: number, numHoles: number, numTriangles: number, area: number, perimeter: number, minHeight: number, maxHeight: number, warnings: string[]},
+ *   fitCurves: (sections: Mesh, options?: {tolerance?: number, snapAngle?: number, normal?: number[], minArcPoints?: number, minArcSweep?: number}) => {mesh: Mesh, pieces: Array<{type: string, start: number[], end: number[], centre: number[], radius: number, sweep: number, residual: number, numPoints: number, chain: number, frame: number}>, frames: Float64Array[], numLines: number, numArcs: number, numCircles: number, maxResidual: number, tolerance: number, warnings: string[]},
+ *   sections: (mesh: Mesh, direction: number[], offsets: ArrayLike<number>, options?: {minLength?: number, recordParentIds?: boolean}) => Mesh,
  *   isosurface: (mesh: Mesh, array: string, isovalues: number|number[], component?: number, recordParentIds?: boolean) => Mesh,
  *   grid: (dims: number[], origin?: number[], spacing?: number[], maxCells?: number) => Mesh,
  *   rectangle: (dims?: number[], size?: number[], origin?: number[], cellType?: string, split?: string, order?: number, maxCells?: number, complete?: boolean) => Mesh,
@@ -352,7 +373,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   igaSample: (info: object, options?: {sampleSubdivisions?: number, trimSamples?: number, edges?: boolean, trim?: boolean}) => {mesh: Mesh, info: object},
  *   igaEvaluate: (info: object, patch: number, params: ArrayLike<number>, options?: {derivatives?: 0 | 1, trimSamples?: number}) => object,
  *   meshCadSurface: (info: object, options: {targetSize: number, maxChordalDeviation?: number, minPointsPerEdge?: number, tolerance?: number, recordFaceIds?: boolean, edges?: boolean, matchUnreferencedTrims?: boolean, strict?: boolean, maxPoints?: number, minAngle?: number, smoothIterations?: number, smoothMethod?: 'laplacian'|'odt', order?: 1|2|3, curvatureDeviation?: number, cellsAcrossGaps?: number, grading?: number, poleRings?: number, faceSizes?: object, edgeSizes?: object, background?: Mesh, backgroundArray?: string, metric?: 'mean'|'varying', virtualEdges?: boolean, reparamConditionNumber?: number, modelTolerances?: boolean, virtualFaces?: boolean, lopCorners?: boolean, metricBackground?: Mesh, metricArray?: string, metricError?: number, untangle?: boolean, quads?: 'none'|'dominant'|'all', quadPairs?: 'matching'|'greedy'}) => {mesh: Mesh, numPoints: number, numTriangles: number, numEdgeSegments: number, numFaces: number, numFailed: number, numEdges: number, numOpenEdges: number, numNonManifoldEdges: number, numMisorientedEdges: number, numDegenerateDropped: number, tolerance: number, minAngleDeg: number, maxAngleDeg: number, minEdge: number, maxEdge: number, maxEdgeGap: number, faces: Array<object>, warnings: string[], numRefinementPoints: number, numFacesBelowBound: number, numSmoothed: number, numCurvedStraightened: number, angleHistogram: number[], virtualEdges: number[][], reparametrised: Array<object>, mergedFaces: Array<object>, toleranceUses: Array<object>, loppedCorners: Array<object>, numUntangled: number, numQuads: number, numLeftoverTriangles: number, minQuadScaledJacobian: number, minMetricAngle: number},
- *   fitPrimitives: (mesh: Mesh, patchData?: string, tolerance?: number, relative?: boolean, minInlierFraction?: number, types?: string[], maxIterations?: number) => {mesh: Mesh, numPatches: number, numPlane: number, numSphere: number, numCylinder: number, numCone: number, numTorus: number, numUnfitted: number},
+ *   fitPrimitives: (mesh: Mesh, patchData?: string, tolerance?: number, relative?: boolean, minInlierFraction?: number, types?: string[], maxIterations?: number, options?: {region?: string, seeds?: number[][], featureAngle?: number, rimAngle?: number, outputRegion?: string, usedPoints?: string, criterion?: string}) => {mesh: Mesh, numPatches: number, numPlane: number, numSphere: number, numCylinder: number, numCone: number, numTorus: number, numUnfitted: number, numFeatureCells: number, warnings: string[]},
  *   fitCad: (mesh: Mesh, options?: {stepPath?: string, tolerance?: number, exactEdges?: boolean, types?: string[], meshDeflection?: number, maxDemotionRounds?: number, freeform?: boolean, freeformDegree?: number, freeformMaxControl?: number, freeformSplit?: boolean, fillets?: boolean, threads?: boolean, mergeFaces?: boolean, backend?: 'auto' | 'occt' | 'native', refineSegmentation?: boolean, maxRefineIterations?: number, refineEpsilon?: number, normalWeight?: number, allowMerge?: boolean, allowSplit?: boolean, ransacSeed?: number, refineTolerance?: number, relativeTolerance?: boolean, freeformGeneral?: boolean, freeformTolerance?: number, freeformSmoothing?: number, maxFreeformPoles?: number, maxFreeformIterations?: number, maxFreeformSplits?: number, sewTolerance?: number, extendSurfaces?: boolean, snapJunctions?: boolean, faceDeviation?: boolean, freeformMode?: 'legacy' | 'adaptive' | 'network' | 'auto', freeformParameterization?: 'auto' | 'projection' | 'lscm' | 'harmonic', extraordinaryVertex?: 'g0' | 'g1' | 'g1x' | 'g1xx', localRefine?: 'knots' | 'thb', freeformG1ToleranceDeg?: number, freeformMaxControlPoints?: number, layoutTargetPatchSize?: number, layoutMaxValenceDeviation?: number, resegmentRounds?: number, layoutSnapToFeatures?: boolean, validateBySurfaceSampling?: boolean, constrainPrimitives?: boolean}) => object,
  *   refinePatches: (mesh: Mesh, options?: {tolerance?: number, relative?: boolean, normalWeight?: number, epsilon?: number, featureAngle?: number, maxIterations?: number, minPatchCells?: number, ransacSeed?: number, types?: string[], allowSplit?: boolean, allowMerge?: boolean, prefix?: string}) => object,
  *   tessellate: (mesh: Mesh, levels?: number, curved?: boolean, fields?: boolean, recordStencil?: boolean) => {mesh: Mesh, numSourcePoints: number, numSourceCells: number, numCurvedSourceCells: number, numPassThroughSourceCells: number, numPoints: number, numCells: number, numBoundaryFacets: number, numInteriorFacets: number, numFacetsWithBadCount: number},
@@ -368,13 +389,16 @@ export class MeshioPlusPlusLoadError extends Error {
  *   adjacency: (mesh: Mesh, kind?: 'node'|'clique'|'cell') => {indptr: Int32Array, indices: Int32Array},
  *   writeGraph: (mesh: Mesh, path: string, kind?: 'node'|'clique'|'cell', format?: 'metis'|'scotch') => {format: string, numVertices: number, numEdges: number, maxDegree: number},
  *   matchPeriodicNodes: (mesh: Mesh, slave: string | {name: string, kind?: string, dim?: number, tag?: number}, master: string | {name: string, kind?: string, dim?: number, tag?: number}, matrix: ArrayLike<number>, atol?: number, requireComplete?: boolean) => {slave: Int32Array, master: Int32Array, unmatched: Int32Array, numFixed: number, maxResidual: number},
- *   repair: (mesh: Mesh, fixOrientation?: boolean, orientOutward?: boolean, fillHoles?: boolean, splitNonManifold?: boolean, maxHoleEdges?: number, weldTolerance?: number, recordProvenance?: boolean) => {mesh: Mesh, qualityBefore: object, qualityAfter: object, numFlipped: number, numComponents: number, largestComponent: number, numOrientedOutward: number, numUnorientable: number, numVerticesSplit: number, numHolesDetected: number, numHolesFilled: number, numHolesSkipped: number, numFacesAdded: number, numPointsAdded: number, pointsWelded: number},
+ *   repair: (mesh: Mesh, fixOrientation?: boolean, orientOutward?: boolean, fillHoles?: boolean, splitNonManifold?: boolean, maxHoleEdges?: number, weldTolerance?: number, recordProvenance?: boolean, fillStyle?: string) => {mesh: Mesh, qualityBefore: object, qualityAfter: object, numFlipped: number, numComponents: number, largestComponent: number, numOrientedOutward: number, numUnorientable: number, numVerticesSplit: number, numHolesDetected: number, numHolesFilled: number, numHolesSkipped: number, numFacesAdded: number, numPointsAdded: number, pointsWelded: number},
  *   shrinkwrap: (mesh: Mesh, target: Mesh, offset?: number, maxDistance?: number, weights?: string, targetRegion?: string, normalWeight?: string, recordDistance?: boolean, recordClosestCell?: boolean) => {mesh: Mesh, quality: object, numProjected: number, numMissed: number, numSkipped: number, maxDisplacement: number},
  *   prepareMetric: (mesh: Mesh, options: {arrays: string[], output?: string, targetVertices?: number, norm?: number, hmin?: number, hmax?: number, gradation?: number, maxSweeps?: number}) => {mesh: Mesh, complexityBefore: number, complexityAfter: number, numGraded: number, sweeps: number},
  *   untangle: (mesh: Mesh, options?: {fixBoundary?: boolean, frozen?: ArrayLike<number>, rings?: number, smooth?: boolean, maxSweeps?: number}) => {mesh: Mesh, numInvertedBefore: number, numInvertedAfter: number, minQualityBefore: number, minQualityAfter: number, sweeps: number, moves: number},
  *   morph: (mesh: Mesh, options: {array: string, fixBoundary?: boolean, constrainedArray?: string, constrained?: ArrayLike<number>, stiffening?: number, steps?: number, allowInverted?: boolean, tolerance?: number, maxIterations?: number}) => {mesh: Mesh, numConstrained: number, numFree: number, numInverted: number, iterations: number, maxDisplacement: number, converged: boolean},
  *   laplacianEigenmodes: (mesh: Mesh, options?: {numModes?: number, tolerance?: number, maxIterations?: number}) => {mesh: Mesh, eigenvalues: number[], iterations: number, maxResidual: number, converged: boolean},
- *   registerRigid: (source: Mesh, target: Mesh, options?: {method?: 'point_to_point'|'point_to_plane', maxIterations?: number, tolerance?: number, maxDistance?: number, initial?: ArrayLike<number>}) => {matrix: number[], initialRms: number, rms: number, iterations: number, numPairs: number, converged: boolean},
+ *   registerRigid: (source: Mesh, target: Mesh, options?: {method?: 'point_to_point'|'point_to_plane', maxIterations?: number, tolerance?: number, maxDistance?: number, initial?: ArrayLike<number>|'auto', symmetricCheck?: boolean, symmetricTolerance?: number, sourceRegion?: string, targetRegion?: string, adaptiveTrim?: number}) => {matrix: number[], initialRms: number, rms: number, iterations: number, numPairs: number, converged: boolean, numRejected: number, candidateRms: Float64Array, chosenCandidate: number, warnings: string[]},
+ *   registerLandmarks: (source: ArrayLike<number>, target: ArrayLike<number>, weights?: ArrayLike<number>) => {matrix: number[], residuals: Float64Array, rms: number},
+ *   findSymmetryPlane: (mesh: Mesh, options?: {seedOrigin?: number[], seedNormal?: number[], tolerance?: number, minShare?: number, maxSamples?: number, maxIterations?: number}) => {origin: number[], normal: number[], rms: number, share: number, tolerance: number, candidateRms: Float64Array, chosenCandidate: number, warnings: string[]},
+ *   autoAlign: (mesh: Mesh, options?: {angleTolerance?: number, subdivisions?: number, region?: string, rotateVectorData?: boolean}) => {mesh: Mesh, matrix: number[], mode: 'face'|'axis', primary: number[], secondary: number[], share: number, faceShare: number, axisShare: number, openingArea: number, warnings: string[]},
  *   estimateNormals: (mesh: Mesh, options?: {k?: number, orientation?: 'consistent'|'viewpoint'|'none', viewpoint?: ArrayLike<number>, recordVariation?: boolean}) => {mesh: Mesh, numDegenerate: number, numComponents: number},
  *   reconstructSurface: (mesh: Mesh, options?: {normals?: string, k?: number, cellSize?: number, resolution?: number, maxDistance?: number, estimateNormals?: boolean, normalsK?: number, maxCells?: number}) => {mesh: Mesh, numSamples: number, spacing: number, cellSize: number, maxDistance: number, numLatticePoints: number, numUndefined: number, numTriangles: number, numComponents: number, estimatedNormals: boolean},
  *   remeshQuads: (mesh: Mesh, options?: {targetFaces?: number, backend?: string, sharp?: boolean, boundary?: boolean, adaptive?: boolean, dominant?: boolean, seed?: number, maxCells?: number}) => {mesh: Mesh, numQuads: number, numTriangles: number, numPoints: number, minScaledJacobian: number, meanScaledJacobian: number, hausdorffToSurface: number, backend: string},
@@ -395,7 +419,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   polyToTet: (mesh: Mesh, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[], numExactTets: number, numFannedCells: number},
  *   refine: (mesh: Mesh, levels?: number, recordParentIds?: boolean,
  *            options?: object, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
- *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
+ *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean, bounds?: {maxDeviation?: number, coverage?: number, maxFaces?: number}) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, deviation?: number, deviationMet?: boolean, rounds?: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
  *   decimateVolume: (mesh: Mesh, ratio?: number, targetCells?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean) => {mesh: Mesh, tetsRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
  *   partition: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, recordIds?: boolean, ghostLayers?: number, weightsKey?: string, returnMaps?: boolean) => {partId: number, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
  *   partitionLabels: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, weightsKey?: string) => number[][],
@@ -843,8 +867,49 @@ export async function loadMeshioPlusPlus(
         cropPredicate: (
             mesh, array, compare = '<', value = 0, recordIds = false, returnMaps = false,
         ) => Module.cropPredicate(mesh, array, compare, value, recordIds, returnMaps),
-        slice: (mesh, origin, normal, recordParentIds = false) =>
-            Module.slice(mesh, origin, normal, recordParentIds),
+        slice: (mesh, origin, normal, recordParentIds = false, options = {}) =>
+            Module.slice(mesh, origin, normal, recordParentIds, Boolean(options.chain),
+                Number(options.minLength ?? 0)),
+        clip: (mesh, origin, normal, options = {}) =>
+            Module.clip(mesh, Array.from(origin, Number), Array.from(normal, Number), options),
+        profileSolid: (sketch, features, options = {}) =>
+            Module.profileSolid(sketch, String(features), options ?? {}),
+        constrainPrimitives: (mesh, options = {}) => Module.constrainPrimitives(mesh, options ?? {}),
+        faceSupport: (solid, scan, options = {}) => Module.faceSupport(solid, scan, options ?? {}),
+        fitCadIterate: (scan, options = {}) => Module.fitCadIterate(scan, options ?? {}),
+        offsetSurface: (mesh, distance, options = {}) =>
+            Module.offsetSurface(mesh, 'offset', Number(distance), options),
+        thicken: (mesh, thickness, options = {}) =>
+            Module.offsetSurface(mesh, 'thicken', Number(thickness), options),
+        hollow: (mesh, wall, options = {}) =>
+            Module.offsetSurface(mesh, 'hollow', Number(wall), options),
+        flipNormals: (mesh, region = '') => Module.flipNormals(mesh, region ?? ''),
+        removeIslands: (mesh, options = {}) => Module.removeIslands(mesh, options),
+        measure: (mesh, spec) => {
+            const r = Module.measure(mesh, typeof spec === 'string' ? spec : JSON.stringify(spec));
+            return { ...r, report: JSON.parse(r.report) };
+        },
+        alignDatums: (mesh, primary, secondary, origin = '') =>
+            Module.alignDatums(mesh, primary, secondary, origin ?? ''),
+        measureElementPrimitive: (mesh, name) => Module.measureElementPrimitive(mesh, name),
+        writeStepElements: (path, mesh, options = {}) => {
+            const o = { ...options };
+            if (o.patches !== undefined) o.patches = Array.from(o.patches, Number);
+            return Module.writeStepElements(path, mesh, o);
+        },
+        silhouette: (mesh, options = {}) => {
+            const o = { ...options };
+            if (o.normal !== undefined) o.normal = Array.from(o.normal, Number);
+            return Module.silhouette(mesh, o);
+        },
+        fitCurves: (sections, options = {}) => {
+            const o = { ...options };
+            if (o.normal !== undefined) o.normal = Array.from(o.normal, Number);
+            return Module.fitCurves(sections, o);
+        },
+        sections: (mesh, direction, offsets, options = {}) =>
+            Module.sections(mesh, Array.from(direction, Number), Array.from(offsets, Number),
+                Number(options.minLength ?? 0), Boolean(options.recordParentIds)),
         grid: (dims, origin = null, spacing = null, maxCells = 20000000) =>
             Module.grid(dims, origin, spacing, maxCells),
         rectangle: (
@@ -1220,9 +1285,10 @@ export async function loadMeshioPlusPlus(
             minInlierFraction = 0.9,
             types = ['plane', 'sphere', 'cylinder', 'cone', 'torus'],
             maxIterations = 50,
+            options = {},
         ) =>
             Module.fitPrimitives(mesh, patchData, tolerance, relative, minInlierFraction,
-                Array.isArray(types) ? types : [types], maxIterations),
+                Array.isArray(types) ? types : [types], maxIterations, options),
         // OpenCASCADE: the full artifact only; the lean one throws by name.
         fitCad: (mesh, options = {}) => Module.fitCad(mesh, options),
         // No OpenCASCADE: both artifacts.
@@ -1240,6 +1306,10 @@ export async function loadMeshioPlusPlus(
         findIntersections: (mesh, options = {}) => Module.findIntersections(mesh, options),
         selectRegion: (mesh, name, options = {}) => Module.selectRegion(mesh, name, options),
         thickness: (mesh, options = {}) => Module.thickness(mesh, options),
+        deviation: (scan, options = {}) => Module.deviation(scan, options),
+        deviationRegions: (mesh, options = {}) => Module.deviationRegions(mesh, options),
+        exaggerate: (mesh, options = {}) => Module.exaggerate(mesh, options),
+        colorize: (mesh, options = {}) => Module.colorize(mesh, options),
         tetrahedralize: (mesh, options) => Module.tetrahedralize(mesh, options),
         tessellate: (mesh, levels = 2, curved = true, fields = true, recordStencil = false) =>
             Module.tessellate(mesh, levels, curved, fields, recordStencil),
@@ -1271,9 +1341,10 @@ export async function loadMeshioPlusPlus(
             maxHoleEdges = 10,
             weldTolerance = 0,
             recordProvenance = false,
+            fillStyle = 'fan',
         ) =>
             Module.repair(mesh, fixOrientation, orientOutward, fillHoles, splitNonManifold,
-                maxHoleEdges, weldTolerance, recordProvenance),
+                maxHoleEdges, weldTolerance, recordProvenance, fillStyle ?? 'fan'),
         shrinkwrap: (
             mesh,
             target,
@@ -1301,9 +1372,19 @@ export async function loadMeshioPlusPlus(
         laplacianEigenmodes: (mesh, options = {}) => Module.laplacianEigenmodes(mesh, options),
         registerRigid: (source, target, options = {}) => {
             const o = { ...options };
-            if (o.initial !== undefined) o.initial = Array.from(o.initial);
+            if (o.initial !== undefined && typeof o.initial !== 'string') o.initial = Array.from(o.initial);
             return Module.registerRigid(source, target, o);
         },
+        registerLandmarks: (source, target, weights) =>
+            Module.registerLandmarks(Array.from(source, Number), Array.from(target, Number),
+                weights === undefined || weights === null ? null : Array.from(weights, Number)),
+        findSymmetryPlane: (mesh, options = {}) => {
+            const o = { ...options };
+            if (o.seedOrigin !== undefined) o.seedOrigin = Array.from(o.seedOrigin, Number);
+            if (o.seedNormal !== undefined) o.seedNormal = Array.from(o.seedNormal, Number);
+            return Module.findSymmetryPlane(mesh, o);
+        },
+        autoAlign: (mesh, options = {}) => Module.autoAlign(mesh, options),
         estimateNormals: (mesh, options = {}) => {
             const o = { ...options };
             if (o.viewpoint !== undefined) o.viewpoint = Array.from(o.viewpoint);
@@ -1394,6 +1475,7 @@ export async function loadMeshioPlusPlus(
             featureAngle = 30,
             frozen = null,
             returnMaps = false,
+            bounds = {},
         ) =>
             Module.decimate(
                 mesh,
@@ -1406,6 +1488,7 @@ export async function loadMeshioPlusPlus(
                 featureAngle,
                 frozen,
                 returnMaps,
+                bounds ?? {},
             ),
         // Tetrahedral VOLUME decimation (decimate's tet-edge-collapse sibling).
         // Exactly one of ratio / targetCells / maxError must be non-negative.

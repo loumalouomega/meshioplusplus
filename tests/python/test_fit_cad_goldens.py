@@ -44,13 +44,33 @@ pytestmark = [
 ]
 
 
+# The roadmap 7.1 columns fit_primitives adds (form error and extremes, sigma,
+# the points used): fit_cad's own fit leaves them out, and the goldens pin
+# fit_cad on the table it has always read, so the inputs leave them out too.
+_FIT_71_COLUMNS = (
+    "fit:patch_form_error",
+    "fit:patch_diameter_min",
+    "fit:patch_diameter_max",
+    "fit:patch_length",
+    "fit:patch_arc",
+    "fit:patch_extent",
+    "fit:patch_sigma",
+    "fit:patch_num_used",
+    "fit:patch_num_rejected",
+)
+
+
 def _fitted(skin, curvature_tolerance=0.0, tolerance=1e-3, min_patch_cells=1):
     seg = mio.segment(
         skin,
         curvature_tolerance=curvature_tolerance,
         min_patch_cells=min_patch_cells,
     )
-    return mio.fit_primitives(seg, tolerance=tolerance)
+    out = mio.fit_primitives(seg, tolerance=tolerance)
+    out.field_data = {
+        k: v for k, v in out.field_data.items() if k not in _FIT_71_COLUMNS
+    }
+    return out
 
 
 def _saddle_box(n):

@@ -223,3 +223,273 @@ TEST(FitPrimitives, ATwoRimBoreIsACylinderNotASphere) {
     // A real sphere band keeps its type.
     EXPECT_EQ(fit_whole(analytic::sphere_band(1.5)).mType, 2);
 }
+
+namespace {
+
+double fd_value(const Mesh& rMesh, const char* pName) {
+    return rMesh.FieldData(pName).As<double>()[0];
+}
+
+Mesh fp_fit_whole_mesh(const Mesh& rMesh, double Tol = 1e-3) {
+    FitPrimitivesOptions o;
+    o.mPatchData = "";
+    o.mTolerance = Tol;
+    return fit_primitives(rMesh, o).mMesh;
+}
+
+// Quads on the half cylinder x = R cos a, y = R sin a, a in [0, 180] degrees.
+Mesh half_cylinder(double R, double H, int N, int M) {
+    std::vector<std::vector<double>> pts;
+    for (int i = 0; i <= M; ++i)
+        for (int k = 0; k <= N; ++k) {
+            const double a = analytic::kPi * k / N;
+            pts.push_back({R * std::cos(a), R * std::sin(a), H * i / M});
+        }
+    std::vector<std::vector<std::int64_t>> quads;
+    for (int i = 0; i < M; ++i)
+        for (int k = 0; k < N; ++k) {
+            const std::int64_t a = i * (N + 1) + k, b = (i + 1) * (N + 1) + k;
+            quads.push_back({a, a + 1, b + 1, b});
+        }
+    return mt::make_mesh(pts, "quad", quads);
+}
+
+}  // namespace
+
+TEST(FitPrimitivesForm, HalfCylinderArcAndZeroFormError) {
+    const Mesh out = fp_fit_whole_mesh(half_cylinder(1.5, 2.0, 24, 4));
+    EXPECT_EQ(out.FieldData("fit:patch_type").As<std::int64_t>()[0], 3);
+    EXPECT_NEAR(fd_value(out, kFitPatchArcName), 180.0, 1e-9);
+    EXPECT_NEAR(fd_value(out, kFitPatchFormErrorName), 0.0, 1e-9);
+    EXPECT_NEAR(fd_value(out, kFitPatchLengthName), 2.0, 1e-9);
+    EXPECT_NEAR(fd_value(out, kFitPatchDiameterMinName), 3.0, 1e-9);
+    EXPECT_NEAR(fd_value(out, kFitPatchDiameterMaxName), 3.0, 1e-9);
+    EXPECT_TRUE(std::isnan(fd_value(out, kFitPatchExtentName)));
+}
+
+TEST(FitPrimitivesForm, ClosedCylinderSpansTheFullCircle) {
+    const Mesh out = fp_fit_whole_mesh(analytic::cylinder(1.0, 2.0, 6));
+    EXPECT_EQ(out.FieldData("fit:patch_type").As<std::int64_t>()[0], 3);
+    EXPECT_DOUBLE_EQ(fd_value(out, kFitPatchArcName), 360.0);
+}
+
+TEST(FitPrimitivesForm, SteppedCylinderReportsBothDiameters) {
+    std::vector<std::pair<double, double>> prof;
+    for (int i = 0; i <= 4; ++i)
+        prof.push_back({1.0, 0.25 * i});
+    for (int i = 4; i <= 8; ++i)
+        prof.push_back({1.002, 0.25 * i});
+    const Mesh out = fp_fit_whole_mesh(analytic::revolve(prof), 3e-3);
+    ASSERT_EQ(out.FieldData("fit:patch_type").As<std::int64_t>()[0], 3);
+    EXPECT_NEAR(fd_value(out, kFitPatchDiameterMinName), 2.0, 1e-6);
+    EXPECT_NEAR(fd_value(out, kFitPatchDiameterMaxName), 2.004, 1e-6);
+    EXPECT_GT(fd_value(out, kFitPatchFormErrorName), 0.0015);
+}
+
+TEST(FitPrimitivesForm, PlaneExtentsAreTheInPlaneSides) {
+    std::vector<std::vector<double>> pts;
+    for (int j = 0; j <= 2; ++j)
+        for (int i = 0; i <= 4; ++i)
+            pts.push_back({0.5 * i, 0.5 * j, 0.0});
+    std::vector<std::vector<std::int64_t>> quads;
+    for (int j = 0; j < 2; ++j)
+        for (int i = 0; i < 4; ++i)
+            quads.push_back({j * 5 + i, j * 5 + i + 1, (j + 1) * 5 + i + 1, (j + 1) * 5 + i});
+    const Mesh out = fp_fit_whole_mesh(mt::make_mesh(pts, "quad", quads));
+    ASSERT_EQ(out.FieldData("fit:patch_type").As<std::int64_t>()[0], 1);
+    const double* e = out.FieldData(kFitPatchExtentName).As<double>();
+    EXPECT_NEAR(e[0], 2.0, 1e-12);
+    EXPECT_NEAR(e[1], 1.0, 1e-12);
+    EXPECT_NEAR(fd_value(out, kFitPatchFormErrorName), 0.0, 1e-12);
+    EXPECT_TRUE(std::isnan(fd_value(out, kFitPatchArcName)));
+}
+
+// ---- roadmap 7.1.1 and 7.1.2 --------------------------------------------------------------
+
+namespace {
+
+std::int64_t fp_region_size(const Mesh& rMesh, const std::string& rName) {
+    const std::size_t i = rMesh.FindRegion(rName, RegionKind::Cell);
+    return i == Mesh::npos ? -1 : static_cast<std::int64_t>(rMesh.Region(i).NumEntries());
+}
+
+// A cylinder of radius R along z, two bands z in [0, 1] and [1.5, 2.5]: a bore
+// a cross hole interrupts.
+Mesh fp_split_bore(double R) {
+    std::vector<std::vector<double>> pts;
+    std::vector<std::vector<std::int64_t>> quads;
+    const int n = 48;
+    for (double z0 : {0.0, 1.5}) {
+        const std::int64_t base = static_cast<std::int64_t>(pts.size());
+        for (int i = 0; i <= 4; ++i)
+            for (int k = 0; k < n; ++k) {
+                const double a = 2.0 * analytic::kPi * k / n;
+                pts.push_back({R * std::cos(a), R * std::sin(a), z0 + 0.25 * i});
+            }
+        for (int i = 0; i < 4; ++i)
+            for (int k = 0; k < n; ++k) {
+                const std::int64_t k1 = (k + 1) % n;
+                quads.push_back({base + i * n + k, base + i * n + k1, base + (i + 1) * n + k1,
+                                 base + (i + 1) * n + k});
+            }
+    }
+    return mt::make_mesh(pts, "quad", quads);
+}
+
+}  // namespace
+
+TEST(FitPrimitivesSeeds, ASeedOnTheHoleFitsTheHoleOnly) {
+    const Mesh plate = analytic::filleted_plate();
+    FitPrimitivesOptions o;
+    o.mSeeds = {{0.6, 0.0, 0.25}};
+    o.mTypes = 1u << 3;  // a cylinder
+    const FitPrimitivesResult r = fit_primitives(plate, o);
+    EXPECT_EQ(r.mNumCylinder, 1);
+    // The hole's cells: those with every corner at radius 0.6.
+    std::int64_t hole = 0;
+    const NDArray& conn = plate.Cells(0).Conn();
+    const std::size_t npc = plate.Cells(0).NodesPerCell();
+    for (std::size_t c = 0; c < plate.Cells(0).NumCells(); ++c) {
+        bool on = true;
+        for (std::size_t k = 0; k < npc; ++k) {
+            const double* p =
+                plate.Points().As<double>() + 3 * conn.As<std::int64_t>()[c * npc + k];
+            on = on && std::fabs(std::hypot(p[0], p[1]) - 0.6) < 1e-12;
+        }
+        hole += on ? 1 : 0;
+    }
+    EXPECT_EQ(r.mNumFeatureCells, hole);
+    EXPECT_EQ(fp_region_size(r.mMesh, "fit:feature"), r.mNumFeatureCells);
+    const std::vector<FpRow> rr = rows(r.mMesh);
+    ASSERT_EQ(rr.size(), 1u);
+    EXPECT_NEAR(rr[0].mParams[6], 0.6, 1e-9);
+    EXPECT_NEAR(std::fabs(rr[0].mParams[5]), 1.0, 1e-9);  // axis along z
+    // The rim angle peels nothing off a hole bounded by sharp edges.
+    EXPECT_EQ(r.mMesh.FieldData(kFitPatchNumRejectedName).As<std::int64_t>()[0], 0);
+}
+
+TEST(FitPrimitivesSeeds, ASeedOnTheFilletFitsTheFilletOnly) {
+    const Mesh plate = analytic::filleted_plate();
+    const double c = 2.0 - 0.8, s = std::sqrt(0.5);
+    FitPrimitivesOptions o;
+    o.mSeeds = {{c + 0.8 * s, c + 0.8 * s, 0.25}};
+    o.mTypes = 1u << 3;
+    const FitPrimitivesResult r = fit_primitives(plate, o);
+    ASSERT_EQ(r.mNumCylinder, 1) << (r.mWarnings.empty() ? "" : r.mWarnings[0]);
+    // The fillet's cells: those with every corner on its cylinder.
+    std::int64_t fillet = 0;
+    const NDArray& conn = plate.Cells(0).Conn();
+    const std::size_t npc = plate.Cells(0).NodesPerCell();
+    for (std::size_t k = 0; k < plate.Cells(0).NumCells(); ++k) {
+        bool on = true;
+        for (std::size_t j = 0; j < npc; ++j) {
+            const double* p =
+                plate.Points().As<double>() + 3 * conn.As<std::int64_t>()[k * npc + j];
+            on = on && std::fabs(std::hypot(p[0] - c, p[1] - c) - 0.8) < 1e-12 &&
+                 p[0] > c - 1e-12 && p[1] > c - 1e-12;
+        }
+        fillet += on ? 1 : 0;
+    }
+    EXPECT_EQ(r.mNumFeatureCells, fillet);
+    const std::vector<FpRow> rr = rows(r.mMesh);
+    EXPECT_NEAR(rr[0].mParams[6], 0.8, 1e-9);
+    // The axis passes through (c, c).
+    EXPECT_NEAR(rr[0].mParams[0], c, 1e-9);
+    EXPECT_NEAR(rr[0].mParams[1], c, 1e-9);
+}
+
+TEST(FitPrimitivesSeeds, TwoSeedsAcrossACrossHoleFitOneCylinder) {
+    FitPrimitivesOptions o;
+    o.mSeeds = {{1.0, 0.0, 0.5}, {0.0, 1.0, 2.0}};
+    o.mTypes = 1u << 3;
+    const FitPrimitivesResult r = fit_primitives(fp_split_bore(1.0), o);
+    EXPECT_EQ(r.mNumPatches, 1);
+    EXPECT_EQ(r.mNumCylinder, 1);
+    EXPECT_EQ(r.mNumFeatureCells, 2 * 4 * 48);
+    EXPECT_NEAR(rows(r.mMesh)[0].mParams[6], 1.0, 1e-9);
+    // One seed alone fits its band.
+    o.mSeeds.pop_back();
+    EXPECT_EQ(fit_primitives(fp_split_bore(1.0), o).mNumFeatureCells, 4 * 48);
+}
+
+TEST(FitPrimitivesSeeds, RegionModeAndBadOptions) {
+    Mesh plate = analytic::filleted_plate();
+    FitPrimitivesOptions o;
+    o.mSeeds = {{0.6, 0.0, 0.25}};
+    o.mTypes = 1u << 3;
+    const FitPrimitivesResult seeded = fit_primitives(plate, o);
+    FitPrimitivesOptions ro;
+    ro.mRegion = "fit:feature";
+    ro.mTypes = 1u << 3;
+    const FitPrimitivesResult region = fit_primitives(seeded.mMesh, ro);
+    EXPECT_EQ(region.mNumCylinder, 1);
+    EXPECT_NEAR(rows(region.mMesh)[0].mParams[6], 0.6, 1e-9);
+    ro.mRegion = "nope";
+    EXPECT_THROW(fit_primitives(plate, ro), std::invalid_argument);
+    o.mRimAngleDeg = 200.0;
+    EXPECT_THROW(fit_primitives(plate, o), std::invalid_argument);
+}
+
+TEST(FitPrimitivesTrimming, OutliersDoNotDragTheRadius) {
+    // A noisy cylinder (sigma 1e-3) with every 20th point 10 sigma outward.
+    const double sigma = 1e-3;
+    Mesh cyl = analytic::cylinder(1.0, 2.0, 20);
+    NDArray pts = NDArray::Uninit(DType::Float64, cyl.Points().Shape());
+    SplitMix g{42};
+    for (std::size_t i = 0; i < cyl.NumPoints(); ++i) {
+        const double* p = cyl.Points().As<double>() + 3 * i;
+        const double r = std::hypot(p[0], p[1]);
+        // A sum of uniforms: near-normal noise of standard deviation sigma.
+        double noise = 0.0;
+        for (int k = 0; k < 12; ++k)
+            noise += 0.5 * g.Next();
+        noise *= sigma / std::sqrt(1.0);
+        const double dr = (i % 20 == 0) ? 10.0 * sigma : noise;
+        double* q = pts.As<double>() + 3 * i;
+        q[0] = p[0] * (r + dr) / r;
+        q[1] = p[1] * (r + dr) / r;
+        q[2] = p[2];
+    }
+    cyl.AssignPoints(std::move(pts));
+    FitPrimitivesOptions o;
+    o.mPatchData = "";
+    o.mTypes = 1u << 3;
+    o.mTolerance = 0.02;
+    o.mMinInlierFraction = 0.5;
+    o.mUsedPoints = FitUsedPoints::All;
+    const double plain = rows(fit_primitives(cyl, o).mMesh)[0].mParams[6];
+    o.mUsedPoints = FitUsedPoints::Sigma3;
+    const FitPrimitivesResult trimmed = fit_primitives(cyl, o);
+    const double robust = rows(trimmed.mMesh)[0].mParams[6];
+    EXPECT_LT(std::fabs(robust - 1.0), sigma);
+    EXPECT_GT(std::fabs(plain - 1.0), std::fabs(robust - 1.0));
+    const std::int64_t rejected =
+        trimmed.mMesh.FieldData(kFitPatchNumRejectedName).As<std::int64_t>()[0];
+    EXPECT_GE(rejected, static_cast<std::int64_t>(cyl.NumPoints() / 20));
+    EXPECT_LT(trimmed.mMesh.FieldData(kFitPatchSigmaName).As<double>()[0], 2.0 * sigma);
+}
+
+TEST(FitPrimitivesTrimming, AConsensusStartFitsAPlaneThroughGrossOutliers) {
+    // A plane with a third of its points lifted far off it: least squares tilts,
+    // the least median of squares start does not.
+    std::vector<std::vector<double>> p;
+    std::vector<std::vector<std::int64_t>> quads;
+    for (int j = 0; j <= 10; ++j)
+        for (int i = 0; i <= 10; ++i)
+            p.push_back({0.1 * i, 0.1 * j, (i + j) % 3 == 0 && i < 6 ? 0.2 : 0.0});
+    for (int j = 0; j < 10; ++j)
+        for (int i = 0; i < 10; ++i)
+            quads.push_back({j * 11 + i, j * 11 + i + 1, (j + 1) * 11 + i + 1, (j + 1) * 11 + i});
+    const Mesh plate = mt::make_mesh(p, "quad", quads);
+    FitPrimitivesOptions o;
+    o.mPatchData = "";
+    o.mTypes = 1u << 1;
+    o.mTolerance = 0.5;
+    o.mMinInlierFraction = 0.0;
+    o.mUsedPoints = FitUsedPoints::Sigma3;
+    const FitPrimitivesResult r = fit_primitives(plate, o);
+    const std::vector<FpRow> rr = rows(r.mMesh);
+    ASSERT_EQ(rr[0].mType, 1);
+    EXPECT_NEAR(std::fabs(rr[0].mParams[5]), 1.0, 1e-12);  // the normal is z
+    EXPECT_NEAR(rr[0].mParams[2], 0.0, 1e-12);
+}

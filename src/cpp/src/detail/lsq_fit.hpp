@@ -72,5 +72,25 @@ using LsqResidual = std::function<void(const std::vector<double>& rTheta, double
 void lsq_levenberg_marquardt(std::vector<double>& rTheta, const std::vector<double>& rTypical,
                              std::size_t N, const LsqResidual& rResidual, int MaxIterations);
 
+/**
+ * @brief Kasa's algebraic circle through the points `(rX[i], rY[i])`: `x^2 +
+ * y^2 + D x + E y + F = 0` by its 3x3 normal equations, solved by Cramer's
+ * rule, accumulated in point order (the arithmetic `fit_cad`'s cylinder
+ * unroll has always used).
+ * @return false when the system is singular or the radius is not real.
+ */
+bool lsq_circle_kasa(const std::vector<double>& rX, const std::vector<double>& rY, double& rCx,
+                     double& rCy, double& rR);
+
+/**
+ * @brief The geometric circle: Gauss-Newton on the residuals `|p - c| - r`
+ * from the start `(rCx, rCy, rR)` (Kasa's, say), at most `MaxIterations`
+ * steps, stopping when a step moves the centre and radius by less than
+ * `1e-15` of the radius.
+ * @return false when a step is singular; the start is then left unchanged.
+ */
+bool lsq_circle_geometric(const std::vector<double>& rX, const std::vector<double>& rY, double& rCx,
+                          double& rCy, double& rR, int MaxIterations = 50);
+
 }  // namespace detail
 }  // namespace meshioplusplus

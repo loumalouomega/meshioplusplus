@@ -46,10 +46,13 @@
  */
 
 // System includes
+#include <cstdint>
+#include <string>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/exceptions.hpp"
 
 namespace meshioplusplus::detail {
 
@@ -59,5 +62,65 @@ const std::vector<int>* cell_flip_permutation(CellType Type);
 /// Per facet of @p Type, its number after the flip; empty for a type without
 /// facets (a vertex or a line), `nullptr` when the type has no permutation.
 const std::vector<int>* cell_flip_facet_map(CellType Type);
+
+/// How one block's cells are flipped: a fixed table, a polygon ring or a
+/// polyhedron's face rings (`mirror` and `flip_normals`, roadmap 7.8.2).
+struct BlockFlip {
+    const std::vector<int>* pPerm = nullptr;
+    const std::vector<int>* pFacets = nullptr;
+    std::vector<int> mPolygonPerm;  ///< a rectangular polygon block's own table
+    bool mRaggedPolygon = false;
+    bool mPolyhedron = false;
+
+    /// The node permutation of a rectangular block.
+    const std::vector<int>& Perm() const { return mPolygonPerm.empty() ? *pPerm : mPolygonPerm; }
+};
+
+/// The flip of a block of cells.
+/// @throws Unsupported for a type with no orientation flip, naming @p pOp.
+template <class CellViewT>
+BlockFlip block_flip(const CellViewT& rCells, const char* pOp) {
+    BlockFlip f;
+    const std::string type(rCells.Type());
+    const CellType ct = cell_type_from_name(type);
+    if (rCells.IsPolyhedron()) {
+        f.mPolyhedron = true;
+        return f;
+    }
+    if (ct == CellType::Polygon) {
+        if (rCells.IsRagged()) {
+            f.mRaggedPolygon = true;
+            return f;
+        }
+        // A polygon with rectangular storage: every row has the same size.
+        const int npc = static_cast<int>(rCells.NodesPerCell());
+        f.mPolygonPerm.push_back(0);
+        for (int i = npc - 1; i >= 1; --i)
+            f.mPolygonPerm.push_back(i);
+        return f;
+    }
+    f.pPerm = rCells.IsRagged() ? nullptr : cell_flip_permutation(ct);
+    f.pFacets = cell_flip_facet_map(ct);
+    if (f.pPerm == nullptr ||
+        static_cast<std::size_t>(cell_type_num_nodes(ct)) != rCells.NodesPerCell())
+        throw Unsupported(std::string("meshio++: ") + pOp +
+                          ": no orientation flip for cell type '" + type +
+                          "' (linear and quadratic types, polygons and polyhedra only)");
+    return f;
+}
+
+/// The local facet a flipped cell gives facet @p F of a cell with @p N facets
+/// (a polygon's N is its node count), or -1 when F is not a facet of the cell.
+inline std::int64_t block_flip_facet(const BlockFlip& rFlip, std::int64_t F, std::int64_t N) {
+    if (F < 0)
+        return -1;
+    if (rFlip.mPolyhedron)
+        return F < N ? F : -1;
+    if (rFlip.mRaggedPolygon || !rFlip.mPolygonPerm.empty())
+        return F < N ? N - 1 - F : -1;
+    if (rFlip.pFacets == nullptr || F >= static_cast<std::int64_t>(rFlip.pFacets->size()))
+        return -1;
+    return (*rFlip.pFacets)[static_cast<std::size_t>(F)];
+}
 
 }  // namespace meshioplusplus::detail

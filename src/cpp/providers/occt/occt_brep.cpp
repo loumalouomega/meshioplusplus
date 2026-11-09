@@ -61,6 +61,11 @@
 #include <IFSelect_ReturnStatus.hxx>
 #include <IGESControl_Reader.hxx>
 #include <Interface_Static.hxx>
+#include <TCollection_HAsciiString.hxx>
+#include <StepData_StepModel.hxx>
+#include <StepBasic_Product.hxx>
+#include <STEPControl_Writer.hxx>
+#include <APIHeaderSection_MakeHeader.hxx>
 #include <Poly_Triangulation.hxx>
 #include <STEPControl_Reader.hxx>
 #include <ShapeAnalysis_ShapeTolerance.hxx>
@@ -912,6 +917,40 @@ Mesh occt_tessellate(const TopoDS_Shape& rNurbs, const BrepInfo& rInfo, double D
     mesh.AddCellData("cad:span", column(span, 2));
     mesh.AddCellData("cad:trimmed", column(std::vector<std::int64_t>(nt, 0), 1));
     return mesh;
+}
+
+// The shape as AP214 STEP in millimetres, its product named @p pProduct and
+// its header free of time stamps and counters, so the bytes depend on the
+// shape alone (fit_cad's writer, shared with profile_solid).
+void occt_write_step(const TopoDS_Shape& rShape, const std::string& rPath, const char* pProduct,
+                     const char* pPrefix) {
+    const std::string base = rPath.substr(rPath.find_last_of("/\\") + 1);
+    STEPControl_Writer writer;
+    Interface_Static::SetCVal("write.step.schema", "AP214IS");
+    Interface_Static::SetCVal("write.step.unit", "MM");
+    if (writer.Transfer(rShape, STEPControl_AsIs) != IFSelect_RetDone)
+        throw WriteError(std::string(pPrefix) + "OpenCASCADE could not transfer the solid to STEP");
+    // The product is otherwise named "Open CASCADE STEP translator <version>
+    // <counter>", which makes the bytes depend on how many files this process
+    // wrote before.
+    const opencascade::handle<StepData_StepModel> model = writer.Model();
+    for (int i = 1; i <= model->NbEntities(); ++i) {
+        const opencascade::handle<StepBasic_Product> product =
+            opencascade::handle<StepBasic_Product>::DownCast(model->Value(i));
+        if (product.IsNull())
+            continue;
+        product->SetId(new TCollection_HAsciiString(pProduct));
+        product->SetName(new TCollection_HAsciiString(pProduct));
+    }
+    APIHeaderSection_MakeHeader header(model);
+    header.SetName(new TCollection_HAsciiString(base.c_str()));
+    header.SetTimeStamp(new TCollection_HAsciiString("1970-01-01T00:00:00"));
+    header.SetOriginatingSystem(new TCollection_HAsciiString("meshio++"));
+    header.SetAuthorisation(new TCollection_HAsciiString(""));
+    header.SetAuthorValue(1, new TCollection_HAsciiString(""));
+    header.SetOrganizationValue(1, new TCollection_HAsciiString(""));
+    if (writer.Write(rPath.c_str()) != IFSelect_RetDone)
+        throw WriteError(std::string(pPrefix) + "cannot write '" + rPath + "'");
 }
 
 }  // namespace meshioplusplus::detail

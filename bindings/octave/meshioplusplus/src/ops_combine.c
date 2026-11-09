@@ -361,7 +361,8 @@ static mxArray *O_mio_find_intersections(const mxArray **a) {
 }
 
 /* thickness(mesh, other, direction, max_distance, threshold, region,
- * region_other). `min_point` is a 1 x 3 row (one point). */
+ * region_other, method, cone_angle, cone_rays, two_sided,
+ * max_normal_deviation). `min_point` is a 1 x 3 row (one point). */
 static mxArray *O_mio_thickness(const mxArray **a) {
     mio_thickness_opts opts;
     mio_thickness_opts_init(&opts);
@@ -378,6 +379,19 @@ static mxArray *O_mio_thickness(const mxArray **a) {
     opts.threshold = mio_o_double(a[4], "threshold");
     opts.region = mio_o_opt_string(a[5]);
     opts.region_target = mio_o_opt_string(a[6]);
+    const char *meth = mio_o_string(a[7], "method");
+    if (strcmp(meth, "ray") == 0)
+        opts.method = MIO_THICKNESS_RAY;
+    else if (strcmp(meth, "sphere") == 0)
+        opts.method = MIO_THICKNESS_SPHERE;
+    else if (strcmp(meth, "cone") == 0)
+        opts.method = MIO_THICKNESS_CONE;
+    else
+        mio_o_error("thickness", "`method` must be 'ray', 'sphere' or 'cone'");
+    opts.cone_angle = mio_o_double(a[8], "cone_angle");
+    opts.cone_rays = (int64_t)mio_o_double(a[9], "cone_rays");
+    opts.two_sided = mio_o_bool(a[10], "two_sided");
+    opts.max_normal_deviation = mio_o_double(a[11], "max_normal_deviation");
     const mio_mesh *target = mio_o_is_null(a[1]) ? NULL : mio_o_mesh(a[1]);
     mio_thickness_report r;
     mio_mesh *out = mio_thickness(mio_o_mesh(a[0]), target, &opts, &r);
@@ -385,7 +399,8 @@ static mxArray *O_mio_thickness(const mxArray **a) {
     mxArray *w = mio_o_getbuffer(mio_thickness_warnings, "thickness");
     const char *names[] = {"mesh",      "direction", "num_cells",    "num_hit",  "num_missed",
                            "num_below", "min",       "max",          "mean",     "min_cell",
-                           "min_point", "max_distance", "warnings"};
+                           "min_point", "max_distance", "warnings", "method", "p2", "p95"};
+    static const char *const kMethods[] = {"ray", "sphere", "cone"};
     mxArray *v[] = {mio_o_wrap_mesh(out),
                     mio_o_str(r.direction == MIO_THICKNESS_OUTWARD ? "outward" : "inward"),
                     mio_o_scalar((double)r.num_cells),
@@ -398,8 +413,167 @@ static mxArray *O_mio_thickness(const mxArray **a) {
                     mio_o_scalar(r.min_cell < 0 ? 0.0 : (double)(r.min_cell + 1)),
                     mio_o_row3(r.min_point),
                     mio_o_scalar(r.max_distance),
+                    w,
+                    mio_o_str(kMethods[r.method >= 0 && r.method <= 2 ? r.method : 0]),
+                    mio_o_scalar(r.p2),
+                    mio_o_scalar(r.p95)};
+    return mio_o_struct(16, names, v);
+}
+
+/* deviation(scan, reference, type, params, tolerance, bins, range_min,
+ * range_max, max_normal_angle, reference_region, register); reference []
+ * measures against the primitive (type 1-5, ten params). */
+static mxArray *O_mio_deviation(const mxArray **a) {
+    mio_deviation_opts opts;
+    mio_deviation_opts_init(&opts);
+    opts.tolerance = mio_o_double(a[4], "tolerance");
+    opts.bins = (int64_t)mio_o_double(a[5], "bins");
+    opts.range_min = mio_o_double(a[6], "range_min");
+    opts.range_max = mio_o_double(a[7], "range_max");
+    opts.max_normal_angle = mio_o_double(a[8], "max_normal_angle");
+    opts.reference_region = mio_o_opt_string(a[9]);
+    opts.register_first = mio_o_bool(a[10], "register");
+    mio_deviation_report r;
+    mio_mesh *out;
+    if (mio_o_is_null(a[1])) {
+        size_t n = 0;
+        double *p = mio_o_doubles(a[3], &n, "params");
+        if (n != 10) mio_o_error("deviation", "`params` must be ten numbers");
+        out = mio_deviation_primitive(mio_o_mesh(a[0]), (int32_t)mio_o_double(a[2], "type"), p,
+                                      &opts, &r);
+    } else {
+        out = mio_deviation(mio_o_mesh(a[0]), mio_o_mesh(a[1]), &opts, &r);
+    }
+    if (out == NULL) mio_o_fail("deviation");
+    mxArray *w = mio_o_getbuffer(mio_deviation_warnings, "deviation");
+    const int64_t nb = r.num_bins;
+    mxArray *counts = mio_o_column(nb);
+    mxArray *edges = mio_o_column(nb + 1);
+    int64_t *tmp = (int64_t *)mxMalloc((size_t)(nb > 0 ? nb : 1) * sizeof(int64_t));
+    mio_deviation_histogram(tmp, mxGetPr(edges), nb);
+    for (int64_t k = 0; k < nb; ++k)
+        mxGetPr(counts)[k] = (double)tmp[k];
+    mxFree(tmp);
+    mxArray *pct = mio_o_matrix(1, 5);
+    for (int k = 0; k < 5; ++k)
+        mxGetPr(pct)[k] = r.percentiles[k];
+    const char *names[] = {"mesh",          "num_points",        "num_measured",
+                           "min",           "max",               "mean",
+                           "rms",           "sigma",             "percentiles",
+                           "histogram_edges", "histogram_counts", "num_outside_range",
+                           "share_within",  "suggested_range",   "num_without_normal",
+                           "warnings",      "registered",        "matrix",
+                           "registration_rms"};
+    mxArray *mat = mio_o_matrix(4, 4);
+    double dm[16];
+    mio_deviation_matrix(dm);
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j) mxGetPr(mat)[j * 4 + i] = dm[4 * i + j];
+    mxArray *v[] = {mio_o_wrap_mesh(out),
+                    mio_o_scalar((double)r.num_points),
+                    mio_o_scalar((double)r.num_measured),
+                    mio_o_scalar(r.min),
+                    mio_o_scalar(r.max),
+                    mio_o_scalar(r.mean),
+                    mio_o_scalar(r.rms),
+                    mio_o_scalar(r.sigma),
+                    pct,
+                    edges,
+                    counts,
+                    mio_o_scalar((double)r.num_outside_range),
+                    mio_o_scalar(r.share_within),
+                    mio_o_scalar(r.suggested_range),
+                    mio_o_scalar((double)r.num_without_normal),
+                    w,
+                    mio_o_logical(r.registered != 0),
+                    mat,
+                    mio_o_scalar(r.registration_rms)};
+    return mio_o_struct(19, names, v);
+}
+
+/* deviation_regions(mesh, tolerance, field, prefix, min_area); `regions` is an
+ * n x 1 struct array. */
+static mxArray *O_mio_deviation_regions(const mxArray **a) {
+    mio_deviation_regions_opts opts;
+    mio_deviation_regions_opts_init(&opts);
+    opts.tolerance = mio_o_double(a[1], "tolerance");
+    opts.field = mio_o_opt_string(a[2]);
+    opts.prefix = mio_o_opt_string(a[3]);
+    opts.min_area = mio_o_double(a[4], "min_area");
+    mio_deviation_regions_report r;
+    mio_mesh *out = mio_deviation_regions(mio_o_mesh(a[0]), &opts, &r);
+    if (out == NULL) mio_o_fail("deviation_regions");
+    const char *fields[] = {"name",   "sign",   "num_cells", "area",  "extreme",
+                            "mean",   "volume", "centroid",  "bounds"};
+    mxArray *regions = mio_o_struct_array(r.num_regions, 9, fields);
+    for (int64_t k = 0; k < r.num_regions; ++k) {
+        mio_deviation_region_info g;
+        if (mio_deviation_region_get(k, &g) != MIO_OK) mio_o_fail("deviation_regions");
+        char buf[512];
+        mio_deviation_region_name(k, buf, (int64_t)sizeof(buf));
+        mxArray *bounds = mio_o_matrix(1, 6);
+        for (int c = 0; c < 6; ++c)
+            mxGetPr(bounds)[c] = g.bounds[c];
+        mxSetField(regions, (mwIndex)k, "name", mio_o_str(buf));
+        mxSetField(regions, (mwIndex)k, "sign", mio_o_scalar((double)g.sign));
+        mxSetField(regions, (mwIndex)k, "num_cells", mio_o_scalar((double)g.num_cells));
+        mxSetField(regions, (mwIndex)k, "area", mio_o_scalar(g.area));
+        mxSetField(regions, (mwIndex)k, "extreme", mio_o_scalar(g.extreme));
+        mxSetField(regions, (mwIndex)k, "mean", mio_o_scalar(g.mean));
+        mxSetField(regions, (mwIndex)k, "volume", mio_o_scalar(g.volume));
+        mxSetField(regions, (mwIndex)k, "centroid", mio_o_row3(g.centroid));
+        mxSetField(regions, (mwIndex)k, "bounds", bounds);
+    }
+    mxArray *w = mio_o_getbuffer(mio_deviation_regions_warnings, "deviation_regions");
+    const char *names[] = {"mesh",        "regions",     "num_excess",
+                           "num_missing", "num_dropped", "warnings"};
+    mxArray *v[] = {mio_o_wrap_mesh(out),
+                    regions,
+                    mio_o_scalar((double)r.num_excess),
+                    mio_o_scalar((double)r.num_missing),
+                    mio_o_scalar((double)r.num_dropped),
                     w};
-    return mio_o_struct(13, names, v);
+    return mio_o_struct(6, names, v);
+}
+
+/* exaggerate(mesh, field, scale, clamp, smooth_fraction). */
+static mxArray *O_mio_exaggerate(const mxArray **a) {
+    mio_exaggerate_opts opts;
+    mio_exaggerate_opts_init(&opts);
+    opts.field = mio_o_opt_string(a[1]);
+    opts.scale = mio_o_double(a[2], "scale");
+    opts.clamp = mio_o_double(a[3], "clamp");
+    opts.smooth_fraction = mio_o_double(a[4], "smooth_fraction");
+    mio_exaggerate_report r;
+    mio_mesh *out = mio_exaggerate(mio_o_mesh(a[0]), &opts, &r);
+    if (out == NULL) mio_o_fail("exaggerate");
+    mxArray *w = mio_o_getbuffer(mio_exaggerate_warnings, "exaggerate");
+    const char *names[] = {"mesh", "clamp", "radius", "num_moved", "warnings"};
+    mxArray *v[] = {mio_o_wrap_mesh(out), mio_o_scalar(r.clamp), mio_o_scalar(r.radius),
+                    mio_o_scalar((double)r.num_moved), w};
+    return mio_o_struct(5, names, v);
+}
+
+/* colorize(mesh, field, cmap, vmin, vmax, symmetric, steps, nan_color,
+ * component); component is 0-based here (-1: the magnitude). */
+static mxArray *O_mio_colorize(const mxArray **a) {
+    mio_colorize_opts opts;
+    mio_colorize_opts_init(&opts);
+    opts.field = mio_o_string(a[1], "field");
+    opts.cmap = mio_o_opt_string(a[2]);
+    opts.vmin = mio_o_double(a[3], "vmin");
+    opts.vmax = mio_o_double(a[4], "vmax");
+    opts.symmetric = mio_o_double(a[5], "symmetric") != 0.0 ? 1 : 0;
+    opts.steps = (int64_t)mio_o_double(a[6], "steps");
+    opts.nan_color = mio_o_opt_string(a[7]);
+    opts.component = (int64_t)mio_o_double(a[8], "component");
+    mio_colorize_report r;
+    mio_mesh *out = mio_colorize(mio_o_mesh(a[0]), &opts, &r);
+    if (out == NULL) mio_o_fail("colorize");
+    const char *names[] = {"mesh", "vmin", "vmax", "location"};
+    mxArray *v[] = {mio_o_wrap_mesh(out), mio_o_scalar(r.vmin), mio_o_scalar(r.vmax),
+                    mio_o_str(r.location == 1 ? "cell" : "point")};
+    return mio_o_struct(4, names, v);
 }
 
 static mxArray *O_mio_has_netgen(const mxArray **a) {
@@ -1283,6 +1457,12 @@ static mxArray *O_mio_decimate(const mxArray **a) {
     int64_t n_frozen = 0;
     opts.frozen = mio_o_ids_0based(a[8], &n_frozen, "frozen");
     opts.num_frozen = n_frozen;
+    /* Roadmap 7.8.5: negative is unset, as the other criteria. */
+    const double dev_limit = mio_o_double(a[9], "max_deviation");
+    opts.max_deviation = dev_limit < 0.0 ? 0.0 : dev_limit;
+    opts.coverage = mio_o_double(a[10], "coverage");
+    const int64_t cap = mio_o_int64(a[11], "max_faces");
+    opts.max_faces = cap < 0 ? 0 : cap;
 
     mio_decimate_result *r = mio_decimate_ex(mio_o_mesh(a[0]), &opts);
     if (r == NULL) mio_o_fail("decimate");
@@ -1295,14 +1475,20 @@ static mxArray *O_mio_decimate(const mxArray **a) {
     mxArray *pr = mio_o_scalar((double)mio_decimate_result_points_removed(r));
     mxArray *cr = mio_o_scalar((double)mio_decimate_result_collapses_rejected(r));
     mxArray *me = mio_o_scalar(mio_decimate_result_max_error_applied(r));
+    int32_t met = 1;
+    int64_t rounds = 0;
+    mxArray *dv = mio_o_scalar(mio_decimate_result_deviation(r, &met, &rounds));
+    mxArray *dm = mio_o_logical(met != 0);
+    mxArray *rd = mio_o_scalar((double)rounds);
     mio_mesh *out = mio_decimate_result_take_mesh(r);
     mio_decimate_result_free(r);
     if (out == NULL) mio_o_fail("decimate take_mesh");
     const char *names[] = {"mesh",           "point_map",          "cell_maps",
                            "faces_removed",  "points_removed",     "collapses_rejected",
-                           "max_error_applied"};
-    mxArray *values[] = {mio_o_wrap_mesh(out), pm, cm, fr, pr, cr, me};
-    return mio_o_struct(7, names, values);
+                           "max_error_applied", "deviation",       "deviation_met",
+                           "rounds"};
+    mxArray *values[] = {mio_o_wrap_mesh(out), pm, cm, fr, pr, cr, me, dv, dm, rd};
+    return mio_o_struct(10, names, values);
 }
 
 /* decimate_volume(mesh, ratio, target_cells, max_error, placement,
@@ -1433,7 +1619,11 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_revolve, 8),
     MIO_O_ENTRY(mio_mirror, 7),
     MIO_O_ENTRY(mio_find_intersections, 6),
-    MIO_O_ENTRY(mio_thickness, 7),
+    MIO_O_ENTRY(mio_thickness, 12),
+    MIO_O_ENTRY(mio_deviation, 11),
+    MIO_O_ENTRY(mio_deviation_regions, 5),
+    MIO_O_ENTRY(mio_exaggerate, 5),
+    MIO_O_ENTRY(mio_colorize, 9),
     MIO_O_ENTRY(mio_has_netgen, 0),
     MIO_O_ENTRY(mio_tetrahedralize_backends, 0),
     MIO_O_ENTRY(mio_remesh_quads, 9),
@@ -1464,7 +1654,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_poly_to_tet, 2),
     MIO_O_ENTRY(mio_refine, 11),
     MIO_O_ENTRY(mio_tessellate, 5),
-    MIO_O_ENTRY(mio_decimate, 9),
+    MIO_O_ENTRY(mio_decimate, 12),
     MIO_O_ENTRY(mio_decimate_volume, 9),
     MIO_O_ENTRY(mio_partition, 9),
     MIO_O_ENTRY(mio_partition_labels, 8),

@@ -24,8 +24,8 @@
  *
  * ### Reading
  *
- * `read_step` needs the OpenCASCADE backend (`MESHIOPLUSPLUS_WITH_OCCT`, LGPL-2.1 with the OCCT exception, bring your
- * own) and throws `Unsupported` naming the flag without it. The file's shape
+ * `read_step` needs the OpenCASCADE backend (`MESHIOPLUSPLUS_WITH_OCCT`, LGPL-2.1 with the OCCT
+ * exception, bring your own) and throws `Unsupported` naming the flag without it. The file's shape
  * is triangulated by `BRepMesh` at `CadReadOptions::mDeflection` into one
  * `triangle` block with the `cad:*` cell data of `BrepInfo`; the overload
  * taking a `BrepInfo` also returns the shape as NURBS -- every face's surface,
@@ -81,6 +81,7 @@
 // System includes
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/brep.hpp"
@@ -127,6 +128,43 @@ MESHIOPLUSPLUS_API void write_step(const std::string& rPath, const Mesh& rMesh);
  */
 MESHIOPLUSPLUS_API void write_step(const std::string& rPath, const Mesh& rMesh,
                                    const StepWriteOptions& rOptions);
+
+/// Options of `write_step_elements` (roadmap 7.6.5).
+struct StepElementsOptions {
+    /// The `segment:patch` labels to write; empty writes every accepted patch.
+    std::vector<std::int64_t> mPatches;
+    /// Facets round a cylinder, cone or torus in the tessellation the B-rep
+    /// writer is given (its faces are the exact surfaces; at least 8).
+    std::int64_t mSegments = 64;
+};
+
+/// What `write_step_elements` wrote.
+struct StepElementsResult {
+    std::int64_t mNumPlanes = 0;     ///< bounded faces
+    std::int64_t mNumSpheres = 0;    ///< balls
+    std::int64_t mNumCylinders = 0;  ///< solids with flat lids
+    std::int64_t mNumCones = 0;      ///< frusta (or cones from the apex)
+    std::int64_t mNumTori = 0;
+    std::int64_t mNumSkipped = 0;  ///< patches with no element (type none, too few points)
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Write the fitted primitives of @p rFitted (`segment`, then
+ * `fit_primitives`) as geometry a CAD user can snap to (roadmap 7.6.5): a
+ * plane as a face bounded by the convex hull of its points, a sphere as a
+ * ball, a cylinder as a solid with flat lids over its points' axial extent, a
+ * cone as the frustum they span and a torus whole, each exact
+ * (`PLANE`, `SPHERICAL_SURFACE`, `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE`,
+ * `TOROIDAL_SURFACE` faces with `CIRCLE` rims). The solids are
+ * `MANIFOLD_SOLID_BREP`s and the planes `SHELL_BASED_SURFACE_MODEL`s of one
+ * face, in one file.
+ * @throws WriteError on a mesh with no fit table, an unknown patch label, a
+ *         selection with nothing to write, or a file that cannot be written.
+ */
+MESHIOPLUSPLUS_API StepElementsResult write_step_elements(const std::string& rPath,
+                                                          const Mesh& rFitted,
+                                                          const StepElementsOptions& rOptions = {});
 
 /// Read a STEP file as its triangulation (see "Reading" above).
 /// @throws Unsupported in a build without OpenCASCADE; ReadError on a file

@@ -50,6 +50,7 @@ def repair(
     weld_tolerance: float = 0.0,
     record_provenance: bool = False,
     return_report: bool = False,
+    fill_style: str = "fan",
 ):
     """Repair a surface mesh's orientation, holes and pinched vertices.
 
@@ -88,6 +89,11 @@ def repair(
         ``0`` (the default) skips the weld.
     :param record_provenance: attach ``repair:parent_point`` (point data) and
         ``repair:hole`` (cell data).
+    :param fill_style: how a hole is filled (roadmap 7.8.6): ``"fan"`` (one
+        centroid point, the default), ``"flat"`` (the minimum-area
+        triangulation of the loop refined to the rim's edge density and
+        faired as a membrane, Liepa 2003) or ``"curved"`` (faired as a thin
+        plate, continuing the surface's curvature).
     :param return_report: also return the run summary dict (the counters,
         ``quality_before``/``quality_after``, ``point_map`` and ``cell_maps``).
     :returns: the repaired mesh, or ``(mesh, report)`` if ``return_report``.
@@ -118,6 +124,7 @@ def repair(
         int(max_hole_edges),
         float(weld_tolerance),
         bool(record_provenance),
+        str(fill_style),
     )
     out = res.pop("mesh")
     return (out, res) if return_report else out

@@ -32,6 +32,7 @@ if TYPE_CHECKING:
         code_aster,
         dex,
         dolfin,
+        dxf,
         elmer,
         ensight,
         exodus,
@@ -116,6 +117,8 @@ if TYPE_CHECKING:
     from ._check_conformity import check_conformity
     from ._check_tetrahedra import check_tetrahedra
     from ._clean import clean
+    from ._clip import clip
+    from ._colorize import colorize
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
     from ._coordinates import convert_coordinates
@@ -131,6 +134,7 @@ if TYPE_CHECKING:
     from ._dataset import DatasetEntry, DatasetManifest
     from ._decimate import decimate
     from ._decimate_volume import decimate_volume
+    from ._deviation import deviation, deviation_regions, exaggerate
     from ._diff import diff, meshes_equal
     from ._eigenmodes import laplacian_eigenmodes
     from ._error import estimate_error
@@ -139,7 +143,10 @@ if TYPE_CHECKING:
     from ._feature_edges import feature_edges
     from ._find_intersections import find_intersections
     from ._fit_cad import fit_cad
+    from ._fit_cad_loop import constrain_primitives, face_support, fit_cad_iterate
+    from ._fit_curves import fit_curves
     from ._fit_primitives import fit_primitives
+    from ._flip_normals import flip_normals
     from ._geodesic import geodesic_distance
     from ._gpu import (
         from_cupy,
@@ -198,6 +205,7 @@ if TYPE_CHECKING:
     )
     from ._interpolate import interpolate
     from ._isosurface import isosurface
+    from ._measure import align_datums, measure, measure_table
     from ._merge import merge
     from ._mesh_cad import mesh_cad_surface, triangulate_polygon_2d
     from ._metric import prepare_metric
@@ -216,6 +224,7 @@ if TYPE_CHECKING:
     from ._normals import compute_normals
     from ._octree import octree
     from ._octree_mesh import octree_mesh
+    from ._offset_surface import hollow, offset_surface, thicken
     from ._optimize_volume import optimize_volume
     from ._parameterize import parameterize
     from ._partition import partition, partition_labels
@@ -259,6 +268,11 @@ if TYPE_CHECKING:
         tube,
         uv_sphere,
     )
+    from ._profile_solid import (
+        profile_features_from_text,
+        profile_solid,
+        profile_solid_providers,
+    )
     from ._project_to_cad import project_to_cad
     from ._proximity import (
         BistrideHierarchy,
@@ -272,10 +286,16 @@ if TYPE_CHECKING:
     from ._refine import refine
     from ._refine_patches import refine_patches
     from ._region_ops import edit_regions
-    from ._registration import register_rigid
+    from ._registration import (
+        auto_align,
+        find_symmetry_plane,
+        register_landmarks,
+        register_rigid,
+    )
     from ._remesh import remesh
     from ._remesh_quads import remesh_quads, remesh_quads_backends
     from ._remesh_volume import remesh_volume
+    from ._remove_islands import remove_islands
     from ._render import render_image, render_text, snapshot
     from ._reorder import compute_bandwidth, reorder
     from ._repair import repair
@@ -297,13 +317,15 @@ if TYPE_CHECKING:
         write_sequence,
     )
     from ._shrinkwrap import shrinkwrap
+    from ._silhouette import silhouette
     from ._skin import extract_skin
-    from ._slice import slice
+    from ._slice import sections, slice
     from ._smooth import smooth
     from ._sniff import sniff_format
     from ._sobolev_deform import sobolev_deform
     from ._split import split
     from ._stats import compute_stats
+    from ._step_elements import write_step_elements
     from ._subdivide import subdivide
     from ._surface import extract_surface
     from ._tensor_invariants import tensor_invariants
@@ -368,6 +390,9 @@ _LAZY_ATTRS = {
     "prepare_metric": "_metric",
     "untangle": "_untangle",
     "register_rigid": "_registration",
+    "register_landmarks": "_registration",
+    "find_symmetry_plane": "_registration",
+    "auto_align": "_registration",
     "convert_coordinates": "_coordinates",
     "write_graph": "_adjacency",
     "clean": "_clean",
@@ -391,6 +416,10 @@ _LAZY_ATTRS = {
     "check_tetrahedra": "_check_tetrahedra",
     "find_intersections": "_find_intersections",
     "thickness": "_thickness",
+    "deviation": "_deviation",
+    "deviation_regions": "_deviation",
+    "exaggerate": "_deviation",
+    "colorize": "_colorize",
     "decimate": "_decimate",
     "decimate_volume": "_decimate_volume",
     "diff": "_diff",
@@ -543,6 +572,25 @@ _LAZY_ATTRS = {
     "shrinkwrap": "_shrinkwrap",
     "extract_skin": "_skin",
     "slice": "_slice",
+    "sections": "_slice",
+    "fit_curves": "_fit_curves",
+    "silhouette": "_silhouette",
+    "measure": "_measure",
+    "remove_islands": "_remove_islands",
+    "offset_surface": "_offset_surface",
+    "profile_solid": "_profile_solid",
+    "profile_solid_providers": "_profile_solid",
+    "profile_features_from_text": "_profile_solid",
+    "constrain_primitives": "_fit_cad_loop",
+    "face_support": "_fit_cad_loop",
+    "fit_cad_iterate": "_fit_cad_loop",
+    "thicken": "_offset_surface",
+    "hollow": "_offset_surface",
+    "flip_normals": "_flip_normals",
+    "clip": "_clip",
+    "measure_table": "_measure",
+    "align_datums": "_measure",
+    "write_step_elements": "_step_elements",
     "smooth": "_smooth",
     "sniff_format": "_sniff",
     "sobolev_deform": "_sobolev_deform",
@@ -593,6 +641,7 @@ __all__ = [
     "code_aster",
     "dex",
     "dolfin",
+    "dxf",
     "elmer",
     "ensight",
     "exodus",
@@ -701,6 +750,10 @@ __all__ = [
     "check_tetrahedra",
     "find_intersections",
     "thickness",
+    "deviation",
+    "deviation_regions",
+    "exaggerate",
+    "colorize",
     "sniff_format",
     "reorder",
     "compute_bandwidth",
@@ -719,6 +772,25 @@ __all__ = [
     "estimate_error",
     "error_size",
     "slice",
+    "sections",
+    "fit_curves",
+    "silhouette",
+    "write_step_elements",
+    "measure",
+    "measure_table",
+    "align_datums",
+    "remove_islands",
+    "offset_surface",
+    "profile_solid",
+    "profile_solid_providers",
+    "profile_features_from_text",
+    "constrain_primitives",
+    "face_support",
+    "fit_cad_iterate",
+    "thicken",
+    "hollow",
+    "flip_normals",
+    "clip",
     "isosurface",
     "transform",
     "clean",
@@ -743,6 +815,9 @@ __all__ = [
     "prepare_metric",
     "untangle",
     "register_rigid",
+    "register_landmarks",
+    "find_symmetry_plane",
+    "auto_align",
     "convert_coordinates",
     "refine",
     "undo_green",

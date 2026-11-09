@@ -178,7 +178,7 @@ def add_transfer_quiet_arg(parser):
     )
 
 
-def add_decimate_args(parser, unit, help_texts, boundary_flag):
+def add_decimate_args(parser, unit, help_texts, boundary_flag, bounded=False):
     """The option block of ``decimate`` and ``decimate-volume``.
 
     ``unit`` is the count flag's noun (``"faces"`` or ``"cells"``, giving
@@ -186,10 +186,12 @@ def add_decimate_args(parser, unit, help_texts, boundary_flag):
     ``ratio``, ``count``, ``max_error``, ``placement``, ``features`` and
     ``angle`` to each verb's own wording; ``boundary_flag`` is the
     ``(flags, kwargs)`` of the boundary switch, whose polarity differs between
-    the two verbs. The order is the verbs' ``--help`` order.
+    the two verbs. The order is the verbs' ``--help`` order. ``bounded`` adds
+    ``decimate``'s ``--max-deviation``, ``--coverage`` and ``--max-faces``
+    (roadmap 7.8.5), ``--max-faces`` alone counting as the criterion.
     """
     add_io_args(parser, "decimated mesh to be written to", in_help=help_texts["in"])
-    group = parser.add_mutually_exclusive_group(required=True)
+    group = parser.add_mutually_exclusive_group(required=not bounded)
     group.add_argument("--ratio", type=float, default=None, help=help_texts["ratio"])
     group.add_argument(
         f"--target-{unit}", type=int, default=None, help=help_texts["count"]
@@ -197,6 +199,22 @@ def add_decimate_args(parser, unit, help_texts, boundary_flag):
     group.add_argument(
         "--max-error", type=float, default=None, help=help_texts["max_error"]
     )
+    if bounded:
+        group.add_argument(
+            "--max-deviation",
+            type=float,
+            default=None,
+            help="the largest distance the result may lie from the input, two-sided",
+        )
+        parser.add_argument(
+            "--coverage",
+            type=float,
+            default=0.999,
+            help="the share of samples --max-deviation holds for (default 0.999)",
+        )
+        parser.add_argument(
+            "--max-faces", type=int, default=None, help="at most this many faces"
+        )
     parser.add_argument(
         "--placement",
         choices=["optimal", "midpoint", "endpoint"],

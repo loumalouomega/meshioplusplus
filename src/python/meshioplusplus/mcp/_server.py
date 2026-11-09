@@ -58,7 +58,7 @@ def _forward(target):
     is what the SDK turns into the tool's input schema, and its docstring the
     description, so both stay written out; only the body, ``return
     _guard(target, a=a, b=b, ...)`` with every parameter by name, is generated
-    (roadmap §8). ``functools.wraps`` keeps the signature visible through
+    (roadmap §7). ``functools.wraps`` keeps the signature visible through
     ``__wrapped__`` (mcp 2.x) and this module's globals for the string
     annotations (mcp 1.x evaluates them against the wrapper's).
     """
@@ -524,9 +524,13 @@ def _register_operations(server: FastMCP) -> None:
         origin: Optional[List[float]] = None,
         normal: Optional[List[float]] = None,
         record_parent_ids: bool = False,
+        chain: bool = False,
+        min_length: float = 0.0,
     ) -> dict:
         """Planar cross-section: the true intersection with a plane, one
-        topological dimension below the input (default plane: z = 0)."""
+        topological dimension below the input (default plane: z = 0). chain
+        walks a surface's line section into polylines (section:chain and
+        section:closed cell data), dropping chains shorter than min_length."""
         return _guard(
             _tools.tool_slice,
             input_path=input_path,
@@ -536,7 +540,327 @@ def _register_operations(server: FastMCP) -> None:
             origin=origin if origin is not None else [0.0, 0.0, 0.0],
             normal=normal if normal is not None else [0.0, 0.0, 1.0],
             record_parent_ids=record_parent_ids,
+            chain=chain,
+            min_length=min_length,
         )
+
+    @server.tool()
+    @_forward(_tools.tool_remove_islands)
+    def remove_islands(
+        input_path: str,
+        output_path: str,
+        connectivity: str = "edge",
+        min_diagonal: float = 0.01,
+        min_area: float = 0.0,
+        min_cells: int = 0,
+        relative: bool = True,
+        dry_run: bool = False,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Drop a scan's crumbs: the connected components (by shared edges,
+        or points) whose bounding-box diagonal, area or cell count is below a
+        threshold, relative to the whole mesh by default (min_diagonal 0.01).
+        dry_run labels islands:component and islands:removed instead. Reports
+        num_components, num_removed, num_cells_removed, num_points_removed
+        and per component its cells, diagonal, area and whether it goes."""
+
+    @server.tool()
+    @_forward(_tools.tool_flip_normals)
+    def flip_normals(
+        input_path: str,
+        output_path: str,
+        region: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Reverse the winding of every cell, or of a cell region's, with no
+        point moved; Side regions move with their cells. Reports num_flipped."""
+
+    @server.tool()
+    @_forward(_tools.tool_clip)
+    def clip(
+        input_path: str,
+        output_path: str,
+        origin: List[float],
+        normal: List[float],
+        keep: str = "below",
+        cap: bool = True,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Cut a surface by the plane through origin normal to normal, keep
+        the side below it (or "above"), split the triangles across it at the
+        crossings slice computes, and cap the cut's closed loops so a closed
+        part stays closed. Reports num_kept, num_split, num_cap_triangles,
+        num_loops, num_open_chains and warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_profile_solid)
+    def profile_solid(
+        input_path: str,
+        output_path: str,
+        features: Union[str, List[dict]],
+        step_path: Optional[str] = None,
+        scan_path: Optional[str] = None,
+        provider: str = "",
+        deflection: float = 0.0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Build a solid from a fit_curves sketch (input_path) by features
+        applied in order, through a CAD provider (OpenCASCADE): first an
+        extrusion ({"kind": "extrude", "distance": d}, 0 runs to scan_path's
+        extent, "symmetric" half each way) or a revolution ({"kind":
+        "revolve", "axis_origin", "axis_direction", "angle"}), then fillets
+        ({"kind": "fillet", "radius"}), chamfers ({"kind": "chamfer",
+        "distance"}) or a shell ({"kind": "shell", "distance": wall}) on
+        every edge; features may also be text such as
+        "extrude:10;fillet:0.5". Writes the tessellation (output_path) and
+        STEP (step_path). Reports volume, area, num_faces, valid, provider,
+        providers and warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_constrain_primitives)
+    def constrain_primitives(
+        input_path: str,
+        output_path: str,
+        face_tolerance: float = 0.0,
+        angle_tolerance: float = -1.0,
+        distance_tolerance: float = -1.0,
+        min_fraction: float = -1.0,
+        force: Optional[List[List[Union[int, str]]]] = None,
+        forbid: Optional[List[List[Union[int, str]]]] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Fit related primitives of a fit_primitives skin together: coaxial
+        groups, parallel and perpendicular planes, equal radii, as
+        fit_cad's constrain_primitives does, with force and forbid lists of
+        [patch_a, patch_b, relation] (coaxial, parallel, perpendicular,
+        equal_radius; patches by segment:patch label) and angle (degrees)
+        and distance tolerances (negative keeps the pass's own). Reports
+        num_constrained, num_groups, face_tolerance, relations (each
+        patch_a, patch_b, relation, angle_deg, distance, forced) and unmet."""
+
+    @server.tool()
+    @_forward(_tools.tool_face_support)
+    def face_support(
+        solid_path: str,
+        scan_path: str,
+        output_path: Optional[str] = None,
+        tolerance: float = 0.0,
+        measured_share: float = 0.9,
+        inferred_share: float = 0.1,
+        hole_data: str = "repair:hole",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Class each face of a fit_cad re-mesh (solid_path) by how much of
+        it the scan supports: measured (at least measured_share of its area
+        within tolerance of the scan), inferred (below inferred_share: no
+        scan near) or partial; scan cells marked by hole_data (repair's
+        fills) count as unmeasured. Reports face_share, face_class,
+        num_measured, num_partial, num_inferred, share_within and
+        tolerance; output_path writes the solid with fit_cad:face_support."""
+
+    @server.tool()
+    @_forward(_tools.tool_fit_cad_iterate)
+    def fit_cad_iterate(
+        input_path: str,
+        output_path: str,
+        step_path: Optional[str] = None,
+        part_class: str = "any",
+        target_within: float = 0.0,
+        target_explained: float = 0.0,
+        segment_tolerance: float = 0.0,
+        fit_tolerance: float = 0.0,
+        max_rounds: int = 4,
+        worst_faces: int = 3,
+        refine_factor: float = 0.25,
+        backend: str = "auto",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Reverse-engineer a closed scan in rounds: segment, fit_primitives
+        and fit_cad, stopping when the share of the scan within tolerance of
+        the solid reaches target_within (and the explained area
+        target_explained), at no improvement or after max_rounds, else
+        re-segmenting the worst faces' patches finer. part_class (analytic,
+        cast, freeform) sets the target (0.90, 0.85, 0.75) and tolerances.
+        Writes the best solid (output_path, and step_path as STEP). Reports
+        rounds, best_round, target_met, stop_reason and the face support."""
+
+    @server.tool()
+    @_forward(_tools.tool_offset_surface)
+    def offset_surface(
+        input_path: str,
+        output_path: str,
+        distance: float,
+        smooth_iterations: int = 0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Offset a triangle and quad surface: each point moves along its
+        offset direction (boundary_layer's) by distance over the least cosine
+        to its faces, so every face's plane moves by distance (positive along
+        the faces' normals). Keeps the connectivity, data and regions.
+        Reports num_not_visible, num_clamped, num_folded, max_move and
+        warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_thicken)
+    def thicken(
+        input_path: str,
+        output_path: str,
+        thickness: float,
+        side: str = "inward",
+        smooth_iterations: int = 0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Turn a surface into a closed shell thickness thick: side
+        "inward" (the surface and its offset by -thickness), "outward" or
+        "both" (+-thickness/2); the lower layer is reversed and the boundary
+        edges are joined by quads (thicken:side cell data 0 upper, 1 lower, 2
+        rim). Reports num_rim_quads, num_folded, max_move and warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_hollow)
+    def hollow(
+        input_path: str,
+        output_path: str,
+        wall: float,
+        smooth_iterations: int = 0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Give a closed surface an inner wall: the surface plus its offset
+        by -wall, reversed (an open surface is refused). Reports num_folded,
+        max_move and warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_measure)
+    def measure(
+        input_path: str,
+        spec: Union[dict, str],
+        output_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Measure a scan by a spec (a dict, its JSON text, or a JSON file's
+        path): elements fitted ("fit": plane, sphere, cylinder, cone or auto,
+        on a cell "region", from "seeds" [[x, y, z]], or a segment "patch"),
+        constructed ("construct": intersection, axis, centre, apex,
+        mid_plane, projection, plane_through; "of": [names]) or literal
+        ("point"); dimensions (distance, angle between two elements, with
+        nominal and tolerance) and tolerances (flatness, cylindricity,
+        sphericity, circularity, parallelism, perpendicularity, angularity
+        with basic_angle, coaxiality, concentricity; feature, datum, limit),
+        and the form criterion. Reports elements, dimensions, tolerances
+        (each value and pass), num_fail and warnings; output_path writes the
+        mesh with its element table (measure:table) and measure:<name>
+        regions."""
+
+    @server.tool()
+    @_forward(_tools.tool_align_datums)
+    def align_datums(
+        input_path: str,
+        output_path: str,
+        primary: str,
+        secondary: str,
+        origin: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """The 3-2-1 datum alignment of a measured mesh (measure): the
+        primary element (a plane, or an axis) sets Z, the secondary X, and
+        origin (a point-like element, or a third plane meeting the other two)
+        the origin. Writes the moved mesh, its element table with it, and
+        reports the 4x4 matrix transform applies."""
+
+    @server.tool()
+    @_forward(_tools.tool_write_step_elements)
+    def write_step_elements(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        patches: Optional[List[int]] = None,
+        segments: int = 64,
+    ) -> dict:
+        """Write the fitted primitives of a mesh (segment, then
+        fit_primitives) to a STEP file as exact geometry a CAD user can snap
+        to: each plane as a face bounded by its points' convex hull, a sphere
+        as a ball, a cylinder as a solid with flat lids over its measured
+        length, a cone as its frustum, a torus whole. patches selects patch
+        labels (default every fitted one). Reports num_planes, num_spheres,
+        num_cylinders, num_cones, num_tori, num_skipped, warnings and
+        output_path."""
+
+    @server.tool()
+    @_forward(_tools.tool_silhouette)
+    def silhouette(
+        input_path: str,
+        output_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        normal: Optional[List[float]] = None,
+        clearance: float = 0.0,
+        round_angle: float = 180.0,
+        arc_segments: int = 64,
+        extrude: bool = False,
+        region: Optional[str] = None,
+        merge_tolerance: float = 1e-9,
+    ) -> dict:
+        """The outline of a surface (or a volume mesh's skin) seen along normal
+        (default 0,0,1): projected and unioned exactly, as closed loops with
+        its holes, in the plane at the part's lowest point. clearance > 0
+        grows it (a loose fit), < 0 shrinks it (a press fit), corners turning
+        by less than round_angle rounded with arcs; extrude returns the closed
+        surface of the prism over it instead (a nest or a jig). Reports
+        num_loops, num_outer, num_holes, num_triangles, area, perimeter,
+        min_height, max_height and warnings; output_path writes the chained
+        line mesh (ready for fit_curves) or the prism."""
+
+    @server.tool()
+    @_forward(_tools.tool_fit_curves)
+    def fit_curves(
+        input_path: str,
+        output_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        tolerance: float = 0.0,
+        snap_angle: float = 0.0,
+        normal: Optional[List[float]] = None,
+        min_arc_points: int = 4,
+        min_arc_sweep: float = 5.0,
+    ) -> dict:
+        """Lines, arcs and circles from a chained line mesh (slice with chain,
+        or sections): each chain split into the runs a line or a circular arc
+        explains within tolerance (0: 1e-3 of the diagonal), in its section
+        plane's 2-D frame; snap_angle snaps lines onto the axes or diagonals.
+        Reports pieces (type, start, end, centre, radius, sweep, residual,
+        num_points, chain, frame), frames (4x4: e1, e2, normal, origin
+        columns), num_lines, num_arcs, num_circles, max_residual, tolerance
+        and warnings; output_path writes the mesh with sketch:piece and the
+        sketch:* field data."""
+
+    @server.tool()
+    @_forward(_tools.tool_sections)
+    def sections(
+        input_path: str,
+        output_path: str,
+        offsets: List[float],
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        direction: Optional[List[float]] = None,
+        min_length: float = 0.0,
+        record_parent_ids: bool = False,
+    ) -> dict:
+        """Chained line sections of a surface at the parallel planes
+        n . x = offsets[k] (n the unit direction, default +z), merged into one
+        line mesh with section:offset, section:chain and section:closed cell
+        data; the drawing profiles of a scanned part."""
 
     @server.tool()
     @_forward(_tools.tool_isosurface)
@@ -1889,6 +2213,11 @@ def _register_operations(server: FastMCP) -> None:
         min_thickness: Optional[float] = None,
         region: str = "",
         region_other: str = "",
+        method: str = "ray",
+        cone_angle: float = 15.0,
+        cone_rays: int = 16,
+        two_sided: bool = False,
+        max_normal_deviation: float = 90.0,
     ) -> dict:
         """Wall thickness or clearance per facet of a surface, by a ray from
         each cell's centroid along its normal.
@@ -1897,12 +2226,122 @@ def _register_operations(server: FastMCP) -> None:
         "outward" at the next wall facing the ray (clearance); "auto" is
         inward for one surface and outward against other_path. The surface
         must be consistently oriented with outward normals. max_distance
-        bounds the ray (0 = the bounding-box diagonal). Reports direction,
-        num_cells, num_hit, num_missed, num_below (below min_thickness), min,
-        max, mean, min_cell, min_point, max_distance and warnings; with
+        bounds the ray (0 = the bounding-box diagonal). method "sphere" reads
+        twice the distance from the ray's midpoint to the nearest other
+        surface (the perpendicular distance where walls diverge), "cone" the
+        shortest of cone_rays rays within cone_angle degrees (a chamfer's
+        narrow spot); two_sided casts both ways with either face counting (a
+        scan's unreliable winding; the ray is then a fifth of the diagonal by
+        default) and max_normal_deviation steps over faces more edge-on than
+        that. Reports direction, method, num_cells, num_hit, num_missed,
+        num_below (below min_thickness), min, max, mean, p2, p95, min_cell,
+        min_point, max_distance and warnings; with
         min_thickness also threshold and passed. Pass output_path to write the
         mesh with thickness:distance (NaN for a miss) and thickness:hit_cell
         cell data."""
+
+    @server.tool()
+    @_forward(_tools.tool_deviation)
+    def deviation(
+        input_path: str,
+        reference_path: str,
+        output_path: Optional[str] = None,
+        file_format: Optional[str] = None,
+        reference_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        patch: Optional[int] = None,
+        tolerance: float = 0.0,
+        min_share: Optional[float] = None,
+        bins: int = 20,
+        range_min: Optional[float] = None,
+        range_max: Optional[float] = None,
+        max_normal_angle: float = 90.0,
+        reference_region: str = "",
+        register: bool = False,
+        element: Optional[str] = None,
+    ) -> dict:
+        """Signed deviation of every point of a scan (input_path) from a
+        reference surface (reference_path): positive outside it (excess
+        material), negative inside (missing material). With patch, measure
+        against that patch label's fitted primitive of a mesh fit_primitives
+        wrote instead. max_normal_angle is the far-side rule: a reference
+        triangle whose normal turns away from the scan point's by more is
+        skipped, so a thin wall is not measured to its back face (180 turns
+        it off). Reports num_points, num_measured, min, max, mean, rms, sigma,
+        percentiles (p1, p5, p50, p95, p99), histogram_edges and
+        histogram_counts (bins over range_min..range_max, default +-max|d|),
+        num_outside_range, share_within (within +-tolerance), suggested_range,
+        num_without_normal and warnings; with min_share also passed. Pass
+        output_path to write the scan with deviation:distance point data.
+        register registers the scan to the reference first (an automatic
+        start, point-to-plane ICP, adaptive trimming): the written scan is
+        then the registered one, and the report adds registered, matrix and
+        registration_rms. element measures against an element of the
+        reference's element table (measure) instead: a plane, sphere,
+        cylinder or cone."""
+
+    @server.tool()
+    @_forward(_tools.tool_deviation_regions)
+    def deviation_regions(
+        input_path: str,
+        output_path: str,
+        tolerance: float,
+        file_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        field: str = "deviation:distance",
+        prefix: str = "deviation:",
+        min_area: float = 0.0,
+    ) -> dict:
+        """Connected regions (cells joined across shared edges) of a measured
+        surface whose deviation, the mean of each cell's corners' field
+        values, lies beyond +tolerance (excess material) or -tolerance
+        (missing material). Each is written as the cell region
+        <prefix>excess_<k> or <prefix>missing_<k>, with the cell data
+        deviation:region. Reports regions (name, sign, num_cells, area,
+        extreme, mean, volume, centroid, bounds; largest |volume| first),
+        num_excess, num_missing, num_dropped (below min_area) and warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_exaggerate)
+    def exaggerate(
+        input_path: str,
+        output_path: str,
+        file_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        field: str = "deviation:distance",
+        scale: float = 10.0,
+        clamp: float = 0.0,
+        smooth_fraction: float = 0.01,
+    ) -> dict:
+        """A copy of a measured surface with each point displaced along its
+        angle-weighted normal by scale times its deviation (field), clamped
+        to +-clamp (0: the 95th percentile of |d| rounded up to two
+        significant figures) and averaged over the points within
+        smooth_fraction of the bounding-box diagonal: a mesh for a figure or
+        an animation. Reports clamp, radius, num_moved and warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_colorize)
+    def colorize(
+        input_path: str,
+        output_path: str,
+        field: str,
+        file_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        cmap: str = "viridis",
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
+        symmetric: bool = False,
+        steps: int = 0,
+        nan_color: str = "#808080",
+        component: Optional[int] = None,
+    ) -> dict:
+        """Bake a point or cell data field into UInt8 red, green and blue data
+        through a colormap (viridis, coolwarm, turbo, ...): the vertex or face
+        colours a PLY file carries and glTF takes with color_by "rgb". vmin
+        and vmax set the range (default the field's min and max; symmetric
+        +-max|v|), steps of 2 or more bands it at fixed steps, nan_color
+        colours non-finite values. Reports vmin, vmax and location."""
 
     @server.tool()
     def render_mesh(
@@ -2261,6 +2700,13 @@ def _register_operations(server: FastMCP) -> None:
         min_inlier_fraction: float = 0.9,
         types: Optional[List[str]] = None,
         max_iterations: int = 50,
+        region: Optional[str] = None,
+        seeds: Optional[List[List[float]]] = None,
+        feature_angle: float = 30.0,
+        rim_angle: float = 15.0,
+        output_region: str = "fit:feature",
+        used_points: str = "auto",
+        criterion: str = "least_squares",
     ) -> dict:
         """Fit a plane, sphere, cylinder, cone or torus to each patch of a
         surface and report how well it fits -- a recovered radius, axis or
@@ -2276,7 +2722,21 @@ def _register_operations(server: FastMCP) -> None:
         with its best residual. The mesh is written with cell data fit:type /
         fit:rms / fit:max and field data fit:patch_*; the report lists each
         patch's type, params (x, y, z, ax, ay, az, r1, r2, angle_deg, 0), rms,
-        max and fraction, plus counts per type."""
+        max and fraction, the form error and extremes, sigma, num_used and
+        num_rejected, plus counts per type.
+
+        region fits one named cell region as one patch; seeds (a list of
+        [x, y, z]) grows a feature from the facet nearest each point across
+        edges below feature_angle while one primitive of types explains it,
+        peels rim faces turning more than rim_angle from the fit, fits it as
+        one patch and writes its cells as the cell region output_region
+        (num_feature_cells). used_points "3sigma"/"2sigma"/"1sigma" refits on
+        the points within k RMS distances until the set stops changing;
+        "auto" is "3sigma" with a region or seeds, "all" otherwise.
+        criterion "minimum_zone" (the narrowest zone holding every point, as
+        GD&T form tolerances are defined), "min_circumscribed" or
+        "max_inscribed" (a shaft's or a hole's envelope) refits planes,
+        spheres and cylinders under that reference."""
 
     @server.tool()
     @_forward(_tools.tool_refine_patches)
@@ -2507,6 +2967,7 @@ def _register_operations(server: FastMCP) -> None:
         max_hole_edges: int = 10,
         weld_tolerance: float = 0.0,
         record_provenance: bool = False,
+        fill_style: str = "fan",
     ) -> dict:
         """Repair a surface mesh's orientation, holes and pinched vertices --
         the three defects `clean` does not touch (it welds, drops degenerate
@@ -2535,7 +2996,12 @@ def _register_operations(server: FastMCP) -> None:
         nested cavities are not detected, so every closed component is
         oriented outward on its own. Point, Cell and Side regions survive (a
         split copy joins its source's; an edge a flip renumbers is found again
-        by its nodes)."""
+        by its nodes).
+
+        fill_style picks how a hole is filled: "fan" (one centroid point,
+        the default), "flat" (minimum-area, refined to the rim's edge
+        density, membrane-faired) or "curved" (thin-plate-faired, continuing
+        the surface's curvature; roadmap 7.8.6)."""
 
     @server.tool()
     @_forward(_tools.tool_shrinkwrap)
@@ -2723,6 +3189,11 @@ def _register_operations(server: FastMCP) -> None:
         source_format: Optional[str] = None,
         target_format: Optional[str] = None,
         output_format: Optional[str] = None,
+        initial: str = "identity",
+        symmetric_check: bool = False,
+        source_region: str = "",
+        target_region: str = "",
+        adaptive_trim: float = 0.0,
     ) -> dict:
         """Rigid registration by iterative closest points: the 4x4 matrix
         (rows) laying the source's points onto the target -- its surface when
@@ -2731,8 +3202,70 @@ def _register_operations(server: FastMCP) -> None:
         iterations; a point-cloud target needs normals point data, see
         estimate_normals). max_distance > 0 drops pairs farther apart
         (outliers). ICP finds the nearest optimum, so the two should start
-        roughly aligned. With output_path the moved source is written too.
-        Reports matrix, initial_rms, rms, iterations, num_pairs, converged."""
+        roughly aligned -- or initial="auto": the best of the 24 candidates
+        laying the two principal frames onto each other, coarse ICP from each
+        (any start; symmetric_check warns when the part looks symmetric).
+        source_region / target_region restrict the pairs to cell regions (the
+        part, not its fixture); adaptive_trim drops pairs beyond that multiple
+        of the median pair distance. With output_path the moved source is
+        written too. Reports matrix, initial_rms, rms, iterations, num_pairs,
+        converged, num_rejected, candidate_rms, chosen_candidate, warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_register_landmarks)
+    def register_landmarks(
+        source_points: List[List[float]],
+        target_points: List[List[float]],
+        weights: Optional[List[float]] = None,
+        input_path: Optional[str] = None,
+        output_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        rotate_data: bool = False,
+    ) -> dict:
+        """The rigid motion laying picked points ([[x, y, z], ...], three or
+        more, the sources not collinear) onto their targets: the weighted Horn
+        solve in closed form, a start for register_rigid. With input_path and
+        output_path the moved mesh is written too. Reports matrix, residuals
+        and rms."""
+
+    @server.tool()
+    @_forward(_tools.tool_find_symmetry_plane)
+    def find_symmetry_plane(
+        input_path: str,
+        input_format: Optional[str] = None,
+        seed_origin: Optional[List[float]] = None,
+        seed_normal: Optional[List[float]] = None,
+        tolerance: float = 0.0,
+        min_share: float = 0.9,
+        max_samples: int = 4000,
+    ) -> dict:
+        """The plane a mesh or point cloud is most nearly symmetric about:
+        each principal plane (and the seed plane) is mirrored, registered back
+        by ICP and read off the reflection-motion product. Refuses a plane
+        whose share of samples within tolerance (0: 0.005 of the diagonal) is
+        below min_share. Reports origin, normal, rms, share, tolerance,
+        candidate_rms, chosen_candidate and warnings."""
+
+    @server.tool()
+    @_forward(_tools.tool_auto_align)
+    def auto_align(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        angle_tolerance: float = 10.0,
+        subdivisions: int = 3,
+        region: str = "",
+        rotate_vector_data: bool = False,
+    ) -> dict:
+        """Pose a scan from itself alone: on its largest flat face, or a
+        cylindrical part on the end of its axis, from an area-weighted
+        histogram of its facet normals (an open scan's opening counts as a
+        face). The result sits on z = 0, centred on the Z axis. Reports
+        matrix, mode ("face" or "axis"), primary, secondary, share,
+        face_share, axis_share, opening_area and warnings alongside the mesh
+        summary."""
 
     @server.tool()
     def estimate_normals(
@@ -3278,15 +3811,17 @@ def _register_operations(server: FastMCP) -> None:
         weld: bool = True,
         tolerance: float = 1e-9,
         reflect_vector_data: bool = False,
+        plane: Optional[str] = None,
     ) -> dict:
         """Reflect a mesh across the plane through origin (default the
         origin) with normal (default [1, 0, 0]), every cell right side out
         (roadmap 3.2.5; a reflecting transform leaves them inverted). With
         keep_original the input followed by its image, the points on the
         plane shared when weld (default); reflect_vector_data reflects float
-        vector and tensor data. Reports num_flipped_cells,
-        num_points_on_plane, num_dropped_cells, num_dropped_sides and
-        warnings."""
+        vector and tensor data. plane="auto" mirrors across the mesh's own
+        symmetry plane (find_symmetry_plane), reported as plane. Reports
+        num_flipped_cells, num_points_on_plane, num_dropped_cells,
+        num_dropped_sides and warnings."""
         return _guard(
             _tools.tool_mirror,
             input_path=input_path,
@@ -3299,6 +3834,7 @@ def _register_operations(server: FastMCP) -> None:
             weld=weld,
             tolerance=tolerance,
             reflect_vector_data=reflect_vector_data,
+            plane=plane,
         )
 
     @server.tool()
@@ -3480,10 +4016,17 @@ def _register_operations(server: FastMCP) -> None:
         preserve_boundary: bool = True,
         preserve_features: bool = True,
         feature_angle: float = 30.0,
+        max_deviation: Optional[float] = None,
+        coverage: float = 0.999,
+        max_faces: Optional[int] = None,
     ) -> dict:
         """Decimate a surface mesh by quadric edge collapse. Give exactly one
         stopping criterion: ratio (fraction of faces to KEEP), target_faces,
-        or max_error. Reports faces/points removed and rejections."""
+        max_error, or max_deviation (the largest two-sided distance from the
+        input on a coverage share of samples: the lightest mesh within it);
+        max_faces caps any of them (alone, it is the target). Reports
+        faces/points removed and rejections, with max_deviation or max_faces
+        also deviation, deviation_met and rounds."""
 
     @server.tool()
     @_forward(_tools.tool_decimate_volume)
@@ -4575,6 +5118,29 @@ def _register_gated(server: FastMCP) -> None:
 # Resources                                                                   #
 # --------------------------------------------------------------------------- #
 def _register_resources(server: FastMCP) -> None:
+    @server.prompt(
+        name="measure_scan", description="Measure a scan against its drawing"
+    )
+    def measure_scan_prompt(
+        scan_path: str = "scan.stl",
+        spec_path: str = "inspection.json",
+        part_class: str = "analytic",
+    ) -> str:
+        """The documented order of the measuring tools (roadmap 7.9.2)."""
+        return _tools.prompt_measure_scan(scan_path, spec_path, part_class)
+
+    @server.prompt(
+        name="reverse_engineer_scan",
+        description="Reverse-engineer a scan into a CAD solid",
+    )
+    def reverse_engineer_scan_prompt(
+        scan_path: str = "scan.stl",
+        step_path: str = "part.step",
+        part_class: str = "analytic",
+    ) -> str:
+        """The documented order of the reverse-engineering tools (roadmap 7.9.2)."""
+        return _tools.prompt_reverse_engineer_scan(scan_path, step_path, part_class)
+
     @server.resource("meshioplusplus://formats")
     def formats_resource() -> str:
         """The supported-formats registry as JSON."""

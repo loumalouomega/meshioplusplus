@@ -30,6 +30,7 @@ function tests = test_ops_combine()
         'metric_from_hessian writes a metric', @t_metric
         'tetrahedralize fills a closed surface', @t_tetrahedralize
         'find_intersections and thickness', @t_intersections
+        'deviation measures an offset sphere', @t_deviation
         'capability queries return their types', @t_capabilities
     };
 end
@@ -295,6 +296,9 @@ function t_decimate()
     expect_equal(df.points_removed, 0);
     % An out-of-range frozen id fails by name (0-based internally).
     expect_error(@() mio.decimate(f, 'target_faces', 1, 'frozen', 999), 'frozen node id 998');
+    dv = mio.decimate(f, 'max_deviation', 1e-9);
+    expect_equal(dv.deviation_met, true);
+    expect_error(@() mio.decimate(f, 'max_deviation', 0.1, 'ratio', 0.5), 'max_deviation');
 end
 
 function t_error_size()
@@ -596,6 +600,31 @@ function t_intersections()
     expect_equal(size(t.min_point), [1, 3]);
     assert(t.min_cell >= 1);
     expect_error(@() mio.thickness(a, 'direction', 'sideways'), 'direction');
+    ts = mio.thickness(a, 'method', 'cone', 'two_sided', true);
+    expect_equal(ts.method, 'cone');
+    assert(ts.p2 <= ts.p95);
+    expect_error(@() mio.thickness(a, 'method', 'laser'), 'method');
+    ch = mio.slice(a, [0 0 0.1], [0 0 1], 'chain', true);
+    assert(mio.num_points(ch) > 0);
+    ss = mio.sections(a, [0 0 1], [-0.5 0.5]);
+    assert(mio.num_points(ss) > 0);
+    fc = mio.fit_curves(ch);
+    if wall == 2
+        % The sphere's section at z = 0.1 is one circle.
+        expect_equal(fc.num_circles, 1);
+        expect_equal(fc.pieces(1).type, 'circle');
+    else
+        % The cube's section is a square: four lines, never a circle through
+        % its corners.
+        expect_equal(fc.num_circles, 0);
+        expect_equal(fc.num_lines, 4);
+        expect_equal(fc.pieces(1).type, 'line');
+    end
+    sil = mio.silhouette(a, 'clearance', 0.05);
+    expect_equal(sil.num_loops, 1);
+    expect_equal(sil.num_holes, 0);
+    assert(sil.area > 0);
+    expect_error(@() mio.silhouette(a, 'arc_segments', 2), 'arc_segments');
 end
 
 function t_capabilities()
@@ -625,4 +654,27 @@ function t_decimate_volume()
     % Exactly one criterion, and frozen ids are range-checked.
     expect_error(@() mio.decimate_volume(tets, 'ratio', 0.5, 'target_cells', 10));
     expect_error(@() mio.decimate_volume(tets, 'ratio', 0.5, 'frozen', 99999), 'frozen');
+end
+
+function t_deviation()
+    if ~(has_cmd('mio_icosa_sphere') && exist('mio.icosa_sphere', 'file'))
+        return;
+    end
+    ref = mio.icosa_sphere('subdivisions', 3);
+    scan = mio.icosa_sphere('radius', 1.01, 'subdivisions', 3);
+    d = mio.deviation(scan, 'reference', ref, 'tolerance', 0.02);
+    assert(abs(d.mean - 0.01) < 1e-9);
+    expect_equal(d.share_within, 1);
+    expect_equal(numel(d.histogram_counts), 20);
+    expect_equal(sum(d.histogram_counts), d.num_measured - d.num_outside_range);
+    p = mio.deviation(scan, 'type', 'sphere', 'params', [0 0 0 0 0 0 1 0 0 0]);
+    assert(abs(p.mean - 0.01) < 1e-12);
+    expect_error(@() mio.deviation(scan, 'type', 'blob'), 'type');
+    g = mio.deviation_regions(d.mesh, 0.005);
+    expect_equal(g.num_excess, 1);
+    expect_equal(g.regions(1).name, 'deviation:excess_0');
+    e = mio.exaggerate(d.mesh, 'scale', 20);
+    assert(e.num_moved > 0);
+    c = mio.colorize(d.mesh, 'deviation:distance', 'steps', 4);
+    expect_equal(c.location, 'point');
 end

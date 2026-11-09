@@ -34,6 +34,7 @@ from ._agglomerate import agglomerate
 from ._check_conformity import check_conformity
 from ._check_tetrahedra import check_tetrahedra
 from ._clean import clean
+from ._colorize import colorize
 from ._convert_cells import convert_cells
 from ._crop import crop
 from ._curvature import compute_curvature
@@ -43,6 +44,7 @@ from ._data_condition import data_condition
 from ._data_manage import data_drop, data_keep, data_rename
 from ._decimate import decimate
 from ._decimate_volume import decimate_volume
+from ._deviation import deviation, deviation_regions, exaggerate
 from ._error import estimate_error
 from ._error_size import error_size
 from ._feature_edges import feature_edges
@@ -390,6 +392,31 @@ def _dvec(step, key):
     ):
         raise _err(step["Op"], f"parameter '{key}' must be an array of numbers")
     return [float(e) for e in v]
+
+
+def _registration_initial(step):
+    """``Initial`` as ``register_rigid``'s ``initial``."""
+    v = _text(step, "Initial", "identity")
+    if v not in ("identity", "auto"):
+        raise _err("RegisterRigid", "Initial must be 'identity' or 'auto'")
+    return "auto" if v == "auto" else None
+
+
+def _int_number(op, step, key, default):
+    v = _number(step, key, default)
+    if float(int(v)) != v:
+        raise _err(op, f"{key} must be an integer")
+    return int(v)
+
+
+def _fit_seeds(op, step):
+    """``Seeds`` as ``(x, y, z)`` triples, or ``None``."""
+    v = _dvec(step, "Seeds")
+    if not v:
+        return None
+    if len(v) % 3:
+        raise _err(op, "Seeds holds x, y, z triples")
+    return [tuple(v[k : k + 3]) for k in range(0, len(v), 3)]
 
 
 def _svec(step, key):
@@ -1140,6 +1167,9 @@ def _apply_step(mesh, step, steps, warnings):
     elif op == "Mirror":
         from ._mirror import mirror
 
+        plane = _text(step, "Plane", "")
+        if plane not in ("", "auto"):
+            raise _err(op, "Plane must be '' or 'auto'")
         mesh, report = mirror(
             mesh,
             _vec3(step, "Point") if "Point" in step else (0.0, 0.0, 0.0),
@@ -1148,8 +1178,11 @@ def _apply_step(mesh, step, steps, warnings):
             weld=_flag(step, "Weld", True),
             tolerance=_number(step, "Tolerance", 1e-9),
             reflect_vector_data=_flag(step, "ReflectData", False),
+            plane=plane or None,
             return_report=True,
         )
+        if plane:
+            entry["SymmetryShare"] = float(report["plane"]["share"])
         entry.update(
             NumFlippedCells=float(report["num_flipped_cells"]),
             NumPointsOnPlane=float(report["num_points_on_plane"]),
@@ -1217,8 +1250,18 @@ def _apply_step(mesh, step, steps, warnings):
         ratio = _number(step, "Ratio", -1.0)
         target_faces = _number(step, "TargetFaces", -1.0)
         max_error = _number(step, "MaxError", -1.0)
-        if ratio < 0.0 and target_faces < 0.0 and max_error < 0.0:
+        max_deviation = _number(step, "MaxDeviation", -1.0)
+        max_faces = _number(step, "MaxFaces", -1.0)
+        bounded = max_deviation >= 0.0 or max_faces >= 0.0
+        if ratio < 0.0 and target_faces < 0.0 and max_error < 0.0 and not bounded:
             ratio = 0.5  # a usable pipeline default (the C++ engine's rule)
+        extra = {}
+        if bounded:
+            extra = {
+                "max_deviation": max_deviation if max_deviation >= 0.0 else None,
+                "coverage": _number(step, "Coverage", 0.999),
+                "max_faces": int(max_faces) if max_faces >= 0.0 else None,
+            }
         mesh, report = decimate(
             mesh,
             ratio=ratio if ratio >= 0.0 else None,
@@ -1229,9 +1272,19 @@ def _apply_step(mesh, step, steps, warnings):
             preserve_features=_flag(step, "PreserveFeatures", True),
             feature_angle=_number(step, "FeatureAngle", 30.0),
             return_report=True,
+            **extra,
         )
         entry["FacesRemoved"] = report["faces_removed"]
         entry["CollapsesRejected"] = report["collapses_rejected"]
+        if bounded:
+            entry["Deviation"] = float(report["deviation"])
+            entry["DeviationMet"] = 1.0 if report["deviation_met"] else 0.0
+            entry["Rounds"] = float(report["rounds"])
+            if not report["deviation_met"]:
+                warnings.append(
+                    "decimate: max_faces forbids max_deviation; the step's Deviation is "
+                    "what the result keeps"
+                )
     elif op == "DecimateVolume":
         ratio = _number(step, "Ratio", -1.0)
         target_cells = _number(step, "TargetCells", -1.0)
@@ -1270,12 +1323,66 @@ def _apply_step(mesh, step, steps, warnings):
             origin=_vec3(step, "Point"),
             normal=_vec3(step, "Normal"),
             record_parent_ids=_flag(step, "RecordParentIds", False),
+            chain=_flag(step, "Chain", False),
+            min_length=_number(step, "MinLength", 0.0),
         )
         entry["SectionFaces"] = float(_total_cells(mesh))
         if _total_cells(mesh) == 0:
             warnings.append(
                 "the section is empty; the plane misses the mesh -- move or flip it"
             )
+    elif op == "Silhouette":
+        from ._silhouette import silhouette
+
+        mesh, rep = silhouette(
+            mesh,
+            _vec3(step, "Normal") if "Normal" in step else (0.0, 0.0, 1.0),
+            clearance=_number(step, "Clearance", 0.0),
+            round_angle=_number(step, "RoundAngle", 180.0),
+            arc_segments=_int_number(op, step, "ArcSegments", 64.0),
+            extrude=_flag(step, "Extrude", False),
+            region=_text(step, "Region", ""),
+            merge_tolerance=_number(step, "MergeTolerance", 1e-9),
+            return_report=True,
+        )
+        entry["NumLoops"] = float(rep["num_loops"])
+        entry["NumHoles"] = float(rep["num_holes"])
+        entry["Area"] = float(rep["area"])
+        entry["Perimeter"] = float(rep["perimeter"])
+        warnings.extend(f"silhouette: {w}" for w in rep["warnings"])
+    elif op == "FitCurves":
+        from ._fit_curves import fit_curves
+
+        mesh, rep = fit_curves(
+            mesh,
+            tolerance=_number(step, "Tolerance", 0.0),
+            snap_angle=_number(step, "SnapAngle", 0.0),
+            normal=_vec3(step, "Normal") if "Normal" in step else None,
+            min_arc_points=_int_number(op, step, "MinArcPoints", 4.0),
+            min_arc_sweep=_number(step, "MinArcSweep", 5.0),
+            return_report=True,
+        )
+        entry["NumLines"] = float(rep["num_lines"])
+        entry["NumArcs"] = float(rep["num_arcs"])
+        entry["NumCircles"] = float(rep["num_circles"])
+        entry["MaxResidual"] = float(rep["max_residual"])
+        warnings.extend(f"fit_curves: {w}" for w in rep["warnings"])
+    elif op == "Sections":
+        from ._slice import sections
+
+        offsets = _dvec(step, "Offsets")
+        if not offsets:
+            raise _err(op, "needs Offsets, the planes' distances")
+        mesh = sections(
+            mesh,
+            _vec3(step, "Direction") if "Direction" in step else (0.0, 0.0, 1.0),
+            offsets,
+            min_length=_number(step, "MinLength", 0.0),
+            record_parent_ids=_flag(step, "RecordParentIds", False),
+        )
+        entry["SectionCells"] = float(_total_cells(mesh))
+        if _total_cells(mesh) == 0:
+            warnings.append("the sections are empty; no plane meets the surface")
     elif op == "Gradient":
         component = int(_number(step, "Component", -1.0))
         mesh, report = gradient(
@@ -1430,11 +1537,19 @@ def _apply_step(mesh, step, steps, warnings):
             types=mask_types,
             max_iterations=int(_number(step, "MaxIterations", 50.0)),
             return_report=True,
+            region=_text(step, "Region", "") or None,
+            seeds=_fit_seeds(op, step),
+            feature_angle=_number(step, "FeatureAngle", 30.0),
+            rim_angle=_number(step, "RimAngle", 15.0),
+            output_region=_text(step, "OutputRegion", "fit:feature"),
+            used_points=_text(step, "UsedPoints", "auto"),
+            criterion=_text(step, "Criterion", "least_squares"),
         )
         entry["NumPatches"] = report["num_patches"]
         for t in TYPES[1:]:
             entry["Num" + t.capitalize()] = report["num_" + t]
         entry["NumUnfitted"] = report["num_unfitted"]
+        entry["NumFeatureCells"] = report["num_feature_cells"]
     elif op == "FitCad":
         # The fitted skin becomes a CAD solid, written to `Path` when given; the
         # mesh continues as the solid re-meshed.
@@ -1689,6 +1804,11 @@ def _apply_step(mesh, step, steps, warnings):
             threshold=threshold,
             region=_text(step, "Region", ""),
             region_other=_text(step, "RegionOther", ""),
+            method=_text(step, "Method", "ray"),
+            cone_angle=_number(step, "ConeAngle", 15.0),
+            cone_rays=_int_number(op, step, "ConeRays", 16.0),
+            two_sided=_flag(step, "TwoSided", False),
+            max_normal_deviation=_number(step, "MaxNormalDeviation", 90.0),
             return_report=True,
         )
         if threshold > 0.0 and _flag(step, "Require", True) and rep["num_below"] > 0:
@@ -1702,6 +1822,273 @@ def _apply_step(mesh, step, steps, warnings):
         entry["Min"] = float(rep["min"])
         entry["Max"] = float(rep["max"])
         entry["Mean"] = float(rep["mean"])
+        entry["P2"] = float(rep["p2"])
+        entry["P95"] = float(rep["p95"])
+    elif op == "RemoveIslands":
+        from ._remove_islands import remove_islands
+
+        mesh, rep = remove_islands(
+            mesh,
+            connectivity=_text(step, "Connectivity", "edge"),
+            min_diagonal=_number(step, "MinDiagonal", 0.01),
+            min_area=_number(step, "MinArea", 0.0),
+            min_cells=int(_number(step, "MinCells", 0.0)),
+            relative=_flag(step, "Relative", True),
+            dry_run=_flag(step, "DryRun", False),
+            return_report=True,
+        )
+        entry["NumComponents"] = float(rep["num_components"])
+        entry["NumRemoved"] = float(rep["num_removed"])
+        entry["NumCellsRemoved"] = float(rep["num_cells_removed"])
+    elif op == "FlipNormals":
+        from ._flip_normals import flip_normals
+
+        mesh, rep = flip_normals(
+            mesh, _text(step, "Region", "") or None, return_report=True
+        )
+        entry["NumFlipped"] = float(rep["num_flipped"])
+    elif op == "Clip":
+        from ._clip import clip
+
+        keep = _text(step, "Keep", "below")
+        if keep not in ("below", "above"):
+            raise ValueError("meshio++: pipeline: Clip: Keep is below or above")
+        mesh, rep = clip(
+            mesh,
+            _vec3(step, "Origin") if "Origin" in step else (0.0, 0.0, 0.0),
+            _vec3(step, "Normal") if "Normal" in step else (0.0, 0.0, 1.0),
+            keep=keep,
+            cap=_flag(step, "Cap", True),
+            return_report=True,
+        )
+        warnings.extend(f"clip: {w}" for w in rep["warnings"])
+        entry["NumSplit"] = float(rep["num_split"])
+        entry["NumCapTriangles"] = float(rep["num_cap_triangles"])
+        entry["NumLoops"] = float(rep["num_loops"])
+    elif op == "ProfileSolid":
+        from ._profile_solid import profile_solid
+
+        scan_path = _text(step, "Scan", "")
+        mesh, rep = profile_solid(
+            mesh,
+            _text(step, "Features", ""),
+            _text(step, "Step", "") or None,
+            provider=_text(step, "Provider", ""),
+            deflection=_number(step, "Deflection", 0.0),
+            scan=read(scan_path) if scan_path else None,
+            return_report=True,
+        )
+        warnings.extend(f"profile_solid: {w}" for w in rep["warnings"])
+        entry["Volume"] = float(rep["volume"])
+        entry["NumFaces"] = float(rep["num_faces"])
+        entry["Valid"] = 1.0 if rep["valid"] else 0.0
+    elif op == "ConstrainPrimitives":
+        from ._fit_cad_loop import constrain_primitives
+
+        def _relations(text, key):
+            out = []
+            for item in filter(None, text.split(",")):
+                parts = item.split(":")
+                if len(parts) != 3:
+                    raise ValueError(
+                        f"meshio++: pipeline: ConstrainPrimitives: {key} is "
+                        "A:B:RELATION, comma-separated"
+                    )
+                out.append((int(parts[0]), int(parts[1]), parts[2]))
+            return out
+
+        mesh, rep = constrain_primitives(
+            mesh,
+            face_tolerance=_number(step, "FaceTolerance", 0.0),
+            angle_tolerance=_number(step, "AngleTolerance", -1.0),
+            distance_tolerance=_number(step, "DistanceTolerance", -1.0),
+            min_fraction=_number(step, "MinFraction", -1.0),
+            force=_relations(_text(step, "Force", ""), "Force"),
+            forbid=_relations(_text(step, "Forbid", ""), "Forbid"),
+            return_report=True,
+        )
+        entry["NumConstrained"] = float(rep["num_constrained"])
+        entry["NumGroups"] = float(rep["num_groups"])
+        entry["NumRelations"] = float(len(rep["relations"]))
+        entry["NumUnmet"] = float(len(rep["unmet"]))
+    elif op == "FaceSupport":
+        from ._fit_cad_loop import face_support
+
+        scan_path = _text(step, "Scan", "")
+        if not scan_path:
+            raise ValueError(
+                "meshio++: pipeline: FaceSupport needs Scan, the scan's path"
+            )
+        mesh, rep = face_support(
+            mesh,
+            read(scan_path),
+            tolerance=_number(step, "Tolerance", 0.0),
+            measured_share=_number(step, "MeasuredShare", 0.9),
+            inferred_share=_number(step, "InferredShare", 0.1),
+            hole_data=_text(step, "HoleData", "repair:hole"),
+            return_report=True,
+        )
+        entry["NumMeasured"] = float(rep["num_measured"])
+        entry["NumPartial"] = float(rep["num_partial"])
+        entry["NumInferred"] = float(rep["num_inferred"])
+        entry["ShareWithin"] = float(rep["share_within"])
+    elif op == "FitCadIterate":
+        from ._fit_cad_loop import fit_cad_iterate
+
+        mesh, rep = fit_cad_iterate(
+            mesh,
+            _text(step, "Step", "") or None,
+            part_class=_text(step, "PartClass", "any"),
+            target_within=_number(step, "TargetWithin", 0.0),
+            target_explained=_number(step, "TargetExplained", 0.0),
+            segment_tolerance=_number(step, "SegmentTolerance", 0.0),
+            fit_tolerance=_number(step, "FitTolerance", 0.0),
+            max_rounds=int(_number(step, "MaxRounds", 4)),
+            worst_faces=int(_number(step, "WorstFaces", 3)),
+            refine_factor=_number(step, "RefineFactor", 0.25),
+            backend=_text(step, "Backend", "auto"),
+            return_report=True,
+        )
+        entry["NumRounds"] = float(len(rep["rounds"]))
+        entry["BestRound"] = float(rep["best_round"])
+        entry["TargetMet"] = 1.0 if rep["target_met"] else 0.0
+        entry["ShareWithin"] = float(rep["rounds"][rep["best_round"]]["share_within"])
+    elif op in ("OffsetSurface", "Thicken", "Hollow"):
+        from ._offset_surface import hollow, offset_surface, thicken
+
+        amount = {"OffsetSurface": "Distance", "Thicken": "Thickness"}.get(op, "Wall")
+        if amount not in step:
+            raise ValueError(f"meshio++: pipeline: {op} needs {amount}")
+        value = _number(step, amount, 0.0)
+        passes = int(_number(step, "SmoothIterations", 0.0))
+        if op == "OffsetSurface":
+            mesh, rep = offset_surface(
+                mesh, value, smooth_iterations=passes, return_report=True
+            )
+        elif op == "Thicken":
+            mesh, rep = thicken(
+                mesh,
+                value,
+                side=_text(step, "Side", "inward"),
+                smooth_iterations=passes,
+                return_report=True,
+            )
+        else:
+            mesh, rep = hollow(
+                mesh, value, smooth_iterations=passes, return_report=True
+            )
+        warnings.extend(rep["warnings"])
+        entry["MaxMove"] = float(rep["max_move"])
+        entry["NumFolded"] = float(rep["num_folded"])
+        entry["NumRimQuads"] = float(rep["num_rim_quads"])
+    elif op == "Measure":
+        from ._measure import measure
+
+        spec = _text(step, "Spec", "")
+        if not spec.strip():
+            raise ValueError("meshio++: pipeline: Measure needs a Spec")
+        mesh, rep = measure(mesh, spec)
+        warnings.extend(f"measure: {w}" for w in rep["warnings"])
+        if _flag(step, "Require", False) and rep["num_fail"] > 0:
+            raise RuntimeError(
+                f"meshio++: pipeline: Measure failed: {rep['num_fail']} dimension(s) or "
+                "tolerance(s) outside their limits"
+            )
+        entry["NumElements"] = float(len(rep["elements"]))
+        entry["NumDimensions"] = float(len(rep["dimensions"]))
+        entry["NumTolerances"] = float(len(rep["tolerances"]))
+        entry["NumFail"] = float(rep["num_fail"])
+    elif op == "AlignDatums":
+        from ._measure import align_datums
+
+        mesh, _ = align_datums(
+            mesh,
+            _text(step, "Primary", ""),
+            _text(step, "Secondary", ""),
+            _text(step, "Origin", "") or None,
+        )
+    elif op == "Deviation":
+        # deviation:distance flows on; with Tolerance and MinShare, a share
+        # within tolerance below MinShare stops the pipeline unless Require is
+        # false.
+        ref_path = _text(step, "Reference", "")
+        element = _text(step, "Element", "")
+        if not ref_path and not element:
+            raise ValueError("meshio++: pipeline: Deviation needs a Reference")
+        patch = _number(step, "Patch", -1.0)
+        tol = _number(step, "Tolerance", 0.0)
+        mesh, rep = deviation(
+            mesh,
+            read(ref_path) if ref_path else mesh,
+            patch=int(patch) if patch >= 0.0 else None,
+            element=element or None,
+            tolerance=tol,
+            bins=int(_number(step, "Bins", 20.0)),
+            max_normal_angle=_number(step, "MaxNormalAngle", 90.0),
+            reference_region=_text(step, "ReferenceRegion", ""),
+            register=_flag(step, "Register", False),
+            return_report=True,
+        )
+        if rep.get("registered"):
+            entry["RegistrationRms"] = float(rep["registration_rms"])
+        min_share = _number(step, "MinShare", 0.0)
+        if (
+            tol > 0.0
+            and min_share > 0.0
+            and _flag(step, "Require", True)
+            and not rep["share_within"] >= min_share
+        ):
+            raise RuntimeError(
+                "meshio++: pipeline: Deviation failed: the share within Tolerance is "
+                "below MinShare"
+            )
+        entry["NumMeasured"] = float(rep["num_measured"])
+        entry["Min"] = float(rep["min"])
+        entry["Max"] = float(rep["max"])
+        entry["Mean"] = float(rep["mean"])
+        entry["Rms"] = float(rep["rms"])
+        entry["Sigma"] = float(rep["sigma"])
+        entry["ShareWithin"] = float(rep["share_within"])
+    elif op == "DeviationRegions":
+        mesh, rep = deviation_regions(
+            mesh,
+            _number(step, "Tolerance", 0.0),
+            field=_text(step, "Field", "deviation:distance"),
+            prefix=_text(step, "Prefix", "deviation:"),
+            min_area=_number(step, "MinArea", 0.0),
+            return_report=True,
+        )
+        entry["NumExcess"] = float(rep["num_excess"])
+        entry["NumMissing"] = float(rep["num_missing"])
+        entry["NumDropped"] = float(rep["num_dropped"])
+    elif op == "Exaggerate":
+        mesh, rep = exaggerate(
+            mesh,
+            field=_text(step, "Field", "deviation:distance"),
+            scale=_number(step, "Scale", 10.0),
+            clamp=_number(step, "Clamp", 0.0),
+            smooth_fraction=_number(step, "SmoothFraction", 0.01),
+            return_report=True,
+        )
+        entry["NumMoved"] = float(rep["num_moved"])
+        entry["Clamp"] = float(rep["clamp"])
+    elif op == "Colorize":
+        lo, hi = _number(step, "VMin", 0.0), _number(step, "VMax", 0.0)
+        comp = int(_number(step, "Component", -1.0))
+        mesh, rep = colorize(
+            mesh,
+            _text(step, "Field", ""),
+            cmap=_text(step, "Cmap", "viridis"),
+            vmin=lo if lo < hi else None,
+            vmax=hi if lo < hi else None,
+            symmetric=_flag(step, "Symmetric", False),
+            steps=int(_number(step, "Steps", 0.0)),
+            nan_color=_text(step, "NanColor", "#808080"),
+            component=None if comp < 0 else comp,
+            return_report=True,
+        )
+        entry["VMin"] = float(rep["vmin"])
+        entry["VMax"] = float(rep["vmax"])
     elif op == "EditRegions":
         kind = _text(step, "Kind", "") or None
         edit = {
@@ -1787,6 +2174,7 @@ def _apply_step(mesh, step, steps, warnings):
             weld_tolerance=_number(step, "WeldTolerance", 0.0),
             record_provenance=_flag(step, "RecordProvenance", False),
             return_report=True,
+            fill_style=_text(step, "FillStyle", "fan"),
         )
         entry["NumFlipped"] = report["num_flipped"]
         entry["NumComponents"] = report["num_components"]
@@ -1968,10 +2356,17 @@ def _apply_step(mesh, step, steps, warnings):
             max_iterations=int(iters),
             tolerance=_number(step, "Tolerance", 1e-10),
             max_distance=_number(step, "MaxDistance", 0.0),
+            initial=_registration_initial(step),
+            symmetric_check=_flag(step, "SymmetricCheck", False),
+            source_region=_text(step, "SourceRegion", ""),
+            target_region=_text(step, "TargetRegion", ""),
+            adaptive_trim=_number(step, "AdaptiveTrim", 0.0),
         )
         mesh = transform(
             mesh, matrix=matrix, rotate_vector_data=_flag(step, "RotateData", False)
         )
+        entry["NumRejected"] = float(report["num_rejected"])
+        warnings.extend(f"register_rigid: {w}" for w in report["warnings"])
         entry["InitialRms"] = float(report["initial_rms"])
         entry["Rms"] = float(report["rms"])
         entry["Iterations"] = float(report["iterations"])
@@ -1981,6 +2376,37 @@ def _apply_step(mesh, step, steps, warnings):
                 "register_rigid: no convergence within MaxIterations; the transform is "
                 "the last iterate"
             )
+    elif op == "RegisterLandmarks":
+        from ._registration import register_landmarks
+        from ._transform import transform
+
+        src, dst = _dvec(step, "SourcePoints"), _dvec(step, "TargetPoints")
+        if not src or not dst or len(src) % 3 or len(dst) != len(src):
+            raise _err(op, "SourcePoints and TargetPoints hold as many x, y, z triples")
+        weights = _dvec(step, "Weights")
+        matrix, report = register_landmarks(
+            [src[k : k + 3] for k in range(0, len(src), 3)],
+            [dst[k : k + 3] for k in range(0, len(dst), 3)],
+            weights or None,
+        )
+        mesh = transform(
+            mesh, matrix=matrix, rotate_vector_data=_flag(step, "RotateData", False)
+        )
+        entry["Rms"] = float(report["rms"])
+    elif op == "AutoAlign":
+        from ._registration import auto_align
+
+        mesh, report = auto_align(
+            mesh,
+            angle_tolerance=_number(step, "AngleTolerance", 10.0),
+            subdivisions=_int_number(op, step, "Subdivisions", 3.0),
+            region=_text(step, "Region", ""),
+            rotate_vector_data=_flag(step, "RotateData", False),
+            return_report=True,
+        )
+        entry["Share"] = float(report["share"])
+        entry["AxisMode"] = 1.0 if report["mode"] == "axis" else 0.0
+        warnings.extend(f"auto_align: {w}" for w in report["warnings"])
     elif op == "EstimateNormals":
         from ._point_normals import estimate_normals
 

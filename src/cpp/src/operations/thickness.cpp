@@ -34,6 +34,8 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/parallel.hpp"
 // Project includes (private, not installed)
+#include "../detail/lsq_fit.hpp"
+#include "../detail/render_field.hpp"
 #include "../detail/tri_bvh.hpp"
 
 namespace meshioplusplus {
@@ -84,6 +86,49 @@ std::vector<ThkFacet> thk_facets(const detail::TriangleSoup& rSoup) {
     return facets;
 }
 
+constexpr double kThkPi = 3.14159265358979323846;
+
+// The fan of a cone: the central direction, then a Fibonacci spiral of
+// `Count - 1` directions within `HalfAngle` radians of it, in the frame
+// `lsq_frame` completes around it (deterministic).
+std::vector<detail::Vec3> thk_fan(const detail::Vec3& rAxis, double HalfAngle, std::int64_t Count) {
+    std::vector<detail::Vec3> out{rAxis};
+    if (Count <= 1)
+        return out;
+    detail::Vec3 e1{0.0, 0.0, 0.0}, e2{0.0, 0.0, 0.0};
+    detail::lsq_frame(rAxis.data(), e1.data(), e2.data());
+    const double golden = kThkPi * (3.0 - std::sqrt(5.0));
+    const auto n = static_cast<double>(Count - 1);
+    for (std::int64_t k = 0; k < Count - 1; ++k) {
+        const double polar = HalfAngle * std::sqrt((static_cast<double>(k) + 0.5) / n);
+        const double az = golden * static_cast<double>(k);
+        const double sp = std::sin(polar);
+        out.push_back(
+            detail::vec3_add(detail::vec3_scale(rAxis, std::cos(polar)),
+                             detail::vec3_add(detail::vec3_scale(e1, sp * std::cos(az)),
+                                              detail::vec3_scale(e2, sp * std::sin(az)))));
+    }
+    return out;
+}
+
+// The vertex ids of each facet's triangles, sorted and unique.
+std::vector<std::vector<std::int64_t>> thk_facet_vertices(const detail::TriangleSoup& rSoup,
+                                                          std::size_t NumFacets) {
+    std::vector<std::vector<std::int64_t>> out(NumFacets);
+    std::size_t f = 0;
+    for (std::size_t t = 0; t < rSoup.NumTriangles(); ++t) {
+        if (t > 0 && rSoup.mSourceCell[t] != rSoup.mSourceCell[t - 1])
+            ++f;
+        for (const std::int64_t v : rSoup.mVertices[t])
+            out[f].push_back(v);
+    }
+    for (std::vector<std::int64_t>& r_v : out) {
+        std::sort(r_v.begin(), r_v.end());
+        r_v.erase(std::unique(r_v.begin(), r_v.end()), r_v.end());
+    }
+    return out;
+}
+
 ThicknessResult thk_run(const Mesh& rMesh, const Mesh* pTarget, const ThicknessOptions& rOptions) {
     if (!std::isfinite(rOptions.mMaxDistance) || rOptions.mMaxDistance < 0.0)
         throw std::invalid_argument(
@@ -91,8 +136,21 @@ ThicknessResult thk_run(const Mesh& rMesh, const Mesh* pTarget, const ThicknessO
     if (!std::isfinite(rOptions.mThreshold) || rOptions.mThreshold < 0.0)
         throw std::invalid_argument(
             "meshio++: thickness: threshold must be finite and non-negative");
+    if (!(rOptions.mMaxNormalDeviationDeg > 0.0 && rOptions.mMaxNormalDeviationDeg <= 90.0))
+        throw std::invalid_argument(
+            "meshio++: thickness: max_normal_deviation must lie in (0, 90] degrees");
+    if (rOptions.mMethod == ThicknessMethod::Cone &&
+        (!(rOptions.mConeAngleDeg > 0.0 && rOptions.mConeAngleDeg < 90.0) ||
+         rOptions.mConeRays < 1))
+        throw std::invalid_argument(
+            "meshio++: thickness: the cone needs an angle in (0, 90) degrees and at least one "
+            "ray");
+    if (rOptions.mMethod != ThicknessMethod::Ray && rOptions.mMethod != ThicknessMethod::Sphere &&
+        rOptions.mMethod != ThicknessMethod::Cone)
+        throw std::invalid_argument("meshio++: thickness: unknown method");
     const bool self = pTarget == nullptr;
     ThicknessResult result;
+    result.mMethod = rOptions.mMethod;
     result.mDirection = rOptions.mDirection != ThicknessDirection::Auto
                             ? rOptions.mDirection
                             : (self ? ThicknessDirection::Inward : ThicknessDirection::Outward);
@@ -118,6 +176,8 @@ ThicknessResult thk_run(const Mesh& rMesh, const Mesh* pTarget, const ThicknessO
                     hi[d] = std::max(hi[d], r_p[d]);
                 }
         ray = soup.mCorners.empty() ? 0.0 : detail::vec3_norm(detail::vec3_sub(hi, lo));
+        if (rOptions.mTwoSided)
+            ray *= 0.2;  // a scan's walls: a fifth of the diagonal
     }
     result.mMaxDistance = ray;
 
@@ -125,29 +185,119 @@ ThicknessResult thk_run(const Mesh& rMesh, const Mesh* pTarget, const ThicknessO
     const detail::TriBvh tree = detail::build_tri_bvh(target);
     std::vector<double> dist(facets.size(), std::numeric_limits<double>::quiet_NaN());
     std::vector<std::int64_t> hit_cell(facets.size(), -1);
-    parallel_for(
-        facets.size(),
-        [&](std::size_t f) {
-            const ThkFacet& r_facet = facets[f];
-            if (detail::vec3_norm_sq(r_facet.mNormal) == 0.0 || !(ray > 0.0))
-                return;
-            const detail::Vec3 dir =
-                inward ? detail::vec3_scale(r_facet.mNormal, -1.0) : r_facet.mNormal;
-            const std::int64_t own = self ? r_facet.mCell : -1;
-            const detail::TriRayHit hit = detail::tri_bvh_ray_filtered(
-                tree, r_facet.mOrigin, dir, 0.0, ray,
-                [&](std::int64_t T, const detail::Vec3& rNormal) {
-                    if (target.mSourceCell[static_cast<std::size_t>(T)] == own)
+    const bool legacy = rOptions.mMethod == ThicknessMethod::Ray && !rOptions.mTwoSided &&
+                        rOptions.mMaxNormalDeviationDeg >= 90.0;
+    if (legacy) {
+        parallel_for(
+            facets.size(),
+            [&](std::size_t f) {
+                const ThkFacet& r_facet = facets[f];
+                if (detail::vec3_norm_sq(r_facet.mNormal) == 0.0 || !(ray > 0.0))
+                    return;
+                const detail::Vec3 dir =
+                    inward ? detail::vec3_scale(r_facet.mNormal, -1.0) : r_facet.mNormal;
+                const std::int64_t own = self ? r_facet.mCell : -1;
+                const detail::TriRayHit hit = detail::tri_bvh_ray_filtered(
+                    tree, r_facet.mOrigin, dir, 0.0, ray,
+                    [&](std::int64_t T, const detail::Vec3& rNormal) {
+                        if (target.mSourceCell[static_cast<std::size_t>(T)] == own)
+                            return false;
+                        const double facing = detail::vec3_dot(rNormal, dir);
+                        return inward ? facing > 0.0 : facing < 0.0;
+                    });
+                if (hit.mTriangle < 0)
+                    return;
+                dist[f] = hit.mT;
+                hit_cell[f] = target.mSourceCell[static_cast<std::size_t>(hit.mTriangle)];
+            },
+            64);
+    } else {
+        // Exit (inward), entry (outward) or either face (two-sided), within the
+        // normal deviation; 90 degrees keeps the strict sign test.
+        const bool strict = rOptions.mMaxNormalDeviationDeg >= 90.0;
+        const double cos_dev = std::cos(rOptions.mMaxNormalDeviationDeg * kThkPi / 180.0);
+        const auto facing_ok = [&](double Facing) {
+            return strict ? Facing > 0.0 : Facing >= cos_dev;
+        };
+        std::vector<detail::Vec3> hit_dir(facets.size(), detail::Vec3{0.0, 0.0, 0.0});
+        parallel_for(
+            facets.size(),
+            [&](std::size_t f) {
+                const ThkFacet& r_facet = facets[f];
+                if (detail::vec3_norm_sq(r_facet.mNormal) == 0.0 || !(ray > 0.0))
+                    return;
+                const detail::Vec3 axis =
+                    inward ? detail::vec3_scale(r_facet.mNormal, -1.0) : r_facet.mNormal;
+                const std::int64_t own = self ? r_facet.mCell : -1;
+                std::vector<detail::Vec3> dirs =
+                    rOptions.mMethod == ThicknessMethod::Cone
+                        ? thk_fan(axis, rOptions.mConeAngleDeg * kThkPi / 180.0, rOptions.mConeRays)
+                        : std::vector<detail::Vec3>{axis};
+                if (rOptions.mTwoSided) {
+                    const std::size_t n = dirs.size();
+                    for (std::size_t k = 0; k < n; ++k)
+                        dirs.push_back(detail::vec3_scale(dirs[k], -1.0));
+                }
+                for (const detail::Vec3& r_dir : dirs) {
+                    const detail::TriRayHit hit = detail::tri_bvh_ray_filtered(
+                        tree, r_facet.mOrigin, r_dir, 0.0, ray,
+                        [&](std::int64_t T, const detail::Vec3& rNormal) {
+                            if (target.mSourceCell[static_cast<std::size_t>(T)] == own)
+                                return false;
+                            const double len = detail::vec3_norm(rNormal);
+                            if (!(len > 0.0))
+                                return false;
+                            const double facing = detail::vec3_dot(rNormal, r_dir) / len;
+                            if (rOptions.mTwoSided)
+                                return facing_ok(std::abs(facing));
+                            return facing_ok(inward ? facing : -facing);
+                        });
+                    if (hit.mTriangle < 0 || !(hit.mT < dist[f] || std::isnan(dist[f])))
+                        continue;
+                    dist[f] = hit.mT;
+                    hit_cell[f] = target.mSourceCell[static_cast<std::size_t>(hit.mTriangle)];
+                    hit_dir[f] = r_dir;
+                }
+            },
+            16);
+        if (rOptions.mMethod == ThicknessMethod::Sphere) {
+            // Twice the distance from each ray's midpoint to the nearest
+            // triangle outside the facet's one-ring, never more than the ray.
+            const detail::DistanceQuery query =
+                detail::build_distance_query(target, SurfaceDistanceOptions{});
+            const std::vector<std::vector<std::int64_t>> ring =
+                thk_facet_vertices(soup, facets.size());
+            std::vector<std::size_t> which;
+            std::vector<detail::Vec3> mids;
+            for (std::size_t f = 0; f < facets.size(); ++f)
+                if (hit_cell[f] >= 0) {
+                    which.push_back(f);
+                    mids.push_back(detail::vec3_add(facets[f].mOrigin,
+                                                    detail::vec3_scale(hit_dir[f], 0.5 * dist[f])));
+                }
+            const detail::TriangleFilter accept = [&](std::size_t Q, std::int64_t T) {
+                if (!self)
+                    return true;
+                const std::vector<std::int64_t>& r_ring = ring[which[Q]];
+                for (const std::int64_t v : target.mVertices[static_cast<std::size_t>(T)])
+                    if (std::binary_search(r_ring.begin(), r_ring.end(), v))
                         return false;
-                    const double facing = detail::vec3_dot(rNormal, dir);
-                    return inward ? facing > 0.0 : facing < 0.0;
-                });
-            if (hit.mTriangle < 0)
-                return;
-            dist[f] = hit.mT;
-            hit_cell[f] = target.mSourceCell[static_cast<std::size_t>(hit.mTriangle)];
-        },
-        64);
+                return true;
+            };
+            const std::vector<detail::SurfaceProjection> proj =
+                detail::query_surface_projections_filtered(query, mids, accept, ray);
+            for (std::size_t q = 0; q < which.size(); ++q) {
+                const std::size_t f = which[q];
+                if (!proj[q].mFound)
+                    continue;
+                const double d = 2.0 * proj[q].mDistance;
+                if (d < dist[f]) {
+                    dist[f] = d;
+                    hit_cell[f] = proj[q].mSourceCell;
+                }
+            }
+        }
+    }
 
     // The summary, in cell order.
     std::int64_t degenerate = 0;
@@ -171,8 +321,16 @@ ThicknessResult thk_run(const Mesh& rMesh, const Mesh* pTarget, const ThicknessO
         if (rOptions.mThreshold > 0.0 && d < rOptions.mThreshold)
             ++result.mNumBelow;
     }
-    if (result.mNumHit > 0)
+    if (result.mNumHit > 0) {
         result.mMean = sum / static_cast<double>(result.mNumHit);
+        std::vector<double> hits;
+        hits.reserve(static_cast<std::size_t>(result.mNumHit));
+        for (std::size_t f = 0; f < facets.size(); ++f)
+            if (hit_cell[f] >= 0)
+                hits.push_back(dist[f]);
+        result.mP2 = detail::render_percentile(hits, 2.0);
+        result.mP95 = detail::render_percentile(hits, 95.0);
+    }
     if (degenerate > 0)
         result.mWarnings.emplace_back(std::to_string(degenerate) +
                                       " cells have no area and no normal; they read as misses");
@@ -212,6 +370,17 @@ ThicknessResult thk_run(const Mesh& rMesh, const Mesh* pTarget, const ThicknessO
 }
 
 }  // namespace
+
+ThicknessMethod thickness_method_from_name(const std::string& rName) {
+    if (rName == "ray")
+        return ThicknessMethod::Ray;
+    if (rName == "sphere")
+        return ThicknessMethod::Sphere;
+    if (rName == "cone")
+        return ThicknessMethod::Cone;
+    throw std::invalid_argument("meshio++: thickness: unknown method '" + rName +
+                                "' (expected 'ray', 'sphere' or 'cone')");
+}
 
 ThicknessResult thickness(const Mesh& rMesh, const ThicknessOptions& rOptions) {
     return thk_run(rMesh, nullptr, rOptions);

@@ -183,6 +183,21 @@ struct DecimateOptions {
     /// length `NumPoints()`, where a non-zero entry pins that vertex. Unioned
     /// with the boundary/feature pins, never subtracted from them.
     std::vector<std::uint8_t> mFrozen;
+
+    /// The largest distance the result may lie from the input, a fourth
+    /// stopping criterion (roadmap 7.8.5): the run keeps the fewest faces
+    /// whose two-sided sample distance (the input's vertices to the result,
+    /// the result's vertices and 2 x 2 face samples per triangle to the
+    /// input, as `hausdorff_distance` measures) is at most this on
+    /// `mCoverage` of the samples. Negative means unset; it replaces the other three.
+    double mMaxDeviation = -1.0;
+
+    /// The share of samples `mMaxDeviation` must hold for, in `(0, 1]`.
+    double mCoverage = 0.999;
+
+    /// At most this many faces, a cap on any criterion (alone, it is
+    /// `mTargetFaces`). Negative means unset.
+    std::int64_t mMaxFaces = -1;
 };
 
 /// The result of `decimate`: the decimated mesh, the index maps, and what the
@@ -218,6 +233,15 @@ struct DecimateResult {
     /// The largest quadric error among the committed collapses (`0.0` when
     /// nothing collapsed).
     double mMaxErrorApplied = 0.0;
+
+    /// With `mMaxDeviation`: the `mCoverage` quantile of the two-sided sample
+    /// distances of the result, and whether it is within `mMaxDeviation`
+    /// (false when `mMaxFaces` forbade it); 0 and true otherwise.
+    double mDeviation = 0.0;
+    bool mDeviationMet = true;
+
+    /// The decimation runs `mMaxDeviation` or `mMaxFaces` took (0: one plain run).
+    std::int64_t mRounds = 0;
 };
 
 /**
@@ -226,9 +250,15 @@ struct DecimateResult {
  * @param rOptions Stopping criterion, placement, pinning policy, frozen mask.
  * @return The decimated all-triangle mesh, the point/cell index maps, and the
  *         collapse/rejection summary.
+ * With `mMaxDeviation`, a deterministic search on the face count: the
+ * input's own face count (or `mMaxFaces`), the count the quadric bound
+ * `mMaxError = mMaxDeviation^2` reaches, then bisection to within 1% of the
+ * fewest faces that keep the deviation, each candidate a full run measured
+ * two-sided; the result is the lightest that passed. With `mMaxFaces` alone or
+ * beside another criterion, a run over the cap is redone at the cap.
  * @throws std::invalid_argument when not exactly one stopping criterion is
- *         set, on a criterion out of range, on a mis-sized `mFrozen` mask, and
- *         on any block outside the surface scope: 3D volume cells (use
+ *         set (`mMaxFaces` alone counts as one), on a criterion out of range, on a mis-sized
+ * `mFrozen` mask, and on any block outside the surface scope: 3D volume cells (use
  *         `extract_surface` first), higher-order cells (linearize first),
  *         ragged polygon/polyhedron blocks, and `line`/`vertex` blocks.
  */

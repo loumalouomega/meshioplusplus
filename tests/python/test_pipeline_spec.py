@@ -1,4 +1,4 @@
-"""The pipeline step spec holds both engines (roadmap §8).
+"""The pipeline step spec holds both engines (roadmap §7).
 
 ``tools/pipeline_steps.json`` lists every step, its keys and, for the keys both
 engines read with a literal default, that key's kind (``number``, ``flag``,

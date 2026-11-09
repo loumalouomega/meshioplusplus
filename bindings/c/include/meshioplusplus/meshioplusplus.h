@@ -1319,6 +1319,486 @@ MIO_API mio_mesh* mio_slice(const mio_mesh* mesh, const double* origin, const do
                             int record_parent_ids);
 
 /**
+ * mio_slice with chaining (roadmap 7.6.1): with `chain` nonzero a surface's
+ * line section comes back walked into polylines, in chain order, with the
+ * Int64 cell data "section:chain" and "section:closed"; chains shorter than
+ * `min_length` are dropped. A volume's section (a surface) is refused.
+ */
+MIO_API mio_mesh* mio_slice_ex(const mio_mesh* mesh, const double* origin, const double* normal,
+                               int record_parent_ids, int chain, double min_length);
+
+/** mio_sketch_piece.type (roadmap 7.6.2). */
+#define MIO_SKETCH_LINE 1
+#define MIO_SKETCH_ARC 2
+#define MIO_SKETCH_CIRCLE 3
+
+/** Options of mio_fit_curves; initialise with mio_fit_curves_opts_init. 88 bytes. */
+typedef struct mio_fit_curves_opts {
+    double tolerance;       /**< largest residual; 0 takes 1e-3 of the diagonal (init: 0) */
+    double snap_angle;      /**< snap lines within this many degrees, below 22.5 (init: 0) */
+    double normal[3];       /**< the sketch normal; zero takes it from the points (init: 0) */
+    int64_t min_arc_points; /**< an arc spans at least this many points (init: 4) */
+    double min_arc_sweep;   /**< and at least this many degrees (init: 5) */
+    int64_t reserved[4];
+} mio_fit_curves_opts;
+
+/** What mio_fit_curves found. 96 bytes. */
+typedef struct mio_fit_curves_report {
+    int64_t num_pieces; /**< see mio_fit_curves_piece() */
+    int64_t num_lines;
+    int64_t num_arcs;
+    int64_t num_circles;
+    int64_t num_frames; /**< see mio_fit_curves_frame() */
+    double max_residual;
+    double tolerance;   /**< the tolerance applied */
+    int64_t num_warnings;
+    int64_t reserved[4];
+} mio_fit_curves_report;
+
+/** One sketch piece, in its frame's 2-D coordinates. 104 bytes. */
+typedef struct mio_sketch_piece {
+    int32_t type;      /**< MIO_SKETCH_LINE, _ARC or _CIRCLE */
+    int32_t reserved32;
+    double start[2];
+    double end[2];
+    double centre[2];  /**< arcs and circles */
+    double radius;     /**< arcs and circles */
+    double sweep;      /**< degrees, counter-clockwise positive; a circle 360 */
+    double residual;   /**< the largest distance of its chain points */
+    int64_t num_points;
+    int64_t chain;
+    int64_t frame;
+} mio_sketch_piece;
+
+MIO_API void mio_fit_curves_opts_init(mio_fit_curves_opts* opts);
+/**
+ * Lines, arcs and circles from the chains of a chained line mesh (roadmap
+ * 7.6.2; doc/fit_curves.md). Returns the input with sketch:piece cell data and
+ * the sketch:* field data (free with mio_mesh_free), or NULL.
+ */
+MIO_API mio_mesh* mio_fit_curves(const mio_mesh* sections, const mio_fit_curves_opts* opts,
+                                 mio_fit_curves_report* report);
+/** Piece `index` of this thread's last mio_fit_curves call. */
+MIO_API mio_status mio_fit_curves_piece(int64_t index, mio_sketch_piece* piece);
+/** Frame `index` of that call: row-major 4x4, columns e1, e2, normal, origin. */
+MIO_API mio_status mio_fit_curves_frame(int64_t index, double frame[16]);
+/** The warnings of that call; string rule 5. */
+MIO_API int64_t mio_fit_curves_warnings(char* buf, int64_t buflen);
+
+/** Options of mio_silhouette; initialise with mio_silhouette_opts_init. 104 bytes. */
+typedef struct mio_silhouette_opts {
+    double normal[3];       /**< the viewing direction (init: 0, 0, 1) */
+    double clearance;       /**< > 0 grows the outline, < 0 shrinks it (init: 0) */
+    double round_angle;     /**< corners turning less than this many degrees are rounded (init: 180) */
+    int64_t arc_segments;   /**< polygon sides of a full turn of arc, at least 4 (init: 64) */
+    int32_t extrude;        /**< nonzero: the prism's closed triangle surface (init: 0) */
+    int32_t reserved32;
+    double merge_tolerance; /**< relative to the projected box's diagonal (init: 1e-9) */
+    /** Restrict to this named cell region of a surface; NULL or "" takes all. */
+    const char* region;
+    int64_t reserved[4];
+} mio_silhouette_opts;
+
+/** What mio_silhouette found. 104 bytes. */
+typedef struct mio_silhouette_report {
+    int64_t num_loops;
+    int64_t num_outer;
+    int64_t num_holes;
+    int64_t num_triangles; /**< projected triangles of non-zero area */
+    double area;           /**< of the outline's region */
+    double perimeter;      /**< the loops' total length */
+    double min_height;     /**< along the normal */
+    double max_height;
+    int64_t num_warnings;
+    int64_t reserved[4];
+} mio_silhouette_report;
+
+MIO_API void mio_silhouette_opts_init(mio_silhouette_opts* opts);
+/**
+ * The outline of a surface (or a volume mesh's skin) seen along a direction,
+ * with its holes, optionally offset by a clearance or made a prism (roadmap
+ * 7.6.3; doc/silhouette.md). Returns a chained line mesh (section:chain,
+ * section:closed, section:offset, silhouette:hole) or the prism (free with
+ * mio_mesh_free), or NULL.
+ */
+MIO_API mio_mesh* mio_silhouette(const mio_mesh* mesh, const mio_silhouette_opts* opts,
+                                 mio_silhouette_report* report);
+/** The warnings of this thread's last mio_silhouette call; string rule 5. */
+MIO_API int64_t mio_silhouette_warnings(char* buf, int64_t buflen);
+
+/** What mio_clip did (roadmap 7.8.3). 72 bytes. */
+typedef struct mio_clip_report {
+    int64_t num_kept;          /**< triangles kept whole */
+    int64_t num_split;         /**< triangles split at the plane */
+    int64_t num_cap_triangles;
+    int64_t num_loops;         /**< closed loops capped */
+    int64_t num_open_chains;   /**< open chains of the cut, not capped */
+    int64_t num_warnings;
+    int64_t reserved[3];
+} mio_clip_report;
+
+/**
+ * Cut a surface by the plane through `origin` normal to `normal`, keep the
+ * side below it (`keep_below` nonzero) or above, and with `cap` triangulate
+ * the cut's closed loops so a closed part stays closed (roadmap 7.8.3;
+ * doc/clip.md). `report` may be NULL.
+ */
+MIO_API mio_mesh* mio_clip(const mio_mesh* mesh, const double origin[3], const double normal[3],
+                           int32_t keep_below, int32_t cap, mio_clip_report* report);
+/** The warnings of this thread's last mio_clip call; string rule 5. */
+MIO_API int64_t mio_clip_warnings(char* buf, int64_t buflen);
+
+/** What mio_offset_surface, mio_thicken and mio_hollow did (roadmap 7.8.4). 64 bytes. */
+typedef struct mio_offset_report {
+    int64_t num_not_visible; /**< points moved by the distance alone */
+    int64_t num_clamped;     /**< points whose stretch hit its bound (4) */
+    int64_t num_folded;      /**< faces whose normal turned over */
+    int64_t num_rim_quads;   /**< mio_thicken: the quads joining the layers */
+    double max_move;         /**< the longest point move */
+    int64_t num_warnings;
+    int64_t reserved[2];
+} mio_offset_report;
+
+/** The sides of mio_thicken's wall. */
+typedef enum mio_thicken_side {
+    MIO_THICKEN_INWARD = 0,  /**< the surface and its offset by -thickness */
+    MIO_THICKEN_OUTWARD = 1, /**< the surface and its offset by +thickness */
+    MIO_THICKEN_BOTH = 2     /**< its offsets by +-thickness / 2 */
+} mio_thicken_side;
+
+/**
+ * Move each point of a triangle and quad surface along its offset direction
+ * by `distance` over the least cosine to its faces, so each face's plane
+ * moves by `distance` (positive along the faces' normals); the connectivity,
+ * data and regions are kept (roadmap 7.8.4; doc/offset_surface.md).
+ * `smooth_iterations` smooths the directions. `report` may be NULL.
+ */
+MIO_API mio_mesh* mio_offset_surface(const mio_mesh* mesh, double distance,
+                                     int32_t smooth_iterations, mio_offset_report* report);
+/**
+ * A closed shell `thickness` thick from a surface: its two offsets on the
+ * `side` (mio_thicken_side) of the wall, the lower reversed, the boundary
+ * edges joined by quads; Int64 cell data thicken:side (roadmap 7.8.4).
+ */
+MIO_API mio_mesh* mio_thicken(const mio_mesh* mesh, double thickness, int32_t side,
+                              int32_t smooth_iterations, mio_offset_report* report);
+/** A closed surface with its offset by -wall, reversed, inside it (roadmap 7.8.4). */
+MIO_API mio_mesh* mio_hollow(const mio_mesh* mesh, double wall, int32_t smooth_iterations,
+                             mio_offset_report* report);
+/** The warnings of this thread's last offset, thicken or hollow call; string rule 5. */
+MIO_API int64_t mio_offset_warnings(char* buf, int64_t buflen);
+
+/**
+ * Reverse the winding of every cell, or of the cell region `region` (NULL or
+ * ""), with no point moved; Side entries move with their cells (roadmap
+ * 7.8.2; doc/flip_normals.md). `num_flipped` may be NULL.
+ */
+MIO_API mio_mesh* mio_flip_normals(const mio_mesh* mesh, const char* region, int64_t* num_flipped);
+
+/** Options of mio_remove_islands (roadmap 7.8.1); mio_remove_islands_opts_init. 64 bytes. */
+typedef struct mio_remove_islands_opts {
+    int32_t connectivity; /**< 0 edge (cells sharing a facet), 1 point (init: 0) */
+    int32_t relative;     /**< diagonal and area as fractions of the mesh's (init: 1) */
+    double min_diagonal;  /**< a component with a smaller diagonal goes (init: 0.01) */
+    double min_area;      /**< likewise for its area, 0 off (init: 0) */
+    int64_t min_cells;    /**< likewise for its cell count, 0 off (init: 0) */
+    int32_t dry_run;      /**< nonzero: remove nothing, label islands:component/removed */
+    int32_t reserved32;
+    int64_t reserved[3];
+} mio_remove_islands_opts;
+
+/** What mio_remove_islands removed. 64 bytes. */
+typedef struct mio_remove_islands_report {
+    int64_t num_components;
+    int64_t num_removed;
+    int64_t num_cells_removed;
+    int64_t num_points_removed;
+    int64_t reserved[4];
+} mio_remove_islands_report;
+
+MIO_API void mio_remove_islands_opts_init(mio_remove_islands_opts* opts);
+/** Remove the small connected components of a mesh (roadmap 7.8.1; doc/remove_islands.md). */
+MIO_API mio_mesh* mio_remove_islands(const mio_mesh* mesh, const mio_remove_islands_opts* opts,
+                                     mio_remove_islands_report* report);
+
+/** What mio_measure found (roadmap 7.2). 80 bytes. */
+typedef struct mio_measure_report {
+    int64_t num_elements;
+    int64_t num_dimensions;
+    int64_t num_tolerances;
+    int64_t num_fail;     /**< dimensions and tolerances outside their limits */
+    int64_t num_warnings;
+    int64_t reserved[5];
+} mio_measure_report;
+
+/**
+ * Measure a mesh by a JSON spec: elements (fitted, constructed or literal),
+ * dimensions and GD&T tolerances (roadmap 7.2; doc/measure.md). Returns the
+ * input with the element table (measure:table field data) and each fitted
+ * element's cells as the region measure:<name> (free with mio_mesh_free), or
+ * NULL. `report` may be NULL.
+ */
+MIO_API mio_mesh* mio_measure(const mio_mesh* mesh, const char* spec_json,
+                              mio_measure_report* report);
+/** The JSON report of this thread's last mio_measure call; string rule 5. */
+MIO_API int64_t mio_measure_report_json(char* buf, int64_t buflen);
+/** The warnings of that call; string rule 5. */
+MIO_API int64_t mio_measure_warnings(char* buf, int64_t buflen);
+
+/* ---- roadmap 7.7: closing the reverse-engineering loop ---------------- */
+
+/** A profile-solid feature's kind (roadmap 7.7.4). */
+typedef enum mio_profile_feature_kind {
+    MIO_PROFILE_EXTRUDE = 0,
+    MIO_PROFILE_REVOLVE = 1,
+    MIO_PROFILE_FILLET = 2,
+    MIO_PROFILE_CHAMFER = 3,
+    MIO_PROFILE_SHELL = 4
+} mio_profile_feature_kind;
+
+/** One feature of mio_profile_solid; mio_profile_feature_init. 96 bytes. */
+typedef struct mio_profile_feature {
+    int32_t kind;             /**< a mio_profile_feature_kind */
+    int32_t symmetric;        /**< extrude: half each way */
+    double distance;          /**< extrude length (0: to the scan's extent); chamfer; shell wall */
+    double angle_deg;         /**< revolve (init 360) */
+    double radius;            /**< fillet */
+    double axis_origin[3];    /**< revolve axis */
+    double axis_direction[3]; /**< (init 0, 0, 1) */
+    int64_t reserved[2];
+} mio_profile_feature;
+
+/** What mio_profile_solid built. 64 bytes. */
+typedef struct mio_profile_solid_report {
+    double volume;
+    double area;
+    int64_t num_faces;
+    int32_t valid; /**< the provider's own check of the solid */
+    int32_t num_warnings;
+    int64_t reserved[4];
+} mio_profile_solid_report;
+
+MIO_API void mio_profile_feature_init(mio_profile_feature* feature);
+/**
+ * Features from their text form (`extrude:D[:symmetric]`,
+ * `revolve:OX,OY,OZ:DX,DY,DZ[:ANGLE]`, `fillet:R`, `chamfer:D`, `shell:W`,
+ * `;`-separated) into `out`, at most `capacity` of them (`out` may be NULL
+ * with capacity 0 to count). Returns how many the text holds, or -1 on a
+ * malformed text (see mio_last_error()).
+ */
+MIO_API int64_t mio_profile_features_from_text(const char* text, mio_profile_feature* out,
+                                               int64_t capacity);
+/**
+ * Build a solid from a fit_curves sketch by features applied in order: an
+ * extrusion or a revolution first, then fillets, chamfers or a shell (roadmap
+ * 7.7.4; doc/profile_solid.md), through the named profile-solid provider
+ * (NULL or "": the first; "occt" with OpenCASCADE). `scan` (may be NULL) sets
+ * an extrusion of 0 to its extent; `step_path` (NULL or "": none) receives
+ * the solid as STEP. Returns its tessellation, or NULL (MIO_ERR_UNSUPPORTED
+ * without a provider). `report` may be NULL.
+ */
+MIO_API mio_mesh* mio_profile_solid(const mio_mesh* sketch, const mio_profile_feature* features,
+                                    int64_t num_features, const char* step_path,
+                                    const char* provider, double deflection, const mio_mesh* scan,
+                                    mio_profile_solid_report* report);
+/** The warnings of this thread's last mio_profile_solid call; string rule 5. */
+MIO_API int64_t mio_profile_solid_warnings(char* buf, int64_t buflen);
+/** Whether a profile-solid provider is registered (1) or not (0). */
+MIO_API int32_t mio_has_profile_solid_provider(void);
+
+/** A relation between two fitted primitives (roadmap 7.7.3). */
+typedef enum mio_primitive_relation {
+    MIO_RELATION_COAXIAL = 0,
+    MIO_RELATION_PARALLEL = 1,
+    MIO_RELATION_PERPENDICULAR = 2,
+    MIO_RELATION_EQUAL_RADIUS = 3
+} mio_primitive_relation;
+
+/** Options of mio_constrain_primitives; mio_constrain_primitives_opts_init. 96 bytes. */
+typedef struct mio_constrain_primitives_opts {
+    double face_tolerance;      /**< <= 0: three times the largest patch tolerance */
+    double angle_tolerance_deg; /**< negative: the pass's own (init -1) */
+    double distance_tolerance;  /**< negative: the pass's own (init -1) */
+    double min_fraction;        /**< negative: fit_primitives' default (init -1) */
+    /** Forced relations, as triples (patch a, patch b, mio_primitive_relation); or NULL. */
+    const int64_t* force;
+    int64_t num_force; /**< triples */
+    const int64_t* forbid; /**< forbidden relations, as triples; or NULL */
+    int64_t num_forbid;
+    int64_t reserved[4];
+} mio_constrain_primitives_opts;
+
+/** What mio_constrain_primitives did. 64 bytes. */
+typedef struct mio_constrain_primitives_report {
+    int64_t num_constrained; /**< patches that took a shared value */
+    int64_t num_groups;
+    int64_t num_relations; /**< read each with mio_constrain_primitives_relation */
+    int64_t num_unmet;     /**< forced relations not kept; mio_constrain_primitives_unmet */
+    double face_tolerance;
+    int64_t reserved[3];
+} mio_constrain_primitives_report;
+
+MIO_API void mio_constrain_primitives_opts_init(mio_constrain_primitives_opts* opts);
+/**
+ * Fit related primitives of a fit_primitives skin together under control:
+ * coaxial groups, parallel and perpendicular planes, equal radii, with forced
+ * and forbidden relations and tolerances (roadmap 7.7.3;
+ * doc/constrain_primitives.md). Returns the skin with its fit:patch_* table
+ * rewritten, or NULL. `report` may be NULL.
+ */
+MIO_API mio_mesh* mio_constrain_primitives(const mio_mesh* mesh,
+                                           const mio_constrain_primitives_opts* opts,
+                                           mio_constrain_primitives_report* report);
+/**
+ * The k-th relation this thread's last mio_constrain_primitives applied: the
+ * reference and the patch that took it, its mio_primitive_relation, its
+ * residual before the change (angle in degrees, distance) and whether it was
+ * forced. Any out-param may be NULL.
+ */
+MIO_API mio_status mio_constrain_primitives_relation(int64_t k, int64_t* patch_a,
+                                                     int64_t* patch_b, int32_t* kind,
+                                                     double* angle_deg, double* distance,
+                                                     int32_t* forced);
+/** The k-th forced relation this thread's last call did not keep. */
+MIO_API mio_status mio_constrain_primitives_unmet(int64_t k, int64_t* patch_a, int64_t* patch_b,
+                                                  int32_t* kind);
+
+/** Options of mio_face_support; mio_face_support_opts_init. 64 bytes. */
+typedef struct mio_face_support_opts {
+    double tolerance;      /**< <= 0: 1e-3 of the scan's diagonal */
+    double measured_share; /**< at least this share: measured (init 0.9) */
+    double inferred_share; /**< below this share: inferred (init 0.1) */
+    const char* hole_data; /**< scan cell data marking fills; NULL: "repair:hole" */
+    int64_t reserved[4];
+} mio_face_support_opts;
+
+/** What mio_face_support found. 64 bytes. */
+typedef struct mio_face_support_report {
+    int64_t num_measured;
+    int64_t num_partial;
+    int64_t num_inferred;
+    int64_t num_faces;
+    double share_within; /**< the scan's points within the tolerance of the solid */
+    double tolerance;
+    int64_t reserved[2];
+} mio_face_support_report;
+
+MIO_API void mio_face_support_opts_init(mio_face_support_opts* opts);
+/**
+ * Class each face of a fit_cad re-mesh by how much of it the scan supports:
+ * measured, partial or inferred (roadmap 7.7.1; doc/fit_cad_loop.md). Returns
+ * the solid with fit_cad:face_support, fit_cad:face_measured and
+ * fit_cad:support, or NULL. `opts` and `report` may be NULL.
+ */
+MIO_API mio_mesh* mio_face_support(const mio_mesh* solid, const mio_mesh* scan,
+                                   const mio_face_support_opts* opts,
+                                   mio_face_support_report* report);
+
+/** fit_cad_iterate's part classes (roadmap 7.7.2). */
+typedef enum mio_fit_cad_part_class {
+    MIO_PART_ANY = 0,
+    MIO_PART_ANALYTIC = 1,
+    MIO_PART_CAST = 2,
+    MIO_PART_FREEFORM = 3
+} mio_fit_cad_part_class;
+
+/** Options of mio_fit_cad_iterate; mio_fit_cad_iterate_opts_init. 112 bytes. */
+typedef struct mio_fit_cad_iterate_opts {
+    double segment_tolerance; /**< <= 0: the part class's */
+    double fit_tolerance;     /**< <= 0: the segment tolerance */
+    double target_within;     /**< <= 0: the part class's */
+    double target_explained;  /**< 0: off */
+    double refine_factor;     /**< in (0, 1) (init 0.25) */
+    int32_t part_class;       /**< a mio_fit_cad_part_class */
+    int32_t backend;          /**< each round's fit_cad engine, a mio_fit_cad_backend */
+    int64_t max_rounds;       /**< init 4 */
+    int64_t worst_faces;      /**< init 3 */
+    int64_t min_patch_cells;  /**< init 1 */
+    int64_t reserved[5];
+} mio_fit_cad_iterate_opts;
+
+/** What mio_fit_cad_iterate did. 96 bytes. */
+typedef struct mio_fit_cad_iterate_report {
+    int64_t num_rounds;
+    int64_t best_round;
+    int32_t target_met;
+    int32_t stop_reason; /**< 0 target, 1 no improvement, 2 rounds, 3 nothing to refine */
+    double target_within;
+    double share_within; /**< the best round's */
+    double explained;    /**< the best round's explained area share */
+    double hausdorff_max;
+    int64_t num_faces;
+    int64_t reserved[4];
+} mio_fit_cad_iterate_report;
+
+MIO_API void mio_fit_cad_iterate_opts_init(mio_fit_cad_iterate_opts* opts);
+/**
+ * Segment, fit and build a solid in rounds towards a target, re-segmenting the
+ * worst faces' patches finer each round (roadmap 7.7.2; doc/fit_cad_loop.md).
+ * Returns the best round's solid, with face_support's arrays, or NULL;
+ * `step_path` (NULL or "": none) receives it as STEP. `opts` and `report` may
+ * be NULL.
+ */
+MIO_API mio_mesh* mio_fit_cad_iterate(const mio_mesh* scan, const char* step_path,
+                                      const mio_fit_cad_iterate_opts* opts,
+                                      mio_fit_cad_iterate_report* report);
+/** Round k of this thread's last mio_fit_cad_iterate. Any out-param may be NULL. */
+MIO_API mio_status mio_fit_cad_iterate_round(int64_t k, double* share_within, double* explained,
+                                             double* hausdorff_max, int64_t* num_faces,
+                                             int64_t* num_resegmented);
+/**
+ * The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4): `primary` sets
+ * Z, `secondary` X, and `origin` (NULL or "": the primary's point) a point-like
+ * element or a third plane. `matrix` (may be NULL) receives the row-major 4x4.
+ */
+MIO_API mio_mesh* mio_align_datums(const mio_mesh* mesh, const char* primary,
+                                   const char* secondary, const char* origin,
+                                   double matrix[16]);
+/**
+ * The element `name` of a measured mesh as a fitted primitive's type (1 plane,
+ * 2 sphere, 3 cylinder, 4 cone) and ten parameters, the reference
+ * mio_deviation_primitive takes (roadmap 7.4.2).
+ */
+MIO_API mio_status mio_measure_element_primitive(const mio_mesh* mesh, const char* name,
+                                                 int32_t* type, double params[10]);
+
+/** What mio_write_step_elements wrote. 88 bytes. */
+typedef struct mio_step_elements_report {
+    int64_t num_planes;    /**< bounded faces */
+    int64_t num_spheres;   /**< balls */
+    int64_t num_cylinders; /**< solids with flat lids */
+    int64_t num_cones;     /**< frusta */
+    int64_t num_tori;
+    int64_t num_skipped;   /**< patches with no element */
+    int64_t num_warnings;
+    int64_t reserved[4];
+} mio_step_elements_report;
+
+/**
+ * Write the fitted primitives of a mesh carrying segment:patch and the
+ * fit:patch_* table (mio_segment, then mio_fit_primitives) to a STEP file as
+ * exact geometry: bounded planes, balls, lidded cylinders, frusta and tori
+ * (roadmap 7.6.5). `patches` (n of them, NULL or 0 for every fitted patch)
+ * selects patch labels; `segments` (64 when 0) is the tessellation the B-rep
+ * writer is given. `report` may be NULL.
+ */
+MIO_API mio_status mio_write_step_elements(const char* path, const mio_mesh* mesh,
+                                           const int64_t* patches, int64_t n, int64_t segments,
+                                           mio_step_elements_report* report);
+/** The warnings of this thread's last mio_write_step_elements call; string rule 5. */
+MIO_API int64_t mio_write_step_elements_warnings(char* buf, int64_t buflen);
+
+/**
+ * Chained sections of a surface at `n_offsets` parallel planes `n . x =
+ * offsets[k]` (`n` the unit `direction`), merged into one line mesh with the
+ * Float64 cell data "section:offset" and the chains numbered across planes
+ * (roadmap 7.6.1). Returns the mesh (free with mio_mesh_free) or NULL.
+ */
+MIO_API mio_mesh* mio_sections(const mio_mesh* mesh, const double* direction,
+                               const double* offsets, int64_t n_offsets, double min_length,
+                               int record_parent_ids);
+
+/**
  * Isosurfaces / contours: the level set of a scalar point_data field, one
  * topological dimension below the cut cells (a volume mesh yields a
  * triangle/quad surface, a 2D surface mesh a line mesh). The data-driven
@@ -2317,7 +2797,18 @@ typedef struct mio_decimate_opts {
     const int64_t* frozen;
     /** Length of `frozen`; ignored when `frozen` is NULL. */
     int64_t num_frozen;
-    int64_t reserved[4]; /**< must be zero; room for additive growth */
+    /**
+     * The largest distance the result may lie from the input (roadmap 7.8.5):
+     * positive replaces the three criteria above (leave them unset) and keeps
+     * the fewest faces whose two-sided sample distance holds on `coverage`;
+     * 0 = unset. See mio_decimate_result_deviation.
+     */
+    double max_deviation;
+    /** The share of samples max_deviation holds for, in (0, 1]; 0 = 0.999. */
+    double coverage;
+    /** At most this many faces, a cap on any criterion (alone, target_faces); 0 = unset. */
+    int64_t max_faces;
+    int64_t reserved[1]; /**< must be zero; room for additive growth */
 } mio_decimate_opts;
 
 /** Zero-initialize decimate options (every field its mio_decimate default). */
@@ -2394,6 +2885,15 @@ MIO_API int64_t mio_decimate_result_collapses_rejected(const mio_decimate_result
 MIO_API double mio_decimate_result_max_error_applied(const mio_decimate_result* result);
 
 /** Free a decimate result (and the mesh it still owns). */
+/**
+ * With max_deviation: the coverage quantile of the result's two-sided sample
+ * distances, `*met` nonzero when it is within max_deviation (zero when
+ * max_faces forbade it); 0 and met otherwise. `*rounds` is the decimation
+ * runs max_deviation or max_faces took. Either out-param may be NULL.
+ * @return the deviation, or -1 on error.
+ */
+MIO_API double mio_decimate_result_deviation(const mio_decimate_result* result, int32_t* met,
+                                             int64_t* rounds);
 MIO_API void mio_decimate_result_free(mio_decimate_result* result);
 
 /**
@@ -3808,6 +4308,13 @@ typedef struct mio_normals_report {
 MIO_API mio_mesh* mio_compute_normals(const mio_mesh* mesh, const mio_normals_opts* opts,
                                       mio_normals_report* report);
 
+/** How mio_repair fills a hole (roadmap 7.8.6; doc/repair.md). */
+typedef enum mio_repair_fill_style {
+    MIO_REPAIR_FILL_FAN = 0,   /**< one centroid point and a fan (the default) */
+    MIO_REPAIR_FILL_FLAT = 1,  /**< minimum-area, refined, membrane-faired (Liepa 2003) */
+    MIO_REPAIR_FILL_CURVED = 2 /**< the same, thin-plate-faired: continues the curvature */
+} mio_repair_fill_style;
+
 /**
  * Options for mio_repair.
  *
@@ -3824,7 +4331,7 @@ typedef struct mio_repair_opts {
     int32_t fill_holes; /**< nonzero (the default) fan-fills boundary loops */
     int32_t split_non_manifold; /**< nonzero (the default) duplicates bowtie vertices */
     int32_t record_provenance;  /**< nonzero attaches repair:parent_point and repair:hole */
-    int32_t reserved_pad;       /**< must be zero; keeps the int64 tail aligned */
+    int32_t fill_style; /**< a mio_repair_fill_style (roadmap 7.8.6; was a zero pad: 0 is the fan) */
     int64_t max_hole_edges;     /**< longest loop still filled (default 10); <= 0 means no limit */
     double weld_tolerance; /**< weld coincident points within this first; 0 (the default) skips */
     int64_t reserved[5];   /**< must be zero; room for additive growth */
@@ -4200,7 +4707,10 @@ typedef struct mio_registration_report {
     int64_t num_pairs;    /**< pairs kept at the end */
     int32_t converged;    /**< nonzero unless max_iterations ran out first */
     int32_t reserved_pad; /**< zero */
-    int64_t reserved[4];  /**< zero; room for additive growth */
+    int64_t num_rejected;     /**< source points left out of the pairs at the end */
+    int64_t chosen_candidate; /**< MIO_REGISTER_INITIAL_AUTO: the candidate refined; else -1 */
+    int64_t num_candidates;   /**< see mio_register_rigid_candidates() */
+    int64_t num_warnings;     /**< see mio_register_rigid_warnings() */
 } mio_registration_report;
 
 /** Initialize registration options (see mio_registration_opts). */
@@ -4218,6 +4728,124 @@ MIO_API void mio_registration_opts_init(mio_registration_opts* opts);
 MIO_API mio_status mio_register_rigid(const mio_mesh* source, const mio_mesh* target,
                                       const mio_registration_opts* opts,
                                       mio_registration_report* report);
+
+/** mio_registration_ex_opts.initial_mode: start from base.initial. */
+#define MIO_REGISTER_INITIAL_MATRIX 0
+/** mio_registration_ex_opts.initial_mode: the best of the 24 principal-frame candidates. */
+#define MIO_REGISTER_INITIAL_AUTO 1
+
+/**
+ * Options for mio_register_rigid_ex (roadmap 7.3.1, 7.3.3): the base options
+ * plus the automatic start, regions and adaptive trimming. 264 bytes;
+ * initialize through mio_registration_ex_opts_init().
+ */
+typedef struct mio_registration_ex_opts {
+    mio_registration_opts base;
+    int32_t initial_mode;       /**< MIO_REGISTER_INITIAL_* (init: _MATRIX) */
+    int32_t symmetric_check;    /**< with _AUTO: warn on a symmetric part (init: 0) */
+    double symmetric_tolerance; /**< relative trimmed-RMS margin (init: 0.05) */
+    double adaptive_trim;       /**< drop pairs beyond this x median distance; 0 off */
+    const char* source_region;  /**< cell region of the source; NULL or "" for all */
+    const char* target_region;  /**< cell region of the target; NULL or "" for all */
+    int64_t reserved[4];        /**< must be zero */
+} mio_registration_ex_opts;
+
+MIO_API void mio_registration_ex_opts_init(mio_registration_ex_opts* opts);
+/** mio_register_rigid with the options of mio_registration_ex_opts. */
+MIO_API mio_status mio_register_rigid_ex(const mio_mesh* source, const mio_mesh* target,
+                                         const mio_registration_ex_opts* opts,
+                                         mio_registration_report* report);
+/**
+ * Copy up to `capacity` candidate trimmed RMS values of this thread's last
+ * register_rigid call into `out` (nullable). Returns the number of
+ * candidates (24 with MIO_REGISTER_INITIAL_AUTO, else 0), or -1 on failure.
+ */
+MIO_API int64_t mio_register_rigid_candidates(double* out, int64_t capacity);
+/** The warnings of this thread's last register_rigid call; string rule 5. */
+MIO_API int64_t mio_register_rigid_warnings(char* buf, int64_t buflen);
+
+/**
+ * Landmark registration (roadmap 7.3.2): the weighted Horn solve laying `n`
+ * source points onto their targets (`3n` doubles each, xyz interleaved).
+ * `weights` (n, non-negative) and `residuals` (n, out) are nullable.
+ * Fewer than three pairs, or collinear source points, are refused.
+ */
+MIO_API mio_status mio_register_landmarks(const double* source, const double* target,
+                                          const double* weights, int64_t n, double matrix[16],
+                                          double* residuals, double* rms);
+
+/** Options of mio_find_symmetry_plane; initialise with mio_symmetry_plane_opts_init. 112 bytes. */
+typedef struct mio_symmetry_plane_opts {
+    double seed_origin[3];  /**< a seed plane's point (init: 0) */
+    double seed_normal[3];  /**< its normal; zero tries no seed (init: 0) */
+    double tolerance;       /**< the share's distance; 0 takes 0.005 of the diagonal */
+    double min_share;       /**< refuse a plane below this share (init: 0.9) */
+    int64_t max_samples;    /**< fine-fit samples (init: 4000) */
+    int64_t max_iterations; /**< per ICP run (init: 50) */
+    int64_t reserved[4];
+} mio_symmetry_plane_opts;
+
+/** What mio_find_symmetry_plane found. 128 bytes. */
+typedef struct mio_symmetry_plane_report {
+    double origin[3];         /**< the centroid projected onto the plane */
+    double normal[3];         /**< unit, its largest-magnitude component positive */
+    double rms;               /**< mirrored samples to the surface */
+    double share;             /**< share within tolerance */
+    double tolerance;         /**< the tolerance applied */
+    int64_t chosen_candidate; /**< 0 to 2 the principal planes, 3 the seed */
+    int64_t num_candidates;
+    int64_t num_warnings;     /**< see mio_find_symmetry_plane_warnings() */
+    int64_t reserved[4];
+} mio_symmetry_plane_report;
+
+MIO_API void mio_symmetry_plane_opts_init(mio_symmetry_plane_opts* opts);
+/** The symmetry plane of a mesh or cloud (roadmap 7.3.6; doc/registration.md). */
+MIO_API mio_status mio_find_symmetry_plane(const mio_mesh* mesh,
+                                           const mio_symmetry_plane_opts* opts,
+                                           mio_symmetry_plane_report* report);
+/** The warnings of this thread's last find_symmetry_plane call; string rule 5. */
+MIO_API int64_t mio_find_symmetry_plane_warnings(char* buf, int64_t buflen);
+
+/** mio_auto_align_report.mode: laid on its largest flat face. */
+#define MIO_AUTO_ALIGN_FACE 0
+/** mio_auto_align_report.mode: stood on the end of its axis. */
+#define MIO_AUTO_ALIGN_AXIS 1
+
+/** Options of mio_auto_align; initialise with mio_auto_align_opts_init. 64 bytes. */
+typedef struct mio_auto_align_opts {
+    double angle_tolerance;     /**< degrees in (0, 45) (init: 10) */
+    int64_t subdivisions;       /**< Gauss-sphere icosahedron splits, 0 to 5 (init: 3) */
+    const char* region;         /**< voting cell region; NULL or "" for all */
+    int32_t rotate_vector_data; /**< rotate vector and tensor point data (init: 0) */
+    int32_t reserved32;
+    int64_t reserved[4];
+} mio_auto_align_opts;
+
+/** How mio_auto_align posed the mesh. 256 bytes. */
+typedef struct mio_auto_align_report {
+    double matrix[16];   /**< row-major 4x4: input onto aligned coordinates */
+    int32_t mode;        /**< MIO_AUTO_ALIGN_FACE or _AXIS */
+    int32_t reserved32;
+    double primary[3];   /**< input direction sent to -Z (face) or +Z (axis) */
+    double secondary[3]; /**< input direction sent to +X */
+    double share;        /**< the chosen pose's agreeing area share */
+    double face_share;
+    double axis_share;
+    double opening_area; /**< the opening's area added to the histogram */
+    int64_t num_warnings; /**< see mio_auto_align_warnings() */
+    int64_t reserved[4];
+} mio_auto_align_report;
+
+MIO_API void mio_auto_align_opts_init(mio_auto_align_opts* opts);
+/**
+ * Pose a scan from itself alone (roadmap 7.3.5): on its largest flat face, or a
+ * cylinder on its axis. Returns the moved mesh (free with mio_mesh_free), or
+ * NULL on failure. See doc/registration.md.
+ */
+MIO_API mio_mesh* mio_auto_align(const mio_mesh* mesh, const mio_auto_align_opts* opts,
+                                 mio_auto_align_report* report);
+/** The warnings of this thread's last auto_align call; string rule 5. */
+MIO_API int64_t mio_auto_align_warnings(char* buf, int64_t buflen);
 
 /** mio_point_normals_opts.orientation: propagate along a spanning tree, then outward. */
 #define MIO_NORMALS_CONSISTENT 0
@@ -5938,7 +6566,9 @@ typedef struct mio_fit_primitives_report {
     int64_t num_cone;
     int64_t num_torus;
     int64_t num_unfitted;
-    int64_t reserved[5]; /**< must be zero; room for additive growth */
+    int64_t num_feature_cells; /**< seed mode: the cells written as output_region */
+    int64_t num_warnings;      /**< see mio_fit_primitives_warnings() */
+    int64_t reserved[3];       /**< must be zero; room for additive growth */
 } mio_fit_primitives_report;
 
 /**
@@ -5956,6 +6586,50 @@ typedef struct mio_fit_primitives_report {
  */
 MIO_API mio_mesh* mio_fit_primitives(const mio_mesh* mesh, const mio_fit_primitives_opts* opts,
                                      mio_fit_primitives_report* report);
+
+/** mio_fit_primitives_ex_opts.used_points (roadmap 7.1.2). */
+typedef enum mio_fit_used_points {
+    MIO_FIT_USED_AUTO = 0,   /**< 3 sigma with a region or seeds, every point otherwise */
+    MIO_FIT_USED_ALL = 1,    /**< every point */
+    MIO_FIT_USED_SIGMA3 = 2, /**< refit on the points within 3 RMS distances, until stable */
+    MIO_FIT_USED_SIGMA2 = 3,
+    MIO_FIT_USED_SIGMA1 = 4
+} mio_fit_used_points;
+
+/** mio_fit_primitives_ex_opts.criterion: the reference a fit is measured
+ *  against (roadmap 7.1.4). */
+typedef enum mio_fit_criterion {
+    MIO_FIT_LEAST_SQUARES = 0,     /**< the least-squares fit (the default) */
+    MIO_FIT_MINIMUM_ZONE = 1,      /**< the narrowest zone holding every point */
+    MIO_FIT_MIN_CIRCUMSCRIBED = 2, /**< the smallest enclosing sphere or cylinder */
+    MIO_FIT_MAX_INSCRIBED = 3,     /**< the largest sphere or cylinder no point is inside */
+} mio_fit_criterion;
+
+/**
+ * mio_fit_primitives with roadmap 7.1's region and seed modes and sigma
+ * trimming, which the fixed struct above has no room for. Initialise with
+ * mio_fit_primitives_ex_opts_init. 192 bytes.
+ */
+typedef struct mio_fit_primitives_ex_opts {
+    mio_fit_primitives_opts base; /**< the options of mio_fit_primitives */
+    const char* region;           /**< fit this named Cell region as one patch; NULL: none */
+    const double* seeds;          /**< num_seeds (x, y, z) triples: grow and fit a feature */
+    int64_t num_seeds;
+    double feature_angle;         /**< seed growth: edges sharper are not crossed (init: 30) */
+    double rim_angle;             /**< seed growth: peel rim faces turning more (init: 15) */
+    const char* output_region;    /**< seed growth: the region written; NULL: "fit:feature" */
+    int32_t used_points;          /**< a mio_fit_used_points (init: AUTO) */
+    int32_t criterion;            /**< a mio_fit_criterion (init: LEAST_SQUARES; roadmap 7.1.4) */
+    int64_t reserved[6];
+} mio_fit_primitives_ex_opts;
+
+MIO_API void mio_fit_primitives_ex_opts_init(mio_fit_primitives_ex_opts* opts);
+/** mio_fit_primitives with the options of mio_fit_primitives_ex_opts (roadmap 7.1.1, 7.1.2). */
+MIO_API mio_mesh* mio_fit_primitives_ex(const mio_mesh* mesh,
+                                        const mio_fit_primitives_ex_opts* opts,
+                                        mio_fit_primitives_report* report);
+/** The warnings of this thread's last fit_primitives call; string rule 5. */
+MIO_API int64_t mio_fit_primitives_warnings(char* buf, int64_t buflen);
 
 /**
  * Options for mio_refine_patches (v17.11.0). Same ABI rules as above; always
@@ -7580,6 +8254,13 @@ typedef enum mio_thickness_direction {
     MIO_THICKNESS_OUTWARD = 2  /**< along the normal, across a gap */
 } mio_thickness_direction;
 
+/** mio_thickness_opts.method (roadmap 7.5.1). */
+typedef enum mio_thickness_method {
+    MIO_THICKNESS_RAY = 0,    /**< one ray along the normal */
+    MIO_THICKNESS_SPHERE = 1, /**< twice the ray midpoint's distance to the nearest other surface */
+    MIO_THICKNESS_CONE = 2    /**< the shortest of a fan of rays within cone_angle */
+} mio_thickness_method;
+
 /** Options of mio_thickness; initialise with mio_thickness_opts_init. 72 bytes. */
 typedef struct mio_thickness_opts {
     const char* region;        /**< Cell region measured; NULL or "" for all */
@@ -7588,13 +8269,17 @@ typedef struct mio_thickness_opts {
     double threshold;          /**< count hits below it when positive (init: 0) */
     int32_t direction;         /**< a mio_thickness_direction (init: AUTO) */
     int32_t attach;            /**< attach thickness:distance and :hit_cell (init: 1) */
-    int64_t reserved[4];
+    int32_t method;            /**< a mio_thickness_method (init: RAY) */
+    int32_t two_sided;         /**< rays both ways, either face counting (init: 0) */
+    double cone_angle;         /**< MIO_THICKNESS_CONE: half-angle, degrees (init: 15) */
+    int64_t cone_rays;         /**< MIO_THICKNESS_CONE: rays of the fan (init: 16) */
+    double max_normal_deviation; /**< step over more edge-on faces, degrees (init: 90) */
 } mio_thickness_opts;
 
 /** What mio_thickness measured. 144 bytes. */
 typedef struct mio_thickness_report {
     int32_t direction;     /**< the direction the rays ran: INWARD or OUTWARD */
-    int32_t reserved32;
+    int32_t method;        /**< the mio_thickness_method used */
     int64_t num_cells;     /**< cells measured */
     int64_t num_hit;       /**< rays that reached a wall */
     int64_t num_missed;    /**< rays that did not */
@@ -7606,7 +8291,9 @@ typedef struct mio_thickness_report {
     double min_point[3];   /**< where its ray started */
     double max_distance;   /**< the ray length used */
     int64_t num_warnings;  /**< see mio_thickness_warnings() */
-    int64_t reserved[4];
+    double p2;             /**< the 2nd percentile of the hit distances */
+    double p95;            /**< the 95th percentile */
+    int64_t reserved[2];
 } mio_thickness_report;
 
 MIO_API void mio_thickness_opts_init(mio_thickness_opts* opts);
@@ -7625,6 +8312,194 @@ MIO_API mio_mesh* mio_thickness(const mio_mesh* mesh, const mio_mesh* target,
                                 const mio_thickness_opts* opts, mio_thickness_report* report);
 /** The warnings of this thread's last mio_thickness call; string rule 5. */
 MIO_API int64_t mio_thickness_warnings(char* buf, int64_t buflen);
+
+/* ---- deviation (roadmap 7.4) --------------------------------------------- */
+
+/** Options of mio_deviation; initialise with mio_deviation_opts_init. 88 bytes. */
+typedef struct mio_deviation_opts {
+    double tolerance;             /**< report the share within +-tolerance when > 0 (init: 0) */
+    int64_t bins;                 /**< histogram bins, at least 1 (init: 20) */
+    double range_min;             /**< histogram range; range_min >= range_max takes */
+    double range_max;             /**<   +-max|d| (init: 0, 0) */
+    double max_normal_angle;      /**< far-side rule, degrees; 180 turns it off (init: 90) */
+    const char* reference_region; /**< Cell region of the reference; NULL or "" for all */
+    int32_t attach;               /**< attach deviation:distance (init: 1) */
+    int32_t register_first;       /**< register the scan first (mio_deviation only; init: 0) */
+    int64_t reserved[4];
+} mio_deviation_opts;
+
+/** What mio_deviation measured. 176 bytes. */
+typedef struct mio_deviation_report {
+    int64_t num_points;         /**< scan points */
+    int64_t num_measured;       /**< points with a finite distance */
+    int64_t num_outside_range;  /**< measured points outside the histogram range */
+    int64_t num_without_normal; /**< points measured without the far-side rule */
+    double min;                 /**< statistics over the measured points */
+    double max;
+    double mean;
+    double rms;
+    double sigma;               /**< population standard deviation */
+    double percentiles[5];      /**< the 1st, 5th, 50th, 95th and 99th percentiles */
+    double share_within;        /**< share within +-tolerance (NaN without one) */
+    double suggested_range;     /**< p95 of |d| rounded up to two significant figures */
+    int64_t num_bins;           /**< see mio_deviation_histogram() */
+    int64_t num_warnings;       /**< see mio_deviation_warnings() */
+    int64_t registered;         /**< nonzero with register_first; see mio_deviation_matrix() */
+    double registration_rms;    /**< the registration's final RMS pair distance */
+    int64_t reserved[2];
+} mio_deviation_report;
+
+MIO_API void mio_deviation_opts_init(mio_deviation_opts* opts);
+
+/**
+ * The signed deviation of every point of `scan` from the surface `reference`
+ * (positive outside it), and its statistics. See doc/deviation.md.
+ *
+ * @param opts   options, or NULL for the mio_deviation_opts_init() defaults.
+ * @param report out, nullable.
+ * @return `scan` with the point data deviation:distance (free with
+ *         mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_deviation(const mio_mesh* scan, const mio_mesh* reference,
+                                const mio_deviation_opts* opts, mio_deviation_report* report);
+/**
+ * The signed deviation of every point of `scan` from a fitted primitive:
+ * `type` 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus, and its ten
+ * fit:patch_params entries. The far-side rule and reference_region are unused.
+ */
+MIO_API mio_mesh* mio_deviation_primitive(const mio_mesh* scan, int32_t type,
+                                          const double params[10],
+                                          const mio_deviation_opts* opts,
+                                          mio_deviation_report* report);
+/**
+ * Copy the histogram of this thread's last mio_deviation or
+ * mio_deviation_primitive call: up to `capacity` counts into `counts` and
+ * `capacity + 1` edges into `edges` (either nullable). Returns the number of
+ * bins, or -1 on failure.
+ */
+MIO_API int64_t mio_deviation_histogram(int64_t* counts, double* edges, int64_t capacity);
+/** The warnings of this thread's last deviation call; string rule 5. */
+MIO_API int64_t mio_deviation_warnings(char* buf, int64_t buflen);
+/**
+ * Copy the registration of this thread's last deviation call (row-major 4x4,
+ * scan onto reference; the identity without register_first) into `matrix`.
+ * Returns 1 when it registered, 0 when not, -1 on failure.
+ */
+MIO_API int64_t mio_deviation_matrix(double matrix[16]);
+
+/** Options of mio_deviation_regions; initialise with mio_deviation_regions_opts_init. 64 bytes. */
+typedef struct mio_deviation_regions_opts {
+    double tolerance;   /**< cells beyond +-tolerance are excess or missing (required, > 0) */
+    double min_area;    /**< drop regions smaller than this (init: 0) */
+    const char* field;  /**< the signed deviation point data; NULL: "deviation:distance" */
+    const char* prefix; /**< region name prefix; NULL: "deviation:" */
+    int64_t reserved[4];
+} mio_deviation_regions_opts;
+
+/** What mio_deviation_regions found. 72 bytes. */
+typedef struct mio_deviation_regions_report {
+    int64_t num_regions;  /**< see mio_deviation_region_get() */
+    int64_t num_excess;
+    int64_t num_missing;
+    int64_t num_dropped;  /**< regions below min_area */
+    int64_t num_warnings; /**< see mio_deviation_regions_warnings() */
+    int64_t reserved[4];
+} mio_deviation_regions_report;
+
+/** One region of this thread's last mio_deviation_regions call. 136 bytes. */
+typedef struct mio_deviation_region_info {
+    int64_t sign;       /**< +1 excess material, -1 missing material */
+    int64_t num_cells;
+    double area;
+    double extreme;     /**< the largest (excess) or least (missing) cell value */
+    double mean;        /**< area-weighted mean deviation */
+    double volume;      /**< signed volume estimate, the sum of d * area */
+    double centroid[3];
+    double bounds[6];   /**< lo x, y, z, hi x, y, z */
+    int64_t reserved[2];
+} mio_deviation_region_info;
+
+MIO_API void mio_deviation_regions_opts_init(mio_deviation_regions_opts* opts);
+/**
+ * The connected regions (cells joined across shared edges) of a measured
+ * surface whose deviation lies beyond +-tolerance, written as the named cell
+ * regions <prefix>excess_<k> and <prefix>missing_<k> with the cell data
+ * deviation:region (roadmap 7.4.3). See doc/deviation.md.
+ * @return the mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_deviation_regions(const mio_mesh* mesh,
+                                        const mio_deviation_regions_opts* opts,
+                                        mio_deviation_regions_report* report);
+/** Region `index` (0-based, largest |volume| first) of this thread's last
+ *  mio_deviation_regions call into `info`; MIO_OK, or an error past the end. */
+MIO_API mio_status mio_deviation_region_get(int64_t index, mio_deviation_region_info* info);
+/** Its name; string rule 5. */
+MIO_API int64_t mio_deviation_region_name(int64_t index, char* buf, int64_t buflen);
+/** The warnings of this thread's last mio_deviation_regions call; string rule 5. */
+MIO_API int64_t mio_deviation_regions_warnings(char* buf, int64_t buflen);
+
+/** Options of mio_exaggerate; initialise with mio_exaggerate_opts_init. 64 bytes. */
+typedef struct mio_exaggerate_opts {
+    const char* field;      /**< signed deviation point data; NULL: "deviation:distance" */
+    double scale;           /**< displacement per unit deviation (init: 10) */
+    double clamp;           /**< clamp to +-clamp first; 0: the suggested range (init: 0) */
+    double smooth_fraction; /**< smoothing radius over the diagonal (init: 0.01) */
+    int64_t reserved[4];
+} mio_exaggerate_opts;
+
+/** What mio_exaggerate did. 64 bytes. */
+typedef struct mio_exaggerate_report {
+    double clamp;         /**< the clamp applied */
+    double radius;        /**< the smoothing radius applied */
+    int64_t num_moved;    /**< points with a normal and a finite deviation */
+    int64_t num_warnings; /**< see mio_exaggerate_warnings() */
+    int64_t reserved[4];
+} mio_exaggerate_report;
+
+MIO_API void mio_exaggerate_opts_init(mio_exaggerate_opts* opts);
+/**
+ * A copy of the surface `mesh` with each point displaced along its normal by
+ * `scale` times its clamped, smoothed deviation (roadmap 7.4.4), for a
+ * figure; the input is not changed. See doc/deviation.md.
+ */
+MIO_API mio_mesh* mio_exaggerate(const mio_mesh* mesh, const mio_exaggerate_opts* opts,
+                                 mio_exaggerate_report* report);
+/** The warnings of this thread's last mio_exaggerate call; string rule 5. */
+MIO_API int64_t mio_exaggerate_warnings(char* buf, int64_t buflen);
+
+/* ---- colorize (roadmap 7.4.4) ---------------------------------------------- */
+
+/** Options of mio_colorize; initialise with mio_colorize_opts_init. 96 bytes. */
+typedef struct mio_colorize_opts {
+    const char* field;     /**< the point or cell data to colour by (required) */
+    const char* cmap;      /**< a colormap name; NULL: "viridis" */
+    double vmin;           /**< the range; vmin >= vmax takes the field's min and max */
+    double vmax;           /**<   (init: 0, 0) */
+    const char* nan_color; /**< "#rrggbb" for a non-finite value; NULL: "#808080" */
+    int64_t steps;         /**< bands at fixed steps; 0 or 1 continuous (init: 0) */
+    int64_t component;     /**< colour by this component; -1 the magnitude (init: -1) */
+    int32_t symmetric;     /**< automatic range +-max|v| (init: 0) */
+    int32_t reserved32;
+    int64_t reserved[4];
+} mio_colorize_opts;
+
+/** What mio_colorize used. 56 bytes. */
+typedef struct mio_colorize_report {
+    double vmin;
+    double vmax;
+    int32_t location; /**< 0: point data, 1: cell data */
+    int32_t reserved32;
+    int64_t reserved[4];
+} mio_colorize_report;
+
+MIO_API void mio_colorize_opts_init(mio_colorize_opts* opts);
+/**
+ * Bake a field into the UInt8 data red, green and blue through a colormap
+ * (banded with steps), on the field's location: the vertex or face colours
+ * PLY carries. See doc/colorize.md.
+ */
+MIO_API mio_mesh* mio_colorize(const mio_mesh* mesh, const mio_colorize_opts* opts,
+                               mio_colorize_report* report);
 
 /** "Any" in a mio_region_selector, "inherit" in mio_edit_regions. */
 #define MIO_REGION_ANY (-2)

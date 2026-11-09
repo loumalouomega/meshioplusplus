@@ -45,6 +45,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/hole_fill.hpp"
 #include "../detail/typed_view.hpp"
 #include "meshioplusplus/region.hpp"
 
@@ -444,7 +445,76 @@ double repair_signed_volume(const std::vector<RepairTri>& rTris,
     return vol;
 }
 
+// Flat and Curved fills (roadmap 7.8.6): each hole's rim rings and spacing
+// from the surface's own triangles, then detail::hole_fill.
+void repair_fill_faired(const std::vector<RepairHole>& rHoles, RepairFillStyle Style,
+                        std::vector<Vec3>& rXyz, std::vector<RepairTri>& rTris,
+                        std::vector<std::int64_t>& rFillComponent,
+                        std::vector<std::int64_t>& rFillHole,
+                        std::vector<std::int64_t>& rAddedHole) {
+    std::vector<std::int64_t> rim_slot(rXyz.size(), -1);
+    std::vector<std::vector<std::int64_t>> ring;
+    for (const RepairHole& r_h : rHoles)
+        for (const std::int64_t v : r_h.mLoop)
+            if (rim_slot[static_cast<std::size_t>(v)] < 0) {
+                rim_slot[static_cast<std::size_t>(v)] = static_cast<std::int64_t>(ring.size());
+                ring.emplace_back();
+            }
+    for (const RepairTri& r_t : rTris)
+        for (std::size_t e = 0; e < 3; ++e) {
+            const std::int64_t slot = rim_slot[static_cast<std::size_t>(r_t[e])];
+            if (slot < 0)
+                continue;
+            ring[static_cast<std::size_t>(slot)].push_back(r_t[(e + 1) % 3]);
+            ring[static_cast<std::size_t>(slot)].push_back(r_t[(e + 2) % 3]);
+        }
+    for (auto& r_r : ring) {
+        std::sort(r_r.begin(), r_r.end());
+        r_r.erase(std::unique(r_r.begin(), r_r.end()), r_r.end());
+    }
+    for (std::size_t h = 0; h < rHoles.size(); ++h) {
+        detail::HoleFillInput in;
+        in.pPoints = &rXyz;
+        in.mLoop = rHoles[h].mLoop;
+        in.mFairing = Style == RepairFillStyle::Curved ? detail::HoleFairing::ThinPlate
+                                                       : detail::HoleFairing::Membrane;
+        for (const std::int64_t v : in.mLoop) {
+            const std::vector<std::int64_t>& r_ring =
+                ring[static_cast<std::size_t>(rim_slot[static_cast<std::size_t>(v)])];
+            double sum = 0.0;
+            for (const std::int64_t q : r_ring)
+                sum += detail::vec3_norm(detail::vec3_sub(rXyz[static_cast<std::size_t>(q)],
+                                                          rXyz[static_cast<std::size_t>(v)]));
+            in.mRimRing.push_back(r_ring);
+            in.mRimSpacing.push_back(r_ring.empty() ? 0.0
+                                                    : sum / static_cast<double>(r_ring.size()));
+        }
+        const detail::HoleFillPatch patch =
+            detail::hole_fill(in, static_cast<std::int64_t>(rXyz.size()));
+        for (const Vec3& r_p : patch.mPoints) {
+            rXyz.push_back(r_p);
+            rAddedHole.push_back(static_cast<std::int64_t>(h));
+        }
+        for (const auto& r_t : patch.mTriangles) {
+            rTris.push_back({r_t[0], r_t[1], r_t[2]});
+            rFillComponent.push_back(rHoles[h].mComponent);
+            rFillHole.push_back(static_cast<std::int64_t>(h));
+        }
+    }
+}
+
 }  // namespace
+
+RepairFillStyle repair_fill_style_from_name(const std::string& rName) {
+    if (rName == "fan")
+        return RepairFillStyle::Fan;
+    if (rName == "flat")
+        return RepairFillStyle::Flat;
+    if (rName == "curved")
+        return RepairFillStyle::Curved;
+    throw std::invalid_argument(std::string(kRepairPrefix) +
+                                "fill_style must be fan, flat or curved, not '" + rName + "'");
+}
 
 RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
     repair_check_blocks(rMesh);
@@ -550,6 +620,7 @@ RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
     std::vector<RepairHole> holes;
     std::vector<std::int64_t> fill_component;  // per fill triangle
     std::vector<std::int64_t> fill_hole;       // per fill triangle
+    std::vector<std::int64_t> added_hole;      // per added point, its hole
     if (rOptions.mFillHoles) {
         RepairHoles found =
             repair_trace_holes(tris, edges, orient.mComponent, xyz.size(), rOptions.mMaxHoleEdges);
@@ -557,19 +628,25 @@ RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
         result.mNumHolesSkipped = found.mSkipped;
         result.mNumHolesFilled = static_cast<std::int64_t>(found.mFilled.size());
         holes = std::move(found.mFilled);
-        for (std::size_t h = 0; h < holes.size(); ++h) {
-            const std::vector<std::int64_t>& loop = holes[h].mLoop;
-            Vec3 c{0.0, 0.0, 0.0};
-            for (const std::int64_t v : loop)
-                c = detail::vec3_add(c, xyz[static_cast<std::size_t>(v)]);
-            c = detail::vec3_scale(c, 1.0 / static_cast<double>(loop.size()));
-            const std::int64_t cid = static_cast<std::int64_t>(xyz.size());
-            xyz.push_back(c);
-            for (std::size_t i = 0; i < loop.size(); ++i) {
-                tris.push_back({loop[i], loop[(i + 1) % loop.size()], cid});
-                fill_component.push_back(holes[h].mComponent);
-                fill_hole.push_back(static_cast<std::int64_t>(h));
+        if (rOptions.mFillStyle == RepairFillStyle::Fan) {
+            for (std::size_t h = 0; h < holes.size(); ++h) {
+                const std::vector<std::int64_t>& loop = holes[h].mLoop;
+                Vec3 c{0.0, 0.0, 0.0};
+                for (const std::int64_t v : loop)
+                    c = detail::vec3_add(c, xyz[static_cast<std::size_t>(v)]);
+                c = detail::vec3_scale(c, 1.0 / static_cast<double>(loop.size()));
+                const std::int64_t cid = static_cast<std::int64_t>(xyz.size());
+                xyz.push_back(c);
+                added_hole.push_back(static_cast<std::int64_t>(h));
+                for (std::size_t i = 0; i < loop.size(); ++i) {
+                    tris.push_back({loop[i], loop[(i + 1) % loop.size()], cid});
+                    fill_component.push_back(holes[h].mComponent);
+                    fill_hole.push_back(static_cast<std::int64_t>(h));
+                }
             }
+        } else {
+            repair_fill_faired(holes, rOptions.mFillStyle, xyz, tris, fill_component, fill_hole,
+                               added_hole);
         }
         result.mNumFacesAdded = static_cast<std::int64_t>(tris.size() - ntri_in);
     }
@@ -726,14 +803,15 @@ RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
                        ? static_cast<std::size_t>(id)
                        : static_cast<std::size_t>(parent_of_new[static_cast<std::size_t>(id) - n]);
         };
-        for (std::size_t h = 0; h < holes.size(); ++h) {
-            const std::vector<std::int64_t>& loop = holes[h].mLoop;
+        for (std::size_t k = 0; k < added_hole.size(); ++k) {
+            const std::vector<std::int64_t>& loop =
+                holes[static_cast<std::size_t>(added_hole[k])].mLoop;
             const double inv = 1.0 / static_cast<double>(loop.size());
             for (std::size_t c = 0; c < ncomp; ++c) {
                 double sum = 0.0;
                 for (const std::int64_t v : loop)
                     sum += a_v[src_row(v) * ncomp + c];
-                detail::write_double(b, (n + n_copies + h) * ncomp + c, sum * inv);
+                detail::write_double(b, (n + n_copies + k) * ncomp + c, sum * inv);
             }
         }
         out.AddPointData(name, std::move(b));
@@ -748,8 +826,8 @@ RepairResult repair(const Mesh& rMesh, const RepairOptions& rOptions) {
             dst[i] = static_cast<std::int64_t>(i);
         for (std::size_t k = 0; k < n_copies; ++k)
             dst[n + k] = parent_of_new[k];
-        for (std::size_t h = 0; h < holes.size(); ++h)
-            dst[n + n_copies + h] = -1;
+        for (std::size_t k = 0; k < added_hole.size(); ++k)
+            dst[n + n_copies + k] = -1;
         out.AddPointData(kRepairParentPointName, std::move(pp));
         std::vector<NDArray> blocks;
         for (std::size_t b = 0; b < nblocks; ++b) {

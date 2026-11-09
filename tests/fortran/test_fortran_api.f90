@@ -1464,6 +1464,24 @@ program test_fortran_api
         ! Exactly one stopping criterion is required.
         bad = fan%decimate(stat=st)
         call check(st /= 0, 'decimate rejects a missing criterion')
+        block
+            type(mio_mesh) :: capped
+            real(real64) :: dev
+            logical :: met
+            integer(int64) :: nround
+            ! Roadmap 7.8.5: a deviation the fan's flat interior meets exactly.
+            capped = fan%decimate(max_deviation=1e-9_real64, deviation=dev, &
+                                  deviation_met=met, rounds=nround, stat=st)
+            call check(st == 0 .and. met .and. dev <= 1e-9_real64 .and. nround >= 1_int64, &
+                       'decimate holds max_deviation')
+            if (st == 0) call capped%free()
+            capped = fan%decimate(max_faces=2_int64, stat=st)
+            call check(st == 0, 'decimate takes max_faces alone')
+            if (st == 0) then
+                call check(capped%cell_block_num_cells(1) <= 2_int64, 'max_faces caps the fan')
+                call capped%free()
+            end if
+        end block
         ! A volume mesh is out of scope by name.
         bad = m%decimate(ratio=0.5_real64, stat=st)
         call check(st /= 0, 'decimate rejects a volume mesh')
@@ -2580,8 +2598,91 @@ contains
             if (ierr == 0) call thick%free()
             thick = mio_thickness(sa, direction='sideways', stat=ierr)
             call check(ierr /= 0, 'thickness refuses an unknown direction')
+            thick = mio_thickness(sa, method='sphere', two_sided=.true., report=trep, stat=ierr)
+            call check(ierr == 0 .and. trep%method == 1 .and. trep%p2 <= trep%p95, &
+                       'thickness by the sphere method')
+            if (ierr == 0) call thick%free()
+            thick = mio_thickness(sa, method='laser', stat=ierr)
+            call check(ierr /= 0, 'thickness refuses an unknown method')
+            ! Chained sections (roadmap 7.6.1).
+            thick = sa%slice([0.0_real64, 0.0_real64, 0.1_real64], &
+                             [0.0_real64, 0.0_real64, 1.0_real64], chain=.true., stat=ierr)
+            call check(ierr == 0, 'a chained slice of the sphere')
+            if (ierr == 0) call thick%free()
+            thick = mio_sections(sa, [0.0_real64, 0.0_real64, 1.0_real64], &
+                                 [-0.5_real64, 0.5_real64], stat=ierr)
+            call check(ierr == 0, 'sections of the sphere')
+            if (ierr == 0) call thick%free()
+            block
+                type(mio_mesh) :: sec, sk
+                type(mio_fit_curves_report) :: frep
+                type(mio_sketch_piece) :: piece
+                type(mio_silhouette_report) :: srep
+                sec = sa%slice([0.0_real64, 0.0_real64, 0.1_real64], &
+                               [0.0_real64, 0.0_real64, 1.0_real64], chain=.true., stat=ierr)
+                sk = mio_fit_curves(sec, report=frep, stat=ierr)
+                call check(ierr == 0 .and. frep%num_circles == 1_int64, &
+                           'fit_curves finds the circle')
+                call mio_fit_curves_piece(1, piece, stat=ierr)
+                call check(ierr == 0 .and. piece%type == 3, 'the first piece is a circle')
+                call sk%free()
+                sk = mio_silhouette(sa, clearance=0.05_real64, report=srep, stat=ierr)
+                call check(ierr == 0 .and. srep%num_loops == 1_int64 .and. &
+                           srep%num_holes == 0_int64, 'silhouette outlines the sphere')
+                call sk%free()
+                call sec%free()
+            end block
             call sb%free()
             call sa%free()
+        end block
+
+        ! deviation (roadmap 7.4.1, 7.4.2).
+        block
+            type(mio_mesh) :: ref, scan, dev
+            type(mio_deviation_report) :: drep
+            real(real64) :: sphere(10)
+            ref = mio_icosa_sphere(subdivisions=3, stat=ierr)
+            scan = mio_icosa_sphere(radius=1.01_real64, subdivisions=3, stat=ierr)
+            dev = mio_deviation(scan, ref, tolerance=0.02_real64, report=drep, stat=ierr)
+            call check(ierr == 0 .and. abs(drep%mean - 0.01_real64) < 1e-9_real64 .and. &
+                       drep%share_within == 1.0_real64, 'deviation of an offset sphere')
+            if (ierr == 0) call dev%free()
+            sphere = 0.0_real64
+            sphere(7) = 1.0_real64
+            dev = mio_deviation_primitive(scan, 2, sphere, report=drep, stat=ierr)
+            call check(ierr == 0 .and. abs(drep%mean - 0.01_real64) < 1e-12_real64, &
+                       'deviation from a sphere primitive')
+            if (ierr == 0) call dev%free()
+            dev = mio_deviation(scan, ref, bins=0, stat=ierr)
+            call check(ierr /= 0, 'deviation refuses zero bins')
+            block
+                type(mio_mesh) :: measured, regs
+                type(mio_deviation_regions_report) :: rrep
+                type(mio_deviation_region_info) :: info
+                integer :: ist
+                measured = mio_deviation(scan, ref, stat=ierr)
+                regs = mio_deviation_regions(measured, 0.005_real64, report=rrep, stat=ierr)
+                call check(ierr == 0 .and. rrep%num_excess == 1_int64 .and. &
+                           rrep%num_missing == 0_int64, 'one excess region on an offset sphere')
+                info = mio_deviation_region(1, stat=ist)
+                call check(ist == 0 .and. info%sign == 1_int64, 'the region is excess material')
+                block
+                    type(mio_mesh) :: big, coloured
+                    type(mio_exaggerate_report) :: erep
+                    type(mio_colorize_report) :: crep
+                    big = mio_exaggerate(measured, scale=20.0_real64, report=erep, stat=ierr)
+                    call check(ierr == 0 .and. erep%num_moved > 0_int64, 'exaggerate moves points')
+                    if (ierr == 0) call big%free()
+                    coloured = mio_colorize(measured, 'deviation:distance', steps=4, &
+                                            report=crep, stat=ierr)
+                    call check(ierr == 0 .and. crep%location == 0, 'colorize colours the points')
+                    if (ierr == 0) call coloured%free()
+                end block
+                if (ierr == 0) call regs%free()
+                call measured%free()
+            end block
+            call scan%free()
+            call ref%free()
         end block
 
         ! The unit cube as a closed, outward-wound triangle surface.
@@ -2978,7 +3079,123 @@ contains
         fitted = seg%fit_primitives(num_plane=nplane, stat=ierr)
         call check(ierr == 0, 'fit_primitives succeeded')
         call check(nplane == 6_int64, 'every cube face fits a plane')
+        block
+            type(mio_step_elements_report) :: erep
+            call mio_write_step_elements(prefix//'_elements.step', fitted, report=erep, stat=ierr)
+            call check(ierr == 0 .and. erep%num_planes == 6_int64, &
+                       'write_step_elements writes the six planes')
+            call mio_write_step_elements(prefix//'_elements.step', fitted, &
+                                         patches=[99_int64], stat=ierr)
+            call check(ierr /= 0, 'write_step_elements refuses an unknown patch')
+        end block
+        block
+            type(mio_mesh) :: kept
+            type(mio_remove_islands_report) :: irep
+            kept = mio_remove_islands(sq, report=irep, stat=ierr)
+            call check(ierr == 0 .and. irep%num_components == 1_int64 .and. &
+                       irep%num_removed == 0_int64, 'remove_islands keeps the cube')
+            if (ierr == 0) call kept%free()
+            kept = mio_remove_islands(sq, connectivity='face', stat=ierr)
+            call check(ierr /= 0, 'remove_islands refuses an unknown connectivity')
+            block
+                type(mio_mesh) :: f1
+                integer(int64) :: nflip
+                f1 = mio_flip_normals(sq, num_flipped=nflip, stat=ierr)
+                call check(ierr == 0 .and. nflip == 6_int64, 'flip_normals flips the six faces')
+                if (ierr == 0) call f1%free()
+                f1 = mio_flip_normals(sq, region='nope', stat=ierr)
+                call check(ierr /= 0, 'flip_normals refuses an unknown region')
+                block
+                    type(mio_clip_report) :: crep
+                    f1 = mio_clip(sq, [0.0_real64, 0.0_real64, 0.5_real64], &
+                                  [0.0_real64, 0.0_real64, 1.0_real64], report=crep, stat=ierr)
+                    call check(ierr == 0 .and. crep%num_loops == 1_int64 .and. &
+                               crep%num_cap_triangles > 0_int64, 'clip halves the cube and caps it')
+                    if (ierr == 0) call f1%free()
+                end block
+                block
+                    type(mio_offset_report) :: orep
+                    f1 = mio_offset_surface(sq, 0.1_real64, report=orep, stat=ierr)
+                    call check(ierr == 0 .and. orep%num_folded == 0_int64 .and. &
+                               abs(orep%max_move - 0.1_real64 * sqrt(3.0_real64)) < 1e-12_real64, &
+                               'offset_surface grows the cube by the distance')
+                    if (ierr == 0) call f1%free()
+                    f1 = mio_hollow(sq, 0.1_real64, report=orep, stat=ierr)
+                    call check(ierr == 0 .and. orep%num_rim_quads == 0_int64, 'hollow walls the cube')
+                    if (ierr == 0) call f1%free()
+                    f1 = mio_thicken(sq, 0.1_real64, side='sideways', stat=ierr)
+                    call check(ierr /= 0, 'thicken refuses an unknown side')
+                    f1 = mio_thicken(sq, 0.1_real64, side='both', report=orep, stat=ierr)
+                    call check(ierr == 0, 'thicken shells the cube')
+                    if (ierr == 0) call f1%free()
+                end block
+                block
+                    ! Roadmap 7.7: the loop on the cube.
+                    type(mio_fit_cad_iterate_report) :: irep
+                    type(mio_face_support_report) :: srep
+                    type(mio_mesh) :: solid, marked
+                    solid = mio_fit_cad_iterate(sq, backend='native', report=irep, stat=ierr)
+                    call check(ierr == 0 .and. irep%num_rounds == 1_int64 .and. &
+                               irep%target_met == 1, 'fit_cad_iterate meets the target at once')
+                    if (ierr == 0) then
+                        marked = mio_face_support(solid, sq, report=srep, stat=ierr)
+                        call check(ierr == 0 .and. srep%num_measured == 6_int64, &
+                                   'face_support measures the six faces')
+                        if (ierr == 0) call marked%free()
+                        call solid%free()
+                    end if
+                    solid = mio_fit_cad_iterate(sq, part_class='plastic', stat=ierr)
+                    call check(ierr /= 0, 'fit_cad_iterate refuses an unknown part class')
+                    marked = mio_constrain_primitives(sq, stat=ierr)
+                    call check(ierr /= 0, 'constrain_primitives needs a fitted skin')
+                    marked = mio_profile_solid(sq, 'extrude:1', stat=ierr)
+                    call check(ierr /= 0, 'profile_solid needs a sketch')
+                end block
+            end block
+        end block
+        block
+            type(mio_mesh) :: measured, aligned
+            type(mio_measure_report) :: mrep
+            character(:), allocatable :: mjson
+            real(real64) :: mat(4, 4), prm(10)
+            integer :: ptype
+            measured = mio_measure(sq, '{"elements": [' // &
+                '{"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},' // &
+                '{"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],' // &
+                '"tolerances": [{"type": "perpendicularity", "feature": "B", "datum": "A",' // &
+                ' "limit": 1e-9}]}', report=mrep, report_json=mjson, stat=ierr)
+            call check(ierr == 0 .and. mrep%num_elements == 2_int64 .and. &
+                       mrep%num_fail == 0_int64 .and. index(mjson, 'perpendicularity') > 0, &
+                       'measure fits two planes and checks a tolerance')
+            if (ierr == 0) then
+                aligned = mio_align_datums(measured, 'A', 'B', matrix=mat, stat=ierr)
+                call check(ierr == 0 .and. abs(mat(4, 4) - 1.0_real64) < 1e-15_real64, &
+                           'align_datums aligns on two planes')
+                if (ierr == 0) call aligned%free()
+                call mio_measure_element_primitive(measured, 'A', ptype, prm, stat=ierr)
+                call check(ierr == 0 .and. ptype == 1, 'an element is a plane primitive')
+                call measured%free()
+            end if
+        end block
         call fitted%free()
+        ! Roadmap 7.1.1: a seed on the top face fits it alone.
+        block
+            integer(int64) :: nfeature
+            real(real64) :: one_seed(3, 1)
+            one_seed(:, 1) = [0.5_real64, 0.5_real64, 1.0_real64]
+            fitted = seg%fit_primitives(types=2, seeds=one_seed, num_plane=nplane, &
+                                        num_feature_cells=nfeature, stat=ierr)
+            call check(ierr == 0 .and. nplane == 1_int64 .and. nfeature > 0_int64, &
+                       'a seed fits one face')
+            if (ierr == 0) call fitted%free()
+            fitted = seg%fit_primitives(used_points='5sigma', stat=ierr)
+            call check(ierr /= 0, 'fit_primitives refuses an unknown used_points')
+            fitted = seg%fit_primitives(criterion='minimum_zone', num_plane=nplane, stat=ierr)
+            call check(ierr == 0 .and. nplane == 6_int64, 'fit_primitives takes the minimum zone')
+            if (ierr == 0) call fitted%free()
+            fitted = seg%fit_primitives(criterion='chebyshev', stat=ierr)
+            call check(ierr /= 0, 'fit_primitives refuses an unknown criterion')
+        end block
 
         ! refine_patches (v17.11.0): six planes are already one patch each.
         refined_mesh = seg%refine_patches(num_patches=npatch, num_splits=nrsplit, &
@@ -3176,6 +3393,36 @@ contains
                    abs(g_matrix(1, 4)) < 1.0e-12_real64, 'the square registers onto itself')
         call square%register_rigid(square, g_matrix, method='affine', stat=ierr)
         call check(ierr /= 0, 'register_rigid rejects an unknown method')
+        ! The automatic start and adaptive trimming (roadmap 7.3.1, 7.3.3).
+        call square%register_rigid(square, g_matrix, initial='auto', adaptive_trim=3.0_real64, &
+                                   num_rejected=g_nv, stat=ierr)
+        call check(ierr == 0, 'register_rigid with initial=auto succeeded')
+        call square%register_rigid(square, g_matrix, initial='guess', stat=ierr)
+        call check(ierr /= 0, 'register_rigid rejects an unknown initial')
+        ! Landmarks (7.3.2): three pairs shifted by (1, 2, 3).
+        block
+            real(real64) :: lsrc(3, 3), ldst(3, 3), lrms
+            type(mio_symmetry_plane_report) :: srep
+            type(mio_auto_align_report) :: arep
+            type(mio_mesh) :: aligned
+            lsrc = reshape([0.0_real64, 0.0_real64, 0.0_real64, 1.0_real64, 0.0_real64, &
+                            0.0_real64, 0.0_real64, 2.0_real64, 0.0_real64], [3, 3])
+            ldst = lsrc
+            ldst(1, :) = ldst(1, :) + 1.0_real64
+            ldst(2, :) = ldst(2, :) + 2.0_real64
+            ldst(3, :) = ldst(3, :) + 3.0_real64
+            call mio_register_landmarks(lsrc, ldst, g_matrix, rms=lrms, stat=ierr)
+            call check(ierr == 0 .and. abs(g_matrix(2, 4) - 2.0_real64) < 1.0e-12_real64, &
+                       'register_landmarks recovers the shift')
+            call mio_register_landmarks(lsrc(:, 1:2), ldst(:, 1:2), g_matrix, stat=ierr)
+            call check(ierr /= 0, 'register_landmarks refuses two pairs')
+            ! The square is symmetric (7.3.6) and lies on its face (7.3.5).
+            call mio_find_symmetry_plane(square, srep, stat=ierr)
+            call check(ierr == 0 .and. srep%share > 0.9_real64, 'find_symmetry_plane succeeded')
+            aligned = mio_auto_align(square, report=arep, stat=ierr)
+            call check(ierr == 0 .and. arep%mode == 0, 'auto_align lays the square on its face')
+            call aligned%free()
+        end block
         ! Normals of the square's corners: one plane, facing +z.
         dist = square%estimate_normals(k=3, num_degenerate=g_nv, stat=ierr)
         call check(ierr == 0, 'estimate_normals succeeded')
@@ -3442,6 +3689,14 @@ contains
         filled = holed%repair(fill_holes=.false., num_holes_filled=nholes, stat=ierr)
         call check(ierr == 0 .and. nholes == 0_int64, 'repair honours fill_holes=.false.')
         call filled%free()
+        ! Roadmap 7.8.6: the flat fill of a triangular hole is one triangle.
+        filled = holed%repair(fill_style='flat', num_faces_added=nfaces, num_points_added=npts, &
+                              watertight_after=wt, stat=ierr)
+        call check(ierr == 0 .and. nfaces == 1_int64 .and. npts == 0_int64 .and. wt, &
+                   'repair fills flat')
+        if (ierr == 0) call filled%free()
+        filled = holed%repair(fill_style='smooth', stat=ierr)
+        call check(ierr /= 0, 'repair refuses an unknown fill_style')
         call holed%free()
 
         ! Shrinkwrap three points onto a z = 0 square, offset 0.25, one point

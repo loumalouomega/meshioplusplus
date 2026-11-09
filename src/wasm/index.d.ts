@@ -21,6 +21,17 @@ export interface SurfaceQualityInfo {
 }
 
 /** Names one region: its name plus, optionally, its kind, dimension and tag. */
+/** What `offsetSurface`, `thicken` and `hollow` did (roadmap 7.8.4). */
+export interface OffsetSurfaceResult {
+  mesh: Mesh;
+  numNotVisible: number;
+  numClamped: number;
+  numFolded: number;
+  numRimQuads: number;
+  maxMove: number;
+  warnings: string[];
+}
+
 export interface RegionSelector {
   name: string;
   kind?: 'point' | 'cell' | 'side';
@@ -853,6 +864,15 @@ export interface ThicknessOptions {
   region?: string;
   /** Reach only this named cell region of the target. */
   regionOther?: string;
+  /** `'ray'` (default), `'sphere'` or `'cone'` (roadmap 7.5.1). */
+  method?: 'ray' | 'sphere' | 'cone';
+  /** The cone's half-angle in degrees and its rays. */
+  coneAngle?: number;
+  coneRays?: number;
+  /** Rays both ways, either face of a triangle counting (roadmap 7.5.2). */
+  twoSided?: boolean;
+  /** Step over triangles more edge-on to the ray than this, degrees. */
+  maxNormalDeviation?: number;
 }
 
 /** What `thickness` returns. */
@@ -872,6 +892,152 @@ export interface ThicknessResult {
   minPoint: Float64Array;
   maxDistance: number;
   warnings: string[];
+  /** The method used, and the 2nd and 95th percentiles of the hits. */
+  method: string;
+  p2: number;
+  p95: number;
+}
+
+/** Options of `deviation` (doc/deviation.md): a `reference` or a `primitive`. */
+export interface DeviationOptions {
+  /** The reference surface. */
+  reference?: Mesh;
+  /** A fitted primitive instead: its type and ten `fit:patch_params` entries. */
+  primitive?: {
+    type: 'plane' | 'sphere' | 'cylinder' | 'cone' | 'torus';
+    params: number[];
+  };
+  /** Report the share within +-tolerance (default 0: none). */
+  tolerance?: number;
+  /** Histogram bins (default 20). */
+  bins?: number;
+  /** `[lo, hi]` of the histogram (default: +-max|d|). */
+  range?: [number, number];
+  /** The far-side rule's angle in degrees (default 90; 180 turns it off). */
+  maxNormalAngle?: number;
+  /** Measure against only this named cell region of the reference. */
+  referenceRegion?: string;
+  /** Register the scan to the reference first (roadmap 7.4.1). */
+  register?: boolean;
+}
+
+/** What `deviation` returns. */
+export interface DeviationResult {
+  /** The scan with the `deviation:distance` point data (NaN where unmeasured). */
+  mesh: Mesh;
+  numPoints: number;
+  numMeasured: number;
+  min: number;
+  max: number;
+  mean: number;
+  rms: number;
+  /** Population standard deviation about the mean. */
+  sigma: number;
+  percentiles: { p1: number; p5: number; p50: number; p95: number; p99: number };
+  /** `bins + 1` edges. */
+  histogramEdges: Float64Array;
+  /** `bins` counts. */
+  histogramCounts: Float64Array;
+  numOutsideRange: number;
+  /** The share within +-tolerance (NaN without one). */
+  shareWithin: number;
+  /** The 95th percentile of |d|, rounded up to two significant figures. */
+  suggestedRange: number;
+  numWithoutNormal: number;
+  warnings: string[];
+  /** With `register`: the registration applied (16 numbers, row-major). */
+  registered: boolean;
+  matrix: number[];
+  registrationRms: number;
+}
+
+/** Options of `deviationRegions` (doc/deviation.md). */
+export interface DeviationRegionsOptions {
+  /** Cells beyond +-tolerance are excess or missing material (required, > 0). */
+  tolerance: number;
+  /** The signed deviation point data (default `deviation:distance`). */
+  field?: string;
+  /** Region names are `<prefix>excess_<k>` and `<prefix>missing_<k>` (default `deviation:`). */
+  prefix?: string;
+  /** Drop regions smaller than this area (default 0). */
+  minArea?: number;
+}
+
+/** One region `deviationRegions` found. */
+export interface DeviationRegion {
+  name: string;
+  /** +1 excess, -1 missing material. */
+  sign: number;
+  numCells: number;
+  area: number;
+  extreme: number;
+  mean: number;
+  /** The signed volume estimate, the sum of d * area. */
+  volume: number;
+  centroid: Float64Array;
+  /** lo x, y, z, hi x, y, z. */
+  bounds: Float64Array;
+}
+
+/** What `deviationRegions` returns. */
+export interface DeviationRegionsResult {
+  /** The mesh with one cell region per region and `deviation:region`. */
+  mesh: Mesh;
+  /** Largest |volume| first. */
+  regions: DeviationRegion[];
+  numExcess: number;
+  numMissing: number;
+  numDropped: number;
+  warnings: string[];
+}
+
+/** Options of `exaggerate` (doc/deviation.md). */
+export interface ExaggerateOptions {
+  /** The signed deviation point data (default `deviation:distance`). */
+  field?: string;
+  /** Displacement per unit deviation (default 10). */
+  scale?: number;
+  /** Clamp the deviation first (default 0: the suggested colour range). */
+  clamp?: number;
+  /** Smoothing radius over the bounding-box diagonal (default 0.01). */
+  smoothFraction?: number;
+}
+
+/** What `exaggerate` returns. */
+export interface ExaggerateResult {
+  mesh: Mesh;
+  clamp: number;
+  radius: number;
+  numMoved: number;
+  warnings: string[];
+}
+
+/** Options of `colorize` (doc/colorize.md). */
+export interface ColorizeOptions {
+  /** The point or cell data to colour by (required). */
+  field: string;
+  /** A colormap name (default `viridis`). */
+  cmap?: string;
+  /** The range (default: the field's min and max). */
+  vmin?: number;
+  vmax?: number;
+  /** With the automatic range, +-max|v|. */
+  symmetric?: boolean;
+  /** Bands at fixed steps (default 0: continuous). */
+  steps?: number;
+  /** `#rrggbb` for a non-finite value (default `#808080`). */
+  nanColor?: string;
+  /** Colour by this 0-based component (default -1: the magnitude). */
+  component?: number;
+}
+
+/** What `colorize` returns. */
+export interface ColorizeResult {
+  /** The mesh with UInt8 `red`, `green` and `blue` data. */
+  mesh: Mesh;
+  vmin: number;
+  vmax: number;
+  location: 'point' | 'cell';
 }
 
 /** Options of `tetrahedralize` (doc/tetrahedralize.md). */
@@ -1738,6 +1904,70 @@ export type OpSpec =
       sign?: SdfSign;
       location?: SdfLocation;
       band?: number;
+    }
+  | {
+      /**
+       * Fit primitives to the segment patches, or (with `seeds`, x, y, z
+       * triples) one feature grown from the facets nearest the seeds, written
+       * as patch 0 and the cell region `fit:feature` (the `FitPrimitives`
+       * pipeline step; roadmap 7.1.1).
+       */
+      op: 'fitPrimitives';
+      patchData?: string;
+      tolerance?: number;
+      relative?: boolean;
+      minInlierFraction?: number;
+      types?: string[];
+      maxIterations?: number;
+      region?: string;
+      seeds?: number[];
+      featureAngle?: number;
+      rimAngle?: number;
+      outputRegion?: string;
+      usedPoints?: string;
+      criterion?: string;
+    }
+  | {
+      /**
+       * Elements, dimensions and GD&T tolerances by a JSON spec (the text, or
+       * a path); the mesh gains its element table (the `Measure` step;
+       * roadmap 7.2).
+       */
+      op: 'measure';
+      spec: string;
+      require?: boolean;
+    }
+  | {
+      /**
+       * The signed distance of every point from a reference: a `reference`
+       * file (its fitted `patch`, or its surface), or a measured `element` of
+       * the reference's table or the mesh's own; writes `deviation:distance`
+       * (the `Deviation` step; roadmap 7.4).
+       */
+      op: 'deviation';
+      reference?: string;
+      patch?: number;
+      element?: string;
+      tolerance?: number;
+      minShare?: number;
+      require?: boolean;
+      bins?: number;
+      maxNormalAngle?: number;
+      referenceRegion?: string;
+      register?: boolean;
+    }
+  | {
+      /** Wall thickness per cell, `thickness:distance` (the `Thickness` step; roadmap 7.5). */
+      op: 'thickness';
+      method?: 'ray' | 'sphere' | 'cone';
+      direction?: 'auto' | 'inward' | 'outward';
+      maxDistance?: number;
+      min?: number;
+      region?: string;
+      coneAngle?: number;
+      coneRays?: number;
+      twoSided?: boolean;
+      maxNormalDeviation?: number;
     };
 
 /** Per-operation counters and caveats from a pipeline run. */
@@ -2902,7 +3132,316 @@ export interface MeshioPlusPlusModule {
    * line mesh. Crossing points on shared edges are deduped so the section is
    * watertight; each section cell inherits its parent's cell_data.
    */
-  slice(mesh: Mesh, origin: number[], normal: number[], recordParentIds?: boolean): Mesh;
+  slice(
+    mesh: Mesh,
+    origin: number[],
+    normal: number[],
+    recordParentIds?: boolean,
+    /** `chain` walks a surface's line section into polylines (roadmap 7.6.1). */
+    options?: { chain?: boolean; minLength?: number },
+  ): Mesh;
+
+  /**
+   * Cut a surface by the plane through `origin` normal to `normal`, keep the
+   * side below it (or above, `keepBelow: false`) and cap the cut's closed
+   * loops (roadmap 7.8.3).
+   */
+  clip(
+    mesh: Mesh,
+    origin: ArrayLike<number>,
+    normal: ArrayLike<number>,
+    options?: { keepBelow?: boolean; cap?: boolean },
+  ): {
+    mesh: Mesh;
+    numKept: number;
+    numSplit: number;
+    numCapTriangles: number;
+    numLoops: number;
+    numOpenChains: number;
+    warnings: string[];
+  };
+
+  /**
+   * Build a `fit_curves` sketch into a solid by features in text form
+   * (`'extrude:10;fillet:0.5'`) through a CAD provider (roadmap 7.7.4); the
+   * full artifact carries OpenCASCADE, the lean one throws naming it.
+   */
+  profileSolid(
+    sketch: Mesh,
+    features: string,
+    options?: { stepPath?: string; scan?: Mesh; provider?: string; deflection?: number },
+  ): {
+    mesh: Mesh;
+    volume: number;
+    area: number;
+    numFaces: number;
+    valid: boolean;
+    provider: string;
+    warnings: string[];
+  };
+
+  /**
+   * Fit related primitives of a fitted skin together under control (roadmap
+   * 7.7.3); relations are `[patchA, patchB, 'coaxial' | 'parallel' |
+   * 'perpendicular' | 'equal_radius']`.
+   */
+  constrainPrimitives(
+    mesh: Mesh,
+    options?: {
+      faceTolerance?: number;
+      angleTolerance?: number;
+      distanceTolerance?: number;
+      minFraction?: number;
+      force?: Array<[number, number, string]>;
+      forbid?: Array<[number, number, string]>;
+    },
+  ): {
+    mesh: Mesh;
+    numConstrained: number;
+    numGroups: number;
+    faceTolerance: number;
+    relations: Array<{
+      patchA: number;
+      patchB: number;
+      relation: string;
+      angleDeg: number;
+      distance: number;
+      forced: boolean;
+    }>;
+    unmet: Array<[number, number, string]>;
+  };
+
+  /** The scan's support of each face of a `fit_cad` solid (roadmap 7.7.1). */
+  faceSupport(
+    solid: Mesh,
+    scan: Mesh,
+    options?: { tolerance?: number; measuredShare?: number; inferredShare?: number; holeData?: string },
+  ): {
+    mesh: Mesh;
+    numMeasured: number;
+    numPartial: number;
+    numInferred: number;
+    shareWithin: number;
+    tolerance: number;
+    faceShare: number[];
+  };
+
+  /** Segment, fit and build a solid in rounds towards a target (roadmap 7.7.2). */
+  fitCadIterate(
+    scan: Mesh,
+    options?: {
+      stepPath?: string;
+      partClass?: 'any' | 'analytic' | 'cast' | 'freeform';
+      targetWithin?: number;
+      targetExplained?: number;
+      segmentTolerance?: number;
+      fitTolerance?: number;
+      maxRounds?: number;
+      worstFaces?: number;
+      refineFactor?: number;
+      backend?: 'auto' | 'occt' | 'native';
+    },
+  ): {
+    mesh: Mesh;
+    rounds: Array<{
+      shareWithin: number;
+      explained: number;
+      hausdorffMax: number;
+      numFaces: number;
+      numPatches: number;
+    }>;
+    bestRound: number;
+    targetWithin: number;
+    targetMet: boolean;
+    stopReason: string;
+    numMeasured: number;
+    numInferred: number;
+  };
+
+  /**
+   * Move each point of a triangle and quad surface along its offset direction
+   * so every face's plane moves by `distance` (roadmap 7.8.4).
+   */
+  offsetSurface(
+    mesh: Mesh,
+    distance: number,
+    options?: { smoothIterations?: number },
+  ): OffsetSurfaceResult;
+
+  /**
+   * A closed shell `thickness` thick from a surface (roadmap 7.8.4): the two
+   * offsets on `side` of the wall, the lower reversed, the rim joined by quads.
+   */
+  thicken(
+    mesh: Mesh,
+    thickness: number,
+    options?: { side?: 'inward' | 'outward' | 'both'; smoothIterations?: number },
+  ): OffsetSurfaceResult;
+
+  /** A closed surface with an inner, reversed wall inside it (roadmap 7.8.4). */
+  hollow(mesh: Mesh, wall: number, options?: { smoothIterations?: number }): OffsetSurfaceResult;
+
+  /**
+   * Reverse the winding of every cell, or of a cell region's (roadmap 7.8.2),
+   * with no point moved; Side entries move with their cells.
+   */
+  flipNormals(mesh: Mesh, region?: string): { mesh: Mesh; numFlipped: number };
+
+  /**
+   * Remove a scan's crumbs (roadmap 7.8.1): the connected components (by
+   * shared edges or points) whose diagonal, area or cell count is below a
+   * threshold, relative to the whole mesh by default.
+   */
+  removeIslands(
+    mesh: Mesh,
+    options?: {
+      connectivity?: 'edge' | 'point';
+      minDiagonal?: number;
+      minArea?: number;
+      minCells?: number;
+      relative?: boolean;
+      dryRun?: boolean;
+    },
+  ): {
+    mesh: Mesh;
+    numComponents: number;
+    numRemoved: number;
+    numCellsRemoved: number;
+    numPointsRemoved: number;
+  };
+
+  /**
+   * Measure a mesh by a spec (an object or its JSON text): elements fitted
+   * from regions, seeds or patches, constructed or literal; dimensions and
+   * GD&T tolerances (roadmap 7.2, doc/measure.md). `report` is the parsed
+   * JSON report; the mesh carries its element table.
+   * @throws {Error} on a malformed spec or an element that cannot be built.
+   */
+  measure(
+    mesh: Mesh,
+    spec: object | string,
+  ): { mesh: Mesh; report: any; numFail: number; warnings: string[] };
+
+  /**
+   * The 3-2-1 datum alignment of a measured mesh (roadmap 7.3.4): `primary`
+   * sets Z, `secondary` X, `origin` (a point-like element or a third plane)
+   * the origin. `matrix` is the row-major 4 x 4.
+   */
+  alignDatums(
+    mesh: Mesh,
+    primary: string,
+    secondary: string,
+    origin?: string,
+  ): { mesh: Mesh; matrix: Float64Array };
+
+  /**
+   * A measured element as a fitted primitive's type (1 plane, 2 sphere, 3
+   * cylinder, 4 cone) and ten parameters, a deviation reference (roadmap 7.4.2).
+   */
+  measureElementPrimitive(mesh: Mesh, name: string): { type: number; params: Float64Array };
+
+  /**
+   * Write the fitted primitives of `mesh` (`segment`, then `fitPrimitives`)
+   * to a STEP file in the virtual file system as exact geometry: bounded
+   * planes, balls, lidded cylinders, frusta and tori (roadmap 7.6.5).
+   * @throws {Error} on a mesh with no fit table or an unknown patch.
+   */
+  writeStepElements(
+    path: string,
+    mesh: Mesh,
+    options?: { patches?: ArrayLike<number>; segments?: number },
+  ): {
+    numPlanes: number;
+    numSpheres: number;
+    numCylinders: number;
+    numCones: number;
+    numTori: number;
+    numSkipped: number;
+    warnings: string[];
+  };
+
+  /**
+   * The outline of a surface (or a volume mesh's skin) seen along `normal`,
+   * with its holes: a chained line mesh `fitCurves` reads, offset by
+   * `clearance` (> 0 grows it), or with `extrude` the closed surface of the
+   * prism over it (roadmap 7.6.3). See doc/silhouette.md.
+   * @throws {Error} on a bad option or a mesh with no surface cells.
+   */
+  silhouette(
+    mesh: Mesh,
+    options?: {
+      normal?: ArrayLike<number>;
+      clearance?: number;
+      roundAngle?: number;
+      arcSegments?: number;
+      extrude?: boolean;
+      region?: string;
+      mergeTolerance?: number;
+    },
+  ): {
+    mesh: Mesh;
+    numLoops: number;
+    numOuter: number;
+    numHoles: number;
+    numTriangles: number;
+    area: number;
+    perimeter: number;
+    minHeight: number;
+    maxHeight: number;
+    warnings: string[];
+  };
+
+  /**
+   * Lines, arcs and circles from the chains of a chained line mesh (roadmap
+   * 7.6.2), each piece in its frame's 2-D coordinates; `frames` are row-major
+   * 4x4 (columns e1, e2, normal, origin). See doc/fit_curves.md.
+   * @throws {Error} on a mesh that is not a chained line mesh.
+   */
+  fitCurves(
+    sections: Mesh,
+    options?: {
+      tolerance?: number;
+      snapAngle?: number;
+      normal?: ArrayLike<number>;
+      minArcPoints?: number;
+      minArcSweep?: number;
+    },
+  ): {
+    mesh: Mesh;
+    pieces: Array<{
+      type: 'line' | 'arc' | 'circle';
+      start: number[];
+      end: number[];
+      centre: number[];
+      radius: number;
+      sweep: number;
+      residual: number;
+      numPoints: number;
+      chain: number;
+      frame: number;
+    }>;
+    frames: Float64Array[];
+    numLines: number;
+    numArcs: number;
+    numCircles: number;
+    maxResidual: number;
+    tolerance: number;
+    warnings: string[];
+  };
+
+  /**
+   * Chained sections of a surface at the parallel planes `n . x = offsets[k]`
+   * (`n` the unit `direction`), merged into one line mesh with the
+   * `section:offset`, `section:chain` and `section:closed` cell data (roadmap
+   * 7.6.1).
+   * @throws {Error} on a zero direction, no offsets or a volume mesh.
+   */
+  sections(
+    mesh: Mesh,
+    direction: number[],
+    offsets: ArrayLike<number>,
+    options?: { minLength?: number; recordParentIds?: boolean },
+  ): Mesh;
 
   /**
    * Isosurfaces / contours: the level set of a scalar `point_data` field, one
@@ -3703,6 +4242,22 @@ export interface MeshioPlusPlusModule {
     minInlierFraction?: number,
     types?: Array<'plane' | 'sphere' | 'cylinder' | 'cone' | 'torus'>,
     maxIterations?: number,
+    options?: {
+      /** Fit this named cell region as one patch (roadmap 7.1.1). */
+      region?: string;
+      /** Grow and fit a feature from the facet nearest each point. */
+      seeds?: Array<[number, number, number]>;
+      /** Seed growth: edges sharper than this are not crossed (default 30). */
+      featureAngle?: number;
+      /** Seed growth: rim faces turning more from the fit are peeled (default 15). */
+      rimAngle?: number;
+      /** Seed growth: the cell region written (default `fit:feature`). */
+      outputRegion?: string;
+      /** Sigma trimming (roadmap 7.1.2; default `auto`). */
+      usedPoints?: 'auto' | 'all' | '3sigma' | '2sigma' | '1sigma';
+      /** Roadmap 7.1.4: the reference planes, spheres and cylinders are refitted under. */
+      criterion?: 'least_squares' | 'minimum_zone' | 'min_circumscribed' | 'max_inscribed';
+    },
   ): {
     mesh: Mesh;
     numPatches: number;
@@ -3712,6 +4267,8 @@ export interface MeshioPlusPlusModule {
     numCone: number;
     numTorus: number;
     numUnfitted: number;
+    numFeatureCells: number;
+    warnings: string[];
   };
 
   /**
@@ -3854,6 +4411,35 @@ export interface MeshioPlusPlusModule {
    * region or direction, or a negative distance.
    */
   thickness(mesh: Mesh, options?: ThicknessOptions): ThicknessResult;
+
+  /**
+   * Signed deviation of every scan point from a reference surface (positive
+   * outside it) or a fitted primitive, and its statistics (roadmap 7.4).
+   * @throws {Error} on a bad option, a volume or higher-order reference block,
+   * or an unknown region or primitive type.
+   */
+  deviation(scan: Mesh, options?: DeviationOptions): DeviationResult;
+
+  /**
+   * The connected excess and missing-material regions beyond +-tolerance of
+   * a measured surface, written as named cell regions (roadmap 7.4.3).
+   * @throws {Error} on a bad option, a missing field or a volume block.
+   */
+  deviationRegions(mesh: Mesh, options: DeviationRegionsOptions): DeviationRegionsResult;
+
+  /**
+   * A copy of a measured surface with each point displaced along its normal
+   * by a scaled, clamped, smoothed deviation (roadmap 7.4.4).
+   * @throws {Error} on a missing field or a bad option.
+   */
+  exaggerate(mesh: Mesh, options?: ExaggerateOptions): ExaggerateResult;
+
+  /**
+   * Bake a field into UInt8 red, green and blue data through a colormap
+   * (roadmap 7.4.4).
+   * @throws {Error} on a missing field, an unknown colormap or a bad option.
+   */
+  colorize(mesh: Mesh, options: ColorizeOptions): ColorizeResult;
 
   /**
    * Fill a closed, manifold, consistently oriented triangle surface with
@@ -4086,6 +4672,7 @@ export interface MeshioPlusPlusModule {
     maxHoleEdges?: number,
     weldTolerance?: number,
     recordProvenance?: boolean,
+    fillStyle?: 'fan' | 'flat' | 'curved',
   ): {
     mesh: Mesh;
     qualityBefore: SurfaceQualityInfo;
@@ -4242,7 +4829,16 @@ export interface MeshioPlusPlusModule {
       maxIterations?: number;
       tolerance?: number;
       maxDistance?: number;
-      initial?: ArrayLike<number>;
+      /** A starting 4x4 matrix (16 numbers, row-major), or `'auto'`: the best
+       * of the 24 principal-frame candidates (roadmap 7.3.1). */
+      initial?: ArrayLike<number> | 'auto';
+      symmetricCheck?: boolean;
+      symmetricTolerance?: number;
+      /** Cell regions restricting the pairs (roadmap 7.3.3). */
+      sourceRegion?: string;
+      targetRegion?: string;
+      /** Drop pairs beyond this multiple of the median pair distance; 0 keeps them. */
+      adaptiveTrim?: number;
     },
   ): {
     matrix: number[];
@@ -4251,6 +4847,73 @@ export interface MeshioPlusPlusModule {
     iterations: number;
     numPairs: number;
     converged: boolean;
+    numRejected: number;
+    candidateRms: Float64Array;
+    chosenCandidate: number;
+    warnings: string[];
+  };
+
+  /**
+   * Landmark registration (roadmap 7.3.2): the weighted Horn solve laying
+   * picked source points (flat xyz) onto their targets.
+   * @throws {Error} on fewer than three pairs or collinear source points.
+   */
+  registerLandmarks(
+    source: ArrayLike<number>,
+    target: ArrayLike<number>,
+    weights?: ArrayLike<number> | null,
+  ): { matrix: number[]; residuals: Float64Array; rms: number };
+
+  /**
+   * The plane a mesh is most nearly symmetric about (roadmap 7.3.6). See
+   * doc/registration.md.
+   * @throws {Error} when no plane reaches `minShare`.
+   */
+  findSymmetryPlane(
+    mesh: Mesh,
+    options?: {
+      seedOrigin?: ArrayLike<number>;
+      seedNormal?: ArrayLike<number>;
+      tolerance?: number;
+      minShare?: number;
+      maxSamples?: number;
+      maxIterations?: number;
+    },
+  ): {
+    origin: number[];
+    normal: number[];
+    rms: number;
+    share: number;
+    tolerance: number;
+    candidateRms: Float64Array;
+    chosenCandidate: number;
+    warnings: string[];
+  };
+
+  /**
+   * Pose a scan from itself alone (roadmap 7.3.5): on its largest flat face,
+   * or a cylinder on the end of its axis. See doc/registration.md.
+   * @throws {Error} on a bad option or no surface cell.
+   */
+  autoAlign(
+    mesh: Mesh,
+    options?: {
+      angleTolerance?: number;
+      subdivisions?: number;
+      region?: string;
+      rotateVectorData?: boolean;
+    },
+  ): {
+    mesh: Mesh;
+    matrix: number[];
+    mode: 'face' | 'axis';
+    primary: number[];
+    secondary: number[];
+    share: number;
+    faceShare: number;
+    axisShare: number;
+    openingArea: number;
+    warnings: string[];
   };
 
   /**
@@ -4720,12 +5383,16 @@ export interface MeshioPlusPlusModule {
     featureAngle?: number,
     frozen?: number[] | Int32Array | null,
     returnMaps?: boolean,
+    bounds?: { maxDeviation?: number; coverage?: number; maxFaces?: number },
   ): {
     mesh: Mesh;
     facesRemoved: number;
     pointsRemoved: number;
     collapsesRejected: number;
     maxErrorApplied: number;
+    deviation?: number;
+    deviationMet?: boolean;
+    rounds?: number;
     pointMap?: Int32Array;
     cellMaps?: Int32Array[];
   };

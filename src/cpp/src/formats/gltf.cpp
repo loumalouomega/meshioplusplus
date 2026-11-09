@@ -51,6 +51,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "../detail/hex_color.hpp"
 #include "../detail/typed_view.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/surface.hpp"
@@ -613,25 +614,7 @@ double gltf_scalarize(const detail::DoubleView& rArray, std::size_t Row, std::si
 }
 
 detail::Rgb gltf_parse_color(const std::string& rText) {
-    auto hex = [](char c) -> int {
-        if (c >= '0' && c <= '9')
-            return c - '0';
-        if (c >= 'a' && c <= 'f')
-            return c - 'a' + 10;
-        if (c >= 'A' && c <= 'F')
-            return c - 'A' + 10;
-        return -1;
-    };
-    bool ok = rText.size() == 7 && rText[0] == '#';
-    for (std::size_t i = 1; ok && i < 7; ++i)
-        ok = hex(rText[i]) >= 0;
-    if (!ok)
-        throw std::invalid_argument(std::string(kGltfPrefix) + "nan_color '" + rText +
-                                    "' is not a '#rrggbb' colour");
-    auto byte = [&](std::size_t i) {
-        return static_cast<std::uint8_t>(hex(rText[i]) * 16 + hex(rText[i + 1]));
-    };
-    return detail::Rgb{byte(1), byte(3), byte(5)};
+    return detail::parse_hex_color(rText, kGltfPrefix);
 }
 
 float gltf_linear(std::uint8_t Byte) {
@@ -649,10 +632,18 @@ struct GltfColorPlan {
     double mHi = 1.0;
     const std::uint8_t* mpTable = nullptr;
     detail::Rgb mNan{128, 128, 128};
+    // `color_by="rgb"`: the colours baked into red/green/blue data, per point
+    // or per global cell, taken as they are.
+    std::vector<detail::Rgb> mRgb;
 
     // The three linear floats of vertex @p rKey.
     std::array<float, 3> Color(const GltfVertexKey& rKey) const {
-        const double v = mValues[static_cast<std::size_t>(mCellMode ? rKey.mCell : rKey.mPoint)];
+        const std::size_t at = static_cast<std::size_t>(mCellMode ? rKey.mCell : rKey.mPoint);
+        if (!mRgb.empty()) {
+            const detail::Rgb& c = mRgb[at];
+            return {gltf_linear(c.mR), gltf_linear(c.mG), gltf_linear(c.mB)};
+        }
+        const double v = mValues[at];
         detail::Rgb c = mNan;
         if (std::isfinite(v))
             c = detail::colormap_lookup(mpTable, detail::color_param(v, mLo, mHi));
@@ -758,8 +749,24 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
         if (rOpt.mVMin.has_value() && rOpt.mVMax.has_value() && *rOpt.mVMin > *rOpt.mVMax)
             throw std::invalid_argument(std::string(kGltfPrefix) + "vmin must not exceed vmax");
     }
-    const bool color_point = color_active && rMesh.HasPointData(rOpt.mColorBy);
-    const bool color_cell = color_active && !color_point && rMesh.HasCellData(rOpt.mColorBy);
+    // color_by "rgb" (with no array of that name) takes the red, green and
+    // blue channels `colorize` bakes, on points or cells.
+    const bool color_rgb = color_active && rOpt.mColorBy == "rgb" && !rMesh.HasPointData("rgb") &&
+                           !rMesh.HasCellData("rgb");
+    auto has_rgb = [&](bool Point) {
+        for (const char* pName : {"red", "green", "blue"})
+            if (Point ? !rMesh.HasPointData(pName) : !rMesh.HasCellData(pName))
+                return false;
+        return true;
+    };
+    const bool color_point = color_active && (color_rgb ? has_rgb(true)
+                                                        : rMesh.HasPointData(rOpt.mColorBy));
+    const bool color_cell = color_active && !color_point &&
+                            (color_rgb ? has_rgb(false) : rMesh.HasCellData(rOpt.mColorBy));
+    if (color_rgb && !color_point && !color_cell)
+        throw std::invalid_argument(std::string(kGltfPrefix) +
+                                    "color_by 'rgb' needs red, green and blue point or cell data "
+                                    "(colorize writes them)");
     if (color_active && !color_point && !color_cell)
         throw std::invalid_argument(std::string(kGltfPrefix) + "color_by array '" + rOpt.mColorBy +
                                     "' is in neither point_data nor cell_data (available: " +
@@ -857,7 +864,28 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
         color.mCellMode = color_cell;
         color.mpTable = table;
         color.mNan = nan_color;
-        if (color_point) {
+        if (color_rgb) {
+            auto chan = [](const NDArray& rA, std::size_t I) {
+                const double v = detail::read_double(rA, I);
+                return static_cast<std::uint8_t>(std::isfinite(v) ? std::max(0.0, std::min(255.0, v))
+                                                                  : 0.0);
+            };
+            if (color_point) {
+                const NDArray& r = rMesh.PointData("red");
+                const NDArray& g = rMesh.PointData("green");
+                const NDArray& b = rMesh.PointData("blue");
+                for (std::size_t p = 0; p < n; ++p)
+                    color.mRgb.push_back({chan(r, p), chan(g, p), chan(b, p)});
+            } else {
+                for (std::size_t blk = 0; blk < rMesh.NumCellBlocks(); ++blk) {
+                    const NDArray& r = rMesh.CellData("red", blk);
+                    const NDArray& g = rMesh.CellData("green", blk);
+                    const NDArray& b = rMesh.CellData("blue", blk);
+                    for (std::size_t c = 0; c < rMesh.Cells(blk).NumCells(); ++c)
+                        color.mRgb.push_back({chan(r, c), chan(g, c), chan(b, c)});
+                }
+            }
+        } else if (color_point) {
             const NDArray& arr = rMesh.PointData(rOpt.mColorBy);
             const std::size_t ncomp = n == 0 ? 0 : arr.Size() / n;
             color.mValues.assign(n, std::nan(""));
@@ -887,6 +915,8 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
         for (const GltfNodeBuilders& nb : builders)
             for (const GltfPrimBuilder* pb : {&nb.mTriangles, &nb.mLines, &nb.mPoints})
                 for (const GltfVertexKey& k : pb->mVertices) {
+                    if (color_rgb)
+                        break;
                     const double v =
                         color.mValues[static_cast<std::size_t>(color_cell ? k.mCell : k.mPoint)];
                     if (!std::isfinite(v))

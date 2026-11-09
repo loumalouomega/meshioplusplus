@@ -36,6 +36,7 @@ Two-dimensional points stay two-dimensional: the plane must then be a line of th
 | `weld` | with `keep_original`, share the points on the plane (true) |
 | `tolerance` | on the plane: a fraction of the points' bounding-box diagonal (1e-9) |
 | `reflect_vector_data` | reflect float vector and tensor data (false) |
+| `plane` | `"auto"`: the mesh's own symmetry plane ([`find_symmetry_plane`](./registration.md#the-symmetry-plane)), `origin` and `normal` then ignored; the report adds it as `plane` (Python, both CLIs, the pipeline, MCP) |
 
 The report has `num_flipped_cells` (reflected cells written), `num_points_on_plane`, `num_dropped_cells`, `num_dropped_sides` and `warnings`.
 
@@ -43,13 +44,13 @@ The report has `num_flipped_cells` (reflected cells written), `num_points_on_pla
 
 | surface | entry |
 |---|---|
-| Python | `meshioplusplus.mirror(mesh, origin=(0, 0, 0), normal=(1, 0, 0), *, keep_original=False, weld=True, tolerance=1e-9, reflect_vector_data=False, return_report=False)`; no numpy twin |
+| Python | `meshioplusplus.mirror(mesh, origin=(0, 0, 0), normal=(1, 0, 0), *, keep_original=False, weld=True, tolerance=1e-9, reflect_vector_data=False, plane=None, return_report=False)`; no numpy twin |
 | C++ | `mirror(const Mesh&, const MirrorOptions&)` → `MirrorResult` (`operations/mirror.hpp`) |
 | C | `mio_mirror(mesh, opts, report)` with `mio_mirror_opts` (104 bytes, through `mio_mirror_opts_init`) and `mio_mirror_report` (72 bytes), `mio_mirror_warnings` |
 | Fortran | `mio_mirror(mesh, origin, normal, keep_original, weld, tolerance, reflect_vector_data, report, stat, errmsg)` |
 | Julia | `mirror(mesh; origin, normal, keep_original, weld, tolerance, reflect_vector_data)` |
 | R | `mio_mirror(mesh, origin, normal, keep_original, weld, tolerance, reflect_vector_data)` |
 | WASM | `mirror(mesh, {origin, normal, keepOriginal, weld, tolerance, reflectVectorData})` |
-| CLI | `mirror INFILE OUTFILE [--origin=x,y,z] [--normal=x,y,z] [--keep-original] [--no-weld] [--tolerance T] [--reflect-data] [--json]`, both CLIs |
-| MCP | `mirror(input_path, output_path, origin, normal, keep_original, weld, tolerance, reflect_vector_data)` |
-| Pipeline | `Mirror` with `Point`, `Normal`, `KeepOriginal`, `Weld`, `Tolerance`, `ReflectData`; the step reports `NumFlippedCells`, `NumPointsOnPlane` and `NumDroppedCells` |
+| CLI | `mirror INFILE OUTFILE [--origin=x,y,z] [--normal=x,y,z] [--plane auto] [--keep-original] [--no-weld] [--tolerance T] [--reflect-data] [--json]`, both CLIs |
+| MCP | `mirror(input_path, output_path, origin, normal, keep_original, weld, tolerance, reflect_vector_data, plane)` |
+| Pipeline | `Mirror` with `Point`, `Normal`, `Plane` (`"auto"`), `KeepOriginal`, `Weld`, `Tolerance`, `ReflectData`; the step reports `NumFlippedCells`, `NumPointsOnPlane` and `NumDroppedCells`, and with `"Plane": "auto"` `SymmetryShare` |

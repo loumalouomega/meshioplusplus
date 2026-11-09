@@ -1030,6 +1030,10 @@ end
     close(d.mesh)
 
     @test_throws MeshioError decimate(fan; target_faces=1, frozen=[999])
+    dv = decimate(fan; max_deviation=1e-9)
+    @test dv.deviation_met && dv.deviation <= 1e-9 && dv.rounds >= 1
+    close(dv.mesh)
+    @test_throws MeshioError decimate(fan; max_deviation=0.1, ratio=0.5)
     close(fan)
 end
 
@@ -1997,6 +2001,51 @@ end
     @test seg.num_feature_edges == 12
     fit = fit_primitives(seg.mesh)
     @test fit.num_plane == 6
+    mz = fit_primitives(seg.mesh; criterion="minimum_zone")
+    @test mz.num_plane == 6
+    close(mz.mesh)
+    @test_throws ArgumentError fit_primitives(seg.mesh; criterion="chebyshev")
+    step_path = joinpath(mktempdir(), "elements.step")
+    el = write_step_elements(step_path, fit.mesh)
+    @test el.num_planes == 6 && isfile(step_path)
+    @test write_step_elements(step_path, fit.mesh; patches=[0]).num_planes == 1
+    @test_throws MeshioError write_step_elements(step_path, fit.mesh; patches=[99])
+    cl = clip(cube, (0.0, 0.0, 0.5), (0.0, 0.0, 1.0))
+    @test cl.num_loops == 1 && cl.num_cap_triangles > 0
+    close(cl.mesh)
+    fl = flip_normals(cube)
+    @test fl.num_flipped == 12
+    close(fl.mesh)
+    ri = remove_islands(cube)
+    @test ri.num_components == 1 && ri.num_removed == 0
+    close(ri.mesh)
+    @test_throws ArgumentError remove_islands(cube; connectivity="face")
+    os = offset_surface(cube, 0.1)
+    @test os.num_folded == 0 && os.max_move >= 0.1
+    close(os.mesh)
+    ho = hollow(cube, 0.1)
+    @test ho.num_rim_quads == 0
+    close(ho.mesh)
+    @test_throws ArgumentError thicken(cube, 0.1; side="sideways")
+    it = fit_cad_iterate(cube; backend="native")
+    @test it.target_met && it.num_rounds == 1 && it.stop_reason == "target"
+    fs = face_support(it.mesh, cube)
+    @test fs.num_measured == fs.num_faces
+    close(fs.mesh)
+    close(it.mesh)
+    @test_throws ArgumentError fit_cad_iterate(cube; part_class="plastic")
+    @test_throws MeshioError constrain_primitives(cube)
+    @test_throws MeshioError profile_solid(cube, "extrude:1")
+    ms = measure(cube, """{"elements": [
+        {"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},
+        {"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],
+      "tolerances": [{"type": "perpendicularity", "feature": "B", "datum": "A", "limit": 1e-9}]}""")
+    @test ms.num_elements == 2 && ms.num_fail == 0 && occursin("perpendicularity", ms.report_json)
+    al = align_datums(ms.mesh, "A", "B")
+    @test size(al.matrix) == (4, 4) && al.matrix[4, 4] == 1.0
+    close(al.mesh)
+    @test measure_element_primitive(ms.mesh, "A").type == 1
+    close(ms.mesh)
     close(fit.mesh)
     # refine_patches (v17.11.0): six planes are already one patch each.
     ref = refine_patches(seg.mesh)
@@ -2016,6 +2065,9 @@ end
     close(seg.mesh)
     @test_throws MeshioError segment(cube; feature_angle=200)
     @test_throws MeshioError fit_primitives(cube)  # no segment:patch labels
+    seeded = fit_primitives(seg.mesh; types=("plane",), seeds=[[0.5, 0.5, 1.0]])
+    @test seeded.num_plane == 1 && seeded.num_feature_cells > 0
+    @test_throws ArgumentError fit_primitives(seg.mesh; used_points="5sigma")
     @test_throws MeshioError refine_patches(cube)  # no segment:patch labels
     # fit_cad refines the segmentation on request, on every backend.
     refined = fit_cad(cube; backend="native", refine_segmentation=true, max_refine_iterations=5)
@@ -2126,6 +2178,21 @@ end
     @test rr.converged && rr.rms < 1e-12
     @test isapprox(rr.matrix, [1.0 0 0 0; 0 1 0 0; 0 0 1 0; 0 0 0 1]; atol=1e-12)
     @test_throws ArgumentError register_rigid(cube, cube; method="affine")
+    ra = register_rigid(cube, cube; initial="auto", symmetric_check=true)
+    @test ra.rms < 1e-8 && length(ra.candidate_rms) == 24 && ra.chosen_candidate >= 0
+    @test !isempty(ra.warnings)  # a cube is symmetric
+    @test_throws ArgumentError register_rigid(cube, cube; initial="guess")
+    lm = register_landmarks([0.0 0 0; 1 0 0; 0 2 0], [1.0 2 3; 2 2 3; 1 4 3])
+    @test isapprox(lm.matrix[1:3, 4], [1.0, 2.0, 3.0]; atol=1e-12) && lm.rms < 1e-12
+    @test_throws MeshioError register_landmarks([0.0 0 0; 1 0 0], [0.0 0 0; 1 0 0])
+    sp = find_symmetry_plane(cube)
+    @test sp.share > 0.9 && isapprox(sum(abs2, sp.normal), 1.0; atol=1e-12)
+    al = auto_align(cube)
+    @test al.mode == "face" && al.share > 0.9
+    close(al.mesh)
+    dv = deviation(cube, cube; register=true)
+    @test dv.registered && size(dv.matrix) == (4, 4)
+    close(dv.mesh)
     nn = estimate_normals(cube; k=3)
     @test nn.num_degenerate == 0 && nn.num_components == 1
     close(nn.mesh)
@@ -2291,6 +2358,10 @@ end
     @test h2.num_holes_detected == 0
     @test h2.quality_after.boundary_edges == 3
     close(h2.mesh)
+    h3 = repair(holed; fill_style="flat")
+    @test h3.num_faces_added == 1 && h3.num_points_added == 0
+    close(h3.mesh)
+    @test_throws ArgumentError repair(holed; fill_style="smooth")
     close(holed)
 
     # Shrinkwrap three points onto the z = 0 square with an offset; a float
@@ -2513,4 +2584,44 @@ end # testset
     @test t.num_missed == 0
     @test isapprox(t.min, 2.0; atol=0.05)
     @test_throws ArgumentError thickness(a; direction="sideways")
+    ts = thickness(a; method="sphere", two_sided=true)
+    @test ts.method == "sphere" && ts.p2 <= ts.p95
+    close(ts.mesh)
+    @test_throws ArgumentError thickness(a; method="laser")
+    ch = slice(a, [0.0, 0.0, 0.1], [0.0, 0.0, 1.0]; chain=true)
+    @test num_points(ch) > 0
+    close(ch)
+    ss = sections(a, [0.0, 0.0, 1.0], [-0.5, 0.5])
+    @test num_points(ss) > 0
+    close(ss)
+    ch = slice(a, [0.0, 0.0, 0.1], [0.0, 0.0, 1.0]; chain=true)
+    fc = fit_curves(ch)
+    @test fc.num_circles == 1 && fc.pieces[1].type == "circle" && size(fc.frames[1]) == (4, 4)
+    close(fc.mesh)
+    close(ch)
+    sil = silhouette(a; clearance=0.05)
+    @test sil.num_loops == 1 && sil.num_holes == 0 && sil.area > 0
+    close(sil.mesh)
+end
+
+@testset "operations: deviation" begin
+    ref = icosa_sphere(; subdivisions=3)
+    scan = icosa_sphere(; radius=1.01, subdivisions=3)
+    d = deviation(scan, ref; tolerance=0.02)
+    @test isapprox(d.mean, 0.01; atol=1e-9)
+    @test d.share_within == 1.0
+    @test length(d.histogram_counts) == 20
+    @test length(d.histogram_edges) == 21
+    @test sum(d.histogram_counts) == d.num_measured - d.num_outside_range
+    p = deviation(scan, "sphere", [0, 0, 0, 0, 0, 0, 1.0, 0, 0, 0])
+    @test isapprox(p.mean, 0.01; atol=1e-12)
+    @test_throws ArgumentError deviation(scan, "blob", zeros(10))
+    g = deviation_regions(deviation(scan, ref).mesh, 0.005)
+    @test g.num_excess == 1
+    @test g.regions[1].sign == 1
+    @test g.regions[1].name == "deviation:excess_0"
+    e = exaggerate(deviation(scan, ref).mesh; scale=20.0)
+    @test e.num_moved > 0
+    c = colorize(deviation(scan, ref).mesh, "deviation:distance"; steps=4)
+    @test c.location == "point"
 end

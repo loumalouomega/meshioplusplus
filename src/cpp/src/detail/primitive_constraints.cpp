@@ -18,6 +18,7 @@
 
 // System includes
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -50,6 +51,8 @@ constexpr std::size_t kPcMaxJointSamples = 20000;
 // How far, in multiples of a patch's tolerance, a shared axis or normal may
 // move the patch for it to be tried.
 constexpr double kPcReach = 2.0;
+// Degrees to radians.
+const double kPcDegree = std::acos(-1.0) / 180.0;
 
 bool pc_normalize(double* pV) {
     const double n = std::sqrt(detail::MathUtils::Dot(pV, pV));
@@ -160,13 +163,18 @@ double pc_line_distance(const double* pX, const double* pD, const double* pP) {
 // Whether a patch's primitive can take the axis (pX, pD): an axial one whose
 // axis is parallel to it and lies on it, a sphere whose centre is on it, each
 // within what moves the patch by kPcReach of its tolerance.
-bool pc_on_axis(const PcPatch& rPatch, const double* pX, const double* pD) {
-    const double reach = kPcReach * rPatch.mTol;
+// DistTol and SinTol (roadmap 7.7.3), when not negative, replace the reach
+// as a distance and the angle test as a sine.
+bool pc_on_axis(const PcPatch& rPatch, const double* pX, const double* pD, double DistTol,
+                double SinTol) {
+    const double own = kPcReach * rPatch.mTol;
+    const double reach = DistTol >= 0.0 ? DistTol : own;
     if (rPatch.mType == 2)
         return pc_line_distance(pX, pD, rPatch.mParams) <= reach;
     if (!rPatch.Axial())
         return false;
-    if (pc_sin(pD, rPatch.mParams + 3) * rPatch.mExtent > reach)
+    const double sine = pc_sin(pD, rPatch.mParams + 3);
+    if (SinTol >= 0.0 ? sine > SinTol : sine * rPatch.mExtent > own)
         return false;
     double p[3];
     pc_axis_point(rPatch, p);
@@ -370,7 +378,8 @@ void pc_fit_group(const std::vector<PcPatch>& rPatches, const std::vector<std::s
 
 }  // namespace
 
-PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance) {
+PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance,
+                                               const PrimitiveConstraintControl& rControl) {
     PrimitiveConstraintReport report;
     for (const char* name : {"fit:patch_id", "fit:patch_type", "fit:patch_params",
                              "fit:patch_rms", "fit:patch_max", "fit:patch_fraction",
@@ -462,7 +471,34 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         const double ext[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
         p.mExtent = std::sqrt(detail::MathUtils::Dot(ext, ext));
     }
-    const double min_fraction = FitPrimitivesOptions().mMinInlierFraction;
+    const double min_fraction = rControl.mMinFraction >= 0.0
+                                    ? rControl.mMinFraction
+                                    : FitPrimitivesOptions().mMinInlierFraction;
+    // Roadmap 7.7.3: the tolerances, and the relations forced or forbidden.
+    const double dist_tol = rControl.mDistanceTolerance;
+    const double sin_tol = rControl.mAngleToleranceDeg >= 0.0
+                               ? std::sin(rControl.mAngleToleranceDeg * kPcDegree)
+                               : -1.0;
+    const auto listed = [&](const std::vector<PrimitiveRelation>& rList, std::size_t A,
+                            std::size_t B, PrimitiveRelationKind Kind) {
+        const std::int64_t a = read_int(ids, A), b = read_int(ids, B);
+        for (const PrimitiveRelation& r_rel : rList)
+            if (r_rel.mKind == Kind && ((r_rel.mPatchA == a && r_rel.mPatchB == b) ||
+                                        (r_rel.mPatchA == b && r_rel.mPatchB == a)))
+                return true;
+        return false;
+    };
+    const auto record = [&](std::size_t A, std::size_t B, PrimitiveRelationKind Kind,
+                            double AngleDeg, double Distance) {
+        PrimitiveRelationRecord rec;
+        rec.mPatchA = read_int(ids, A);
+        rec.mPatchB = read_int(ids, B);
+        rec.mKind = Kind;
+        rec.mAngleDeg = AngleDeg;
+        rec.mDistance = Distance;
+        rec.mForced = listed(rControl.mForce, A, B, Kind);
+        report.mRelations.push_back(rec);
+    };
     const auto keep = [&](PcPatch& rPatch, const double* pParams) {
         PcStats s;
         if (!pc_accept(rPatch, pParams, FaceTolerance, min_fraction, s))
@@ -475,6 +511,7 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
     // 1. Coaxial groups, seeded in row order by the axial primitives.
     std::vector<std::uint8_t> grouped(m, 0);
     std::vector<std::vector<double>> references;  // unit directions, axes first
+    std::vector<std::size_t> ref_row;             // the row each came from
     for (std::size_t a = 0; a < m; ++a) {
         if (grouped[a] || !patches[a].Axial())
             continue;
@@ -485,9 +522,34 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         std::vector<std::size_t> rows = {a};
         // Every other row not yet grouped, in order: a sphere before the
         // seed too (an earlier axial row seeded its own group already).
-        for (std::size_t b = 0; b < m; ++b)
-            if (b != a && !grouped[b] && pc_on_axis(patches[b], x, d))
+        for (std::size_t b = 0; b < m; ++b) {
+            if (b == a || grouped[b])
+                continue;
+            bool forbidden = false;
+            for (const std::size_t q : rows)
+                forbidden =
+                    forbidden || listed(rControl.mForbid, q, b, PrimitiveRelationKind::Coaxial);
+            if (forbidden)
+                continue;
+            const bool forced = listed(rControl.mForce, a, b, PrimitiveRelationKind::Coaxial) &&
+                                (patches[b].Axial() || patches[b].mType == 2);
+            if (forced || pc_on_axis(patches[b], x, d, dist_tol, sin_tol))
                 rows.push_back(b);
+        }
+        // Each member's residual before the joint fit: its axis's angle to the
+        // seed's and its axis point's distance from the seed's axis.
+        std::vector<std::array<double, 2>> before(m, {0.0, 0.0});
+        for (const std::size_t b : rows) {
+            const PcPatch& r_p = patches[b];
+            double q[3];
+            if (r_p.mType == 2) {
+                std::copy(r_p.mParams, r_p.mParams + 3, q);
+            } else {
+                pc_axis_point(r_p, q);
+                before[b][0] = std::asin(std::min(1.0, pc_sin(d, r_p.mParams + 3))) / kPcDegree;
+            }
+            before[b][1] = pc_line_distance(x, d, q);
+        }
         // Fit jointly; a member that no longer passes leaves and the rest are
         // fitted again, until every member passes or one is left.
         while (rows.size() >= 2) {
@@ -504,6 +566,9 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
                 for (std::size_t i = 0; i < rows.size(); ++i) {
                     keep(patches[rows[i]], fitted[i].data());
                     grouped[rows[i]] = 1;
+                    if (i > 0)
+                        record(a, rows[i], PrimitiveRelationKind::Coaxial, before[rows[i]][0],
+                               before[rows[i]][1]);
                 }
                 ++report.mNumGroups;
                 break;
@@ -519,6 +584,7 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         double axis[3] = {patches[a].mParams[3], patches[a].mParams[4], patches[a].mParams[5]};
         pc_canonical(axis);
         references.push_back({axis[0], axis[1], axis[2]});
+        ref_row.push_back(a);
     }
 
     // 2. Planes against the references: the axes, then the planes seen.
@@ -529,24 +595,39 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
             continue;
         const double budget = p.mExtent > 0.0 ? kPcReach * p.mTol / p.mExtent : 0.0;
         const double* n = p.mParams + 3;
+        const double n0[3] = {n[0], n[1], n[2]};
         double target[3];
         bool have = false;
         std::size_t parallel = references.size();
-        for (std::size_t i = 0; i < references.size() && !have; ++i) {
-            const double* ref = references[i].data();
-            if (pc_sin(n, ref) <= budget) {
-                const double s = detail::MathUtils::Dot(n, ref) < 0.0 ? -1.0 : 1.0;
-                for (int k = 0; k < 3; ++k)
-                    target[k] = s * ref[k];
-                have = true;
-                parallel = i;
+        // A forced reference first (roadmap 7.7.3), then the first within
+        // the tolerance; a forbidden one never.
+        for (int pass = 0; pass < 2; ++pass)
+            for (std::size_t i = 0; i < references.size() && !have; ++i) {
+                const double* ref = references[i].data();
+                if (listed(rControl.mForbid, ref_row[i], r, PrimitiveRelationKind::Parallel))
+                    continue;
+                const bool forced =
+                    listed(rControl.mForce, ref_row[i], r, PrimitiveRelationKind::Parallel);
+                if (pass == 0
+                        ? forced
+                        : (sin_tol >= 0.0 ? pc_sin(n, ref) <= sin_tol : pc_sin(n, ref) <= budget)) {
+                    const double s = detail::MathUtils::Dot(n, ref) < 0.0 ? -1.0 : 1.0;
+                    for (int k = 0; k < 3; ++k)
+                        target[k] = s * ref[k];
+                    have = true;
+                    parallel = i;
+                }
             }
-        }
+        std::vector<std::size_t> perp;
         if (!have) {
-            std::vector<std::size_t> perp;
-            for (std::size_t i = 0; i < references.size(); ++i)
-                if (std::fabs(detail::MathUtils::Dot(n, references[i].data())) <= budget)
+            for (std::size_t i = 0; i < references.size(); ++i) {
+                if (listed(rControl.mForbid, ref_row[i], r, PrimitiveRelationKind::Perpendicular))
+                    continue;
+                const double c = std::fabs(detail::MathUtils::Dot(n, references[i].data()));
+                if (listed(rControl.mForce, ref_row[i], r, PrimitiveRelationKind::Perpendicular) ||
+                    (sin_tol >= 0.0 ? c <= sin_tol : c <= budget))
                     perp.push_back(i);
+            }
             if (!perp.empty()) {
                 const double* r1 = references[perp[0]].data();
                 const double* r2 = nullptr;
@@ -581,10 +662,28 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
             }
             snapped = keep(p, cand);
         }
+        if (snapped && parallel < references.size()) {
+            record(ref_row[parallel], r, PrimitiveRelationKind::Parallel,
+                   std::asin(std::min(1.0, pc_sin(n0, references[parallel].data()))) / kPcDegree,
+                   0.0);
+        } else if (snapped) {
+            // The one or two references it was made perpendicular to.
+            for (std::size_t j = 0; j < perp.size(); ++j) {
+                const double c = std::fabs(detail::MathUtils::Dot(n0, references[perp[j]].data()));
+                if (j == 0 ||
+                    pc_sin(references[perp[0]].data(), references[perp[j]].data()) > 1e-6) {
+                    record(ref_row[perp[j]], r, PrimitiveRelationKind::Perpendicular,
+                           std::asin(std::min(1.0, c)) / kPcDegree, 0.0);
+                    if (j > 0)
+                        break;
+                }
+            }
+        }
         if (snapped && parallel < references.size())
             family[parallel] = 1;
         else if (parallel == references.size()) {
             references.push_back({p.mParams[3], p.mParams[4], p.mParams[5]});
+            ref_row.push_back(r);
             family.push_back(0);
         }
     }
@@ -602,11 +701,18 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
         sized[a] = 1;
         const int slot = radius_slot(t);
         std::vector<std::size_t> rows = {a};
-        for (std::size_t b = a + 1; b < m; ++b)
-            if (!sized[b] && patches[b].mType == t &&
-                std::fabs(patches[b].mParams[slot] - patches[a].mParams[slot]) <=
-                    std::min(patches[a].mTol, patches[b].mTol))
+        for (std::size_t b = a + 1; b < m; ++b) {
+            if (sized[b] || patches[b].mType != t ||
+                listed(rControl.mForbid, a, b, PrimitiveRelationKind::EqualRadius))
+                continue;
+            const double gap = std::fabs(patches[b].mParams[slot] - patches[a].mParams[slot]);
+            if (listed(rControl.mForce, a, b, PrimitiveRelationKind::EqualRadius) ||
+                gap <= (dist_tol >= 0.0 ? dist_tol : std::min(patches[a].mTol, patches[b].mTol)))
                 rows.push_back(b);
+        }
+        std::vector<double> radius_before(m, 0.0);
+        for (const std::size_t q : rows)
+            radius_before[q] = patches[q].mParams[slot];
         while (rows.size() >= 2) {
             double sum = 0.0, w = 0.0;
             for (std::size_t r : rows) {
@@ -634,8 +740,13 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
                     keep(patches[r], cand);
                     sized[r] = 1;
                 }
-                if (changed)
+                if (changed) {
                     ++report.mNumGroups;
+                    for (const std::size_t q : rows)
+                        if (q != a)
+                            record(a, q, PrimitiveRelationKind::EqualRadius, 0.0,
+                                   std::fabs(radius_before[q] - radius_before[a]));
+                }
                 break;
             }
             rows = std::move(passing);
@@ -650,6 +761,15 @@ PrimitiveConstraintReport constrain_primitives(Mesh& rMesh, double FaceTolerance
                 changed[r] = 1;
     for (std::uint8_t c : changed)
         report.mNumConstrained += c;
+    for (const PrimitiveRelation& r_rel : rControl.mForce) {
+        bool met = false;
+        for (const PrimitiveRelationRecord& r_rec : report.mRelations)
+            met = met || (r_rec.mKind == r_rel.mKind &&
+                          ((r_rec.mPatchA == r_rel.mPatchA && r_rec.mPatchB == r_rel.mPatchB) ||
+                           (r_rec.mPatchA == r_rel.mPatchB && r_rec.mPatchB == r_rel.mPatchA)));
+        if (!met)
+            report.mUnmet.push_back(r_rel);
+    }
     if (report.mNumConstrained == 0)
         return report;
 

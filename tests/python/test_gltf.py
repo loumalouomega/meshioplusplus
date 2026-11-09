@@ -840,3 +840,43 @@ def test_cli_rejects_flags_that_do_not_apply(tmp_path):
         out = tmp_path / ("x.glb" if "--colorbar" in extra else "x.vtu")
         with pytest.raises(ValueError, match=match):
             mio._cli.main(["convert", str(src), str(out), *extra])
+
+
+@needs_core
+@pytest.mark.parametrize("cell", [False, True], ids=["points", "cells"])
+def test_color_by_rgb_takes_the_baked_channels_in_both_engines(tmp_path, cell):
+    """``color_by="rgb"`` (roadmap 7.4.4) writes the ``red``/``green``/``blue``
+    channels ``colorize`` bakes as ``COLOR_0``, byte-identically in both engines."""
+    from .test_curvature import icosphere
+
+    mesh = icosphere(2, 1.5)
+    if cell:
+        n = len(mesh.cells[0].data)
+        mesh.cell_data = {"v": [np.arange(n, dtype=float)]}
+    else:
+        mesh.point_data = {"v": np.asarray(mesh.points)[:, 2].copy()}
+    coloured = mio.colorize(mesh, "v", steps=4)
+    a, b = tmp_path / "core.glb", tmp_path / "py.glb"
+    _core.gltf_write(
+        str(a),
+        coloured,
+        container="auto",
+        up_axis="auto",
+        normal_weight="angle",
+        normals=True,
+        fields=True,
+        recenter=True,
+        by_region=True,
+        unlit=True,
+        split_angle=30.0,
+        scale=1.0,
+        color_by="rgb",
+        cmap="viridis",
+        vmin=None,
+        vmax=None,
+    )
+    _gltf.write(str(b), coloured, color_by="rgb")
+    assert a.read_bytes() == b.read_bytes()
+    assert "COLOR_0" in read_glb(a)[0]["meshes"][0]["primitives"][0]["attributes"]
+    with pytest.raises(ValueError, match="red, green and blue"):
+        _gltf.write(str(b), mesh, color_by="rgb")

@@ -315,6 +315,9 @@ function t_repair()
     g = mio.repair(h, 'fill_holes', false);
     expect_equal(g.num_holes_detected, 0);
     expect_equal(g.quality_after.boundary_edges, 3);
+    fl = mio.repair(h, 'fill_style', 'flat');
+    expect_equal(fl.num_faces_added, 1);
+    expect_error(@() mio.repair(h, 'fill_style', 'smooth'), 'fill_style');
 end
 
 function t_shrinkwrap()
@@ -385,12 +388,55 @@ function t_feature_segment()
     expect_equal(sg.num_patches, 6);
     fp = mio.fit_primitives(sg.mesh);
     expect_equal(fp.num_plane, 6);
+    mz = mio.fit_primitives(sg.mesh, 'criterion', 'minimum_zone');
+    expect_equal(mz.num_plane, 6);
+    expect_error(@() mio.fit_primitives(sg.mesh, 'criterion', 'chebyshev'), 'criterion');
+    step_path = [tempname() '.step'];
+    el = mio.write_step_elements(step_path, fp.mesh);
+    expect_equal(el.num_planes, 6);
+    el = mio.write_step_elements(step_path, fp.mesh, 'patches', 0);
+    expect_equal(el.num_planes, 1);
+    expect_error(@() mio.write_step_elements(step_path, fp.mesh, 'patches', 99), 'patch');
+    cl = mio.clip(m, [0 0 0.5], [0 0 1]);
+    expect_equal(cl.num_loops, 1);
+    fl = mio.flip_normals(m);
+    expect_equal(fl.num_flipped, 12);
+    ri = mio.remove_islands(m);
+    expect_equal(ri.num_components, 1);
+    expect_error(@() mio.remove_islands(m, 'connectivity', 'face'), 'connectivity');
+    os = mio.offset_surface(m, 0.1);
+    expect_equal(os.num_folded, 0);
+    ho = mio.hollow(m, 0.1);
+    expect_equal(ho.num_rim_quads, 0);
+    expect_error(@() mio.thicken(m, 0.1, 'side', 'sideways'), 'side');
+    it = mio.fit_cad_iterate(m, 'backend', 'native');
+    expect_equal(it.target_met, true);
+    fs = mio.face_support(it.mesh, m);
+    expect_equal(fs.num_measured, fs.num_faces);
+    expect_error(@() mio.fit_cad_iterate(m, 'part_class', 'plastic'), 'part_class');
+    expect_error(@() mio.constrain_primitives(m), 'fit_primitives');
+    expect_error(@() mio.profile_solid(m, 'extrude:1'), 'sketch');
+    ms = mio.measure(m, ['{"elements": [' ...
+        '{"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},' ...
+        '{"name": "B", "fit": "plane", "seeds": [[1.0, 0.5, 0.5]]}],' ...
+        '"tolerances": [{"type": "perpendicularity", "feature": "B", "datum": "A", "limit": 1e-9}]}']);
+    expect_equal(ms.num_elements, 2);
+    expect_equal(ms.num_fail, 0);
+    al = mio.align_datums(ms.mesh, 'A', 'B');
+    expect_equal(size(al.matrix), [4 4]);
+    el = mio.measure_element_primitive(ms.mesh, 'A');
+    expect_equal(el.type, 1);
+    delete(step_path);
     fp2 = mio.fit_primitives(sg.mesh, 'types', 'plane');
     expect_equal(fp2.num_plane, 6);
     expect_error(@() mio.segment(m, 'feature_angle', 200));
     expect_error(@() mio.segment(m, 'method', 'blob'), 'method');
     expect_error(@() mio.fit_primitives(m));
     expect_error(@() mio.fit_primitives(sg.mesh, 'types', 'blob'), 'blob');
+    fp3 = mio.fit_primitives(sg.mesh, 'types', 'plane', 'seeds', [0.5 0.5 1]);
+    expect_equal(fp3.num_plane, 1);
+    assert(fp3.num_feature_cells > 0);
+    expect_error(@() mio.fit_primitives(sg.mesh, 'used_points', '5sigma'), 'used_points');
 end
 
 function t_refine_patches()
@@ -560,6 +606,21 @@ function t_spectral_registration()
     rs = mio.register_rigid(moved, m, 'initial', eye(4));
     expect_equal(rs.matrix(1, 4), -0.05, 1e-6);
     expect_error(@() mio.register_rigid(m, m, 'initial', eye(3)), '4 x 4');
+    % The automatic start, landmarks, the symmetry plane and auto-align
+    % (roadmap 7.3).
+    ra = mio.register_rigid(moved, m, 'initial', 'auto', 'symmetric_check', true);
+    assert(ra.rms < 1e-6);
+    expect_equal(numel(ra.candidate_rms), 24);
+    expect_error(@() mio.register_rigid(m, m, 'initial', 'guess'), 'initial');
+    lm = mio.register_landmarks([0 0 0; 1 0 0; 0 2 0], [1 2 3; 2 2 3; 1 4 3]);
+    expect_equal(lm.matrix(1:3, 4), [1; 2; 3], 1e-12);
+    expect_error(@() mio.register_landmarks([0 0 0; 1 0 0], [0 0 0; 1 0 0]));
+    sp = mio.find_symmetry_plane(m);
+    assert(sp.share > 0.9);
+    al = mio.auto_align(m);
+    assert(strcmp(al.mode, 'face'));
+    dv = mio.deviation(moved, 'reference', m, 'register', true);
+    assert(dv.registered);
 
     nn = mio.estimate_normals(m, 'k', 3);
     expect_equal(nn.num_degenerate, 0);

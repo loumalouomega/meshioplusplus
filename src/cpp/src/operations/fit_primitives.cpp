@@ -38,11 +38,16 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/cell_region_mask.hpp"
 #include "../detail/crease_edges.hpp"
+#include "../detail/primitive_grow.hpp"
 #include "../detail/lsq_fit.hpp"
+#include "../detail/zone_fit.hpp"
 #include "../detail/primitive_geom.hpp"
 #include "../detail/surface_rings.hpp"
 #include "../detail/math_utils.hpp"
+#include "meshioplusplus/detail/space_filling.hpp"
+#include "meshioplusplus/region.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -490,6 +495,17 @@ struct FpOutcome {
     double mMax = std::numeric_limits<double>::quiet_NaN();
     double mFraction = 0.0;
     double mTol = 0.0;
+    detail::PrimitiveFormMetrics mForm{};
+    // The points the fit used, and their RMS distance (roadmap 7.1.2).
+    double mSigma = std::numeric_limits<double>::quiet_NaN();
+    std::int64_t mNumUsed = 0;
+    std::int64_t mNumRejected = 0;
+    // The best attempt when no type was accepted (world frame): what sigma
+    // trimming measures residuals against.
+    std::int64_t mTryType = 0;
+    double mTryParams[kFpParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    // Why the criterion's refit (roadmap 7.1.4) kept the least-squares fit.
+    std::string mZoneWhy;
 };
 
 // How far the facets' centres lie from a fitted surface (the parameters in
@@ -580,9 +596,329 @@ FpOutcome fp_fit_patch(const FpPatch& rP, const FitPrimitivesOptions& rOptions) 
             out.mRms = fit.mRms;
             out.mMax = fit.mMax;
             out.mFraction = fit.mFraction;
+            out.mTryType = t;
+            for (std::size_t k = 0; k < kFpParams; ++k)
+                out.mTryParams[k] = fit.mParams[k];
+            for (int k = 0; k < 3; ++k)
+                out.mTryParams[k] += rP.mShift[k];
         }
     }
     return out;
+}
+
+// A copy of the patch with only the points @p rUsed marks, centred on their
+// own mean as the fitters expect (its faces and diagonal kept).
+FpPatch fp_subset(const FpPatch& rP, const std::vector<std::uint8_t>& rUsed) {
+    FpPatch sub;
+    sub.mDiag = rP.mDiag;
+    for (std::size_t i = 0; i < rP.NumPoints(); ++i)
+        if (rUsed[i])
+            for (std::size_t k = 0; k < 3; ++k)
+                sub.mPts.push_back(rP.mPts[i * 3 + k]);
+    double mean[3] = {0.0, 0.0, 0.0};
+    if (!sub.mPts.empty())
+        fp_mean(sub.mPts, mean);
+    for (std::size_t i = 0; i < sub.NumPoints(); ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            sub.mPts[i * 3 + k] -= mean[k];
+    sub.mNormals = rP.mNormals;
+    sub.mCentres = rP.mCentres;
+    for (std::size_t f = 0; f < sub.NumFaces(); ++f)
+        for (std::size_t k = 0; k < 3; ++k)
+            sub.mCentres[f * 3 + k] -= mean[k];
+    for (int k = 0; k < 3; ++k)
+        sub.mShift[k] = rP.mShift[k] + mean[k];
+    return sub;
+}
+
+// The points in Hilbert order over their bounding box (ties: point order).
+std::vector<std::int64_t> fp_hilbert_order(const FpPatch& rP) {
+    const std::size_t n = rP.NumPoints();
+    double lo[3], hi[3];
+    for (int k = 0; k < 3; ++k) {
+        lo[k] = std::numeric_limits<double>::infinity();
+        hi[k] = -lo[k];
+    }
+    for (std::size_t i = 0; i < n; ++i)
+        for (int k = 0; k < 3; ++k) {
+            lo[k] = std::min(lo[k], rP.mPts[i * 3 + static_cast<std::size_t>(k)]);
+            hi[k] = std::max(hi[k], rP.mPts[i * 3 + static_cast<std::size_t>(k)]);
+        }
+    double ext = 0.0;
+    for (int k = 0; k < 3; ++k)
+        ext = std::max(ext, hi[k] - lo[k]);
+    const double scale = ext > 0.0 ? static_cast<double>((1u << detail::sfc_bits) - 1) / ext : 0.0;
+    std::vector<std::uint64_t> keys(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        std::uint32_t q[3];
+        for (int k = 0; k < 3; ++k)
+            q[k] = static_cast<std::uint32_t>(
+                (rP.mPts[i * 3 + static_cast<std::size_t>(k)] - lo[k]) * scale);
+        keys[i] = detail::sfc_hilbert_key(q, detail::sfc_bits);
+    }
+    return detail::sfc_stable_argsort(keys);
+}
+
+// A least median of squares consensus (Rousseeuw 1984) for a plane (3 points)
+// or a sphere (4), over a fixed schedule of minimal subsets drawn by stride
+// from the Hilbert-ordered points, no random sampling; the inliers of the
+// best subset: points within 2.5 robust standard deviations of it.
+std::vector<std::uint8_t> fp_lmeds_inliers(const FpPatch& rP, std::int64_t Type) {
+    const std::size_t n = rP.NumPoints();
+    const std::size_t m = Type == 1 ? 3 : 4;
+    std::vector<std::uint8_t> used(n, 1);
+    if (n < 2 * m)
+        return used;
+    const std::vector<std::int64_t> order = fp_hilbert_order(rP);
+    const std::size_t trials = std::min<std::size_t>(500, n);
+    double best_med = std::numeric_limits<double>::infinity();
+    double best[kFpParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    std::vector<double> r2(n);
+    for (std::size_t j = 0; j < trials; ++j) {
+        std::size_t idx[4];
+        for (std::size_t k = 0; k < m; ++k)
+            idx[k] = static_cast<std::size_t>(order[(j * 7919 + k * (n / m) + k * j) % n]);
+        double prm[kFpParams] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+        const double* a = &rP.mPts[idx[0] * 3];
+        const double* b = &rP.mPts[idx[1] * 3];
+        const double* c = &rP.mPts[idx[2] * 3];
+        if (Type == 1) {
+            const double u[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+            const double v[3] = {c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+            double nrm[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                             u[0] * v[1] - u[1] * v[0]};
+            const double len = std::sqrt(detail::MathUtils::Dot(nrm, nrm));
+            if (!(len > 0.0))
+                continue;
+            for (int k = 0; k < 3; ++k) {
+                prm[k] = a[k];
+                prm[3 + k] = nrm[k] / len;
+            }
+        } else {
+            std::vector<double> mat(16, 0.0), rhs(4, 0.0);
+            for (std::size_t r = 0; r < 4; ++r) {
+                const double* p = &rP.mPts[idx[r] * 3];
+                mat[r * 4 + 0] = 2.0 * p[0];
+                mat[r * 4 + 1] = 2.0 * p[1];
+                mat[r * 4 + 2] = 2.0 * p[2];
+                mat[r * 4 + 3] = 1.0;
+                rhs[r] = detail::MathUtils::Dot(p, p);
+            }
+            if (!detail::lsq_solve(mat, rhs, 4))
+                continue;
+            const double rad2 = rhs[3] + rhs[0] * rhs[0] + rhs[1] * rhs[1] + rhs[2] * rhs[2];
+            if (!(rad2 > 0.0))
+                continue;
+            prm[0] = rhs[0];
+            prm[1] = rhs[1];
+            prm[2] = rhs[2];
+            prm[6] = std::sqrt(rad2);
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            const double d = detail::primitive_signed_distance(Type, prm, &rP.mPts[i * 3]);
+            r2[i] = d * d;
+        }
+        std::vector<double> sorted = r2;
+        std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(n / 2),
+                         sorted.end());
+        const double med = sorted[n / 2];
+        if (med < best_med) {
+            best_med = med;
+            std::copy(prm, prm + kFpParams, best);
+        }
+    }
+    if (!std::isfinite(best_med))
+        return used;
+    // Rousseeuw's robust scale, with the small-sample factor.
+    const double scale = 1.4826 * (1.0 + 5.0 / static_cast<double>(n - m)) * std::sqrt(best_med);
+    // An exact consensus has no spread: keep what lies on it to rounding.
+    const double cut = std::max(2.5 * scale, 1e-12 * rP.mDiag);
+    std::size_t kept = 0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double d = std::fabs(detail::primitive_signed_distance(Type, best, &rP.mPts[i * 3]));
+        used[i] = d <= cut ? 1 : 0;
+        kept += used[i];
+    }
+    if (kept < 2 * m)
+        std::fill(used.begin(), used.end(), std::uint8_t{1});
+    return used;
+}
+
+// The sigma-trimmed fit of a patch (roadmap 7.1.2): refit on the points within
+// K times the RMS distance of the points kept, until that set stops changing.
+FpOutcome fp_fit_patch_trimmed(const FpPatch& rP, const FitPrimitivesOptions& rOptions, double K,
+                               std::vector<std::uint8_t>& rUsed) {
+    const std::size_t n = rP.NumPoints();
+    std::vector<std::uint8_t>& used = rUsed;
+    used.assign(n, 1);
+    if (rOptions.mTypes == (1u << 1) || rOptions.mTypes == (1u << 2))
+        used = fp_lmeds_inliers(rP, rOptions.mTypes == (1u << 1) ? 1 : 2);
+    // The tolerance stays the whole patch's.
+    FitPrimitivesOptions o = rOptions;
+    if (o.mRelative) {
+        o.mTolerance = rOptions.mTolerance * rP.mDiag;
+        o.mRelative = false;
+    }
+    FpOutcome out;
+    std::vector<double> dist(n);
+    for (int round = 0; round < 20; ++round) {
+        out = fp_fit_patch(fp_subset(rP, used), o);
+        const std::int64_t type = out.mType ? out.mType : out.mTryType;
+        const double* prm = out.mType ? out.mParams : out.mTryParams;
+        if (type == 0)
+            break;
+        double sum = 0.0;
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            double w[3];
+            for (std::size_t k = 0; k < 3; ++k)
+                w[k] = rP.mPts[i * 3 + k] + rP.mShift[k];
+            dist[i] = detail::primitive_signed_distance(type, prm, w);
+            if (used[i]) {
+                sum += dist[i] * dist[i];
+                ++count;
+            }
+        }
+        const double sigma = count ? std::sqrt(sum / static_cast<double>(count)) : 0.0;
+        if (!(sigma > 0.0))
+            break;
+        std::vector<std::uint8_t> next(n);
+        std::size_t kept = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            next[i] = std::fabs(dist[i]) <= K * sigma ? 1 : 0;
+            kept += next[i];
+        }
+        if (next == used || kept < 6)
+            break;
+        used.swap(next);
+    }
+    out.mTol = o.mTolerance;
+    std::int64_t nused = 0;
+    for (std::uint8_t u : used)
+        nused += u;
+    out.mNumUsed = nused;
+    out.mNumRejected = static_cast<std::int64_t>(n) - nused;
+    return out;
+}
+
+// Seed mode (roadmap 7.1.1): the label marking the cells grown from the seeds
+// (0) and the rest (-1), the cells themselves, and the absolute tolerance the
+// growth ran at, which the patch is then fitted at.
+std::vector<std::int64_t> fp_seed_labels(const Mesh& rMesh, const FitPrimitivesOptions& rOptions,
+                                         std::size_t NCells, FitPrimitivesOptions& rFit,
+                                         std::vector<std::int64_t>& rCells,
+                                         std::vector<std::string>& rWarnings) {
+    std::vector<std::uint8_t> selected(NCells, 1);
+    if (!rOptions.mRegion.empty())
+        selected = detail::cell_region_mask(rMesh, rOptions.mRegion, NCells, kFpPrefix);
+    const detail::PrimitiveGrowSurface surf =
+        detail::build_primitive_grow_surface(rMesh, selected, rOptions.mFeatureAngleDeg, kFpPrefix);
+    std::vector<std::int64_t> label(NCells, -1);
+    const std::size_t nf = surf.NumFaces();
+    if (nf == 0) {
+        rWarnings.emplace_back("the surface has no 2-D cells to grow from");
+        return label;
+    }
+    detail::PrimitiveGrowInput in = surf.Input();
+    detail::prepare_primitive_grow(in, nf, rOptions.mRelative ? rOptions.mTolerance : 1.0);
+    if (!rOptions.mRelative)
+        in.mTol = rOptions.mTolerance;
+    const std::vector<std::vector<std::int64_t>> areas = detail::primitive_smooth_areas(in, nf);
+    std::vector<std::int64_t> patch(nf, -1);
+    std::vector<std::uint8_t> mark(nf, 0);
+    const std::uint32_t types = rOptions.mTypes;
+    const bool try_plane = (types & (1u << 1)) != 0;
+    const std::uint32_t curved = types & ~(1u << 1);
+    std::vector<std::int64_t> faces;
+    for (std::size_t k = 0; k < rOptions.mSeeds.size(); ++k) {
+        const std::int64_t f =
+            detail::nearest_centroid_face(surf.mCentroid, rOptions.mSeeds[k].data());
+        if (f < 0)
+            continue;
+        if (patch[static_cast<std::size_t>(f)] != -1)
+            continue;  // an earlier seed's region holds it
+        const std::vector<std::int64_t>& area =
+            areas[static_cast<std::size_t>(in.mSmoothArea[static_cast<std::size_t>(f)])];
+        const double area_total = detail::primitive_grow_area_of(in, area);
+        // The seed's whole smooth area when one primitive explains it (step 1
+        // of `segment`'s primitive method: a bore between sharp edges), else a
+        // region grown exactly, as `segment` grows a CAD tessellation (a
+        // fillet's tangent planes stay out), else within the whole tolerance,
+        // as a scan's noise wants.
+        detail::PrimitiveGrowRegion reg;
+        bool whole_free = true;
+        for (std::int64_t g : area)
+            whole_free = whole_free && patch[static_cast<std::size_t>(g)] == -1;
+        if (whole_free && detail::primitive_grow_fit(in, area, types).mType > 0)
+            reg.mFaces = area;
+        in.mGrowTol = detail::kPrimitiveGrowExactShare * in.mTol;
+        if (reg.mFaces.empty())
+            reg = detail::primitive_grow_from_seed(in, f, try_plane, curved, area_total, 0.0,
+                                                   detail::kPrimitiveGrowExactShare, patch, mark);
+        if (reg.mFaces.empty()) {
+            in.mGrowTol = in.mTol;
+            reg = detail::primitive_grow_from_seed(in, f, try_plane, curved, area_total, 0.0, 1.0,
+                                                   patch, mark);
+        }
+        if (reg.mFaces.empty()) {
+            rWarnings.push_back(
+                "seed " + std::to_string(k) +
+                ": no primitive of the asked types grows from the facet nearest it");
+            continue;
+        }
+        for (std::int64_t g : reg.mFaces) {
+            patch[static_cast<std::size_t>(g)] = 0;
+            faces.push_back(g);
+        }
+    }
+    std::sort(faces.begin(), faces.end());
+    // Peel the rim: boundary faces whose normal turns away from the fitted
+    // surface's, ring by ring.
+    if (rOptions.mRimAngleDeg < 180.0 && !faces.empty()) {
+        const double cos_rim = std::cos(rOptions.mRimAngleDeg * kFpPi / 180.0);
+        std::vector<std::uint8_t> in_region(nf, 0);
+        for (std::int64_t g : faces)
+            in_region[static_cast<std::size_t>(g)] = 1;
+        for (int pass = 0; pass < 8; ++pass) {
+            const detail::PrimitiveFit fit = detail::primitive_grow_fit(in, faces, types);
+            if (fit.mType == 0)
+                break;
+            std::vector<std::int64_t> kept;
+            for (std::int64_t g : faces) {
+                const std::size_t gs = static_cast<std::size_t>(g);
+                const std::int64_t ring = surf.mRings.mStart[gs + 1] - surf.mRings.mStart[gs];
+                const std::int64_t neighbours = surf.mAdjStart[gs + 1] - surf.mAdjStart[gs];
+                bool rim = neighbours < ring;
+                for (std::int64_t e = surf.mAdjStart[gs]; e < surf.mAdjStart[gs + 1] && !rim; ++e)
+                    rim = !in_region[static_cast<std::size_t>(
+                        surf.mAdj[static_cast<std::size_t>(e)].first)];
+                double nrm[3];
+                const bool peel =
+                    rim &&
+                    detail::primitive_normal(fit.mType, fit.mParams, &surf.mCentroid[gs * 3],
+                                             nrm) &&
+                    std::fabs(detail::MathUtils::Dot(nrm, &surf.mNormals[gs * 3])) < cos_rim;
+                if (peel)
+                    in_region[gs] = 0;
+                else
+                    kept.push_back(g);
+            }
+            if (kept.size() == faces.size() || kept.empty())
+                break;
+            faces.swap(kept);
+        }
+    }
+    for (std::int64_t g : faces) {
+        const std::int64_t c = surf.mRings.mCell[static_cast<std::size_t>(g)];
+        label[static_cast<std::size_t>(c)] = 0;
+        rCells.push_back(c);
+    }
+    std::sort(rCells.begin(), rCells.end());
+    if (faces.empty())
+        rWarnings.emplace_back("no seed grew a region");
+    rFit.mTolerance = in.mTol;
+    rFit.mRelative = false;
+    return label;
 }
 
 }  // namespace
@@ -634,6 +970,21 @@ PrimitiveFit fit_primitive_samples(const std::vector<double>& rPts,
 
 }  // namespace detail
 
+FitCriterion fit_criterion_from_name(const std::string& rName) {
+    if (rName == "least_squares")
+        return FitCriterion::LeastSquares;
+    if (rName == "minimum_zone")
+        return FitCriterion::MinimumZone;
+    if (rName == "min_circumscribed")
+        return FitCriterion::MinCircumscribed;
+    if (rName == "max_inscribed")
+        return FitCriterion::MaxInscribed;
+    throw std::invalid_argument(
+        "meshio++: fit_primitives: criterion must be 'least_squares', "
+        "'minimum_zone', 'min_circumscribed' or 'max_inscribed', not '" +
+        rName + "'");
+}
+
 FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions& rOptions) {
     if (!(rOptions.mTolerance > 0.0) || !std::isfinite(rOptions.mTolerance))
         throw std::invalid_argument(std::string(kFpPrefix) +
@@ -647,11 +998,45 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
                                     "cone, torus and nothing else");
     if (rOptions.mMaxIterations < 1)
         throw std::invalid_argument(std::string(kFpPrefix) + "max_iterations must be >= 1");
+    if (rOptions.mUsedPoints < FitUsedPoints::Auto || rOptions.mUsedPoints > FitUsedPoints::Sigma1)
+        throw std::invalid_argument(std::string(kFpPrefix) + "unknown used_points");
+    if (rOptions.mCriterion < FitCriterion::LeastSquares ||
+        rOptions.mCriterion > FitCriterion::MaxInscribed)
+        throw std::invalid_argument(std::string(kFpPrefix) + "unknown criterion");
+    if (!(rOptions.mFeatureAngleDeg >= 0.0 && rOptions.mFeatureAngleDeg <= 180.0) ||
+        !(rOptions.mRimAngleDeg >= 0.0 && rOptions.mRimAngleDeg <= 180.0))
+        throw std::invalid_argument(std::string(kFpPrefix) +
+                                    "feature_angle and rim_angle must lie in [0, 180] degrees");
+    for (const std::array<double, 3>& rSeed : rOptions.mSeeds)
+        for (double v : rSeed)
+            if (!std::isfinite(v))
+                throw std::invalid_argument(std::string(kFpPrefix) + "a seed must be finite");
+    const bool seeded = !rOptions.mSeeds.empty();
+    if (seeded && rOptions.mOutputRegion.empty())
+        throw std::invalid_argument(std::string(kFpPrefix) + "the output region needs a name");
+    const bool feature_mode = seeded || !rOptions.mRegion.empty();
+    const FitUsedPoints used_mode =
+        rOptions.mUsedPoints == FitUsedPoints::Auto
+            ? (feature_mode ? FitUsedPoints::Sigma3 : FitUsedPoints::All)
+            : rOptions.mUsedPoints;
+    const double trim_k = used_mode == FitUsedPoints::Sigma3   ? 3.0
+                          : used_mode == FitUsedPoints::Sigma2 ? 2.0
+                                                               : 1.0;
+    FitPrimitivesResult result;
+    FitPrimitivesOptions fit_opts = rOptions;
 
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const std::size_t ncells = static_cast<std::size_t>(detail::total_cells(bases));
     std::vector<std::int64_t> label(ncells, 0);
-    if (!rOptions.mPatchData.empty()) {
+    std::vector<std::int64_t> feature_cells;
+    if (seeded) {
+        label = fp_seed_labels(rMesh, rOptions, ncells, fit_opts, feature_cells, result.mWarnings);
+    } else if (!rOptions.mRegion.empty()) {
+        const std::vector<std::uint8_t> mask =
+            detail::cell_region_mask(rMesh, rOptions.mRegion, ncells, kFpPrefix);
+        for (std::size_t c = 0; c < ncells; ++c)
+            label[c] = mask[c] ? 0 : -1;
+    } else if (!rOptions.mPatchData.empty()) {
         if (!rMesh.HasCellData(rOptions.mPatchData))
             throw std::invalid_argument(std::string(kFpPrefix) + "no cell data named '" +
                                         rOptions.mPatchData +
@@ -740,10 +1125,57 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
                 patch.mCentres.push_back(c[d] / static_cast<double>(size) - patch.mShift[d]);
             }
         }
-        outcome[r] = fp_fit_patch(patch, rOptions);
+        std::vector<std::uint8_t> used;
+        if (used_mode == FitUsedPoints::All) {
+            outcome[r] = fp_fit_patch(patch, fit_opts);
+            used.assign(verts.size(), 1);
+            outcome[r].mNumUsed = static_cast<std::int64_t>(verts.size());
+        } else {
+            outcome[r] = fp_fit_patch_trimmed(patch, fit_opts, trim_k, used);
+        }
+        const bool zone = rOptions.mCriterion != FitCriterion::LeastSquares;
+        if (!rOptions.mExtendedReport && !zone)
+            return;
+        // Sigma, form error and extremes over the points used, in the world
+        // frame the parameters are in.
+        std::vector<double> world;
+        for (std::size_t i = 0; i < verts.size(); ++i)
+            if (used[i])
+                for (int k = 0; k < 3; ++k)
+                    world.push_back(patch.mPts[i * 3 + static_cast<std::size_t>(k)] +
+                                    patch.mShift[k]);
+        const std::size_t nused = world.size() / 3;
+        FpOutcome& o = outcome[r];
+        // The criterion's refit of the accepted fit (roadmap 7.1.4).
+        if (zone && o.mType > 0) {
+            if (o.mType <= 3) {
+                const detail::ZoneFitResult z =
+                    detail::zone_fit(o.mType, o.mParams, world.data(), nused,
+                                     static_cast<detail::ZoneCriterion>(rOptions.mCriterion));
+                if (z.mOk)
+                    for (std::size_t k = 0; k < kFpParams; ++k)
+                        o.mParams[k] = z.mParams[k];
+                else
+                    o.mZoneWhy = z.mWhy;
+            } else {
+                o.mZoneWhy =
+                    "a minimum-zone or envelope fit applies to planes, spheres and cylinders";
+            }
+        }
+        if (!rOptions.mExtendedReport)
+            return;
+        if (o.mType > 0 && nused > 0) {
+            double sum = 0.0;
+            for (std::size_t i = 0; i < nused; ++i) {
+                const double d =
+                    detail::primitive_signed_distance(o.mType, o.mParams, &world[i * 3]);
+                sum += d * d;
+            }
+            o.mSigma = std::sqrt(sum / static_cast<double>(nused));
+        }
+        o.mForm = detail::primitive_form_metrics(o.mType, o.mParams, world.data(), nused);
     });
 
-    FitPrimitivesResult result;
     result.mNumPatches = static_cast<std::int64_t>(m);
     for (const FpOutcome& o : outcome) {
         switch (o.mType) {
@@ -802,6 +1234,10 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     out.AddCellData(kFitRmsName, std::move(rms_blocks));
     out.AddCellData(kFitMaxName, std::move(max_blocks));
 
+    for (std::size_t r = 0; r < m; ++r)
+        if (!outcome[r].mZoneWhy.empty())
+            result.mWarnings.push_back("patch " + std::to_string(ids[r]) + ": " +
+                                       outcome[r].mZoneWhy + "; kept the least-squares fit");
     NDArray pid = NDArray::Uninit(DType::Int64, {m});
     NDArray ptype = NDArray::Uninit(DType::Int64, {m});
     NDArray params = NDArray::Uninit(DType::Float64, {m, kFpParams});
@@ -809,6 +1245,28 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     NDArray pmax = NDArray::Uninit(DType::Float64, {m});
     NDArray pfrac = NDArray::Uninit(DType::Float64, {m});
     NDArray ptol = NDArray::Uninit(DType::Float64, {m});
+    NDArray psigma = NDArray::Uninit(DType::Float64, {m});
+    NDArray pnused = NDArray::Uninit(DType::Int64, {m});
+    NDArray pnrej = NDArray::Uninit(DType::Int64, {m});
+    NDArray pform = NDArray::Uninit(DType::Float64, {m});
+    NDArray pdmin = NDArray::Uninit(DType::Float64, {m});
+    NDArray pdmax = NDArray::Uninit(DType::Float64, {m});
+    NDArray plen = NDArray::Uninit(DType::Float64, {m});
+    NDArray parc = NDArray::Uninit(DType::Float64, {m});
+    NDArray pext = NDArray::Uninit(DType::Float64, {m, 2});
+    for (std::size_t r = 0; r < m; ++r) {
+        const detail::PrimitiveFormMetrics& f = outcome[r].mForm;
+        psigma.As<double>()[r] = outcome[r].mSigma;
+        pnused.As<std::int64_t>()[r] = outcome[r].mNumUsed;
+        pnrej.As<std::int64_t>()[r] = outcome[r].mNumRejected;
+        pform.As<double>()[r] = f.mFormError;
+        pdmin.As<double>()[r] = f.mDiameterMin;
+        pdmax.As<double>()[r] = f.mDiameterMax;
+        plen.As<double>()[r] = f.mLength;
+        parc.As<double>()[r] = f.mArcDeg;
+        pext.As<double>()[r * 2] = f.mExtent[0];
+        pext.As<double>()[r * 2 + 1] = f.mExtent[1];
+    }
     for (std::size_t r = 0; r < m; ++r) {
         pid.As<std::int64_t>()[r] = ids[r];
         ptype.As<std::int64_t>()[r] = outcome[r].mType;
@@ -826,6 +1284,29 @@ FitPrimitivesResult fit_primitives(const Mesh& rMesh, const FitPrimitivesOptions
     out.AddFieldData("fit:patch_max", std::move(pmax));
     out.AddFieldData("fit:patch_fraction", std::move(pfrac));
     out.AddFieldData("fit:patch_tolerance", std::move(ptol));
+    if (rOptions.mExtendedReport) {
+        out.AddFieldData(kFitPatchFormErrorName, std::move(pform));
+        out.AddFieldData(kFitPatchDiameterMinName, std::move(pdmin));
+        out.AddFieldData(kFitPatchDiameterMaxName, std::move(pdmax));
+        out.AddFieldData(kFitPatchLengthName, std::move(plen));
+        out.AddFieldData(kFitPatchArcName, std::move(parc));
+        out.AddFieldData(kFitPatchExtentName, std::move(pext));
+        out.AddFieldData(kFitPatchSigmaName, std::move(psigma));
+        out.AddFieldData(kFitPatchNumUsedName, std::move(pnused));
+        out.AddFieldData(kFitPatchNumRejectedName, std::move(pnrej));
+    }
+    if (seeded) {
+        result.mNumFeatureCells = static_cast<std::int64_t>(feature_cells.size());
+        for (std::size_t k = out.NumRegions(); k-- > 0;)
+            if (out.Region(k).mKind == RegionKind::Cell &&
+                out.Region(k).mName == rOptions.mOutputRegion)
+                out.RemoveRegion(k);
+        NDArray entries = NDArray::Uninit(DType::Int64, {feature_cells.size()});
+        std::copy(feature_cells.begin(), feature_cells.end(), entries.As<std::int64_t>());
+        meshioplusplus::Region region(rOptions.mOutputRegion, RegionKind::Cell, std::move(entries));
+        region.Canonicalize();
+        out.AddRegion(std::move(region));
+    }
     return result;
 }
 

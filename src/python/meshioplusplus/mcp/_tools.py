@@ -44,14 +44,12 @@ from collections import OrderedDict
 
 import numpy as np
 
+from .. import GeometryGuard, GridArray, GridSpec, adapt, agglomerate
+from .. import align_datums as _align_datums_op
 from .. import (
-    GeometryGuard,
-    GridArray,
-    GridSpec,
-    adapt,
-    agglomerate,
     annulus,
     attach_quality,
+    auto_align,
     ball,
     boundary_layer,
     box,
@@ -64,6 +62,10 @@ from .. import (
     check_tetrahedra,
     circle,
     clean,
+)
+from .. import clip as _clip_op
+from .. import (
+    colorize,
     compute_bandwidth,
     compute_curvature,
     compute_normals,
@@ -72,6 +74,9 @@ from .. import (
     compute_stats,
     cone,
     conservative_interpolate,
+)
+from .. import constrain_primitives as _constrain_primitives_op
+from .. import (
     contact_pairs,
     convert_cells,
     convert_coordinates,
@@ -90,6 +95,8 @@ from .. import (
     decimate,
     decimate_volume,
     delaunay_2d,
+    deviation,
+    deviation_regions,
     diff,
     discretize_levelset,
     disk,
@@ -98,15 +105,25 @@ from .. import (
     error_size,
     estimate_error,
     estimate_normals,
+    exaggerate,
     extract_skin,
     extract_surface,
     extrude,
+)
+from .. import face_support as _face_support_op
+from .. import (
     feature_edges,
     fichera,
     find_interface,
     find_intersections,
+    find_symmetry_plane,
     fit_cad,
-    fit_primitives,
+)
+from .. import fit_cad_iterate as _fit_cad_iterate_op
+from .. import fit_curves as _fit_curves_op
+from .. import fit_primitives
+from .. import flip_normals as _flip_normals_op
+from .. import (
     geo_sphere,
     geodesic_distance,
     geometry_descriptors,
@@ -118,6 +135,9 @@ from .. import (
     hausdorff_distance,
     helix,
     hessian,
+)
+from .. import hollow as _hollow_op
+from .. import (
     honeycomb,
     icosa_sphere,
     iga_evaluate,
@@ -129,6 +149,9 @@ from .. import (
     line,
     lshape,
     match_periodic_nodes,
+)
+from .. import measure as _measure_op
+from .. import (
     merge,
     mesh_cad_surface,
     mesh_domain,
@@ -141,6 +164,9 @@ from .. import (
     octa_sphere,
     octree,
     octree_mesh,
+)
+from .. import offset_surface as _offset_surface_op
+from .. import (
     optimize_volume,
     parameterize,
     partition,
@@ -151,6 +177,10 @@ from .. import (
     poly_to_tet,
     power_spectrum,
     prepare_metric,
+)
+from .. import profile_solid as _profile_solid_op
+from .. import profile_solid_providers as _profile_solid_providers
+from .. import (
     project_to_cad,
     proximity_graph,
     read,
@@ -162,11 +192,15 @@ from .. import (
     refine,
     refine_patches,
     region_adjacency,
+    register_landmarks,
     register_rigid,
     remesh,
     remesh_quads,
     remesh_quads_backends,
     remesh_volume,
+)
+from .. import remove_islands as _remove_islands_op
+from .. import (
     render_text,
     reorder,
     repair,
@@ -178,9 +212,11 @@ from .. import (
     scatter_grid,
 )
 from .. import screenshot as _screenshot_fn
+from .. import sections as _sections_op
 from .. import segment
 from .. import select as _select_op
 from .. import shrinkwrap
+from .. import silhouette as _silhouette_op
 from .. import slice as _slice_op
 from .. import smooth
 from .. import snapshot as _snapshot_fn
@@ -201,6 +237,9 @@ from .. import (
     tetra_sphere,
     tetrahedralize,
     tetrahedralize_backends,
+)
+from .. import thicken as _thicken_op
+from .. import (
     thickness,
     torus,
     transform,
@@ -213,6 +252,7 @@ from .. import (
     write_graph,
 )
 from .. import write_parquet as _write_parquet_fn
+from .. import write_step_elements as _write_step_elements_op
 from .._helpers import _filetypes_from_path, formats
 
 # --------------------------------------------------------------------------- #
@@ -837,6 +877,11 @@ def tool_thickness(
     min_thickness=None,
     region="",
     region_other="",
+    method="ray",
+    cone_angle=15.0,
+    cone_rays=16,
+    two_sided=False,
+    max_normal_deviation=90.0,
 ):
     """Wall thickness (inward) or clearance (outward, the default against
     ``other_path``) per facet by a ray along its normal; with
@@ -854,6 +899,11 @@ def tool_thickness(
         region=region,
         region_other=region_other,
         attach=output_path is not None,
+        method=method,
+        cone_angle=cone_angle,
+        cone_rays=cone_rays,
+        two_sided=two_sided,
+        max_normal_deviation=max_normal_deviation,
         return_report=True,
     )
     if min_thickness is not None:
@@ -861,6 +911,147 @@ def tool_thickness(
         report["passed"] = bool(report["num_below"] == 0)
     if output_path is not None:
         report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_deviation(
+    input_path,
+    reference_path,
+    output_path=None,
+    file_format=None,
+    reference_format=None,
+    output_format=None,
+    patch=None,
+    tolerance=0.0,
+    min_share=None,
+    bins=20,
+    range_min=None,
+    range_max=None,
+    max_normal_angle=90.0,
+    reference_region="",
+    register=False,
+    element=None,
+):
+    """Signed deviation of every point of a scan from a reference surface
+    (or, with ``patch``, from that patch's fitted primitive in a mesh
+    ``fit_primitives`` wrote) and its statistics; with ``min_share``, also
+    whether the share within ``tolerance`` reaches it. Pass ``output_path``
+    to write the scan with ``deviation:distance`` point data."""
+    scan = _load(input_path, file_format)
+    reference = _load(reference_path, reference_format)
+    rng = None
+    if range_min is not None or range_max is not None:
+        if range_min is None or range_max is None:
+            raise ValueError("meshio++: deviation: give both range_min and range_max")
+        rng = (float(range_min), float(range_max))
+    out, report = deviation(
+        scan,
+        reference,
+        patch=patch,
+        element=element,
+        tolerance=tolerance,
+        bins=bins,
+        range=rng,
+        max_normal_angle=max_normal_angle,
+        reference_region=reference_region,
+        attach=output_path is not None,
+        register=bool(register),
+        return_report=True,
+    )
+    if min_share is not None:
+        report["min_share"] = float(min_share)
+        report["passed"] = bool(
+            float(tolerance) > 0.0 and report["share_within"] >= float(min_share)
+        )
+    if output_path is not None:
+        report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_deviation_regions(
+    input_path,
+    output_path,
+    tolerance,
+    file_format=None,
+    output_format=None,
+    field="deviation:distance",
+    prefix="deviation:",
+    min_area=0.0,
+):
+    """Connected excess and missing-material regions of a measured surface
+    (one carrying ``deviation:distance``) beyond ``+-tolerance``, written as
+    named cell regions; the report lists each region's area, extreme and mean
+    deviation, signed volume, centroid and bounds, largest volume first."""
+    mesh = _load(input_path, file_format)
+    out, report = deviation_regions(
+        mesh,
+        tolerance,
+        field=field,
+        prefix=prefix,
+        min_area=min_area,
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_exaggerate(
+    input_path,
+    output_path,
+    file_format=None,
+    output_format=None,
+    field="deviation:distance",
+    scale=10.0,
+    clamp=0.0,
+    smooth_fraction=0.01,
+):
+    """Points displaced along their normals by ``scale`` times their clamped,
+    smoothed deviation, written to ``output_path`` (a mesh for a figure; the
+    measured scan is not changed)."""
+    mesh = _load(input_path, file_format)
+    out, report = exaggerate(
+        mesh,
+        field=field,
+        scale=scale,
+        clamp=clamp,
+        smooth_fraction=smooth_fraction,
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_colorize(
+    input_path,
+    output_path,
+    field,
+    file_format=None,
+    output_format=None,
+    cmap="viridis",
+    vmin=None,
+    vmax=None,
+    symmetric=False,
+    steps=0,
+    nan_color="#808080",
+    component=None,
+):
+    """A field baked into UInt8 ``red``/``green``/``blue`` data through a
+    colormap (``steps`` bands it), written to ``output_path``: the vertex or
+    face colours PLY carries; glTF takes them with ``color_by="rgb"``."""
+    mesh = _load(input_path, file_format)
+    out, report = colorize(
+        mesh,
+        field,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        symmetric=symmetric,
+        steps=steps,
+        nan_color=nan_color,
+        component=component,
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
     return _json_safe(report)
 
 
@@ -1635,9 +1826,379 @@ def tool_slice(
     origin=(0.0, 0.0, 0.0),
     normal=(0.0, 0.0, 1.0),
     record_parent_ids=False,
+    chain=False,
+    min_length=0.0,
 ):
     """Planar cross-section (one topological dimension below the input)."""
     return _run_op(_slice_op, locals(), report=False)
+
+
+def tool_remove_islands(
+    input_path,
+    output_path,
+    connectivity="edge",
+    min_diagonal=0.01,
+    min_area=0.0,
+    min_cells=0,
+    relative=True,
+    dry_run=False,
+    input_format=None,
+    output_format=None,
+):
+    """Drop the small connected components of a mesh."""
+    out, report = _remove_islands_op(
+        _load(input_path, input_format),
+        connectivity=connectivity,
+        min_diagonal=float(min_diagonal),
+        min_area=float(min_area),
+        min_cells=int(min_cells),
+        relative=bool(relative),
+        dry_run=bool(dry_run),
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_flip_normals(
+    input_path, output_path, region=None, input_format=None, output_format=None
+):
+    """Reverse the winding of cells."""
+    out, report = _flip_normals_op(
+        _load(input_path, input_format), region, return_report=True
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_clip(
+    input_path,
+    output_path,
+    origin,
+    normal,
+    keep="below",
+    cap=True,
+    input_format=None,
+    output_format=None,
+):
+    """Cut a surface by a plane, keep a side and cap it."""
+    out, report = _clip_op(
+        _load(input_path, input_format),
+        origin,
+        normal,
+        keep=keep,
+        cap=bool(cap),
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_profile_solid(
+    input_path,
+    output_path,
+    features,
+    step_path=None,
+    scan_path=None,
+    provider="",
+    deflection=0.0,
+    input_format=None,
+    output_format=None,
+):
+    """A sketch extruded or revolved into a solid through a CAD provider."""
+    step = str(_resolve(step_path, for_write=True)) if step_path else None
+    scan = _load(scan_path, input_format) if scan_path else None
+    out, report = _profile_solid_op(
+        _load(input_path, input_format),
+        features,
+        step,
+        provider=provider,
+        deflection=float(deflection),
+        scan=scan,
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    report["providers"] = _profile_solid_providers()
+    if step:
+        report["step_path"] = step
+    return _json_safe(report)
+
+
+def tool_constrain_primitives(
+    input_path,
+    output_path,
+    face_tolerance=0.0,
+    angle_tolerance=-1.0,
+    distance_tolerance=-1.0,
+    min_fraction=-1.0,
+    force=None,
+    forbid=None,
+    input_format=None,
+    output_format=None,
+):
+    """Fit related primitives of a fitted skin together under control."""
+    out, report = _constrain_primitives_op(
+        _load(input_path, input_format),
+        face_tolerance=float(face_tolerance),
+        angle_tolerance=float(angle_tolerance),
+        distance_tolerance=float(distance_tolerance),
+        min_fraction=float(min_fraction),
+        force=[tuple(r) for r in force or []],
+        forbid=[tuple(r) for r in forbid or []],
+        return_report=True,
+    )
+    report["unmet"] = [list(u) for u in report["unmet"]]
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_face_support(
+    solid_path,
+    scan_path,
+    output_path=None,
+    tolerance=0.0,
+    measured_share=0.9,
+    inferred_share=0.1,
+    hole_data="repair:hole",
+    input_format=None,
+    output_format=None,
+):
+    """The scan's support of each face of a fit_cad solid."""
+    out, report = _face_support_op(
+        _load(solid_path, input_format),
+        _load(scan_path, input_format),
+        tolerance=float(tolerance),
+        measured_share=float(measured_share),
+        inferred_share=float(inferred_share),
+        hole_data=hole_data,
+        return_report=True,
+    )
+    if output_path:
+        report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_fit_cad_iterate(
+    input_path,
+    output_path,
+    step_path=None,
+    part_class="any",
+    target_within=0.0,
+    target_explained=0.0,
+    segment_tolerance=0.0,
+    fit_tolerance=0.0,
+    max_rounds=4,
+    worst_faces=3,
+    refine_factor=0.25,
+    backend="auto",
+    input_format=None,
+    output_format=None,
+):
+    """Segment, fit and build a solid in rounds towards a target."""
+    step = str(_resolve(step_path, for_write=True)) if step_path else None
+    out, report = _fit_cad_iterate_op(
+        _load(input_path, input_format),
+        step,
+        part_class=part_class,
+        target_within=float(target_within),
+        target_explained=float(target_explained),
+        segment_tolerance=float(segment_tolerance),
+        fit_tolerance=float(fit_tolerance),
+        max_rounds=int(max_rounds),
+        worst_faces=int(worst_faces),
+        refine_factor=float(refine_factor),
+        backend=backend,
+        return_report=True,
+    )
+    report.pop("skin")
+    report["output_path"] = _store(out, output_path, output_format)
+    if step:
+        report["step_path"] = step
+    return _json_safe(report)
+
+
+def tool_offset_surface(
+    input_path,
+    output_path,
+    distance,
+    smooth_iterations=0,
+    input_format=None,
+    output_format=None,
+):
+    """Move a surface's points along their offset directions."""
+    out, report = _offset_surface_op(
+        _load(input_path, input_format),
+        float(distance),
+        smooth_iterations=int(smooth_iterations),
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_thicken(
+    input_path,
+    output_path,
+    thickness,
+    side="inward",
+    smooth_iterations=0,
+    input_format=None,
+    output_format=None,
+):
+    """Turn a surface into a closed shell of a thickness."""
+    out, report = _thicken_op(
+        _load(input_path, input_format),
+        float(thickness),
+        side=side,
+        smooth_iterations=int(smooth_iterations),
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_hollow(
+    input_path,
+    output_path,
+    wall,
+    smooth_iterations=0,
+    input_format=None,
+    output_format=None,
+):
+    """Give a closed surface an inner wall."""
+    out, report = _hollow_op(
+        _load(input_path, input_format),
+        float(wall),
+        smooth_iterations=int(smooth_iterations),
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_measure(
+    input_path, spec, output_path=None, input_format=None, output_format=None
+):
+    """Elements, dimensions and GD&T tolerances of a scan by a spec."""
+    if isinstance(spec, str) and not spec.lstrip().startswith("{"):
+        spec = str(_resolve(spec, must_exist=True))
+    out, report = _measure_op(_load(input_path, input_format), spec)
+    if output_path:
+        report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_align_datums(
+    input_path,
+    output_path,
+    primary,
+    secondary,
+    origin=None,
+    input_format=None,
+    output_format=None,
+):
+    """The 3-2-1 datum alignment of a measured mesh."""
+    out, matrix = _align_datums_op(
+        _load(input_path, input_format), primary, secondary, origin
+    )
+    return _json_safe(
+        {
+            "matrix": matrix.tolist(),
+            "output_path": _store(out, output_path, output_format),
+        }
+    )
+
+
+def tool_write_step_elements(
+    input_path,
+    output_path,
+    input_format=None,
+    patches=None,
+    segments=64,
+):
+    """Fitted primitives as exact STEP geometry (planes, balls, cylinders, ...)."""
+    out = _resolve(output_path, for_write=True)
+    report = _write_step_elements_op(
+        out,
+        _load(input_path, input_format),
+        patches=None if patches is None else [int(p) for p in patches],
+        segments=int(segments),
+    )
+    _cache_invalidate(out)
+    report["output_path"] = str(out)
+    return _json_safe(report)
+
+
+def tool_silhouette(
+    input_path,
+    output_path=None,
+    input_format=None,
+    output_format=None,
+    normal=None,
+    clearance=0.0,
+    round_angle=180.0,
+    arc_segments=64,
+    extrude=False,
+    region=None,
+    merge_tolerance=1e-9,
+):
+    """The outline of a part along a direction, optionally offset or a prism."""
+    out, report = _silhouette_op(
+        _load(input_path, input_format),
+        (0.0, 0.0, 1.0) if normal is None else normal,
+        clearance=float(clearance),
+        round_angle=float(round_angle),
+        arc_segments=int(arc_segments),
+        extrude=bool(extrude),
+        region=region,
+        merge_tolerance=float(merge_tolerance),
+        return_report=True,
+    )
+    if output_path:
+        report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_fit_curves(
+    input_path,
+    output_path=None,
+    input_format=None,
+    output_format=None,
+    tolerance=0.0,
+    snap_angle=0.0,
+    normal=None,
+    min_arc_points=4,
+    min_arc_sweep=5.0,
+):
+    """Lines, arcs and circles from a chained line mesh (a sketch)."""
+    out, report = _fit_curves_op(
+        _load(input_path, input_format),
+        tolerance=float(tolerance),
+        snap_angle=float(snap_angle),
+        normal=normal,
+        min_arc_points=int(min_arc_points),
+        min_arc_sweep=float(min_arc_sweep),
+        return_report=True,
+    )
+    if output_path:
+        report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_sections(
+    input_path,
+    output_path,
+    offsets,
+    input_format=None,
+    output_format=None,
+    direction=None,
+    min_length=0.0,
+    record_parent_ids=False,
+):
+    """Chained line sections of a surface at parallel planes."""
+    if direction is None:
+        direction = (0.0, 0.0, 1.0)
+    return _run_op(_sections_op, locals(), report=False)
 
 
 def tool_isosurface(
@@ -3239,6 +3800,13 @@ def tool_fit_primitives(
     min_inlier_fraction=0.9,
     types=None,
     max_iterations=50,
+    region=None,
+    seeds=None,
+    feature_angle=30.0,
+    rim_angle=15.0,
+    output_region="fit:feature",
+    used_points="auto",
+    criterion="least_squares",
 ):
     """Fit a plane, sphere, cylinder, cone or torus to each patch of a surface;
     written with cell data fit:type / fit:rms / fit:max and per-patch field
@@ -3255,6 +3823,13 @@ def tool_fit_primitives(
         types=tuple(types) if types else TYPES[1:],
         max_iterations=max_iterations,
         return_report=True,
+        region=region,
+        seeds=seeds,
+        feature_angle=feature_angle,
+        rim_angle=rim_angle,
+        output_region=output_region,
+        used_points=used_points,
+        criterion=criterion,
     )
     fd = out.field_data
     patches = []
@@ -3268,13 +3843,23 @@ def tool_fit_primitives(
                 "rms": float(fd["fit:patch_rms"][i]),
                 "max": float(fd["fit:patch_max"][i]),
                 "fraction": float(fd["fit:patch_fraction"][i]),
+                "form_error": float(fd["fit:patch_form_error"][i]),
+                "diameter_min": float(fd["fit:patch_diameter_min"][i]),
+                "diameter_max": float(fd["fit:patch_diameter_max"][i]),
+                "length": float(fd["fit:patch_length"][i]),
+                "arc_deg": float(fd["fit:patch_arc"][i]),
+                "extent": [float(x) for x in fd["fit:patch_extent"][i]],
+                "sigma": float(fd["fit:patch_sigma"][i]),
+                "num_used": int(fd["fit:patch_num_used"][i]),
+                "num_rejected": int(fd["fit:patch_num_rejected"][i]),
             }
         )
     return _result(
         _store(out, output_path, output_format),
         out,
         patches=patches,
-        **{k: int(v) for k, v in report.items()},
+        warnings=list(report["warnings"]),
+        **{k: int(v) for k, v in report.items() if k != "warnings"},
     )
 
 
@@ -3871,6 +4456,7 @@ def tool_repair(
     max_hole_edges=10,
     weld_tolerance=0.0,
     record_provenance=False,
+    fill_style="fan",
 ):
     """Repair a surface mesh's orientation, holes and pinched vertices -- the
     three defects `clean` does not touch. Triangles are rewound so neighbours
@@ -3890,6 +4476,7 @@ def tool_repair(
         weld_tolerance=weld_tolerance,
         record_provenance=record_provenance,
         return_report=True,
+        fill_style=fill_style,
     )
     return _result(
         _store(out, output_path, output_format),
@@ -4122,9 +4709,18 @@ def tool_register_rigid(
     source_format=None,
     target_format=None,
     output_format=None,
+    initial="identity",
+    symmetric_check=False,
+    source_region="",
+    target_region="",
+    adaptive_trim=0.0,
 ):
     """The rigid motion laying one mesh or point cloud onto another (ICP); with
     output_path, also the moved source."""
+    if initial not in ("identity", "auto"):
+        raise ValueError(
+            f"meshio++: register_rigid: initial must be 'identity' or 'auto', not {initial!r}"
+        )
     source = _load(source_path, source_format)
     matrix, report = register_rigid(
         source,
@@ -4133,6 +4729,11 @@ def tool_register_rigid(
         max_iterations=int(max_iterations),
         tolerance=float(tolerance),
         max_distance=float(max_distance),
+        initial="auto" if initial == "auto" else None,
+        symmetric_check=bool(symmetric_check),
+        source_region=source_region,
+        target_region=target_region,
+        adaptive_trim=float(adaptive_trim),
     )
     out = {"matrix": [[float(v) for v in row] for row in matrix]}
     out.update(report)
@@ -4140,6 +4741,80 @@ def tool_register_rigid(
         moved = transform(source, matrix=matrix, rotate_vector_data=bool(rotate_data))
         out["output_path"] = _store(moved, output_path, output_format)
     return _json_safe(out)
+
+
+def tool_register_landmarks(
+    source_points,
+    target_points,
+    weights=None,
+    input_path=None,
+    output_path=None,
+    input_format=None,
+    output_format=None,
+    rotate_data=False,
+):
+    """The rigid motion laying picked points onto their targets (the weighted
+    Horn solve); with input_path and output_path, also the moved mesh."""
+    matrix, report = register_landmarks(source_points, target_points, weights)
+    out = {"matrix": [[float(v) for v in row] for row in matrix]}
+    out.update(report)
+    if input_path and output_path:
+        moved = transform(
+            _load(input_path, input_format),
+            matrix=matrix,
+            rotate_vector_data=bool(rotate_data),
+        )
+        out["output_path"] = _store(moved, output_path, output_format)
+    return _json_safe(out)
+
+
+def tool_find_symmetry_plane(
+    input_path,
+    input_format=None,
+    seed_origin=None,
+    seed_normal=None,
+    tolerance=0.0,
+    min_share=0.9,
+    max_samples=4000,
+):
+    """The plane a mesh or point cloud is most nearly symmetric about."""
+    if (seed_origin is None) != (seed_normal is None):
+        raise ValueError(
+            "meshio++: find_symmetry_plane: seed_origin and seed_normal go together"
+        )
+    seed = None if seed_origin is None else (seed_origin, seed_normal)
+    return _json_safe(
+        find_symmetry_plane(
+            _load(input_path, input_format),
+            seed=seed,
+            tolerance=float(tolerance),
+            min_share=float(min_share),
+            max_samples=int(max_samples),
+        )
+    )
+
+
+def tool_auto_align(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    angle_tolerance=10.0,
+    subdivisions=3,
+    region="",
+    rotate_vector_data=False,
+):
+    """Pose a scan on its largest flat face, or a cylinder on its axis."""
+    out, report = auto_align(
+        _load(input_path, input_format),
+        angle_tolerance=float(angle_tolerance),
+        subdivisions=int(subdivisions),
+        region=region,
+        rotate_vector_data=bool(rotate_vector_data),
+        return_report=True,
+    )
+    report["matrix"] = [[float(v) for v in row] for row in report["matrix"]]
+    return _json_safe(_result(_store(out, output_path, output_format), out, **report))
 
 
 def tool_estimate_normals(
@@ -4629,6 +5304,9 @@ def tool_decimate(
     preserve_boundary=True,
     preserve_features=True,
     feature_angle=30.0,
+    max_deviation=None,
+    coverage=0.999,
+    max_faces=None,
 ):
     """Reduce a surface mesh's face count (exactly one stopping criterion)."""
     return _run_op(decimate, locals())
@@ -5303,11 +5981,13 @@ def tool_mirror(
     weld=True,
     tolerance=1e-9,
     reflect_vector_data=False,
+    plane=None,
 ):
     """Reflect a mesh across a plane with every cell right side out. Returns
     num_flipped_cells, num_points_on_plane, num_dropped_cells,
-    num_dropped_sides and warnings alongside the mesh summary."""
-    return _run_op(mirror, locals())
+    num_dropped_sides and warnings alongside the mesh summary; with
+    plane="auto" the mesh's own symmetry plane, reported as plane."""
+    return _json_safe(_run_op(mirror, locals()))
 
 
 def tool_tetrahedralize(
@@ -6890,6 +7570,98 @@ def tool_render_mesh(
 # --------------------------------------------------------------------------- #
 # name -> {"fn", "wraps" (public meshioplusplus API names this tool covers,
 # consumed by the parity-guard test), "gated" (extra name, or None)}.
+# --------------------------------------------------------------------------- #
+# Workflow prompts (roadmap 7.9.2): the documented order of the tools, the    #
+# defaults per part class and the report fields to check. Every tool a       #
+# prompt names in backticks is in TOOL_REGISTRY (test_mcp checks it).        #
+# --------------------------------------------------------------------------- #
+_PART_CLASS_DEFAULTS = {
+    "analytic": (0.90, 1e-3),
+    "cast": (0.85, 2e-3),
+    "freeform": (0.75, 4e-3),
+}
+
+
+def _part_class_line(part_class):
+    target, tol = _PART_CLASS_DEFAULTS.get(part_class, _PART_CLASS_DEFAULTS["analytic"])
+    return (
+        f"Part class `{part_class}`: aim for {target:.0%} of the scan within "
+        f"tolerance; fit and segment at {tol:g} of the bounding-box diagonal."
+    )
+
+
+def prompt_measure_scan(
+    scan_path="scan.stl", spec_path="inspection.json", part_class="analytic"
+):
+    """The 'measure this scan' workflow, as text."""
+    return f"""Measure the scan `{scan_path}` against its drawing, step by step. Use the
+meshio++ tools in this order and check each report before going on.
+
+1. `info` on {scan_path}: units, cell types, size. A scan in millimetres
+   reads in millimetres; nothing below rescales it.
+2. `repair` (fill_style "curved" for scan holes; record_provenance true so
+   the fills are known later), then `remove_islands` for the scanner's
+   crumbs. Check quality_after.watertight and num_removed.
+3. Align: `auto_align` when there is no nominal (it lays the part on its
+   largest flat face), `register_rigid` (initial "auto") against a CAD mesh,
+   or `register_landmarks` from picked pairs. Check rms and share.
+4. `segment` (method "primitive") then `fit_primitives` (criterion
+   "minimum_zone" for form tolerances). Check each patch's type, rms and
+   form_error; a patch reported "none" is not a primitive, do not force one.
+5. `measure` with the spec {spec_path}: elements (fit a plane, cylinder,
+   sphere from a region or seed points; construct axes, intersections),
+   dimensions with nominal and tolerance, and the GD&T tolerances. Read
+   num_fail, then each dimension's and tolerance's value and pass.
+6. `align_datums` lays the part on its datums A, B, C (the 3-2-1 frame a
+   CMM uses) when the report must be in the part's frame.
+7. `deviation` against the nominal (or against an element), then
+   `deviation_regions` for the areas beyond tolerance and `colorize` for the
+   colour map. Check share_within, the percentiles and suggested_range.
+8. `thickness` (method "sphere" or "cone" on a scan) where walls matter;
+   check p2, the thinnest reading.
+
+{_part_class_line(part_class)}
+Report every value with its unit, the PASS/FAIL table from `measure`, and
+what could not be measured (an element whose fit was refused, a tolerance
+with no datum)."""
+
+
+def prompt_reverse_engineer_scan(
+    scan_path="scan.stl", step_path="part.step", part_class="analytic"
+):
+    """The 'reverse-engineer this scan' workflow, as text."""
+    target, tol = _PART_CLASS_DEFAULTS.get(part_class, _PART_CLASS_DEFAULTS["analytic"])
+    return f"""Reverse-engineer the scan `{scan_path}` into a CAD solid `{step_path}`, step by
+step. Use the meshio++ tools in this order and check each report.
+
+1. `info` on {scan_path}, then `repair` (record_provenance true: its fills
+   are marked repair:hole, so `face_support` later knows them) and
+   `remove_islands`. The skin must be closed and consistently wound
+   (quality_after.watertight) before any fit.
+2. `auto_align` (or `find_symmetry_plane` for a symmetric part) so the part
+   sits in a sensible frame; `decimate` with max_deviation only if the scan
+   is too heavy to fit, never coarser than the tolerance.
+3. `fit_cad_iterate` with part_class "{part_class}" (target {target:.0%},
+   tolerance {tol:g} of the diagonal) and step_path {step_path}: it runs
+   `segment`, `fit_primitives` and `fit_cad` in rounds and re-segments the
+   worst faces. Check rounds (share_within and explained rising),
+   stop_reason and target_met.
+4. `face_support` on the solid against the scan: faces "inferred" were
+   guessed (hidden, or closed by repair), "partial" half measured. Say which.
+5. If related primitives should share an axis or be perpendicular,
+   `constrain_primitives` on the fitted skin (force or forbid relations by
+   patch label), then `fit_cad` again with constrain_primitives false.
+6. For prismatic or turned regions, `sections` and `fit_curves` give a
+   sketch of lines, arcs and circles; `write_step_elements` exports fitted
+   planes, cylinders and spheres as exact solids.
+7. `deviation` of the scan against the solid's re-mesh: share_within and
+   the percentiles are the honest verdict.
+
+Report the faces by type, the share within tolerance, the inferred faces
+and the deviation; a face left as facets is a region no primitive or
+freeform surface explained within tolerance, not an error to hide."""
+
+
 TOOL_REGISTRY = OrderedDict(
     [
         (
@@ -6968,6 +7740,74 @@ TOOL_REGISTRY = OrderedDict(
         ("clean", {"fn": tool_clean, "wraps": ("clean",), "gated": None}),
         ("crop", {"fn": tool_crop, "wraps": ("crop",), "gated": None}),
         ("slice", {"fn": tool_slice, "wraps": ("slice",), "gated": None}),
+        ("sections", {"fn": tool_sections, "wraps": ("sections",), "gated": None}),
+        (
+            "remove_islands",
+            {"fn": tool_remove_islands, "wraps": ("remove_islands",), "gated": None},
+        ),
+        (
+            "flip_normals",
+            {"fn": tool_flip_normals, "wraps": ("flip_normals",), "gated": None},
+        ),
+        ("clip", {"fn": tool_clip, "wraps": ("clip",), "gated": None}),
+        (
+            "profile_solid",
+            {
+                "fn": tool_profile_solid,
+                "wraps": (
+                    "profile_solid",
+                    "profile_solid_providers",
+                    "profile_features_from_text",
+                ),
+                "gated": None,
+            },
+        ),
+        (
+            "constrain_primitives",
+            {
+                "fn": tool_constrain_primitives,
+                "wraps": ("constrain_primitives",),
+                "gated": None,
+            },
+        ),
+        (
+            "face_support",
+            {"fn": tool_face_support, "wraps": ("face_support",), "gated": None},
+        ),
+        (
+            "fit_cad_iterate",
+            {"fn": tool_fit_cad_iterate, "wraps": ("fit_cad_iterate",), "gated": None},
+        ),
+        (
+            "offset_surface",
+            {"fn": tool_offset_surface, "wraps": ("offset_surface",), "gated": None},
+        ),
+        ("thicken", {"fn": tool_thicken, "wraps": ("thicken",), "gated": None}),
+        ("hollow", {"fn": tool_hollow, "wraps": ("hollow",), "gated": None}),
+        (
+            "measure",
+            {"fn": tool_measure, "wraps": ("measure", "measure_table"), "gated": None},
+        ),
+        (
+            "align_datums",
+            {"fn": tool_align_datums, "wraps": ("align_datums",), "gated": None},
+        ),
+        (
+            "write_step_elements",
+            {
+                "fn": tool_write_step_elements,
+                "wraps": ("write_step_elements",),
+                "gated": None,
+            },
+        ),
+        (
+            "silhouette",
+            {"fn": tool_silhouette, "wraps": ("silhouette",), "gated": None},
+        ),
+        (
+            "fit_curves",
+            {"fn": tool_fit_curves, "wraps": ("fit_curves",), "gated": None},
+        ),
         (
             "isosurface",
             {"fn": tool_isosurface, "wraps": ("isosurface",), "gated": None},
@@ -7098,6 +7938,26 @@ TOOL_REGISTRY = OrderedDict(
             "thickness",
             {"fn": tool_thickness, "wraps": ("thickness",), "gated": None},
         ),
+        (
+            "deviation",
+            {"fn": tool_deviation, "wraps": ("deviation",), "gated": None},
+        ),
+        (
+            "deviation_regions",
+            {
+                "fn": tool_deviation_regions,
+                "wraps": ("deviation_regions",),
+                "gated": None,
+            },
+        ),
+        (
+            "exaggerate",
+            {"fn": tool_exaggerate, "wraps": ("exaggerate",), "gated": None},
+        ),
+        (
+            "colorize",
+            {"fn": tool_colorize, "wraps": ("colorize",), "gated": None},
+        ),
         ("repair", {"fn": tool_repair, "wraps": ("repair",), "gated": None}),
         (
             "shrinkwrap",
@@ -7146,6 +8006,26 @@ TOOL_REGISTRY = OrderedDict(
                 "wraps": ("register_rigid",),
                 "gated": None,
             },
+        ),
+        (
+            "register_landmarks",
+            {
+                "fn": tool_register_landmarks,
+                "wraps": ("register_landmarks",),
+                "gated": None,
+            },
+        ),
+        (
+            "find_symmetry_plane",
+            {
+                "fn": tool_find_symmetry_plane,
+                "wraps": ("find_symmetry_plane",),
+                "gated": None,
+            },
+        ),
+        (
+            "auto_align",
+            {"fn": tool_auto_align, "wraps": ("auto_align",), "gated": None},
         ),
         (
             "estimate_normals",

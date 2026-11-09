@@ -180,6 +180,42 @@
           </details>
         </section>
 
+        <section class="sb-section" id="features-section" hidden>
+          <h2 id="h-features">Features</h2>
+          <p class="hint">Turn on <em>Fit</em> in the toolbar (G), then click a face, a bore or a ball: a primitive grows from the click and is fitted to it, its outliers beyond three sigma left out.</p>
+          <label class="row">
+            <span>Primitive</span>
+            <select id="feat-type">
+              <option value="auto" selected>auto</option>
+              <option value="plane">plane</option>
+              <option value="cylinder">cylinder</option>
+              <option value="sphere">sphere</option>
+              <option value="cone">cone</option>
+            </select>
+          </label>
+          <label class="row"><span>Tolerance</span><input type="number" id="feat-tol" value="0.002" min="0" step="0.001" title="A share of the surface's diagonal" /></label>
+          <div id="feat-status"></div>
+          <div id="feat-list"></div>
+          <div id="feat-relation" class="sel-stats"></div>
+          <div class="btn-row"><button type="button" id="feat-clear">Clear</button></div>
+          <details class="op" id="feat-views">
+            <summary>Deviation and thickness</summary>
+            <label class="row"><span>Tolerance ±</span><input type="number" id="feat-dev-tol" value="0.01" min="0" step="0.001" /></label>
+            <div class="btn-row"><button type="button" id="feat-deviation" disabled>Deviation from the feature</button></div>
+            <label class="row">
+              <span>Thickness</span>
+              <select id="feat-thk-method">
+                <option value="ray">ray</option>
+                <option value="sphere" selected>sphere</option>
+                <option value="cone">cone</option>
+              </select>
+            </label>
+            <div class="btn-row"><button type="button" id="feat-thickness">Measure thickness</button></div>
+            <div id="feat-view-result" class="sel-stats"></div>
+            <p class="hint">Both are added to the operations as steps (undo removes them) and colour the surface by their field; the Statistics histogram follows.</p>
+          </details>
+        </section>
+
         <section class="sb-section" id="stats-section" hidden>
           <h2 id="h-stats">Statistics</h2>
           <label class="row"><span>Array</span><select id="stats-array"></select></label>
@@ -581,6 +617,7 @@
           <button type="button" id="tool-measure" aria-pressed="false" title="Measure the distance between two points (M)">
             Measure
           </button>
+          <button type="button" id="tool-fit" aria-pressed="false" title="Fit a feature where you click (G)">Fit</button>
           <button
             type="button"
             id="tool-inspect"

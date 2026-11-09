@@ -241,7 +241,10 @@ struct _CDecimateOpts
     feature_angle::Cdouble
     frozen::Ptr{Int64}
     num_frozen::Int64
-    reserved::NTuple{4,Int64}
+    max_deviation::Cdouble  # roadmap 7.8.5; 0 = unset
+    coverage::Cdouble       # 0 = 0.999
+    max_faces::Int64        # 0 = unset
+    reserved::NTuple{1,Int64}
 end
 
 """
@@ -786,7 +789,23 @@ struct _CFitPrimitivesReport
     num_cone::Int64
     num_torus::Int64
     num_unfitted::Int64
-    reserved::NTuple{5,Int64}
+    num_feature_cells::Int64
+    num_warnings::Int64
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_fit_primitives_ex_opts` (roadmap 7.1)."""
+struct _CFitPrimitivesExOpts
+    base::_CFitPrimitivesOpts
+    region::Cstring
+    seeds::Ptr{Cdouble}
+    num_seeds::Int64
+    feature_angle::Cdouble
+    rim_angle::Cdouble
+    output_region::Cstring
+    used_points::Int32
+    criterion::Int32
+    reserved::NTuple{6,Int64}
 end
 
 """Mirror of C `mio_iga_opts`. ABI; build through [`iga_refine`](@ref) and
@@ -1054,13 +1073,17 @@ struct _CThicknessOpts
     threshold::Cdouble
     direction::Int32
     attach::Int32
-    reserved::NTuple{4,Int64}
+    method::Int32
+    two_sided::Int32
+    cone_angle::Cdouble
+    cone_rays::Int64
+    max_normal_deviation::Cdouble
 end
 
 """Mirror of C `mio_thickness_report`."""
 struct _CThicknessReport
     direction::Int32
-    reserved32::Int32
+    method::Int32
     num_cells::Int64
     num_hit::Int64
     num_missed::Int64
@@ -1072,6 +1095,115 @@ struct _CThicknessReport
     min_point::NTuple{3,Cdouble}
     max_distance::Cdouble
     num_warnings::Int64
+    p2::Cdouble
+    p95::Cdouble
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_deviation_opts` (roadmap 7.4)."""
+struct _CDeviationOpts
+    tolerance::Cdouble
+    bins::Int64
+    range_min::Cdouble
+    range_max::Cdouble
+    max_normal_angle::Cdouble
+    reference_region::Cstring
+    attach::Int32
+    register_first::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_deviation_report`."""
+struct _CDeviationReport
+    num_points::Int64
+    num_measured::Int64
+    num_outside_range::Int64
+    num_without_normal::Int64
+    min::Cdouble
+    max::Cdouble
+    mean::Cdouble
+    rms::Cdouble
+    sigma::Cdouble
+    percentiles::NTuple{5,Cdouble}
+    share_within::Cdouble
+    suggested_range::Cdouble
+    num_bins::Int64
+    num_warnings::Int64
+    registered::Int64
+    registration_rms::Cdouble
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_deviation_regions_opts` (roadmap 7.4.3)."""
+struct _CDeviationRegionsOpts
+    tolerance::Cdouble
+    min_area::Cdouble
+    field::Cstring
+    prefix::Cstring
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_deviation_regions_report`."""
+struct _CDeviationRegionsReport
+    num_regions::Int64
+    num_excess::Int64
+    num_missing::Int64
+    num_dropped::Int64
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_deviation_region_info`."""
+struct _CDeviationRegionInfo
+    sign::Int64
+    num_cells::Int64
+    area::Cdouble
+    extreme::Cdouble
+    mean::Cdouble
+    volume::Cdouble
+    centroid::NTuple{3,Cdouble}
+    bounds::NTuple{6,Cdouble}
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_exaggerate_opts` (roadmap 7.4.4)."""
+struct _CExaggerateOpts
+    field::Cstring
+    scale::Cdouble
+    clamp::Cdouble
+    smooth_fraction::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_exaggerate_report`."""
+struct _CExaggerateReport
+    clamp::Cdouble
+    radius::Cdouble
+    num_moved::Int64
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_colorize_opts` (roadmap 7.4.4)."""
+struct _CColorizeOpts
+    field::Cstring
+    cmap::Cstring
+    vmin::Cdouble
+    vmax::Cdouble
+    nan_color::Cstring
+    steps::Int64
+    component::Int64
+    symmetric::Int32
+    reserved32::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_colorize_report`."""
+struct _CColorizeReport
+    vmin::Cdouble
+    vmax::Cdouble
+    location::Int32
+    reserved32::Int32
     reserved::NTuple{4,Int64}
 end
 
@@ -1741,7 +1873,7 @@ struct _CRepairOpts
     fill_holes::Int32
     split_non_manifold::Int32
     record_provenance::Int32
-    reserved_pad::Int32
+    fill_style::Int32  # roadmap 7.8.6: 0 fan, 1 flat, 2 curved
     max_hole_edges::Int64
     weld_tolerance::Cdouble
     reserved::NTuple{5,Int64}
@@ -1925,6 +2057,294 @@ struct _CRegistrationReport
     num_pairs::Int64
     converged::Int32
     reserved_pad::Int32
+    num_rejected::Int64
+    chosen_candidate::Int64
+    num_candidates::Int64
+    num_warnings::Int64
+end
+
+"""Mirror of C `mio_registration_ex_opts` (roadmap 7.3)."""
+struct _CRegistrationExOpts
+    base::_CRegistrationOpts
+    initial_mode::Int32
+    symmetric_check::Int32
+    symmetric_tolerance::Cdouble
+    adaptive_trim::Cdouble
+    source_region::Cstring
+    target_region::Cstring
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_fit_curves_opts` (roadmap 7.6.2)."""
+struct _CFitCurvesOpts
+    tolerance::Cdouble
+    snap_angle::Cdouble
+    normal::NTuple{3,Cdouble}
+    min_arc_points::Int64
+    min_arc_sweep::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_fit_curves_report`."""
+struct _CFitCurvesReport
+    num_pieces::Int64
+    num_lines::Int64
+    num_arcs::Int64
+    num_circles::Int64
+    num_frames::Int64
+    max_residual::Cdouble
+    tolerance::Cdouble
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_silhouette_opts` (roadmap 7.6.3)."""
+struct _CSilhouetteOpts
+    normal::NTuple{3,Cdouble}
+    clearance::Cdouble
+    round_angle::Cdouble
+    arc_segments::Int64
+    extrude::Int32
+    reserved32::Int32
+    merge_tolerance::Cdouble
+    region::Cstring
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_silhouette_report`."""
+struct _CSilhouetteReport
+    num_loops::Int64
+    num_outer::Int64
+    num_holes::Int64
+    num_triangles::Int64
+    area::Cdouble
+    perimeter::Cdouble
+    min_height::Cdouble
+    max_height::Cdouble
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_clip_report` (roadmap 7.8.3)."""
+struct _CClipReport
+    num_kept::Int64
+    num_split::Int64
+    num_cap_triangles::Int64
+    num_loops::Int64
+    num_open_chains::Int64
+    num_warnings::Int64
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_profile_feature` (roadmap 7.7.4)."""
+struct _CProfileFeature
+    kind::Int32
+    symmetric::Int32
+    distance::Cdouble
+    angle_deg::Cdouble
+    radius::Cdouble
+    axis_origin::NTuple{3,Cdouble}
+    axis_direction::NTuple{3,Cdouble}
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_profile_solid_report`."""
+struct _CProfileSolidReport
+    volume::Cdouble
+    area::Cdouble
+    num_faces::Int64
+    valid::Int32
+    num_warnings::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_constrain_primitives_opts` (roadmap 7.7.3)."""
+struct _CConstrainPrimitivesOpts
+    face_tolerance::Cdouble
+    angle_tolerance_deg::Cdouble
+    distance_tolerance::Cdouble
+    min_fraction::Cdouble
+    force::Ptr{Int64}
+    num_force::Int64
+    forbid::Ptr{Int64}
+    num_forbid::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_constrain_primitives_report`."""
+struct _CConstrainPrimitivesReport
+    num_constrained::Int64
+    num_groups::Int64
+    num_relations::Int64
+    num_unmet::Int64
+    face_tolerance::Cdouble
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_face_support_opts` (roadmap 7.7.1)."""
+struct _CFaceSupportOpts
+    tolerance::Cdouble
+    measured_share::Cdouble
+    inferred_share::Cdouble
+    hole_data::Cstring
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_face_support_report`."""
+struct _CFaceSupportReport
+    num_measured::Int64
+    num_partial::Int64
+    num_inferred::Int64
+    num_faces::Int64
+    share_within::Cdouble
+    tolerance::Cdouble
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_fit_cad_iterate_opts` (roadmap 7.7.2)."""
+struct _CFitCadIterateOpts
+    segment_tolerance::Cdouble
+    fit_tolerance::Cdouble
+    target_within::Cdouble
+    target_explained::Cdouble
+    refine_factor::Cdouble
+    part_class::Int32
+    backend::Int32
+    max_rounds::Int64
+    worst_faces::Int64
+    min_patch_cells::Int64
+    reserved::NTuple{5,Int64}
+end
+
+"""Mirror of C `mio_fit_cad_iterate_report`."""
+struct _CFitCadIterateReport
+    num_rounds::Int64
+    best_round::Int64
+    target_met::Int32
+    stop_reason::Int32
+    target_within::Cdouble
+    share_within::Cdouble
+    explained::Cdouble
+    hausdorff_max::Cdouble
+    num_faces::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_offset_report` (roadmap 7.8.4)."""
+struct _COffsetReport
+    num_not_visible::Int64
+    num_clamped::Int64
+    num_folded::Int64
+    num_rim_quads::Int64
+    max_move::Cdouble
+    num_warnings::Int64
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_remove_islands_opts` (roadmap 7.8.1)."""
+struct _CRemoveIslandsOpts
+    connectivity::Int32
+    relative::Int32
+    min_diagonal::Cdouble
+    min_area::Cdouble
+    min_cells::Int64
+    dry_run::Int32
+    reserved32::Int32
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_remove_islands_report`."""
+struct _CRemoveIslandsReport
+    num_components::Int64
+    num_removed::Int64
+    num_cells_removed::Int64
+    num_points_removed::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_measure_report` (roadmap 7.2)."""
+struct _CMeasureReport
+    num_elements::Int64
+    num_dimensions::Int64
+    num_tolerances::Int64
+    num_fail::Int64
+    num_warnings::Int64
+    reserved::NTuple{5,Int64}
+end
+
+"""Mirror of C `mio_step_elements_report` (roadmap 7.6.5)."""
+struct _CStepElementsReport
+    num_planes::Int64
+    num_spheres::Int64
+    num_cylinders::Int64
+    num_cones::Int64
+    num_tori::Int64
+    num_skipped::Int64
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_sketch_piece`."""
+struct _CSketchPiece
+    type::Int32
+    reserved32::Int32
+    start::NTuple{2,Cdouble}
+    stop::NTuple{2,Cdouble}
+    centre::NTuple{2,Cdouble}
+    radius::Cdouble
+    sweep::Cdouble
+    residual::Cdouble
+    num_points::Int64
+    chain::Int64
+    frame::Int64
+end
+
+"""Mirror of C `mio_symmetry_plane_opts` (roadmap 7.3.6)."""
+struct _CSymmetryPlaneOpts
+    seed_origin::NTuple{3,Cdouble}
+    seed_normal::NTuple{3,Cdouble}
+    tolerance::Cdouble
+    min_share::Cdouble
+    max_samples::Int64
+    max_iterations::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_symmetry_plane_report`."""
+struct _CSymmetryPlaneReport
+    origin::NTuple{3,Cdouble}
+    normal::NTuple{3,Cdouble}
+    rms::Cdouble
+    share::Cdouble
+    tolerance::Cdouble
+    chosen_candidate::Int64
+    num_candidates::Int64
+    num_warnings::Int64
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_auto_align_opts` (roadmap 7.3.5)."""
+struct _CAutoAlignOpts
+    angle_tolerance::Cdouble
+    subdivisions::Int64
+    region::Cstring
+    rotate_vector_data::Int32
+    reserved32::Int32
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_auto_align_report`."""
+struct _CAutoAlignReport
+    matrix::NTuple{16,Cdouble}
+    mode::Int32
+    reserved32::Int32
+    primary::NTuple{3,Cdouble}
+    secondary::NTuple{3,Cdouble}
+    share::Cdouble
+    face_share::Cdouble
+    axis_share::Cdouble
+    opening_area::Cdouble
+    num_warnings::Int64
     reserved::NTuple{4,Int64}
 end
 
@@ -2157,6 +2577,9 @@ function _check_abi_layout()
     sizeof(_CFitPrimitivesOpts) == 88 ||
         error("meshio++: mio_fit_primitives_opts layout mismatch " *
               "($(sizeof(_CFitPrimitivesOpts)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CFitPrimitivesExOpts) == 192 &&
+                                 fieldoffset(_CFitPrimitivesExOpts, 8) == 136)) ||
+        error("meshio++: mio_fit_primitives_ex_opts layout mismatch")
     sizeof(_CFitPrimitivesReport) == 96 ||
         error("meshio++: mio_fit_primitives_report layout mismatch " *
               "($(sizeof(_CFitPrimitivesReport)) bytes)")
@@ -2241,10 +2664,27 @@ function _check_abi_layout()
         error("meshio++: mio_find_intersections_report layout mismatch " *
               "($(sizeof(_CFindIntersectionsReport)) bytes)")
     (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CThicknessOpts) == 72 &&
-                                 fieldoffset(_CThicknessOpts, 7) == 40)) ||
+                                 fieldoffset(_CThicknessOpts, 7) == 40 &&
+                                 fieldoffset(_CThicknessOpts, 11) == 64)) ||
         error("meshio++: mio_thickness_opts layout mismatch ($(sizeof(_CThicknessOpts)) bytes)")
-    (sizeof(_CThicknessReport) == 144 && fieldoffset(_CThicknessReport, 13) == 104) ||
+    (sizeof(_CThicknessReport) == 144 && fieldoffset(_CThicknessReport, 13) == 104 &&
+     fieldoffset(_CThicknessReport, 14) == 112) ||
         error("meshio++: mio_thickness_report layout mismatch ($(sizeof(_CThicknessReport)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CDeviationOpts) == 88 &&
+                                 fieldoffset(_CDeviationOpts, 9) == 56)) ||
+        error("meshio++: mio_deviation_opts layout mismatch ($(sizeof(_CDeviationOpts)) bytes)")
+    (sizeof(Ptr{Cvoid}) != 8 || sizeof(_CDeviationRegionsOpts) == 64) ||
+        error("meshio++: mio_deviation_regions_opts layout mismatch")
+    (sizeof(_CDeviationRegionsReport) == 72 && sizeof(_CDeviationRegionInfo) == 136 &&
+     fieldoffset(_CDeviationRegionInfo, 8) == 72) ||
+        error("meshio++: mio_deviation_regions report layout mismatch")
+    (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CExaggerateOpts) == 64 && sizeof(_CColorizeOpts) == 96 &&
+                                 fieldoffset(_CColorizeOpts, 8) == 56)) ||
+        error("meshio++: mio_exaggerate_opts / mio_colorize_opts layout mismatch")
+    (sizeof(_CExaggerateReport) == 64 && sizeof(_CColorizeReport) == 56) ||
+        error("meshio++: mio_exaggerate_report / mio_colorize_report layout mismatch")
+    (sizeof(_CDeviationReport) == 176 && fieldoffset(_CDeviationReport, 14) == 136) ||
+        error("meshio++: mio_deviation_report layout mismatch ($(sizeof(_CDeviationReport)) bytes)")
     (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CTetrahedralizeOpts) == 80 &&
                                  fieldoffset(_CTetrahedralizeOpts, 5) == 32 &&
                                  fieldoffset(_CTetrahedralizeOpts, 8) == 48 &&
@@ -2374,6 +2814,36 @@ function _check_abi_layout()
         error("meshio++: mio_registration_opts layout mismatch ($(sizeof(_CRegistrationOpts)) bytes)")
     sizeof(_CRegistrationReport) == 200 ||
         error("meshio++: mio_registration_report layout mismatch ($(sizeof(_CRegistrationReport)) bytes)")
+    (sizeof(_CRegistrationExOpts) == 264 && fieldoffset(_CRegistrationExOpts, 6) == 216) ||
+        error("meshio++: mio_registration_ex_opts layout mismatch ($(sizeof(_CRegistrationExOpts)) bytes)")
+    (sizeof(_CFitCurvesOpts) == 88 && sizeof(_CFitCurvesReport) == 96 &&
+     sizeof(_CSketchPiece) == 104 && fieldoffset(_CSketchPiece, 9) == 80) ||
+        error("meshio++: mio_fit_curves layout mismatch")
+    (sizeof(_CSilhouetteOpts) == 104 && fieldoffset(_CSilhouetteOpts, 8) == 64 &&
+     sizeof(_CSilhouetteReport) == 104) ||
+        error("meshio++: mio_silhouette layout mismatch")
+    sizeof(_CStepElementsReport) == 88 || error("meshio++: mio_step_elements_report layout mismatch")
+    sizeof(_CMeasureReport) == 80 || error("meshio++: mio_measure_report layout mismatch")
+    (sizeof(_CRemoveIslandsOpts) == 64 && sizeof(_CRemoveIslandsReport) == 64) ||
+        error("meshio++: mio_remove_islands layout mismatch")
+    sizeof(_CClipReport) == 72 || error("meshio++: mio_clip_report layout mismatch")
+    sizeof(_COffsetReport) == 64 || error("meshio++: mio_offset_report layout mismatch")
+    sizeof(_CConstrainPrimitivesOpts) == 96 || error("meshio++: mio_constrain_primitives_opts layout mismatch")
+    sizeof(_CProfileFeature) == 96 || error("meshio++: mio_profile_feature layout mismatch")
+    sizeof(_CProfileSolidReport) == 64 || error("meshio++: mio_profile_solid_report layout mismatch")
+    sizeof(_CConstrainPrimitivesReport) == 64 || error("meshio++: mio_constrain_primitives_report layout mismatch")
+    sizeof(_CFaceSupportOpts) == 64 || error("meshio++: mio_face_support_opts layout mismatch")
+    sizeof(_CFaceSupportReport) == 64 || error("meshio++: mio_face_support_report layout mismatch")
+    sizeof(_CFitCadIterateOpts) == 112 || error("meshio++: mio_fit_cad_iterate_opts layout mismatch")
+    sizeof(_CFitCadIterateReport) == 96 || error("meshio++: mio_fit_cad_iterate_report layout mismatch")
+    sizeof(_CSymmetryPlaneOpts) == 112 ||
+        error("meshio++: mio_symmetry_plane_opts layout mismatch ($(sizeof(_CSymmetryPlaneOpts)) bytes)")
+    sizeof(_CSymmetryPlaneReport) == 128 ||
+        error("meshio++: mio_symmetry_plane_report layout mismatch ($(sizeof(_CSymmetryPlaneReport)) bytes)")
+    sizeof(_CAutoAlignOpts) == 64 ||
+        error("meshio++: mio_auto_align_opts layout mismatch ($(sizeof(_CAutoAlignOpts)) bytes)")
+    (sizeof(_CAutoAlignReport) == 256 && fieldoffset(_CAutoAlignReport, 4) == 136) ||
+        error("meshio++: mio_auto_align_report layout mismatch ($(sizeof(_CAutoAlignReport)) bytes)")
     sizeof(_CPointNormalsOpts) == 72 ||
         error("meshio++: mio_point_normals_opts layout mismatch ($(sizeof(_CPointNormalsOpts)) bytes)")
     sizeof(_CReconstructSurfaceOpts) == 96 ||

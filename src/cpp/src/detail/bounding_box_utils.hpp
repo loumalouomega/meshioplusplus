@@ -19,7 +19,7 @@
 /**
  * @file detail/bounding_box_utils.hpp
  * @brief `BoundingBoxUtils`: axis-aligned boxes of point sets, the loop that
- * operations used to write out by hand (doc/geometry_kernels.md, roadmap §8).
+ * operations used to write out by hand (doc/geometry_kernels.md, roadmap §7).
  *
  * A Kratos-style utility class (cf. `Kratos::BoundingBox`): a plain
  * `BoundingBox3` value and static inline members. `FromPoints` starts from the

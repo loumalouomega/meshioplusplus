@@ -33,6 +33,7 @@
 // Project includes
 #include "meshioplusplus/abi_version.hpp"
 #include "meshioplusplus/log.hpp"
+#include "meshioplusplus/operations/profile_solid.hpp"
 #include "meshioplusplus/providers.hpp"
 
 // Project includes (private, not installed)
@@ -45,6 +46,8 @@ namespace providers {
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
 /// The OpenCASCADE provider this build compiled in (providers/occt/).
 CadKernelProvider make_occt_provider();
+/// Its profile solids (roadmap 7.7.4).
+ProfileSolidProvider make_occt_profile_provider();
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_NETGEN
 /// The Netgen provider this build compiled in (providers/netgen/).
@@ -92,6 +95,10 @@ struct ProvidersState {
     /// The quad remeshers (roadmap 7.7.3), by name, and every one ever added.
     std::map<std::string, std::shared_ptr<const QuadRemesherProvider>> mQuad;
     std::vector<std::shared_ptr<const QuadRemesherProvider>> mQuadRetained;
+    /// The profile-solid providers (roadmap 7.7.4), by name, and every one ever added.
+    std::map<std::string, std::shared_ptr<const ProfileSolidProvider>> mProfile;
+    std::vector<std::shared_ptr<const ProfileSolidProvider>> mProfileRetained;
+    bool mProfileBuiltinDone = false;
     bool mExternalDone = false;
 };
 
@@ -204,6 +211,43 @@ std::shared_ptr<const QuadRemesherProvider> quad_remesher(const std::string& rNa
     const std::lock_guard<std::mutex> lock(r_state.mMutex);
     const auto it = r_state.mQuad.find(rName);
     return it == r_state.mQuad.end() ? nullptr : it->second;
+}
+
+void add_profile_solid_provider(ProfileSolidProvider Provider) {
+    ProvidersState& r_state = providers_state();
+    auto p_new = std::make_shared<const ProfileSolidProvider>(std::move(Provider));
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    if (t_loading_plugin && r_state.mProfile.count(p_new->mName))
+        return;
+    r_state.mProfileRetained.push_back(p_new);
+    r_state.mProfile[p_new->mName] = std::move(p_new);
+}
+
+void remove_profile_solid_provider(const std::string& rName) noexcept {
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    r_state.mProfile.erase(rName);
+}
+
+std::shared_ptr<const ProfileSolidProvider> profile_solid_provider(
+    const std::string& rName) noexcept {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    if (rName.empty())
+        return r_state.mProfile.empty() ? nullptr : r_state.mProfile.begin()->second;
+    const auto it = r_state.mProfile.find(rName);
+    return it == r_state.mProfile.end() ? nullptr : it->second;
+}
+
+std::vector<std::string> profile_solid_provider_names() {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    std::vector<std::string> names;
+    for (const auto& r_entry : r_state.mProfile)
+        names.push_back(r_entry.first);
+    return names;
 }
 
 std::vector<std::string> quad_remesher_names() {
@@ -367,6 +411,18 @@ static void register_compiled_in_providers() noexcept {
     (void)install;
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
     install(r_state.mCad, [] { return providers::make_occt_provider(); });
+    if (!r_state.mProfileBuiltinDone) {
+        r_state.mProfileBuiltinDone = true;
+        try {
+            auto p_new = std::make_shared<const ProfileSolidProvider>(
+                providers::make_occt_profile_provider());
+            if (!r_state.mProfile.count(p_new->mName)) {
+                r_state.mProfileRetained.push_back(p_new);
+                r_state.mProfile[p_new->mName] = std::move(p_new);
+            }
+        } catch (...) {
+        }
+    }
 #else
     r_state.mCad.mBuiltinDone = true;
 #endif
