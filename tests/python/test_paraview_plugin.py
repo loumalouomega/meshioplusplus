@@ -433,3 +433,32 @@ def test_writer_inputs_and_options(tmp_path):
     assert any(
         "ParaView" in line for line in meshioplusplus.read_metadata(vtu)["provenance"]
     )
+
+
+_PIPELINE = """
+src, ops = args
+reader = meshioreader(FileName=src)
+f = meshioPipeline(Input=reader, Operations=ops)
+try:
+    f.UpdatePipeline()
+    cells = servermanager.Fetch(f).GetNumberOfCells()
+    print(json.dumps({"cells": cells}))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+"""
+
+
+@pytest.mark.parametrize("ops", ['[{"Op": "Refine"}]', '[{"Op": "NoSuchOp"}]'])
+def test_pipeline_filter(tmp_path, ops):
+    """roadmap 6.8: Refine gives eight times the cells; an unknown op fails."""
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+        [("tetra", [[0, 1, 2, 3]])],
+    )
+    src = tmp_path / "in.vtu"
+    meshioplusplus.write(src, mesh)
+    seen = _run_pvpython(tmp_path, _PIPELINE, src, ops)
+    if "NoSuchOp" in ops:
+        assert seen.get("cells", 0) == 0
+    else:
+        assert seen == {"cells": 8}

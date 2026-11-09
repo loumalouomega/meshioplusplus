@@ -987,3 +987,38 @@ def mesh_from_data_object(data_object, op=WRITER_OP):
         regions.append(Region(name, "cell", entries, dim, i + 1))
     merged.regions = regions
     return merged
+
+
+# --------------------------------------------------------------------------- #
+# the meshio++ Pipeline filter (roadmap 6.8)                                  #
+# --------------------------------------------------------------------------- #
+#: The field array the filters put their report in, as JSON text.
+REPORT_KEY = "meshioplusplus:report"
+FILTER_OP = "ParaView filter"
+
+
+def run_operations(mesh, operations):
+    """``apply_operations(mesh, operations)`` for the Pipeline filter.
+
+    ``operations`` is the settings pipeline's ``Operations`` list as JSON
+    text (or a list, or a whole settings document); blank text passes the
+    mesh through. Returns ``(mesh, report)``; the report's warnings are
+    surfaced as warnings.
+    """
+    from ._interop import _emit
+    from ._pipeline import apply_operations
+
+    if isinstance(operations, str) and not operations.strip():
+        return mesh, {"steps": [], "warnings": []}
+    out, report = apply_operations(mesh, operations)
+    _emit(FILTER_OP, report.get("warnings", []))
+    return out, report
+
+
+def fill_grid_with_report(grid, mesh, report, op=FILTER_OP):
+    """:func:`fill_grid`, plus the report as the ``meshioplusplus:report``
+    field array (JSON text)."""
+    notes = fill_grid(grid, mesh, op)
+    text = json.dumps(report, separators=(",", ":"), default=str)
+    grid.GetFieldData().AddArray(_field_array(REPORT_KEY, [text], notes))
+    return notes

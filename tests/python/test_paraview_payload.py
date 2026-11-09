@@ -663,3 +663,31 @@ def test_a_multiblock_becomes_one_mesh_with_a_region_per_block(tmp_path):
         if r.kind == "cell" and r.dim == 3
     }
     assert groups == {"left": 1, "right": 1}
+
+
+# --------------------------------------------------------------------------- #
+# the Pipeline filter (roadmap 6.8)                                           #
+# --------------------------------------------------------------------------- #
+def test_operations_refine_and_report():
+    """The roadmap's probe: Refine on tetrahedra gives eight times the cells,
+    and the report reaches the grid as a JSON field array."""
+    import json
+
+    mesh = _step_meshes()[0][1]
+    out, report = _paraview.run_operations(mesh, '[{"Op": "Refine"}]')
+    assert sum(len(b) for b in out.cells) == 8
+    grid = vtk.vtkUnstructuredGrid()
+    _paraview.fill_grid_with_report(grid, out, report)
+    text = grid.GetFieldData().GetAbstractArray(_paraview.REPORT_KEY).GetValue(0)
+    assert json.loads(text)["steps"][0]["op"] == "Refine"
+
+
+def test_operations_unknown_op_is_named():
+    with pytest.raises(ValueError, match="NoSuchOp"):
+        _paraview.run_operations(_step_meshes()[0][1], '[{"Op": "NoSuchOp"}]')
+
+
+def test_blank_operations_pass_through():
+    mesh = _step_meshes()[0][1]
+    out, report = _paraview.run_operations(mesh, "  ")
+    assert out is mesh and report == {"steps": [], "warnings": []}

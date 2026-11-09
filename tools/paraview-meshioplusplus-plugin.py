@@ -521,6 +521,46 @@ class MeshioPlusPlusWriter(VTKPythonAlgorithmBase):
         self.Update()
 
 
+@smproxy.filter(name="MeshioPlusPlusPipeline", label="meshio++ Pipeline")
+@smhint.xml('<ShowInMenu category="meshio++"/>')
+@smproperty.input(name="Input", port_index=0)
+@smdomain.datatype(
+    dataTypes=["vtkDataSet", "vtkCompositeDataSet"], composite_data_supported=True
+)
+class MeshioPlusPlusPipeline(VTKPythonAlgorithmBase):
+    """The settings pipeline's Operations, applied to the input
+    (apply_operations): every operation the pipeline has, in one filter."""
+
+    def __init__(self):
+        VTKPythonAlgorithmBase.__init__(
+            self,
+            nInputPorts=1,
+            nOutputPorts=1,
+            inputType="vtkDataObject",
+            outputType="vtkUnstructuredGrid",
+        )
+        self._operations = "[]"
+
+    @smproperty.stringvector(name="Operations", default_values="[]")
+    @smhint.xml('<Widget type="multi_line" syntax="json"/>')
+    def SetOperations(self, text):
+        # The settings pipeline's Operations list as JSON, e.g.
+        # [{"Op": "Refine"}, {"Op": "Smooth", "Iterations": 5}].
+        if self._operations != text:
+            self._operations = text
+            self.Modified()
+
+    def RequestData(self, request, inInfoVec, outInfoVec):
+        mesh = _paraview.mesh_from_data_object(
+            vtkDataObject.GetData(inInfoVec[0]), _paraview.FILTER_OP
+        )
+        mesh, report = _paraview.run_operations(mesh, self._operations)
+        _paraview.fill_grid_with_report(
+            vtkUnstructuredGrid.GetData(outInfoVec), mesh, report
+        )
+        return 1
+
+
 _alias(MeshioPlusPlusReader, "meshio++ reader", smproxy.source)
 _alias(
     MeshioPlusPlusWriter,

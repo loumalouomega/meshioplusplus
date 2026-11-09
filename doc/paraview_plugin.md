@@ -88,6 +88,16 @@ Regions cross as arrays by default, so they survive a round trip through ParaVie
 
 With **RegionsAsBlocks** the reader outputs a `vtkPartitionedDataSetCollection` instead, one block per region in a `vtkDataAssembly` (groups `cell_regions`, `side_regions` and `point_regions`), as ParaView's own Exodus reader shows its blocks and sets, so a region is a block to tick in the *Multiblock Inspector*: a cell region's piece of [`split(by="regions")`](./regions.md) (regions may overlap, and a cell can be in several blocks), a side region's facets, a point region's points as vertices. A mesh with no cell region is one more block, `mesh`.
 
+## The meshio++ Pipeline filter
+
+*Filters → meshio++ → meshio++ Pipeline* (`meshioPipeline` in `pvpython`) applies the [settings pipeline](./pipeline.md)'s `Operations` list, given as JSON in its **Operations** property, to its input through [`apply_operations`](./pipeline.md#in-memory-apply-operations): every operation the pipeline has, with its validation, in one filter. Any dataset or composite input is accepted, as by the writer; the output is an unstructured grid, and the run's report (`{"steps": [...], "warnings": [...]}`) is its `meshioplusplus:report` field array, with the warnings on ParaView's output window. An unknown operation or key fails the filter with the pipeline's error, which names it.
+
+```json
+[{"Op": "Refine"}, {"Op": "Smooth", "Iterations": 5}]
+```
+
+The model steps (`MeshCadSurface`, `FitCad`, `ProjectToCad`, the IGA steps) are reachable only within one run of the filter, since a CAD model cannot travel through VTK; `Split` and a fanned-out `Partition`, which write a file per piece, need `run_pipeline` instead.
+
 ## What crosses into ParaView
 
 The reader hands ParaView the mesh's points (padded to three columns when the mesh is 1-D or 2-D), its cells, and its point, cell and field data, in one vectorised pass with no per-cell Python loop:
