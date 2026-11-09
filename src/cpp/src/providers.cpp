@@ -247,12 +247,11 @@ namespace {
 /// dlopen runs) does not wait on itself; the flag makes that nested call return
 /// at once. Allocated and never freed, like providers_state(), so a provider
 /// query during static destruction still finds it.
-std::recursive_mutex& plugin_scan_mutex() {  // NOSONAR(cpp:S8462): see above
-    static std::recursive_mutex* const s_mutex =
-        new std::recursive_mutex;  // NOSONAR(cpp:S8462,cpp:S8474): see above
+std::recursive_mutex& plugin_scan_mutex() {                 // NOSONAR(cpp:S8462): see above
+    static auto* const s_mutex = new std::recursive_mutex;  // NOSONAR(cpp:S8462,cpp:S8474)
     return *s_mutex;
 }
-bool g_plugins_scan_started = false;        // guarded by the scan mutex
+bool g_plugins_scan_started = false;           // guarded by the scan mutex
 std::atomic<bool> g_plugins_scan_done{false};  // the lock-free fast path
 
 using PluginAbiFn = int (*)();
@@ -413,8 +412,8 @@ void register_builtin_providers() noexcept {
     // thread passes straight through.
     if (g_plugins_scan_done.load())
         return;
-    const std::lock_guard<std::recursive_mutex> scan_lock(
-        plugin_scan_mutex());  // NOSONAR(cpp:S8462): re-entered by a plugin, see above
+    // Recursive on purpose: re-entered by a plugin, see plugin_scan_mutex().
+    const std::lock_guard scan_lock(plugin_scan_mutex());  // NOSONAR(cpp:S8462)
     if (g_plugins_scan_started)
         return;  // done meanwhile, or this thread's own plugin is asking
     g_plugins_scan_started = true;
