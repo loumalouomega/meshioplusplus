@@ -443,4 +443,69 @@ TEST(AdaptVolume, OctreeSphereWithAFrozenBoundary) {
     EXPECT_GE(min_dihedral(r.mMesh), std::min(r.mMinDihedralBefore, 10.0) - 1e-9);
 }
 
+// --- M3: splits ---------------------------------------------------------------------
+
+TEST(AdaptVolume, SplitRefinesToTheSizeAndKeepsTheBoxAndItsSides) {
+    const CheckInvariants check;
+    const Mesh in = tet_box(2);
+    AdaptVolumeOptions o;
+    o.mHmin = 0.1;
+    o.mHmax = 0.15;  // well below the input's 0.5 edges
+    o.mSizeArray = "h";
+    o.mEnableCollapse = false;
+    o.mEnableSwap = false;
+    o.mEnableSmooth = false;
+    const AdaptVolumeResult r = adapt_volume(with_sizes(in, 0.12), o);
+    print_report("box split", r);
+    EXPECT_GT(r.mNumSplit, 0);
+    EXPECT_GT(r.mNumTetsAfter, 4 * r.mNumTetsBefore);
+    EXPECT_NEAR(r.mVolumeAfter, 1.0, 1e-12);
+    // every face of a side region still lies on its side of the box
+    const Mesh& m = r.mMesh;
+    constexpr int kF[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
+    const std::map<std::string, std::pair<int, double>> planes{
+        {"xmin", {0, 0.0}}, {"xmax", {0, 1.0}}, {"ymin", {1, 0.0}},
+        {"ymax", {1, 1.0}}, {"zmin", {2, 0.0}}, {"zmax", {2, 1.0}}};
+    for (const auto& [name, plane] : planes) {
+        ASSERT_TRUE(m.HasRegion(name, RegionKind::Side)) << name;
+        const mio::Region& reg = m.Region(m.FindRegion(name, RegionKind::Side));
+        EXPECT_GT(reg.NumEntries(), 8u) << name;
+        double area = 0.0;
+        for (std::size_t e = 0; e < reg.NumEntries(); ++e) {
+            const std::size_t cell = static_cast<std::size_t>(reg.Entries()[2 * e]);
+            const int facet = static_cast<int>(reg.Entries()[2 * e + 1]);
+            mio::detail::Vec3 p[3];
+            for (int q = 0; q < 3; ++q) {
+                const std::size_t v = static_cast<std::size_t>(mio::detail::read_int(
+                    m.Cells(0).Conn(), cell * 4 + static_cast<std::size_t>(kF[facet][q])));
+                for (int d = 0; d < 3; ++d)
+                    p[q][static_cast<std::size_t>(d)] =
+                        mio::detail::read_double(m.Points(), v * 3 + static_cast<std::size_t>(d));
+                EXPECT_NEAR(p[q][static_cast<std::size_t>(plane.first)], plane.second, 1e-12)
+                    << name;
+            }
+            area +=
+                0.5 * mio::detail::vec3_norm(mio::detail::vec3_cross(
+                          mio::detail::vec3_sub(p[1], p[0]), mio::detail::vec3_sub(p[2], p[0])));
+        }
+        EXPECT_NEAR(area, 1.0, 1e-12) << name;
+    }
+    EXPECT_GE(min_dihedral(m), std::min(r.mMinDihedralBefore, 10.0) - 1e-9);
+}
+
+TEST(AdaptVolume, CollapseAndSplitDoNotOscillate) {
+    const CheckInvariants check;
+    // a uniform size between the box's two edge lengths: both passes have work
+    AdaptVolumeOptions o;
+    o.mHmin = 0.18;
+    o.mHmax = 0.18;
+    o.mEnableSwap = false;
+    o.mEnableSmooth = false;
+    const AdaptVolumeResult r = adapt_volume(tet_box(4), o);
+    print_report("box collapse+split", r);
+    const AdaptVolumeResult again = adapt_volume(r.mMesh, o);
+    print_report("box collapse+split, again", again);
+    EXPECT_LE(again.mNumCollapsed + again.mNumSplit, r.mNumTetsAfter / 10 + 1);
+}
+
 }  // namespace

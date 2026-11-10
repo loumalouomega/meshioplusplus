@@ -226521,7 +226521,7 @@ private:
     std::vector<std::int64_t> mScratchShared, mScratchRingA, mScratchRingB, mScratchTetsA;
     std::vector<std::int64_t> mScratchCommon, mScratchLinkV;
     std::vector<std::uint64_t> mScratchEdgesA, mScratchEdgesB, mScratchLinkE, mScratchEdgeCommon;
-    std::vector<TriKey> mScratchTriA, mScratchTriB;
+    std::vector<TriKey> mScratchTriA, mScratchTriB, mScratchFaces;
 
     void Setup();
     void ReadClasses(std::vector<std::int32_t>& rClassOfCell);
@@ -226548,6 +226548,16 @@ private:
     AdvReject TryCollapse(std::int64_t A, std::int64_t B);
     void CommitCollapse(std::int64_t A, std::int64_t B);
     std::int64_t CollapsePass();
+
+    // split
+    /// A new vertex on the edge (a, b) at fraction @p T, carrying interpolated data.
+    std::int64_t NewVertex(std::int64_t A, std::int64_t B, double T, const Vec3& rP,
+                           TetVertexKind Kind, std::int32_t Feature, double ChainParam);
+    /// The boundary faces through the edge (a, b) (the shared tets in mScratchShared).
+    void EdgeBoundaryFaces(std::int64_t A, std::int64_t B, std::vector<TriKey>& rOut) const;
+    AdvReject TrySplit(std::int64_t A, std::int64_t B, Vec3& rP, double& rT);
+    void CommitSplit(std::int64_t A, std::int64_t B, const Vec3& rP, double T);
+    std::int64_t SplitPass();
 
     void Time(const char* pStage, AdvClock::time_point Since) {
         mTimes[pStage] += adv_seconds(Since);
@@ -227189,6 +227199,178 @@ std::int64_t AdvRemesher::CollapsePass() {
     return applied;
 }
 
+// --- split ---------------------------------------------------------------------
+
+std::int64_t AdvRemesher::NewVertex(std::int64_t A, std::int64_t B, double T, const Vec3& rP,
+                                    TetVertexKind Kind, std::int32_t Feature, double ChainParam) {
+    const std::size_t a = static_cast<std::size_t>(A), b = static_cast<std::size_t>(B);
+    const double h = SizeFieldUtils::Interpolate(mStore.mSize[a], mStore.mSize[b], T);
+    const std::int64_t source = T <= 0.5 ? mStore.mSource[a] : mStore.mSource[b];
+    const std::int64_t m = mStore.AddVertex(rP, h, Kind, Feature, ChainParam, source);
+    for (detail::DecimFloatData& f : mFloatData) {
+        const std::size_t nc = f.mNumComponents;
+        for (std::size_t k = 0; k < nc; ++k)
+            f.mValues.push_back((1.0 - T) * f.mValues[a * nc + k] + T * f.mValues[b * nc + k]);
+    }
+    // A point region takes the new vertex when it holds both ends and the new
+    // vertex has the kind of one of them (so the midpoint of an edge between
+    // two corners does not join a region of corners).
+    const std::uint8_t ka = mStore.mKind[a], kb = mStore.mKind[b];
+    const std::uint8_t km = static_cast<std::uint8_t>(Kind);
+    for (auto& member : mPointMember)
+        member.push_back(
+            static_cast<std::uint8_t>(member[a] && member[b] && (km == ka || km == kb)));
+    mVersion.push_back(0);
+    return m;
+}
+
+void AdvRemesher::EdgeBoundaryFaces(std::int64_t A, std::int64_t B,
+                                    std::vector<TriKey>& rOut) const {
+    rOut.clear();
+    if (mStore.mBoundary.empty())
+        return;
+    for (const std::int64_t t : mScratchShared)
+        for (const std::int64_t x : mStore.mTets[static_cast<std::size_t>(t)]) {
+            if (x == A || x == B)
+                continue;
+            const TriKey k = detail::tri_key(A, B, x);
+            if (mStore.mBoundary.count(k))
+                rOut.push_back(k);
+        }
+    std::sort(rOut.begin(), rOut.end());
+    rOut.erase(std::unique(rOut.begin(), rOut.end()), rOut.end());
+}
+
+// Precondition, simulated edit and postconditions of splitting the edge (a, b)
+// at its metric midpoint: every child positive and no worse than the floor.
+AdvReject AdvRemesher::TrySplit(std::int64_t A, std::int64_t B, Vec3& rP, double& rT) {
+    mStore.SharedTets(A, B, mScratchShared);
+    if (mScratchShared.empty())
+        return AdvReject::NotEdge;
+    EdgeBoundaryFaces(A, B, mScratchFaces);
+    if (!mScratchFaces.empty() && mrOptions.mPreserveBoundary)
+        return AdvReject::Class;
+    const std::size_t a = static_cast<std::size_t>(A), b = static_cast<std::size_t>(B);
+    rT = SizeFieldUtils::MidpointParameter(mStore.mSize[a], mStore.mSize[b]);
+    const Vec3 pa = mStore.Point(A), pb = mStore.Point(B);
+    rP = detail::vec3_add(pa, detail::vec3_scale(detail::vec3_sub(pb, pa), rT));
+    double old_min = std::numeric_limits<double>::infinity();
+    double new_min = std::numeric_limits<double>::infinity();
+    for (const std::int64_t t : mScratchShared) {
+        const TetCorners& c = mStore.mTets[static_cast<std::size_t>(t)];
+        old_min = std::min(old_min, TetQuality(c));
+        for (const std::int64_t replaced : {B, A}) {
+            Vec3 q[4];
+            for (int k = 0; k < 4; ++k)
+                q[k] = c[k] == replaced ? rP : mStore.Point(c[k]);
+            if (detail::tet_volume6(q[0], q[1], q[2], q[3]) <= mEpsVol6 ||
+                !TetRemeshStore::Positive(q[0], q[1], q[2], q[3]))
+                return AdvReject::Inversion;
+            new_min = std::min(new_min, Quality(q[0], q[1], q[2], q[3]));
+        }
+    }
+    if (new_min < std::min(old_min, mQualityMin))
+        return AdvReject::Quality;
+    return AdvReject::None;
+}
+
+void AdvRemesher::CommitSplit(std::int64_t A, std::int64_t B, const Vec3& rP, double T) {
+    mStore.SharedTets(A, B, mScratchShared);
+    EdgeBoundaryFaces(A, B, mScratchFaces);
+    const std::size_t a = static_cast<std::size_t>(A), b = static_cast<std::size_t>(B);
+    TetVertexKind kind = TetVertexKind::Interior;
+    std::int32_t feature = -1;
+    double param = 0.0;
+    const std::int32_t chain = mStore.RidgeChain(A, B);
+    if (chain >= 0) {
+        kind = TetVertexKind::Ridge;
+        feature = chain;
+        const double sa = mStore.ChainParam(A, chain, mStore.ChainParam(B, chain, 0.0));
+        const double sb = mStore.ChainParam(B, chain, sa);
+        param = sa + (sb - sa) * T;
+    } else if (!mScratchFaces.empty()) {
+        kind = TetVertexKind::Surface;
+        feature = mStore.mBoundary.at(mScratchFaces.front()).mPatch;
+    }
+    const std::int64_t m = NewVertex(A, B, T, rP, kind, feature, param);
+    const std::vector<std::int64_t> shared = mScratchShared;
+    for (const std::int64_t t : shared) {
+        const TetCorners c = mStore.mTets[static_cast<std::size_t>(t)];
+        const std::int32_t cls = mStore.mClass[static_cast<std::size_t>(t)];
+        TetCorners lo = c, hi = c;
+        for (int k = 0; k < 4; ++k) {
+            if (c[k] == B)
+                lo[k] = m;
+            if (c[k] == A)
+                hi[k] = m;
+        }
+        mStore.KillTet(t);
+        mStore.AddTet(lo, cls);
+        mStore.AddTet(hi, cls);
+    }
+    for (const TriKey& k : mScratchFaces) {
+        const detail::TetBoundaryFace face = mStore.mBoundary.at(k);
+        std::int64_t x = k[0];
+        for (const std::int64_t v : k)
+            if (v != A && v != B)
+                x = v;
+        mStore.mBoundary.erase(k);
+        mStore.mBoundary.emplace(detail::tri_key(A, m, x), face);
+        mStore.mBoundary.emplace(detail::tri_key(m, B, x), face);
+    }
+    if (chain >= 0) {
+        mStore.mRidgeEdges.erase(detail::edge_key64(A, B));
+        mStore.mRidgeEdges[detail::edge_key64(A, m)] = chain;
+        mStore.mRidgeEdges[detail::edge_key64(m, B)] = chain;
+    }
+    ++mVersion[a];
+    ++mVersion[b];
+}
+
+std::int64_t AdvRemesher::SplitPass() {
+    AdvQueue queue;  // keyed by the negative length: longest first
+    {
+        const auto edges = AliveEdges();
+        std::vector<double> len(edges.size());
+        parallel_for(edges.size(),
+                     [&](std::size_t i) { len[i] = EdgeLength(edges[i][0], edges[i][1]); });
+        for (std::size_t i = 0; i < edges.size(); ++i)
+            if (len[i] > kAdvLong)
+                PushEdge(queue, edges[i][0], edges[i][1], -len[i]);
+    }
+    // a bound on the work of one pass, against a size field far below the mesh
+    const std::int64_t budget = 4 * mStore.NumAliveTets() + 1024;
+    std::int64_t applied = 0;
+    std::vector<std::int64_t> ring;
+    while (!queue.empty() && applied < budget) {
+        const AdvEdgeCand e = queue.top();
+        queue.pop();
+        const std::size_t ea = static_cast<std::size_t>(e.mA), eb = static_cast<std::size_t>(e.mB);
+        if (!mStore.mVertexAlive[ea] || !mStore.mVertexAlive[eb] || mVersion[ea] != e.mVersionA ||
+            mVersion[eb] != e.mVersionB)
+            continue;
+        Vec3 p;
+        double t = 0.5;
+        const AdvReject why = TrySplit(e.mA, e.mB, p, t);
+        if (why == AdvReject::NotEdge)
+            continue;
+        if (why != AdvReject::None) {
+            CountReject(why);
+            continue;
+        }
+        CommitSplit(e.mA, e.mB, p, t);
+        ++applied;
+        const std::int64_t m = static_cast<std::int64_t>(mStore.NumVertices()) - 1;
+        mStore.VertexRing(m, ring);
+        for (const std::int64_t x : ring) {
+            const double l = EdgeLength(m, x);
+            if (l > kAdvLong)
+                PushEdge(queue, m, x, -l);
+        }
+    }
+    return applied;
+}
+
 // --- output ----------------------------------------------------------------
 
 void AdvRemesher::Emit() {
@@ -227405,6 +227587,14 @@ void AdvRemesher::Run() {
             changed += n;
             Time("collapse", t0);
             Verify("collapse");
+        }
+        if (mrOptions.mEnableSplit) {
+            t0 = AdvClock::now();
+            const std::int64_t n = SplitPass();
+            mrResult.mNumSplit += n;
+            changed += n;
+            Time("split", t0);
+            Verify("split");
         }
         ++mrResult.mIterations;
         if (static_cast<double>(changed) < 0.01 * static_cast<double>(mStore.NumAliveTets()))
