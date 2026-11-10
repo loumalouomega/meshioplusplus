@@ -11,9 +11,9 @@ from ._vtu import write as _py_write
 def read(filename, points_only=False, arrays=None):
     """Read a VTU file.
 
-    Uses the C++ core for ascii and inline binary (uncompressed or zlib) files,
-    falling back to the reference Python reader for anything it doesn't handle
-    (lzma, appended/raw binary, multi-piece).
+    Uses the C++ core, falling back to the reference Python reader for what
+    this build's core does not handle (a codec it was built without, such as
+    lzma) and for buffers.
     """
     # points_only/arrays reach the C++ reader, which skips the unwanted
     # <DataArray>/section bodies outright. The Python fallback below has no

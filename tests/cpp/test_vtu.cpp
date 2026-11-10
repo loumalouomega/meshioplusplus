@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstring>
 #include <chrono>
 #include <map>
 #include <fstream>
@@ -27,9 +28,12 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "../../src/cpp/src/detail/vtu_decode.hpp"
 
 namespace {
 void rt(const mt::Mesh& mesh, bool binary, bool zlib) {
@@ -395,4 +399,122 @@ TEST(Vtu, AsciiMalformedNumberInALargeArrayIsAReadError) {
     const std::string ok = vtu_ascii_points_file(n, 0, "");
     EXPECT_EQ(meshioplusplus::read_vtu(ok).NumPoints(), n);
     expect_malformed(vtu_ascii_points_file(n, 3 * n - 10, "nope"), "nope");
+}
+
+// Issue #229: GiD's VTU export base64-encodes each array's header and data as
+// one stream where VTK encodes them as two separately padded chunks; it also
+// writes a supplementary file of cells only (NumberOfPoints="0", no <Points>).
+namespace {
+
+// One array's text: the raw framing vtu_encode_raw writes (size header, or
+// block header and blocks), base64'd as one stream or as header + body.
+std::string vtu_test_framed_b64(const std::vector<unsigned char>& rBytes, bool Joint,
+                                meshioplusplus::detail::VtkCodec Codec, std::size_t Hsz) {
+    std::vector<unsigned char> raw;
+    meshioplusplus::detail::vtu_encode_raw(rBytes.data(), rBytes.size(), Codec, Hsz, raw);
+    if (Joint)
+        return meshioplusplus::detail::b64encode(raw.data(), raw.size());
+    std::size_t head = Hsz;
+    if (Codec != meshioplusplus::detail::VtkCodec::None) {
+        std::uint64_t nblocks = 0;
+        for (std::size_t i = 0; i < Hsz; ++i)
+            nblocks |= static_cast<std::uint64_t>(raw[i]) << (8 * i);
+        head = Hsz * (3 + static_cast<std::size_t>(nblocks));
+    }
+    return meshioplusplus::detail::b64encode(raw.data(), head) +
+           meshioplusplus::detail::b64encode(raw.data() + head, raw.size() - head);
+}
+
+template <class T>
+std::vector<unsigned char> vtu_test_bytes(const std::vector<T>& rValues) {
+    std::vector<unsigned char> out(rValues.size() * sizeof(T));
+    std::memcpy(out.data(), rValues.data(), out.size());
+    return out;
+}
+
+std::string vtu_test_cells_only(bool Joint, bool Inline, meshioplusplus::detail::VtkCodec Codec,
+                                std::size_t Hsz) {
+    const std::size_t n = 5;
+    std::vector<std::uint32_t> conn(3 * n), offs(n), parent(n);
+    std::vector<std::uint8_t> types(n, 5), code(n), face(n, 2);
+    for (std::size_t i = 0; i < 3 * n; ++i)
+        conn[i] = static_cast<std::uint32_t>(i);
+    for (std::size_t i = 0; i < n; ++i) {
+        offs[i] = static_cast<std::uint32_t>(3 * (i + 1));
+        parent[i] = static_cast<std::uint32_t>(100 + i);
+        code[i] = static_cast<std::uint8_t>(i);
+    }
+    struct Arr {
+        const char* mName;
+        const char* mType;
+        std::vector<unsigned char> mBytes;
+        bool mCell;
+    };
+    const std::vector<Arr> arrays = {{"connectivity", "UInt32", vtu_test_bytes(conn), false},
+                                     {"offsets", "UInt32", vtu_test_bytes(offs), false},
+                                     {"types", "UInt8", vtu_test_bytes(types), false},
+                                     {"BoundaryCode", "UInt8", vtu_test_bytes(code), true},
+                                     {"ParentElementId", "UInt32", vtu_test_bytes(parent), true},
+                                     {"LocalFaceId", "UInt8", vtu_test_bytes(face), true}};
+    std::string appended, cells, cell_data;
+    for (const Arr& a : arrays) {
+        const std::string text = vtu_test_framed_b64(a.mBytes, Joint, Codec, Hsz);
+        std::string da =
+            std::string("<DataArray type=\"") + a.mType + "\" Name=\"" + a.mName + "\"";
+        if (Inline) {
+            da += " format=\"binary\">" + text + "</DataArray>";
+        } else {
+            da += " format=\"appended\" offset=\"" + std::to_string(appended.size()) + "\"/>";
+            appended += text;
+        }
+        (a.mCell ? cell_data : cells) += da;
+    }
+    const std::string compressor = Codec == meshioplusplus::detail::VtkCodec::None
+                                       ? ""
+                                       : " compressor=\"vtkZLibDataCompressor\"";
+    return std::string(
+               "<?xml version=\"1.0\"?>\n<VTKFile type=\"UnstructuredGrid\" version=\"1.0\" "
+               "byte_order=\"LittleEndian\" header_type=\"") +
+           (Hsz == 4 ? "UInt32" : "UInt64") + "\"" + compressor +
+           "><UnstructuredGrid><Piece NumberOfPoints=\"0\" NumberOfCells=\"5\"><Cells>" + cells +
+           "</Cells><CellData>" + cell_data + "</CellData></Piece></UnstructuredGrid>" +
+           (Inline ? std::string()
+                   : "<AppendedData encoding=\"base64\">_" + appended + "</AppendedData>") +
+           "</VTKFile>\n";
+}
+
+}  // namespace
+
+TEST(VtuBase64Framing, OneChunkOrTwoAppendedOrInlineAndCellsOnly) {
+    using meshioplusplus::detail::VtkCodec;
+    std::vector<VtkCodec> codecs = {VtkCodec::None};
+    if (meshioplusplus::detail::vtk_codec_available(VtkCodec::Zlib))
+        codecs.push_back(VtkCodec::Zlib);
+    for (const VtkCodec codec : codecs)
+        for (const std::size_t hsz : {std::size_t{4}, std::size_t{8}})
+            for (const bool joint : {true, false})
+                for (const bool inl : {false, true}) {
+                    SCOPED_TRACE(std::string(joint ? "one chunk" : "two chunks") +
+                                 (inl ? ", inline" : ", appended") + ", hsz " +
+                                 std::to_string(hsz) +
+                                 (codec == VtkCodec::None ? ", plain" : ", zlib"));
+                    const std::string path = mt::temp_path("_framing.vtu");
+                    std::ofstream(path) << vtu_test_cells_only(joint, inl, codec, hsz);
+                    const mt::Mesh m = meshioplusplus::read_vtu(path);
+                    EXPECT_EQ(m.NumPoints(), 0u);
+                    EXPECT_EQ(m.Points().Shape(), (std::vector<std::size_t>{0, 3}));
+                    ASSERT_EQ(m.NumCellBlocks(), 1u);
+                    EXPECT_EQ(std::string(m.Cells(0).Type()), "triangle");
+                    ASSERT_EQ(m.Cells(0).NumCells(), 5u);
+                    for (std::size_t i = 0; i < 15; ++i)
+                        EXPECT_EQ(meshioplusplus::detail::read_int(m.Cells(0).Conn(), i),
+                                  static_cast<std::int64_t>(i));
+                    ASSERT_TRUE(m.HasCellData("ParentElementId"));
+                    EXPECT_EQ(meshioplusplus::detail::read_int(m.CellData("ParentElementId", 0), 4),
+                              104);
+                    ASSERT_TRUE(m.HasCellData("BoundaryCode"));
+                    EXPECT_EQ(meshioplusplus::detail::read_int(m.CellData("BoundaryCode", 0), 3),
+                              3);
+                    std::remove(path.c_str());
+                }
 }

@@ -121551,6 +121551,20 @@ std::uint64_t read_uint_le(const unsigned char* pP, std::size_t isz) {
 
 std::vector<unsigned char> vtu_decode_uncompressed(const char* pText, std::size_t len,
                                                    std::size_t hsz) {
+    // One stream, or (VTK) a separately padded header chunk: see
+    // vtub_uncompressed_ndarray, which this matches.
+    const std::size_t head_chars = ((hsz + 2) / 3) * 4;
+    if (hsz % 3 != 0 && len > head_chars && pText[head_chars - 1] == '=') {
+        const std::vector<unsigned char> head = b64decode(pText, head_chars);
+        if (head.size() < hsz)
+            throw ReadError("VTU binary data too short");
+        const std::uint64_t total = read_uint_le(head.data(), hsz);
+        std::vector<unsigned char> body = b64decode(pText + head_chars, len - head_chars);
+        if (body.size() < total)
+            throw ReadError("VTU binary data truncated");
+        body.resize(static_cast<std::size_t>(total));
+        return body;
+    }
     std::vector<unsigned char> all = b64decode(pText, len);
     if (all.size() < hsz)
         throw ReadError("VTU binary data too short");
@@ -121559,6 +121573,32 @@ std::vector<unsigned char> vtu_decode_uncompressed(const char* pText, std::size_
         throw ReadError("VTU binary data truncated");
     return std::vector<unsigned char>(all.begin() + hsz, all.begin() + hsz + total);
 }
+
+namespace {
+
+/**
+ * The compressed blocks of an inline "binary" array whose block header takes
+ * @p NumHeaderBytes bytes (@p NumHeaderChars base64 characters when encoded on
+ * its own). VTK encodes the header and the blocks as two separately padded
+ * chunks; other writers (GiD's VTU export, issue #229) encode them as one
+ * stream. The two differ only when the header is not a whole number of base64
+ * groups: then a separate header chunk ends in '=', and a joint one does not.
+ */
+std::vector<unsigned char> vtub_block_data(const char* pText, std::size_t len,
+                                           std::size_t NumHeaderBytes, std::size_t NumHeaderChars) {
+    // A text that ends with the header chunk is one stream either way.
+    const bool joint =
+        NumHeaderBytes % 3 != 0 && (len == NumHeaderChars || pText[NumHeaderChars - 1] != '=');
+    if (!joint)
+        return b64decode(pText + NumHeaderChars, len - NumHeaderChars);
+    std::vector<unsigned char> all = b64decode(pText, len);
+    if (all.size() < NumHeaderBytes)
+        throw ReadError("VTU compressed-block header truncated");
+    all.erase(all.begin(), all.begin() + static_cast<std::ptrdiff_t>(NumHeaderBytes));
+    return all;
+}
+
+}  // namespace
 
 std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len, std::size_t hsz,
                                              VtkCodec codec) {
@@ -121594,7 +121634,7 @@ std::vector<unsigned char> vtu_decode_blocks(const char* pText, std::size_t len,
         comp_sizes[k] = read_uint_le(header.data() + (3 + k) * hsz, hsz);
 
     std::vector<unsigned char> blockdata =
-        b64decode(pText + num_header_chars, len - num_header_chars);
+        vtub_block_data(pText, len, num_header_bytes, num_header_chars);
 
     // Input offsets are a (cheap, sequential) prefix sum of comp_sizes; the
     // output offset of block k is k*max_block per the VTU block scheme -> the
@@ -121983,19 +122023,28 @@ std::size_t vtub_decompress_into(VtkCodec codec, const unsigned char* pSrc, std:
 // The payload of an uncompressed DataArray, straight into a fresh array:
 // vtu_decode_uncompressed's checks, without its two intermediate buffers.
 NDArray vtub_uncompressed_ndarray(const char* pText, std::size_t len, std::size_t hsz, DType dt) {
-    const VtubB64 stream(pText, len);
-    if (stream.Size() < hsz)
+    // The size header and the payload may be one base64 stream, or (VTK's own
+    // writer) two separately padded chunks: then the header's chunk ends in '='
+    // and the payload starts after it (issue #229). hsz (4 or 8) is never a
+    // whole number of base64 groups, so a joint header chunk has no '=' unless
+    // the whole array ends there -- one stream either way.
+    const std::size_t head_chars = ((hsz + 2) / 3) * 4;
+    const bool separate = hsz % 3 != 0 && len > head_chars && pText[head_chars - 1] == '=';
+    const VtubB64 head_stream(pText, separate ? head_chars : len);
+    if (head_stream.Size() < hsz)
         throw ReadError("VTU binary data too short");
     unsigned char head[8] = {0};
-    stream.Decode(0, hsz, head);
+    head_stream.Decode(0, hsz, head);
     const std::uint64_t total = read_uint_le(head, hsz);
-    if (total > stream.Size() - hsz)
+    const std::size_t skip = separate ? 0 : hsz;
+    const VtubB64 body = separate ? VtubB64(pText + head_chars, len - head_chars) : head_stream;
+    if (total > body.Size() - skip)
         throw ReadError("VTU binary data truncated");
     const std::size_t isz = dtype_size(dt);
     const std::size_t n = isz ? static_cast<std::size_t>(total) / isz : 0;
     NDArray a = NDArray::Uninit(dt, {n});
     if (n)
-        stream.Decode(hsz, hsz + n * isz, reinterpret_cast<unsigned char*>(a.Data()));
+        body.Decode(skip, skip + n * isz, reinterpret_cast<unsigned char*>(a.Data()));
     return a;
 }
 
@@ -122030,7 +122079,7 @@ NDArray vtu_decode_ndarray(const char* pText, std::size_t len, std::size_t hsz, 
     for (std::uint64_t k = 0; k < num_blocks; ++k)
         comp_sizes[k] = read_uint_le(header.data() + (3 + k) * hsz, hsz);
     const std::vector<unsigned char> blockdata =
-        b64decode(pText + num_header_chars, len - num_header_chars);
+        vtub_block_data(pText, len, num_header_bytes, num_header_chars);
     std::vector<std::size_t> in_off(static_cast<std::size_t>(num_blocks) + 1, 0);
     for (std::uint64_t k = 0; k < num_blocks; ++k) {
         const std::size_t at = in_off[static_cast<std::size_t>(k)];
@@ -217670,6 +217719,12 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         if (points.Size() == 0 && h.mNumPoints > 0)
             throw ReadError("VTU: pieces disagree on the point dtype or dimension");
         mesh.AssignPoints(std::move(points));
+    } else {
+        // No piece has <Points>: every one declared NumberOfPoints="0" (the
+        // header check refuses the rest) -- a file of cells only, such as the
+        // boundary groups GiD writes beside its main export (issue #229). Its
+        // points are an empty (0, 3) array, not an absent one.
+        mesh.AssignPoints(NDArray(DType::Float64, {std::size_t{0}, std::size_t{3}}));
     }
 
     auto merged = [&](std::map<std::string, std::vector<NDArray>>& rData, const char* pWhat,
