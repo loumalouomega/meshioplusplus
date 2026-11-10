@@ -34,6 +34,7 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/adapt_volume.hpp"
+#include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
 
@@ -58,8 +59,8 @@ Mesh tet_box(std::int64_t N, double Size = 1.0) {
 // A cylinder of radius 1 and height 1: a Kuhn-split box on [-1, 1]^2 x [0, 1]
 // pushed onto the disk by the squircle map (its square's sides become arcs of
 // the unit circle), so the tetrahedra conform and the rims are smooth loops.
-Mesh tet_cylinder(std::int64_t N = 6) {
-    Mesh b = mio::box({{N, N, 2}}, {{2.0, 2.0, 1.0}}, {{-1.0, -1.0, 0.0}}, "tetra");
+Mesh tet_cylinder(std::int64_t N = 6, std::int64_t Nz = 2) {
+    Mesh b = mio::box({{N, N, Nz}}, {{2.0, 2.0, 1.0}}, {{-1.0, -1.0, 0.0}}, "tetra");
     const NDArray& p = b.Points();
     NDArray q = NDArray::Uninit(mio::DType::Float64, {b.NumPoints(), 3});
     for (std::size_t i = 0; i < b.NumPoints(); ++i) {
@@ -617,6 +618,7 @@ TEST(AdaptVolume, SmoothingRaisesTheInteriorWithoutTouchingTheBoundary) {
     for (const auto metric :
          {mio::AdaptVolumeQuality::MinDihedral, mio::AdaptVolumeQuality::Amips}) {
         AdaptVolumeOptions s;
+        s.mPreserveBoundary = true;
         s.mQualityMetric = metric;
         s.mEnableCollapse = false;
         s.mEnableSplit = false;
@@ -631,6 +633,170 @@ TEST(AdaptVolume, SmoothingRaisesTheInteriorWithoutTouchingTheBoundary) {
         EXPECT_EQ(boundary_triangles(r.mMesh), boundary_triangles(rough));
         EXPECT_NEAR(r.mVolumeAfter, r.mVolumeBefore, 1e-12);
     }
+}
+
+// --- M6: the boundary ---------------------------------------------------------------
+
+TEST(AdaptVolume, BoundarySmoothingSlidesWithinTheSidesOfABox) {
+    const CheckInvariants check;
+    AdaptVolumeOptions o;
+    o.mHmin = 0.1;
+    o.mHmax = 0.15;
+    o.mSizeArray = "h";
+    o.mEnableCollapse = false;
+    o.mEnableSmooth = false;
+    o.mEnableSwap = false;
+    const Mesh rough = adapt_volume(with_sizes(tet_box(2), 0.12), o).mMesh;
+    AdaptVolumeOptions s;
+    s.mEnableCollapse = false;
+    s.mEnableSplit = false;
+    s.mEnableSwap = false;
+    const AdaptVolumeResult r = adapt_volume(rough, s);
+    print_report("box smoothing with the boundary", r);
+    EXPECT_NE(boundary_triangles(r.mMesh), boundary_triangles(rough));  // sides smoothed
+    EXPECT_NEAR(r.mVolumeAfter, 1.0, 1e-12);  // within the planes of the box
+    EXPECT_LE(r.mMaxBoundaryDeviation, 1e-12);
+    EXPECT_GE(r.mMinDihedralAfter, r.mMinDihedralBefore);
+}
+
+TEST(AdaptVolume, CoarsensTheBoundaryOfAnOverRefinedBoxKeepingItsCornersAndEdges) {
+    const CheckInvariants check;
+    const Mesh in = tet_box(8);
+    AdaptVolumeOptions o;
+    o.mHmin = 0.3;
+    o.mHmax = 0.4;
+    const AdaptVolumeResult r = adapt_volume(in, o);
+    print_report("box 8^3, h 0.3", r);
+    EXPECT_LT(r.mNumTetsAfter, r.mNumTetsBefore / 4);
+    EXPECT_NEAR(r.mVolumeAfter, 1.0, 1e-12);
+    EXPECT_LE(r.mMaxBoundaryDeviation, 1e-12);
+    // the eight corners are still points of the mesh
+    for (const double x : {0.0, 1.0})
+        for (const double y : {0.0, 1.0})
+            for (const double z : {0.0, 1.0})
+                EXPECT_GE(find_point(r.mMesh, x, y, z), 0);
+    EXPECT_EQ(r.mNumCorners, 8);
+    EXPECT_GE(r.mMinDihedralAfter, std::min(r.mMinDihedralBefore, 10.0) - 1e-9);
+}
+
+TEST(AdaptVolume, SphereStaysWithinHausd) {
+    const CheckInvariants check;
+    const Mesh in = octree_sphere(0.04);
+    AdaptVolumeOptions o;
+    const AdaptVolumeResult r = adapt_volume(in, o);
+    print_report("octree sphere min_size 0.04", r);
+    std::printf(
+        "[ adapt    ] hmin %.3g hmax %.3g hausd %.3g, boundary deviation %.3g, volume %.6f -> "
+        "%.6f\n",
+        r.mHmin, r.mHmax, r.mHausd, r.mMaxBoundaryDeviation, r.mVolumeBefore, r.mVolumeAfter);
+    EXPECT_LE(r.mMaxBoundaryDeviation, r.mHausd);
+    EXPECT_NEAR(r.mVolumeAfter, r.mVolumeBefore, 0.01 * r.mVolumeBefore);
+    EXPECT_GE(r.mMinDihedralAfter, std::min(r.mMinDihedralBefore, 10.0) - 1e-9);
+}
+
+TEST(AdaptVolume, CylinderKeepsItsRimsAndCaps) {
+    const CheckInvariants check;
+    const Mesh in = tet_cylinder(16, 8);  // edges 0.125
+    AdaptVolumeOptions o;
+    o.mHmin = 0.25;
+    o.mHmax = 0.4;
+    const AdaptVolumeResult r = adapt_volume(in, o);
+    print_report("cylinder, h 0.25", r);
+    EXPECT_LT(r.mNumTetsAfter, r.mNumTetsBefore);
+    EXPECT_EQ(r.mNumCorners, 4);
+    EXPECT_LE(r.mMaxBoundaryDeviation, r.mHausd);
+    // the caps stay flat and every point stays inside the cylinder
+    const Mesh& m = r.mMesh;
+    for (std::size_t i = 0; i < m.NumPoints(); ++i) {
+        const double x = mio::detail::read_double(m.Points(), i * 3),
+                     y = mio::detail::read_double(m.Points(), i * 3 + 1),
+                     z = mio::detail::read_double(m.Points(), i * 3 + 2);
+        EXPECT_LE(std::hypot(x, y), 1.0 + 1e-12);
+        EXPECT_GE(z, -1e-12);
+        EXPECT_LE(z, 1.0 + 1e-12);
+    }
+}
+
+TEST(AdaptVolume, NestedShellsKeepTheirMaterials) {
+    const CheckInvariants check;
+    const Mesh a = mio::icosa_sphere(1.0, 4);
+    const Mesh b = mio::icosa_sphere(0.5, 3);
+    const Mesh both = mio::merge({&a, &b}, mio::MergeOptions{}).mMesh;
+    mio::OctreeMeshOptions oo;
+    oo.mMaxSize = 0.4;
+    oo.mMinSize = 0.05;
+    oo.mPaddingRelative = 0.05;
+    oo.mConformity = mio::OctreeMeshConformity::Cleaving;
+    const Mesh in = mio::octree_mesh(both, oo).mMesh;
+    const AdaptVolumeResult r = adapt_volume(in, AdaptVolumeOptions{});
+    print_report("nested shells (cleaving)", r);
+    const Mesh& m = r.mMesh;
+    ASSERT_TRUE(m.HasRegion("material_1", RegionKind::Cell));
+    ASSERT_TRUE(m.HasRegion("material_2", RegionKind::Cell));
+    const auto& m1 = m.Region(m.FindRegion("material_1", RegionKind::Cell));
+    const auto& m2 = m.Region(m.FindRegion("material_2", RegionKind::Cell));
+    EXPECT_GT(m1.NumEntries(), 0u);
+    EXPECT_GT(m2.NumEntries(), 0u);
+    EXPECT_EQ(m1.NumEntries() + m2.NumEntries(), m.Cells(0).NumCells());
+    ASSERT_TRUE(m.HasCellData("octree_mesh:material"));
+    // material 2 (the inner ball) stays inside the inner shell, within hausd
+    // and the input's own distance from the skin (0.05 of slack)
+    const NDArray& mat = m.CellData("octree_mesh:material", 0);
+    const NDArray& c = m.Cells(0).Conn();
+    for (std::size_t t = 0; t < m.Cells(0).NumCells(); ++t) {
+        double rmax = 0.0, rmin = 1e9;
+        for (std::size_t k = 0; k < 4; ++k) {
+            const std::size_t v = static_cast<std::size_t>(mio::detail::read_int(c, t * 4 + k));
+            const double rr = std::hypot(mio::detail::read_double(m.Points(), v * 3),
+                                         mio::detail::read_double(m.Points(), v * 3 + 1),
+                                         mio::detail::read_double(m.Points(), v * 3 + 2));
+            rmax = std::max(rmax, rr);
+            rmin = std::min(rmin, rr);
+        }
+        if (mio::detail::read_int(mat, t) == 2)
+            EXPECT_LE(rmax, 0.55);
+        else
+            EXPECT_GE(rmin, 0.45);
+    }
+    EXPECT_LE(r.mMaxBoundaryDeviation, r.mHausd);
+    for (const auto& [label, dv] : r.mRegionVolumeChange)
+        EXPECT_LE(std::abs(dv), 6.0 * r.mHausd) << label;  // hausd times the shells' area
+}
+
+TEST(AdaptVolume, ASecondRunChangesLittle) {
+    AdaptVolumeOptions o;
+    o.mHmin = 0.3;
+    o.mHmax = 0.4;
+    const AdaptVolumeResult first = adapt_volume(tet_box(8), o);
+    const AdaptVolumeResult second = adapt_volume(first.mMesh, o);
+    print_report("box 8^3 again", second);
+    // the passes keep trading edges at the 4/5 and 4/3 thresholds (measured:
+    // about a tenth of them), but the mesh they leave is about the same size
+    EXPECT_LE(std::abs(second.mNumTetsAfter - first.mNumTetsAfter), first.mNumTetsAfter / 10);
+    EXPECT_GE(second.mMinDihedralAfter, std::min(first.mMinDihedralAfter, 10.0));
+}
+
+TEST(AdaptVolume, OutputIsDeterministic) {
+    const Mesh in = octree_sphere();
+    auto digest = [](const AdaptVolumeResult& rR) {
+        meshioplusplus::bench::MeshDigest d;
+        d.Of(rR.mMesh);
+        d.U64(static_cast<std::uint64_t>(rR.mNumCollapsed));
+        d.U64(static_cast<std::uint64_t>(rR.mNumSplit));
+        d.U64(static_cast<std::uint64_t>(rR.mNumSwapped));
+        d.U64(static_cast<std::uint64_t>(rR.mNumSmoothed));
+        return d.Value();
+    };
+    const std::uint64_t first = digest(adapt_volume(in, AdaptVolumeOptions{}));
+    for (int run = 0; run < 2; ++run)
+        EXPECT_EQ(digest(adapt_volume(in, AdaptVolumeOptions{})), first);
+}
+
+TEST(AdaptVolume, RefusesATangledMesh) {
+    // two tetrahedra on the same side of their shared face
+    const Mesh m = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0.2, 0.2, 1}, {0.3, 0.3, 0.5}},
+                                 "tetra", {{0, 1, 2, 3}, {0, 2, 1, 4}});
+    EXPECT_THROW(adapt_volume(m), std::invalid_argument);
 }
 
 }  // namespace

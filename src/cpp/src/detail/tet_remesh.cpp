@@ -190,6 +190,23 @@ void TetRemeshStore::Build(std::vector<double> Xyz, std::vector<TetCorners> Tets
             face.mClassA = mClass[static_cast<std::size_t>(recs[i].mTet)];
             boundary = true;
         } else {
+            // two tetrahedra on a face lie on its two sides (exact), unless one
+            // is flat; on one side they overlap: a tangled mesh
+            const TriKey& k = recs[i].mKey;
+            auto apex = [&](std::int64_t T) {
+                for (const std::int64_t v : mTets[static_cast<std::size_t>(T)])
+                    if (v != k[0] && v != k[1] && v != k[2])
+                        return v;
+                return k[0];
+            };
+            const int s1 =
+                OrientSign(Point(k[0]), Point(k[1]), Point(k[2]), Point(apex(recs[i].mTet)));
+            const int s2 =
+                OrientSign(Point(k[0]), Point(k[1]), Point(k[2]), Point(apex(recs[i + 1].mTet)));
+            if (s1 * s2 > 0)
+                throw std::invalid_argument(
+                    "adapt_volume: two tetrahedra overlap across a face (a tangled mesh); run "
+                    "untangle first");
             const std::int32_t ca = mClass[static_cast<std::size_t>(recs[i].mTet)];
             const std::int32_t cb = mClass[static_cast<std::size_t>(recs[i + 1].mTet)];
             if (ca != cb) {

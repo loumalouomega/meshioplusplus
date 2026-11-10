@@ -36,6 +36,15 @@
  *    contract: a mesh whose every triangle is counter-clockwise by the exact
  *    `orient2d`, or `std::invalid_argument` (a degenerate, open or crossing
  *    boundary). Anything else is a finding.
+ *  - **`adapt_volume`.** The input decodes into a Kuhn-split box of one to
+ *    three cells a side whose points are perturbed the ways a remesher's
+ *    predicates and guards fail on: a few ulps off the grid, snapped onto a
+ *    plane (flat tetrahedra, as `octree_mesh`'s fix stage can leave), or
+ *    pulled towards a neighbour (slivers and caps); sizes, the Hausdorff
+ *    bound, the quality floor and the passes come from the bytes, at most
+ *    three iterations. The contract: a mesh whose every tetrahedron is
+ *    non-negative by the exact `orient3d` with finite coordinates, or
+ *    `std::invalid_argument`. Anything else is a finding.
  *
  * The target is taken from, in order: `MIO_FUZZ_TARGET` or `MIO_FUZZ_FORMAT`
  * (what tools/fuzz/run_campaign.sh sets), a `-format=<name>` or
@@ -70,11 +79,13 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
+#include "meshioplusplus/operations/adapt_volume.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
+#include "meshioplusplus/operations/primitives.hpp"
 
 namespace {
 
-enum class FuzzOpTarget { None, MeshCadSurface, TriangulatePolygon2d };
+enum class FuzzOpTarget { None, MeshCadSurface, TriangulatePolygon2d, AdaptVolume };
 
 FuzzOpTarget gTarget = FuzzOpTarget::None;
 std::filesystem::path gDir;
@@ -87,6 +98,8 @@ FuzzOpTarget fuzz_op_parse(std::string Name) {
         return FuzzOpTarget::MeshCadSurface;
     if (Name == "triangulate_polygon_2d")
         return FuzzOpTarget::TriangulatePolygon2d;
+    if (Name == "adapt_volume")
+        return FuzzOpTarget::AdaptVolume;
     return FuzzOpTarget::None;
 }
 
@@ -342,6 +355,80 @@ void fuzz_triangulate_polygon_2d(const std::uint8_t* pData, std::size_t Size) {
     }
 }
 
+void fuzz_adapt_volume(const std::uint8_t* pData, std::size_t Size) {
+    namespace mio = meshioplusplus;
+    FuzzOpBytes in(pData, Size);
+    const std::int64_t n = 1 + in.Byte() % 3;
+    mio::Mesh box = mio::box({{n, n, n}}, {{1.0, 1.0, 1.0}}, {{0.0, 0.0, 0.0}}, "tetra");
+    mio::NDArray pts = box.Points();
+    pts.MakeOwned();
+    const std::size_t np = box.NumPoints();
+    const int mode = in.Byte() % 4;
+    for (std::size_t i = 0; i < np; ++i) {
+        const std::uint8_t sel = in.Byte();
+        if (sel % 3 != 0)
+            continue;  // about a third of the points move
+        double p[3];
+        for (std::size_t d = 0; d < 3; ++d)
+            p[d] = mio::detail::read_double(pts, i * 3 + d);
+        if (mode == 0) {  // a few ulps off the grid
+            for (double& x : p)
+                x = fuzz_op_ulps(x, static_cast<std::int8_t>(in.Byte()) % 7);
+        } else if (mode == 1) {  // onto the plane z = 1/3 (no double holds it): flat tetrahedra
+            p[2] = fuzz_op_ulps(1.0 / 3.0, static_cast<std::int8_t>(in.Byte()) % 3);
+        } else if (mode == 2) {  // towards the box centre: slivers and caps
+            const double t = (in.Byte() % 64) / 64.0;
+            for (double& x : p)
+                x = x + t * (0.5 - x);
+        } else {  // a small offset on the grid of 1/64
+            for (double& x : p)
+                x += static_cast<std::int8_t>(in.Byte()) / 1024.0;
+        }
+        for (std::size_t d = 0; d < 3; ++d)
+            mio::detail::write_double(pts, i * 3 + d, p[d]);
+    }
+    mio::Mesh m;
+    m.AssignPoints(std::move(pts));
+    m.AddCellBlock("tetra", mio::NDArray(box.Cells(0).Conn()));
+    mio::AdaptVolumeOptions o;
+    const std::uint8_t flags = in.Byte();
+    o.mHmin = 0.05 + (in.Byte() % 8) * 0.05;
+    o.mHmax = o.mHmin * (1.0 + in.Byte() % 4);
+    o.mHausd = 1e-4 * (1 + in.Byte() % 64);
+    o.mQualityMin = in.Byte() % 30;
+    o.mMaxIterations = 1 + in.Byte() % 3;
+    o.mPreserveBoundary = flags & 1;
+    o.mPreserveFeatures = !(flags & 2);
+    o.mQualityMetric = static_cast<mio::AdaptVolumeQuality>((flags >> 2) % 3);
+    o.mEnableCollapse = !(flags & 16);
+    o.mEnableSplit = !(flags & 32);
+    o.mEnableSwap = !(flags & 64);
+    o.mEnableSmooth = !(flags & 128);
+    try {
+        const mio::AdaptVolumeResult r = mio::adapt_volume(m, o);
+        const mio::Mesh& out = r.mMesh;
+        const double* x = out.Points().As<double>();
+        for (std::size_t i = 0; i < out.NumPoints() * 3; ++i)
+            if (!std::isfinite(x[i]))
+                fuzz_op_finding("adapt_volume", "a coordinate is not finite");
+        for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
+            const mio::NDArray& c = out.Cells(b).Conn();
+            for (std::size_t t = 0; t < out.Cells(b).NumCells(); ++t) {
+                const double* q[4];
+                for (std::size_t k = 0; k < 4; ++k)
+                    q[k] = x + 3 * mio::detail::read_int(c, t * 4 + k);
+                // orient3d is positive when the fourth point is below: inverted
+                if (mio::detail::orient3d(q[0], q[1], q[2], q[3]) > 0.0)
+                    fuzz_op_finding("adapt_volume", "a tetrahedron is inverted");
+            }
+        }
+    } catch (const std::invalid_argument&) {
+    } catch (const std::exception& e) {
+        fuzz_op_finding("adapt_volume leaked an exception",
+                        std::string(typeid(e).name()) + ": " + e.what());
+    }
+}
+
 }  // namespace
 
 /**
@@ -353,7 +440,7 @@ extern "C" int LLVMFuzzerInitialize(int* pArgc, char*** pArgv) {
     if (gTarget == FuzzOpTarget::None) {
         std::fprintf(stderr,
                      "meshioplusplus_fuzz_ops: unknown target; known: "
-                     "mesh_cad_surface triangulate_polygon_2d\n");
+                     "mesh_cad_surface triangulate_polygon_2d adapt_volume\n");
         std::exit(2);
     }
     gDir = std::filesystem::temp_directory_path() /
@@ -368,6 +455,8 @@ extern "C" int LLVMFuzzerInitialize(int* pArgc, char*** pArgv) {
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* pData, std::size_t size) {
     if (gTarget == FuzzOpTarget::MeshCadSurface)
         fuzz_mesh_cad_surface(pData, size);
+    else if (gTarget == FuzzOpTarget::AdaptVolume)
+        fuzz_adapt_volume(pData, size);
     else
         fuzz_triangulate_polygon_2d(pData, size);
     return 0;

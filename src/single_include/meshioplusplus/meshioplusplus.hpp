@@ -120251,6 +120251,23 @@ void TetRemeshStore::Build(std::vector<double> Xyz, std::vector<TetCorners> Tets
             face.mClassA = mClass[static_cast<std::size_t>(recs[i].mTet)];
             boundary = true;
         } else {
+            // two tetrahedra on a face lie on its two sides (exact), unless one
+            // is flat; on one side they overlap: a tangled mesh
+            const TriKey& k = recs[i].mKey;
+            auto apex = [&](std::int64_t T) {
+                for (const std::int64_t v : mTets[static_cast<std::size_t>(T)])
+                    if (v != k[0] && v != k[1] && v != k[2])
+                        return v;
+                return k[0];
+            };
+            const int s1 =
+                OrientSign(Point(k[0]), Point(k[1]), Point(k[2]), Point(apex(recs[i].mTet)));
+            const int s2 =
+                OrientSign(Point(k[0]), Point(k[1]), Point(k[2]), Point(apex(recs[i + 1].mTet)));
+            if (s1 * s2 > 0)
+                throw std::invalid_argument(
+                    "adapt_volume: two tetrahedra overlap across a face (a tangled mesh); run "
+                    "untangle first");
             const std::int32_t ca = mClass[static_cast<std::size_t>(recs[i].mTet)];
             const std::int32_t cb = mClass[static_cast<std::size_t>(recs[i + 1].mTet)];
             if (ca != cb) {
@@ -227501,11 +227518,13 @@ void ndarray_heap_free(void* pPtr) noexcept {
 #include <array>
 #include <chrono>
 #include <cstdlib>
+#include <cstdio>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <memory>
 #include <queue>
 #include <stdexcept>
 #include <string>
@@ -227636,6 +227655,16 @@ private:
     double mQualityMin = 0.0;
     double mEpsVol6 = 0.0;
     std::map<std::string, double> mTimes;
+    // the reference skin: the input's boundary and interfaces, by patch
+    detail::TriangleSoup mRefSoup;
+    std::unique_ptr<detail::DistanceQuery> mRefQuery;
+    std::vector<std::int32_t> mRefPatch;
+    std::vector<std::array<std::int64_t, 3>> mRefTriangles;
+    double mCosNormal = 0.0;
+    /// Reference vertices, edge midpoints and centroids, and a grid over them
+    /// (the reverse half of the Hausdorff bound).
+    std::vector<Vec3> mRefSamples;
+    std::unique_ptr<detail::SpatialGrid> mRefGrid;
     std::vector<std::uint32_t> mVersion;  ///< per vertex, bumped by every edit of its star
     bool mCheck = false;  ///< MESHIOPLUSPLUS_ADAPT_VOLUME_CHECK: verify after each pass
     std::vector<TetCorners> mFlatKeys;  ///< input tetrahedra that were already flat, sorted
@@ -227691,6 +227720,38 @@ private:
                           std::vector<detail::TetFlipTet>& rFixed,
                           std::vector<std::int32_t>& rFixedClass);
     std::int64_t SwapPass();
+
+    // the boundary: reference skin, envelope, normals
+    void BuildReference();
+    /// The nearest point of patch @p Patch of the reference skin to @p rP.
+    bool ProjectToPatch(const Vec3& rP, std::int32_t Patch, Vec3& rOut) const;
+    /// Every sample of every triangle within hausd of its patch of the reference.
+    bool InEnvelope(const std::vector<std::array<Vec3, 3>>& rTris,
+                    const std::vector<std::int32_t>& rPatches) const;
+    /// The boundary faces of V (each wound outward from its class-A side) and
+    /// the same faces with V at @p rP, their patches, and whether every face's
+    /// normal turns by at most the bound.
+    /**
+     * @brief The reverse half of the bound: every reference sample within
+     * hausd of the faces @p rOld stays within max(0.9 hausd, its distance to
+     * them) of @p rNew or of the boundary faces around the vertices of
+     * @p rAround other than @p rReplaced (sorted), the faces the edit replaces.
+     */
+    bool ReverseCovered(const std::vector<std::array<Vec3, 3>>& rOld,
+                        const std::vector<std::array<Vec3, 3>>& rNew,
+                        const std::vector<std::int64_t>& rAround,
+                        const std::vector<TriKey>& rReplaced);
+    /// The current geometry of the boundary faces @p rKeys.
+    std::vector<std::array<Vec3, 3>> FaceGeometry(const std::vector<TriKey>& rKeys) const;
+    bool MovedFaces(std::int64_t V, std::int64_t Onto, const Vec3& rP,
+                    std::vector<std::array<Vec3, 3>>& rNew, std::vector<std::int32_t>& rPatches);
+    AdvReject BoundaryCollapse(std::int64_t A, std::int64_t B);
+    void CommitBoundaryCollapse(std::int64_t A, std::int64_t B);
+    std::int64_t BoundarySmoothPass();
+    /// The star of V stays positive with V at rP and its least quality is at least @p Floor.
+    bool StarValid(std::int64_t V, const Vec3& rP, double Floor) const;
+    double StarMinQuality(std::int64_t V) const;
+    double BoundaryDeviation() const;
 
     // smoothing
     /// Per class, 0 for the interior vertices of that class a smoothing may move.
@@ -228235,11 +228296,23 @@ AdvReject AdvRemesher::LinkCondition(std::int64_t A, std::int64_t B) {
 // a -> b (a removed, its tetrahedra moved onto b); nothing is changed.
 AdvReject AdvRemesher::TryCollapse(std::int64_t A, std::int64_t B) {
     const std::size_t a = static_cast<std::size_t>(A);
-    if (mStore.mFrozen[a] || mStore.Kind(A) != TetVertexKind::Interior)
+    const TetVertexKind ka = mStore.Kind(A);
+    if (mStore.mFrozen[a] || ka == TetVertexKind::Corner)
         return AdvReject::Class;
     mStore.SharedTets(A, B, mScratchShared);
     if (mScratchShared.empty())
         return AdvReject::NotEdge;
+    // a surface vertex moves along an edge of its patch, a ridge vertex along its chain
+    if (ka == TetVertexKind::Surface) {
+        EdgeBoundaryFaces(A, B, mScratchFaces);
+        if (mScratchFaces.size() != 2)
+            return AdvReject::Class;
+        for (const TriKey& k : mScratchFaces)
+            if (mStore.mBoundary.at(k).mPatch != mStore.mFeature[a])
+                return AdvReject::Class;
+    } else if (ka == TetVertexKind::Ridge && mStore.RidgeChain(A, B) != mStore.mFeature[a]) {
+        return AdvReject::Class;
+    }
     if (const AdvReject r = LinkCondition(A, B); r != AdvReject::None)
         return r;
     // the tetrahedra that move, and their orientation (exact)
@@ -228272,11 +228345,15 @@ AdvReject AdvRemesher::TryCollapse(std::int64_t A, std::int64_t B) {
     }
     if (new_min < std::min(old_min, mQualityMin))
         return AdvReject::Quality;
+    if (ka != TetVertexKind::Interior)
+        return BoundaryCollapse(A, B);
     return AdvReject::None;
 }
 
 void AdvRemesher::CommitCollapse(std::int64_t A, std::int64_t B) {
     const std::size_t a = static_cast<std::size_t>(A);
+    if (mStore.Kind(A) != TetVertexKind::Interior)
+        CommitBoundaryCollapse(A, B);
     mStore.SharedTets(A, B, mScratchShared);
     for (const std::int64_t t : mScratchShared)
         mStore.KillTet(t);
@@ -228400,25 +228477,84 @@ AdvReject AdvRemesher::TrySplit(std::int64_t A, std::int64_t B, Vec3& rP, double
     const std::size_t a = static_cast<std::size_t>(A), b = static_cast<std::size_t>(B);
     rT = SizeFieldUtils::MidpointParameter(mStore.mSize[a], mStore.mSize[b]);
     const Vec3 pa = mStore.Point(A), pb = mStore.Point(B);
-    rP = detail::vec3_add(pa, detail::vec3_scale(detail::vec3_sub(pb, pa), rT));
-    double old_min = std::numeric_limits<double>::infinity();
-    double new_min = std::numeric_limits<double>::infinity();
-    for (const std::int64_t t : mScratchShared) {
-        const TetCorners& c = mStore.mTets[static_cast<std::size_t>(t)];
-        old_min = std::min(old_min, TetQuality(c));
-        for (const std::int64_t replaced : {B, A}) {
-            Vec3 q[4];
-            for (int k = 0; k < 4; ++k)
-                q[k] = c[k] == replaced ? rP : mStore.Point(c[k]);
-            if (detail::tet_volume6(q[0], q[1], q[2], q[3]) <= mEpsVol6 ||
-                !TetRemeshStore::Positive(q[0], q[1], q[2], q[3]))
-                return AdvReject::Inversion;
-            new_min = std::min(new_min, Quality(q[0], q[1], q[2], q[3]));
+    const Vec3 mid = detail::vec3_add(pa, detail::vec3_scale(detail::vec3_sub(pb, pa), rT));
+    // every child positive and no worse than the floor, with the new vertex at rQ
+    auto children = [&](const Vec3& rQ) {
+        double old_min = std::numeric_limits<double>::infinity();
+        double new_min = std::numeric_limits<double>::infinity();
+        for (const std::int64_t t : mScratchShared) {
+            const TetCorners& c = mStore.mTets[static_cast<std::size_t>(t)];
+            old_min = std::min(old_min, TetQuality(c));
+            for (const std::int64_t replaced : {B, A}) {
+                Vec3 q[4];
+                for (int k = 0; k < 4; ++k)
+                    q[k] = c[k] == replaced ? rQ : mStore.Point(c[k]);
+                if (detail::tet_volume6(q[0], q[1], q[2], q[3]) <= mEpsVol6 ||
+                    !TetRemeshStore::Positive(q[0], q[1], q[2], q[3]))
+                    return AdvReject::Inversion;
+                new_min = std::min(new_min, Quality(q[0], q[1], q[2], q[3]));
+            }
+        }
+        if (new_min < std::min(old_min, mQualityMin))
+            return AdvReject::Quality;
+        return AdvReject::None;
+    };
+    // a boundary edge: its midpoint on the chain, or projected onto its patch,
+    // when the children, the normals and the envelope allow; else the midpoint
+    if (!mScratchFaces.empty()) {
+        Vec3 proj{0.0, 0.0, 0.0};
+        bool have = false;
+        const std::int32_t chain = mStore.RidgeChain(A, B);
+        if (chain >= 0) {
+            const double sa = mStore.ChainParam(A, chain, mStore.ChainParam(B, chain, 0.0));
+            const double sb = mStore.ChainParam(B, chain, sa);
+            proj = mStore.mChains[static_cast<std::size_t>(chain)].Eval(sa + (sb - sa) * rT);
+            have = true;
+        } else {
+            const std::int32_t patch = mStore.mBoundary.at(mScratchFaces.front()).mPatch;
+            bool one_patch = true;
+            for (const TriKey& k : mScratchFaces)
+                one_patch = one_patch && mStore.mBoundary.at(k).mPatch == patch;
+            have = one_patch && ProjectToPatch(mid, patch, proj);
+        }
+        if (have && children(proj) == AdvReject::None) {
+            std::vector<std::array<Vec3, 3>> faces;
+            std::vector<std::int32_t> patches;
+            bool ok = true;
+            for (const TriKey& k : mScratchFaces) {
+                const auto o = mStore.OrientedFace(k);
+                std::array<Vec3, 3> old{};
+                for (std::size_t i = 0; i < 3; ++i)
+                    old[i] = mStore.Point(o[i]);
+                const Vec3 n0 = detail::vec3_cross(detail::vec3_sub(old[1], old[0]),
+                                                   detail::vec3_sub(old[2], old[0]));
+                for (const std::int64_t replaced : {B, A}) {
+                    std::array<Vec3, 3> f = old;
+                    for (std::size_t i = 0; i < 3; ++i)
+                        if (o[i] == replaced)
+                            f[i] = proj;
+                    const Vec3 n1 = detail::vec3_cross(detail::vec3_sub(f[1], f[0]),
+                                                       detail::vec3_sub(f[2], f[0]));
+                    const double l0 = detail::vec3_norm(n0), l1 = detail::vec3_norm(n1);
+                    ok = ok && l1 > 0.0 && detail::vec3_dot(n0, n1) >= mCosNormal * l0 * l1;
+                    faces.push_back(f);
+                    patches.push_back(mStore.mBoundary.at(k).mPatch);
+                }
+            }
+            std::vector<std::int64_t> around{A, B};
+            for (const TriKey& k : mScratchFaces)
+                around.insert(around.end(), k.begin(), k.end());
+            std::sort(around.begin(), around.end());
+            around.erase(std::unique(around.begin(), around.end()), around.end());
+            if (ok && InEnvelope(faces, patches) &&
+                ReverseCovered(FaceGeometry(mScratchFaces), faces, around, mScratchFaces)) {
+                rP = proj;
+                return AdvReject::None;
+            }
         }
     }
-    if (new_min < std::min(old_min, mQualityMin))
-        return AdvReject::Quality;
-    return AdvReject::None;
+    rP = mid;
+    return children(mid);
 }
 
 void AdvRemesher::CommitSplit(std::int64_t A, std::int64_t B, const Vec3& rP, double T) {
@@ -228601,6 +228737,441 @@ std::int64_t AdvRemesher::SwapPass() {
     return applied;
 }
 
+// --- the boundary ------------------------------------------------------------------
+
+void AdvRemesher::BuildReference() {
+    std::vector<TriKey> keys;
+    keys.reserve(mStore.mBoundary.size());
+    for (const auto& kv : mStore.mBoundary)
+        keys.push_back(kv.first);
+    std::sort(keys.begin(), keys.end());
+    mCosNormal = std::cos(mrOptions.mMaxNormalDeviation * 3.14159265358979323846 / 180.0);
+    if (keys.empty())
+        return;
+    const std::size_t n = mStore.NumVertices();
+    mRefSoup.mPoints.resize(n);
+    for (std::size_t v = 0; v < n; ++v)
+        mRefSoup.mPoints[v] = mStore.Point(static_cast<std::int64_t>(v));
+    for (std::size_t f = 0; f < keys.size(); ++f) {
+        const auto o = mStore.OrientedFace(keys[f]);
+        mRefTriangles.push_back(o);
+        for (const std::int64_t v : o)
+            mRefSoup.mCorners.push_back(mStore.Point(v));
+        mRefSoup.mVertices.push_back(o);
+        mRefSoup.mSourceCell.push_back(static_cast<std::int64_t>(f));
+        mRefPatch.push_back(mStore.mBoundary.at(keys[f]).mPatch);
+    }
+    SurfaceDistanceOptions so;
+    so.mWatertightCheck = SdfWatertightCheck::Off;
+    mRefQuery = std::make_unique<detail::DistanceQuery>(detail::build_distance_query(mRefSoup, so));
+
+    // reverse samples: every used vertex, edge midpoint and centroid
+    std::vector<std::uint8_t> used(n, 0);
+    std::vector<std::uint64_t> edges;
+    double edge_sum = 0.0;
+    for (const auto& t : mRefTriangles) {
+        Vec3 c{0.0, 0.0, 0.0};
+        for (std::size_t i = 0; i < 3; ++i) {
+            used[static_cast<std::size_t>(t[i])] = 1;
+            c = detail::vec3_add(c, mStore.Point(t[i]));
+            edges.push_back(detail::edge_key64(t[i], t[(i + 1) % 3]));
+        }
+        mRefSamples.push_back(detail::vec3_scale(c, 1.0 / 3.0));
+    }
+    std::sort(edges.begin(), edges.end());
+    edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+    for (const std::uint64_t e : edges) {
+        const Vec3 pa = mStore.Point(static_cast<std::int64_t>(e >> 32));
+        const Vec3 pb = mStore.Point(static_cast<std::int64_t>(e & 0xFFFFFFFFull));
+        mRefSamples.push_back(detail::vec3_scale(detail::vec3_add(pa, pb), 0.5));
+        edge_sum += detail::vec3_norm(detail::vec3_sub(pa, pb));
+    }
+    for (std::size_t v = 0; v < n; ++v)
+        if (used[v])
+            mRefSamples.push_back(mStore.Point(static_cast<std::int64_t>(v)));
+    const double cell =
+        edges.empty() ? mDiagonal
+                      : std::max(edge_sum / static_cast<double>(edges.size()), 1e-12 * mDiagonal);
+    mRefGrid = std::make_unique<detail::SpatialGrid>(cell);
+    for (std::size_t i = 0; i < mRefSamples.size(); ++i)
+        mRefGrid->Insert(mRefGrid->KeyOf(mRefSamples[i].data()), static_cast<std::int64_t>(i));
+}
+
+std::vector<std::array<Vec3, 3>> AdvRemesher::FaceGeometry(const std::vector<TriKey>& rKeys) const {
+    std::vector<std::array<Vec3, 3>> out;
+    out.reserve(rKeys.size());
+    for (const TriKey& k : rKeys)
+        out.push_back({mStore.Point(k[0]), mStore.Point(k[1]), mStore.Point(k[2])});
+    return out;
+}
+
+bool AdvRemesher::ReverseCovered(const std::vector<std::array<Vec3, 3>>& rOld,
+                                 const std::vector<std::array<Vec3, 3>>& rNew,
+                                 const std::vector<std::int64_t>& rAround,
+                                 const std::vector<TriKey>& rReplaced) {
+    if (!mRefGrid || rOld.empty())
+        return true;
+    Vec3 lo = rOld[0][0], hi = rOld[0][0];
+    for (const auto& f : rOld)
+        for (const Vec3& p : f)
+            for (std::size_t d = 0; d < 3; ++d) {
+                lo[d] = std::min(lo[d], p[d]);
+                hi[d] = std::max(hi[d], p[d]);
+            }
+    for (std::size_t d = 0; d < 3; ++d) {
+        lo[d] -= mHausd;
+        hi[d] += mHausd;
+    }
+    auto dist2 = [](const Vec3& rP, const std::vector<std::array<Vec3, 3>>& rFaces) {
+        double best = std::numeric_limits<double>::infinity();
+        for (const auto& f : rFaces)
+            best =
+                std::min(best, detail::closest_point_on_triangle(rP, f[0], f[1], f[2]).mDistanceSq);
+        return best;
+    };
+    // the unchanged faces around: boundary faces of the vertices around, minus
+    // the ones the edit replaces
+    std::vector<TriKey> around, faces;
+    for (const std::int64_t v : rAround) {
+        mStore.BoundaryFacesOf(v, faces);
+        for (const TriKey& k : faces)
+            if (!std::binary_search(rReplaced.begin(), rReplaced.end(), k))
+                around.push_back(k);
+    }
+    std::sort(around.begin(), around.end());
+    around.erase(std::unique(around.begin(), around.end()), around.end());
+    std::vector<std::array<Vec3, 3>> keep = rNew;
+    const auto unchanged = FaceGeometry(around);
+    keep.insert(keep.end(), unchanged.begin(), unchanged.end());
+    const double h2 = mHausd * mHausd, margin2 = 0.81 * h2;
+    bool ok = true;
+    std::vector<std::int64_t> seen;
+    mRefGrid->ForEachInBox(mRefGrid->KeyOf(lo.data()), mRefGrid->KeyOf(hi.data()),
+                           [&](const std::vector<std::int64_t>& rIds) {
+                               for (const std::int64_t i : rIds) {
+                                   if (!ok)
+                                       return;
+                                   const Vec3& p = mRefSamples[static_cast<std::size_t>(i)];
+                                   bool inside = true;
+                                   for (std::size_t d = 0; d < 3; ++d)
+                                       inside = inside && p[d] >= lo[d] && p[d] <= hi[d];
+                                   if (!inside)
+                                       continue;
+                                   const double before = dist2(p, rOld);
+                                   if (before > h2)
+                                       continue;
+                                   if (dist2(p, keep) > std::max(margin2, before))
+                                       ok = false;
+                               }
+                           });
+    return ok;
+}
+
+bool AdvRemesher::ProjectToPatch(const Vec3& rP, std::int32_t Patch, Vec3& rOut) const {
+    if (!mRefQuery)
+        return false;
+    const auto hits = detail::query_surface_projections_filtered(
+        *mRefQuery, {rP},
+        [&](std::size_t, std::int64_t T) {
+            return mRefPatch[static_cast<std::size_t>(T)] == Patch;
+        },
+        std::numeric_limits<double>::infinity());
+    if (!hits[0].mFound)
+        return false;
+    rOut = hits[0].mPoint;
+    return true;
+}
+
+bool AdvRemesher::InEnvelope(const std::vector<std::array<Vec3, 3>>& rTris,
+                             const std::vector<std::int32_t>& rPatches) const {
+    if (!mRefQuery || rTris.empty())
+        return true;
+    // a barycentric grid per face, its spacing at most hausd (2 to 6
+    // subdivisions), every sample within 0.9 hausd of the face's patch: the
+    // margin covers the face between the samples
+    std::vector<Vec3> pts;
+    std::vector<std::int32_t> patch_of;
+    for (std::size_t f = 0; f < rTris.size(); ++f) {
+        const auto& t = rTris[f];
+        double lmax = 0.0;
+        for (std::size_t i = 0; i < 3; ++i)
+            lmax = std::max(lmax, detail::vec3_norm(detail::vec3_sub(t[(i + 1) % 3], t[i])));
+        const int n = std::clamp(static_cast<int>(std::ceil(lmax / mHausd)), 2, 6);
+        for (int i = 0; i <= n; ++i)
+            for (int j = 0; i + j <= n; ++j) {
+                const double u = static_cast<double>(i) / n, v = static_cast<double>(j) / n;
+                const double w = 1.0 - u - v;
+                pts.push_back(detail::vec3_add(
+                    detail::vec3_add(detail::vec3_scale(t[0], w), detail::vec3_scale(t[1], u)),
+                    detail::vec3_scale(t[2], v)));
+                patch_of.push_back(rPatches[f]);
+            }
+    }
+    const auto hits = detail::query_surface_projections_filtered(
+        *mRefQuery, pts,
+        [&](std::size_t Q, std::int64_t T) {
+            return mRefPatch[static_cast<std::size_t>(T)] == patch_of[Q];
+        },
+        0.9 * mHausd);
+    for (const auto& h : hits)
+        if (!h.mFound)
+            return false;
+    return true;
+}
+
+bool AdvRemesher::MovedFaces(std::int64_t V, std::int64_t Onto, const Vec3& rP,
+                             std::vector<std::array<Vec3, 3>>& rNew,
+                             std::vector<std::int32_t>& rPatches) {
+    rNew.clear();
+    rPatches.clear();
+    mStore.BoundaryFacesOf(V, mScratchTriA);
+    for (const TriKey& k : mScratchTriA) {
+        if (Onto >= 0 && (k[0] == Onto || k[1] == Onto || k[2] == Onto))
+            continue;  // vanishes with the collapse
+        const auto o = mStore.OrientedFace(k);
+        std::array<Vec3, 3> before{}, after{};
+        for (std::size_t i = 0; i < 3; ++i) {
+            before[i] = mStore.Point(o[i]);
+            after[i] = o[i] == V ? rP : before[i];
+        }
+        const Vec3 n0 = detail::vec3_cross(detail::vec3_sub(before[1], before[0]),
+                                           detail::vec3_sub(before[2], before[0]));
+        const Vec3 n1 = detail::vec3_cross(detail::vec3_sub(after[1], after[0]),
+                                           detail::vec3_sub(after[2], after[0]));
+        const double l0 = detail::vec3_norm(n0), l1 = detail::vec3_norm(n1);
+        if (!(l1 > 0.0))
+            return false;
+        if (l0 > 0.0 && detail::vec3_dot(n0, n1) < mCosNormal * l0 * l1)
+            return false;
+        rNew.push_back(after);
+        rPatches.push_back(mStore.mBoundary.at(k).mPatch);
+    }
+    return true;
+}
+
+// The boundary half of a collapse of a boundary vertex a onto b: the boundary
+// link condition (the vertices sharing a boundary face with both a and b are
+// exactly the far corners of the boundary faces through ab, and no two
+// boundary faces become one), the normals, and the envelope both ways.
+AdvReject AdvRemesher::BoundaryCollapse(std::int64_t A, std::int64_t B) {
+    mStore.BoundaryFacesOf(A, mScratchTriA);
+    mStore.BoundaryFacesOf(B, mScratchTriB);
+    auto ring = [](const std::vector<TriKey>& rFaces, std::int64_t V) {
+        std::vector<std::int64_t> r;
+        for (const TriKey& k : rFaces)
+            for (const std::int64_t x : k)
+                if (x != V)
+                    r.push_back(x);
+        std::sort(r.begin(), r.end());
+        r.erase(std::unique(r.begin(), r.end()), r.end());
+        return r;
+    };
+    const std::vector<std::int64_t> ra = ring(mScratchTriA, A), rb = ring(mScratchTriB, B);
+    std::vector<std::int64_t> common, opposite;
+    std::set_intersection(ra.begin(), ra.end(), rb.begin(), rb.end(), std::back_inserter(common));
+    for (const TriKey& k : mScratchTriA)
+        if (k[0] == B || k[1] == B || k[2] == B)
+            for (const std::int64_t x : k)
+                if (x != A && x != B)
+                    opposite.push_back(x);
+    std::sort(opposite.begin(), opposite.end());
+    opposite.erase(std::unique(opposite.begin(), opposite.end()), opposite.end());
+    common.erase(std::remove(common.begin(), common.end(), A), common.end());
+    common.erase(std::remove(common.begin(), common.end(), B), common.end());
+    if (common != opposite)
+        return AdvReject::Link;
+    for (const TriKey& k : mScratchTriA) {
+        if (k[0] == B || k[1] == B || k[2] == B)
+            continue;
+        std::int64_t o[2];
+        int i = 0;
+        for (const std::int64_t x : k)
+            if (x != A)
+                o[i++] = x;
+        if (mStore.mBoundary.count(detail::tri_key(B, o[0], o[1])))
+            return AdvReject::Link;
+    }
+    std::vector<std::array<Vec3, 3>> faces;
+    std::vector<std::int32_t> patches;
+    if (!MovedFaces(A, B, mStore.Point(B), faces, patches))
+        return AdvReject::Normal;
+    if (!InEnvelope(faces, patches))
+        return AdvReject::Hausdorff;
+    // the other way: the reference the old faces covered stays covered
+    mStore.BoundaryFacesOf(A, mScratchTriA);
+    if (!ReverseCovered(FaceGeometry(mScratchTriA), faces, ra, mScratchTriA))
+        return AdvReject::Hausdorff;
+    return AdvReject::None;
+}
+
+void AdvRemesher::CommitBoundaryCollapse(std::int64_t A, std::int64_t B) {
+    std::vector<TriKey> faces;
+    mStore.BoundaryFacesOf(A, faces);
+    for (const TriKey& k : faces) {
+        const detail::TetBoundaryFace face = mStore.mBoundary.at(k);
+        mStore.mBoundary.erase(k);
+        if (k[0] == B || k[1] == B || k[2] == B)
+            continue;
+        std::int64_t o[2];
+        int i = 0;
+        for (const std::int64_t x : k)
+            if (x != A)
+                o[i++] = x;
+        mStore.mBoundary.emplace(detail::tri_key(B, o[0], o[1]), face);
+    }
+    std::vector<std::int64_t> ring;
+    mStore.VertexRing(A, ring);
+    for (const std::int64_t x : ring) {
+        const std::int32_t chain = mStore.RidgeChain(A, x);
+        if (chain < 0)
+            continue;
+        mStore.mRidgeEdges.erase(detail::edge_key64(A, x));
+        if (x != B)
+            mStore.mRidgeEdges[detail::edge_key64(B, x)] = chain;
+    }
+}
+
+double AdvRemesher::StarMinQuality(std::int64_t V) const {
+    double m = std::numeric_limits<double>::infinity();
+    for (const std::int64_t t : mStore.mVertexTets[static_cast<std::size_t>(V)])
+        m = std::min(m, TetQuality(mStore.mTets[static_cast<std::size_t>(t)]));
+    return m;
+}
+
+bool AdvRemesher::StarValid(std::int64_t V, const Vec3& rP, double Floor) const {
+    for (const std::int64_t t : mStore.mVertexTets[static_cast<std::size_t>(V)]) {
+        const TetCorners& c = mStore.mTets[static_cast<std::size_t>(t)];
+        Vec3 q[4];
+        for (int k = 0; k < 4; ++k)
+            q[k] = c[k] == V ? rP : mStore.Point(c[k]);
+        if (detail::tet_volume6(q[0], q[1], q[2], q[3]) <= mEpsVol6 ||
+            !TetRemeshStore::Positive(q[0], q[1], q[2], q[3]))
+            return false;
+        if (Quality(q[0], q[1], q[2], q[3]) < Floor)
+            return false;
+    }
+    return true;
+}
+
+// Surface vertices slide half way to the mean of their boundary neighbours
+// along the tangent plane and back onto their patch of the reference skin;
+// ridge vertices slide half way to the middle of their two chain neighbours,
+// along the chain. A move is kept when the star's least quality does not
+// drop, every normal turns by at most the bound and the faces stay within
+// hausd of their patch.
+std::int64_t AdvRemesher::BoundarySmoothPass() {
+    std::int64_t moved = 0;
+    std::vector<TriKey> faces;
+    std::vector<std::array<Vec3, 3>> new_faces;
+    std::vector<std::int32_t> patches;
+    std::vector<std::int64_t> ring;
+    for (std::size_t v = 0; v < mStore.NumVertices(); ++v) {
+        const std::int64_t V = static_cast<std::int64_t>(v);
+        const TetVertexKind kind = mStore.Kind(V);
+        if (!mStore.mVertexAlive[v] || mStore.mFrozen[v] ||
+            (kind != TetVertexKind::Surface && kind != TetVertexKind::Ridge))
+            continue;
+        const Vec3 p0 = mStore.Point(V);
+        Vec3 target{0.0, 0.0, 0.0};
+        double param = mStore.mChainParam[v];
+        if (kind == TetVertexKind::Surface) {
+            mStore.BoundaryFacesOf(V, faces);
+            Vec3 normal{0.0, 0.0, 0.0}, mean{0.0, 0.0, 0.0};
+            std::vector<std::int64_t> nb;
+            for (const TriKey& k : faces) {
+                const auto o = mStore.OrientedFace(k);
+                normal = detail::vec3_add(
+                    normal,
+                    detail::vec3_cross(detail::vec3_sub(mStore.Point(o[1]), mStore.Point(o[0])),
+                                       detail::vec3_sub(mStore.Point(o[2]), mStore.Point(o[0]))));
+                for (const std::int64_t x : k)
+                    if (x != V)
+                        nb.push_back(x);
+            }
+            std::sort(nb.begin(), nb.end());
+            nb.erase(std::unique(nb.begin(), nb.end()), nb.end());
+            if (nb.empty())
+                continue;
+            for (const std::int64_t x : nb)
+                mean = detail::vec3_add(mean, mStore.Point(x));
+            mean = detail::vec3_scale(mean, 1.0 / static_cast<double>(nb.size()));
+            const Vec3 n = detail::vec3_normalize(normal);
+            Vec3 d = detail::vec3_scale(detail::vec3_sub(mean, p0), 0.5);
+            d = detail::vec3_sub(d, detail::vec3_scale(n, detail::vec3_dot(d, n)));
+            if (!ProjectToPatch(detail::vec3_add(p0, d), mStore.mFeature[v], target))
+                continue;
+        } else {
+            const std::int32_t chain = mStore.mFeature[v];
+            mStore.VertexRing(V, ring);
+            std::vector<double> s;
+            for (const std::int64_t x : ring)
+                if (mStore.RidgeChain(V, x) == chain)
+                    s.push_back(mStore.ChainParam(x, chain, param));
+            if (s.size() != 2)
+                continue;
+            param = param + 0.5 * (0.5 * (s[0] + s[1]) - param);
+            target = mStore.mChains[static_cast<std::size_t>(chain)].Eval(param);
+        }
+        if (detail::vec3_norm_sq(detail::vec3_sub(target, p0)) <= 0.0)
+            continue;
+        if (!StarValid(V, target, StarMinQuality(V)))
+            continue;
+        if (!MovedFaces(V, -1, target, new_faces, patches) || !InEnvelope(new_faces, patches))
+            continue;
+        mStore.BoundaryFacesOf(V, faces);
+        std::vector<std::int64_t> around;
+        for (const TriKey& k : faces)
+            around.insert(around.end(), k.begin(), k.end());
+        std::sort(around.begin(), around.end());
+        around.erase(std::unique(around.begin(), around.end()), around.end());
+        if (!ReverseCovered(FaceGeometry(faces), new_faces, around, faces))
+            continue;
+        mStore.SetPoint(V, target);
+        if (kind == TetVertexKind::Ridge)
+            mStore.mChainParam[v] = param;
+        ++mVersion[v];
+        ++moved;
+    }
+    return moved;
+}
+
+double AdvRemesher::BoundaryDeviation() const {
+    if (mRefTriangles.empty())
+        return 0.0;
+    auto skin = [](const std::vector<double>& rXyz, std::size_t N,
+                   const std::vector<std::array<std::int64_t, 3>>& rTris) {
+        Mesh m;
+        NDArray pts = NDArray::Uninit(DType::Float64, {N, 3});
+        std::copy(rXyz.begin(), rXyz.begin() + static_cast<std::ptrdiff_t>(N * 3),
+                  pts.As<double>());
+        m.AssignPoints(std::move(pts));
+        NDArray conn = NDArray::Uninit(DType::Int64, {rTris.size(), 3});
+        std::int64_t* c = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < rTris.size(); ++i)
+            for (std::size_t k = 0; k < 3; ++k)
+                c[i * 3 + k] = rTris[i][k];
+        m.AddCellBlock(cell_type_name(CellType::Triangle), std::move(conn));
+        return m;
+    };
+    std::vector<double> ref(mRefSoup.mPoints.size() * 3);
+    for (std::size_t v = 0; v < mRefSoup.mPoints.size(); ++v)
+        for (std::size_t d = 0; d < 3; ++d)
+            ref[v * 3 + d] = mRefSoup.mPoints[v][d];
+    std::vector<TriKey> keys;
+    for (const auto& kv : mStore.mBoundary)
+        keys.push_back(kv.first);
+    std::sort(keys.begin(), keys.end());
+    std::vector<std::array<std::int64_t, 3>> now;
+    for (const TriKey& k : keys)
+        now.push_back(mStore.OrientedFace(k));
+    HausdorffOptions ho;
+    ho.mFaceSamples = 4;
+    const HausdorffResult h =
+        hausdorff_distance(skin(mStore.mXyz, mStore.NumVertices(), now),
+                           skin(ref, mRefSoup.mPoints.size(), mRefTriangles), ho);
+    return h.mDistance;
+}
+
 // --- smoothing -------------------------------------------------------------------
 
 std::vector<std::uint8_t> AdvRemesher::InteriorPins(std::int32_t Class) const {
@@ -228628,7 +229199,7 @@ std::int64_t AdvRemesher::SmoothInteriorPass(bool Odt) {
     so.mMethod = SmoothMethod::Odt;
     so.mIterations = 1;
     so.mGuardInversion = true;
-    std::int64_t moved = 0;
+    const std::vector<double> before = mStore.mXyz;
     for (std::size_t c = 0; c < by_class.size(); ++c) {
         if (by_class[c].empty())
             continue;
@@ -228636,10 +229207,59 @@ std::int64_t AdvRemesher::SmoothInteriorPass(bool Odt) {
         if (std::find(pinned.begin(), pinned.end(), 0) == pinned.end())
             continue;
         if (Odt)
-            moved += detail::tet_flip_guarded_odt(mStore.mXyz, by_class[c], pinned, so, mEpsVol6);
-        moved += detail::tet_flip_smooth_worst(mStore.mXyz, by_class[c], pinned, mEpsVol6,
-                                               kAdvWorstThresholdDeg);
+            detail::tet_flip_guarded_odt(mStore.mXyz, by_class[c], pinned, so, mEpsVol6);
+        detail::tet_flip_smooth_worst(mStore.mXyz, by_class[c], pinned, mEpsVol6,
+                                      kAdvWorstThresholdDeg);
     }
+    // The shared kernels guard dihedral angles, which do not see a
+    // tetrahedron's sign: a tetrahedron that was flat can come out inverted.
+    // Put back, in ascending order and until none is left, the moved vertices
+    // of every tetrahedron the exact orient3d finds inverted, or flat where it
+    // was not.
+    auto moved_vertex = [&](std::int64_t V) {
+        const std::size_t i = static_cast<std::size_t>(V) * 3;
+        return mStore.mXyz[i] != before[i] || mStore.mXyz[i + 1] != before[i + 1] ||
+               mStore.mXyz[i + 2] != before[i + 2];
+    };
+    for (bool again = true; again;) {
+        again = false;
+        for (std::size_t t = 0; t < mStore.NumTets(); ++t) {
+            if (!mStore.mTetAlive[t])
+                continue;
+            const TetCorners& c = mStore.mTets[t];
+            bool any_moved = false;
+            for (const std::int64_t v : c)
+                any_moved = any_moved || moved_vertex(v);
+            if (!any_moved)
+                continue;
+            const int sign = TetRemeshStore::OrientSign(mStore.Point(c[0]), mStore.Point(c[1]),
+                                                        mStore.Point(c[2]), mStore.Point(c[3]));
+            if (sign > 0)
+                continue;
+            if (sign == 0) {
+                TetCorners k = c;
+                std::sort(k.begin(), k.end());
+                if (std::binary_search(mFlatKeys.begin(), mFlatKeys.end(), k)) {
+                    // flat before too? only then may it stay flat
+                    const auto pb = [&](std::int64_t V) {
+                        const std::size_t i = static_cast<std::size_t>(V) * 3;
+                        return Vec3{before[i], before[i + 1], before[i + 2]};
+                    };
+                    if (TetRemeshStore::OrientSign(pb(c[0]), pb(c[1]), pb(c[2]), pb(c[3])) == 0)
+                        continue;
+                }
+            }
+            for (const std::int64_t v : c)
+                if (moved_vertex(v))
+                    for (std::size_t d = 0; d < 3; ++d)
+                        mStore.mXyz[static_cast<std::size_t>(v) * 3 + d] =
+                            before[static_cast<std::size_t>(v) * 3 + d];
+            again = true;
+        }
+    }
+    std::int64_t moved = 0;
+    for (std::size_t v = 0; v < mStore.NumVertices(); ++v)
+        moved += moved_vertex(static_cast<std::int64_t>(v));
     if (moved > 0)
         for (std::uint32_t& v : mVersion)
             ++v;
@@ -228905,6 +229525,7 @@ void AdvRemesher::Prepare() {
     if (const char* p_env = std::getenv("MESHIOPLUSPLUS_ADAPT_VOLUME_CHECK"))
         mCheck = p_env[0] != '\0' && p_env[0] != '0';
     Setup();
+    BuildReference();
     mVersion.assign(mStore.NumVertices(), 0);
     mFlatKeys.clear();
     for (std::size_t t = 0; t < mStore.NumTets(); ++t) {
@@ -228967,7 +229588,10 @@ void AdvRemesher::Run() {
             t0 = AdvClock::now();
             const bool amips = mrOptions.mQualityMetric == AdaptVolumeQuality::Amips;
             std::int64_t n = amips ? AmipsPass() : 0;
+            Verify("amips smoothing");
             n += SmoothInteriorPass(!amips);
+            Verify("interior smoothing");
+            n += BoundarySmoothPass();
             mrResult.mNumSmoothed += n;  // moves do not count towards the 1% stop
             Time("smooth", t0);
             Verify("smooth");
@@ -229008,6 +229632,7 @@ void AdvRemesher::Run() {
     mrResult.mMaxDihedralAfter = after.mMaxDihedral;
     mrResult.mMeanQualityAfter = after.mMeanQuality;
     mrResult.mVolumeAfter = after.mVolume;
+    mrResult.mMaxBoundaryDeviation = BoundaryDeviation();
     for (std::size_t c = 0; c < mClasses.size(); ++c)
         mrResult.mRegionVolumeChange.emplace_back(mClasses[c].mLabel,
                                                   after.mClassVolume[c] - before.mClassVolume[c]);
