@@ -373,6 +373,7 @@ def test_an_unticked_array_is_absent(tmp_path):
 
 
 _BLOCKS = """
+import re
 src = args[0]
 options = {"FileFormat": args[1]} if len(args) > 1 else {}
 reader = meshioreader(FileName=src, RegionsAsBlocks=1, **options)
@@ -381,6 +382,8 @@ data = servermanager.Fetch(reader)
 blocks = {}
 for i in range(data.GetNumberOfPartitionedDataSets()):
     name = data.GetMetaData(i).Get(data.NAME())
+    # Fetch gathers the data from the server and names each block "Block <n>_<name>".
+    name = re.sub(r"^Block [0-9]+_", "", name)
     blocks[name] = data.GetPartition(i, 0).GetNumberOfCells()
 assembly = data.GetDataAssembly()
 print(json.dumps({"class": data.GetClassName(), "blocks": blocks,
