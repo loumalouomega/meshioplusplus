@@ -2353,7 +2353,10 @@ jobs:
         run: |
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgl1 libglx-mesa0 libegl1 libxt6t64 xvfb
+          # Kitware's pvpython links libglapi.so.0 and libOpenGL.so.0 itself.
+          # Ubuntu 24.04's libglx-mesa0 no longer depends on libglapi-mesa, and
+          # libgl1 does not bring libopengl0, so both are named here.
+          sudo apt-get install -y --no-install-recommends libgl1 libglx-mesa0 libglapi-mesa libopengl0 libegl1 libxt6t64 xvfb
       - name: Download ParaView
         run: |
           curl -fsSL --retry 4 -o pv.tar.gz "https://www.paraview.org/files/v${{ matrix.series }}/${{ steps.pv.outputs.tarball }}"
