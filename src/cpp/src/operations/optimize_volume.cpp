@@ -47,6 +47,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/fem_kernels.hpp"
+#include "../detail/tet_scope.hpp"
 #include "../detail/typed_view.hpp"
 
 // Project includes (private, not installed)
@@ -60,43 +61,9 @@ using detail::Vec3;
 
 constexpr const char* kOvPrefix = "meshio++: optimize_volume: ";
 
-// --- tet-only scope check (the smooth ODT / decimate_volume shape) -----------
+// --- tet-only scope check (shared with adapt_volume) --------------------------
 
-void optvol_check_blocks(const Mesh& rMesh) {
-    bool has_tet = false;
-    for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsPolyhedron())
-            throw std::invalid_argument(
-                std::string(kOvPrefix) +
-                "operates on tet-only meshes, but the mesh contains a polyhedron cell block -- "
-                "run convert_cells(mode='simplexify') first");
-        if (cb.IsRagged())
-            throw std::invalid_argument(
-                std::string(kOvPrefix) +
-                "operates on tet-only meshes, but the mesh contains ragged cell block '" +
-                std::string(cb.Type()) + "'");
-        const CellType ct = cell_type_from_name(cb.Type());
-        if (ct == CellType::Tetra) {
-            has_tet = true;
-            continue;
-        }
-        const int dim = cell_type_dimension(ct);
-        if (dim == 3)
-            throw std::invalid_argument(
-                std::string(kOvPrefix) +
-                "operates on tet-only meshes, but the mesh contains 3D cell block '" +
-                std::string(cb.Type()) +
-                "' that is not linear tetra -- run convert_cells(mode='simplexify') first");
-        throw std::invalid_argument(
-            std::string(kOvPrefix) +
-            "operates on tet-only meshes, but the mesh contains non-3D cell block '" +
-            std::string(cb.Type()) +
-            "' alongside its tets (its nodes would dangle; drop it first, e.g. via split)");
-    }
-    if (!has_tet)
-        throw std::invalid_argument(std::string(kOvPrefix) +
-                                    "requires at least one tetra cell block");
-}
+void optvol_check_blocks(const Mesh& rMesh) { detail::require_tet_only_blocks(rMesh, kOvPrefix); }
 
 // --- tiny geometry over a flat xyz buffer ------------------------------------
 
@@ -433,39 +400,12 @@ std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets, 
 
 constexpr double kOptvolRadToDeg = 57.295779513082320876798;
 
-// The least dihedral angle of a tet, in degrees, whatever its orientation: the
-// angle between the two faces through each edge. 0 for a degenerate tet.
-double optvol_min_dihedral(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
-    const Vec3 p[4] = {rA, rB, rC, rD};
-    // The edge (i, j) has the opposite edge (k, l); its dihedral angle is the
-    // angle between the normals of faces (i, j, k) and (i, j, l).
-    constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
-                                 {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
-    // The acos of a cosine more than kOptvolAcosSkip below the largest one
-    // evaluated is larger than that one's by more than acos's own error (it
-    // is decreasing, with a slope of magnitude at least 1, and accurate to an
-    // ulp or so), so it cannot be the least: it is skipped, and the least is
-    // the one evaluating all six gives, bit for bit (roadmap 5.5.2: acos was
-    // 31% of optimize_volume's instructions). A NaN cosine is skipped, as
-    // std::min skipped its NaN angle.
-    constexpr double kOptvolAcosSkip = 1e-12;
-    double least = 180.0;
-    double c_most = -2.0;  // the largest cosine whose acos was evaluated
-    for (const auto& e : kEdge) {
-        const Vec3& a = p[e[0]];
-        const Vec3 ab = detail::vec3_sub(p[e[1]], a);
-        const Vec3 n1 = detail::vec3_cross(ab, detail::vec3_sub(p[e[2]], a));
-        const Vec3 n2 = detail::vec3_cross(ab, detail::vec3_sub(p[e[3]], a));
-        const double den = std::sqrt(detail::vec3_dot(n1, n1) * detail::vec3_dot(n2, n2));
-        if (!(den > 0.0))
-            return 0.0;
-        const double c = std::clamp(detail::vec3_dot(n1, n2) / den, -1.0, 1.0);
-        if (!(c > c_most - kOptvolAcosSkip))
-            continue;
-        least = std::min(least, std::acos(c) * kOptvolRadToDeg);
-        c_most = std::max(c_most, c);
-    }
-    return least;
+// The least dihedral angle of a tet, in degrees, whatever its orientation; 0
+// for a degenerate tet. The shared kernel (detail/fem_kernels.hpp), moved
+// there verbatim so adapt_volume measures exactly what this operation does.
+inline double optvol_min_dihedral(const Vec3& rA, const Vec3& rB, const Vec3& rC,
+                                  const Vec3& rD) {
+    return detail::tet_min_dihedral(rA, rB, rC, rD);
 }
 
 double optvol_min_dihedral_tet(const std::vector<double>& rXyz, const Tet& t) {
