@@ -727,6 +727,12 @@ Mesh read_vtu(const std::string& rPath, const ReadOptions& rOpts) {
         if (points.Size() == 0 && h.mNumPoints > 0)
             throw ReadError("VTU: pieces disagree on the point dtype or dimension");
         mesh.AssignPoints(std::move(points));
+    } else {
+        // No piece has <Points>: every one declared NumberOfPoints="0" (the
+        // header check refuses the rest) -- a file of cells only, such as the
+        // boundary groups GiD writes beside its main export (issue #229). Its
+        // points are an empty (0, 3) array, not an absent one.
+        mesh.AssignPoints(NDArray(DType::Float64, {std::size_t{0}, std::size_t{3}}));
     }
 
     auto merged = [&](std::map<std::string, std::vector<NDArray>>& rData, const char* pWhat,

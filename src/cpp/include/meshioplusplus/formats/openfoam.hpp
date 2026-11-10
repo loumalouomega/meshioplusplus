@@ -139,6 +139,12 @@ struct OpenFoamInfo {
 struct OpenFoamWriteOptions {
     /// `false` (default) writes ASCII, matching every earlier release.
     bool mBinary = false;
+    /// `true` writes every case file gzipped as `<name>.gz`, as OpenFOAM's
+    /// `writeCompression on` does, and removes a plain file of the same name
+    /// (ABI 44, roadmap 2.3.5.1). Needs a build with zlib
+    /// (`MESHIOPLUSPLUS_WITH_ZLIB`); without it the write throws `WriteError`.
+    /// It sits in the padding after #mBinary, so the size is unchanged.
+    bool mCompress = false;
     /// Label (integer) width in bits: 32 or 64. Only meaningful when
     /// #mBinary is `true` — ASCII numbers carry no width of their own.
     int mLabelBits = 32;

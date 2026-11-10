@@ -17,6 +17,7 @@ class ArrayReader:
 
     _ordered = VtuReader._ordered
     read_appended = VtuReader.read_appended
+    _read_framed = VtuReader._read_framed
     read_uncompressed_binary = VtuReader.read_uncompressed_binary
     read_compressed_binary = VtuReader.read_compressed_binary
     read_data = VtuReader.read_data

@@ -174,6 +174,19 @@ meshioplusplus.openfoam.write("out/case.foam", mesh, binary=True, label_bits=64,
 - A binary request on a big-endian host raises by name rather than writing bytes that host's own reader could not parse back: OpenFOAM binary files are little-endian only, and this writer never byte-swaps.
 - Validated against [foamlib](https://github.com/gerlero/foamlib) (a real, independent OpenFOAM file parser — `tests/python/test_openfoam.py`, skipped when the package is absent) for `points`/`owner`/`neighbour` at the default width; foamlib has no `faceCompactList`/per-face-list reader of its own, so `faces` is cross-checked only against this project's own two engines (C++ and Python reading each other's output, and each reading its own).
 
+## Compressed cases
+
+A case run with `writeCompression on` holds `points.gz`, `faces.gz`, `owner.gz`, … and gzipped field files in place of the plain ones (roadmap 2.3.5.1). Both readers take either form, file by file: a missing `points` is looked for as `points.gz`, a field file `U.gz` is the field `U`, and when both are present the plain file is read, as OpenFOAM does.
+
+```python
+meshioplusplus.openfoam.write("out/case.foam", mesh, compression="gzip")
+```
+
+- `compression="gzip"` (Python) or `OpenFoamWriteOptions::mCompress` (C++) writes every case file it produces gzipped: the `polyMesh` files, the zone files, the `*ProcAddressing` lists of a decomposed case and the field files of each time directory; `regionProperties` stays plain. The bytes are those of Python's `gzip.compress(data, mtime=0)`. It combines with `binary`.
+- Writing either form removes the other form of each file it writes, and the stale-file cleanup removes both, so a case never holds a plain `points` that would shadow a newer `points.gz`.
+- Reading or writing a compressed case needs zlib (`MESHIOPLUSPLUS_WITH_ZLIB`, on by default); without it the read raises naming the flag, and so does a compressed write. The Python fallback reader inflates with the standard library.
+- **Python and C++ only**, like the label and scalar widths: the registry's generic write, both CLIs, the C API and its bindings write plain files.
+
 ## Quirks & limitations
 
 - **The only meshio++ writer that creates a directory.** `write` resolves its path exactly as `read` does and creates `<case>/constant/polyMesh/` as needed; a `.foam` target also gets its (empty) marker file written, which is what makes the case openable by ParaView. Because a case *directory* has no extension, that form needs an explicit `file_format="openfoam"` — `resolve_format` (reads) checks a few of the file's own bytes for content-aware extensions like `.mesh`/`.dat` (see [MFEM](./mfem.md#reading)) and OpenFOAM's directory sniffing, but still has no rule for a bare directory with no marker files; a *write* resolves by name alone, through `resolve_write_format` (v16.17.0), which never stats the filesystem.

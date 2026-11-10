@@ -76,7 +76,7 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) (read as a general glTF 2.0 reader; written as the surface with per-vertex normals, fields as `_NAME` attributes, `color_by` into `COLOR_0`) (`.glb`, `.gltf`),
 > [OBJ](https://en.wikipedia.org/wiki/Wavefront_.obj_file) (`.obj`),
 > [OFF](https://segeval.cs.princeton.edu/public/off_format.html) (`.off`),
-> [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`),
+> [OpenFOAM polyMesh](https://www.openfoam.com/) (`.foam`; `writeCompression on` cases read and written),
 > [OpenUSD](https://openusd.org/) (`.usd`, `.usda`, `.usdc`),
 > [OpenRadioss](https://openradioss.org/) starter deck (`_0000.rad`; parts, subsets, groups, boxes and surfaces as named regions, units applied, `#include` followed; written with optional placeholder materials and properties), animation files (`<run>A001`…; one state per file, a run's files a transient sequence) and time-history files (`<run>T01`; each output a step of field data; written too, from the `radioss_th:*` field data),
 > [MSC Marc](https://hexagon.com/products/marc) input deck (`.dat`, written by name) and formatted post file (`.t19`; `DEFINE` sets as named regions, every increment is a step),

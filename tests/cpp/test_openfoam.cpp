@@ -36,9 +36,11 @@
 // Project includes
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
+#include "meshioplusplus/detail/compressed_input.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../../src/cpp/src/detail/gzip_deflate.hpp"
 
 namespace fs = std::filesystem;
 
@@ -1840,6 +1842,125 @@ TEST(OpenFoamRegionProperties, RefusesWhatASolverCouldNotReadAndMalformedFiles) 
     } catch (const meshioplusplus::ReadError& rException) {
         EXPECT_NE(std::string(rException.what()).find("a, b"), std::string::npos);
     }
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+// Roadmap 2.3.5.1: a case written with `writeCompression on` holds `points.gz`,
+// `faces.gz`, ... and gzipped field files in place of the plain ones.
+namespace {
+
+bool foam_test_has_gzip() {
+    return meshioplusplus::detail::compression_available(meshioplusplus::detail::Compression::Gzip);
+}
+
+// Replace every regular file under `rDir` (recursively) by its `.gz`.
+void foam_test_gzip_tree(const fs::path& rDir) {
+    std::vector<fs::path> files;
+    for (const auto& entry : fs::recursive_directory_iterator(rDir))
+        if (entry.is_regular_file() && entry.path().extension() != ".foam")
+            files.push_back(entry.path());
+    for (const fs::path& file : files) {
+        std::ifstream in(file, std::ios::binary);
+        std::ostringstream text;
+        text << in.rdbuf();
+        in.close();
+        const std::string gz = meshioplusplus::detail::gzip_compress(text.str(), "test");
+        fs::path target = file;
+        target += ".gz";
+        std::ofstream(target, std::ios::binary).write(gz.data(),
+                                                      static_cast<std::streamsize>(gz.size()));
+        fs::remove(file);
+    }
+}
+
+std::size_t foam_test_count(const fs::path& rDir, bool Gz) {
+    std::size_t n = 0;
+    for (const auto& entry : fs::recursive_directory_iterator(rDir))
+        if (entry.is_regular_file() && entry.path().extension() != ".foam")
+            n += (entry.path().extension() == ".gz") == Gz;
+    return n;
+}
+
+}  // namespace
+
+TEST(OpenFoamCompressed, AGzippedCaseReadsAsThePlainOne) {
+    if (!foam_test_has_gzip())
+        GTEST_SKIP() << "this build has no zlib";
+    meshioplusplus::Mesh m = hex_grid(2);
+    const fs::path base = write_case(m);
+    fs::create_directories(base / "0");
+    std::ofstream(base / "0" / "p") << "FoamFile\n{\n format ascii;\n class volScalarField;\n "
+                                       "object p;\n}\ninternalField   uniform 42;\n";
+
+    meshioplusplus::OpenFoamInfo plain_info, gz_info;
+    const meshioplusplus::ReadOptions opts;
+    const meshioplusplus::Mesh plain =
+        meshioplusplus::read_openfoam((base / "case.foam").string(), opts, plain_info);
+    foam_test_gzip_tree(base);
+    ASSERT_TRUE(fs::exists(base / "constant" / "polyMesh" / "points.gz"));
+    ASSERT_FALSE(fs::exists(base / "constant" / "polyMesh" / "points"));
+    const meshioplusplus::Mesh gz =
+        meshioplusplus::read_openfoam((base / "case.foam").string(), opts, gz_info);
+
+    mt::expect_mesh_eq(plain, gz);
+    ASSERT_TRUE(gz.HasCellData("p"));
+    EXPECT_EQ(gz_info.mCellTags, plain_info.mCellTags);
+    EXPECT_EQ(gz_info.mPatchTypes, plain_info.mPatchTypes);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+TEST(OpenFoamCompressed, TheWriterGzipsEveryCaseFileAndReadsItBack) {
+    if (!foam_test_has_gzip())
+        GTEST_SKIP() << "this build has no zlib";
+    meshioplusplus::Mesh m = hex_grid(2);
+    m.AddCellData("p", {mt::data_array({1, 2, 3, 4, 5, 6, 7, 8})});
+    const fs::path base = temp_case_dir();
+    meshioplusplus::OpenFoamWriteOptions gz;
+    gz.mCompress = true;
+    meshioplusplus::write_openfoam((base / "case.foam").string(), m, {}, gz);
+    EXPECT_EQ(foam_test_count(base, /*Gz=*/false), 0u);
+    EXPECT_GE(foam_test_count(base, /*Gz=*/true), 5u);
+
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh back = meshioplusplus::read_openfoam((base / "case.foam").string(),
+                                                                    meshioplusplus::ReadOptions{},
+                                                                    info);
+    EXPECT_EQ(back.NumPoints(), 27u);
+    ASSERT_GE(back.NumCellBlocks(), 1u);
+    EXPECT_EQ(back.Cells(0).NumCells(), 8u);
+    ASSERT_TRUE(back.HasCellData("p"));
+
+    // Written plain over it, no `.gz` is left behind for OpenFOAM to shadow.
+    meshioplusplus::write_openfoam((base / "case.foam").string(), m, {},
+                                   meshioplusplus::OpenFoamWriteOptions{});
+    EXPECT_EQ(foam_test_count(base, /*Gz=*/true), 0u);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+TEST(OpenFoamCompressed, ADecomposedCaseIsGzippedToo) {
+    if (!foam_test_has_gzip())
+        GTEST_SKIP() << "this build has no zlib";
+    meshioplusplus::Mesh mesh = foam_test_grid(2);
+    meshioplusplus::NDArray part(meshioplusplus::DType::Int64, {std::size_t{8}});
+    for (std::size_t c = 0; c < 8; ++c)
+        part.As<std::int64_t>()[c] = c < 4 ? 0 : 1;
+    mesh.AddCellData("partition:part", {std::move(part)});
+    const fs::path base = temp_case_dir();
+    meshioplusplus::OpenFoamWriteOptions gz;
+    gz.mCompress = true;
+    meshioplusplus::write_openfoam_decomposed((base / "case.foam").string(), mesh, {}, gz);
+    EXPECT_TRUE(
+        fs::exists(base / "processor1" / "constant" / "polyMesh" / "faceProcAddressing.gz"));
+    EXPECT_EQ(foam_test_count(base, /*Gz=*/false), 0u);
+    meshioplusplus::OpenFoamInfo info;
+    const meshioplusplus::Mesh back =
+        meshioplusplus::read_openfoam((base / "case.foam").string(), info);
+    ASSERT_GE(back.NumCellBlocks(), 1u);
+    EXPECT_EQ(back.Cells(0).NumCells(), 8u);
+    EXPECT_EQ(back.NumPoints(), 27u);
     std::error_code ec;
     fs::remove_all(base, ec);
 }

@@ -139,17 +139,38 @@ TEST(CommaLocaleWriters, EveryWriterIgnoresTheProcessLocale) {
     for (const auto& [name, write] : writers) {
         std::setlocale(LC_NUMERIC, "C");
         const auto in_c = clw_write(write, name);
-        mio_test::find_comma_locale();
+        const std::string comma = mio_test::find_comma_locale();
         const auto in_comma = clw_write(write, name);
         std::setlocale(LC_NUMERIC, "C");
         if (in_c.empty() && in_comma.empty())
             continue;
         ++compared;
-        ASSERT_EQ(in_c.size(), in_comma.size()) << name;
+        SCOPED_TRACE("writer " + name + " under LC_NUMERIC=" + comma);
+        if (in_c.size() != in_comma.size()) {
+            // clw_write swallows a throw, so a writer that fails only under the
+            // comma locale shows up as a size mismatch: report why it threw.
+            std::setlocale(LC_NUMERIC, comma.c_str());
+            std::string why = "no exception";
+            try {
+                write((fs::temp_directory_path() / ("mio_clw_err_" + name)).string());
+            } catch (const std::exception& rErr) {
+                why = rErr.what();
+            }
+            std::setlocale(LC_NUMERIC, "C");
+            FAIL() << name << ": " << in_c.size() << " file(s) under C, " << in_comma.size()
+                   << " under the comma locale; the comma write says: " << why;
+        }
         for (const auto& [file, bytes] : in_c) {
             const auto it = in_comma.find(file);
-            ASSERT_NE(it, in_comma.end()) << name << ": " << file;
-            EXPECT_EQ(it->second, bytes) << name << ": " << file;
+            ASSERT_NE(it, in_comma.end()) << name << ": " << file << " missing under comma";
+            if (it->second == bytes)
+                continue;
+            std::size_t at = 0;
+            while (at < bytes.size() && at < it->second.size() && bytes[at] == it->second[at])
+                ++at;
+            ADD_FAILURE() << name << ": " << file << " differs at byte " << at << " (C: \""
+                          << bytes.substr(at, 24) << "\", comma: \"" << it->second.substr(at, 24)
+                          << "\")";
         }
     }
     EXPECT_GT(compared, 20u);

@@ -166,12 +166,6 @@ except ModuleNotFoundError:
     lzma = None
 
 
-def num_bytes_to_num_base64_chars(num_bytes):
-    # Rounding up in integer division works by double negation since Python
-    # always rounds down.
-    return -(-num_bytes // 3) * 4
-
-
 def _polyhedron_cells_from_data(
     offsets, faces, faceoffsets, cell_data_raw, face_starts=None
 ):
@@ -703,10 +697,11 @@ class VtuReader:
 
         point_offsets = np.cumsum([0] + [pts.shape[0] for pts in points][:-1])
 
-        # Now merge across pieces
-        if not points:
-            raise ReadError()
-        self.points = np.concatenate(points)
+        # Now merge across pieces. No piece with <Points> means every one
+        # declared NumberOfPoints="0" (checked above): a file of cells only,
+        # such as the boundary groups GiD writes beside its main export (issue
+        # #229), whose points are an empty (0, 3) array, as the core reads it.
+        self.points = np.concatenate(points) if points else np.empty((0, 3))
 
         # A name some piece lacks is dropped, as the C++ reader does.
         names = set(point_data[0]).intersection(*point_data[1:])
@@ -753,12 +748,18 @@ class VtuReader:
 
     def read_appended(self, offset, dtype):
         """One array of the ``<AppendedData>`` payload (raw bytes or base64
-        text), read from its offset: a byte-count header (or, compressed, the
-        block table), then the bytes."""
+        text), read from its offset."""
         if self.raw_appended is not None:
             src = _RawSource(self.raw_appended, offset)
         else:
             src = _Base64Source(self.appended_data, offset)
+        return self._read_framed(src, dtype)
+
+    def _read_framed(self, src, dtype):
+        """One framed array from ``src``: a byte-count header (or, compressed,
+        the block table), then the bytes. Base64 text reads alike whether the
+        header and the body were encoded apart (VTK) or as one stream (GiD,
+        issue #229), appended or inline."""
         header_dtype = self._ordered(vtu_to_numpy_type[self.header_type])
         hs = header_dtype.itemsize
         dtype = self._ordered(dtype)
@@ -782,99 +783,12 @@ class VtuReader:
         return np.frombuffer(b"".join(parts), dtype=dtype)
 
     def read_uncompressed_binary(self, data, dtype):
-        byte_string = base64.b64decode(data)
-
-        # the first item is the total_num_bytes, given in header_dtype
-        header_dtype = vtu_to_numpy_type[self.header_type]
-        if self.byte_order is not None:
-            header_dtype = header_dtype.newbyteorder(
-                "<" if self.byte_order == "LittleEndian" else ">"
-            )
-        num_header_bytes = np.dtype(header_dtype).itemsize
-        total_num_bytes = np.frombuffer(byte_string[:num_header_bytes], header_dtype)[0]
-
-        # Check if block size was decoded separately
-        # (so decoding stopped after block size due to padding)
-        if len(byte_string) == num_header_bytes:
-            header_len = len(base64.b64encode(byte_string))
-            byte_string = base64.b64decode(data[header_len:])
-        else:
-            byte_string = byte_string[num_header_bytes:]
-
-        # Read the block data; multiple blocks possible here?
-        if self.byte_order is not None:
-            dtype = dtype.newbyteorder(
-                "<" if self.byte_order == "LittleEndian" else ">"
-            )
-        return np.frombuffer(byte_string[:total_num_bytes], dtype=dtype)
+        """An inline ``format="binary"`` array with no compressor."""
+        return self._read_framed(_Base64Source("".join(data.split()), 0), dtype)
 
     def read_compressed_binary(self, data, dtype):
-        # first read the block size; it determines the size of the header
-        header_dtype = vtu_to_numpy_type[self.header_type]
-        if self.byte_order is not None:
-            header_dtype = header_dtype.newbyteorder(
-                "<" if self.byte_order == "LittleEndian" else ">"
-            )
-        num_bytes_per_item = np.dtype(header_dtype).itemsize
-        num_chars = num_bytes_to_num_base64_chars(num_bytes_per_item)
-        byte_string = base64.b64decode(data[:num_chars])[:num_bytes_per_item]
-        num_blocks = np.frombuffer(byte_string, header_dtype)[0]
-
-        # read the entire header
-        num_header_items = 3 + int(num_blocks)
-        num_header_bytes = num_bytes_per_item * num_header_items
-        num_header_chars = num_bytes_to_num_base64_chars(num_header_bytes)
-        byte_string = base64.b64decode(data[:num_header_chars])
-        header = np.frombuffer(byte_string, header_dtype)
-
-        # num_blocks = header[0]
-        max_uncompressed_block_size = int(header[1])
-        last_uncompressed_block_size = int(header[2])
-        block_sizes = header[3:]
-
-        # Read the block data
-        byte_array = base64.b64decode(data[num_header_chars:])
-        if self.byte_order is not None:
-            dtype = dtype.newbyteorder(
-                "<" if self.byte_order == "LittleEndian" else ">"
-            )
-
-        byte_offsets = np.empty(block_sizes.shape[0] + 1, dtype=block_sizes.dtype)
-        byte_offsets[0] = 0
-        np.cumsum(block_sizes, out=byte_offsets[1:])
-
-        assert self.compression is not None
-        c = _compressor_for(self.compression)  # already the compressor= attribute
-
-        # An empty array is written with no blocks at all; there is nothing to
-        # concatenate (an empty piece of a partitioned file is one).
-        if int(num_blocks) == 0:
-            return np.empty(0, dtype=dtype)
-
-        # process the compressed data
-        # Every block decompresses to max_uncompressed_block_size except the
-        # last. zlib/lzma infer that themselves, but LZ4's raw block format
-        # cannot -- it has no size field -- so it is passed explicitly. The VTU
-        # header carries it, which is exactly why the raw block format is
-        # usable here at all.
-        block_data = np.concatenate(
-            [
-                np.frombuffer(
-                    c.decompress(
-                        byte_array[byte_offsets[k] : byte_offsets[k + 1]],
-                        uncompressed_size=(
-                            last_uncompressed_block_size
-                            if k + 1 == num_blocks
-                            else max_uncompressed_block_size
-                        ),
-                    ),
-                    dtype=dtype,
-                )
-                for k in range(num_blocks)
-            ]
-        )
-
-        return block_data
+        """An inline ``format="binary"`` array of compressed blocks."""
+        return self._read_framed(_Base64Source("".join(data.split()), 0), dtype)
 
     def read_data(self, c):
         fmt = c.attrib["format"] if "format" in c.attrib else "ascii"
@@ -908,7 +822,10 @@ class VtuReader:
                 if self.compression is None
                 else self.read_compressed_binary
             )
-            data = reader(c.text.strip(), dtype)
+            try:
+                data = reader(c.text or "", dtype)
+            except ValueError as exc:
+                raise ReadError(f"VTK XML: invalid binary array: {exc}") from exc
         elif fmt == "appended":
             if self.raw_appended is None and self.appended_data is None:
                 raise ReadError("VTU: appended DataArray but no <AppendedData>")

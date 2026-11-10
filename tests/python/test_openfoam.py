@@ -2159,3 +2159,77 @@ def test_multi_region_error_names_the_regions_of_region_properties(tmp_path):
     meshioplusplus.openfoam.write_region_properties(tmp_path, {"fluid": ["a", "b"]})
     with pytest.raises(Exception, match="multi-region case.*a, b"):
         meshioplusplus.openfoam.read(tmp_path / "case.foam")
+
+
+# ---------------------------------------------------------------------------
+# Compressed cases (roadmap 2.3.5.1): `writeCompression on`
+# ---------------------------------------------------------------------------
+
+
+def _gzip_case(root):
+    """Replace every case file under ``root`` by its ``.gz`` sibling."""
+    import gzip
+
+    for path in sorted(p for p in Path(root).rglob("*") if p.is_file()):
+        if path.suffix == ".foam":
+            continue
+        path.with_name(path.name + ".gz").write_bytes(
+            gzip.compress(path.read_bytes(), mtime=0)
+        )
+        path.unlink()
+
+
+def _core_has_gzip():
+    return bool(getattr(meshioplusplus._core, "__has_zlib__", False))
+
+
+class TestCompressedCase:
+    def test_python_reader_reads_a_gzipped_case(self, case_dir):
+        plain = read(case_dir / "case.foam")
+        _gzip_case(case_dir)
+        assert (case_dir / "constant" / "polyMesh" / "points.gz").is_file()
+        assert not (case_dir / "constant" / "polyMesh" / "points").exists()
+        gz = read(case_dir / "case.foam")
+        np.testing.assert_array_equal(gz.points, plain.points)
+        assert [c.type for c in gz.cells] == [c.type for c in plain.cells]
+        for a, b in zip(gz.cells, plain.cells):
+            np.testing.assert_array_equal(a.data, b.data)
+
+    def test_core_reads_a_gzipped_case(self, case_dir):
+        if not hasattr(meshioplusplus._core, "openfoam_read") or not _core_has_gzip():
+            pytest.skip("no compiled OpenFOAM reader with zlib")
+        plain = meshioplusplus.read(case_dir / "case.foam")
+        _gzip_case(case_dir)
+        gz = meshioplusplus._core.openfoam_read(
+            str(case_dir / "case.foam"), "", False, None, 0
+        )
+        np.testing.assert_array_equal(gz.points, plain.points)
+        assert [c.type for c in gz.cells] == [c.type for c in plain.cells]
+
+    def test_write_gzip_round_trips_and_clears_the_other_form(self, tmp_path):
+        if not hasattr(meshioplusplus._core, "openfoam_write") or not _core_has_gzip():
+            pytest.skip("no compiled OpenFOAM writer with zlib")
+        mesh = TestWrite._hex_grid(2)
+        mesh.cell_data["p"] = [np.arange(8, dtype=float)]
+        case = tmp_path / "case.foam"
+        meshioplusplus.openfoam.write(case, mesh, compression="gzip")
+        poly = tmp_path / "constant" / "polyMesh"
+        for name in ("points", "faces", "owner", "neighbour", "boundary"):
+            assert (poly / f"{name}.gz").is_file(), name
+            assert not (poly / name).exists(), name
+        for engine in (read, meshioplusplus.read):
+            back = engine(case)
+            assert len(back.points) == 27
+        back = meshioplusplus.read(case)
+        # Block 0 holds the hexahedra; the boundary patches follow it.
+        assert back.cells[0].type == "hexahedron"
+        np.testing.assert_allclose(np.ravel(back.cell_data["p"][0]), np.arange(8))
+        meshioplusplus.openfoam.write(case, mesh)
+        assert (poly / "points").is_file()
+        assert not list(tmp_path.rglob("*.gz"))
+
+    def test_an_unknown_compression_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="compression"):
+            meshioplusplus.openfoam.write(
+                tmp_path / "case.foam", TestWrite._hex_grid(1), compression="xz"
+            )

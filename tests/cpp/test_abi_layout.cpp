@@ -322,6 +322,10 @@ MIO_ABI_LAYOUT(meshioplusplus::MdpaRawBlock, 96, 8);
 // above. Three POD fields, no pointer/std::string member, so it is 4-aligned
 // rather than the 8 most options structs here get.
 MIO_ABI_LAYOUT(meshioplusplus::OpenFoamWriteOptions, 12, 4);
+// ABI 44 (roadmap 2.3.5.1): `mCompress` fills the padding after `mBinary`, so
+// the size holds -- a break all the same (the `ReadOptions::mGhosts` precedent).
+static_assert(offsetof(meshioplusplus::OpenFoamWriteOptions, mCompress) == 1,
+              "OpenFoamWriteOptions::mCompress moved");
 // `OpenFoamRegionGroup` (a `regionProperties` line) is a pure addition, pinned from the release
 // that introduces it: a `std::string` family and a `std::vector<std::string>` of regions.
 MIO_ABI_LAYOUT(meshioplusplus::OpenFoamRegionGroup, 56, 8);

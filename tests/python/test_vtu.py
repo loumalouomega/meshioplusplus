@@ -244,6 +244,12 @@ def test_polyhedra_with_alternating_node_counts_keep_their_cell_data():
 _QUIRKS = pathlib.Path(__file__).resolve().parent / "meshes" / "vtu"
 
 
+def _core_has_zlib():
+    from meshioplusplus import _core
+
+    return bool(getattr(_core, "__has_zlib__", False))
+
+
 def _core_vtu_read(path):
     from meshioplusplus import _core
 
@@ -554,3 +560,117 @@ def test_an_older_file_has_its_hexahedron_edges_swapped(reader, version, tmp_pat
     if version in ("0.1", "1.0"):
         want[[18, 19]] = want[[19, 18]]
     np.testing.assert_array_equal(reader(p).cells[0].data, [want])
+
+
+# ---------------------------------------------------------------------------
+# Issue #229: a header and a body base64-encoded as one stream (GiD's VTU
+# export) or apart (VTK), appended or inline, and a file of cells only.
+# ---------------------------------------------------------------------------
+
+
+def _framed_b64(arr, *, joint, header_fmt, compressed):
+    import base64
+    import struct
+    import zlib
+
+    raw = arr.tobytes()
+    if compressed:
+        body = zlib.compress(raw)
+        header = struct.pack("<" + header_fmt * 4, 1, len(raw), len(raw), len(body))
+    else:
+        body = raw
+        header = struct.pack("<" + header_fmt, len(raw))
+    if joint:
+        return base64.b64encode(header + body).decode()
+    return base64.b64encode(header).decode() + base64.b64encode(body).decode()
+
+
+def _cells_only_vtu(n=5, *, joint, header_fmt="I", compressed=True, inline=False):
+    """GiD's supplementary boundary-group file, shrunk: NumberOfPoints="0", no
+    <Points>, triangles, and UInt8/UInt32 cell data."""
+    arrays = [
+        ("connectivity", "UInt32", np.arange(3 * n, dtype="<u4"), "Cells"),
+        ("offsets", "UInt32", np.arange(3, 3 * n + 1, 3, dtype="<u4"), "Cells"),
+        ("types", "UInt8", np.full(n, 5, dtype="u1"), "Cells"),
+        ("BoundaryCode", "UInt8", np.arange(n, dtype="u1"), "CellData"),
+        ("ParentElementId", "UInt32", np.arange(n, dtype="<u4") + 100, "CellData"),
+        ("LocalFaceId", "UInt8", np.full(n, 2, dtype="u1"), "CellData"),
+    ]
+    text = ""
+    xml = {"Cells": [], "CellData": []}
+    for name, vtk_type, arr, section in arrays:
+        chunk = _framed_b64(
+            arr, joint=joint, header_fmt=header_fmt, compressed=compressed
+        )
+        if inline:
+            xml[section].append(
+                f'<DataArray type="{vtk_type}" Name="{name}" format="binary">'
+                f"{chunk}</DataArray>"
+            )
+        else:
+            xml[section].append(
+                f'<DataArray type="{vtk_type}" Name="{name}" format="appended" '
+                f'offset="{len(text)}"/>'
+            )
+            text += chunk
+    compressor = ' compressor="vtkZLibDataCompressor"' if compressed else ""
+    header_type = "UInt32" if header_fmt == "I" else "UInt64"
+    appended = (
+        "" if inline else f'<AppendedData encoding="base64">_{text}</AppendedData>'
+    )
+    return (
+        '<?xml version="1.0"?>\n<VTKFile type="UnstructuredGrid" version="1.0" '
+        f'byte_order="LittleEndian" header_type="{header_type}"{compressor}>'
+        f'<UnstructuredGrid><Piece NumberOfPoints="0" NumberOfCells="{n}">'
+        f'<Cells>{"".join(xml["Cells"])}</Cells>'
+        f'<CellData>{"".join(xml["CellData"])}</CellData>'
+        f"</Piece></UnstructuredGrid>{appended}</VTKFile>\n"
+    )
+
+
+def _expect_cells_only(mesh, n=5):
+    assert mesh.points.shape == (0, 3)
+    assert [c.type for c in mesh.cells] == ["triangle"]
+    np.testing.assert_array_equal(mesh.cells[0].data, np.arange(3 * n).reshape(n, 3))
+    np.testing.assert_array_equal(np.ravel(mesh.cell_data["BoundaryCode"][0]), range(n))
+    np.testing.assert_array_equal(
+        np.ravel(mesh.cell_data["ParentElementId"][0]), np.arange(n) + 100
+    )
+    np.testing.assert_array_equal(np.ravel(mesh.cell_data["LocalFaceId"][0]), [2] * n)
+
+
+@pytest.mark.parametrize("reader", [_core_vtu_read, _vtu.read], ids=["core", "python"])
+@pytest.mark.parametrize("inline", [False, True], ids=["appended", "inline"])
+@pytest.mark.parametrize("compressed", [True, False], ids=["zlib", "plain"])
+@pytest.mark.parametrize("header_fmt", ["I", "Q"], ids=["UInt32", "UInt64"])
+@pytest.mark.parametrize("joint", [True, False], ids=["one_chunk", "two_chunks"])
+def test_base64_header_and_body_in_one_chunk_or_two(
+    tmp_path, reader, inline, compressed, header_fmt, joint
+):
+    """Issue #229: GiD encodes each array's header and data as one base64
+    stream, VTK as two; both read the same in either engine."""
+    if reader is _core_vtu_read and compressed and not _core_has_zlib():
+        pytest.skip("this build's core has no zlib")
+    path = tmp_path / "cells.vtu"
+    path.write_text(
+        _cells_only_vtu(
+            joint=joint, header_fmt=header_fmt, compressed=compressed, inline=inline
+        )
+    )
+    _expect_cells_only(reader(path))
+
+
+def test_gid_cells_only_file_reads_from_a_path_and_a_buffer(tmp_path):
+    """Issue #229's file, shrunk: appended base64, zlib, UInt32 headers, one
+    chunk per array, NumberOfPoints="0" and no <Points>. A buffer always takes
+    the Python reader."""
+    import io
+
+    text = _cells_only_vtu(joint=True)
+    path = tmp_path / "gid_boundary_groups.vtu"
+    path.write_text(text)
+    if _core_has_zlib():
+        _expect_cells_only(meshioplusplus.read(path))
+    _expect_cells_only(
+        meshioplusplus.read(io.BytesIO(text.encode()), file_format="vtu")
+    )

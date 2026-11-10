@@ -45,6 +45,7 @@
 #include "meshioplusplus/formats/openfoam.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
+#include "meshioplusplus/detail/compressed_input.hpp"
 #include "meshioplusplus/detail/face_mesh.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/file_source.hpp"
@@ -57,6 +58,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "face_cells_common.hpp"
+#include "../detail/gzip_deflate.hpp"
 #include "../detail/row_writer.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
@@ -84,10 +86,61 @@ struct FoamFormat {
  * Returns the source itself so the caller controls its lifetime; everything
  * below takes a view into it.
  */
-detail::FileSource read_whole(const std::string& rPath) {
+/**
+ * @brief A case file's text: mapped from disk, or inflated from its `.gz`.
+ *
+ * `writeCompression on` makes OpenFOAM write `points.gz`, `faces.gz`, ... and
+ * gzipped field files in place of the plain ones (roadmap 2.3.5.1). Callers
+ * only ever take `View()`, so the two sources look alike to them.
+ */
+class FoamText {
+  public:
+    explicit FoamText(detail::FileSource Source) : mSource(std::move(Source)) {}
+    explicit FoamText(std::string Inflated) : mInflated(std::move(Inflated)) {}
+    std::string_view View() const { return mSource ? mSource->View() : std::string_view(mInflated); }
+
+  private:
+    std::optional<detail::FileSource> mSource;
+    std::string mInflated;
+};
+
+/// `rPath` itself when it exists, else its gzipped sibling `<rPath>.gz` when
+/// that exists, else `rPath` (so an error names the plain file).
+fs::path foam_resolve(const fs::path& rPath) {
+    std::error_code ec;
+    if (fs::exists(rPath, ec))
+        return rPath;
+    fs::path gz = rPath;
+    gz += ".gz";
+    if (fs::is_regular_file(gz, ec))
+        return gz;
+    return rPath;
+}
+
+/// Whether a case file exists, plain or gzipped.
+bool foam_file_exists(const fs::path& rPath) {
+    std::error_code ec;
+    return fs::exists(foam_resolve(rPath), ec);
+}
+
+/// A directory entry's case-file name: `U.gz` names the field `U`.
+std::string foam_strip_gz(std::string Name) {
+    if (Name.size() > 3 && Name.compare(Name.size() - 3, 3, ".gz") == 0)
+        Name.resize(Name.size() - 3);
+    return Name;
+}
+
+FoamText read_whole(const std::string& rPath) {
+    const fs::path resolved = foam_resolve(rPath);
     try {
-        return detail::FileSource(rPath);
-    } catch (const ReadError&) {
+        if (resolved.native() == fs::path(rPath).native())
+            return FoamText(detail::FileSource(rPath));
+        const detail::FileSource gz(resolved.string());
+        return FoamText(detail::decompress_bytes(detail::Compression::Gzip, gz.View()));
+    } catch (const ReadError& rErr) {
+        if (resolved.native() != fs::path(rPath).native())
+            throw ReadError("Could not read gzipped OpenFOAM file " + resolved.string() + ": " +
+                            rErr.what());
         throw ReadError("Could not open OpenFOAM file: " + rPath);
     }
 }
@@ -686,7 +739,7 @@ std::vector<Zone> parse_zone_file_binary(std::string_view rRaw, const char* pLab
 // ---- dispatch readers ----
 
 std::vector<std::array<double, 3>> read_points(const fs::path& rPath) {
-    const detail::FileSource source = read_whole(rPath.string());
+    const FoamText source = read_whole(rPath.string());
     const std::string_view raw = source.View();
     const FoamFormat fmt = detect_format(raw);
     if (fmt.mBinary)
@@ -695,7 +748,7 @@ std::vector<std::array<double, 3>> read_points(const fs::path& rPath) {
 }
 
 std::vector<Face> read_faces(const fs::path& rPath) {
-    const detail::FileSource source = read_whole(rPath.string());
+    const FoamText source = read_whole(rPath.string());
     const std::string_view raw = source.View();
     const FoamFormat fmt = detect_format(raw);
     if (fmt.mBinary)
@@ -704,7 +757,7 @@ std::vector<Face> read_faces(const fs::path& rPath) {
 }
 
 std::vector<std::int64_t> read_int_list(const fs::path& rPath) {
-    const detail::FileSource source = read_whole(rPath.string());
+    const FoamText source = read_whole(rPath.string());
     const std::string_view raw = source.View();
     const FoamFormat fmt = detect_format(raw);
     if (fmt.mBinary)
@@ -788,9 +841,9 @@ RawPolyMesh read_raw_polymesh(const fs::path& rPoly) {
     raw.mPoints = read_points(rPoly / "points");
     raw.mFaces = read_faces(rPoly / "faces");
     raw.mOwner = read_int_list(rPoly / "owner");
-    if (fs::exists(rPoly / "neighbour"))
+    if (foam_file_exists(rPoly / "neighbour"))
         raw.mNeighbour = read_int_list(rPoly / "neighbour");
-    if (fs::exists(rPoly / "boundary"))
+    if (foam_file_exists(rPoly / "boundary"))
         raw.mBoundary = parse_boundary(
             strip_comments_and_header(read_whole((rPoly / "boundary").string()).View()));
     foam_check_polymesh(raw);
@@ -872,7 +925,7 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
         pm.mPointAddr = read_int_list(poly / "pointProcAddressing");
         pm.mCellAddr = read_int_list(poly / "cellProcAddressing");
         pm.mFaceAddr = read_int_list(poly / "faceProcAddressing");
-        if (fs::exists(poly / "boundaryProcAddressing"))
+        if (foam_file_exists(poly / "boundaryProcAddressing"))
             pm.mBoundaryAddr = read_int_list(poly / "boundaryProcAddressing");
         for (std::int64_t v : pm.mPointAddr)
             max_point = std::max(max_point, v);
@@ -1022,9 +1075,9 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
 
 /// One `cellZones`/`faceZones`/`pointZones` file; empty when the file is absent.
 std::vector<Zone> foam_read_zone_file(const fs::path& rPath, const char* pKey) {
-    if (!fs::exists(rPath))
+    if (!foam_file_exists(rPath))
         return {};
-    const detail::FileSource source = read_whole(rPath.string());
+    const FoamText source = read_whole(rPath.string());
     const FoamFormat fmt = detect_format(source.View());
     // strip_comments_and_header's comment-removal pass scans the whole body and is unsafe over
     // raw id bytes -- see parse_zone_file_binary's own doc comment.
@@ -1194,7 +1247,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
  * own data list can introduce a stray `(` (`dimensions` uses `[...]`).
  */
 FoamField foam_read_internal_field(const fs::path& rPath, int components) {
-    const detail::FileSource source = read_whole(rPath.string());
+    const FoamText source = read_whole(rPath.string());
     const std::string_view raw = source.View();
     const FoamFormat fmt = detect_format(raw);
     const std::size_t kp = raw.find("internalField");
@@ -1594,7 +1647,7 @@ private:
 
 /// The per-patch values of a field file's `boundaryField` (see `FoamBoundaryScanner`).
 std::vector<FoamPatchField> foam_read_boundary_field(const fs::path& rPath, int Components) {
-    const detail::FileSource source = read_whole(rPath.string());
+    const FoamText source = read_whole(rPath.string());
     const std::string_view raw = source.View();
     return FoamBoundaryScanner(raw, detect_format(raw), Components).Scan();
 }
@@ -1660,8 +1713,10 @@ std::vector<std::string> foam_field_files(const fs::path& rTimeDir) {
     std::error_code ec;
     for (const auto& entry : fs::directory_iterator(rTimeDir, ec))
         if (entry.is_regular_file())
-            names.push_back(entry.path().filename().string());
+            names.push_back(foam_strip_gz(entry.path().filename().string()));
+    // `U` and `U.gz` side by side name one field (the plain one is read).
     std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
     return names;
 }
 
@@ -1679,7 +1734,7 @@ FoamField foam_read_decomposed_field(const fs::path& rCaseRoot,
     for (const std::size_t proc : rProcs) {
         const fs::path pdir = rCaseRoot / ("processor" + std::to_string(proc));
         const fs::path file = pdir / rTime / rName;
-        if (!fs::exists(file))
+        if (!foam_file_exists(file))
             continue;
         const FoamField local = foam_read_internal_field(file, Components);
         const std::vector<std::int64_t> addr = read_int_list(
@@ -1700,12 +1755,26 @@ FoamField foam_read_decomposed_field(const fs::path& rCaseRoot,
 /// The `class` entry of a field file's `FoamFile` header (`volScalarField`,
 /// …), read the same cheap line-scan way `detect_format` reads `format`/
 /// `arch` -- no full parse needed just to classify the field.
+std::string foam_field_class_from(std::istream& rIn);
+
 std::string foam_field_file_class(const fs::path& rPath) {
+    if (foam_resolve(rPath) != rPath) {
+        // Gzipped: the header is at the top of the inflated text.
+        if (!foam_file_exists(rPath))
+            return {};
+        const FoamText text = read_whole(rPath.string());
+        auto in = detail::make_classic_istringstream(std::string(text.View().substr(0, 4096)));
+        return foam_field_class_from(in);
+    }
     auto f = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!f)
         return {};
+    return foam_field_class_from(f);
+}
+
+std::string foam_field_class_from(std::istream& rIn) {
     std::string line;
-    while (std::getline(f, line)) {
+    while (std::getline(rIn, line)) {
         const std::string s = openfoam_strip(line);
         if (s.rfind("class", 0) == 0) {
             std::string rest = openfoam_strip(s.substr(std::strlen("class")));
@@ -1766,7 +1835,7 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
             if (entry.is_directory() && fs::exists(entry.path() / "polyMesh"))
                 regions.push_back(entry.path().filename().string());
         }
-        if (!regions.empty() || fs::exists(case_root / "constant" / "regionProperties")) {
+        if (!regions.empty() || foam_file_exists(case_root / "constant" / "regionProperties")) {
             if (regions.empty()) {
                 // regionProperties without region directories: name the regions it lists
                 try {
@@ -2316,7 +2385,7 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                             const fs::path file = case_root /
                                                   ("processor" + std::to_string(proc_ids[k])) /
                                                   time_dirs[step].mName / field_name;
-                            if (fs::exists(file))
+                            if (foam_file_exists(file))
                                 per_proc[k] = foam_read_boundary_field(file, fc.mComponents);
                         }
                         for (std::size_t pidx = 0;
@@ -2821,11 +2890,74 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
     return "";
 }
 
-auto foam_open(const fs::path& rPath) {
-    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
-    if (!f)
-        throw WriteError("OpenFOAM: could not open for writing: " + rPath.string());
-    return f;
+/// `<rPath>.gz`, the name `writeCompression on` gives a case file.
+fs::path foam_gz_path(const fs::path& rPath) {
+    fs::path gz = rPath;
+    gz += ".gz";
+    return gz;
+}
+
+/**
+ * @brief One case file being written, plain or gzipped (roadmap 2.3.5.1).
+ *
+ * An `std::ostream` either way, so the writers below stream into it as they
+ * did into the plain `std::ofstream`. Gzipped, the text gathers in memory and
+ * is deflated into `<name>.gz` when the stream goes out of scope; the output
+ * file is opened up front, so an unwritable directory still fails at the open.
+ * Writing either form removes the other, so a case never holds both `points`
+ * and `points.gz` (OpenFOAM reads the plain one and would ignore the update).
+ */
+class FoamOut : public std::ostream {
+  public:
+    FoamOut(const fs::path& rPath, bool Compress) : std::ostream(nullptr), mCompress(Compress) {
+        if (mCompress && !detail::gzip_compress_available())
+            throw WriteError(
+                "OpenFOAM: writing a compressed case needs a build with zlib "
+                "(-DMESHIOPLUSPLUS_WITH_ZLIB=ON)");
+        const fs::path target = mCompress ? foam_gz_path(rPath) : rPath;
+        std::error_code ec;
+        fs::remove(mCompress ? rPath : foam_gz_path(rPath), ec);
+        mFile = detail::make_classic_ofstream(target, std::ios::binary);
+        if (!mFile)
+            throw WriteError("OpenFOAM: could not open for writing: " + target.string());
+        mTarget = target.string();
+        detail::imbue_classic(*this);
+        rdbuf(mCompress ? static_cast<std::streambuf*>(&mBuffer) : mFile.rdbuf());
+    }
+    FoamOut(const FoamOut&) = delete;
+    FoamOut& operator=(const FoamOut&) = delete;
+    ~FoamOut() override {
+        if (!mCompress)
+            return;
+        // A destructor cannot throw: a failure here is logged, as a failed
+        // flush of the plain std::ofstream it replaces went unreported.
+        try {
+            const std::string gz = detail::gzip_compress(mBuffer.view(), "OpenFOAM");
+            mFile.write(gz.data(), static_cast<std::streamsize>(gz.size()));
+            if (!mFile)
+                log::error("OpenFOAM: failed writing {}", mTarget);
+        } catch (const std::exception& rErr) {
+            log::error("OpenFOAM: failed writing {}: {}", mTarget, rErr.what());
+        }
+    }
+
+  private:
+    bool mCompress;
+    std::string mTarget;
+    // Opened by the constructor through make_classic_ofstream (the classic locale).
+    decltype(detail::make_classic_ofstream()) mFile = detail::make_classic_ofstream();
+    std::stringbuf mBuffer;
+};
+
+FoamOut foam_open(const fs::path& rPath, bool Compress) { return FoamOut(rPath, Compress); }
+
+/// Remove a case file in both its forms (`name` and `name.gz`); true when
+/// either was there.
+bool foam_remove_case_file(const fs::path& rPath) {
+    std::error_code ec;
+    const bool plain = fs::remove(rPath, ec);
+    const bool gz = fs::remove(foam_gz_path(rPath), ec);
+    return plain || gz;
 }
 
 /// One zone as it will be written: a name plus its member ids, already
@@ -2837,7 +2969,7 @@ void foam_write_zone_file(const fs::path& rPath, const char* pClass, const char*
                           const char* pZoneType, const char* pLabelKey,
                           const std::vector<FoamZoneOut>& rZones,
                           const OpenFoamWriteOptions& rOpts) {
-    auto f = foam_open(rPath);
+    auto f = foam_open(rPath, rOpts.mCompress);
     foam_write_header(f, pClass, pObject, rOpts);
     f << rZones.size() << "\n(\n";
     for (const auto& [name, ids] : rZones) {
@@ -3125,7 +3257,7 @@ void foam_emit_fields(const fs::path& rDir, const std::string& rLocation,
         throw WriteError("OpenFOAM: could not create directory " + dir.string() + ": " +
                          ec.message());
     for (const FoamFieldOut& field : out) {
-        auto f = foam_open(dir / field.mName);
+        auto f = foam_open(dir / field.mName, rOpts.mCompress);
         foam_write_header(f, field.mClass, field.mName, rOpts, location.c_str());
         f << "dimensions      [0 0 0 0 0 0 0];\n\n";
         f << "internalField   ";
@@ -3215,7 +3347,7 @@ struct FoamZonesOut {
 void foam_emit_label_list(const fs::path& rFile, const char* pObject,
                           const std::vector<std::int64_t>& rValues,
                           const OpenFoamWriteOptions& rOpts) {
-    auto f = foam_open(rFile);
+    auto f = foam_open(rFile, rOpts.mCompress);
     foam_write_header(f, "labelList", pObject, rOpts);
     if (rOpts.mBinary) {
         f << rValues.size() << "\n(";
@@ -3349,7 +3481,7 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
             }
 
         {
-            auto f = foam_open(poly / "points");
+            auto f = foam_open(poly / "points", rOpts.mCompress);
             foam_write_header(f, "vectorField", "points", rOpts);
             if (rOpts.mBinary) {
                 f << point_addr.size() << "\n(";
@@ -3376,7 +3508,7 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
         }
         std::vector<std::int64_t> owner, neighbour, face_addr;
         {
-            auto f = foam_open(poly / "faces");
+            auto f = foam_open(poly / "faces", rOpts.mCompress);
             foam_write_header(f, "faceList", "faces", rOpts);
             f << all.size() << (rOpts.mBinary ? "\n(" : "\n(\n");
             for (std::size_t li = 0; li < all.size(); ++li) {
@@ -3413,7 +3545,7 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
         foam_emit_label_list(poly / "owner", "owner", owner, rOpts);
         foam_emit_label_list(poly / "neighbour", "neighbour", neighbour, rOpts);
         {
-            auto f = foam_open(poly / "boundary");
+            auto f = foam_open(poly / "boundary", rOpts.mCompress);
             foam_write_header(f, "polyBoundaryMesh", "boundary", rOpts);
             f << patches.size() << "\n(\n";
             for (const FoamPatchOut& p : patches) {
@@ -3457,8 +3589,7 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
             auto emit = [&](const char* pFile, const std::vector<FoamZoneOut>& rLocal,
                             const char* pClass, const char* pType, const char* pKey) {
                 if (rLocal.empty()) {
-                    std::error_code rc;
-                    fs::remove(poly / pFile, rc);
+                    foam_remove_case_file(poly / pFile);
                     return;
                 }
                 foam_write_zone_file(poly / pFile, pClass, pFile, pType, pKey, rLocal, rOpts);
@@ -3623,8 +3754,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
     for (const char* name : {"meshModifiers", "boundaryProcAddressing", "cellProcAddressing",
                              "faceProcAddressing", "pointProcAddressing", "cellLevel", "pointLevel",
                              "level0Edge", "refinementHistory", "surfaceIndex"}) {
-        std::error_code rc;
-        if (fs::remove(poly / name, rc))
+        if (foam_remove_case_file(poly / name))
             log::info("OpenFOAM: removed stale {}", name);
     }
 
@@ -3633,7 +3763,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
     const std::size_t np = rMesh.NumPoints();
 
     {
-        auto f = foam_open(poly / "points");
+        auto f = foam_open(poly / "points", rOpts.mCompress);
         foam_write_header(f, "vectorField", "points", rOpts);
         // The count MUST be on a line of its own: every ASCII parser here takes
         // "the first line that is entirely digits" as the count, so `8(` would
@@ -3670,7 +3800,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
         }
     }
     {
-        auto f = foam_open(poly / "faces");
+        auto f = foam_open(poly / "faces", rOpts.mCompress);
         foam_write_header(f, "faceList", "faces", rOpts);
         // Non-contiguous, so each face is its own length-prefixed labelList,
         // in binary exactly as in ASCII -- the same shape read_binary_faces
@@ -3698,7 +3828,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
         }
     }
     {
-        auto f = foam_open(poly / "owner");
+        auto f = foam_open(poly / "owner", rOpts.mCompress);
         foam_write_header(f, "labelList", "owner", rOpts);
         if (rOpts.mBinary) {
             f << order.mNewToOld.size() << "\n(";
@@ -3719,7 +3849,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
         // OpenFOAM's `neighbour` holds ONLY internal faces -- our own reader
         // also accepts a -1-padded full-length list, which is exactly why a
         // round trip through it is a weak oracle for this writer.
-        auto f = foam_open(poly / "neighbour");
+        auto f = foam_open(poly / "neighbour", rOpts.mCompress);
         foam_write_header(f, "labelList", "neighbour", rOpts);
         if (rOpts.mBinary) {
             f << order.mNumInternal << "\n(";
@@ -3739,7 +3869,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
         }
     }
     {
-        auto f = foam_open(poly / "boundary");
+        auto f = foam_open(poly / "boundary", rOpts.mCompress);
         foam_write_header(f, "polyBoundaryMesh", "boundary", rOpts);
         f << order.mPatches.size() << "\n(\n";
         for (const FoamPatchOut& p : order.mPatches) {
@@ -3765,8 +3895,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
                                    const char* pClass, const char* pZoneType,
                                    const char* pLabelKey) {
             if (rZones.empty()) {
-                std::error_code rc;
-                if (fs::remove(poly / pFile, rc))
+                if (foam_remove_case_file(poly / pFile))
                     log::info("OpenFOAM: removed stale {}", pFile);
                 return;
             }
@@ -3913,7 +4042,7 @@ void write_openfoam_region_properties(const std::string& rPath,
     if (ec && !fs::is_directory(file.parent_path()))
         throw WriteError("OpenFOAM: could not create directory " + file.parent_path().string() +
                          ": " + ec.message());
-    auto f = foam_open(file);
+    auto f = foam_open(file, false);
     foam_write_header(f, "dictionary", "regionProperties", OpenFoamWriteOptions{}, "constant");
     f << "regions\n(\n";
     for (const OpenFoamRegionGroup& group : rGroups) {
@@ -3927,7 +4056,7 @@ void write_openfoam_region_properties(const std::string& rPath,
 
 std::vector<OpenFoamRegionGroup> read_openfoam_region_properties(const std::string& rPath) {
     const fs::path file = foam_region_properties_path(rPath);
-    if (!fs::exists(file))
+    if (!foam_file_exists(file))
         throw ReadError("OpenFOAM: no " + file.string());
     const std::vector<std::string> tokens =
         foam_region_properties_tokens(strip_comments_and_header(read_whole(file.string()).View()));
