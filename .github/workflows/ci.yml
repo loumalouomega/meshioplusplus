@@ -1866,7 +1866,7 @@ jobs:
   paraview-plugin:
     name: ParaView plugin (pvpython)
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         shell: bash -el {0}
@@ -2326,7 +2326,7 @@ jobs:
   paraview-bundle:
     name: ParaView bundle (Kitware ParaView ${{ matrix.series }})
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
