@@ -69,6 +69,7 @@ from ._interop import (
     _region_payload,
     _regions_from_masks,
 )
+from ._ragged import ragged_gather
 
 #: Cell types that become Blender **polygons**. ``polygon`` covers the ragged
 #: storage shape and ``polygon<n>`` the uniform one; both are n-gons to Blender.
@@ -517,20 +518,11 @@ def _to_blender_payload(
 # --------------------------------------------------------------------------- #
 # the pure inverse                                                            #
 # --------------------------------------------------------------------------- #
-def _ring_gather(starts, totals):
-    """``concatenate([arange(s, s + t) for s, t in zip(starts, totals)])`` and
-    each entry's position within its ring, without a loop per polygon."""
-    totals = np.asarray(totals, dtype=np.int64)
-    off = np.repeat(np.cumsum(totals) - totals, totals)
-    within = np.arange(int(totals.sum()), dtype=np.int64) - off
-    return np.repeat(np.asarray(starts, dtype=np.int64), totals) + within, within
-
-
 def _implied_edges(pairs, loop_vertices, loop_starts, loop_totals):
     """Which ``pairs`` (``(m, 2)``, either orientation) are a side of some
     polygon: the edges the polygons already imply."""
     totals = np.asarray(loop_totals, dtype=np.int64)
-    gather, within = _ring_gather(loop_starts, totals)
+    gather, within = ragged_gather(loop_starts, totals)
     ring_total = np.repeat(totals, totals)
     following = gather + np.where(within + 1 == ring_total, 1 - ring_total, 1)
     a = np.asarray(loop_vertices, dtype=np.int64)[gather]
@@ -615,7 +607,7 @@ def _mesh_from_blender_arrays(
     order = np.argsort(loop_totals, kind="stable")
     totals = loop_totals[order]
     starts = loop_starts[order]
-    gather = _ring_gather(starts, totals)[0]
+    gather = ragged_gather(starts, totals)[0]
     connectivity = np.ascontiguousarray(loop_vertices[gather], dtype=np.int64)
     offsets = np.cumsum(totals, dtype=np.int64)
     types = np.where(totals == 3, 5, np.where(totals == 4, 9, 7)).astype(np.int64)

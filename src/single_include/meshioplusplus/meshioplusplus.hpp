@@ -127,7 +127,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 43
+#define MESHIOPLUSPLUS_ABI_VERSION 44
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -12661,7 +12661,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
  */
 
 /// Major component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MAJOR 19
+#define MESHIOPLUSPLUS_VERSION_MAJOR 20
 /// Minor component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MINOR 0
 /// Patch component of the release version.
@@ -12673,7 +12673,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "19.0.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "20.0.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -23661,9 +23661,9 @@ MESHIOPLUSPLUS_API MeshMetadata read_vti_metadata(const std::string& rPath,
  *   used by the VTU reader) — zero-copy-friendly block reconstruction when
  *   the connectivity is contiguous and node order is identity.
  *
- * Cell types are shared with VTU (see vtu.hpp / doc/formats/vtk.md); only
- * `wedge` needs a node-order permutation relative to VTK (`[0,2,1,3,5,4]`,
- * self-inverse) — every other type uses natural order.
+ * Cell types are shared with VTU (see vtu.hpp / doc/formats/vtk.md); every
+ * type, the linear `wedge` included, uses meshio++'s natural node order,
+ * which is VTK's.
  *
  * `_cpp_ok(mesh)` (Python-side gate, not in this header) skips the C++ write
  * path for meshes with polyhedron cells or any 2-component vector data,
@@ -23687,8 +23687,7 @@ namespace meshioplusplus {
  * `CELLS`/`CELL_TYPES` (4.2) or `CELLS`/`OFFSETS`/`CONNECTIVITY` (5.1)
  * blocks, then `POINT_DATA`/`CELL_DATA` `SCALARS`/`VECTORS`/`TENSORS`/
  * `FIELD` sections. Binary output is always big-endian regardless of host.
- * `wedge` cells are permuted `[0,2,1,3,5,4]` to VTK's node order; every other
- * type is written in meshio++'s natural order.
+ * Every type is written in meshio++'s natural node order, which is VTK's.
  *
  * @param rPath filesystem path to write
  * @param rMesh the mesh to write
@@ -42746,9 +42745,8 @@ MESHIOPLUSPLUS_API bool has_skinnable_cells(const Mesh& rMesh);
  * implementations, ported from `src/meshio/_vtk_common.py`.
  *
  * Holds the meshio-type <-> VTK-cell-type-id maps (`meshio_to_vtk_type`/
- * `vtk_to_meshio_type`), the one node-order quirk that differs between the
- * two conventions (`meshio_to_vtk_order`/`vtk_to_meshio_order`, for the
- * linear wedge), and `is_special_cell`, which flags the cell types whose
+ * `vtk_to_meshio_type`), the node-order hooks between the two conventions
+ * (`meshio_to_vtk_order`/`vtk_to_meshio_order`, identity for every type), and `is_special_cell`, which flags the cell types whose
  * per-cell node count is not fixed (`"polygon"` and the VTK_LAGRANGE_* and
  * VTK_BEZIER_* families) and therefore need the offsets-based reconstruction in
  * `detail/vtk_cells.hpp` rather than a plain fixed-width connectivity slice.
@@ -42823,17 +42821,17 @@ inline const std::unordered_map<std::string, int>& meshio_to_vtk_type() {
  * @brief Node-index permutation applied when writing a meshio cell block's
  * connectivity out in VTK order.
  *
- * Only the linear `"wedge"` differs between the two conventions (meshio/gmsh
- * prism ordering vs. `vtkWedge`'s); every other supported type has identical
- * ordering, signaled by returning an empty vector (callers should treat
- * empty as "no permutation needed", not as an error).
+ * No supported type differs: an empty vector means "no permutation needed",
+ * not an error. The linear `"wedge"` used to be permuted `[0,2,1,3,5,4]`,
+ * after the `vtkWedge` documentation; VTK's own reference element, face
+ * table, Jacobian and verdict volume agree with the Gmsh prism instead, so
+ * the permutation turned every wedge inside out (removed in ABI 44). The
+ * function stays as the one place a future difference would go.
  * @param meshio_type The meshio cell-type name.
  * @return `result[j]` = the meshio-order index to place at VTK-order
  *         position `j`; empty if the ordering is already identical.
  */
-inline std::vector<int> meshio_to_vtk_order(const std::string& rMeshioType) {
-    if (rMeshioType == "wedge")
-        return {0, 2, 1, 3, 5, 4};
+inline std::vector<int> meshio_to_vtk_order(const std::string& /*rMeshioType*/) {
     return {};
 }
 
@@ -42901,16 +42899,13 @@ inline const std::unordered_map<int, std::string>& vtk_to_meshio_type() {
  * @brief Inverse of `meshio_to_vtk_order`, applied when reading VTK
  * connectivity back into meshio order.
  *
- * Only the linear wedge (VTK type id 13) differs; its permutation
- * `[0,2,1,3,5,4]` happens to be its own inverse, so the same literal serves
- * both directions. Empty means no permutation needed.
+ * No supported type differs (see `meshio_to_vtk_order`). Empty means no
+ * permutation needed.
  * @param vtk_type The VTK cell type id being read.
  * @return `result[j]` = the VTK-order index to place at meshio-order
  *         position `j`; empty if the ordering is already identical.
  */
-inline std::vector<int> vtk_to_meshio_order(int vtk_type) {
-    if (vtk_type == 13)
-        return {0, 2, 1, 3, 5, 4};
+inline std::vector<int> vtk_to_meshio_order(int /*vtk_type*/) {
     return {};
 }
 
@@ -57174,6 +57169,833 @@ inline void vtk_hex_swap_stream(std::int64_t* pConn, const std::vector<std::int6
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/vtk_hex_order.hpp =====
+// ===== begin src/cpp/src/formats/lagrange_common.hpp =====
+/**
+ * @file formats/lagrange_common.hpp
+ * @brief Arbitrary-order Lagrange cells: the `VTK_LAGRANGE_*` node layout and
+ *        nodal interpolation between point sets of one polynomial space.
+ *
+ * - `vtk_lattice` lists the nodes of a VTK Lagrange cell of order `p` as
+ *   integer lattice coordinates (`x = i/p` ...) on the reference cell whose
+ *   corners are meshio++'s (and MFEM's): the unit segment, the triangle
+ *   (0,0) (1,0) (0,1), the unit square, the tetrahedron at the origin and the
+ *   unit axes, the unit cube, and the prism of that triangle over [0, 1]. The
+ *   order follows VTK: corners, edges, faces, interior (the hexahedron's
+ *   vertical edges in VTK 9.1's order). Ported from MFEM's `mesh/vtk.cpp`
+ *   (BSD-3-Clause, Lawrence Livermore National Security), which writes the
+ *   files ParaView reads.
+ * - `interpolation_matrix` maps values at one set of nodes of the cell's
+ *   polynomial space (P_p on simplices, Q_p on the square and cube, P_p x P_p
+ *   on the prism) to values at other points, through an orthogonal basis
+ *   (Legendre products, Dubiner's collapsed bases) so the Vandermonde solve is
+ *   well conditioned.
+ * - `lattice_weights` names a lattice node by the corners it is a combination
+ *   of, with integer weights on a common denominator `p^3`, so the same node
+ *   of two cells sharing an edge or face gets the same key.
+ *
+ * A **format-private** header, beside the `.cpp` files that use it (MFEM
+ * today), in a named namespace for the amalgamation. Twin of
+ * `src/python/meshioplusplus/_lagrange.py`.
+ */
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace meshioplusplus {
+namespace lagrange {
+
+enum class Shape { Line, Triangle, Quad, Tetra, Hexahedron, Wedge };
+
+inline int shape_dim(Shape S) {
+    switch (S) {
+        case Shape::Line:
+            return 1;
+        case Shape::Triangle:
+        case Shape::Quad:
+            return 2;
+        default:
+            return 3;
+    }
+}
+
+/// Number of nodes of an order-`P` cell.
+inline std::size_t num_nodes(Shape S, int P) {
+    const std::size_t p = static_cast<std::size_t>(P);
+    switch (S) {
+        case Shape::Line:
+            return p + 1;
+        case Shape::Triangle:
+            return (p + 1) * (p + 2) / 2;
+        case Shape::Quad:
+            return (p + 1) * (p + 1);
+        case Shape::Tetra:
+            return (p + 1) * (p + 2) * (p + 3) / 6;
+        case Shape::Hexahedron:
+            return (p + 1) * (p + 1) * (p + 1);
+        case Shape::Wedge:
+            return (p + 1) * (p + 1) * (p + 2) / 2;
+    }
+    return 0;
+}
+
+/// The Gauss-Lobatto points of order `P` on [0, 1], ascending.
+inline std::vector<double> gll_points(int P) {
+    std::vector<double> x(static_cast<std::size_t>(P) + 1);
+    x.front() = 0.0;
+    x.back() = 1.0;
+    // Interior points: the roots of P'_P on [-1, 1], by Newton from the
+    // Chebyshev-Gauss-Lobatto guesses; computed for the lower half and
+    // mirrored, so the set is exactly symmetric.
+    for (int k = 1; 2 * k <= P; ++k) {
+        long double t = -std::cos(3.14159265358979323846264338327950288L * k / P);
+        for (int it = 0; it < 100; ++it) {
+            // Legendre P_P(t), P'_P(t) by recurrence.
+            long double p0 = 1.0L, p1 = t;
+            for (int n = 1; n < P; ++n) {
+                const long double p2 = ((2 * n + 1) * t * p1 - n * p0) / (n + 1);
+                p0 = p1;
+                p1 = p2;
+            }
+            const long double d1 = P * (t * p1 - p0) / (t * t - 1.0L);
+            const long double d2 = (2.0L * t * d1 - P * (P + 1) * p1) / (1.0L - t * t);
+            const long double step = d1 / d2;
+            t -= step;
+            if (std::fabs(static_cast<double>(step)) < 1e-19)
+                break;
+        }
+        const double v = static_cast<double>((1.0L + t) / 2.0L);
+        x[static_cast<std::size_t>(k)] = v;
+        x[static_cast<std::size_t>(P - k)] = 1.0 - v;
+    }
+    if (P % 2 == 0 && P > 0)
+        x[static_cast<std::size_t>(P / 2)] = 0.5;
+    return x;
+}
+
+/// Equispaced points `i/P` on [0, 1].
+inline std::vector<double> uniform_points(int P) {
+    std::vector<double> x(static_cast<std::size_t>(P) + 1);
+    for (int i = 0; i <= P; ++i)
+        x[static_cast<std::size_t>(i)] = static_cast<double>(i) / P;
+    return x;
+}
+
+// --- VTK node order (after MFEM's mesh/vtk.cpp) ---------------------------------------
+
+inline int vtk_triangle_index(int* pB, int Ref) {
+    int max = Ref, min = 0;
+    const int bmin = std::min(std::min(pB[0], pB[1]), pB[2]);
+    int idx = 0;
+    while (bmin > min) {
+        idx += 3 * Ref;
+        max -= 2;
+        ++min;
+        Ref -= 3;
+    }
+    for (int d = 0; d < 3; ++d) {
+        if (pB[(d + 2) % 3] == max)
+            return idx;
+        ++idx;
+    }
+    for (int d = 0; d < 3; ++d) {
+        if (pB[(d + 1) % 3] == min)
+            return idx + pB[d] - (min + 1);
+        idx += max - (min + 1);
+    }
+    return idx;
+}
+
+inline int vtk_tetra_index(int* pB, int Ref) {
+    int idx = 0, max = Ref, min = 0;
+    const int bmin = std::min(std::min(std::min(pB[0], pB[1]), pB[2]), pB[3]);
+    while (bmin > min) {
+        idx += 2 * (Ref * Ref + 1);
+        max -= 3;
+        ++min;
+        Ref -= 4;
+    }
+    static const int kVertexMax[4] = {3, 0, 1, 2};
+    static const int kEdgeMin[6][2] = {{1, 2}, {2, 3}, {0, 2}, {0, 1}, {1, 3}, {0, 3}};
+    static const int kEdgeCount[6] = {0, 1, 3, 2, 2, 2};
+    static const int kFaceMin[4] = {1, 3, 0, 2};
+    static const int kFaceB[4][3] = {{0, 2, 3}, {2, 0, 1}, {2, 1, 3}, {1, 0, 3}};
+    for (int v = 0; v < 4; ++v) {
+        if (pB[kVertexMax[v]] == max)
+            return idx;
+        ++idx;
+    }
+    for (int e = 0; e < 6; ++e) {
+        if (pB[kEdgeMin[e][0]] == min && pB[kEdgeMin[e][1]] == min)
+            return idx + pB[kEdgeCount[e]] - (min + 1);
+        idx += max - (min + 1);
+    }
+    for (int f = 0; f < 4; ++f) {
+        if (pB[kFaceMin[f]] == min) {
+            int projected[3];
+            for (int i = 0; i < 3; ++i)
+                projected[i] = pB[kFaceB[f][i]] - min;
+            return idx + vtk_triangle_index(projected, Ref) - 3 * Ref;
+        }
+        idx += (Ref + 1) * (Ref + 2) / 2 - 3 * Ref;
+    }
+    return idx;
+}
+
+inline int vtk_triangle_offset(int Ref, int I, int J) {
+    return I + Ref * (J - 1) - (J * (J + 1)) / 2;
+}
+
+inline int vtk_wedge_index(int I, int J, int K, int Ref) {
+    const int om1 = Ref - 1;
+    const int ibdr = I == 0, jbdr = J == 0, ijbdr = I + J == Ref, kbdr = K == 0 || K == Ref;
+    const int nbdr = ibdr + jbdr + ijbdr + kbdr;
+    if (nbdr == 3)
+        return (ibdr && jbdr ? 0 : (jbdr && ijbdr ? 1 : 2)) + (K ? 3 : 0);
+    int offset = 6;
+    if (nbdr == 2) {
+        if (!kbdr) {
+            offset += om1 * 6;
+            return offset + (K - 1) + ((ibdr && jbdr) ? 0 : (jbdr && ijbdr ? 1 : 2)) * om1;
+        }
+        offset += K == Ref ? 3 * om1 : 0;
+        if (jbdr)
+            return offset + I - 1;
+        offset += om1;
+        if (ijbdr)
+            return offset + J - 1;
+        offset += om1;
+        return offset + (Ref - J - 1);
+    }
+    offset += 9 * om1;
+    const int ntf = (om1 - 1) * om1 / 2;
+    const int nqf = om1 * om1;
+    if (nbdr == 1) {
+        if (kbdr) {
+            if (K > 0)
+                offset += ntf;
+            return offset + vtk_triangle_offset(Ref, I, J);
+        }
+        offset += 2 * ntf;
+        if (jbdr)
+            return offset + (I - 1) + om1 * (K - 1);
+        offset += nqf;
+        if (ijbdr)
+            return offset + (J - 1) + om1 * (K - 1);
+        offset += nqf;
+        return offset + (Ref - J - 1) + om1 * (K - 1);
+    }
+    offset += 2 * ntf + 3 * nqf;
+    return offset + vtk_triangle_offset(Ref, I, J) + ntf * (K - 1);
+}
+
+inline int vtk_tensor_index(int Idx, int Ref, int Dim) {
+    const int n = Ref + 1;
+    if (Dim == 1) {
+        if (Idx == 0 || Idx == Ref)
+            return Idx ? 1 : 0;
+        return Idx + 1;
+    }
+    if (Dim == 2) {
+        const int i = Idx % n, j = Idx / n;
+        const bool ibdr = i == 0 || i == Ref, jbdr = j == 0 || j == Ref;
+        if (ibdr && jbdr)
+            return i ? (j ? 2 : 1) : (j ? 3 : 0);
+        int offset = 4;
+        if (jbdr)
+            return (i - 1) + (j ? Ref - 1 + Ref - 1 : 0) + offset;
+        if (ibdr)
+            return (j - 1) + (i ? Ref - 1 : 2 * (Ref - 1) + Ref - 1) + offset;
+        offset += 2 * (Ref - 1 + Ref - 1);
+        return offset + (i - 1) + (Ref - 1) * (j - 1);
+    }
+    const int i = Idx % n, j = (Idx / n) % n, k = Idx / (n * n);
+    const bool ibdr = i == 0 || i == Ref, jbdr = j == 0 || j == Ref, kbdr = k == 0 || k == Ref;
+    const int nbdr = (ibdr ? 1 : 0) + (jbdr ? 1 : 0) + (kbdr ? 1 : 0);
+    if (nbdr == 3)
+        return (i ? (j ? 2 : 1) : (j ? 3 : 0)) + (k ? 4 : 0);
+    int offset = 8;
+    if (nbdr == 2) {
+        if (!ibdr)
+            return (i - 1) + (j ? Ref - 1 + Ref - 1 : 0) + (k ? 2 * (Ref - 1 + Ref - 1) : 0) +
+                   offset;
+        if (!jbdr)
+            return (j - 1) + (i ? Ref - 1 : 2 * (Ref - 1) + Ref - 1) +
+                   (k ? 2 * (Ref - 1 + Ref - 1) : 0) + offset;
+        offset += 4 * (Ref - 1) + 4 * (Ref - 1);
+        return (k - 1) + (Ref - 1) * (i ? (j ? 2 : 1) : (j ? 3 : 0)) + offset;
+    }
+    offset += 4 * (Ref - 1 + Ref - 1 + Ref - 1);
+    if (nbdr == 1) {
+        if (ibdr)
+            return (j - 1) + (Ref - 1) * (k - 1) + (i ? (Ref - 1) * (Ref - 1) : 0) + offset;
+        offset += 2 * (Ref - 1) * (Ref - 1);
+        if (jbdr)
+            return (i - 1) + (Ref - 1) * (k - 1) + (j ? (Ref - 1) * (Ref - 1) : 0) + offset;
+        offset += 2 * (Ref - 1) * (Ref - 1);
+        return (i - 1) + (Ref - 1) * (j - 1) + (k ? (Ref - 1) * (Ref - 1) : 0) + offset;
+    }
+    offset += 2 * 3 * (Ref - 1) * (Ref - 1);
+    return offset + (i - 1) + (Ref - 1) * ((j - 1) + (Ref - 1) * (k - 1));
+}
+
+/// The nodes of an order-`P` VTK Lagrange cell, in VTK order, as integer
+/// lattice coordinates (`x = i / P`).
+inline std::vector<std::array<int, 3>> vtk_lattice(Shape S, int P) {
+    std::vector<std::array<int, 3>> out(num_nodes(S, P));
+    switch (S) {
+        case Shape::Triangle: {
+            int b[3];
+            for (b[1] = 0; b[1] <= P; ++b[1])
+                for (b[0] = 0; b[0] <= P - b[1]; ++b[0]) {
+                    b[2] = P - b[0] - b[1];
+                    out[static_cast<std::size_t>(vtk_triangle_index(b, P))] = {b[0], b[1], 0};
+                }
+            break;
+        }
+        case Shape::Tetra: {
+            int b[4];
+            for (b[2] = 0; b[2] <= P; ++b[2])
+                for (b[1] = 0; b[1] <= P - b[2]; ++b[1])
+                    for (b[0] = 0; b[0] <= P - b[1] - b[2]; ++b[0]) {
+                        b[3] = P - b[0] - b[1] - b[2];
+                        out[static_cast<std::size_t>(vtk_tetra_index(b, P))] = {b[0], b[1], b[2]};
+                    }
+            break;
+        }
+        case Shape::Wedge:
+            for (int k = 0; k <= P; ++k)
+                for (int j = 0; j <= P; ++j)
+                    for (int i = 0; i <= P - j; ++i)
+                        out[static_cast<std::size_t>(vtk_wedge_index(i, j, k, P))] = {i, j, k};
+            break;
+        default: {
+            const int dim = shape_dim(S);
+            const int n = P + 1;
+            const int total = dim == 1 ? n : (dim == 2 ? n * n : n * n * n);
+            for (int idx = 0; idx < total; ++idx) {
+                const std::array<int, 3> ijk = {idx % n, dim > 1 ? (idx / n) % n : 0,
+                                                dim > 2 ? idx / (n * n) : 0};
+                out[static_cast<std::size_t>(vtk_tensor_index(idx, P, dim))] = ijk;
+            }
+            break;
+        }
+    }
+    return out;
+}
+
+// --- Gmsh's node order (twin of _lagrange.gmsh_lattice) -------------------------------------
+//
+// The fixed-order types beyond VTK's own (triangle10, quad16, tetra20, wedge40,
+// hexahedron64, ...) are held in Gmsh's order: the corners, each edge's
+// interior nodes in the direction listed, each face's interior nodes as an
+// element of the same family (recursively), then the volume's likewise -- a
+// prism's being the inner triangle's nodes, each with its column of nodes
+// along the third direction in Gmsh's line order. Checked against Gmsh 4.15
+// for every order it has (tests/python/test_lagrange_gmsh_order.py).
+
+using LatticeNode = std::array<int, 3>;
+
+inline LatticeNode lattice_add(LatticeNode A, const LatticeNode& rB, int Scale = 1) {
+    for (int k = 0; k < 3; ++k)
+        A[static_cast<std::size_t>(k)] += Scale * rB[static_cast<std::size_t>(k)];
+    return A;
+}
+
+/// One lattice step from `rFrom` towards `rTo` on an order-`P` cell.
+inline LatticeNode lattice_step(const LatticeNode& rFrom, const LatticeNode& rTo, int P) {
+    LatticeNode d;
+    for (std::size_t k = 0; k < 3; ++k)
+        d[k] = (rTo[k] - rFrom[k]) / P;  // exact: corners are P steps apart
+    return d;
+}
+
+inline const std::vector<std::pair<int, int>>& gmsh_edges(Shape S) {
+    static const std::vector<std::pair<int, int>> line = {{0, 1}};
+    static const std::vector<std::pair<int, int>> tri = {{0, 1}, {1, 2}, {2, 0}};
+    static const std::vector<std::pair<int, int>> quad = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+    static const std::vector<std::pair<int, int>> tet = {{0, 1}, {1, 2}, {2, 0},
+                                                         {3, 0}, {3, 2}, {3, 1}};
+    static const std::vector<std::pair<int, int>> hex = {{0, 1}, {0, 3}, {0, 4}, {1, 2},
+                                                         {1, 5}, {2, 3}, {2, 6}, {3, 7},
+                                                         {4, 5}, {4, 7}, {5, 6}, {6, 7}};
+    static const std::vector<std::pair<int, int>> wedge = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 4},
+                                                           {2, 5}, {3, 4}, {3, 5}, {4, 5}};
+    switch (S) {
+        case Shape::Line:
+            return line;
+        case Shape::Triangle:
+            return tri;
+        case Shape::Quad:
+            return quad;
+        case Shape::Tetra:
+            return tet;
+        case Shape::Hexahedron:
+            return hex;
+        case Shape::Wedge:
+            return wedge;
+    }
+    return line;
+}
+
+inline const std::vector<std::vector<int>>& gmsh_faces(Shape S) {
+    static const std::vector<std::vector<int>> none;
+    static const std::vector<std::vector<int>> tet = {{0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {3, 1, 2}};
+    static const std::vector<std::vector<int>> hex = {{0, 3, 2, 1}, {0, 1, 5, 4}, {0, 4, 7, 3},
+                                                      {1, 2, 6, 5}, {2, 3, 7, 6}, {4, 5, 6, 7}};
+    static const std::vector<std::vector<int>> wedge = {
+        {0, 2, 1}, {3, 4, 5}, {0, 1, 4, 3}, {0, 3, 5, 2}, {1, 2, 5, 4}};
+    switch (S) {
+        case Shape::Tetra:
+            return tet;
+        case Shape::Hexahedron:
+            return hex;
+        case Shape::Wedge:
+            return wedge;
+        default:
+            return none;
+    }
+}
+
+/// Each corner moved one lattice step towards each of its `rAround` corners.
+inline std::vector<LatticeNode> lattice_inset(const std::vector<LatticeNode>& rCorners, int P,
+                                              const std::vector<std::vector<int>>& rAround) {
+    std::vector<LatticeNode> out;
+    for (std::size_t k = 0; k < rCorners.size(); ++k) {
+        LatticeNode c = rCorners[k];
+        for (const int m : rAround[k])
+            c = lattice_add(c, lattice_step(rCorners[k], rCorners[static_cast<std::size_t>(m)], P));
+        out.push_back(c);
+    }
+    return out;
+}
+
+/// The two neighbours of each corner of an `N`-gon.
+inline std::vector<std::vector<int>> lattice_ring(int N) {
+    std::vector<std::vector<int>> out;
+    for (int k = 0; k < N; ++k)
+        out.push_back({(k + 1) % N, (k + N - 1) % N});
+    return out;
+}
+
+inline void gmsh_nodes(Shape S, const std::vector<LatticeNode>& rC, int P,
+                       std::vector<LatticeNode>& rOut) {
+    if (P == 0) {
+        rOut.push_back(rC[0]);
+        return;
+    }
+    rOut.insert(rOut.end(), rC.begin(), rC.end());
+    for (const auto& [a, b] : gmsh_edges(S)) {
+        const auto& ca = rC[static_cast<std::size_t>(a)];
+        const LatticeNode d = lattice_step(ca, rC[static_cast<std::size_t>(b)], P);
+        for (int t = 1; t < P; ++t)
+            rOut.push_back(lattice_add(ca, d, t));
+    }
+    for (const auto& face : gmsh_faces(S)) {
+        std::vector<LatticeNode> v;
+        for (const int i : face)
+            v.push_back(rC[static_cast<std::size_t>(i)]);
+        const int n = static_cast<int>(face.size());
+        const int order = n == 3 ? P - 3 : P - 2;
+        if (order >= 0)
+            gmsh_nodes(n == 3 ? Shape::Triangle : Shape::Quad, lattice_inset(v, P, lattice_ring(n)),
+                       order, rOut);
+    }
+    switch (S) {
+        case Shape::Triangle:
+            if (P >= 3)
+                gmsh_nodes(S, lattice_inset(rC, P, lattice_ring(3)), P - 3, rOut);
+            break;
+        case Shape::Quad:
+            if (P >= 2)
+                gmsh_nodes(S, lattice_inset(rC, P, lattice_ring(4)), P - 2, rOut);
+            break;
+        case Shape::Tetra:
+            if (P >= 4)
+                gmsh_nodes(S, lattice_inset(rC, P, {{1, 2, 3}, {0, 2, 3}, {0, 1, 3}, {0, 1, 2}}),
+                           P - 4, rOut);
+            break;
+        case Shape::Hexahedron:
+            if (P >= 2)
+                gmsh_nodes(S,
+                           lattice_inset(rC, P,
+                                         {{1, 3, 4},
+                                          {0, 2, 5},
+                                          {1, 3, 6},
+                                          {0, 2, 7},
+                                          {0, 5, 7},
+                                          {1, 4, 6},
+                                          {2, 5, 7},
+                                          {3, 4, 6}}),
+                           P - 2, rOut);
+            break;
+        case Shape::Wedge:
+            if (P >= 3) {
+                std::vector<LatticeNode> flat = {
+                    {rC[0][0], rC[0][1], 0}, {rC[1][0], rC[1][1], 0}, {rC[2][0], rC[2][1], 0}};
+                const LatticeNode dz = lattice_step(rC[0], rC[3], P);
+                std::vector<LatticeNode> column, tri;
+                gmsh_nodes(Shape::Line, {lattice_add(rC[0], dz), lattice_add(rC[3], dz, -1)}, P - 2,
+                           column);
+                gmsh_nodes(Shape::Triangle, lattice_inset(flat, P, lattice_ring(3)), P - 3, tri);
+                for (const auto& t : tri)
+                    for (const auto& z : column)
+                        rOut.push_back({t[0], t[1], z[2]});
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+/// The nodes of an order-`P` cell in Gmsh's order, in `vtk_lattice`'s frame.
+inline std::vector<LatticeNode> gmsh_lattice(Shape S, int P) {
+    std::vector<LatticeNode> c;
+    switch (S) {
+        case Shape::Line:
+            c = {{0, 0, 0}, {P, 0, 0}};
+            break;
+        case Shape::Triangle:
+            c = {{0, 0, 0}, {P, 0, 0}, {0, P, 0}};
+            break;
+        case Shape::Quad:
+            c = {{0, 0, 0}, {P, 0, 0}, {P, P, 0}, {0, P, 0}};
+            break;
+        case Shape::Tetra:
+            c = {{0, 0, 0}, {P, 0, 0}, {0, P, 0}, {0, 0, P}};
+            break;
+        case Shape::Hexahedron:
+            c = {{0, 0, 0}, {P, 0, 0}, {P, P, 0}, {0, P, 0},
+                 {0, 0, P}, {P, 0, P}, {P, P, P}, {0, P, P}};
+            break;
+        case Shape::Wedge:
+            c = {{0, 0, 0}, {P, 0, 0}, {0, P, 0}, {0, 0, P}, {P, 0, P}, {0, P, P}};
+            break;
+    }
+    std::vector<LatticeNode> out;
+    gmsh_nodes(S, c, P, out);
+    return out;
+}
+
+/// `perm` with VTK Lagrange node `j` = Gmsh node `perm[j]` (twin of
+/// `_lagrange.gmsh_to_vtk_order`).
+inline std::vector<int> gmsh_to_vtk_order(Shape S, int P) {
+    const auto gmsh = gmsh_lattice(S, P);
+    const auto vtk = vtk_lattice(S, P);
+    std::vector<int> perm(vtk.size());
+    for (std::size_t j = 0; j < vtk.size(); ++j) {
+        const auto it = std::find(gmsh.begin(), gmsh.end(), vtk[j]);
+        perm[j] = static_cast<int>(it - gmsh.begin());
+    }
+    return perm;
+}
+
+/// A fixed-order type VTK has no id of its own for, written as a VTK
+/// Lagrange cell (twin of `_vtk_common.FIXED_LAGRANGE`).
+struct FixedLagrange {
+    int mVtkType = 0;
+    Shape mShape = Shape::Line;
+    int mOrder = 0;
+};
+
+/// `rType` (`triangle10`, `hexahedron64`, ...) as a VTK Lagrange cell, for
+/// orders 3 and up whose Gmsh order was checked against Gmsh: to 10, the
+/// hexahedron and prism to 9.
+inline bool fixed_lagrange(const std::string& rType, FixedLagrange& rOut) {
+    static const std::pair<const char*, std::pair<Shape, int>> shapes[] = {
+        {"line", {Shape::Line, 68}},
+        {"triangle", {Shape::Triangle, 69}},
+        {"quad", {Shape::Quad, 70}},
+        {"tetra", {Shape::Tetra, 71}},
+        {"hexahedron", {Shape::Hexahedron, 72}},
+        {"wedge", {Shape::Wedge, 73}}};
+    for (const auto& [name, info] : shapes) {
+        const std::string prefix(name);
+        if (rType.size() <= prefix.size() || rType.compare(0, prefix.size(), prefix) != 0)
+            continue;
+        const std::string digits = rType.substr(prefix.size());
+        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 4)
+            return false;
+        const std::size_t count = static_cast<std::size_t>(std::stoi(digits));
+        const int max_order =
+            info.first == Shape::Hexahedron || info.first == Shape::Wedge ? 9 : 10;
+        for (int p = 3; p <= max_order; ++p)
+            if (num_nodes(info.first, p) == count) {
+                rOut = {info.second, info.first, p};
+                return true;
+            }
+        return false;
+    }
+    return false;
+}
+
+/// Corner weights of lattice node `rIjk` of an order-`P` cell, over the common
+/// denominator `P^3`: `(corner, weight)` for every corner with a nonzero one,
+/// by corner. Barycentric on simplices, multilinear on the square and cube,
+/// their product on the prism -- so a node shared by two cells has the same
+/// weights over the corners they share.
+inline std::vector<std::pair<int, std::int64_t>> lattice_weights(Shape S, int P,
+                                                                 const std::array<int, 3>& rIjk) {
+    const std::int64_t p = P, i = rIjk[0], j = rIjk[1], k = rIjk[2];
+    std::vector<std::int64_t> w;
+    switch (S) {
+        case Shape::Line:
+            w = {(p - i) * p * p, i * p * p};
+            break;
+        case Shape::Triangle:
+            w = {(p - i - j) * p * p, i * p * p, j * p * p};
+            break;
+        case Shape::Quad:
+            w = {(p - i) * (p - j) * p, i * (p - j) * p, i * j * p, (p - i) * j * p};
+            break;
+        case Shape::Tetra:
+            w = {(p - i - j - k) * p * p, i * p * p, j * p * p, k * p * p};
+            break;
+        case Shape::Hexahedron:
+            w = {(p - i) * (p - j) * (p - k),
+                 i * (p - j) * (p - k),
+                 i * j * (p - k),
+                 (p - i) * j * (p - k),
+                 (p - i) * (p - j) * k,
+                 i * (p - j) * k,
+                 i * j * k,
+                 (p - i) * j * k};
+            break;
+        case Shape::Wedge:
+            w = {(p - i - j) * (p - k) * p, i * (p - k) * p, j * (p - k) * p,
+                 (p - i - j) * k * p,       i * k * p,       j * k * p};
+            break;
+    }
+    std::vector<std::pair<int, std::int64_t>> out;
+    for (std::size_t c = 0; c < w.size(); ++c)
+        if (w[c] != 0)
+            out.emplace_back(static_cast<int>(c), w[c]);
+    return out;
+}
+
+// --- orthogonal bases ---------------------------------------------------------------
+
+/// Jacobi P_n^{(A,0)}(x) for n = 0..N.
+inline std::vector<double> jacobi(int N, double A, double X) {
+    std::vector<double> v(static_cast<std::size_t>(N) + 1);
+    v[0] = 1.0;
+    if (N >= 1)
+        v[1] = ((A + 2.0) * X + A) / 2.0;
+    for (int n = 1; n < N; ++n) {
+        const double a1 = 2.0 * (n + 1) * (n + A + 1) * (2 * n + A);
+        const double a2 = (2 * n + A + 1) * A * A;
+        const double a3 = (2 * n + A) * (2 * n + A + 1) * (2 * n + A + 2);
+        const double a4 = 2.0 * (n + A) * n * (2 * n + A + 2);
+        v[static_cast<std::size_t>(n) + 1] = ((a2 + a3 * X) * v[static_cast<std::size_t>(n)] -
+                                              a4 * v[static_cast<std::size_t>(n) - 1]) /
+                                             a1;
+    }
+    return v;
+}
+
+/// The orthogonal basis of the cell's order-`P` space at reference point `rX`.
+inline std::vector<double> basis(Shape S, int P, const std::array<double, 3>& rX) {
+    std::vector<double> out;
+    const double r = 2.0 * rX[0] - 1.0, s = 2.0 * rX[1] - 1.0, t = 2.0 * rX[2] - 1.0;
+    switch (S) {
+        case Shape::Line: {
+            out = jacobi(P, 0.0, r);
+            break;
+        }
+        case Shape::Quad: {
+            const auto a = jacobi(P, 0.0, r), b = jacobi(P, 0.0, s);
+            for (int j = 0; j <= P; ++j)
+                for (int i = 0; i <= P; ++i)
+                    out.push_back(a[static_cast<std::size_t>(i)] * b[static_cast<std::size_t>(j)]);
+            break;
+        }
+        case Shape::Hexahedron: {
+            const auto a = jacobi(P, 0.0, r), b = jacobi(P, 0.0, s), c = jacobi(P, 0.0, t);
+            for (int k = 0; k <= P; ++k)
+                for (int j = 0; j <= P; ++j)
+                    for (int i = 0; i <= P; ++i)
+                        out.push_back(a[static_cast<std::size_t>(i)] *
+                                      b[static_cast<std::size_t>(j)] *
+                                      c[static_cast<std::size_t>(k)]);
+            break;
+        }
+        case Shape::Triangle:
+        case Shape::Wedge: {
+            const double a = std::fabs(1.0 - s) > 1e-14 ? 2.0 * (1.0 + r) / (1.0 - s) - 1.0 : -1.0;
+            const auto pa = jacobi(P, 0.0, a);
+            std::vector<double> tri;
+            for (int i = 0; i <= P; ++i) {
+                const auto pb = jacobi(P - i, 2.0 * i + 1.0, s);
+                const double f = std::pow((1.0 - s) / 2.0, i);
+                for (int j = 0; i + j <= P; ++j)
+                    tri.push_back(pa[static_cast<std::size_t>(i)] * f *
+                                  pb[static_cast<std::size_t>(j)]);
+            }
+            if (S == Shape::Triangle) {
+                out = std::move(tri);
+            } else {
+                const auto c = jacobi(P, 0.0, t);
+                for (int k = 0; k <= P; ++k)
+                    for (double v : tri)
+                        out.push_back(v * c[static_cast<std::size_t>(k)]);
+            }
+            break;
+        }
+        case Shape::Tetra: {
+            const double a = std::fabs(s + t) > 1e-14 ? 2.0 * (1.0 + r) / (-s - t) - 1.0 : -1.0;
+            const double b = std::fabs(1.0 - t) > 1e-14 ? 2.0 * (1.0 + s) / (1.0 - t) - 1.0 : -1.0;
+            const auto pa = jacobi(P, 0.0, a);
+            for (int i = 0; i <= P; ++i) {
+                const auto pb = jacobi(P - i, 2.0 * i + 1.0, b);
+                const double fb = std::pow((1.0 - b) / 2.0, i);
+                for (int j = 0; i + j <= P; ++j) {
+                    const auto pc = jacobi(P - i - j, 2.0 * (i + j) + 2.0, t);
+                    const double fc = std::pow((1.0 - t) / 2.0, i + j);
+                    for (int k = 0; i + j + k <= P; ++k)
+                        out.push_back(pa[static_cast<std::size_t>(i)] * fb *
+                                      pb[static_cast<std::size_t>(j)] * fc *
+                                      pc[static_cast<std::size_t>(k)]);
+                }
+            }
+            break;
+        }
+    }
+    return out;
+}
+
+/// The matrix (row-major, targets x nodes) mapping values at `rNodes` -- a
+/// unisolvent node set of the order-`P` space -- to values at `rTargets`.
+inline std::vector<double> interpolation_matrix(
+    Shape S, int P, const std::vector<std::array<double, 3>>& rNodes,
+    const std::vector<std::array<double, 3>>& rTargets) {
+    const std::size_t n = rNodes.size();
+    if (n != num_nodes(S, P))
+        throw std::runtime_error("lagrange: node count does not match the space");
+    // A = V^T (n x n): A[b][m] = basis_b(node_m); solve A X = Phi^T for X
+    // (n x targets); the matrix is X^T.
+    std::vector<double> a(n * n);
+    for (std::size_t m = 0; m < n; ++m) {
+        const auto v = basis(S, P, rNodes[m]);
+        for (std::size_t b = 0; b < n; ++b)
+            a[b * n + m] = v[b];
+    }
+    const std::size_t nt = rTargets.size();
+    std::vector<double> x(n * nt);
+    for (std::size_t t = 0; t < nt; ++t) {
+        const auto v = basis(S, P, rTargets[t]);
+        for (std::size_t b = 0; b < n; ++b)
+            x[b * nt + t] = v[b];
+    }
+    // LU with partial pivoting, applied to every right-hand side at once.
+    for (std::size_t c = 0; c < n; ++c) {
+        std::size_t piv = c;
+        for (std::size_t r = c + 1; r < n; ++r)
+            if (std::fabs(a[r * n + c]) > std::fabs(a[piv * n + c]))
+                piv = r;
+        if (std::fabs(a[piv * n + c]) < 1e-300)
+            throw std::runtime_error("lagrange: the node set is not unisolvent");
+        if (piv != c) {
+            for (std::size_t k = 0; k < n; ++k)
+                std::swap(a[c * n + k], a[piv * n + k]);
+            for (std::size_t k = 0; k < nt; ++k)
+                std::swap(x[c * nt + k], x[piv * nt + k]);
+        }
+        for (std::size_t r = c + 1; r < n; ++r) {
+            const double f = a[r * n + c] / a[c * n + c];
+            if (f == 0.0)
+                continue;
+            for (std::size_t k = c; k < n; ++k)
+                a[r * n + k] -= f * a[c * n + k];
+            for (std::size_t k = 0; k < nt; ++k)
+                x[r * nt + k] -= f * x[c * nt + k];
+        }
+    }
+    for (std::size_t c = n; c-- > 0;) {
+        for (std::size_t k = 0; k < nt; ++k) {
+            double v = x[c * nt + k];
+            for (std::size_t q = c + 1; q < n; ++q)
+                v -= a[c * n + q] * x[q * nt + k];
+            x[c * nt + k] = v / a[c * n + c];
+        }
+    }
+    std::vector<double> out(nt * n);
+    for (std::size_t t = 0; t < nt; ++t)
+        for (std::size_t m = 0; m < n; ++m)
+            out[t * n + m] = x[m * nt + t];
+    // Snap exact reproductions (a target that is a node) to 0/1.
+    for (double& v : out)
+        if (std::fabs(v) < 1e-14)
+            v = 0.0;
+        else if (std::fabs(v - 1.0) < 1e-14)
+            v = 1.0;
+    return out;
+}
+
+}  // namespace lagrange
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/lagrange_common.hpp =====
+// ===== begin src/cpp/src/detail/vtk_write_cell.hpp =====
+/**
+ * @file detail/vtk_write_cell.hpp
+ * @brief The VTK cell type and node order a VTK writer writes a block as.
+ *
+ * A **core-private** header (the `vtk_hex_order.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI.
+ *
+ * `meshio_to_vtk_type` and `meshio_to_vtk_order` (`vtk_common.hpp`) cover the
+ * types VTK has an id for. The fixed-order types beyond those (`triangle10`,
+ * `quad16`, `tetra20`, `wedge40`, `hexahedron64`, ...) are written as VTK
+ * Lagrange cells, their Gmsh node order permuted into VTK's
+ * (`lagrange::fixed_lagrange`, `lagrange::gmsh_to_vtk_order`), and read back
+ * as the `VTK_LAGRANGE_*` type: the twin of `_vtk_common.FIXED_LAGRANGE`. The
+ * VTU, legacy VTK, VTKHDF and VTX writers ask here.
+ */
+
+// System includes
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The VTK cell type id `rType` is written as, or none.
+inline std::optional<std::int64_t> vtk_type_for_write(const std::string& rType) {
+    const auto& types = meshio_to_vtk_type();
+    if (const auto it = types.find(rType); it != types.end())
+        return it->second;
+    lagrange::FixedLagrange fixed;
+    if (lagrange::fixed_lagrange(rType, fixed))
+        return fixed.mVtkType;
+    return std::nullopt;
+}
+
+/// The node permutation `rType` is written with: `order[j]` is the meshio++
+/// node at VTK position `j`; empty for none.
+inline std::vector<int> vtk_order_for_write(const std::string& rType) {
+    lagrange::FixedLagrange fixed;
+    if (meshio_to_vtk_type().count(rType) == 0 && lagrange::fixed_lagrange(rType, fixed)) {
+        std::vector<int> order = lagrange::gmsh_to_vtk_order(fixed.mShape, fixed.mOrder);
+        for (std::size_t j = 0; j < order.size(); ++j)
+            if (order[j] != static_cast<int>(j))
+                return order;
+        return {};
+    }
+    return meshio_to_vtk_order(rType);
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/vtk_write_cell.hpp =====
 // ===== begin src/cpp/src/detail/vtk_xml_pieces.hpp =====
 #include <array>
 #include <cstdint>
@@ -60035,531 +60857,6 @@ inline std::string gid_gauss_coords_key(const std::string& rMeshioName, std::siz
 }  // namespace gid_detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/gid_common.hpp =====
-// ===== begin src/cpp/src/formats/lagrange_common.hpp =====
-/**
- * @file formats/lagrange_common.hpp
- * @brief Arbitrary-order Lagrange cells: the `VTK_LAGRANGE_*` node layout and
- *        nodal interpolation between point sets of one polynomial space.
- *
- * - `vtk_lattice` lists the nodes of a VTK Lagrange cell of order `p` as
- *   integer lattice coordinates (`x = i/p` ...) on the reference cell whose
- *   corners are meshio++'s (and MFEM's): the unit segment, the triangle
- *   (0,0) (1,0) (0,1), the unit square, the tetrahedron at the origin and the
- *   unit axes, the unit cube, and the prism of that triangle over [0, 1]. The
- *   order follows VTK: corners, edges, faces, interior (the hexahedron's
- *   vertical edges in VTK 9.1's order). Ported from MFEM's `mesh/vtk.cpp`
- *   (BSD-3-Clause, Lawrence Livermore National Security), which writes the
- *   files ParaView reads.
- * - `interpolation_matrix` maps values at one set of nodes of the cell's
- *   polynomial space (P_p on simplices, Q_p on the square and cube, P_p x P_p
- *   on the prism) to values at other points, through an orthogonal basis
- *   (Legendre products, Dubiner's collapsed bases) so the Vandermonde solve is
- *   well conditioned.
- * - `lattice_weights` names a lattice node by the corners it is a combination
- *   of, with integer weights on a common denominator `p^3`, so the same node
- *   of two cells sharing an edge or face gets the same key.
- *
- * A **format-private** header, beside the `.cpp` files that use it (MFEM
- * today), in a named namespace for the amalgamation. Twin of
- * `src/python/meshioplusplus/_lagrange.py`.
- */
-
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <stdexcept>
-#include <utility>
-#include <vector>
-
-namespace meshioplusplus {
-namespace lagrange {
-
-enum class Shape { Line, Triangle, Quad, Tetra, Hexahedron, Wedge };
-
-inline int shape_dim(Shape S) {
-    switch (S) {
-        case Shape::Line:
-            return 1;
-        case Shape::Triangle:
-        case Shape::Quad:
-            return 2;
-        default:
-            return 3;
-    }
-}
-
-/// Number of nodes of an order-`P` cell.
-inline std::size_t num_nodes(Shape S, int P) {
-    const std::size_t p = static_cast<std::size_t>(P);
-    switch (S) {
-        case Shape::Line:
-            return p + 1;
-        case Shape::Triangle:
-            return (p + 1) * (p + 2) / 2;
-        case Shape::Quad:
-            return (p + 1) * (p + 1);
-        case Shape::Tetra:
-            return (p + 1) * (p + 2) * (p + 3) / 6;
-        case Shape::Hexahedron:
-            return (p + 1) * (p + 1) * (p + 1);
-        case Shape::Wedge:
-            return (p + 1) * (p + 1) * (p + 2) / 2;
-    }
-    return 0;
-}
-
-/// The Gauss-Lobatto points of order `P` on [0, 1], ascending.
-inline std::vector<double> gll_points(int P) {
-    std::vector<double> x(static_cast<std::size_t>(P) + 1);
-    x.front() = 0.0;
-    x.back() = 1.0;
-    // Interior points: the roots of P'_P on [-1, 1], by Newton from the
-    // Chebyshev-Gauss-Lobatto guesses; computed for the lower half and
-    // mirrored, so the set is exactly symmetric.
-    for (int k = 1; 2 * k <= P; ++k) {
-        long double t = -std::cos(3.14159265358979323846264338327950288L * k / P);
-        for (int it = 0; it < 100; ++it) {
-            // Legendre P_P(t), P'_P(t) by recurrence.
-            long double p0 = 1.0L, p1 = t;
-            for (int n = 1; n < P; ++n) {
-                const long double p2 = ((2 * n + 1) * t * p1 - n * p0) / (n + 1);
-                p0 = p1;
-                p1 = p2;
-            }
-            const long double d1 = P * (t * p1 - p0) / (t * t - 1.0L);
-            const long double d2 = (2.0L * t * d1 - P * (P + 1) * p1) / (1.0L - t * t);
-            const long double step = d1 / d2;
-            t -= step;
-            if (std::fabs(static_cast<double>(step)) < 1e-19)
-                break;
-        }
-        const double v = static_cast<double>((1.0L + t) / 2.0L);
-        x[static_cast<std::size_t>(k)] = v;
-        x[static_cast<std::size_t>(P - k)] = 1.0 - v;
-    }
-    if (P % 2 == 0 && P > 0)
-        x[static_cast<std::size_t>(P / 2)] = 0.5;
-    return x;
-}
-
-/// Equispaced points `i/P` on [0, 1].
-inline std::vector<double> uniform_points(int P) {
-    std::vector<double> x(static_cast<std::size_t>(P) + 1);
-    for (int i = 0; i <= P; ++i)
-        x[static_cast<std::size_t>(i)] = static_cast<double>(i) / P;
-    return x;
-}
-
-// --- VTK node order (after MFEM's mesh/vtk.cpp) ---------------------------------------
-
-inline int vtk_triangle_index(int* pB, int Ref) {
-    int max = Ref, min = 0;
-    const int bmin = std::min(std::min(pB[0], pB[1]), pB[2]);
-    int idx = 0;
-    while (bmin > min) {
-        idx += 3 * Ref;
-        max -= 2;
-        ++min;
-        Ref -= 3;
-    }
-    for (int d = 0; d < 3; ++d) {
-        if (pB[(d + 2) % 3] == max)
-            return idx;
-        ++idx;
-    }
-    for (int d = 0; d < 3; ++d) {
-        if (pB[(d + 1) % 3] == min)
-            return idx + pB[d] - (min + 1);
-        idx += max - (min + 1);
-    }
-    return idx;
-}
-
-inline int vtk_tetra_index(int* pB, int Ref) {
-    int idx = 0, max = Ref, min = 0;
-    const int bmin = std::min(std::min(std::min(pB[0], pB[1]), pB[2]), pB[3]);
-    while (bmin > min) {
-        idx += 2 * (Ref * Ref + 1);
-        max -= 3;
-        ++min;
-        Ref -= 4;
-    }
-    static const int kVertexMax[4] = {3, 0, 1, 2};
-    static const int kEdgeMin[6][2] = {{1, 2}, {2, 3}, {0, 2}, {0, 1}, {1, 3}, {0, 3}};
-    static const int kEdgeCount[6] = {0, 1, 3, 2, 2, 2};
-    static const int kFaceMin[4] = {1, 3, 0, 2};
-    static const int kFaceB[4][3] = {{0, 2, 3}, {2, 0, 1}, {2, 1, 3}, {1, 0, 3}};
-    for (int v = 0; v < 4; ++v) {
-        if (pB[kVertexMax[v]] == max)
-            return idx;
-        ++idx;
-    }
-    for (int e = 0; e < 6; ++e) {
-        if (pB[kEdgeMin[e][0]] == min && pB[kEdgeMin[e][1]] == min)
-            return idx + pB[kEdgeCount[e]] - (min + 1);
-        idx += max - (min + 1);
-    }
-    for (int f = 0; f < 4; ++f) {
-        if (pB[kFaceMin[f]] == min) {
-            int projected[3];
-            for (int i = 0; i < 3; ++i)
-                projected[i] = pB[kFaceB[f][i]] - min;
-            return idx + vtk_triangle_index(projected, Ref) - 3 * Ref;
-        }
-        idx += (Ref + 1) * (Ref + 2) / 2 - 3 * Ref;
-    }
-    return idx;
-}
-
-inline int vtk_triangle_offset(int Ref, int I, int J) {
-    return I + Ref * (J - 1) - (J * (J + 1)) / 2;
-}
-
-inline int vtk_wedge_index(int I, int J, int K, int Ref) {
-    const int om1 = Ref - 1;
-    const int ibdr = I == 0, jbdr = J == 0, ijbdr = I + J == Ref, kbdr = K == 0 || K == Ref;
-    const int nbdr = ibdr + jbdr + ijbdr + kbdr;
-    if (nbdr == 3)
-        return (ibdr && jbdr ? 0 : (jbdr && ijbdr ? 1 : 2)) + (K ? 3 : 0);
-    int offset = 6;
-    if (nbdr == 2) {
-        if (!kbdr) {
-            offset += om1 * 6;
-            return offset + (K - 1) + ((ibdr && jbdr) ? 0 : (jbdr && ijbdr ? 1 : 2)) * om1;
-        }
-        offset += K == Ref ? 3 * om1 : 0;
-        if (jbdr)
-            return offset + I - 1;
-        offset += om1;
-        if (ijbdr)
-            return offset + J - 1;
-        offset += om1;
-        return offset + (Ref - J - 1);
-    }
-    offset += 9 * om1;
-    const int ntf = (om1 - 1) * om1 / 2;
-    const int nqf = om1 * om1;
-    if (nbdr == 1) {
-        if (kbdr) {
-            if (K > 0)
-                offset += ntf;
-            return offset + vtk_triangle_offset(Ref, I, J);
-        }
-        offset += 2 * ntf;
-        if (jbdr)
-            return offset + (I - 1) + om1 * (K - 1);
-        offset += nqf;
-        if (ijbdr)
-            return offset + (J - 1) + om1 * (K - 1);
-        offset += nqf;
-        return offset + (Ref - J - 1) + om1 * (K - 1);
-    }
-    offset += 2 * ntf + 3 * nqf;
-    return offset + vtk_triangle_offset(Ref, I, J) + ntf * (K - 1);
-}
-
-inline int vtk_tensor_index(int Idx, int Ref, int Dim) {
-    const int n = Ref + 1;
-    if (Dim == 1) {
-        if (Idx == 0 || Idx == Ref)
-            return Idx ? 1 : 0;
-        return Idx + 1;
-    }
-    if (Dim == 2) {
-        const int i = Idx % n, j = Idx / n;
-        const bool ibdr = i == 0 || i == Ref, jbdr = j == 0 || j == Ref;
-        if (ibdr && jbdr)
-            return i ? (j ? 2 : 1) : (j ? 3 : 0);
-        int offset = 4;
-        if (jbdr)
-            return (i - 1) + (j ? Ref - 1 + Ref - 1 : 0) + offset;
-        if (ibdr)
-            return (j - 1) + (i ? Ref - 1 : 2 * (Ref - 1) + Ref - 1) + offset;
-        offset += 2 * (Ref - 1 + Ref - 1);
-        return offset + (i - 1) + (Ref - 1) * (j - 1);
-    }
-    const int i = Idx % n, j = (Idx / n) % n, k = Idx / (n * n);
-    const bool ibdr = i == 0 || i == Ref, jbdr = j == 0 || j == Ref, kbdr = k == 0 || k == Ref;
-    const int nbdr = (ibdr ? 1 : 0) + (jbdr ? 1 : 0) + (kbdr ? 1 : 0);
-    if (nbdr == 3)
-        return (i ? (j ? 2 : 1) : (j ? 3 : 0)) + (k ? 4 : 0);
-    int offset = 8;
-    if (nbdr == 2) {
-        if (!ibdr)
-            return (i - 1) + (j ? Ref - 1 + Ref - 1 : 0) + (k ? 2 * (Ref - 1 + Ref - 1) : 0) +
-                   offset;
-        if (!jbdr)
-            return (j - 1) + (i ? Ref - 1 : 2 * (Ref - 1) + Ref - 1) +
-                   (k ? 2 * (Ref - 1 + Ref - 1) : 0) + offset;
-        offset += 4 * (Ref - 1) + 4 * (Ref - 1);
-        return (k - 1) + (Ref - 1) * (i ? (j ? 2 : 1) : (j ? 3 : 0)) + offset;
-    }
-    offset += 4 * (Ref - 1 + Ref - 1 + Ref - 1);
-    if (nbdr == 1) {
-        if (ibdr)
-            return (j - 1) + (Ref - 1) * (k - 1) + (i ? (Ref - 1) * (Ref - 1) : 0) + offset;
-        offset += 2 * (Ref - 1) * (Ref - 1);
-        if (jbdr)
-            return (i - 1) + (Ref - 1) * (k - 1) + (j ? (Ref - 1) * (Ref - 1) : 0) + offset;
-        offset += 2 * (Ref - 1) * (Ref - 1);
-        return (i - 1) + (Ref - 1) * (j - 1) + (k ? (Ref - 1) * (Ref - 1) : 0) + offset;
-    }
-    offset += 2 * 3 * (Ref - 1) * (Ref - 1);
-    return offset + (i - 1) + (Ref - 1) * ((j - 1) + (Ref - 1) * (k - 1));
-}
-
-/// The nodes of an order-`P` VTK Lagrange cell, in VTK order, as integer
-/// lattice coordinates (`x = i / P`).
-inline std::vector<std::array<int, 3>> vtk_lattice(Shape S, int P) {
-    std::vector<std::array<int, 3>> out(num_nodes(S, P));
-    switch (S) {
-        case Shape::Triangle: {
-            int b[3];
-            for (b[1] = 0; b[1] <= P; ++b[1])
-                for (b[0] = 0; b[0] <= P - b[1]; ++b[0]) {
-                    b[2] = P - b[0] - b[1];
-                    out[static_cast<std::size_t>(vtk_triangle_index(b, P))] = {b[0], b[1], 0};
-                }
-            break;
-        }
-        case Shape::Tetra: {
-            int b[4];
-            for (b[2] = 0; b[2] <= P; ++b[2])
-                for (b[1] = 0; b[1] <= P - b[2]; ++b[1])
-                    for (b[0] = 0; b[0] <= P - b[1] - b[2]; ++b[0]) {
-                        b[3] = P - b[0] - b[1] - b[2];
-                        out[static_cast<std::size_t>(vtk_tetra_index(b, P))] = {b[0], b[1], b[2]};
-                    }
-            break;
-        }
-        case Shape::Wedge:
-            for (int k = 0; k <= P; ++k)
-                for (int j = 0; j <= P; ++j)
-                    for (int i = 0; i <= P - j; ++i)
-                        out[static_cast<std::size_t>(vtk_wedge_index(i, j, k, P))] = {i, j, k};
-            break;
-        default: {
-            const int dim = shape_dim(S);
-            const int n = P + 1;
-            const int total = dim == 1 ? n : (dim == 2 ? n * n : n * n * n);
-            for (int idx = 0; idx < total; ++idx) {
-                const std::array<int, 3> ijk = {idx % n, dim > 1 ? (idx / n) % n : 0,
-                                                dim > 2 ? idx / (n * n) : 0};
-                out[static_cast<std::size_t>(vtk_tensor_index(idx, P, dim))] = ijk;
-            }
-            break;
-        }
-    }
-    return out;
-}
-
-/// Corner weights of lattice node `rIjk` of an order-`P` cell, over the common
-/// denominator `P^3`: `(corner, weight)` for every corner with a nonzero one,
-/// by corner. Barycentric on simplices, multilinear on the square and cube,
-/// their product on the prism -- so a node shared by two cells has the same
-/// weights over the corners they share.
-inline std::vector<std::pair<int, std::int64_t>> lattice_weights(Shape S, int P,
-                                                                 const std::array<int, 3>& rIjk) {
-    const std::int64_t p = P, i = rIjk[0], j = rIjk[1], k = rIjk[2];
-    std::vector<std::int64_t> w;
-    switch (S) {
-        case Shape::Line:
-            w = {(p - i) * p * p, i * p * p};
-            break;
-        case Shape::Triangle:
-            w = {(p - i - j) * p * p, i * p * p, j * p * p};
-            break;
-        case Shape::Quad:
-            w = {(p - i) * (p - j) * p, i * (p - j) * p, i * j * p, (p - i) * j * p};
-            break;
-        case Shape::Tetra:
-            w = {(p - i - j - k) * p * p, i * p * p, j * p * p, k * p * p};
-            break;
-        case Shape::Hexahedron:
-            w = {(p - i) * (p - j) * (p - k),
-                 i * (p - j) * (p - k),
-                 i * j * (p - k),
-                 (p - i) * j * (p - k),
-                 (p - i) * (p - j) * k,
-                 i * (p - j) * k,
-                 i * j * k,
-                 (p - i) * j * k};
-            break;
-        case Shape::Wedge:
-            w = {(p - i - j) * (p - k) * p, i * (p - k) * p, j * (p - k) * p,
-                 (p - i - j) * k * p,       i * k * p,       j * k * p};
-            break;
-    }
-    std::vector<std::pair<int, std::int64_t>> out;
-    for (std::size_t c = 0; c < w.size(); ++c)
-        if (w[c] != 0)
-            out.emplace_back(static_cast<int>(c), w[c]);
-    return out;
-}
-
-// --- orthogonal bases ---------------------------------------------------------------
-
-/// Jacobi P_n^{(A,0)}(x) for n = 0..N.
-inline std::vector<double> jacobi(int N, double A, double X) {
-    std::vector<double> v(static_cast<std::size_t>(N) + 1);
-    v[0] = 1.0;
-    if (N >= 1)
-        v[1] = ((A + 2.0) * X + A) / 2.0;
-    for (int n = 1; n < N; ++n) {
-        const double a1 = 2.0 * (n + 1) * (n + A + 1) * (2 * n + A);
-        const double a2 = (2 * n + A + 1) * A * A;
-        const double a3 = (2 * n + A) * (2 * n + A + 1) * (2 * n + A + 2);
-        const double a4 = 2.0 * (n + A) * n * (2 * n + A + 2);
-        v[static_cast<std::size_t>(n) + 1] = ((a2 + a3 * X) * v[static_cast<std::size_t>(n)] -
-                                              a4 * v[static_cast<std::size_t>(n) - 1]) /
-                                             a1;
-    }
-    return v;
-}
-
-/// The orthogonal basis of the cell's order-`P` space at reference point `rX`.
-inline std::vector<double> basis(Shape S, int P, const std::array<double, 3>& rX) {
-    std::vector<double> out;
-    const double r = 2.0 * rX[0] - 1.0, s = 2.0 * rX[1] - 1.0, t = 2.0 * rX[2] - 1.0;
-    switch (S) {
-        case Shape::Line: {
-            out = jacobi(P, 0.0, r);
-            break;
-        }
-        case Shape::Quad: {
-            const auto a = jacobi(P, 0.0, r), b = jacobi(P, 0.0, s);
-            for (int j = 0; j <= P; ++j)
-                for (int i = 0; i <= P; ++i)
-                    out.push_back(a[static_cast<std::size_t>(i)] * b[static_cast<std::size_t>(j)]);
-            break;
-        }
-        case Shape::Hexahedron: {
-            const auto a = jacobi(P, 0.0, r), b = jacobi(P, 0.0, s), c = jacobi(P, 0.0, t);
-            for (int k = 0; k <= P; ++k)
-                for (int j = 0; j <= P; ++j)
-                    for (int i = 0; i <= P; ++i)
-                        out.push_back(a[static_cast<std::size_t>(i)] *
-                                      b[static_cast<std::size_t>(j)] *
-                                      c[static_cast<std::size_t>(k)]);
-            break;
-        }
-        case Shape::Triangle:
-        case Shape::Wedge: {
-            const double a = std::fabs(1.0 - s) > 1e-14 ? 2.0 * (1.0 + r) / (1.0 - s) - 1.0 : -1.0;
-            const auto pa = jacobi(P, 0.0, a);
-            std::vector<double> tri;
-            for (int i = 0; i <= P; ++i) {
-                const auto pb = jacobi(P - i, 2.0 * i + 1.0, s);
-                const double f = std::pow((1.0 - s) / 2.0, i);
-                for (int j = 0; i + j <= P; ++j)
-                    tri.push_back(pa[static_cast<std::size_t>(i)] * f *
-                                  pb[static_cast<std::size_t>(j)]);
-            }
-            if (S == Shape::Triangle) {
-                out = std::move(tri);
-            } else {
-                const auto c = jacobi(P, 0.0, t);
-                for (int k = 0; k <= P; ++k)
-                    for (double v : tri)
-                        out.push_back(v * c[static_cast<std::size_t>(k)]);
-            }
-            break;
-        }
-        case Shape::Tetra: {
-            const double a = std::fabs(s + t) > 1e-14 ? 2.0 * (1.0 + r) / (-s - t) - 1.0 : -1.0;
-            const double b = std::fabs(1.0 - t) > 1e-14 ? 2.0 * (1.0 + s) / (1.0 - t) - 1.0 : -1.0;
-            const auto pa = jacobi(P, 0.0, a);
-            for (int i = 0; i <= P; ++i) {
-                const auto pb = jacobi(P - i, 2.0 * i + 1.0, b);
-                const double fb = std::pow((1.0 - b) / 2.0, i);
-                for (int j = 0; i + j <= P; ++j) {
-                    const auto pc = jacobi(P - i - j, 2.0 * (i + j) + 2.0, t);
-                    const double fc = std::pow((1.0 - t) / 2.0, i + j);
-                    for (int k = 0; i + j + k <= P; ++k)
-                        out.push_back(pa[static_cast<std::size_t>(i)] * fb *
-                                      pb[static_cast<std::size_t>(j)] * fc *
-                                      pc[static_cast<std::size_t>(k)]);
-                }
-            }
-            break;
-        }
-    }
-    return out;
-}
-
-/// The matrix (row-major, targets x nodes) mapping values at `rNodes` -- a
-/// unisolvent node set of the order-`P` space -- to values at `rTargets`.
-inline std::vector<double> interpolation_matrix(
-    Shape S, int P, const std::vector<std::array<double, 3>>& rNodes,
-    const std::vector<std::array<double, 3>>& rTargets) {
-    const std::size_t n = rNodes.size();
-    if (n != num_nodes(S, P))
-        throw std::runtime_error("lagrange: node count does not match the space");
-    // A = V^T (n x n): A[b][m] = basis_b(node_m); solve A X = Phi^T for X
-    // (n x targets); the matrix is X^T.
-    std::vector<double> a(n * n);
-    for (std::size_t m = 0; m < n; ++m) {
-        const auto v = basis(S, P, rNodes[m]);
-        for (std::size_t b = 0; b < n; ++b)
-            a[b * n + m] = v[b];
-    }
-    const std::size_t nt = rTargets.size();
-    std::vector<double> x(n * nt);
-    for (std::size_t t = 0; t < nt; ++t) {
-        const auto v = basis(S, P, rTargets[t]);
-        for (std::size_t b = 0; b < n; ++b)
-            x[b * nt + t] = v[b];
-    }
-    // LU with partial pivoting, applied to every right-hand side at once.
-    for (std::size_t c = 0; c < n; ++c) {
-        std::size_t piv = c;
-        for (std::size_t r = c + 1; r < n; ++r)
-            if (std::fabs(a[r * n + c]) > std::fabs(a[piv * n + c]))
-                piv = r;
-        if (std::fabs(a[piv * n + c]) < 1e-300)
-            throw std::runtime_error("lagrange: the node set is not unisolvent");
-        if (piv != c) {
-            for (std::size_t k = 0; k < n; ++k)
-                std::swap(a[c * n + k], a[piv * n + k]);
-            for (std::size_t k = 0; k < nt; ++k)
-                std::swap(x[c * nt + k], x[piv * nt + k]);
-        }
-        for (std::size_t r = c + 1; r < n; ++r) {
-            const double f = a[r * n + c] / a[c * n + c];
-            if (f == 0.0)
-                continue;
-            for (std::size_t k = c; k < n; ++k)
-                a[r * n + k] -= f * a[c * n + k];
-            for (std::size_t k = 0; k < nt; ++k)
-                x[r * nt + k] -= f * x[c * nt + k];
-        }
-    }
-    for (std::size_t c = n; c-- > 0;) {
-        for (std::size_t k = 0; k < nt; ++k) {
-            double v = x[c * nt + k];
-            for (std::size_t q = c + 1; q < n; ++q)
-                v -= a[c * n + q] * x[q * nt + k];
-            x[c * nt + k] = v / a[c * n + c];
-        }
-    }
-    std::vector<double> out(nt * n);
-    for (std::size_t t = 0; t < nt; ++t)
-        for (std::size_t m = 0; m < n; ++m)
-            out[t * n + m] = x[m * nt + t];
-    // Snap exact reproductions (a target that is a node) to 0/1.
-    for (double& v : out)
-        if (std::fabs(v) < 1e-14)
-            v = 0.0;
-        else if (std::fabs(v - 1.0) < 1e-14)
-            v = 1.0;
-    return out;
-}
-
-}  // namespace lagrange
-}  // namespace meshioplusplus
-// ===== end src/cpp/src/formats/lagrange_common.hpp =====
 // ===== begin src/cpp/src/formats/library_preflight.hpp =====
 /**
  * @file library_preflight.hpp
@@ -212355,7 +212652,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
                 const NDArray& conn = cb.Conn();
                 const std::size_t nc = cb.NumCells();
                 const std::size_t k = cols(conn);
-                std::vector<int> order = meshio_to_vtk_order(cb.Type());
+                std::vector<int> order = detail::vtk_order_for_write(cb.Type());
                 const int* ord = order.empty() ? nullptr : order.data();
                 gather_be(cbuf.data() + base * 8, conn, nc, k, ord, 8);
                 base += nc * k;
@@ -212369,7 +212666,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             for (const auto cb : rMesh.CellRange()) {
                 const detail::Int64View conn(cb.Conn());
                 const std::size_t k = cols(cb.Conn());
-                std::vector<int> order = meshio_to_vtk_order(cb.Type());
+                std::vector<int> order = detail::vtk_order_for_write(cb.Type());
                 vtk_write_int_lines(os, cb.NumCells() * k, [&](std::size_t i) {
                     const std::size_t j = i % k;
                     const std::size_t col = order.empty() ? j : static_cast<std::size_t>(order[j]);
@@ -212386,9 +212683,8 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             std::size_t bi = 0;
             bool warned = false;
             for (const auto cb : rMesh.CellRange()) {
-                const auto vt = meshio_to_vtk_type().find(std::string(cb.Type()));
-                if (vt != meshio_to_vtk_type().end() && detail::vtk_hex_order_applies(vt->second) &&
-                    !cb.IsRagged() && cb.NumCells()) {
+                const auto vt = detail::vtk_type_for_write(std::string(cb.Type()));
+                if (vt && detail::vtk_hex_order_applies(*vt) && !cb.IsRagged() && cb.NumCells()) {
                     const std::size_t k = cols(cb.Conn());
                     NDArray swapped(DType::Int64, {cb.NumCells(), k});
                     const detail::Int64View src(cb.Conn());
@@ -212434,7 +212730,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
                 const std::size_t nc = cb.NumCells();
                 const std::size_t k = cols(conn);
                 const std::size_t stride = k + 1;
-                std::vector<int> order = meshio_to_vtk_order(cb.Type());
+                std::vector<int> order = detail::vtk_order_for_write(cb.Type());
                 const int* ord = order.empty() ? nullptr : order.data();
                 const std::size_t block_base = p;
                 dispatch_dtype(conn.Dtype(), [&]<class T>() {
@@ -212460,7 +212756,7 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
             for (const auto cb : rMesh.CellRange()) {
                 const detail::Int64View conn(conn_of(bi++, cb.Conn()));
                 const std::size_t k = cols(cb.Conn());
-                std::vector<int> order = meshio_to_vtk_order(cb.Type());
+                std::vector<int> order = detail::vtk_order_for_write(cb.Type());
                 // Each cell is its count, then its ids: k + 1 lines.
                 vtk_write_int_lines(os, cb.NumCells() * (k + 1), [&](std::size_t i) {
                     const std::size_t r = i / (k + 1);
@@ -212477,15 +212773,14 @@ void write_vtk(const std::string& rPath, const Mesh& rMesh, bool binary, bool v5
 
     // Cell types.
     os << "CELL_TYPES " << total_cells << '\n';
-    const auto& tmap = meshio_to_vtk_type();
     std::vector<std::int32_t> ctypes(total_cells);
     std::size_t ci = 0;
     for (const auto cb : rMesh.CellRange()) {
-        auto it = tmap.find(cb.Type());
-        if (it == tmap.end())
+        const auto vtk_type = detail::vtk_type_for_write(cb.Type());
+        if (!vtk_type)
             throw WriteError("Unknown cell type for VTK: " + cb.Type());
         for (std::size_t r = 0; r < cb.NumCells(); ++r)
-            ctypes[ci++] = it->second;
+            ctypes[ci++] = static_cast<std::int32_t>(*vtk_type);
     }
     if (binary) {
         write_be(os, ctypes);
@@ -214320,13 +214615,14 @@ VtkhdfCells vtkhdf_collect(const Mesh& rMesh, const std::vector<std::size_t>& rB
             }
             continue;
         }
-        auto it = polygon ? tmap.find("polygon") : tmap.find(type);
-        if (it == tmap.end())
+        const auto vtk_type = detail::vtk_type_for_write(polygon ? std::string("polygon") : type);
+        if (!vtk_type)
             throw WriteError("meshio++: vtkhdf: cell type '" + type + "' has no VTK cell type id");
         const NDArray& conn_array = cb.Conn();
         const std::size_t k = cols(conn_array);
         const detail::Int64View conn(conn_array);
-        const std::vector<int> order = polygon ? std::vector<int>{} : meshio_to_vtk_order(type);
+        const std::vector<int> order =
+            polygon ? std::vector<int>{} : detail::vtk_order_for_write(type);
         for (std::size_t r = 0; r < nc; ++r) {
             if (!wanted(r))
                 continue;
@@ -214335,7 +214631,7 @@ VtkhdfCells vtkhdf_collect(const Mesh& rMesh, const std::vector<std::size_t>& rB
                 out.mConn.push_back(conn[r * k + col]);
             }
             out.mSizes.push_back(static_cast<I64>(k));
-            out.mTypes.push_back(it->second);
+            out.mTypes.push_back(*vtk_type);
             out.mFacesPerCell.push_back(0);
             out.mRows.push_back(rBases[bi] + r);
         }
@@ -216038,9 +216334,10 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
     // list edges 10 and 11 in the order meshio++ holds; an older one tells VTK to
     // swap them (detail/vtk_hex_order.hpp), so a mesh with such cells says 2.2.
     bool hex_order = false;
-    for (const auto cb : rMesh.CellRange())
-        hex_order = hex_order || cb.Type() == "VTK_LAGRANGE_HEXAHEDRON" ||
-                    cb.Type() == "VTK_BEZIER_HEXAHEDRON";
+    for (const auto cb : rMesh.CellRange()) {
+        const auto vtk_type = detail::vtk_type_for_write(cb.Type());
+        hex_order = hex_order || (vtk_type && detail::vtk_hex_order_applies(*vtk_type));
+    }
     detail::vtk_xml_prolog(os, "UnstructuredGrid", hex_order ? "2.2" : "0.1", binary, codec, hsz);
     os << "<UnstructuredGrid>\n";
     // Field data belongs to the dataset, not to a piece: VTK writes it on the grid,
@@ -216137,7 +216434,6 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
         // Build connectivity / offsets / types (Int64) into pre-sized arrays.
         // Per-block offsets are closed-form (conn_base + (r+1)*k), so rows are
         // independent and each block fills in parallel.
-        const auto& tmap = meshio_to_vtk_type();
         std::size_t ncells = 0;
         bool any_polyhedron = false, any_ragged = false;
         for (const auto cb : rMesh.CellRange()) {
@@ -216155,16 +216451,16 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
             std::vector<VtuBlockRun> runs;
             std::size_t cell_base = 0, conn_base = 0;
             for (const auto cb : rMesh.CellRange()) {
-                auto it = tmap.find(cb.Type());
-                if (it == tmap.end())
+                const auto vtk_type = detail::vtk_type_for_write(cb.Type());
+                if (!vtk_type)
                     throw WriteError("Unknown cell type for VTU: " + cb.Type());
                 VtuBlockRun run;
                 run.mCellBase = cell_base;
                 run.mConnBase = conn_base;
                 run.mNumCells = cb.NumCells();
                 run.mK = cols(cb.Conn());
-                run.mType = it->second;
-                run.mOrder = meshio_to_vtk_order(cb.Type());
+                run.mType = *vtk_type;
+                run.mOrder = detail::vtk_order_for_write(cb.Type());
                 run.mpConn = std::make_unique<detail::Int64View>(cb.Conn());
                 cell_base += run.mNumCells;
                 conn_base += run.mNumCells * run.mK;
@@ -216265,11 +216561,11 @@ void vtu_write_impl(const std::string& rPath, const Mesh& rMesh, bool binary,
                 }
                 const NDArray& conn = cb.Conn();
                 const std::size_t k = cols(conn);
-                std::vector<int> order = meshio_to_vtk_order(cb.Type());
-                auto it = tmap.find(cb.Type());
-                if (it == tmap.end())
+                std::vector<int> order = detail::vtk_order_for_write(cb.Type());
+                const auto found = detail::vtk_type_for_write(cb.Type());
+                if (!found)
                     throw WriteError("Unknown cell type for VTU: " + cb.Type());
-                const std::int64_t vtk_type = it->second;
+                const std::int64_t vtk_type = *found;
                 // Rows are independent: each one's slots and offset are closed-form.
                 const detail::Int64View cv(conn);
                 const std::size_t cbase = connectivity.size();
@@ -218107,23 +218403,22 @@ public:
             std::vector<std::int64_t> mRows;
         };
         std::vector<Block> blocks;
-        const auto& vtk_types = meshio_to_vtk_type();
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
             const auto cb = rMesh.Cells(b);
             const std::size_t count = cb.NumCells();
             if (count == 0)
                 continue;
-            const auto found = vtk_types.find(cb.Type());
-            if (found == vtk_types.end())
+            const auto found = detail::vtk_type_for_write(cb.Type());
+            if (!found)
                 vw_fail("cell type '" + cb.Type() + "' has no VTK type");
             const std::size_t w = cb.NodesPerCell();
-            std::vector<int> order = meshio_to_vtk_order(cb.Type());
+            std::vector<int> order = detail::vtk_order_for_write(cb.Type());
             if (order.size() != w)
                 order.clear();
             Block blk;
             blk.mIndex = b;
             blk.mType = cb.Type();
-            blk.mVtk = vw_lagrange(found->second, w);
+            blk.mVtk = vw_lagrange(static_cast<int>(*found), w);
             blk.mWidth = w + 1;
             blk.mFirst = mCells;
             blk.mCount = count;
@@ -230502,43 +230797,39 @@ constexpr const char* kCutPrefix = "meshio++: cut: ";
 
 /// A cuttable cell type: its CutCells family (cutcells::cell::type's value),
 /// topological dimension, corner count, node count when the level set may be
-/// quadratic on it (0: linear only), its corners' VTK type, and whether its
-/// meshio corner order differs from VTK's (the wedge).
+/// quadratic on it (0: linear only) and its corners' VTK type. meshio++'s
+/// corner order is VTK's for every family.
 struct CutKind {
     int mFamily = 0;
     int mTdim = 0;
     int mCorners = 0;
     int mQuadraticNodes = 0;
     int mVtk = 0;
-    bool mWedge = false;
 };
 
 std::optional<CutKind> cut_kind(const std::string& rType) {
     // cutcells::cell::type: interval 1, triangle 2, tetrahedron 3,
     // quadrilateral 4, hexahedron 5, prism 6, pyramid 7.
     if (rType == "line" || rType == "line3")
-        return CutKind{1, 1, 2, 0, 3, false};
+        return CutKind{1, 1, 2, 0, 3};
     if (rType == "triangle" || rType == "triangle7")
-        return CutKind{2, 2, 3, 0, 5, false};
+        return CutKind{2, 2, 3, 0, 5};
     if (rType == "triangle6")
-        return CutKind{2, 2, 3, 6, 5, false};
+        return CutKind{2, 2, 3, 6, 5};
     if (rType == "quad" || rType == "quad8" || rType == "quad9")
-        return CutKind{4, 2, 4, 0, 9, false};
+        return CutKind{4, 2, 4, 0, 9};
     if (rType == "tetra")
-        return CutKind{3, 3, 4, 0, 10, false};
+        return CutKind{3, 3, 4, 0, 10};
     if (rType == "tetra10")
-        return CutKind{3, 3, 4, 10, 10, false};
+        return CutKind{3, 3, 4, 10, 10};
     if (rType == "hexahedron" || rType == "hexahedron20" || rType == "hexahedron27")
-        return CutKind{5, 3, 8, 0, 12, false};
+        return CutKind{5, 3, 8, 0, 12};
     if (rType == "wedge" || rType == "wedge15" || rType == "wedge18")
-        return CutKind{6, 3, 6, 0, 13, true};
+        return CutKind{6, 3, 6, 0, 13};
     if (rType == "pyramid" || rType == "pyramid13" || rType == "pyramid14")
-        return CutKind{7, 3, 5, 0, 14, false};
+        return CutKind{7, 3, 5, 0, 14};
     return std::nullopt;
 }
-
-/// meshio wedge corners -> VTK order (meshio_to_vtk_order("wedge")); its own inverse.
-constexpr int kCutWedgeOrder[6] = {0, 2, 1, 3, 5, 4};
 
 /// Per CutCells family, VTK corner j is Basix corner kCutVtkToBasix[f][j] and
 /// back (cutcells::cell::vtk_to_basix_vertex_permutation; each is its own
@@ -230846,9 +231137,8 @@ CutInput cut_prepare(const Mesh& rMesh, const CutOptions& rOptions) {
         for (std::size_t c = 0; c < nc; ++c) {
             int corner[8];
             for (int v = 0; v < kind->mCorners; ++v) {
-                const int src = kind->mWedge ? kCutWedgeOrder[v] : v;
                 const std::int64_t node =
-                    detail::read_int(r_c, c * npc + static_cast<std::size_t>(src));
+                    detail::read_int(r_c, c * npc + static_cast<std::size_t>(v));
                 if (node < 0 || static_cast<std::size_t>(node) >= np)
                     cut_fail("a '" + cells.Type() + "' cell names node " + std::to_string(node) +
                              " of " + std::to_string(np));
@@ -231324,10 +231614,8 @@ CutLevelSetResult cut_level_set(const Mesh& rMesh, const CutOptions& rOptions) {
                 const int begin = cm._offset[static_cast<std::size_t>(c)];
                 const int count = cm._offset[static_cast<std::size_t>(c) + 1] - begin;
                 for (int j = 0; j < count; ++j) {
-                    // meshio position j <- VTK position (the wedge's swap) <- Basix position.
-                    const int vtk = fam == 6 ? kCutWedgeOrder[j] : j;
-                    const int src =
-                        count == cut_family_corners(fam) ? kCutVtkToBasix[fam][vtk] : vtk;
+                    // meshio position j = VTK position <- Basix position.
+                    const int src = count == cut_family_corners(fam) ? kCutVtkToBasix[fam][j] : j;
                     pieces.mConn.push_back(cm._connectivity[static_cast<std::size_t>(begin + src)]);
                 }
                 pieces.mOffsets.push_back(static_cast<std::int64_t>(pieces.mConn.size()));

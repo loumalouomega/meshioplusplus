@@ -1858,17 +1858,38 @@ jobs:
   # pvpython: conda-forge ParaView, with meshio++ built into the same
   # environment so the compiled core matches pvpython's Python. The test skips
   # without pvpython; MESHIOPLUSPLUS_REQUIRE_PVPYTHON makes that a failure
-  # here, so the job cannot pass by skipping.
+  # here, so the job cannot pass by skipping. HDF5 and netCDF are on, so XDMF,
+  # Exodus and CGNS go through the plugin too (roadmap 6.10.1), and the
+  # ParaView-side checks of the files meshio++ writes (test_pvd_paraview.py)
+  # run here, the one job with a pvpython.
   # --------------------------------------------------------------------------
   paraview-plugin:
     name: ParaView plugin (pvpython)
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         shell: bash -el {0}
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: false
+      # Submodules: vendored Eigen (MED transpose) and nlohmann/json (the
+      # pipeline the Pipeline filter runs).
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      # Degrades to available=false when the LFS budget is spent; the tests
+      # that need a fixture skip on an LFS pointer (tools/fetch-lfs.sh).
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
       - name: Install a GL runtime
         run: |
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
@@ -1888,18 +1909,20 @@ jobs:
           # absl lts_20260526 symbols (undefined symbol at startup, exit 127).
           # Pin the 20260526 LTS build until the paraview and libabseil packages
           # agree; drop the pin then.
+          # libnetcdf: the Exodus reader's library; the solver picks the build
+          # that matches the pinned hdf5.
           create-args: >-
-            -c conda-forge python=3.12 paraview hdf5=1.14 vtk-base=9.7.0=py312h3887a20_1 libabseil=20260526 cxx-compiler cmake ninja pybind11 scikit-build-core numpy pytest
+            -c conda-forge python=3.12 paraview hdf5=1.14 libnetcdf vtk-base=9.7.0=py312h3887a20_1 libabseil=20260526 cxx-compiler cmake ninja pybind11 scikit-build-core numpy pytest
       - name: Build meshio++ into ParaView's environment
         env:
-          CMAKE_ARGS: -DMESHIOPLUSPLUS_WITH_HDF5=OFF -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+          CMAKE_ARGS: -DMESHIOPLUSPLUS_WITH_HDF5=ON -DMESHIOPLUSPLUS_WITH_NETCDF=ON
           CMAKE_BUILD_PARALLEL_LEVEL: "4"
         run: python -m pip install --no-build-isolation .
-      - name: Plugin smoke test
+      - name: Plugin tests under pvpython
         env:
           MESHIOPLUSPLUS_REQUIRE_PVPYTHON: "1"
         # The source tree is src/-laid-out, so this imports the installed package.
-        run: xvfb-run -a python -m pytest tests/python/test_paraview_plugin.py -v
+        run: xvfb-run -a python -m pytest tests/python/test_paraview_plugin.py tests/python/test_pvd_paraview.py tests/python/test_paraview_payload.py tests/python/test_paraview_plugin_algorithms.py tests/python/test_lagrange_gmsh_order.py -v
 
   # --------------------------------------------------------------------------
   # glTF output against the Khronos glTF-Validator (the `gltf-validator` npm
@@ -2292,6 +2315,68 @@ jobs:
               sys.exit("rich must be bundled: meshioplusplus/__init__.py imports _cli")
           print("ok:", sorted(present))
           PY
+
+  # --------------------------------------------------------------------------
+  # The self-contained ParaView bundle (roadmap 6.11, src/paraview/
+  # build_bundle.py) loaded by pvpython from a Kitware binary tarball, which has
+  # its own Python and no pip: the case the bundle exists for. One leg per
+  # ParaView series; the newest Linux tarball of the series names its Python,
+  # and the wheel and the bundle are built for that Python.
+  # --------------------------------------------------------------------------
+  paraview-bundle:
+    name: ParaView bundle (Kitware ParaView ${{ matrix.series }})
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        series: ["5.13", "6.0"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - name: Find the series' Linux tarball and its Python
+        id: pv
+        run: |
+          listing=$(curl -fsSL --retry 4 "https://www.paraview.org/files/v${{ matrix.series }}/")
+          tarball=$(grep -oE 'ParaView-[0-9.]+(-[A-Za-z0-9]+)?-MPI-Linux-Python3\.[0-9]+-x86_64\.tar\.gz' <<<"$listing" | sort -uV | tail -1)
+          test -n "$tarball" || { echo "no Linux tarball for ParaView ${{ matrix.series }}"; exit 1; }
+          python=$(grep -oE 'Python3\.[0-9]+' <<<"$tarball" | sed 's/Python//')
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "python=$python" >> "$GITHUB_OUTPUT"
+          echo "tag=${python/./}" >> "$GITHUB_OUTPUT"
+          echo "ParaView ${{ matrix.series }}: $tarball (Python $python)"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ steps.pv.outputs.python }}
+      - name: Install a GL runtime
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          # Kitware's pvpython links libglapi.so.0 and libOpenGL.so.0 itself.
+          # Ubuntu 24.04's libglx-mesa0 no longer depends on libglapi-mesa, and
+          # libgl1 does not bring libopengl0, so both are named here.
+          sudo apt-get install -y --no-install-recommends libgl1 libglx-mesa0 libglapi-mesa libopengl0 libegl1 libxt6t64 xvfb
+      - name: Download ParaView
+        run: |
+          curl -fsSL --retry 4 -o pv.tar.gz "https://www.paraview.org/files/v${{ matrix.series }}/${{ steps.pv.outputs.tarball }}"
+          mkdir paraview && tar -xzf pv.tar.gz -C paraview --strip-components=1
+          echo "PVPYTHON=$PWD/paraview/bin/pvpython" >> "$GITHUB_ENV"
+      - name: Build the wheel and the bundle
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: "4"
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel --outdir dist
+          python src/paraview/build_bundle.py --platform linux-x64 \
+                 --python-tag ${{ steps.pv.outputs.tag }} \
+                 --local-wheel 'dist/meshioplusplus-*.whl' --outdir dist
+      - name: Load the bundle in pvpython
+        run: |
+          python -m pip install dist/meshioplusplus-*.whl pytest
+          export MESHIOPLUSPLUS_PARAVIEW_BUNDLE=$(ls dist/meshioplusplus-paraview-*.zip)
+          export MESHIOPLUSPLUS_BUNDLE_PVPYTHON="$PVPYTHON"
+          xvfb-run -a python -m pytest tests/python/test_paraview_bundle.py -v
 
   # --------------------------------------------------------------------------
   # The CLI's optional native viewer. Lives here rather than in cli.yml because

@@ -31,17 +31,21 @@ pytestmark = pytest.mark.skipif(
     PVPYTHON is None and not _REQUIRED, reason="pvpython not installed"
 )
 
-_SCRIPT = """
+_PRELUDE = """
 import json, sys
 import paraview.simple as pvs
 from paraview import servermanager
 
-plugin, src, dst = sys.argv[1:4]
-pvs.LoadPlugin(plugin, ns=globals())
-reader = pvs.meshioreader(FileName=src)
+pvs.LoadPlugin(sys.argv[1], ns=globals())
+args = sys.argv[2:]
+"""
+
+_SCRIPT = """
+src, dst = args
+reader = meshioreader(FileName=src)
 reader.UpdatePipeline()
 grid = servermanager.Fetch(reader)
-writer = pvs.meshioWriter(Input=reader, FileName=dst)
+writer = meshioWriter(Input=reader, FileName=dst)
 writer.UpdatePipeline()
 print(json.dumps({
     "points": grid.GetNumberOfPoints(),
@@ -81,7 +85,12 @@ def _pvpython_mismatch():
     return None
 
 
-def test_plugin_reads_and_writes_through_paraview(tmp_path):
+def _run_pvpython(tmp_path, script, *args):
+    """Run ``script`` in pvpython with the plugin loaded; its last line, as JSON.
+
+    The script sees ``pvs`` (paraview.simple), ``servermanager``, the plugin's
+    proxies in its globals, and ``args`` (the strings passed here).
+    """
     assert (
         PVPYTHON is not None
     ), "MESHIOPLUSPLUS_REQUIRE_PVPYTHON is set but there is no pvpython"
@@ -90,6 +99,20 @@ def test_plugin_reads_and_writes_through_paraview(tmp_path):
         if _REQUIRED:
             pytest.fail(mismatch)
         pytest.skip(mismatch)
+    path = tmp_path / "probe.py"
+    path.write_text(_PRELUDE + script)
+    run = subprocess.run(
+        [PVPYTHON, str(path), str(PLUGIN), *map(str, args)],
+        capture_output=True,
+        text=True,
+        env=_env(),
+        timeout=300,
+    )
+    assert run.returncode == 0, run.stderr[-3000:]
+    return json.loads(run.stdout.strip().splitlines()[-1])
+
+
+def test_plugin_reads_and_writes_through_paraview(tmp_path):
     mesh = meshioplusplus.Mesh(
         np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]]),
         [("tetra", [[0, 1, 2, 3]]), ("triangle", [[1, 2, 4], [0, 1, 4]])],
@@ -99,23 +122,378 @@ def test_plugin_reads_and_writes_through_paraview(tmp_path):
     src = tmp_path / "in.vtu"
     dst = tmp_path / "out.vtk"
     meshioplusplus.write(src, mesh)
-    script = tmp_path / "smoke.py"
-    script.write_text(_SCRIPT)
-    run = subprocess.run(
-        [PVPYTHON, str(script), str(PLUGIN), str(src), str(dst)],
-        capture_output=True,
-        text=True,
-        env=_env(),
-        timeout=300,
-    )
-    assert run.returncode == 0, run.stderr[-3000:]
-    seen = json.loads(run.stdout.strip().splitlines()[-1])
+    seen = _run_pvpython(tmp_path, _SCRIPT, src, dst)
     assert seen == {"points": 5, "cells": 3, "point_data": ["u"], "cell_data": ["c"]}
 
     back = meshioplusplus.read(dst)
     assert len(back.points) == 5
-    assert sorted((b.type, len(b.data)) for b in back.cells) == [
+    # The writer keeps the cell order: one tetra block, then the triangles.
+    assert [(b.type, len(b.data)) for b in back.cells] == [
         ("tetra", 1),
         ("triangle", 2),
     ]
     np.testing.assert_array_equal(back.point_data["u"], np.arange(5.0))
+
+
+_VOLUMES = """
+reader = meshioreader(FileName=args[0])
+sizes = pvs.CellSize(Input=reader)
+sizes.UpdatePipeline()
+grid = servermanager.Fetch(sizes)
+v = grid.GetCellData().GetArray("Volume")
+values = [v.GetValue(i) for i in range(v.GetNumberOfTuples())]
+writer = meshioWriter(Input=reader, FileName=args[1])
+writer.UpdatePipeline()
+solids = [x for x in values if x != 0.0]
+print(json.dumps({"cells": grid.GetNumberOfCells(), "solids": len(solids),
+                  "min": min(solids) if solids else None}))
+"""
+
+
+@pytest.mark.parametrize("case", ["linear", "toroid"])
+def test_wedges_are_not_inside_out(tmp_path, case):
+    """roadmap 1.1: every wedge ParaView shows has a positive volume, and the
+    file the writer writes back has no inverted cell."""
+    if case == "linear":
+        src = tmp_path / "wedges.msh"
+        meshioplusplus.write(
+            src,
+            meshioplusplus.Mesh(
+                np.array(
+                    [[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [0, 1, 1]]
+                    + [[1, 1, 0], [1, 1, 1]]
+                ),
+                [("wedge", [[0, 1, 2, 3, 4, 5], [1, 6, 2, 4, 7, 5]])],
+            ),
+        )
+    else:
+        src = REPO / "tests" / "python" / "meshes" / "mfem" / "toroid-wedge.mesh"
+    dst = tmp_path / "out.vtu"
+    seen = _run_pvpython(tmp_path, _VOLUMES, src, dst)
+    mesh = meshioplusplus.read(src)
+    assert meshioplusplus.compute_quality(mesh)["num_inverted"] == 0
+    assert seen["cells"] == sum(len(b) for b in mesh.cells)
+    assert seen["solids"] > 0
+    assert seen["min"] > 0
+    assert meshioplusplus.compute_quality(meshioplusplus.read(dst))["num_inverted"] == 0
+
+
+_COUNTS = """
+options = {"FileFormat": args[1]} if len(args) > 1 else {}
+reader = meshioreader(FileName=args[0], **options)
+reader.UpdatePipeline()
+grid = servermanager.Fetch(reader)
+print(json.dumps({"points": grid.GetNumberOfPoints(), "cells": grid.GetNumberOfCells()}))
+"""
+
+
+@pytest.mark.parametrize("case", ["polygon5", "line_1d"])
+def test_polygon_n_and_1d_meshes_are_read(tmp_path, case):
+    """roadmap 1.2: a polygon5 block and a 1-D mesh keep their cells."""
+    if case == "polygon5":
+        mesh = meshioplusplus.Mesh(
+            np.array(
+                [[0.0, 0, 0], [1, 0, 0], [1.5, 1, 0], [0.5, 1.6, 0], [-0.5, 1, 0]]
+            ),
+            [("polygon5", [[0, 1, 2, 3, 4]]), ("triangle", [[0, 1, 2]])],
+        )
+        # Only some formats keep a polygon5 block; the file format is named
+        # because a bare .msh is Fluent's on some builds and Gmsh's on others.
+        src, fmt = tmp_path / "in.msh", "ansys"
+    else:
+        mesh = meshioplusplus.Mesh(
+            np.array([[0.0], [1.0], [3.0]]), [("line", [[0, 1], [1, 2]])]
+        )
+        src, fmt = tmp_path / "in.mesh", "medit"
+    meshioplusplus.write(src, mesh, file_format=fmt)
+    expected = meshioplusplus.read(src, file_format=fmt)
+    seen = _run_pvpython(tmp_path, _COUNTS, src, fmt)
+    assert seen == {
+        "points": len(expected.points),
+        "cells": sum(len(b) for b in expected.cells),
+    }
+
+
+_NAMES = """
+src, state = args
+pxm = servermanager.ProxyManager()
+names = {}
+for group, name in (
+    ("sources", "MeshioPlusPlusReader"),
+    ("sources", "meshio++ reader"),
+    ("writers", "MeshioPlusPlusWriter"),
+    ("writers", "meshio++ Writer"),
+):
+    names[name] = pxm.GetPrototypeProxy(group, name) is not None
+# A state file saved with the old reader name loads into the alias, which
+# paraview.simple names after its label, "meshio++ reader (old name)".
+reader = meshioreaderoldname(FileName=src)
+pvs.SaveState(state)
+pvs.Delete(reader)
+pvs.LoadState(state)
+loaded = [p for p in pvs.GetSources().values() if p.GetXMLName() == "meshio++ reader"]
+loaded[0].UpdatePipeline()
+names["state_cells"] = servermanager.Fetch(loaded[0]).GetNumberOfCells()
+print(json.dumps(names))
+"""
+
+
+def test_stable_names_and_old_aliases(tmp_path):
+    """roadmap 6.10.2: stable proxy names; the old ones still load a state."""
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+        [("tetra", [[0, 1, 2, 3]])],
+    )
+    src = tmp_path / "in.vtu"
+    meshioplusplus.write(src, mesh)
+    seen = _run_pvpython(tmp_path, _NAMES, src, tmp_path / "state.pvsm")
+    assert seen == {
+        "MeshioPlusPlusReader": True,
+        "meshio++ reader": True,
+        "MeshioPlusPlusWriter": True,
+        "meshio++ Writer": True,
+        "state_cells": 1,
+    }
+
+
+def _capability(flag):
+    from meshioplusplus import _core
+
+    return bool(getattr(_core, flag, False))
+
+
+@pytest.mark.parametrize(
+    "ext, flag",
+    [(".xdmf", "__has_hdf5__"), (".exo", "__has_netcdf__"), (".cgns", "__has_hdf5__")],
+)
+def test_hdf5_and_netcdf_formats_through_the_plugin(tmp_path, ext, flag):
+    """roadmap 6.10.1: XDMF, Exodus and CGNS go through the plugin in CI."""
+    if not _capability(flag):
+        if _REQUIRED:
+            pytest.fail(f"this build has no {flag.strip('_')}")
+        pytest.skip(f"this build has no {flag.strip('_')}")
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]]),
+        [("tetra", [[0, 1, 2, 3], [1, 2, 3, 4]])],
+        point_data={"u": np.arange(5.0)},
+    )
+    src = tmp_path / f"in{ext}"
+    meshioplusplus.write(src, mesh)
+    expected = meshioplusplus.read(src)
+    seen = _run_pvpython(tmp_path, _COUNTS, src)
+    assert seen == {
+        "points": len(expected.points),
+        "cells": sum(len(b) for b in expected.cells),
+    }
+
+
+def test_polyhedra_reach_paraview(tmp_path):
+    """roadmap 6.2: a VTU of polyhedra has the cell count meshioplusplus.read
+    gives, and the writer writes the polyhedra back."""
+    src = REPO / "tests" / "python" / "meshes" / "vtu" / "two_pieces_polyhedron.vtu"
+    if src.read_bytes().startswith(b"version https://git-lfs"):
+        pytest.skip("LFS content not fetched")
+    dst = tmp_path / "out.vtu"
+    seen = _run_pvpython(tmp_path, _SCRIPT, src, dst)
+    mesh = meshioplusplus.read(src)
+    assert seen["cells"] == sum(len(b) for b in mesh.cells)
+    back = meshioplusplus.read(dst)
+    assert sorted((b.type, len(b)) for b in back.cells) == sorted(
+        (b.type, len(b)) for b in mesh.cells
+    )
+
+
+_TIME = """
+src, dst = args
+reader = meshioreader(FileName=src)
+reader.UpdatePipelineInformation()
+times = list(reader.TimestepValues)
+reader.UpdatePipeline(2.0)
+grid = servermanager.Fetch(reader)
+u = grid.GetPointData().GetArray("u")
+writer = meshioWriter(Input=reader, FileName=dst, WriteTimeSteps=1)
+writer.UpdatePipeline()
+print(json.dumps({"times": times, "u": [u.GetValue(i) for i in range(u.GetNumberOfTuples())]}))
+"""
+
+
+def test_time_steps_in_and_out(tmp_path):
+    """roadmap 6.4: a three-step frd shows TimestepValues [0, 0.5, 2], time
+    2.0 is the last step, and the writer writes every step back."""
+    points = np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]])
+    steps = [
+        (
+            t,
+            meshioplusplus.Mesh(
+                points,
+                [("tetra", [[0, 1, 2, 3]])],
+                point_data={"u": np.full(4, 10.0 * t)},
+            ),
+        )
+        for t in (0.0, 0.5, 2.0)
+    ]
+    src = tmp_path / "in.frd"
+    dst = tmp_path / "out.frd"
+    meshioplusplus.write_sequence(src, steps)
+    seen = _run_pvpython(tmp_path, _TIME, src, dst)
+    assert seen["times"] == [0.0, 0.5, 2.0]
+    assert seen["u"] == [20.0] * 4
+    assert meshioplusplus.read_metadata(dst)["time_values"] == [0.0, 0.5, 2.0]
+
+
+_ARRAYS = """
+src = args[0]
+reader = meshioreader(FileName=src)
+reader.UpdatePipelineInformation()
+offered = sorted(reader.PointArrays.Available)
+reader.PointArrays = ["v"]
+reader.UpdatePipeline()
+grid = servermanager.Fetch(reader)
+names = [grid.GetPointData().GetArrayName(i)
+         for i in range(grid.GetPointData().GetNumberOfArrays())]
+print(json.dumps({"offered": offered, "read": names,
+                  "addons": list(reader.GetProperty("AddOns"))}))
+"""
+
+
+def test_an_unticked_array_is_absent(tmp_path):
+    """roadmap 6.5: the array checkboxes come from read_metadata, and an
+    unticked array is absent from the fetched dataset."""
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+        [("tetra", [[0, 1, 2, 3]])],
+        point_data={"u": np.arange(4.0), "v": np.ones(4)},
+    )
+    src = tmp_path / "in.vtu"
+    meshioplusplus.write(src, mesh)
+    seen = _run_pvpython(tmp_path, _ARRAYS, src)
+    assert seen["offered"] == ["u", "v"]
+    assert seen["read"] == ["v"]
+    assert sorted(a.split(":")[0] for a in seen["addons"]) == ["mmg", "netgen", "occt"]
+
+
+_BLOCKS = """
+import re
+src = args[0]
+options = {"FileFormat": args[1]} if len(args) > 1 else {}
+reader = meshioreader(FileName=src, RegionsAsBlocks=1, **options)
+reader.UpdatePipeline()
+data = servermanager.Fetch(reader)
+blocks = {}
+for i in range(data.GetNumberOfPartitionedDataSets()):
+    name = data.GetMetaData(i).Get(data.NAME())
+    # Fetch gathers the data from the server and names each block "Block <n>_<name>".
+    name = re.sub(r"^Block [0-9]+_", "", name)
+    blocks[name] = data.GetPartition(i, 0).GetNumberOfCells()
+assembly = data.GetDataAssembly()
+print(json.dumps({"class": data.GetClassName(), "blocks": blocks,
+                  "count": data.GetNumberOfPartitionedDataSets(),
+                  "assembly": assembly.GetNumberOfChildren(0) if assembly else None}))
+"""
+
+
+def test_regions_as_blocks_in_paraview(tmp_path):
+    """roadmap 6.6.2: a Gmsh file with two physical groups shows both names,
+    each block with its region's cell count."""
+    from meshioplusplus._regions import Region
+
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]]),
+        [("tetra", [[0, 1, 2, 3], [1, 2, 3, 4]]), ("triangle", [[0, 1, 2]])],
+        regions=[
+            Region("solid", "cell", [0, 1], 3, 1),
+            Region("bottom", "cell", [2], 2, 2),
+        ],
+    )
+    src = tmp_path / "groups.msh"
+    meshioplusplus.write(src, mesh, file_format="gmsh")
+    seen = _run_pvpython(tmp_path, _BLOCKS, src, "gmsh")
+    assert seen["class"] == "vtkPartitionedDataSetCollection", seen
+    assert seen["blocks"].get("solid") == 2, seen
+    assert seen["blocks"].get("bottom") == 1, seen
+
+
+_SOURCES = """
+stl, msh, vtu = args
+sphere = pvs.Sphere()
+meshioWriter(Input=sphere, FileName=stl).UpdatePipeline()
+left = pvs.UnstructuredCellTypes()
+right = pvs.UnstructuredCellTypes()
+group = pvs.GroupDatasets(Input=[left, right])
+group.BlockNames = ["left", "right"]
+meshioWriter(Input=group, FileName=msh).UpdatePipeline()
+meshioWriter(Input=sphere, FileName=vtu, Encoding="ascii").UpdatePipeline()
+print(json.dumps({"sphere": servermanager.Fetch(sphere).GetNumberOfCells()}))
+"""
+
+
+def test_writer_inputs_and_options(tmp_path):
+    """roadmap 6.7: ParaView's Sphere() source writes to .stl, a two-block
+    multiblock writes .msh with a physical group per block, Encoding reaches
+    the writer, and the file names ParaView as its source."""
+    stl, msh, vtu = (tmp_path / n for n in ("sphere.stl", "blocks.msh", "s.vtu"))
+    seen = _run_pvpython(tmp_path, _SOURCES, stl, msh, vtu)
+    assert sum(len(b) for b in meshioplusplus.read(stl).cells) == seen["sphere"]
+    names = {r.name for r in meshioplusplus.read(msh).regions if r.kind == "cell"}
+    assert {"left", "right"} <= names
+    assert b'format="ascii"' in vtu.read_bytes()
+    assert any(
+        "ParaView" in line for line in meshioplusplus.read_metadata(vtu)["provenance"]
+    )
+
+
+_PIPELINE = """
+src, ops = args
+reader = meshioreader(FileName=src)
+f = meshioPipeline(Input=reader, Operations=ops)
+try:
+    f.UpdatePipeline()
+    cells = servermanager.Fetch(f).GetNumberOfCells()
+    print(json.dumps({"cells": cells}))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+"""
+
+
+@pytest.mark.parametrize("ops", ['[{"Op": "Refine"}]', '[{"Op": "NoSuchOp"}]'])
+def test_pipeline_filter(tmp_path, ops):
+    """roadmap 6.8: Refine gives eight times the cells; an unknown op fails."""
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+        [("tetra", [[0, 1, 2, 3]])],
+    )
+    src = tmp_path / "in.vtu"
+    meshioplusplus.write(src, mesh)
+    seen = _run_pvpython(tmp_path, _PIPELINE, src, ops)
+    if "NoSuchOp" in ops:
+        assert seen.get("cells", 0) == 0
+    else:
+        assert seen == {"cells": 8}
+
+
+def test_gmsh_p3_triangles_reach_paraview(tmp_path):
+    """roadmap 6.3.2: a Gmsh P3 triangle mesh shows a non-zero cell count."""
+    from meshioplusplus._lagrange import gmsh_lattice
+
+    points = np.array(gmsh_lattice("triangle", 3), dtype=float) / 3
+    mesh = meshioplusplus.Mesh(points, [("triangle10", [list(range(10))])])
+    src = tmp_path / "p3.msh"
+    meshioplusplus.write(src, mesh, file_format="gmsh")
+    assert meshioplusplus.read(src, file_format="gmsh").cells[0].type == "triangle10"
+    seen = _run_pvpython(tmp_path, _COUNTS, src, "gmsh")
+    assert seen == {"points": 10, "cells": 1}
+
+
+_REMESH = """
+sphere = pvs.Sphere(ThetaResolution=64, PhiResolution=64)
+f = meshioRemeshsurface(Input=sphere, NumClusters=500)
+f.UpdatePipeline()
+print(json.dumps({"points": servermanager.Fetch(f).GetNumberOfPoints()}))
+"""
+
+
+def test_remesh_filter_in_paraview(tmp_path):
+    """roadmap 6.9: remesh with 500 clusters on ParaView's sphere gives about
+    500 points."""
+    seen = _run_pvpython(tmp_path, _REMESH)
+    assert 400 <= seen["points"] <= 600

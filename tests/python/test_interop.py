@@ -25,7 +25,7 @@ import pytest
 
 import meshioplusplus
 from meshioplusplus import _interop
-from meshioplusplus._mesh import Mesh
+from meshioplusplus._mesh import CellBlock, Mesh
 from meshioplusplus._regions import Region, block_bases
 
 
@@ -124,13 +124,21 @@ def test_vtk_payload_cell_data_is_block_major():
     assert payload.kept_global.tolist() == [0, 1, 2, 3]
 
 
+def _custom_block():
+    """A block of a type VTK has no id for."""
+    block = CellBlock("tetra", np.array([[0, 1, 2, 3]], dtype=np.int64))
+    block.type = "custom"
+    return block
+
+
 def test_vtk_payload_drops_unsupported_blocks():
-    """A polyhedron block is dropped by name, and the global index skips it."""
+    """A block VTK cannot express is dropped by name, and the global index
+    skips it."""
     mesh = Mesh(
         np.zeros((6, 3)),
         [
             ("triangle", np.array([[0, 1, 2]], dtype=np.int64)),
-            ("polyhedron4", [[[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]]),
+            _custom_block(),
             ("tetra", np.array([[0, 1, 2, 4], [1, 2, 3, 5]], dtype=np.int64)),
         ],
         cell_data={
@@ -143,8 +151,8 @@ def test_vtk_payload_drops_unsupported_blocks():
     )
     payload = _interop._to_vtk_payload(mesh)
 
-    assert [t for _, t in payload.dropped] == ["polyhedron4"]
-    assert any("polyhedron4" in note for note in payload.notes)
+    assert [t for _, t in payload.dropped] == ["custom"]
+    assert any("custom" in note for note in payload.notes)
     assert payload.celltypes.tolist() == [5, 10, 10]
     # The dropped block's cell data must not leak in, and the global index must
     # advance over it -- block 2's cells are global 2 and 3, not 1 and 2.
@@ -152,12 +160,35 @@ def test_vtk_payload_drops_unsupported_blocks():
     assert payload.kept_global.tolist() == [0, 2, 3]
 
 
+def test_vtk_payload_carries_polyhedra():
+    """roadmap 6.2: a polyhedron block is a VTK_POLYHEDRON block whose points
+    are its faces' distinct nodes, with its faces beside the cells."""
+    faces = [[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]]
+    mesh = Mesh(
+        np.zeros((5, 3)),
+        [
+            ("triangle", np.array([[0, 1, 2]], dtype=np.int64)),
+            ("polyhedron4", [[np.array(f) for f in faces]]),
+            ("tetra", np.array([[1, 2, 3, 4]], dtype=np.int64)),
+        ],
+    )
+    payload = _interop._to_vtk_payload(mesh)
+    assert payload.dropped == []
+    assert payload.celltypes.tolist() == [5, 42, 10]
+    assert payload.connectivity.tolist() == [0, 1, 2, 0, 1, 2, 3, 1, 2, 3, 4]
+    assert payload.face_location_offsets.tolist() == [0, 0, 4, 4]
+    assert payload.face_offsets.tolist() == [0, 3, 6, 9, 12]
+    assert payload.face_connectivity.tolist() == sum(faces, [])
+    assert payload.shared["connectivity"] is False
+    assert not _interop._to_vtk_payload(_triangle_mesh()).has_polyhedra
+
+
 def test_vtk_payload_cell_region_entry_in_dropped_block_is_noted():
     mesh = Mesh(
         np.zeros((4, 3)),
         [
             ("triangle", np.array([[0, 1, 2]], dtype=np.int64)),
-            ("polyhedron4", [[[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]]),
+            _custom_block(),
         ],
         regions=[Region("both", "cell", [0, 1])],
     )
@@ -207,15 +238,17 @@ def test_vtk_payload_derived_arrays_are_not_notes():
     assert any("offsets/celltypes" in d for d in payload.derived)
 
 
-def test_vtk_payload_wedge_is_reordered():
-    """meshio's wedge node order differs from VTK's, which forces a copy."""
+def test_vtk_payload_wedge_keeps_its_order():
+    """meshio++'s wedge (Gmsh's prism) is VTK's wedge: no permutation, so the
+    connectivity is shared (roadmap 1.1; test_vtk_wedge_orientation.py checks
+    the sign against VTK)."""
     mesh = Mesh(
         np.zeros((6, 3)),
         [("wedge", np.array([[0, 1, 2, 3, 4, 5]], dtype=np.int64))],
     )
     payload = _interop._to_vtk_payload(mesh)
-    assert payload.connectivity.tolist() == [0, 2, 1, 3, 5, 4]
-    assert payload.shared["connectivity"] is False
+    assert payload.connectivity.tolist() == [0, 1, 2, 3, 4, 5]
+    assert payload.shared["connectivity"] is True
 
 
 def test_vtk_payload_pads_2d_points():
@@ -494,6 +527,28 @@ def test_pyvista_round_trip():
         np.concatenate(back.cell_data["mat"]), np.array([10, 20, 30, 31])
     )
     assert meshioplusplus.meshes_equal(mesh, back)
+
+
+def test_pyvista_round_trip_keeps_polyhedra():
+    """roadmap 6.2: to_pyvista no longer drops polyhedra, and from_pyvista
+    reads them back in their order."""
+    pytest.importorskip("pyvista")
+    faces = [[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]]
+    mesh = Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]]),
+        [
+            ("polyhedron4", [[np.array(f) for f in faces]]),
+            ("tetra", np.array([[1, 2, 3, 4]], dtype=np.int64)),
+        ],
+        cell_data={"c": [np.array([1.0]), np.array([2.0])]},
+    )
+    grid = meshioplusplus.to_pyvista(mesh)
+    assert grid.n_cells == 2
+    assert grid.compute_cell_sizes()["Volume"][0] > 0
+    back = meshioplusplus.from_pyvista(grid)
+    assert [(b.type, len(b)) for b in back.cells] == [("polyhedron4", 1), ("tetra", 1)]
+    assert [f.tolist() for f in back.cells[0].data[0]] == faces
+    assert [c.tolist() for c in back.cell_data["c"]] == [[1.0], [2.0]]
 
 
 def test_pyvista_round_trip_preserves_regions_with_dim_and_tag():

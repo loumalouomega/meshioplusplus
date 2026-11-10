@@ -65,6 +65,8 @@ With `appended=True` the arrays declare `format="appended" offset="..."` instead
 
 The full VTK cell set, including VTK Lagrange high-order cells (`VTK_LAGRANGE_*`) and, since v16.40.0, VTK's rational Bézier cells (`VTK_BEZIER_*`, types 75–81). See [VTK](./vtk.md) for the shared numeric type-code table.
 
+The fixed-order types VTK has no id of its own for (`triangle10` … `triangle66`, `quad16` … `quad121`, `tetra20` … `tetra286`, `line5` … `line11`, and `wedge40` … `wedge550` and `hexahedron64` … `hexahedron1000` to order 9) are written as VTK Lagrange cells, their [Gmsh node order](../cell_types.md#higher-order-fixed-types) permuted into VTK's, and read back as the `VTK_LAGRANGE_*` type; both engines, and the legacy VTK, VTKHDF and VTX writers too. The writers raised on them before. `hexahedron1331` (order 10) has no Gmsh type to check its order against and is still refused, as is `pyramid14`, which VTK has no cell for.
+
 ## Data mapping
 
 `<PointData>`/`<CellData>` map generically to `point_data`/`cell_data`; [named regions](../regions.md#the-vtk-xml-convention) round-trip as `region:<kind>:<name>` `<FieldData>` arrays (v16.27.0; VTU has no native set concept, so this is a meshio++ convention, documented there). `point_sets`/`cell_sets` are views over regions and travel the same way; before v16.27.0 they were converted into data arrays.

@@ -536,6 +536,55 @@ jobs:
           files: dist/*.zip
           generate_release_notes: true
 
+  # ---------------------------------------------------------------------------
+  # The self-contained ParaView plugin bundle (roadmap 6.11): one zip per
+  # platform and ParaView Python, the plugin beside meshio++, its add-ons and
+  # rich unpacked into site-packages/, attached to the tag's Release. Built
+  # from the wheel artifacts, as the Blender extension is. ci.yml's
+  # paraview-bundle job loads one in Kitware ParaView binaries.
+  # ---------------------------------------------------------------------------
+  paraview_bundle:
+    name: ParaView bundle (${{ matrix.platform }}, cp${{ matrix.python }})
+    needs: [build_wheels, build_occt_addon, build_netgen_addon, build_mmg_addon]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["310", "311", "312", "313"]
+        platform: [linux-x64, windows-x64, macos-x64, macos-arm64]
+        include:
+          - { platform: linux-x64, tag: "manylinux*x86_64" }
+          - { platform: windows-x64, tag: "win_amd64" }
+          - { platform: macos-x64, tag: "macosx*x86_64" }
+          - { platform: macos-arm64, tag: "macosx*arm64" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          path: wheelhouse
+          pattern: "{wheels,occt-wheels,netgen-wheels,mmg-wheels}-*"
+          merge-multiple: true
+      - name: Build the bundle
+        run: |
+          python -m pip install --upgrade pip
+          python src/paraview/build_bundle.py \
+            --platform ${{ matrix.platform }} \
+            --python-tag ${{ matrix.python }} \
+            --local-wheel 'wheelhouse/meshioplusplus-*-cp${{ matrix.python }}-*${{ matrix.tag }}.whl' \
+            --addon-wheel 'wheelhouse/meshioplusplus_occt-*-cp${{ matrix.python }}-*${{ matrix.tag }}.whl' \
+            --addon-wheel 'wheelhouse/meshioplusplus_netgen-*-cp${{ matrix.python }}-*${{ matrix.tag }}.whl' \
+            --addon-wheel 'wheelhouse/meshioplusplus_mmg-*-cp${{ matrix.python }}-*${{ matrix.tag }}.whl' \
+            --outdir dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+
   publish:
     name: Publish to PyPI
     needs: [build_wheels, build_sdist, build_occt_addon, build_netgen_addon, build_mmg_addon]

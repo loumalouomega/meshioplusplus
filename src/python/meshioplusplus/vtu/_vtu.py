@@ -25,6 +25,7 @@ from .._region_field_data import (
     regions_to_field_arrays,
 )
 from .._vtk_common import (
+    HEX_ORDER_TYPES,
     hex_swap_stream,
     meshio_to_vtk_order,
     meshio_to_vtk_type,
@@ -1028,8 +1029,7 @@ def write(
     # 2.2 (VTK 9.1) is the first version whose higher-order hexahedra are in
     # the order meshio++ holds; an older one tells VTK to swap edges 10 and 11.
     hex_order = any(
-        c.type in ("VTK_LAGRANGE_HEXAHEDRON", "VTK_BEZIER_HEXAHEDRON")
-        for c in mesh.cells
+        meshio_to_vtk_type.get(c.type) in HEX_ORDER_TYPES for c in mesh.cells
     )
     vtk_file = ET.Element(
         "VTKFile",

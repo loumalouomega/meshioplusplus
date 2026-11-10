@@ -45,7 +45,7 @@ A transient file is best written through the [time-series writers](../vtkhdf_tim
 | meshio++ | VTKHDF |
 |---|---|
 | `points` | `Points`, `(n, 3)`; a 2-D mesh is zero-padded. The stored dtype is kept on read (VTK writes `float32`) and the mesh's own dtype on write |
-| cell blocks | `Connectivity`/`Offsets`/`Types`, with VTK's ids and node order. The linear wedge is the one type whose node order differs from meshio's and is permuted both ways |
+| cell blocks | `Connectivity`/`Offsets`/`Types`, with VTK's ids and node order, which is meshio++'s for every type (the linear wedge too: VTK's reference wedge is Gmsh's prism) |
 | `point_data` | `PointData/<name>`, `(n,)` or `(n, k)`; higher rank is folded to `(n, prod)`; a `bool` array is stored as `uint8` |
 | `cell_data` | `CellData/<name>`, one flat array over all cells (concatenated in block order); split back per block on read |
 | `field_data` | `FieldData/<name>`; a non-numeric entry is skipped with a warning on write |

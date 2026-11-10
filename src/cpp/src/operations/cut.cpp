@@ -78,43 +78,39 @@ constexpr const char* kCutPrefix = "meshio++: cut: ";
 
 /// A cuttable cell type: its CutCells family (cutcells::cell::type's value),
 /// topological dimension, corner count, node count when the level set may be
-/// quadratic on it (0: linear only), its corners' VTK type, and whether its
-/// meshio corner order differs from VTK's (the wedge).
+/// quadratic on it (0: linear only) and its corners' VTK type. meshio++'s
+/// corner order is VTK's for every family.
 struct CutKind {
     int mFamily = 0;
     int mTdim = 0;
     int mCorners = 0;
     int mQuadraticNodes = 0;
     int mVtk = 0;
-    bool mWedge = false;
 };
 
 std::optional<CutKind> cut_kind(const std::string& rType) {
     // cutcells::cell::type: interval 1, triangle 2, tetrahedron 3,
     // quadrilateral 4, hexahedron 5, prism 6, pyramid 7.
     if (rType == "line" || rType == "line3")
-        return CutKind{1, 1, 2, 0, 3, false};
+        return CutKind{1, 1, 2, 0, 3};
     if (rType == "triangle" || rType == "triangle7")
-        return CutKind{2, 2, 3, 0, 5, false};
+        return CutKind{2, 2, 3, 0, 5};
     if (rType == "triangle6")
-        return CutKind{2, 2, 3, 6, 5, false};
+        return CutKind{2, 2, 3, 6, 5};
     if (rType == "quad" || rType == "quad8" || rType == "quad9")
-        return CutKind{4, 2, 4, 0, 9, false};
+        return CutKind{4, 2, 4, 0, 9};
     if (rType == "tetra")
-        return CutKind{3, 3, 4, 0, 10, false};
+        return CutKind{3, 3, 4, 0, 10};
     if (rType == "tetra10")
-        return CutKind{3, 3, 4, 10, 10, false};
+        return CutKind{3, 3, 4, 10, 10};
     if (rType == "hexahedron" || rType == "hexahedron20" || rType == "hexahedron27")
-        return CutKind{5, 3, 8, 0, 12, false};
+        return CutKind{5, 3, 8, 0, 12};
     if (rType == "wedge" || rType == "wedge15" || rType == "wedge18")
-        return CutKind{6, 3, 6, 0, 13, true};
+        return CutKind{6, 3, 6, 0, 13};
     if (rType == "pyramid" || rType == "pyramid13" || rType == "pyramid14")
-        return CutKind{7, 3, 5, 0, 14, false};
+        return CutKind{7, 3, 5, 0, 14};
     return std::nullopt;
 }
-
-/// meshio wedge corners -> VTK order (meshio_to_vtk_order("wedge")); its own inverse.
-constexpr int kCutWedgeOrder[6] = {0, 2, 1, 3, 5, 4};
 
 /// Per CutCells family, VTK corner j is Basix corner kCutVtkToBasix[f][j] and
 /// back (cutcells::cell::vtk_to_basix_vertex_permutation; each is its own
@@ -422,9 +418,8 @@ CutInput cut_prepare(const Mesh& rMesh, const CutOptions& rOptions) {
         for (std::size_t c = 0; c < nc; ++c) {
             int corner[8];
             for (int v = 0; v < kind->mCorners; ++v) {
-                const int src = kind->mWedge ? kCutWedgeOrder[v] : v;
                 const std::int64_t node =
-                    detail::read_int(r_c, c * npc + static_cast<std::size_t>(src));
+                    detail::read_int(r_c, c * npc + static_cast<std::size_t>(v));
                 if (node < 0 || static_cast<std::size_t>(node) >= np)
                     cut_fail("a '" + cells.Type() + "' cell names node " + std::to_string(node) +
                              " of " + std::to_string(np));
@@ -900,10 +895,8 @@ CutLevelSetResult cut_level_set(const Mesh& rMesh, const CutOptions& rOptions) {
                 const int begin = cm._offset[static_cast<std::size_t>(c)];
                 const int count = cm._offset[static_cast<std::size_t>(c) + 1] - begin;
                 for (int j = 0; j < count; ++j) {
-                    // meshio position j <- VTK position (the wedge's swap) <- Basix position.
-                    const int vtk = fam == 6 ? kCutWedgeOrder[j] : j;
-                    const int src =
-                        count == cut_family_corners(fam) ? kCutVtkToBasix[fam][vtk] : vtk;
+                    // meshio position j = VTK position <- Basix position.
+                    const int src = count == cut_family_corners(fam) ? kCutVtkToBasix[fam][j] : j;
                     pieces.mConn.push_back(cm._connectivity[static_cast<std::size_t>(begin + src)]);
                 }
                 pieces.mOffsets.push_back(static_cast<std::int64_t>(pieces.mConn.size()));

@@ -227,21 +227,25 @@ def _flatten_cell_data(mesh, name, block_indices, notes):
     return np.concatenate(parts, axis=0)
 
 
-def _region_payload(mesh, num_points, kept_global, notes):
+def _region_payload(mesh, num_points, kept_global, notes, carry_sides=False):
     """Region masks + the JSON-serializable metadata sidecar.
 
     ``Point`` and ``Cell`` regions become int8 0/1 masks keyed
     ``(kind, name)``; ``Side`` regions are dropped by name, because neither VTK
     nor trimesh has a ``(cell, local facet)`` concept to map them onto.
 
-    ``kept_global`` is the ascending array of *global block-major* cell indices
-    actually emitted (blocks the target cannot express are absent from it), so a
+    ``carry_sides`` skips side regions without a note, for a caller that
+    carries them itself (the ParaView plugin, as the VTU convention's field
+    arrays). ``kept_global`` is the ascending array of *global block-major*
+    cell indices actually emitted (blocks the target cannot express are absent from it), so a
     cell region entry in a dropped block is removed here rather than silently
     landing on the wrong cell.
     """
     masks, meta = {}, []
     n_cells = len(kept_global)
     for region in getattr(mesh, "regions", []):
+        if region.kind == "side" and carry_sides:
+            continue  # the caller carries it another way
         if region.kind == "side":
             notes.append(
                 f"side region '{region.name}' was dropped: the target has no "
@@ -348,10 +352,23 @@ class VtkPayload:
     #: Arrays built because the target's data model has no meshio++ counterpart.
     #: Not warnings — see :func:`_derived_note`.
     derived: list = field(default_factory=list)
+    #: Polyhedron faces as a cell array (VTK 9.4's layout): face ``f`` is
+    #: ``face_connectivity[face_offsets[f]:face_offsets[f + 1]]``, global point
+    #: ids, the faces numbered in cell order.
+    face_connectivity: np.ndarray = field(default_factory=lambda: np.empty(0, np.int64))
+    face_offsets: np.ndarray = field(default_factory=lambda: np.zeros(1, np.int64))
+    #: ``(num_cells + 1,)``: cell ``c`` has the faces
+    #: ``face_location_offsets[c]`` to ``face_location_offsets[c + 1]`` (none
+    #: for a cell that is not a polyhedron); ``None`` when no cell is one.
+    face_location_offsets: np.ndarray = None
 
     @property
     def num_cells(self) -> int:
         return len(self.celltypes)
+
+    @property
+    def has_polyhedra(self) -> bool:
+        return self.face_location_offsets is not None
 
 
 def _vtk_type_id(cell_type):
@@ -364,6 +381,9 @@ def _vtk_type_id(cell_type):
     # storage shape distinguishes them, which VTK does not care about.
     if cell_type.startswith("polygon"):
         return meshio_to_vtk_type["polygon"]
+    # `polyhedron4`, `polyhedron8`, ...: the name counts the distinct points.
+    if cell_type.startswith("polyhedron"):
+        return meshio_to_vtk_type["polyhedron"]
     return None
 
 
@@ -402,8 +422,8 @@ def _vtk_block_conn(cell_block):
         n, k = data.shape
         counts = np.full(n, k, dtype=np.int64)
         if perm is not None:
-            # `wedge` is the one type whose meshio (gmsh Prism) node order
-            # differs from VTK's; a permutation is always a copy.
+            # A permutation into VTK's node order is always a copy (no type
+            # needs one today; see _vtk_common.vtk_to_meshio_order).
             flat = np.ascontiguousarray(data[:, perm], dtype=np.int64).reshape(-1)
             return (
                 flat,
@@ -425,15 +445,43 @@ def _vtk_block_conn(cell_block):
     return flat, counts, False, "ragged polygon rows are flattened"
 
 
-def _to_vtk_payload(mesh, zero_copy_only: bool = False) -> VtkPayload:
+def _vtk_polyhedron_block(cell_block):
+    """A polyhedron block's VTK cells: ``(connectivity, counts, faces, face
+    sizes, faces per cell)``, all int64.
+
+    VTK lists a polyhedron's points (each once) besides its faces; they are
+    the sorted distinct nodes of its faces, as the VTU writer lists them.
+    """
+    from ._ragged import polyhedron_csr
+
+    flat, offsets, face_offsets = polyhedron_csr(cell_block.data)
+    n = len(face_offsets) - 1
+    per_cell = np.diff(offsets[face_offsets])
+    cell_of = np.repeat(np.arange(n, dtype=np.int64), per_cell)
+    order = np.lexsort((flat, cell_of))
+    cells, nodes = cell_of[order], flat[order]
+    first = np.ones(len(nodes), dtype=bool)
+    first[1:] = (cells[1:] != cells[:-1]) | (nodes[1:] != nodes[:-1])
+    counts = np.bincount(cells[first], minlength=n).astype(np.int64)
+    return nodes[first], counts, flat, np.diff(offsets), np.diff(face_offsets)
+
+
+def _to_vtk_payload(
+    mesh, zero_copy_only: bool = False, carry_sides: bool = False
+) -> VtkPayload:
     """Map a mesh onto the arrays a VTK 9 unstructured grid needs.
 
     Pure: imports no third-party library, touches no VTK object, and does not
     modify ``mesh``.
 
-    Blocks VTK cannot express — ragged ``polyhedron``, ``custom``, anything
-    absent from the meshio↔VTK type map — are **dropped with a note naming
-    them**, never an exception. Mixed-type meshes are the normal case.
+    Blocks VTK cannot express — ``custom``, anything absent from the
+    meshio↔VTK type map — are **dropped with a note naming them**, never an
+    exception. Mixed-type meshes are the normal case. A polyhedron block is a
+    ``VTK_POLYHEDRON`` block: its faces travel in ``face_connectivity``,
+    ``face_offsets`` and ``face_location_offsets``.
+
+    ``carry_sides`` leaves side regions out without the note that they were
+    dropped, for a caller that carries them itself.
 
     Raises
     ------
@@ -450,7 +498,7 @@ def _to_vtk_payload(mesh, zero_copy_only: bool = False) -> VtkPayload:
     kept, dropped = [], []
     for b, cb in enumerate(mesh.cells):
         type_id = _vtk_type_id(cb.type)
-        if type_id is None or cb.type.startswith("polyhedron"):
+        if type_id is None:
             dropped.append((b, cb.type))
             continue
         kept.append((b, cb, type_id))
@@ -459,9 +507,18 @@ def _to_vtk_payload(mesh, zero_copy_only: bool = False) -> VtkPayload:
         notes.append(f"cell blocks VTK cannot express were dropped: {names}")
 
     conn_parts, count_parts, type_parts, global_parts = [], [], [], []
+    face_parts, size_parts, per_cell_parts = [], [], []
     share_conn, conn_reason = True, None
     for b, cb, type_id in kept:
-        flat, counts, ok, reason = _vtk_block_conn(cb)
+        if cb.type.startswith("polyhedron"):
+            flat, counts, faces, sizes, per_cell = _vtk_polyhedron_block(cb)
+            ok, reason = False, None
+            face_parts.append(faces)
+            size_parts.append(sizes)
+            per_cell_parts.append(per_cell)
+        else:
+            flat, counts, ok, reason = _vtk_block_conn(cb)
+            per_cell_parts.append(np.zeros(len(counts), dtype=np.int64))
         conn_parts.append(flat)
         count_parts.append(counts)
         type_parts.append(np.full(len(counts), type_id, dtype=np.uint8))
@@ -474,7 +531,14 @@ def _to_vtk_payload(mesh, zero_copy_only: bool = False) -> VtkPayload:
         shared["connectivity"] = True
     elif conn_parts:
         connectivity = np.concatenate(conn_parts)
-        if len(conn_parts) > 1:
+        if face_parts:
+            _derived_note(
+                "connectivity",
+                "VTK lists a polyhedron's points besides its faces",
+                derived,
+            )
+            shared["connectivity"] = False
+        elif len(conn_parts) > 1:
             _derived_note(
                 "connectivity",
                 f"{len(conn_parts)} cell blocks concatenated into one VTK cell array",
@@ -501,6 +565,20 @@ def _to_vtk_payload(mesh, zero_copy_only: bool = False) -> VtkPayload:
     _derived_note(
         "offsets/celltypes", "VTK's cell array has no meshio++ counterpart", derived
     )
+    face_kw = {}
+    if face_parts:
+        sizes = np.concatenate(size_parts)
+        face_offsets = np.zeros(len(sizes) + 1, dtype=np.int64)
+        np.cumsum(sizes, out=face_offsets[1:])
+        per_cell = np.concatenate(per_cell_parts)
+        locations = np.zeros(len(per_cell) + 1, dtype=np.int64)
+        np.cumsum(per_cell, out=locations[1:])
+        face_kw = dict(
+            face_connectivity=np.concatenate(face_parts),
+            face_offsets=face_offsets,
+            face_location_offsets=locations,
+        )
+        _derived_note("faces", "VTK's polyhedron faces are a separate array", derived)
 
     points = _vtk_points(mesh, notes, shared, zero_copy_only)
 
@@ -538,7 +616,9 @@ def _to_vtk_payload(mesh, zero_copy_only: bool = False) -> VtkPayload:
         if got is not None:
             cell_data[name] = got
 
-    masks, meta = _region_payload(mesh, len(points), kept_global, notes)
+    masks, meta = _region_payload(
+        mesh, len(points), kept_global, notes, carry_sides=carry_sides
+    )
 
     return VtkPayload(
         points=points,
@@ -554,6 +634,7 @@ def _to_vtk_payload(mesh, zero_copy_only: bool = False) -> VtkPayload:
         shared=shared,
         notes=notes,
         derived=derived,
+        **face_kw,
     )
 
 
@@ -1006,8 +1087,6 @@ def to_pyvista(mesh, zero_copy_only: bool = False):
         under ``zero_copy_only`` when an array would be copied.
     """
     pv = _require("pyvista", "pyvista", "to_pyvista")
-    import vtk
-    from vtk.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray
 
     payload = _to_vtk_payload(mesh, zero_copy_only=zero_copy_only)
     _emit("to_pyvista", payload.notes)
@@ -1017,18 +1096,13 @@ def to_pyvista(mesh, zero_copy_only: bool = False):
     # pyvista's UnstructuredGrid(cells, celltypes, points) constructor takes the
     # *legacy* `[n, p0, ..., n, p1, ...]` layout and always copies. Going through
     # vtkCellArray.SetData is what actually shares the VTK 9 offsets/connectivity
-    # pair, so this route is mandatory rather than a preference.
-    cell_array = vtk.vtkCellArray()
-    cell_array.SetData(
-        numpy_to_vtkIdTypeArray(payload.offsets, deep=False),
-        numpy_to_vtkIdTypeArray(payload.connectivity, deep=False),
-    )
+    # pair, so this route is mandatory rather than a preference; set_cells also
+    # carries the polyhedra's faces, through whichever API this VTK has.
+    from ._paraview import set_cells
+
     grid = pv.UnstructuredGrid()
     grid.points = payload.points
-    grid.SetCells(
-        numpy_to_vtk(payload.celltypes, deep=False, array_type=vtk.VTK_UNSIGNED_CHAR),
-        cell_array,
-    )
+    set_cells(grid, payload)
 
     for name, values in payload.point_data.items():
         grid.point_data[name] = values
@@ -1066,14 +1140,9 @@ def from_pyvista(grid):
     _require("pyvista", "pyvista", "from_pyvista")
 
     from ._mesh import Mesh
-    from ._vtk_common import vtk_cells_from_data
+    from ._paraview import cells_from_grid
 
     notes: list = []
-    connectivity = np.asarray(grid.cell_connectivity)
-    # `vtk_cells_from_data` wants END offsets (the VTU convention); a VTK 9 cell
-    # array's `offset` starts at 0 and has num_cells + 1 entries.
-    offsets = np.asarray(grid.offset)[1:]
-    celltypes = np.asarray(grid.celltypes)
 
     meta_by_name = {}
     try:
@@ -1090,7 +1159,7 @@ def from_pyvista(grid):
             )
 
     # Cell region masks are indexed by VTK cell, which is exactly the global
-    # block-major numbering `vtk_cells_from_data` produces (it splits the type
+    # block-major numbering `cells_from_grid` produces (it splits the type
     # array into contiguous runs, in order). So they must be harvested from the
     # FLAT arrays, before that call turns cell data into per-block lists.
     cell_flat = {str(k): np.asarray(v) for k, v in grid.cell_data.items()}
@@ -1098,7 +1167,7 @@ def from_pyvista(grid):
     regions = _regions_from_masks(point_data, "point", meta_by_name, notes)
     regions += _regions_from_masks(cell_flat, "cell", meta_by_name, notes)
 
-    cells, cell_data = vtk_cells_from_data(connectivity, offsets, celltypes, cell_flat)
+    cells, cell_data = cells_from_grid(grid, cell_flat)
 
     _emit("from_pyvista", notes)
     return Mesh(

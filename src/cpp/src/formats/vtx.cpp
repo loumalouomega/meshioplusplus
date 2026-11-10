@@ -42,6 +42,7 @@
 #include "meshioplusplus/detail/vtk_cells.hpp"
 #include "meshioplusplus/vtk_common.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/vtk_write_cell.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
@@ -914,23 +915,22 @@ public:
             std::vector<std::int64_t> mRows;
         };
         std::vector<Block> blocks;
-        const auto& vtk_types = meshio_to_vtk_type();
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
             const auto cb = rMesh.Cells(b);
             const std::size_t count = cb.NumCells();
             if (count == 0)
                 continue;
-            const auto found = vtk_types.find(cb.Type());
-            if (found == vtk_types.end())
+            const auto found = detail::vtk_type_for_write(cb.Type());
+            if (!found)
                 vw_fail("cell type '" + cb.Type() + "' has no VTK type");
             const std::size_t w = cb.NodesPerCell();
-            std::vector<int> order = meshio_to_vtk_order(cb.Type());
+            std::vector<int> order = detail::vtk_order_for_write(cb.Type());
             if (order.size() != w)
                 order.clear();
             Block blk;
             blk.mIndex = b;
             blk.mType = cb.Type();
-            blk.mVtk = vw_lagrange(found->second, w);
+            blk.mVtk = vw_lagrange(static_cast<int>(*found), w);
             blk.mWidth = w + 1;
             blk.mFirst = mCells;
             blk.mCount = count;
