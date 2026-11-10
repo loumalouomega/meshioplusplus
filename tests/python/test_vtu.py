@@ -244,6 +244,12 @@ def test_polyhedra_with_alternating_node_counts_keep_their_cell_data():
 _QUIRKS = pathlib.Path(__file__).resolve().parent / "meshes" / "vtu"
 
 
+def _core_has_zlib():
+    from meshioplusplus import _core
+
+    return bool(getattr(_core, "__has_zlib__", False))
+
+
 def _core_vtu_read(path):
     from meshioplusplus import _core
 
@@ -643,6 +649,8 @@ def test_base64_header_and_body_in_one_chunk_or_two(
 ):
     """Issue #229: GiD encodes each array's header and data as one base64
     stream, VTK as two; both read the same in either engine."""
+    if reader is _core_vtu_read and compressed and not _core_has_zlib():
+        pytest.skip("this build's core has no zlib")
     path = tmp_path / "cells.vtu"
     path.write_text(
         _cells_only_vtu(
@@ -661,7 +669,8 @@ def test_gid_cells_only_file_reads_from_a_path_and_a_buffer(tmp_path):
     text = _cells_only_vtu(joint=True)
     path = tmp_path / "gid_boundary_groups.vtu"
     path.write_text(text)
-    _expect_cells_only(meshioplusplus.read(path))
+    if _core_has_zlib():
+        _expect_cells_only(meshioplusplus.read(path))
     _expect_cells_only(
         meshioplusplus.read(io.BytesIO(text.encode()), file_format="vtu")
     )
