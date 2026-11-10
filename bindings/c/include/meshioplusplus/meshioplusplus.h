@@ -3698,6 +3698,8 @@ typedef enum mio_octree_mesh_fill {
  * initialize through mio_octree_mesh_opts_init(), which sets the defaults
  * (several are not zero).
  */
+struct mio_adapt_volume_opts;
+
 typedef struct mio_octree_mesh_opts {
     /** Explicit bounds {xlo, ylo, zlo, xhi, yhi, zhi}, or NULL for the padded skin box. */
     const double* bounds;
@@ -3744,8 +3746,11 @@ typedef struct mio_octree_mesh_opts {
     double crossing_margin; /**< a sliver's edges cross this far inside both, in [0, 0.5) (0.01) */
     double crossing_gap;    /**< ... and come this close, relative to the shorter one (0.05) */
     int32_t volume_fix;     /**< nonzero (default): run the volume fix */
-    int32_t reserved32;     /**< must be zero */
-    int64_t reserved[4];          /**< must be zero; room for additive growth */
+    /** Nonzero: remesh the tetrahedral output with adapt_volume (ABI 45; off by default). */
+    int32_t post_adapt;
+    /** Its options (borrowed); NULL takes mio_adapt_volume_opts_init()'s defaults. */
+    const struct mio_adapt_volume_opts* adapt;
+    int64_t reserved[3]; /**< must be zero; room for additive growth */
 } mio_octree_mesh_opts;
 
 /** What mio_octree_mesh reports; see doc/octree_mesh.md for every field. */
@@ -4169,6 +4174,107 @@ typedef struct mio_optimize_volume_report {
  */
 MIO_API mio_mesh* mio_optimize_volume_ex(const mio_mesh* mesh, const mio_optimize_volume_opts* opts,
                                          mio_optimize_volume_report* report);
+
+/** mio_adapt_volume_opts.quality_metric: what adapt_volume guards. */
+typedef enum mio_adapt_volume_quality {
+    MIO_ADAPT_VOLUME_MIN_DIHEDRAL = 0, /**< the least dihedral angle, degrees (default) */
+    MIO_ADAPT_VOLUME_MEAN_RATIO = 1,   /**< the mean ratio, 1 for the regular tetrahedron */
+    MIO_ADAPT_VOLUME_AMIPS = 2         /**< AMIPS smoothing, its reciprocal guarded */
+} mio_adapt_volume_quality;
+
+/**
+ * Options for mio_adapt_volume (and mio_octree_mesh_opts.adapt). Same ABI rules
+ * as mio_feature_edges_opts; always initialize through
+ * mio_adapt_volume_opts_init(). See doc/adapt_volume.md.
+ */
+typedef struct mio_adapt_volume_opts {
+    double hmin;                 /**< smallest target edge; <= 0 the smallest boundary size */
+    double hmax;                 /**< largest target edge; <= 0 a diagonal over 8 */
+    double hgrad;                /**< gradation (1.3) */
+    double hausd;                /**< boundary bound; <= 0 1e-3 of the diagonal */
+    double feature_angle;        /**< ridge angle, degrees (30) */
+    double corner_angle;         /**< corner angle along a chain, degrees (30) */
+    double max_normal_deviation; /**< the most a boundary face turns per edit (30) */
+    double quality_min;          /**< quality floor; < 0 the metric's default */
+    double target_min_dihedral;  /**< stop once reached; 0 disables */
+    const char* size_array;      /**< point_data of target sizes, or NULL (borrowed) */
+    const int64_t* frozen;       /**< point ids that never move (borrowed), or NULL */
+    int64_t num_frozen;
+    const char* const* material_arrays; /**< integer cell_data kept by parent (borrowed) */
+    int64_t num_material_arrays;        /**< 0 takes the known material names */
+    int32_t hausd_relative;      /**< nonzero: hausd is a fraction of the diagonal */
+    int32_t curvature_sizing;    /**< nonzero: bound boundary sizes by curvature */
+    int32_t preserve_boundary;   /**< nonzero: leave the boundary bit for bit */
+    int32_t preserve_features;   /**< nonzero (default): keep ridges and corners */
+    int32_t quality_metric;      /**< a mio_adapt_volume_quality */
+    int32_t max_iterations;      /**< collapse / split / swap / smooth cycles (10) */
+    int32_t collapse;            /**< nonzero (default): run the collapse pass */
+    int32_t split;               /**< nonzero (default): run the split pass */
+    int32_t swap;                /**< nonzero (default): run the swap pass */
+    int32_t smooth;              /**< nonzero (default): run the smoothing pass */
+    int64_t reserved[8];         /**< must be zero; room for additive growth */
+} mio_adapt_volume_opts;
+
+/** Initialize adapt_volume options to the defaults (every pass on). */
+MIO_API void mio_adapt_volume_opts_init(mio_adapt_volume_opts* opts);
+
+/** What mio_adapt_volume did; see doc/adapt_volume.md for every field. */
+typedef struct mio_adapt_volume_report {
+    int64_t num_tets_before;
+    int64_t num_tets_after;
+    int64_t num_points_before;
+    int64_t num_points_after;
+    int64_t num_collapsed;
+    int64_t num_split;
+    int64_t num_swapped;
+    int64_t num_smoothed;
+    int64_t num_rejected_by_link;
+    int64_t num_rejected_by_inversion;
+    int64_t num_rejected_by_quality;
+    int64_t num_rejected_by_length;
+    int64_t num_rejected_by_class;
+    int64_t num_rejected_by_hausdorff;
+    int64_t num_rejected_by_normal;
+    int64_t num_corners;
+    int64_t num_ridge_vertices;
+    int64_t num_chains;
+    int64_t num_patches;
+    int64_t iterations;
+    double min_dihedral_before;
+    double min_dihedral_after;
+    double max_dihedral_before;
+    double max_dihedral_after;
+    double mean_quality_before;
+    double mean_quality_after;
+    double max_boundary_deviation; /**< symmetric Hausdorff distance to the input boundary */
+    double hmin;                   /**< the sizes and bound the run used */
+    double hmax;
+    double hausd;
+    double volume_before;
+    double volume_after;
+    int64_t reserved[8]; /**< zero */
+} mio_adapt_volume_report;
+
+/**
+ * Remesh a tetrahedral mesh to a graded isotropic size field: collapse, split,
+ * swap and smooth under a Hausdorff bound, keeping corners, ridges, materials,
+ * regions and boundary tags. The warnings, the per-class volume change and the
+ * timings are on the C++ and Python APIs only.
+ *
+ * @param mesh   a tetra-only volume mesh.
+ * @param opts   options; NULL means every mio_adapt_volume_opts_init() default.
+ * @param report optional out.
+ * @return the adapted mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_adapt_volume(const mio_mesh* mesh, const mio_adapt_volume_opts* opts,
+                                   mio_adapt_volume_report* report);
+
+/**
+ * The adapt_volume report of this thread's last mio_octree_mesh call.
+ * @return 1 when it ran (post_adapt) and @p report was filled, 0 when it did
+ *         not, -1 on a NULL @p report.
+ */
+MIO_API int mio_octree_mesh_adapt_report(mio_adapt_volume_report* report);
 
 /** Which dual area a per-vertex curvature is divided by. */
 typedef enum mio_curvature_dual_area {

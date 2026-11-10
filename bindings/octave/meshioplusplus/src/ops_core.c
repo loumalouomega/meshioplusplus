@@ -182,6 +182,109 @@ static mxArray *O_mio_optimize_volume(const mxArray **a) {
     return mio_o_struct(13, names, values);
 }
 
+/* adapt_volume(mesh, hmin, hmax, hgrad, hausd, hausd_relative, size_array,
+ * preserve_boundary, preserve_features, quality_metric, quality_min,
+ * max_iterations, collapse, split, swap, smooth) */
+static mxArray *O_mio_adapt_volume(const mxArray **a) {
+    mio_adapt_volume_opts opts;
+    mio_adapt_volume_report rep;
+    mio_adapt_volume_opts_init(&opts);
+    opts.hmin = mio_o_double(a[1], "hmin");
+    opts.hmax = mio_o_double(a[2], "hmax");
+    opts.hgrad = mio_o_double(a[3], "hgrad");
+    opts.hausd = mio_o_double(a[4], "hausd");
+    opts.hausd_relative = mio_o_bool(a[5], "hausd_relative");
+    const char *size_name = mio_o_string(a[6], "size_array");
+    if (size_name[0] != '\0') opts.size_array = size_name;
+    opts.preserve_boundary = mio_o_bool(a[7], "preserve_boundary");
+    opts.preserve_features = mio_o_bool(a[8], "preserve_features");
+    const char *metric = mio_o_string(a[9], "quality_metric");
+    if (strcmp(metric, "min_dihedral") == 0)
+        opts.quality_metric = MIO_ADAPT_VOLUME_MIN_DIHEDRAL;
+    else if (strcmp(metric, "mean_ratio") == 0)
+        opts.quality_metric = MIO_ADAPT_VOLUME_MEAN_RATIO;
+    else if (strcmp(metric, "amips") == 0)
+        opts.quality_metric = MIO_ADAPT_VOLUME_AMIPS;
+    else
+        mio_o_error("adapt_volume", "meshio++: adapt_volume: quality_metric must be "
+                                    "\"min_dihedral\", \"mean_ratio\" or \"amips\"");
+    opts.quality_min = mio_o_double(a[10], "quality_min");
+    opts.max_iterations = mio_o_int(a[11], "max_iterations");
+    opts.collapse = mio_o_bool(a[12], "collapse");
+    opts.split = mio_o_bool(a[13], "split");
+    opts.swap = mio_o_bool(a[14], "swap");
+    opts.smooth = mio_o_bool(a[15], "smooth");
+    mio_mesh *out = mio_adapt_volume(mio_o_mesh(a[0]), &opts, &rep);
+    if (out == NULL) mio_o_fail("adapt_volume");
+    const char *names[] = {"mesh",
+                           "num_tets_before",
+                           "num_tets_after",
+                           "num_points_before",
+                           "num_points_after",
+                           "num_collapsed",
+                           "num_split",
+                           "num_swapped",
+                           "num_smoothed",
+                           "num_rejected_by_link",
+                           "num_rejected_by_inversion",
+                           "num_rejected_by_quality",
+                           "num_rejected_by_length",
+                           "num_rejected_by_class",
+                           "num_rejected_by_hausdorff",
+                           "num_rejected_by_normal",
+                           "num_corners",
+                           "num_ridge_vertices",
+                           "num_chains",
+                           "num_patches",
+                           "iterations",
+                           "min_dihedral_before",
+                           "min_dihedral_after",
+                           "max_dihedral_before",
+                           "max_dihedral_after",
+                           "mean_quality_before",
+                           "mean_quality_after",
+                           "max_boundary_deviation",
+                           "hmin",
+                           "hmax",
+                           "hausd",
+                           "volume_before",
+                           "volume_after"};
+    mxArray *values[] = {mio_o_wrap_mesh(out),
+                         mio_o_scalar((double)rep.num_tets_before),
+                         mio_o_scalar((double)rep.num_tets_after),
+                         mio_o_scalar((double)rep.num_points_before),
+                         mio_o_scalar((double)rep.num_points_after),
+                         mio_o_scalar((double)rep.num_collapsed),
+                         mio_o_scalar((double)rep.num_split),
+                         mio_o_scalar((double)rep.num_swapped),
+                         mio_o_scalar((double)rep.num_smoothed),
+                         mio_o_scalar((double)rep.num_rejected_by_link),
+                         mio_o_scalar((double)rep.num_rejected_by_inversion),
+                         mio_o_scalar((double)rep.num_rejected_by_quality),
+                         mio_o_scalar((double)rep.num_rejected_by_length),
+                         mio_o_scalar((double)rep.num_rejected_by_class),
+                         mio_o_scalar((double)rep.num_rejected_by_hausdorff),
+                         mio_o_scalar((double)rep.num_rejected_by_normal),
+                         mio_o_scalar((double)rep.num_corners),
+                         mio_o_scalar((double)rep.num_ridge_vertices),
+                         mio_o_scalar((double)rep.num_chains),
+                         mio_o_scalar((double)rep.num_patches),
+                         mio_o_scalar((double)rep.iterations),
+                         mio_o_scalar(rep.min_dihedral_before),
+                         mio_o_scalar(rep.min_dihedral_after),
+                         mio_o_scalar(rep.max_dihedral_before),
+                         mio_o_scalar(rep.max_dihedral_after),
+                         mio_o_scalar(rep.mean_quality_before),
+                         mio_o_scalar(rep.mean_quality_after),
+                         mio_o_scalar(rep.max_boundary_deviation),
+                         mio_o_scalar(rep.hmin),
+                         mio_o_scalar(rep.hmax),
+                         mio_o_scalar(rep.hausd),
+                         mio_o_scalar(rep.volume_before),
+                         mio_o_scalar(rep.volume_after)};
+    return mio_o_struct(33, names, values);
+}
+
 /* --- subsetting ---------------------------------------------------------- */
 
 /* crop_bbox(mesh, lo, hi, mode, record_ids) */
@@ -1980,6 +2083,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_clean, 6),
     MIO_O_ENTRY(mio_smooth, 10),
     MIO_O_ENTRY(mio_optimize_volume, 8),
+    MIO_O_ENTRY(mio_adapt_volume, 16),
     MIO_O_ENTRY(mio_crop_bbox, 5),
     MIO_O_ENTRY(mio_crop_predicate, 5),
     MIO_O_ENTRY(mio_crop_plane, 5),

@@ -224,6 +224,17 @@ def add_args(parser):
         default=0.05,
         help="... and come this close, relative to the shorter edge",
     )
+    parser.add_argument(
+        "--post-adapt",
+        action="store_true",
+        help="remesh the tetrahedra with adapt_volume (doc/adapt_volume.md)",
+    )
+    parser.add_argument("--adapt-hmin", type=float, default=0.0)
+    parser.add_argument("--adapt-hmax", type=float, default=0.0)
+    parser.add_argument("--adapt-hgrad", type=float, default=1.3)
+    parser.add_argument("--adapt-hausd", type=float, default=0.0)
+    parser.add_argument("--adapt-max-iterations", type=int, default=10)
+    parser.add_argument("--adapt-preserve-boundary", action="store_true")
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="suppress the summary"
@@ -276,13 +287,23 @@ def octree_mesh_cmd(args):
         cap_flatness=args.cap_flatness,
         crossing_margin=args.crossing_margin,
         crossing_gap=args.crossing_gap,
+        post_adapt=args.post_adapt,
+        adapt_hmin=args.adapt_hmin,
+        adapt_hmax=args.adapt_hmax,
+        adapt_hgrad=args.adapt_hgrad,
+        adapt_hausd=args.adapt_hausd,
+        adapt_max_iterations=args.adapt_max_iterations,
+        adapt_preserve_boundary=args.adapt_preserve_boundary,
         return_report=True,
     )
     write(args.outfile, out, file_format=args.output_format)
 
     if args.json:
         # Timings differ from run to run; the JSON holds what is reproducible.
-        emit_json({k: v for k, v in report.items() if k != "timings"})
+        doc = {k: v for k, v in report.items() if k != "timings"}
+        if "adapt" in doc:
+            doc["adapt"] = {k: v for k, v in doc["adapt"].items() if k != "timings"}
+        emit_json(doc)
     elif not args.quiet:
         print(f"octree mesh ({report['output']})")
         print(f"  root size:      {report['root_size']:g}")

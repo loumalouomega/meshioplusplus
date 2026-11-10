@@ -700,6 +700,19 @@ test_that("decimate collapses a fan and honours frozen", {
               "frozen node id 998")
 })
 
+test_that("adapt_volume coarsens a tet box within its bounds", {
+  tets <- mio_box(dims = c(5, 5, 5), cell_type = "tetra")
+  on.exit(mio_release(tets))
+  a <- mio_adapt_volume(tets, hmin = 0.3, hmax = 0.4)
+  on.exit(mio_release(a$mesh), add = TRUE)
+  expect_lt(a$num_tets_after, a$num_tets_before)
+  expect_equal(mio_num_cells(a$mesh), a$num_tets_after)
+  expect_equal(a$num_corners, 8)
+  expect_lte(a$max_boundary_deviation, a$hausd)
+  expect_equal(a$volume_after, 1, tolerance = 1e-12)
+  expect_error(mio_adapt_volume(tets, quality_metric = "best"), "quality_metric")
+})
+
 test_that("decimate_volume collapses tets and reports its maps", {
   tets <- mio_box(dims = c(3, 3, 3), cell_type = "tetra")
   on.exit(mio_release(tets))

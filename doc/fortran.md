@@ -119,6 +119,10 @@ The complete CI-tested example lives at [`doc/examples/fortran_example.f90`](htt
 
 `m%read(path, 'gmsh')` accepts non-periodic 4.0 files as well as 2.2/4.1, in ASCII or binary (4- or 8-byte producer counts). For periodic files use `read_with_info` / `write_with_info`; writes stay 4.1 (`gmsh`) or 2.2 (`gmsh22`). Info-less reads refuse `$Periodic` rather than lose it. See [Gmsh](formats/gmsh.md).
 
+## Tetrahedral remeshing (`adapt_volume`)
+
+`out = m%adapt_volume(hmin=, hmax=, hgrad=, hausd=, hausd_relative=, preserve_boundary=, preserve_features=, quality_metric=, quality_min=, max_iterations=, collapse=, split=, swap=, smooth=, report=rep, stat=ierr)` remeshes a tetrahedral mesh to a graded size field ([adapt_volume](adapt_volume.md)); `rep` is a `type(mio_adapt_volume_report_t)`, the C report's interop mirror, with every count. `size_array`, `frozen` and the material arrays are on the C, C++ and Python APIs. `mio_octree_mesh_opts_t` gains `post_adapt` and `adapt` (a `c_loc` of a `mio_adapt_volume_opts_t`).
+
 ## Selective reads and file summaries
 
 Sets↔data conversions return a new mesh through `m%sets_to_data(MIO_DATA_POINT [, data_name, join_char, order, stat, errmsg])` and `m%data_to_sets(MIO_DATA_CELL, key [, stat, errmsg])`. Only point/cell locations are accepted. Set order defaults to native region-name order; an explicit `order` lists every set name once. Labels are scalar integer values, not indices: they stay zero-based with -1 for uncovered entities. See [sets/data semantics](data_manage.md#sets--integer-data).

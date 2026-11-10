@@ -1773,6 +1773,15 @@ step('optimizeVolume: ODT-remeshes a tetrahedral mesh', () => {
     assert.throws(() => m.optimizeVolume(tetCube, 5, true, true, true, 1e-6, 'best'), /objective/);
 });
 
+step('adaptVolume: coarsens a tetrahedral mesh to a size field', () => {
+    const box = m.box([5, 5, 5], null, null, 'tetra');
+    const out = m.adaptVolume(box, {hmin: 0.3, hmax: 0.4});
+    assert.ok(out.numTetsAfter < out.numTetsBefore);
+    assert.ok(out.maxBoundaryDeviation <= out.hausd);
+    assert.ok(Array.isArray(out.warnings));
+    assert.throws(() => m.adaptVolume(box, {qualityMetric: 'best'}), /quality_metric/);
+});
+
 step('optimizeVolume is reachable as a convertSurfaceOps pipeline step', () => {
     const tetCube = m.convertCells(cube, 'simplexify');
     m.writeMesh('/ovol.vtu', tetCube);

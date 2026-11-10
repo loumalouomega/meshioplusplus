@@ -30,6 +30,7 @@ from contextvars import ContextVar
 import numpy as np
 
 from . import _pipeline_table, _primitives
+from ._adapt_volume import adapt_volume
 from ._agglomerate import agglomerate
 from ._check_conformity import check_conformity
 from ._check_tetrahedra import check_tetrahedra
@@ -2721,6 +2722,49 @@ def _apply_step(mesh, step, steps, warnings):
         entry["NumWorstSmoothed"] = float(report["num_worst_smoothed"])
         entry["MinDihedralBefore"] = float(report["min_dihedral_before"])
         entry["MinDihedralAfter"] = float(report["min_dihedral_after"])
+    elif op == "AdaptVolume":
+        # Size-field tetrahedral remeshing: new points and tetrahedra; material
+        # cell_data and every region carried, other cell_data dropped.
+        mesh, report = adapt_volume(
+            mesh,
+            hmin=_number(step, "Hmin", 0.0),
+            hmax=_number(step, "Hmax", 0.0),
+            hgrad=_number(step, "Hgrad", 1.3),
+            hausd=_number(step, "Hausd", 0.0),
+            hausd_relative=_flag(step, "HausdRelative", False),
+            size_array=_text(step, "SizeArray", "") or None,
+            curvature_sizing=_flag(step, "CurvatureSizing", False),
+            feature_angle=_number(step, "FeatureAngle", 30.0),
+            corner_angle=_number(step, "CornerAngle", 30.0),
+            max_normal_deviation=_number(step, "MaxNormalDeviation", 30.0),
+            preserve_boundary=_flag(step, "PreserveBoundary", False),
+            preserve_features=_flag(step, "PreserveFeatures", True),
+            quality_metric=_text(step, "QualityMetric", "min_dihedral"),
+            quality_min=_number(step, "QualityMin", -1.0),
+            max_iterations=int(_number(step, "MaxIterations", 10.0)),
+            target_min_dihedral=_number(step, "TargetMinDihedral", 0.0),
+            collapse=_flag(step, "Collapse", True),
+            split=_flag(step, "Split", True),
+            swap=_flag(step, "Swap", True),
+            smooth=_flag(step, "Smooth", True),
+            return_report=True,
+        )
+        for key, name in (
+            ("NumTetsBefore", "num_tets_before"),
+            ("NumTetsAfter", "num_tets_after"),
+            ("NumPointsBefore", "num_points_before"),
+            ("NumPointsAfter", "num_points_after"),
+            ("NumCollapsed", "num_collapsed"),
+            ("NumSplit", "num_split"),
+            ("NumSwapped", "num_swapped"),
+            ("NumSmoothed", "num_smoothed"),
+            ("MinDihedralBefore", "min_dihedral_before"),
+            ("MinDihedralAfter", "min_dihedral_after"),
+            ("MaxDihedralAfter", "max_dihedral_after"),
+            ("MaxBoundaryDeviation", "max_boundary_deviation"),
+            ("Iterations", "iterations"),
+        ):
+            entry[key] = float(report[name])
     elif op == "Generate":
         # A mesh from parameters; like Voxelize it REPLACES the geometry, and it
         # never reads the incoming mesh, so a document may omit Input when this
@@ -2794,6 +2838,13 @@ def _apply_step(mesh, step, steps, warnings):
             cap_flatness=_number(step, "CapFlatness", 0.01),
             crossing_margin=_number(step, "CrossingMargin", 0.01),
             crossing_gap=_number(step, "CrossingGap", 0.05),
+            post_adapt=_flag(step, "PostAdapt", False),
+            adapt_hmin=_number(step, "AdaptHmin", 0.0),
+            adapt_hmax=_number(step, "AdaptHmax", 0.0),
+            adapt_hgrad=_number(step, "AdaptHgrad", 1.3),
+            adapt_hausd=_number(step, "AdaptHausd", 0.0),
+            adapt_max_iterations=int(_number(step, "AdaptMaxIterations", 10.0)),
+            adapt_preserve_boundary=_flag(step, "AdaptPreserveBoundary", False),
             return_report=True,
         )
         entry["NumLeaves"] = float(rep["num_leaves"])

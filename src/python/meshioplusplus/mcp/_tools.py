@@ -167,6 +167,7 @@ from .. import (
 )
 from .. import offset_surface as _offset_surface_op
 from .. import (
+    adapt_volume,
     optimize_volume,
     parameterize,
     partition,
@@ -3039,6 +3040,13 @@ def tool_octree_mesh(
     cap_flatness=0.01,
     crossing_margin=0.01,
     crossing_gap=0.05,
+    post_adapt=False,
+    adapt_hmin=0.0,
+    adapt_hmax=0.0,
+    adapt_hgrad=1.3,
+    adapt_hausd=0.0,
+    adapt_max_iterations=10,
+    adapt_preserve_boundary=False,
 ):
     """Mesh the inside of a skin on a balanced octree (castellated, tet or hex)."""
     return _run_op(octree_mesh, locals())
@@ -5672,6 +5680,38 @@ def tool_optimize_volume(
     point data and named Point regions carry; cell data and Cell/Side regions
     are dropped (a flip has no cell correspondence)."""
     return _run_op(optimize_volume, locals())
+
+
+def tool_adapt_volume(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    hmin=0.0,
+    hmax=0.0,
+    hgrad=1.3,
+    hausd=0.0,
+    hausd_relative=False,
+    size_array=None,
+    curvature_sizing=False,
+    feature_angle=30.0,
+    corner_angle=30.0,
+    max_normal_deviation=30.0,
+    preserve_boundary=False,
+    preserve_features=True,
+    quality_metric="min_dihedral",
+    quality_min=-1.0,
+    max_iterations=10,
+    target_min_dihedral=0.0,
+    collapse=True,
+    split=True,
+    swap=True,
+    smooth=True,
+):
+    """Remesh a tetrahedral mesh to a graded isotropic size field (collapse,
+    split, swap, smooth) under a boundary Hausdorff bound, keeping corners,
+    ridges, materials, regions and boundary tags. Tet-only, C++-core-only."""
+    return _run_op(adapt_volume, locals())
 
 
 def tool_smooth(
@@ -8364,6 +8404,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "optimize_volume",
             {"fn": tool_optimize_volume, "wraps": ("optimize_volume",), "gated": None},
+        ),
+        (
+            "adapt_volume",
+            {"fn": tool_adapt_volume, "wraps": ("adapt_volume",), "gated": None},
         ),
         ("smooth", {"fn": tool_smooth, "wraps": ("smooth",), "gated": None}),
         ("merge", {"fn": tool_merge, "wraps": ("merge",), "gated": None}),

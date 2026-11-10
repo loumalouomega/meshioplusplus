@@ -126,6 +126,13 @@ function t_clean_smooth_crop()
     expect_equal(ov.num_edge_removals, 0);
     expect_error(@() mio.optimize_volume(m, 'objective', 'best'), 'objective');
 
+    % adapt_volume: size-field tetrahedral remeshing, tet-only.
+    av = mio.adapt_volume(m, 'hmin', 1.0, 'hmax', 2.0, 'max_iterations', 3);
+    expect_equal(mio.num_cells(av.mesh), av.num_tets_after);
+    assert(av.min_dihedral_after >= min(av.min_dihedral_before, 10) - 1e-9);
+    assert(av.max_boundary_deviation <= av.hausd);
+    expect_error(@() mio.adapt_volume(m, 'quality_metric', 'best'), 'quality_metric');
+
     b = mio.crop_bbox(m, [-1 -1 -1], [10 10 10]);
     expect_equal(mio.num_cells(b), 2); % the box holds everything
 

@@ -1539,6 +1539,13 @@ def _register_operations(server: FastMCP) -> None:
         cap_flatness: float = 0.01,
         crossing_margin: float = 0.01,
         crossing_gap: float = 0.05,
+        post_adapt: bool = False,
+        adapt_hmin: float = 0.0,
+        adapt_hmax: float = 0.0,
+        adapt_hgrad: float = 1.3,
+        adapt_hausd: float = 0.0,
+        adapt_max_iterations: int = 10,
+        adapt_preserve_boundary: bool = False,
     ) -> dict:
         """Mesh the inside of a skin (any closed or slightly dirty surface:
         STL/OBJ/PLY/...) on a 2:1-balanced octree. output='castellated' gives
@@ -4315,6 +4322,52 @@ def _register_operations(server: FastMCP) -> None:
         default 0.35) trades boundary tet quality for a small, measured chance
         of non-manifold boundary edges (reported as num_non_manifold_edges);
         0 gives an exactly watertight but lower-quality boundary."""
+
+    @server.tool()
+    @_forward(_tools.tool_adapt_volume)
+    def adapt_volume(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        hmin: float = 0.0,
+        hmax: float = 0.0,
+        hgrad: float = 1.3,
+        hausd: float = 0.0,
+        hausd_relative: bool = False,
+        size_array: Optional[str] = None,
+        curvature_sizing: bool = False,
+        feature_angle: float = 30.0,
+        corner_angle: float = 30.0,
+        max_normal_deviation: float = 30.0,
+        preserve_boundary: bool = False,
+        preserve_features: bool = True,
+        quality_metric: str = "min_dihedral",
+        quality_min: float = -1.0,
+        max_iterations: int = 10,
+        target_min_dihedral: float = 0.0,
+        collapse: bool = True,
+        split: bool = True,
+        swap: bool = True,
+        smooth: bool = True,
+    ) -> dict:
+        """Remesh a valid but over-refined tetrahedral mesh (typically
+        octree_mesh's tet output) into fewer, better-shaped tetrahedra: each
+        iteration collapses edges shorter than 4/5 of the target size, splits
+        those longer than 4/3, swaps (2-3, 3-2, edge and multi-face removal)
+        and smooths (ODT or AMIPS inside; tangential moves projected back on
+        the boundary). The size field keeps the boundary's own resolution
+        (raised by hmin) and grades inside to hmax at gradation hgrad; the
+        boundary stays within hausd of the input's (default 1e-3 of the
+        diagonal). Corners stay, ridge vertices slide along their chain,
+        surface vertices within their patch; material interfaces, regions and
+        side tags are kept, other cell_data dropped. Every edit is guarded by
+        exact orientation tests and the quality floor quality_min.
+        preserve_boundary freezes the boundary bit for bit. Reports the counts
+        before/after, the edits, the refusals by guard (num_rejected_by_*),
+        the dihedral range, max_boundary_deviation (the symmetric Hausdorff
+        distance to the input boundary), the volumes, region_volume_change and
+        timings. Tet-only and C++-core-only. See doc/adapt_volume.md."""
 
     @server.tool()
     @_forward(_tools.tool_optimize_volume)

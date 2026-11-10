@@ -66,6 +66,7 @@
 // Project includes
 #include "meshioplusplus/export.hpp"
 #include "meshioplusplus/mesh.hpp"
+#include "meshioplusplus/operations/adapt_volume.hpp"
 #include "meshioplusplus/operations/quality.hpp"
 #include "meshioplusplus/operations/sdf_names.hpp"
 
@@ -251,6 +252,12 @@ struct OctreeMeshOptions {
     double mCrossingMargin = 0.01;
     /// ... and the edges come this close, relative to the shorter one.
     double mCrossingGap = 0.05;
+    /// Tetrahedral output: remesh it with `adapt_volume` (size field, gradation,
+    /// Hausdorff bound) after the volume fix, before the quality report. Off by
+    /// default (ABI 45).
+    bool mPostAdapt = false;
+    /// The options of that `adapt_volume` run.
+    AdaptVolumeOptions mAdapt;
 };
 
 /// The result of `octree_mesh`.
@@ -315,6 +322,10 @@ struct OctreeMeshResult {
     std::vector<std::pair<std::string, double>> mTimings;
     /// Everything that did not meet its target, in order.
     std::vector<std::string> mWarnings;
+    /// `mPostAdapt` ran (ABI 45).
+    bool mAdapted = false;
+    /// Its report; `mAdapt.mMesh` is empty (the mesh is `mMesh`).
+    AdaptVolumeResult mAdapt;
 };
 
 /**

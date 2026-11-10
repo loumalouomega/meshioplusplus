@@ -118,6 +118,7 @@ module meshioplusplus
     public :: MIO_MDPA_VALUE_NUMBER, MIO_MDPA_VALUE_TEXT, MIO_MDPA_VALUE_TABLE
     public :: mio_stats_report
     public :: mio_octree_mesh_report
+    public :: mio_adapt_volume_opts_t, mio_adapt_volume_report_t
     public :: mio_surface_quality
     public :: mio_find_interface_result, mio_contact_pairs_result
     public :: mio_grid
@@ -324,6 +325,75 @@ module meshioplusplus
         real(c_double) :: min_improvement = 1.0e-6_c_double
         integer(c_int32_t) :: objective = 0
         integer(c_int32_t) :: max_ring_size = 7
+        integer(c_int64_t) :: reserved(8) = 0
+    end type
+
+    !> Interop mirror of C `mio_adapt_volume_opts` (ABI 45, 216 bytes). Field
+    !> order/types are ABI; the defaults mirror `mio_adapt_volume_opts_init`
+    !> (called anyway). See doc/adapt_volume.md.
+    type, bind(c) :: mio_adapt_volume_opts_t
+        real(c_double) :: hmin = 0.0_c_double
+        real(c_double) :: hmax = 0.0_c_double
+        real(c_double) :: hgrad = 1.3_c_double
+        real(c_double) :: hausd = 0.0_c_double
+        real(c_double) :: feature_angle = 30.0_c_double
+        real(c_double) :: corner_angle = 30.0_c_double
+        real(c_double) :: max_normal_deviation = 30.0_c_double
+        real(c_double) :: quality_min = -1.0_c_double
+        real(c_double) :: target_min_dihedral = 0.0_c_double
+        type(c_ptr) :: size_array = c_null_ptr
+        type(c_ptr) :: frozen = c_null_ptr
+        integer(c_int64_t) :: num_frozen = 0
+        type(c_ptr) :: material_arrays = c_null_ptr
+        integer(c_int64_t) :: num_material_arrays = 0
+        integer(c_int32_t) :: hausd_relative = 0
+        integer(c_int32_t) :: curvature_sizing = 0
+        integer(c_int32_t) :: preserve_boundary = 0
+        integer(c_int32_t) :: preserve_features = 1
+        integer(c_int32_t) :: quality_metric = 0
+        integer(c_int32_t) :: max_iterations = 10
+        integer(c_int32_t) :: collapse = 1
+        integer(c_int32_t) :: split = 1
+        integer(c_int32_t) :: swap = 1
+        integer(c_int32_t) :: smooth = 1
+        integer(c_int64_t) :: reserved(8) = 0
+    end type
+
+    !> What `m%adapt_volume` reports: an interop mirror of C
+    !> `mio_adapt_volume_report` (320 bytes; see doc/adapt_volume.md).
+    type, bind(c) :: mio_adapt_volume_report_t
+        integer(c_int64_t) :: num_tets_before = 0
+        integer(c_int64_t) :: num_tets_after = 0
+        integer(c_int64_t) :: num_points_before = 0
+        integer(c_int64_t) :: num_points_after = 0
+        integer(c_int64_t) :: num_collapsed = 0
+        integer(c_int64_t) :: num_split = 0
+        integer(c_int64_t) :: num_swapped = 0
+        integer(c_int64_t) :: num_smoothed = 0
+        integer(c_int64_t) :: num_rejected_by_link = 0
+        integer(c_int64_t) :: num_rejected_by_inversion = 0
+        integer(c_int64_t) :: num_rejected_by_quality = 0
+        integer(c_int64_t) :: num_rejected_by_length = 0
+        integer(c_int64_t) :: num_rejected_by_class = 0
+        integer(c_int64_t) :: num_rejected_by_hausdorff = 0
+        integer(c_int64_t) :: num_rejected_by_normal = 0
+        integer(c_int64_t) :: num_corners = 0
+        integer(c_int64_t) :: num_ridge_vertices = 0
+        integer(c_int64_t) :: num_chains = 0
+        integer(c_int64_t) :: num_patches = 0
+        integer(c_int64_t) :: iterations = 0
+        real(c_double) :: min_dihedral_before = 0.0_c_double
+        real(c_double) :: min_dihedral_after = 0.0_c_double
+        real(c_double) :: max_dihedral_before = 0.0_c_double
+        real(c_double) :: max_dihedral_after = 0.0_c_double
+        real(c_double) :: mean_quality_before = 0.0_c_double
+        real(c_double) :: mean_quality_after = 0.0_c_double
+        real(c_double) :: max_boundary_deviation = 0.0_c_double
+        real(c_double) :: hmin = 0.0_c_double
+        real(c_double) :: hmax = 0.0_c_double
+        real(c_double) :: hausd = 0.0_c_double
+        real(c_double) :: volume_before = 0.0_c_double
+        real(c_double) :: volume_after = 0.0_c_double
         integer(c_int64_t) :: reserved(8) = 0
     end type
 
@@ -2150,8 +2220,11 @@ module meshioplusplus
         real(c_double) :: crossing_margin = 0.01_c_double
         real(c_double) :: crossing_gap = 0.05_c_double
         integer(c_int32_t) :: volume_fix = 1
-        integer(c_int32_t) :: reserved32 = 0
-        integer(c_int64_t) :: reserved(4) = 0
+        !> ABI 45: nonzero remeshes the tetrahedra with adapt_volume.
+        integer(c_int32_t) :: post_adapt = 0
+        !> c_loc of a mio_adapt_volume_opts_t, or c_null_ptr for its defaults.
+        type(c_ptr) :: adapt = c_null_ptr
+        integer(c_int64_t) :: reserved(3) = 0
     end type
 
     !> What `m%octree_mesh` reports: an interop mirror of C
@@ -2761,6 +2834,7 @@ module meshioplusplus
         procedure :: clean => mesh_clean
         procedure :: smooth => mesh_smooth
         procedure :: optimize_volume => mesh_optimize_volume
+        procedure :: adapt_volume => mesh_adapt_volume
         procedure :: crop_bbox => mesh_crop_bbox
         procedure :: crop_plane => mesh_crop_plane
         procedure :: crop_predicate => mesh_crop_predicate
@@ -3777,6 +3851,21 @@ module meshioplusplus
             type(c_ptr), value :: h
             type(mio_optimize_volume_opts_t), intent(in) :: opts
             type(mio_optimize_volume_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_adapt_volume_opts_init(opts) &
+                bind(c, name="mio_adapt_volume_opts_init")
+            import :: mio_adapt_volume_opts_t
+            type(mio_adapt_volume_opts_t), intent(out) :: opts
+        end subroutine
+
+        function c_mio_adapt_volume(h, opts, report) &
+                bind(c, name="mio_adapt_volume") result(r)
+            import :: c_ptr, mio_adapt_volume_opts_t, mio_adapt_volume_report_t
+            type(c_ptr), value :: h
+            type(mio_adapt_volume_opts_t), intent(in) :: opts
+            type(mio_adapt_volume_report_t), intent(out) :: report
             type(c_ptr) :: r
         end function
 
@@ -8925,6 +9014,73 @@ contains
         if (present(min_dihedral_before)) &
             min_dihedral_before = real(rep%min_dihedral_before, real64)
         if (present(min_dihedral_after)) min_dihedral_after = real(rep%min_dihedral_after, real64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Remesh a tetrahedral mesh to a graded isotropic size field: collapse,
+    !> split, swap and smooth under a Hausdorff bound, keeping corners, ridges,
+    !> materials, regions and boundary tags. Every option is optional (the
+    !> defaults of `mio_adapt_volume_opts_init`); `quality_metric` is
+    !> 'min_dihedral', 'mean_ratio' or 'amips'. `report` receives every count.
+    !> `size_array`, `frozen` and the material arrays are on the C, C++ and
+    !> Python APIs. See doc/adapt_volume.md.
+    function mesh_adapt_volume(self, hmin, hmax, hgrad, hausd, hausd_relative, &
+                               preserve_boundary, preserve_features, quality_metric, &
+                               quality_min, max_iterations, collapse, split, swap, smooth, &
+                               report, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in), optional :: hmin, hmax, hgrad, hausd, quality_min
+        logical, intent(in), optional :: hausd_relative, preserve_boundary, preserve_features
+        character(*), intent(in), optional :: quality_metric
+        integer, intent(in), optional :: max_iterations
+        logical, intent(in), optional :: collapse, split, swap, smooth
+        type(mio_adapt_volume_report_t), intent(out), optional :: report
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_adapt_volume_opts_t) :: opts
+        type(mio_adapt_volume_report_t) :: rep
+        if (c_sizeof(opts) /= 216_c_size_t .or. c_sizeof(rep) /= 320_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: adapt_volume layout mismatch'
+            error stop 1
+        end if
+        call c_mio_adapt_volume_opts_init(opts)
+        if (present(hmin)) opts%hmin = real(hmin, c_double)
+        if (present(hmax)) opts%hmax = real(hmax, c_double)
+        if (present(hgrad)) opts%hgrad = real(hgrad, c_double)
+        if (present(hausd)) opts%hausd = real(hausd, c_double)
+        if (present(quality_min)) opts%quality_min = real(quality_min, c_double)
+        if (present(hausd_relative)) opts%hausd_relative = merge(1_c_int32_t, 0_c_int32_t, hausd_relative)
+        if (present(preserve_boundary)) &
+            opts%preserve_boundary = merge(1_c_int32_t, 0_c_int32_t, preserve_boundary)
+        if (present(preserve_features)) &
+            opts%preserve_features = merge(1_c_int32_t, 0_c_int32_t, preserve_features)
+        if (present(max_iterations)) opts%max_iterations = int(max_iterations, c_int32_t)
+        if (present(collapse)) opts%collapse = merge(1_c_int32_t, 0_c_int32_t, collapse)
+        if (present(split)) opts%split = merge(1_c_int32_t, 0_c_int32_t, split)
+        if (present(swap)) opts%swap = merge(1_c_int32_t, 0_c_int32_t, swap)
+        if (present(smooth)) opts%smooth = merge(1_c_int32_t, 0_c_int32_t, smooth)
+        if (present(quality_metric)) then
+            select case (trim(quality_metric))
+            case ('min_dihedral')
+                opts%quality_metric = 0
+            case ('mean_ratio')
+                opts%quality_metric = 1
+            case ('amips')
+                opts%quality_metric = 2
+            case default
+                call handle_failure('adapt_volume', &
+                                    "quality_metric must be 'min_dihedral', 'mean_ratio' or 'amips'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        out%handle = c_mio_adapt_volume(self%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('adapt_volume', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(report)) report = rep
         call clear_status(stat, errmsg)
     end function
 

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import math
 
+from ._adapt_volume import adapt_volume_options, adapt_volume_report
+
 _PREFIX = "meshio++: octree_mesh: "
 
 #: The outputs, as ``output=`` names them.
@@ -136,6 +138,14 @@ def octree_mesh(
     cap_flatness: float = 0.01,
     crossing_margin: float = 0.01,
     crossing_gap: float = 0.05,
+    post_adapt: bool = False,
+    adapt_hmin: float = 0.0,
+    adapt_hmax: float = 0.0,
+    adapt_hgrad: float = 1.3,
+    adapt_hausd: float = 0.0,
+    adapt_max_iterations: int = 10,
+    adapt_preserve_boundary: bool = False,
+    adapt_options=None,
     return_report: bool = False,
 ):
     """Mesh the inside of a skin on a balanced octree.
@@ -220,7 +230,16 @@ def octree_mesh(
     :param untangle_iterations: hexahedral output: untangling iterations.
     :param max_cells: refuse an octree with more leaves.
     :param max_tets: refuse an output with more cells.
-    :param return_report: also return the report.
+    :param post_adapt: tetrahedral output: remesh it with :func:`adapt_volume`
+        (size field, gradation, Hausdorff bound) before the quality report. Off
+        by default, so the output is unchanged unless asked.
+    :param adapt_hmin: ``adapt_volume``'s ``hmin`` (and ``adapt_hmax``,
+        ``adapt_hgrad``, ``adapt_hausd``, ``adapt_max_iterations``,
+        ``adapt_preserve_boundary`` its others); ``adapt_options`` is a dict of
+        any of ``adapt_volume``'s keywords, which wins over these.
+    :param return_report: also return the report; with ``post_adapt`` its
+        ``"adapt"`` entry is ``adapt_volume``'s report, and its timings gain an
+        ``"adapt"`` stage.
     :returns: the volume mesh, or ``(mesh, report)``. The report holds the
         frame (``origin``, ``root_size``, ``root_cells``, ``max_level``,
         ``finest_level``, ``surface_level``, ``min_size``, ``max_size``), the
@@ -321,6 +340,16 @@ def octree_mesh(
     if not 0.0 <= opts["crossing_margin"] < 0.5:
         raise ValueError(f"{_PREFIX}crossing_margin must be in [0, 0.5)")
 
+    adapt = dict(adapt_options or {})
+    adapt.setdefault("hmin", adapt_hmin)
+    adapt.setdefault("hmax", adapt_hmax)
+    adapt.setdefault("hgrad", adapt_hgrad)
+    adapt.setdefault("hausd", adapt_hausd)
+    adapt.setdefault("max_iterations", adapt_max_iterations)
+    adapt.setdefault("preserve_boundary", adapt_preserve_boundary)
+    opts["post_adapt"] = bool(post_adapt)
+    opts["adapt"] = adapt_volume_options(**adapt)
+
     try:
         from . import _core
     except ImportError as exc:
@@ -342,6 +371,8 @@ def octree_mesh(
     report["quality"] = res["quality"]
     report["timings"] = {str(k): float(v) for k, v in res["timings"]}
     report["warnings"] = [str(w) for w in res["warnings"]]
+    if "adapt" in res:
+        report["adapt"] = adapt_volume_report(res["adapt"])
     return out, report
 
 

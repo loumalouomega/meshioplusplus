@@ -159,6 +159,10 @@ These follow the R binding exactly, apart from the layout rules above:
 
 `mio.frame_array(f)` is `double(f.rgba) / 255`. `mio.render_png` returns the encoded PNG as a `uint8` column, `mio.write_snapshot` writes a file, and `mio.render_text` returns terminal art as a char row (UTF-8 decoded). See [terminal rendering](/tui) for every option.
 
+## Tetrahedral remeshing
+
+`r = mio.adapt_volume(mesh, 'hmin', h, 'hmax', H, ...)` ports `mio_adapt_volume` option for option ([adapt_volume](adapt_volume.md)): `'hgrad'`, `'hausd'`, `'hausd_relative'`, `'size_array'`, `'preserve_boundary'`, `'preserve_features'`, `'quality_metric'`, `'quality_min'`, `'max_iterations'`, `'collapse'`, `'split'`, `'swap'` and `'smooth'`; `r` holds `mesh` and every counter of the report. As in R, `mio.octree_mesh` has no `post_adapt`; call `mio.adapt_volume` on its mesh.
+
 ## Where the shapes differ from R
 
 Lists follow one rule. A named list becomes a 1x1 struct. A list of same-shaped records (regions, partitions, data_info entries) becomes an `n x 1` struct array. An unnamed list becomes an `n x 1` cell, and a character vector an `n x 1` cellstr. An R data frame becomes a struct of `n x 1` columns. The few other differences:

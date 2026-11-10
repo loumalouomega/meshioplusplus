@@ -87,6 +87,7 @@
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
+#include "meshioplusplus/operations/adapt_volume.hpp"
 #include "meshioplusplus/operations/conservative_interpolate.hpp"
 #include "meshioplusplus/operations/diff.hpp"
 #include "meshioplusplus/operations/interpolate.hpp"
@@ -498,6 +499,50 @@ void cli_names_json(meshioplusplus::cli::JsonOut& rJson, const char* pKey,
     for (const std::string& n : rNames)
         rJson.String(n);
     rJson.EndArray();
+}
+
+// adapt_volume's report as JSON fields (every one but the timings, which
+// differ from run to run), shared by adapt-volume and octree-mesh --post-adapt.
+void cli_adapt_volume_json(meshioplusplus::cli::JsonOut& rJson,
+                           const meshioplusplus::AdaptVolumeResult& rR) {
+    rJson.Field("num_tets_before", rR.mNumTetsBefore);
+    rJson.Field("num_tets_after", rR.mNumTetsAfter);
+    rJson.Field("num_points_before", rR.mNumPointsBefore);
+    rJson.Field("num_points_after", rR.mNumPointsAfter);
+    rJson.Field("num_collapsed", rR.mNumCollapsed);
+    rJson.Field("num_split", rR.mNumSplit);
+    rJson.Field("num_swapped", rR.mNumSwapped);
+    rJson.Field("num_smoothed", rR.mNumSmoothed);
+    rJson.Field("num_rejected_by_link", rR.mNumRejectedByLink);
+    rJson.Field("num_rejected_by_inversion", rR.mNumRejectedByInversion);
+    rJson.Field("num_rejected_by_quality", rR.mNumRejectedByQuality);
+    rJson.Field("num_rejected_by_length", rR.mNumRejectedByLength);
+    rJson.Field("num_rejected_by_class", rR.mNumRejectedByClass);
+    rJson.Field("num_rejected_by_hausdorff", rR.mNumRejectedByHausdorff);
+    rJson.Field("num_rejected_by_normal", rR.mNumRejectedByNormal);
+    rJson.Field("num_corners", rR.mNumCorners);
+    rJson.Field("num_ridge_vertices", rR.mNumRidgeVertices);
+    rJson.Field("num_chains", rR.mNumChains);
+    rJson.Field("num_patches", rR.mNumPatches);
+    rJson.Field("iterations", rR.mIterations);
+    rJson.Field("min_dihedral_before", rR.mMinDihedralBefore);
+    rJson.Field("min_dihedral_after", rR.mMinDihedralAfter);
+    rJson.Field("max_dihedral_before", rR.mMaxDihedralBefore);
+    rJson.Field("max_dihedral_after", rR.mMaxDihedralAfter);
+    rJson.Field("mean_quality_before", rR.mMeanQualityBefore);
+    rJson.Field("mean_quality_after", rR.mMeanQualityAfter);
+    rJson.Field("max_boundary_deviation", rR.mMaxBoundaryDeviation);
+    rJson.Field("hmin", rR.mHmin);
+    rJson.Field("hmax", rR.mHmax);
+    rJson.Field("hausd", rR.mHausd);
+    rJson.Field("volume_before", rR.mVolumeBefore);
+    rJson.Field("volume_after", rR.mVolumeAfter);
+    rJson.Key("region_volume_change");
+    rJson.BeginObject();
+    for (const auto& [label, dv] : rR.mRegionVolumeChange)
+        rJson.Field(label, dv);
+    rJson.EndObject();
+    cli_names_json(rJson, "warnings", rR.mWarnings);
 }
 
 /// A row-major 4x4 matrix as four rows of four numbers.
@@ -6664,7 +6709,14 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
                                           {"zero-volume-factor", {}, true},
                                           {"cap-flatness", {}, true},
                                           {"crossing-margin", {}, true},
-                                          {"crossing-gap", {}, true}},
+                                          {"crossing-gap", {}, true},
+                                          {"post-adapt", {}, false},
+                                          {"adapt-hmin", {}, true},
+                                          {"adapt-hmax", {}, true},
+                                          {"adapt-hgrad", {}, true},
+                                          {"adapt-hausd", {}, true},
+                                          {"adapt-max-iterations", {}, true},
+                                          {"adapt-preserve-boundary", {}, false}},
                                          report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("octree-mesh requires exactly INFILE and OUTFILE");
@@ -6716,6 +6768,14 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
     o.mCapFlatness = num("cap-flatness", o.mCapFlatness);
     o.mCrossingMargin = num("crossing-margin", o.mCrossingMargin);
     o.mCrossingGap = num("crossing-gap", o.mCrossingGap);
+    o.mPostAdapt = has_flag(p, "post-adapt");
+    o.mAdapt.mHmin = num("adapt-hmin", o.mAdapt.mHmin);
+    o.mAdapt.mHmax = num("adapt-hmax", o.mAdapt.mHmax);
+    o.mAdapt.mHgrad = num("adapt-hgrad", o.mAdapt.mHgrad);
+    o.mAdapt.mHausd = num("adapt-hausd", o.mAdapt.mHausd);
+    o.mAdapt.mMaxIterations =
+        static_cast<int>(integer("adapt-max-iterations", o.mAdapt.mMaxIterations));
+    o.mAdapt.mPreserveBoundary = has_flag(p, "adapt-preserve-boundary");
 
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     mio::OctreeMeshResult r = mio::octree_mesh(mesh, o);
@@ -6809,6 +6869,12 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
         json.EndObject();
         json.EndObject();
         cli_names_json(json, "warnings", r.mWarnings);
+        if (r.mAdapted) {
+            json.Key("adapt");
+            json.BeginObject();
+            cli_adapt_volume_json(json, r.mAdapt);
+            json.EndObject();
+        }
         json.EndObject();
     } else if (!has_flag(p, "quiet")) {
         std::cout << "octree mesh (" << mio::octree_mesh_output_name(r.mOutput) << ")\n";
@@ -8185,6 +8251,86 @@ int cmd_remesh_volume(const std::vector<std::string>& rArgs) {
         std::cout << "  non-manifold edges:       " << r.mNumNonManifoldEdges << "\n";
     }
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    return 0;
+}
+
+// adapt-volume: size-field tetrahedral remeshing. See operations/adapt_volume.hpp.
+int cmd_adapt_volume(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"hmin", {}, true},
+                                          {"hmax", {}, true},
+                                          {"hgrad", {}, true},
+                                          {"hausd", {}, true},
+                                          {"hausd-relative", {}, false},
+                                          {"size-array", {}, true},
+                                          {"curvature-sizing", {}, false},
+                                          {"feature-angle", {}, true},
+                                          {"corner-angle", {}, true},
+                                          {"max-normal-deviation", {}, true},
+                                          {"preserve-boundary", {}, false},
+                                          {"no-preserve-features", {}, false},
+                                          {"quality-metric", {}, true},
+                                          {"quality-min", {}, true},
+                                          {"max-iterations", {}, true},
+                                          {"target-min-dihedral", {}, true},
+                                          {"no-collapse", {}, false},
+                                          {"no-split", {}, false},
+                                          {"no-swap", {}, false},
+                                          {"no-smooth", {}, false},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("adapt-volume requires INFILE OUTFILE");
+    namespace mio = meshioplusplus;
+    mio::AdaptVolumeOptions o;
+    const auto number = [&](const char* pName, double& rOut) {
+        if (has_opt(p, pName))
+            rOut = mio::detail::stod_c(opt_value(p, pName));
+    };
+    number("hmin", o.mHmin);
+    number("hmax", o.mHmax);
+    number("hgrad", o.mHgrad);
+    number("hausd", o.mHausd);
+    o.mHausdRelative = has_flag(p, "hausd-relative");
+    cli_opt_string(p, "size-array", o.mSizeArray);
+    o.mCurvatureSizing = has_flag(p, "curvature-sizing");
+    number("feature-angle", o.mFeatureAngle);
+    number("corner-angle", o.mCornerAngle);
+    number("max-normal-deviation", o.mMaxNormalDeviation);
+    o.mPreserveBoundary = has_flag(p, "preserve-boundary");
+    o.mPreserveFeatures = !has_flag(p, "no-preserve-features");
+    o.mQualityMetric =
+        mio::adapt_volume_quality_from_name(opt_value(p, "quality-metric", "min_dihedral"));
+    number("quality-min", o.mQualityMin);
+    if (has_opt(p, "max-iterations"))
+        o.mMaxIterations = std::stoi(opt_value(p, "max-iterations"));
+    number("target-min-dihedral", o.mTargetMinDihedral);
+    o.mEnableCollapse = !has_flag(p, "no-collapse");
+    o.mEnableSplit = !has_flag(p, "no-split");
+    o.mEnableSwap = !has_flag(p, "no-swap");
+    o.mEnableSmooth = !has_flag(p, "no-smooth");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    mio::AdaptVolumeResult r = mio::adapt_volume(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        mio::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        cli_adapt_volume_json(json, r);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << "tets " << r.mNumTetsBefore << " -> " << r.mNumTetsAfter << ", points "
+              << r.mNumPointsBefore << " -> " << r.mNumPointsAfter << "\n";
+    std::cout << "collapsed " << r.mNumCollapsed << ", split " << r.mNumSplit << ", swapped "
+              << r.mNumSwapped << ", smoothed " << r.mNumSmoothed << " in " << r.mIterations
+              << " iteration(s)\n";
+    char buf[160];
+    mio::detail::snprintf_c(buf, sizeof(buf),
+                            "dihedral [%.2f, %.2f] -> [%.2f, %.2f] degrees; boundary within "
+                            "%.4g (hausd %.4g)",
+                            r.mMinDihedralBefore, r.mMaxDihedralBefore, r.mMinDihedralAfter,
+                            r.mMaxDihedralAfter, r.mMaxBoundaryDeviation, r.mHausd);
+    std::cout << buf << "\n";
     return 0;
 }
 
@@ -10498,6 +10644,10 @@ const CliVerb kCliVerbs[] = {
      "                            flip connectivity to raise the least dihedral angle\n"
      "                            (--objective worst, the default) or the ODT energy\n",
      &cmd_optimize_volume},
+    {"adapt-volume", nullptr,
+     "  adapt-volume            Remesh a tetrahedral mesh to a graded size field: collapse,\n"
+     "                            split, swap and smooth under a Hausdorff bound\n",
+     &cmd_adapt_volume},
     {"partition", nullptr,
      "  partition               Decompose into N balanced parts (SFC / KaHIP)\n"
      "                            OUT pattern needs {part}, or is a .pvtu/.pvtp index\n"

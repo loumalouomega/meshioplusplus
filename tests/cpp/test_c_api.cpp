@@ -5468,6 +5468,75 @@ TEST(CApi, OctreeConformingTransitionsHaveNoHangingNodes) {
     mio_mesh_free(cube);
 }
 
+TEST(CApi, AdaptVolumeCoarsensABoxAndPostAdaptsAnOctreeMesh) {
+    mio_gen_opts g;
+    mio_gen_opts_init(&g);
+    g.counts[0] = g.counts[1] = g.counts[2] = 6;
+    g.cell_type = MIO_GEN_TETRA;
+    mio_mesh* box = mio_box(&g);
+    ASSERT_NE(box, nullptr) << mio_last_error();
+    mio_adapt_volume_opts o;
+    mio_adapt_volume_opts_init(&o);
+    EXPECT_DOUBLE_EQ(o.hgrad, 1.3);
+    EXPECT_EQ(o.max_iterations, 10);
+    EXPECT_EQ(o.preserve_features, 1);
+    EXPECT_EQ(o.collapse + o.split + o.swap + o.smooth, 4);
+    o.hmin = 0.3;
+    o.hmax = 0.4;
+    mio_adapt_volume_report r;
+    mio_mesh* out = mio_adapt_volume(box, &o, &r);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_LT(r.num_tets_after, r.num_tets_before);
+    EXPECT_EQ(r.num_corners, 8);
+    EXPECT_NEAR(r.volume_after, 1.0, 1e-12);
+    EXPECT_LE(r.max_boundary_deviation, r.hausd);
+    mio_mesh_free(out);
+    out = mio_adapt_volume(box, nullptr, nullptr);  // NULL: the defaults
+    EXPECT_NE(out, nullptr) << mio_last_error();
+    mio_mesh_free(out);
+    const int64_t frozen[1] = {1000000};
+    o.frozen = frozen;
+    o.num_frozen = 1;
+    EXPECT_EQ(mio_adapt_volume(box, &o, nullptr), nullptr);  // out of range
+    o.frozen = nullptr;
+    o.num_frozen = 0;
+    o.quality_metric = 9;
+    EXPECT_EQ(mio_adapt_volume(box, &o, nullptr), nullptr);
+    EXPECT_EQ(mio_adapt_volume(nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(box);
+
+    // octree_mesh's opt-in post-stage, and its report
+    mio_mesh* cube = capi_cube_surface();
+    mio_octree_mesh_opts oo;
+    mio_octree_mesh_opts_init(&oo);
+    EXPECT_EQ(oo.post_adapt, 0);
+    EXPECT_EQ(oo.adapt, nullptr);
+    oo.max_size = 0.5;
+    oo.min_size = 0.125;
+    mio_octree_mesh_report rep;
+    mio_mesh* plain = mio_octree_mesh(cube, &oo, &rep);
+    ASSERT_NE(plain, nullptr) << mio_last_error();
+    mio_adapt_volume_report ar;
+    EXPECT_EQ(mio_octree_mesh_adapt_report(&ar), 0);
+    const int64_t plain_tets = rep.num_tetrahedra;
+    mio_mesh_free(plain);
+    mio_adapt_volume_opts ao;
+    mio_adapt_volume_opts_init(&ao);
+    ao.hmin = 0.2;
+    oo.post_adapt = 1;
+    oo.adapt = &ao;
+    mio_mesh* adapted = mio_octree_mesh(cube, &oo, &rep);
+    ASSERT_NE(adapted, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_octree_mesh_adapt_report(&ar), 1);
+    EXPECT_EQ(ar.num_tets_before, plain_tets);
+    EXPECT_EQ(ar.num_tets_after, rep.num_tetrahedra);
+    EXPECT_EQ(rep.guarantee_applies, 0);
+    EXPECT_EQ(rep.num_inverted, 0);
+    EXPECT_EQ(mio_octree_mesh_adapt_report(nullptr), -1);
+    mio_mesh_free(adapted);
+    mio_mesh_free(cube);
+}
+
 TEST(CApi, OctreeMeshTetrahedraAndCastellatedCells) {
     mio_mesh* cube = capi_cube_surface();
     mio_octree_mesh_opts opts;

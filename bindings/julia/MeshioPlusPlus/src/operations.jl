@@ -240,6 +240,86 @@ function optimize_volume(m::Mesh; max_iterations::Integer=10, relocate::Bool=tru
      min_dihedral_before=rep.min_dihedral_before, min_dihedral_after=rep.min_dihedral_after)
 end
 
+const _ADAPT_VOLUME_QUALITIES = Dict("min_dihedral" => Int32(0), "mean_ratio" => Int32(1),
+                                     "amips" => Int32(2))
+
+# Fill a mio_adapt_volume_opts from keyword values (`nothing` keeps the default).
+function _adapt_volume_opts!(opts::Ref{_CAdaptVolumeOpts}; hmin=nothing, hmax=nothing,
+                             hgrad=nothing, hausd=nothing, hausd_relative=nothing,
+                             curvature_sizing=nothing, feature_angle=nothing,
+                             corner_angle=nothing, max_normal_deviation=nothing,
+                             preserve_boundary=nothing, preserve_features=nothing,
+                             quality_metric=nothing, quality_min=nothing,
+                             max_iterations=nothing, target_min_dihedral=nothing,
+                             collapse=nothing, split=nothing, swap=nothing, smooth=nothing)
+    ccall(_sym(:mio_adapt_volume_opts_init), Cvoid, (Ref{_CAdaptVolumeOpts},), opts)
+    scalars = (; hmin, hmax, hgrad, hausd, feature_angle, corner_angle, max_normal_deviation,
+               quality_min, target_min_dihedral, max_iterations)
+    for (k, v) in pairs(scalars)
+        v === nothing || _setopt!(opts, k, v)
+    end
+    flags = (; hausd_relative, curvature_sizing, preserve_boundary, preserve_features,
+             collapse, split, swap, smooth)
+    for (k, v) in pairs(flags)
+        v === nothing || _setopt!(opts, k, Bool(v) ? Int32(1) : Int32(0))
+    end
+    if quality_metric !== nothing
+        code = get(_ADAPT_VOLUME_QUALITIES, String(quality_metric), nothing)
+        code === nothing && throw(ArgumentError(
+            "meshio++: adapt_volume: quality_metric must be \"min_dihedral\", \"mean_ratio\" or \"amips\""))
+        _setopt!(opts, :quality_metric, code)
+    end
+    opts
+end
+
+_adapt_volume_named(rep::_CAdaptVolumeReport) =
+    (num_tets_before=Int(rep.num_tets_before), num_tets_after=Int(rep.num_tets_after),
+     num_points_before=Int(rep.num_points_before), num_points_after=Int(rep.num_points_after),
+     num_collapsed=Int(rep.num_collapsed), num_split=Int(rep.num_split),
+     num_swapped=Int(rep.num_swapped), num_smoothed=Int(rep.num_smoothed),
+     num_rejected_by_link=Int(rep.num_rejected_by_link),
+     num_rejected_by_inversion=Int(rep.num_rejected_by_inversion),
+     num_rejected_by_quality=Int(rep.num_rejected_by_quality),
+     num_rejected_by_length=Int(rep.num_rejected_by_length),
+     num_rejected_by_class=Int(rep.num_rejected_by_class),
+     num_rejected_by_hausdorff=Int(rep.num_rejected_by_hausdorff),
+     num_rejected_by_normal=Int(rep.num_rejected_by_normal),
+     num_corners=Int(rep.num_corners), num_ridge_vertices=Int(rep.num_ridge_vertices),
+     num_chains=Int(rep.num_chains), num_patches=Int(rep.num_patches),
+     iterations=Int(rep.iterations), min_dihedral_before=rep.min_dihedral_before,
+     min_dihedral_after=rep.min_dihedral_after, max_dihedral_before=rep.max_dihedral_before,
+     max_dihedral_after=rep.max_dihedral_after, mean_quality_before=rep.mean_quality_before,
+     mean_quality_after=rep.mean_quality_after,
+     max_boundary_deviation=rep.max_boundary_deviation, hmin=rep.hmin, hmax=rep.hmax,
+     hausd=rep.hausd, volume_before=rep.volume_before, volume_after=rep.volume_after)
+
+"""
+    adapt_volume(m; hmin, hmax, hgrad, hausd, hausd_relative, size_array,
+                 curvature_sizing, feature_angle, corner_angle, max_normal_deviation,
+                 preserve_boundary, preserve_features, quality_metric, quality_min,
+                 max_iterations, target_min_dihedral, collapse, split, swap, smooth)
+
+Remesh a tetrahedral mesh to a graded isotropic size field: collapse, split, swap
+and smooth under a boundary Hausdorff bound, keeping corners, ridges, materials,
+regions and boundary tags. Every keyword defaults to `mio_adapt_volume_opts_init`'s
+value. Returns `(; mesh, num_tets_before, num_tets_after, ...)` with every field of
+the C report (see doc/adapt_volume.md).
+"""
+function adapt_volume(m::Mesh; size_array=nothing, kwargs...)
+    opts = Ref{_CAdaptVolumeOpts}()
+    _adapt_volume_opts!(opts; kwargs...)
+    name = size_array === nothing ? "" : String(size_array)
+    report = Ref{_CAdaptVolumeReport}()
+    ptr = GC.@preserve name begin
+        isempty(name) || _setopt!(opts, :size_array, Base.unsafe_convert(Cstring, name))
+        ccall(_sym(:mio_adapt_volume), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CAdaptVolumeOpts}, Ref{_CAdaptVolumeReport}),
+              _handle(m), opts, report)
+    end
+    r = _check_ptr(ptr)
+    merge((mesh=Mesh(r),), _adapt_volume_named(report[]))
+end
+
 # --- subsetting --------------------------------------------------------------
 
 _crop_mode(mode::Symbol) = mode === :all ? Cint(0) : mode === :any ? Cint(1) :
@@ -3943,7 +4023,10 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
                      attach_distance=nothing, attach_quality=nothing, pillow=nothing,
                      hex_grading=nothing, untangle_iterations=nothing, max_cells=nothing,
                      max_tets=nothing, volume_fix=nothing, zero_volume_factor=nothing,
-                     cap_flatness=nothing, crossing_margin=nothing, crossing_gap=nothing)
+                     cap_flatness=nothing, crossing_margin=nothing, crossing_gap=nothing,
+                     post_adapt=nothing, adapt_hmin=nothing, adapt_hmax=nothing,
+                     adapt_hgrad=nothing, adapt_hausd=nothing, adapt_max_iterations=nothing,
+                     adapt_preserve_boundary=nothing)
     bnd = bounds === nothing ? Cdouble[] : Cdouble[Cdouble(v) for v in bounds]
     (bounds === nothing || length(bnd) == 6) ||
         throw(ArgumentError("bounds must have six entries"))
@@ -3977,8 +4060,16 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
         v === nothing || _setopt!(opts, k, Bool(v) ? Int32(1) : Int32(0))
     end
 
+    adapt_opts = Ref{_CAdaptVolumeOpts}()
+    _adapt_volume_opts!(adapt_opts; hmin=adapt_hmin, hmax=adapt_hmax, hgrad=adapt_hgrad,
+                        hausd=adapt_hausd, max_iterations=adapt_max_iterations,
+                        preserve_boundary=adapt_preserve_boundary)
+    post_adapt === nothing ||
+        _setopt!(opts, :post_adapt, Bool(post_adapt) ? Int32(1) : Int32(0))
     report = Ref{_COctreeMeshReport}()
-    ptr = GC.@preserve bnd size_name region_name begin
+    ptr = GC.@preserve bnd size_name region_name adapt_opts begin
+        _setopt!(opts, :adapt,
+                 Ptr{Cvoid}(Base.unsafe_convert(Ptr{_CAdaptVolumeOpts}, adapt_opts)))
         isempty(bnd) || _setopt!(opts, :bounds, pointer(bnd))
         isempty(size_name) ||
             _setopt!(opts, :size_array, Base.unsafe_convert(Cstring, size_name))
@@ -4006,6 +4097,9 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
         ccall(_sym(:mio_octree_mesh_leaves_per_level), Int64, (Ptr{Int64}, Int64),
               leaves_per_level, length(leaves_per_level))
     stages = isempty(stage_text) ? String[] : String.(Base.split(stage_text, '\n'))
+    adapt_report = Ref{_CAdaptVolumeReport}()
+    adapted = ccall(_sym(:mio_octree_mesh_adapt_report), Cint, (Ref{_CAdaptVolumeReport},),
+                    adapt_report) == 1
     r = report[]
     (mesh=mesh,
      output=0 <= r.output < length(_OCTREE_MESH_OUTPUT_NAMES) ?
@@ -4041,7 +4135,8 @@ function octree_mesh(m::Mesh; output=nothing, min_size=nothing, max_size=nothing
      num_warnings=Int(r.num_warnings),
      leaves_per_level=Int.(leaves_per_level),
      timings=[(stages[i], Float64(stage_seconds[i])) for i in 1:min(length(stages), length(stage_seconds))],
-     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')))
+     warnings=isempty(text) ? String[] : String.(Base.split(text, '\n')),
+     adapt=adapted ? _adapt_volume_named(adapt_report[]) : nothing)
 end
 
 const _CURVATURE_DUAL_AREAS = Dict(:mixed_voronoi => Int32(0), :barycentric => Int32(1))

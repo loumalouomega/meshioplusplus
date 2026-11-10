@@ -34815,6 +34815,12 @@ struct OctreeMeshOptions {
     double mCrossingMargin = 0.01;
     /// ... and the edges come this close, relative to the shorter one.
     double mCrossingGap = 0.05;
+    /// Tetrahedral output: remesh it with `adapt_volume` (size field, gradation,
+    /// Hausdorff bound) after the volume fix, before the quality report. Off by
+    /// default (ABI 45).
+    bool mPostAdapt = false;
+    /// The options of that `adapt_volume` run.
+    AdaptVolumeOptions mAdapt;
 };
 
 /// The result of `octree_mesh`.
@@ -34879,6 +34885,10 @@ struct OctreeMeshResult {
     std::vector<std::pair<std::string, double>> mTimings;
     /// Everything that did not meet its target, in order.
     std::vector<std::string> mWarnings;
+    /// `mPostAdapt` ran (ABI 45).
+    bool mAdapted = false;
+    /// Its report; `mAdapt.mMesh` is empty (the mesh is `mMesh`).
+    AdaptVolumeResult mAdapt;
 };
 
 /**
@@ -62988,6 +62998,11 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"OptimizeVolume",
          {"MaxIterations", "Relocate", "Flip", "PreserveBoundary", "MinImprovement", "Objective",
           "MaxRingSize"}},
+        {"AdaptVolume",
+         {"Hmin", "Hmax", "Hgrad", "Hausd", "HausdRelative", "SizeArray", "CurvatureSizing",
+          "FeatureAngle", "CornerAngle", "MaxNormalDeviation", "PreserveBoundary",
+          "PreserveFeatures", "QualityMetric", "QualityMin", "MaxIterations", "TargetMinDihedral",
+          "Collapse", "Split", "Swap", "Smooth"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -63006,7 +63021,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "PreserveFeatures", "FitIterations", "DihedralFloorGuard", "Fill", "KeepOutside",
           "AttachDistance", "AttachQuality", "Pillow", "HexGrading", "UntangleIterations",
           "MaxCells", "MaxTets", "VolumeFix", "ZeroVolumeFactor", "CapFlatness", "CrossingMargin",
-          "CrossingGap"}},
+          "CrossingGap", "PostAdapt", "AdaptHmin", "AdaptHmax", "AdaptHgrad", "AdaptHausd",
+          "AdaptMaxIterations", "AdaptPreserveBoundary"}},
         {"Octree",
          {"RootCells", "MinLevel", "MaxLevel", "Bounds", "Padding", "PaddingRelative", "Dimension",
           "SampleDistance", "Balance", "Fill", "AttachDistance", "EvenOdd", "MaxCells", "Sign",
@@ -264636,6 +264652,80 @@ OctreeMeshFill octree_mesh_fill_from_name(const std::string& rName) {
     octm_fail("unknown fill '" + rName + "' (expected 'all', 'inside' or 'cover')");
 }
 
+namespace {
+
+// The opt-in post-stage: adapt_volume on the tetrahedra, then the measures
+// the emit took of the boundary, taken again (against the skin itself).
+void octm_post_adapt(const detail::OctreeMeshSetup& rSetup, const OctreeMeshOptions& rO,
+                     OctreeMeshResult& rResult) {
+    AdaptVolumeResult r = adapt_volume(rResult.mMesh, rO.mAdapt);
+    rResult.mMesh = std::move(r.mMesh);
+    r.mMesh = Mesh();
+    for (const std::string& w : r.mWarnings)
+        detail::octree_mesh_warn(rResult, std::string(detail::kOctreeMeshPrefix) + "adapt: " + w);
+    rResult.mAdapt = std::move(r);
+    rResult.mAdapted = true;
+    rResult.mGuaranteeApplies = false;  // the lattice's angle bound no longer holds
+    const Mesh& m = rResult.mMesh;
+    if (m.HasRegion(kOctreeMeshInsideRegion, RegionKind::Cell))
+        rResult.mNumInside = static_cast<std::int64_t>(
+            m.Region(m.FindRegion(kOctreeMeshInsideRegion, RegionKind::Cell)).NumEntries());
+    // the boundary: faces used once
+    std::vector<detail::Vec3> pts(m.NumPoints());
+    for (std::size_t i = 0; i < m.NumPoints(); ++i)
+        for (std::size_t d = 0; d < 3; ++d)
+            pts[i][d] = detail::read_double(m.Points(), i * 3 + d);
+    std::vector<std::pair<std::array<std::int64_t, 3>, std::array<std::int64_t, 3>>> faces;
+    constexpr int kFacet[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
+    for (std::size_t b = 0; b < m.NumCellBlocks(); ++b) {
+        const NDArray& c = m.Cells(b).Conn();
+        for (std::size_t t = 0; t < m.Cells(b).NumCells(); ++t)
+            for (const auto& f : kFacet) {
+                std::array<std::int64_t, 3> o{};
+                for (int k = 0; k < 3; ++k)
+                    o[static_cast<std::size_t>(k)] =
+                        detail::read_int(c, t * 4 + static_cast<std::size_t>(f[k]));
+                std::array<std::int64_t, 3> key = o;
+                std::sort(key.begin(), key.end());
+                faces.emplace_back(key, o);
+            }
+    }
+    std::sort(faces.begin(), faces.end());
+    std::vector<std::array<std::int64_t, 3>> skin;
+    for (std::size_t i = 0; i < faces.size();) {
+        std::size_t j = i;
+        while (j < faces.size() && faces[j].first == faces[i].first)
+            ++j;
+        if (j - i == 1)
+            skin.push_back(faces[i].second);
+        i = j;
+    }
+    std::vector<std::array<std::int64_t, 2>> edges;
+    for (const auto& f : skin)
+        for (int e = 0; e < 3; ++e)
+            edges.push_back(
+                {std::min(f[static_cast<std::size_t>(e)], f[static_cast<std::size_t>((e + 1) % 3)]),
+                 std::max(f[static_cast<std::size_t>(e)],
+                          f[static_cast<std::size_t>((e + 1) % 3)])});
+    std::sort(edges.begin(), edges.end());
+    rResult.mNumBoundaryEdgesOpen = 0;
+    rResult.mNumNonManifoldBoundaryEdges = 0;
+    for (std::size_t i = 0; i < edges.size();) {
+        std::size_t j = i;
+        while (j < edges.size() && edges[j] == edges[i])
+            ++j;
+        if (j - i == 1)
+            ++rResult.mNumBoundaryEdgesOpen;
+        else if (j - i > 2)
+            ++rResult.mNumNonManifoldBoundaryEdges;
+        i = j;
+    }
+    if (!skin.empty())
+        rResult.mHausdorffToSkin = detail::octree_mesh_hausdorff_to_skin(rSetup, pts, skin);
+}
+
+}  // namespace
+
 OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOptions) {
     octm_check_options(rOptions);
     OctreeMeshResult result;
@@ -264670,6 +264760,10 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
             break;
     }
     clock.Lap(result, "output");
+    if (rOptions.mPostAdapt && rOptions.mOutput == OctreeMeshOutput::Tetra) {
+        octm_post_adapt(*setup, rOptions, result);
+        clock.Lap(result, "adapt");
+    }
     octm_report_mesh(rOptions, result);
     clock.Lap(result, "quality");
     return result;
@@ -272591,6 +272685,48 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"MinDihedralAfter", ov.mMinDihedralAfter}});
         return std::move(ov.mMesh);
     }
+    if (op == "AdaptVolume") {
+        // Size-field tetrahedral remeshing: new points and tetrahedra; material
+        // cell_data and every region carried, other cell_data dropped.
+        AdaptVolumeOptions opts;
+        opts.mHmin = pipe_number(rStep, "Hmin", 0.0);
+        opts.mHmax = pipe_number(rStep, "Hmax", 0.0);
+        opts.mHgrad = pipe_number(rStep, "Hgrad", 1.3);
+        opts.mHausd = pipe_number(rStep, "Hausd", 0.0);
+        opts.mHausdRelative = pipe_flag(rStep, "HausdRelative", false);
+        opts.mSizeArray = pipe_text(rStep, "SizeArray", "");
+        opts.mCurvatureSizing = pipe_flag(rStep, "CurvatureSizing", false);
+        opts.mFeatureAngle = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mCornerAngle = pipe_number(rStep, "CornerAngle", 30.0);
+        opts.mMaxNormalDeviation = pipe_number(rStep, "MaxNormalDeviation", 30.0);
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", false);
+        opts.mPreserveFeatures = pipe_flag(rStep, "PreserveFeatures", true);
+        opts.mQualityMetric =
+            adapt_volume_quality_from_name(pipe_text(rStep, "QualityMetric", "min_dihedral"));
+        opts.mQualityMin = pipe_number(rStep, "QualityMin", -1.0);
+        opts.mMaxIterations = static_cast<int>(pipe_number(rStep, "MaxIterations", 10.0));
+        opts.mTargetMinDihedral = pipe_number(rStep, "TargetMinDihedral", 0.0);
+        opts.mEnableCollapse = pipe_flag(rStep, "Collapse", true);
+        opts.mEnableSplit = pipe_flag(rStep, "Split", true);
+        opts.mEnableSwap = pipe_flag(rStep, "Swap", true);
+        opts.mEnableSmooth = pipe_flag(rStep, "Smooth", true);
+        AdaptVolumeResult av = adapt_volume(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumTetsBefore", static_cast<double>(av.mNumTetsBefore)},
+                        {"NumTetsAfter", static_cast<double>(av.mNumTetsAfter)},
+                        {"NumPointsBefore", static_cast<double>(av.mNumPointsBefore)},
+                        {"NumPointsAfter", static_cast<double>(av.mNumPointsAfter)},
+                        {"NumCollapsed", static_cast<double>(av.mNumCollapsed)},
+                        {"NumSplit", static_cast<double>(av.mNumSplit)},
+                        {"NumSwapped", static_cast<double>(av.mNumSwapped)},
+                        {"NumSmoothed", static_cast<double>(av.mNumSmoothed)},
+                        {"MinDihedralBefore", av.mMinDihedralBefore},
+                        {"MinDihedralAfter", av.mMinDihedralAfter},
+                        {"MaxDihedralAfter", av.mMaxDihedralAfter},
+                        {"MaxBoundaryDeviation", av.mMaxBoundaryDeviation},
+                        {"Iterations", static_cast<double>(av.mIterations)}});
+        return std::move(av.mMesh);
+    }
     if (op == "Generate") {
         // A mesh from parameters (operations/primitives.hpp). Like Voxelize it
         // REPLACES the geometry rather than transforming it; unlike Voxelize it
@@ -272873,6 +273009,13 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mCapFlatness = pipe_number(rStep, "CapFlatness", 0.01);
         opts.mCrossingMargin = pipe_number(rStep, "CrossingMargin", 0.01);
         opts.mCrossingGap = pipe_number(rStep, "CrossingGap", 0.05);
+        opts.mPostAdapt = pipe_flag(rStep, "PostAdapt", false);
+        opts.mAdapt.mHmin = pipe_number(rStep, "AdaptHmin", 0.0);
+        opts.mAdapt.mHmax = pipe_number(rStep, "AdaptHmax", 0.0);
+        opts.mAdapt.mHgrad = pipe_number(rStep, "AdaptHgrad", 1.3);
+        opts.mAdapt.mHausd = pipe_number(rStep, "AdaptHausd", 0.0);
+        opts.mAdapt.mMaxIterations = static_cast<int>(pipe_number(rStep, "AdaptMaxIterations", 10.0));
+        opts.mAdapt.mPreserveBoundary = pipe_flag(rStep, "AdaptPreserveBoundary", false);
         OctreeMeshResult r = octree_mesh(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumLeaves", static_cast<double>(r.mNumLeaves)},

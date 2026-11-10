@@ -799,4 +799,37 @@ TEST(AdaptVolume, RefusesATangledMesh) {
     EXPECT_THROW(adapt_volume(m), std::invalid_argument);
 }
 
+// --- M7: octree_mesh's post-stage ---------------------------------------------------
+
+TEST(AdaptVolume, OctreeMeshPostAdaptIsOptIn) {
+    const Mesh skin = mio::icosa_sphere(1.0, 4);
+    mio::OctreeMeshOptions o;
+    o.mMinSize = 0.04;
+    const auto plain = mio::octree_mesh(skin, o);
+    EXPECT_FALSE(plain.mAdapted);
+    o.mPostAdapt = true;
+    o.mAdapt.mHgrad = 2.0;
+    const auto adapted = mio::octree_mesh(skin, o);
+    ASSERT_TRUE(adapted.mAdapted);
+    EXPECT_EQ(adapted.mAdapt.mNumTetsBefore, plain.mNumTetrahedra);
+    EXPECT_EQ(adapted.mAdapt.mNumTetsAfter, adapted.mNumTetrahedra);
+    EXPECT_LT(adapted.mNumTetrahedra, plain.mNumTetrahedra);
+    EXPECT_EQ(adapted.mNumInverted, 0);
+    EXPECT_FALSE(adapted.mGuaranteeApplies);
+    EXPECT_EQ(adapted.mNumBoundaryEdgesOpen, 0);
+    EXPECT_EQ(adapted.mNumNonManifoldBoundaryEdges, 0);
+    EXPECT_GE(adapted.mMinDihedral, std::min(plain.mMinDihedral, 10.0) - 1e-9);
+    EXPECT_LE(adapted.mHausdorffToSkin, plain.mHausdorffToSkin + adapted.mAdapt.mHausd);
+    bool lap = false;
+    for (const auto& t : adapted.mTimings)
+        lap = lap || t.first == "adapt";
+    EXPECT_TRUE(lap);
+    std::printf(
+        "[ adapt    ] octree_mesh post_adapt (hgrad 2): tets %lld -> %lld, dihedral %.2f -> %.2f, "
+        "hausdorff to skin %.4g -> %.4g\n",
+        static_cast<long long>(plain.mNumTetrahedra),
+        static_cast<long long>(adapted.mNumTetrahedra), plain.mMinDihedral, adapted.mMinDihedral,
+        plain.mHausdorffToSkin, adapted.mHausdorffToSkin);
+}
+
 }  // namespace

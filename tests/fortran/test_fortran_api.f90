@@ -1212,6 +1212,20 @@ program test_fortran_api
         call check(index(errmsg, 'frozen node id 998') > 0, 'the error names the bad id')
     end block
 
+    ! -- adapt_volume: size-field tetrahedral remeshing --
+    block
+        type(mio_mesh) :: ad, bad
+        type(mio_adapt_volume_report_t) :: rep
+        integer :: st
+        ad = m%adapt_volume(hmin=1.0d0, hmax=2.0d0, max_iterations=3, report=rep, stat=st)
+        call check(st == 0, 'adapt_volume succeeded on a tet mesh')
+        call check(rep%num_tets_after == ad%cell_block_num_cells(1), 'adapt_volume reports the tet count')
+        call check(rep%min_dihedral_after >= min(rep%min_dihedral_before, 10.0d0) - 1.0d-9, &
+                   'adapt_volume keeps the quality floor')
+        bad = m%adapt_volume(quality_metric='best', stat=st)
+        call check(st /= 0, 'adapt_volume refuses an unknown quality metric')
+    end block
+
     ! -- optimize_volume: ODT remeshing (relocate + flip connectivity) --
     block
         type(mio_mesh) :: opt

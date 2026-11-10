@@ -169,6 +169,7 @@ meshioplusplus refine     in.vtu out.vtu --where "q<0.3"     # adaptive, closed 
 meshioplusplus partition  in.vtu 'out_{part}.vtu' --nparts 4 # N balanced parts
 meshioplusplus remesh-volume in.vtu out.vtu --cell-size 0.5  # retetrahedralize (isosurface stuffing)
 meshioplusplus optimize-volume in.vtu out.vtu               # ODT-remesh a tet mesh (relocate + flips)
+meshioplusplus adapt-volume in.vtu out.vtu --hgrad 1.5      # remesh a tet mesh to a graded size field
 meshioplusplus smooth     in.vtu out.vtu --iterations 20     # relax node positions
 meshioplusplus smooth     in.vtu out.vtu --method odt        # ODT smoothing, tet-only
 meshioplusplus interpolate src.vtu tgt.vtu out.vtu           # transfer fields across meshes
@@ -925,6 +926,18 @@ print(report["min_dihedral_before"], report["min_dihedral_after"])  # never lowe
 By default (`objective="worst"`) it raises the least dihedral angle and never lowers it — guarded relocation, 2-3 flips, edge removal, multi-face removal and worst-cell smoothing (Freitag and Ollivier-Gooch 1997; Klingner and Shewchuk 2007), taking Netgen's optimised sphere from 17.4 to 32.4 degrees; `objective="energy"` is the ODT energy with scaled-Jacobian flips it ran alone up to v18.0.0. See [`doc/optimize_volume.md`](doc/optimize_volume.md).
 
 The flips touch only interior faces/edges, so the boundary surface is preserved exactly (watertight in ⇒ watertight out); the point set is invariant, so `point_data`/`field_data` and named Point regions carry through while `cell_data`/Cell/Side regions are dropped. Tet-only, and (like `remesh_volume`) C++-core only.
+
+#### Size-field tetrahedral remeshing
+
+**`meshioplusplus.adapt_volume`** turns a valid but over-refined tetrahedral mesh, typically `octree_mesh`'s graded output, into one with fewer, better-shaped tetrahedra: it collapses, splits, swaps and smooths towards an isotropic size field with a gradation and a bound on how far the boundary moves, keeping corners, ridges, materials, regions and boundary tags. Every edit is guarded by exact orientation tests and a quality floor, and the output is byte-identical across backends and thread counts. It is native and MIT-licensed, an alternative to the LGPL MMG backend's `adapt`. See `doc/adapt_volume.md`.
+
+<!--pytest-codeblocks:skip-->
+
+```python
+out, report = meshioplusplus.adapt_volume(tets, hgrad=1.5, return_report=True)
+print(report["num_tets_before"], report["num_tets_after"], report["max_boundary_deviation"])
+tets = meshioplusplus.octree_mesh(skin, post_adapt=True, adapt_hgrad=1.5)  # the same as a post-stage
+```
 
 #### Smoothing
 

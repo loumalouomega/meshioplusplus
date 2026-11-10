@@ -639,6 +639,80 @@ OctreeMeshFill octree_mesh_fill_from_name(const std::string& rName) {
     octm_fail("unknown fill '" + rName + "' (expected 'all', 'inside' or 'cover')");
 }
 
+namespace {
+
+// The opt-in post-stage: adapt_volume on the tetrahedra, then the measures
+// the emit took of the boundary, taken again (against the skin itself).
+void octm_post_adapt(const detail::OctreeMeshSetup& rSetup, const OctreeMeshOptions& rO,
+                     OctreeMeshResult& rResult) {
+    AdaptVolumeResult r = adapt_volume(rResult.mMesh, rO.mAdapt);
+    rResult.mMesh = std::move(r.mMesh);
+    r.mMesh = Mesh();
+    for (const std::string& w : r.mWarnings)
+        detail::octree_mesh_warn(rResult, std::string(detail::kOctreeMeshPrefix) + "adapt: " + w);
+    rResult.mAdapt = std::move(r);
+    rResult.mAdapted = true;
+    rResult.mGuaranteeApplies = false;  // the lattice's angle bound no longer holds
+    const Mesh& m = rResult.mMesh;
+    if (m.HasRegion(kOctreeMeshInsideRegion, RegionKind::Cell))
+        rResult.mNumInside = static_cast<std::int64_t>(
+            m.Region(m.FindRegion(kOctreeMeshInsideRegion, RegionKind::Cell)).NumEntries());
+    // the boundary: faces used once
+    std::vector<detail::Vec3> pts(m.NumPoints());
+    for (std::size_t i = 0; i < m.NumPoints(); ++i)
+        for (std::size_t d = 0; d < 3; ++d)
+            pts[i][d] = detail::read_double(m.Points(), i * 3 + d);
+    std::vector<std::pair<std::array<std::int64_t, 3>, std::array<std::int64_t, 3>>> faces;
+    constexpr int kFacet[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
+    for (std::size_t b = 0; b < m.NumCellBlocks(); ++b) {
+        const NDArray& c = m.Cells(b).Conn();
+        for (std::size_t t = 0; t < m.Cells(b).NumCells(); ++t)
+            for (const auto& f : kFacet) {
+                std::array<std::int64_t, 3> o{};
+                for (int k = 0; k < 3; ++k)
+                    o[static_cast<std::size_t>(k)] =
+                        detail::read_int(c, t * 4 + static_cast<std::size_t>(f[k]));
+                std::array<std::int64_t, 3> key = o;
+                std::sort(key.begin(), key.end());
+                faces.emplace_back(key, o);
+            }
+    }
+    std::sort(faces.begin(), faces.end());
+    std::vector<std::array<std::int64_t, 3>> skin;
+    for (std::size_t i = 0; i < faces.size();) {
+        std::size_t j = i;
+        while (j < faces.size() && faces[j].first == faces[i].first)
+            ++j;
+        if (j - i == 1)
+            skin.push_back(faces[i].second);
+        i = j;
+    }
+    std::vector<std::array<std::int64_t, 2>> edges;
+    for (const auto& f : skin)
+        for (int e = 0; e < 3; ++e)
+            edges.push_back(
+                {std::min(f[static_cast<std::size_t>(e)], f[static_cast<std::size_t>((e + 1) % 3)]),
+                 std::max(f[static_cast<std::size_t>(e)],
+                          f[static_cast<std::size_t>((e + 1) % 3)])});
+    std::sort(edges.begin(), edges.end());
+    rResult.mNumBoundaryEdgesOpen = 0;
+    rResult.mNumNonManifoldBoundaryEdges = 0;
+    for (std::size_t i = 0; i < edges.size();) {
+        std::size_t j = i;
+        while (j < edges.size() && edges[j] == edges[i])
+            ++j;
+        if (j - i == 1)
+            ++rResult.mNumBoundaryEdgesOpen;
+        else if (j - i > 2)
+            ++rResult.mNumNonManifoldBoundaryEdges;
+        i = j;
+    }
+    if (!skin.empty())
+        rResult.mHausdorffToSkin = detail::octree_mesh_hausdorff_to_skin(rSetup, pts, skin);
+}
+
+}  // namespace
+
 OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOptions) {
     octm_check_options(rOptions);
     OctreeMeshResult result;
@@ -673,6 +747,10 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
             break;
     }
     clock.Lap(result, "output");
+    if (rOptions.mPostAdapt && rOptions.mOutput == OctreeMeshOutput::Tetra) {
+        octm_post_adapt(*setup, rOptions, result);
+        clock.Lap(result, "adapt");
+    }
     octm_report_mesh(rOptions, result);
     clock.Lap(result, "quality");
     return result;
