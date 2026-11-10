@@ -1013,20 +1013,28 @@ def view_backends():
 def roadmap_map():
     columns = [
         (
-            "§1 format reach",
+            "§1 correctness debts",
+            [
+                ("Ansys .rst: both sparse flags", "S"),
+            ],
+            [],
+        ),
+        (
+            "§2 format reach",
             [
                 ("route runs (.odb · .t16 · DPF)", "S"),
                 ("reader checks awaiting a licence", "S"),
                 ("written files in vendor tools", "S"),
                 ("depth: CGNS · Exodus · EnSight", "L"),
                 ("series writers · small losses", "S"),
+                ("OpenFOAM .gz · decomposed reads", "M"),
                 ("new: Fluent · PLOT3D · coastal", "M"),
                 ("reopened: 3MF · E57/LAS · VDB", "M"),
             ],
             [],
         ),
         (
-            "§2 quality",
+            "§3 quality",
             [
                 ("OSS-Fuzz submission", "S"),
                 ("CalculiX validators in CI", "S"),
@@ -1044,14 +1052,16 @@ def roadmap_map():
             [],
         ),
         (
-            "§3 ecosystem reach",
+            "§4 ecosystem reach",
             [
                 ("registries (calendar-bound)", "S"),
+                ("CRAN · Julia: build first", "M"),
                 ("Rust bindings over the C API", "M"),
                 ("interop phase 2 (Open3D, DOLFINx)", "S"),
                 ("CLI chatbot over MCP tools", "M"),
                 ("manager shows thumbnails", "S"),
                 ("split wheels: Windows", "M"),
+                ("add-on wheels: LGPL texts", "S"),
                 ("CLI plugins: MMG, Netgen", "M"),
                 ("CLI plugin: Polyscope viewer", "M"),
                 ("embedded MCP (design first)", "L"),
@@ -1061,34 +1071,34 @@ def roadmap_map():
                 ("C++ module (design first)", "M"),
                 ("zarr/pmsh in core (design first)", "M"),
             ],
-            [(6, 7)],
+            [(7, 8), (8, 9)],
         ),
         (
-            "§4 performance",
+            "§5 performance",
             [
                 ("harness: missing rows", "M"),
                 ("wheel runtimes: CI probe", "S"),
-                ("HDF5: lock scope", "L"),
+                ("HDF5: lock scope", "M"),
                 ("WASM copies · worst-cell smoothing", "M"),
                 ("sequences: read-ahead, fields only", "M"),
                 ("PGO · runtime-dispatch SIMD", "M"),
-                ("wasm64 · in-place transform", "M"),
+                ("wasm memory · in-place transform", "M"),
             ],
             [(0, 1)],
         ),
         (
-            "§7 data model",
+            "§8 data model",
             [
-                ("complex values (design first)", "L"),
+                ("complex pairs (design first)", "S"),
                 ("strings · booleans (design first)", "M"),
                 ("integration points (design first)", "L"),
-                ("facets · tree (design first)", "L"),
-                ("structured grids (design first)", "XL"),
+                ("side data · tree (design first)", "M"),
+                ("structured grids (design first)", "M"),
             ],
             [],
         ),
         (
-            "§8 operations",
+            "§9 operations",
             [
                 ("booleans via a backend", "M"),
                 ("subdivision · elevation", "M"),
