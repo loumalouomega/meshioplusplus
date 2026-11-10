@@ -359,6 +359,13 @@ void TetRemeshStore::KillTet(std::int64_t T) {
     }
 }
 
+void TetRemeshStore::ReplaceTets(std::vector<TetCorners> Tets, std::vector<std::int32_t> Class) {
+    mTets = std::move(Tets);
+    mClass = std::move(Class);
+    mTetAlive.assign(mTets.size(), 1);
+    BuildVertexTets();
+}
+
 TetClassifyReport TetRemeshStore::Classify(double FeatureAngleDeg, double CornerAngleDeg,
                                            bool PreserveFeatures) {
     TetClassifyReport report;

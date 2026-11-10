@@ -364,6 +364,24 @@ double min_dihedral(const Mesh& rM) {
     return m;
 }
 
+std::size_t count_below(const Mesh& rM, double Deg) {
+    std::size_t n = 0;
+    for (std::size_t b = 0; b < rM.NumCellBlocks(); ++b) {
+        const NDArray& c = rM.Cells(b).Conn();
+        for (std::size_t t = 0; t < rM.Cells(b).NumCells(); ++t) {
+            mio::detail::Vec3 p[4];
+            for (std::size_t k = 0; k < 4; ++k) {
+                const std::size_t v = static_cast<std::size_t>(mio::detail::read_int(c, t * 4 + k));
+                p[k] = {mio::detail::read_double(rM.Points(), v * 3),
+                        mio::detail::read_double(rM.Points(), v * 3 + 1),
+                        mio::detail::read_double(rM.Points(), v * 3 + 2)};
+            }
+            n += mio::detail::tet_min_dihedral(p[0], p[1], p[2], p[3]) < Deg;
+        }
+    }
+    return n;
+}
+
 struct CheckInvariants {
     CheckInvariants() { setenv("MESHIOPLUSPLUS_ADAPT_VOLUME_CHECK", "1", 1); }
     ~CheckInvariants() { unsetenv("MESHIOPLUSPLUS_ADAPT_VOLUME_CHECK"); }
@@ -506,6 +524,77 @@ TEST(AdaptVolume, CollapseAndSplitDoNotOscillate) {
     const AdaptVolumeResult again = adapt_volume(r.mMesh, o);
     print_report("box collapse+split, again", again);
     EXPECT_LE(again.mNumCollapsed + again.mNumSplit, r.mNumTetsAfter / 10 + 1);
+}
+
+// --- M4: swaps ----------------------------------------------------------------------
+
+TEST(AdaptVolume, SwapsRaiseTheLeastAngleOfSplitTetrahedra) {
+    const CheckInvariants check;
+    AdaptVolumeOptions o;
+    o.mHmin = 0.1;
+    o.mHmax = 0.15;
+    o.mSizeArray = "h";
+    o.mEnableCollapse = false;
+    o.mEnableSmooth = false;
+    o.mEnableSwap = false;
+    const AdaptVolumeResult split = adapt_volume(with_sizes(tet_box(2), 0.12), o);
+    // swaps alone on the split mesh: the boundary stays, the least angle rises
+    AdaptVolumeOptions w;
+    w.mEnableCollapse = false;
+    w.mEnableSplit = false;
+    w.mEnableSmooth = false;
+    const AdaptVolumeResult swapped = adapt_volume(split.mMesh, w);
+    print_report("box split, then swaps", swapped);
+    EXPECT_GT(swapped.mNumSwapped, 0);
+    // the worst tetrahedra here touch the boundary, which no swap changes, so
+    // the least angle holds while the number of bad ones drops
+    EXPECT_GE(swapped.mMinDihedralAfter, split.mMinDihedralAfter);
+    EXPECT_LT(count_below(swapped.mMesh, 20.0), count_below(split.mMesh, 20.0) / 2);
+    EXPECT_EQ(swapped.mNumPointsAfter, split.mNumPointsAfter);
+    EXPECT_NEAR(swapped.mVolumeAfter, 1.0, 1e-12);
+    EXPECT_EQ(boundary_triangles(swapped.mMesh), boundary_triangles(split.mMesh));
+}
+
+TEST(AdaptVolume, SwapsNeverCrossAMaterialInterface) {
+    const CheckInvariants check;
+    Mesh in = tet_box(4);
+    const std::size_t nc = in.Cells(0).NumCells();
+    NDArray mat = NDArray::Uninit(mio::DType::Int64, {nc});
+    for (std::size_t c = 0; c < nc; ++c) {
+        double x = 0.0;
+        for (std::size_t k = 0; k < 4; ++k)
+            x += mio::detail::read_double(
+                in.Points(),
+                static_cast<std::size_t>(mio::detail::read_int(in.Cells(0).Conn(), c * 4 + k)) * 3);
+        mio::detail::write_int(mat, c, x < 2.0 ? 1 : 2);  // centroid x < 0.5
+    }
+    in.AddCellData("octree_mesh:material", {mat});
+    AdaptVolumeOptions o;
+    o.mHmin = 0.08;
+    o.mHmax = 0.12;
+    o.mEnableCollapse = false;
+    o.mEnableSmooth = false;
+    const AdaptVolumeResult r = adapt_volume(in, o);
+    print_report("two materials split+swap", r);
+    EXPECT_GT(r.mNumSwapped, 0);
+    // every tetrahedron of material 1 lies left of x = 0.5, of material 2 right of it
+    const NDArray& m = r.mMesh.CellData("octree_mesh:material", 0);
+    const NDArray& c = r.mMesh.Cells(0).Conn();
+    for (std::size_t t = 0; t < r.mMesh.Cells(0).NumCells(); ++t) {
+        const std::int64_t mt = mio::detail::read_int(m, t);
+        for (std::size_t k = 0; k < 4; ++k) {
+            const double x = mio::detail::read_double(
+                r.mMesh.Points(),
+                static_cast<std::size_t>(mio::detail::read_int(c, t * 4 + k)) * 3);
+            if (mt == 1)
+                EXPECT_LE(x, 0.5 + 1e-12);
+            else
+                EXPECT_GE(x, 0.5 - 1e-12);
+        }
+    }
+    ASSERT_EQ(r.mRegionVolumeChange.size(), 2u);
+    EXPECT_NEAR(r.mRegionVolumeChange[0].second, 0.0, 1e-12);
+    EXPECT_NEAR(r.mRegionVolumeChange[1].second, 0.0, 1e-12);
 }
 
 }  // namespace

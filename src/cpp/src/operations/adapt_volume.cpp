@@ -68,6 +68,7 @@
 #include "../detail/decimate_shared.hpp"
 #include "../detail/fem_kernels.hpp"
 #include "../detail/size_field_utils.hpp"
+#include "../detail/tet_flips.hpp"
 #include "../detail/tet_remesh.hpp"
 #include "../detail/tet_scope.hpp"
 #include "../detail/typed_view.hpp"
@@ -193,7 +194,7 @@ private:
     std::map<std::string, double> mTimes;
     std::vector<std::uint32_t> mVersion;  ///< per vertex, bumped by every edit of its star
     bool mCheck = false;  ///< MESHIOPLUSPLUS_ADAPT_VOLUME_CHECK: verify after each pass
-    std::vector<std::uint8_t> mAllowFlat;  ///< input tetrahedra that were already flat
+    std::vector<TetCorners> mFlatKeys;  ///< input tetrahedra that were already flat, sorted
 
     // scratch, reused across candidates
     std::vector<std::int64_t> mScratchShared, mScratchRingA, mScratchRingB, mScratchTetsA;
@@ -236,6 +237,16 @@ private:
     AdvReject TrySplit(std::int64_t A, std::int64_t B, Vec3& rP, double& rT);
     void CommitSplit(std::int64_t A, std::int64_t B, const Vec3& rP, double T);
     std::int64_t SplitPass();
+
+    // swaps and the shared smoothing (detail/tet_flips.hpp, per class)
+    /// The alive tetrahedra of each class that a move may touch, and the rest.
+    void TetsByClass(std::vector<std::vector<detail::TetFlipTet>>& rByClass,
+                     std::vector<detail::TetFlipTet>& rFixed,
+                     std::vector<std::int32_t>& rFixedClass) const;
+    void StoreTetsByClass(std::vector<std::vector<detail::TetFlipTet>>& rByClass,
+                          std::vector<detail::TetFlipTet>& rFixed,
+                          std::vector<std::int32_t>& rFixedClass);
+    std::int64_t SwapPass();
 
     void Time(const char* pStage, AdvClock::time_point Since) {
         mTimes[pStage] += adv_seconds(Since);
@@ -628,8 +639,15 @@ AdvMeasures AdvRemesher::Measure() const {
 void AdvRemesher::Verify(const char* pStage) const {
     if (!mCheck)
         return;
+    std::vector<std::uint8_t> allow_flat(mStore.NumTets(), 0);
+    if (!mFlatKeys.empty())
+        for (std::size_t t = 0; t < mStore.NumTets(); ++t) {
+            TetCorners k = mStore.mTets[t];
+            std::sort(k.begin(), k.end());
+            allow_flat[t] = std::binary_search(mFlatKeys.begin(), mFlatKeys.end(), k);
+        }
     std::string why;
-    if (!mStore.CheckInvariants(why, mAllowFlat))
+    if (!mStore.CheckInvariants(why, allow_flat))
         throw std::logic_error(std::string(kAdvPrefix) + "invariant broken after " + pStage + ": " +
                                why);
 }
@@ -1049,6 +1067,89 @@ std::int64_t AdvRemesher::SplitPass() {
     return applied;
 }
 
+// --- swaps ---------------------------------------------------------------------
+
+/// The least dihedral angle below which a tetrahedron is a target of the
+/// moves (optimize_volume's worst-cell threshold).
+constexpr double kAdvWorstThresholdDeg = 40.0;
+
+void AdvRemesher::TetsByClass(std::vector<std::vector<detail::TetFlipTet>>& rByClass,
+                              std::vector<detail::TetFlipTet>& rFixed,
+                              std::vector<std::int32_t>& rFixedClass) const {
+    rByClass.assign(mClasses.size(), {});
+    rFixed.clear();
+    rFixedClass.clear();
+    // tagged faces between two tetrahedra of one class: keep both sides out
+    bool any_inner = false;
+    for (const auto& kv : mStore.mBoundary)
+        any_inner = any_inner || kv.second.mClassA == kv.second.mClassB;
+    for (std::size_t t = 0; t < mStore.NumTets(); ++t) {
+        if (!mStore.mTetAlive[t])
+            continue;
+        const TetCorners& c = mStore.mTets[t];
+        bool fixed = false;
+        if (any_inner)
+            for (int k = 0; k < 4 && !fixed; ++k) {
+                const detail::TetBoundaryFace* f =
+                    mStore.FindFace(c[(k + 1) % 4], c[(k + 2) % 4], c[(k + 3) % 4]);
+                fixed = f && f->mClassA == f->mClassB;
+            }
+        if (fixed) {
+            rFixed.push_back(c);
+            rFixedClass.push_back(mStore.mClass[t]);
+        } else {
+            rByClass[static_cast<std::size_t>(mStore.mClass[t])].push_back(c);
+        }
+    }
+}
+
+void AdvRemesher::StoreTetsByClass(std::vector<std::vector<detail::TetFlipTet>>& rByClass,
+                                   std::vector<detail::TetFlipTet>& rFixed,
+                                   std::vector<std::int32_t>& rFixedClass) {
+    std::vector<TetCorners> tets;
+    std::vector<std::int32_t> cls;
+    for (std::size_t c = 0; c < rByClass.size(); ++c) {
+        tets.insert(tets.end(), rByClass[c].begin(), rByClass[c].end());
+        cls.insert(cls.end(), rByClass[c].size(), static_cast<std::int32_t>(c));
+    }
+    tets.insert(tets.end(), rFixed.begin(), rFixed.end());
+    cls.insert(cls.end(), rFixedClass.begin(), rFixedClass.end());
+    mStore.ReplaceTets(std::move(tets), std::move(cls));
+    for (std::uint32_t& v : mVersion)
+        ++v;
+}
+
+// optimize_volume's worst-cell moves, run on each class alone: a face between
+// two classes has one tetrahedron in each vector, so it is never flipped, and
+// the boundary faces are untouched. Every move raises the least dihedral
+// angle of the tetrahedra it replaces.
+std::int64_t AdvRemesher::SwapPass() {
+    std::vector<std::vector<detail::TetFlipTet>> by_class;
+    std::vector<detail::TetFlipTet> fixed;
+    std::vector<std::int32_t> fixed_class;
+    TetsByClass(by_class, fixed, fixed_class);
+    constexpr double kMinImprovement = 1e-6;
+    constexpr int kMaxRing = 7;
+    const auto quality = [&](const detail::TetFlipTet& t) {
+        return detail::tet_flip_worst_q(mStore.mXyz, t, mEpsVol6);
+    };
+    std::int64_t applied = 0;
+    for (auto& tets : by_class) {
+        if (tets.empty())
+            continue;
+        applied += detail::tet_flip_pass_23(mStore.mXyz, tets, kMinImprovement, mEpsVol6, quality,
+                                            kAdvWorstThresholdDeg);
+        std::int64_t n32 = 0;
+        applied += detail::tet_flip_pass_edge_removal(mStore.mXyz, tets, kMinImprovement, mEpsVol6,
+                                                      kMaxRing, kAdvWorstThresholdDeg, n32);
+        applied += detail::tet_flip_pass_multi_face(mStore.mXyz, tets, kMinImprovement, mEpsVol6,
+                                                    kMaxRing, kAdvWorstThresholdDeg);
+    }
+    if (applied > 0)
+        StoreTetsByClass(by_class, fixed, fixed_class);
+    return applied;
+}
+
 // --- output ----------------------------------------------------------------
 
 void AdvRemesher::Emit() {
@@ -1230,12 +1331,17 @@ void AdvRemesher::Prepare() {
         mCheck = p_env[0] != '\0' && p_env[0] != '0';
     Setup();
     mVersion.assign(mStore.NumVertices(), 0);
-    mAllowFlat.assign(mStore.NumTets(), 0);
+    mFlatKeys.clear();
     for (std::size_t t = 0; t < mStore.NumTets(); ++t) {
         const TetCorners& c = mStore.mTets[t];
-        mAllowFlat[t] = TetRemeshStore::OrientSign(mStore.Point(c[0]), mStore.Point(c[1]),
-                                                   mStore.Point(c[2]), mStore.Point(c[3])) == 0;
+        if (TetRemeshStore::OrientSign(mStore.Point(c[0]), mStore.Point(c[1]), mStore.Point(c[2]),
+                                       mStore.Point(c[3])) == 0) {
+            TetCorners k = c;
+            std::sort(k.begin(), k.end());
+            mFlatKeys.push_back(k);
+        }
     }
+    std::sort(mFlatKeys.begin(), mFlatKeys.end());
     Verify("setup");
 }
 
@@ -1273,6 +1379,14 @@ void AdvRemesher::Run() {
             changed += n;
             Time("split", t0);
             Verify("split");
+        }
+        if (mrOptions.mEnableSwap) {
+            t0 = AdvClock::now();
+            const std::int64_t n = SwapPass();
+            mrResult.mNumSwapped += n;
+            changed += n;
+            Time("swap", t0);
+            Verify("swap");
         }
         ++mrResult.mIterations;
         if (static_cast<double>(changed) < 0.01 * static_cast<double>(mStore.NumAliveTets()))

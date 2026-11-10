@@ -208,6 +208,12 @@ public:
     std::int64_t AddTet(const TetCorners& rCorners, std::int32_t Class);
     /// Tombstone a tetrahedron.
     void KillTet(std::int64_t T);
+    /**
+     * @brief Replace every tetrahedron by @p Tets (classes @p Class), keeping
+     * the vertices, the boundary map and the ridges: for edits that leave the
+     * boundary faces and the points alone, such as flips within one class.
+     */
+    void ReplaceTets(std::vector<TetCorners> Tets, std::vector<std::int32_t> Class);
 
     /**
      * @brief Check the invariants: every alive tetrahedron strictly positive
