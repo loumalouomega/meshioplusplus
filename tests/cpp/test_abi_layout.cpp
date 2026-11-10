@@ -109,6 +109,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
+#include "meshioplusplus/operations/adapt_volume.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/neighbors.hpp"
@@ -528,6 +529,15 @@ MIO_ABI_LAYOUT(meshioplusplus::RemeshVolumeOptions, 224, 8);
 // deliberately NOT pinned, embedding a `Mesh` like every other *Result.
 // ABI 37 appends mObjective and mMaxRingSize (worst-cell moves): 40 -> 48.
 MIO_ABI_LAYOUT(meshioplusplus::OptimizeVolumeOptions, 48, 8);
+// ABI 45: adapt_volume (operations/adapt_volume.hpp, a new header). The result
+// embeds a Mesh and is not pinned.
+MIO_ABI_LAYOUT(meshioplusplus::AdaptVolumeOptions, 192, 8);
+static_assert(offsetof(meshioplusplus::AdaptVolumeOptions, mFrozen) == 136,
+              "meshio++ ABI: AdaptVolumeOptions layout changed (Tier A, doc/abi.md)");
+static_assert(offsetof(meshioplusplus::AdaptVolumeOptions, mEnableCollapse) == 184,
+              "meshio++ ABI: AdaptVolumeOptions layout changed (Tier A, doc/abi.md)");
+static_assert(sizeof(meshioplusplus::AdaptVolumeQuality) == 4,
+              "meshio++ ABI: AdaptVolumeQuality underlying width changed (Tier A, doc/abi.md)");
 static_assert(
     sizeof(meshioplusplus::OptimizeVolumeObjective) == 4,
     "meshio++ ABI: OptimizeVolumeObjective underlying width changed (Tier A, doc/abi.md)");

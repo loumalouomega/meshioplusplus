@@ -8,6 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+- **`adapt_volume`: isotropic, size-field-driven tetrahedral remeshing** ([adapt_volume](doc/adapt_volume.md)): collapses, splits, swaps and smooths a valid tetrahedral mesh (typically `octree_mesh`'s graded output) towards a graded size field, keeping the boundary within a Hausdorff bound of the input, its corners, ridges and patches, the materials and regions and the side tags, with every edit guarded by exact orientation tests and a quality floor. Native, MIT, no new dependency. **ABI 45.**
+
 ## v20.0.0 (2026-11-10)
 
 A major release: the ParaView plugin grows from a reader and a writer into a full integration (a payload layer, polyhedra, time steps, array selection, named regions, the writer's inputs and options, the Pipeline filter and 29 dedicated filters, and a self-contained bundle per ParaView Python), and a linear `wedge` is no longer written to VTK inside out. Scan metrology and reverse engineering land in the roadmap's section 7: measuring and alignment, deviation analysis, chained sections, curves and DXF, scan editing, profile solids, the closed CAD loop, workflow prompts and a measuring mode in the browser viewer. The roadmap's code-duplication and SonarCloud passes close, and they change installed C++ headers. **Breaking:** files meshio++ wrote before this release carry inverted linear wedges (`flip_normals` or a rewrite repairs them), and C++ callers of the headers changed by the duplication pass must adapt (see the entries below). **ABI 44 (Tier A and B):** rebuild native consumers.

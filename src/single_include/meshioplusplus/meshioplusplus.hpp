@@ -127,7 +127,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 44
+#define MESHIOPLUSPLUS_ABI_VERSION 45
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -25643,6 +25643,190 @@ ModelPart from_model_part(const TModelPart& rSource, std::string rName = "Main")
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/kratos_bridge.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/adapt_volume.hpp =====
+/**
+ * @file operations/adapt_volume.hpp
+ * @brief Isotropic, size-field-driven remeshing of a tetrahedral mesh:
+ *        edge collapse, edge split, swaps and smoothing under a target size,
+ *        a gradation and a boundary Hausdorff bound (doc/adapt_volume.md).
+ *
+ * The input is a valid tetrahedral mesh, typically `octree_mesh`'s graded
+ * output, which has far more tetrahedra than its boundary resolution needs.
+ * Every vertex gets a target size `h`: the boundary keeps its own resolution
+ * (or the caller's `size_array`, or a curvature bound), the interior is free
+ * to grow to `hmax`, and the field is graded so neighbouring sizes differ by
+ * at most `hgrad - 1` per unit length. Each iteration then collapses the
+ * edges shorter than 4/5 in that metric, splits those longer than 4/3, swaps
+ * (2-3, 3-2, edge removal and multi-face removal, `optimize_volume`'s kernels)
+ * and smooths (ODT or AMIPS in the interior, tangential moves projected back
+ * onto the input skin on the boundary).
+ *
+ * Every local edit runs its preconditions, applies the edit, checks its
+ * postconditions and is rolled back when one fails: no tetrahedron is ever
+ * inverted or flat (exact `orient3d`), the least quality of the tetrahedra an
+ * edit touches never drops below `min(old least, quality_min)`, the boundary
+ * stays within `hausd` of the input boundary with its normals turning by at
+ * most `max_normal_deviation`, corners never move, ridge vertices move only
+ * along their chain and surface vertices only within their patch, and the
+ * interfaces between materials and regions are kept as internal boundaries.
+ * With `preserve_boundary` the boundary vertices and triangles are left
+ * bit for bit.
+ *
+ * Every pass is serial in a fixed order (only per-element pure computations
+ * run in parallel, into disjoint slots), so the output is byte-identical
+ * across mesh backends, parallel backends and thread counts.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The quality `adapt_volume` guards and reports.
+enum class AdaptVolumeQuality : std::int32_t {
+    /// The least dihedral angle, in degrees (the default).
+    MinDihedral = 0,
+    /// The mean ratio `12 (3 V)^(2/3) / sum(l^2)`, 1 for the regular tetrahedron.
+    MeanRatio = 1,
+    /// The conformal AMIPS energy, guarded as its reciprocal (the mean ratio);
+    /// the interior smoothing then minimises the AMIPS energy of each star
+    /// instead of moving to the ODT point.
+    Amips = 2,
+};
+
+/// Options for `adapt_volume`.
+struct AdaptVolumeOptions {
+    /// The smallest target edge length; <= 0 takes the smallest boundary size.
+    double mHmin = 0.0;
+    /// The largest target edge length; <= 0 takes an eighth of the bounding-box diagonal.
+    double mHmax = 0.0;
+    /// The gradation: neighbouring sizes differ by at most `(hgrad - 1) |uv|`.
+    double mHgrad = 1.3;
+    /// How far the boundary may move from the input boundary. <= 0 takes 1e-3
+    /// of the bounding-box diagonal; with `mHausdRelative`, a fraction of it.
+    double mHausd = 0.0;
+    /// Read `mHausd` as a fraction of the bounding-box diagonal.
+    bool mHausdRelative = false;
+    /// A float `point_data` array of target sizes (one component); empty for none.
+    std::string mSizeArray;
+    /// Bound the boundary size by `sqrt(8 hausd R)`, R the local radius of curvature.
+    bool mCurvatureSizing = false;
+    /// Boundary edges whose faces turn by more than this many degrees are ridges.
+    double mFeatureAngle = 30.0;
+    /// A ridge vertex where its chain turns by more than this many degrees is a corner.
+    double mCornerAngle = 30.0;
+    /// The most a boundary face's normal may turn in one edit, in degrees.
+    double mMaxNormalDeviation = 30.0;
+    /// Freeze the boundary: its vertices and triangles are left bit for bit.
+    bool mPreserveBoundary = false;
+    /// Keep sharp edges (ridges) and corners of the boundary.
+    bool mPreserveFeatures = true;
+    /// The quality the edits guard and the report measures.
+    AdaptVolumeQuality mQualityMetric = AdaptVolumeQuality::MinDihedral;
+    /// The quality floor of an edit: it may lower its star's least quality
+    /// only down to this. < 0 takes 10 degrees (MinDihedral) or 0.2.
+    double mQualityMin = -1.0;
+    /// Iterations of the collapse / split / swap / smooth cycle.
+    int mMaxIterations = 10;
+    /// Stop early once the least dihedral angle reaches this; 0 disables.
+    double mTargetMinDihedral = 0.0;
+    /// Per point, non-zero for a vertex that never moves and is never removed.
+    std::vector<std::uint8_t> mFrozen;
+    /// Integer cell_data arrays that name materials, kept by parent; empty
+    /// takes the known names (`octree_mesh:material`, `medit:ref`,
+    /// `gmsh:physical`, `gmsh:geometrical`, `cell_tags`).
+    std::vector<std::string> mMaterialArrays;
+    /// The four passes, for debugging and ablation.
+    bool mEnableCollapse = true;
+    bool mEnableSplit = true;
+    bool mEnableSwap = true;
+    bool mEnableSmooth = true;
+};
+
+/// The output of `adapt_volume`.
+struct AdaptVolumeResult {
+    /// The adapted mesh: one `tetra` block per input block.
+    Mesh mMesh;
+    std::int64_t mNumTetsBefore = 0;
+    std::int64_t mNumTetsAfter = 0;
+    std::int64_t mNumPointsBefore = 0;
+    std::int64_t mNumPointsAfter = 0;
+    /// Edits applied.
+    std::int64_t mNumCollapsed = 0;
+    std::int64_t mNumSplit = 0;
+    std::int64_t mNumSwapped = 0;
+    std::int64_t mNumSmoothed = 0;
+    /// Candidate edits refused, by the first guard that refused them.
+    std::int64_t mNumRejectedByLink = 0;
+    std::int64_t mNumRejectedByInversion = 0;
+    std::int64_t mNumRejectedByQuality = 0;
+    std::int64_t mNumRejectedByLength = 0;
+    std::int64_t mNumRejectedByClass = 0;
+    std::int64_t mNumRejectedByHausdorff = 0;
+    std::int64_t mNumRejectedByNormal = 0;
+    /// Dihedral angles, in degrees.
+    double mMinDihedralBefore = 0.0;
+    double mMinDihedralAfter = 0.0;
+    double mMaxDihedralBefore = 0.0;
+    double mMaxDihedralAfter = 0.0;
+    /// The mean of the chosen quality (the mean ratio for AMIPS).
+    double mMeanQualityBefore = 0.0;
+    double mMeanQualityAfter = 0.0;
+    /// The symmetric Hausdorff distance between the output and the input boundary.
+    double mMaxBoundaryDeviation = 0.0;
+    /// The sizes and the Hausdorff bound the run used.
+    double mHmin = 0.0;
+    double mHmax = 0.0;
+    double mHausd = 0.0;
+    /// Total volumes, and the change of each material class (input order).
+    double mVolumeBefore = 0.0;
+    double mVolumeAfter = 0.0;
+    std::vector<std::pair<std::string, double>> mRegionVolumeChange;
+    /// The classification of the input.
+    std::int64_t mNumCorners = 0;
+    std::int64_t mNumRidgeVertices = 0;
+    std::int64_t mNumChains = 0;
+    std::int64_t mNumPatches = 0;
+    /// Iterations run.
+    int mIterations = 0;
+    /// Seconds per stage (`setup`, `collapse`, `split`, `swap`, `smooth`,
+    /// `polish`, `output`), each summed over the iterations.
+    std::vector<std::pair<std::string, double>> mTimings;
+    /// What was dropped or could not be kept.
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Parse an `AdaptVolumeQuality` from `"min_dihedral"`, `"mean_ratio"`
+ *        or `"amips"`.
+ * @throws std::invalid_argument naming the accepted values.
+ */
+MESHIOPLUSPLUS_API AdaptVolumeQuality adapt_volume_quality_from_name(const std::string& rName);
+
+/// The name `adapt_volume_quality_from_name` parses back.
+MESHIOPLUSPLUS_API const char* adapt_volume_quality_name(AdaptVolumeQuality Quality);
+
+/**
+ * @brief Remesh a tetrahedral mesh to a graded isotropic size field.
+ * @param rMesh a tetra-only volume mesh (one or more `tetra` blocks).
+ * @param rOptions sizes, gradation, Hausdorff bound, feature policy, quality
+ *        floor and pass switches.
+ * @return the adapted mesh and the report.
+ * @throws std::invalid_argument on a non-`tetra` or ragged block, a mesh with
+ *         no tetrahedra, an inverted or flat input tetrahedron, a face shared
+ *         by more than two tetrahedra, a bad option, or an unknown
+ *         `size_array` / material array.
+ */
+MESHIOPLUSPLUS_API AdaptVolumeResult adapt_volume(const Mesh& rMesh,
+                                                  const AdaptVolumeOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/adapt_volume.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/adjacency.hpp =====
 /**
  * @file operations/adjacency.hpp
@@ -50466,6 +50650,8 @@ FeatureSnapReport feature_snap(std::vector<Vec3>& rPoints,
  */
 
 // System includes
+#include <algorithm>
+#include <cmath>
 #include <limits>
 
 // Project includes
@@ -50528,6 +50714,103 @@ inline constexpr int kHexCornerEdges[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {
  */
 inline constexpr int kWedgeCornerEdges[6][3] = {{1, 2, 3}, {2, 0, 4}, {0, 1, 5},
                                                 {5, 4, 0}, {3, 5, 1}, {4, 3, 2}};
+
+/// Degrees per radian, as `optimize_volume` has always spelled it.
+inline constexpr double kTetRadToDeg = 57.295779513082320876798;
+
+/**
+ * @brief The least dihedral angle of the tetrahedron (A, B, C, D), in degrees,
+ * whatever its orientation; 0 for a degenerate one.
+ *
+ * The angle through each edge is the one between the normals of the two faces
+ * through it. A cosine more than 1e-12 below the largest one already evaluated
+ * cannot give the least angle (acos is decreasing with slope at least 1 and
+ * accurate to an ulp or so), so its acos is skipped: the result is bit for bit
+ * what evaluating all six gives (roadmap 5.5.2). Moved verbatim from
+ * `optimize_volume`, whose digests pin it.
+ */
+inline double tet_min_dihedral(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
+    const Vec3 p[4] = {rA, rB, rC, rD};
+    // The edge (i, j) has the opposite edge (k, l); its dihedral angle is the
+    // angle between the normals of faces (i, j, k) and (i, j, l).
+    constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
+                                 {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
+    constexpr double kAcosSkip = 1e-12;
+    double least = 180.0;
+    double c_most = -2.0;  // the largest cosine whose acos was evaluated
+    for (const auto& e : kEdge) {
+        const Vec3& a = p[e[0]];
+        const Vec3 ab = vec3_sub(p[e[1]], a);
+        const Vec3 n1 = vec3_cross(ab, vec3_sub(p[e[2]], a));
+        const Vec3 n2 = vec3_cross(ab, vec3_sub(p[e[3]], a));
+        const double den = std::sqrt(vec3_dot(n1, n1) * vec3_dot(n2, n2));
+        if (!(den > 0.0))
+            return 0.0;
+        const double c = std::clamp(vec3_dot(n1, n2) / den, -1.0, 1.0);
+        if (!(c > c_most - kAcosSkip))
+            continue;
+        least = std::min(least, std::acos(c) * kTetRadToDeg);
+        c_most = std::max(c_most, c);
+    }
+    return least;
+}
+
+/**
+ * @brief The least and the largest dihedral angle of (A, B, C, D), in degrees,
+ * from all six; both 0 for a degenerate tetrahedron.
+ */
+inline void tet_dihedral_range(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD,
+                               double& rMin, double& rMax) {
+    const Vec3 p[4] = {rA, rB, rC, rD};
+    constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
+                                 {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
+    rMin = 180.0;
+    rMax = 0.0;
+    for (const auto& e : kEdge) {
+        const Vec3& a = p[e[0]];
+        const Vec3 ab = vec3_sub(p[e[1]], a);
+        const Vec3 n1 = vec3_cross(ab, vec3_sub(p[e[2]], a));
+        const Vec3 n2 = vec3_cross(ab, vec3_sub(p[e[3]], a));
+        const double den = std::sqrt(vec3_dot(n1, n1) * vec3_dot(n2, n2));
+        if (!(den > 0.0)) {
+            rMin = rMax = 0.0;
+            return;
+        }
+        const double angle = std::acos(std::clamp(vec3_dot(n1, n2) / den, -1.0, 1.0)) * kTetRadToDeg;
+        rMin = std::min(rMin, angle);
+        rMax = std::max(rMax, angle);
+    }
+}
+
+/**
+ * @brief The mean ratio `12 (3 V)^(2/3) / sum(l^2)` of (A, B, C, D): 1 for the
+ * regular tetrahedron, falling to 0 as it flattens; 0 when the signed volume is
+ * not positive. Liu and Joe's measure, the reciprocal of the conformal AMIPS
+ * energy (`tet_amips`).
+ */
+inline double tet_mean_ratio(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
+    const double v = tet_volume6(rA, rB, rC, rD) / 6.0;
+    if (!(v > 0.0))
+        return 0.0;
+    const double l2 = vec3_norm_sq(vec3_sub(rB, rA)) + vec3_norm_sq(vec3_sub(rC, rA)) +
+                      vec3_norm_sq(vec3_sub(rD, rA)) + vec3_norm_sq(vec3_sub(rC, rB)) +
+                      vec3_norm_sq(vec3_sub(rD, rB)) + vec3_norm_sq(vec3_sub(rD, rC));
+    if (!(l2 > 0.0))
+        return 0.0;
+    return 12.0 * std::cbrt(9.0 * v * v) / l2;
+}
+
+/**
+ * @brief The conformal AMIPS energy of (A, B, C, D) against the regular
+ * tetrahedron, `tr(J^T J) / (3 det(J)^(2/3))`: 1 for the regular tetrahedron,
+ * growing without bound as it flattens, +infinity when the signed volume is
+ * not positive. Equal to `1 / tet_mean_ratio` (Hu et al., "Fast Tetrahedral
+ * Meshing in the Wild", 2020, use it as their quality).
+ */
+inline double tet_amips(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
+    const double q = tet_mean_ratio(rA, rB, rC, rD);
+    return q > 0.0 ? 1.0 / q : std::numeric_limits<double>::infinity();
+}
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/fem_kernels.hpp =====
@@ -55472,6 +55755,60 @@ ConvertCellsResult simplexify_ex(const Mesh& rMesh, bool RecordParentIds, bool E
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/simplexify.hpp =====
+// ===== begin src/cpp/src/detail/size_field_utils.hpp =====
+/**
+ * @file detail/size_field_utils.hpp
+ * @brief An isotropic size field on mesh vertices: metric edge lengths, the
+ * metric midpoint of an edge, size interpolation and gradation.
+ *
+ * Sizes vary geometrically along an edge, `h(t) = ha (hb / ha)^t`, so the
+ * metric length of an edge is `|ab| (hb - ha) / (ha hb ln(hb / ha))` and
+ * `|ab| / ha` when the sizes agree (Dapogny, Dobrzynski and Frey 2014). An
+ * edge is unit when its metric length is 1; `adapt_volume` splits above 4/3
+ * and collapses below 4/5 (Botsch and Kobbelt 2004).
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Static helpers over an isotropic size field (Kratos-style utility class).
+struct SizeFieldUtils {
+    /// The metric length of the edge (a, b) with sizes @p Ha and @p Hb.
+    static double EdgeLength(const Vec3& rA, const Vec3& rB, double Ha, double Hb);
+
+    /// The metric length of an edge of Euclidean length @p Length.
+    static double MetricLength(double Length, double Ha, double Hb);
+
+    /// The fraction `t` of the way from a to b at which the metric length is
+    /// half the edge's: 1/2 when the sizes agree.
+    static double MidpointParameter(double Ha, double Hb);
+
+    /// The size at fraction @p T of the way from a to b, `ha (hb / ha)^t`.
+    static double Interpolate(double Ha, double Hb, double T);
+
+    /**
+     * @brief Grade @p rSize in place over the undirected @p rEdges, so that
+     * `h(v) <= h(u) + (Hgrad - 1) |uv|` along every edge: a Dijkstra sweep from
+     * the smallest sizes, ties broken by vertex id (deterministic).
+     * @return how many sizes were lowered.
+     */
+    static std::int64_t Grade(const std::vector<double>& rXyz,
+                              const std::vector<std::array<std::int64_t, 2>>& rEdges, double Hgrad,
+                              std::vector<double>& rSize);
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/size_field_utils.hpp =====
 // ===== begin src/cpp/src/detail/sketch_pieces.hpp =====
 /**
  * @file detail/sketch_pieces.hpp
@@ -56704,6 +57041,242 @@ std::int64_t count_tet_overlaps(const std::vector<Vec3>& rPoints,
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/tet_checks.hpp =====
+// ===== begin src/cpp/src/detail/tet_remesh.hpp =====
+/**
+ * @file detail/tet_remesh.hpp
+ * @brief The editable tetrahedral store behind `adapt_volume`: tetrahedra with
+ * tombstones, each vertex's incident tetrahedra, the tagged boundary faces
+ * (outer boundary and material interfaces), the ridge edges, and the
+ * classification of every vertex as a corner, a ridge vertex (on a chain), a
+ * surface vertex (in a patch) or an interior vertex.
+ *
+ * The store is plain data with small, exact queries; the operation composes
+ * its edits from them (precondition, a simulated edit whose postconditions are
+ * checked, then the commit). Orientation decisions use the exact `orient3d`
+ * predicate. Hash maps hold the boundary and ridge lookups only: nothing that
+ * leaves the store is produced by iterating them, so the output is
+ * deterministic.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// What a vertex may do: lower kinds are more constrained.
+enum class TetVertexKind : std::uint8_t {
+    Corner = 0,    ///< never moves, never removed
+    Ridge = 1,     ///< moves along its chain only
+    Surface = 2,   ///< moves within its patch only
+    Interior = 3,  ///< free
+};
+
+/// The four corners of a tetrahedron, positively oriented in the store.
+using TetCorners = std::array<std::int64_t, 4>;
+/// A triangle as its three sorted vertex ids.
+using TriKey = std::array<std::int64_t, 3>;
+
+/// The sorted key of the triangle (a, b, c).
+TriKey tri_key(std::int64_t A, std::int64_t B, std::int64_t C);
+
+/// A 64-bit key for the undirected edge (a, b); both ids must be below 2^32.
+inline std::uint64_t edge_key64(std::int64_t A, std::int64_t B) {
+    const std::uint64_t lo = static_cast<std::uint64_t>(A < B ? A : B);
+    const std::uint64_t hi = static_cast<std::uint64_t>(A < B ? B : A);
+    return (lo << 32) | hi;
+}
+
+/// A hash of a `TriKey` (a 64-bit mix of its three ids).
+struct TriKeyHash {
+    std::size_t operator()(const TriKey& rKey) const noexcept;
+};
+
+/// A boundary face: on the outer boundary or between two material classes.
+struct TetBoundaryFace {
+    std::int32_t mPatch = -1;   ///< the surface patch it belongs to
+    std::int32_t mTag = 0;      ///< caller's tag (side-region membership), 0 for none
+    std::int32_t mClassA = -1;  ///< the class it faces (the lower one on an interface)
+    std::int32_t mClassB = -1;  ///< the other class, -1 on the outer boundary
+};
+
+/// A ridge chain as an arc-length parametrised polyline of the input boundary.
+struct TetRidgeChain {
+    std::int64_t mFront = -1;  ///< the corner it starts at
+    std::int64_t mBack = -1;   ///< the corner it ends at
+    std::vector<Vec3> mPoints;
+    std::vector<double> mArc;  ///< cumulative length at each point
+
+    double Length() const { return mArc.empty() ? 0.0 : mArc.back(); }
+    /// The point at arc length @p S, clamped to the chain.
+    Vec3 Eval(double S) const;
+    /// The arc length of the point of the chain nearest @p rP.
+    double Project(const Vec3& rP) const;
+};
+
+/// The classification counts.
+struct TetClassifyReport {
+    std::int64_t mNumCorners = 0;
+    std::int64_t mNumRidgeVertices = 0;
+    std::int64_t mNumChains = 0;
+    std::int64_t mNumPatches = 0;
+};
+
+/**
+ * @brief The editable tetrahedral mesh. Members are public plain arrays
+ * (struct of arrays) so the operation reads them without accessor noise; the
+ * methods keep the incidence lists, the boundary map and the ridge map
+ * consistent.
+ */
+class TetRemeshStore {
+public:
+    // --- vertices ---------------------------------------------------------
+    std::vector<double> mXyz;                ///< 3 per vertex
+    std::vector<double> mSize;               ///< target edge length
+    std::vector<std::uint8_t> mKind;         ///< TetVertexKind
+    std::vector<std::int32_t> mFeature;      ///< patch (Surface) or chain (Ridge), else -1
+    std::vector<double> mChainParam;         ///< arc length on the chain (Ridge)
+    std::vector<std::uint8_t> mFrozen;       ///< never moves, never removed
+    std::vector<std::uint8_t> mVertexAlive;  ///< 0 once collapsed away
+    std::vector<std::int64_t> mSource;       ///< input point whose integer data it keeps
+    std::vector<std::vector<std::int64_t>> mVertexTets;  ///< alive incident tets, ascending
+
+    // --- tetrahedra -------------------------------------------------------
+    std::vector<TetCorners> mTets;
+    std::vector<std::int32_t> mClass;     ///< material class
+    std::vector<std::uint8_t> mTetAlive;  ///< tombstones
+
+    // --- boundary ---------------------------------------------------------
+    std::unordered_map<TriKey, TetBoundaryFace, TriKeyHash> mBoundary;
+    std::unordered_map<std::uint64_t, std::int32_t> mRidgeEdges;  ///< edge -> chain
+    std::vector<TetRidgeChain> mChains;
+    std::int32_t mNumPatches = 0;
+
+    /**
+     * @brief Load the tetrahedra @p rTets over the points @p rXyz (3 per
+     * point). Each tetrahedron is reoriented to a non-negative exact
+     * orientation; the faces with one tetrahedron and those between two of
+     * different @p rClass become boundary faces, tagged from @p rFaceTags
+     * (sorted triangle -> tag) where present.
+     * @throws std::invalid_argument on a face shared by more than two tetrahedra.
+     */
+    void Build(std::vector<double> Xyz, std::vector<TetCorners> Tets,
+               std::vector<std::int32_t> Class,
+               const std::unordered_map<TriKey, std::int32_t, TriKeyHash>& rFaceTags);
+
+    /**
+     * @brief Classify every vertex, number the patches and trace the chains.
+     * A boundary edge is a ridge when it does not have exactly two boundary
+     * faces, when its two faces differ in tag or classes, or (with
+     * @p PreserveFeatures) when their normals turn by more than
+     * @p FeatureAngleDeg. Corners are where the ridge graph branches, ends or
+     * turns by more than @p CornerAngleDeg, and where chains of different
+     * patches meet.
+     */
+    TetClassifyReport Classify(double FeatureAngleDeg, double CornerAngleDeg,
+                               bool PreserveFeatures);
+
+    std::size_t NumVertices() const { return mVertexAlive.size(); }
+    std::size_t NumTets() const { return mTets.size(); }
+    std::int64_t NumAliveTets() const;
+
+    Vec3 Point(std::int64_t V) const {
+        const std::size_t i = static_cast<std::size_t>(V) * 3;
+        return {mXyz[i], mXyz[i + 1], mXyz[i + 2]};
+    }
+    void SetPoint(std::int64_t V, const Vec3& rP) {
+        const std::size_t i = static_cast<std::size_t>(V) * 3;
+        mXyz[i] = rP[0];
+        mXyz[i + 1] = rP[1];
+        mXyz[i + 2] = rP[2];
+    }
+    TetVertexKind Kind(std::int64_t V) const {
+        return static_cast<TetVertexKind>(mKind[static_cast<std::size_t>(V)]);
+    }
+
+    /// True when the four points are strictly positively oriented (exact).
+    static bool Positive(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD);
+    /// The exact orientation sign of the four points: 1, 0 or -1.
+    static int OrientSign(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD);
+
+    /// The alive tetrahedra containing both @p A and @p B, ascending.
+    void SharedTets(std::int64_t A, std::int64_t B, std::vector<std::int64_t>& rOut) const;
+    /// The sorted vertices sharing a tetrahedron with @p V, without @p V.
+    void VertexRing(std::int64_t V, std::vector<std::int64_t>& rOut) const;
+    /// The boundary faces containing @p V, sorted.
+    void BoundaryFacesOf(std::int64_t V, std::vector<TriKey>& rOut) const;
+    /// True when @p V lies on a boundary face.
+    bool OnBoundary(std::int64_t V) const;
+    /// The boundary face (a, b, c), or null.
+    const TetBoundaryFace* FindFace(std::int64_t A, std::int64_t B, std::int64_t C) const;
+    /// The chain of the ridge edge (a, b), or -1.
+    std::int32_t RidgeChain(std::int64_t A, std::int64_t B) const;
+    /// The arc length of @p V on chain @p Chain (a corner reads as the end
+    /// nearer @p Near).
+    double ChainParam(std::int64_t V, std::int32_t Chain, double Near) const;
+    /// The boundary face (a, b, c) wound outward from its class-A tetrahedron.
+    std::array<std::int64_t, 3> OrientedFace(const TriKey& rKey) const;
+
+    /// Append a vertex and return its id.
+    std::int64_t AddVertex(const Vec3& rP, double Size, TetVertexKind Kind, std::int32_t Feature,
+                           double ChainParam, std::int64_t Source);
+    /// Append a tetrahedron and return its id.
+    std::int64_t AddTet(const TetCorners& rCorners, std::int32_t Class);
+    /// Tombstone a tetrahedron.
+    void KillTet(std::int64_t T);
+
+    /**
+     * @brief Check the invariants: every alive tetrahedron strictly positive
+     * (exact) or flagged in @p rAllowFlat, no duplicate tetrahedra, consistent
+     * incidence lists, no face with three tetrahedra, every boundary or
+     * interface face in the boundary map and every boundary map entry a
+     * boundary face, and an outer boundary with no open edge.
+     * @param rWhy set to the first violation found.
+     */
+    bool CheckInvariants(std::string& rWhy, const std::vector<std::uint8_t>& rAllowFlat = {}) const;
+
+private:
+    void BuildVertexTets();
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/tet_remesh.hpp =====
+// ===== begin src/cpp/src/detail/tet_scope.hpp =====
+/**
+ * @file detail/tet_scope.hpp
+ * @brief The tet-only scope check `optimize_volume` and `adapt_volume` share:
+ * every block linear `tetra`, at least one of them.
+ *
+ * A **core-private** header: nothing installed names it.
+ */
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief Throw `std::invalid_argument`, its message starting with @p pPrefix,
+ * unless every block of @p rMesh is a linear `tetra` block and one exists: a
+ * polyhedron or ragged block, another 3D block (pointing at
+ * `convert_cells(mode='simplexify')`) and a lower-dimensional block (pointing
+ * at `split`) are each named.
+ */
+void require_tet_only_blocks(const Mesh& rMesh, const char* pPrefix);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/tet_scope.hpp =====
 // ===== begin src/cpp/src/detail/thb_spline.hpp =====
 /**
  * @file detail/thb_spline.hpp
@@ -61690,6 +62263,36 @@ void xdmf_write_sets(pugi::xml_node grid, xdmfcommon::DataItemStore& rStore, con
 
 }  // namespace meshioplusplus::xdmfdetail
 // ===== end src/cpp/src/formats/xdmf_sets.hpp =====
+// ===== begin src/cpp/src/operations/adapt_volume_internal.hpp =====
+/**
+ * @file operations/adapt_volume_internal.hpp
+ * @brief Test hooks into `adapt_volume`'s guards: each runs the operation's
+ * own setup and evaluates one candidate edit without applying it.
+ *
+ * Operation-private (not installed).
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/**
+ * @brief The guard that refuses the half-edge collapse of point @p A onto
+ * point @p B of @p rMesh under @p rOptions: `"none"` when it would be applied,
+ * else `"not_edge"`, `"link"`, `"inversion"`, `"quality"`, `"length"`,
+ * `"class"`, `"hausdorff"` or `"normal"`.
+ */
+std::string adapt_volume_probe_collapse(const Mesh& rMesh, const AdaptVolumeOptions& rOptions,
+                                        std::int64_t A, std::int64_t B);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/adapt_volume_internal.hpp =====
 // ===== begin src/cpp/src/operations/mesh_cad_testing.hpp =====
 /**
  * @file operations/mesh_cad_testing.hpp
@@ -113050,6 +113653,112 @@ bool render_triangle_contour(const double* pXyz, const double* pValue, double Le
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/render_field.cpp =====
+// ===== begin src/cpp/src/detail/size_field_utils.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <functional>
+#include <queue>
+#include <utility>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+// Relative size difference below which an edge is measured as uniform: the
+// closed forms divide by ln(hb / ha), which loses its digits as hb -> ha.
+constexpr double kSfuUniform = 1e-6;
+
+}  // namespace
+
+double SizeFieldUtils::MetricLength(double Length, double Ha, double Hb) {
+    if (!(Ha > 0.0) || !(Hb > 0.0))
+        return Length;  // no size: Euclidean
+    const double d = Hb - Ha;
+    if (std::abs(d) <= kSfuUniform * Ha)
+        return Length / (0.5 * (Ha + Hb));
+    return Length * d / (Ha * Hb * std::log(Hb / Ha));
+}
+
+double SizeFieldUtils::EdgeLength(const Vec3& rA, const Vec3& rB, double Ha, double Hb) {
+    return MetricLength(vec3_norm(vec3_sub(rB, rA)), Ha, Hb);
+}
+
+double SizeFieldUtils::MidpointParameter(double Ha, double Hb) {
+    if (!(Ha > 0.0) || !(Hb > 0.0) || std::abs(Hb - Ha) <= kSfuUniform * Ha)
+        return 0.5;
+    // int_0^t ds / (ha r^s) = (1 - r^-t) / (ha ln r); half of the total at
+    // r^-t = (1 + 1/r) / 2.
+    const double r = Hb / Ha;
+    return -std::log(0.5 * (1.0 + 1.0 / r)) / std::log(r);
+}
+
+double SizeFieldUtils::Interpolate(double Ha, double Hb, double T) {
+    if (!(Ha > 0.0) || !(Hb > 0.0))
+        return Ha + (Hb - Ha) * T;
+    return Ha * std::pow(Hb / Ha, T);
+}
+
+std::int64_t SizeFieldUtils::Grade(const std::vector<double>& rXyz,
+                                   const std::vector<std::array<std::int64_t, 2>>& rEdges,
+                                   double Hgrad, std::vector<double>& rSize) {
+    const std::size_t n = rSize.size();
+    const double slope = Hgrad - 1.0;
+    if (!(slope >= 0.0) || n == 0)
+        return 0;
+    // CSR adjacency, neighbours in edge order (the edges come sorted).
+    std::vector<std::size_t> start(n + 1, 0);
+    for (const auto& e : rEdges) {
+        ++start[static_cast<std::size_t>(e[0]) + 1];
+        ++start[static_cast<std::size_t>(e[1]) + 1];
+    }
+    for (std::size_t i = 0; i < n; ++i)
+        start[i + 1] += start[i];
+    std::vector<std::int64_t> adj(start[n]);
+    std::vector<std::size_t> fill(start.begin(), start.end() - 1);
+    for (const auto& e : rEdges) {
+        adj[fill[static_cast<std::size_t>(e[0])]++] = e[1];
+        adj[fill[static_cast<std::size_t>(e[1])]++] = e[0];
+    }
+    auto dist = [&](std::int64_t A, std::int64_t B) {
+        const std::size_t a = static_cast<std::size_t>(A) * 3, b = static_cast<std::size_t>(B) * 3;
+        const double dx = rXyz[a] - rXyz[b], dy = rXyz[a + 1] - rXyz[b + 1],
+                     dz = rXyz[a + 2] - rXyz[b + 2];
+        return std::sqrt(dx * dx + dy * dy + dz * dz);
+    };
+    using Entry = std::pair<double, std::int64_t>;
+    std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> heap;
+    for (std::size_t v = 0; v < n; ++v)
+        if (start[v + 1] > start[v] && rSize[v] > 0.0)
+            heap.push({rSize[v], static_cast<std::int64_t>(v)});
+    std::vector<std::uint8_t> lowered(n, 0);
+    while (!heap.empty()) {
+        const auto [h, v] = heap.top();
+        heap.pop();
+        if (h != rSize[static_cast<std::size_t>(v)])
+            continue;  // stale
+        for (std::size_t k = start[static_cast<std::size_t>(v)];
+             k < start[static_cast<std::size_t>(v) + 1]; ++k) {
+            const std::int64_t u = adj[k];
+            const double cand = h + slope * dist(v, u);
+            if (cand < rSize[static_cast<std::size_t>(u)]) {
+                rSize[static_cast<std::size_t>(u)] = cand;
+                lowered[static_cast<std::size_t>(u)] = 1;
+                heap.push({cand, u});
+            }
+        }
+    }
+    std::int64_t count = 0;
+    for (const std::uint8_t l : lowered)
+        count += l;
+    return count;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/size_field_utils.cpp =====
 // ===== begin src/cpp/src/detail/sketch_pieces.cpp =====
 #include <cstddef>
 #include <cstdint>
@@ -118253,6 +118962,690 @@ std::int64_t count_tet_overlaps(const std::vector<Vec3>& rPoints,
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/tet_checks.cpp =====
+// ===== begin src/cpp/src/detail/tet_remesh.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+constexpr double kTetrmPi = 3.14159265358979323846;
+
+// The outward face of a positive tetrahedron opposite each corner
+// (detail/cell_faces' tetra table, indexed by the corner it omits).
+constexpr int kTetrmOppositeFace[4][3] = {{1, 2, 3}, {2, 0, 3}, {0, 1, 3}, {0, 2, 1}};
+
+std::int64_t tetrm_find(std::vector<std::int64_t>& rParent, std::int64_t X) {
+    while (rParent[static_cast<std::size_t>(X)] != X) {
+        rParent[static_cast<std::size_t>(X)] =
+            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(X)])];
+        X = rParent[static_cast<std::size_t>(X)];
+    }
+    return X;
+}
+
+void tetrm_union(std::vector<std::int64_t>& rParent, std::int64_t A, std::int64_t B) {
+    A = tetrm_find(rParent, A);
+    B = tetrm_find(rParent, B);
+    if (A == B)
+        return;
+    // the lower root wins, so the partition's roots do not depend on the order
+    if (A < B)
+        rParent[static_cast<std::size_t>(B)] = A;
+    else
+        rParent[static_cast<std::size_t>(A)] = B;
+}
+
+Vec3 tetrm_unit_normal(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
+    return vec3_normalize(vec3_cross(vec3_sub(rB, rA), vec3_sub(rC, rA)));
+}
+
+}  // namespace
+
+TriKey tri_key(std::int64_t A, std::int64_t B, std::int64_t C) {
+    TriKey k{A, B, C};
+    if (k[0] > k[1])
+        std::swap(k[0], k[1]);
+    if (k[1] > k[2])
+        std::swap(k[1], k[2]);
+    if (k[0] > k[1])
+        std::swap(k[0], k[1]);
+    return k;
+}
+
+std::size_t TriKeyHash::operator()(const TriKey& rKey) const noexcept {
+    std::uint64_t h = 0x9E3779B97F4A7C15ull;
+    for (const std::int64_t v : rKey) {
+        h ^= static_cast<std::uint64_t>(v) + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+        h *= 0xBF58476D1CE4E5B9ull;
+    }
+    return static_cast<std::size_t>(h ^ (h >> 31));
+}
+
+Vec3 TetRidgeChain::Eval(double S) const {
+    if (mPoints.empty())
+        return {0.0, 0.0, 0.0};
+    if (mPoints.size() == 1 || !(S > 0.0))
+        return mPoints.front();
+    if (S >= Length())
+        return mPoints.back();
+    const auto it = std::upper_bound(mArc.begin(), mArc.end(), S);
+    const std::size_t i = static_cast<std::size_t>(it - mArc.begin());  // mArc[i-1] <= S < mArc[i]
+    const double seg = mArc[i] - mArc[i - 1];
+    const double t = seg > 0.0 ? (S - mArc[i - 1]) / seg : 0.0;
+    return vec3_add(mPoints[i - 1], vec3_scale(vec3_sub(mPoints[i], mPoints[i - 1]), t));
+}
+
+int TetRemeshStore::OrientSign(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
+    // Shewchuk's orient3d is positive when D lies below the plane of the
+    // counter-clockwise (A, B, C): the opposite of meshio's positive volume.
+    const double o = orient3d(rA.data(), rB.data(), rC.data(), rD.data());
+    return o < 0.0 ? 1 : (o > 0.0 ? -1 : 0);
+}
+
+bool TetRemeshStore::Positive(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
+    return OrientSign(rA, rB, rC, rD) > 0;
+}
+
+void TetRemeshStore::BuildVertexTets() {
+    const std::size_t n = NumVertices();
+    std::vector<std::size_t> count(n, 0);
+    for (std::size_t t = 0; t < mTets.size(); ++t)
+        if (mTetAlive[t])
+            for (const std::int64_t v : mTets[t])
+                ++count[static_cast<std::size_t>(v)];
+    mVertexTets.assign(n, {});
+    for (std::size_t v = 0; v < n; ++v)
+        mVertexTets[v].reserve(count[v]);
+    for (std::size_t t = 0; t < mTets.size(); ++t)
+        if (mTetAlive[t])
+            for (const std::int64_t v : mTets[t])
+                mVertexTets[static_cast<std::size_t>(v)].push_back(static_cast<std::int64_t>(t));
+}
+
+void TetRemeshStore::Build(std::vector<double> Xyz, std::vector<TetCorners> Tets,
+                           std::vector<std::int32_t> Class,
+                           const std::unordered_map<TriKey, std::int32_t, TriKeyHash>& rFaceTags) {
+    const std::size_t n = Xyz.size() / 3;
+    if (n >= (std::size_t{1} << 32))
+        throw std::invalid_argument("adapt_volume: at most 2^32 points are supported");
+    mXyz = std::move(Xyz);
+    mTets = std::move(Tets);
+    mClass = std::move(Class);
+    mTetAlive.assign(mTets.size(), 1);
+    for (TetCorners& t : mTets) {
+        for (const std::int64_t v : t)
+            if (v < 0 || static_cast<std::size_t>(v) >= n)
+                throw std::invalid_argument(
+                    "adapt_volume: a tetrahedron names a point out of range");
+        if (OrientSign(Point(t[0]), Point(t[1]), Point(t[2]), Point(t[3])) < 0)
+            std::swap(t[2], t[3]);
+    }
+    mSize.assign(n, 0.0);
+    mKind.assign(n, static_cast<std::uint8_t>(TetVertexKind::Interior));
+    mFeature.assign(n, -1);
+    mChainParam.assign(n, 0.0);
+    mFrozen.assign(n, 0);
+    mSource.resize(n);
+    std::iota(mSource.begin(), mSource.end(), std::int64_t{0});
+    mVertexAlive.assign(n, 0);
+    BuildVertexTets();
+    for (std::size_t v = 0; v < n; ++v)
+        mVertexAlive[v] = !mVertexTets[v].empty();
+
+    // Faces: (key, tet) records sorted, so equal faces are adjacent.
+    struct FaceRec {
+        TriKey mKey;
+        std::int64_t mTet;
+    };
+    std::vector<FaceRec> recs;
+    recs.reserve(mTets.size() * 4);
+    for (std::size_t t = 0; t < mTets.size(); ++t)
+        for (int k = 0; k < 4; ++k) {
+            const auto& f = kTetrmOppositeFace[k];
+            recs.push_back({tri_key(mTets[t][f[0]], mTets[t][f[1]], mTets[t][f[2]]),
+                            static_cast<std::int64_t>(t)});
+        }
+    std::sort(recs.begin(), recs.end(), [](const FaceRec& rA, const FaceRec& rB) {
+        return rA.mKey != rB.mKey ? rA.mKey < rB.mKey : rA.mTet < rB.mTet;
+    });
+    mBoundary.clear();
+    mBoundary.reserve(recs.size() / 8 + 16);
+    for (std::size_t i = 0; i < recs.size();) {
+        std::size_t j = i + 1;
+        while (j < recs.size() && recs[j].mKey == recs[i].mKey)
+            ++j;
+        if (j - i > 2)
+            throw std::invalid_argument(
+                "adapt_volume: a face is shared by more than two tetrahedra (a non-manifold "
+                "volume); run check_tetrahedra first");
+        TetBoundaryFace face;
+        bool boundary = false;
+        if (j - i == 1) {
+            face.mClassA = mClass[static_cast<std::size_t>(recs[i].mTet)];
+            boundary = true;
+        } else {
+            const std::int32_t ca = mClass[static_cast<std::size_t>(recs[i].mTet)];
+            const std::int32_t cb = mClass[static_cast<std::size_t>(recs[i + 1].mTet)];
+            if (ca != cb) {
+                face.mClassA = std::min(ca, cb);
+                face.mClassB = std::max(ca, cb);
+                boundary = true;
+            }
+        }
+        if (boundary) {
+            const auto it = rFaceTags.find(recs[i].mKey);
+            if (it != rFaceTags.end())
+                face.mTag = it->second;
+            mBoundary.emplace(recs[i].mKey, face);
+        }
+        i = j;
+    }
+    mRidgeEdges.clear();
+    mChains.clear();
+    mNumPatches = 0;
+}
+
+std::int64_t TetRemeshStore::NumAliveTets() const {
+    std::int64_t c = 0;
+    for (const std::uint8_t a : mTetAlive)
+        c += a;
+    return c;
+}
+
+void TetRemeshStore::SharedTets(std::int64_t A, std::int64_t B,
+                                std::vector<std::int64_t>& rOut) const {
+    rOut.clear();
+    const auto& la = mVertexTets[static_cast<std::size_t>(A)];
+    const auto& lb = mVertexTets[static_cast<std::size_t>(B)];
+    std::set_intersection(la.begin(), la.end(), lb.begin(), lb.end(), std::back_inserter(rOut));
+}
+
+void TetRemeshStore::VertexRing(std::int64_t V, std::vector<std::int64_t>& rOut) const {
+    rOut.clear();
+    for (const std::int64_t t : mVertexTets[static_cast<std::size_t>(V)])
+        for (const std::int64_t c : mTets[static_cast<std::size_t>(t)])
+            if (c != V)
+                rOut.push_back(c);
+    std::sort(rOut.begin(), rOut.end());
+    rOut.erase(std::unique(rOut.begin(), rOut.end()), rOut.end());
+}
+
+void TetRemeshStore::BoundaryFacesOf(std::int64_t V, std::vector<TriKey>& rOut) const {
+    rOut.clear();
+    if (mBoundary.empty())
+        return;
+    for (const std::int64_t t : mVertexTets[static_cast<std::size_t>(V)]) {
+        const TetCorners& c = mTets[static_cast<std::size_t>(t)];
+        for (int k = 0; k < 4; ++k) {
+            if (c[k] == V)
+                continue;  // the face opposite V does not contain it
+            const auto& f = kTetrmOppositeFace[k];
+            const TriKey key = tri_key(c[f[0]], c[f[1]], c[f[2]]);
+            if (mBoundary.count(key))
+                rOut.push_back(key);
+        }
+    }
+    std::sort(rOut.begin(), rOut.end());
+    rOut.erase(std::unique(rOut.begin(), rOut.end()), rOut.end());
+}
+
+bool TetRemeshStore::OnBoundary(std::int64_t V) const {
+    if (mBoundary.empty())
+        return false;
+    for (const std::int64_t t : mVertexTets[static_cast<std::size_t>(V)]) {
+        const TetCorners& c = mTets[static_cast<std::size_t>(t)];
+        for (int k = 0; k < 4; ++k) {
+            if (c[k] == V)
+                continue;
+            const auto& f = kTetrmOppositeFace[k];
+            if (mBoundary.count(tri_key(c[f[0]], c[f[1]], c[f[2]])))
+                return true;
+        }
+    }
+    return false;
+}
+
+const TetBoundaryFace* TetRemeshStore::FindFace(std::int64_t A, std::int64_t B,
+                                                std::int64_t C) const {
+    const auto it = mBoundary.find(tri_key(A, B, C));
+    return it == mBoundary.end() ? nullptr : &it->second;
+}
+
+std::int32_t TetRemeshStore::RidgeChain(std::int64_t A, std::int64_t B) const {
+    const auto it = mRidgeEdges.find(edge_key64(A, B));
+    return it == mRidgeEdges.end() ? -1 : it->second;
+}
+
+double TetRemeshStore::ChainParam(std::int64_t V, std::int32_t Chain, double Near) const {
+    const std::size_t v = static_cast<std::size_t>(V);
+    if (Kind(V) == TetVertexKind::Ridge && mFeature[v] == Chain)
+        return mChainParam[v];
+    const TetRidgeChain& c = mChains[static_cast<std::size_t>(Chain)];
+    if (V == c.mFront && V != c.mBack)
+        return 0.0;
+    if (V == c.mBack && V != c.mFront)
+        return c.Length();
+    return Near < 0.5 * c.Length() ? 0.0 : c.Length();
+}
+
+std::array<std::int64_t, 3> TetRemeshStore::OrientedFace(const TriKey& rKey) const {
+    const TetBoundaryFace* face = FindFace(rKey[0], rKey[1], rKey[2]);
+    std::vector<std::int64_t> ab;
+    SharedTets(rKey[0], rKey[1], ab);
+    for (const std::int64_t t : ab) {
+        const TetCorners& c = mTets[static_cast<std::size_t>(t)];
+        int opposite = -1;
+        bool has_c = false;
+        for (int k = 0; k < 4; ++k) {
+            if (c[k] == rKey[2])
+                has_c = true;
+            else if (c[k] != rKey[0] && c[k] != rKey[1])
+                opposite = k;
+        }
+        if (!has_c || opposite < 0)
+            continue;
+        if (face && mClass[static_cast<std::size_t>(t)] != face->mClassA)
+            continue;
+        const auto& f = kTetrmOppositeFace[opposite];
+        return {c[f[0]], c[f[1]], c[f[2]]};
+    }
+    return {rKey[0], rKey[1], rKey[2]};
+}
+
+std::int64_t TetRemeshStore::AddVertex(const Vec3& rP, double Size, TetVertexKind Kind,
+                                       std::int32_t Feature, double ChainParam,
+                                       std::int64_t Source) {
+    const std::int64_t id = static_cast<std::int64_t>(NumVertices());
+    if (static_cast<std::uint64_t>(id) >= (std::uint64_t{1} << 32))
+        throw std::invalid_argument("adapt_volume: at most 2^32 points are supported");
+    mXyz.insert(mXyz.end(), {rP[0], rP[1], rP[2]});
+    mSize.push_back(Size);
+    mKind.push_back(static_cast<std::uint8_t>(Kind));
+    mFeature.push_back(Feature);
+    mChainParam.push_back(ChainParam);
+    mFrozen.push_back(0);
+    mVertexAlive.push_back(1);
+    mSource.push_back(Source);
+    mVertexTets.emplace_back();
+    return id;
+}
+
+std::int64_t TetRemeshStore::AddTet(const TetCorners& rCorners, std::int32_t Class) {
+    const std::int64_t id = static_cast<std::int64_t>(mTets.size());
+    mTets.push_back(rCorners);
+    mClass.push_back(Class);
+    mTetAlive.push_back(1);
+    for (const std::int64_t v : rCorners)
+        mVertexTets[static_cast<std::size_t>(v)].push_back(id);  // the largest id: stays sorted
+    return id;
+}
+
+void TetRemeshStore::KillTet(std::int64_t T) {
+    const std::size_t t = static_cast<std::size_t>(T);
+    if (!mTetAlive[t])
+        return;
+    mTetAlive[t] = 0;
+    for (const std::int64_t v : mTets[t]) {
+        auto& l = mVertexTets[static_cast<std::size_t>(v)];
+        const auto it = std::lower_bound(l.begin(), l.end(), T);
+        if (it != l.end() && *it == T)
+            l.erase(it);
+    }
+}
+
+TetClassifyReport TetRemeshStore::Classify(double FeatureAngleDeg, double CornerAngleDeg,
+                                           bool PreserveFeatures) {
+    TetClassifyReport report;
+    const std::size_t n = NumVertices();
+    std::vector<TriKey> keys;
+    keys.reserve(mBoundary.size());
+    for (const auto& kv : mBoundary)
+        keys.push_back(kv.first);
+    std::sort(keys.begin(), keys.end());
+    const std::size_t nf = keys.size();
+
+    std::vector<Vec3> normal(nf);
+    for (std::size_t f = 0; f < nf; ++f) {
+        const auto o = OrientedFace(keys[f]);
+        normal[f] = tetrm_unit_normal(Point(o[0]), Point(o[1]), Point(o[2]));
+    }
+
+    // Boundary edges and their faces.
+    struct EdgeRec {
+        std::uint64_t mKey;
+        std::int64_t mFace;
+    };
+    std::vector<EdgeRec> erecs;
+    erecs.reserve(nf * 3);
+    for (std::size_t f = 0; f < nf; ++f)
+        for (int e = 0; e < 3; ++e)
+            erecs.push_back(
+                {edge_key64(keys[f][e], keys[f][(e + 1) % 3]), static_cast<std::int64_t>(f)});
+    std::sort(erecs.begin(), erecs.end(), [](const EdgeRec& rA, const EdgeRec& rB) {
+        return rA.mKey != rB.mKey ? rA.mKey < rB.mKey : rA.mFace < rB.mFace;
+    });
+
+    const double cos_feature = std::cos(FeatureAngleDeg * kTetrmPi / 180.0);
+    std::vector<std::int64_t> parent(nf);
+    std::iota(parent.begin(), parent.end(), std::int64_t{0});
+    std::vector<std::array<std::int64_t, 2>> ridge_edges;
+    std::vector<std::vector<std::int64_t>> ridge_faces;  // the faces of each ridge edge
+    for (std::size_t i = 0; i < erecs.size();) {
+        std::size_t j = i + 1;
+        while (j < erecs.size() && erecs[j].mKey == erecs[i].mKey)
+            ++j;
+        bool ridge = j - i != 2;
+        if (!ridge) {
+            const TetBoundaryFace& f1 =
+                mBoundary.at(keys[static_cast<std::size_t>(erecs[i].mFace)]);
+            const TetBoundaryFace& f2 =
+                mBoundary.at(keys[static_cast<std::size_t>(erecs[i + 1].mFace)]);
+            ridge = f1.mTag != f2.mTag || f1.mClassA != f2.mClassA || f1.mClassB != f2.mClassB;
+            if (!ridge && PreserveFeatures) {
+                const Vec3& n1 = normal[static_cast<std::size_t>(erecs[i].mFace)];
+                const Vec3& n2 = normal[static_cast<std::size_t>(erecs[i + 1].mFace)];
+                const bool valid = vec3_norm_sq(n1) > 0.5 && vec3_norm_sq(n2) > 0.5;
+                ridge = valid && vec3_dot(n1, n2) < cos_feature;
+            }
+        }
+        if (ridge) {
+            const std::int64_t lo = static_cast<std::int64_t>(erecs[i].mKey >> 32);
+            const std::int64_t hi = static_cast<std::int64_t>(erecs[i].mKey & 0xFFFFFFFFull);
+            ridge_edges.push_back({lo, hi});
+            std::vector<std::int64_t> fs;
+            for (std::size_t k = i; k < j; ++k)
+                fs.push_back(erecs[k].mFace);
+            ridge_faces.push_back(std::move(fs));
+        } else {
+            tetrm_union(parent, erecs[i].mFace, erecs[i + 1].mFace);
+        }
+        i = j;
+    }
+
+    // Patches, numbered by their first face in key order.
+    std::vector<std::int32_t> patch_of_root(nf, -1);
+    std::vector<std::int32_t> patch(nf, -1);
+    std::int32_t num_patches = 0;
+    for (std::size_t f = 0; f < nf; ++f) {
+        const std::size_t r =
+            static_cast<std::size_t>(tetrm_find(parent, static_cast<std::int64_t>(f)));
+        if (patch_of_root[r] < 0)
+            patch_of_root[r] = num_patches++;
+        patch[f] = patch_of_root[r];
+        mBoundary.at(keys[f]).mPatch = patch[f];
+    }
+    mNumPatches = num_patches;
+
+    // Per vertex: the patches of its boundary faces, and its first one.
+    std::vector<std::int32_t> first_patch(n, -1);
+    std::vector<std::uint8_t> multi_patch(n, 0);
+    for (std::size_t f = 0; f < nf; ++f)
+        for (const std::int64_t v : keys[f]) {
+            std::int32_t& fp = first_patch[static_cast<std::size_t>(v)];
+            if (fp < 0)
+                fp = patch[f];
+            else if (fp != patch[f])
+                multi_patch[static_cast<std::size_t>(v)] = 1;
+        }
+
+    // The ridge graph: corners and chains, then extra corners where two
+    // ridges separating different patches meet at a degree-2 vertex.
+    std::vector<Vec3> pts(n);
+    for (std::size_t v = 0; v < n; ++v)
+        pts[v] = Point(static_cast<std::int64_t>(v));
+    const FeatureGraph graph = feature_graph(pts, ridge_edges, CornerAngleDeg);
+    std::vector<std::uint8_t> corner(n, 0);
+    for (const std::int64_t c : graph.mCorners)
+        corner[static_cast<std::size_t>(c)] = 1;
+    {
+        std::unordered_map<std::uint64_t, std::vector<std::int32_t>> signature;
+        signature.reserve(ridge_edges.size() * 2 + 1);
+        for (std::size_t e = 0; e < ridge_edges.size(); ++e) {
+            std::vector<std::int32_t> sig;
+            for (const std::int64_t f : ridge_faces[e])
+                sig.push_back(patch[static_cast<std::size_t>(f)]);
+            std::sort(sig.begin(), sig.end());
+            sig.erase(std::unique(sig.begin(), sig.end()), sig.end());
+            signature[edge_key64(ridge_edges[e][0], ridge_edges[e][1])] = std::move(sig);
+        }
+        for (const auto& chain : graph.mChains)
+            for (std::size_t i = 1; i + 1 < chain.size(); ++i)
+                if (signature[edge_key64(chain[i - 1], chain[i])] !=
+                    signature[edge_key64(chain[i], chain[i + 1])])
+                    corner[static_cast<std::size_t>(chain[i])] = 1;
+    }
+    // A vertex where patches meet without a ridge (a pinch) is a corner too.
+    std::vector<std::uint8_t> on_ridge(n, 0);
+    for (const auto& e : ridge_edges) {
+        on_ridge[static_cast<std::size_t>(e[0])] = 1;
+        on_ridge[static_cast<std::size_t>(e[1])] = 1;
+    }
+    for (std::size_t v = 0; v < n; ++v)
+        if (multi_patch[v] && !on_ridge[v])
+            corner[v] = 1;
+
+    // Chains, split at every corner.
+    mChains.clear();
+    mRidgeEdges.clear();
+    for (std::size_t v = 0; v < n; ++v) {
+        mKind[v] = static_cast<std::uint8_t>(first_patch[v] >= 0 ? TetVertexKind::Surface
+                                                                 : TetVertexKind::Interior);
+        mFeature[v] = first_patch[v];
+        mChainParam[v] = 0.0;
+    }
+    for (const auto& chain : graph.mChains) {
+        std::size_t start = 0;
+        for (std::size_t i = 1; i < chain.size(); ++i) {
+            if (!corner[static_cast<std::size_t>(chain[i])] && i + 1 < chain.size())
+                continue;
+            TetRidgeChain rc;
+            rc.mFront = chain[start];
+            rc.mBack = chain[i];
+            corner[static_cast<std::size_t>(rc.mFront)] = 1;  // every chain ends at corners
+            corner[static_cast<std::size_t>(rc.mBack)] = 1;
+            const std::int32_t id = static_cast<std::int32_t>(mChains.size());
+            double arc = 0.0;
+            for (std::size_t k = start; k <= i; ++k) {
+                const Vec3 p = Point(chain[k]);
+                if (k > start)
+                    arc += vec3_norm(vec3_sub(p, rc.mPoints.back()));
+                rc.mPoints.push_back(p);
+                rc.mArc.push_back(arc);
+                if (k > start)
+                    mRidgeEdges[edge_key64(chain[k - 1], chain[k])] = id;
+                if (k > start && k < i) {
+                    const std::size_t v = static_cast<std::size_t>(chain[k]);
+                    mKind[v] = static_cast<std::uint8_t>(TetVertexKind::Ridge);
+                    mFeature[v] = id;
+                    mChainParam[v] = arc;
+                }
+            }
+            mChains.push_back(std::move(rc));
+            start = i;
+        }
+    }
+    for (std::size_t v = 0; v < n; ++v)
+        if (corner[v]) {
+            mKind[v] = static_cast<std::uint8_t>(TetVertexKind::Corner);
+            mFeature[v] = -1;
+        }
+
+    for (std::size_t v = 0; v < n; ++v) {
+        if (!mVertexAlive[v])
+            continue;
+        report.mNumCorners += Kind(static_cast<std::int64_t>(v)) == TetVertexKind::Corner;
+        report.mNumRidgeVertices += Kind(static_cast<std::int64_t>(v)) == TetVertexKind::Ridge;
+    }
+    report.mNumChains = static_cast<std::int64_t>(mChains.size());
+    report.mNumPatches = num_patches;
+    return report;
+}
+
+bool TetRemeshStore::CheckInvariants(std::string& rWhy,
+                                     const std::vector<std::uint8_t>& rAllowFlat) const {
+    const std::size_t n = NumVertices();
+    std::vector<std::size_t> uses(n, 0);
+    std::vector<TetCorners> sorted_tets;
+    for (std::size_t t = 0; t < mTets.size(); ++t) {
+        if (!mTetAlive[t])
+            continue;
+        const TetCorners& c = mTets[t];
+        for (const std::int64_t v : c) {
+            if (v < 0 || static_cast<std::size_t>(v) >= n ||
+                !mVertexAlive[static_cast<std::size_t>(v)]) {
+                rWhy = "tetrahedron " + std::to_string(t) + " names a dead or missing vertex";
+                return false;
+            }
+            const auto& l = mVertexTets[static_cast<std::size_t>(v)];
+            if (!std::binary_search(l.begin(), l.end(), static_cast<std::int64_t>(t))) {
+                rWhy = "tetrahedron " + std::to_string(t) + " missing from its corner's list";
+                return false;
+            }
+            ++uses[static_cast<std::size_t>(v)];
+        }
+        const int s = OrientSign(Point(c[0]), Point(c[1]), Point(c[2]), Point(c[3]));
+        const bool flat_ok = t < rAllowFlat.size() && rAllowFlat[t];
+        if (s < 0 || (s == 0 && !flat_ok)) {
+            rWhy = "tetrahedron " + std::to_string(t) + (s < 0 ? " is inverted" : " is flat");
+            return false;
+        }
+        TetCorners k = c;
+        std::sort(k.begin(), k.end());
+        if (k[0] == k[1] || k[1] == k[2] || k[2] == k[3]) {
+            rWhy = "tetrahedron " + std::to_string(t) + " repeats a vertex";
+            return false;
+        }
+        sorted_tets.push_back(k);
+    }
+    for (std::size_t v = 0; v < n; ++v)
+        if (uses[v] != mVertexTets[v].size()) {
+            rWhy = "vertex " + std::to_string(v) + " lists a dead tetrahedron";
+            return false;
+        }
+    std::sort(sorted_tets.begin(), sorted_tets.end());
+    if (std::adjacent_find(sorted_tets.begin(), sorted_tets.end()) != sorted_tets.end()) {
+        rWhy = "two tetrahedra share all four vertices";
+        return false;
+    }
+
+    struct FaceRec {
+        TriKey mKey;
+        std::int32_t mClass;
+    };
+    std::vector<FaceRec> recs;
+    for (std::size_t t = 0; t < mTets.size(); ++t)
+        if (mTetAlive[t])
+            for (int k = 0; k < 4; ++k) {
+                const auto& f = kTetrmOppositeFace[k];
+                recs.push_back(
+                    {tri_key(mTets[t][f[0]], mTets[t][f[1]], mTets[t][f[2]]), mClass[t]});
+            }
+    std::sort(recs.begin(), recs.end(),
+              [](const FaceRec& rA, const FaceRec& rB) { return rA.mKey < rB.mKey; });
+    std::size_t num_boundary = 0;
+    std::vector<std::uint64_t> outer_edges;
+    for (std::size_t i = 0; i < recs.size();) {
+        std::size_t j = i + 1;
+        while (j < recs.size() && recs[j].mKey == recs[i].mKey)
+            ++j;
+        if (j - i > 2) {
+            rWhy = "a face is shared by more than two tetrahedra";
+            return false;
+        }
+        const bool boundary = j - i == 1 || recs[i].mClass != recs[i + 1].mClass;
+        const bool in_map = mBoundary.count(recs[i].mKey) > 0;
+        if (boundary != in_map) {
+            rWhy = boundary ? "a boundary face is missing from the boundary map"
+                            : "the boundary map holds an interior face";
+            return false;
+        }
+        if (boundary)
+            ++num_boundary;
+        if (j - i == 1) {
+            const TriKey& k = recs[i].mKey;
+            outer_edges.push_back(edge_key64(k[0], k[1]));
+            outer_edges.push_back(edge_key64(k[1], k[2]));
+            outer_edges.push_back(edge_key64(k[0], k[2]));
+        }
+        i = j;
+    }
+    if (num_boundary != mBoundary.size()) {
+        rWhy = "the boundary map holds a face no tetrahedron has";
+        return false;
+    }
+    std::sort(outer_edges.begin(), outer_edges.end());
+    for (std::size_t i = 0; i < outer_edges.size();) {
+        std::size_t j = i + 1;
+        while (j < outer_edges.size() && outer_edges[j] == outer_edges[i])
+            ++j;
+        if (j - i == 1) {
+            rWhy = "the outer boundary has an open edge";
+            return false;
+        }
+        i = j;
+    }
+    return true;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/tet_remesh.cpp =====
+// ===== begin src/cpp/src/detail/tet_scope.cpp =====
+#include <stdexcept>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+void require_tet_only_blocks(const Mesh& rMesh, const char* pPrefix) {
+    const std::string prefix(pPrefix);
+    bool has_tet = false;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.IsPolyhedron())
+            throw std::invalid_argument(
+                prefix +
+                "operates on tet-only meshes, but the mesh contains a polyhedron cell block -- "
+                "run convert_cells(mode='simplexify') first");
+        if (cb.IsRagged())
+            throw std::invalid_argument(
+                prefix + "operates on tet-only meshes, but the mesh contains ragged cell block '" +
+                std::string(cb.Type()) + "'");
+        const CellType ct = cell_type_from_name(cb.Type());
+        if (ct == CellType::Tetra) {
+            has_tet = true;
+            continue;
+        }
+        const int dim = cell_type_dimension(ct);
+        if (dim == 3)
+            throw std::invalid_argument(
+                prefix + "operates on tet-only meshes, but the mesh contains 3D cell block '" +
+                std::string(cb.Type()) +
+                "' that is not linear tetra -- run convert_cells(mode='simplexify') first");
+        throw std::invalid_argument(
+            prefix + "operates on tet-only meshes, but the mesh contains non-3D cell block '" +
+            std::string(cb.Type()) +
+            "' alongside its tets (its nodes would dangle; drop it first, e.g. via split)");
+    }
+    if (!has_tet)
+        throw std::invalid_argument(prefix + "requires at least one tetra cell block");
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/tet_scope.cpp =====
 // ===== begin src/cpp/src/detail/thb_spline.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -224980,6 +226373,1131 @@ void ndarray_heap_free(void* pPtr) noexcept {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/ndarray.cpp =====
+// ===== begin src/cpp/src/operations/adapt_volume.cpp =====
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cstdlib>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <queue>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::SizeFieldUtils;
+using detail::TetCorners;
+using detail::TetRemeshStore;
+using detail::TetVertexKind;
+using detail::TriKey;
+using detail::Vec3;
+
+constexpr const char* kAdvPrefix = "meshio++: adapt_volume: ";
+
+/// The integer cell_data names read as materials when the caller names none.
+constexpr const char* kAdvDefaultMaterials[] = {"octree_mesh:material", "medit:ref",
+                                                "gmsh:physical", "gmsh:geometrical", "cell_tags"};
+
+/// The local facet (cell_faces' tetra order) of a tetrahedron opposite each corner.
+constexpr int kAdvFacetOpposite[4] = {1, 2, 0, 3};
+/// The corners of each local facet of a tetrahedron (cell_faces' tetra table).
+constexpr int kAdvFacetCorners[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
+
+using AdvClock = std::chrono::steady_clock;
+
+double adv_seconds(AdvClock::time_point Since) {
+    return std::chrono::duration<double>(AdvClock::now() - Since).count();
+}
+
+/// A material class: the input block, the cell regions and the material values
+/// a tetrahedron carries, all inherited by every tetrahedron made from it.
+struct AdvClass {
+    std::size_t mBlock = 0;
+    std::vector<std::int32_t> mRegions;    ///< cell-region indices, ascending
+    std::vector<std::int64_t> mMaterials;  ///< one value per material array
+    std::int64_t mRepresentative = 0;      ///< a local input cell of mBlock with these values
+    std::string mLabel;
+};
+
+/// The measures the report takes before and after.
+struct AdvMeasures {
+    double mMinDihedral = 0.0;
+    double mMaxDihedral = 0.0;
+    double mMeanQuality = 0.0;
+    double mVolume = 0.0;
+    std::vector<double> mClassVolume;
+};
+
+/// Why a candidate edit was refused (the first guard that refused it).
+enum class AdvReject : std::uint8_t {
+    None = 0,
+    NotEdge,
+    Link,
+    Inversion,
+    Quality,
+    Length,
+    Class,
+    Hausdorff,
+    Normal,
+};
+
+/// A candidate edge in a pass's queue: stale once either end's version moved.
+struct AdvEdgeCand {
+    double mKey = 0.0;  ///< the metric length (collapse) or its negative (split)
+    std::int64_t mA = 0;
+    std::int64_t mB = 0;
+    std::uint32_t mVersionA = 0;
+    std::uint32_t mVersionB = 0;
+
+    bool operator>(const AdvEdgeCand& rO) const {
+        if (mKey != rO.mKey)
+            return mKey > rO.mKey;
+        if (mA != rO.mA)
+            return mA > rO.mA;
+        return mB > rO.mB;
+    }
+};
+
+using AdvQueue =
+    std::priority_queue<AdvEdgeCand, std::vector<AdvEdgeCand>, std::greater<AdvEdgeCand>>;
+
+/// Edges shorter than this (in the metric) are collapsed, longer than kAdvLong split.
+constexpr double kAdvShort = 0.8;
+constexpr double kAdvLong = 4.0 / 3.0;
+
+/**
+ * The remesher: the store, the size field, the classes and tags, the data
+ * carried per vertex, and one method per pass.
+ */
+class AdvRemesher {
+public:
+    AdvRemesher(const Mesh& rMesh, const AdaptVolumeOptions& rOptions, AdaptVolumeResult& rResult)
+        : mrMesh(rMesh), mrOptions(rOptions), mrResult(rResult) {}
+
+    /// Setup, classification, sizes and the per-vertex state; idempotent.
+    void Prepare();
+    void Run();
+    /// The guard refusing the collapse A -> B (test hook).
+    AdvReject ProbeCollapse(std::int64_t A, std::int64_t B) { return TryCollapse(A, B); }
+
+private:
+    const Mesh& mrMesh;
+    const AdaptVolumeOptions& mrOptions;
+    AdaptVolumeResult& mrResult;
+
+    TetRemeshStore mStore;
+    std::vector<AdvClass> mClasses;
+    std::vector<std::string> mMaterialNames;
+    /// Per tag id: the (side region, owner class) pairs a boundary face carries.
+    std::vector<std::vector<std::pair<std::int32_t, std::int32_t>>> mTags;
+    /// Per point region: membership of every store vertex.
+    std::vector<std::vector<std::uint8_t>> mPointMember;
+    std::vector<std::size_t> mPointRegions;
+    std::vector<detail::DecimFloatData> mFloatData;
+    std::size_t mNumInputPoints = 0;
+    double mDiagonal = 1.0;
+    double mHausd = 0.0;
+    double mQualityMin = 0.0;
+    double mEpsVol6 = 0.0;
+    std::map<std::string, double> mTimes;
+    std::vector<std::uint32_t> mVersion;  ///< per vertex, bumped by every edit of its star
+    bool mCheck = false;  ///< MESHIOPLUSPLUS_ADAPT_VOLUME_CHECK: verify after each pass
+    std::vector<std::uint8_t> mAllowFlat;  ///< input tetrahedra that were already flat
+
+    // scratch, reused across candidates
+    std::vector<std::int64_t> mScratchShared, mScratchRingA, mScratchRingB, mScratchTetsA;
+    std::vector<std::int64_t> mScratchCommon, mScratchLinkV;
+    std::vector<std::uint64_t> mScratchEdgesA, mScratchEdgesB, mScratchLinkE, mScratchEdgeCommon;
+    std::vector<TriKey> mScratchTriA, mScratchTriB;
+
+    void Setup();
+    void ReadClasses(std::vector<std::int32_t>& rClassOfCell);
+    void ReadTags(const std::vector<std::int32_t>& rClassOfCell,
+                  const std::vector<TetCorners>& rTets,
+                  std::unordered_map<TriKey, std::int32_t, detail::TriKeyHash>& rFaceTags);
+    void BuildSizes();
+    AdvMeasures Measure() const;
+    void Emit();
+    void Verify(const char* pStage) const;
+    void CountReject(AdvReject Why);
+
+    double EdgeLength(std::int64_t A, std::int64_t B) const {
+        return SizeFieldUtils::EdgeLength(mStore.Point(A), mStore.Point(B),
+                                          mStore.mSize[static_cast<std::size_t>(A)],
+                                          mStore.mSize[static_cast<std::size_t>(B)]);
+    }
+    /// Every edge of an alive tetrahedron, sorted, as (lo, hi).
+    std::vector<std::array<std::int64_t, 2>> AliveEdges() const;
+    void PushEdge(AdvQueue& rQueue, std::int64_t A, std::int64_t B, double Key) const;
+
+    // collapse
+    AdvReject LinkCondition(std::int64_t A, std::int64_t B);
+    AdvReject TryCollapse(std::int64_t A, std::int64_t B);
+    void CommitCollapse(std::int64_t A, std::int64_t B);
+    std::int64_t CollapsePass();
+
+    void Time(const char* pStage, AdvClock::time_point Since) {
+        mTimes[pStage] += adv_seconds(Since);
+    }
+
+public:
+    /// The guarded quality of a tetrahedron (higher is better); -1 when not positive.
+    double Quality(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) const {
+        if (detail::tet_volume6(rA, rB, rC, rD) <= mEpsVol6 ||
+            !TetRemeshStore::Positive(rA, rB, rC, rD))
+            return -1.0;
+        if (mrOptions.mQualityMetric == AdaptVolumeQuality::MinDihedral)
+            return detail::tet_min_dihedral(rA, rB, rC, rD);
+        return detail::tet_mean_ratio(rA, rB, rC, rD);
+    }
+    double TetQuality(const TetCorners& rT) const {
+        return Quality(mStore.Point(rT[0]), mStore.Point(rT[1]), mStore.Point(rT[2]),
+                       mStore.Point(rT[3]));
+    }
+};
+
+// --- setup -----------------------------------------------------------------
+
+void AdvRemesher::ReadClasses(std::vector<std::int32_t>& rClassOfCell) {
+    const std::vector<std::int64_t> bases = detail::block_bases(mrMesh);
+    const std::size_t total = static_cast<std::size_t>(detail::total_cells(bases));
+
+    // Material arrays: the caller's, or the known names present.
+    if (!mrOptions.mMaterialArrays.empty()) {
+        for (const std::string& name : mrOptions.mMaterialArrays)
+            if (!mrMesh.HasCellData(name))
+                throw std::invalid_argument(std::string(kAdvPrefix) + "material array '" + name +
+                                            "' is not a cell_data array");
+        mMaterialNames = mrOptions.mMaterialArrays;
+    } else {
+        for (const char* name : kAdvDefaultMaterials)
+            if (mrMesh.HasCellData(name))
+                mMaterialNames.emplace_back(name);
+    }
+    for (const std::string& name : mMaterialNames) {
+        if (mrMesh.CellDataNumBlocks(name) != mrMesh.NumCellBlocks())
+            throw std::invalid_argument(std::string(kAdvPrefix) + "material array '" + name +
+                                        "' does not have one entry per block");
+        for (std::size_t b = 0; b < mrMesh.NumCellBlocks(); ++b) {
+            const NDArray& a = mrMesh.CellData(name, b);
+            if (detail::is_float_dtype(a.Dtype()) ||
+                detail::rows(a) != mrMesh.Cells(b).NumCells() || (a.Size() != detail::rows(a)))
+                throw std::invalid_argument(std::string(kAdvPrefix) + "material array '" + name +
+                                            "' must be one integer per cell");
+        }
+    }
+
+    // Cell-region memberships.
+    std::vector<std::vector<std::int32_t>> regions_of(total);
+    for (std::size_t r = 0; r < mrMesh.NumRegions(); ++r) {
+        const Region& reg = mrMesh.Region(r);
+        if (reg.mKind != RegionKind::Cell)
+            continue;
+        const std::int64_t* e = reg.Entries();
+        for (std::size_t i = 0; i < reg.NumEntries(); ++i)
+            if (e[i] >= 0 && static_cast<std::size_t>(e[i]) < total)
+                regions_of[static_cast<std::size_t>(e[i])].push_back(static_cast<std::int32_t>(r));
+    }
+
+    rClassOfCell.assign(total, 0);
+    std::map<std::vector<std::int64_t>, std::int32_t> ids;
+    for (std::size_t b = 0; b < mrMesh.NumCellBlocks(); ++b) {
+        const std::size_t nc = mrMesh.Cells(b).NumCells();
+        std::vector<const NDArray*> mats;
+        for (const std::string& name : mMaterialNames)
+            mats.push_back(&mrMesh.CellData(name, b));
+        for (std::size_t c = 0; c < nc; ++c) {
+            const std::size_t g = static_cast<std::size_t>(bases[b]) + c;
+            std::vector<std::int64_t> key{static_cast<std::int64_t>(b)};
+            for (const std::int32_t r : regions_of[g])
+                key.push_back(r);
+            key.push_back(-1);
+            std::vector<std::int64_t> values;
+            for (const NDArray* a : mats)
+                values.push_back(detail::read_int(*a, c));
+            key.insert(key.end(), values.begin(), values.end());
+            const auto it = ids.find(key);
+            if (it != ids.end()) {
+                rClassOfCell[g] = it->second;
+                continue;
+            }
+            const std::int32_t id = static_cast<std::int32_t>(mClasses.size());
+            ids.emplace(key, id);
+            AdvClass cls;
+            cls.mBlock = b;
+            cls.mRegions = regions_of[g];
+            cls.mMaterials = values;
+            cls.mRepresentative = static_cast<std::int64_t>(c);
+            cls.mLabel = "block " + std::to_string(b);
+            for (const std::int32_t r : cls.mRegions)
+                cls.mLabel += " " + mrMesh.Region(static_cast<std::size_t>(r)).mName;
+            for (std::size_t m = 0; m < values.size(); ++m)
+                cls.mLabel += " " + mMaterialNames[m] + "=" + std::to_string(values[m]);
+            mClasses.push_back(std::move(cls));
+            rClassOfCell[g] = id;
+        }
+    }
+}
+
+void AdvRemesher::ReadTags(
+    const std::vector<std::int32_t>& rClassOfCell, const std::vector<TetCorners>& rTets,
+    std::unordered_map<TriKey, std::int32_t, detail::TriKeyHash>& rFaceTags) {
+    // Per face: the (side region, owner class) pairs, then one id per distinct list.
+    std::map<TriKey, std::vector<std::pair<std::int32_t, std::int32_t>>> lists;
+    for (std::size_t r = 0; r < mrMesh.NumRegions(); ++r) {
+        const Region& reg = mrMesh.Region(r);
+        if (reg.mKind != RegionKind::Side)
+            continue;
+        const std::int64_t* e = reg.Entries();
+        for (std::size_t i = 0; i < reg.NumEntries(); ++i) {
+            const std::int64_t cell = e[2 * i], facet = e[2 * i + 1];
+            if (cell < 0 || static_cast<std::size_t>(cell) >= rTets.size() || facet < 0 ||
+                facet > 3)
+                continue;
+            const TetCorners& t = rTets[static_cast<std::size_t>(cell)];
+            const auto& f = kAdvFacetCorners[facet];
+            lists[detail::tri_key(t[f[0]], t[f[1]], t[f[2]])].push_back(
+                {static_cast<std::int32_t>(r), rClassOfCell[static_cast<std::size_t>(cell)]});
+        }
+    }
+    std::map<std::vector<std::pair<std::int32_t, std::int32_t>>, std::int32_t> ids;
+    mTags.assign(1, {});  // tag 0: none
+    for (auto& [key, list] : lists) {
+        std::sort(list.begin(), list.end());
+        list.erase(std::unique(list.begin(), list.end()), list.end());
+        auto it = ids.find(list);
+        if (it == ids.end()) {
+            it = ids.emplace(list, static_cast<std::int32_t>(mTags.size())).first;
+            mTags.push_back(list);
+        }
+        rFaceTags.emplace(key, it->second);
+    }
+}
+
+void AdvRemesher::Setup() {
+    detail::require_tet_only_blocks(mrMesh, kAdvPrefix);
+    if (mrMesh.PointDim() != 3)
+        throw std::invalid_argument(std::string(kAdvPrefix) + "needs 3-D points");
+    if (!(mrOptions.mHgrad >= 1.0))
+        throw std::invalid_argument(std::string(kAdvPrefix) + "hgrad must be >= 1");
+    if (mrOptions.mMaxIterations < 0)
+        throw std::invalid_argument(std::string(kAdvPrefix) + "max_iterations must be >= 0");
+    if (!(mrOptions.mMaxNormalDeviation > 0.0) || mrOptions.mMaxNormalDeviation > 180.0)
+        throw std::invalid_argument(std::string(kAdvPrefix) +
+                                    "max_normal_deviation must be in (0, 180] degrees");
+    const std::size_t n = mrMesh.NumPoints();
+    mNumInputPoints = n;
+    if (!mrOptions.mFrozen.empty() && mrOptions.mFrozen.size() != n)
+        throw std::invalid_argument(std::string(kAdvPrefix) +
+                                    "frozen must have one entry per point");
+
+    std::vector<double> xyz(n * 3);
+    {
+        const detail::DoubleView pv(mrMesh.Points());
+        for (std::size_t i = 0; i < n * 3; ++i)
+            xyz[i] = pv[i];
+    }
+    std::vector<TetCorners> tets;
+    {
+        const std::vector<std::int64_t> bases = detail::block_bases(mrMesh);
+        tets.resize(static_cast<std::size_t>(detail::total_cells(bases)));
+        std::size_t bi = 0;
+        for (const auto cb : mrMesh.CellRange()) {
+            const detail::Int64View cv(cb.Conn());
+            const std::size_t base = static_cast<std::size_t>(bases[bi++]);
+            for (std::size_t c = 0; c < cb.NumCells(); ++c)
+                for (std::size_t k = 0; k < 4; ++k)
+                    tets[base + c][k] = cv[c * 4 + k];
+        }
+    }
+    std::vector<std::int32_t> class_of_cell;
+    ReadClasses(class_of_cell);
+    std::unordered_map<TriKey, std::int32_t, detail::TriKeyHash> face_tags;
+    ReadTags(class_of_cell, tets, face_tags);
+
+    // Scale.
+    double lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
+    for (std::size_t i = 0; i < n; ++i)
+        for (int d = 0; d < 3; ++d) {
+            const double x = xyz[i * 3 + static_cast<std::size_t>(d)];
+            lo[d] = i == 0 ? x : std::min(lo[d], x);
+            hi[d] = i == 0 ? x : std::max(hi[d], x);
+        }
+    mDiagonal = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                          (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    if (!(mDiagonal > 0.0))
+        mDiagonal = 1.0;
+    mEpsVol6 = mDiagonal * mDiagonal * mDiagonal * 1e-14;
+    if (mrOptions.mHausd > 0.0)
+        mHausd = mrOptions.mHausdRelative ? mrOptions.mHausd * mDiagonal : mrOptions.mHausd;
+    else
+        mHausd = 1e-3 * mDiagonal;
+    if (mrOptions.mQualityMin >= 0.0)
+        mQualityMin = mrOptions.mQualityMin;
+    else
+        mQualityMin = mrOptions.mQualityMetric == AdaptVolumeQuality::MinDihedral ? 10.0 : 0.2;
+
+    mStore.Build(std::move(xyz), std::move(tets), std::move(class_of_cell), face_tags);
+    const detail::TetClassifyReport cr = mStore.Classify(
+        mrOptions.mFeatureAngle, mrOptions.mCornerAngle, mrOptions.mPreserveFeatures);
+    mrResult.mNumCorners = cr.mNumCorners;
+    mrResult.mNumRidgeVertices = cr.mNumRidgeVertices;
+    mrResult.mNumChains = cr.mNumChains;
+    mrResult.mNumPatches = cr.mNumPatches;
+
+    for (std::size_t v = 0; v < n; ++v) {
+        const bool frozen = !mrOptions.mFrozen.empty() && mrOptions.mFrozen[v];
+        const bool boundary =
+            mrOptions.mPreserveBoundary && mStore.OnBoundary(static_cast<std::int64_t>(v));
+        mStore.mFrozen[v] = static_cast<std::uint8_t>(frozen || boundary);
+    }
+
+    // Data carried per vertex.
+    mFloatData = detail::decim_float_working_copies(mrMesh, n);
+    for (std::size_t r = 0; r < mrMesh.NumRegions(); ++r) {
+        const Region& reg = mrMesh.Region(r);
+        if (reg.mKind != RegionKind::Point)
+            continue;
+        std::vector<std::uint8_t> member(n, 0);
+        const std::int64_t* e = reg.Entries();
+        for (std::size_t i = 0; i < reg.NumEntries(); ++i)
+            if (e[i] >= 0 && static_cast<std::size_t>(e[i]) < n)
+                member[static_cast<std::size_t>(e[i])] = 1;
+        mPointRegions.push_back(r);
+        mPointMember.push_back(std::move(member));
+    }
+    BuildSizes();
+}
+
+void AdvRemesher::BuildSizes() {
+    const std::size_t n = mStore.NumVertices();
+    std::vector<double> boundary_sum(n, 0.0);
+    std::vector<std::int32_t> boundary_count(n, 0);
+    std::vector<TriKey> keys;
+    keys.reserve(mStore.mBoundary.size());
+    for (const auto& kv : mStore.mBoundary)
+        keys.push_back(kv.first);
+    std::sort(keys.begin(), keys.end());
+    std::vector<std::uint64_t> bedges;
+    for (const TriKey& k : keys)
+        for (int e = 0; e < 3; ++e)
+            bedges.push_back(detail::edge_key64(k[e], k[(e + 1) % 3]));
+    std::sort(bedges.begin(), bedges.end());
+    bedges.erase(std::unique(bedges.begin(), bedges.end()), bedges.end());
+    for (const std::uint64_t e : bedges) {
+        const std::int64_t a = static_cast<std::int64_t>(e >> 32);
+        const std::int64_t b = static_cast<std::int64_t>(e & 0xFFFFFFFFull);
+        const double l = detail::vec3_norm(detail::vec3_sub(mStore.Point(a), mStore.Point(b)));
+        boundary_sum[static_cast<std::size_t>(a)] += l;
+        boundary_sum[static_cast<std::size_t>(b)] += l;
+        ++boundary_count[static_cast<std::size_t>(a)];
+        ++boundary_count[static_cast<std::size_t>(b)];
+    }
+
+    // The caller's sizes.
+    std::vector<double> user;
+    if (!mrOptions.mSizeArray.empty()) {
+        if (!mrMesh.HasPointData(mrOptions.mSizeArray))
+            throw std::invalid_argument(std::string(kAdvPrefix) + "size_array '" +
+                                        mrOptions.mSizeArray + "' is not a point_data array");
+        const NDArray& a = mrMesh.PointData(mrOptions.mSizeArray);
+        if (a.Size() != mNumInputPoints)
+            throw std::invalid_argument(std::string(kAdvPrefix) + "size_array '" +
+                                        mrOptions.mSizeArray + "' must be one value per point");
+        user.resize(mNumInputPoints);
+        for (std::size_t i = 0; i < mNumInputPoints; ++i)
+            user[i] = detail::read_double(a, i);
+    }
+
+    // Curvature: the turn of the vertex normals along each boundary edge of a patch.
+    std::vector<double> curvature(n, 0.0);
+    if (mrOptions.mCurvatureSizing) {
+        std::vector<Vec3> vnormal(n, Vec3{0.0, 0.0, 0.0});
+        for (const TriKey& k : keys) {
+            const auto o = mStore.OrientedFace(k);
+            const Vec3 a = mStore.Point(o[0]), b = mStore.Point(o[1]), c = mStore.Point(o[2]);
+            const Vec3 an = detail::vec3_cross(detail::vec3_sub(b, a), detail::vec3_sub(c, a));
+            const std::int32_t patch = mStore.mBoundary.at(k).mPatch;
+            for (const std::int64_t v : k)
+                if (mStore.Kind(v) == TetVertexKind::Surface &&
+                    mStore.mFeature[static_cast<std::size_t>(v)] == patch)
+                    vnormal[static_cast<std::size_t>(v)] =
+                        detail::vec3_add(vnormal[static_cast<std::size_t>(v)], an);
+        }
+        for (Vec3& v : vnormal)
+            v = detail::vec3_normalize(v);
+        for (const std::uint64_t e : bedges) {
+            const std::int64_t a = static_cast<std::int64_t>(e >> 32);
+            const std::int64_t b = static_cast<std::int64_t>(e & 0xFFFFFFFFull);
+            const Vec3& na = vnormal[static_cast<std::size_t>(a)];
+            const Vec3& nb = vnormal[static_cast<std::size_t>(b)];
+            if (detail::vec3_norm_sq(na) < 0.5 || detail::vec3_norm_sq(nb) < 0.5)
+                continue;
+            const double l = detail::vec3_norm(detail::vec3_sub(mStore.Point(a), mStore.Point(b)));
+            if (!(l > 0.0))
+                continue;
+            const double k = detail::vec3_norm(detail::vec3_sub(na, nb)) / l;
+            curvature[static_cast<std::size_t>(a)] =
+                std::max(curvature[static_cast<std::size_t>(a)], k);
+            curvature[static_cast<std::size_t>(b)] =
+                std::max(curvature[static_cast<std::size_t>(b)], k);
+        }
+    }
+
+    // Seeds.
+    double hmin_auto = std::numeric_limits<double>::infinity();
+    std::vector<double> seed(n, 0.0);
+    for (std::size_t v = 0; v < n; ++v)
+        if (boundary_count[v] > 0) {
+            double h = boundary_sum[v] / boundary_count[v];
+            if (!user.empty() && v < user.size() && user[v] > 0.0)
+                h = std::min(h, user[v]);
+            if (curvature[v] > 0.0)
+                h = std::min(h, std::sqrt(8.0 * mHausd / curvature[v]));
+            seed[v] = h;
+            hmin_auto = std::min(hmin_auto, h);
+        }
+    const double hmax = mrOptions.mHmax > 0.0 ? mrOptions.mHmax : mDiagonal / 8.0;
+    double hmin = mrOptions.mHmin > 0.0 ? mrOptions.mHmin
+                                        : (std::isfinite(hmin_auto) ? hmin_auto : hmax / 32.0);
+    hmin = std::min(hmin, hmax);
+    if (mrOptions.mHmin > 0.0 && mrOptions.mHmax > 0.0 && mrOptions.mHmin > mrOptions.mHmax)
+        throw std::invalid_argument(std::string(kAdvPrefix) + "hmin must not exceed hmax");
+    for (std::size_t v = 0; v < n; ++v)
+        if (boundary_count[v] == 0) {
+            double h = hmax;
+            if (!user.empty() && v < user.size() && user[v] > 0.0)
+                h = std::min(h, user[v]);
+            seed[v] = h;
+        }
+
+    // Grade over the tetrahedra's edges, then clamp.
+    std::vector<std::array<std::int64_t, 2>> edges;
+    edges.reserve(mStore.NumTets() * 6);
+    for (std::size_t t = 0; t < mStore.NumTets(); ++t) {
+        const TetCorners& c = mStore.mTets[t];
+        for (int i = 0; i < 4; ++i)
+            for (int j = i + 1; j < 4; ++j)
+                edges.push_back({std::min(c[i], c[j]), std::max(c[i], c[j])});
+    }
+    std::sort(edges.begin(), edges.end());
+    edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+    SizeFieldUtils::Grade(mStore.mXyz, edges, mrOptions.mHgrad, seed);
+    for (double& h : seed)
+        h = std::clamp(h, hmin, hmax);
+    mStore.mSize = std::move(seed);
+    mrResult.mHmin = hmin;
+    mrResult.mHmax = hmax;
+    mrResult.mHausd = mHausd;
+}
+
+AdvMeasures AdvRemesher::Measure() const {
+    AdvMeasures m;
+    m.mClassVolume.assign(mClasses.size(), 0.0);
+    std::vector<std::size_t> alive;
+    for (std::size_t t = 0; t < mStore.NumTets(); ++t)
+        if (mStore.mTetAlive[t])
+            alive.push_back(t);
+    std::vector<double> mn(alive.size()), mx(alive.size()), q(alive.size()), vol(alive.size());
+    parallel_for(alive.size(), [&](std::size_t i) {
+        const TetCorners& c = mStore.mTets[alive[i]];
+        const Vec3 a = mStore.Point(c[0]), b = mStore.Point(c[1]), cc = mStore.Point(c[2]),
+                   d = mStore.Point(c[3]);
+        detail::tet_dihedral_range(a, b, cc, d, mn[i], mx[i]);
+        q[i] = mrOptions.mQualityMetric == AdaptVolumeQuality::MinDihedral
+                   ? detail::tet_min_dihedral(a, b, cc, d)
+                   : detail::tet_mean_ratio(a, b, cc, d);
+        vol[i] = detail::tet_volume(a, b, cc, d);
+    });
+    m.mMinDihedral = alive.empty() ? 0.0 : 180.0;
+    double qsum = 0.0;
+    for (std::size_t i = 0; i < alive.size(); ++i) {
+        m.mMinDihedral = std::min(m.mMinDihedral, mn[i]);
+        m.mMaxDihedral = std::max(m.mMaxDihedral, mx[i]);
+        qsum += q[i];
+        m.mVolume += vol[i];
+        m.mClassVolume[static_cast<std::size_t>(mStore.mClass[alive[i]])] += vol[i];
+    }
+    m.mMeanQuality = alive.empty() ? 0.0 : qsum / static_cast<double>(alive.size());
+    return m;
+}
+
+// --- shared pass machinery ----------------------------------------------------
+
+void AdvRemesher::Verify(const char* pStage) const {
+    if (!mCheck)
+        return;
+    std::string why;
+    if (!mStore.CheckInvariants(why, mAllowFlat))
+        throw std::logic_error(std::string(kAdvPrefix) + "invariant broken after " + pStage + ": " +
+                               why);
+}
+
+void AdvRemesher::CountReject(AdvReject Why) {
+    switch (Why) {
+        case AdvReject::Link:
+            ++mrResult.mNumRejectedByLink;
+            break;
+        case AdvReject::Inversion:
+            ++mrResult.mNumRejectedByInversion;
+            break;
+        case AdvReject::Quality:
+            ++mrResult.mNumRejectedByQuality;
+            break;
+        case AdvReject::Length:
+            ++mrResult.mNumRejectedByLength;
+            break;
+        case AdvReject::Class:
+            ++mrResult.mNumRejectedByClass;
+            break;
+        case AdvReject::Hausdorff:
+            ++mrResult.mNumRejectedByHausdorff;
+            break;
+        case AdvReject::Normal:
+            ++mrResult.mNumRejectedByNormal;
+            break;
+        default:
+            break;
+    }
+}
+
+std::vector<std::array<std::int64_t, 2>> AdvRemesher::AliveEdges() const {
+    std::vector<std::array<std::int64_t, 2>> edges;
+    edges.reserve(static_cast<std::size_t>(mStore.NumAliveTets()) * 6);
+    for (std::size_t t = 0; t < mStore.NumTets(); ++t) {
+        if (!mStore.mTetAlive[t])
+            continue;
+        const TetCorners& c = mStore.mTets[t];
+        for (int i = 0; i < 4; ++i)
+            for (int j = i + 1; j < 4; ++j)
+                edges.push_back({std::min(c[i], c[j]), std::max(c[i], c[j])});
+    }
+    std::sort(edges.begin(), edges.end());
+    edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+    return edges;
+}
+
+void AdvRemesher::PushEdge(AdvQueue& rQueue, std::int64_t A, std::int64_t B, double Key) const {
+    const std::int64_t lo = std::min(A, B), hi = std::max(A, B);
+    rQueue.push({Key, lo, hi, mVersion[static_cast<std::size_t>(lo)],
+                 mVersion[static_cast<std::size_t>(hi)]});
+}
+
+// --- collapse ------------------------------------------------------------------
+
+// The link condition of the edge (a, b) (Dey et al.; Edelsbrunner): the
+// vertices, edges and triangles common to the links of a and b are exactly
+// those of the link of ab. A triangle common to both links would leave two
+// tetrahedra on the same four vertices (the duplicate-tet check).
+AdvReject AdvRemesher::LinkCondition(std::int64_t A, std::int64_t B) {
+    const auto& shared = mScratchShared;
+    // vertices
+    mStore.VertexRing(A, mScratchRingA);
+    mStore.VertexRing(B, mScratchRingB);
+    mScratchCommon.clear();
+    std::set_intersection(mScratchRingA.begin(), mScratchRingA.end(), mScratchRingB.begin(),
+                          mScratchRingB.end(), std::back_inserter(mScratchCommon));
+    mScratchLinkV.clear();
+    mScratchLinkE.clear();
+    for (const std::int64_t t : shared) {
+        std::int64_t o[2];
+        int k = 0;
+        for (const std::int64_t c : mStore.mTets[static_cast<std::size_t>(t)])
+            if (c != A && c != B)
+                o[k++] = c;
+        mScratchLinkV.push_back(o[0]);
+        mScratchLinkV.push_back(o[1]);
+        mScratchLinkE.push_back(detail::edge_key64(o[0], o[1]));
+    }
+    std::sort(mScratchLinkV.begin(), mScratchLinkV.end());
+    mScratchLinkV.erase(std::unique(mScratchLinkV.begin(), mScratchLinkV.end()),
+                        mScratchLinkV.end());
+    if (mScratchCommon != mScratchLinkV)
+        return AdvReject::Link;
+    // edges and triangles of the links
+    auto link_of = [&](std::int64_t V, std::int64_t Other, std::vector<std::uint64_t>& rEdges,
+                       std::vector<TriKey>& rTris) {
+        rEdges.clear();
+        rTris.clear();
+        for (const std::int64_t t : mStore.mVertexTets[static_cast<std::size_t>(V)]) {
+            std::int64_t o[3];
+            int k = 0;
+            bool has_other = false;
+            for (const std::int64_t c : mStore.mTets[static_cast<std::size_t>(t)]) {
+                if (c == V)
+                    continue;
+                has_other = has_other || c == Other;
+                o[k++] = c;
+            }
+            rEdges.push_back(detail::edge_key64(o[0], o[1]));
+            rEdges.push_back(detail::edge_key64(o[1], o[2]));
+            rEdges.push_back(detail::edge_key64(o[0], o[2]));
+            if (!has_other)
+                rTris.push_back(detail::tri_key(o[0], o[1], o[2]));
+        }
+        std::sort(rEdges.begin(), rEdges.end());
+        rEdges.erase(std::unique(rEdges.begin(), rEdges.end()), rEdges.end());
+        std::sort(rTris.begin(), rTris.end());
+    };
+    link_of(A, B, mScratchEdgesA, mScratchTriA);
+    link_of(B, A, mScratchEdgesB, mScratchTriB);
+    mScratchEdgeCommon.clear();
+    std::set_intersection(mScratchEdgesA.begin(), mScratchEdgesA.end(), mScratchEdgesB.begin(),
+                          mScratchEdgesB.end(), std::back_inserter(mScratchEdgeCommon));
+    std::sort(mScratchLinkE.begin(), mScratchLinkE.end());
+    for (const std::uint64_t e : mScratchEdgeCommon)
+        if (!std::binary_search(mScratchLinkE.begin(), mScratchLinkE.end(), e))
+            return AdvReject::Link;
+    // a triangle opposite a and opposite b: the collapse would duplicate a tetrahedron
+    std::size_t i = 0, j = 0;
+    while (i < mScratchTriA.size() && j < mScratchTriB.size()) {
+        if (mScratchTriA[i] == mScratchTriB[j])
+            return AdvReject::Link;
+        if (mScratchTriA[i] < mScratchTriB[j])
+            ++i;
+        else
+            ++j;
+    }
+    return AdvReject::None;
+}
+
+// Precondition, simulated edit and postconditions of the half-edge collapse
+// a -> b (a removed, its tetrahedra moved onto b); nothing is changed.
+AdvReject AdvRemesher::TryCollapse(std::int64_t A, std::int64_t B) {
+    const std::size_t a = static_cast<std::size_t>(A);
+    if (mStore.mFrozen[a] || mStore.Kind(A) != TetVertexKind::Interior)
+        return AdvReject::Class;
+    mStore.SharedTets(A, B, mScratchShared);
+    if (mScratchShared.empty())
+        return AdvReject::NotEdge;
+    if (const AdvReject r = LinkCondition(A, B); r != AdvReject::None)
+        return r;
+    // the tetrahedra that move, and their orientation (exact)
+    mScratchTetsA.clear();
+    double old_min = std::numeric_limits<double>::infinity();
+    for (const std::int64_t t : mStore.mVertexTets[a]) {
+        old_min = std::min(old_min, TetQuality(mStore.mTets[static_cast<std::size_t>(t)]));
+        if (!std::binary_search(mScratchShared.begin(), mScratchShared.end(), t))
+            mScratchTetsA.push_back(t);
+    }
+    double new_min = std::numeric_limits<double>::infinity();
+    for (const std::int64_t t : mScratchTetsA) {
+        TetCorners c = mStore.mTets[static_cast<std::size_t>(t)];
+        for (std::int64_t& v : c)
+            if (v == A)
+                v = B;
+        const Vec3 p0 = mStore.Point(c[0]), p1 = mStore.Point(c[1]), p2 = mStore.Point(c[2]),
+                   p3 = mStore.Point(c[3]);
+        if (detail::tet_volume6(p0, p1, p2, p3) <= mEpsVol6 ||
+            !TetRemeshStore::Positive(p0, p1, p2, p3))
+            return AdvReject::Inversion;
+        new_min = std::min(new_min, Quality(p0, p1, p2, p3));
+    }
+    // no new edge longer than the split threshold
+    for (const std::int64_t x : mScratchRingA) {
+        if (x == B || std::binary_search(mScratchRingB.begin(), mScratchRingB.end(), x))
+            continue;
+        if (EdgeLength(B, x) > kAdvLong)
+            return AdvReject::Length;
+    }
+    if (new_min < std::min(old_min, mQualityMin))
+        return AdvReject::Quality;
+    return AdvReject::None;
+}
+
+void AdvRemesher::CommitCollapse(std::int64_t A, std::int64_t B) {
+    const std::size_t a = static_cast<std::size_t>(A);
+    mStore.SharedTets(A, B, mScratchShared);
+    for (const std::int64_t t : mScratchShared)
+        mStore.KillTet(t);
+    const std::vector<std::int64_t> moving = mStore.mVertexTets[a];
+    auto& lb = mStore.mVertexTets[static_cast<std::size_t>(B)];
+    for (const std::int64_t t : moving) {
+        for (std::int64_t& v : mStore.mTets[static_cast<std::size_t>(t)])
+            if (v == A)
+                v = B;
+        detail::decim_sorted_insert(lb, t);
+    }
+    mStore.mVertexTets[a].clear();
+    mStore.mVertexAlive[a] = 0;
+    ++mVersion[a];
+    ++mVersion[static_cast<std::size_t>(B)];
+}
+
+std::int64_t AdvRemesher::CollapsePass() {
+    AdvQueue queue;
+    {
+        const auto edges = AliveEdges();
+        std::vector<double> len(edges.size());
+        parallel_for(edges.size(),
+                     [&](std::size_t i) { len[i] = EdgeLength(edges[i][0], edges[i][1]); });
+        for (std::size_t i = 0; i < edges.size(); ++i)
+            if (len[i] < kAdvShort)
+                PushEdge(queue, edges[i][0], edges[i][1], len[i]);
+    }
+    std::int64_t applied = 0;
+    std::vector<std::int64_t> ring;
+    while (!queue.empty()) {
+        const AdvEdgeCand e = queue.top();
+        queue.pop();
+        const std::size_t ea = static_cast<std::size_t>(e.mA), eb = static_cast<std::size_t>(e.mB);
+        if (!mStore.mVertexAlive[ea] || !mStore.mVertexAlive[eb] || mVersion[ea] != e.mVersionA ||
+            mVersion[eb] != e.mVersionB)
+            continue;  // stale
+        // remove the less constrained end first (the lower kind survives), then the other
+        std::int64_t first = e.mB, second = e.mA;
+        if (mStore.mKind[ea] > mStore.mKind[eb])
+            std::swap(first, second);
+        AdvReject why = TryCollapse(first, second);
+        std::int64_t removed = first, kept = second;
+        if (why != AdvReject::None) {
+            const AdvReject other = TryCollapse(second, first);
+            if (other == AdvReject::None) {
+                why = other;
+                removed = second;
+                kept = first;
+            }
+        }
+        if (why == AdvReject::NotEdge)
+            continue;
+        if (why != AdvReject::None) {
+            CountReject(why);
+            continue;
+        }
+        CommitCollapse(removed, kept);
+        ++applied;
+        mStore.VertexRing(kept, ring);
+        for (const std::int64_t x : ring) {
+            const double l = EdgeLength(kept, x);
+            if (l < kAdvShort)
+                PushEdge(queue, kept, x, l);
+        }
+    }
+    return applied;
+}
+
+// --- output ----------------------------------------------------------------
+
+void AdvRemesher::Emit() {
+    const std::size_t nv = mStore.NumVertices();
+    // Vertices: the used ones, in store order (survivors of the input, then new).
+    std::vector<std::uint8_t> used(nv, 0);
+    for (std::size_t t = 0; t < mStore.NumTets(); ++t)
+        if (mStore.mTetAlive[t])
+            for (const std::int64_t v : mStore.mTets[t])
+                used[static_cast<std::size_t>(v)] = 1;
+    std::vector<std::int64_t> remap(nv, -1);
+    std::vector<std::int64_t> order;
+    for (std::size_t v = 0; v < nv; ++v)
+        if (used[v]) {
+            remap[v] = static_cast<std::int64_t>(order.size());
+            order.push_back(static_cast<std::int64_t>(v));
+        }
+    const std::size_t np = order.size();
+    Mesh& out = mrResult.mMesh;
+    {
+        const NDArray& points = mrMesh.Points();
+        NDArray pts = NDArray::Uninit(points.Dtype(), {np, 3});
+        for (std::size_t i = 0; i < np; ++i)
+            for (std::size_t d = 0; d < 3; ++d)
+                detail::write_double(pts, i * 3 + d,
+                                     mStore.mXyz[static_cast<std::size_t>(order[i]) * 3 + d]);
+        out.AssignPoints(std::move(pts));
+    }
+
+    // Tetrahedra: one block per input block, in store order.
+    const std::size_t nb = mrMesh.NumCellBlocks();
+    std::vector<std::vector<std::int64_t>> block_tets(nb);
+    for (std::size_t t = 0; t < mStore.NumTets(); ++t)
+        if (mStore.mTetAlive[t])
+            block_tets[mClasses[static_cast<std::size_t>(mStore.mClass[t])].mBlock].push_back(
+                static_cast<std::int64_t>(t));
+    std::vector<std::int64_t> out_index(mStore.NumTets(), -1);
+    std::vector<std::int64_t> base(nb + 1, 0);
+    for (std::size_t b = 0; b < nb; ++b) {
+        base[b + 1] = base[b] + static_cast<std::int64_t>(block_tets[b].size());
+        NDArray conn = NDArray::Uninit(DType::Int64, {block_tets[b].size(), 4});
+        std::int64_t* dst = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < block_tets[b].size(); ++i) {
+            const std::size_t t = static_cast<std::size_t>(block_tets[b][i]);
+            out_index[t] = base[b] + static_cast<std::int64_t>(i);
+            for (std::size_t k = 0; k < 4; ++k)
+                dst[i * 4 + k] = remap[static_cast<std::size_t>(mStore.mTets[t][k])];
+        }
+        out.AddCellBlock(cell_type_name(CellType::Tetra), std::move(conn));
+    }
+
+    // point_data: float arrays carried (interpolated on splits), the others
+    // from the input point each vertex keeps.
+    std::vector<std::int64_t> source(np);
+    for (std::size_t i = 0; i < np; ++i)
+        source[i] = mStore.mSource[static_cast<std::size_t>(order[i])];
+    for (const std::string& name : mrMesh.PointDataNames()) {
+        const NDArray& a = mrMesh.PointData(name);
+        const auto fit =
+            std::find_if(mFloatData.begin(), mFloatData.end(),
+                         [&](const detail::DecimFloatData& rF) { return rF.mName == name; });
+        if (fit == mFloatData.end()) {
+            if (detail::rows(a) == mNumInputPoints)
+                out.AddPointData(name, detail::subset_gather_rows(a, source));
+            continue;
+        }
+        std::vector<std::size_t> shape = a.Shape();
+        shape[0] = np;
+        NDArray o = NDArray::Uninit(a.Dtype(), shape);
+        const std::size_t nc = fit->mNumComponents;
+        for (std::size_t i = 0; i < np; ++i)
+            for (std::size_t k = 0; k < nc; ++k)
+                detail::write_double(o, i * nc + k,
+                                     fit->mValues[static_cast<std::size_t>(order[i]) * nc + k]);
+        out.AddPointData(name, std::move(o));
+    }
+
+    // cell_data: the material arrays by class; the rest has no correspondence.
+    for (const std::string& name : mMaterialNames) {
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < nb; ++b) {
+            std::vector<std::int64_t> rows;
+            rows.reserve(block_tets[b].size());
+            for (const std::int64_t t : block_tets[b])
+                rows.push_back(
+                    mClasses[static_cast<std::size_t>(mStore.mClass[static_cast<std::size_t>(t)])]
+                        .mRepresentative);
+            blocks.push_back(detail::subset_gather_rows(mrMesh.CellData(name, b), rows));
+        }
+        out.AddCellData(name, std::move(blocks));
+    }
+    std::vector<std::string> dropped;
+    for (const std::string& name : mrMesh.CellDataNames())
+        if (std::find(mMaterialNames.begin(), mMaterialNames.end(), name) == mMaterialNames.end())
+            dropped.push_back(name);
+    if (!dropped.empty()) {
+        std::string msg = "dropped cell_data with no correspondence across the edits:";
+        for (const std::string& d : dropped)
+            msg += " " + d;
+        log::warn("{}{}", kAdvPrefix, msg);
+        mrResult.mWarnings.push_back(msg);
+    }
+    for (const std::string& name : mrMesh.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(mrMesh.FieldData(name)));
+
+    // Regions.
+    std::vector<std::vector<std::int64_t>> cell_entries(mrMesh.NumRegions());
+    for (std::size_t t = 0; t < mStore.NumTets(); ++t)
+        if (mStore.mTetAlive[t])
+            for (const std::int32_t r :
+                 mClasses[static_cast<std::size_t>(mStore.mClass[t])].mRegions)
+                cell_entries[static_cast<std::size_t>(r)].push_back(out_index[t]);
+    std::vector<std::vector<std::int64_t>> side_entries(mrMesh.NumRegions());
+    {
+        std::vector<TriKey> keys;
+        for (const auto& kv : mStore.mBoundary)
+            if (kv.second.mTag > 0)
+                keys.push_back(kv.first);
+        std::sort(keys.begin(), keys.end());
+        std::vector<std::int64_t> ab;
+        for (const TriKey& k : keys) {
+            const auto& list = mTags[static_cast<std::size_t>(mStore.mBoundary.at(k).mTag)];
+            mStore.SharedTets(k[0], k[1], ab);
+            for (const auto& [region, owner] : list) {
+                for (const std::int64_t t : ab) {
+                    const TetCorners& c = mStore.mTets[static_cast<std::size_t>(t)];
+                    int opposite = -1;
+                    bool has = false;
+                    for (int q = 0; q < 4; ++q) {
+                        if (c[q] == k[2])
+                            has = true;
+                        else if (c[q] != k[0] && c[q] != k[1])
+                            opposite = q;
+                    }
+                    if (!has || opposite < 0 || mStore.mClass[static_cast<std::size_t>(t)] != owner)
+                        continue;
+                    side_entries[static_cast<std::size_t>(region)].push_back(
+                        out_index[static_cast<std::size_t>(t)]);
+                    side_entries[static_cast<std::size_t>(region)].push_back(
+                        kAdvFacetOpposite[opposite]);
+                    break;
+                }
+            }
+        }
+    }
+    std::size_t point_region = 0;
+    for (std::size_t r = 0; r < mrMesh.NumRegions(); ++r) {
+        const Region& reg = mrMesh.Region(r);
+        std::vector<std::int64_t> entries;
+        if (reg.mKind == RegionKind::Cell) {
+            entries = std::move(cell_entries[r]);
+        } else if (reg.mKind == RegionKind::Side) {
+            entries = std::move(side_entries[r]);
+        } else {
+            const auto& member = mPointMember[point_region++];
+            for (std::size_t v = 0; v < np; ++v)
+                if (member[static_cast<std::size_t>(order[v])])
+                    entries.push_back(static_cast<std::int64_t>(v));
+        }
+        const std::size_t stride = reg.mKind == RegionKind::Side ? 2 : 1;
+        NDArray e = reg.mKind == RegionKind::Side
+                        ? NDArray::Uninit(DType::Int64, {entries.size() / stride, 2})
+                        : NDArray::Uninit(DType::Int64, {entries.size()});
+        if (!entries.empty())
+            std::copy(entries.begin(), entries.end(), e.As<std::int64_t>());
+        out.AddRegion(Region(reg.mName, reg.mKind, reg.mDim, reg.mTag, std::move(e)));
+    }
+    for (std::size_t i = 0; i < mrMesh.NumPropertySets(); ++i)
+        out.AddPropertySet(mrMesh.GetPropertySet(i));
+
+    mrResult.mNumPointsAfter = static_cast<std::int64_t>(np);
+    mrResult.mNumTetsAfter = base[nb];
+}
+
+// --- driver ----------------------------------------------------------------
+
+void AdvRemesher::Prepare() {
+    if (const char* p_env = std::getenv("MESHIOPLUSPLUS_ADAPT_VOLUME_CHECK"))
+        mCheck = p_env[0] != '\0' && p_env[0] != '0';
+    Setup();
+    mVersion.assign(mStore.NumVertices(), 0);
+    mAllowFlat.assign(mStore.NumTets(), 0);
+    for (std::size_t t = 0; t < mStore.NumTets(); ++t) {
+        const TetCorners& c = mStore.mTets[t];
+        mAllowFlat[t] = TetRemeshStore::OrientSign(mStore.Point(c[0]), mStore.Point(c[1]),
+                                                   mStore.Point(c[2]), mStore.Point(c[3])) == 0;
+    }
+    Verify("setup");
+}
+
+void AdvRemesher::Run() {
+    auto t0 = AdvClock::now();
+    Prepare();
+    mrResult.mNumTetsBefore = mStore.NumAliveTets();
+    {
+        std::int64_t used = 0;
+        for (const std::uint8_t a : mStore.mVertexAlive)
+            used += a;
+        mrResult.mNumPointsBefore = used;
+    }
+    const AdvMeasures before = Measure();
+    mrResult.mMinDihedralBefore = before.mMinDihedral;
+    mrResult.mMaxDihedralBefore = before.mMaxDihedral;
+    mrResult.mMeanQualityBefore = before.mMeanQuality;
+    mrResult.mVolumeBefore = before.mVolume;
+    Time("setup", t0);
+
+    for (int it = 0; it < mrOptions.mMaxIterations; ++it) {
+        std::int64_t changed = 0;
+        if (mrOptions.mEnableCollapse) {
+            t0 = AdvClock::now();
+            const std::int64_t n = CollapsePass();
+            mrResult.mNumCollapsed += n;
+            changed += n;
+            Time("collapse", t0);
+            Verify("collapse");
+        }
+        ++mrResult.mIterations;
+        if (static_cast<double>(changed) < 0.01 * static_cast<double>(mStore.NumAliveTets()))
+            break;
+        if (mrOptions.mTargetMinDihedral > 0.0 &&
+            Measure().mMinDihedral >= mrOptions.mTargetMinDihedral)
+            break;
+    }
+
+    t0 = AdvClock::now();
+    const AdvMeasures after = Measure();
+    mrResult.mMinDihedralAfter = after.mMinDihedral;
+    mrResult.mMaxDihedralAfter = after.mMaxDihedral;
+    mrResult.mMeanQualityAfter = after.mMeanQuality;
+    mrResult.mVolumeAfter = after.mVolume;
+    for (std::size_t c = 0; c < mClasses.size(); ++c)
+        mrResult.mRegionVolumeChange.emplace_back(mClasses[c].mLabel,
+                                                  after.mClassVolume[c] - before.mClassVolume[c]);
+    Emit();
+    Time("output", t0);
+    for (const char* stage : {"setup", "collapse", "split", "swap", "smooth", "polish", "output"})
+        mrResult.mTimings.emplace_back(stage, mTimes.count(stage) ? mTimes[stage] : 0.0);
+}
+
+}  // namespace
+
+AdaptVolumeQuality adapt_volume_quality_from_name(const std::string& rName) {
+    if (rName == "min_dihedral")
+        return AdaptVolumeQuality::MinDihedral;
+    if (rName == "mean_ratio")
+        return AdaptVolumeQuality::MeanRatio;
+    if (rName == "amips")
+        return AdaptVolumeQuality::Amips;
+    throw std::invalid_argument(std::string(kAdvPrefix) +
+                                "quality_metric must be 'min_dihedral', "
+                                "'mean_ratio' or 'amips', got '" +
+                                rName + "'");
+}
+
+const char* adapt_volume_quality_name(AdaptVolumeQuality Quality) {
+    switch (Quality) {
+        case AdaptVolumeQuality::MeanRatio:
+            return "mean_ratio";
+        case AdaptVolumeQuality::Amips:
+            return "amips";
+        case AdaptVolumeQuality::MinDihedral:
+        default:
+            return "min_dihedral";
+    }
+}
+
+namespace detail {
+
+std::string adapt_volume_probe_collapse(const Mesh& rMesh, const AdaptVolumeOptions& rOptions,
+                                        std::int64_t A, std::int64_t B) {
+    AdaptVolumeResult result;
+    AdvRemesher remesher(rMesh, rOptions, result);
+    remesher.Prepare();
+    if (A < 0 || B < 0 || A == B || static_cast<std::size_t>(std::max(A, B)) >= rMesh.NumPoints())
+        throw std::invalid_argument("adapt_volume_probe_collapse: bad vertex ids");
+    switch (remesher.ProbeCollapse(A, B)) {
+        case AdvReject::None:
+            return "none";
+        case AdvReject::NotEdge:
+            return "not_edge";
+        case AdvReject::Link:
+            return "link";
+        case AdvReject::Inversion:
+            return "inversion";
+        case AdvReject::Quality:
+            return "quality";
+        case AdvReject::Length:
+            return "length";
+        case AdvReject::Class:
+            return "class";
+        case AdvReject::Hausdorff:
+            return "hausdorff";
+        case AdvReject::Normal:
+            return "normal";
+    }
+    return "none";
+}
+
+}  // namespace detail
+
+AdaptVolumeResult adapt_volume(const Mesh& rMesh, const AdaptVolumeOptions& rOptions) {
+    AdaptVolumeResult result;
+    AdvRemesher(rMesh, rOptions, result).Run();
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/adapt_volume.cpp =====
 // ===== begin src/cpp/src/operations/adjacency.cpp =====
 #include <algorithm>
 #include <charconv>
@@ -263450,43 +265968,9 @@ using detail::Vec3;
 
 constexpr const char* kOvPrefix = "meshio++: optimize_volume: ";
 
-// --- tet-only scope check (the smooth ODT / decimate_volume shape) -----------
+// --- tet-only scope check (shared with adapt_volume) --------------------------
 
-void optvol_check_blocks(const Mesh& rMesh) {
-    bool has_tet = false;
-    for (const auto cb : rMesh.CellRange()) {
-        if (cb.IsPolyhedron())
-            throw std::invalid_argument(
-                std::string(kOvPrefix) +
-                "operates on tet-only meshes, but the mesh contains a polyhedron cell block -- "
-                "run convert_cells(mode='simplexify') first");
-        if (cb.IsRagged())
-            throw std::invalid_argument(
-                std::string(kOvPrefix) +
-                "operates on tet-only meshes, but the mesh contains ragged cell block '" +
-                std::string(cb.Type()) + "'");
-        const CellType ct = cell_type_from_name(cb.Type());
-        if (ct == CellType::Tetra) {
-            has_tet = true;
-            continue;
-        }
-        const int dim = cell_type_dimension(ct);
-        if (dim == 3)
-            throw std::invalid_argument(
-                std::string(kOvPrefix) +
-                "operates on tet-only meshes, but the mesh contains 3D cell block '" +
-                std::string(cb.Type()) +
-                "' that is not linear tetra -- run convert_cells(mode='simplexify') first");
-        throw std::invalid_argument(
-            std::string(kOvPrefix) +
-            "operates on tet-only meshes, but the mesh contains non-3D cell block '" +
-            std::string(cb.Type()) +
-            "' alongside its tets (its nodes would dangle; drop it first, e.g. via split)");
-    }
-    if (!has_tet)
-        throw std::invalid_argument(std::string(kOvPrefix) +
-                                    "requires at least one tetra cell block");
-}
+void optvol_check_blocks(const Mesh& rMesh) { detail::require_tet_only_blocks(rMesh, kOvPrefix); }
 
 // --- tiny geometry over a flat xyz buffer ------------------------------------
 
@@ -263823,39 +266307,12 @@ std::int64_t optvol_pass_32(std::vector<double>& rXyz, std::vector<Tet>& rTets, 
 
 constexpr double kOptvolRadToDeg = 57.295779513082320876798;
 
-// The least dihedral angle of a tet, in degrees, whatever its orientation: the
-// angle between the two faces through each edge. 0 for a degenerate tet.
-double optvol_min_dihedral(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Vec3& rD) {
-    const Vec3 p[4] = {rA, rB, rC, rD};
-    // The edge (i, j) has the opposite edge (k, l); its dihedral angle is the
-    // angle between the normals of faces (i, j, k) and (i, j, l).
-    constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
-                                 {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
-    // The acos of a cosine more than kOptvolAcosSkip below the largest one
-    // evaluated is larger than that one's by more than acos's own error (it
-    // is decreasing, with a slope of magnitude at least 1, and accurate to an
-    // ulp or so), so it cannot be the least: it is skipped, and the least is
-    // the one evaluating all six gives, bit for bit (roadmap 5.5.2: acos was
-    // 31% of optimize_volume's instructions). A NaN cosine is skipped, as
-    // std::min skipped its NaN angle.
-    constexpr double kOptvolAcosSkip = 1e-12;
-    double least = 180.0;
-    double c_most = -2.0;  // the largest cosine whose acos was evaluated
-    for (const auto& e : kEdge) {
-        const Vec3& a = p[e[0]];
-        const Vec3 ab = detail::vec3_sub(p[e[1]], a);
-        const Vec3 n1 = detail::vec3_cross(ab, detail::vec3_sub(p[e[2]], a));
-        const Vec3 n2 = detail::vec3_cross(ab, detail::vec3_sub(p[e[3]], a));
-        const double den = std::sqrt(detail::vec3_dot(n1, n1) * detail::vec3_dot(n2, n2));
-        if (!(den > 0.0))
-            return 0.0;
-        const double c = std::clamp(detail::vec3_dot(n1, n2) / den, -1.0, 1.0);
-        if (!(c > c_most - kOptvolAcosSkip))
-            continue;
-        least = std::min(least, std::acos(c) * kOptvolRadToDeg);
-        c_most = std::max(c_most, c);
-    }
-    return least;
+// The least dihedral angle of a tet, in degrees, whatever its orientation; 0
+// for a degenerate tet. The shared kernel (detail/fem_kernels.hpp), moved
+// there verbatim so adapt_volume measures exactly what this operation does.
+inline double optvol_min_dihedral(const Vec3& rA, const Vec3& rB, const Vec3& rC,
+                                  const Vec3& rD) {
+    return detail::tet_min_dihedral(rA, rB, rC, rD);
 }
 
 double optvol_min_dihedral_tet(const std::vector<double>& rXyz, const Tet& t) {
