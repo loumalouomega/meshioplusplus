@@ -625,3 +625,30 @@ def test_side_regions_are_not_written(tmp_path):
         path = str(tmp_path / "s.cgns")
         write(path)
         assert "sides" not in {r.name for r in _core.cgns_read(path).regions}
+
+
+@pytest.mark.parametrize("engine", ["python", "core"])
+def test_every_zone_is_read_and_a_narrower_zone_is_padded(tmp_path, engine):
+    """Roadmap 2.3.1.1: zones concatenate in name order; a zone with fewer
+    coordinates than another is padded with zeros rather than misaligned."""
+    import h5py
+
+    pts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    mesh = meshioplusplus.Mesh(pts, [("triangle", np.array([[0, 1, 2]]))])
+    p = tmp_path / "two_zone.cgns"
+    _cgns.write(p, mesh)
+    with h5py.File(p, "r+") as f:
+        f.copy("Base/Zone1", "Base/Zone2")
+        zone2 = f["Base/Zone2"]
+        zone2.attrs["name"] = np.bytes_("Zone2".ljust(33, "\0"))
+        del zone2["GridCoordinates/CoordinateZ"]
+    read = _cgns.read if engine == "python" else meshioplusplus.read
+    if engine == "core" and not hasattr(_core, "cgns_read"):
+        pytest.skip("no compiled CGNS reader")
+    out = read(p)
+    assert out.points.shape == (6, 3)
+    np.testing.assert_array_equal(out.points[:3], pts)
+    np.testing.assert_array_equal(out.points[3:, :2], pts[:, :2])
+    np.testing.assert_array_equal(out.points[3:, 2], 0.0)
+    assert [c.type for c in out.cells] == ["triangle", "triangle"]
+    np.testing.assert_array_equal(out.cells[1].data, [[3, 4, 5]])

@@ -2221,9 +2221,9 @@ class TestCompressedCase:
             back = engine(case)
             assert len(back.points) == 27
         back = meshioplusplus.read(case)
-        np.testing.assert_allclose(
-            np.concatenate([np.ravel(a) for a in back.cell_data["p"]]), np.arange(8)
-        )
+        # Block 0 holds the hexahedra; the boundary patches follow it.
+        assert back.cells[0].type == "hexahedron"
+        np.testing.assert_allclose(np.ravel(back.cell_data["p"][0]), np.arange(8))
         meshioplusplus.openfoam.write(case, mesh)
         assert (poly / "points").is_file()
         assert not list(tmp_path.rglob("*.gz"))
