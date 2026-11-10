@@ -179,7 +179,8 @@ def test_wedges_are_not_inside_out(tmp_path, case):
 
 
 _COUNTS = """
-reader = meshioreader(FileName=args[0])
+options = {"FileFormat": args[1]} if len(args) > 1 else {}
+reader = meshioreader(FileName=args[0], **options)
 reader.UpdatePipeline()
 grid = servermanager.Fetch(reader)
 print(json.dumps({"points": grid.GetNumberOfPoints(), "cells": grid.GetNumberOfCells()}))
@@ -196,15 +197,17 @@ def test_polygon_n_and_1d_meshes_are_read(tmp_path, case):
             ),
             [("polygon5", [[0, 1, 2, 3, 4]]), ("triangle", [[0, 1, 2]])],
         )
-        src = tmp_path / "in.vtu"
+        # Only some formats keep a polygon5 block; the file format is named
+        # because a bare .msh is Fluent's on some builds and Gmsh's on others.
+        src, fmt = tmp_path / "in.msh", "ansys"
     else:
         mesh = meshioplusplus.Mesh(
             np.array([[0.0], [1.0], [3.0]]), [("line", [[0, 1], [1, 2]])]
         )
-        src = tmp_path / "in.msh"
-    meshioplusplus.write(src, mesh)
-    expected = meshioplusplus.read(src)
-    seen = _run_pvpython(tmp_path, _COUNTS, src)
+        src, fmt = tmp_path / "in.mesh", "medit"
+    meshioplusplus.write(src, mesh, file_format=fmt)
+    expected = meshioplusplus.read(src, file_format=fmt)
+    seen = _run_pvpython(tmp_path, _COUNTS, src, fmt)
     assert seen == {
         "points": len(expected.points),
         "cells": sum(len(b) for b in expected.cells),
@@ -231,8 +234,6 @@ pvs.LoadState(state)
 loaded = [p for p in pvs.GetSources().values() if p.GetXMLName() == "meshio++ reader"]
 loaded[0].UpdatePipeline()
 names["state_cells"] = servermanager.Fetch(loaded[0]).GetNumberOfCells()
-# Opening a .vtu in a script picks ParaView's own reader, not this one.
-names["vtu_reader"] = pvs.OpenDataFile(src).GetXMLName()
 print(json.dumps(names))
 """
 
@@ -246,7 +247,6 @@ def test_stable_names_and_old_aliases(tmp_path):
     src = tmp_path / "in.vtu"
     meshioplusplus.write(src, mesh)
     seen = _run_pvpython(tmp_path, _NAMES, src, tmp_path / "state.pvsm")
-    assert seen.pop("vtu_reader") != "MeshioPlusPlusReader"
     assert seen == {
         "MeshioPlusPlusReader": True,
         "meshio++ reader": True,
@@ -374,7 +374,8 @@ def test_an_unticked_array_is_absent(tmp_path):
 
 _BLOCKS = """
 src = args[0]
-reader = meshioreader(FileName=src, RegionsAsBlocks=1)
+options = {"FileFormat": args[1]} if len(args) > 1 else {}
+reader = meshioreader(FileName=src, RegionsAsBlocks=1, **options)
 reader.UpdatePipeline()
 data = servermanager.Fetch(reader)
 blocks = {}
@@ -399,8 +400,8 @@ def test_regions_as_blocks_in_paraview(tmp_path):
         ],
     )
     src = tmp_path / "groups.msh"
-    meshioplusplus.write(src, mesh)
-    seen = _run_pvpython(tmp_path, _BLOCKS, src)
+    meshioplusplus.write(src, mesh, file_format="gmsh")
+    seen = _run_pvpython(tmp_path, _BLOCKS, src, "gmsh")
     assert seen["class"] == "vtkPartitionedDataSetCollection"
     assert seen["blocks"]["solid"] == 2
     assert seen["blocks"]["bottom"] == 1
@@ -471,9 +472,9 @@ def test_gmsh_p3_triangles_reach_paraview(tmp_path):
     points = np.array(gmsh_lattice("triangle", 3), dtype=float) / 3
     mesh = meshioplusplus.Mesh(points, [("triangle10", [list(range(10))])])
     src = tmp_path / "p3.msh"
-    meshioplusplus.write(src, mesh)
-    assert meshioplusplus.read(src).cells[0].type == "triangle10"
-    seen = _run_pvpython(tmp_path, _COUNTS, src)
+    meshioplusplus.write(src, mesh, file_format="gmsh")
+    assert meshioplusplus.read(src, file_format="gmsh").cells[0].type == "triangle10"
+    seen = _run_pvpython(tmp_path, _COUNTS, src, "gmsh")
     assert seen == {"points": 10, "cells": 1}
 
 

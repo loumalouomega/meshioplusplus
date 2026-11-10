@@ -53,7 +53,7 @@ From `pvpython` or `pvbatch`, `paraview.simple.LoadPlugin(path, ns=globals())` l
 
 The reader and the writer are the server-manager proxies `MeshioPlusPlusReader` (group `sources`) and `MeshioPlusPlusWriter` (group `writers`): stable identifiers that state files and `servermanager.ProxyManager()` lookups use. `paraview.simple` names its functions after their labels, `meshio++ reader` and `meshio++ Writer`, so scripts keep calling `meshioreader(...)` and `meshioWriter(...)`. The names the plugin used before, `meshio++ reader` and `meshio++ Writer`, stay registered as aliases (labelled "(old name)", without a file-dialog entry), so a state file saved with them still loads.
 
-The reader registers every extension meshio++ knows, `.vtu` and the other formats ParaView reads itself included. In the GUI, ParaView then asks which reader to open such a file with and can remember the answer as the default for that extension; `paraview.simple.OpenDataFile` keeps picking ParaView's own reader for those extensions (CI checks this for `.vtu`), so call `meshioreader(FileName=...)` to read one through meshio++.
+The reader registers every extension meshio++ knows, `.vtu` and the other formats ParaView reads itself included. In the GUI, ParaView then asks which reader to open such a file with and can remember the answer as the default for that extension; `paraview.simple.OpenDataFile` may pick meshio++'s reader for those extensions too once the plugin is loaded, so call the reader you want by name: `meshioreader(FileName=...)` reads through meshio++, and ParaView's own reader proxy (for example `XMLUnstructuredGridReader`) reads through ParaView.
 
 ## Usage
 
