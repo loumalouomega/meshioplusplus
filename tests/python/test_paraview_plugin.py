@@ -382,7 +382,10 @@ blocks = {}
 for i in range(data.GetNumberOfPartitionedDataSets()):
     name = data.GetMetaData(i).Get(data.NAME())
     blocks[name] = data.GetPartition(i, 0).GetNumberOfCells()
-print(json.dumps({"class": data.GetClassName(), "blocks": blocks}))
+assembly = data.GetDataAssembly()
+print(json.dumps({"class": data.GetClassName(), "blocks": blocks,
+                  "count": data.GetNumberOfPartitionedDataSets(),
+                  "assembly": assembly.GetNumberOfChildren(0) if assembly else None}))
 """
 
 
@@ -402,9 +405,9 @@ def test_regions_as_blocks_in_paraview(tmp_path):
     src = tmp_path / "groups.msh"
     meshioplusplus.write(src, mesh, file_format="gmsh")
     seen = _run_pvpython(tmp_path, _BLOCKS, src, "gmsh")
-    assert seen["class"] == "vtkPartitionedDataSetCollection"
-    assert seen["blocks"]["solid"] == 2
-    assert seen["blocks"]["bottom"] == 1
+    assert seen["class"] == "vtkPartitionedDataSetCollection", seen
+    assert seen["blocks"].get("solid") == 2, seen
+    assert seen["blocks"].get("bottom") == 1, seen
 
 
 _SOURCES = """
