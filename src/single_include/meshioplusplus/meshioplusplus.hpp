@@ -227692,6 +227692,13 @@ private:
                           std::vector<std::int32_t>& rFixedClass);
     std::int64_t SwapPass();
 
+    // smoothing
+    /// Per class, 0 for the interior vertices of that class a smoothing may move.
+    std::vector<std::uint8_t> InteriorPins(std::int32_t Class) const;
+    std::int64_t SmoothInteriorPass(bool Odt);
+    double StarAmips(std::int64_t V, const Vec3& rP, double& rMinQuality, bool& rValid) const;
+    std::int64_t AmipsPass();
+
     void Time(const char* pStage, AdvClock::time_point Since) {
         mTimes[pStage] += adv_seconds(Since);
     }
@@ -228594,6 +228601,130 @@ std::int64_t AdvRemesher::SwapPass() {
     return applied;
 }
 
+// --- smoothing -------------------------------------------------------------------
+
+std::vector<std::uint8_t> AdvRemesher::InteriorPins(std::int32_t Class) const {
+    std::vector<std::uint8_t> pinned(mStore.NumVertices(), 1);
+    for (std::size_t v = 0; v < mStore.NumVertices(); ++v) {
+        if (!mStore.mVertexAlive[v] || mStore.mFrozen[v] ||
+            mStore.Kind(static_cast<std::int64_t>(v)) != TetVertexKind::Interior ||
+            mStore.mVertexTets[v].empty())
+            continue;
+        if (mStore.mClass[static_cast<std::size_t>(mStore.mVertexTets[v].front())] == Class)
+            pinned[v] = 0;
+    }
+    return pinned;
+}
+
+// The interior vertices of each class: optimize_volume's guarded ODT
+// relocation (each moved vertex's star keeps its least dihedral angle) and,
+// for the tetrahedra under 40 degrees, its worst-cell smoothing.
+std::int64_t AdvRemesher::SmoothInteriorPass(bool Odt) {
+    std::vector<std::vector<detail::TetFlipTet>> by_class;
+    std::vector<detail::TetFlipTet> fixed;
+    std::vector<std::int32_t> fixed_class;
+    TetsByClass(by_class, fixed, fixed_class);
+    SmoothOptions so;
+    so.mMethod = SmoothMethod::Odt;
+    so.mIterations = 1;
+    so.mGuardInversion = true;
+    std::int64_t moved = 0;
+    for (std::size_t c = 0; c < by_class.size(); ++c) {
+        if (by_class[c].empty())
+            continue;
+        const std::vector<std::uint8_t> pinned = InteriorPins(static_cast<std::int32_t>(c));
+        if (std::find(pinned.begin(), pinned.end(), 0) == pinned.end())
+            continue;
+        if (Odt)
+            moved += detail::tet_flip_guarded_odt(mStore.mXyz, by_class[c], pinned, so, mEpsVol6);
+        moved += detail::tet_flip_smooth_worst(mStore.mXyz, by_class[c], pinned, mEpsVol6,
+                                               kAdvWorstThresholdDeg);
+    }
+    if (moved > 0)
+        for (std::uint32_t& v : mVersion)
+            ++v;
+    return moved;
+}
+
+// The AMIPS energy of the star of V with V at rP, its least quality, and
+// whether every tetrahedron of it stays strictly positive (exact).
+double AdvRemesher::StarAmips(std::int64_t V, const Vec3& rP, double& rMinQuality,
+                              bool& rValid) const {
+    double e = 0.0;
+    rMinQuality = std::numeric_limits<double>::infinity();
+    rValid = true;
+    for (const std::int64_t t : mStore.mVertexTets[static_cast<std::size_t>(V)]) {
+        const TetCorners& c = mStore.mTets[static_cast<std::size_t>(t)];
+        Vec3 q[4];
+        for (int k = 0; k < 4; ++k)
+            q[k] = c[k] == V ? rP : mStore.Point(c[k]);
+        const double qual = Quality(q[0], q[1], q[2], q[3]);
+        if (!(qual > 0.0)) {
+            rValid = false;
+            return std::numeric_limits<double>::infinity();
+        }
+        rMinQuality = std::min(rMinQuality, qual);
+        e += detail::tet_amips(q[0], q[1], q[2], q[3]);
+    }
+    return e;
+}
+
+// Interior vertices, one at a time in ascending order: a step down the
+// gradient of the star's conformal AMIPS energy (central differences), halved
+// until the energy drops with every tetrahedron positive and the star's least
+// quality no lower (Hu et al. 2020 smooth the same energy).
+std::int64_t AdvRemesher::AmipsPass() {
+    std::int64_t moved = 0;
+    std::vector<std::int64_t> ring;
+    for (std::size_t v = 0; v < mStore.NumVertices(); ++v) {
+        const std::int64_t V = static_cast<std::int64_t>(v);
+        if (!mStore.mVertexAlive[v] || mStore.mFrozen[v] ||
+            mStore.Kind(V) != TetVertexKind::Interior)
+            continue;
+        const Vec3 p0 = mStore.Point(V);
+        double q0 = 0.0;
+        bool valid = false;
+        const double e0 = StarAmips(V, p0, q0, valid);
+        if (!valid)
+            continue;
+        mStore.VertexRing(V, ring);
+        double edge = 0.0;
+        for (const std::int64_t x : ring)
+            edge += detail::vec3_norm(detail::vec3_sub(mStore.Point(x), p0));
+        edge /= static_cast<double>(std::max<std::size_t>(ring.size(), 1));
+        const double h = 1e-6 * edge;
+        Vec3 g{0.0, 0.0, 0.0};
+        bool ok = true;
+        for (int d = 0; d < 3 && ok; ++d) {
+            Vec3 pp = p0, pm = p0;
+            pp[static_cast<std::size_t>(d)] += h;
+            pm[static_cast<std::size_t>(d)] -= h;
+            double qa = 0.0, qb = 0.0;
+            bool va = false, vb = false;
+            const double ea = StarAmips(V, pp, qa, va), eb = StarAmips(V, pm, qb, vb);
+            ok = va && vb;
+            g[static_cast<std::size_t>(d)] = (ea - eb) / (2.0 * h);
+        }
+        const double gn = detail::vec3_norm(g);
+        if (!ok || !(gn > 0.0))
+            continue;
+        double step = 0.1 * edge / gn;
+        for (int k = 0; k < 12; ++k, step *= 0.5) {
+            const Vec3 p = detail::vec3_sub(p0, detail::vec3_scale(g, step));
+            double q = 0.0;
+            bool vp = false;
+            const double e = StarAmips(V, p, q, vp);
+            if (vp && e < e0 && q >= q0) {
+                mStore.SetPoint(V, p);
+                ++mVersion[v];
+                ++moved;
+                break;
+            }
+        }
+    }
+    return moved;
+}
+
 // --- output ----------------------------------------------------------------
 
 void AdvRemesher::Emit() {
@@ -228832,12 +228963,43 @@ void AdvRemesher::Run() {
             Time("swap", t0);
             Verify("swap");
         }
+        if (mrOptions.mEnableSmooth) {
+            t0 = AdvClock::now();
+            const bool amips = mrOptions.mQualityMetric == AdaptVolumeQuality::Amips;
+            std::int64_t n = amips ? AmipsPass() : 0;
+            n += SmoothInteriorPass(!amips);
+            mrResult.mNumSmoothed += n;  // moves do not count towards the 1% stop
+            Time("smooth", t0);
+            Verify("smooth");
+        }
         ++mrResult.mIterations;
         if (static_cast<double>(changed) < 0.01 * static_cast<double>(mStore.NumAliveTets()))
             break;
         if (mrOptions.mTargetMinDihedral > 0.0 &&
             Measure().mMinDihedral >= mrOptions.mTargetMinDihedral)
             break;
+    }
+
+    // polish: the worst-cell moves and smoothing until they stop (at most 3 rounds)
+    if (mrOptions.mEnableSwap || mrOptions.mEnableSmooth) {
+        t0 = AdvClock::now();
+        for (int round = 0; round < 3; ++round) {
+            std::int64_t n = 0;
+            if (mrOptions.mEnableSwap) {
+                const std::int64_t k = SwapPass();
+                mrResult.mNumSwapped += k;
+                n += k;
+            }
+            if (mrOptions.mEnableSmooth) {
+                const std::int64_t k = SmoothInteriorPass(false);
+                mrResult.mNumSmoothed += k;
+                n += k;
+            }
+            if (n == 0)
+                break;
+        }
+        Time("polish", t0);
+        Verify("polish");
     }
 
     t0 = AdvClock::now();

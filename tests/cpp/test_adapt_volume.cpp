@@ -455,7 +455,11 @@ TEST(AdaptVolume, OctreeSphereWithAFrozenBoundary) {
     o.mPreserveBoundary = true;
     const AdaptVolumeResult r = adapt_volume(in, o);
     print_report("octree sphere, boundary frozen", r);
-    EXPECT_LT(r.mNumTetsAfter, r.mNumTetsBefore);
+    // the default sphere's interior is near the size field already: the
+    // passes trade a few vertices at the 4/5 and 4/3 thresholds, and the least
+    // angle rises
+    EXPECT_LE(r.mNumTetsAfter, r.mNumTetsBefore + r.mNumTetsBefore / 50);
+    EXPECT_GE(r.mMinDihedralAfter, r.mMinDihedralBefore);
     EXPECT_EQ(boundary_triangles(r.mMesh), boundary_triangles(in));
     EXPECT_NEAR(r.mVolumeAfter, r.mVolumeBefore, 1e-12 * r.mVolumeBefore);
     EXPECT_GE(min_dihedral(r.mMesh), std::min(r.mMinDihedralBefore, 10.0) - 1e-9);
@@ -595,6 +599,38 @@ TEST(AdaptVolume, SwapsNeverCrossAMaterialInterface) {
     ASSERT_EQ(r.mRegionVolumeChange.size(), 2u);
     EXPECT_NEAR(r.mRegionVolumeChange[0].second, 0.0, 1e-12);
     EXPECT_NEAR(r.mRegionVolumeChange[1].second, 0.0, 1e-12);
+}
+
+// --- M5: smoothing ------------------------------------------------------------------
+
+TEST(AdaptVolume, SmoothingRaisesTheInteriorWithoutTouchingTheBoundary) {
+    const CheckInvariants check;
+    // a split box (bad interior tetrahedra), then smoothing alone
+    AdaptVolumeOptions o;
+    o.mHmin = 0.1;
+    o.mHmax = 0.15;
+    o.mSizeArray = "h";
+    o.mEnableCollapse = false;
+    o.mEnableSmooth = false;
+    o.mEnableSwap = false;
+    const Mesh rough = adapt_volume(with_sizes(tet_box(2), 0.12), o).mMesh;
+    for (const auto metric :
+         {mio::AdaptVolumeQuality::MinDihedral, mio::AdaptVolumeQuality::Amips}) {
+        AdaptVolumeOptions s;
+        s.mQualityMetric = metric;
+        s.mEnableCollapse = false;
+        s.mEnableSplit = false;
+        s.mEnableSwap = false;
+        const AdaptVolumeResult r = adapt_volume(rough, s);
+        print_report(metric == mio::AdaptVolumeQuality::Amips ? "smoothing alone, amips"
+                                                              : "smoothing alone, odt",
+                     r);
+        EXPECT_GT(r.mNumSmoothed, 0);
+        EXPECT_GE(r.mMinDihedralAfter, r.mMinDihedralBefore);
+        EXPECT_GT(r.mMeanQualityAfter, r.mMeanQualityBefore);
+        EXPECT_EQ(boundary_triangles(r.mMesh), boundary_triangles(rough));
+        EXPECT_NEAR(r.mVolumeAfter, r.mVolumeBefore, 1e-12);
+    }
 }
 
 }  // namespace
