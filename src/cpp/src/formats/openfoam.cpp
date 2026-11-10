@@ -2944,7 +2944,8 @@ class FoamOut : public std::ostream {
   private:
     bool mCompress;
     std::string mTarget;
-    std::ofstream mFile;
+    // Opened by the constructor through make_classic_ofstream (the classic locale).
+    decltype(detail::make_classic_ofstream()) mFile = detail::make_classic_ofstream();
     std::stringbuf mBuffer;
 };
 

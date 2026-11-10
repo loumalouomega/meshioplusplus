@@ -21337,6 +21337,12 @@ struct OpenFoamInfo {
 struct OpenFoamWriteOptions {
     /// `false` (default) writes ASCII, matching every earlier release.
     bool mBinary = false;
+    /// `true` writes every case file gzipped as `<name>.gz`, as OpenFOAM's
+    /// `writeCompression on` does, and removes a plain file of the same name
+    /// (ABI 44, roadmap 2.3.5.1). Needs a build with zlib
+    /// (`MESHIOPLUSPLUS_WITH_ZLIB`); without it the write throws `WriteError`.
+    /// It sits in the padding after #mBinary, so the size is unchanged.
+    bool mCompress = false;
     /// Label (integer) width in bits: 32 or 64. Only meaningful when
     /// #mBinary is `true` — ASCII numbers carry no width of their own.
     int mLabelBits = 32;
@@ -47174,6 +47180,7 @@ private:
  */
 
 // System includes
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -47325,6 +47332,31 @@ NDArray append_rows(const NDArray& rA, std::size_t NumRows, std::size_t NumNew, 
     rFill(sink.Data());
     sink.Commit();
     return b;
+}
+
+/**
+ * @brief Float64 `(n_k, c_k)` blocks of rows stacked into one `(sum n_k, C)`
+ * array, `C` the widest `c_k` (at least @p MinCols): a narrower block's missing
+ * columns are zero. What a multi-zone reader does with each zone's points.
+ */
+inline NDArray stack_padded_rows(const std::vector<NDArray>& rBlocks, std::size_t MinCols) {
+    std::size_t total = 0;
+    std::size_t cols = MinCols;
+    for (const NDArray& b : rBlocks) {
+        total += b.Shape()[0];
+        cols = std::max(cols, b.Shape()[1]);
+    }
+    NDArray out(DType::Float64, {total, cols});  // zero-filled
+    double* dst = out.As<double>();
+    std::size_t row = 0;
+    for (const NDArray& b : rBlocks) {
+        const double* src = b.As<double>();
+        const std::size_t n = b.Shape()[0];
+        const std::size_t c = b.Shape()[1];
+        for (std::size_t i = 0; i < n; ++i, ++row)
+            std::copy(src + i * c, src + (i + 1) * c, dst + row * cols);
+    }
+    return out;
 }
 
 }  // namespace detail
@@ -51526,6 +51558,42 @@ struct GeometryUtils {
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/geometry_utils.hpp =====
+// ===== begin src/cpp/src/detail/gzip_deflate.hpp =====
+/**
+ * @file detail/gzip_deflate.hpp
+ * @brief gzip output, byte-identical to Python's `gzip.compress(data, mtime=0)`.
+ *
+ * A **core-private** header (the `slot_runs.hpp` precedent): no installed
+ * header names it, and it adds nothing to the API or the ABI. The reading
+ * side is `detail::decompress_bytes` (`detail/compressed_input.hpp`).
+ *
+ * The layout is the one CPython writes: a 10-byte header with mtime 0, XFL 2
+ * and OS 255, raw deflate at level 9, then CRC-32 and the input size, so a
+ * native writer and its Python twin produce the same bytes when they share a
+ * zlib. libMesh's `.gz` meshes and OpenFOAM's `writeCompression on` cases are
+ * written through it.
+ */
+
+// System includes
+#include <string>
+#include <string_view>
+
+namespace meshioplusplus::detail {
+
+/// Whether this build can write gzip (it was built with zlib,
+/// `MESHIOPLUSPLUS_WITH_ZLIB`).
+bool gzip_compress_available();
+
+/**
+ * @brief `In` as one gzip member.
+ * @param In The bytes to compress.
+ * @param pWhat The format name the errors start with (`"libMesh"`).
+ * @throws WriteError When zlib fails, or the build has none.
+ */
+std::string gzip_compress(std::string_view In, const char* pWhat);
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/gzip_deflate.hpp =====
 // ===== begin src/cpp/src/detail/hausdorff_samples.hpp =====
 /**
  * @file detail/hausdorff_samples.hpp
@@ -92122,6 +92190,60 @@ bool point_bbox(const Mesh& rMesh, std::array<double, 3>& rLo, std::array<double
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/grid_lattice.cpp =====
+// ===== begin src/cpp/src/detail/gzip_deflate.cpp =====
+#include <cstdint>
+#include <string>
+#include <string_view>
+
+// Project includes
+
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+#include <zlib.h>
+#endif
+
+namespace meshioplusplus::detail {
+
+bool gzip_compress_available() {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+    return true;
+#else
+    return false;
+#endif
+}
+
+std::string gzip_compress(std::string_view In, const char* pWhat) {
+#ifdef MESHIOPLUSPLUS_HAS_ZLIB
+    z_stream z{};
+    if (deflateInit2(&z, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+        throw WriteError(std::string(pWhat) + ": zlib deflateInit2 failed");
+    std::string out("\x1f\x8b\x08\x00\x00\x00\x00\x00\x02\xff", 10);
+    out.resize(10 + deflateBound(&z, static_cast<uLong>(In.size())));
+    z.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(In.data()));
+    z.avail_in = static_cast<uInt>(In.size());
+    z.next_out = reinterpret_cast<Bytef*>(&out[10]);
+    z.avail_out = static_cast<uInt>(out.size() - 10);
+    const int rc = deflate(&z, Z_FINISH);
+    const std::size_t produced = 10 + z.total_out;
+    deflateEnd(&z);
+    if (rc != Z_STREAM_END)
+        throw WriteError(std::string(pWhat) + ": zlib deflate failed");
+    out.resize(produced);
+    const uLong crc =
+        crc32(0L, reinterpret_cast<const Bytef*>(In.data()), static_cast<uInt>(In.size()));
+    for (const std::uint32_t v :
+         {static_cast<std::uint32_t>(crc), static_cast<std::uint32_t>(In.size())})
+        for (int b = 0; b < 4; ++b)
+            out += static_cast<char>((v >> (8 * b)) & 0xff);
+    return out;
+#else
+    (void)In;
+    throw WriteError(std::string(pWhat) +
+                     ": this build has no zlib (MESHIOPLUSPLUS_WITH_ZLIB) to write .gz");
+#endif
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/gzip_deflate.cpp =====
 // ===== begin src/cpp/src/detail/hdf5_util.cpp =====
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
@@ -134430,19 +134552,9 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
     if (point_chunks.size() == 1) {
         mesh.AssignPoints(std::move(point_chunks.front()));
     } else {
-        std::size_t total = 0;
-        for (const NDArray& c : point_chunks)
-            total += c.Shape()[0];
-        NDArray all(DType::Float64, {total, point_dim_out});
-        double* dst = all.As<double>();
-        std::size_t row = 0;
-        for (const NDArray& c : point_chunks) {
-            const double* src = c.As<double>();
-            const std::size_t n = c.Shape()[0];
-            std::memcpy(dst + row * point_dim_out, src, n * point_dim_out * sizeof(double));
-            row += n;
-        }
-        mesh.AssignPoints(std::move(all));
+        // Zones may differ in coordinate count; the widest wins and the others
+        // pad with zeros (the cgnslib reader's rule too).
+        mesh.AssignPoints(detail::stack_padded_rows(point_chunks, 2));
     }
     if (length_unit > 0.0)
         detail::set_mesh_length_unit(mesh, length_unit);
@@ -134753,7 +134865,7 @@ struct MllSection {
 
 /// Read one fixed-size section into a rectangular block.
 void cgns_mll_read_fixed(int fn, int B, int Z, const MllSection& rSec, const std::string& rMeshio,
-                         const std::string& rPath, Mesh& rMesh) {
+                         std::int64_t PointOffset, const std::string& rPath, Mesh& rMesh) {
     const int npc = [&] {
         int n = 0;
         cg_npe(rSec.mType, &n);
@@ -134779,7 +134891,7 @@ void cgns_mll_read_fixed(int fn, int B, int Z, const MllSection& rSec, const std
         const cgsize_t* src = raw.data() + c * static_cast<std::size_t>(npc);
         for (int k = 0; k < npc; ++k)
             dst[c * static_cast<std::size_t>(npc) + k] =
-                static_cast<std::int64_t>(src[perm ? (*perm)[k] : k]) - 1;
+                static_cast<std::int64_t>(src[perm ? (*perm)[k] : k]) - 1 + PointOffset;
     }
     rMesh.AddCellBlock(rMeshio, std::move(conn));
 }
@@ -134810,7 +134922,7 @@ void cgns_mll_check_offsets(const std::vector<cgsize_t>& rOffsets, cgsize_t Data
                       rPath);
 }
 
-MllFaces cgns_mll_read_ngon(int fn, int B, int Z, const MllSection& rSec,
+MllFaces cgns_mll_read_ngon(int fn, int B, int Z, const MllSection& rSec, std::int64_t PointOffset,
                             const std::string& rPath) {
     const std::size_t nfaces = static_cast<std::size_t>(rSec.mEnd - rSec.mStart + 1);
     cgsize_t data_size = 0;
@@ -134835,7 +134947,8 @@ MllFaces cgns_mll_read_ngon(int fn, int B, int Z, const MllSection& rSec,
     out.mOffsets.push_back(0);
     for (std::size_t f = 0; f < nfaces; ++f) {
         for (cgsize_t i = offsets[f]; i < offsets[f + 1]; ++i)
-            out.mNodes.push_back(static_cast<std::int64_t>(elems[static_cast<std::size_t>(i)]) - 1);
+            out.mNodes.push_back(static_cast<std::int64_t>(elems[static_cast<std::size_t>(i)]) - 1 +
+                                 PointOffset);
         out.mOffsets.push_back(static_cast<std::int64_t>(out.mNodes.size()));
     }
     return out;
@@ -135102,79 +135215,16 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
             break;
     }
     if (pTarget != nullptr && !found_target)
-        cgns_mll_fail(
-            "ZoneIterativeData_t/FlowSolutionPointers names '" + *pTarget +
-                "', which no FlowSolution_t in this zone has",
-            rPath);
+        cgns_mll_fail("ZoneIterativeData_t/FlowSolutionPointers names '" + *pTarget +
+                          "', which no FlowSolution_t in this zone has",
+                      rPath);
 }
 
-}  // namespace
-
-Mesh read_cgns_mll(const std::string& rPath) { return read_cgns_mll(rPath, ReadOptions{}); }
-
-Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
-    detail::LibraryLock lock;
-    CgnsFile file(rPath);
-    const int fn = file.Fn();
-
-    int nbases = 0;
-    if (cg_nbases(fn, &nbases) != CG_OK || nbases < 1)
-        cgns_mll_fail("no CGNSBase_t found", rPath);
-    if (nbases > 1)
-        log::warn("CGNS (cgnslib): '{}' has {} bases; reading the first only", rPath, nbases);
-    const int B = 1;
-
-    char base_name[33] = {0};
-    int cell_dim = 0, phys_dim = 0;
-    if (cg_base_read(fn, B, base_name, &cell_dim, &phys_dim) != CG_OK)
-        cgns_mll_fail("cg_base_read failed", rPath);
-
-    int nzones = 0;
-    if (cg_nzones(fn, B, &nzones) != CG_OK || nzones < 1)
-        cgns_mll_fail("no Zone_t found", rPath);
-    if (nzones > 1)
-        log::warn("CGNS (cgnslib): '{}' has {} zones; reading the first only", rPath, nzones);
-    const int Z = 1;
-
-    CGNS_ENUMT(ZoneType_t) ztype = CGNS_ENUMV(ZoneTypeNull);
-    if (cg_zone_type(fn, B, Z, &ztype) != CG_OK)
-        cgns_mll_fail("cg_zone_type failed", rPath);
-    if (ztype != CGNS_ENUMV(Unstructured))
-        throw ReadError(detail::format_compat(
-            "meshio++: CGNS (cgnslib): '{}' zone 1 is Structured; meshio++ reads unstructured "
-            "zones only",
-            rPath));
-
-    char zone_name[33] = {0};
-    cgsize_t zsize[9] = {0};
-    if (cg_zone_read(fn, B, Z, zone_name, zsize) != CG_OK)
-        cgns_mll_fail("cg_zone_read failed", rPath);
-    const std::size_t npoints = static_cast<std::size_t>(zsize[0]);
-
-    // --- coordinates -------------------------------------------------------
-    int ncoords = 0;
-    if (cg_ncoords(fn, B, Z, &ncoords) != CG_OK)
-        cgns_mll_fail("cg_ncoords failed", rPath);
-    const std::size_t dim = static_cast<std::size_t>(std::max(2, std::min(3, ncoords)));
-
-    Mesh mesh;
-    {
-        NDArray points = NDArray::Uninit(DType::Float64, {npoints, dim});
-        double* dst = points.As<double>();
-        std::vector<double> buf(npoints);
-        const cgsize_t rmin = 1;
-        const cgsize_t rmax = static_cast<cgsize_t>(npoints);
-        static const char* kNames[3] = {"CoordinateX", "CoordinateY", "CoordinateZ"};
-        for (std::size_t d = 0; d < dim; ++d) {
-            if (cg_coord_read(fn, B, Z, kNames[d], CGNS_ENUMV(RealDouble), &rmin, &rmax,
-                              buf.data()) != CG_OK)
-                cgns_mll_fail(std::string("cg_coord_read failed for ") + kNames[d], rPath);
-            for (std::size_t i = 0; i < npoints; ++i)
-                dst[i * dim + d] = buf[i];
-        }
-        mesh.AssignPoints(std::move(points));
-    }
-
+/// Read zone `Z`'s element sections into blocks appended to `rMesh`, node ids
+/// shifted by `PointOffset` (the points of the zones read before it), in
+/// ascending ElementRange order -- the raw-HDF5 reader's rule per zone.
+void cgns_mll_read_zone_cells(int fn, int B, int Z, std::int64_t PointOffset,
+                              const std::string& rPath, Mesh& rMesh) {
     // --- sections ----------------------------------------------------------
     int nsections = 0;
     if (cg_nsections(fn, B, Z, &nsections) != CG_OK)
@@ -135202,7 +135252,7 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
     std::vector<const MllSection*> nfaces;
     for (const MllSection& sec : secs) {
         if (sec.mType == CGNS_ENUMV(NGON_n)) {
-            ngons.push_back(cgns_mll_read_ngon(fn, B, Z, sec, rPath));
+            ngons.push_back(cgns_mll_read_ngon(fn, B, Z, sec, PointOffset, rPath));
             continue;
         }
         if (sec.mType == CGNS_ENUMV(NFACE_n)) {
@@ -135221,7 +135271,7 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
                 "ordering meshio++ has not verified (the cubic/quartic Lagrange family); "
                 "refusing to guess.",
                 sec.mName, static_cast<int>(sec.mType)));
-        cgns_mll_read_fixed(fn, B, Z, sec, meshio, rPath, mesh);
+        cgns_mll_read_fixed(fn, B, Z, sec, meshio, PointOffset, rPath, rMesh);
     }
 
     if (!ngons.empty() && nfaces.empty()) {
@@ -135244,8 +135294,8 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
                         faces.mNodes.begin() + static_cast<std::ptrdiff_t>(faces.mOffsets[i + 1]));
                     offsets.push_back(static_cast<std::int64_t>(flat.size()));
                 }
-                mesh.AddPolygonBlock("polygon" + std::to_string(n), std::move(flat),
-                                     std::move(offsets));
+                rMesh.AddPolygonBlock("polygon" + std::to_string(n), std::move(flat),
+                                      std::move(offsets));
             }
         }
     } else if (!nfaces.empty()) {
@@ -135307,10 +135357,132 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
             }
             for (auto& g : detail::group_polyhedra_by_node_count(std::move(flat), std::move(rows),
                                                                  std::move(cell_faces)))
-                mesh.AddPolyhedronBlock("polyhedron" + std::to_string(g.mNodeCount),
-                                        std::move(g.mFlat), std::move(g.mRowOffsets),
-                                        std::move(g.mFaceOffsets));
+                rMesh.AddPolyhedronBlock("polyhedron" + std::to_string(g.mNodeCount),
+                                         std::move(g.mFlat), std::move(g.mRowOffsets),
+                                         std::move(g.mFaceOffsets));
         }
+    }
+}
+
+/// Zone `Z`'s GridCoordinates as a Float64 `(npoints, dim)` array, `dim` the
+/// zone's own coordinate count clamped to [2, 3].
+NDArray cgns_mll_read_coords(int fn, int B, int Z, std::size_t NumPoints,
+                             const std::string& rPath) {
+    int ncoords = 0;
+    if (cg_ncoords(fn, B, Z, &ncoords) != CG_OK)
+        cgns_mll_fail("cg_ncoords failed", rPath);
+    const std::size_t dim = static_cast<std::size_t>(std::max(2, std::min(3, ncoords)));
+    NDArray points = NDArray::Uninit(DType::Float64, {NumPoints, dim});
+    double* dst = points.As<double>();
+    std::vector<double> buf(NumPoints);
+    const cgsize_t rmin = 1;
+    const cgsize_t rmax = static_cast<cgsize_t>(NumPoints);
+    static const char* kNames[3] = {"CoordinateX", "CoordinateY", "CoordinateZ"};
+    for (std::size_t d = 0; d < dim; ++d) {
+        if (cg_coord_read(fn, B, Z, kNames[d], CGNS_ENUMV(RealDouble), &rmin, &rmax, buf.data()) !=
+            CG_OK)
+            cgns_mll_fail(std::string("cg_coord_read failed for ") + kNames[d], rPath);
+        for (std::size_t i = 0; i < NumPoints; ++i)
+            dst[i * dim + d] = buf[i];
+    }
+    return points;
+}
+
+/// The zone indices of base `B`, Unstructured or not, ordered by zone name: the
+/// order the raw-HDF5 reader walks them in (HDF5's name index), so a file reads
+/// to the same block order with and without cgnslib.
+std::vector<std::pair<std::string, int> > cgns_mll_zones_by_name(int fn, int B,
+                                                                 const std::string& rPath) {
+    int nzones = 0;
+    if (cg_nzones(fn, B, &nzones) != CG_OK || nzones < 1)
+        cgns_mll_fail("no Zone_t found", rPath);
+    std::vector<std::pair<std::string, int> > zones;
+    for (int Z = 1; Z <= nzones; ++Z) {
+        char zone_name[33] = {0};
+        cgsize_t zsize[9] = {0};
+        if (cg_zone_read(fn, B, Z, zone_name, zsize) != CG_OK)
+            cgns_mll_fail("cg_zone_read failed", rPath);
+        zones.emplace_back(zone_name, Z);
+    }
+    std::sort(zones.begin(), zones.end());
+    return zones;
+}
+
+}  // namespace
+
+Mesh read_cgns_mll(const std::string& rPath) {
+    return read_cgns_mll(rPath, ReadOptions{});
+}
+
+Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
+    CgnsFile file(rPath);
+    const int fn = file.Fn();
+
+    int nbases = 0;
+    if (cg_nbases(fn, &nbases) != CG_OK || nbases < 1)
+        cgns_mll_fail("no CGNSBase_t found", rPath);
+    if (nbases > 1)
+        log::warn("CGNS (cgnslib): '{}' has {} bases; reading the first only", rPath, nbases);
+    const int B = 1;
+
+    char base_name[33] = {0};
+    int cell_dim = 0, phys_dim = 0;
+    if (cg_base_read(fn, B, base_name, &cell_dim, &phys_dim) != CG_OK)
+        cgns_mll_fail("cg_base_read failed", rPath);
+
+    // Every zone, concatenated as the raw-HDF5 reader does (roadmap 2.3.1.1):
+    // points stacked zone after zone, each zone's node ids shifted by the
+    // points before it, blocks zone-major and ElementRange-ordered within.
+    const std::vector<std::pair<std::string, int> > zones = cgns_mll_zones_by_name(fn, B, rPath);
+    const std::size_t nzones = zones.size();
+
+    Mesh mesh;
+    std::vector<NDArray> point_chunks;
+    std::int64_t point_offset = 0;
+    std::size_t npoints = 0;
+    for (const auto& [zone_name, Z] : zones) {
+        CGNS_ENUMT(ZoneType_t) ztype = CGNS_ENUMV(ZoneTypeNull);
+        if (cg_zone_type(fn, B, Z, &ztype) != CG_OK)
+            cgns_mll_fail("cg_zone_type failed", rPath);
+        if (ztype != CGNS_ENUMV(Unstructured))
+            throw ReadError(detail::format_compat(
+                "meshio++: CGNS (cgnslib): '{}' zone '{}' is Structured; meshio++ reads "
+                "unstructured zones only",
+                rPath, zone_name));
+
+        char name[33] = {0};
+        cgsize_t zsize[9] = {0};
+        if (cg_zone_read(fn, B, Z, name, zsize) != CG_OK)
+            cgns_mll_fail("cg_zone_read failed", rPath);
+        const std::size_t zone_points = static_cast<std::size_t>(zsize[0]);
+
+        point_chunks.push_back(cgns_mll_read_coords(fn, B, Z, zone_points, rPath));
+        cgns_mll_read_zone_cells(fn, B, Z, point_offset, rPath, mesh);
+
+        // FlowSolution_t is read for a single-zone file only: across zones the
+        // arrays would have to be concatenated, and a solution on only some
+        // zones has no defensible filler -- the raw reader's rule and warning.
+        int nsols = 0;
+        if (nzones > 1 && cg_nsols(fn, B, Z, &nsols) == CG_OK && nsols > 0) {
+            char sol_name[33] = {0};
+            CGNS_ENUMT(GridLocation_t) loc = CGNS_ENUMV(GridLocationNull);
+            if (cg_sol_info(fn, B, Z, 1, sol_name, &loc) == CG_OK)
+                log::warn(
+                    "CGNS: file has {} zones; FlowSolution '{}' on zone '{}' was not read "
+                    "(cross-zone field concatenation is not supported).",
+                    nzones, sol_name, zone_name);
+        }
+        point_offset += static_cast<std::int64_t>(zone_points);
+        npoints += zone_points;
+    }
+
+    // Zones may differ in coordinate count; the widest wins and the others pad
+    // with zeros.
+    if (point_chunks.size() == 1) {
+        mesh.AssignPoints(std::move(point_chunks.front()));
+    } else {
+        mesh.AssignPoints(detail::stack_padded_rows(point_chunks, 2));
     }
 
     // --- FlowSolution_t ----------------------------------------------------
@@ -135324,20 +135496,26 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
     // With BaseIterativeData_t/ZoneIterativeData_t present, only the ONE
     // FlowSolution_t the resolved step's FlowSolutionPointers names is read;
     // without it, every FlowSolution_t is read, as before.
-    const CgnsMllIterativeData iter = cgns_mll_read_iterative_data(fn, B, Z);
-    if (!iter.mFlowSolutionPointers.empty()) {
-        const std::size_t step = rOptions.ResolveTimeStep(iter.mFlowSolutionPointers.size());
-        const std::string target = iter.mFlowSolutionPointers[step];
-        cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, &target);
-    } else {
-        cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, nullptr);
+    if (nzones == 1) {
+        const int Z = zones.front().second;
+        const CgnsMllIterativeData iter = cgns_mll_read_iterative_data(fn, B, Z);
+        if (!iter.mFlowSolutionPointers.empty()) {
+            const std::size_t step = rOptions.ResolveTimeStep(iter.mFlowSolutionPointers.size());
+            const std::string target = iter.mFlowSolutionPointers[step];
+            cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, &target);
+        } else {
+            cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, nullptr);
+        }
     }
 
-    // DimensionalUnits_t: the zone's overrides the base's.
+    // DimensionalUnits_t: a zone's overrides the base's, and with several
+    // zones the last one that names a unit wins, as in the raw reader.
     double length_unit = -1.0;
     if (cg_goto(fn, B, "end") == CG_OK)
         length_unit = cgns_mll_length_unit();
-    if (cg_goto(fn, B, "Zone_t", Z, "end") == CG_OK) {
+    for (const auto& zone : zones) {
+        if (cg_goto(fn, B, "Zone_t", zone.second, "end") != CG_OK)
+            continue;
         const double zone_unit = cgns_mll_length_unit();
         if (zone_unit > 0.0)
             length_unit = zone_unit;
@@ -135358,56 +135536,56 @@ MeshMetadata read_cgns_mll_metadata(const std::string& rPath, const ReadOptions&
         cgns_mll_fail("no CGNSBase_t found", rPath);
     const int B = 1;
 
-    int nzones = 0;
-    if (cg_nzones(fn, B, &nzones) != CG_OK || nzones < 1)
-        cgns_mll_fail("no Zone_t found", rPath);
-    const int Z = 1;
-
-    char zone_name[33] = {0};
-    cgsize_t zsize[9] = {0};
-    if (cg_zone_read(fn, B, Z, zone_name, zsize) != CG_OK)
-        cgns_mll_fail("cg_zone_read failed", rPath);
+    // Every zone, summed as the raw-HDF5 metadata reader sums them.
+    const std::vector<std::pair<std::string, int> > zones = cgns_mll_zones_by_name(fn, B, rPath);
 
     MeshMetadata meta;
     meta.mFormat = "cgns";
-    meta.mNumPoints = static_cast<std::size_t>(zsize[0]);
+    for (const auto& zone : zones) {
+        const int Z = zone.second;
+        char zone_name[33] = {0};
+        cgsize_t zsize[9] = {0};
+        if (cg_zone_read(fn, B, Z, zone_name, zsize) != CG_OK)
+            cgns_mll_fail("cg_zone_read failed", rPath);
+        meta.mNumPoints += static_cast<std::size_t>(zsize[0]);
 
-    int nsections = 0;
-    if (cg_nsections(fn, B, Z, &nsections) == CG_OK) {
-        for (int S = 1; S <= nsections; ++S) {
-            char name[33] = {0};
-            CGNS_ENUMT(ElementType_t) type = CGNS_ENUMV(ElementTypeNull);
-            cgsize_t start = 0, end = 0;
-            int nbndry = 0, parent_flag = 0;
-            if (cg_section_read(fn, B, Z, S, name, &type, &start, &end, &nbndry, &parent_flag) !=
-                CG_OK)
-                continue;
-            if (end < start)
-                continue;
-            CellBlockInfo block;
-            block.mNumCells = static_cast<std::size_t>(end - start + 1);
-            if (type == CGNS_ENUMV(NGON_n)) {
-                block.mType = "polygon";
-                block.mRagged = true;
-            } else if (type == CGNS_ENUMV(NFACE_n)) {
-                block.mType = "polyhedron";
-                block.mRagged = true;
-            } else if (type == CGNS_ENUMV(MIXED)) {
-                continue;  // structurally unsupported; the full reader names it
-            } else {
-                const std::string meshio = cgns_mll_meshio_name(type);
-                if (meshio.empty())
+        int nsections = 0;
+        if (cg_nsections(fn, B, Z, &nsections) == CG_OK) {
+            for (int S = 1; S <= nsections; ++S) {
+                char name[33] = {0};
+                CGNS_ENUMT(ElementType_t) type = CGNS_ENUMV(ElementTypeNull);
+                cgsize_t start = 0, end = 0;
+                int nbndry = 0, parent_flag = 0;
+                if (cg_section_read(fn, B, Z, S, name, &type, &start, &end, &nbndry,
+                                    &parent_flag) != CG_OK)
                     continue;
-                block.mType = meshio;
-                int npc = 0;
-                cg_npe(type, &npc);
-                block.mNodesPerCell = npc > 0 ? static_cast<std::size_t>(npc) : 0;
+                if (end < start)
+                    continue;
+                CellBlockInfo block;
+                block.mNumCells = static_cast<std::size_t>(end - start + 1);
+                if (type == CGNS_ENUMV(NGON_n)) {
+                    block.mType = "polygon";
+                    block.mRagged = true;
+                } else if (type == CGNS_ENUMV(NFACE_n)) {
+                    block.mType = "polyhedron";
+                    block.mRagged = true;
+                } else if (type == CGNS_ENUMV(MIXED)) {
+                    continue;  // structurally unsupported; the full reader names it
+                } else {
+                    const std::string meshio = cgns_mll_meshio_name(type);
+                    if (meshio.empty())
+                        continue;
+                    block.mType = meshio;
+                    int npc = 0;
+                    cg_npe(type, &npc);
+                    block.mNodesPerCell = npc > 0 ? static_cast<std::size_t>(npc) : 0;
+                }
+                meta.mCellBlocks.push_back(std::move(block));
             }
-            meta.mCellBlocks.push_back(std::move(block));
         }
     }
 
-    const CgnsMllIterativeData iter = cgns_mll_read_iterative_data(fn, B, Z);
+    const CgnsMllIterativeData iter = cgns_mll_read_iterative_data(fn, B, zones.front().second);
     meta.mTimeValues = iter.mTimeValues;
 
     return meta;
@@ -156140,9 +156318,6 @@ void write_ip(const std::string& rPath, const Mesh& rMesh) {
 // Project includes
 
 // External includes
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-#include <zlib.h>
-#endif
 #ifdef MESHIOPLUSPLUS_HAS_BZIP2
 #include <bzlib.h>
 #endif
@@ -156154,39 +156329,6 @@ namespace {
 constexpr const char* kLmWhat = "libMesh";
 
 // --- compression: libMesh's `.gz` (gzip) and `.bz2` (bzip2) files ---------------
-
-// gzip, laid out as Python's gzip.compress(data, mtime=0) lays it out (raw
-// deflate at level 9, mtime 0, XFL 2, OS 255), so both engines write the same
-// bytes when they share a zlib.
-std::string lm_gzip(const std::string& rIn) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-    z_stream z{};
-    if (deflateInit2(&z, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK)
-        throw WriteError("libMesh: zlib deflateInit2 failed");
-    std::string out("\x1f\x8b\x08\x00\x00\x00\x00\x00\x02\xff", 10);
-    out.resize(10 + deflateBound(&z, static_cast<uLong>(rIn.size())));
-    z.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(rIn.data()));
-    z.avail_in = static_cast<uInt>(rIn.size());
-    z.next_out = reinterpret_cast<Bytef*>(&out[10]);
-    z.avail_out = static_cast<uInt>(out.size() - 10);
-    const int rc = deflate(&z, Z_FINISH);
-    const std::size_t produced = 10 + z.total_out;
-    deflateEnd(&z);
-    if (rc != Z_STREAM_END)
-        throw WriteError("libMesh: zlib deflate failed");
-    out.resize(produced);
-    const uLong crc =
-        crc32(0L, reinterpret_cast<const Bytef*>(rIn.data()), static_cast<uInt>(rIn.size()));
-    for (const std::uint32_t v :
-         {static_cast<std::uint32_t>(crc), static_cast<std::uint32_t>(rIn.size())})
-        for (int b = 0; b < 4; ++b)
-            out += static_cast<char>((v >> (8 * b)) & 0xff);
-    return out;
-#else
-    (void)rIn;
-    throw WriteError("libMesh: this build has no zlib (MESHIOPLUSPLUS_WITH_ZLIB) to write .gz");
-#endif
-}
 
 std::string lm_bzip2(const std::string& rIn) {
 #ifdef MESHIOPLUSPLUS_HAS_BZIP2
@@ -158023,7 +158165,9 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
     triples(edges, "# number of edge boundary conditions");
     triples(shellfaces, "# number of shellface boundary conditions");
 
-    const std::string data = gz ? lm_gzip(io.Data()) : bz2 ? lm_bzip2(io.Data()) : io.Data();
+    const std::string data = gz    ? detail::gzip_compress(io.Data(), "libMesh")
+                             : bz2 ? lm_bzip2(io.Data())
+                                   : io.Data();
     auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!out)
         throw WriteError("libMesh: cannot open " + rPath + " for writing");
@@ -190001,10 +190145,61 @@ struct FoamFormat {
  * Returns the source itself so the caller controls its lifetime; everything
  * below takes a view into it.
  */
-detail::FileSource read_whole(const std::string& rPath) {
+/**
+ * @brief A case file's text: mapped from disk, or inflated from its `.gz`.
+ *
+ * `writeCompression on` makes OpenFOAM write `points.gz`, `faces.gz`, ... and
+ * gzipped field files in place of the plain ones (roadmap 2.3.5.1). Callers
+ * only ever take `View()`, so the two sources look alike to them.
+ */
+class FoamText {
+  public:
+    explicit FoamText(detail::FileSource Source) : mSource(std::move(Source)) {}
+    explicit FoamText(std::string Inflated) : mInflated(std::move(Inflated)) {}
+    std::string_view View() const { return mSource ? mSource->View() : std::string_view(mInflated); }
+
+  private:
+    std::optional<detail::FileSource> mSource;
+    std::string mInflated;
+};
+
+/// `rPath` itself when it exists, else its gzipped sibling `<rPath>.gz` when
+/// that exists, else `rPath` (so an error names the plain file).
+fs::path foam_resolve(const fs::path& rPath) {
+    std::error_code ec;
+    if (fs::exists(rPath, ec))
+        return rPath;
+    fs::path gz = rPath;
+    gz += ".gz";
+    if (fs::is_regular_file(gz, ec))
+        return gz;
+    return rPath;
+}
+
+/// Whether a case file exists, plain or gzipped.
+bool foam_file_exists(const fs::path& rPath) {
+    std::error_code ec;
+    return fs::exists(foam_resolve(rPath), ec);
+}
+
+/// A directory entry's case-file name: `U.gz` names the field `U`.
+std::string foam_strip_gz(std::string Name) {
+    if (Name.size() > 3 && Name.compare(Name.size() - 3, 3, ".gz") == 0)
+        Name.resize(Name.size() - 3);
+    return Name;
+}
+
+FoamText read_whole(const std::string& rPath) {
+    const fs::path resolved = foam_resolve(rPath);
     try {
-        return detail::FileSource(rPath);
-    } catch (const ReadError&) {
+        if (resolved.native() == fs::path(rPath).native())
+            return FoamText(detail::FileSource(rPath));
+        const detail::FileSource gz(resolved.string());
+        return FoamText(detail::decompress_bytes(detail::Compression::Gzip, gz.View()));
+    } catch (const ReadError& rErr) {
+        if (resolved.native() != fs::path(rPath).native())
+            throw ReadError("Could not read gzipped OpenFOAM file " + resolved.string() + ": " +
+                            rErr.what());
         throw ReadError("Could not open OpenFOAM file: " + rPath);
     }
 }
@@ -190603,7 +190798,7 @@ std::vector<Zone> parse_zone_file_binary(std::string_view rRaw, const char* pLab
 // ---- dispatch readers ----
 
 std::vector<std::array<double, 3>> read_points(const fs::path& rPath) {
-    const detail::FileSource source = read_whole(rPath.string());
+    const FoamText source = read_whole(rPath.string());
     const std::string_view raw = source.View();
     const FoamFormat fmt = detect_format(raw);
     if (fmt.mBinary)
@@ -190612,7 +190807,7 @@ std::vector<std::array<double, 3>> read_points(const fs::path& rPath) {
 }
 
 std::vector<Face> read_faces(const fs::path& rPath) {
-    const detail::FileSource source = read_whole(rPath.string());
+    const FoamText source = read_whole(rPath.string());
     const std::string_view raw = source.View();
     const FoamFormat fmt = detect_format(raw);
     if (fmt.mBinary)
@@ -190621,7 +190816,7 @@ std::vector<Face> read_faces(const fs::path& rPath) {
 }
 
 std::vector<std::int64_t> read_int_list(const fs::path& rPath) {
-    const detail::FileSource source = read_whole(rPath.string());
+    const FoamText source = read_whole(rPath.string());
     const std::string_view raw = source.View();
     const FoamFormat fmt = detect_format(raw);
     if (fmt.mBinary)
@@ -190705,9 +190900,9 @@ RawPolyMesh read_raw_polymesh(const fs::path& rPoly) {
     raw.mPoints = read_points(rPoly / "points");
     raw.mFaces = read_faces(rPoly / "faces");
     raw.mOwner = read_int_list(rPoly / "owner");
-    if (fs::exists(rPoly / "neighbour"))
+    if (foam_file_exists(rPoly / "neighbour"))
         raw.mNeighbour = read_int_list(rPoly / "neighbour");
-    if (fs::exists(rPoly / "boundary"))
+    if (foam_file_exists(rPoly / "boundary"))
         raw.mBoundary = parse_boundary(
             strip_comments_and_header(read_whole((rPoly / "boundary").string()).View()));
     foam_check_polymesh(raw);
@@ -190789,7 +190984,7 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
         pm.mPointAddr = read_int_list(poly / "pointProcAddressing");
         pm.mCellAddr = read_int_list(poly / "cellProcAddressing");
         pm.mFaceAddr = read_int_list(poly / "faceProcAddressing");
-        if (fs::exists(poly / "boundaryProcAddressing"))
+        if (foam_file_exists(poly / "boundaryProcAddressing"))
             pm.mBoundaryAddr = read_int_list(poly / "boundaryProcAddressing");
         for (std::int64_t v : pm.mPointAddr)
             max_point = std::max(max_point, v);
@@ -190939,9 +191134,9 @@ RawPolyMesh reconstruct_decomposed(const fs::path& rCaseRoot,
 
 /// One `cellZones`/`faceZones`/`pointZones` file; empty when the file is absent.
 std::vector<Zone> foam_read_zone_file(const fs::path& rPath, const char* pKey) {
-    if (!fs::exists(rPath))
+    if (!foam_file_exists(rPath))
         return {};
-    const detail::FileSource source = read_whole(rPath.string());
+    const FoamText source = read_whole(rPath.string());
     const FoamFormat fmt = detect_format(source.View());
     // strip_comments_and_header's comment-removal pass scans the whole body and is unsafe over
     // raw id bytes -- see parse_zone_file_binary's own doc comment.
@@ -191111,7 +191306,7 @@ FoamField foam_scan_nonuniform_list(std::string_view rText, int components) {
  * own data list can introduce a stray `(` (`dimensions` uses `[...]`).
  */
 FoamField foam_read_internal_field(const fs::path& rPath, int components) {
-    const detail::FileSource source = read_whole(rPath.string());
+    const FoamText source = read_whole(rPath.string());
     const std::string_view raw = source.View();
     const FoamFormat fmt = detect_format(raw);
     const std::size_t kp = raw.find("internalField");
@@ -191511,7 +191706,7 @@ private:
 
 /// The per-patch values of a field file's `boundaryField` (see `FoamBoundaryScanner`).
 std::vector<FoamPatchField> foam_read_boundary_field(const fs::path& rPath, int Components) {
-    const detail::FileSource source = read_whole(rPath.string());
+    const FoamText source = read_whole(rPath.string());
     const std::string_view raw = source.View();
     return FoamBoundaryScanner(raw, detect_format(raw), Components).Scan();
 }
@@ -191577,8 +191772,10 @@ std::vector<std::string> foam_field_files(const fs::path& rTimeDir) {
     std::error_code ec;
     for (const auto& entry : fs::directory_iterator(rTimeDir, ec))
         if (entry.is_regular_file())
-            names.push_back(entry.path().filename().string());
+            names.push_back(foam_strip_gz(entry.path().filename().string()));
+    // `U` and `U.gz` side by side name one field (the plain one is read).
     std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
     return names;
 }
 
@@ -191596,7 +191793,7 @@ FoamField foam_read_decomposed_field(const fs::path& rCaseRoot,
     for (const std::size_t proc : rProcs) {
         const fs::path pdir = rCaseRoot / ("processor" + std::to_string(proc));
         const fs::path file = pdir / rTime / rName;
-        if (!fs::exists(file))
+        if (!foam_file_exists(file))
             continue;
         const FoamField local = foam_read_internal_field(file, Components);
         const std::vector<std::int64_t> addr = read_int_list(
@@ -191617,12 +191814,26 @@ FoamField foam_read_decomposed_field(const fs::path& rCaseRoot,
 /// The `class` entry of a field file's `FoamFile` header (`volScalarField`,
 /// …), read the same cheap line-scan way `detect_format` reads `format`/
 /// `arch` -- no full parse needed just to classify the field.
+std::string foam_field_class_from(std::istream& rIn);
+
 std::string foam_field_file_class(const fs::path& rPath) {
+    if (foam_resolve(rPath) != rPath) {
+        // Gzipped: the header is at the top of the inflated text.
+        if (!foam_file_exists(rPath))
+            return {};
+        const FoamText text = read_whole(rPath.string());
+        auto in = detail::make_classic_istringstream(std::string(text.View().substr(0, 4096)));
+        return foam_field_class_from(in);
+    }
     auto f = detail::make_classic_ifstream(rPath, std::ios::binary);
     if (!f)
         return {};
+    return foam_field_class_from(f);
+}
+
+std::string foam_field_class_from(std::istream& rIn) {
     std::string line;
-    while (std::getline(f, line)) {
+    while (std::getline(rIn, line)) {
         const std::string s = openfoam_strip(line);
         if (s.rfind("class", 0) == 0) {
             std::string rest = openfoam_strip(s.substr(std::strlen("class")));
@@ -191683,7 +191894,7 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
             if (entry.is_directory() && fs::exists(entry.path() / "polyMesh"))
                 regions.push_back(entry.path().filename().string());
         }
-        if (!regions.empty() || fs::exists(case_root / "constant" / "regionProperties")) {
+        if (!regions.empty() || foam_file_exists(case_root / "constant" / "regionProperties")) {
             if (regions.empty()) {
                 // regionProperties without region directories: name the regions it lists
                 try {
@@ -192233,7 +192444,7 @@ Mesh read_openfoam(const std::string& rPathIn, const ReadOptions& rOptions, Open
                             const fs::path file = case_root /
                                                   ("processor" + std::to_string(proc_ids[k])) /
                                                   time_dirs[step].mName / field_name;
-                            if (fs::exists(file))
+                            if (foam_file_exists(file))
                                 per_proc[k] = foam_read_boundary_field(file, fc.mComponents);
                         }
                         for (std::size_t pidx = 0;
@@ -192738,11 +192949,74 @@ std::string foam_validate_order(const detail::GlobalFaces& rFaces, const FoamFac
     return "";
 }
 
-auto foam_open(const fs::path& rPath) {
-    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
-    if (!f)
-        throw WriteError("OpenFOAM: could not open for writing: " + rPath.string());
-    return f;
+/// `<rPath>.gz`, the name `writeCompression on` gives a case file.
+fs::path foam_gz_path(const fs::path& rPath) {
+    fs::path gz = rPath;
+    gz += ".gz";
+    return gz;
+}
+
+/**
+ * @brief One case file being written, plain or gzipped (roadmap 2.3.5.1).
+ *
+ * An `std::ostream` either way, so the writers below stream into it as they
+ * did into the plain `std::ofstream`. Gzipped, the text gathers in memory and
+ * is deflated into `<name>.gz` when the stream goes out of scope; the output
+ * file is opened up front, so an unwritable directory still fails at the open.
+ * Writing either form removes the other, so a case never holds both `points`
+ * and `points.gz` (OpenFOAM reads the plain one and would ignore the update).
+ */
+class FoamOut : public std::ostream {
+  public:
+    FoamOut(const fs::path& rPath, bool Compress) : std::ostream(nullptr), mCompress(Compress) {
+        if (mCompress && !detail::gzip_compress_available())
+            throw WriteError(
+                "OpenFOAM: writing a compressed case needs a build with zlib "
+                "(-DMESHIOPLUSPLUS_WITH_ZLIB=ON)");
+        const fs::path target = mCompress ? foam_gz_path(rPath) : rPath;
+        std::error_code ec;
+        fs::remove(mCompress ? rPath : foam_gz_path(rPath), ec);
+        mFile = detail::make_classic_ofstream(target, std::ios::binary);
+        if (!mFile)
+            throw WriteError("OpenFOAM: could not open for writing: " + target.string());
+        mTarget = target.string();
+        detail::imbue_classic(*this);
+        rdbuf(mCompress ? static_cast<std::streambuf*>(&mBuffer) : mFile.rdbuf());
+    }
+    FoamOut(const FoamOut&) = delete;
+    FoamOut& operator=(const FoamOut&) = delete;
+    ~FoamOut() override {
+        if (!mCompress)
+            return;
+        // A destructor cannot throw: a failure here is logged, as a failed
+        // flush of the plain std::ofstream it replaces went unreported.
+        try {
+            const std::string gz = detail::gzip_compress(mBuffer.view(), "OpenFOAM");
+            mFile.write(gz.data(), static_cast<std::streamsize>(gz.size()));
+            if (!mFile)
+                log::error("OpenFOAM: failed writing {}", mTarget);
+        } catch (const std::exception& rErr) {
+            log::error("OpenFOAM: failed writing {}: {}", mTarget, rErr.what());
+        }
+    }
+
+  private:
+    bool mCompress;
+    std::string mTarget;
+    // Opened by the constructor through make_classic_ofstream (the classic locale).
+    decltype(detail::make_classic_ofstream()) mFile = detail::make_classic_ofstream();
+    std::stringbuf mBuffer;
+};
+
+FoamOut foam_open(const fs::path& rPath, bool Compress) { return FoamOut(rPath, Compress); }
+
+/// Remove a case file in both its forms (`name` and `name.gz`); true when
+/// either was there.
+bool foam_remove_case_file(const fs::path& rPath) {
+    std::error_code ec;
+    const bool plain = fs::remove(rPath, ec);
+    const bool gz = fs::remove(foam_gz_path(rPath), ec);
+    return plain || gz;
 }
 
 /// One zone as it will be written: a name plus its member ids, already
@@ -192754,7 +193028,7 @@ void foam_write_zone_file(const fs::path& rPath, const char* pClass, const char*
                           const char* pZoneType, const char* pLabelKey,
                           const std::vector<FoamZoneOut>& rZones,
                           const OpenFoamWriteOptions& rOpts) {
-    auto f = foam_open(rPath);
+    auto f = foam_open(rPath, rOpts.mCompress);
     foam_write_header(f, pClass, pObject, rOpts);
     f << rZones.size() << "\n(\n";
     for (const auto& [name, ids] : rZones) {
@@ -193042,7 +193316,7 @@ void foam_emit_fields(const fs::path& rDir, const std::string& rLocation,
         throw WriteError("OpenFOAM: could not create directory " + dir.string() + ": " +
                          ec.message());
     for (const FoamFieldOut& field : out) {
-        auto f = foam_open(dir / field.mName);
+        auto f = foam_open(dir / field.mName, rOpts.mCompress);
         foam_write_header(f, field.mClass, field.mName, rOpts, location.c_str());
         f << "dimensions      [0 0 0 0 0 0 0];\n\n";
         f << "internalField   ";
@@ -193132,7 +193406,7 @@ struct FoamZonesOut {
 void foam_emit_label_list(const fs::path& rFile, const char* pObject,
                           const std::vector<std::int64_t>& rValues,
                           const OpenFoamWriteOptions& rOpts) {
-    auto f = foam_open(rFile);
+    auto f = foam_open(rFile, rOpts.mCompress);
     foam_write_header(f, "labelList", pObject, rOpts);
     if (rOpts.mBinary) {
         f << rValues.size() << "\n(";
@@ -193266,7 +193540,7 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
             }
 
         {
-            auto f = foam_open(poly / "points");
+            auto f = foam_open(poly / "points", rOpts.mCompress);
             foam_write_header(f, "vectorField", "points", rOpts);
             if (rOpts.mBinary) {
                 f << point_addr.size() << "\n(";
@@ -193293,7 +193567,7 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
         }
         std::vector<std::int64_t> owner, neighbour, face_addr;
         {
-            auto f = foam_open(poly / "faces");
+            auto f = foam_open(poly / "faces", rOpts.mCompress);
             foam_write_header(f, "faceList", "faces", rOpts);
             f << all.size() << (rOpts.mBinary ? "\n(" : "\n(\n");
             for (std::size_t li = 0; li < all.size(); ++li) {
@@ -193330,7 +193604,7 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
         foam_emit_label_list(poly / "owner", "owner", owner, rOpts);
         foam_emit_label_list(poly / "neighbour", "neighbour", neighbour, rOpts);
         {
-            auto f = foam_open(poly / "boundary");
+            auto f = foam_open(poly / "boundary", rOpts.mCompress);
             foam_write_header(f, "polyBoundaryMesh", "boundary", rOpts);
             f << patches.size() << "\n(\n";
             for (const FoamPatchOut& p : patches) {
@@ -193374,8 +193648,7 @@ void foam_write_decomposed(const std::string& rPath, const Mesh& rMesh,
             auto emit = [&](const char* pFile, const std::vector<FoamZoneOut>& rLocal,
                             const char* pClass, const char* pType, const char* pKey) {
                 if (rLocal.empty()) {
-                    std::error_code rc;
-                    fs::remove(poly / pFile, rc);
+                    foam_remove_case_file(poly / pFile);
                     return;
                 }
                 foam_write_zone_file(poly / pFile, pClass, pFile, pType, pKey, rLocal, rOpts);
@@ -193540,8 +193813,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
     for (const char* name : {"meshModifiers", "boundaryProcAddressing", "cellProcAddressing",
                              "faceProcAddressing", "pointProcAddressing", "cellLevel", "pointLevel",
                              "level0Edge", "refinementHistory", "surfaceIndex"}) {
-        std::error_code rc;
-        if (fs::remove(poly / name, rc))
+        if (foam_remove_case_file(poly / name))
             log::info("OpenFOAM: removed stale {}", name);
     }
 
@@ -193550,7 +193822,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
     const std::size_t np = rMesh.NumPoints();
 
     {
-        auto f = foam_open(poly / "points");
+        auto f = foam_open(poly / "points", rOpts.mCompress);
         foam_write_header(f, "vectorField", "points", rOpts);
         // The count MUST be on a line of its own: every ASCII parser here takes
         // "the first line that is entirely digits" as the count, so `8(` would
@@ -193587,7 +193859,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
         }
     }
     {
-        auto f = foam_open(poly / "faces");
+        auto f = foam_open(poly / "faces", rOpts.mCompress);
         foam_write_header(f, "faceList", "faces", rOpts);
         // Non-contiguous, so each face is its own length-prefixed labelList,
         // in binary exactly as in ASCII -- the same shape read_binary_faces
@@ -193615,7 +193887,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
         }
     }
     {
-        auto f = foam_open(poly / "owner");
+        auto f = foam_open(poly / "owner", rOpts.mCompress);
         foam_write_header(f, "labelList", "owner", rOpts);
         if (rOpts.mBinary) {
             f << order.mNewToOld.size() << "\n(";
@@ -193636,7 +193908,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
         // OpenFOAM's `neighbour` holds ONLY internal faces -- our own reader
         // also accepts a -1-padded full-length list, which is exactly why a
         // round trip through it is a weak oracle for this writer.
-        auto f = foam_open(poly / "neighbour");
+        auto f = foam_open(poly / "neighbour", rOpts.mCompress);
         foam_write_header(f, "labelList", "neighbour", rOpts);
         if (rOpts.mBinary) {
             f << order.mNumInternal << "\n(";
@@ -193656,7 +193928,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
         }
     }
     {
-        auto f = foam_open(poly / "boundary");
+        auto f = foam_open(poly / "boundary", rOpts.mCompress);
         foam_write_header(f, "polyBoundaryMesh", "boundary", rOpts);
         f << order.mPatches.size() << "\n(\n";
         for (const FoamPatchOut& p : order.mPatches) {
@@ -193682,8 +193954,7 @@ void foam_write_impl(const std::string& rPath, const Mesh& rMesh, const OpenFoam
                                    const char* pClass, const char* pZoneType,
                                    const char* pLabelKey) {
             if (rZones.empty()) {
-                std::error_code rc;
-                if (fs::remove(poly / pFile, rc))
+                if (foam_remove_case_file(poly / pFile))
                     log::info("OpenFOAM: removed stale {}", pFile);
                 return;
             }
@@ -193830,7 +194101,7 @@ void write_openfoam_region_properties(const std::string& rPath,
     if (ec && !fs::is_directory(file.parent_path()))
         throw WriteError("OpenFOAM: could not create directory " + file.parent_path().string() +
                          ": " + ec.message());
-    auto f = foam_open(file);
+    auto f = foam_open(file, false);
     foam_write_header(f, "dictionary", "regionProperties", OpenFoamWriteOptions{}, "constant");
     f << "regions\n(\n";
     for (const OpenFoamRegionGroup& group : rGroups) {
@@ -193844,7 +194115,7 @@ void write_openfoam_region_properties(const std::string& rPath,
 
 std::vector<OpenFoamRegionGroup> read_openfoam_region_properties(const std::string& rPath) {
     const fs::path file = foam_region_properties_path(rPath);
-    if (!fs::exists(file))
+    if (!foam_file_exists(file))
         throw ReadError("OpenFOAM: no " + file.string());
     const std::vector<std::string> tokens =
         foam_region_properties_tokens(strip_comments_and_header(read_whole(file.string()).View()));
