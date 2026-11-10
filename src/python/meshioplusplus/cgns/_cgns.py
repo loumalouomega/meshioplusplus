@@ -1006,11 +1006,15 @@ def _read_spec(f):
 
     if not point_chunks:
         raise ReadError(f"CGNS: base '{base_name}' has no Unstructured zones")
-    points = (
-        point_chunks[0]
-        if len(point_chunks) == 1
-        else np.concatenate(point_chunks, axis=0)
-    )
+    if len(point_chunks) == 1:
+        points = point_chunks[0]
+    else:
+        # Zones may differ in coordinate count; the widest wins and the
+        # others pad with zeros, as the core reader does.
+        dim = max(c.shape[1] for c in point_chunks)
+        points = np.concatenate(
+            [np.pad(c, ((0, 0), (0, dim - c.shape[1]))) for c in point_chunks], axis=0
+        )
     out = Mesh(
         points,
         cells,

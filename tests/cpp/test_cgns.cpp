@@ -642,6 +642,79 @@ TEST(Cgns, MismatchedCoordinateLengthsThrow) {
     std::filesystem::remove(p, ec);
 }
 
+namespace {
+
+// A two-zone file: `rMesh` written by write_cgns as Zone1 (with a point
+// FlowSolution), then Zone1 copied under the name Zone2 -- two zones with the
+// same geometry, which every reader must concatenate zone after zone.
+std::string cgns_two_zone_file(const mt::Mesh& rMesh) {
+    const std::string p = mt::temp_path("_two_zone.cgns");
+    meshioplusplus::write_cgns(p, rMesh, -1);
+    h5::SilenceErrors silence;
+    h5::Hid f = h5::open_file_rw(p);
+    h5::Hid base = h5::open_group(f, "Base");
+    EXPECT_GE(H5Ocopy(base, "Zone1", base, "Zone2", H5P_DEFAULT, H5P_DEFAULT), 0);
+    h5::Hid zone2 = h5::open_group(base, "Zone2");
+    H5Adelete(zone2, "name");
+    cgns_write_fixed_attr_str(zone2, "name", "Zone2", 33);
+    return p;
+}
+
+// `rOut` is `rOne` (the single-zone read) twice: its points stacked, its blocks
+// repeated with the second copy's node ids shifted by its point count, and no
+// FlowSolution (not read across zones).
+void cgns_expect_two_copies(const mt::Mesh& rOne, const mt::Mesh& rOut) {
+    const std::size_t np = rOne.NumPoints();
+    const std::size_t nb = rOne.NumCellBlocks();
+    ASSERT_EQ(rOut.NumPoints(), 2 * np);
+    ASSERT_EQ(rOut.PointDim(), rOne.PointDim());
+    const std::size_t dim = rOne.PointDim();
+    for (std::size_t i = 0; i < np * dim; ++i) {
+        EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(rOut.Points(), i),
+                         meshioplusplus::detail::read_double(rOne.Points(), i));
+        EXPECT_DOUBLE_EQ(meshioplusplus::detail::read_double(rOut.Points(), np * dim + i),
+                         meshioplusplus::detail::read_double(rOne.Points(), i));
+    }
+    ASSERT_EQ(rOut.NumCellBlocks(), 2 * nb);
+    for (std::size_t copy = 0; copy < 2; ++copy) {
+        for (std::size_t b = 0; b < nb; ++b) {
+            const auto want = rOne.Cells(b);
+            const auto got = rOut.Cells(copy * nb + b);
+            ASSERT_EQ(std::string(got.Type()), std::string(want.Type()));
+            ASSERT_EQ(got.Conn().Size(), want.Conn().Size());
+            for (std::size_t i = 0; i < want.Conn().Size(); ++i)
+                EXPECT_EQ(meshioplusplus::detail::read_int(got.Conn(), i),
+                          meshioplusplus::detail::read_int(want.Conn(), i) +
+                              static_cast<std::int64_t>(copy * np));
+        }
+    }
+    EXPECT_EQ(rOut.NumPointData(), 0u);
+}
+
+}  // namespace
+
+TEST(Cgns, EveryZoneIsReadAndConcatenated) {
+    // roadmap 2.3.1.1: whichever reader read_cgns routes to (the cgnslib one
+    // in a cgnslib build, the raw-HDF5 one otherwise) reads every zone.
+    mt::Mesh m = mt::tri_quad_mesh();
+    m.AddPointData("p", mt::data_array({0, 1, 2, 3, 4, 5, 6}));
+    const std::string one = mt::temp_path("_one_zone.cgns");
+    meshioplusplus::write_cgns(one, m, -1);
+    const mt::Mesh single = meshioplusplus::read_cgns(one);
+    ASSERT_TRUE(single.HasPointData("p"));
+
+    const std::string two = cgns_two_zone_file(m);
+    cgns_expect_two_copies(single, meshioplusplus::read_cgns(two));
+
+    const meshioplusplus::MeshMetadata meta =
+        meshioplusplus::read_cgns_metadata(two, meshioplusplus::ReadOptions{});
+    EXPECT_EQ(meta.mNumPoints, 2 * single.NumPoints());
+    EXPECT_EQ(meta.mCellBlocks.size(), 2 * single.NumCellBlocks());
+
+    std::remove(one.c_str());
+    std::remove(two.c_str());
+}
+
 // ---- geometric ordering verification --------------------------------------
 //
 // A round trip through OUR OWN reader and writer cannot prove the CGNS
@@ -1071,6 +1144,65 @@ TEST(CgnsMll, TransientReadSelectsOneStepByFlowSolutionPointers) {
     EXPECT_TRUE(meshioplusplus::seq_format_may_have_steps("cgns"));
     EXPECT_EQ(meshioplusplus::sequence_num_steps(path, "cgns"), 2u);
 
+    std::remove(path.c_str());
+}
+
+TEST(CgnsMll, ReadsEveryZoneAsTheRawReaderDoes) {
+    // roadmap 2.3.1.1: the cgnslib path read zone 1 only, so building with
+    // cgnslib narrowed what a multi-zone file read to.
+    mt::Mesh m = mt::tri_quad_mesh();
+    m.AddPointData("p", mt::data_array({0, 1, 2, 3, 4, 5, 6}));
+    const std::string one = mt::temp_path("_mll_one_zone.cgns");
+    meshioplusplus::write_cgns(one, m, -1);
+    const mt::Mesh single = meshioplusplus::read_cgns_mll(one);
+
+    const std::string two = cgns_two_zone_file(m);
+    cgns_expect_two_copies(single, meshioplusplus::read_cgns_mll(two));
+    const meshioplusplus::MeshMetadata meta =
+        meshioplusplus::read_cgns_mll_metadata(two, meshioplusplus::ReadOptions{});
+    EXPECT_EQ(meta.mNumPoints, 2 * single.NumPoints());
+    EXPECT_EQ(meta.mCellBlocks.size(), 2 * single.NumCellBlocks());
+
+    std::remove(one.c_str());
+    std::remove(two.c_str());
+}
+
+TEST(CgnsMll, ZonesAreReadInNameOrderWhateverTheirCreationOrder) {
+    // The raw reader walks zones in HDF5 name order; written through cgnslib
+    // as "B" (a triangle) then "A" (a tetra), both readers start with "A".
+    const std::string path = mt::temp_path("_mll_zone_order.cgns");
+    std::remove(path.c_str());
+    int fn = 0, B = 0, Z = 0, S = 0, c = 0;
+    ASSERT_EQ(cg_open(path.c_str(), CG_MODE_WRITE, &fn), CG_OK) << cg_get_error();
+    ASSERT_EQ(cg_base_write(fn, "Base", 3, 3, &B), CG_OK);
+    const double x[4] = {0, 1, 0, 0}, y[4] = {0, 0, 1, 0}, z[4] = {0, 0, 0, 1};
+    {
+        cgsize_t zsize[3] = {3, 1, 0};
+        ASSERT_EQ(cg_zone_write(fn, B, "B", zsize, CGNS_ENUMV(Unstructured), &Z), CG_OK);
+        ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateX", x, &c), CG_OK);
+        ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateY", y, &c), CG_OK);
+        ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateZ", z, &c), CG_OK);
+        const cgsize_t conn[3] = {1, 2, 3};
+        ASSERT_EQ(cg_section_write(fn, B, Z, "Tri", CGNS_ENUMV(TRI_3), 1, 1, 0, conn, &S), CG_OK);
+    }
+    {
+        cgsize_t zsize[3] = {4, 1, 0};
+        ASSERT_EQ(cg_zone_write(fn, B, "A", zsize, CGNS_ENUMV(Unstructured), &Z), CG_OK);
+        ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateX", x, &c), CG_OK);
+        ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateY", y, &c), CG_OK);
+        ASSERT_EQ(cg_coord_write(fn, B, Z, CGNS_ENUMV(RealDouble), "CoordinateZ", z, &c), CG_OK);
+        const cgsize_t conn[4] = {1, 2, 3, 4};
+        ASSERT_EQ(cg_section_write(fn, B, Z, "Tet", CGNS_ENUMV(TETRA_4), 1, 1, 0, conn, &S), CG_OK);
+    }
+    ASSERT_EQ(cg_close(fn), CG_OK);
+
+    const mt::Mesh out = meshioplusplus::read_cgns_mll(path);
+    ASSERT_EQ(out.NumPoints(), 7u);
+    ASSERT_EQ(out.NumCellBlocks(), 2u);
+    EXPECT_EQ(std::string(out.Cells(0).Type()), "tetra");
+    EXPECT_EQ(std::string(out.Cells(1).Type()), "triangle");
+    // The triangle's nodes follow the tetra's four points.
+    EXPECT_EQ(meshioplusplus::detail::read_int(out.Cells(1).Conn(), 0), 4);
     std::remove(path.c_str());
 }
 

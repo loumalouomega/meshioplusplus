@@ -7,12 +7,15 @@ Handles general polyhedra in addition to tetra/pyramid/wedge/hexahedron.
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+
+from .._compressed import decompress
 
 # The face-to-cell kernel, shared with the Fluent reader; the private names
 # are kept for the tests that import them from here.
@@ -30,6 +33,23 @@ from .._mesh import CellBlock, Mesh
 logger = logging.getLogger(__name__)
 
 
+def _gz_sibling(path: Path) -> Path:
+    return path.with_name(path.name + ".gz")
+
+
+def _case_exists(path: Path) -> bool:
+    """Whether a case file exists, plain or gzipped (``writeCompression on``
+    writes ``points.gz``, ``faces.gz``, ... in place of the plain files)."""
+    return path.exists() or _gz_sibling(path).is_file()
+
+
+def _case_bytes(path: Path) -> bytes:
+    """A case file's bytes: the plain file, else its inflated ``.gz`` sibling."""
+    if not path.exists() and _gz_sibling(path).is_file():
+        return decompress(".gz", _gz_sibling(path).read_bytes())
+    return path.read_bytes()
+
+
 def _detect_format(path: Path) -> tuple[str, int, int]:
     """
     Reads the FoamFile header and returns (format, label_bytes, scalar_bytes).
@@ -42,7 +62,7 @@ def _detect_format(path: Path) -> tuple[str, int, int]:
     label_bytes = 8
     scalar_bytes = 8
 
-    with open(path, "rb") as f:
+    with io.BytesIO(_case_bytes(path)) as f:
         for raw in f:
             try:
                 line = raw.decode("ascii", errors="replace").strip()
@@ -153,7 +173,7 @@ def _data_start(raw: bytes) -> tuple[int, int]:
 
 def _read_binary_points(path: Path, scalar_bytes: int = 8) -> np.ndarray:
     """Binary vectorField:  N ( <N*3*scalar bytes binary> )."""
-    raw = path.read_bytes()
+    raw = _case_bytes(path)
     n, start = _data_start(raw)
 
     dtype = "<f4" if scalar_bytes == 4 else "<f8"
@@ -172,7 +192,7 @@ def _read_binary_points(path: Path, scalar_bytes: int = 8) -> np.ndarray:
 
 def _read_binary_labels(path: Path, label_bytes: int = 4) -> np.ndarray:
     """Binary labelList (owner/neighbour):  N ( <N*label bytes binary> )."""
-    raw = path.read_bytes()
+    raw = _case_bytes(path)
     n, start = _data_start(raw)
 
     dtype = "<i4" if label_bytes == 4 else "<i8"
@@ -209,7 +229,7 @@ def _read_binary_faces(path: Path, label_bytes: int = 4) -> _RaggedArray:
        disjoint, so a +1/-1 diff + cumsum marks them), then a single
        ``view`` to the label dtype.
     """
-    raw = path.read_bytes()
+    raw = _case_bytes(path)
     nfaces, pos = _data_start(raw)
 
     counts = np.empty(nfaces, dtype=np.int32)
@@ -266,7 +286,7 @@ def _skip_header(lines: list[str]) -> list[str]:
 
 def _read_foam_lines(path: Path) -> list[str]:
     """Read a FoamFile, strip comments and header, return content lines."""
-    text = _strip_comments(path.read_text(errors="replace"))
+    text = _strip_comments(_case_bytes(path).decode("utf-8", errors="replace"))
     return _skip_header(text.splitlines())
 
 
@@ -581,12 +601,12 @@ def read(filename) -> Mesh:
     owner = _read_int_list(poly / "owner")
     neighbour = (
         _read_int_list(poly / "neighbour")
-        if (poly / "neighbour").exists()
+        if _case_exists(poly / "neighbour")
         else np.array([], dtype=int)
     )
     boundary = (
         _parse_boundary(_read_foam_lines(poly / "boundary"))
-        if (poly / "boundary").exists()
+        if _case_exists(poly / "boundary")
         else {}
     )
 

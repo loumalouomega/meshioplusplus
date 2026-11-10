@@ -9947,7 +9947,7 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         "openfoam_write",
         [openfoam_info](const std::string& path, py::object pymesh, py::dict cell_tags,
                         py::dict patch_types, bool binary, int label_bits, int scalar_bits,
-                        const std::string& region, bool decomposed) {
+                        const std::string& region, bool decomposed, bool compress) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
@@ -9956,6 +9956,7 @@ data. Usable as a context manager; ``__exit__`` finalizes.
             wopts.mBinary = binary;
             wopts.mLabelBits = label_bits;
             wopts.mScalarBits = scalar_bits;
+            wopts.mCompress = compress;
             core_nogil([&] {
                 if (decomposed)
                     return meshioplusplus::write_openfoam_decomposed(path, cpp, info, wopts);
@@ -9967,7 +9968,7 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         py::arg("path"), py::arg("mesh"), py::arg("cell_tags") = py::dict(),
         py::arg("patch_types") = py::dict(), py::arg("binary") = false, py::arg("label_bits") = 32,
         py::arg("scalar_bits") = 64, py::arg("region") = std::string(),
-        py::arg("decomposed") = false);
+        py::arg("decomposed") = false, py::arg("compress") = false);
     // `constant/regionProperties` of a multi-region case: {family: [regions]}, in dict order.
     m.def(
         "openfoam_write_region_properties",
@@ -9999,18 +10000,19 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     py::class_<meshioplusplus::OpenFoamSeriesWriter>(m, "OpenFoamSeriesWriter")
         .def(py::init([openfoam_info](const std::string& path, py::dict cell_tags,
                                       py::dict patch_types, bool binary, int label_bits,
-                                      int scalar_bits, const std::string& region) {
+                                      int scalar_bits, const std::string& region, bool compress) {
                  meshioplusplus::OpenFoamWriteOptions wopts;
                  wopts.mBinary = binary;
                  wopts.mLabelBits = label_bits;
                  wopts.mScalarBits = scalar_bits;
+                 wopts.mCompress = compress;
                  return std::make_unique<meshioplusplus::OpenFoamSeriesWriter>(
                      path, openfoam_info(cell_tags, patch_types), wopts, region);
              }),
              py::arg("path"), py::arg("cell_tags") = py::dict(),
              py::arg("patch_types") = py::dict(), py::arg("binary") = false,
              py::arg("label_bits") = 32, py::arg("scalar_bits") = 64,
-             py::arg("region") = std::string())
+             py::arg("region") = std::string(), py::arg("compress") = false)
         .def(
             "write",
             [](meshioplusplus::OpenFoamSeriesWriter& rSelf, double time, py::object pymesh) {

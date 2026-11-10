@@ -47,6 +47,7 @@
 #ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
 #include <cgnslib.h>
 
+#include "../detail/data_plumbing.hpp"
 #include "../detail/polyhedron_groups.hpp"
 #endif
 
@@ -174,7 +175,7 @@ struct MllSection {
 
 /// Read one fixed-size section into a rectangular block.
 void cgns_mll_read_fixed(int fn, int B, int Z, const MllSection& rSec, const std::string& rMeshio,
-                         const std::string& rPath, Mesh& rMesh) {
+                         std::int64_t PointOffset, const std::string& rPath, Mesh& rMesh) {
     const int npc = [&] {
         int n = 0;
         cg_npe(rSec.mType, &n);
@@ -200,7 +201,7 @@ void cgns_mll_read_fixed(int fn, int B, int Z, const MllSection& rSec, const std
         const cgsize_t* src = raw.data() + c * static_cast<std::size_t>(npc);
         for (int k = 0; k < npc; ++k)
             dst[c * static_cast<std::size_t>(npc) + k] =
-                static_cast<std::int64_t>(src[perm ? (*perm)[k] : k]) - 1;
+                static_cast<std::int64_t>(src[perm ? (*perm)[k] : k]) - 1 + PointOffset;
     }
     rMesh.AddCellBlock(rMeshio, std::move(conn));
 }
@@ -231,7 +232,7 @@ void cgns_mll_check_offsets(const std::vector<cgsize_t>& rOffsets, cgsize_t Data
                       rPath);
 }
 
-MllFaces cgns_mll_read_ngon(int fn, int B, int Z, const MllSection& rSec,
+MllFaces cgns_mll_read_ngon(int fn, int B, int Z, const MllSection& rSec, std::int64_t PointOffset,
                             const std::string& rPath) {
     const std::size_t nfaces = static_cast<std::size_t>(rSec.mEnd - rSec.mStart + 1);
     cgsize_t data_size = 0;
@@ -256,7 +257,8 @@ MllFaces cgns_mll_read_ngon(int fn, int B, int Z, const MllSection& rSec,
     out.mOffsets.push_back(0);
     for (std::size_t f = 0; f < nfaces; ++f) {
         for (cgsize_t i = offsets[f]; i < offsets[f + 1]; ++i)
-            out.mNodes.push_back(static_cast<std::int64_t>(elems[static_cast<std::size_t>(i)]) - 1);
+            out.mNodes.push_back(static_cast<std::int64_t>(elems[static_cast<std::size_t>(i)]) - 1 +
+                                 PointOffset);
         out.mOffsets.push_back(static_cast<std::int64_t>(out.mNodes.size()));
     }
     return out;
@@ -523,79 +525,16 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
             break;
     }
     if (pTarget != nullptr && !found_target)
-        cgns_mll_fail(
-            "ZoneIterativeData_t/FlowSolutionPointers names '" + *pTarget +
-                "', which no FlowSolution_t in this zone has",
-            rPath);
+        cgns_mll_fail("ZoneIterativeData_t/FlowSolutionPointers names '" + *pTarget +
+                          "', which no FlowSolution_t in this zone has",
+                      rPath);
 }
 
-}  // namespace
-
-Mesh read_cgns_mll(const std::string& rPath) { return read_cgns_mll(rPath, ReadOptions{}); }
-
-Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
-    detail::LibraryLock lock;
-    CgnsFile file(rPath);
-    const int fn = file.Fn();
-
-    int nbases = 0;
-    if (cg_nbases(fn, &nbases) != CG_OK || nbases < 1)
-        cgns_mll_fail("no CGNSBase_t found", rPath);
-    if (nbases > 1)
-        log::warn("CGNS (cgnslib): '{}' has {} bases; reading the first only", rPath, nbases);
-    const int B = 1;
-
-    char base_name[33] = {0};
-    int cell_dim = 0, phys_dim = 0;
-    if (cg_base_read(fn, B, base_name, &cell_dim, &phys_dim) != CG_OK)
-        cgns_mll_fail("cg_base_read failed", rPath);
-
-    int nzones = 0;
-    if (cg_nzones(fn, B, &nzones) != CG_OK || nzones < 1)
-        cgns_mll_fail("no Zone_t found", rPath);
-    if (nzones > 1)
-        log::warn("CGNS (cgnslib): '{}' has {} zones; reading the first only", rPath, nzones);
-    const int Z = 1;
-
-    CGNS_ENUMT(ZoneType_t) ztype = CGNS_ENUMV(ZoneTypeNull);
-    if (cg_zone_type(fn, B, Z, &ztype) != CG_OK)
-        cgns_mll_fail("cg_zone_type failed", rPath);
-    if (ztype != CGNS_ENUMV(Unstructured))
-        throw ReadError(detail::format_compat(
-            "meshio++: CGNS (cgnslib): '{}' zone 1 is Structured; meshio++ reads unstructured "
-            "zones only",
-            rPath));
-
-    char zone_name[33] = {0};
-    cgsize_t zsize[9] = {0};
-    if (cg_zone_read(fn, B, Z, zone_name, zsize) != CG_OK)
-        cgns_mll_fail("cg_zone_read failed", rPath);
-    const std::size_t npoints = static_cast<std::size_t>(zsize[0]);
-
-    // --- coordinates -------------------------------------------------------
-    int ncoords = 0;
-    if (cg_ncoords(fn, B, Z, &ncoords) != CG_OK)
-        cgns_mll_fail("cg_ncoords failed", rPath);
-    const std::size_t dim = static_cast<std::size_t>(std::max(2, std::min(3, ncoords)));
-
-    Mesh mesh;
-    {
-        NDArray points = NDArray::Uninit(DType::Float64, {npoints, dim});
-        double* dst = points.As<double>();
-        std::vector<double> buf(npoints);
-        const cgsize_t rmin = 1;
-        const cgsize_t rmax = static_cast<cgsize_t>(npoints);
-        static const char* kNames[3] = {"CoordinateX", "CoordinateY", "CoordinateZ"};
-        for (std::size_t d = 0; d < dim; ++d) {
-            if (cg_coord_read(fn, B, Z, kNames[d], CGNS_ENUMV(RealDouble), &rmin, &rmax,
-                              buf.data()) != CG_OK)
-                cgns_mll_fail(std::string("cg_coord_read failed for ") + kNames[d], rPath);
-            for (std::size_t i = 0; i < npoints; ++i)
-                dst[i * dim + d] = buf[i];
-        }
-        mesh.AssignPoints(std::move(points));
-    }
-
+/// Read zone `Z`'s element sections into blocks appended to `rMesh`, node ids
+/// shifted by `PointOffset` (the points of the zones read before it), in
+/// ascending ElementRange order -- the raw-HDF5 reader's rule per zone.
+void cgns_mll_read_zone_cells(int fn, int B, int Z, std::int64_t PointOffset,
+                              const std::string& rPath, Mesh& rMesh) {
     // --- sections ----------------------------------------------------------
     int nsections = 0;
     if (cg_nsections(fn, B, Z, &nsections) != CG_OK)
@@ -623,7 +562,7 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
     std::vector<const MllSection*> nfaces;
     for (const MllSection& sec : secs) {
         if (sec.mType == CGNS_ENUMV(NGON_n)) {
-            ngons.push_back(cgns_mll_read_ngon(fn, B, Z, sec, rPath));
+            ngons.push_back(cgns_mll_read_ngon(fn, B, Z, sec, PointOffset, rPath));
             continue;
         }
         if (sec.mType == CGNS_ENUMV(NFACE_n)) {
@@ -642,7 +581,7 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
                 "ordering meshio++ has not verified (the cubic/quartic Lagrange family); "
                 "refusing to guess.",
                 sec.mName, static_cast<int>(sec.mType)));
-        cgns_mll_read_fixed(fn, B, Z, sec, meshio, rPath, mesh);
+        cgns_mll_read_fixed(fn, B, Z, sec, meshio, PointOffset, rPath, rMesh);
     }
 
     if (!ngons.empty() && nfaces.empty()) {
@@ -665,8 +604,8 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
                         faces.mNodes.begin() + static_cast<std::ptrdiff_t>(faces.mOffsets[i + 1]));
                     offsets.push_back(static_cast<std::int64_t>(flat.size()));
                 }
-                mesh.AddPolygonBlock("polygon" + std::to_string(n), std::move(flat),
-                                     std::move(offsets));
+                rMesh.AddPolygonBlock("polygon" + std::to_string(n), std::move(flat),
+                                      std::move(offsets));
             }
         }
     } else if (!nfaces.empty()) {
@@ -728,10 +667,132 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
             }
             for (auto& g : detail::group_polyhedra_by_node_count(std::move(flat), std::move(rows),
                                                                  std::move(cell_faces)))
-                mesh.AddPolyhedronBlock("polyhedron" + std::to_string(g.mNodeCount),
-                                        std::move(g.mFlat), std::move(g.mRowOffsets),
-                                        std::move(g.mFaceOffsets));
+                rMesh.AddPolyhedronBlock("polyhedron" + std::to_string(g.mNodeCount),
+                                         std::move(g.mFlat), std::move(g.mRowOffsets),
+                                         std::move(g.mFaceOffsets));
         }
+    }
+}
+
+/// Zone `Z`'s GridCoordinates as a Float64 `(npoints, dim)` array, `dim` the
+/// zone's own coordinate count clamped to [2, 3].
+NDArray cgns_mll_read_coords(int fn, int B, int Z, std::size_t NumPoints,
+                             const std::string& rPath) {
+    int ncoords = 0;
+    if (cg_ncoords(fn, B, Z, &ncoords) != CG_OK)
+        cgns_mll_fail("cg_ncoords failed", rPath);
+    const std::size_t dim = static_cast<std::size_t>(std::max(2, std::min(3, ncoords)));
+    NDArray points = NDArray::Uninit(DType::Float64, {NumPoints, dim});
+    double* dst = points.As<double>();
+    std::vector<double> buf(NumPoints);
+    const cgsize_t rmin = 1;
+    const cgsize_t rmax = static_cast<cgsize_t>(NumPoints);
+    static const char* kNames[3] = {"CoordinateX", "CoordinateY", "CoordinateZ"};
+    for (std::size_t d = 0; d < dim; ++d) {
+        if (cg_coord_read(fn, B, Z, kNames[d], CGNS_ENUMV(RealDouble), &rmin, &rmax, buf.data()) !=
+            CG_OK)
+            cgns_mll_fail(std::string("cg_coord_read failed for ") + kNames[d], rPath);
+        for (std::size_t i = 0; i < NumPoints; ++i)
+            dst[i * dim + d] = buf[i];
+    }
+    return points;
+}
+
+/// The zone indices of base `B`, Unstructured or not, ordered by zone name: the
+/// order the raw-HDF5 reader walks them in (HDF5's name index), so a file reads
+/// to the same block order with and without cgnslib.
+std::vector<std::pair<std::string, int> > cgns_mll_zones_by_name(int fn, int B,
+                                                                 const std::string& rPath) {
+    int nzones = 0;
+    if (cg_nzones(fn, B, &nzones) != CG_OK || nzones < 1)
+        cgns_mll_fail("no Zone_t found", rPath);
+    std::vector<std::pair<std::string, int> > zones;
+    for (int Z = 1; Z <= nzones; ++Z) {
+        char zone_name[33] = {0};
+        cgsize_t zsize[9] = {0};
+        if (cg_zone_read(fn, B, Z, zone_name, zsize) != CG_OK)
+            cgns_mll_fail("cg_zone_read failed", rPath);
+        zones.emplace_back(zone_name, Z);
+    }
+    std::sort(zones.begin(), zones.end());
+    return zones;
+}
+
+}  // namespace
+
+Mesh read_cgns_mll(const std::string& rPath) {
+    return read_cgns_mll(rPath, ReadOptions{});
+}
+
+Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
+    CgnsFile file(rPath);
+    const int fn = file.Fn();
+
+    int nbases = 0;
+    if (cg_nbases(fn, &nbases) != CG_OK || nbases < 1)
+        cgns_mll_fail("no CGNSBase_t found", rPath);
+    if (nbases > 1)
+        log::warn("CGNS (cgnslib): '{}' has {} bases; reading the first only", rPath, nbases);
+    const int B = 1;
+
+    char base_name[33] = {0};
+    int cell_dim = 0, phys_dim = 0;
+    if (cg_base_read(fn, B, base_name, &cell_dim, &phys_dim) != CG_OK)
+        cgns_mll_fail("cg_base_read failed", rPath);
+
+    // Every zone, concatenated as the raw-HDF5 reader does (roadmap 2.3.1.1):
+    // points stacked zone after zone, each zone's node ids shifted by the
+    // points before it, blocks zone-major and ElementRange-ordered within.
+    const std::vector<std::pair<std::string, int> > zones = cgns_mll_zones_by_name(fn, B, rPath);
+    const std::size_t nzones = zones.size();
+
+    Mesh mesh;
+    std::vector<NDArray> point_chunks;
+    std::int64_t point_offset = 0;
+    std::size_t npoints = 0;
+    for (const auto& [zone_name, Z] : zones) {
+        CGNS_ENUMT(ZoneType_t) ztype = CGNS_ENUMV(ZoneTypeNull);
+        if (cg_zone_type(fn, B, Z, &ztype) != CG_OK)
+            cgns_mll_fail("cg_zone_type failed", rPath);
+        if (ztype != CGNS_ENUMV(Unstructured))
+            throw ReadError(detail::format_compat(
+                "meshio++: CGNS (cgnslib): '{}' zone '{}' is Structured; meshio++ reads "
+                "unstructured zones only",
+                rPath, zone_name));
+
+        char name[33] = {0};
+        cgsize_t zsize[9] = {0};
+        if (cg_zone_read(fn, B, Z, name, zsize) != CG_OK)
+            cgns_mll_fail("cg_zone_read failed", rPath);
+        const std::size_t zone_points = static_cast<std::size_t>(zsize[0]);
+
+        point_chunks.push_back(cgns_mll_read_coords(fn, B, Z, zone_points, rPath));
+        cgns_mll_read_zone_cells(fn, B, Z, point_offset, rPath, mesh);
+
+        // FlowSolution_t is read for a single-zone file only: across zones the
+        // arrays would have to be concatenated, and a solution on only some
+        // zones has no defensible filler -- the raw reader's rule and warning.
+        int nsols = 0;
+        if (nzones > 1 && cg_nsols(fn, B, Z, &nsols) == CG_OK && nsols > 0) {
+            char sol_name[33] = {0};
+            CGNS_ENUMT(GridLocation_t) loc = CGNS_ENUMV(GridLocationNull);
+            if (cg_sol_info(fn, B, Z, 1, sol_name, &loc) == CG_OK)
+                log::warn(
+                    "CGNS: file has {} zones; FlowSolution '{}' on zone '{}' was not read "
+                    "(cross-zone field concatenation is not supported).",
+                    nzones, sol_name, zone_name);
+        }
+        point_offset += static_cast<std::int64_t>(zone_points);
+        npoints += zone_points;
+    }
+
+    // Zones may differ in coordinate count; the widest wins and the others pad
+    // with zeros.
+    if (point_chunks.size() == 1) {
+        mesh.AssignPoints(std::move(point_chunks.front()));
+    } else {
+        mesh.AssignPoints(detail::stack_padded_rows(point_chunks, 2));
     }
 
     // --- FlowSolution_t ----------------------------------------------------
@@ -745,20 +806,26 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
     // With BaseIterativeData_t/ZoneIterativeData_t present, only the ONE
     // FlowSolution_t the resolved step's FlowSolutionPointers names is read;
     // without it, every FlowSolution_t is read, as before.
-    const CgnsMllIterativeData iter = cgns_mll_read_iterative_data(fn, B, Z);
-    if (!iter.mFlowSolutionPointers.empty()) {
-        const std::size_t step = rOptions.ResolveTimeStep(iter.mFlowSolutionPointers.size());
-        const std::string target = iter.mFlowSolutionPointers[step];
-        cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, &target);
-    } else {
-        cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, nullptr);
+    if (nzones == 1) {
+        const int Z = zones.front().second;
+        const CgnsMllIterativeData iter = cgns_mll_read_iterative_data(fn, B, Z);
+        if (!iter.mFlowSolutionPointers.empty()) {
+            const std::size_t step = rOptions.ResolveTimeStep(iter.mFlowSolutionPointers.size());
+            const std::string target = iter.mFlowSolutionPointers[step];
+            cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, &target);
+        } else {
+            cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, nullptr);
+        }
     }
 
-    // DimensionalUnits_t: the zone's overrides the base's.
+    // DimensionalUnits_t: a zone's overrides the base's, and with several
+    // zones the last one that names a unit wins, as in the raw reader.
     double length_unit = -1.0;
     if (cg_goto(fn, B, "end") == CG_OK)
         length_unit = cgns_mll_length_unit();
-    if (cg_goto(fn, B, "Zone_t", Z, "end") == CG_OK) {
+    for (const auto& zone : zones) {
+        if (cg_goto(fn, B, "Zone_t", zone.second, "end") != CG_OK)
+            continue;
         const double zone_unit = cgns_mll_length_unit();
         if (zone_unit > 0.0)
             length_unit = zone_unit;
@@ -779,56 +846,56 @@ MeshMetadata read_cgns_mll_metadata(const std::string& rPath, const ReadOptions&
         cgns_mll_fail("no CGNSBase_t found", rPath);
     const int B = 1;
 
-    int nzones = 0;
-    if (cg_nzones(fn, B, &nzones) != CG_OK || nzones < 1)
-        cgns_mll_fail("no Zone_t found", rPath);
-    const int Z = 1;
-
-    char zone_name[33] = {0};
-    cgsize_t zsize[9] = {0};
-    if (cg_zone_read(fn, B, Z, zone_name, zsize) != CG_OK)
-        cgns_mll_fail("cg_zone_read failed", rPath);
+    // Every zone, summed as the raw-HDF5 metadata reader sums them.
+    const std::vector<std::pair<std::string, int> > zones = cgns_mll_zones_by_name(fn, B, rPath);
 
     MeshMetadata meta;
     meta.mFormat = "cgns";
-    meta.mNumPoints = static_cast<std::size_t>(zsize[0]);
+    for (const auto& zone : zones) {
+        const int Z = zone.second;
+        char zone_name[33] = {0};
+        cgsize_t zsize[9] = {0};
+        if (cg_zone_read(fn, B, Z, zone_name, zsize) != CG_OK)
+            cgns_mll_fail("cg_zone_read failed", rPath);
+        meta.mNumPoints += static_cast<std::size_t>(zsize[0]);
 
-    int nsections = 0;
-    if (cg_nsections(fn, B, Z, &nsections) == CG_OK) {
-        for (int S = 1; S <= nsections; ++S) {
-            char name[33] = {0};
-            CGNS_ENUMT(ElementType_t) type = CGNS_ENUMV(ElementTypeNull);
-            cgsize_t start = 0, end = 0;
-            int nbndry = 0, parent_flag = 0;
-            if (cg_section_read(fn, B, Z, S, name, &type, &start, &end, &nbndry, &parent_flag) !=
-                CG_OK)
-                continue;
-            if (end < start)
-                continue;
-            CellBlockInfo block;
-            block.mNumCells = static_cast<std::size_t>(end - start + 1);
-            if (type == CGNS_ENUMV(NGON_n)) {
-                block.mType = "polygon";
-                block.mRagged = true;
-            } else if (type == CGNS_ENUMV(NFACE_n)) {
-                block.mType = "polyhedron";
-                block.mRagged = true;
-            } else if (type == CGNS_ENUMV(MIXED)) {
-                continue;  // structurally unsupported; the full reader names it
-            } else {
-                const std::string meshio = cgns_mll_meshio_name(type);
-                if (meshio.empty())
+        int nsections = 0;
+        if (cg_nsections(fn, B, Z, &nsections) == CG_OK) {
+            for (int S = 1; S <= nsections; ++S) {
+                char name[33] = {0};
+                CGNS_ENUMT(ElementType_t) type = CGNS_ENUMV(ElementTypeNull);
+                cgsize_t start = 0, end = 0;
+                int nbndry = 0, parent_flag = 0;
+                if (cg_section_read(fn, B, Z, S, name, &type, &start, &end, &nbndry,
+                                    &parent_flag) != CG_OK)
                     continue;
-                block.mType = meshio;
-                int npc = 0;
-                cg_npe(type, &npc);
-                block.mNodesPerCell = npc > 0 ? static_cast<std::size_t>(npc) : 0;
+                if (end < start)
+                    continue;
+                CellBlockInfo block;
+                block.mNumCells = static_cast<std::size_t>(end - start + 1);
+                if (type == CGNS_ENUMV(NGON_n)) {
+                    block.mType = "polygon";
+                    block.mRagged = true;
+                } else if (type == CGNS_ENUMV(NFACE_n)) {
+                    block.mType = "polyhedron";
+                    block.mRagged = true;
+                } else if (type == CGNS_ENUMV(MIXED)) {
+                    continue;  // structurally unsupported; the full reader names it
+                } else {
+                    const std::string meshio = cgns_mll_meshio_name(type);
+                    if (meshio.empty())
+                        continue;
+                    block.mType = meshio;
+                    int npc = 0;
+                    cg_npe(type, &npc);
+                    block.mNodesPerCell = npc > 0 ? static_cast<std::size_t>(npc) : 0;
+                }
+                meta.mCellBlocks.push_back(std::move(block));
             }
-            meta.mCellBlocks.push_back(std::move(block));
         }
     }
 
-    const CgnsMllIterativeData iter = cgns_mll_read_iterative_data(fn, B, Z);
+    const CgnsMllIterativeData iter = cgns_mll_read_iterative_data(fn, B, zones.front().second);
     meta.mTimeValues = iter.mTimeValues;
 
     return meta;

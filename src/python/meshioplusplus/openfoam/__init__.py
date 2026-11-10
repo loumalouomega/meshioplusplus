@@ -52,6 +52,7 @@ def write(
     region="",
     decomposed=False,
     region_family="",
+    compression=None,
 ):
     """Write an OpenFOAM polyMesh case.
 
@@ -90,6 +91,12 @@ def write(
     processor's share of the fields; reading the case back reassembles the mesh.
     Write it into a fresh directory.
 
+    ``compression="gzip"`` writes every case file gzipped (``points.gz``,
+    ``faces.gz``, the field files, ...), as OpenFOAM's ``writeCompression on``
+    does, and removes a plain file of the same name; the reader takes either
+    form. It needs a core built with zlib. ``None`` (the default) writes plain
+    files and removes a ``.gz`` one of the same name.
+
     Note there is deliberately no Python fallback: a swallowed write error would
     mean a different implementation silently produced a different case.
     """
@@ -99,6 +106,7 @@ def write(
             "(meshioplusplus._core.openfoam_write), which this installation "
             "does not provide"
         )
+    compress = _compress_flag(compression)
     properties = None
     if region_family:
         if not region or decomposed:
@@ -114,9 +122,22 @@ def write(
         scalar_bits,
         region,
         decomposed,
+        compress,
     )
     if properties is not None:
         write_region_properties(filename, properties)
+
+
+def _compress_flag(compression):
+    """``compression=`` as the core's flag: ``None`` writes plain files,
+    ``"gzip"`` gzipped ones (``writeCompression on``)."""
+    if compression is None:
+        return False
+    if compression == "gzip":
+        return True
+    raise ValueError(
+        f"OpenFOAM: compression must be None or 'gzip', not {compression!r}"
+    )
 
 
 def _region_properties_with(filename, family, region):
@@ -124,7 +145,8 @@ def _region_properties_with(filename, family, region):
     root = Path(filename)
     root = root.parent if root.suffix == ".foam" else root
     families = {}
-    if (root / "constant" / "regionProperties").exists():
+    props = root / "constant" / "regionProperties"
+    if props.exists() or props.with_name(props.name + ".gz").exists():
         families = read_region_properties(filename)
     for other, names in families.items():
         if region in names and other != family:
@@ -192,6 +214,7 @@ class SeriesWriter:
         scalar_bits=64,
         region="",
         mesh=None,
+        compression=None,
     ):
         if not hasattr(_core, "OpenFoamSeriesWriter"):
             raise RuntimeError(
@@ -199,12 +222,13 @@ class SeriesWriter:
                 "(meshioplusplus._core.OpenFoamSeriesWriter), which this installation "
                 "does not provide"
             )
-        self._args = (str(filename), binary, label_bits, scalar_bits, region)
+        compress = _compress_flag(compression)
+        self._args = (str(filename), binary, label_bits, scalar_bits, region, compress)
         self._core = None
 
     def write(self, time, mesh):
         if self._core is None:
-            path, binary, label_bits, scalar_bits, region = self._args
+            path, binary, label_bits, scalar_bits, region, compress = self._args
             self._core = _core.OpenFoamSeriesWriter(
                 path,
                 getattr(mesh, "cell_tags", None) or {},
@@ -213,6 +237,7 @@ class SeriesWriter:
                 label_bits,
                 scalar_bits,
                 region,
+                compress,
             )
         self._core.write(float(time), mesh)
 

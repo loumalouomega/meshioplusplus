@@ -31,6 +31,7 @@
 #include <vector>
 
 // Project includes
+#include "../detail/data_plumbing.hpp"
 #include "../detail/library_lock.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/cell_type.hpp"
@@ -1997,19 +1998,9 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
     if (point_chunks.size() == 1) {
         mesh.AssignPoints(std::move(point_chunks.front()));
     } else {
-        std::size_t total = 0;
-        for (const NDArray& c : point_chunks)
-            total += c.Shape()[0];
-        NDArray all(DType::Float64, {total, point_dim_out});
-        double* dst = all.As<double>();
-        std::size_t row = 0;
-        for (const NDArray& c : point_chunks) {
-            const double* src = c.As<double>();
-            const std::size_t n = c.Shape()[0];
-            std::memcpy(dst + row * point_dim_out, src, n * point_dim_out * sizeof(double));
-            row += n;
-        }
-        mesh.AssignPoints(std::move(all));
+        // Zones may differ in coordinate count; the widest wins and the others
+        // pad with zeros (the cgnslib reader's rule too).
+        mesh.AssignPoints(detail::stack_padded_rows(point_chunks, 2));
     }
     if (length_unit > 0.0)
         detail::set_mesh_length_unit(mesh, length_unit);

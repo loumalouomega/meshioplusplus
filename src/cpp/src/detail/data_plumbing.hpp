@@ -31,6 +31,7 @@
  */
 
 // System includes
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -189,6 +190,31 @@ NDArray append_rows(const NDArray& rA, std::size_t NumRows, std::size_t NumNew, 
     rFill(sink.Data());
     sink.Commit();
     return b;
+}
+
+/**
+ * @brief Float64 `(n_k, c_k)` blocks of rows stacked into one `(sum n_k, C)`
+ * array, `C` the widest `c_k` (at least @p MinCols): a narrower block's missing
+ * columns are zero. What a multi-zone reader does with each zone's points.
+ */
+inline NDArray stack_padded_rows(const std::vector<NDArray>& rBlocks, std::size_t MinCols) {
+    std::size_t total = 0;
+    std::size_t cols = MinCols;
+    for (const NDArray& b : rBlocks) {
+        total += b.Shape()[0];
+        cols = std::max(cols, b.Shape()[1]);
+    }
+    NDArray out(DType::Float64, {total, cols});  // zero-filled
+    double* dst = out.As<double>();
+    std::size_t row = 0;
+    for (const NDArray& b : rBlocks) {
+        const double* src = b.As<double>();
+        const std::size_t n = b.Shape()[0];
+        const std::size_t c = b.Shape()[1];
+        for (std::size_t i = 0; i < n; ++i, ++row)
+            std::copy(src + i * c, src + (i + 1) * c, dst + row * cols);
+    }
+    return out;
 }
 
 }  // namespace detail

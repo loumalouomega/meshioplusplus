@@ -51,14 +51,12 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
+#include "../detail/gzip_deflate.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/math_utils.hpp"
 
 // External includes
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-#include <zlib.h>
-#endif
 #ifdef MESHIOPLUSPLUS_HAS_BZIP2
 #include <bzlib.h>
 #endif
@@ -70,39 +68,6 @@ namespace {
 constexpr const char* kLmWhat = "libMesh";
 
 // --- compression: libMesh's `.gz` (gzip) and `.bz2` (bzip2) files ---------------
-
-// gzip, laid out as Python's gzip.compress(data, mtime=0) lays it out (raw
-// deflate at level 9, mtime 0, XFL 2, OS 255), so both engines write the same
-// bytes when they share a zlib.
-std::string lm_gzip(const std::string& rIn) {
-#ifdef MESHIOPLUSPLUS_HAS_ZLIB
-    z_stream z{};
-    if (deflateInit2(&z, Z_BEST_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK)
-        throw WriteError("libMesh: zlib deflateInit2 failed");
-    std::string out("\x1f\x8b\x08\x00\x00\x00\x00\x00\x02\xff", 10);
-    out.resize(10 + deflateBound(&z, static_cast<uLong>(rIn.size())));
-    z.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(rIn.data()));
-    z.avail_in = static_cast<uInt>(rIn.size());
-    z.next_out = reinterpret_cast<Bytef*>(&out[10]);
-    z.avail_out = static_cast<uInt>(out.size() - 10);
-    const int rc = deflate(&z, Z_FINISH);
-    const std::size_t produced = 10 + z.total_out;
-    deflateEnd(&z);
-    if (rc != Z_STREAM_END)
-        throw WriteError("libMesh: zlib deflate failed");
-    out.resize(produced);
-    const uLong crc =
-        crc32(0L, reinterpret_cast<const Bytef*>(rIn.data()), static_cast<uInt>(rIn.size()));
-    for (const std::uint32_t v :
-         {static_cast<std::uint32_t>(crc), static_cast<std::uint32_t>(rIn.size())})
-        for (int b = 0; b < 4; ++b)
-            out += static_cast<char>((v >> (8 * b)) & 0xff);
-    return out;
-#else
-    (void)rIn;
-    throw WriteError("libMesh: this build has no zlib (MESHIOPLUSPLUS_WITH_ZLIB) to write .gz");
-#endif
-}
 
 std::string lm_bzip2(const std::string& rIn) {
 #ifdef MESHIOPLUSPLUS_HAS_BZIP2
@@ -1939,7 +1904,9 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
     triples(edges, "# number of edge boundary conditions");
     triples(shellfaces, "# number of shellface boundary conditions");
 
-    const std::string data = gz ? lm_gzip(io.Data()) : bz2 ? lm_bzip2(io.Data()) : io.Data();
+    const std::string data = gz    ? detail::gzip_compress(io.Data(), "libMesh")
+                             : bz2 ? lm_bzip2(io.Data())
+                                   : io.Data();
     auto out = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!out)
         throw WriteError("libMesh: cannot open " + rPath + " for writing");
