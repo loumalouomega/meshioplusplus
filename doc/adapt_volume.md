@@ -150,6 +150,8 @@ Float `point_data` is interpolated on splits and keeps the survivor's value on c
 
 `max_boundary_deviation` was 0.0026–0.0031 against `hausd` 0.00346 in every row.
 
+The whole benchmark at `hgrad` 2 with geometry sizes, against `mmg3d` at `hgrad` 2 (`benchmark/adapt_volume_geometry_hgrad2.csv`; its seconds were taken while a build ran, so they are left out), gives 0.44 to 0.96 times MMG's tetrahedra, from 4,304 on the sphere (MMG 5,590) to 46,407 on the Buddha (MMG 87,948). The least dihedral angle is above MMG's on every case, and on the scans fewer tetrahedra fall under 10 degrees than with MMG (0.74% against 1.16% on the Buddha, 2.88% against 4.14% on the dragon). The volume still changes more than with MMG (0.10–0.28% against 0.003–0.11%).
+
 **Limits.**
 
 - The Hausdorff guard samples faces, so the bound is measured on these cases, not proven.
