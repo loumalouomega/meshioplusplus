@@ -172,6 +172,7 @@ export default defineConfig({
               { text: "Field-aligned quad remeshing", link: "/remesh_quads" },
               { text: "Volumetric remeshing (isosurface stuffing)", link: "/remesh_volume" },
               { text: "ODT remeshing (relocate + flip)", link: "/optimize_volume" },
+              { text: "Size-field tet remeshing (adapt_volume)", link: "/adapt_volume" },
               { text: "Smoothing (Laplacian / Taubin / ODT)", link: "/smooth" },
               { text: "MMG backend (adapt, level sets, move)", link: "/mmg" },
               { text: "Metric toolbox", link: "/metric" },

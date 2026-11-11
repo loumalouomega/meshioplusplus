@@ -187,6 +187,96 @@ SEXP R_mio_optimize_volume(SEXP mesh, SEXP max_iterations, SEXP relocate, SEXP f
     return res;
 }
 
+/* adapt_volume(mesh, hmin, hmax, hgrad, hausd, hausd_relative, size_array,
+ * preserve_boundary, preserve_features, quality_metric, quality_min,
+ * max_iterations, collapse, split, swap, smooth, boundary_sizing) */
+SEXP R_mio_adapt_volume(SEXP mesh, SEXP hmin, SEXP hmax, SEXP hgrad, SEXP hausd,
+                        SEXP hausd_relative, SEXP size_array, SEXP preserve_boundary,
+                        SEXP preserve_features, SEXP quality_metric, SEXP quality_min,
+                        SEXP max_iterations, SEXP collapse, SEXP split, SEXP swap, SEXP smooth,
+                        SEXP boundary_sizing) {
+    mio_adapt_volume_opts opts;
+    mio_adapt_volume_report rep;
+    const char *metric;
+    const char *size_name;
+    mio_adapt_volume_opts_init(&opts);
+    opts.hmin = mio_r_double(hmin, "hmin");
+    opts.hmax = mio_r_double(hmax, "hmax");
+    opts.hgrad = mio_r_double(hgrad, "hgrad");
+    opts.hausd = mio_r_double(hausd, "hausd");
+    opts.hausd_relative = mio_r_bool(hausd_relative, "hausd_relative");
+    size_name = mio_r_string(size_array, "size_array");
+    if (size_name[0] != '\0') opts.size_array = size_name;
+    opts.preserve_boundary = mio_r_bool(preserve_boundary, "preserve_boundary");
+    opts.preserve_features = mio_r_bool(preserve_features, "preserve_features");
+    metric = mio_r_string(quality_metric, "quality_metric");
+    if (strcmp(metric, "min_dihedral") == 0)
+        opts.quality_metric = MIO_ADAPT_VOLUME_MIN_DIHEDRAL;
+    else if (strcmp(metric, "mean_ratio") == 0)
+        opts.quality_metric = MIO_ADAPT_VOLUME_MEAN_RATIO;
+    else if (strcmp(metric, "amips") == 0)
+        opts.quality_metric = MIO_ADAPT_VOLUME_AMIPS;
+    else
+        Rf_error("meshio++: adapt_volume: quality_metric must be \"min_dihedral\", "
+                 "\"mean_ratio\" or \"amips\"");
+    opts.quality_min = mio_r_double(quality_min, "quality_min");
+    opts.max_iterations = mio_r_int(max_iterations, "max_iterations");
+    opts.collapse = mio_r_bool(collapse, "collapse");
+    opts.split = mio_r_bool(split, "split");
+    opts.swap = mio_r_bool(swap, "swap");
+    opts.smooth = mio_r_bool(smooth, "smooth");
+    {
+        const char *sizing = mio_r_string(boundary_sizing, "boundary_sizing");
+        if (strcmp(sizing, "input") == 0)
+            opts.boundary_sizing = MIO_ADAPT_VOLUME_SIZING_INPUT;
+        else if (strcmp(sizing, "geometry") == 0)
+            opts.boundary_sizing = MIO_ADAPT_VOLUME_SIZING_GEOMETRY;
+        else
+            Rf_error("meshio++: adapt_volume: boundary_sizing must be \"input\" or \"geometry\"");
+    }
+    mio_mesh *out = mio_adapt_volume(mio_r_mesh(mesh), &opts, &rep);
+    if (out == NULL) mio_r_fail("adapt_volume");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const char *names[] = {"mesh",
+                           "num_tets_before",
+                           "num_tets_after",
+                           "num_points_before",
+                           "num_points_after",
+                           "num_collapsed",
+                           "num_split",
+                           "num_swapped",
+                           "num_smoothed",
+                           "num_rejected_by_link",
+                           "num_rejected_by_inversion",
+                           "num_rejected_by_quality",
+                           "num_rejected_by_length",
+                           "num_rejected_by_class",
+                           "num_rejected_by_hausdorff",
+                           "num_rejected_by_normal",
+                           "num_corners",
+                           "num_ridge_vertices",
+                           "num_chains",
+                           "num_patches",
+                           "iterations",
+                           "min_dihedral_before",
+                           "min_dihedral_after",
+                           "max_dihedral_before",
+                           "max_dihedral_after",
+                           "mean_quality_before",
+                           "mean_quality_after",
+                           "max_boundary_deviation",
+                           "hmin",
+                           "hmax",
+                           "hausd",
+                           "volume_before",
+                           "volume_after"};
+    SEXP values[33] = {mo};
+    const double numbers[] = {(double)rep.num_tets_before, (double)rep.num_tets_after, (double)rep.num_points_before, (double)rep.num_points_after, (double)rep.num_collapsed, (double)rep.num_split, (double)rep.num_swapped, (double)rep.num_smoothed, (double)rep.num_rejected_by_link, (double)rep.num_rejected_by_inversion, (double)rep.num_rejected_by_quality, (double)rep.num_rejected_by_length, (double)rep.num_rejected_by_class, (double)rep.num_rejected_by_hausdorff, (double)rep.num_rejected_by_normal, (double)rep.num_corners, (double)rep.num_ridge_vertices, (double)rep.num_chains, (double)rep.num_patches, (double)rep.iterations, rep.min_dihedral_before, rep.min_dihedral_after, rep.max_dihedral_before, rep.max_dihedral_after, rep.mean_quality_before, rep.mean_quality_after, rep.max_boundary_deviation, rep.hmin, rep.hmax, rep.hausd, rep.volume_before, rep.volume_after};
+    SEXP res = mio_r_report_list(33, names, values, numbers);
+    UNPROTECT(1);
+    return res;
+}
+
 /* --- subsetting --------------------------------------------------------- */
 
 SEXP R_mio_crop_bbox(SEXP mesh, SEXP lo, SEXP hi, SEXP mode, SEXP record_ids) {

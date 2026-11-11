@@ -1359,6 +1359,50 @@ mio_optimize_volume <- function(mesh, max_iterations = 10L, relocate = TRUE, fli
   )
 }
 
+#' Size-field tetrahedral remeshing
+#'
+#' Remesh a valid tetrahedral mesh (typically [mio_octree_mesh()]'s output) to a
+#' graded isotropic size field: collapse, split, swap and smooth under a bound
+#' on how far the boundary moves, keeping corners, ridges, materials, regions
+#' and boundary tags. Every edit is guarded by exact orientation tests and a
+#' quality floor. Tet-only. To remesh `mio_octree_mesh()`'s output, call this on
+#' it (the Python, C, C++ and CLI `octree_mesh` also take `post_adapt`). See
+#' `doc/adapt_volume.md`.
+#'
+#' @param mesh a `mio_mesh` external pointer (tetra-only volume mesh).
+#' @param hmin,hmax the target edge length bounds; 0 picks them from the input.
+#' @param hgrad the gradation.
+#' @param hausd how far the boundary may move; 0 takes 1e-3 of the diagonal.
+#' @param hausd_relative read `hausd` as a fraction of the diagonal.
+#' @param size_array a point-data name of target sizes, or `NULL`.
+#' @param preserve_boundary leave the boundary bit for bit.
+#' @param preserve_features keep ridges and corners.
+#' @param quality_metric `"min_dihedral"`, `"mean_ratio"` or `"amips"`.
+#' @param quality_min the quality floor of an edit; negative takes the default.
+#' @param max_iterations collapse / split / swap / smooth cycles.
+#' @param collapse,split,swap,smooth run each pass.
+#' @param boundary_sizing `"input"` keeps the boundary's resolution, `"geometry"`
+#'   sizes it by curvature (`hmax` where flat).
+#' @return a named list with `mesh` and every counter of the report
+#'   (`num_tets_before`, `num_tets_after`, ..., `max_boundary_deviation`,
+#'   `hmin`, `hmax`, `hausd`, `volume_before`, `volume_after`).
+#' @export
+mio_adapt_volume <- function(mesh, hmin = 0, hmax = 0, hgrad = 1.3, hausd = 0,
+                             hausd_relative = FALSE, size_array = NULL,
+                             preserve_boundary = FALSE, preserve_features = TRUE,
+                             quality_metric = "min_dihedral", quality_min = -1,
+                             max_iterations = 10L, collapse = TRUE, split = TRUE,
+                             swap = TRUE, smooth = TRUE, boundary_sizing = "input") {
+  .Call(
+    R_mio_adapt_volume, mesh, as.numeric(hmin), as.numeric(hmax), as.numeric(hgrad),
+    as.numeric(hausd), isTRUE(hausd_relative),
+    if (is.null(size_array)) "" else as.character(size_array),
+    isTRUE(preserve_boundary), isTRUE(preserve_features), as.character(quality_metric),
+    as.numeric(quality_min), as.integer(max_iterations), isTRUE(collapse), isTRUE(split),
+    isTRUE(swap), isTRUE(smooth), as.character(boundary_sizing)
+  )
+}
+
 #' @rdname mio_extract_surface
 #' @export
 mio_crop_bbox <- function(mesh, lo, hi, mode = "all", record_ids = FALSE) {

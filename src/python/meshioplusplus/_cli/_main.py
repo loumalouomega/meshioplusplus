@@ -800,6 +800,12 @@ _VERBS = (
         "ODT-remesh a tetrahedral mesh (relocate vertices + flip connectivity)",
     ),
     _Verb(
+        "adapt-volume",
+        "_adapt_volume",
+        "adapt_volume_cmd",
+        "Remesh a tetrahedral mesh to a graded size field (collapse, split, swap, smooth)",
+    ),
+    _Verb(
         "partition",
         "_partition",
         "partition_cmd",

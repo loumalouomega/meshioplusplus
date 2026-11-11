@@ -238,7 +238,7 @@ def test_native_connectivity_shape_probe(tmp_path):
     subprocess.run([executable, "-format=vtkhdf", str(path)], check=True, timeout=20)
 
 
-@pytest.mark.parametrize("failure", ["abort", "sanitizer"])
+@pytest.mark.parametrize("failure", ["abort", "sanitizer", "segv"])
 def test_native_mutator_isolation(tmp_path, failure):
     executable = os.environ.get("MIO_FUZZ_MUTATOR_PROBE")
     if not executable:

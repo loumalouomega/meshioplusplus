@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.15...3.30)
 # properties, and the find_package/pkg-config metadata of the C API.
 project(
   meshioplusplus_core
-  VERSION 20.0.0
+  VERSION 20.1.0
   LANGUAGES C CXX
   DESCRIPTION "C++ core for the meshio++ mesh I/O library")
 
@@ -2153,7 +2153,7 @@ if(MESHIOPLUSPLUS_BUILD_FUZZERS)
     target_compile_options(meshioplusplus_fuzz_read PRIVATE -fsanitize=fuzzer)
     target_link_options(meshioplusplus_fuzz_read PRIVATE -fsanitize=fuzzer)
   endif()
-  foreach(_op IN ITEMS mesh_cad_surface triangulate_polygon_2d)
+  foreach(_op IN ITEMS mesh_cad_surface triangulate_polygon_2d adapt_volume)
     add_executable(meshioplusplus_fuzz_${_op} tests/fuzz/fuzz_mesh_cad.cpp)
     target_link_libraries(meshioplusplus_fuzz_${_op} PRIVATE meshioplusplus_core_obj)
     if(MESHIOPLUSPLUS_FUZZING_ENGINE)

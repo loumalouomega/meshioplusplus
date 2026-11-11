@@ -218,6 +218,7 @@
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
+#include "meshioplusplus/operations/adapt_volume.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
@@ -8535,6 +8536,95 @@ val optimize_volume_js(const val& rMeshObj, double maxIterations, bool relocate,
 }
 
 /**
+ * @brief Size-field tetrahedral remeshing (`adaptVolume`): collapse, split,
+ * swap and smooth to a graded isotropic size field under a boundary Hausdorff
+ * bound. Every option is optional, camelCase. See doc/adapt_volume.md.
+ */
+val adapt_volume_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::AdaptVolumeOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            const auto number = [&](const char* pKey, double& rOut) {
+                if (rOptions.hasOwnProperty(pKey))
+                    rOut = rOptions[pKey].as<double>();
+            };
+            const auto flag = [&](const char* pKey, bool& rOut) {
+                if (rOptions.hasOwnProperty(pKey))
+                    rOut = rOptions[pKey].as<bool>();
+            };
+            number("hmin", options.mHmin);
+            number("hmax", options.mHmax);
+            number("hgrad", options.mHgrad);
+            number("hausd", options.mHausd);
+            flag("hausdRelative", options.mHausdRelative);
+            if (rOptions.hasOwnProperty("sizeArray"))
+                options.mSizeArray = rOptions["sizeArray"].as<std::string>();
+            flag("curvatureSizing", options.mCurvatureSizing);
+            number("featureAngle", options.mFeatureAngle);
+            number("cornerAngle", options.mCornerAngle);
+            number("maxNormalDeviation", options.mMaxNormalDeviation);
+            flag("preserveBoundary", options.mPreserveBoundary);
+            flag("preserveFeatures", options.mPreserveFeatures);
+            if (rOptions.hasOwnProperty("qualityMetric"))
+                options.mQualityMetric = meshioplusplus::adapt_volume_quality_from_name(
+                    rOptions["qualityMetric"].as<std::string>());
+            number("qualityMin", options.mQualityMin);
+            if (rOptions.hasOwnProperty("maxIterations"))
+                options.mMaxIterations = static_cast<int>(rOptions["maxIterations"].as<double>());
+            number("targetMinDihedral", options.mTargetMinDihedral);
+            flag("collapse", options.mEnableCollapse);
+            flag("split", options.mEnableSplit);
+            flag("swap", options.mEnableSwap);
+            flag("smooth", options.mEnableSmooth);
+            if (rOptions.hasOwnProperty("boundarySizing"))
+                options.mBoundarySizing = meshioplusplus::adapt_volume_boundary_sizing_from_name(
+                    rOptions["boundarySizing"].as<std::string>());
+        }
+        meshioplusplus::AdaptVolumeResult r =
+            meshioplusplus::adapt_volume(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numTetsBefore", static_cast<double>(r.mNumTetsBefore));
+        out.set("numTetsAfter", static_cast<double>(r.mNumTetsAfter));
+        out.set("numPointsBefore", static_cast<double>(r.mNumPointsBefore));
+        out.set("numPointsAfter", static_cast<double>(r.mNumPointsAfter));
+        out.set("numCollapsed", static_cast<double>(r.mNumCollapsed));
+        out.set("numSplit", static_cast<double>(r.mNumSplit));
+        out.set("numSwapped", static_cast<double>(r.mNumSwapped));
+        out.set("numSmoothed", static_cast<double>(r.mNumSmoothed));
+        out.set("numRejectedByLink", static_cast<double>(r.mNumRejectedByLink));
+        out.set("numRejectedByInversion", static_cast<double>(r.mNumRejectedByInversion));
+        out.set("numRejectedByQuality", static_cast<double>(r.mNumRejectedByQuality));
+        out.set("numRejectedByLength", static_cast<double>(r.mNumRejectedByLength));
+        out.set("numRejectedByClass", static_cast<double>(r.mNumRejectedByClass));
+        out.set("numRejectedByHausdorff", static_cast<double>(r.mNumRejectedByHausdorff));
+        out.set("numRejectedByNormal", static_cast<double>(r.mNumRejectedByNormal));
+        out.set("minDihedralBefore", r.mMinDihedralBefore);
+        out.set("minDihedralAfter", r.mMinDihedralAfter);
+        out.set("maxDihedralBefore", r.mMaxDihedralBefore);
+        out.set("maxDihedralAfter", r.mMaxDihedralAfter);
+        out.set("meanQualityBefore", r.mMeanQualityBefore);
+        out.set("meanQualityAfter", r.mMeanQualityAfter);
+        out.set("maxBoundaryDeviation", r.mMaxBoundaryDeviation);
+        out.set("hmin", r.mHmin);
+        out.set("hmax", r.mHmax);
+        out.set("hausd", r.mHausd);
+        out.set("volumeBefore", r.mVolumeBefore);
+        out.set("volumeAfter", r.mVolumeAfter);
+        out.set("numCorners", static_cast<double>(r.mNumCorners));
+        out.set("numRidgeVertices", static_cast<double>(r.mNumRidgeVertices));
+        out.set("numChains", static_cast<double>(r.mNumChains));
+        out.set("numPatches", static_cast<double>(r.mNumPatches));
+        out.set("iterations", static_cast<double>(r.mIterations));
+        val warnings = val::array();
+        for (const std::string& w : r.mWarnings)
+            warnings.call<void>("push", w);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/**
  * @brief Split a mesh into pieces (by "type" / "component" / "region"|"tag").
  * Returns a JS array of `{key, mesh}` objects, plus `pointMap`/`cellMaps` per
  * piece when `returnMaps` is set. `tagName` selects the integer cell_data for
@@ -10954,6 +11044,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("remesh", &remesh_js);
     emscripten::function("remeshVolume", &remesh_volume_js);
     emscripten::function("optimizeVolume", &optimize_volume_js);
+    emscripten::function("adaptVolume", &adapt_volume_js);
     emscripten::function("computeCurvature", &compute_curvature_js);
     emscripten::function("computeNormals", &compute_normals_js);
     emscripten::function("featureEdges", &feature_edges_js);

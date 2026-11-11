@@ -110,6 +110,7 @@ if TYPE_CHECKING:
         z88,
         zarr,
     )
+    from ._adapt_volume import adapt_volume
     from ._adjacency import adjacency, write_graph
     from ._agglomerate import agglomerate
     from ._blender import from_blender, has_blender, to_blender
@@ -525,6 +526,7 @@ _LAZY_ATTRS = {
     "write_dataset": "_ml",
     "compute_normals": "_normals",
     "optimize_volume": "_optimize_volume",
+    "adapt_volume": "_adapt_volume",
     "partition": "_partition",
     "partition_labels": "_partition",
     "match_periodic_nodes": "_periodic",
@@ -825,6 +827,7 @@ __all__ = [
     "decimate_volume",
     "remesh",
     "remesh_volume",
+    "adapt_volume",
     "adapt",
     "metric_from_hessian",
     "has_mmg",

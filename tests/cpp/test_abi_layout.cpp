@@ -109,6 +109,7 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
+#include "meshioplusplus/operations/adapt_volume.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/operations/curvature.hpp"
 #include "meshioplusplus/operations/neighbors.hpp"
@@ -436,9 +437,14 @@ static_assert(offsetof(meshioplusplus::DeviationOptions, mRegister) == 73,
               "DeviationOptions::mRegister moved");
 MIO_ABI_LAYOUT(meshioplusplus::OctreeOptions, 304, 8);
 // ABI 36: `mHexGrading` (roadmap 3.1.4.3) in the padding after `mPillow`.
-MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 376, 8);
+// ABI 45: `mPostAdapt` and `mAdapt` (an AdaptVolumeOptions) appended, 376 -> 576.
+MIO_ABI_LAYOUT(meshioplusplus::OctreeMeshOptions, 576, 8);
 static_assert(offsetof(meshioplusplus::OctreeMeshOptions, mHexGrading) == 308,
               "OctreeMeshOptions::mHexGrading moved");
+static_assert(offsetof(meshioplusplus::OctreeMeshOptions, mPostAdapt) == 376,
+              "OctreeMeshOptions::mPostAdapt moved");
+static_assert(offsetof(meshioplusplus::OctreeMeshOptions, mAdapt) == 384,
+              "OctreeMeshOptions::mAdapt moved");
 // ABI 34 (v17.15.0): the quality options of roadmap 6.2 and the fields 6.3,
 // 6.4 and 6.6 will use, appended in one layout (refused until their items
 // land), and the face record's refinement report.
@@ -528,6 +534,17 @@ MIO_ABI_LAYOUT(meshioplusplus::RemeshVolumeOptions, 224, 8);
 // deliberately NOT pinned, embedding a `Mesh` like every other *Result.
 // ABI 37 appends mObjective and mMaxRingSize (worst-cell moves): 40 -> 48.
 MIO_ABI_LAYOUT(meshioplusplus::OptimizeVolumeOptions, 48, 8);
+// ABI 45: adapt_volume (operations/adapt_volume.hpp, a new header). The result
+// embeds a Mesh and is not pinned.
+MIO_ABI_LAYOUT(meshioplusplus::AdaptVolumeOptions, 192, 8);
+static_assert(offsetof(meshioplusplus::AdaptVolumeOptions, mFrozen) == 136,
+              "meshio++ ABI: AdaptVolumeOptions layout changed (Tier A, doc/abi.md)");
+static_assert(offsetof(meshioplusplus::AdaptVolumeOptions, mEnableCollapse) == 184,
+              "meshio++ ABI: AdaptVolumeOptions layout changed (Tier A, doc/abi.md)");
+static_assert(offsetof(meshioplusplus::AdaptVolumeOptions, mBoundarySizing) == 188,
+              "meshio++ ABI: AdaptVolumeOptions layout changed (Tier A, doc/abi.md)");
+static_assert(sizeof(meshioplusplus::AdaptVolumeQuality) == 4,
+              "meshio++ ABI: AdaptVolumeQuality underlying width changed (Tier A, doc/abi.md)");
 static_assert(
     sizeof(meshioplusplus::OptimizeVolumeObjective) == 4,
     "meshio++ ABI: OptimizeVolumeObjective underlying width changed (Tier A, doc/abi.md)");

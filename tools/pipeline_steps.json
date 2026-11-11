@@ -716,6 +716,29 @@
       {"name": "Objective", "kind": "text", "default": "worst"},
       {"name": "MaxRingSize", "kind": "number", "default": 7.0}
     ]},
+    {"op": "AdaptVolume", "keys": [
+      {"name": "Hmin", "kind": "number", "default": 0.0},
+      {"name": "Hmax", "kind": "number", "default": 0.0},
+      {"name": "Hgrad", "kind": "number", "default": 1.3},
+      {"name": "Hausd", "kind": "number", "default": 0.0},
+      {"name": "HausdRelative", "kind": "flag", "default": false},
+      {"name": "SizeArray", "kind": "text", "default": ""},
+      {"name": "CurvatureSizing", "kind": "flag", "default": false},
+      {"name": "FeatureAngle", "kind": "number", "default": 30.0},
+      {"name": "CornerAngle", "kind": "number", "default": 30.0},
+      {"name": "MaxNormalDeviation", "kind": "number", "default": 30.0},
+      {"name": "PreserveBoundary", "kind": "flag", "default": false},
+      {"name": "PreserveFeatures", "kind": "flag", "default": true},
+      {"name": "QualityMetric", "kind": "text", "default": "min_dihedral"},
+      {"name": "QualityMin", "kind": "number", "default": -1.0},
+      {"name": "MaxIterations", "kind": "number", "default": 10.0},
+      {"name": "TargetMinDihedral", "kind": "number", "default": 0.0},
+      {"name": "Collapse", "kind": "flag", "default": true},
+      {"name": "Split", "kind": "flag", "default": true},
+      {"name": "Swap", "kind": "flag", "default": true},
+      {"name": "Smooth", "kind": "flag", "default": true},
+      {"name": "BoundarySizing", "kind": "text", "default": "input"}
+    ]},
     {"op": "Isosurface", "keys": [
       {"name": "Array", "kind": "text", "default": ""},
       {"name": "Isovalue", "kind": "number", "default": 0.0},
@@ -818,7 +841,15 @@
       {"name": "ZeroVolumeFactor", "kind": "number", "default": 1e-06},
       {"name": "CapFlatness", "kind": "number", "default": 0.01},
       {"name": "CrossingMargin", "kind": "number", "default": 0.01},
-      {"name": "CrossingGap", "kind": "number", "default": 0.05}
+      {"name": "CrossingGap", "kind": "number", "default": 0.05},
+      {"name": "PostAdapt", "kind": "flag", "default": false},
+      {"name": "AdaptHmin", "kind": "number", "default": 0.0},
+      {"name": "AdaptHmax", "kind": "number", "default": 0.0},
+      {"name": "AdaptHgrad", "kind": "number", "default": 1.3},
+      {"name": "AdaptHausd", "kind": "number", "default": 0.0},
+      {"name": "AdaptMaxIterations", "kind": "number", "default": 10.0},
+      {"name": "AdaptPreserveBoundary", "kind": "flag", "default": false},
+      {"name": "AdaptBoundarySizing", "kind": "text", "default": "input"}
     ]},
     {"op": "Octree", "keys": [
       {"name": "RootCells"},

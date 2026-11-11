@@ -1022,6 +1022,19 @@ WRITING = [
         lambda f, out: ["untangle", f["tangled"], out + ".vtu", "--json"],
     ),
     (
+        "adapt-volume",
+        lambda f, out: [
+            "adapt-volume",
+            f["tets"],
+            out + ".vtu",
+            "--hmin",
+            "0.5",
+            "--max-iterations",
+            "3",
+            "--json",
+        ],
+    ),
+    (
         "morph",
         lambda f, out: [
             "morph",

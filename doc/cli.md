@@ -1353,6 +1353,39 @@ meshioplusplus optimize-volume volume.vtu optimized.vtu --objective energy
 
 ---
 
+
+## meshioplusplus adapt-volume
+
+Remesh a **tetrahedral** mesh to a graded isotropic size field: collapse, split, swap and smooth under a bound on how far the boundary moves, keeping corners, ridges, materials, regions and boundary tags (see [adapt_volume](/adapt_volume)). Both CLIs take the same flags and print the same `--json` report (timings left out, as they differ from run to run).
+
+```
+meshioplusplus adapt-volume [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--hmin H` / `--hmax H` | Target edge length bounds (default: automatic) |
+| `--hgrad G` | Gradation (default: 1.3) |
+| `--hausd D` | How far the boundary may move (default: 1e-3 of the diagonal); `--hausd-relative` reads it as a fraction of the diagonal |
+| `--size-array NAME` | A point-data array of target sizes |
+| `--curvature-sizing` | Bound boundary sizes by curvature |
+| `--feature-angle A` / `--corner-angle A` | Ridge and corner angles (default: 30 degrees) |
+| `--max-normal-deviation A` | The most a boundary face turns per edit (default: 30 degrees) |
+| `--preserve-boundary` | Leave the boundary bit for bit |
+| `--no-preserve-features` | Let ridges and corners go |
+| `--quality-metric M` | `min_dihedral` (default), `mean_ratio` or `amips` |
+| `--quality-min Q` | The quality floor of an edit (default: 10 degrees or 0.2) |
+| `--max-iterations N` | Collapse / split / swap / smooth cycles (default: 10) |
+| `--target-min-dihedral A` | Stop once the least dihedral angle reaches A |
+| `--boundary-sizing input\|geometry` | Keep the boundary's resolution (default) or size it by curvature, `hmax` where flat |
+| `--no-collapse`, `--no-split`, `--no-swap`, `--no-smooth` | Turn a pass off |
+| `--json` | Print the report as JSON |
+
+```bash
+meshioplusplus adapt-volume octree.vtu adapted.vtu --hmin 0.05 --hgrad 1.5
+meshioplusplus octree-mesh skin.stl tets.vtu --post-adapt --adapt-hgrad 1.5
+```
+
 ## meshioplusplus curvature
 
 Per-vertex mean and Gaussian curvature of a surface, by the angle defect and the cotangent Laplace-Beltrami operator (see [curvature](/curvature)).

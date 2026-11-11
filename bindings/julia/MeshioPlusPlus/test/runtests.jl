@@ -986,6 +986,14 @@ end
     close(ov.mesh)
     @test_throws ArgumentError optimize_volume(m; objective="best")
 
+    # adapt_volume: size-field tetrahedral remeshing, tet-only.
+    av = adapt_volume(m; hmin=1.0, hmax=2.0, max_iterations=3)
+    @test av.num_tets_after == num_cells(av.mesh)
+    @test av.min_dihedral_after >= min(av.min_dihedral_before, 10.0) - 1e-9
+    @test av.max_boundary_deviation <= av.hausd
+    close(av.mesh)
+    @test_throws ArgumentError adapt_volume(m; quality_metric="best")
+
     b = crop_bbox(m, [-1.0, -1.0, -1.0], [10.0, 10.0, 10.0])
     @test num_cells(b) == 2                   # the box holds everything
     close(b)

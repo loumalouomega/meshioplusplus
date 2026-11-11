@@ -1404,6 +1404,19 @@ def test_optimize_volume_objectives(tmp_path):
         _tools.tool_optimize_volume(src, str(tmp_path / "x.vtu"), objective="best")
 
 
+def test_adapt_volume_tool(tmp_path):
+    src = str(tmp_path / "box.vtu")
+    meshioplusplus.write(src, meshioplusplus.box(dims=(5, 5, 5), cell_type="tetra"))
+    out = _dump(
+        _tools.tool_adapt_volume(src, str(tmp_path / "a.vtu"), hmin=0.3, hmax=0.4)
+    )
+    assert out["num_tets_after"] < out["num_tets_before"]
+    assert out["max_boundary_deviation"] <= out["hausd"]
+    assert "num_rejected_by_link" in out and "region_volume_change" in out
+    with pytest.raises(ValueError, match="quality_metric"):
+        _tools.tool_adapt_volume(src, str(tmp_path / "x.vtu"), quality_metric="best")
+
+
 def test_select_writes_a_region(tmp_path):
     src = str(tmp_path / "cube.vtu")
     meshioplusplus.write(src, _unit_cube_quads())

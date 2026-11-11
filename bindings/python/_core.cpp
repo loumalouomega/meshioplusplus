@@ -237,6 +237,7 @@
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
+#include "meshioplusplus/operations/adapt_volume.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
@@ -1805,6 +1806,100 @@ py::dict core_metric_summary_dict(const meshioplusplus::QualityMetricSummary& rS
         hist.append(h);
     d["histogram"] = hist;
     return d;
+}
+
+// adapt_volume's options from the keyword dictionary the Python layer
+// builds (every key optional, the C++ defaults otherwise); shared by
+// `adapt_volume` and `octree_mesh(post_adapt=True)`.
+meshioplusplus::AdaptVolumeOptions core_adapt_volume_options(const py::dict& rOpts) {
+    meshioplusplus::AdaptVolumeOptions o;
+    auto num = [&](const char* pKey, double& rField) {
+        if (rOpts.contains(pKey))
+            rField = rOpts[pKey].cast<double>();
+    };
+    auto flag = [&](const char* pKey, bool& rField) {
+        if (rOpts.contains(pKey))
+            rField = rOpts[pKey].cast<bool>();
+    };
+    num("hmin", o.mHmin);
+    num("hmax", o.mHmax);
+    num("hgrad", o.mHgrad);
+    num("hausd", o.mHausd);
+    flag("hausd_relative", o.mHausdRelative);
+    if (rOpts.contains("size_array") && !rOpts["size_array"].is_none())
+        o.mSizeArray = rOpts["size_array"].cast<std::string>();
+    flag("curvature_sizing", o.mCurvatureSizing);
+    num("feature_angle", o.mFeatureAngle);
+    num("corner_angle", o.mCornerAngle);
+    num("max_normal_deviation", o.mMaxNormalDeviation);
+    flag("preserve_boundary", o.mPreserveBoundary);
+    flag("preserve_features", o.mPreserveFeatures);
+    if (rOpts.contains("quality_metric"))
+        o.mQualityMetric = meshioplusplus::adapt_volume_quality_from_name(
+            rOpts["quality_metric"].cast<std::string>());
+    num("quality_min", o.mQualityMin);
+    if (rOpts.contains("max_iterations"))
+        o.mMaxIterations = rOpts["max_iterations"].cast<int>();
+    num("target_min_dihedral", o.mTargetMinDihedral);
+    if (rOpts.contains("frozen") && !rOpts["frozen"].is_none())
+        o.mFrozen = rOpts["frozen"].cast<std::vector<std::uint8_t>>();
+    if (rOpts.contains("material_arrays") && !rOpts["material_arrays"].is_none())
+        o.mMaterialArrays = rOpts["material_arrays"].cast<std::vector<std::string>>();
+    flag("collapse", o.mEnableCollapse);
+    flag("split", o.mEnableSplit);
+    flag("swap", o.mEnableSwap);
+    flag("smooth", o.mEnableSmooth);
+    if (rOpts.contains("boundary_sizing"))
+        o.mBoundarySizing = meshioplusplus::adapt_volume_boundary_sizing_from_name(
+            rOpts["boundary_sizing"].cast<std::string>());
+    return o;
+}
+
+// adapt_volume's report, every field but the mesh.
+py::dict core_adapt_volume_report(const meshioplusplus::AdaptVolumeResult& rR) {
+    py::dict out;
+    out["num_tets_before"] = rR.mNumTetsBefore;
+    out["num_tets_after"] = rR.mNumTetsAfter;
+    out["num_points_before"] = rR.mNumPointsBefore;
+    out["num_points_after"] = rR.mNumPointsAfter;
+    out["num_collapsed"] = rR.mNumCollapsed;
+    out["num_split"] = rR.mNumSplit;
+    out["num_swapped"] = rR.mNumSwapped;
+    out["num_smoothed"] = rR.mNumSmoothed;
+    out["num_rejected_by_link"] = rR.mNumRejectedByLink;
+    out["num_rejected_by_inversion"] = rR.mNumRejectedByInversion;
+    out["num_rejected_by_quality"] = rR.mNumRejectedByQuality;
+    out["num_rejected_by_length"] = rR.mNumRejectedByLength;
+    out["num_rejected_by_class"] = rR.mNumRejectedByClass;
+    out["num_rejected_by_hausdorff"] = rR.mNumRejectedByHausdorff;
+    out["num_rejected_by_normal"] = rR.mNumRejectedByNormal;
+    out["min_dihedral_before"] = rR.mMinDihedralBefore;
+    out["min_dihedral_after"] = rR.mMinDihedralAfter;
+    out["max_dihedral_before"] = rR.mMaxDihedralBefore;
+    out["max_dihedral_after"] = rR.mMaxDihedralAfter;
+    out["mean_quality_before"] = rR.mMeanQualityBefore;
+    out["mean_quality_after"] = rR.mMeanQualityAfter;
+    out["max_boundary_deviation"] = rR.mMaxBoundaryDeviation;
+    out["hmin"] = rR.mHmin;
+    out["hmax"] = rR.mHmax;
+    out["hausd"] = rR.mHausd;
+    out["volume_before"] = rR.mVolumeBefore;
+    out["volume_after"] = rR.mVolumeAfter;
+    py::list regions;
+    for (const auto& [label, dv] : rR.mRegionVolumeChange)
+        regions.append(py::make_tuple(label, dv));
+    out["region_volume_change"] = regions;
+    out["num_corners"] = rR.mNumCorners;
+    out["num_ridge_vertices"] = rR.mNumRidgeVertices;
+    out["num_chains"] = rR.mNumChains;
+    out["num_patches"] = rR.mNumPatches;
+    out["iterations"] = rR.mIterations;
+    py::list timings;
+    for (const auto& t : rR.mTimings)
+        timings.append(py::make_tuple(t.first, t.second));
+    out["timings"] = timings;
+    out["warnings"] = rR.mWarnings;
+    return out;
 }
 
 /// A quality report's counts and per-metric summaries, into @p rOut.
@@ -5010,7 +5105,7 @@ PYBIND11_MODULE(_core, m) {
            bool attach_distance, bool attach_quality, bool pillow, const std::string& hex_grading,
            std::int64_t untangle_iterations, std::int64_t max_cells, std::int64_t max_tets,
            bool volume_fix, double zero_volume_factor, double cap_flatness, double crossing_margin,
-           double crossing_gap) {
+           double crossing_gap, bool post_adapt, py::dict adapt) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
@@ -5056,6 +5151,8 @@ PYBIND11_MODULE(_core, m) {
             o.mCapFlatness = cap_flatness;
             o.mCrossingMargin = crossing_margin;
             o.mCrossingGap = crossing_gap;
+            o.mPostAdapt = post_adapt;
+            o.mAdapt = core_adapt_volume_options(adapt);
             meshioplusplus::OctreeMeshResult r =
                 core_nogil([&] { return meshioplusplus::octree_mesh(cpp, o); });
             py::dict out;
@@ -5116,6 +5213,8 @@ PYBIND11_MODULE(_core, m) {
                 timings.append(py::make_tuple(t.first, t.second));
             out["timings"] = timings;
             out["warnings"] = r.mWarnings;
+            if (r.mAdapted)
+                out["adapt"] = core_adapt_volume_report(r.mAdapt);
             return out;
         },
         py::arg("mesh"), py::arg("output") = "tet", py::arg("min_size") = 0.0,
@@ -5136,7 +5235,26 @@ PYBIND11_MODULE(_core, m) {
         py::arg("max_cells") = 20000000, py::arg("max_tets") = 100000000,
         py::arg("volume_fix") = true, py::arg("zero_volume_factor") = 1.0e-6,
         py::arg("cap_flatness") = 0.01, py::arg("crossing_margin") = 0.01,
-        py::arg("crossing_gap") = 0.05);
+        py::arg("crossing_gap") = 0.05, py::arg("post_adapt") = false,
+        py::arg("adapt") = py::dict());
+
+    // Size-field tetrahedral remeshing (operations/adapt_volume.hpp,
+    // doc/adapt_volume.md): every option is a keyword, read by
+    // core_adapt_volume_options.
+    m.def(
+        "adapt_volume",
+        [](py::object pymesh, py::kwargs opts) {
+            auto cpp_in = core_mesh_in(pymesh);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            const meshioplusplus::AdaptVolumeOptions o = core_adapt_volume_options(opts);
+            meshioplusplus::AdaptVolumeResult r =
+                core_nogil([&] { return meshioplusplus::adapt_volume(cpp, o); });
+            py::dict out = core_adapt_volume_report(r);
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            return out;
+        },
+        py::arg("mesh"));
 
     // Distance to a surface. `sample_distance` takes bare query points;
     // `distance_to_surface` attaches the result to a mesh as ordinary data.

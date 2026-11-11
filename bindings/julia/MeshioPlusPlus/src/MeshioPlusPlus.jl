@@ -105,7 +105,7 @@ export contact_pairs, split_interface, match_periodic_nodes, adjacency, write_gr
 
 # Operations
 export extract_surface, extract_skin, attach_quality, quality_counts
-export transform, clean, smooth, optimize_volume, crop_bbox, crop_plane, crop_predicate, slice, isosurface
+export transform, clean, smooth, optimize_volume, adapt_volume, crop_bbox, crop_plane, crop_predicate, slice, isosurface
 export gradient
 export hessian
 export estimate_error, error_size

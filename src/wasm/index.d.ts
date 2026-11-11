@@ -4725,6 +4725,76 @@ export interface MeshioPlusPlusModule {
    * `[hmin, hmax]` and grade, into point data `output`. See doc/metric.md.
    * @throws {Error} on a missing or misshapen field, or bad options.
    */
+  /**
+   * Remesh a tetrahedral mesh to a graded isotropic size field: collapse,
+   * split, swap and smooth under a bound on how far the boundary moves,
+   * keeping corners, ridges, materials, regions and boundary tags. Every edit
+   * is guarded by exact orientation tests and a quality floor. Tet-only. See
+   * doc/adapt_volume.md.
+   * @throws {Error} on a non-tetra block, a tangled mesh or a bad option.
+   */
+  adaptVolume(
+    mesh: Mesh,
+    options?: {
+      hmin?: number;
+      hmax?: number;
+      hgrad?: number;
+      hausd?: number;
+      hausdRelative?: boolean;
+      sizeArray?: string;
+      curvatureSizing?: boolean;
+      featureAngle?: number;
+      cornerAngle?: number;
+      maxNormalDeviation?: number;
+      preserveBoundary?: boolean;
+      preserveFeatures?: boolean;
+      qualityMetric?: 'min_dihedral' | 'mean_ratio' | 'amips';
+      qualityMin?: number;
+      maxIterations?: number;
+      targetMinDihedral?: number;
+      collapse?: boolean;
+      split?: boolean;
+      swap?: boolean;
+      smooth?: boolean;
+      boundarySizing?: 'input' | 'geometry';
+    },
+  ): {
+    mesh: Mesh;
+    numTetsBefore: number;
+    numTetsAfter: number;
+    numPointsBefore: number;
+    numPointsAfter: number;
+    numCollapsed: number;
+    numSplit: number;
+    numSwapped: number;
+    numSmoothed: number;
+    numRejectedByLink: number;
+    numRejectedByInversion: number;
+    numRejectedByQuality: number;
+    numRejectedByLength: number;
+    numRejectedByClass: number;
+    numRejectedByHausdorff: number;
+    numRejectedByNormal: number;
+    minDihedralBefore: number;
+    minDihedralAfter: number;
+    maxDihedralBefore: number;
+    maxDihedralAfter: number;
+    meanQualityBefore: number;
+    meanQualityAfter: number;
+    maxBoundaryDeviation: number;
+    hmin: number;
+    hmax: number;
+    hausd: number;
+    volumeBefore: number;
+    volumeAfter: number;
+    numCorners: number;
+    numRidgeVertices: number;
+    numChains: number;
+    numPatches: number;
+    iterations: number;
+    warnings: string[];
+  };
+
   prepareMetric(
     mesh: Mesh,
     options: {

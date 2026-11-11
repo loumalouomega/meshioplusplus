@@ -181,6 +181,7 @@
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
+#include "meshioplusplus/operations/adapt_volume.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
@@ -2654,6 +2655,142 @@ mio_mesh* mio_optimize_volume_ex(const mio_mesh* mesh, const mio_optimize_volume
             report->min_dihedral_before = r.mMinDihedralBefore;
             report->min_dihedral_after = r.mMinDihedralAfter;
         }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+static_assert(sizeof(mio_adapt_volume_opts) == 216,
+              "mio_adapt_volume_opts grew outside its reserved tail");
+static_assert(offsetof(mio_adapt_volume_opts, size_array) == 72 &&
+                  offsetof(mio_adapt_volume_opts, hausd_relative) == 112 &&
+                  offsetof(mio_adapt_volume_opts, boundary_sizing) == 152 &&
+                  offsetof(mio_adapt_volume_opts, reserved) == 160,
+              "mio_adapt_volume_opts layout changed");
+static_assert(sizeof(mio_adapt_volume_report) == 320,
+              "mio_adapt_volume_report grew outside its reserved tail");
+static_assert(static_cast<int>(meshioplusplus::AdaptVolumeQuality::Amips) == MIO_ADAPT_VOLUME_AMIPS &&
+                  static_cast<int>(meshioplusplus::AdaptVolumeQuality::MeanRatio) ==
+                      MIO_ADAPT_VOLUME_MEAN_RATIO,
+              "mio_adapt_volume_quality must match AdaptVolumeQuality");
+
+void mio_adapt_volume_opts_init(mio_adapt_volume_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_adapt_volume_opts{};
+    const meshioplusplus::AdaptVolumeOptions d;
+    opts->hmin = d.mHmin;
+    opts->hmax = d.mHmax;
+    opts->hgrad = d.mHgrad;
+    opts->hausd = d.mHausd;
+    opts->feature_angle = d.mFeatureAngle;
+    opts->corner_angle = d.mCornerAngle;
+    opts->max_normal_deviation = d.mMaxNormalDeviation;
+    opts->quality_min = d.mQualityMin;
+    opts->target_min_dihedral = d.mTargetMinDihedral;
+    opts->preserve_features = 1;
+    opts->quality_metric = MIO_ADAPT_VOLUME_MIN_DIHEDRAL;
+    opts->max_iterations = d.mMaxIterations;
+    opts->collapse = 1;
+    opts->split = 1;
+    opts->swap = 1;
+    opts->smooth = 1;
+}
+
+namespace {
+
+/// The core options of a flat mio_adapt_volume_opts (NULL: the defaults).
+meshioplusplus::AdaptVolumeOptions capi_adapt_volume_options(const mio_mesh* pMesh,
+                                                             const mio_adapt_volume_opts* pOpts) {
+    mio_adapt_volume_opts defaults;
+    mio_adapt_volume_opts_init(&defaults);
+    const mio_adapt_volume_opts& o = pOpts ? *pOpts : defaults;
+    if (o.quality_metric < MIO_ADAPT_VOLUME_MIN_DIHEDRAL || o.quality_metric > MIO_ADAPT_VOLUME_AMIPS)
+        throw std::invalid_argument("meshio++: adapt_volume: unknown quality_metric");
+    meshioplusplus::AdaptVolumeOptions options;
+    options.mHmin = o.hmin;
+    options.mHmax = o.hmax;
+    options.mHgrad = o.hgrad;
+    options.mHausd = o.hausd;
+    options.mHausdRelative = o.hausd_relative != 0;
+    if (o.size_array)
+        options.mSizeArray = o.size_array;
+    options.mCurvatureSizing = o.curvature_sizing != 0;
+    options.mFeatureAngle = o.feature_angle;
+    options.mCornerAngle = o.corner_angle;
+    options.mMaxNormalDeviation = o.max_normal_deviation;
+    options.mPreserveBoundary = o.preserve_boundary != 0;
+    options.mPreserveFeatures = o.preserve_features != 0;
+    options.mQualityMetric = static_cast<meshioplusplus::AdaptVolumeQuality>(o.quality_metric);
+    options.mQualityMin = o.quality_min;
+    options.mMaxIterations = o.max_iterations;
+    options.mTargetMinDihedral = o.target_min_dihedral;
+    if (!pMesh && o.frozen && o.num_frozen > 0)
+        throw std::invalid_argument(
+            "meshio++: octree_mesh: adapt.frozen names points of a mesh that does not exist yet");
+    if (pMesh)
+        options.mFrozen = capi_frozen_mask(pMesh, o.frozen, o.num_frozen, "adapt_volume");
+    for (int64_t i = 0; i < o.num_material_arrays && o.material_arrays; ++i)
+        if (o.material_arrays[i])
+            options.mMaterialArrays.emplace_back(o.material_arrays[i]);
+    options.mEnableCollapse = o.collapse != 0;
+    options.mEnableSplit = o.split != 0;
+    options.mEnableSwap = o.swap != 0;
+    options.mEnableSmooth = o.smooth != 0;
+    if (o.boundary_sizing != MIO_ADAPT_VOLUME_SIZING_INPUT &&
+        o.boundary_sizing != MIO_ADAPT_VOLUME_SIZING_GEOMETRY)
+        throw std::invalid_argument("meshio++: adapt_volume: unknown boundary_sizing");
+    options.mBoundarySizing =
+        static_cast<meshioplusplus::AdaptVolumeBoundarySizing>(o.boundary_sizing);
+    return options;
+}
+
+void capi_adapt_volume_report(const meshioplusplus::AdaptVolumeResult& rR,
+                              mio_adapt_volume_report& rOut) {
+    rOut = mio_adapt_volume_report{};
+    rOut.num_tets_before = rR.mNumTetsBefore;
+    rOut.num_tets_after = rR.mNumTetsAfter;
+    rOut.num_points_before = rR.mNumPointsBefore;
+    rOut.num_points_after = rR.mNumPointsAfter;
+    rOut.num_collapsed = rR.mNumCollapsed;
+    rOut.num_split = rR.mNumSplit;
+    rOut.num_swapped = rR.mNumSwapped;
+    rOut.num_smoothed = rR.mNumSmoothed;
+    rOut.num_rejected_by_link = rR.mNumRejectedByLink;
+    rOut.num_rejected_by_inversion = rR.mNumRejectedByInversion;
+    rOut.num_rejected_by_quality = rR.mNumRejectedByQuality;
+    rOut.num_rejected_by_length = rR.mNumRejectedByLength;
+    rOut.num_rejected_by_class = rR.mNumRejectedByClass;
+    rOut.num_rejected_by_hausdorff = rR.mNumRejectedByHausdorff;
+    rOut.num_rejected_by_normal = rR.mNumRejectedByNormal;
+    rOut.num_corners = rR.mNumCorners;
+    rOut.num_ridge_vertices = rR.mNumRidgeVertices;
+    rOut.num_chains = rR.mNumChains;
+    rOut.num_patches = rR.mNumPatches;
+    rOut.iterations = rR.mIterations;
+    rOut.min_dihedral_before = rR.mMinDihedralBefore;
+    rOut.min_dihedral_after = rR.mMinDihedralAfter;
+    rOut.max_dihedral_before = rR.mMaxDihedralBefore;
+    rOut.max_dihedral_after = rR.mMaxDihedralAfter;
+    rOut.mean_quality_before = rR.mMeanQualityBefore;
+    rOut.mean_quality_after = rR.mMeanQualityAfter;
+    rOut.max_boundary_deviation = rR.mMaxBoundaryDeviation;
+    rOut.hmin = rR.mHmin;
+    rOut.hmax = rR.mHmax;
+    rOut.hausd = rR.mHausd;
+    rOut.volume_before = rR.mVolumeBefore;
+    rOut.volume_after = rR.mVolumeAfter;
+}
+
+}  // namespace
+
+mio_mesh* mio_adapt_volume(const mio_mesh* mesh, const mio_adapt_volume_opts* opts,
+                           mio_adapt_volume_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        const meshioplusplus::AdaptVolumeOptions options = capi_adapt_volume_options(mesh, opts);
+        meshioplusplus::AdaptVolumeResult r = meshioplusplus::adapt_volume(mesh->mMesh, options);
+        if (report)
+            capi_adapt_volume_report(r, *report);
         return new mio_mesh{std::move(r.mMesh)};
     });
 }
@@ -6596,6 +6733,10 @@ static_assert(sizeof(mio_octree_opts) == 176, "mio_octree_opts grew outside its 
 static_assert(sizeof(mio_octree_report) == 96, "mio_octree_report layout changed");
 static_assert(sizeof(mio_octree_mesh_opts) == 304,
               "mio_octree_mesh_opts grew outside its reserved tail");
+// ABI 45: post_adapt in place of reserved32, adapt at the front of the tail.
+static_assert(offsetof(mio_octree_mesh_opts, post_adapt) == 268 &&
+                  offsetof(mio_octree_mesh_opts, adapt) == 272,
+              "mio_octree_mesh_opts layout changed");
 static_assert(offsetof(mio_octree_mesh_opts, hex_grading) == 228 &&
                   offsetof(mio_octree_mesh_opts, zero_volume_factor) == 232 &&
                   offsetof(mio_octree_mesh_opts, volume_fix) == 264,
@@ -6775,6 +6916,9 @@ meshioplusplus::OctreeMeshOptions capi_octree_mesh_options(const mio_octree_mesh
     options.mCapFlatness = rOpts.cap_flatness;
     options.mCrossingMargin = rOpts.crossing_margin;
     options.mCrossingGap = rOpts.crossing_gap;
+    options.mPostAdapt = rOpts.post_adapt != 0;
+    if (rOpts.adapt)
+        options.mAdapt = capi_adapt_volume_options(nullptr, rOpts.adapt);
     return options;
 }
 
@@ -6786,6 +6930,8 @@ std::string& capi_octree_mesh_warnings() {
 
 /// The variable-length parts of the report of this thread's last mio_octree_mesh call.
 struct CapiOctreeMeshExtras {
+    bool mAdapted = false;  ///< post_adapt ran
+    meshioplusplus::AdaptVolumeResult mAdapt;  ///< its report (no mesh)
     std::string mStageNames;  ///< The stage names, one per line.
     std::vector<double> mStageSeconds;
     std::vector<std::int64_t> mLeavesPerLevel;
@@ -7539,6 +7685,8 @@ mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_opts* opts
             extras.mStageSeconds.push_back(seconds);
         }
         extras.mLeavesPerLevel = r.mLeavesPerLevel;
+        extras.mAdapted = r.mAdapted;
+        extras.mAdapt = std::move(r.mAdapt);
         if (report) {
             *report = mio_octree_mesh_report{};
             report->output = static_cast<std::int32_t>(r.mOutput);
@@ -7594,6 +7742,16 @@ mio_mesh* mio_octree_mesh(const mio_mesh* mesh, const mio_octree_mesh_opts* opts
         }
         return new mio_mesh{std::move(r.mMesh)};
     });
+}
+
+int mio_octree_mesh_adapt_report(mio_adapt_volume_report* report) {
+    if (!report)
+        return -1;
+    const CapiOctreeMeshExtras& extras = capi_octree_mesh_extras();
+    if (!extras.mAdapted)
+        return 0;
+    capi_adapt_volume_report(extras.mAdapt, *report);
+    return 1;
 }
 
 int64_t mio_octree_mesh_warnings(char* buf, int64_t buflen) {

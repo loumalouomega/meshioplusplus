@@ -452,8 +452,9 @@ struct _COctreeMeshOpts
     crossing_margin::Cdouble
     crossing_gap::Cdouble
     volume_fix::Int32
-    reserved32::Int32
-    reserved::NTuple{4,Int64}
+    post_adapt::Int32
+    adapt::Ptr{Cvoid}
+    reserved::NTuple{3,Int64}
 end
 
 """
@@ -694,6 +695,75 @@ struct _CSegmentReport
     num_boundary_edges::Int64
     num_non_manifold_edges::Int64
     reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_adapt_volume_opts` (ABI 45, 216 bytes). Build through
+[`adapt_volume`](@ref)."""
+struct _CAdaptVolumeOpts
+    hmin::Cdouble
+    hmax::Cdouble
+    hgrad::Cdouble
+    hausd::Cdouble
+    feature_angle::Cdouble
+    corner_angle::Cdouble
+    max_normal_deviation::Cdouble
+    quality_min::Cdouble
+    target_min_dihedral::Cdouble
+    size_array::Cstring
+    frozen::Ptr{Int64}
+    num_frozen::Int64
+    material_arrays::Ptr{Cstring}
+    num_material_arrays::Int64
+    hausd_relative::Int32
+    curvature_sizing::Int32
+    preserve_boundary::Int32
+    preserve_features::Int32
+    quality_metric::Int32
+    max_iterations::Int32
+    collapse::Int32
+    split::Int32
+    swap::Int32
+    smooth::Int32
+    boundary_sizing::Int32
+    reserved32::Int32
+    reserved::NTuple{7,Int64}
+end
+
+"""Mirror of C `mio_adapt_volume_report` (320 bytes)."""
+struct _CAdaptVolumeReport
+    num_tets_before::Int64
+    num_tets_after::Int64
+    num_points_before::Int64
+    num_points_after::Int64
+    num_collapsed::Int64
+    num_split::Int64
+    num_swapped::Int64
+    num_smoothed::Int64
+    num_rejected_by_link::Int64
+    num_rejected_by_inversion::Int64
+    num_rejected_by_quality::Int64
+    num_rejected_by_length::Int64
+    num_rejected_by_class::Int64
+    num_rejected_by_hausdorff::Int64
+    num_rejected_by_normal::Int64
+    num_corners::Int64
+    num_ridge_vertices::Int64
+    num_chains::Int64
+    num_patches::Int64
+    iterations::Int64
+    min_dihedral_before::Cdouble
+    min_dihedral_after::Cdouble
+    max_dihedral_before::Cdouble
+    max_dihedral_after::Cdouble
+    mean_quality_before::Cdouble
+    mean_quality_after::Cdouble
+    max_boundary_deviation::Cdouble
+    hmin::Cdouble
+    hmax::Cdouble
+    hausd::Cdouble
+    volume_before::Cdouble
+    volume_after::Cdouble
+    reserved::NTuple{8,Int64}
 end
 
 """Mirror of C `mio_optimize_volume_opts` (ABI 37). Build through
@@ -2540,6 +2610,12 @@ function _check_abi_layout()
     sizeof(_COctreeMeshOpts) == 304 ||
         error("meshio++: mio_octree_mesh_opts layout mismatch " *
               "($(sizeof(_COctreeMeshOpts)) bytes)")
+    sizeof(_CAdaptVolumeOpts) == 216 ||
+        error("meshio++: mio_adapt_volume_opts layout mismatch " *
+              "($(sizeof(_CAdaptVolumeOpts)) bytes)")
+    sizeof(_CAdaptVolumeReport) == 320 ||
+        error("meshio++: mio_adapt_volume_report layout mismatch " *
+              "($(sizeof(_CAdaptVolumeReport)) bytes)")
     sizeof(_COctreeMeshReport) == 440 ||
         error("meshio++: mio_octree_mesh_report layout mismatch " *
               "($(sizeof(_COctreeMeshReport)) bytes)")

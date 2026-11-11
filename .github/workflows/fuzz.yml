@@ -128,12 +128,12 @@ jobs:
             -DMESHIOPLUSPLUS_BUILD_FUZZERS=ON -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
             -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ
           cmake --build build --target meshioplusplus_fuzz_mesh_cad_surface \
-            meshioplusplus_fuzz_triangulate_polygon_2d
+            meshioplusplus_fuzz_triangulate_polygon_2d meshioplusplus_fuzz_adapt_volume
       - name: Build the seed corpora
         run: |
-          mkdir -p seeds/op_mesh_cad_surface seeds/op_triangulate_polygon_2d
+          mkdir -p seeds/op_mesh_cad_surface seeds/op_triangulate_polygon_2d seeds/op_adapt_volume
           cp tests/python/meshes/cad_json/*.json seeds/op_mesh_cad_surface/
-          for op in mesh_cad_surface triangulate_polygon_2d; do
+          for op in mesh_cad_surface triangulate_polygon_2d adapt_volume; do
             cp tests/fuzz/regressions/op_$op/* seeds/op_$op/
           done
       - name: Fuzz
@@ -144,7 +144,7 @@ jobs:
           secs="${{ github.event.inputs.seconds }}"
           [ "${{ github.event_name }}" = pull_request ] && secs=10
           status=0
-          for op in mesh_cad_surface triangulate_polygon_2d; do
+          for op in mesh_cad_surface triangulate_polygon_2d adapt_volume; do
             FORMATS=op_$op FUZZ_BINARY=meshioplusplus_fuzz_$op \
               tools/fuzz/run_campaign.sh build seeds findings-$op "${secs:-60}" || status=1
           done

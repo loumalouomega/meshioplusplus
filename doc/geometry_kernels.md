@@ -9,7 +9,7 @@ This page covers the geometry and FEM kernels and the binding helpers. Every oth
 | Header | Contents |
 | --- | --- |
 | `include/meshioplusplus/detail/geometry.hpp` (installed) | `Vec3`, `vec3_sub`, `vec3_add`, `vec3_scale`, `vec3_dot`, `vec3_cross`, `vec3_norm_sq`, `vec3_norm`, `vec3_normalize`, `triple_product`, `det3`; `read_point`, `read_corner_coords`, `cell_corner_count`. |
-| `src/cpp/src/detail/fem_kernels.hpp` (private) | `tet_volume6` and `tet_volume`; `det_unit3`, the per-corner factor of the scaled Jacobian that `quality` reports; `corner_jacobian_ratio`, the same factor as one division; `kHexCornerEdges` and `kWedgeCornerEdges`, the corner frames of a hexahedron and a wedge. |
+| `src/cpp/src/detail/fem_kernels.hpp` (private) | `tet_volume6` and `tet_volume`; `det_unit3`, the per-corner factor of the scaled Jacobian that `quality` reports; `corner_jacobian_ratio`, the same factor as one division; `kHexCornerEdges` and `kWedgeCornerEdges`, the corner frames of a hexahedron and a wedge; `tet_min_dihedral` (moved verbatim from `optimize_volume`, whose digests pin it), `tet_dihedral_range`, `tet_mean_ratio` and `tet_amips` (its reciprocal), the tetrahedron quality measures `optimize_volume` and `adapt_volume` share. |
 | `src/cpp/src/detail/cell_centroids.hpp` (private) | `cell_centroids`, per-cell centroids of a whole mesh in global cell order (`partition`, `interpolate`). |
 | `include/meshioplusplus/detail/polyhedron.hpp` | Polygon and polyhedron measures: `poly_measure`, `polygon_area_vector`, `polygon_centroid`, `cell_volume_from_corners`. |
 | `include/meshioplusplus/detail/cell_faces.hpp`, `cell_edges.hpp`, `cell_subdivision.hpp` | Topology tables per cell type: outward faces, edges, refinement edges and quad faces. |

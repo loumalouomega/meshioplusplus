@@ -144,6 +144,7 @@
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
+#include "meshioplusplus/operations/adapt_volume.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 
 #include "pipeline_table.hpp"
@@ -3008,6 +3009,50 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"MinDihedralAfter", ov.mMinDihedralAfter}});
         return std::move(ov.mMesh);
     }
+    if (op == "AdaptVolume") {
+        // Size-field tetrahedral remeshing: new points and tetrahedra; material
+        // cell_data and every region carried, other cell_data dropped.
+        AdaptVolumeOptions opts;
+        opts.mHmin = pipe_number(rStep, "Hmin", 0.0);
+        opts.mHmax = pipe_number(rStep, "Hmax", 0.0);
+        opts.mHgrad = pipe_number(rStep, "Hgrad", 1.3);
+        opts.mHausd = pipe_number(rStep, "Hausd", 0.0);
+        opts.mHausdRelative = pipe_flag(rStep, "HausdRelative", false);
+        opts.mSizeArray = pipe_text(rStep, "SizeArray", "");
+        opts.mCurvatureSizing = pipe_flag(rStep, "CurvatureSizing", false);
+        opts.mFeatureAngle = pipe_number(rStep, "FeatureAngle", 30.0);
+        opts.mCornerAngle = pipe_number(rStep, "CornerAngle", 30.0);
+        opts.mMaxNormalDeviation = pipe_number(rStep, "MaxNormalDeviation", 30.0);
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", false);
+        opts.mPreserveFeatures = pipe_flag(rStep, "PreserveFeatures", true);
+        opts.mQualityMetric =
+            adapt_volume_quality_from_name(pipe_text(rStep, "QualityMetric", "min_dihedral"));
+        opts.mQualityMin = pipe_number(rStep, "QualityMin", -1.0);
+        opts.mMaxIterations = static_cast<int>(pipe_number(rStep, "MaxIterations", 10.0));
+        opts.mTargetMinDihedral = pipe_number(rStep, "TargetMinDihedral", 0.0);
+        opts.mEnableCollapse = pipe_flag(rStep, "Collapse", true);
+        opts.mEnableSplit = pipe_flag(rStep, "Split", true);
+        opts.mEnableSwap = pipe_flag(rStep, "Swap", true);
+        opts.mEnableSmooth = pipe_flag(rStep, "Smooth", true);
+        opts.mBoundarySizing =
+            adapt_volume_boundary_sizing_from_name(pipe_text(rStep, "BoundarySizing", "input"));
+        AdaptVolumeResult av = adapt_volume(mesh, opts);
+        pipe_push_step(rReport, rStep,
+                       {{"NumTetsBefore", static_cast<double>(av.mNumTetsBefore)},
+                        {"NumTetsAfter", static_cast<double>(av.mNumTetsAfter)},
+                        {"NumPointsBefore", static_cast<double>(av.mNumPointsBefore)},
+                        {"NumPointsAfter", static_cast<double>(av.mNumPointsAfter)},
+                        {"NumCollapsed", static_cast<double>(av.mNumCollapsed)},
+                        {"NumSplit", static_cast<double>(av.mNumSplit)},
+                        {"NumSwapped", static_cast<double>(av.mNumSwapped)},
+                        {"NumSmoothed", static_cast<double>(av.mNumSmoothed)},
+                        {"MinDihedralBefore", av.mMinDihedralBefore},
+                        {"MinDihedralAfter", av.mMinDihedralAfter},
+                        {"MaxDihedralAfter", av.mMaxDihedralAfter},
+                        {"MaxBoundaryDeviation", av.mMaxBoundaryDeviation},
+                        {"Iterations", static_cast<double>(av.mIterations)}});
+        return std::move(av.mMesh);
+    }
     if (op == "Generate") {
         // A mesh from parameters (operations/primitives.hpp). Like Voxelize it
         // REPLACES the geometry rather than transforming it; unlike Voxelize it
@@ -3290,6 +3335,15 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mCapFlatness = pipe_number(rStep, "CapFlatness", 0.01);
         opts.mCrossingMargin = pipe_number(rStep, "CrossingMargin", 0.01);
         opts.mCrossingGap = pipe_number(rStep, "CrossingGap", 0.05);
+        opts.mPostAdapt = pipe_flag(rStep, "PostAdapt", false);
+        opts.mAdapt.mHmin = pipe_number(rStep, "AdaptHmin", 0.0);
+        opts.mAdapt.mHmax = pipe_number(rStep, "AdaptHmax", 0.0);
+        opts.mAdapt.mHgrad = pipe_number(rStep, "AdaptHgrad", 1.3);
+        opts.mAdapt.mHausd = pipe_number(rStep, "AdaptHausd", 0.0);
+        opts.mAdapt.mMaxIterations = static_cast<int>(pipe_number(rStep, "AdaptMaxIterations", 10.0));
+        opts.mAdapt.mPreserveBoundary = pipe_flag(rStep, "AdaptPreserveBoundary", false);
+        opts.mAdapt.mBoundarySizing = adapt_volume_boundary_sizing_from_name(
+            pipe_text(rStep, "AdaptBoundarySizing", "input"));
         OctreeMeshResult r = octree_mesh(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumLeaves", static_cast<double>(r.mNumLeaves)},
