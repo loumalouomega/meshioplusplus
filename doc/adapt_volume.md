@@ -86,7 +86,76 @@ Float `point_data` is interpolated on splits and keeps the survivor's value on c
 
 ## Measured
 
-<!-- tables: tools/adapt_volume_bench.py -->
+`tools/adapt_volume_bench.py` meshes each skin with `octree_mesh` at `min_size` (a fraction of the bounding-box diagonal), then remeshes the tetrahedra with `adapt_volume` at `hmin` = `min_size`, `hmax` = the octree's `max_size`, `hgrad` 1.3 and the default `hausd` (1e-3 of the diagonal), once with each `boundary_sizing`, and runs MMG 5.8's `mmg3d_O3` on the same tetrahedra with the same four parameters (as a separate program on a Medit file: nothing links it). tetgen and gmsh were not installed and are skipped. The skins are the unit sphere (`icosa_sphere(1, 5)`), the unit cube, a cylinder of radius 0.5 and height 2, `example/data/Bunny.stl`, and the Happy Buddha and XYZ RGB dragon scans from common-3d-test-models (`--fetch`). One run each, serial, on a 4-core x86-64 container, Release build; the raw rows, with the scaled-Jacobian minimum and dihedral histograms, are `benchmark/adapt_volume.csv` (input sizes) and `benchmark/adapt_volume_geometry.csv` (geometry sizes).
+
+"Under 20°" is the share of tetrahedra whose least dihedral angle is below 20 degrees. "Hausdorff to skin" is the symmetric [`hausdorff_distance`](hausdorff.md) from the output's boundary to the *original skin*, so it includes `octree_mesh`'s own distance from the skin (its first row per case); `adapt_volume`'s bound is on its distance from *its input's* boundary, which its report gives as `max_boundary_deviation`. The volume error is against the `octree_mesh` mesh. On the sphere, `octree_mesh` meshes the icosphere's own resolution at both `min_size` values the script tries, so only one is shown.
+
+| Case | `min_size` | Method | Tetrahedra | Points | Dihedral range | Under 20° | Hausdorff to skin | Volume error | Seconds |
+|---|---|---|---:|---:|---|---:|---:|---:|---:|
+| sphere | 0.02 | octree_mesh | 18,552 | 3,871 | 35.3–125.3 | 0.00% | 0.00323 | 0.000% | 0.6 |
+| sphere | 0.02 | adapt_volume, input sizes | 14,975 | 3,276 | 38.1–135.1 | 0.00% | 0.00338 | 0.022% | 5.0 |
+| sphere | 0.02 | adapt_volume, geometry sizes | 7,215 | 1,861 | 34.9–138.4 | 0.00% | 0.00385 | 0.096% | 3.9 |
+| sphere | 0.02 | mmg3d | 12,094 | 2,665 | 25.3–136.5 | 0.00% | 0.00325 | 0.003% | 1.2 |
+| box | 0.03 | octree_mesh | 35,702 | 8,359 | 14.9–149.8 | 0.89% | 2.78e-16 | 0.000% | 0.7 |
+| box | 0.03 | adapt_volume, input sizes | 39,800 | 8,684 | 36.4–138.2 | 0.00% | 2.78e-16 | 0.000% | 12.8 |
+| box | 0.03 | adapt_volume, geometry sizes | 1,283 | 328 | 30.6–138.9 | 0.00% | 2.48e-16 | 0.000% | 1.8 |
+| box | 0.03 | mmg3d | 1,399 | 343 | 25.6–136.6 | 0.00% | 1e-15 | 0.000% | 1.2 |
+| box | 0.015 | octree_mesh | 75,995 | 18,219 | 14.9–149.8 | 1.41% | 2.78e-16 | 0.000% | 1.8 |
+| box | 0.015 | adapt_volume, input sizes | 96,749 | 21,056 | 33.6–142.7 | 0.00% | 2.48e-16 | 0.000% | 34.3 |
+| box | 0.015 | adapt_volume, geometry sizes | 1,291 | 327 | 26.3–136.9 | 0.00% | 2e-16 | 0.000% | 2.9 |
+| box | 0.015 | mmg3d | 1,350 | 334 | 20.0–148.4 | 0.07% | 1.01e-15 | 0.000% | 1.6 |
+| cylinder | 0.02 | octree_mesh | 63,758 | 13,797 | 11.6–160.3 | 1.66% | 0.00297 | 0.000% | 1.4 |
+| cylinder | 0.02 | adapt_volume, input sizes | 54,631 | 11,453 | 35.4–139.5 | 0.00% | 0.0029 | 0.099% | 14.8 |
+| cylinder | 0.02 | adapt_volume, geometry sizes | 9,887 | 2,347 | 27.1–142.3 | 0.00% | 0.00313 | 0.202% | 6.2 |
+| cylinder | 0.02 | mmg3d | 16,943 | 3,831 | 16.0–149.0 | 0.04% | 0.0022 | 0.030% | 2.0 |
+| cylinder | 0.01 | octree_mesh | 204,598 | 42,829 | 7.9–167.1 | 2.87% | 0.00297 | 0.000% | 4.5 |
+| cylinder | 0.01 | adapt_volume, input sizes | 164,220 | 33,340 | 31.3–143.9 | 0.00% | 0.00294 | 0.082% | 52.6 |
+| cylinder | 0.01 | adapt_volume, geometry sizes | 10,736 | 2,534 | 30.1–136.2 | 0.00% | 0.00336 | 0.204% | 11.1 |
+| cylinder | 0.01 | mmg3d | 23,218 | 5,050 | 19.8–145.6 | 0.00% | 0.00215 | 0.033% | 4.5 |
+| bunny | 0.012 | octree_mesh | 242,914 | 49,423 | 0.3–179.5 | 2.05% | 0.584 | 0.000% | 7.8 |
+| bunny | 0.012 | adapt_volume, input sizes | 165,202 | 33,408 | 2.4–169.5 | 0.04% | 0.587 | 0.046% | 54.4 |
+| bunny | 0.012 | adapt_volume, geometry sizes | 45,849 | 10,384 | 4.0–169.8 | 0.19% | 0.587 | 0.223% | 28.5 |
+| bunny | 0.012 | mmg3d | 75,251 | 16,354 | 1.1–175.8 | 0.10% | 0.418 | 0.046% | 6.3 |
+| bunny | 0.008 | octree_mesh | 629,287 | 125,848 | 0.2–179.6 | 2.07% | 0.313 | 0.000% | 19.4 |
+| bunny | 0.008 | adapt_volume, input sizes | 405,123 | 80,444 | 0.3–179.3 | 0.01% | 0.313 | 0.023% | 133.9 |
+| bunny | 0.008 | adapt_volume, geometry sizes | 62,203 | 13,704 | 3.8–167.0 | 0.13% | 0.313 | 0.225% | 48.1 |
+| bunny | 0.008 | mmg3d | 112,033 | 23,522 | 3.0–170.9 | 0.07% | 0.277 | 0.092% | 13.7 |
+| buddha | 0.008 | octree_mesh | 525,773 | 108,850 | 0.1–179.9 | 2.87% | 0.00209 | 0.000% | 29.1 |
+| buddha | 0.008 | adapt_volume, input sizes | 376,153 | 78,800 | 1.1–178.5 | 0.65% | 0.00216 | 0.039% | 146.4 |
+| buddha | 0.008 | adapt_volume, geometry sizes | 96,771 | 24,293 | 0.9–178.5 | 3.98% | 0.00209 | 0.210% | 64.8 |
+| buddha | 0.008 | mmg3d | 182,096 | 40,891 | 0.1–179.7 | 2.09% | 0.00209 | 0.060% | 22.3 |
+| dragon | 0.008 | octree_mesh | 195,220 | 42,010 | 0.1–179.8 | 9.26% | 3.07 | 0.000% | 18.3 |
+| dragon | 0.008 | adapt_volume, input sizes | 163,314 | 37,757 | 2.1–177.2 | 4.04% | 3.07 | 0.141% | 76.2 |
+| dragon | 0.008 | adapt_volume, geometry sizes | 59,796 | 16,654 | 0.7–178.7 | 15.75% | 3.07 | 0.274% | 31.6 |
+| dragon | 0.008 | mmg3d | 82,985 | 21,387 | 0.5–179.2 | 9.01% | 3.07 | 0.007% | 19.3 |
+
+![The octree_mesh sphere after adapt_volume with geometry sizes, cut open, each tetrahedron coloured by its least dihedral angle](/images/adapt_volume_sphere.png)
+
+**Against the targets.** The goal was about 1.3 times MMG's tetrahedron count with a least dihedral angle close to MMG's.
+
+- With `boundary_sizing="geometry"` the count is 0.46 to 0.96 times MMG's on every case. The least dihedral angle is above MMG's on every case (on the scans barely: 0.9 against 0.1 degrees on the Buddha, 0.7 against 0.5 on the dragon). On the two scans, though, more tetrahedra end below 20 degrees than with MMG: 4.0% against 2.1% (Buddha) and 15.8% against 9.0% (dragon). Collapses there are accepted down to the quality floor, `min(the input's least, quality_min)`, which a scan's sub-degree octree slivers put at the input's least angle. The volume changes by 0.1–0.27%, against MMG's 0.003–0.09%: the boundary moves within `hausd`, and MMG's moves less.
+- With the default `"input"` sizing, the boundary keeps the octree's resolution. The count is then 1.2 times MMG's on the sphere, about 2 times on the scans, 2.2 to 7 times on the bunny and cylinder, and 28 to 72 times on the box, whose flat faces MMG coarsens to a few hundred triangles. On the analytic cases its least angle is the highest of the three (31–38 degrees), and its volume error is below the geometry runs'.
+- `max_boundary_deviation` stayed within `hausd` on every run: on the sphere 0.00142 (input) and 0.00273 (geometry) against 0.00346, on the cylinder 0.00220 and 0.00225 against 0.00245, and 0 on the box.
+
+**Runtime.** `adapt_volume` takes 1.5 to 4.5 times MMG's time with geometry sizes and 4 to 21 times with input sizes; most of it is the envelope and link checks of refused collapses. Every pass is serial, for determinism; `mmg3d` is serial too.
+
+**Gradation.** At `hgrad` 1.3 the size grows by at most 30% of the distance, slower than `octree_mesh`'s 2:1 grading, so under input sizing the interior gains tetrahedra; a looser gradation removes them. On the unit sphere at `min_size=0.04` (13,560 tetrahedra from `octree_mesh`, least angle 27.9 degrees):
+
+| `hgrad` | Input sizes: tetrahedra | Least angle | Geometry sizes: tetrahedra | Least angle |
+|---:|---:|---:|---:|---:|
+| 1.3 | 15,449 | 34.3 | 6,960 | 27.0 |
+| 1.6 | 8,111 | 36.5 | 5,201 | 27.4 |
+| 2.0 | 6,451 | 34.7 | 3,893 | 27.8 |
+| 3.0 | 4,696 | 30.8 | 3,532 | 27.2 |
+
+`max_boundary_deviation` was 0.0026–0.0031 against `hausd` 0.00346 in every row.
+
+**Limits.**
+
+- The Hausdorff guard samples faces, so the bound is measured on these cases, not proven.
+- About 2% of edges still churn between collapse and split per iteration once smoothing moves vertices. The stop rule counts only topological edits, so a run usually takes all `max_iterations`.
+- R, Octave and WASM have no `post_adapt`; they call `adapt_volume` on `octree_mesh`'s output instead.
+- No pass runs in parallel.
 
 ## Everywhere else
 
