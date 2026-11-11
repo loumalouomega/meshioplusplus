@@ -54,7 +54,7 @@ A backend-independent `detail/brep_deviation` samples each face of the solid's N
 
 - [x] Helper and tests, options, report fields, `fit_cad:face_deviation`, bindings, ABI 46.
 
-Departures: the mesh-to-CAD side measures a skin point whose foot falls outside its face's trims against the face's trim curves on the surface, not against the sample grid: the first version charged a facet centre on a planar side face, next to its trimmed top edge, 2.4 tolerances where the true distance is nil. Acceptance by the validation measures (`validation_acceptance`) applies to the adaptive, network and general freeform faces; the legacy grid faces keep their own test.
+Departures: the mesh-to-CAD side measures each skin point against the face its facet stands for (the face of the nearest triangle of the returned mesh), from several starts, and against the face's trim curves on the surface where its foot leaves the trims. The first version chose the face by the nearest triangle of the faces' sample grids, whose cells overhang holes and sag from curved faces; it charged correct faces up to 15 tolerances and folded normals at 58 to 88 degrees. What it now reports beyond the tolerance is real: an adaptive face of the organic torus folds within tolerance (an 87-degree facet normal), and in the NURBS form of OpenCASCADE's multi-turn helical flanks the trims cover less than the faces (ten tolerances on the threaded rod). Acceptance by the validation measures (`validation_acceptance`) applies to the adaptive, network and general freeform faces; the legacy grid faces keep their own test.
 
 ### Step 3: the fit schedule
 
