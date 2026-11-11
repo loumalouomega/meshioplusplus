@@ -96,6 +96,10 @@ struct PatchNetworkOptions {
     int mMaxSweeps = 6;
     int mMaxRefinements = 6;
     bool mValidate = true;
+    /// With `fit_cad`'s `validation_acceptance` (unreleased): the largest
+    /// facet-normal deviation a patch may show
+    /// (`surface_normal_deviation_deg`); 0 does not look.
+    double mMaxNormalDeg = 0.0;
 };
 
 /// One fitted patch.

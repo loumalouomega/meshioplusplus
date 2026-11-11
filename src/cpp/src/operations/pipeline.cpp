@@ -1993,6 +1993,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mLayoutSnapToFeatures = pipe_flag(rStep, "LayoutSnapToFeatures", true);
         opts.mValidateBySurfaceSampling = pipe_flag(rStep, "ValidateBySurfaceSampling", true);
         opts.mConstrainPrimitives = pipe_flag(rStep, "ConstrainPrimitives", false);
+        opts.mValidationReport = pipe_flag(rStep, "ValidationReport", false);
+        opts.mValidationAcceptance = pipe_flag(rStep, "ValidationAcceptance", false);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         std::vector<std::pair<std::string, double>> counters = {
             {"Valid", cr.mValid ? 1.0 : 0.0},
@@ -2046,6 +2048,15 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                                   static_cast<double>(cr.mNumConstrainedPrimitives));
             counters.emplace_back("NumConstraintGroups",
                                   static_cast<double>(cr.mNumConstraintGroups));
+        }
+        if (opts.mValidationReport) {
+            counters.emplace_back("CadToMeshMax", cr.mCadToMeshMax);
+            counters.emplace_back("CadToMeshP95", cr.mCadToMeshP95);
+            counters.emplace_back("MeshToCadMax", cr.mMeshToCadMax);
+            counters.emplace_back("MeshToCadP95", cr.mMeshToCadP95);
+            counters.emplace_back("NormalDeviationMaxDeg", cr.mNormalDeviationMaxDeg);
+            counters.emplace_back("StepRoundTripChecked", cr.mStepRoundTripChecked ? 1.0 : 0.0);
+            counters.emplace_back("StepRoundTripValid", cr.mStepRoundTripValid ? 1.0 : 0.0);
         }
         // The freeform modes (v17.12.0) report only outside the legacy mode.
         if (opts.mFreeformMode != FitCadFreeformMode::Legacy) {

@@ -226,7 +226,9 @@
       {"name": "ResegmentRounds", "kind": "number", "default": 2.0},
       {"name": "LayoutSnapToFeatures", "kind": "flag", "default": true},
       {"name": "ValidateBySurfaceSampling", "kind": "flag", "default": true},
-      {"name": "ConstrainPrimitives", "kind": "flag", "default": false}
+      {"name": "ConstrainPrimitives", "kind": "flag", "default": false},
+      {"name": "ValidationReport", "kind": "flag", "default": false},
+      {"name": "ValidationAcceptance", "kind": "flag", "default": false}
     ]},
     {"op": "RefinePatches", "keys": [
       {"name": "Tolerance", "kind": "number", "default": 0.001},

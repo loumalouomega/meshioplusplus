@@ -22,6 +22,7 @@
 // Project includes
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
+#include "geometry_utils.hpp"
 #include "lsq_fit.hpp"
 #include "nurbs_eval.hpp"
 #include "param_disc.hpp"
@@ -37,18 +38,6 @@ double sv_median(std::vector<double> rV) {
     const std::size_t mid = rV.size() / 2;
     std::nth_element(rV.begin(), rV.begin() + static_cast<std::ptrdiff_t>(mid), rV.end());
     return rV[mid];
-}
-
-// Whether (U, V) lies inside the closed polygon (even-odd rule).
-bool sv_inside(const std::vector<double>& rPu, const std::vector<double>& rPv, double U, double V) {
-    bool in = false;
-    const std::size_t n = rPu.size();
-    for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
-        if ((rPv[i] > V) != (rPv[j] > V) &&
-            U < (rPu[j] - rPu[i]) * (V - rPv[i]) / (rPv[j] - rPv[i]) + rPu[i])
-            in = !in;
-    }
-    return in;
 }
 
 }  // namespace
@@ -191,7 +180,7 @@ SurfaceValidation surface_validate(const BsplineSurface& rS, const std::vector<P
             return true;  // a closed patch: everywhere
         bool in = false;
         for (std::size_t i = 0; i < lu.size(); ++i)
-            in = in != sv_inside(lu[i], lv[i], U, V);
+            in = in != GeometryUtils::PointInPolygon2D(lu[i], lv[i], U, V);
         return in;
     };
 
@@ -259,6 +248,32 @@ SurfaceValidation surface_validate(const BsplineSurface& rS, const std::vector<P
     if (n > 0)
         out.mRmsReverse = std::sqrt(sum / static_cast<double>(n));
     return out;
+}
+
+double surface_normal_deviation_deg(const BsplineSurface& rS, const std::vector<PatchVec>& rPts,
+                                    const std::vector<PatchTri>& rTris,
+                                    const std::vector<double>& rU, const std::vector<double>& rV) {
+    double worst = 0.0;
+    for (const PatchTri& t : rTris) {
+        const Vec3 a{rPts[t[0]][0], rPts[t[0]][1], rPts[t[0]][2]};
+        const Vec3 b{rPts[t[1]][0], rPts[t[1]][1], rPts[t[1]][2]};
+        const Vec3 c{rPts[t[2]][0], rPts[t[2]][1], rPts[t[2]][2]};
+        const Vec3 facet = GeometryUtils::TriangleNormal(a, b, c);
+        const double centre[3] = {(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0,
+                                  (a[2] + b[2] + c[2]) / 3.0};
+        double u = (rU[t[0]] + rU[t[1]] + rU[t[2]]) / 3.0;
+        double w = (rV[t[0]] + rV[t[1]] + rV[t[2]]) / 3.0;
+        bspline_project(rS, centre, u, w);
+        BsplineEval e;
+        bspline_eval(rS, u, w, 1, e);
+        const Vec3 n = vec3_cross({e.mSu[0], e.mSu[1], e.mSu[2]}, {e.mSv[0], e.mSv[1], e.mSv[2]});
+        const double ln = MathUtils::Norm(n), lf = MathUtils::Norm(facet);
+        if (!(ln > 0.0) || !(lf > 0.0))
+            continue;
+        const double cosine = std::min(1.0, std::abs(MathUtils::Dot(n, facet)) / (ln * lf));
+        worst = std::max(worst, std::acos(cosine) * 57.29577951308232);
+    }
+    return worst;
 }
 
 }  // namespace detail

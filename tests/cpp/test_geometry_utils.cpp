@@ -114,3 +114,24 @@ TEST(GeometryUtils, SignedTwiceArea2D) {
         EXPECT_EQ(bits(GeometryUtils::SignedTwiceArea2D(u0, v0, u1, v1, u2, v2)), bits(copy));
     }
 }
+
+TEST(GeometryUtils, PointInPolygon2D) {
+    // A unit square with a square hole: the two loops combine by XOR.
+    const std::vector<double> ou{0, 1, 1, 0}, ov{0, 0, 1, 1};
+    const std::vector<double> iu{0.25, 0.75, 0.75, 0.25}, iv{0.25, 0.25, 0.75, 0.75};
+    EXPECT_TRUE(GeometryUtils::PointInPolygon2D(ou, ov, 0.1, 0.1));
+    EXPECT_FALSE(GeometryUtils::PointInPolygon2D(ou, ov, 1.1, 0.5));
+    EXPECT_FALSE(GeometryUtils::PointInPolygon2D(ou, ov, 0.5, -0.1));
+    const auto in_region = [&](double U, double V) {
+        return GeometryUtils::PointInPolygon2D(ou, ov, U, V) !=
+               GeometryUtils::PointInPolygon2D(iu, iv, U, V);
+    };
+    EXPECT_TRUE(in_region(0.1, 0.5));
+    EXPECT_FALSE(in_region(0.5, 0.5));
+    // A triangle, either winding.
+    const std::vector<double> tu{0, 2, 0}, tv{0, 0, 2};
+    const std::vector<double> ru{0, 0, 2}, rv{0, 2, 0};
+    EXPECT_TRUE(GeometryUtils::PointInPolygon2D(tu, tv, 0.5, 0.5));
+    EXPECT_TRUE(GeometryUtils::PointInPolygon2D(ru, rv, 0.5, 0.5));
+    EXPECT_FALSE(GeometryUtils::PointInPolygon2D(tu, tv, 1.5, 1.5));
+}

@@ -9152,8 +9152,16 @@ static_assert(sizeof(mio_fit_cad_report_ex3) == 184,
 // reserved tails.
 static_assert(offsetof(mio_fit_cad_opts_ex2, constrain_primitives) == 64,
               "mio_fit_cad_opts_ex2: constrain_primitives left the reserved tail's start");
-static_assert(offsetof(mio_fit_cad_opts_ex2, reserved) == 72,
+static_assert(offsetof(mio_fit_cad_opts_ex2, validation_report) == 68,
+              "mio_fit_cad_opts_ex2: validation_report left the former reserved32");
+static_assert(offsetof(mio_fit_cad_opts_ex2, validation_acceptance) == 72,
+              "mio_fit_cad_opts_ex2: validation_acceptance left the reserved tail's start");
+static_assert(offsetof(mio_fit_cad_opts_ex2, reserved) == 80,
               "mio_fit_cad_opts_ex2: the reserved tail moved");
+static_assert(sizeof(mio_fit_cad_report_ex4) == 272,
+              "mio_fit_cad_report_ex4 grew outside its reserved tail");
+static_assert(offsetof(mio_fit_cad_report_ex4, reserved) == 96,
+              "mio_fit_cad_report_ex4: the reserved tail moved");
 static_assert(offsetof(mio_fit_cad_report_ex3, num_constrained_primitives) == 104,
               "mio_fit_cad_report_ex3: the counts left the reserved tail's start");
 static_assert(offsetof(mio_fit_cad_report_ex3, reserved) == 120,
@@ -10930,6 +10938,15 @@ mio_mesh* mio_fit_cad3(const mio_mesh* mesh, const char* step_path, const mio_fi
                        const mio_fit_cad_opts_ex* opts_ex, const mio_fit_cad_opts_ex2* opts_ex2,
                        mio_fit_cad_report* report, mio_fit_cad_report_ex* report_ex,
                        mio_fit_cad_report_ex2* report_ex2, mio_fit_cad_report_ex3* report_ex3) {
+    return mio_fit_cad4(mesh, step_path, opts, opts_ex, opts_ex2, report, report_ex, report_ex2,
+                        report_ex3, nullptr);
+}
+
+mio_mesh* mio_fit_cad4(const mio_mesh* mesh, const char* step_path, const mio_fit_cad_opts* opts,
+                       const mio_fit_cad_opts_ex* opts_ex, const mio_fit_cad_opts_ex2* opts_ex2,
+                       mio_fit_cad_report* report, mio_fit_cad_report_ex* report_ex,
+                       mio_fit_cad_report_ex2* report_ex2, mio_fit_cad_report_ex3* report_ex3,
+                       mio_fit_cad_report_ex4* report_ex4) {
     return capi_guarded_mesh([&]() -> mio_mesh* {
         capi_require(mesh, "meshio++: mesh is NULL");
         meshioplusplus::FitCadOptions options;
@@ -10999,6 +11016,8 @@ mio_mesh* mio_fit_cad3(const mio_mesh* mesh, const char* step_path, const mio_fi
             options.mLayoutSnapToFeatures = opts_ex2->layout_snap_to_features != 0;
             options.mValidateBySurfaceSampling = opts_ex2->validate_by_surface_sampling != 0;
             options.mConstrainPrimitives = opts_ex2->constrain_primitives != 0;
+            options.mValidationReport = opts_ex2->validation_report != 0;
+            options.mValidationAcceptance = opts_ex2->validation_acceptance != 0;
         }
         meshioplusplus::FitCadResult r =
             meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);
@@ -11077,6 +11096,22 @@ mio_mesh* mio_fit_cad3(const mio_mesh* mesh, const char* step_path, const mio_fi
             report_ex3->num_face_records = static_cast<std::int64_t>(r.mFaces.size());
             report_ex3->num_constrained_primitives = r.mNumConstrainedPrimitives;
             report_ex3->num_constraint_groups = r.mNumConstraintGroups;
+        }
+        if (report_ex4) {
+            *report_ex4 = mio_fit_cad_report_ex4{};
+            report_ex4->validation_reported = r.mValidationReported ? 1 : 0;
+            report_ex4->step_round_trip_checked = r.mStepRoundTripChecked ? 1 : 0;
+            report_ex4->step_round_trip_valid = r.mStepRoundTripValid ? 1 : 0;
+            report_ex4->cad_to_mesh_max = r.mCadToMeshMax;
+            report_ex4->cad_to_mesh_p95 = r.mCadToMeshP95;
+            report_ex4->cad_to_mesh_p99 = r.mCadToMeshP99;
+            report_ex4->mesh_to_cad_max = r.mMeshToCadMax;
+            report_ex4->mesh_to_cad_p95 = r.mMeshToCadP95;
+            report_ex4->mesh_to_cad_p99 = r.mMeshToCadP99;
+            report_ex4->normal_deviation_max_deg = r.mNormalDeviationMaxDeg;
+            report_ex4->normal_deviation_p95_deg = r.mNormalDeviationP95Deg;
+            report_ex4->step_round_trip_volume_ratio = r.mStepRoundTripVolumeRatio;
+            report_ex4->total_freeform_control_points = r.mTotalFreeformControlPoints;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

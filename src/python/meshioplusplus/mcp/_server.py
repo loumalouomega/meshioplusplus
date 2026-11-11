@@ -4999,6 +4999,8 @@ def _register_gated(server: FastMCP) -> None:
         layout_snap_to_features: bool = True,
         validate_by_surface_sampling: bool = True,
         constrain_primitives: bool = False,
+        validation_report: bool = False,
+        validation_acceptance: bool = False,
     ) -> dict:
         """Turn a closed triangle skin into a CAD solid with analytic faces,
         written to output_path as AP214 STEP -- the last step of skin to CAD
@@ -5091,7 +5093,13 @@ def _register_gated(server: FastMCP) -> None:
         backend: coaxial cylinders, cones, tori and spheres share one axis,
         parallel and perpendicular planes and nearly equal radii are made
         exact, each change kept only where its patch still passes its fit;
-        adds num_constrained_primitives and num_constraint_groups."""
+        adds num_constrained_primitives and num_constraint_groups.
+        validation_report (off) measures the solid against the skin both ways
+        (cad_to_mesh_max/_p95/_p99, mesh_to_cad_max/_p95/_p99), the normal
+        deviation (normal_deviation_max_deg, normal_deviation_p95_deg) and
+        the STEP file read back (step_round_trip_checked, _valid,
+        _volume_ratio), with total_freeform_control_points;
+        validation_acceptance (off) holds every freeform face to them."""
 
     @server.tool()
     @_forward(_tools.tool_data_export)

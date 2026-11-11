@@ -2083,6 +2083,23 @@ FcHandle<Geom_Surface> fc_freeform_general(const std::vector<gp_Pnt>& rPts,
             pInfo->mReason = static_cast<std::uint8_t>(FitCadDemotionReason::BudgetExceeded);
         return {};
     }
+    if (rOptions.mValidationAcceptance) {
+        // The validation measures (unreleased): the surface sampled inside
+        // its trim and its normal at the facet centres, as the adaptive faces
+        // are held to them.
+        std::vector<double> fu = fit.mU, fv = fit.mV;
+        const detail::FreeformAcceptance acc = detail::freeform_accept(
+            fit.mSurface, pts, tris, fu, fv, Tol, 0.0, true, kFitCadValidationNormalDeg);
+        if (!acc.mOk) {
+            log::debug(
+                "fit_cad: the general freeform surface fails the validation measures "
+                "(samples {}, normals {} deg)",
+                acc.mReverseMaxDist, acc.mNormalDeg);
+            if (pInfo)
+                pInfo->mReason = static_cast<std::uint8_t>(FitCadDemotionReason::HausdorffExceeded);
+            return {};
+        }
+    }
     FcHandle<Geom_Surface> surf = fc_occt_bspline(fit.mSurface);
     // Through the cached projector: a projector per point samples the whole
     // surface each time.
@@ -4397,6 +4414,34 @@ namespace detail {
 FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                           const FitCadOptions& rOptions) {
     return fc_occt_fit_cad(rMesh, rStepPath, rOptions);
+}
+
+CadStepCheck occt_check_step(const std::string& rPath) {
+    CadStepCheck out;
+    detail::LibraryLock lock;
+    FcQuietMessenger quiet;
+    try {
+        const TopoDS_Shape shape = occt_read_cad_file(rPath, false, "step");
+        if (shape.IsNull())
+            return out;
+        out.mRead = true;
+        out.mValid = BRepCheck_Analyzer(shape).IsValid();
+        out.mClosed = fc_closed(shape);
+        GProp_GProps props;
+        BRepGProp::VolumeProperties(shape, props);
+        out.mVolume = props.Mass();
+        for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next())
+            ++out.mNumSolids;
+        for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next())
+            ++out.mNumFaces;
+    } catch (const Standard_Failure& rErr) {
+        log::debug("fit_cad: reading '{}' back failed: {}", rPath, rErr.GetMessageString());
+        out.mValid = false;
+    } catch (const std::exception& rErr) {
+        log::debug("fit_cad: reading '{}' back failed: {}", rPath, rErr.what());
+        out.mValid = false;
+    }
+    return out;
 }
 
 }  // namespace detail

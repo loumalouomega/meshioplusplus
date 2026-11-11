@@ -6199,8 +6199,9 @@ val refine_patches_js(const val& rMeshObj, const val& rOptions) {
  *   ransacSeed, refineTolerance, relativeTolerance, freeformGeneral,
  *   freeformTolerance, freeformSmoothing, maxFreeformPoles,
  *   maxFreeformIterations, maxFreeformSplits, sewTolerance, extendSurfaces,
- *   snapJunctions, faceDeviation, the freeform-mode keys and
- *   constrainPrimitives}`, every key optional;
+ *   snapJunctions, faceDeviation, the freeform-mode keys,
+ *   constrainPrimitives, validationReport and validationAcceptance}`, every
+ *   key optional;
  *   `types` is an array of `'plane'`, `'sphere'`, `'cylinder'`, `'cone'`,
  *   `'torus'`, `backend` one of `'auto'`, `'occt'`, `'native'`; the
  *   `refine*` keys, `normalWeight`, `allow*` and `ransacSeed` set
@@ -6262,7 +6263,9 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                                  "resegmentRounds",
                                  "layoutSnapToFeatures",
                                  "validateBySurfaceSampling",
-                                 "constrainPrimitives"});
+                                 "constrainPrimitives",
+                                 "validationReport",
+                                 "validationAcceptance"});
             const auto has = [&](const char* pKey) {
                 return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined();
             };
@@ -6397,6 +6400,10 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                     rOptions["validateBySurfaceSampling"].as<bool>();
             if (has("constrainPrimitives"))
                 options.mConstrainPrimitives = rOptions["constrainPrimitives"].as<bool>();
+            if (has("validationReport"))
+                options.mValidationReport = rOptions["validationReport"].as<bool>();
+            if (has("validationAcceptance"))
+                options.mValidationAcceptance = rOptions["validationAcceptance"].as<bool>();
         }
         if (options.mBackend == meshioplusplus::FitCadBackend::Occt &&
             !meshioplusplus::fit_cad_has_occt())
@@ -6453,6 +6460,7 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
             {"numEscalations", r.mNumEscalations},
             {"numConstrainedPrimitives", r.mNumConstrainedPrimitives},
             {"numConstraintGroups", r.mNumConstraintGroups},
+            {"totalFreeformControlPoints", r.mTotalFreeformControlPoints},
         };
         for (const auto& [name, value] : counters)
             out.set(name, static_cast<double>(value));
@@ -6488,6 +6496,20 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
         out.set("maxG1AngleDeg", r.mMaxG1AngleDeg);
         out.set("maxFreeformDistance", r.mMaxFreeformDistance);
         out.set("rmsFreeformDistance", r.mRmsFreeformDistance);
+        // The validation report (unreleased): NaN and false unless
+        // `validationReport` measured it.
+        out.set("validationReported", r.mValidationReported);
+        out.set("cadToMeshMax", r.mCadToMeshMax);
+        out.set("cadToMeshP95", r.mCadToMeshP95);
+        out.set("cadToMeshP99", r.mCadToMeshP99);
+        out.set("meshToCadMax", r.mMeshToCadMax);
+        out.set("meshToCadP95", r.mMeshToCadP95);
+        out.set("meshToCadP99", r.mMeshToCadP99);
+        out.set("normalDeviationMaxDeg", r.mNormalDeviationMaxDeg);
+        out.set("normalDeviationP95Deg", r.mNormalDeviationP95Deg);
+        out.set("stepRoundTripChecked", r.mStepRoundTripChecked);
+        out.set("stepRoundTripValid", r.mStepRoundTripValid);
+        out.set("stepRoundTripVolumeRatio", r.mStepRoundTripVolumeRatio);
         if (r.mFreeformMode != meshioplusplus::FitCadFreeformMode::Legacy) {
             val faces = val::array();
             for (std::size_t i = 0; i < r.mFaces.size(); ++i) {

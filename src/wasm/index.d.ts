@@ -5830,6 +5830,14 @@ export interface FitCadOptions {
    * made exact, each change kept only where its patch still passes its fit (default false).
    */
   constrainPrimitives?: boolean;
+  /**
+   * Whether the built solid is measured against the skin: the two-sided distance (faces sampled
+   * inside their trims, skin points projected onto the faces), the normal deviation and, with
+   * OpenCASCADE and a `stepPath`, the file read back and checked (default false).
+   */
+  validationReport?: boolean;
+  /** Whether every freeform face is also held to those measures before it is accepted (default false). */
+  validationAcceptance?: boolean;
 }
 
 /** One patch {@link MeshioPlusPlusModule.fitCad} tried as a surface (v17.12.0). */
@@ -6209,6 +6217,25 @@ export interface FitCadResult {
   numConstrainedPrimitives: number;
   /** With `constrainPrimitives`: the coaxial groups, parallel-normal families and equal-radius sets formed. */
   numConstraintGroups: number;
+  /** With `validationReport`: whether the solid was measured against the skin. */
+  validationReported: boolean;
+  /** The largest, 95th- and 99th-percentile distance of the faces' samples from the skin (NaN unmeasured). */
+  cadToMeshMax: number;
+  cadToMeshP95: number;
+  cadToMeshP99: number;
+  /** The same of the skin's vertices and facet centres from the solid. */
+  meshToCadMax: number;
+  meshToCadP95: number;
+  meshToCadP99: number;
+  /** The largest and 95th-percentile facet-normal deviation, in degrees. */
+  normalDeviationMaxDeg: number;
+  normalDeviationP95Deg: number;
+  /** Whether the STEP file was read back (OpenCASCADE only), whether it was a valid closed solid, its volume over the skin's. */
+  stepRoundTripChecked: boolean;
+  stepRoundTripValid: boolean;
+  stepRoundTripVolumeRatio: number;
+  /** The control points of the faces no primitive is (with `validationReport`). */
+  totalFreeformControlPoints: number;
   /** Outside the legacy mode: one record per patch tried as a surface. */
   faces?: FitCadFaceRecord[];
   /** The solid's B-rep, for `writeMesh(path, mesh, 'cad_json', {info})`. */

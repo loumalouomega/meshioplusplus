@@ -50,7 +50,7 @@ FitCadParamMethod fa_method(int Method) {
 FreeformAcceptance freeform_accept(const BsplineSurface& rS, const std::vector<PatchVec>& rPts,
                                    const std::vector<PatchTri>& rTris, std::vector<double>& rU,
                                    std::vector<double>& rV, double Tol, double SkinSigma,
-                                   bool Validate) {
+                                   bool Validate, double MaxNormalDeg) {
     FreeformAcceptance out;
     std::vector<std::uint8_t> used(rPts.size(), 0);
     for (const PatchTri& t : rTris)
@@ -125,6 +125,11 @@ FreeformAcceptance freeform_accept(const BsplineSurface& rS, const std::vector<P
     out.mMaxCentroidDist = worst_centroid;
     if (!(worst_vertex <= vertex_limit) || !(worst_centroid <= out.mAllowance))
         return out;
+    if (MaxNormalDeg > 0.0 && !out.mWhite) {
+        out.mNormalDeg = surface_normal_deviation_deg(rS, rPts, rTris, rU, rV);
+        if (!(out.mNormalDeg <= MaxNormalDeg))
+            return out;
+    }
     if (Validate) {
         const SurfaceValidation val = surface_validate(rS, rPts, rTris, rU, rV);
         out.mReverseMaxDist = val.mMaxForward;
@@ -218,9 +223,9 @@ FreeformAdaptiveResult freeform_adaptive_fit(const std::vector<PatchVec>& rPts,
                 break;
             }
             std::vector<double> fu = fit.mU, fv = fit.mV;
-            const FreeformAcceptance acc =
-                freeform_accept(fit.mSurface, rPts, rTris, fu, fv, tol,
-                                loose_pass ? skin_sigma : 0.0, rOptions.mValidate);
+            const FreeformAcceptance acc = freeform_accept(
+                fit.mSurface, rPts, rTris, fu, fv, tol, loose_pass ? skin_sigma : 0.0,
+                rOptions.mValidate, rOptions.mMaxNormalDeg);
             out.mSigma = acc.mSigma;
             out.mAllowance = acc.mAllowance;
             out.mMaxDist = acc.mMaxDist;

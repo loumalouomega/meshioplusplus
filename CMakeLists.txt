@@ -2097,6 +2097,11 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
   # doc/spikes.md; tools/boolean_corpus.py runs it on Thingi10K pairs).
   add_executable(meshioplusplus_boolean_spike src/cpp/benchmark/boolean_spike.cpp)
   target_link_libraries(meshioplusplus_boolean_spike PRIVATE meshioplusplus_core_obj)
+  # fit_cad's KPI harness (doc/fit_cad_freeform_plan.md; tools/fit_cad_kpi.py
+  # runs it). It builds the tests' generated fixtures, which include gtest.
+  add_executable(meshioplusplus_fit_cad_kpi src/cpp/benchmark/fit_cad_kpi.cpp)
+  target_include_directories(meshioplusplus_fit_cad_kpi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp)
+  target_link_libraries(meshioplusplus_fit_cad_kpi PRIVATE meshioplusplus_core_obj GTest::gtest)
 
   if(MESHIOPLUSPLUS_BUILD_FORTRAN)
     # Plain Fortran program, nonzero exit on any failed check; argv[1] is a

@@ -1683,8 +1683,10 @@ struct _CFitCadOptsEx2
     layout_snap_to_features::Int32
     validate_by_surface_sampling::Int32
     constrain_primitives::Int32
+    validation_report::Int32
+    validation_acceptance::Int32
     reserved32::Int32
-    reserved::NTuple{7,Int64}
+    reserved::NTuple{6,Int64}
 end
 
 """Mirror of C `mio_fit_cad_report_ex3` (v17.12.0)."""
@@ -1706,6 +1708,25 @@ struct _CFitCadReportEx3
     num_constrained_primitives::Int64
     num_constraint_groups::Int64
     reserved::NTuple{8,Int64}
+end
+
+"""Mirror of C `mio_fit_cad_report_ex4` (unreleased): the validation report."""
+struct _CFitCadReportEx4
+    validation_reported::Int32
+    step_round_trip_checked::Int32
+    step_round_trip_valid::Int32
+    reserved32::Int32
+    cad_to_mesh_max::Cdouble
+    cad_to_mesh_p95::Cdouble
+    cad_to_mesh_p99::Cdouble
+    mesh_to_cad_max::Cdouble
+    mesh_to_cad_p95::Cdouble
+    mesh_to_cad_p99::Cdouble
+    normal_deviation_max_deg::Cdouble
+    normal_deviation_p95_deg::Cdouble
+    step_round_trip_volume_ratio::Cdouble
+    total_freeform_control_points::Int64
+    reserved::NTuple{22,Int64}
 end
 
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),
@@ -2828,6 +2849,14 @@ function _check_abi_layout()
               "($(sizeof(_CFitCadReportEx3)) bytes)")
     (fieldoffset(_CFitCadReportEx3, 10) == 64 && fieldoffset(_CFitCadReportEx3, 15) == 104) ||
         error("meshio++: mio_fit_cad_report_ex3 field offsets mismatch")
+    (fieldoffset(_CFitCadOptsEx2, 13) == 68 && fieldoffset(_CFitCadOptsEx2, 14) == 72 &&
+     fieldoffset(_CFitCadOptsEx2, 16) == 80) ||
+        error("meshio++: mio_fit_cad_opts_ex2 validation field offsets mismatch")
+    sizeof(_CFitCadReportEx4) == 272 ||
+        error("meshio++: mio_fit_cad_report_ex4 layout mismatch " *
+              "($(sizeof(_CFitCadReportEx4)) bytes)")
+    fieldoffset(_CFitCadReportEx4, 15) == 96 ||
+        error("meshio++: mio_fit_cad_report_ex4 field offsets mismatch")
     sizeof(_CRenderOpts) == 432 ||
         error("meshio++: mio_render_opts layout mismatch ($(sizeof(_CRenderOpts)) bytes)")
     sizeof(_CTextOpts) == 96 ||

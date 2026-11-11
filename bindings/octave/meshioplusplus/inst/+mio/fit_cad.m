@@ -25,8 +25,9 @@ function r = fit_cad(mesh, varargin)
 %     'g1x'), 'local_refine' ('knots' or 'thb'), 'freeform_g1_tolerance_deg'
 %     (1), 'freeform_max_control_points' (400), 'layout_target_patch_size'
 %     (0.1), 'layout_max_valence_deviation' (2), 'resegment_rounds' (2),
-%     'layout_snap_to_features' (true), 'validate_by_surface_sampling' (true)
-%     and 'constrain_primitives' (false).
+%     'layout_snap_to_features' (true), 'validate_by_surface_sampling' (true),
+%     'constrain_primitives' (false), 'validation_report' (false) and
+%     'validation_acceptance' (false).
 %   Returns a struct: mesh (with cell data 'fit_cad:face', 'fit_cad:type' and
 %   'fit_cad:patch'), valid, tolerance, volume, skin_volume, volume_ratio,
 %   max_deviation, num_faces, num_plane, num_sphere, num_cylinder, num_cone,
@@ -44,7 +45,13 @@ function r = fit_cad(mesh, varargin)
 %   num_network_patches, num_network_edges, num_extraordinary_vertices,
 %   num_resegmented, num_escalations, max_g1_angle_deg,
 %   max_freeform_distance, rms_freeform_distance, num_face_records,
-%   num_constrained_primitives and num_constraint_groups.
+%   num_constrained_primitives, num_constraint_groups and the validation
+%   report: validation_reported, cad_to_mesh_max, cad_to_mesh_p95,
+%   cad_to_mesh_p99, mesh_to_cad_max, mesh_to_cad_p95, mesh_to_cad_p99,
+%   normal_deviation_max_deg, normal_deviation_p95_deg,
+%   step_round_trip_checked, step_round_trip_valid,
+%   step_round_trip_volume_ratio and total_freeform_control_points (NaN and
+%   false unless 'validation_report' measured them).
 
     o = mio.internal.opts(varargin, {'step_path', '', 'tolerance', 0, 'exact_edges', true, ...
         'types', {'plane', 'sphere', 'cylinder', 'cone', 'torus'}, 'mesh_deflection', 0, ...
@@ -62,7 +69,8 @@ function r = fit_cad(mesh, varargin)
         'freeform_g1_tolerance_deg', 1, 'freeform_max_control_points', 400, ...
         'layout_target_patch_size', 0.1, 'layout_max_valence_deviation', 2, ...
         'resegment_rounds', 2, 'layout_snap_to_features', true, ...
-        'validate_by_surface_sampling', true, 'constrain_primitives', false}, 'mio.fit_cad');
+        'validate_by_surface_sampling', true, 'constrain_primitives', false, ...
+        'validation_report', false, 'validation_acceptance', false}, 'mio.fit_cad');
     if isempty(o.ransac_seed)
         seed = [];
     else
@@ -88,7 +96,8 @@ function r = fit_cad(mesh, varargin)
         double(o.freeform_g1_tolerance_deg), double(o.freeform_max_control_points), ...
         double(o.layout_target_patch_size), double(o.layout_max_valence_deviation), ...
         double(o.resegment_rounds), logical(o.layout_snap_to_features), ...
-        logical(o.validate_by_surface_sampling), logical(o.constrain_primitives));
+        logical(o.validate_by_surface_sampling), logical(o.constrain_primitives), ...
+        logical(o.validation_report), logical(o.validation_acceptance));
 end
 
 function mask = types_mask(types, fname)

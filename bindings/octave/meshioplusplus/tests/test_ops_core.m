@@ -498,6 +498,11 @@ function t_fit_cad()
     expect_equal(cc.num_faces, 6);
     expect_equal(cc.num_demoted, 0);
     assert(cc.num_constrained_primitives >= 0 && cc.num_constrained_primitives <= 6);
+    % The validation report (unreleased): the cube's planes lie on its skin.
+    vr = mio.fit_cad(m, 'backend', 'native', 'validation_report', true);
+    assert(vr.validation_reported);
+    assert(vr.cad_to_mesh_max >= 0 && vr.cad_to_mesh_max <= 1e-9);
+    assert(vr.mesh_to_cad_max >= vr.mesh_to_cad_p95);
     % A STEP file is written on request.
     step = [tempname() '.step'];
     cleanup = onCleanup(@() delete_if(step));

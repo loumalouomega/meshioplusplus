@@ -1183,7 +1183,8 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                    SEXP freeform_max_control_points, SEXP layout_target_patch_size,
                    SEXP layout_max_valence_deviation, SEXP resegment_rounds,
                    SEXP layout_snap_to_features, SEXP validate_by_surface_sampling,
-                   SEXP constrain_primitives) {
+                   SEXP constrain_primitives, SEXP validation_report,
+                   SEXP validation_acceptance) {
     mio_fit_cad_opts opts;
     mio_fit_cad_opts_ex opts_ex;
     mio_fit_cad_opts_ex2 opts_ex2;
@@ -1191,6 +1192,7 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     mio_fit_cad_report_ex report_ex;
     mio_fit_cad_report_ex2 report_ex2;
     mio_fit_cad_report_ex3 report_ex3;
+    mio_fit_cad_report_ex4 report_ex4;
     mio_mesh *out;
     static const char* const modes[] = {"legacy", "adaptive", "network", "auto", NULL};
     static const char* const params[] = {"auto", "projection", "lscm", "harmonic", NULL};
@@ -1221,6 +1223,9 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
         mio_r_bool(validate_by_surface_sampling, "validate_by_surface_sampling") ? 1 : 0;
     opts_ex2.constrain_primitives =
         mio_r_bool(constrain_primitives, "constrain_primitives") ? 1 : 0;
+    opts_ex2.validation_report = mio_r_bool(validation_report, "validation_report") ? 1 : 0;
+    opts_ex2.validation_acceptance =
+        mio_r_bool(validation_acceptance, "validation_acceptance") ? 1 : 0;
     opts_ex.refine_segmentation = mio_r_bool(refine_segmentation, "refine_segmentation") ? 1 : 0;
     opts_ex.refine.max_iterations = mio_r_int64(max_refine_iterations, "max_refine_iterations");
     opts_ex.refine.epsilon = mio_r_double(refine_epsilon, "refine_epsilon");
@@ -1265,8 +1270,8 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
             Rf_error("meshio++: fit_cad: backend must be \"auto\", \"occt\" or \"native\"");
     }
 
-    out = mio_fit_cad3(mio_r_mesh(mesh), mio_r_string(step_path, "step_path"), &opts, &opts_ex,
-                       &opts_ex2, &report, &report_ex, &report_ex2, &report_ex3);
+    out = mio_fit_cad4(mio_r_mesh(mesh), mio_r_string(step_path, "step_path"), &opts, &opts_ex,
+                       &opts_ex2, &report, &report_ex, &report_ex2, &report_ex3, &report_ex4);
     if (out == NULL) mio_r_fail("fit_cad");
     SEXP mo = PROTECT(mio_r_wrap_mesh(out));
     SEXP valid = PROTECT(Rf_ScalarLogical(report.valid != 0));
@@ -1280,6 +1285,9 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                                         ? modes[report_ex3.freeform_mode]
                                         : "legacy"));
     SEXP g1 = PROTECT(Rf_ScalarReal(report_ex3.max_g1_angle_deg));
+    SEXP measured = PROTECT(Rf_ScalarLogical(report_ex4.validation_reported != 0));
+    SEXP rt_checked = PROTECT(Rf_ScalarLogical(report_ex4.step_round_trip_checked != 0));
+    SEXP rt_valid = PROTECT(Rf_ScalarLogical(report_ex4.step_round_trip_valid != 0));
     const char* names[] = {"mesh",
                            "valid",
                            "tolerance",
@@ -1341,13 +1349,29 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                            "rms_freeform_distance",
                            "num_face_records",
                            "num_constrained_primitives",
-                           "num_constraint_groups"};
-    const SEXP values[] = {mo, valid, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                           NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
-                           NULL, NULL, NULL, NULL, NULL, NULL, NULL, engine, refined, NULL, NULL,
-                           NULL, NULL, NULL, closed, NULL, NULL, NULL, NULL, NULL, NULL, NULL, kept,
-                           checked, mode, NULL, NULL, NULL, NULL, NULL, NULL, NULL, g1, NULL, NULL,
-                           NULL, NULL, NULL};
+                           "num_constraint_groups",
+                           "validation_reported",
+                           "cad_to_mesh_max",
+                           "cad_to_mesh_p95",
+                           "cad_to_mesh_p99",
+                           "mesh_to_cad_max",
+                           "mesh_to_cad_p95",
+                           "mesh_to_cad_p99",
+                           "normal_deviation_max_deg",
+                           "normal_deviation_p95_deg",
+                           "step_round_trip_checked",
+                           "step_round_trip_valid",
+                           "step_round_trip_volume_ratio",
+                           "total_freeform_control_points"};
+    const SEXP values[] = {mo,         valid, NULL, NULL,   NULL, NULL, NULL,     NULL, NULL,
+                           NULL,       NULL,  NULL, NULL,   NULL, NULL, NULL,     NULL, NULL,
+                           NULL,       NULL,  NULL, NULL,   NULL, NULL, NULL,     NULL, NULL,
+                           NULL,       NULL,  NULL, NULL,   engine, refined, NULL, NULL, NULL,
+                           NULL,       NULL,  closed, NULL, NULL, NULL, NULL,     NULL, NULL,
+                           NULL,       kept,  checked, mode, NULL, NULL, NULL,    NULL, NULL,
+                           NULL,       NULL,  g1,   NULL,   NULL, NULL, NULL,     NULL, measured,
+                           NULL,       NULL,  NULL, NULL,   NULL, NULL, NULL,     NULL, rt_checked,
+                           rt_valid,   NULL,  NULL};
     const double numbers[] = {report.tolerance, report.volume, report.skin_volume,
                               report.volume_ratio, report.max_deviation, (double)report.num_faces,
                               (double)report.num_plane, (double)report.num_sphere,
@@ -1381,9 +1405,16 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                               (double)report_ex3.num_escalations, report_ex3.max_freeform_distance,
                               report_ex3.rms_freeform_distance, (double)report_ex3.num_face_records,
                               (double)report_ex3.num_constrained_primitives,
-                              (double)report_ex3.num_constraint_groups};
-    SEXP res = mio_r_report_list(62, names, values, numbers);
-    UNPROTECT(9);
+                              (double)report_ex3.num_constraint_groups,
+                              report_ex4.cad_to_mesh_max, report_ex4.cad_to_mesh_p95,
+                              report_ex4.cad_to_mesh_p99, report_ex4.mesh_to_cad_max,
+                              report_ex4.mesh_to_cad_p95, report_ex4.mesh_to_cad_p99,
+                              report_ex4.normal_deviation_max_deg,
+                              report_ex4.normal_deviation_p95_deg,
+                              report_ex4.step_round_trip_volume_ratio,
+                              (double)report_ex4.total_freeform_control_points};
+    SEXP res = mio_r_report_list(75, names, values, numbers);
+    UNPROTECT(12);
     return res;
 }
 

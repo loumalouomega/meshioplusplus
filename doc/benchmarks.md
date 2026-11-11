@@ -1118,6 +1118,13 @@ build/bench-ops-seq/meshioplusplus_bench_ops --tier XL --runs 1 --ops feature_ed
 
 The digests agree at 1 and 4 threads and on the `NATIVE` mesh backend (tiers S to L). The rows never fail CI on time.
 
+### fit_cad freeform KPIs
+
+The quality of [`fit_cad`](fit_cad.md)'s freeform faces, measured over every fixture of its golden, freeform and kinematic sets (`tests/cpp/fit_cad_fixtures.hpp`) in each freeform mode and with both backends, as the [freeform plan](fit_cad_freeform_plan.md) records each of its steps against: the faceted area share, validity and closedness, faces by type and control points, the two-sided distance and the normal deviation of the [validation report](fit_cad.md#validation-report) (as multiples of the tolerance), the largest G1 angle, the STEP file read back by OpenCASCADE, and the time. `meshioplusplus_fit_cad_kpi` (built with the tests) measures, `tools/fit_cad_kpi.py` writes `benchmark/fit_cad_kpi.csv` and regenerates the tables below, and `--compare OLD.csv` prints a change's deltas and fails on a lost solid or a rise in the faceted share. It is out of CI: the full set takes minutes, the hook of notebook 39 (`--hook example/data/hook.mdpa`) hours. The first table is the faceted area share (✗ a solid that is not valid or not closed); the second each fixture's run with the least of it.
+
+<!-- fit_cad_kpi:begin -->
+<!-- fit_cad_kpi:end -->
+
 ### Flooded inside test in `octree_mesh`
 
 The winding numbers of the lattice points away from a closed skin dominated the time of a uniformly fine `octree_mesh`; they are now flooded through the leaves the skin does not cut ([inside and outside](octree_mesh.md#inside-and-outside)). Measured on 2026-10-27 in the Python package (Release, STL backend, four threads of an Intel Xeon), the best of two runs with the flood switched off and on:

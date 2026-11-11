@@ -201,6 +201,49 @@ inline meshioplusplus::Mesh wavy_capped(int N = 96, int M = 64) {
     return closed_revolve(prof, 0.0, 2.0, N);
 }
 
+// A prism of a smooth closed profile that is no circle, r(a) = 1 + 0.2 cos 3a
+// + 0.08 sin 2a, swept along z from 0 to H and closed by flat caps: its wall
+// is a surface of linear extrusion no primitive explains (the kinematic
+// fixtures of doc/fit_cad_freeform_plan.md). Wound outwards.
+inline meshioplusplus::Mesh extruded_lobe(double H = 1.5, int N = 96, int M = 24) {
+    const auto r = [](double A) {
+        return 1.0 + 0.2 * std::cos(3.0 * A) + 0.08 * std::sin(2.0 * A);
+    };
+    // Rings: the bottom cap's inner rings, the wall's, the top cap's inner ones.
+    std::vector<std::pair<double, double>> rings;  // (scale, z)
+    for (int i = 1; i <= 3; ++i)
+        rings.push_back({i / 3.0, 0.0});
+    for (int i = 1; i <= M; ++i)
+        rings.push_back({1.0, H * i / M});
+    for (int i = 2; i >= 1; --i)
+        rings.push_back({i / 3.0, H});
+    std::vector<std::vector<double>> pts;
+    pts.push_back({0.0, 0.0, 0.0});
+    for (const auto& sz : rings)
+        for (int k = 0; k < N; ++k) {
+            const double a = 2.0 * kPi * k / N;
+            pts.push_back(
+                {sz.first * r(a) * std::cos(a), sz.first * r(a) * std::sin(a), sz.second});
+        }
+    const std::int64_t top = static_cast<std::int64_t>(pts.size());
+    pts.push_back({0.0, 0.0, H});
+    const auto ring = [&](std::size_t I, int K) {
+        return 1 + static_cast<std::int64_t>(I) * N + (K % N);
+    };
+    const std::size_t last = rings.size() - 1;
+    std::vector<std::vector<std::int64_t>> tris;
+    for (int k = 0; k < N; ++k)
+        tris.push_back({0, ring(0, k + 1), ring(0, k)});
+    for (int k = 0; k < N; ++k)
+        tris.push_back({top, ring(last, k), ring(last, k + 1)});
+    for (std::size_t i = 0; i < last; ++i)
+        for (int k = 0; k < N; ++k) {
+            tris.push_back({ring(i, k), ring(i, k + 1), ring(i + 1, k + 1)});
+            tris.push_back({ring(i, k), ring(i + 1, k + 1), ring(i + 1, k)});
+        }
+    return mt::make_mesh(pts, "triangle", tris);
+}
+
 // A triangle skin under construction: points, and quads split into two
 // triangles each wound so its normal points along the quad's expected
 // outward direction.

@@ -50,7 +50,9 @@ mio_fit_cad(
   resegment_rounds = 2L,
   layout_snap_to_features = TRUE,
   validate_by_surface_sampling = TRUE,
-  constrain_primitives = FALSE
+  constrain_primitives = FALSE,
+  validation_report = FALSE,
+  validation_acceptance = FALSE
 )
 }
 \arguments{
@@ -173,6 +175,14 @@ sampled against the skin too, outside the legacy mode.}
 on either backend: coaxial cylinders, cones, tori and spheres share one
 axis, parallel and perpendicular planes and nearly equal radii are made
 exact, each change kept only where its patch still passes its fit.}
+
+\item{validation_report}{Whether the built solid is measured against the
+skin: the two-sided distance (faces sampled inside their trims; skin
+points projected onto the faces), the normal deviation and, with
+OpenCASCADE and a STEP file, the file read back and checked.}
+
+\item{validation_acceptance}{Whether every freeform face is also held to
+those measures before it is accepted.}
 }
 \value{
 A list of `mesh` (the solid re-meshed, with cell data
@@ -200,8 +210,15 @@ A list of `mesh` (the solid re-meshed, with cell data
   `num_escalations`, `max_g1_angle_deg`, `max_freeform_distance`,
   `rms_freeform_distance`, `num_face_records` (the rows of the
   `fit_cad:face_table` field data the mesh carries outside the legacy
-  mode), and `num_constrained_primitives` and `num_constraint_groups`
-  (what `constrain_primitives` changed).
+  mode), `num_constrained_primitives` and `num_constraint_groups`
+  (what `constrain_primitives` changed), and the validation report
+  (`validation_reported`, `cad_to_mesh_max`, `cad_to_mesh_p95`,
+  `cad_to_mesh_p99`, `mesh_to_cad_max`, `mesh_to_cad_p95`,
+  `mesh_to_cad_p99`, `normal_deviation_max_deg`,
+  `normal_deviation_p95_deg`, `step_round_trip_checked`,
+  `step_round_trip_valid`, `step_round_trip_volume_ratio` and
+  `total_freeform_control_points`; `NaN` and `FALSE` unless
+  `validation_report` measured them).
 }
 \description{
 Builds a CAD solid from the fitted patches of a closed skin through the

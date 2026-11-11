@@ -234,6 +234,8 @@ OP_TABLE = {
         "LayoutSnapToFeatures",
         "ValidateBySurfaceSampling",
         "ConstrainPrimitives",
+        "ValidationReport",
+        "ValidationAcceptance",
     ),
     "RefinePatches": (
         "Tolerance",
@@ -1381,6 +1383,8 @@ KEY_DEFAULTS = {
         ("LayoutSnapToFeatures", "flag", True),
         ("ValidateBySurfaceSampling", "flag", True),
         ("ConstrainPrimitives", "flag", False),
+        ("ValidationReport", "flag", False),
+        ("ValidationAcceptance", "flag", False),
     ),
     "RefinePatches": (
         ("Tolerance", "number", 0.001),

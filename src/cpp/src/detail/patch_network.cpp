@@ -885,6 +885,12 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                     return false;
                 }
             }
+        if (rOptions.mMaxNormalDeg > 0.0) {
+            std::vector<double> nu = p.mU, nv = p.mV;
+            if (!(surface_normal_deviation_deg(p.mSurface, rPts, p.mTris, nu, nv) <=
+                  rOptions.mMaxNormalDeg))
+                return false;
+        }
         if (Validate) {
             std::vector<PatchTri> near = p.mTris;
             for (std::size_t j : neighbours[I])

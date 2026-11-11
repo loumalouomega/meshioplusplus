@@ -6252,7 +6252,8 @@ PYBIND11_MODULE(_core, m) {
            double freeform_g1_tolerance_deg, std::int64_t freeform_max_control_points,
            double layout_target_patch_size, std::int64_t layout_max_valence_deviation,
            std::int64_t resegment_rounds, bool layout_snap_to_features,
-           bool validate_by_surface_sampling, bool constrain_primitives) {
+           bool validate_by_surface_sampling, bool constrain_primitives, bool validation_report,
+           bool validation_acceptance) {
             // A keyword option's position in its list, or a ValueError naming it.
             const auto keyword = [](const std::string& rValue, const char* pName,
                                     std::initializer_list<const char*> Words) {
@@ -6326,6 +6327,8 @@ PYBIND11_MODULE(_core, m) {
             options.mLayoutSnapToFeatures = layout_snap_to_features;
             options.mValidateBySurfaceSampling = validate_by_surface_sampling;
             options.mConstrainPrimitives = constrain_primitives;
+            options.mValidationReport = validation_report;
+            options.mValidationAcceptance = validation_acceptance;
             meshioplusplus::FitCadResult r =
                 core_nogil([&] { return meshioplusplus::fit_cad(cpp, path, options); });
             py::dict out;
@@ -6407,6 +6410,20 @@ PYBIND11_MODULE(_core, m) {
             out["rms_freeform_distance"] = r.mRmsFreeformDistance;
             out["num_constrained_primitives"] = r.mNumConstrainedPrimitives;
             out["num_constraint_groups"] = r.mNumConstraintGroups;
+            // The validation report (unreleased).
+            out["validation_reported"] = r.mValidationReported;
+            out["cad_to_mesh_max"] = r.mCadToMeshMax;
+            out["cad_to_mesh_p95"] = r.mCadToMeshP95;
+            out["cad_to_mesh_p99"] = r.mCadToMeshP99;
+            out["mesh_to_cad_max"] = r.mMeshToCadMax;
+            out["mesh_to_cad_p95"] = r.mMeshToCadP95;
+            out["mesh_to_cad_p99"] = r.mMeshToCadP99;
+            out["normal_deviation_max_deg"] = r.mNormalDeviationMaxDeg;
+            out["normal_deviation_p95_deg"] = r.mNormalDeviationP95Deg;
+            out["step_round_trip_checked"] = r.mStepRoundTripChecked;
+            out["step_round_trip_valid"] = r.mStepRoundTripValid;
+            out["step_round_trip_volume_ratio"] = r.mStepRoundTripVolumeRatio;
+            out["total_freeform_control_points"] = r.mTotalFreeformControlPoints;
             py::list faces;
             for (const meshioplusplus::FitCadFaceRecord& f : r.mFaces) {
                 py::dict row;
@@ -6449,7 +6466,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("freeform_g1_tolerance_deg") = 1.0, py::arg("freeform_max_control_points") = 400,
         py::arg("layout_target_patch_size") = 0.1, py::arg("layout_max_valence_deviation") = 2,
         py::arg("resegment_rounds") = 2, py::arg("layout_snap_to_features") = true,
-        py::arg("validate_by_surface_sampling") = true, py::arg("constrain_primitives") = false);
+        py::arg("validate_by_surface_sampling") = true, py::arg("constrain_primitives") = false,
+        py::arg("validation_report") = false, py::arg("validation_acceptance") = false);
 
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See

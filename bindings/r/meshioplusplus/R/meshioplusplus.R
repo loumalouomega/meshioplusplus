@@ -2519,6 +2519,12 @@ mio_has_occt <- function() {
 #'   on either backend: coaxial cylinders, cones, tori and spheres share one
 #'   axis, parallel and perpendicular planes and nearly equal radii are made
 #'   exact, each change kept only where its patch still passes its fit.
+#' @param validation_report Whether the built solid is measured against the
+#'   skin: the two-sided distance (faces sampled inside their trims; skin
+#'   points projected onto the faces), the normal deviation and, with
+#'   OpenCASCADE and a STEP file, the file read back and checked.
+#' @param validation_acceptance Whether every freeform face is also held to
+#'   those measures before it is accepted.
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
@@ -2544,8 +2550,15 @@ mio_has_occt <- function() {
 #'   `num_escalations`, `max_g1_angle_deg`, `max_freeform_distance`,
 #'   `rms_freeform_distance`, `num_face_records` (the rows of the
 #'   `fit_cad:face_table` field data the mesh carries outside the legacy
-#'   mode), and `num_constrained_primitives` and `num_constraint_groups`
-#'   (what `constrain_primitives` changed).
+#'   mode), `num_constrained_primitives` and `num_constraint_groups`
+#'   (what `constrain_primitives` changed), and the validation report
+#'   (`validation_reported`, `cad_to_mesh_max`, `cad_to_mesh_p95`,
+#'   `cad_to_mesh_p99`, `mesh_to_cad_max`, `mesh_to_cad_p95`,
+#'   `mesh_to_cad_p99`, `normal_deviation_max_deg`,
+#'   `normal_deviation_p95_deg`, `step_round_trip_checked`,
+#'   `step_round_trip_valid`, `step_round_trip_volume_ratio` and
+#'   `total_freeform_control_points`; `NaN` and `FALSE` unless
+#'   `validation_report` measured them).
 #' @export
 mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         types = c("plane", "sphere", "cylinder", "cone", "torus"),
@@ -2569,7 +2582,8 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         layout_max_valence_deviation = 2L, resegment_rounds = 2L,
                         layout_snap_to_features = TRUE,
                         validate_by_surface_sampling = TRUE,
-                        constrain_primitives = FALSE) {
+                        constrain_primitives = FALSE, validation_report = FALSE,
+                        validation_acceptance = FALSE) {
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -2596,7 +2610,8 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
     as.numeric(freeform_max_control_points), as.numeric(layout_target_patch_size),
     as.numeric(layout_max_valence_deviation), as.numeric(resegment_rounds),
     isTRUE(layout_snap_to_features), isTRUE(validate_by_surface_sampling),
-    isTRUE(constrain_primitives)
+    isTRUE(constrain_primitives), isTRUE(validation_report),
+    isTRUE(validation_acceptance)
   )
 }
 

@@ -32,6 +32,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -45,6 +46,21 @@
 
 namespace meshioplusplus {
 
+/// What reading a STEP file back and checking it found (`fit_cad`'s
+/// validation report, unreleased).
+struct CadStepCheck {
+    /// Whether the file could be read into a shape.
+    bool mRead = false;
+    /// Whether the kernel's B-rep check passes on it.
+    bool mValid = false;
+    /// Whether every shell is closed (every edge borders two faces).
+    bool mClosed = false;
+    /// Its volume (NaN when not read).
+    double mVolume = std::numeric_limits<double>::quiet_NaN();
+    std::int64_t mNumSolids = 0;
+    std::int64_t mNumFaces = 0;
+};
+
 /// A CAD kernel: STEP and IGES reading and `fit_cad`'s kernel backend.
 struct CadKernelProvider {
     /// The kernel's name ("occt").
@@ -57,6 +73,9 @@ struct CadKernelProvider {
     std::function<Mesh(const std::string&, BrepInfo&, const CadReadOptions&)> mReadIges;
     /// The kernel backend of `fit_cad`.
     std::function<FitCadResult(const Mesh&, const std::string&, const FitCadOptions&)> mFitCad;
+    /// A STEP file read back and checked (unreleased); empty in a kernel
+    /// without it.
+    std::function<CadStepCheck(const std::string&)> mCheckStep;
 };
 
 /// One closed region handed to a tetrahedral mesher: its points and its

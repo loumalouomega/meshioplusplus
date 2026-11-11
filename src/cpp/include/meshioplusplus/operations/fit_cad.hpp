@@ -441,7 +441,38 @@ struct FitCadOptions {
     /// change kept only where its patch still passes its fit (unreleased).
     /// Both backends; off by default.
     bool mConstrainPrimitives = false;
+    /// Whether the built solid is measured against the skin (unreleased,
+    /// doc/fit_cad_freeform_plan.md): the two-sided distance between its
+    /// trimmed NURBS faces and the skin, by dense sampling of each face's
+    /// trimmed domain and by projecting the skin's vertices and facet centres
+    /// onto the faces, the normal deviation at those foot points, and, where
+    /// a CAD kernel is available and a STEP file was written, the file read
+    /// back and checked. Fills the `mValidation*`, `mCadToMesh*`,
+    /// `mMeshToCad*`, `mNormalDeviation*` and `mStepRoundTrip*` members and
+    /// the `fit_cad:face_deviation` field data. Measures only: the solid is
+    /// the same either way. Both backends; off by default.
+    bool mValidationReport = false;
+    /// Whether a freeform face must also pass the validation measures before
+    /// it is accepted (unreleased): every freeform fit is checked by sampling
+    /// its surface inside its trim against the skin (as
+    /// `mValidateBySurfaceSampling` does in the freeform modes, here in every
+    /// mode), and its normal at the patch's facet centres must lie within
+    /// `kFitCadValidationNormalDeg` of the facets' unless the patch shows
+    /// noise. Both backends; off by default.
+    bool mValidationAcceptance = false;
 };
+
+/// With `FitCadOptions::mValidationAcceptance`: the largest angle, in degrees,
+/// between a freeform face's normal and a facet's at the facet's centre
+/// (unreleased).
+inline constexpr double kFitCadValidationNormalDeg = 30.0;
+
+/// Field data with `FitCadOptions::mValidationReport` (unreleased): per face
+/// (`fit_cad:face` order) the largest and the 95th-percentile distance of the
+/// face's samples from the skin, the largest distance of the skin's vertices
+/// and facet centres it is nearest to from it, the largest normal deviation
+/// there in degrees, and its sample count, an `(n, 5)` float64 array.
+inline constexpr const char* kFitCadFaceDeviationName = "fit_cad:face_deviation";
 
 /// The re-meshed solid and what was built.
 struct FitCadResult {
@@ -562,6 +593,32 @@ struct FitCadResult {
     /// families and equal-radius sets of two or more it formed (unreleased).
     std::int64_t mNumConstrainedPrimitives = 0;
     std::int64_t mNumConstraintGroups = 0;
+    /// With `mValidationReport` (unreleased): whether the solid was measured
+    /// (false when it was not asked for, or the solid had no face to sample).
+    bool mValidationReported = false;
+    /// The largest, 95th- and 99th-percentile distance of the faces' samples
+    /// from the skin (CAD to mesh), NaN when not measured.
+    double mCadToMeshMax = std::numeric_limits<double>::quiet_NaN();
+    double mCadToMeshP95 = std::numeric_limits<double>::quiet_NaN();
+    double mCadToMeshP99 = std::numeric_limits<double>::quiet_NaN();
+    /// The same of the skin's vertices and facet centres from the solid
+    /// (mesh to CAD).
+    double mMeshToCadMax = std::numeric_limits<double>::quiet_NaN();
+    double mMeshToCadP95 = std::numeric_limits<double>::quiet_NaN();
+    double mMeshToCadP99 = std::numeric_limits<double>::quiet_NaN();
+    /// The largest and the 95th-percentile angle, in degrees, between a
+    /// facet's normal and the solid's at the facet centre's foot point.
+    double mNormalDeviationMaxDeg = std::numeric_limits<double>::quiet_NaN();
+    double mNormalDeviationP95Deg = std::numeric_limits<double>::quiet_NaN();
+    /// Whether the written STEP file was read back and checked by a CAD kernel,
+    /// whether it then was a valid closed solid, and its volume over the
+    /// skin's (NaN when not checked).
+    bool mStepRoundTripChecked = false;
+    bool mStepRoundTripValid = false;
+    double mStepRoundTripVolumeRatio = std::numeric_limits<double>::quiet_NaN();
+    /// The control points of the faces that are not planes, spheres,
+    /// cylinders, cones or tori, summed over the solid as NURBS.
+    std::int64_t mTotalFreeformControlPoints = 0;
 };
 
 /**

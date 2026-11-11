@@ -88,5 +88,16 @@ SurfaceValidation surface_validate(const BsplineSurface& rS, const std::vector<P
                                    int SamplesPerSpan = 3,
                                    const std::vector<PatchTri>* pDistanceTris = nullptr);
 
+/**
+ * @brief The largest unsigned angle, in degrees within `[0, 90]`, between a
+ * facet's normal and the surface's at the facet centre's foot point
+ * (`bspline_project` from the mean of its corners' parameters), over
+ * @p rTris: a surface that stays within the tolerance but waves between the
+ * vertices shows here (`fit_cad`'s `validation_acceptance`, unreleased).
+ */
+double surface_normal_deviation_deg(const BsplineSurface& rS, const std::vector<PatchVec>& rPts,
+                                    const std::vector<PatchTri>& rTris,
+                                    const std::vector<double>& rU, const std::vector<double>& rV);
+
 }  // namespace detail
 }  // namespace meshioplusplus

@@ -127,7 +127,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 45
+#define MESHIOPLUSPLUS_ABI_VERSION 46
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -30898,7 +30898,38 @@ struct FitCadOptions {
     /// change kept only where its patch still passes its fit (unreleased).
     /// Both backends; off by default.
     bool mConstrainPrimitives = false;
+    /// Whether the built solid is measured against the skin (unreleased,
+    /// doc/fit_cad_freeform_plan.md): the two-sided distance between its
+    /// trimmed NURBS faces and the skin, by dense sampling of each face's
+    /// trimmed domain and by projecting the skin's vertices and facet centres
+    /// onto the faces, the normal deviation at those foot points, and, where
+    /// a CAD kernel is available and a STEP file was written, the file read
+    /// back and checked. Fills the `mValidation*`, `mCadToMesh*`,
+    /// `mMeshToCad*`, `mNormalDeviation*` and `mStepRoundTrip*` members and
+    /// the `fit_cad:face_deviation` field data. Measures only: the solid is
+    /// the same either way. Both backends; off by default.
+    bool mValidationReport = false;
+    /// Whether a freeform face must also pass the validation measures before
+    /// it is accepted (unreleased): every freeform fit is checked by sampling
+    /// its surface inside its trim against the skin (as
+    /// `mValidateBySurfaceSampling` does in the freeform modes, here in every
+    /// mode), and its normal at the patch's facet centres must lie within
+    /// `kFitCadValidationNormalDeg` of the facets' unless the patch shows
+    /// noise. Both backends; off by default.
+    bool mValidationAcceptance = false;
 };
+
+/// With `FitCadOptions::mValidationAcceptance`: the largest angle, in degrees,
+/// between a freeform face's normal and a facet's at the facet's centre
+/// (unreleased).
+inline constexpr double kFitCadValidationNormalDeg = 30.0;
+
+/// Field data with `FitCadOptions::mValidationReport` (unreleased): per face
+/// (`fit_cad:face` order) the largest and the 95th-percentile distance of the
+/// face's samples from the skin, the largest distance of the skin's vertices
+/// and facet centres it is nearest to from it, the largest normal deviation
+/// there in degrees, and its sample count, an `(n, 5)` float64 array.
+inline constexpr const char* kFitCadFaceDeviationName = "fit_cad:face_deviation";
 
 /// The re-meshed solid and what was built.
 struct FitCadResult {
@@ -31019,6 +31050,32 @@ struct FitCadResult {
     /// families and equal-radius sets of two or more it formed (unreleased).
     std::int64_t mNumConstrainedPrimitives = 0;
     std::int64_t mNumConstraintGroups = 0;
+    /// With `mValidationReport` (unreleased): whether the solid was measured
+    /// (false when it was not asked for, or the solid had no face to sample).
+    bool mValidationReported = false;
+    /// The largest, 95th- and 99th-percentile distance of the faces' samples
+    /// from the skin (CAD to mesh), NaN when not measured.
+    double mCadToMeshMax = std::numeric_limits<double>::quiet_NaN();
+    double mCadToMeshP95 = std::numeric_limits<double>::quiet_NaN();
+    double mCadToMeshP99 = std::numeric_limits<double>::quiet_NaN();
+    /// The same of the skin's vertices and facet centres from the solid
+    /// (mesh to CAD).
+    double mMeshToCadMax = std::numeric_limits<double>::quiet_NaN();
+    double mMeshToCadP95 = std::numeric_limits<double>::quiet_NaN();
+    double mMeshToCadP99 = std::numeric_limits<double>::quiet_NaN();
+    /// The largest and the 95th-percentile angle, in degrees, between a
+    /// facet's normal and the solid's at the facet centre's foot point.
+    double mNormalDeviationMaxDeg = std::numeric_limits<double>::quiet_NaN();
+    double mNormalDeviationP95Deg = std::numeric_limits<double>::quiet_NaN();
+    /// Whether the written STEP file was read back and checked by a CAD kernel,
+    /// whether it then was a valid closed solid, and its volume over the
+    /// skin's (NaN when not checked).
+    bool mStepRoundTripChecked = false;
+    bool mStepRoundTripValid = false;
+    double mStepRoundTripVolumeRatio = std::numeric_limits<double>::quiet_NaN();
+    /// The control points of the faces that are not planes, spheres,
+    /// cylinders, cones or tori, summed over the solid as NURBS.
+    std::int64_t mTotalFreeformControlPoints = 0;
 };
 
 /**
@@ -42550,6 +42607,7 @@ T parallel_exclusive_scan(const U* pIn, std::size_t n, T* pOut, T init) {
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -42557,6 +42615,21 @@ T parallel_exclusive_scan(const U* pIn, std::size_t n, T* pOut, T init) {
 // Project includes
 
 namespace meshioplusplus {
+
+/// What reading a STEP file back and checking it found (`fit_cad`'s
+/// validation report, unreleased).
+struct CadStepCheck {
+    /// Whether the file could be read into a shape.
+    bool mRead = false;
+    /// Whether the kernel's B-rep check passes on it.
+    bool mValid = false;
+    /// Whether every shell is closed (every edge borders two faces).
+    bool mClosed = false;
+    /// Its volume (NaN when not read).
+    double mVolume = std::numeric_limits<double>::quiet_NaN();
+    std::int64_t mNumSolids = 0;
+    std::int64_t mNumFaces = 0;
+};
 
 /// A CAD kernel: STEP and IGES reading and `fit_cad`'s kernel backend.
 struct CadKernelProvider {
@@ -42570,6 +42643,9 @@ struct CadKernelProvider {
     std::function<Mesh(const std::string&, BrepInfo&, const CadReadOptions&)> mReadIges;
     /// The kernel backend of `fit_cad`.
     std::function<FitCadResult(const Mesh&, const std::string&, const FitCadOptions&)> mFitCad;
+    /// A STEP file read back and checked (unreleased); empty in a kernel
+    /// without it.
+    std::function<CadStepCheck(const std::string&)> mCheckStep;
 };
 
 /// One closed region handed to a tetrahedral mesher: its points and its
@@ -43782,6 +43858,94 @@ struct BoundingBoxUtils {
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/bounding_box_utils.hpp =====
+// ===== begin src/cpp/src/detail/brep_deviation.hpp =====
+/**
+ * @file detail/brep_deviation.hpp
+ * @brief The two-sided distance and the normal deviation between a trimmed
+ * NURBS B-rep (`BrepInfo`) and the triangle skin it was fitted to, for
+ * `fit_cad`'s validation report (doc/fit_cad_freeform_plan.md, step 2).
+ *
+ *  - **CAD to mesh.** Each face is sampled on a grid of `N + 1` nodes a side
+ *    over the bounding box of its trims in its parameter space (its knot
+ *    domain when untrimmed), a node kept when the even-odd rule puts it inside
+ *    the trims (`GeometryUtils::PointInPolygon2D`, each trimming curve
+ *    evaluated as a polyline), and each kept node's unsigned distance to the
+ *    skin is measured.
+ *  - **Mesh to CAD.** Every skin vertex and facet centre is projected onto
+ *    the triangles of the face grids (a cell joins when one of its corners is
+ *    inside the trims), then onto the face the nearest triangle belongs to by
+ *    Gauss-Newton from the triangle's interpolated parameters; the projected
+ *    distance replaces the triangle distance only when its foot lies inside
+ *    the trims and is nearer.
+ *  - **Normals.** At each facet centre's foot point, the unsigned angle (in
+ *    `[0, 90]` degrees) between the facet's normal and the surface's: a
+ *    face's orientation flag does not enter, so the measure is the same for
+ *    every backend.
+ *
+ * Every pass is serial or runs on the deterministic distance queries, in a
+ * fixed sample order, so nothing depends on the thread count. Maxima are
+ * exact over the samples; quantiles are `coverage_quantile`'s.
+ *
+ * Core-private (not installed).
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// How densely a B-rep is sampled.
+struct BrepDeviationOptions {
+    /// Grid cells per parameter direction of each face (nodes: one more).
+    std::size_t mSamplesPerDirection = 24;
+    /// Polyline points per knot span of a trimming curve of degree above 1.
+    std::size_t mTrimSamplesPerSpan = 8;
+    /// Gauss-Newton steps of a mesh-to-CAD foot point.
+    std::size_t mMaxNewtonIterations = 12;
+};
+
+/// One face's measures (NaN-free; 0 where a side has no sample).
+struct BrepFaceDeviation {
+    double mCadToMeshMax = 0.0;
+    double mCadToMeshP95 = 0.0;
+    double mMeshToCadMax = 0.0;
+    double mNormalMaxDeg = 0.0;
+    std::int64_t mNumSamples = 0;  ///< its CAD-to-mesh samples
+};
+
+/// The B-rep against the skin.
+struct BrepDeviation {
+    /// False when there was nothing to measure (no face, or no skin
+    /// triangle); `mWhy` then says which.
+    bool mOk = false;
+    std::string mWhy;
+    double mCadToMeshMax = 0.0;
+    double mCadToMeshP95 = 0.0;
+    double mCadToMeshP99 = 0.0;
+    double mMeshToCadMax = 0.0;
+    double mMeshToCadP95 = 0.0;
+    double mMeshToCadP99 = 0.0;
+    double mNormalMaxDeg = 0.0;
+    double mNormalP95Deg = 0.0;
+    /// Per face of `BrepInfo::mFaces`, in order.
+    std::vector<BrepFaceDeviation> mFaces;
+};
+
+/**
+ * @brief Measure @p rBrep against the skin of points @p rXyz (three per
+ * point) and triangles @p rTri (three point ids each).
+ */
+BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& rXyz,
+                             const std::vector<std::int64_t>& rTri,
+                             const BrepDeviationOptions& rOptions = {});
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/brep_deviation.hpp =====
 // ===== begin src/cpp/src/detail/patch_flatten.hpp =====
 /**
  * @file patch_flatten.hpp
@@ -51055,6 +51219,10 @@ struct FreeformAdaptiveOptions {
     /// meets the target (the face is the flattened surface), else by knot
     /// lines as without it.
     bool mThb = false;
+    /// With `fit_cad`'s `validation_acceptance` (unreleased): the largest
+    /// facet-normal deviation a face may show where the patch shows no noise
+    /// (`surface_normal_deviation_deg`); 0 does not look.
+    double mMaxNormalDeg = 0.0;
 };
 
 /// The face, and how it got there.
@@ -51098,6 +51266,8 @@ struct FreeformAcceptance {
     double mRmsDist = 0.0;
     double mMaxCentroidDist = 0.0;
     double mReverseMaxDist = 0.0;
+    /// With `MaxNormalDeg`: the facet-normal deviation measured.
+    double mNormalDeg = 0.0;
 };
 
 /**
@@ -51106,11 +51276,14 @@ struct FreeformAcceptance {
  * projected from its parameters (`rU`, `rV`, updated to the feet), the noise
  * allowance from the residuals' whiteness and `SkinSigma`, every facet centre
  * within the allowance and, with `Validate`, the surface's samples too.
+ * With @p MaxNormalDeg above 0, a patch the noise allowance does not apply to
+ * must also keep every facet normal within that many degrees of the
+ * surface's (`surface_normal_deviation_deg`).
  */
 FreeformAcceptance freeform_accept(const BsplineSurface& rS, const std::vector<PatchVec>& rPts,
                                    const std::vector<PatchTri>& rTris, std::vector<double>& rU,
                                    std::vector<double>& rV, double Tol, double SkinSigma,
-                                   bool Validate);
+                                   bool Validate, double MaxNormalDeg = 0.0);
 
 /// Fit one patch (see the file comment).
 FreeformAdaptiveResult freeform_adaptive_fit(const std::vector<PatchVec>& rPts,
@@ -51371,6 +51544,10 @@ struct PatchNetworkOptions {
     int mMaxSweeps = 6;
     int mMaxRefinements = 6;
     bool mValidate = true;
+    /// With `fit_cad`'s `validation_acceptance` (unreleased): the largest
+    /// facet-normal deviation a patch may show
+    /// (`surface_normal_deviation_deg`); 0 does not look.
+    double mMaxNormalDeg = 0.0;
 };
 
 /// One fitted patch.
@@ -51611,6 +51788,10 @@ MESHIOPLUSPLUS_API std::unordered_map<std::int64_t, std::int64_t> native_refine_
 FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                           const FitCadOptions& rOptions);
 
+/// A STEP file read back by OpenCASCADE and checked (fit_cad's validation
+/// report; providers/occt/fit_cad_occt.cpp).
+CadStepCheck occt_check_step(const std::string& rPath);
+
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/fit_cad_native.hpp =====
 // ===== begin src/cpp/src/detail/math_utils.hpp =====
@@ -51794,6 +51975,7 @@ struct MathUtils {
 // System includes
 #include <array>
 #include <cstddef>
+#include <vector>
 
 // Project includes
 
@@ -51865,6 +52047,24 @@ struct GeometryUtils {
     static double SignedTwiceArea2D(double U0, double V0, double U1, double V1, double U2,
                                     double V2) {
         return (U1 - U0) * (V2 - V0) - (U2 - U0) * (V1 - V0);
+    }
+
+    /**
+     * @brief Whether `(u, v)` lies inside the closed polygon `(rPu[i], rPv[i])`
+     * by the even-odd rule (a crossing count along `+u`). Several loops of one
+     * region (an outer one and its holes) combine by XOR-ing their results.
+     * A point on an edge may come out either way.
+     */
+    static bool PointInPolygon2D(const std::vector<double>& rPu, const std::vector<double>& rPv,
+                                 double U, double V) {
+        bool in = false;
+        const std::size_t n = rPu.size();
+        for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+            if ((rPv[i] > V) != (rPv[j] > V) &&
+                U < (rPu[j] - rPu[i]) * (V - rPv[i]) / (rPv[j] - rPv[i]) + rPu[i])
+                in = !in;
+        }
+        return in;
     }
 
     ///@}
@@ -56971,6 +57171,17 @@ SurfaceValidation surface_validate(const BsplineSurface& rS, const std::vector<P
                                    const std::vector<double>& rU, const std::vector<double>& rV,
                                    int SamplesPerSpan = 3,
                                    const std::vector<PatchTri>* pDistanceTris = nullptr);
+
+/**
+ * @brief The largest unsigned angle, in degrees within `[0, 90]`, between a
+ * facet's normal and the surface's at the facet centre's foot point
+ * (`bspline_project` from the mean of its corners' parameters), over
+ * @p rTris: a surface that stays within the tolerance but waves between the
+ * vertices shows here (`fit_cad`'s `validation_acceptance`, unreleased).
+ */
+double surface_normal_deviation_deg(const BsplineSurface& rS, const std::vector<PatchVec>& rPts,
+                                    const std::vector<PatchTri>& rTris,
+                                    const std::vector<double>& rU, const std::vector<double>& rV);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -62898,7 +63109,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "FreeformParameterization", "ExtraordinaryVertex", "LocalRefine",
           "FreeformG1ToleranceDeg", "FreeformMaxControlPoints", "LayoutTargetPatchSize",
           "LayoutMaxValenceDeviation", "ResegmentRounds", "LayoutSnapToFeatures",
-          "ValidateBySurfaceSampling", "ConstrainPrimitives"}},
+          "ValidateBySurfaceSampling", "ConstrainPrimitives", "ValidationReport",
+          "ValidationAcceptance"}},
         {"RefinePatches",
          {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
           "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
@@ -77398,6 +77610,496 @@ BccLattice bcc_octree_lattice(const LinearOctree& rTree, std::int64_t MaxTets) {
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/bcc_octree_tets.cpp =====
+// ===== begin src/cpp/src/detail/brep_deviation.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+namespace {
+
+constexpr double kBdPi = 3.14159265358979323846;
+
+// A face prepared for evaluation: its surface as an evaluation net, its knot
+// domain and its trims as parameter-space polygons.
+struct BdFace {
+    bool mOk = false;
+    IgaEvalNet mNet;
+    std::size_t mNu = 0, mNv = 0;
+    int mP = 0, mQ = 0;
+    double mU0 = 0.0, mU1 = 0.0, mV0 = 0.0, mV1 = 0.0;
+    std::vector<std::vector<double>> mLu, mLv;
+    /// The trims on the surface: per loop, closed polylines in 3D (each
+    /// parameter-space segment subdivided) and their parameters.
+    std::vector<std::vector<Vec3>> mBoundary;
+    std::vector<std::vector<std::array<double, 2>>> mBoundaryUv;
+};
+
+// A trimming curve as polyline points in its loop's direction, appended to
+// (rU, rV): the control points of a polyline, else samples per knot span.
+void bd_trim_polyline(const BrepTrim& rTrim, std::size_t PerSpan, std::vector<double>& rU,
+                      std::vector<double>& rV) {
+    const BrepCurve& c = rTrim.mCurve;
+    if (c.mControlPoints.Shape().size() != 2 || c.mControlPoints.Shape()[1] < 2)
+        return;
+    const std::size_t n = c.mControlPoints.Shape()[0];
+    const std::size_t dim = c.mControlPoints.Shape()[1];
+    const double* cp = c.mControlPoints.As<double>();
+    std::vector<double> pu, pv;
+    const bool weighted = c.mRational && c.mWeights.Size() == n;
+    if (c.mDegree <= 1 && !weighted) {
+        for (std::size_t i = 0; i < n; ++i) {
+            pu.push_back(cp[i * dim]);
+            pv.push_back(cp[i * dim + 1]);
+        }
+    } else if (n > static_cast<std::size_t>(c.mDegree) &&
+               c.mKnots.size() == n + static_cast<std::size_t>(c.mDegree) + 1) {
+        const double* w = weighted ? c.mWeights.As<double>() : nullptr;
+        double t0 = c.mKnots[static_cast<std::size_t>(c.mDegree)], t1 = c.mKnots[n];
+        if (c.mActiveRange.size() == 2) {
+            t0 = std::max(t0, c.mActiveRange[0]);
+            t1 = std::min(t1, c.mActiveRange[1]);
+        }
+        const std::size_t spans = std::max<std::size_t>(1, n - static_cast<std::size_t>(c.mDegree));
+        const std::size_t m = std::max<std::size_t>(2, spans * PerSpan + 1);
+        std::vector<double> out(dim);
+        for (std::size_t k = 0; k < m; ++k) {
+            const double t = t0 + (t1 - t0) * static_cast<double>(k) / static_cast<double>(m - 1);
+            const std::size_t s = nurbs_find_span(c.mDegree, c.mKnots, n, t);
+            nurbs_curve_point_in_span(c.mDegree, c.mKnots, cp, w, dim, s, t, out.data());
+            pu.push_back(out[0]);
+            pv.push_back(out[1]);
+        }
+    }
+    if (!rTrim.mDirection) {
+        std::reverse(pu.begin(), pu.end());
+        std::reverse(pv.begin(), pv.end());
+    }
+    rU.insert(rU.end(), pu.begin(), pu.end());
+    rV.insert(rV.end(), pv.begin(), pv.end());
+}
+
+BdFace bd_face(const BrepInfo& rBrep, const BrepFace& rFace, const BrepDeviationOptions& rOptions) {
+    BdFace f;
+    if (rFace.mPatch < 0 || static_cast<std::size_t>(rFace.mPatch) >= rBrep.mPatches.size())
+        return f;
+    const NurbsPatch& patch = rBrep.mPatches[static_cast<std::size_t>(rFace.mPatch)];
+    if (patch.mDegrees.size() != 2 || patch.mKnots.size() != 2 ||
+        patch.mControlPoints.Shape().size() != 2 || patch.mControlPoints.Shape()[1] != 3)
+        return f;
+    f.mP = patch.mDegrees[0];
+    f.mQ = patch.mDegrees[1];
+    if (f.mP < 1 || f.mQ < 1 || patch.mKnots[0].size() <= 2 * static_cast<std::size_t>(f.mP) + 1 ||
+        patch.mKnots[1].size() <= 2 * static_cast<std::size_t>(f.mQ) + 1)
+        return f;
+    f.mNu = patch.mKnots[0].size() - static_cast<std::size_t>(f.mP) - 1;
+    f.mNv = patch.mKnots[1].size() - static_cast<std::size_t>(f.mQ) - 1;
+    if (patch.mControlPoints.Shape()[0] != f.mNu * f.mNv)
+        return f;
+    f.mNet.mDim = 2;
+    f.mNet.mDegrees = {f.mP, f.mQ, 0};
+    f.mNet.mKnots = {&patch.mKnots[0], &patch.mKnots[1], nullptr};
+    f.mNet.mCounts = {f.mNu, f.mNv, 1};
+    f.mNet.mValues = patch.mControlPoints.As<double>();
+    f.mNet.mColumns = 3;
+    f.mNet.mWeights =
+        patch.mWeights.Size() == f.mNu * f.mNv ? patch.mWeights.As<double>() : nullptr;
+    f.mU0 = patch.mKnots[0][static_cast<std::size_t>(f.mP)];
+    f.mU1 = patch.mKnots[0][f.mNu];
+    f.mV0 = patch.mKnots[1][static_cast<std::size_t>(f.mQ)];
+    f.mV1 = patch.mKnots[1][f.mNv];
+    if (!(f.mU1 > f.mU0) || !(f.mV1 > f.mV0))
+        return f;
+    if (rFace.mTrimmed)
+        for (const BrepLoop& loop : rFace.mLoops) {
+            std::vector<double> lu, lv;
+            for (const BrepTrim& t : loop.mTrims)
+                bd_trim_polyline(t, rOptions.mTrimSamplesPerSpan, lu, lv);
+            if (lu.size() >= 3) {
+                f.mLu.push_back(std::move(lu));
+                f.mLv.push_back(std::move(lv));
+            }
+        }
+    f.mOk = true;
+    return f;
+}
+
+bool bd_inside(const BdFace& rF, double U, double V) {
+    if (rF.mLu.empty())
+        return true;
+    bool in = false;
+    for (std::size_t i = 0; i < rF.mLu.size(); ++i)
+        in = in != GeometryUtils::PointInPolygon2D(rF.mLu[i], rF.mLv[i], U, V);
+    return in;
+}
+
+// The surface point and its first derivatives at (U, V), clamped to the domain.
+void bd_eval(const BdFace& rF, double U, double V, Vec3& rS, Vec3& rSu, Vec3& rSv) {
+    U = std::clamp(U, rF.mU0, rF.mU1);
+    V = std::clamp(V, rF.mV0, rF.mV1);
+    const std::size_t span[2] = {nurbs_find_span(rF.mP, *rF.mNet.mKnots[0], rF.mNu, U),
+                                 nurbs_find_span(rF.mQ, *rF.mNet.mKnots[1], rF.mNv, V)};
+    const double uv[2] = {U, V};
+    double out[3], der[6];
+    iga_eval_point(rF.mNet, span, uv, 1, out, der);
+    rS = {out[0], out[1], out[2]};
+    rSu = {der[0], der[1], der[2]};
+    rSv = {der[3], der[4], der[5]};
+}
+
+// The trims of a face as closed 3D polylines on its surface: every
+// parameter-space segment cut into `Sub` pieces, so a straight trim in (u, v)
+// follows the surface between its points.
+void bd_boundary(BdFace& rF, std::size_t Sub) {
+    for (std::size_t l = 0; l < rF.mLu.size(); ++l) {
+        std::vector<Vec3> pts;
+        std::vector<std::array<double, 2>> uvs;
+        const std::size_t n = rF.mLu[l].size();
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::size_t j = (i + 1) % n;
+            for (std::size_t k = 0; k < Sub; ++k) {
+                const double t = static_cast<double>(k) / static_cast<double>(Sub);
+                const double u = rF.mLu[l][i] + t * (rF.mLu[l][j] - rF.mLu[l][i]);
+                const double v = rF.mLv[l][i] + t * (rF.mLv[l][j] - rF.mLv[l][i]);
+                Vec3 s, su, sv;
+                bd_eval(rF, u, v, s, su, sv);
+                pts.push_back(s);
+                uvs.push_back({u, v});
+            }
+        }
+        rF.mBoundary.push_back(std::move(pts));
+        rF.mBoundaryUv.push_back(std::move(uvs));
+    }
+}
+
+// The distance from rP to a face's boundary polylines, with the parameters of
+// the nearest polyline point (interpolated along its segment).
+double bd_boundary_distance(const BdFace& rF, const Vec3& rP, double& rU, double& rV) {
+    double best = std::numeric_limits<double>::infinity();
+    for (std::size_t l = 0; l < rF.mBoundary.size(); ++l) {
+        const std::vector<Vec3>& pts = rF.mBoundary[l];
+        const std::size_t n = pts.size();
+        for (std::size_t i = 0; i < n; ++i) {
+            const Vec3& a = pts[i];
+            const Vec3& b = pts[(i + 1) % n];
+            const Vec3 ab = vec3_sub(b, a);
+            const double len2 = MathUtils::Dot(ab, ab);
+            double t = len2 > 0.0 ? MathUtils::Dot(vec3_sub(rP, a), ab) / len2 : 0.0;
+            t = std::clamp(t, 0.0, 1.0);
+            const Vec3 q{a[0] + t * ab[0], a[1] + t * ab[1], a[2] + t * ab[2]};
+            const double d = MathUtils::Norm(vec3_sub(rP, q));
+            if (d < best) {
+                best = d;
+                const auto& ua = rF.mBoundaryUv[l][i];
+                const auto& ub = rF.mBoundaryUv[l][(i + 1) % n];
+                rU = ua[0] + t * (ub[0] - ua[0]);
+                rV = ua[1] + t * (ub[1] - ua[1]);
+            }
+        }
+    }
+    return best;
+}
+
+// The unsigned angle, in degrees within [0, 90], between two directions; 0
+// when either vanishes.
+double bd_angle_deg(const Vec3& rA, const Vec3& rB) {
+    const double la = MathUtils::Norm(rA), lb = MathUtils::Norm(rB);
+    if (!(la > 0.0) || !(lb > 0.0))
+        return 0.0;
+    const double c = std::min(1.0, std::abs(MathUtils::Dot(rA, rB)) / (la * lb));
+    return std::acos(c) * 180.0 / kBdPi;
+}
+
+// Gauss-Newton foot point of rP on the face from (rU, rV); returns the
+// distance and leaves the parameters and the surface normal at the foot.
+double bd_project(const BdFace& rF, const Vec3& rP, std::size_t MaxIterations, double& rU,
+                  double& rV, Vec3& rNormal) {
+    Vec3 s, su, sv;
+    bd_eval(rF, rU, rV, s, su, sv);
+    double best = MathUtils::Norm(vec3_sub(rP, s));
+    for (std::size_t it = 0; it < MaxIterations; ++it) {
+        const Vec3 r = vec3_sub(rP, s);
+        const double a = MathUtils::Dot(su, su), b = MathUtils::Dot(su, sv),
+                     c = MathUtils::Dot(sv, sv);
+        const double g0 = MathUtils::Dot(su, r), g1 = MathUtils::Dot(sv, r);
+        const double det = a * c - b * b;
+        if (!(det > 1e-300))
+            break;
+        const double du = (c * g0 - b * g1) / det, dv = (a * g1 - b * g0) / det;
+        const double nu = std::clamp(rU + du, rF.mU0, rF.mU1);
+        const double nv = std::clamp(rV + dv, rF.mV0, rF.mV1);
+        Vec3 s2, su2, sv2;
+        bd_eval(rF, nu, nv, s2, su2, sv2);
+        const double d2 = MathUtils::Norm(vec3_sub(rP, s2));
+        if (!(d2 < best))
+            break;
+        const bool small = std::abs(nu - rU) <= 1e-14 * (rF.mU1 - rF.mU0) &&
+                           std::abs(nv - rV) <= 1e-14 * (rF.mV1 - rF.mV0);
+        rU = nu;
+        rV = nv;
+        s = s2;
+        su = su2;
+        sv = sv2;
+        best = d2;
+        if (small)
+            break;
+    }
+    rNormal = vec3_cross(su, sv);
+    return best;
+}
+
+}  // namespace
+
+BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& rXyz,
+                             const std::vector<std::int64_t>& rTri,
+                             const BrepDeviationOptions& rOptions) {
+    BrepDeviation out;
+    out.mFaces.assign(rBrep.mFaces.size(), BrepFaceDeviation{});
+    if (rBrep.mFaces.empty()) {
+        out.mWhy = "the B-rep has no face";
+        return out;
+    }
+    if (rTri.size() < 3) {
+        out.mWhy = "the skin has no triangle";
+        return out;
+    }
+    const std::size_t N = std::max<std::size_t>(2, rOptions.mSamplesPerDirection);
+
+    // The skin, as a soup to measure the faces' samples against.
+    TriangleSoup skin;
+    skin.mPoints.reserve(rXyz.size() / 3);
+    for (std::size_t i = 0; i + 2 < rXyz.size(); i += 3)
+        skin.mPoints.push_back({rXyz[i], rXyz[i + 1], rXyz[i + 2]});
+    const auto pt = [&](std::int64_t V) { return skin.mPoints[static_cast<std::size_t>(V)]; };
+    for (std::size_t t = 0; t + 2 < rTri.size(); t += 3) {
+        skin.mVertices.push_back({rTri[t], rTri[t + 1], rTri[t + 2]});
+        skin.mCorners.push_back(pt(rTri[t]));
+        skin.mCorners.push_back(pt(rTri[t + 1]));
+        skin.mCorners.push_back(pt(rTri[t + 2]));
+        skin.mSourceCell.push_back(static_cast<std::int64_t>(t / 3));
+    }
+    SurfaceDistanceOptions dopt;
+    dopt.mSign = SdfSign::Unsigned;
+    dopt.mWatertightCheck = SdfWatertightCheck::Off;
+    const DistanceQuery skin_query = build_distance_query(skin, dopt);
+
+    // Every face on its grid: the nodes, which are inside the trims, and the
+    // cells (two triangles each) a corner of which is.
+    TriangleSoup cad;
+    std::vector<std::array<double, 6>> cad_uv;  // per CAD triangle: its corners' (u, v)
+    std::vector<std::size_t> cad_face;
+    std::vector<Vec3> samples;
+    std::vector<std::size_t> sample_face;
+    std::vector<BdFace> faces;
+    faces.reserve(rBrep.mFaces.size());
+    for (std::size_t fi = 0; fi < rBrep.mFaces.size(); ++fi) {
+        faces.push_back(bd_face(rBrep, rBrep.mFaces[fi], rOptions));
+        if (faces.back().mOk)
+            bd_boundary(faces.back(), 4);
+        const BdFace& f = faces.back();
+        if (!f.mOk)
+            continue;
+        double lo_u = f.mU0, hi_u = f.mU1, lo_v = f.mV0, hi_v = f.mV1;
+        if (!f.mLu.empty()) {
+            lo_u = hi_u = f.mLu[0][0];
+            lo_v = hi_v = f.mLv[0][0];
+            for (std::size_t l = 0; l < f.mLu.size(); ++l)
+                for (std::size_t k = 0; k < f.mLu[l].size(); ++k) {
+                    lo_u = std::min(lo_u, f.mLu[l][k]);
+                    hi_u = std::max(hi_u, f.mLu[l][k]);
+                    lo_v = std::min(lo_v, f.mLv[l][k]);
+                    hi_v = std::max(hi_v, f.mLv[l][k]);
+                }
+            lo_u = std::max(lo_u, f.mU0);
+            hi_u = std::min(hi_u, f.mU1);
+            lo_v = std::max(lo_v, f.mV0);
+            hi_v = std::min(hi_v, f.mV1);
+            if (!(hi_u > lo_u) || !(hi_v > lo_v))
+                continue;
+        }
+        std::vector<Vec3> node((N + 1) * (N + 1));
+        std::vector<char> inside((N + 1) * (N + 1), 0);
+        std::vector<double> nu((N + 1) * (N + 1)), nv((N + 1) * (N + 1));
+        for (std::size_t j = 0; j <= N; ++j)
+            for (std::size_t i = 0; i <= N; ++i) {
+                const std::size_t k = j * (N + 1) + i;
+                nu[k] = lo_u + (hi_u - lo_u) * static_cast<double>(i) / static_cast<double>(N);
+                nv[k] = lo_v + (hi_v - lo_v) * static_cast<double>(j) / static_cast<double>(N);
+                Vec3 su, sv;
+                bd_eval(f, nu[k], nv[k], node[k], su, sv);
+                inside[k] = bd_inside(f, nu[k], nv[k]) ? 1 : 0;
+                if (inside[k]) {
+                    samples.push_back(node[k]);
+                    sample_face.push_back(fi);
+                }
+            }
+        // A cell a trim runs through joins too, so the face's triangles reach
+        // its boundary where no node of the cell falls inside.
+        std::vector<char> crossed(N * N, 0);
+        for (std::size_t l = 0; l < f.mBoundaryUv.size(); ++l)
+            for (const auto& uv : f.mBoundaryUv[l]) {
+                const double fu = (uv[0] - lo_u) / (hi_u - lo_u) * static_cast<double>(N);
+                const double fv = (uv[1] - lo_v) / (hi_v - lo_v) * static_cast<double>(N);
+                if (!(fu >= 0.0) || !(fv >= 0.0) || fu > static_cast<double>(N) ||
+                    fv > static_cast<double>(N))
+                    continue;
+                const std::size_t ci = std::min(N - 1, static_cast<std::size_t>(fu));
+                const std::size_t cj = std::min(N - 1, static_cast<std::size_t>(fv));
+                crossed[cj * N + ci] = 1;
+            }
+        for (std::size_t j = 0; j < N; ++j)
+            for (std::size_t i = 0; i < N; ++i) {
+                const std::size_t a = j * (N + 1) + i, b = a + 1, c = a + N + 1, d = c + 1;
+                if (!(inside[a] || inside[b] || inside[c] || inside[d] || crossed[j * N + i]))
+                    continue;
+                for (const std::array<std::size_t, 3>& tri :
+                     {std::array<std::size_t, 3>{a, b, d}, std::array<std::size_t, 3>{a, d, c}}) {
+                    const std::int64_t base = static_cast<std::int64_t>(cad.mPoints.size());
+                    for (std::size_t q : tri)
+                        cad.mPoints.push_back(node[q]);
+                    cad.mVertices.push_back({base, base + 1, base + 2});
+                    for (std::size_t q : tri)
+                        cad.mCorners.push_back(node[q]);
+                    cad.mSourceCell.push_back(static_cast<std::int64_t>(cad_face.size()));
+                    cad_uv.push_back(
+                        {nu[tri[0]], nv[tri[0]], nu[tri[1]], nv[tri[1]], nu[tri[2]], nv[tri[2]]});
+                    cad_face.push_back(fi);
+                }
+            }
+    }
+    if (samples.empty() || cad_face.empty()) {
+        out.mWhy = "no face could be sampled";
+        return out;
+    }
+
+    // CAD to mesh.
+    std::vector<double> c2m(samples.size());
+    {
+        const std::vector<ClosestPointHit> hits = query_closest_points(skin_query, samples);
+        for (std::size_t s = 0; s < samples.size(); ++s) {
+            c2m[s] = hits[s].mFound ? hits[s].mDistance : 0.0;
+            BrepFaceDeviation& fd = out.mFaces[sample_face[s]];
+            fd.mCadToMeshMax = std::max(fd.mCadToMeshMax, c2m[s]);
+            ++fd.mNumSamples;
+        }
+        std::vector<std::vector<double>> per_face(rBrep.mFaces.size());
+        for (std::size_t s = 0; s < samples.size(); ++s)
+            per_face[sample_face[s]].push_back(c2m[s]);
+        for (std::size_t fi = 0; fi < per_face.size(); ++fi)
+            if (!per_face[fi].empty())
+                out.mFaces[fi].mCadToMeshP95 = coverage_quantile(per_face[fi], 0.95);
+    }
+
+    // Mesh to CAD: the skin's vertices, then its facet centres (whose facet
+    // normal gives the normal deviation).
+    std::vector<Vec3> queries = skin.mPoints;
+    const std::size_t nv = queries.size();
+    for (std::size_t t = 0; t < skin.NumTriangles(); ++t) {
+        const Vec3& a = skin.mCorners[3 * t];
+        const Vec3& b = skin.mCorners[3 * t + 1];
+        const Vec3& c = skin.mCorners[3 * t + 2];
+        queries.push_back(
+            {(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0});
+    }
+    // A skin point no triangle uses (an orphan) is not part of the skin.
+    std::vector<char> used(nv, 0);
+    for (const std::array<std::int64_t, 3>& v : skin.mVertices)
+        for (std::int64_t q : v)
+            used[static_cast<std::size_t>(q)] = 1;
+    SurfaceDistanceOptions copt;
+    copt.mSign = SdfSign::Unsigned;
+    copt.mWatertightCheck = SdfWatertightCheck::Off;
+    const DistanceQuery cad_query = build_distance_query(cad, copt);
+    const std::vector<SurfaceProjection> proj = query_surface_projections(cad_query, queries);
+    std::vector<double> m2c, normal_deg;
+    m2c.reserve(queries.size());
+    for (std::size_t q = 0; q < queries.size(); ++q) {
+        if (q < nv && !used[q])
+            continue;
+        const SurfaceProjection& h = proj[q];
+        if (!h.mFound || h.mTriangle < 0)
+            continue;
+        const std::size_t t = static_cast<std::size_t>(h.mTriangle);
+        const std::size_t fi = cad_face[t];
+        const BdFace& f = faces[fi];
+        // The foot's parameters, interpolated over the CAD triangle.
+        const Vec3& a = cad.mCorners[3 * t];
+        const Vec3& b = cad.mCorners[3 * t + 1];
+        const Vec3& c = cad.mCorners[3 * t + 2];
+        const Vec3 e0 = vec3_sub(b, a), e1 = vec3_sub(c, a), ep = vec3_sub(h.mPoint, a);
+        const double d00 = MathUtils::Dot(e0, e0), d01 = MathUtils::Dot(e0, e1),
+                     d11 = MathUtils::Dot(e1, e1);
+        const double d20 = MathUtils::Dot(ep, e0), d21 = MathUtils::Dot(ep, e1);
+        const double den = d00 * d11 - d01 * d01;
+        double wb = 0.0, wc = 0.0;
+        if (den > 0.0) {
+            wb = (d11 * d20 - d01 * d21) / den;
+            wc = (d00 * d21 - d01 * d20) / den;
+        }
+        const std::array<double, 6>& uv = cad_uv[t];
+        double u = (1.0 - wb - wc) * uv[0] + wb * uv[2] + wc * uv[4];
+        double v = (1.0 - wb - wc) * uv[1] + wb * uv[3] + wc * uv[5];
+        // The nearest point of a trimmed face is its foot inside the trims or
+        // a point of its boundary: the triangles only choose the face and the
+        // start. An untrimmed face's foot always counts.
+        Vec3 n_surface{0.0, 0.0, 0.0};
+        double d = std::numeric_limits<double>::infinity();
+        Vec3 n_foot{0.0, 0.0, 0.0};
+        const double dn = bd_project(f, queries[q], rOptions.mMaxNewtonIterations, u, v, n_foot);
+        if (bd_inside(f, u, v)) {
+            d = dn;
+            n_surface = n_foot;
+        }
+        if (!f.mBoundary.empty()) {
+            double bu = 0.0, bv = 0.0;
+            const double db = bd_boundary_distance(f, queries[q], bu, bv);
+            if (db < d) {
+                d = db;
+                Vec3 s, su, sv;
+                bd_eval(f, bu, bv, s, su, sv);
+                n_surface = vec3_cross(su, sv);
+            }
+        }
+        if (!std::isfinite(d)) {
+            d = h.mDistance;
+            n_surface = h.mNormal;
+        }
+        m2c.push_back(d);
+        BrepFaceDeviation& fd = out.mFaces[fi];
+        fd.mMeshToCadMax = std::max(fd.mMeshToCadMax, d);
+        if (q >= nv) {
+            const std::size_t st = q - nv;
+            const double ang = bd_angle_deg(
+                GeometryUtils::TriangleNormal(skin.mCorners[3 * st], skin.mCorners[3 * st + 1],
+                                              skin.mCorners[3 * st + 2]),
+                n_surface);
+            normal_deg.push_back(ang);
+            fd.mNormalMaxDeg = std::max(fd.mNormalMaxDeg, ang);
+        }
+    }
+
+    out.mCadToMeshMax = *std::max_element(c2m.begin(), c2m.end());
+    out.mCadToMeshP95 = coverage_quantile(c2m, 0.95);
+    out.mCadToMeshP99 = coverage_quantile(c2m, 0.99);
+    if (!m2c.empty()) {
+        out.mMeshToCadMax = *std::max_element(m2c.begin(), m2c.end());
+        out.mMeshToCadP95 = coverage_quantile(m2c, 0.95);
+        out.mMeshToCadP99 = coverage_quantile(m2c, 0.99);
+    }
+    if (!normal_deg.empty()) {
+        out.mNormalMaxDeg = *std::max_element(normal_deg.begin(), normal_deg.end());
+        out.mNormalP95Deg = coverage_quantile(normal_deg, 0.95);
+    }
+    out.mOk = true;
+    return out;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/brep_deviation.cpp =====
 // ===== begin src/cpp/src/detail/brep_nurbs.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -92442,7 +93144,7 @@ FitCadParamMethod fa_method(int Method) {
 FreeformAcceptance freeform_accept(const BsplineSurface& rS, const std::vector<PatchVec>& rPts,
                                    const std::vector<PatchTri>& rTris, std::vector<double>& rU,
                                    std::vector<double>& rV, double Tol, double SkinSigma,
-                                   bool Validate) {
+                                   bool Validate, double MaxNormalDeg) {
     FreeformAcceptance out;
     std::vector<std::uint8_t> used(rPts.size(), 0);
     for (const PatchTri& t : rTris)
@@ -92517,6 +93219,11 @@ FreeformAcceptance freeform_accept(const BsplineSurface& rS, const std::vector<P
     out.mMaxCentroidDist = worst_centroid;
     if (!(worst_vertex <= vertex_limit) || !(worst_centroid <= out.mAllowance))
         return out;
+    if (MaxNormalDeg > 0.0 && !out.mWhite) {
+        out.mNormalDeg = surface_normal_deviation_deg(rS, rPts, rTris, rU, rV);
+        if (!(out.mNormalDeg <= MaxNormalDeg))
+            return out;
+    }
     if (Validate) {
         const SurfaceValidation val = surface_validate(rS, rPts, rTris, rU, rV);
         out.mReverseMaxDist = val.mMaxForward;
@@ -92610,9 +93317,9 @@ FreeformAdaptiveResult freeform_adaptive_fit(const std::vector<PatchVec>& rPts,
                 break;
             }
             std::vector<double> fu = fit.mU, fv = fit.mV;
-            const FreeformAcceptance acc =
-                freeform_accept(fit.mSurface, rPts, rTris, fu, fv, tol,
-                                loose_pass ? skin_sigma : 0.0, rOptions.mValidate);
+            const FreeformAcceptance acc = freeform_accept(
+                fit.mSurface, rPts, rTris, fu, fv, tol, loose_pass ? skin_sigma : 0.0,
+                rOptions.mValidate, rOptions.mMaxNormalDeg);
             out.mSigma = acc.mSigma;
             out.mAllowance = acc.mAllowance;
             out.mMaxDist = acc.mMaxDist;
@@ -105776,6 +106483,12 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                     return false;
                 }
             }
+        if (rOptions.mMaxNormalDeg > 0.0) {
+            std::vector<double> nu = p.mU, nv = p.mV;
+            if (!(surface_normal_deviation_deg(p.mSurface, rPts, p.mTris, nu, nv) <=
+                  rOptions.mMaxNormalDeg))
+                return false;
+        }
         if (Validate) {
             std::vector<PatchTri> near = p.mTris;
             for (std::size_t j : neighbours[I])
@@ -118666,18 +119379,6 @@ double sv_median(std::vector<double> rV) {
     return rV[mid];
 }
 
-// Whether (U, V) lies inside the closed polygon (even-odd rule).
-bool sv_inside(const std::vector<double>& rPu, const std::vector<double>& rPv, double U, double V) {
-    bool in = false;
-    const std::size_t n = rPu.size();
-    for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
-        if ((rPv[i] > V) != (rPv[j] > V) &&
-            U < (rPu[j] - rPu[i]) * (V - rPv[i]) / (rPv[j] - rPv[i]) + rPu[i])
-            in = !in;
-    }
-    return in;
-}
-
 }  // namespace
 
 double patch_noise_sigma(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris) {
@@ -118818,7 +119519,7 @@ SurfaceValidation surface_validate(const BsplineSurface& rS, const std::vector<P
             return true;  // a closed patch: everywhere
         bool in = false;
         for (std::size_t i = 0; i < lu.size(); ++i)
-            in = in != sv_inside(lu[i], lv[i], U, V);
+            in = in != GeometryUtils::PointInPolygon2D(lu[i], lv[i], U, V);
         return in;
     };
 
@@ -118886,6 +119587,32 @@ SurfaceValidation surface_validate(const BsplineSurface& rS, const std::vector<P
     if (n > 0)
         out.mRmsReverse = std::sqrt(sum / static_cast<double>(n));
     return out;
+}
+
+double surface_normal_deviation_deg(const BsplineSurface& rS, const std::vector<PatchVec>& rPts,
+                                    const std::vector<PatchTri>& rTris,
+                                    const std::vector<double>& rU, const std::vector<double>& rV) {
+    double worst = 0.0;
+    for (const PatchTri& t : rTris) {
+        const Vec3 a{rPts[t[0]][0], rPts[t[0]][1], rPts[t[0]][2]};
+        const Vec3 b{rPts[t[1]][0], rPts[t[1]][1], rPts[t[1]][2]};
+        const Vec3 c{rPts[t[2]][0], rPts[t[2]][1], rPts[t[2]][2]};
+        const Vec3 facet = GeometryUtils::TriangleNormal(a, b, c);
+        const double centre[3] = {(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0,
+                                  (a[2] + b[2] + c[2]) / 3.0};
+        double u = (rU[t[0]] + rU[t[1]] + rU[t[2]]) / 3.0;
+        double w = (rV[t[0]] + rV[t[1]] + rV[t[2]]) / 3.0;
+        bspline_project(rS, centre, u, w);
+        BsplineEval e;
+        bspline_eval(rS, u, w, 1, e);
+        const Vec3 n = vec3_cross({e.mSu[0], e.mSu[1], e.mSu[2]}, {e.mSv[0], e.mSv[1], e.mSv[2]});
+        const double ln = MathUtils::Norm(n), lf = MathUtils::Norm(facet);
+        if (!(ln > 0.0) || !(lf > 0.0))
+            continue;
+        const double cosine = std::min(1.0, std::abs(MathUtils::Dot(n, facet)) / (ln * lf));
+        worst = std::max(worst, std::acos(cosine) * 57.29577951308232);
+    }
+    return worst;
 }
 
 }  // namespace detail
@@ -243294,6 +244021,86 @@ double fcn_facet_area_fraction(const std::vector<double>& rXyz,
     return total > 0.0 ? facet / total : 0.0;
 }
 
+// The facets fanned into triangles, three point ids each, in facet order.
+std::vector<std::int64_t> fcn_fan(const detail::ClosedFacets& rFc) {
+    std::vector<std::int64_t> tri;
+    for (std::size_t f = 0; f < rFc.NumFacets(); ++f)
+        for (std::int64_t k = rFc.mStart[f] + 1; k + 1 < rFc.mStart[f + 1]; ++k)
+            tri.insert(tri.end(), {rFc.mNodes[static_cast<std::size_t>(rFc.mStart[f])],
+                                   rFc.mNodes[static_cast<std::size_t>(k)],
+                                   rFc.mNodes[static_cast<std::size_t>(k + 1)]});
+    return tri;
+}
+
+// The validation report (`FitCadOptions::mValidationReport`): @p rBrep, the
+// solid as trimmed NURBS faces in `fit_cad:face` order, measured against the
+// skin of @p rFc both ways; the STEP file at @p rStepPath, when one was
+// written and a kernel can read it, read back and checked. Only `rResult`'s
+// validation members and `fit_cad:face_deviation` change.
+void fcn_validate(const detail::ClosedFacets& rFc, const BrepInfo& rBrep,
+                  const std::string& rStepPath, FitCadResult& rResult) {
+    const detail::BrepDeviation dev = detail::brep_deviation(rBrep, rFc.mXyz, fcn_fan(rFc));
+    if (dev.mOk) {
+        rResult.mValidationReported = true;
+        rResult.mCadToMeshMax = dev.mCadToMeshMax;
+        rResult.mCadToMeshP95 = dev.mCadToMeshP95;
+        rResult.mCadToMeshP99 = dev.mCadToMeshP99;
+        rResult.mMeshToCadMax = dev.mMeshToCadMax;
+        rResult.mMeshToCadP95 = dev.mMeshToCadP95;
+        rResult.mMeshToCadP99 = dev.mMeshToCadP99;
+        rResult.mNormalDeviationMaxDeg = dev.mNormalMaxDeg;
+        rResult.mNormalDeviationP95Deg = dev.mNormalP95Deg;
+        constexpr std::size_t kCols = 5;
+        NDArray a = NDArray::Uninit(DType::Float64, {dev.mFaces.size(), kCols});
+        for (std::size_t i = 0; i < dev.mFaces.size(); ++i) {
+            const detail::BrepFaceDeviation& f = dev.mFaces[i];
+            const double row[kCols] = {f.mCadToMeshMax, f.mCadToMeshP95, f.mMeshToCadMax,
+                                       f.mNormalMaxDeg, static_cast<double>(f.mNumSamples)};
+            std::copy(row, row + kCols, a.As<double>() + i * kCols);
+        }
+        rResult.mMesh.AddFieldData(kFitCadFaceDeviationName, std::move(a));
+    } else {
+        log::warn("fit_cad: the solid could not be measured against the skin: {}", dev.mWhy);
+    }
+    // The control points of the faces no primitive is: per B-rep face, its
+    // type from the cells that carry it.
+    if (rResult.mMesh.HasCellData(kFitCadFaceName) && rResult.mMesh.HasCellData(kFitCadTypeName)) {
+        std::vector<std::int64_t> type_of(rBrep.mFaces.size(), -1);
+        for (std::size_t b = 0; b < rResult.mMesh.NumCellBlocks(); ++b) {
+            const NDArray& fa = rResult.mMesh.CellData(kFitCadFaceName, b);
+            const NDArray& ta = rResult.mMesh.CellData(kFitCadTypeName, b);
+            for (std::size_t c = 0; c < std::min(fa.Size(), ta.Size()); ++c) {
+                const std::int64_t f = detail::read_int(fa, c);
+                if (f >= 0 && static_cast<std::size_t>(f) < type_of.size() &&
+                    type_of[static_cast<std::size_t>(f)] < 0)
+                    type_of[static_cast<std::size_t>(f)] = detail::read_int(ta, c);
+            }
+        }
+        std::int64_t total = 0;
+        for (std::size_t f = 0; f < rBrep.mFaces.size(); ++f) {
+            const std::int64_t t = type_of[f];
+            const std::int64_t p = rBrep.mFaces[f].mPatch;
+            if (t == 0 || (t >= 1 && t <= 5) || p < 0 ||
+                static_cast<std::size_t>(p) >= rBrep.mPatches.size())
+                continue;
+            const NurbsPatch& patch = rBrep.mPatches[static_cast<std::size_t>(p)];
+            total += patch.mControlPoints.Shape().size() >= 1
+                         ? static_cast<std::int64_t>(patch.mControlPoints.Shape()[0])
+                         : 0;
+        }
+        rResult.mTotalFreeformControlPoints = total;
+    }
+    // The file read back.
+    const auto p_kernel = cad_kernel();
+    if (!rStepPath.empty() && p_kernel && p_kernel->mCheckStep) {
+        const CadStepCheck check = p_kernel->mCheckStep(rStepPath);
+        rResult.mStepRoundTripChecked = true;
+        rResult.mStepRoundTripValid = check.mRead && check.mValid && check.mClosed;
+        if (check.mRead && std::isfinite(check.mVolume) && rResult.mSkinVolume != 0.0)
+            rResult.mStepRoundTripVolumeRatio = check.mVolume / rResult.mSkinVolume;
+    }
+}
+
 // `fit_cad:face_table`: one row per record, the `FitCadFaceRecord` columns in
 // declaration order as float64.
 NDArray fcn_face_table(const std::vector<FitCadFaceRecord>& rFaces) {
@@ -243533,6 +244340,10 @@ detail::FreeformAdaptiveOptions fcn_adaptive_options(const FitCadOptions& rOptio
     o.mParameterization = static_cast<detail::ParamLadder>(rOptions.mFreeformParameterization);
     o.mValidate = rOptions.mValidateBySurfaceSampling;
     o.mThb = rOptions.mLocalRefine == FitCadLocalRefine::Thb;
+    if (rOptions.mValidationAcceptance) {
+        o.mValidate = true;
+        o.mMaxNormalDeg = kFitCadValidationNormalDeg;
+    }
     return o;
 }
 
@@ -243649,7 +244460,9 @@ std::vector<FcnRegionNetwork> fcn_networks(const detail::ClosedFacets& rFc,
         no.mMaxTotalPoles = static_cast<std::size_t>(rOptions.mFreeformMaxControlPoints);
         no.mG1ToleranceDeg = rOptions.mFreeformG1ToleranceDeg;
         no.mExtraordinary = rOptions.mExtraordinaryVertex;
-        no.mValidate = rOptions.mValidateBySurfaceSampling;
+        no.mValidate = rOptions.mValidateBySurfaceSampling || rOptions.mValidationAcceptance;
+        if (rOptions.mValidationAcceptance)
+            no.mMaxNormalDeg = kFitCadValidationNormalDeg;
         reg.mNet = detail::patch_network_fit(reg.mPts, reg.mTris, reg.mLayout, no);
         // The tangent-plane treatment of the extraordinary vertices kept only
         // where it does better there than leaving them alone (`g0`) and fits
@@ -244412,15 +245225,20 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     opts.mFaces = StepFaces::Fitted;
     opts.mTolerance = rOptions.mTolerance;
     detail::StepBrepResult brep;
-    detail::write_step_report(rStepPath, *pSource, opts, &brep,
-                              freeform.mFaces.empty() ? nullptr : &freeform.mFaces,
-                              freeform.mEdgeCurves.empty() ? nullptr : &freeform.mEdgeCurves,
-                              rOptions.mFreeformMode != FitCadFreeformMode::Legacy);
+    detail::write_step_report(
+        rStepPath, *pSource, opts, &brep, freeform.mFaces.empty() ? nullptr : &freeform.mFaces,
+        freeform.mEdgeCurves.empty() ? nullptr : &freeform.mEdgeCurves,
+        rOptions.mFreeformMode != FitCadFreeformMode::Legacy || rOptions.mValidationReport);
 
     FitCadResult result;
     result.mBackend = FitCadBackend::Native;
     // Outside the legacy mode, the solid as NURBS too (v17.12.0), for
     // `write_cad_json`; empty, with a warning, where a face cannot be one.
+    // The NURBS form the validation report measures; the legacy mode built it
+    // for that alone and does not return it.
+    BrepInfo measured;
+    if (rOptions.mValidationReport && rOptions.mFreeformMode == FitCadFreeformMode::Legacy)
+        measured = std::move(brep.mBrep);
     if (rOptions.mFreeformMode != FitCadFreeformMode::Legacy) {
         result.mBrep = std::move(brep.mBrep);
         if (!brep.mBrepWhy.empty())
@@ -244564,6 +245382,13 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         log::info("fit_cad: {} fitted patch(es) written as coplanar facets",
                   result.mCounts.mNumDemoted);
     fcn_report_refined(refined, work, result);
+    if (rOptions.mValidationReport) {
+        if (!brep.mBrepWhy.empty())
+            log::warn("fit_cad: the native solid has no NURBS form to measure ({})", brep.mBrepWhy);
+        fcn_validate(fc,
+                     rOptions.mFreeformMode == FitCadFreeformMode::Legacy ? measured : result.mBrep,
+                     rStepPath, result);
+    }
     return result;
 }
 
@@ -244703,8 +245528,14 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
         return fit_cad_build(rMesh, rStepPath, general);
     }
     const auto p_kernel = cad_kernel();
-    if (rOptions.mBackend != FitCadBackend::Native && p_kernel && p_kernel->mFitCad)
-        return p_kernel->mFitCad(rMesh, rStepPath, rOptions);
+    if (rOptions.mBackend != FitCadBackend::Native && p_kernel && p_kernel->mFitCad) {
+        FitCadResult kernel = p_kernel->mFitCad(rMesh, rStepPath, rOptions);
+        if (rOptions.mValidationReport) {
+            const detail::ClosedFacets fc = detail::closed_facets(rMesh, kFcnPrefix);
+            fcn_validate(fc, kernel.mBrep, rStepPath, kernel);
+        }
+        return kernel;
+    }
     if (rOptions.mBackend == FitCadBackend::Occt)
         throw Unsupported(
             "fit_cad: no OpenCASCADE backend is available (the release binaries carry it and "
@@ -271707,6 +272538,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mLayoutSnapToFeatures = pipe_flag(rStep, "LayoutSnapToFeatures", true);
         opts.mValidateBySurfaceSampling = pipe_flag(rStep, "ValidateBySurfaceSampling", true);
         opts.mConstrainPrimitives = pipe_flag(rStep, "ConstrainPrimitives", false);
+        opts.mValidationReport = pipe_flag(rStep, "ValidationReport", false);
+        opts.mValidationAcceptance = pipe_flag(rStep, "ValidationAcceptance", false);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         std::vector<std::pair<std::string, double>> counters = {
             {"Valid", cr.mValid ? 1.0 : 0.0},
@@ -271760,6 +272593,15 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                                   static_cast<double>(cr.mNumConstrainedPrimitives));
             counters.emplace_back("NumConstraintGroups",
                                   static_cast<double>(cr.mNumConstraintGroups));
+        }
+        if (opts.mValidationReport) {
+            counters.emplace_back("CadToMeshMax", cr.mCadToMeshMax);
+            counters.emplace_back("CadToMeshP95", cr.mCadToMeshP95);
+            counters.emplace_back("MeshToCadMax", cr.mMeshToCadMax);
+            counters.emplace_back("MeshToCadP95", cr.mMeshToCadP95);
+            counters.emplace_back("NormalDeviationMaxDeg", cr.mNormalDeviationMaxDeg);
+            counters.emplace_back("StepRoundTripChecked", cr.mStepRoundTripChecked ? 1.0 : 0.0);
+            counters.emplace_back("StepRoundTripValid", cr.mStepRoundTripValid ? 1.0 : 0.0);
         }
         // The freeform modes (v17.12.0) report only outside the legacy mode.
         if (opts.mFreeformMode != FitCadFreeformMode::Legacy) {
@@ -309425,6 +310267,23 @@ FcHandle<Geom_Surface> fc_freeform_general(const std::vector<gp_Pnt>& rPts,
             pInfo->mReason = static_cast<std::uint8_t>(FitCadDemotionReason::BudgetExceeded);
         return {};
     }
+    if (rOptions.mValidationAcceptance) {
+        // The validation measures (unreleased): the surface sampled inside
+        // its trim and its normal at the facet centres, as the adaptive faces
+        // are held to them.
+        std::vector<double> fu = fit.mU, fv = fit.mV;
+        const detail::FreeformAcceptance acc = detail::freeform_accept(
+            fit.mSurface, pts, tris, fu, fv, Tol, 0.0, true, kFitCadValidationNormalDeg);
+        if (!acc.mOk) {
+            log::debug(
+                "fit_cad: the general freeform surface fails the validation measures "
+                "(samples {}, normals {} deg)",
+                acc.mReverseMaxDist, acc.mNormalDeg);
+            if (pInfo)
+                pInfo->mReason = static_cast<std::uint8_t>(FitCadDemotionReason::HausdorffExceeded);
+            return {};
+        }
+    }
     FcHandle<Geom_Surface> surf = fc_occt_bspline(fit.mSurface);
     // Through the cached projector: a projector per point samples the whole
     // surface each time.
@@ -311741,6 +312600,34 @@ FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     return fc_occt_fit_cad(rMesh, rStepPath, rOptions);
 }
 
+CadStepCheck occt_check_step(const std::string& rPath) {
+    CadStepCheck out;
+    detail::LibraryLock lock;
+    FcQuietMessenger quiet;
+    try {
+        const TopoDS_Shape shape = occt_read_cad_file(rPath, false, "step");
+        if (shape.IsNull())
+            return out;
+        out.mRead = true;
+        out.mValid = BRepCheck_Analyzer(shape).IsValid();
+        out.mClosed = fc_closed(shape);
+        GProp_GProps props;
+        BRepGProp::VolumeProperties(shape, props);
+        out.mVolume = props.Mass();
+        for (TopExp_Explorer ex(shape, TopAbs_SOLID); ex.More(); ex.Next())
+            ++out.mNumSolids;
+        for (TopExp_Explorer ex(shape, TopAbs_FACE); ex.More(); ex.Next())
+            ++out.mNumFaces;
+    } catch (const Standard_Failure& rErr) {
+        log::debug("fit_cad: reading '{}' back failed: {}", rPath, rErr.GetMessageString());
+        out.mValid = false;
+    } catch (const std::exception& rErr) {
+        log::debug("fit_cad: reading '{}' back failed: {}", rPath, rErr.what());
+        out.mValid = false;
+    }
+    return out;
+}
+
 }  // namespace detail
 
 }  // namespace meshioplusplus
@@ -312764,6 +313651,7 @@ CadKernelProvider make_occt_provider() {
         return occt_read_shape(rPath, true, rInfo, rOptions);
     };
     provider.mFitCad = detail::occt_fit_cad;
+    provider.mCheckStep = detail::occt_check_step;
     return provider;
 }
 

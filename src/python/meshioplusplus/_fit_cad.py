@@ -112,6 +112,23 @@ _MODE_FLOATS = (
     "max_freeform_distance",
     "rms_freeform_distance",
 )
+# The validation report's keys (unreleased), only with ``validation_report``.
+_VALIDATION_FLOATS = (
+    "cad_to_mesh_max",
+    "cad_to_mesh_p95",
+    "cad_to_mesh_p99",
+    "mesh_to_cad_max",
+    "mesh_to_cad_p95",
+    "mesh_to_cad_p99",
+    "normal_deviation_max_deg",
+    "normal_deviation_p95_deg",
+    "step_round_trip_volume_ratio",
+)
+_VALIDATION_BOOLS = (
+    "validation_reported",
+    "step_round_trip_checked",
+    "step_round_trip_valid",
+)
 
 
 def has_occt() -> bool:
@@ -210,6 +227,8 @@ def fit_cad(
     layout_snap_to_features: bool = True,
     validate_by_surface_sampling: bool = True,
     constrain_primitives: bool = False,
+    validation_report: bool = False,
+    validation_acceptance: bool = False,
 ):
     """Build a CAD solid from the fitted patches of a closed skin.
 
@@ -363,6 +382,24 @@ def fit_cad(
         equal, each change kept only where its patch still passes its fit.
         The report then holds ``num_constrained_primitives`` and
         ``num_constraint_groups``.
+    :param validation_report: measure the built solid against the skin: the
+        two-sided distance between its trimmed NURBS faces and the skin (each
+        face sampled densely inside its trims; the skin's vertices and facet
+        centres projected onto the faces), the normal deviation at those foot
+        points and, where OpenCASCADE is available and a STEP file was
+        written, the file read back and checked. The report then holds
+        ``validation_reported``, ``cad_to_mesh_max``, ``cad_to_mesh_p95``,
+        ``cad_to_mesh_p99``, ``mesh_to_cad_max``, ``mesh_to_cad_p95``,
+        ``mesh_to_cad_p99``, ``normal_deviation_max_deg``,
+        ``normal_deviation_p95_deg``, ``step_round_trip_checked``,
+        ``step_round_trip_valid``, ``step_round_trip_volume_ratio`` and
+        ``total_freeform_control_points``, and the mesh the
+        ``fit_cad:face_deviation`` field data. The solid is the same either
+        way.
+    :param validation_acceptance: also hold every freeform face to those
+        measures before it is accepted: its surface sampled inside its trim
+        within the tolerance of the skin, and its normal at the patch's facet
+        centres within 30 degrees of theirs unless the patch shows noise.
     :returns: the solid re-meshed as triangles with cell data ``fit_cad:face``,
         ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet,
         blend or conic blend, 8 a helical thread face, 9 a vertex blend, 10 a
@@ -556,6 +593,8 @@ def fit_cad(
         **{k: v for k, v in modes.items() if v != _MODE_DEFAULTS[k]},
         # Off by default, passed only when on, like the options above.
         **({"constrain_primitives": True} if constrain_primitives else {}),
+        **({"validation_report": True} if validation_report else {}),
+        **({"validation_acceptance": True} if validation_acceptance else {}),
     )
     out = res["mesh"]
     info = out.info if isinstance(getattr(out, "info", None), dict) else {}
@@ -593,6 +632,12 @@ def fit_cad(
     if constrain_primitives:
         report["num_constrained_primitives"] = int(res["num_constrained_primitives"])
         report["num_constraint_groups"] = int(res["num_constraint_groups"])
+    if validation_report:
+        report.update({k: bool(res[k]) for k in _VALIDATION_BOOLS})
+        report.update({k: float(res[k]) for k in _VALIDATION_FLOATS})
+        report["total_freeform_control_points"] = int(
+            res["total_freeform_control_points"]
+        )
     return out, report
 
 

@@ -2103,6 +2103,12 @@ end
     @test constrained.num_faces == 6 && constrained.num_demoted == 0
     @test 0 <= constrained.num_constrained_primitives <= 6
     close(constrained.mesh)
+    # The validation report (unreleased): the cube's planes lie on its skin.
+    validated = fit_cad(cube; backend="native", validation_report=true)
+    @test validated.validation_reported
+    @test 0.0 <= validated.cad_to_mesh_max <= 1e-9
+    @test validated.mesh_to_cad_max >= validated.mesh_to_cad_p95
+    close(validated.mesh)
     if has_occt()
         snapped = fit_cad(cube; snap_junctions=true, face_deviation=true)
         @test snapped.valid && snapped.closed

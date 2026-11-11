@@ -8356,6 +8356,29 @@ TEST(CApi, FitCad3FreeformModes) {
     for (int64_t r : report_ex3.reserved)
         EXPECT_EQ(r, 0);
     mio_mesh_free(skin);
+    // mio_fit_cad4: the validation report (unreleased), zero without it.
+    mio_fit_cad_opts_ex2_init(&ex2);
+    EXPECT_EQ(ex2.validation_report, 0);
+    EXPECT_EQ(ex2.validation_acceptance, 0);
+    mio_fit_cad_report_ex4 report_ex4;
+    skin = mio_fit_cad4(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, nullptr,
+                        &report_ex4);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    EXPECT_EQ(report_ex4.validation_reported, 0);
+    mio_mesh_free(skin);
+    ex2.validation_report = 1;
+    skin = mio_fit_cad4(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, nullptr,
+                        &report_ex4);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    EXPECT_EQ(report_ex4.validation_reported, 1);
+    EXPECT_GE(report_ex4.cad_to_mesh_max, report_ex4.cad_to_mesh_p95);
+    EXPECT_GE(report_ex4.mesh_to_cad_max, report_ex4.mesh_to_cad_p95);
+    EXPECT_LE(report_ex4.cad_to_mesh_max, 1e-9);
+    EXPECT_LE(report_ex4.mesh_to_cad_max, 1e-9);
+    EXPECT_EQ(report_ex4.step_round_trip_checked, 0);  // no file written
+    for (int64_t r : report_ex4.reserved)
+        EXPECT_EQ(r, 0);
+    mio_mesh_free(skin);
     mio_mesh_free(m);
 }
 

@@ -97,6 +97,10 @@ struct FreeformAdaptiveOptions {
     /// meets the target (the face is the flattened surface), else by knot
     /// lines as without it.
     bool mThb = false;
+    /// With `fit_cad`'s `validation_acceptance` (unreleased): the largest
+    /// facet-normal deviation a face may show where the patch shows no noise
+    /// (`surface_normal_deviation_deg`); 0 does not look.
+    double mMaxNormalDeg = 0.0;
 };
 
 /// The face, and how it got there.
@@ -140,6 +144,8 @@ struct FreeformAcceptance {
     double mRmsDist = 0.0;
     double mMaxCentroidDist = 0.0;
     double mReverseMaxDist = 0.0;
+    /// With `MaxNormalDeg`: the facet-normal deviation measured.
+    double mNormalDeg = 0.0;
 };
 
 /**
@@ -148,11 +154,14 @@ struct FreeformAcceptance {
  * projected from its parameters (`rU`, `rV`, updated to the feet), the noise
  * allowance from the residuals' whiteness and `SkinSigma`, every facet centre
  * within the allowance and, with `Validate`, the surface's samples too.
+ * With @p MaxNormalDeg above 0, a patch the noise allowance does not apply to
+ * must also keep every facet normal within that many degrees of the
+ * surface's (`surface_normal_deviation_deg`).
  */
 FreeformAcceptance freeform_accept(const BsplineSurface& rS, const std::vector<PatchVec>& rPts,
                                    const std::vector<PatchTri>& rTris, std::vector<double>& rU,
                                    std::vector<double>& rV, double Tol, double SkinSigma,
-                                   bool Validate);
+                                   bool Validate, double MaxNormalDeg = 0.0);
 
 /// Fit one patch (see the file comment).
 FreeformAdaptiveResult freeform_adaptive_fit(const std::vector<PatchVec>& rPts,

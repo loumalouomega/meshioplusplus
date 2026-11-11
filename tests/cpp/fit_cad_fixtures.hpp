@@ -277,4 +277,22 @@ inline std::vector<FreeformFixture> freeform_fixtures(bool Variants = true) {
     return out;
 }
 
+/**
+ * @brief The kinematic set (doc/fit_cad_freeform_plan.md): skins whose
+ * unexplained patches are a surface of linear extrusion (`extruded_lobe`), of
+ * revolution (`wavy_capped`, a waving radius) and a helical sweep of a
+ * rounded profile (`rounded_thread_rod`), each at `2e-3` of its diagonal.
+ */
+inline std::vector<FreeformFixture> kinematic_fixtures() {
+    std::vector<FreeformFixture> out;
+    for (auto& [name, skin] : std::vector<std::pair<std::string, Mesh>>{
+             {"extruded_lobe", analytic::extruded_lobe()},
+             {"revolved_wave", analytic::wavy_capped()},
+             {"helical_sweep", analytic::rounded_thread_rod()}}) {
+        const double tol = 2e-3 * diagonal(skin);
+        out.push_back({name, fitted_abs(skin, tol), tol});
+    }
+    return out;
+}
+
 }  // namespace fcfix

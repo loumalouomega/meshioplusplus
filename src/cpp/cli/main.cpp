@@ -3310,6 +3310,8 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                           {"no-layout-snap-to-features", {}, false},
                                           {"no-validate-by-surface-sampling", {}, false},
                                           {"constrain-primitives", {}, false},
+                                          {"validation-report", {}, false},
+                                          {"validation-acceptance", {}, false},
                                           {"mesh-out", {}, true},
                                           {"cad-json", {}, true}},
                                          report_flag_specs()}));
@@ -3433,6 +3435,8 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
     options.mLayoutSnapToFeatures = !has_flag(p, "no-layout-snap-to-features");
     options.mValidateBySurfaceSampling = !has_flag(p, "no-validate-by-surface-sampling");
     options.mConstrainPrimitives = has_flag(p, "constrain-primitives");
+    options.mValidationReport = has_flag(p, "validation-report");
+    options.mValidationAcceptance = has_flag(p, "validation-acceptance");
     const bool modes = options.mFreeformMode != meshioplusplus::FitCadFreeformMode::Legacy;
     static const char* const kModes[] = {"legacy", "adaptive", "network", "auto"};
     meshioplusplus::FitCadResult r = meshioplusplus::fit_cad(mesh, p.positionals[1], options);
@@ -3503,6 +3507,21 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         if (options.mConstrainPrimitives) {
             json.Field("num_constrained_primitives", r.mNumConstrainedPrimitives);
             json.Field("num_constraint_groups", r.mNumConstraintGroups);
+        }
+        if (options.mValidationReport) {
+            json.Field("validation_reported", r.mValidationReported);
+            json.Field("cad_to_mesh_max", r.mCadToMeshMax);
+            json.Field("cad_to_mesh_p95", r.mCadToMeshP95);
+            json.Field("cad_to_mesh_p99", r.mCadToMeshP99);
+            json.Field("mesh_to_cad_max", r.mMeshToCadMax);
+            json.Field("mesh_to_cad_p95", r.mMeshToCadP95);
+            json.Field("mesh_to_cad_p99", r.mMeshToCadP99);
+            json.Field("normal_deviation_max_deg", r.mNormalDeviationMaxDeg);
+            json.Field("normal_deviation_p95_deg", r.mNormalDeviationP95Deg);
+            json.Field("step_round_trip_checked", r.mStepRoundTripChecked);
+            json.Field("step_round_trip_valid", r.mStepRoundTripValid);
+            json.Field("step_round_trip_volume_ratio", r.mStepRoundTripVolumeRatio);
+            json.Field("total_freeform_control_points", r.mTotalFreeformControlPoints);
         }
         // The freeform modes report only outside the legacy mode.
         if (modes) {
@@ -3604,6 +3623,14 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         if (options.mConstrainPrimitives)
             std::cout << "  constrained: " << r.mNumConstrainedPrimitives << " primitive(s) in "
                       << r.mNumConstraintGroups << " group(s)\n";
+        if (options.mValidationReport)
+            std::cout << "  validation: CAD to mesh " << r.mCadToMeshMax << " (P95 "
+                      << r.mCadToMeshP95 << "), mesh to CAD " << r.mMeshToCadMax << " (P95 "
+                      << r.mMeshToCadP95 << "), normals " << r.mNormalDeviationMaxDeg
+                      << " deg; STEP read back: "
+                      << (r.mStepRoundTripChecked ? (r.mStepRoundTripValid ? "valid" : "NOT valid")
+                                                  : "not checked")
+                      << "\n";
         if (modes)
             std::cout << "  freeform (" << kModes[static_cast<int>(r.mFreeformMode) & 3]
                       << "): " << r.mNumFreeformAdaptive << " adaptive face(s), "

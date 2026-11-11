@@ -325,6 +325,17 @@ def add_args(parser):
         "parallel and perpendicular planes and nearly equal radii are made exact",
     )
     parser.add_argument(
+        "--validation-report",
+        action="store_true",
+        help="measure the solid against the skin both ways (sampled faces, projected "
+        "skin points), the normal deviation and the STEP file read back",
+    )
+    parser.add_argument(
+        "--validation-acceptance",
+        action="store_true",
+        help="hold every freeform face to the validation measures before accepting it",
+    )
+    parser.add_argument(
         "--mesh-out", type=str, default=None, help="also write the re-meshed solid here"
     )
     parser.add_argument(
@@ -411,6 +422,8 @@ def to_cad_cmd(args):
         layout_snap_to_features=not args.no_layout_snap_to_features,
         validate_by_surface_sampling=not args.no_validate_by_surface_sampling,
         constrain_primitives=args.constrain_primitives,
+        validation_report=args.validation_report,
+        validation_acceptance=args.validation_acceptance,
     )
     if args.mesh_out:
         write(args.mesh_out, out)
@@ -463,6 +476,18 @@ def to_cad_cmd(args):
             print(
                 f"  constrained: {report['num_constrained_primitives']} primitive(s) "
                 f"in {report['num_constraint_groups']} group(s)"
+            )
+        if args.validation_report:
+            print(
+                f"  validation: CAD to mesh {report['cad_to_mesh_max']:.6g} "
+                f"(P95 {report['cad_to_mesh_p95']:.6g}), mesh to CAD "
+                f"{report['mesh_to_cad_max']:.6g} (P95 {report['mesh_to_cad_p95']:.6g}), "
+                f"normals {report['normal_deviation_max_deg']:.4g} deg; STEP read back: "
+                + (
+                    ("valid" if report["step_round_trip_valid"] else "NOT valid")
+                    if report["step_round_trip_checked"]
+                    else "not checked"
+                )
             )
         if report.get("refined"):
             print(

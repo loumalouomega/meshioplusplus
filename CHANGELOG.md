@@ -8,6 +8,15 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+The first steps of the [freeform fit CAD plan](doc/fit_cad_freeform_plan.md). Everything is off by default, so no default output changes: the `fit_cad` golden digests are as they were.
+
+- **`fit_cad` validation report** ([fit CAD](doc/fit_cad.md#validation-report)): `validation_report` measures the built solid against the skin in its NURBS form, the same way for both backends: each face sampled inside its trims (CAD to mesh), the skin's vertices and facet centres projected onto the faces (mesh to CAD), as maxima and 95th and 99th percentiles, the facet-normal deviation at the foot points, and, with OpenCASCADE and a STEP file, the file read back, checked, tested for closed shells and its volume compared; per face as the new `fit_cad:face_deviation` field data. `validation_acceptance` holds every adaptive, network and general freeform face to the sampled distance and a 30-degree normal test before accepting it. Python, both CLIs (`--validation-report`, `--validation-acceptance`), the pipeline (`ValidationReport`, `ValidationAcceptance`), the MCP tool, C (`mio_fit_cad4`, `mio_fit_cad_report_ex4`; `mio_fit_cad_opts_ex2` keeps its size), Fortran, Julia, R, Octave and WASM.
+- **`fit_cad` KPI harness** ([benchmarks](doc/benchmarks.md#fit-cad-freeform-kpis)): `meshioplusplus_fit_cad_kpi` (built with the tests) runs the golden, freeform and new kinematic fixtures (an extruded lobe, a revolved wave, a helical sweep) in every freeform mode with both backends, and `tools/fit_cad_kpi.py` writes `benchmark/fit_cad_kpi.csv`, regenerates the KPI tables and compares two runs.
+- **Shared utilities**: `GeometryUtils::PointInPolygon2D` (the even-odd test `surface_validate` kept privately), `detail::surface_normal_deviation_deg`, and `detail/brep_deviation`.
+- **ABI:** `MESHIOPLUSPLUS_ABI_VERSION` 45 -> 46 (Tier A): `FitCadOptions` takes `mValidationReport` and `mValidationAcceptance` in its tail padding (still 288 bytes), `FitCadResult` appends the validation report, and `CadKernelProvider` appends `mCheckStep` (160 -> 192 bytes) returning the new `CadStepCheck`.
+
 ## v20.1.0 (2026-11-11)
 
 A minor release: `adapt_volume`, a native, MIT-licensed, dependency-free tetrahedral remesher that coarsens and improves a tetrahedral mesh towards a graded size field under a Hausdorff bound, and an opt-in `octree_mesh` post-stage that runs it. Everything is additive and `octree_mesh`'s output is unchanged unless `post_adapt` is set. **C++ ABI 45** ([ABI](doc/abi.md)): `OctreeMeshOptions` and `OctreeMeshResult` grew, so C++ consumers recompile against the new headers; the C option structs keep their size (the new fields take their reserved tails), so the C, Fortran, Julia, R, Octave, WASM and Python callers are unaffected.

@@ -1613,6 +1613,8 @@ def _apply_step(mesh, step, steps, warnings):
             layout_snap_to_features=_flag(step, "LayoutSnapToFeatures", True),
             validate_by_surface_sampling=_flag(step, "ValidateBySurfaceSampling", True),
             constrain_primitives=_flag(step, "ConstrainPrimitives", False),
+            validation_report=_flag(step, "ValidationReport", False),
+            validation_acceptance=_flag(step, "ValidationAcceptance", False),
         )
         entry["Valid"] = 1.0 if report["valid"] else 0.0
         entry["Native"] = 1.0 if report["backend"] == "native" else 0.0
@@ -1657,6 +1659,18 @@ def _apply_step(mesh, step, steps, warnings):
         if "num_constrained_primitives" in report:
             entry["NumConstrainedPrimitives"] = report["num_constrained_primitives"]
             entry["NumConstraintGroups"] = report["num_constraint_groups"]
+        if "validation_reported" in report:
+            entry["CadToMeshMax"] = report["cad_to_mesh_max"]
+            entry["CadToMeshP95"] = report["cad_to_mesh_p95"]
+            entry["MeshToCadMax"] = report["mesh_to_cad_max"]
+            entry["MeshToCadP95"] = report["mesh_to_cad_p95"]
+            entry["NormalDeviationMaxDeg"] = report["normal_deviation_max_deg"]
+            entry["StepRoundTripChecked"] = (
+                1.0 if report["step_round_trip_checked"] else 0.0
+            )
+            entry["StepRoundTripValid"] = (
+                1.0 if report["step_round_trip_valid"] else 0.0
+            )
         # The freeform modes (v17.12.0) report only outside the legacy mode.
         if "freeform_mode" in report:
             entry["BrepChecked"] = 1.0 if report["brep_checked"] else 0.0

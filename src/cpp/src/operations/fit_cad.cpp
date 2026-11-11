@@ -43,6 +43,7 @@
 #include "meshioplusplus/operations/segment.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/brep_deviation.hpp"
 #include "../detail/closed_facets.hpp"
 #include "../detail/fit_cad_native.hpp"
 #include "../detail/cut_graph.hpp"
@@ -104,6 +105,86 @@ double fcn_facet_area_fraction(const std::vector<double>& rXyz,
             facet += area;
     }
     return total > 0.0 ? facet / total : 0.0;
+}
+
+// The facets fanned into triangles, three point ids each, in facet order.
+std::vector<std::int64_t> fcn_fan(const detail::ClosedFacets& rFc) {
+    std::vector<std::int64_t> tri;
+    for (std::size_t f = 0; f < rFc.NumFacets(); ++f)
+        for (std::int64_t k = rFc.mStart[f] + 1; k + 1 < rFc.mStart[f + 1]; ++k)
+            tri.insert(tri.end(), {rFc.mNodes[static_cast<std::size_t>(rFc.mStart[f])],
+                                   rFc.mNodes[static_cast<std::size_t>(k)],
+                                   rFc.mNodes[static_cast<std::size_t>(k + 1)]});
+    return tri;
+}
+
+// The validation report (`FitCadOptions::mValidationReport`): @p rBrep, the
+// solid as trimmed NURBS faces in `fit_cad:face` order, measured against the
+// skin of @p rFc both ways; the STEP file at @p rStepPath, when one was
+// written and a kernel can read it, read back and checked. Only `rResult`'s
+// validation members and `fit_cad:face_deviation` change.
+void fcn_validate(const detail::ClosedFacets& rFc, const BrepInfo& rBrep,
+                  const std::string& rStepPath, FitCadResult& rResult) {
+    const detail::BrepDeviation dev = detail::brep_deviation(rBrep, rFc.mXyz, fcn_fan(rFc));
+    if (dev.mOk) {
+        rResult.mValidationReported = true;
+        rResult.mCadToMeshMax = dev.mCadToMeshMax;
+        rResult.mCadToMeshP95 = dev.mCadToMeshP95;
+        rResult.mCadToMeshP99 = dev.mCadToMeshP99;
+        rResult.mMeshToCadMax = dev.mMeshToCadMax;
+        rResult.mMeshToCadP95 = dev.mMeshToCadP95;
+        rResult.mMeshToCadP99 = dev.mMeshToCadP99;
+        rResult.mNormalDeviationMaxDeg = dev.mNormalMaxDeg;
+        rResult.mNormalDeviationP95Deg = dev.mNormalP95Deg;
+        constexpr std::size_t kCols = 5;
+        NDArray a = NDArray::Uninit(DType::Float64, {dev.mFaces.size(), kCols});
+        for (std::size_t i = 0; i < dev.mFaces.size(); ++i) {
+            const detail::BrepFaceDeviation& f = dev.mFaces[i];
+            const double row[kCols] = {f.mCadToMeshMax, f.mCadToMeshP95, f.mMeshToCadMax,
+                                       f.mNormalMaxDeg, static_cast<double>(f.mNumSamples)};
+            std::copy(row, row + kCols, a.As<double>() + i * kCols);
+        }
+        rResult.mMesh.AddFieldData(kFitCadFaceDeviationName, std::move(a));
+    } else {
+        log::warn("fit_cad: the solid could not be measured against the skin: {}", dev.mWhy);
+    }
+    // The control points of the faces no primitive is: per B-rep face, its
+    // type from the cells that carry it.
+    if (rResult.mMesh.HasCellData(kFitCadFaceName) && rResult.mMesh.HasCellData(kFitCadTypeName)) {
+        std::vector<std::int64_t> type_of(rBrep.mFaces.size(), -1);
+        for (std::size_t b = 0; b < rResult.mMesh.NumCellBlocks(); ++b) {
+            const NDArray& fa = rResult.mMesh.CellData(kFitCadFaceName, b);
+            const NDArray& ta = rResult.mMesh.CellData(kFitCadTypeName, b);
+            for (std::size_t c = 0; c < std::min(fa.Size(), ta.Size()); ++c) {
+                const std::int64_t f = detail::read_int(fa, c);
+                if (f >= 0 && static_cast<std::size_t>(f) < type_of.size() &&
+                    type_of[static_cast<std::size_t>(f)] < 0)
+                    type_of[static_cast<std::size_t>(f)] = detail::read_int(ta, c);
+            }
+        }
+        std::int64_t total = 0;
+        for (std::size_t f = 0; f < rBrep.mFaces.size(); ++f) {
+            const std::int64_t t = type_of[f];
+            const std::int64_t p = rBrep.mFaces[f].mPatch;
+            if (t == 0 || (t >= 1 && t <= 5) || p < 0 ||
+                static_cast<std::size_t>(p) >= rBrep.mPatches.size())
+                continue;
+            const NurbsPatch& patch = rBrep.mPatches[static_cast<std::size_t>(p)];
+            total += patch.mControlPoints.Shape().size() >= 1
+                         ? static_cast<std::int64_t>(patch.mControlPoints.Shape()[0])
+                         : 0;
+        }
+        rResult.mTotalFreeformControlPoints = total;
+    }
+    // The file read back.
+    const auto p_kernel = cad_kernel();
+    if (!rStepPath.empty() && p_kernel && p_kernel->mCheckStep) {
+        const CadStepCheck check = p_kernel->mCheckStep(rStepPath);
+        rResult.mStepRoundTripChecked = true;
+        rResult.mStepRoundTripValid = check.mRead && check.mValid && check.mClosed;
+        if (check.mRead && std::isfinite(check.mVolume) && rResult.mSkinVolume != 0.0)
+            rResult.mStepRoundTripVolumeRatio = check.mVolume / rResult.mSkinVolume;
+    }
 }
 
 // `fit_cad:face_table`: one row per record, the `FitCadFaceRecord` columns in
@@ -345,6 +426,10 @@ detail::FreeformAdaptiveOptions fcn_adaptive_options(const FitCadOptions& rOptio
     o.mParameterization = static_cast<detail::ParamLadder>(rOptions.mFreeformParameterization);
     o.mValidate = rOptions.mValidateBySurfaceSampling;
     o.mThb = rOptions.mLocalRefine == FitCadLocalRefine::Thb;
+    if (rOptions.mValidationAcceptance) {
+        o.mValidate = true;
+        o.mMaxNormalDeg = kFitCadValidationNormalDeg;
+    }
     return o;
 }
 
@@ -461,7 +546,9 @@ std::vector<FcnRegionNetwork> fcn_networks(const detail::ClosedFacets& rFc,
         no.mMaxTotalPoles = static_cast<std::size_t>(rOptions.mFreeformMaxControlPoints);
         no.mG1ToleranceDeg = rOptions.mFreeformG1ToleranceDeg;
         no.mExtraordinary = rOptions.mExtraordinaryVertex;
-        no.mValidate = rOptions.mValidateBySurfaceSampling;
+        no.mValidate = rOptions.mValidateBySurfaceSampling || rOptions.mValidationAcceptance;
+        if (rOptions.mValidationAcceptance)
+            no.mMaxNormalDeg = kFitCadValidationNormalDeg;
         reg.mNet = detail::patch_network_fit(reg.mPts, reg.mTris, reg.mLayout, no);
         // The tangent-plane treatment of the extraordinary vertices kept only
         // where it does better there than leaving them alone (`g0`) and fits
@@ -1224,15 +1311,20 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     opts.mFaces = StepFaces::Fitted;
     opts.mTolerance = rOptions.mTolerance;
     detail::StepBrepResult brep;
-    detail::write_step_report(rStepPath, *pSource, opts, &brep,
-                              freeform.mFaces.empty() ? nullptr : &freeform.mFaces,
-                              freeform.mEdgeCurves.empty() ? nullptr : &freeform.mEdgeCurves,
-                              rOptions.mFreeformMode != FitCadFreeformMode::Legacy);
+    detail::write_step_report(
+        rStepPath, *pSource, opts, &brep, freeform.mFaces.empty() ? nullptr : &freeform.mFaces,
+        freeform.mEdgeCurves.empty() ? nullptr : &freeform.mEdgeCurves,
+        rOptions.mFreeformMode != FitCadFreeformMode::Legacy || rOptions.mValidationReport);
 
     FitCadResult result;
     result.mBackend = FitCadBackend::Native;
     // Outside the legacy mode, the solid as NURBS too (v17.12.0), for
     // `write_cad_json`; empty, with a warning, where a face cannot be one.
+    // The NURBS form the validation report measures; the legacy mode built it
+    // for that alone and does not return it.
+    BrepInfo measured;
+    if (rOptions.mValidationReport && rOptions.mFreeformMode == FitCadFreeformMode::Legacy)
+        measured = std::move(brep.mBrep);
     if (rOptions.mFreeformMode != FitCadFreeformMode::Legacy) {
         result.mBrep = std::move(brep.mBrep);
         if (!brep.mBrepWhy.empty())
@@ -1376,6 +1468,13 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         log::info("fit_cad: {} fitted patch(es) written as coplanar facets",
                   result.mCounts.mNumDemoted);
     fcn_report_refined(refined, work, result);
+    if (rOptions.mValidationReport) {
+        if (!brep.mBrepWhy.empty())
+            log::warn("fit_cad: the native solid has no NURBS form to measure ({})", brep.mBrepWhy);
+        fcn_validate(fc,
+                     rOptions.mFreeformMode == FitCadFreeformMode::Legacy ? measured : result.mBrep,
+                     rStepPath, result);
+    }
     return result;
 }
 
@@ -1515,8 +1614,14 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
         return fit_cad_build(rMesh, rStepPath, general);
     }
     const auto p_kernel = cad_kernel();
-    if (rOptions.mBackend != FitCadBackend::Native && p_kernel && p_kernel->mFitCad)
-        return p_kernel->mFitCad(rMesh, rStepPath, rOptions);
+    if (rOptions.mBackend != FitCadBackend::Native && p_kernel && p_kernel->mFitCad) {
+        FitCadResult kernel = p_kernel->mFitCad(rMesh, rStepPath, rOptions);
+        if (rOptions.mValidationReport) {
+            const detail::ClosedFacets fc = detail::closed_facets(rMesh, kFcnPrefix);
+            fcn_validate(fc, kernel.mBrep, rStepPath, kernel);
+        }
+        return kernel;
+    }
     if (rOptions.mBackend == FitCadBackend::Occt)
         throw Unsupported(
             "fit_cad: no OpenCASCADE backend is available (the release binaries carry it and "

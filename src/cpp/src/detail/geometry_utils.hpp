@@ -34,6 +34,7 @@
 // System includes
 #include <array>
 #include <cstddef>
+#include <vector>
 
 // Project includes
 #include "math_utils.hpp"
@@ -106,6 +107,24 @@ struct GeometryUtils {
     static double SignedTwiceArea2D(double U0, double V0, double U1, double V1, double U2,
                                     double V2) {
         return (U1 - U0) * (V2 - V0) - (U2 - U0) * (V1 - V0);
+    }
+
+    /**
+     * @brief Whether `(u, v)` lies inside the closed polygon `(rPu[i], rPv[i])`
+     * by the even-odd rule (a crossing count along `+u`). Several loops of one
+     * region (an outer one and its holes) combine by XOR-ing their results.
+     * A point on an edge may come out either way.
+     */
+    static bool PointInPolygon2D(const std::vector<double>& rPu, const std::vector<double>& rPv,
+                                 double U, double V) {
+        bool in = false;
+        const std::size_t n = rPu.size();
+        for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+            if ((rPv[i] > V) != (rPv[j] > V) &&
+                U < (rPu[j] - rPu[i]) * (V - rPv[i]) / (rPv[j] - rPv[i]) + rPu[i])
+                in = !in;
+        }
+        return in;
     }
 
     ///@}
