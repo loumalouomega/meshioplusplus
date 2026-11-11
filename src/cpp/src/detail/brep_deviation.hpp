@@ -28,12 +28,13 @@
  *    the trims (`GeometryUtils::PointInPolygon2D`, each trimming curve
  *    evaluated as a polyline), and each kept node's unsigned distance to the
  *    skin is measured.
- *  - **Mesh to CAD.** Every skin vertex and facet centre is projected onto
- *    the triangles of the face grids (a cell joins when one of its corners is
- *    inside the trims), then onto the face the nearest triangle belongs to by
- *    Gauss-Newton from the triangle's interpolated parameters; the projected
- *    distance replaces the triangle distance only when its foot lies inside
- *    the trims and is nearer.
+ *  - **Mesh to CAD.** Every skin vertex and facet centre is measured to the
+ *    face its facet was built into (`pTriFace`, a vertex to each of its
+ *    facets' faces): Gauss-Newton from the face's nearest sample node, the
+ *    foot kept when it lies inside the trims, else the nearest point of the
+ *    face's trim curves on the surface. Without `pTriFace` the face is the
+ *    one of the nearest triangle of the faces' trimmed domains triangulated
+ *    in their parameters, the next ones tried when the foot falls outside.
  *  - **Normals.** At each facet centre's foot point, the unsigned angle (in
  *    `[0, 90]` degrees) between the facet's normal and the surface's: a
  *    face's orientation flag does not enter, so the measure is the same for
@@ -100,6 +101,7 @@ struct BrepDeviation {
  */
 BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& rXyz,
                              const std::vector<std::int64_t>& rTri,
-                             const BrepDeviationOptions& rOptions = {});
+                             const BrepDeviationOptions& rOptions = {},
+                             const std::vector<std::int64_t>* pTriFace = nullptr);
 
 }  // namespace meshioplusplus::detail

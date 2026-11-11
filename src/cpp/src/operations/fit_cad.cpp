@@ -34,12 +34,14 @@
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/refine_patches.hpp"
+#include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 
 // Project includes (private, not installed)
@@ -125,7 +127,47 @@ std::vector<std::int64_t> fcn_fan(const detail::ClosedFacets& rFc) {
 // validation members and `fit_cad:face_deviation` change.
 void fcn_validate(const detail::ClosedFacets& rFc, const BrepInfo& rBrep,
                   const std::string& rStepPath, FitCadResult& rResult) {
-    const detail::BrepDeviation dev = detail::brep_deviation(rBrep, rFc.mXyz, fcn_fan(rFc));
+    const std::vector<std::int64_t> tri = fcn_fan(rFc);
+    // Each skin triangle's face: that of the nearest triangle of the result
+    // mesh (the skin itself from the native backend, the solid re-meshed
+    // from OpenCASCADE), so a point is measured to the face it stands for.
+    std::vector<std::int64_t> tri_face;
+    if (rResult.mMesh.HasCellData(kFitCadFaceName) && !tri.empty()) {
+        const detail::TriangleSoup soup = detail::build_triangle_soup(rResult.mMesh, "");
+        if (soup.NumTriangles() > 0) {
+            SurfaceDistanceOptions dopt;
+            dopt.mSign = SdfSign::Unsigned;
+            dopt.mWatertightCheck = SdfWatertightCheck::Off;
+            const detail::DistanceQuery query = detail::build_distance_query(soup, dopt);
+            std::vector<detail::Vec3> centres;
+            for (std::size_t t = 0; t + 2 < tri.size(); t += 3) {
+                detail::Vec3 c{0.0, 0.0, 0.0};
+                for (std::size_t k = 0; k < 3; ++k)
+                    for (std::size_t d = 0; d < 3; ++d)
+                        c[d] += rFc.mXyz[static_cast<std::size_t>(tri[t + k]) * 3 + d] / 3.0;
+                centres.push_back(c);
+            }
+            const std::vector<detail::ClosestPointHit> hits =
+                detail::query_closest_points(query, centres);
+            const std::vector<std::int64_t> bases = detail::block_bases(rResult.mMesh);
+            std::vector<std::int64_t> cell_face(
+                static_cast<std::size_t>(detail::total_cells(bases)), -1);
+            for (std::size_t b = 0; b < rResult.mMesh.NumCellBlocks(); ++b) {
+                const NDArray& fa = rResult.mMesh.CellData(kFitCadFaceName, b);
+                for (std::size_t c = 0; c < fa.Size(); ++c)
+                    cell_face[static_cast<std::size_t>(bases[b]) + c] = detail::read_int(fa, c);
+            }
+            tri_face.reserve(hits.size());
+            for (const detail::ClosestPointHit& h : hits)
+                tri_face.push_back(h.mFound && h.mSourceCell >= 0 &&
+                                           static_cast<std::size_t>(h.mSourceCell) <
+                                               cell_face.size()
+                                       ? cell_face[static_cast<std::size_t>(h.mSourceCell)]
+                                       : -1);
+        }
+    }
+    const detail::BrepDeviation dev =
+        detail::brep_deviation(rBrep, rFc.mXyz, tri, {}, tri_face.empty() ? nullptr : &tri_face);
     if (dev.mOk) {
         rResult.mValidationReported = true;
         rResult.mCadToMeshMax = dev.mCadToMeshMax;

@@ -25,6 +25,7 @@
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "brep_deviation.hpp"
+#include "cdt2d.hpp"
 #include "geometry_utils.hpp"
 #include "hausdorff_samples.hpp"
 #include "iga_kernels.hpp"
@@ -169,24 +170,42 @@ void bd_eval(const BdFace& rF, double U, double V, Vec3& rS, Vec3& rSu, Vec3& rS
 }
 
 // The trims of a face as closed 3D polylines on its surface: every
-// parameter-space segment cut into `Sub` pieces, so a straight trim in (u, v)
-// follows the surface between its points.
-void bd_boundary(BdFace& rF, std::size_t Sub) {
+// parameter-space segment cut in two while its midpoint on the surface lies
+// further than `Eps` from its chord (up to `kBdBoundaryDepth` times), so a
+// trim that is straight in (u, v) follows the surface between its points.
+constexpr int kBdBoundaryDepth = 10;
+
+void bd_boundary_segment(const BdFace& rF, const std::array<double, 2>& rA, const Vec3& rPa,
+                         const std::array<double, 2>& rB, const Vec3& rPb, double Eps, int Depth,
+                         std::vector<Vec3>& rPts, std::vector<std::array<double, 2>>& rUv) {
+    const std::array<double, 2> m{0.5 * (rA[0] + rB[0]), 0.5 * (rA[1] + rB[1])};
+    Vec3 pm, su, sv;
+    bd_eval(rF, m[0], m[1], pm, su, sv);
+    const Vec3 chord{0.5 * (rPa[0] + rPb[0]), 0.5 * (rPa[1] + rPb[1]), 0.5 * (rPa[2] + rPb[2])};
+    if (Depth < kBdBoundaryDepth && MathUtils::Norm(vec3_sub(pm, chord)) > Eps) {
+        bd_boundary_segment(rF, rA, rPa, m, pm, Eps, Depth + 1, rPts, rUv);
+        bd_boundary_segment(rF, m, pm, rB, rPb, Eps, Depth + 1, rPts, rUv);
+        return;
+    }
+    // The segment's start; its end starts the next one.
+    rPts.push_back(rPa);
+    rUv.push_back(rA);
+}
+
+void bd_boundary(BdFace& rF, double Eps) {
     for (std::size_t l = 0; l < rF.mLu.size(); ++l) {
         std::vector<Vec3> pts;
         std::vector<std::array<double, 2>> uvs;
         const std::size_t n = rF.mLu[l].size();
+        std::vector<Vec3> at(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            Vec3 su, sv;
+            bd_eval(rF, rF.mLu[l][i], rF.mLv[l][i], at[i], su, sv);
+        }
         for (std::size_t i = 0; i < n; ++i) {
             const std::size_t j = (i + 1) % n;
-            for (std::size_t k = 0; k < Sub; ++k) {
-                const double t = static_cast<double>(k) / static_cast<double>(Sub);
-                const double u = rF.mLu[l][i] + t * (rF.mLu[l][j] - rF.mLu[l][i]);
-                const double v = rF.mLv[l][i] + t * (rF.mLv[l][j] - rF.mLv[l][i]);
-                Vec3 s, su, sv;
-                bd_eval(rF, u, v, s, su, sv);
-                pts.push_back(s);
-                uvs.push_back({u, v});
-            }
+            bd_boundary_segment(rF, {rF.mLu[l][i], rF.mLv[l][i]}, at[i],
+                                {rF.mLu[l][j], rF.mLv[l][j]}, at[j], Eps, 0, pts, uvs);
         }
         rF.mBoundary.push_back(std::move(pts));
         rF.mBoundaryUv.push_back(std::move(uvs));
@@ -219,6 +238,74 @@ double bd_boundary_distance(const BdFace& rF, const Vec3& rP, double& rU, double
         }
     }
     return best;
+}
+
+// The trimmed domain of a face triangulated in its parameters, appended to
+// the soup with each triangle's corner parameters and face; false (nothing
+// appended) for an untrimmed face or trims the triangulation refuses.
+bool bd_triangulate(const BdFace& rF, std::size_t Face, const std::vector<double>& rNu,
+                    const std::vector<double>& rNv, const std::vector<char>& rInside,
+                    TriangleSoup& rSoup, std::vector<std::array<double, 6>>& rUv,
+                    std::vector<std::size_t>& rFace) {
+    if (rF.mLu.empty())
+        return false;
+    double lo[2] = {rF.mLu[0][0], rF.mLv[0][0]}, hi[2] = {lo[0], lo[1]};
+    for (std::size_t l = 0; l < rF.mLu.size(); ++l)
+        for (std::size_t k = 0; k < rF.mLu[l].size(); ++k) {
+            if (!cdt2d_in_range(rF.mLu[l][k]) || !cdt2d_in_range(rF.mLv[l][k]))
+                return false;
+            lo[0] = std::min(lo[0], rF.mLu[l][k]);
+            hi[0] = std::max(hi[0], rF.mLu[l][k]);
+            lo[1] = std::min(lo[1], rF.mLv[l][k]);
+            hi[1] = std::max(hi[1], rF.mLv[l][k]);
+        }
+    if (!(hi[0] > lo[0]) || !(hi[1] > lo[1]))
+        return false;
+    Cdt2d cdt(lo[0], lo[1], hi[0], hi[1]);
+    for (std::size_t l = 0; l < rF.mLu.size(); ++l) {
+        std::vector<Cdt2d::Vec2> pts;
+        for (std::size_t k = 0; k < rF.mLu[l].size(); ++k)
+            pts.push_back({rF.mLu[l][k], rF.mLv[l][k]});
+        const std::vector<std::int64_t> ids = cdt.InsertBatch(pts);
+        for (std::size_t k = 0; k < ids.size(); ++k) {
+            const std::int64_t a = ids[k], b = ids[(k + 1) % ids.size()];
+            if (a != b && cdt.InsertSegment(a, b) != Cdt2dStatus::Ok)
+                return false;
+        }
+    }
+    if (cdt.Classify() != Cdt2dStatus::Ok)
+        return false;
+    for (std::size_t k = 0; k < rInside.size(); ++k)
+        if (rInside[k] && cdt2d_in_range(rNu[k]) && cdt2d_in_range(rNv[k]))
+            cdt.InsertSteiner({rNu[k], rNv[k]});
+    const std::vector<Cdt2d::Tri> tris = cdt.InsideTriangles();
+    if (tris.empty())
+        return false;
+    std::vector<Vec3> at(static_cast<std::size_t>(cdt.NumVertices()));
+    std::vector<char> done(at.size(), 0);
+    const auto point = [&](std::int64_t V) {
+        const std::size_t i = static_cast<std::size_t>(V);
+        if (!done[i]) {
+            Vec3 su, sv;
+            bd_eval(rF, cdt.Point(V)[0], cdt.Point(V)[1], at[i], su, sv);
+            done[i] = 1;
+        }
+        return at[i];
+    };
+    for (const Cdt2d::Tri& t : tris) {
+        const std::int64_t base = static_cast<std::int64_t>(rSoup.mPoints.size());
+        for (std::int64_t v : t) {
+            const Vec3 p = point(v);
+            rSoup.mPoints.push_back(p);
+            rSoup.mCorners.push_back(p);
+        }
+        rSoup.mVertices.push_back({base, base + 1, base + 2});
+        rSoup.mSourceCell.push_back(static_cast<std::int64_t>(rFace.size()));
+        rUv.push_back({cdt.Point(t[0])[0], cdt.Point(t[0])[1], cdt.Point(t[1])[0],
+                       cdt.Point(t[1])[1], cdt.Point(t[2])[0], cdt.Point(t[2])[1]});
+        rFace.push_back(Face);
+    }
+    return true;
 }
 
 // The unsigned angle, in degrees within [0, 90], between two directions; 0
@@ -273,7 +360,8 @@ double bd_project(const BdFace& rF, const Vec3& rP, std::size_t MaxIterations, d
 
 BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& rXyz,
                              const std::vector<std::int64_t>& rTri,
-                             const BrepDeviationOptions& rOptions) {
+                             const BrepDeviationOptions& rOptions,
+                             const std::vector<std::int64_t>* pTriFace) {
     BrepDeviation out;
     out.mFaces.assign(rBrep.mFaces.size(), BrepFaceDeviation{});
     if (rBrep.mFaces.empty()) {
@@ -313,10 +401,23 @@ BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& r
     std::vector<std::size_t> sample_face;
     std::vector<BdFace> faces;
     faces.reserve(rBrep.mFaces.size());
+    // The trim curves follow their surfaces to a millionth of the skin's size.
+    double boundary_eps = 0.0;
+    {
+        double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
+        for (const Vec3& p : skin.mPoints)
+            for (int d = 0; d < 3; ++d) {
+                lo[d] = std::min(lo[d], p[static_cast<std::size_t>(d)]);
+                hi[d] = std::max(hi[d], p[static_cast<std::size_t>(d)]);
+            }
+        boundary_eps =
+            1e-6 * std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                             (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    }
     for (std::size_t fi = 0; fi < rBrep.mFaces.size(); ++fi) {
         faces.push_back(bd_face(rBrep, rBrep.mFaces[fi], rOptions));
         if (faces.back().mOk)
-            bd_boundary(faces.back(), 4);
+            bd_boundary(faces.back(), boundary_eps);
         const BdFace& f = faces.back();
         if (!f.mOk)
             continue;
@@ -356,8 +457,13 @@ BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& r
                     faces.back().mNodeUv.push_back({nu[k], nv[k]});
                 }
             }
-        // A cell a trim runs through joins too, so the face's triangles reach
-        // its boundary where no node of the cell falls inside.
+        // The face's triangles for the mesh-to-CAD side: its trimmed domain
+        // triangulated in its parameters (the trims as constraints, the
+        // inside grid nodes as interior points), so they cover the face and
+        // nothing past its trims; failing that (trims that cross), the grid
+        // cells a node of which is inside or a trim runs through.
+        if (bd_triangulate(f, fi, nu, nv, inside, cad, cad_uv, cad_face))
+            continue;
         std::vector<char> crossed(N * N, 0);
         for (std::size_t l = 0; l < f.mBoundaryUv.size(); ++l)
             for (const auto& uv : f.mBoundaryUv[l]) {
@@ -493,7 +599,80 @@ BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& r
     std::vector<BdHit> best(queries.size());
     std::vector<std::vector<std::size_t>> tried(queries.size());
     std::vector<std::size_t> pending;
-    {
+    // A query measured to one face: its foot from the face's nearest sample
+    // node, kept inside the trims, else the nearest trim point.
+    const auto on_face = [&](const Vec3& rP, std::size_t Fi) {
+        BdHit r;
+        r.mFace = Fi;
+        const BdFace& f = faces[Fi];
+        if (!f.mOk)
+            return r;
+        if (!f.mNodes.empty()) {
+            // Gauss-Newton from the few nearest nodes: one start can stall in
+            // a valley of a curved face.
+            constexpr std::size_t kStarts = 6;
+            std::vector<std::pair<double, std::size_t>> by;
+            by.reserve(f.mNodes.size());
+            for (std::size_t k = 0; k < f.mNodes.size(); ++k)
+                by.emplace_back(MathUtils::Norm(vec3_sub(rP, f.mNodes[k])), k);
+            const std::size_t ns = std::min(kStarts, by.size());
+            std::partial_sort(by.begin(), by.begin() + static_cast<std::ptrdiff_t>(ns), by.end());
+            for (std::size_t i = 0; i < ns; ++i) {
+                double u = f.mNodeUv[by[i].second][0], v = f.mNodeUv[by[i].second][1];
+                Vec3 n_foot{0.0, 0.0, 0.0};
+                const double dn = bd_project(f, rP, rOptions.mMaxNewtonIterations, u, v, n_foot);
+                if (dn < r.mDist && bd_inside(f, u, v)) {
+                    r.mDist = dn;
+                    r.mNormal = n_foot;
+                    r.mInside = true;
+                }
+            }
+        }
+        if (!f.mBoundary.empty()) {
+            double bu = 0.0, bv = 0.0;
+            const double db = bd_boundary_distance(f, rP, bu, bv);
+            if (db < r.mDist) {
+                r.mDist = db;
+                Vec3 sp, su, sv;
+                bd_eval(f, bu, bv, sp, su, sv);
+                r.mNormal = vec3_cross(su, sv);
+            }
+        }
+        return r;
+    };
+    const bool hinted = pTriFace && pTriFace->size() == skin.NumTriangles();
+    if (hinted) {
+        // Each vertex's faces, from its facets.
+        std::vector<std::vector<std::size_t>> vface(nv);
+        for (std::size_t t = 0; t < skin.NumTriangles(); ++t) {
+            const std::int64_t fi = (*pTriFace)[t];
+            if (fi < 0 || static_cast<std::size_t>(fi) >= faces.size())
+                continue;
+            for (std::int64_t v : skin.mVertices[t]) {
+                auto& list = vface[static_cast<std::size_t>(v)];
+                if (std::find(list.begin(), list.end(), static_cast<std::size_t>(fi)) == list.end())
+                    list.push_back(static_cast<std::size_t>(fi));
+            }
+        }
+        for (std::size_t q = 0; q < queries.size(); ++q) {
+            std::vector<std::size_t> cand;
+            if (q < nv) {
+                cand = vface[q];
+            } else {
+                const std::int64_t fi = (*pTriFace)[q - nv];
+                if (fi >= 0 && static_cast<std::size_t>(fi) < faces.size())
+                    cand.push_back(static_cast<std::size_t>(fi));
+            }
+            for (std::size_t fi : cand) {
+                const BdHit h = on_face(queries[q], fi);
+                tried[q].push_back(fi);
+                if (h.mDist < best[q].mDist)
+                    best[q] = h;
+            }
+            if (!tried[q].empty() && !std::isfinite(best[q].mDist))
+                tried[q].clear();  // its face could not be measured
+        }
+    } else {
         const std::vector<SurfaceProjection> proj = query_surface_projections(cad_query, queries);
         for (std::size_t q = 0; q < queries.size(); ++q) {
             if ((q < nv && !used[q]) || !proj[q].mFound || proj[q].mTriangle < 0)
