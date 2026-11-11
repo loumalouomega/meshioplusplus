@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 // External includes
@@ -32,6 +33,7 @@
 // Project includes
 #include "../../src/cpp/benchmark/mesh_digest.hpp"
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/adapt_volume.hpp"
 #include "meshioplusplus/operations/merge.hpp"
@@ -241,12 +243,18 @@ Mesh icosa_star() {
     return mt::make_mesh(pts, "tetra", tets);
 }
 
-Mesh with_sizes(Mesh m, double H) {
+Mesh with_sizes(Mesh&& rM, double H) {
+    Mesh m = std::move(rM);
     NDArray h = NDArray::Uninit(mio::DType::Float64, {m.NumPoints()});
     for (std::size_t i = 0; i < m.NumPoints(); ++i)
         mio::detail::write_double(h, i, H);
     m.AddPointData("h", std::move(h));
     return m;
+}
+
+// A KRATOS mesh is not copy-constructible: an lvalue goes through the uniform clone.
+Mesh with_sizes(const Mesh& rM, double H) {
+    return with_sizes(mio::detail::clone_mesh(rM), H);
 }
 
 std::int64_t find_point(const Mesh& rM, double X, double Y, double Z) {
