@@ -1377,6 +1377,7 @@ meshioplusplus adapt-volume [options] INFILE OUTFILE
 | `--quality-min Q` | The quality floor of an edit (default: 10 degrees or 0.2) |
 | `--max-iterations N` | Collapse / split / swap / smooth cycles (default: 10) |
 | `--target-min-dihedral A` | Stop once the least dihedral angle reaches A |
+| `--boundary-sizing input\|geometry` | Keep the boundary's resolution (default) or size it by curvature, `hmax` where flat |
 | `--no-collapse`, `--no-split`, `--no-swap`, `--no-smooth` | Turn a pass off |
 | `--json` | Print the report as JSON |
 

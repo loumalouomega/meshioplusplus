@@ -121,7 +121,7 @@ The complete CI-tested example lives at [`doc/examples/fortran_example.f90`](htt
 
 ## Tetrahedral remeshing (`adapt_volume`)
 
-`out = m%adapt_volume(hmin=, hmax=, hgrad=, hausd=, hausd_relative=, preserve_boundary=, preserve_features=, quality_metric=, quality_min=, max_iterations=, collapse=, split=, swap=, smooth=, report=rep, stat=ierr)` remeshes a tetrahedral mesh to a graded size field ([adapt_volume](adapt_volume.md)); `rep` is a `type(mio_adapt_volume_report_t)`, the C report's interop mirror, with every count. `size_array`, `frozen` and the material arrays are on the C, C++ and Python APIs. `mio_octree_mesh_opts_t` gains `post_adapt` and `adapt` (a `c_loc` of a `mio_adapt_volume_opts_t`).
+`out = m%adapt_volume(hmin=, hmax=, hgrad=, hausd=, hausd_relative=, preserve_boundary=, preserve_features=, quality_metric=, quality_min=, max_iterations=, collapse=, split=, swap=, smooth=, report=rep, stat=ierr, boundary_sizing=)` remeshes a tetrahedral mesh to a graded size field ([adapt_volume](adapt_volume.md)); `rep` is a `type(mio_adapt_volume_report_t)`, the C report's interop mirror, with every count. `size_array`, `frozen` and the material arrays are on the C, C++ and Python APIs. `mio_octree_mesh_opts_t` gains `post_adapt` and `adapt` (a `c_loc` of a `mio_adapt_volume_opts_t`).
 
 ## Selective reads and file summaries
 

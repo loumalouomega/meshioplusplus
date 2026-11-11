@@ -161,7 +161,7 @@ These follow the R binding exactly, apart from the layout rules above:
 
 ## Tetrahedral remeshing
 
-`r = mio.adapt_volume(mesh, 'hmin', h, 'hmax', H, ...)` ports `mio_adapt_volume` option for option ([adapt_volume](adapt_volume.md)): `'hgrad'`, `'hausd'`, `'hausd_relative'`, `'size_array'`, `'preserve_boundary'`, `'preserve_features'`, `'quality_metric'`, `'quality_min'`, `'max_iterations'`, `'collapse'`, `'split'`, `'swap'` and `'smooth'`; `r` holds `mesh` and every counter of the report. As in R, `mio.octree_mesh` has no `post_adapt`; call `mio.adapt_volume` on its mesh.
+`r = mio.adapt_volume(mesh, 'hmin', h, 'hmax', H, ...)` ports `mio_adapt_volume` option for option ([adapt_volume](adapt_volume.md)): `'hgrad'`, `'hausd'`, `'hausd_relative'`, `'size_array'`, `'preserve_boundary'`, `'preserve_features'`, `'quality_metric'`, `'quality_min'`, `'max_iterations'`, `'collapse'`, `'split'`, `'swap'`, `'smooth'` and `'boundary_sizing'`; `r` holds `mesh` and every counter of the report. As in R, `mio.octree_mesh` has no `post_adapt`; call `mio.adapt_volume` on its mesh.
 
 ## Where the shapes differ from R
 
