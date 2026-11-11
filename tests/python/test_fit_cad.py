@@ -733,3 +733,68 @@ def test_opencascade_reads_the_solid_back(tmp_path):
     props = GProp_GProps()
     BRepGProp.VolumeProperties_s(shape, props)
     assert props.Mass() == pytest.approx(report["volume"], rel=1e-6)
+
+
+_VALIDATION_KEYS = {
+    "validation_reported",
+    "cad_to_mesh_max",
+    "cad_to_mesh_p95",
+    "cad_to_mesh_p99",
+    "mesh_to_cad_max",
+    "mesh_to_cad_p95",
+    "mesh_to_cad_p99",
+    "normal_deviation_max_deg",
+    "normal_deviation_p95_deg",
+    "step_round_trip_checked",
+    "step_round_trip_valid",
+    "step_round_trip_volume_ratio",
+    "total_freeform_control_points",
+}
+
+
+@pytest.mark.parametrize("backend", ["native", "occt"])
+def test_validation_report(tmp_path, backend):
+    # doc/fit_cad_freeform_plan.md, step 2: only with the option, the solid
+    # unchanged, the box's planes on its skin both ways, and the STEP file
+    # read back where OpenCASCADE is available.
+    if backend == "occt" and not HAS_OCCT:
+        pytest.skip("core built without OpenCASCADE")
+    skin = _fitted(box_skin(3))
+    plain_mesh, plain = mio.fit_cad(skin, backend=backend, return_report=True)
+    assert not _VALIDATION_KEYS & set(plain)
+    path = tmp_path / "box.step"
+    out, report = mio.fit_cad(
+        skin, path, backend=backend, return_report=True, validation_report=True
+    )
+    assert set(report) - set(plain) == _VALIDATION_KEYS
+    assert report["num_faces"] == plain["num_faces"]
+    assert report["validation_reported"] is True
+    assert report["cad_to_mesh_max"] < 1e-9
+    assert report["mesh_to_cad_max"] < 1e-9
+    assert report["normal_deviation_max_deg"] < 1e-6
+    assert report["total_freeform_control_points"] == 0
+    table = out.field_data["fit_cad:face_deviation"]
+    assert table.shape == (report["num_faces"], 5)
+    assert (table[:, 4] > 0).all()
+    assert "fit_cad:face_deviation" not in plain_mesh.field_data
+    assert report["step_round_trip_checked"] is HAS_OCCT
+    if HAS_OCCT:
+        assert report["step_round_trip_valid"] is True
+        assert report["step_round_trip_volume_ratio"] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_validation_acceptance_keeps_a_clean_freeform_face():
+    # A smooth bump is still one freeform face when its normals are checked.
+    skin = _fitted(_bumped_box())
+    _out, report = mio.fit_cad(
+        skin,
+        backend="native",
+        freeform_mode="adaptive",
+        validation_acceptance=True,
+        validation_report=True,
+        return_report=True,
+    )
+    assert report["num_bspline"] >= 1
+    assert report["facet_area_fraction"] == 0.0
+    assert report["normal_deviation_max_deg"] < 30.0
+    assert report["cad_to_mesh_max"] <= report["tolerance"]

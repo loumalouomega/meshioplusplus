@@ -46,6 +46,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
@@ -73,7 +74,7 @@ struct KpiFixture {
 
 std::vector<std::string> kpi_split(const std::string& rText) {
     std::vector<std::string> out;
-    std::stringstream ss(rText);
+    auto ss = meshioplusplus::detail::make_classic_stringstream(rText);
     std::string item;
     while (std::getline(ss, item, ','))
         if (!item.empty())
@@ -210,7 +211,7 @@ int main(int argc, char** argv) {
     if (!hook.empty())
         fixtures.push_back(kpi_hook(hook));
 
-    std::ofstream file;
+    auto file = meshioplusplus::detail::make_classic_ofstream();
     if (!csv.empty())
         file.open(csv);
     std::ostream& out = csv.empty() ? std::cout : file;
