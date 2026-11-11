@@ -3047,6 +3047,7 @@ def tool_octree_mesh(
     adapt_hausd=0.0,
     adapt_max_iterations=10,
     adapt_preserve_boundary=False,
+    adapt_boundary_sizing="input",
 ):
     """Mesh the inside of a skin on a balanced octree (castellated, tet or hex)."""
     return _run_op(octree_mesh, locals())
@@ -5707,6 +5708,7 @@ def tool_adapt_volume(
     split=True,
     swap=True,
     smooth=True,
+    boundary_sizing="input",
 ):
     """Remesh a tetrahedral mesh to a graded isotropic size field (collapse,
     split, swap, smooth) under a boundary Hausdorff bound, keeping corners,

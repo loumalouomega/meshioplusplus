@@ -115,6 +115,7 @@
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
+#include "meshioplusplus/operations/adapt_volume.hpp"
 #include "meshioplusplus/operations/partition.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/pipeline.hpp"
@@ -1308,6 +1309,25 @@ int main(int argc, char** argv) {
             o.mMinSize = octree_step;
             o.mMaxSize = 8.0 * octree_step;
             of(pD, mio::octree_mesh(surface, o).mMesh);
+        });
+        // adapt_volume on those tetrahedra (a loose gradation, so it coarsens).
+        const BenchLazyMesh octree_tets([&] {
+            mio::OctreeMeshOptions o;
+            o.mMinSize = octree_step;
+            o.mMaxSize = 8.0 * octree_step;
+            return mio::octree_mesh(surface, o).mMesh;
+        });
+        row("adapt_volume", [&](MeshDigest* pD) {
+            mio::AdaptVolumeOptions o;
+            o.mHgrad = 2.0;
+            auto r = mio::adapt_volume(octree_tets, o);
+            of(pD, r.mMesh);
+            if (pD) {
+                pD->U64(static_cast<std::uint64_t>(r.mNumCollapsed));
+                pD->U64(static_cast<std::uint64_t>(r.mNumSplit));
+                pD->U64(static_cast<std::uint64_t>(r.mNumSwapped));
+                pD->U64(static_cast<std::uint64_t>(r.mNumSmoothed));
+            }
         });
         row("octree_mesh_hex", [&](MeshDigest* pD) {
             mio::OctreeMeshOptions o;

@@ -1849,6 +1849,9 @@ meshioplusplus::AdaptVolumeOptions core_adapt_volume_options(const py::dict& rOp
     flag("split", o.mEnableSplit);
     flag("swap", o.mEnableSwap);
     flag("smooth", o.mEnableSmooth);
+    if (rOpts.contains("boundary_sizing"))
+        o.mBoundarySizing = meshioplusplus::adapt_volume_boundary_sizing_from_name(
+            rOpts["boundary_sizing"].cast<std::string>());
     return o;
 }
 

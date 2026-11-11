@@ -2747,6 +2747,7 @@ def _apply_step(mesh, step, steps, warnings):
             split=_flag(step, "Split", True),
             swap=_flag(step, "Swap", True),
             smooth=_flag(step, "Smooth", True),
+            boundary_sizing=_text(step, "BoundarySizing", "input"),
             return_report=True,
         )
         for key, name in (
@@ -2845,6 +2846,7 @@ def _apply_step(mesh, step, steps, warnings):
             adapt_hausd=_number(step, "AdaptHausd", 0.0),
             adapt_max_iterations=int(_number(step, "AdaptMaxIterations", 10.0)),
             adapt_preserve_boundary=_flag(step, "AdaptPreserveBoundary", False),
+            adapt_boundary_sizing=_text(step, "AdaptBoundarySizing", "input"),
             return_report=True,
         )
         entry["NumLeaves"] = float(rep["num_leaves"])

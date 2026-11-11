@@ -580,7 +580,8 @@ void AdvRemesher::BuildSizes() {
 
     // Curvature: the turn of the vertex normals along each boundary edge of a patch.
     std::vector<double> curvature(n, 0.0);
-    if (mrOptions.mCurvatureSizing) {
+    const bool geometry = mrOptions.mBoundarySizing == AdaptVolumeBoundarySizing::Geometry;
+    if (mrOptions.mCurvatureSizing || geometry) {
         std::vector<Vec3> vnormal(n, Vec3{0.0, 0.0, 0.0});
         for (const TriKey& k : keys) {
             const auto o = mStore.OrientedFace(k);
@@ -616,9 +617,11 @@ void AdvRemesher::BuildSizes() {
     // Seeds.
     double hmin_auto = std::numeric_limits<double>::infinity();
     std::vector<double> seed(n, 0.0);
+    const double hmax_seed = mrOptions.mHmax > 0.0 ? mrOptions.mHmax : mDiagonal / 8.0;
     for (std::size_t v = 0; v < n; ++v)
         if (boundary_count[v] > 0) {
-            double h = boundary_sum[v] / boundary_count[v];
+            // the input's resolution, or (geometry) hmax where nothing bounds it
+            double h = geometry ? hmax_seed : boundary_sum[v] / boundary_count[v];
             if (!user.empty() && v < user.size() && user[v] > 0.0)
                 h = std::min(h, user[v]);
             if (curvature[v] > 0.0)
@@ -2200,6 +2203,16 @@ AdaptVolumeQuality adapt_volume_quality_from_name(const std::string& rName) {
                                 "quality_metric must be 'min_dihedral', "
                                 "'mean_ratio' or 'amips', got '" +
                                 rName + "'");
+}
+
+AdaptVolumeBoundarySizing adapt_volume_boundary_sizing_from_name(const std::string& rName) {
+    if (rName == "input")
+        return AdaptVolumeBoundarySizing::Input;
+    if (rName == "geometry")
+        return AdaptVolumeBoundarySizing::Geometry;
+    throw std::invalid_argument(std::string(kAdvPrefix) +
+                                "boundary_sizing must be 'input' or 'geometry', got '" + rName +
+                                "'");
 }
 
 const char* adapt_volume_quality_name(AdaptVolumeQuality Quality) {

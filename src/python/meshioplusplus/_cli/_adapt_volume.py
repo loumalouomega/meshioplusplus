@@ -48,6 +48,12 @@ def add_args(parser):
     parser.add_argument("--quality-min", type=float, default=-1.0)
     parser.add_argument("--max-iterations", type=int, default=10)
     parser.add_argument("--target-min-dihedral", type=float, default=0.0)
+    parser.add_argument(
+        "--boundary-sizing",
+        choices=("input", "geometry"),
+        default="input",
+        help="input: keep the boundary's resolution; geometry: size it by curvature",
+    )
     for name in ("collapse", "split", "swap", "smooth"):
         parser.add_argument(f"--no-{name}", action="store_true")
 
@@ -76,6 +82,7 @@ def adapt_volume_cmd(args):
         split=not args.no_split,
         swap=not args.no_swap,
         smooth=not args.no_smooth,
+        boundary_sizing=args.boundary_sizing,
         return_report=True,
     )
     write(args.outfile, out, file_format=args.output_format)

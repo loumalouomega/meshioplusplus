@@ -6716,7 +6716,8 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
                                           {"adapt-hgrad", {}, true},
                                           {"adapt-hausd", {}, true},
                                           {"adapt-max-iterations", {}, true},
-                                          {"adapt-preserve-boundary", {}, false}},
+                                          {"adapt-preserve-boundary", {}, false},
+                                          {"adapt-boundary-sizing", {}, true}},
                                          report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("octree-mesh requires exactly INFILE and OUTFILE");
@@ -6776,6 +6777,8 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
     o.mAdapt.mMaxIterations =
         static_cast<int>(integer("adapt-max-iterations", o.mAdapt.mMaxIterations));
     o.mAdapt.mPreserveBoundary = has_flag(p, "adapt-preserve-boundary");
+    o.mAdapt.mBoundarySizing = mio::adapt_volume_boundary_sizing_from_name(
+        opt_value(p, "adapt-boundary-sizing", "input"));
 
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     mio::OctreeMeshResult r = mio::octree_mesh(mesh, o);
@@ -8277,6 +8280,7 @@ int cmd_adapt_volume(const std::vector<std::string>& rArgs) {
                                           {"no-split", {}, false},
                                           {"no-swap", {}, false},
                                           {"no-smooth", {}, false},
+                                          {"boundary-sizing", {}, true},
                                           {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("adapt-volume requires INFILE OUTFILE");
@@ -8308,6 +8312,8 @@ int cmd_adapt_volume(const std::vector<std::string>& rArgs) {
     o.mEnableSplit = !has_flag(p, "no-split");
     o.mEnableSwap = !has_flag(p, "no-swap");
     o.mEnableSmooth = !has_flag(p, "no-smooth");
+    o.mBoundarySizing =
+        mio::adapt_volume_boundary_sizing_from_name(opt_value(p, "boundary-sizing", "input"));
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     mio::AdaptVolumeResult r = mio::adapt_volume(mesh, o);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));

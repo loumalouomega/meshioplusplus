@@ -4756,6 +4756,7 @@ export interface MeshioPlusPlusModule {
       split?: boolean;
       swap?: boolean;
       smooth?: boolean;
+      boundarySizing?: 'input' | 'geometry';
     },
   ): {
     mesh: Mesh;

@@ -20,7 +20,8 @@ mio_adapt_volume(
   collapse = TRUE,
   split = TRUE,
   swap = TRUE,
-  smooth = TRUE
+  smooth = TRUE,
+  boundary_sizing = "input"
 )
 }
 \arguments{
@@ -47,6 +48,9 @@ mio_adapt_volume(
 \item{max_iterations}{collapse / split / swap / smooth cycles.}
 
 \item{collapse, split, swap, smooth}{run each pass.}
+
+\item{boundary_sizing}{\code{"input"} keeps the boundary's resolution, \code{"geometry"}
+sizes it by curvature (\code{hmax} where flat).}
 }
 \value{
 a named list with \code{mesh} and every counter of the report

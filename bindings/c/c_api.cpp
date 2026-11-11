@@ -2663,7 +2663,8 @@ static_assert(sizeof(mio_adapt_volume_opts) == 216,
               "mio_adapt_volume_opts grew outside its reserved tail");
 static_assert(offsetof(mio_adapt_volume_opts, size_array) == 72 &&
                   offsetof(mio_adapt_volume_opts, hausd_relative) == 112 &&
-                  offsetof(mio_adapt_volume_opts, reserved) == 152,
+                  offsetof(mio_adapt_volume_opts, boundary_sizing) == 152 &&
+                  offsetof(mio_adapt_volume_opts, reserved) == 160,
               "mio_adapt_volume_opts layout changed");
 static_assert(sizeof(mio_adapt_volume_report) == 320,
               "mio_adapt_volume_report grew outside its reserved tail");
@@ -2735,6 +2736,11 @@ meshioplusplus::AdaptVolumeOptions capi_adapt_volume_options(const mio_mesh* pMe
     options.mEnableSplit = o.split != 0;
     options.mEnableSwap = o.swap != 0;
     options.mEnableSmooth = o.smooth != 0;
+    if (o.boundary_sizing != MIO_ADAPT_VOLUME_SIZING_INPUT &&
+        o.boundary_sizing != MIO_ADAPT_VOLUME_SIZING_GEOMETRY)
+        throw std::invalid_argument("meshio++: adapt_volume: unknown boundary_sizing");
+    options.mBoundarySizing =
+        static_cast<meshioplusplus::AdaptVolumeBoundarySizing>(o.boundary_sizing);
     return options;
 }
 

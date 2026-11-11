@@ -25699,6 +25699,17 @@ enum class AdaptVolumeQuality : std::int32_t {
     Amips = 2,
 };
 
+/// Where `adapt_volume`'s boundary sizes come from.
+enum class AdaptVolumeBoundarySizing : std::int32_t {
+    /// The input boundary's own resolution: the mean length of each boundary
+    /// vertex's boundary edges (the default; the boundary does not coarsen).
+    Input = 0,
+    /// The geometry: `sqrt(8 hausd R)` for the local radius of curvature `R`,
+    /// `hmax` where the boundary is flat, as MMG sizes it; the Hausdorff and
+    /// normal guards keep the boundary's shape.
+    Geometry = 1,
+};
+
 /// Options for `adapt_volume`.
 struct AdaptVolumeOptions {
     /// The smallest target edge length; <= 0 takes the smallest boundary size.
@@ -25714,7 +25725,8 @@ struct AdaptVolumeOptions {
     bool mHausdRelative = false;
     /// A float `point_data` array of target sizes (one component); empty for none.
     std::string mSizeArray;
-    /// Bound the boundary size by `sqrt(8 hausd R)`, R the local radius of curvature.
+    /// Bound the boundary size by `sqrt(8 hausd R)`, R the local radius of
+    /// curvature (always on under `AdaptVolumeBoundarySizing::Geometry`).
     bool mCurvatureSizing = false;
     /// Boundary edges whose faces turn by more than this many degrees are ridges.
     double mFeatureAngle = 30.0;
@@ -25746,6 +25758,8 @@ struct AdaptVolumeOptions {
     bool mEnableSplit = true;
     bool mEnableSwap = true;
     bool mEnableSmooth = true;
+    /// Where the boundary sizes come from (in the padding after the switches).
+    AdaptVolumeBoundarySizing mBoundarySizing = AdaptVolumeBoundarySizing::Input;
 };
 
 /// The output of `adapt_volume`.
@@ -25807,6 +25821,13 @@ struct AdaptVolumeResult {
  * @throws std::invalid_argument naming the accepted values.
  */
 MESHIOPLUSPLUS_API AdaptVolumeQuality adapt_volume_quality_from_name(const std::string& rName);
+
+/**
+ * @brief Parse an `AdaptVolumeBoundarySizing` from `"input"` or `"geometry"`.
+ * @throws std::invalid_argument naming the accepted values.
+ */
+MESHIOPLUSPLUS_API AdaptVolumeBoundarySizing
+adapt_volume_boundary_sizing_from_name(const std::string& rName);
 
 /// The name `adapt_volume_quality_from_name` parses back.
 MESHIOPLUSPLUS_API const char* adapt_volume_quality_name(AdaptVolumeQuality Quality);
@@ -63002,7 +63023,7 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Hmin", "Hmax", "Hgrad", "Hausd", "HausdRelative", "SizeArray", "CurvatureSizing",
           "FeatureAngle", "CornerAngle", "MaxNormalDeviation", "PreserveBoundary",
           "PreserveFeatures", "QualityMetric", "QualityMin", "MaxIterations", "TargetMinDihedral",
-          "Collapse", "Split", "Swap", "Smooth"}},
+          "Collapse", "Split", "Swap", "Smooth", "BoundarySizing"}},
         {"Isosurface", {"Array", "Isovalue", "Isovalues", "Component", "RecordParentIds"}},
         {"Voxelize",
          {"Resolution", "CellSize", "Bounds", "Padding", "PaddingRelative", "Fill",
@@ -63022,7 +63043,7 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "AttachDistance", "AttachQuality", "Pillow", "HexGrading", "UntangleIterations",
           "MaxCells", "MaxTets", "VolumeFix", "ZeroVolumeFactor", "CapFlatness", "CrossingMargin",
           "CrossingGap", "PostAdapt", "AdaptHmin", "AdaptHmax", "AdaptHgrad", "AdaptHausd",
-          "AdaptMaxIterations", "AdaptPreserveBoundary"}},
+          "AdaptMaxIterations", "AdaptPreserveBoundary", "AdaptBoundarySizing"}},
         {"Octree",
          {"RootCells", "MinLevel", "MaxLevel", "Bounds", "Padding", "PaddingRelative", "Dimension",
           "SampleDistance", "Balance", "Fill", "AttachDistance", "EvenOdd", "MaxCells", "Sign",
@@ -228051,7 +228072,8 @@ void AdvRemesher::BuildSizes() {
 
     // Curvature: the turn of the vertex normals along each boundary edge of a patch.
     std::vector<double> curvature(n, 0.0);
-    if (mrOptions.mCurvatureSizing) {
+    const bool geometry = mrOptions.mBoundarySizing == AdaptVolumeBoundarySizing::Geometry;
+    if (mrOptions.mCurvatureSizing || geometry) {
         std::vector<Vec3> vnormal(n, Vec3{0.0, 0.0, 0.0});
         for (const TriKey& k : keys) {
             const auto o = mStore.OrientedFace(k);
@@ -228087,9 +228109,11 @@ void AdvRemesher::BuildSizes() {
     // Seeds.
     double hmin_auto = std::numeric_limits<double>::infinity();
     std::vector<double> seed(n, 0.0);
+    const double hmax_seed = mrOptions.mHmax > 0.0 ? mrOptions.mHmax : mDiagonal / 8.0;
     for (std::size_t v = 0; v < n; ++v)
         if (boundary_count[v] > 0) {
-            double h = boundary_sum[v] / boundary_count[v];
+            // the input's resolution, or (geometry) hmax where nothing bounds it
+            double h = geometry ? hmax_seed : boundary_sum[v] / boundary_count[v];
             if (!user.empty() && v < user.size() && user[v] > 0.0)
                 h = std::min(h, user[v]);
             if (curvature[v] > 0.0)
@@ -229671,6 +229695,16 @@ AdaptVolumeQuality adapt_volume_quality_from_name(const std::string& rName) {
                                 "quality_metric must be 'min_dihedral', "
                                 "'mean_ratio' or 'amips', got '" +
                                 rName + "'");
+}
+
+AdaptVolumeBoundarySizing adapt_volume_boundary_sizing_from_name(const std::string& rName) {
+    if (rName == "input")
+        return AdaptVolumeBoundarySizing::Input;
+    if (rName == "geometry")
+        return AdaptVolumeBoundarySizing::Geometry;
+    throw std::invalid_argument(std::string(kAdvPrefix) +
+                                "boundary_sizing must be 'input' or 'geometry', got '" + rName +
+                                "'");
 }
 
 const char* adapt_volume_quality_name(AdaptVolumeQuality Quality) {
@@ -272710,6 +272744,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mEnableSplit = pipe_flag(rStep, "Split", true);
         opts.mEnableSwap = pipe_flag(rStep, "Swap", true);
         opts.mEnableSmooth = pipe_flag(rStep, "Smooth", true);
+        opts.mBoundarySizing =
+            adapt_volume_boundary_sizing_from_name(pipe_text(rStep, "BoundarySizing", "input"));
         AdaptVolumeResult av = adapt_volume(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumTetsBefore", static_cast<double>(av.mNumTetsBefore)},
@@ -273016,6 +273052,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mAdapt.mHausd = pipe_number(rStep, "AdaptHausd", 0.0);
         opts.mAdapt.mMaxIterations = static_cast<int>(pipe_number(rStep, "AdaptMaxIterations", 10.0));
         opts.mAdapt.mPreserveBoundary = pipe_flag(rStep, "AdaptPreserveBoundary", false);
+        opts.mAdapt.mBoundarySizing = adapt_volume_boundary_sizing_from_name(
+            pipe_text(rStep, "AdaptBoundarySizing", "input"));
         OctreeMeshResult r = octree_mesh(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumLeaves", static_cast<double>(r.mNumLeaves)},

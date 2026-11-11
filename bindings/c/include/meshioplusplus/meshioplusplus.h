@@ -4182,6 +4182,12 @@ typedef enum mio_adapt_volume_quality {
     MIO_ADAPT_VOLUME_AMIPS = 2         /**< AMIPS smoothing, its reciprocal guarded */
 } mio_adapt_volume_quality;
 
+/** mio_adapt_volume_opts.boundary_sizing: where the boundary sizes come from. */
+typedef enum mio_adapt_volume_boundary_sizing {
+    MIO_ADAPT_VOLUME_SIZING_INPUT = 0,   /**< the input boundary's own resolution */
+    MIO_ADAPT_VOLUME_SIZING_GEOMETRY = 1 /**< curvature, hmax where flat */
+} mio_adapt_volume_boundary_sizing;
+
 /**
  * Options for mio_adapt_volume (and mio_octree_mesh_opts.adapt). Same ABI rules
  * as mio_feature_edges_opts; always initialize through
@@ -4212,7 +4218,11 @@ typedef struct mio_adapt_volume_opts {
     int32_t split;               /**< nonzero (default): run the split pass */
     int32_t swap;                /**< nonzero (default): run the swap pass */
     int32_t smooth;              /**< nonzero (default): run the smoothing pass */
-    int64_t reserved[8];         /**< must be zero; room for additive growth */
+    /** A mio_adapt_volume_boundary_sizing: 0 (default) keeps the input boundary's
+     *  resolution, 1 sizes the boundary by curvature (hmax where flat). */
+    int32_t boundary_sizing;
+    int32_t reserved32;          /**< must be zero */
+    int64_t reserved[7];         /**< must be zero; room for additive growth */
 } mio_adapt_volume_opts;
 
 /** Initialize adapt_volume options to the defaults (every pass on). */

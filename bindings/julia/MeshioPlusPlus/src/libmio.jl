@@ -724,7 +724,9 @@ struct _CAdaptVolumeOpts
     split::Int32
     swap::Int32
     smooth::Int32
-    reserved::NTuple{8,Int64}
+    boundary_sizing::Int32
+    reserved32::Int32
+    reserved::NTuple{7,Int64}
 end
 
 """Mirror of C `mio_adapt_volume_report` (320 bytes)."""

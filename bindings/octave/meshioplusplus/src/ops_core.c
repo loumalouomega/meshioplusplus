@@ -184,7 +184,7 @@ static mxArray *O_mio_optimize_volume(const mxArray **a) {
 
 /* adapt_volume(mesh, hmin, hmax, hgrad, hausd, hausd_relative, size_array,
  * preserve_boundary, preserve_features, quality_metric, quality_min,
- * max_iterations, collapse, split, swap, smooth) */
+ * max_iterations, collapse, split, swap, smooth, boundary_sizing) */
 static mxArray *O_mio_adapt_volume(const mxArray **a) {
     mio_adapt_volume_opts opts;
     mio_adapt_volume_report rep;
@@ -214,6 +214,14 @@ static mxArray *O_mio_adapt_volume(const mxArray **a) {
     opts.split = mio_o_bool(a[13], "split");
     opts.swap = mio_o_bool(a[14], "swap");
     opts.smooth = mio_o_bool(a[15], "smooth");
+    const char *sizing = mio_o_string(a[16], "boundary_sizing");
+    if (strcmp(sizing, "input") == 0)
+        opts.boundary_sizing = MIO_ADAPT_VOLUME_SIZING_INPUT;
+    else if (strcmp(sizing, "geometry") == 0)
+        opts.boundary_sizing = MIO_ADAPT_VOLUME_SIZING_GEOMETRY;
+    else
+        mio_o_error("adapt_volume",
+                    "meshio++: adapt_volume: boundary_sizing must be \"input\" or \"geometry\"");
     mio_mesh *out = mio_adapt_volume(mio_o_mesh(a[0]), &opts, &rep);
     if (out == NULL) mio_o_fail("adapt_volume");
     const char *names[] = {"mesh",
@@ -2083,7 +2091,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_clean, 6),
     MIO_O_ENTRY(mio_smooth, 10),
     MIO_O_ENTRY(mio_optimize_volume, 8),
-    MIO_O_ENTRY(mio_adapt_volume, 16),
+    MIO_O_ENTRY(mio_adapt_volume, 17),
     MIO_O_ENTRY(mio_crop_bbox, 5),
     MIO_O_ENTRY(mio_crop_predicate, 5),
     MIO_O_ENTRY(mio_crop_plane, 5),

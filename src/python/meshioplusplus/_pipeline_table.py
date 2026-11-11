@@ -752,6 +752,7 @@ OP_TABLE = {
         "Split",
         "Swap",
         "Smooth",
+        "BoundarySizing",
     ),
     "Isosurface": (
         "Array",
@@ -863,6 +864,7 @@ OP_TABLE = {
         "AdaptHausd",
         "AdaptMaxIterations",
         "AdaptPreserveBoundary",
+        "AdaptBoundarySizing",
     ),
     "Octree": (
         "RootCells",
@@ -1730,6 +1732,7 @@ KEY_DEFAULTS = {
         ("Split", "flag", True),
         ("Swap", "flag", True),
         ("Smooth", "flag", True),
+        ("BoundarySizing", "text", "input"),
     ),
     "Isosurface": (
         ("Array", "text", ""),
@@ -1815,6 +1818,7 @@ KEY_DEFAULTS = {
         ("AdaptHausd", "number", 0.0),
         ("AdaptMaxIterations", "number", 10.0),
         ("AdaptPreserveBoundary", "flag", False),
+        ("AdaptBoundarySizing", "text", "input"),
     ),
     "Octree": (
         ("MinLevel", "number", 0.0),

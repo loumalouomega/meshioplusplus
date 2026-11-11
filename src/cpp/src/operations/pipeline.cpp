@@ -3034,6 +3034,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mEnableSplit = pipe_flag(rStep, "Split", true);
         opts.mEnableSwap = pipe_flag(rStep, "Swap", true);
         opts.mEnableSmooth = pipe_flag(rStep, "Smooth", true);
+        opts.mBoundarySizing =
+            adapt_volume_boundary_sizing_from_name(pipe_text(rStep, "BoundarySizing", "input"));
         AdaptVolumeResult av = adapt_volume(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumTetsBefore", static_cast<double>(av.mNumTetsBefore)},
@@ -3340,6 +3342,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mAdapt.mHausd = pipe_number(rStep, "AdaptHausd", 0.0);
         opts.mAdapt.mMaxIterations = static_cast<int>(pipe_number(rStep, "AdaptMaxIterations", 10.0));
         opts.mAdapt.mPreserveBoundary = pipe_flag(rStep, "AdaptPreserveBoundary", false);
+        opts.mAdapt.mBoundarySizing = adapt_volume_boundary_sizing_from_name(
+            pipe_text(rStep, "AdaptBoundarySizing", "input"));
         OctreeMeshResult r = octree_mesh(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumLeaves", static_cast<double>(r.mNumLeaves)},

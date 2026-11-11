@@ -189,11 +189,12 @@ SEXP R_mio_optimize_volume(SEXP mesh, SEXP max_iterations, SEXP relocate, SEXP f
 
 /* adapt_volume(mesh, hmin, hmax, hgrad, hausd, hausd_relative, size_array,
  * preserve_boundary, preserve_features, quality_metric, quality_min,
- * max_iterations, collapse, split, swap, smooth) */
+ * max_iterations, collapse, split, swap, smooth, boundary_sizing) */
 SEXP R_mio_adapt_volume(SEXP mesh, SEXP hmin, SEXP hmax, SEXP hgrad, SEXP hausd,
                         SEXP hausd_relative, SEXP size_array, SEXP preserve_boundary,
                         SEXP preserve_features, SEXP quality_metric, SEXP quality_min,
-                        SEXP max_iterations, SEXP collapse, SEXP split, SEXP swap, SEXP smooth) {
+                        SEXP max_iterations, SEXP collapse, SEXP split, SEXP swap, SEXP smooth,
+                        SEXP boundary_sizing) {
     mio_adapt_volume_opts opts;
     mio_adapt_volume_report rep;
     const char *metric;
@@ -224,6 +225,15 @@ SEXP R_mio_adapt_volume(SEXP mesh, SEXP hmin, SEXP hmax, SEXP hgrad, SEXP hausd,
     opts.split = mio_r_bool(split, "split");
     opts.swap = mio_r_bool(swap, "swap");
     opts.smooth = mio_r_bool(smooth, "smooth");
+    {
+        const char *sizing = mio_r_string(boundary_sizing, "boundary_sizing");
+        if (strcmp(sizing, "input") == 0)
+            opts.boundary_sizing = MIO_ADAPT_VOLUME_SIZING_INPUT;
+        else if (strcmp(sizing, "geometry") == 0)
+            opts.boundary_sizing = MIO_ADAPT_VOLUME_SIZING_GEOMETRY;
+        else
+            Rf_error("meshio++: adapt_volume: boundary_sizing must be \"input\" or \"geometry\"");
+    }
     mio_mesh *out = mio_adapt_volume(mio_r_mesh(mesh), &opts, &rep);
     if (out == NULL) mio_r_fail("adapt_volume");
     SEXP mo = PROTECT(mio_r_wrap_mesh(out));

@@ -1546,6 +1546,7 @@ def _register_operations(server: FastMCP) -> None:
         adapt_hausd: float = 0.0,
         adapt_max_iterations: int = 10,
         adapt_preserve_boundary: bool = False,
+        adapt_boundary_sizing: str = "input",
     ) -> dict:
         """Mesh the inside of a skin (any closed or slightly dirty surface:
         STL/OBJ/PLY/...) on a 2:1-balanced octree. output='castellated' gives
@@ -4350,6 +4351,7 @@ def _register_operations(server: FastMCP) -> None:
         split: bool = True,
         swap: bool = True,
         smooth: bool = True,
+        boundary_sizing: str = "input",
     ) -> dict:
         """Remesh a valid but over-refined tetrahedral mesh (typically
         octree_mesh's tet output) into fewer, better-shaped tetrahedra: each
@@ -4363,7 +4365,9 @@ def _register_operations(server: FastMCP) -> None:
         surface vertices within their patch; material interfaces, regions and
         side tags are kept, other cell_data dropped. Every edit is guarded by
         exact orientation tests and the quality floor quality_min.
-        preserve_boundary freezes the boundary bit for bit. Reports the counts
+        preserve_boundary freezes the boundary bit for bit; boundary_sizing
+        "geometry" sizes the boundary by curvature (hmax where flat, as MMG
+        does) instead of keeping its resolution. Reports the counts
         before/after, the edits, the refusals by guard (num_rejected_by_*),
         the dihedral range, max_boundary_deviation (the symmetric Hausdorff
         distance to the input boundary), the volumes, region_volume_change and

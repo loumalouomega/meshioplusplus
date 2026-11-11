@@ -145,6 +145,7 @@ def octree_mesh(
     adapt_hausd: float = 0.0,
     adapt_max_iterations: int = 10,
     adapt_preserve_boundary: bool = False,
+    adapt_boundary_sizing: str = "input",
     adapt_options=None,
     return_report: bool = False,
 ):
@@ -235,7 +236,7 @@ def octree_mesh(
         by default, so the output is unchanged unless asked.
     :param adapt_hmin: ``adapt_volume``'s ``hmin`` (and ``adapt_hmax``,
         ``adapt_hgrad``, ``adapt_hausd``, ``adapt_max_iterations``,
-        ``adapt_preserve_boundary`` its others); ``adapt_options`` is a dict of
+        ``adapt_preserve_boundary``, ``adapt_boundary_sizing`` its others); ``adapt_options`` is a dict of
         any of ``adapt_volume``'s keywords, which wins over these.
     :param return_report: also return the report; with ``post_adapt`` its
         ``"adapt"`` entry is ``adapt_volume``'s report, and its timings gain an
@@ -347,6 +348,7 @@ def octree_mesh(
     adapt.setdefault("hausd", adapt_hausd)
     adapt.setdefault("max_iterations", adapt_max_iterations)
     adapt.setdefault("preserve_boundary", adapt_preserve_boundary)
+    adapt.setdefault("boundary_sizing", adapt_boundary_sizing)
     opts["post_adapt"] = bool(post_adapt)
     opts["adapt"] = adapt_volume_options(**adapt)
 

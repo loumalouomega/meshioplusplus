@@ -235,6 +235,9 @@ def add_args(parser):
     parser.add_argument("--adapt-hausd", type=float, default=0.0)
     parser.add_argument("--adapt-max-iterations", type=int, default=10)
     parser.add_argument("--adapt-preserve-boundary", action="store_true")
+    parser.add_argument(
+        "--adapt-boundary-sizing", choices=("input", "geometry"), default="input"
+    )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
     parser.add_argument(
         "--quiet", "-q", action="store_true", help="suppress the summary"
@@ -294,6 +297,7 @@ def octree_mesh_cmd(args):
         adapt_hausd=args.adapt_hausd,
         adapt_max_iterations=args.adapt_max_iterations,
         adapt_preserve_boundary=args.adapt_preserve_boundary,
+        adapt_boundary_sizing=args.adapt_boundary_sizing,
         return_report=True,
     )
     write(args.outfile, out, file_format=args.output_format)

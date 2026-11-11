@@ -832,4 +832,37 @@ TEST(AdaptVolume, OctreeMeshPostAdaptIsOptIn) {
         plain.mHausdorffToSkin, adapted.mHausdorffToSkin);
 }
 
+// --- geometric boundary sizing ------------------------------------------------------
+
+TEST(AdaptVolume, GeometricBoundarySizingCoarsensFlatFaces) {
+    const CheckInvariants check;
+    const Mesh in = tet_box(8);
+    AdaptVolumeOptions o;
+    o.mBoundarySizing = mio::AdaptVolumeBoundarySizing::Geometry;
+    o.mHmax = 0.5;
+    const AdaptVolumeResult r = adapt_volume(in, o);
+    print_report("box 8^3, boundary sized by geometry", r);
+    AdaptVolumeOptions input = o;
+    input.mBoundarySizing = mio::AdaptVolumeBoundarySizing::Input;
+    const AdaptVolumeResult ri = adapt_volume(in, input);
+    print_report("box 8^3, boundary sized by the input", ri);
+    EXPECT_LT(r.mNumTetsAfter, ri.mNumTetsAfter);
+    EXPECT_NEAR(r.mVolumeAfter, 1.0, 1e-12);
+    EXPECT_LE(r.mMaxBoundaryDeviation, r.mHausd);
+    for (const double x : {0.0, 1.0})
+        for (const double y : {0.0, 1.0})
+            for (const double z : {0.0, 1.0})
+                EXPECT_GE(find_point(r.mMesh, x, y, z), 0);
+    // on a curved boundary the curvature bound and the guards hold the shape
+    AdaptVolumeOptions g;
+    g.mBoundarySizing = mio::AdaptVolumeBoundarySizing::Geometry;
+    const AdaptVolumeResult rs = adapt_volume(octree_sphere(0.04), g);
+    print_report("octree sphere, boundary sized by geometry", rs);
+    EXPECT_LE(rs.mMaxBoundaryDeviation, rs.mHausd);
+    EXPECT_GE(rs.mMinDihedralAfter, std::min(rs.mMinDihedralBefore, 10.0) - 1e-9);
+    EXPECT_EQ(mio::adapt_volume_boundary_sizing_from_name("geometry"),
+              mio::AdaptVolumeBoundarySizing::Geometry);
+    EXPECT_THROW(mio::adapt_volume_boundary_sizing_from_name("x"), std::invalid_argument);
+}
+
 }  // namespace

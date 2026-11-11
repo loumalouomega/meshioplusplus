@@ -1381,6 +1381,8 @@ mio_optimize_volume <- function(mesh, max_iterations = 10L, relocate = TRUE, fli
 #' @param quality_min the quality floor of an edit; negative takes the default.
 #' @param max_iterations collapse / split / swap / smooth cycles.
 #' @param collapse,split,swap,smooth run each pass.
+#' @param boundary_sizing `"input"` keeps the boundary's resolution, `"geometry"`
+#'   sizes it by curvature (`hmax` where flat).
 #' @return a named list with `mesh` and every counter of the report
 #'   (`num_tets_before`, `num_tets_after`, ..., `max_boundary_deviation`,
 #'   `hmin`, `hmax`, `hausd`, `volume_before`, `volume_after`).
@@ -1390,14 +1392,14 @@ mio_adapt_volume <- function(mesh, hmin = 0, hmax = 0, hgrad = 1.3, hausd = 0,
                              preserve_boundary = FALSE, preserve_features = TRUE,
                              quality_metric = "min_dihedral", quality_min = -1,
                              max_iterations = 10L, collapse = TRUE, split = TRUE,
-                             swap = TRUE, smooth = TRUE) {
+                             swap = TRUE, smooth = TRUE, boundary_sizing = "input") {
   .Call(
     R_mio_adapt_volume, mesh, as.numeric(hmin), as.numeric(hmax), as.numeric(hgrad),
     as.numeric(hausd), isTRUE(hausd_relative),
     if (is.null(size_array)) "" else as.character(size_array),
     isTRUE(preserve_boundary), isTRUE(preserve_features), as.character(quality_metric),
     as.numeric(quality_min), as.integer(max_iterations), isTRUE(collapse), isTRUE(split),
-    isTRUE(swap), isTRUE(smooth)
+    isTRUE(swap), isTRUE(smooth), as.character(boundary_sizing)
   )
 }
 

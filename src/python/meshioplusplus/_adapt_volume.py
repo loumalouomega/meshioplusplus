@@ -101,6 +101,7 @@ def adapt_volume_options(
     split=True,
     swap=True,
     smooth=True,
+    boundary_sizing="input",
 ):
     """Validate and normalise :func:`adapt_volume`'s options into the keyword
     dictionary ``_core`` reads (shared with ``octree_mesh(post_adapt=True)``)."""
@@ -114,6 +115,8 @@ def adapt_volume_options(
         raise ValueError(
             f"{_PREFIX}quality_metric must be 'min_dihedral', 'mean_ratio' or 'amips'"
         )
+    if str(boundary_sizing) not in ("input", "geometry"):
+        raise ValueError(f"{_PREFIX}boundary_sizing must be 'input' or 'geometry'")
     if float(hmin) > 0.0 and float(hmax) > 0.0 and float(hmin) > float(hmax):
         raise ValueError(f"{_PREFIX}hmin must not exceed hmax")
     return {
@@ -141,6 +144,7 @@ def adapt_volume_options(
         "split": bool(split),
         "swap": bool(swap),
         "smooth": bool(smooth),
+        "boundary_sizing": str(boundary_sizing),
     }
 
 
@@ -169,6 +173,7 @@ def adapt_volume(
     split=True,
     swap=True,
     smooth=True,
+    boundary_sizing="input",
     return_report=False,
 ):
     """Remesh a tetrahedral mesh towards a graded isotropic size field.
@@ -207,6 +212,11 @@ def adapt_volume(
         takes the known material names.
     :param collapse: run the collapse pass (and ``split``, ``swap``,
         ``smooth`` theirs), for debugging and ablation.
+    :param boundary_sizing: where the boundary sizes come from: ``"input"``
+        (the default) keeps the input boundary's own resolution (the mean
+        length of each boundary vertex's edges), ``"geometry"`` sizes it by
+        curvature, ``sqrt(8 hausd R)``, and ``hmax`` where it is flat, as MMG
+        does, so a planar or gently curved boundary coarsens too.
     :param return_report: also return the report: counts before and after,
         the edits, the refusals by guard (``num_rejected_by_*``), the dihedral
         range, the mean quality, ``max_boundary_deviation`` (the symmetric
@@ -241,6 +251,7 @@ def adapt_volume(
         split=split,
         swap=swap,
         smooth=smooth,
+        boundary_sizing=boundary_sizing,
     )
     try:
         from . import _core

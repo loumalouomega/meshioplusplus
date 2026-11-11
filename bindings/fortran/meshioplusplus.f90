@@ -356,7 +356,9 @@ module meshioplusplus
         integer(c_int32_t) :: split = 1
         integer(c_int32_t) :: swap = 1
         integer(c_int32_t) :: smooth = 1
-        integer(c_int64_t) :: reserved(8) = 0
+        integer(c_int32_t) :: boundary_sizing = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(7) = 0
     end type
 
     !> What `m%adapt_volume` reports: an interop mirror of C
@@ -9027,7 +9029,7 @@ contains
     function mesh_adapt_volume(self, hmin, hmax, hgrad, hausd, hausd_relative, &
                                preserve_boundary, preserve_features, quality_metric, &
                                quality_min, max_iterations, collapse, split, swap, smooth, &
-                               report, stat, errmsg) result(out)
+                               report, stat, errmsg, boundary_sizing) result(out)
         class(mio_mesh), intent(in) :: self
         real(real64), intent(in), optional :: hmin, hmax, hgrad, hausd, quality_min
         logical, intent(in), optional :: hausd_relative, preserve_boundary, preserve_features
@@ -9035,6 +9037,7 @@ contains
         integer, intent(in), optional :: max_iterations
         logical, intent(in), optional :: collapse, split, swap, smooth
         type(mio_adapt_volume_report_t), intent(out), optional :: report
+        character(*), intent(in), optional :: boundary_sizing
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
         type(mio_mesh) :: out
@@ -9071,6 +9074,18 @@ contains
             case default
                 call handle_failure('adapt_volume', &
                                     "quality_metric must be 'min_dihedral', 'mean_ratio' or 'amips'", &
+                                    stat, errmsg)
+                return
+            end select
+        end if
+        if (present(boundary_sizing)) then
+            select case (trim(boundary_sizing))
+            case ('input')
+                opts%boundary_sizing = 0
+            case ('geometry')
+                opts%boundary_sizing = 1
+            case default
+                call handle_failure('adapt_volume', "boundary_sizing must be 'input' or 'geometry'", &
                                     stat, errmsg)
                 return
             end select

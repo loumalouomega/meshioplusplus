@@ -8576,6 +8576,9 @@ val adapt_volume_js(const val& rMeshObj, const val& rOptions) {
             flag("split", options.mEnableSplit);
             flag("swap", options.mEnableSwap);
             flag("smooth", options.mEnableSmooth);
+            if (rOptions.hasOwnProperty("boundarySizing"))
+                options.mBoundarySizing = meshioplusplus::adapt_volume_boundary_sizing_from_name(
+                    rOptions["boundarySizing"].as<std::string>());
         }
         meshioplusplus::AdaptVolumeResult r =
             meshioplusplus::adapt_volume(val_to_mesh(rMeshObj), options);

@@ -251,7 +251,8 @@ function _adapt_volume_opts!(opts::Ref{_CAdaptVolumeOpts}; hmin=nothing, hmax=no
                              preserve_boundary=nothing, preserve_features=nothing,
                              quality_metric=nothing, quality_min=nothing,
                              max_iterations=nothing, target_min_dihedral=nothing,
-                             collapse=nothing, split=nothing, swap=nothing, smooth=nothing)
+                             collapse=nothing, split=nothing, swap=nothing, smooth=nothing,
+                             boundary_sizing=nothing)
     ccall(_sym(:mio_adapt_volume_opts_init), Cvoid, (Ref{_CAdaptVolumeOpts},), opts)
     scalars = (; hmin, hmax, hgrad, hausd, feature_angle, corner_angle, max_normal_deviation,
                quality_min, target_min_dihedral, max_iterations)
@@ -268,6 +269,12 @@ function _adapt_volume_opts!(opts::Ref{_CAdaptVolumeOpts}; hmin=nothing, hmax=no
         code === nothing && throw(ArgumentError(
             "meshio++: adapt_volume: quality_metric must be \"min_dihedral\", \"mean_ratio\" or \"amips\""))
         _setopt!(opts, :quality_metric, code)
+    end
+    if boundary_sizing !== nothing
+        b = String(boundary_sizing)
+        b == "input" || b == "geometry" || throw(ArgumentError(
+            "meshio++: adapt_volume: boundary_sizing must be \"input\" or \"geometry\""))
+        _setopt!(opts, :boundary_sizing, b == "geometry" ? Int32(1) : Int32(0))
     end
     opts
 end

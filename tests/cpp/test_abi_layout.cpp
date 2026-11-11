@@ -541,6 +541,8 @@ static_assert(offsetof(meshioplusplus::AdaptVolumeOptions, mFrozen) == 136,
               "meshio++ ABI: AdaptVolumeOptions layout changed (Tier A, doc/abi.md)");
 static_assert(offsetof(meshioplusplus::AdaptVolumeOptions, mEnableCollapse) == 184,
               "meshio++ ABI: AdaptVolumeOptions layout changed (Tier A, doc/abi.md)");
+static_assert(offsetof(meshioplusplus::AdaptVolumeOptions, mBoundarySizing) == 188,
+              "meshio++ ABI: AdaptVolumeOptions layout changed (Tier A, doc/abi.md)");
 static_assert(sizeof(meshioplusplus::AdaptVolumeQuality) == 4,
               "meshio++ ABI: AdaptVolumeQuality underlying width changed (Tier A, doc/abi.md)");
 static_assert(

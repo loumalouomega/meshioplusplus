@@ -94,6 +94,17 @@ enum class AdaptVolumeQuality : std::int32_t {
     Amips = 2,
 };
 
+/// Where `adapt_volume`'s boundary sizes come from.
+enum class AdaptVolumeBoundarySizing : std::int32_t {
+    /// The input boundary's own resolution: the mean length of each boundary
+    /// vertex's boundary edges (the default; the boundary does not coarsen).
+    Input = 0,
+    /// The geometry: `sqrt(8 hausd R)` for the local radius of curvature `R`,
+    /// `hmax` where the boundary is flat, as MMG sizes it; the Hausdorff and
+    /// normal guards keep the boundary's shape.
+    Geometry = 1,
+};
+
 /// Options for `adapt_volume`.
 struct AdaptVolumeOptions {
     /// The smallest target edge length; <= 0 takes the smallest boundary size.
@@ -109,7 +120,8 @@ struct AdaptVolumeOptions {
     bool mHausdRelative = false;
     /// A float `point_data` array of target sizes (one component); empty for none.
     std::string mSizeArray;
-    /// Bound the boundary size by `sqrt(8 hausd R)`, R the local radius of curvature.
+    /// Bound the boundary size by `sqrt(8 hausd R)`, R the local radius of
+    /// curvature (always on under `AdaptVolumeBoundarySizing::Geometry`).
     bool mCurvatureSizing = false;
     /// Boundary edges whose faces turn by more than this many degrees are ridges.
     double mFeatureAngle = 30.0;
@@ -141,6 +153,8 @@ struct AdaptVolumeOptions {
     bool mEnableSplit = true;
     bool mEnableSwap = true;
     bool mEnableSmooth = true;
+    /// Where the boundary sizes come from (in the padding after the switches).
+    AdaptVolumeBoundarySizing mBoundarySizing = AdaptVolumeBoundarySizing::Input;
 };
 
 /// The output of `adapt_volume`.
@@ -202,6 +216,13 @@ struct AdaptVolumeResult {
  * @throws std::invalid_argument naming the accepted values.
  */
 MESHIOPLUSPLUS_API AdaptVolumeQuality adapt_volume_quality_from_name(const std::string& rName);
+
+/**
+ * @brief Parse an `AdaptVolumeBoundarySizing` from `"input"` or `"geometry"`.
+ * @throws std::invalid_argument naming the accepted values.
+ */
+MESHIOPLUSPLUS_API AdaptVolumeBoundarySizing
+adapt_volume_boundary_sizing_from_name(const std::string& rName);
 
 /// The name `adapt_volume_quality_from_name` parses back.
 MESHIOPLUSPLUS_API const char* adapt_volume_quality_name(AdaptVolumeQuality Quality);

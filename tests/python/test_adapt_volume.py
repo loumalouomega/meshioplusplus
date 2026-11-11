@@ -189,3 +189,16 @@ def test_pipeline_step_matches_the_direct_call_in_both_engines(tmp_path):
         settings["Output"]["Path"] = str(tmp_path / "out_cpp.vtu")
         _core.run_pipeline_json(json.dumps(settings))
         assert mp.meshes_equal(out_py, mp.read(settings["Output"]["Path"]))
+
+
+def test_geometry_boundary_sizing_coarsens_a_flat_boundary():
+    box = _tet_box(8)
+    a = mp.adapt_volume(box, hmax=0.5, return_report=True)[1]
+    g = mp.adapt_volume(box, hmax=0.5, boundary_sizing="geometry", return_report=True)[
+        1
+    ]
+    assert g["num_tets_after"] < a["num_tets_after"]
+    assert g["max_boundary_deviation"] <= g["hausd"]
+    assert g["volume_after"] == pytest.approx(1.0, abs=1e-12)
+    with pytest.raises(ValueError, match="boundary_sizing"):
+        mp.adapt_volume(box, boundary_sizing="curvature")
