@@ -16,6 +16,9 @@
 #include <sanitizer/common_interface_defs.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
 
 extern "C" std::size_t LLVMFuzzerMutate(std::uint8_t*, std::size_t, std::size_t);
 
@@ -119,6 +122,30 @@ bool hdfmut_change(hid_t File, std::mt19937& rRandom) {
     return changed;
 }
 
+// Give the forked child the default action for every fatal signal. A sanitizer
+// runtime intercepts signal()/sigaction() and libFuzzer installs handlers of its
+// own that write a crash-* artifact for the *parent's* current unit, which the
+// campaign script reports as a finding; HDF5 crashing on a file this mutator has
+// just edited is not a finding in the reader under test. On Linux the raw
+// syscall bypasses the interceptors; elsewhere signal() is the best available.
+void hdfmut_default_signals() {
+    static constexpr int kSignals[] = {SIGSEGV, SIGBUS, SIGFPE,  SIGILL,  SIGABRT, SIGALRM,
+                                       SIGTERM, SIGINT, SIGXCPU, SIGXFSZ, SIGPIPE};
+    for (const int signal_number : kSignals) {
+#if defined(__linux__) && defined(SYS_rt_sigaction)
+        struct {
+            void* mHandler;
+            unsigned long mFlags;
+            void* mRestorer;
+            unsigned long mMask;
+        } action = {nullptr, 0, nullptr, 0};  // SIG_DFL, empty mask
+        ::syscall(SYS_rt_sigaction, signal_number, &action, nullptr, sizeof(unsigned long));
+#else
+        std::signal(signal_number, SIG_DFL);
+#endif
+    }
+}
+
 }  // namespace
 
 extern "C" std::size_t LLVMFuzzerCustomMutator(std::uint8_t* pData, std::size_t Size,
@@ -156,8 +183,12 @@ extern "C" std::size_t LLVMFuzzerCustomMutator(std::uint8_t* pData, std::size_t 
         // input, which is empty while mutating. A mutator failure should only
         // trigger the byte-mutation fallback; reader failures still report.
         __sanitizer_set_death_callback(nullptr);
-        std::signal(SIGABRT, SIG_DFL);
-        std::signal(SIGALRM, SIG_DFL);
+        // Its sanitizer reports are about HDF5's parser, not the reader: keep them
+        // out of fuzz.log, and let the default SIGALRM end a hung walk (itimers do
+        // not survive fork, so libFuzzer's timeout cannot do it for the child).
+        __sanitizer_set_report_path("/dev/null");
+        hdfmut_default_signals();
+        ::alarm(5);
         H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
         hid_t file = H5Fopen(path.c_str(), H5F_ACC_RDWR, H5P_DEFAULT);
         bool changed = false;
