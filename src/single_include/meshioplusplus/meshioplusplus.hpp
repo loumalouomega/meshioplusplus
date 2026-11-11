@@ -12663,7 +12663,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 20
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 0
+#define MESHIOPLUSPLUS_VERSION_MINOR 1
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -12673,7 +12673,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "20.0.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "20.1.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -120231,7 +120231,8 @@ void TetRemeshStore::Build(std::vector<double> Xyz, std::vector<TetCorners> Tets
                            std::vector<std::int32_t> Class,
                            const std::unordered_map<TriKey, std::int32_t, TriKeyHash>& rFaceTags) {
     const std::size_t n = Xyz.size() / 3;
-    if (n >= (std::size_t{1} << 32))
+    // 64-bit arithmetic: on a 32-bit size_t (WebAssembly) `size_t{1} << 32` is undefined.
+    if (static_cast<std::uint64_t>(n) >= (std::uint64_t{1} << 32))
         throw std::invalid_argument("adapt_volume: at most 2^32 points are supported");
     mXyz = std::move(Xyz);
     mTets = std::move(Tets);
