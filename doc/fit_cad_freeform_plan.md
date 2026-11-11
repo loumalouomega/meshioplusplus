@@ -94,4 +94,9 @@ Regularity constraints (tangency, offset axes, angles snapped to 0, 45 or 90 deg
 
 ## Measurements
 
-The KPI table of each stage is in [benchmarks](./benchmarks.md#fit-cad-freeform-kpis) once step 1 lands; each stage's deltas against the previous one are recorded here.
+The KPI tables are in [benchmarks](./benchmarks.md#fit-cad-freeform-kpis), their rows in `benchmark/fit_cad_kpi.csv`. Each stage's deltas against the baseline:
+
+| Stage | Change |
+| --- | --- |
+| Steps 1 and 2 | No geometry changes: the golden digests and the instruction counts of `fit_cad_adaptive` (+0.1%) and `fit_cad_network` (-0.01%) hold. The report finds a STEP file of the double torus that reads back invalid, two native cages whose solids read back with the wrong volume, an adaptive face that folds within its tolerance and helical flanks whose NURBS trims fall short. |
+| Steps 3 and 4 (options off by default) | Continuation: the hood (OpenCASCADE adaptive) 0.112 to 0, 324 to 46 control points; the cages 0.94, 0.88, 0.81 to 0.72, 0.55, 0.23; control points a third to two thirds fewer on most freeform faces; the native organic and double tori 0 and 0.13 to 0.44 and 0.42 as facets. SDM: under 0.03 either way but on the genus fixtures. |
