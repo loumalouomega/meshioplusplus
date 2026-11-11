@@ -1775,8 +1775,10 @@ step('optimizeVolume: ODT-remeshes a tetrahedral mesh', () => {
 
 step('adaptVolume: coarsens a tetrahedral mesh to a size field', () => {
     const box = m.box([5, 5, 5], null, null, 'tetra');
-    const out = m.adaptVolume(box, {hmin: 0.3, hmax: 0.4});
-    assert.ok(out.numTetsAfter < out.numTetsBefore);
+    // geometry sizing coarsens the flat faces too, by far more than the handful of
+    // collapses the input-resolution default makes on this mesh
+    const out = m.adaptVolume(box, {hmin: 0.3, hmax: 0.4, boundarySizing: 'geometry'});
+    assert.ok(out.numTetsAfter < out.numTetsBefore / 2);
     assert.ok(out.maxBoundaryDeviation <= out.hausd);
     assert.ok(Array.isArray(out.warnings));
     assert.throws(() => m.adaptVolume(box, {qualityMetric: 'best'}), /quality_metric/);

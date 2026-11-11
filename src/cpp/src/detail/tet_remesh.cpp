@@ -133,7 +133,8 @@ void TetRemeshStore::Build(std::vector<double> Xyz, std::vector<TetCorners> Tets
                            std::vector<std::int32_t> Class,
                            const std::unordered_map<TriKey, std::int32_t, TriKeyHash>& rFaceTags) {
     const std::size_t n = Xyz.size() / 3;
-    if (n >= (std::size_t{1} << 32))
+    // 64-bit arithmetic: on a 32-bit size_t (WebAssembly) `size_t{1} << 32` is undefined.
+    if (static_cast<std::uint64_t>(n) >= (std::uint64_t{1} << 32))
         throw std::invalid_argument("adapt_volume: at most 2^32 points are supported");
     mXyz = std::move(Xyz);
     mTets = std::move(Tets);
