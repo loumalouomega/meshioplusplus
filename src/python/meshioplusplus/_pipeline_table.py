@@ -236,6 +236,8 @@ OP_TABLE = {
         "ConstrainPrimitives",
         "ValidationReport",
         "ValidationAcceptance",
+        "FreeformFitSchedule",
+        "FreeformObjective",
     ),
     "RefinePatches": (
         "Tolerance",
@@ -1385,6 +1387,8 @@ KEY_DEFAULTS = {
         ("ConstrainPrimitives", "flag", False),
         ("ValidationReport", "flag", False),
         ("ValidationAcceptance", "flag", False),
+        ("FreeformFitSchedule", "text", "legacy"),
+        ("FreeformObjective", "text", "default"),
     ),
     "RefinePatches": (
         ("Tolerance", "number", 0.001),

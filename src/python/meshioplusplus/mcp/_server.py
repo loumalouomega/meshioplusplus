@@ -5001,6 +5001,8 @@ def _register_gated(server: FastMCP) -> None:
         constrain_primitives: bool = False,
         validation_report: bool = False,
         validation_acceptance: bool = False,
+        freeform_fit_schedule: str = "legacy",
+        freeform_objective: str = "default",
     ) -> dict:
         """Turn a closed triangle skin into a CAD solid with analytic faces,
         written to output_path as AP214 STEP -- the last step of skin to CAD
@@ -5099,7 +5101,10 @@ def _register_gated(server: FastMCP) -> None:
         deviation (normal_deviation_max_deg, normal_deviation_p95_deg) and
         the STEP file read back (step_round_trip_checked, _valid,
         _volume_ratio), with total_freeform_control_points;
-        validation_acceptance (off) holds every freeform face to them."""
+        validation_acceptance (off) holds every freeform face to them.
+        freeform_fit_schedule ("legacy" or "continuation") and
+        freeform_objective ("default", "pdm", "tdm" or "sdm") choose how the
+        adaptive and general freeform faces' B-spline fit runs."""
 
     @server.tool()
     @_forward(_tools.tool_data_export)

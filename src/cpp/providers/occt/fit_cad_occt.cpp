@@ -2064,6 +2064,8 @@ FcHandle<Geom_Surface> fc_freeform_general(const std::vector<gp_Pnt>& rPts,
     o.mSmoothing = rOptions.mFreeformSmoothing;
     o.mMaxPoles = static_cast<std::size_t>(rOptions.mMaxFreeformPoles);
     o.mMaxIterations = static_cast<int>(rOptions.mMaxFreeformIterations);
+    o.mSchedule = static_cast<int>(rOptions.mFreeformFitSchedule);
+    o.mObjective = static_cast<int>(rOptions.mFreeformObjective);
     const detail::BsplineFitResult fit = detail::bspline_fit_patch(pts, tris, par.mU, par.mV, o);
     log::debug(
         "fit_cad: general freeform fit of a {}-triangle patch: {} after {} iteration(s), "

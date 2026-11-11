@@ -4527,7 +4527,8 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
             layout_max_valence_deviation=2, resegment_rounds=2,
             layout_snap_to_features=true, validate_by_surface_sampling=true,
             constrain_primitives=false, validation_report=false,
-            validation_acceptance=false)
+            validation_acceptance=false, freeform_fit_schedule="legacy",
+            freeform_objective="default")
         -> (; mesh, backend, valid, closed, tolerance, volume, skin_volume, volume_ratio,
              max_deviation, num_faces, num_plane, num_sphere, num_cylinder,
              num_cone, num_torus, num_faceted_faces, num_patches, num_demoted,
@@ -4612,7 +4613,10 @@ the solid against the skin both ways (`cad_to_mesh_*`, `mesh_to_cad_*`, as
 maxima, 95th and 99th percentiles), the normal deviation
 (`normal_deviation_max_deg`, `normal_deviation_p95_deg`) and the STEP file
 read back (`step_round_trip_*`, OpenCASCADE only); `validation_acceptance`
-holds every freeform face to those measures. See `doc/fit_cad.md`.
+holds every freeform face to those measures. `freeform_fit_schedule`
+(`"legacy"` or `"continuation"`) and `freeform_objective` (`"default"`,
+`"pdm"`, `"tdm"` or `"sdm"`) choose how the adaptive and general freeform
+faces' B-spline fit runs. See `doc/fit_cad.md`.
 """
 function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  exact_edges::Bool=true,
@@ -4640,7 +4644,9 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  layout_snap_to_features::Bool=true,
                  validate_by_surface_sampling::Bool=true,
                  constrain_primitives::Bool=false, validation_report::Bool=false,
-                 validation_acceptance::Bool=false)
+                 validation_acceptance::Bool=false,
+                 freeform_fit_schedule::AbstractString="legacy",
+                 freeform_objective::AbstractString="default")
     pick(name, value, words) = begin
         k = findfirst(==(String(value)), words)
         k === nothing && throw(ArgumentError("meshio++: fit_cad: $(name) must be one of " *
@@ -4652,6 +4658,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                    ("auto", "projection", "lscm", "harmonic"))
     ev_c = pick("extraordinary_vertex", extraordinary_vertex, ("g0", "g1", "g1x", "g1xx"))
     refine_c = pick("local_refine", local_refine, ("knots", "thb"))
+    schedule_c = pick("freeform_fit_schedule", freeform_fit_schedule, ("legacy", "continuation"))
+    objective_c = pick("freeform_objective", freeform_objective, ("default", "pdm", "tdm", "sdm"))
     backend_c = backend == "auto" ? Int32(0) : backend == "occt" ? Int32(1) :
                 backend == "native" ? Int32(2) :
                 throw(ArgumentError("meshio++: fit_cad: backend must be \"auto\", \"occt\" or \"native\""))
@@ -4691,7 +4699,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                                Int32(layout_snap_to_features),
                                Int32(validate_by_surface_sampling),
                                Int32(constrain_primitives), Int32(validation_report),
-                               Int32(validation_acceptance), Int32(0), ntuple(_ -> Int64(0), 6))
+                               Int32(validation_acceptance), schedule_c, objective_c, Int32(0),
+                               ntuple(_ -> Int64(0), 5))
     ptr = ccall(_sym(:mio_fit_cad4), Ptr{Cvoid},
                 (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ref{_CFitCadOptsEx},
                  Ref{_CFitCadOptsEx2}, Ptr{_CFitCadReport}, Ptr{_CFitCadReportEx},

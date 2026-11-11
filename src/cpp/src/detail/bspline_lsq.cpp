@@ -386,5 +386,59 @@ double bspline_project(const BsplineSurface& rS, const double* pP, double& rU, d
     return best;
 }
 
+bool bspline_principal_curvatures(const BsplineEval& rE, BsplineCurvature& rOut) {
+    const double* su = rE.mSu;
+    const double* sv = rE.mSv;
+    double n[3] = {su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
+                   su[0] * sv[1] - su[1] * sv[0]};
+    const double ln = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    if (!(ln > 0.0))
+        return false;
+    for (double& x : n)
+        x /= ln;
+    const auto dot = [](const double* pA, const double* pB) {
+        return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
+    };
+    const double E = dot(su, su), F = dot(su, sv), G = dot(sv, sv);
+    const double L = dot(rE.mSuu, n), M = dot(rE.mSuv, n), N = dot(rE.mSvv, n);
+    const double det = E * G - F * F;
+    if (!(det > 0.0))
+        return false;
+    // det(II - k I) = 0: k = H -+ sqrt(H^2 - K).
+    const double H = 0.5 * (E * N - 2.0 * F * M + G * L) / det;
+    const double K = (L * N - M * M) / det;
+    const double disc = std::sqrt(std::max(0.0, H * H - K));
+    rOut.mK1 = H - disc;
+    rOut.mK2 = H + disc;
+    for (int c = 0; c < 3; ++c)
+        rOut.mN[c] = n[c];
+    // A direction (a, b) in the null space of II - k I, as a unit tangent.
+    const auto direction = [&](double k, double* pT) {
+        double a1 = M - k * F, b1 = -(L - k * E);  // from the first row
+        double a2 = N - k * G, b2 = -(M - k * F);  // from the second
+        const double l1 = a1 * a1 * E + 2.0 * a1 * b1 * F + b1 * b1 * G;
+        const double l2 = a2 * a2 * E + 2.0 * a2 * b2 * F + b2 * b2 * G;
+        const double a = l1 >= l2 ? a1 : a2, b = l1 >= l2 ? b1 : b2;
+        double t[3] = {a * su[0] + b * sv[0], a * su[1] + b * sv[1], a * su[2] + b * sv[2]};
+        const double lt = std::sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+        if (!(lt > 1e-12 * std::sqrt(E + G)))
+            return false;
+        for (int c = 0; c < 3; ++c)
+            pT[c] = t[c] / lt;
+        return true;
+    };
+    const bool umbilic = disc <= 1e-12 * (std::abs(H) + 1e-300);
+    if (umbilic || !direction(rOut.mK1, rOut.mT1)) {
+        const double lu = std::sqrt(E);
+        for (int c = 0; c < 3; ++c)
+            rOut.mT1[c] = su[c] / lu;
+    }
+    // The second direction completes the frame, so the two stay orthogonal.
+    rOut.mT2[0] = n[1] * rOut.mT1[2] - n[2] * rOut.mT1[1];
+    rOut.mT2[1] = n[2] * rOut.mT1[0] - n[0] * rOut.mT1[2];
+    rOut.mT2[2] = n[0] * rOut.mT1[1] - n[1] * rOut.mT1[0];
+    return true;
+}
+
 }  // namespace detail
 }  // namespace meshioplusplus

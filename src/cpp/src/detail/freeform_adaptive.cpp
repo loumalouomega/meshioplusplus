@@ -202,6 +202,8 @@ FreeformAdaptiveResult freeform_adaptive_fit(const std::vector<PatchVec>& rPts,
             o.mMaxIterations = rungs[r].mIterations;
             o.mMaxTotalPoles = rOptions.mMaxTotalPoles;
             o.mMargin = rOptions.mMargin;
+            o.mSchedule = rOptions.mSchedule;
+            o.mObjective = rOptions.mObjective;
             // THB (experimental) where it meets the target, else knot lines,
             // so it never loses a face the knots would keep.
             ThbFitInfo thb;

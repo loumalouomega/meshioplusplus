@@ -7152,6 +7152,20 @@ typedef enum mio_fit_cad_local_refine {
     MIO_LOCAL_REFINE_THB = 1
 } mio_fit_cad_local_refine;
 
+/** FitCadFreeformFitSchedule's values (unreleased). */
+typedef enum mio_fit_cad_fit_schedule {
+    MIO_FIT_SCHEDULE_LEGACY = 0,
+    MIO_FIT_SCHEDULE_CONTINUATION = 1
+} mio_fit_cad_fit_schedule;
+
+/** FitCadFreeformObjective's values (unreleased). */
+typedef enum mio_fit_cad_objective {
+    MIO_OBJECTIVE_DEFAULT = 0,
+    MIO_OBJECTIVE_PDM = 1,
+    MIO_OBJECTIVE_TDM = 2,
+    MIO_OBJECTIVE_SDM = 3
+} mio_fit_cad_objective;
+
 /** FitCadDemotionReason's values: column 4 of the "fit_cad:face_table" field data. */
 typedef enum mio_fit_cad_demotion_reason {
     MIO_DEMOTION_NONE = 0,
@@ -7207,8 +7221,15 @@ typedef struct mio_fit_cad_opts_ex2 {
     /** Nonzero: every freeform face is also held to those measures before it
      *  is accepted. Takes the front of the former reserved[0] (unreleased). */
     int32_t validation_acceptance;
+    /** The freeform B-spline fit's schedule, a mio_fit_cad_fit_schedule; 0
+     *  (legacy) is the fit as before. Takes the former `reserved32`
+     *  (unreleased). */
+    int32_t freeform_fit_schedule;
+    /** Its objective, a mio_fit_cad_objective; 0 (default) as before. Takes
+     *  the front of the former reserved[0] (unreleased). */
+    int32_t freeform_objective;
     int32_t reserved32;  /**< must be zero */
-    int64_t reserved[6]; /**< must be zero; room for additive growth */
+    int64_t reserved[5]; /**< must be zero; room for additive growth */
 } mio_fit_cad_opts_ex2;
 
 /** Initialize the freeform-mode options to fit_cad's defaults (legacy mode). */

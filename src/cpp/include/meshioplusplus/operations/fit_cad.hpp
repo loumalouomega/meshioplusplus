@@ -298,6 +298,32 @@ struct FitCadFaceRecord {
     double mMaxG1AngleDeg = std::numeric_limits<double>::quiet_NaN();
 };
 
+/// How a freeform face's B-spline fit spends its iterations (unreleased,
+/// doc/fit_cad_freeform_plan.md step 3).
+enum class FitCadFreeformFitSchedule : std::int32_t {
+    /// The fit as before the option existed (the default).
+    Legacy = 0,
+    /// A thin-plate weight that starts high and falls two decades whenever
+    /// parameter correction stalls, knots inserted at the residual-weighted
+    /// median of a span's bad samples, and knots removed once the targets are
+    /// met while they still are.
+    Continuation = 1,
+};
+
+/// The error a freeform face's B-spline fit minimises (unreleased, step 4).
+enum class FitCadFreeformObjective : std::int32_t {
+    /// Point distance with parameter correction, a tangent-distance step
+    /// when it stalls: as before the option existed (the default).
+    Default = 0,
+    /// Point distance with parameter correction only.
+    Pdm = 1,
+    /// A tangent-distance step first every iteration.
+    Tdm = 2,
+    /// A squared-distance step first every iteration (Wang, Pottmann and Liu
+    /// 2006, by the principal curvatures at each foot point).
+    Sdm = 3,
+};
+
 /// Which engine `fit_cad` builds the solid with (since v17.9.0).
 enum class FitCadBackend : std::int32_t {
     /// OpenCASCADE when the build carries it, else `Native`.
@@ -460,6 +486,13 @@ struct FitCadOptions {
     /// `kFitCadValidationNormalDeg` of the facets' unless the patch shows
     /// noise. Both backends; off by default.
     bool mValidationAcceptance = false;
+    /// The schedule of the adaptive and general freeform faces' B-spline fit
+    /// (unreleased); `Legacy` keeps every output as it was. The patch
+    /// network and the hierarchical refinement keep their own.
+    FitCadFreeformFitSchedule mFreeformFitSchedule = FitCadFreeformFitSchedule::Legacy;
+    /// The objective of that fit (unreleased); `Default` keeps every output
+    /// as it was.
+    FitCadFreeformObjective mFreeformObjective = FitCadFreeformObjective::Default;
 };
 
 /// With `FitCadOptions::mValidationAcceptance`: the largest angle, in degrees,

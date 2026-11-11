@@ -5838,6 +5838,10 @@ export interface FitCadOptions {
   validationReport?: boolean;
   /** Whether every freeform face is also held to those measures before it is accepted (default false). */
   validationAcceptance?: boolean;
+  /** The adaptive and general freeform faces' B-spline fit schedule (default 'legacy'). */
+  freeformFitSchedule?: 'legacy' | 'continuation';
+  /** The error that fit minimises (default 'default'). */
+  freeformObjective?: 'default' | 'pdm' | 'tdm' | 'sdm';
 }
 
 /** One patch {@link MeshioPlusPlusModule.fitCad} tried as a surface (v17.12.0). */

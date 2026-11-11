@@ -6253,7 +6253,8 @@ PYBIND11_MODULE(_core, m) {
            double layout_target_patch_size, std::int64_t layout_max_valence_deviation,
            std::int64_t resegment_rounds, bool layout_snap_to_features,
            bool validate_by_surface_sampling, bool constrain_primitives, bool validation_report,
-           bool validation_acceptance) {
+           bool validation_acceptance, const std::string& freeform_fit_schedule,
+           const std::string& freeform_objective) {
             // A keyword option's position in its list, or a ValueError naming it.
             const auto keyword = [](const std::string& rValue, const char* pName,
                                     std::initializer_list<const char*> Words) {
@@ -6329,6 +6330,12 @@ PYBIND11_MODULE(_core, m) {
             options.mConstrainPrimitives = constrain_primitives;
             options.mValidationReport = validation_report;
             options.mValidationAcceptance = validation_acceptance;
+            options.mFreeformFitSchedule =
+                static_cast<meshioplusplus::FitCadFreeformFitSchedule>(keyword(
+                    freeform_fit_schedule, "freeform_fit_schedule", {"legacy", "continuation"}));
+            options.mFreeformObjective =
+                static_cast<meshioplusplus::FitCadFreeformObjective>(keyword(
+                    freeform_objective, "freeform_objective", {"default", "pdm", "tdm", "sdm"}));
             meshioplusplus::FitCadResult r =
                 core_nogil([&] { return meshioplusplus::fit_cad(cpp, path, options); });
             py::dict out;
@@ -6467,7 +6474,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("layout_target_patch_size") = 0.1, py::arg("layout_max_valence_deviation") = 2,
         py::arg("resegment_rounds") = 2, py::arg("layout_snap_to_features") = true,
         py::arg("validate_by_surface_sampling") = true, py::arg("constrain_primitives") = false,
-        py::arg("validation_report") = false, py::arg("validation_acceptance") = false);
+        py::arg("validation_report") = false, py::arg("validation_acceptance") = false,
+        py::arg("freeform_fit_schedule") = "legacy", py::arg("freeform_objective") = "default");
 
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See

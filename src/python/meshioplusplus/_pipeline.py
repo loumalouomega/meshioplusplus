@@ -1601,6 +1601,8 @@ def _apply_step(mesh, step, steps, warnings):
             freeform_parameterization=_text(step, "FreeformParameterization", "auto"),
             extraordinary_vertex=_text(step, "ExtraordinaryVertex", "g1x"),
             local_refine=_text(step, "LocalRefine", "knots"),
+            freeform_fit_schedule=_text(step, "FreeformFitSchedule", "legacy"),
+            freeform_objective=_text(step, "FreeformObjective", "default"),
             freeform_g1_tolerance_deg=_number(step, "FreeformG1ToleranceDeg", 1.0),
             freeform_max_control_points=int(
                 _number(step, "FreeformMaxControlPoints", 400.0)

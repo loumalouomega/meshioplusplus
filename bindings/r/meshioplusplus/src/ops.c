@@ -1184,7 +1184,8 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                    SEXP layout_max_valence_deviation, SEXP resegment_rounds,
                    SEXP layout_snap_to_features, SEXP validate_by_surface_sampling,
                    SEXP constrain_primitives, SEXP validation_report,
-                   SEXP validation_acceptance) {
+                   SEXP validation_acceptance, SEXP freeform_fit_schedule,
+                   SEXP freeform_objective) {
     mio_fit_cad_opts opts;
     mio_fit_cad_opts_ex opts_ex;
     mio_fit_cad_opts_ex2 opts_ex2;
@@ -1198,6 +1199,8 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     static const char* const params[] = {"auto", "projection", "lscm", "harmonic", NULL};
     static const char* const evs[] = {"g0", "g1", "g1x", "g1xx", NULL};
     static const char* const refines[] = {"knots", "thb", NULL};
+    static const char* const schedules[] = {"legacy", "continuation", NULL};
+    static const char* const objectives[] = {"default", "pdm", "tdm", "sdm", NULL};
 
     mio_fit_cad_opts_init(&opts);
     mio_fit_cad_opts_ex_init(&opts_ex);
@@ -1208,6 +1211,10 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     opts_ex2.extraordinary_vertex =
         ops_fit_cad_keyword(extraordinary_vertex, "extraordinary_vertex", evs);
     opts_ex2.local_refine = ops_fit_cad_keyword(local_refine, "local_refine", refines);
+    opts_ex2.freeform_fit_schedule =
+        ops_fit_cad_keyword(freeform_fit_schedule, "freeform_fit_schedule", schedules);
+    opts_ex2.freeform_objective =
+        ops_fit_cad_keyword(freeform_objective, "freeform_objective", objectives);
     opts_ex2.freeform_g1_tolerance_deg =
         mio_r_double(freeform_g1_tolerance_deg, "freeform_g1_tolerance_deg");
     opts_ex2.freeform_max_control_points =

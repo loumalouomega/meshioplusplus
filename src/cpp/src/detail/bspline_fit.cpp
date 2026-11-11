@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -139,9 +140,15 @@ bool bsf_pdm(BsplineSurface& rS, const BsfSamples& rSamples, double Lambda, doub
 
 // One tangent distance minimisation step with damping Mu (Wang, Pottmann and
 // Liu 2006): min sum ((S(u_k) - x_k) . n_k)^2 + Mu |S(u_k) - x_k|^2
-// + Lambda * thin plate, the three coordinates coupled.
-bool bsf_tdm(BsplineSurface& rS, const BsfSamples& rSamples, double Lambda, double Empty,
-             double Mu) {
+// + Lambda * thin plate, the three coordinates coupled. With `Sdm`, the
+// squared-distance step of the same paper, extended to surfaces: each
+// sample's error is (S - x)^T M (S - x) with M = n n^T + sum_i a_i t_i t_i^T
+// over the principal directions t_i at its foot point, a_i = d k_i /
+// (d k_i - 1) on the side away from the centre of curvature (d k_i < 0,
+// d = (x - S) . n) and 0 towards it -- the second-order approximation of the
+// squared distance to the surface the paper derives for a curve.
+bool bsf_tdm(BsplineSurface& rS, const BsfSamples& rSamples, double Lambda, double Empty, double Mu,
+             bool Sdm = false) {
     const std::size_t np = rS.NumPoles();
     const SkylineMatrix pole_env = bspline_normal_envelope(rS);
     std::vector<std::size_t> first(3 * np);
@@ -154,7 +161,7 @@ bool bsf_tdm(BsplineSurface& rS, const BsfSamples& rSamples, double Lambda, doub
     std::vector<double> vals;
     for (std::size_t k = 0; k < rSamples.Size(); ++k) {
         BsplineEval e;
-        bspline_eval(rS, rSamples.mU[k], rSamples.mV[k], 1, e);
+        bspline_eval(rS, rSamples.mU[k], rSamples.mV[k], Sdm ? 2 : 1, e);
         double n[3] = {e.mSu[1] * e.mSv[2] - e.mSu[2] * e.mSv[1],
                        e.mSu[2] * e.mSv[0] - e.mSu[0] * e.mSv[2],
                        e.mSu[0] * e.mSv[1] - e.mSu[1] * e.mSv[0]};
@@ -168,6 +175,50 @@ bool bsf_tdm(BsplineSurface& rS, const BsfSamples& rSamples, double Lambda, doub
         if (w == 0.0)
             continue;
         bspline_row(rS, rSamples.mU[k], rSamples.mV[k], cols, vals);
+        if (Sdm) {
+            // The sample's metric: the normal's, and the principal directions'
+            // where the sample lies on the far side of the centre of curvature.
+            double m[3][3];
+            for (std::size_t c = 0; c < 3; ++c)
+                for (std::size_t d = 0; d < 3; ++d)
+                    m[c][d] = n[c] * n[d];
+            BsplineCurvature kc;
+            if (bspline_principal_curvatures(e, kc)) {
+                const double dist =
+                    (x[0] - e.mS[0]) * n[0] + (x[1] - e.mS[1]) * n[1] + (x[2] - e.mS[2]) * n[2];
+                const double ks[2] = {kc.mK1, kc.mK2};
+                const double* ts[2] = {kc.mT1, kc.mT2};
+                for (int i = 0; i < 2; ++i) {
+                    const double dk = dist * ks[i];
+                    if (!(dk < 0.0))
+                        continue;
+                    const double a = dk / (dk - 1.0);
+                    for (std::size_t c = 0; c < 3; ++c)
+                        for (std::size_t d = 0; d < 3; ++d)
+                            m[c][d] += a * ts[i][c] * ts[i][d];
+                }
+            }
+            double mx[3];
+            for (std::size_t c = 0; c < 3; ++c)
+                mx[c] = m[c][0] * x[0] + m[c][1] * x[1] + m[c][2] * x[2];
+            for (std::size_t ia = 0; ia < cols.size(); ++ia) {
+                for (std::size_t c = 0; c < 3; ++c)
+                    rhs[3 * cols[ia] + c] += w * vals[ia] * (mx[c] + Mu * x[c]);
+                for (std::size_t ib = 0; ib < cols.size(); ++ib) {
+                    if (cols[ib] > cols[ia])
+                        continue;
+                    const double bb = w * vals[ia] * vals[ib];
+                    for (std::size_t c = 0; c < 3; ++c)
+                        for (std::size_t d = 0; d < 3; ++d) {
+                            const std::size_t r = 3 * cols[ia] + c, s2 = 3 * cols[ib] + d;
+                            if (s2 > r)
+                                continue;
+                            a.At(r, s2) += bb * (m[c][d] + (c == d ? Mu : 0.0));
+                        }
+                }
+            }
+            continue;
+        }
         for (std::size_t ia = 0; ia < cols.size(); ++ia) {
             for (std::size_t c = 0; c < 3; ++c)
                 rhs[3 * cols[ia] + c] += w * vals[ia] * (n[c] * xn + Mu * x[c]);
@@ -213,6 +264,38 @@ std::vector<double> bsf_insert(const std::vector<double>& rK, int P,
     out.insert(out.end(), mids.begin(), mids.end());
     std::sort(out.begin(), out.end());
     (void)P;
+    return out;
+}
+
+// The knot vector with the given values inserted.
+std::vector<double> bsf_insert_at(const std::vector<double>& rK, const std::vector<double>& rAt) {
+    std::vector<double> out = rK;
+    out.insert(out.end(), rAt.begin(), rAt.end());
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// The weighted median of (value, weight) pairs; the pairs are sorted.
+double bsf_weighted_median(std::vector<std::pair<double, double>> rPairs) {
+    std::sort(rPairs.begin(), rPairs.end());
+    double total = 0.0;
+    for (const auto& p : rPairs)
+        total += p.second;
+    double acc = 0.0;
+    for (const auto& p : rPairs) {
+        acc += p.second;
+        if (acc >= 0.5 * total)
+            return p.first;
+    }
+    return rPairs.back().first;
+}
+
+// The knot vector without one interior knot value (one copy of it).
+std::vector<double> bsf_remove(const std::vector<double>& rK, double Value) {
+    std::vector<double> out = rK;
+    const auto it = std::find(out.begin(), out.end(), Value);
+    if (it != out.end())
+        out.erase(it);
     return out;
 }
 
@@ -290,6 +373,15 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
     smp.mNumData = smp.Size();
     const double lambda = rOptions.mSmoothing * static_cast<double>(smp.Size());
     const double empty = rOptions.mEmptySmoothing * static_cast<double>(smp.Size());
+    // The schedule (unreleased): with continuation the thin-plate weight in
+    // force starts high and falls to `lambda` two decades at a time, each
+    // fall an iteration the budget does not count; as before otherwise.
+    const bool cont = rOptions.mSchedule == 1;
+    double lam =
+        cont ? std::max(lambda, rOptions.mContinuationStart * static_cast<double>(smp.Size()))
+             : lambda;
+    const double gain = 0.9;
+    int extra_iterations = 0;
 
     // Ghost samples where the parameter square holds no data (the margin, a
     // disc's corners): a coarse, smooth fit evaluated there, lightly weighted,
@@ -352,7 +444,7 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
     std::size_t n0 = std::min(std::max(rOptions.mStartPoles, pmin), maxp);
     BsplineSurface s = bsf_shape(p, bspline_clamped_knots(p, n0, 0.0, 1.0),
                                  bspline_clamped_knots(p, n0, 0.0, 1.0));
-    if (!bsf_pdm(s, smp, lambda, empty))
+    if (!bsf_pdm(s, smp, lam, empty))
         return out;
     BsfErrors err = bsf_project(s, smp, tol / ctol);
     out.mHistory.push_back(err.Worst());
@@ -370,18 +462,39 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
         }
     };
     double mu = 0.1;
-    for (int it = 1; it <= rOptions.mMaxIterations && !met(best_err); ++it) {
+    for (int it = 1; it <= rOptions.mMaxIterations + extra_iterations && !met(best_err); ++it) {
         out.mIterations = it;
         const double before = err.Worst();
         bool progressed = false;
+        // 0. A tangent- or squared-distance step first, when the objective
+        // asks for one every iteration (unreleased).
+        if ((rOptions.mObjective == 2 || rOptions.mObjective == 3) &&
+            s.NumPoles() <= kBsfTdmMaxPoles) {
+            BsplineSurface t = s;
+            BsfSamples ts = smp;
+            if (bsf_tdm(t, ts, lam, empty, mu, rOptions.mObjective == 3)) {
+                const BsfErrors te = bsf_project(t, ts, tol / ctol);
+                if (te.Worst() < err.Worst()) {
+                    progressed = te.Worst() < gain * before;
+                    s = std::move(t);
+                    smp = std::move(ts);
+                    err = te;
+                    mu = std::max(mu * 0.5, 1e-2);
+                } else {
+                    mu *= 10.0;
+                }
+            } else {
+                mu *= 10.0;
+            }
+        }
         // 1. Point distance minimisation at the corrected parameters.
         {
             BsplineSurface t = s;
             BsfSamples ts = smp;
-            if (bsf_pdm(t, ts, lambda, empty)) {
+            if (bsf_pdm(t, ts, lam, empty)) {
                 const BsfErrors te = bsf_project(t, ts, tol / ctol);
                 if (te.Worst() < err.Worst()) {
-                    progressed = te.Worst() < 0.9 * before;
+                    progressed = progressed || te.Worst() < gain * before;
                     s = std::move(t);
                     smp = std::move(ts);
                     err = te;
@@ -389,23 +502,41 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
             }
         }
         // 2. Tangent distance minimisation once that stalls.
-        if (!progressed && !met(err) && s.NumPoles() <= kBsfTdmMaxPoles) {
+        if (rOptions.mObjective == 0 && !progressed && !met(err) &&
+            s.NumPoles() <= kBsfTdmMaxPoles) {
             for (int attempt = 0; attempt < 1 && !progressed; ++attempt) {
                 BsplineSurface t = s;
                 BsfSamples ts = smp;
-                if (!bsf_tdm(t, ts, lambda, empty, mu)) {
+                if (!bsf_tdm(t, ts, lam, empty, mu)) {
                     mu *= 10.0;
                     continue;
                 }
                 const BsfErrors te = bsf_project(t, ts, tol / ctol);
                 if (te.Worst() < err.Worst()) {
-                    progressed = te.Worst() < 0.9 * before;
+                    progressed = te.Worst() < gain * before;
                     s = std::move(t);
                     smp = std::move(ts);
                     err = te;
                     mu = std::max(mu * 0.5, 1e-2);
                 } else {
                     mu *= 10.0;
+                }
+            }
+        }
+        // 2b. Continuation: a stalled fit at a thin-plate weight above the
+        // floor goes on a decade lower before any knot is inserted.
+        if (cont && !progressed && !met(err) && lam > lambda) {
+            lam = std::max(lambda, 0.01 * lam);
+            ++extra_iterations;
+            progressed = true;
+            BsplineSurface t = s;
+            BsfSamples ts = smp;
+            if (bsf_pdm(t, ts, lam, empty)) {
+                const BsfErrors te = bsf_project(t, ts, tol / ctol);
+                if (te.Worst() < err.Worst()) {
+                    s = std::move(t);
+                    smp = std::move(ts);
+                    err = te;
                 }
             }
         }
@@ -423,6 +554,9 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
                 ++in_cell[cell_of[k]];
             }
             std::map<std::size_t, double> bad_u, bad_v;
+            // With continuation, each bad span's samples, weighted by their
+            // excess, place its new knot.
+            std::map<std::size_t, std::vector<std::pair<double, double>>> at_u, at_v;
             for (std::size_t k = 0; k < smp.mNumData; ++k) {
                 const double limit = k < smp.mNumVertices ? tol : ctol;
                 if (!(err.mDist[k] > limit) || in_cell[cell_of[k]] < kBsfMinCellSamples)
@@ -430,6 +564,10 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
                 const std::size_t su = cell_of[k].first, sv = cell_of[k].second;
                 bad_u[su] = std::max(bad_u[su], err.mDist[k]);
                 bad_v[sv] = std::max(bad_v[sv], err.mDist[k]);
+                if (cont) {
+                    at_u[su].emplace_back(smp.mU[k], err.mDist[k] - limit);
+                    at_v[sv].emplace_back(smp.mV[k], err.mDist[k] - limit);
+                }
             }
             // The worst spans first, within the pole budget.
             const auto pick = [&](const std::map<std::size_t, double>& rBad, std::size_t N) {
@@ -456,10 +594,23 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
             }
             if (su.empty() && sv.empty())
                 break;  // the pole budget is spent
+            const auto placed =
+                [&](const std::vector<double>& rK, const std::vector<std::size_t>& rSp,
+                    std::map<std::size_t, std::vector<std::pair<double, double>>>& rAt) {
+                    std::vector<double> at;
+                    for (std::size_t sp : rSp) {
+                        const double a = rK[sp], b = rK[sp + 1];
+                        const double m =
+                            rAt[sp].empty() ? 0.5 * (a + b) : bsf_weighted_median(rAt[sp]);
+                        at.push_back(std::clamp(m, a + 0.15 * (b - a), b - 0.15 * (b - a)));
+                    }
+                    return bsf_insert_at(rK, at);
+                };
             BsplineSurface t =
-                bsf_shape(p, bsf_insert(s.mKnotsU, p, su), bsf_insert(s.mKnotsV, p, sv));
+                cont ? bsf_shape(p, placed(s.mKnotsU, su, at_u), placed(s.mKnotsV, sv, at_v))
+                     : bsf_shape(p, bsf_insert(s.mKnotsU, p, su), bsf_insert(s.mKnotsV, p, sv));
             BsfSamples ts = smp;
-            if (!bsf_pdm(t, ts, lambda, empty))
+            if (!bsf_pdm(t, ts, lam, empty))
                 break;
             err = bsf_project(t, ts, tol / ctol);
             s = std::move(t);
@@ -475,6 +626,70 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
     s = std::move(best);
     smp = std::move(best_smp);
     err = best_err;
+
+    // Continuation's last stage: interior knots removed while the refitted
+    // surface still meets the targets, the knot whose spans hold the least
+    // residual first (unreleased).
+    if (cont && met(err)) {
+        for (int pass = 0; pass < 64; ++pass) {
+            // Each distinct interior knot of both directions with the largest
+            // residual of the samples in its two spans.
+            std::vector<std::tuple<double, int, double>> cand;  // (load, dir, knot)
+            for (int dir = 0; dir < 2; ++dir) {
+                const std::vector<double>& k = dir == 0 ? s.mKnotsU : s.mKnotsV;
+                const std::size_t n = dir == 0 ? s.mNu : s.mNv;
+                if (n <= pmin)
+                    continue;
+                std::vector<double> inner(k.begin() + p + 1, k.begin() + static_cast<long>(n));
+                inner.erase(std::unique(inner.begin(), inner.end()), inner.end());
+                for (std::size_t i = 0; i < inner.size(); ++i) {
+                    const double lo_k = i == 0 ? k[static_cast<std::size_t>(p)] : inner[i - 1];
+                    const double hi_k = i + 1 < inner.size() ? inner[i + 1] : k[n];
+                    double load = 0.0;
+                    for (std::size_t q = 0; q < smp.mNumData; ++q) {
+                        const double t = dir == 0 ? smp.mU[q] : smp.mV[q];
+                        if (t >= lo_k && t <= hi_k)
+                            load = std::max(load, err.mDist[q]);
+                    }
+                    cand.emplace_back(load, dir, inner[i]);
+                }
+            }
+            std::sort(cand.begin(), cand.end());
+            bool removed = false;
+            for (const auto& [load, dir, knot] : cand) {
+                (void)load;
+                BsplineSurface t = bsf_shape(p, dir == 0 ? bsf_remove(s.mKnotsU, knot) : s.mKnotsU,
+                                             dir == 1 ? bsf_remove(s.mKnotsV, knot) : s.mKnotsV);
+                BsfSamples ts = smp;
+                if (!bsf_pdm(t, ts, lambda, empty))
+                    continue;
+                BsfErrors te = bsf_project(t, ts, tol / ctol);
+                // One more correction and refit, as the loop would take.
+                {
+                    BsplineSurface t2 = t;
+                    BsfSamples ts2 = ts;
+                    if (bsf_pdm(t2, ts2, lambda, empty)) {
+                        const BsfErrors te2 = bsf_project(t2, ts2, tol / ctol);
+                        if (te2.Worst() < te.Worst()) {
+                            t = std::move(t2);
+                            ts = std::move(ts2);
+                            te = te2;
+                        }
+                    }
+                }
+                if (!met(te))
+                    continue;
+                s = std::move(t);
+                smp = std::move(ts);
+                err = te;
+                ++out.mRemovals;
+                removed = true;
+                break;  // the loads changed: rank again
+            }
+            if (!removed)
+                break;
+        }
+    }
 
     out.mOk = met(err);
     out.mSurface = std::move(s);

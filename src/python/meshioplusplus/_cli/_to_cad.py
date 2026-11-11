@@ -285,6 +285,20 @@ def add_args(parser):
         help="how a freeform patch is refined (thb is experimental)",
     )
     parser.add_argument(
+        "--freeform-fit-schedule",
+        choices=["legacy", "continuation"],
+        default="legacy",
+        help="the freeform B-spline fit's schedule: continuation lowers the "
+        "smoothing as it converges, places knots where the residual is and removes "
+        "the knots the target does not need",
+    )
+    parser.add_argument(
+        "--freeform-objective",
+        choices=["default", "pdm", "tdm", "sdm"],
+        default="default",
+        help="the error the freeform B-spline fit minimises",
+    )
+    parser.add_argument(
         "--freeform-max-control-points",
         type=int,
         default=400,
@@ -414,6 +428,8 @@ def to_cad_cmd(args):
         freeform_parameterization=args.freeform_parameterization,
         extraordinary_vertex=args.extraordinary_vertex,
         local_refine=args.local_refine,
+        freeform_fit_schedule=args.freeform_fit_schedule,
+        freeform_objective=args.freeform_objective,
         freeform_g1_tolerance_deg=args.g1_tolerance,
         freeform_max_control_points=args.freeform_max_control_points,
         layout_target_patch_size=args.layout_target_patch_size,

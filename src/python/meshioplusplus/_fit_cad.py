@@ -85,6 +85,8 @@ _FREEFORM_MODES = ("legacy", "adaptive", "network", "auto")
 _PARAMETERIZATIONS = ("auto", "projection", "lscm", "harmonic")
 _EXTRAORDINARY_VERTEX = ("g0", "g1", "g1x", "g1xx")
 _LOCAL_REFINE = ("knots", "thb")
+_FIT_SCHEDULES = ("legacy", "continuation")
+_OBJECTIVES = ("default", "pdm", "tdm", "sdm")
 _MODE_DEFAULTS = {
     "freeform_mode": "legacy",
     "freeform_parameterization": "auto",
@@ -97,6 +99,8 @@ _MODE_DEFAULTS = {
     "resegment_rounds": 2,
     "layout_snap_to_features": True,
     "validate_by_surface_sampling": True,
+    "freeform_fit_schedule": "legacy",
+    "freeform_objective": "default",
 }
 _MODE_INTS = (
     "num_freeform_adaptive",
@@ -229,6 +233,8 @@ def fit_cad(
     constrain_primitives: bool = False,
     validation_report: bool = False,
     validation_acceptance: bool = False,
+    freeform_fit_schedule: str = "legacy",
+    freeform_objective: str = "default",
 ):
     """Build a CAD solid from the fitted patches of a closed skin.
 
@@ -400,6 +406,17 @@ def fit_cad(
         measures before it is accepted: its surface sampled inside its trim
         within the tolerance of the skin, and its normal at the patch's facet
         centres within 30 degrees of theirs unless the patch shows noise.
+    :param freeform_fit_schedule: how the adaptive and general freeform
+        faces' B-spline fit spends its iterations: ``"legacy"`` (as before)
+        or ``"continuation"`` (a thin-plate weight that starts high and falls
+        as parameter correction stalls, knots placed at the residual-weighted
+        median of a span's bad samples, and knots removed once the targets are
+        met while they still are).
+    :param freeform_objective: the error that fit minimises: ``"default"``
+        (point distance, a tangent-distance step when it stalls), ``"pdm"``
+        (point distance only), ``"tdm"`` (a tangent-distance step first every
+        iteration) or ``"sdm"`` (a squared-distance step by the principal
+        curvatures at the foot points, first every iteration).
     :returns: the solid re-meshed as triangles with cell data ``fit_cad:face``,
         ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet,
         blend or conic blend, 8 a helical thread face, 9 a vertex blend, 10 a
@@ -537,12 +554,16 @@ def fit_cad(
         "resegment_rounds": int(resegment_rounds),
         "layout_snap_to_features": bool(layout_snap_to_features),
         "validate_by_surface_sampling": bool(validate_by_surface_sampling),
+        "freeform_fit_schedule": str(freeform_fit_schedule),
+        "freeform_objective": str(freeform_objective),
     }
     for key, words in (
         ("freeform_mode", _FREEFORM_MODES),
         ("freeform_parameterization", _PARAMETERIZATIONS),
         ("extraordinary_vertex", _EXTRAORDINARY_VERTEX),
         ("local_refine", _LOCAL_REFINE),
+        ("freeform_fit_schedule", _FIT_SCHEDULES),
+        ("freeform_objective", _OBJECTIVES),
     ):
         if modes[key] not in words:
             raise ValueError(

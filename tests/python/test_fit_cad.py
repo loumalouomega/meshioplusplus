@@ -798,3 +798,31 @@ def test_validation_acceptance_keeps_a_clean_freeform_face():
     assert report["facet_area_fraction"] == 0.0
     assert report["normal_deviation_max_deg"] < 30.0
     assert report["cad_to_mesh_max"] <= report["tolerance"]
+
+
+@pytest.mark.parametrize("schedule", ["legacy", "continuation"])
+@pytest.mark.parametrize("objective", ["default", "pdm", "tdm", "sdm"])
+def test_fit_schedule_and_objective_build_the_bump(schedule, objective):
+    # doc/fit_cad_freeform_plan.md, steps 3 and 4: every schedule and
+    # objective still makes the bump one freeform face within the tolerance.
+    _out, report = mio.fit_cad(
+        _fitted(_bumped_box()),
+        backend="native",
+        freeform_mode="adaptive",
+        freeform_fit_schedule=schedule,
+        freeform_objective=objective,
+        validation_report=True,
+        return_report=True,
+    )
+    assert report["facet_area_fraction"] == 0.0
+    assert report["num_bspline"] >= 1
+    assert report["cad_to_mesh_max"] <= report["tolerance"]
+    assert report["mesh_to_cad_max"] <= report["tolerance"]
+
+
+@pytest.mark.parametrize(
+    "key, value", [("freeform_fit_schedule", "fast"), ("freeform_objective", "lsq")]
+)
+def test_fit_schedule_and_objective_are_checked(key, value):
+    with pytest.raises(ValueError, match=key):
+        mio.fit_cad(box_skin(2), backend="native", **{key: value})

@@ -1982,6 +1982,10 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             keyword("ExtraordinaryVertex", "g1x", {"g0", "g1", "g1x", "g1xx"}));
         opts.mLocalRefine =
             static_cast<FitCadLocalRefine>(keyword("LocalRefine", "knots", {"knots", "thb"}));
+        opts.mFreeformFitSchedule = static_cast<FitCadFreeformFitSchedule>(
+            keyword("FreeformFitSchedule", "legacy", {"legacy", "continuation"}));
+        opts.mFreeformObjective = static_cast<FitCadFreeformObjective>(
+            keyword("FreeformObjective", "default", {"default", "pdm", "tdm", "sdm"}));
         opts.mFreeformG1ToleranceDeg = pipe_number(rStep, "FreeformG1ToleranceDeg", 1.0);
         opts.mFreeformMaxControlPoints =
             static_cast<std::int64_t>(pipe_number(rStep, "FreeformMaxControlPoints", 400.0));

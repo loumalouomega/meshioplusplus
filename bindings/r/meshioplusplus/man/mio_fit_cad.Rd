@@ -52,7 +52,9 @@ mio_fit_cad(
   validate_by_surface_sampling = TRUE,
   constrain_primitives = FALSE,
   validation_report = FALSE,
-  validation_acceptance = FALSE
+  validation_acceptance = FALSE,
+  freeform_fit_schedule = "legacy",
+  freeform_objective = "default"
 )
 }
 \arguments{
@@ -183,6 +185,12 @@ OpenCASCADE and a STEP file, the file read back and checked.}
 
 \item{validation_acceptance}{Whether every freeform face is also held to
 those measures before it is accepted.}
+
+\item{freeform_fit_schedule}{The adaptive and general freeform faces'
+B-spline fit schedule, `"legacy"` or `"continuation"`.}
+
+\item{freeform_objective}{Its objective, `"default"`, `"pdm"`, `"tdm"` or
+`"sdm"`.}
 }
 \value{
 A list of `mesh` (the solid re-meshed, with cell data

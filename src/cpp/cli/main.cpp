@@ -3303,6 +3303,8 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                           {"g1-tolerance", {}, true},
                                           {"extraordinary-vertex", {}, true},
                                           {"local-refine", {}, true},
+                                          {"freeform-fit-schedule", {}, true},
+                                          {"freeform-objective", {}, true},
                                           {"freeform-max-control-points", {}, true},
                                           {"layout-target-patch-size", {}, true},
                                           {"layout-max-valence-deviation", {}, true},
@@ -3427,6 +3429,12 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
     if (has_opt(p, "local-refine"))
         options.mLocalRefine = static_cast<meshioplusplus::FitCadLocalRefine>(
             keyword("local-refine", {"knots", "thb"}));
+    if (has_opt(p, "freeform-fit-schedule"))
+        options.mFreeformFitSchedule = static_cast<meshioplusplus::FitCadFreeformFitSchedule>(
+            keyword("freeform-fit-schedule", {"legacy", "continuation"}));
+    if (has_opt(p, "freeform-objective"))
+        options.mFreeformObjective = static_cast<meshioplusplus::FitCadFreeformObjective>(
+            keyword("freeform-objective", {"default", "pdm", "tdm", "sdm"}));
     cli_opt_double(p, "g1-tolerance", options.mFreeformG1ToleranceDeg);
     cli_opt_int64(p, "freeform-max-control-points", options.mFreeformMaxControlPoints);
     cli_opt_double(p, "layout-target-patch-size", options.mLayoutTargetPatchSize);

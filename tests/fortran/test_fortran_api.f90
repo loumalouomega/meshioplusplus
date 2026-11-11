@@ -3258,6 +3258,12 @@ contains
         call check(hmax >= 0.0_real64 .and. hmax <= 1.0e-9_real64, &
                    'the cube planes lie on the skin')
         call solid%free()
+        solid = sq%fit_cad(backend='native', freeform_fit_schedule='continuation', &
+                           freeform_objective='sdm', stat=ierr)
+        call check(ierr == 0, 'fit_cad takes the fit schedule and objective')
+        call solid%free()
+        solid = sq%fit_cad(backend='native', freeform_objective='nope', stat=ierr)
+        call check(ierr /= 0, 'fit_cad refuses an unknown objective')
         ! The Phase 3 options (v17.11.0): closed on every backend, nothing
         ! measured is NaN, and an option out of range is refused.
         solid = sq%fit_cad(backend='native', closed=was_closed, hausdorff_max=hmax, &

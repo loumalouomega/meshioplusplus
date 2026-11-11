@@ -503,6 +503,11 @@ function t_fit_cad()
     assert(vr.validation_reported);
     assert(vr.cad_to_mesh_max >= 0 && vr.cad_to_mesh_max <= 1e-9);
     assert(vr.mesh_to_cad_max >= vr.mesh_to_cad_p95);
+    sc = mio.fit_cad(m, 'backend', 'native', 'freeform_fit_schedule', 'continuation', ...
+        'freeform_objective', 'sdm');
+    expect_equal(sc.num_faces, 6);
+    expect_error(@() mio.fit_cad(m, 'backend', 'native', 'freeform_objective', 'nope'), ...
+        'freeform_objective');
     % A STEP file is written on request.
     step = [tempname() '.step'];
     cleanup = onCleanup(@() delete_if(step));

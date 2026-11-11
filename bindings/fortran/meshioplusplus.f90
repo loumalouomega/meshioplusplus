@@ -657,8 +657,10 @@ module meshioplusplus
         integer(c_int32_t) :: constrain_primitives = 0
         integer(c_int32_t) :: validation_report = 0
         integer(c_int32_t) :: validation_acceptance = 0
+        integer(c_int32_t) :: freeform_fit_schedule = 0
+        integer(c_int32_t) :: freeform_objective = 0
         integer(c_int32_t) :: reserved32 = 0
-        integer(c_int64_t) :: reserved(6) = 0
+        integer(c_int64_t) :: reserved(5) = 0
     end type
 
     !> Interop mirror of C `mio_fit_cad_report_ex3` (v17.12.0, 184 bytes).
@@ -10849,7 +10851,8 @@ contains
                           mesh_to_cad_max, mesh_to_cad_p95, mesh_to_cad_p99, &
                           normal_deviation_max_deg, normal_deviation_p95_deg, &
                           step_round_trip_checked, step_round_trip_valid, &
-                          step_round_trip_volume_ratio, total_freeform_control_points) result(out)
+                          step_round_trip_volume_ratio, total_freeform_control_points, &
+                          freeform_fit_schedule, freeform_objective) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: step_path
         real(real64), intent(in), optional :: tolerance, mesh_deflection
@@ -10918,6 +10921,7 @@ contains
         real(real64), intent(out), optional :: normal_deviation_max_deg, normal_deviation_p95_deg
         real(real64), intent(out), optional :: step_round_trip_volume_ratio
         integer(int64), intent(out), optional :: total_freeform_control_points
+        character(*), intent(in), optional :: freeform_fit_schedule, freeform_objective
         type(mio_mesh) :: out
         type(c_ptr) :: res, path_ptr
         type(mio_fit_cad_opts_t) :: opts
@@ -10973,6 +10977,25 @@ contains
                 return
             end if
             opts_ex2%local_refine = int(code, c_int32_t)
+        end if
+        if (present(freeform_fit_schedule)) then
+            code = keyword_index(freeform_fit_schedule, [character(12) :: 'legacy', 'continuation'])
+            if (code < 0) then
+                call handle_failure('fit_cad', &
+                    "freeform_fit_schedule must be 'legacy' or 'continuation'", stat, errmsg)
+                return
+            end if
+            opts_ex2%freeform_fit_schedule = int(code, c_int32_t)
+        end if
+        if (present(freeform_objective)) then
+            code = keyword_index(freeform_objective, [character(7) :: 'default', 'pdm', 'tdm', &
+                                                      'sdm'])
+            if (code < 0) then
+                call handle_failure('fit_cad', &
+                    "freeform_objective must be 'default', 'pdm', 'tdm' or 'sdm'", stat, errmsg)
+                return
+            end if
+            opts_ex2%freeform_objective = int(code, c_int32_t)
         end if
         if (present(freeform_g1_tolerance_deg)) &
             opts_ex2%freeform_g1_tolerance_deg = real(freeform_g1_tolerance_deg, c_double)

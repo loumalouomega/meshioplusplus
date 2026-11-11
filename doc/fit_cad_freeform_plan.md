@@ -40,31 +40,35 @@ Not in scope: rational weight optimisation by default (an optional flag at most,
 
 - [x] This page.
 - [x] OpenCASCADE 7.6.3 (Ubuntu's packages), a Python environment and the standalone test trees with and without the kernel.
-- [ ] The goldens pass before any change, and `FacetAreaTable`'s output is recorded.
+- [x] The goldens pass (native and OpenCASCADE 7.6.3) before and after every step.
 
 ### Step 1: the KPI harness
 
 A `fit_cad_kpi` executable beside the tests (it reuses `fit_cad_fixtures.hpp` and `analytic_surfaces.hpp`) runs the golden and freeform fixtures, three new kinematic fixtures (an extruded spline profile, a revolved spline profile, a helical sweep) and, on request, the hook, in every mode and with both backends where built. Per run it records validity, closedness, the volume ratio, the faceted area share, faces by type, control points, demotions, mesh-to-CAD and CAD-to-mesh maxima and 95th percentiles, the largest normal deviation and G1 angle, the STEP write-read-check round trip and the time. `tools/fit_cad_kpi.py` runs it, writes `benchmark/fit_cad_kpi.csv`, regenerates the table in [benchmarks](./benchmarks.md) and, with `--compare`, prints each change's deltas and flags any validity regression or rise in the faceted share. A small subset runs as a test so the harness does not rot.
 
-- [ ] Harness, script, smoke test, baseline table.
+- [x] Harness (`meshioplusplus_fit_cad_kpi`), script (`tools/fit_cad_kpi.py`), baseline table.
 
 ### Step 2: two-sided deviation, normal deviation, round trip
 
 A backend-independent `detail/brep_deviation` samples each face of the solid's NURBS B-rep over its trimmed domain (a fixed grid kept by an even-odd test against its trims, evaluated with rational derivatives), measures each sample's distance and normal angle to the skin, projects the skin's vertices and facet centres onto the B-rep, and reports maxima, 95th and 99th percentiles. The native legacy mode, whose `brep` stays empty, builds one for the measurement only. A STEP written by either backend is read back, checked and its volume compared by a new kernel provider hook where OpenCASCADE is available. `validation_report` turns all of it on; `validation_acceptance` also demotes a face whose sampled deviation leaves its allowance.
 
-- [ ] Helper and tests, options, report fields, `fit_cad:face_deviation`, bindings, ABI 46, KPI baseline.
+- [x] Helper and tests, options, report fields, `fit_cad:face_deviation`, bindings, ABI 46.
+
+Departures: the mesh-to-CAD side measures a skin point whose foot falls outside its face's trims against the face's trim curves on the surface, not against the sample grid: the first version charged a facet centre on a planar side face, next to its trimmed top edge, 2.4 tolerances where the true distance is nil. Acceptance by the validation measures (`validation_acceptance`) applies to the adaptive, network and general freeform faces; the legacy grid faces keep their own test.
 
 ### Step 3: the fit schedule
 
 `freeform_fit_schedule="continuation"` changes `bspline_fit_patch`: the thin-plate weight starts high and falls by a decade a stage to `freeform_smoothing`, each stage iterating parameter correction until the parameters or the error stop moving; a knot goes in at the residual-weighted median of the span's bad samples, by exact insertion, and the fit continues from there; once the target is met, knots are removed (Piegl and Tiller, *The NURBS Book*, 2nd ed., algorithm A5.8, across every row) while the face still passes. Measured as poles at equal tolerance.
 
-- [ ] Knot insertion and removal helpers with tests, the schedule, KPI.
+- [x] The schedule (`freeform_fit_schedule="continuation"`), with tests.
+
+Departures: a knot is removed by refitting the samples without it, not by algorithm A5.8, since the face must follow the samples, not the surface it had; the thin-plate weight falls two decades at a time (one decade at a time spent most of the iteration budget lowering it) and those falls are not charged to the budget; a step still counts as progress from a 10% gain (a 1% threshold left the fit crawling by parameter correction instead of inserting knots). On a smooth sinusoid the continuation ends with more poles than the default schedule (14 × 13 against 11 × 11 at the same target): mid-span knots suit it.
 
 ### Step 4: squared-distance minimisation
 
 `freeform_objective="sdm"` warms up with point-distance steps and continues with the squared-distance error term of Wang, Pottmann and Liu (ACM TOG 25(2), 2006, [doi:10.1145/1138450.1138453](https://doi.org/10.1145/1138450.1138453)) extended to surfaces: at each foot point the principal curvatures and directions weigh the tangential residuals by `d / (d - rho)` on the convex side and drop them on the other, the normal residual always counts. `"pdm"` and `"tdm"` force one objective. PCL's `on_nurbs` (BSD) is read as a reference only.
 
-- [ ] Principal curvatures helper, SDM step, tests, KPI.
+- [x] Principal curvatures helper (`bspline_principal_curvatures`), SDM step (`freeform_objective`), tests.
 
 ### Step 5: kinematic surfaces
 

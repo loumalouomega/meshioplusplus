@@ -26,8 +26,10 @@ function r = fit_cad(mesh, varargin)
 %     (1), 'freeform_max_control_points' (400), 'layout_target_patch_size'
 %     (0.1), 'layout_max_valence_deviation' (2), 'resegment_rounds' (2),
 %     'layout_snap_to_features' (true), 'validate_by_surface_sampling' (true),
-%     'constrain_primitives' (false), 'validation_report' (false) and
-%     'validation_acceptance' (false).
+%     'constrain_primitives' (false), 'validation_report' (false),
+%     'validation_acceptance' (false), 'freeform_fit_schedule' ('legacy' or
+%     'continuation') and 'freeform_objective' ('default', 'pdm', 'tdm' or
+%     'sdm').
 %   Returns a struct: mesh (with cell data 'fit_cad:face', 'fit_cad:type' and
 %   'fit_cad:patch'), valid, tolerance, volume, skin_volume, volume_ratio,
 %   max_deviation, num_faces, num_plane, num_sphere, num_cylinder, num_cone,
@@ -70,7 +72,8 @@ function r = fit_cad(mesh, varargin)
         'layout_target_patch_size', 0.1, 'layout_max_valence_deviation', 2, ...
         'resegment_rounds', 2, 'layout_snap_to_features', true, ...
         'validate_by_surface_sampling', true, 'constrain_primitives', false, ...
-        'validation_report', false, 'validation_acceptance', false}, 'mio.fit_cad');
+        'validation_report', false, 'validation_acceptance', false, ...
+        'freeform_fit_schedule', 'legacy', 'freeform_objective', 'default'}, 'mio.fit_cad');
     if isempty(o.ransac_seed)
         seed = [];
     else
@@ -97,7 +100,9 @@ function r = fit_cad(mesh, varargin)
         double(o.layout_target_patch_size), double(o.layout_max_valence_deviation), ...
         double(o.resegment_rounds), logical(o.layout_snap_to_features), ...
         logical(o.validate_by_surface_sampling), logical(o.constrain_primitives), ...
-        logical(o.validation_report), logical(o.validation_acceptance));
+        logical(o.validation_report), logical(o.validation_acceptance), ...
+        mio.internal.str(o.freeform_fit_schedule, 'freeform_fit_schedule'), ...
+        mio.internal.str(o.freeform_objective, 'freeform_objective'));
 end
 
 function mask = types_mask(types, fname)

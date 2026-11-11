@@ -1685,8 +1685,10 @@ struct _CFitCadOptsEx2
     constrain_primitives::Int32
     validation_report::Int32
     validation_acceptance::Int32
+    freeform_fit_schedule::Int32
+    freeform_objective::Int32
     reserved32::Int32
-    reserved::NTuple{6,Int64}
+    reserved::NTuple{5,Int64}
 end
 
 """Mirror of C `mio_fit_cad_report_ex3` (v17.12.0)."""
@@ -2850,7 +2852,8 @@ function _check_abi_layout()
     (fieldoffset(_CFitCadReportEx3, 10) == 64 && fieldoffset(_CFitCadReportEx3, 15) == 104) ||
         error("meshio++: mio_fit_cad_report_ex3 field offsets mismatch")
     (fieldoffset(_CFitCadOptsEx2, 13) == 68 && fieldoffset(_CFitCadOptsEx2, 14) == 72 &&
-     fieldoffset(_CFitCadOptsEx2, 16) == 80) ||
+     fieldoffset(_CFitCadOptsEx2, 15) == 76 && fieldoffset(_CFitCadOptsEx2, 16) == 80 &&
+     fieldoffset(_CFitCadOptsEx2, 18) == 88) ||
         error("meshio++: mio_fit_cad_opts_ex2 validation field offsets mismatch")
     sizeof(_CFitCadReportEx4) == 272 ||
         error("meshio++: mio_fit_cad_report_ex4 layout mismatch " *

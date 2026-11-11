@@ -6200,8 +6200,9 @@ val refine_patches_js(const val& rMeshObj, const val& rOptions) {
  *   freeformTolerance, freeformSmoothing, maxFreeformPoles,
  *   maxFreeformIterations, maxFreeformSplits, sewTolerance, extendSurfaces,
  *   snapJunctions, faceDeviation, the freeform-mode keys,
- *   constrainPrimitives, validationReport and validationAcceptance}`, every
- *   key optional;
+ *   constrainPrimitives, validationReport, validationAcceptance,
+ *   freeformFitSchedule ('legacy' | 'continuation') and freeformObjective
+ *   ('default' | 'pdm' | 'tdm' | 'sdm')}`, every key optional;
  *   `types` is an array of `'plane'`, `'sphere'`, `'cylinder'`, `'cone'`,
  *   `'torus'`, `backend` one of `'auto'`, `'occt'`, `'native'`; the
  *   `refine*` keys, `normalWeight`, `allow*` and `ransacSeed` set
@@ -6265,7 +6266,9 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                                  "validateBySurfaceSampling",
                                  "constrainPrimitives",
                                  "validationReport",
-                                 "validationAcceptance"});
+                                 "validationAcceptance",
+                                 "freeformFitSchedule",
+                                 "freeformObjective"});
             const auto has = [&](const char* pKey) {
                 return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined();
             };
@@ -6380,6 +6383,13 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
             if (has("localRefine"))
                 options.mLocalRefine = static_cast<meshioplusplus::FitCadLocalRefine>(
                     keyword("localRefine", {"knots", "thb"}));
+            if (has("freeformFitSchedule"))
+                options.mFreeformFitSchedule =
+                    static_cast<meshioplusplus::FitCadFreeformFitSchedule>(
+                        keyword("freeformFitSchedule", {"legacy", "continuation"}));
+            if (has("freeformObjective"))
+                options.mFreeformObjective = static_cast<meshioplusplus::FitCadFreeformObjective>(
+                    keyword("freeformObjective", {"default", "pdm", "tdm", "sdm"}));
             if (has("freeformG1ToleranceDeg"))
                 options.mFreeformG1ToleranceDeg = rOptions["freeformG1ToleranceDeg"].as<double>();
             if (has("freeformMaxControlPoints"))

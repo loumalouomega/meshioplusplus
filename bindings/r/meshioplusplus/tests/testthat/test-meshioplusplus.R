@@ -1740,6 +1740,12 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   expect_true(vr$validation_reported)
   expect_true(vr$cad_to_mesh_max >= 0 && vr$cad_to_mesh_max <= 1e-9)
   expect_true(vr$mesh_to_cad_max >= vr$mesh_to_cad_p95)
+  sc <- mio_fit_cad(m, backend = "native", freeform_fit_schedule = "continuation",
+                    freeform_objective = "sdm")
+  on.exit(mio_release(sc$mesh), add = TRUE)
+  expect_equal(sc$num_faces, 6)
+  expect_error(mio_fit_cad(m, backend = "native", freeform_objective = "nope"),
+               "freeform_objective")
   if (mio_has_occt()) {
     sc <- mio_fit_cad(m, snap_junctions = TRUE, face_deviation = TRUE)
     on.exit(mio_release(sc$mesh), add = TRUE)

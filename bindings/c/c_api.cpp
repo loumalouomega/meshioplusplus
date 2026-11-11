@@ -9156,8 +9156,17 @@ static_assert(offsetof(mio_fit_cad_opts_ex2, validation_report) == 68,
               "mio_fit_cad_opts_ex2: validation_report left the former reserved32");
 static_assert(offsetof(mio_fit_cad_opts_ex2, validation_acceptance) == 72,
               "mio_fit_cad_opts_ex2: validation_acceptance left the reserved tail's start");
-static_assert(offsetof(mio_fit_cad_opts_ex2, reserved) == 80,
+static_assert(offsetof(mio_fit_cad_opts_ex2, freeform_fit_schedule) == 76,
+              "mio_fit_cad_opts_ex2: freeform_fit_schedule left the former reserved32");
+static_assert(offsetof(mio_fit_cad_opts_ex2, freeform_objective) == 80,
+              "mio_fit_cad_opts_ex2: freeform_objective left the reserved tail's start");
+static_assert(offsetof(mio_fit_cad_opts_ex2, reserved) == 88,
               "mio_fit_cad_opts_ex2: the reserved tail moved");
+static_assert(MIO_OBJECTIVE_SDM == static_cast<int>(meshioplusplus::FitCadFreeformObjective::Sdm),
+              "mio_fit_cad_objective must match FitCadFreeformObjective");
+static_assert(MIO_FIT_SCHEDULE_CONTINUATION ==
+                  static_cast<int>(meshioplusplus::FitCadFreeformFitSchedule::Continuation),
+              "mio_fit_cad_fit_schedule must match FitCadFreeformFitSchedule");
 static_assert(sizeof(mio_fit_cad_report_ex4) == 272,
               "mio_fit_cad_report_ex4 grew outside its reserved tail");
 static_assert(offsetof(mio_fit_cad_report_ex4, reserved) == 96,
@@ -11018,6 +11027,11 @@ mio_mesh* mio_fit_cad4(const mio_mesh* mesh, const char* step_path, const mio_fi
             options.mConstrainPrimitives = opts_ex2->constrain_primitives != 0;
             options.mValidationReport = opts_ex2->validation_report != 0;
             options.mValidationAcceptance = opts_ex2->validation_acceptance != 0;
+            // Out of range is refused by fit_cad, naming the option.
+            options.mFreeformFitSchedule = static_cast<meshioplusplus::FitCadFreeformFitSchedule>(
+                opts_ex2->freeform_fit_schedule);
+            options.mFreeformObjective =
+                static_cast<meshioplusplus::FitCadFreeformObjective>(opts_ex2->freeform_objective);
         }
         meshioplusplus::FitCadResult r =
             meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);

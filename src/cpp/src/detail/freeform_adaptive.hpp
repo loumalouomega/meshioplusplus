@@ -101,6 +101,10 @@ struct FreeformAdaptiveOptions {
     /// facet-normal deviation a face may show where the patch shows no noise
     /// (`surface_normal_deviation_deg`); 0 does not look.
     double mMaxNormalDeg = 0.0;
+    /// The B-spline fit's schedule and objective (`BsplineFitOptions`
+    /// `mSchedule`, `mObjective`; unreleased): 0 as before.
+    int mSchedule = 0;
+    int mObjective = 0;
 };
 
 /// The face, and how it got there.

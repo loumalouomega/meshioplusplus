@@ -2525,6 +2525,10 @@ mio_has_occt <- function() {
 #'   OpenCASCADE and a STEP file, the file read back and checked.
 #' @param validation_acceptance Whether every freeform face is also held to
 #'   those measures before it is accepted.
+#' @param freeform_fit_schedule The adaptive and general freeform faces'
+#'   B-spline fit schedule, `"legacy"` or `"continuation"`.
+#' @param freeform_objective Its objective, `"default"`, `"pdm"`, `"tdm"` or
+#'   `"sdm"`.
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
@@ -2583,7 +2587,8 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         layout_snap_to_features = TRUE,
                         validate_by_surface_sampling = TRUE,
                         constrain_primitives = FALSE, validation_report = FALSE,
-                        validation_acceptance = FALSE) {
+                        validation_acceptance = FALSE, freeform_fit_schedule = "legacy",
+                        freeform_objective = "default") {
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -2611,7 +2616,8 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
     as.numeric(layout_max_valence_deviation), as.numeric(resegment_rounds),
     isTRUE(layout_snap_to_features), isTRUE(validate_by_surface_sampling),
     isTRUE(constrain_primitives), isTRUE(validation_report),
-    isTRUE(validation_acceptance)
+    isTRUE(validation_acceptance), as.character(freeform_fit_schedule),
+    as.character(freeform_objective)
   )
 }
 

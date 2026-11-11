@@ -30755,6 +30755,32 @@ struct FitCadFaceRecord {
     double mMaxG1AngleDeg = std::numeric_limits<double>::quiet_NaN();
 };
 
+/// How a freeform face's B-spline fit spends its iterations (unreleased,
+/// doc/fit_cad_freeform_plan.md step 3).
+enum class FitCadFreeformFitSchedule : std::int32_t {
+    /// The fit as before the option existed (the default).
+    Legacy = 0,
+    /// A thin-plate weight that starts high and falls two decades whenever
+    /// parameter correction stalls, knots inserted at the residual-weighted
+    /// median of a span's bad samples, and knots removed once the targets are
+    /// met while they still are.
+    Continuation = 1,
+};
+
+/// The error a freeform face's B-spline fit minimises (unreleased, step 4).
+enum class FitCadFreeformObjective : std::int32_t {
+    /// Point distance with parameter correction, a tangent-distance step
+    /// when it stalls: as before the option existed (the default).
+    Default = 0,
+    /// Point distance with parameter correction only.
+    Pdm = 1,
+    /// A tangent-distance step first every iteration.
+    Tdm = 2,
+    /// A squared-distance step first every iteration (Wang, Pottmann and Liu
+    /// 2006, by the principal curvatures at each foot point).
+    Sdm = 3,
+};
+
 /// Which engine `fit_cad` builds the solid with (since v17.9.0).
 enum class FitCadBackend : std::int32_t {
     /// OpenCASCADE when the build carries it, else `Native`.
@@ -30917,6 +30943,13 @@ struct FitCadOptions {
     /// `kFitCadValidationNormalDeg` of the facets' unless the patch shows
     /// noise. Both backends; off by default.
     bool mValidationAcceptance = false;
+    /// The schedule of the adaptive and general freeform faces' B-spline fit
+    /// (unreleased); `Legacy` keeps every output as it was. The patch
+    /// network and the hierarchical refinement keep their own.
+    FitCadFreeformFitSchedule mFreeformFitSchedule = FitCadFreeformFitSchedule::Legacy;
+    /// The objective of that fit (unreleased); `Default` keeps every output
+    /// as it was.
+    FitCadFreeformObjective mFreeformObjective = FitCadFreeformObjective::Default;
 };
 
 /// With `FitCadOptions::mValidationAcceptance`: the largest angle, in degrees,
@@ -44379,6 +44412,24 @@ struct BsplineEval {
  */
 void bspline_eval(const BsplineSurface& rS, double U, double V, int NDer, BsplineEval& rOut);
 
+/// A surface point's principal curvatures and directions (unreleased).
+struct BsplineCurvature {
+    double mN[3] = {0.0, 0.0, 0.0};   ///< the unit normal, along `Su x Sv`
+    double mK1 = 0.0, mK2 = 0.0;      ///< the curvatures, `mK1 <= mK2`
+    double mT1[3] = {0.0, 0.0, 0.0};  ///< the unit direction of `mK1`
+    double mT2[3] = {0.0, 0.0, 0.0};  ///< the unit direction of `mK2`
+};
+
+/**
+ * @brief The principal curvatures and directions at a point evaluated with
+ * second derivatives (@p rE from `bspline_eval(..., 2, ...)`), from the first
+ * and second fundamental forms. A curvature is positive where the surface
+ * bends towards the normal: its centre of curvature lies at `S + n / k`. At
+ * an umbilic the directions are `Su` and `n x Su`. False where the
+ * parametrisation is singular (`Su x Sv` vanishes).
+ */
+bool bspline_principal_curvatures(const BsplineEval& rE, BsplineCurvature& rOut);
+
 /**
  * @brief The collocation row of a sample at `(U, V)`: the `(p + 1)(q + 1)`
  * pole indices whose basis functions are non-zero there, and those values.
@@ -45022,6 +45073,26 @@ struct BsplineFitOptions {
     /// The weight of a triangle's centroid against a vertex's in the fits: a
     /// flat facet's centroid lies its chordal sag off a smooth surface.
     double mCentroidWeight = 0.25;
+    /// The schedule (unreleased, doc/fit_cad_freeform_plan.md step 3). 0 (the
+    /// default) is the fit as before. 1, continuation: the thin-plate weight
+    /// starts at `mContinuationStart` times the sample count and falls two
+    /// decades at a time to `mSmoothing` whenever parameter correction stops
+    /// gaining 10%, before any knot is inserted (the falls are not counted
+    /// against `mMaxIterations`); a knot goes in at the
+    /// residual-weighted median of a span's bad samples, not its middle; and
+    /// once the targets are met, interior knots are removed, the least loaded
+    /// first, while the refitted surface still meets them.
+    int mSchedule = 0;
+    /// The thin-plate weight a continuation starts from, relative to the
+    /// sample count.
+    double mContinuationStart = 1e-4;
+    /// The objective (unreleased, step 4). 0 (the default) as before: point
+    /// distance minimisation with parameter correction, a tangent-distance
+    /// step when it stalls. 1 point distance only. 2 a tangent-distance step
+    /// tried first every iteration. 3 a squared-distance step (Wang, Pottmann
+    /// and Liu 2006, extended to surfaces by the principal curvatures at each
+    /// foot point) tried first every iteration.
+    int mObjective = 0;
 };
 
 /// The fitted surface and how it got there.
@@ -45033,6 +45104,7 @@ struct BsplineFitResult {
     double mRmsError = 0.0;
     int mIterations = 0;
     int mRefinements = 0;  ///< knot insertion rounds
+    int mRemovals = 0;     ///< knots removed (`mSchedule` 1)
     /// The largest sample distance after each kept state, non-increasing.
     std::vector<double> mHistory;
     /// The vertices' foot-point parameters on the final surface.
@@ -51223,6 +51295,10 @@ struct FreeformAdaptiveOptions {
     /// facet-normal deviation a face may show where the patch shows no noise
     /// (`surface_normal_deviation_deg`); 0 does not look.
     double mMaxNormalDeg = 0.0;
+    /// The B-spline fit's schedule and objective (`BsplineFitOptions`
+    /// `mSchedule`, `mObjective`; unreleased): 0 as before.
+    int mSchedule = 0;
+    int mObjective = 0;
 };
 
 /// The face, and how it got there.
@@ -63110,7 +63186,7 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "FreeformG1ToleranceDeg", "FreeformMaxControlPoints", "LayoutTargetPatchSize",
           "LayoutMaxValenceDeviation", "ResegmentRounds", "LayoutSnapToFeatures",
           "ValidateBySurfaceSampling", "ConstrainPrimitives", "ValidationReport",
-          "ValidationAcceptance"}},
+          "ValidationAcceptance", "FreeformFitSchedule", "FreeformObjective"}},
         {"RefinePatches",
          {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
           "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
@@ -79474,6 +79550,7 @@ CurveFitResult bspline_curve_fit(const std::vector<PatchVec>& rPts,
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -79589,9 +79666,15 @@ bool bsf_pdm(BsplineSurface& rS, const BsfSamples& rSamples, double Lambda, doub
 
 // One tangent distance minimisation step with damping Mu (Wang, Pottmann and
 // Liu 2006): min sum ((S(u_k) - x_k) . n_k)^2 + Mu |S(u_k) - x_k|^2
-// + Lambda * thin plate, the three coordinates coupled.
-bool bsf_tdm(BsplineSurface& rS, const BsfSamples& rSamples, double Lambda, double Empty,
-             double Mu) {
+// + Lambda * thin plate, the three coordinates coupled. With `Sdm`, the
+// squared-distance step of the same paper, extended to surfaces: each
+// sample's error is (S - x)^T M (S - x) with M = n n^T + sum_i a_i t_i t_i^T
+// over the principal directions t_i at its foot point, a_i = d k_i /
+// (d k_i - 1) on the side away from the centre of curvature (d k_i < 0,
+// d = (x - S) . n) and 0 towards it -- the second-order approximation of the
+// squared distance to the surface the paper derives for a curve.
+bool bsf_tdm(BsplineSurface& rS, const BsfSamples& rSamples, double Lambda, double Empty, double Mu,
+             bool Sdm = false) {
     const std::size_t np = rS.NumPoles();
     const SkylineMatrix pole_env = bspline_normal_envelope(rS);
     std::vector<std::size_t> first(3 * np);
@@ -79604,7 +79687,7 @@ bool bsf_tdm(BsplineSurface& rS, const BsfSamples& rSamples, double Lambda, doub
     std::vector<double> vals;
     for (std::size_t k = 0; k < rSamples.Size(); ++k) {
         BsplineEval e;
-        bspline_eval(rS, rSamples.mU[k], rSamples.mV[k], 1, e);
+        bspline_eval(rS, rSamples.mU[k], rSamples.mV[k], Sdm ? 2 : 1, e);
         double n[3] = {e.mSu[1] * e.mSv[2] - e.mSu[2] * e.mSv[1],
                        e.mSu[2] * e.mSv[0] - e.mSu[0] * e.mSv[2],
                        e.mSu[0] * e.mSv[1] - e.mSu[1] * e.mSv[0]};
@@ -79618,6 +79701,50 @@ bool bsf_tdm(BsplineSurface& rS, const BsfSamples& rSamples, double Lambda, doub
         if (w == 0.0)
             continue;
         bspline_row(rS, rSamples.mU[k], rSamples.mV[k], cols, vals);
+        if (Sdm) {
+            // The sample's metric: the normal's, and the principal directions'
+            // where the sample lies on the far side of the centre of curvature.
+            double m[3][3];
+            for (std::size_t c = 0; c < 3; ++c)
+                for (std::size_t d = 0; d < 3; ++d)
+                    m[c][d] = n[c] * n[d];
+            BsplineCurvature kc;
+            if (bspline_principal_curvatures(e, kc)) {
+                const double dist =
+                    (x[0] - e.mS[0]) * n[0] + (x[1] - e.mS[1]) * n[1] + (x[2] - e.mS[2]) * n[2];
+                const double ks[2] = {kc.mK1, kc.mK2};
+                const double* ts[2] = {kc.mT1, kc.mT2};
+                for (int i = 0; i < 2; ++i) {
+                    const double dk = dist * ks[i];
+                    if (!(dk < 0.0))
+                        continue;
+                    const double a = dk / (dk - 1.0);
+                    for (std::size_t c = 0; c < 3; ++c)
+                        for (std::size_t d = 0; d < 3; ++d)
+                            m[c][d] += a * ts[i][c] * ts[i][d];
+                }
+            }
+            double mx[3];
+            for (std::size_t c = 0; c < 3; ++c)
+                mx[c] = m[c][0] * x[0] + m[c][1] * x[1] + m[c][2] * x[2];
+            for (std::size_t ia = 0; ia < cols.size(); ++ia) {
+                for (std::size_t c = 0; c < 3; ++c)
+                    rhs[3 * cols[ia] + c] += w * vals[ia] * (mx[c] + Mu * x[c]);
+                for (std::size_t ib = 0; ib < cols.size(); ++ib) {
+                    if (cols[ib] > cols[ia])
+                        continue;
+                    const double bb = w * vals[ia] * vals[ib];
+                    for (std::size_t c = 0; c < 3; ++c)
+                        for (std::size_t d = 0; d < 3; ++d) {
+                            const std::size_t r = 3 * cols[ia] + c, s2 = 3 * cols[ib] + d;
+                            if (s2 > r)
+                                continue;
+                            a.At(r, s2) += bb * (m[c][d] + (c == d ? Mu : 0.0));
+                        }
+                }
+            }
+            continue;
+        }
         for (std::size_t ia = 0; ia < cols.size(); ++ia) {
             for (std::size_t c = 0; c < 3; ++c)
                 rhs[3 * cols[ia] + c] += w * vals[ia] * (n[c] * xn + Mu * x[c]);
@@ -79663,6 +79790,38 @@ std::vector<double> bsf_insert(const std::vector<double>& rK, int P,
     out.insert(out.end(), mids.begin(), mids.end());
     std::sort(out.begin(), out.end());
     (void)P;
+    return out;
+}
+
+// The knot vector with the given values inserted.
+std::vector<double> bsf_insert_at(const std::vector<double>& rK, const std::vector<double>& rAt) {
+    std::vector<double> out = rK;
+    out.insert(out.end(), rAt.begin(), rAt.end());
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// The weighted median of (value, weight) pairs; the pairs are sorted.
+double bsf_weighted_median(std::vector<std::pair<double, double>> rPairs) {
+    std::sort(rPairs.begin(), rPairs.end());
+    double total = 0.0;
+    for (const auto& p : rPairs)
+        total += p.second;
+    double acc = 0.0;
+    for (const auto& p : rPairs) {
+        acc += p.second;
+        if (acc >= 0.5 * total)
+            return p.first;
+    }
+    return rPairs.back().first;
+}
+
+// The knot vector without one interior knot value (one copy of it).
+std::vector<double> bsf_remove(const std::vector<double>& rK, double Value) {
+    std::vector<double> out = rK;
+    const auto it = std::find(out.begin(), out.end(), Value);
+    if (it != out.end())
+        out.erase(it);
     return out;
 }
 
@@ -79740,6 +79899,15 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
     smp.mNumData = smp.Size();
     const double lambda = rOptions.mSmoothing * static_cast<double>(smp.Size());
     const double empty = rOptions.mEmptySmoothing * static_cast<double>(smp.Size());
+    // The schedule (unreleased): with continuation the thin-plate weight in
+    // force starts high and falls to `lambda` two decades at a time, each
+    // fall an iteration the budget does not count; as before otherwise.
+    const bool cont = rOptions.mSchedule == 1;
+    double lam =
+        cont ? std::max(lambda, rOptions.mContinuationStart * static_cast<double>(smp.Size()))
+             : lambda;
+    const double gain = 0.9;
+    int extra_iterations = 0;
 
     // Ghost samples where the parameter square holds no data (the margin, a
     // disc's corners): a coarse, smooth fit evaluated there, lightly weighted,
@@ -79802,7 +79970,7 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
     std::size_t n0 = std::min(std::max(rOptions.mStartPoles, pmin), maxp);
     BsplineSurface s = bsf_shape(p, bspline_clamped_knots(p, n0, 0.0, 1.0),
                                  bspline_clamped_knots(p, n0, 0.0, 1.0));
-    if (!bsf_pdm(s, smp, lambda, empty))
+    if (!bsf_pdm(s, smp, lam, empty))
         return out;
     BsfErrors err = bsf_project(s, smp, tol / ctol);
     out.mHistory.push_back(err.Worst());
@@ -79820,18 +79988,39 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
         }
     };
     double mu = 0.1;
-    for (int it = 1; it <= rOptions.mMaxIterations && !met(best_err); ++it) {
+    for (int it = 1; it <= rOptions.mMaxIterations + extra_iterations && !met(best_err); ++it) {
         out.mIterations = it;
         const double before = err.Worst();
         bool progressed = false;
+        // 0. A tangent- or squared-distance step first, when the objective
+        // asks for one every iteration (unreleased).
+        if ((rOptions.mObjective == 2 || rOptions.mObjective == 3) &&
+            s.NumPoles() <= kBsfTdmMaxPoles) {
+            BsplineSurface t = s;
+            BsfSamples ts = smp;
+            if (bsf_tdm(t, ts, lam, empty, mu, rOptions.mObjective == 3)) {
+                const BsfErrors te = bsf_project(t, ts, tol / ctol);
+                if (te.Worst() < err.Worst()) {
+                    progressed = te.Worst() < gain * before;
+                    s = std::move(t);
+                    smp = std::move(ts);
+                    err = te;
+                    mu = std::max(mu * 0.5, 1e-2);
+                } else {
+                    mu *= 10.0;
+                }
+            } else {
+                mu *= 10.0;
+            }
+        }
         // 1. Point distance minimisation at the corrected parameters.
         {
             BsplineSurface t = s;
             BsfSamples ts = smp;
-            if (bsf_pdm(t, ts, lambda, empty)) {
+            if (bsf_pdm(t, ts, lam, empty)) {
                 const BsfErrors te = bsf_project(t, ts, tol / ctol);
                 if (te.Worst() < err.Worst()) {
-                    progressed = te.Worst() < 0.9 * before;
+                    progressed = progressed || te.Worst() < gain * before;
                     s = std::move(t);
                     smp = std::move(ts);
                     err = te;
@@ -79839,23 +80028,41 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
             }
         }
         // 2. Tangent distance minimisation once that stalls.
-        if (!progressed && !met(err) && s.NumPoles() <= kBsfTdmMaxPoles) {
+        if (rOptions.mObjective == 0 && !progressed && !met(err) &&
+            s.NumPoles() <= kBsfTdmMaxPoles) {
             for (int attempt = 0; attempt < 1 && !progressed; ++attempt) {
                 BsplineSurface t = s;
                 BsfSamples ts = smp;
-                if (!bsf_tdm(t, ts, lambda, empty, mu)) {
+                if (!bsf_tdm(t, ts, lam, empty, mu)) {
                     mu *= 10.0;
                     continue;
                 }
                 const BsfErrors te = bsf_project(t, ts, tol / ctol);
                 if (te.Worst() < err.Worst()) {
-                    progressed = te.Worst() < 0.9 * before;
+                    progressed = te.Worst() < gain * before;
                     s = std::move(t);
                     smp = std::move(ts);
                     err = te;
                     mu = std::max(mu * 0.5, 1e-2);
                 } else {
                     mu *= 10.0;
+                }
+            }
+        }
+        // 2b. Continuation: a stalled fit at a thin-plate weight above the
+        // floor goes on a decade lower before any knot is inserted.
+        if (cont && !progressed && !met(err) && lam > lambda) {
+            lam = std::max(lambda, 0.01 * lam);
+            ++extra_iterations;
+            progressed = true;
+            BsplineSurface t = s;
+            BsfSamples ts = smp;
+            if (bsf_pdm(t, ts, lam, empty)) {
+                const BsfErrors te = bsf_project(t, ts, tol / ctol);
+                if (te.Worst() < err.Worst()) {
+                    s = std::move(t);
+                    smp = std::move(ts);
+                    err = te;
                 }
             }
         }
@@ -79873,6 +80080,9 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
                 ++in_cell[cell_of[k]];
             }
             std::map<std::size_t, double> bad_u, bad_v;
+            // With continuation, each bad span's samples, weighted by their
+            // excess, place its new knot.
+            std::map<std::size_t, std::vector<std::pair<double, double>>> at_u, at_v;
             for (std::size_t k = 0; k < smp.mNumData; ++k) {
                 const double limit = k < smp.mNumVertices ? tol : ctol;
                 if (!(err.mDist[k] > limit) || in_cell[cell_of[k]] < kBsfMinCellSamples)
@@ -79880,6 +80090,10 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
                 const std::size_t su = cell_of[k].first, sv = cell_of[k].second;
                 bad_u[su] = std::max(bad_u[su], err.mDist[k]);
                 bad_v[sv] = std::max(bad_v[sv], err.mDist[k]);
+                if (cont) {
+                    at_u[su].emplace_back(smp.mU[k], err.mDist[k] - limit);
+                    at_v[sv].emplace_back(smp.mV[k], err.mDist[k] - limit);
+                }
             }
             // The worst spans first, within the pole budget.
             const auto pick = [&](const std::map<std::size_t, double>& rBad, std::size_t N) {
@@ -79906,10 +80120,23 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
             }
             if (su.empty() && sv.empty())
                 break;  // the pole budget is spent
+            const auto placed =
+                [&](const std::vector<double>& rK, const std::vector<std::size_t>& rSp,
+                    std::map<std::size_t, std::vector<std::pair<double, double>>>& rAt) {
+                    std::vector<double> at;
+                    for (std::size_t sp : rSp) {
+                        const double a = rK[sp], b = rK[sp + 1];
+                        const double m =
+                            rAt[sp].empty() ? 0.5 * (a + b) : bsf_weighted_median(rAt[sp]);
+                        at.push_back(std::clamp(m, a + 0.15 * (b - a), b - 0.15 * (b - a)));
+                    }
+                    return bsf_insert_at(rK, at);
+                };
             BsplineSurface t =
-                bsf_shape(p, bsf_insert(s.mKnotsU, p, su), bsf_insert(s.mKnotsV, p, sv));
+                cont ? bsf_shape(p, placed(s.mKnotsU, su, at_u), placed(s.mKnotsV, sv, at_v))
+                     : bsf_shape(p, bsf_insert(s.mKnotsU, p, su), bsf_insert(s.mKnotsV, p, sv));
             BsfSamples ts = smp;
-            if (!bsf_pdm(t, ts, lambda, empty))
+            if (!bsf_pdm(t, ts, lam, empty))
                 break;
             err = bsf_project(t, ts, tol / ctol);
             s = std::move(t);
@@ -79925,6 +80152,70 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
     s = std::move(best);
     smp = std::move(best_smp);
     err = best_err;
+
+    // Continuation's last stage: interior knots removed while the refitted
+    // surface still meets the targets, the knot whose spans hold the least
+    // residual first (unreleased).
+    if (cont && met(err)) {
+        for (int pass = 0; pass < 64; ++pass) {
+            // Each distinct interior knot of both directions with the largest
+            // residual of the samples in its two spans.
+            std::vector<std::tuple<double, int, double>> cand;  // (load, dir, knot)
+            for (int dir = 0; dir < 2; ++dir) {
+                const std::vector<double>& k = dir == 0 ? s.mKnotsU : s.mKnotsV;
+                const std::size_t n = dir == 0 ? s.mNu : s.mNv;
+                if (n <= pmin)
+                    continue;
+                std::vector<double> inner(k.begin() + p + 1, k.begin() + static_cast<long>(n));
+                inner.erase(std::unique(inner.begin(), inner.end()), inner.end());
+                for (std::size_t i = 0; i < inner.size(); ++i) {
+                    const double lo_k = i == 0 ? k[static_cast<std::size_t>(p)] : inner[i - 1];
+                    const double hi_k = i + 1 < inner.size() ? inner[i + 1] : k[n];
+                    double load = 0.0;
+                    for (std::size_t q = 0; q < smp.mNumData; ++q) {
+                        const double t = dir == 0 ? smp.mU[q] : smp.mV[q];
+                        if (t >= lo_k && t <= hi_k)
+                            load = std::max(load, err.mDist[q]);
+                    }
+                    cand.emplace_back(load, dir, inner[i]);
+                }
+            }
+            std::sort(cand.begin(), cand.end());
+            bool removed = false;
+            for (const auto& [load, dir, knot] : cand) {
+                (void)load;
+                BsplineSurface t = bsf_shape(p, dir == 0 ? bsf_remove(s.mKnotsU, knot) : s.mKnotsU,
+                                             dir == 1 ? bsf_remove(s.mKnotsV, knot) : s.mKnotsV);
+                BsfSamples ts = smp;
+                if (!bsf_pdm(t, ts, lambda, empty))
+                    continue;
+                BsfErrors te = bsf_project(t, ts, tol / ctol);
+                // One more correction and refit, as the loop would take.
+                {
+                    BsplineSurface t2 = t;
+                    BsfSamples ts2 = ts;
+                    if (bsf_pdm(t2, ts2, lambda, empty)) {
+                        const BsfErrors te2 = bsf_project(t2, ts2, tol / ctol);
+                        if (te2.Worst() < te.Worst()) {
+                            t = std::move(t2);
+                            ts = std::move(ts2);
+                            te = te2;
+                        }
+                    }
+                }
+                if (!met(te))
+                    continue;
+                s = std::move(t);
+                smp = std::move(ts);
+                err = te;
+                ++out.mRemovals;
+                removed = true;
+                break;  // the loads changed: rank again
+            }
+            if (!removed)
+                break;
+        }
+    }
 
     out.mOk = met(err);
     out.mSurface = std::move(s);
@@ -80310,6 +80601,60 @@ double bspline_project(const BsplineSurface& rS, const double* pP, double& rU, d
             break;
     }
     return best;
+}
+
+bool bspline_principal_curvatures(const BsplineEval& rE, BsplineCurvature& rOut) {
+    const double* su = rE.mSu;
+    const double* sv = rE.mSv;
+    double n[3] = {su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
+                   su[0] * sv[1] - su[1] * sv[0]};
+    const double ln = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    if (!(ln > 0.0))
+        return false;
+    for (double& x : n)
+        x /= ln;
+    const auto dot = [](const double* pA, const double* pB) {
+        return pA[0] * pB[0] + pA[1] * pB[1] + pA[2] * pB[2];
+    };
+    const double E = dot(su, su), F = dot(su, sv), G = dot(sv, sv);
+    const double L = dot(rE.mSuu, n), M = dot(rE.mSuv, n), N = dot(rE.mSvv, n);
+    const double det = E * G - F * F;
+    if (!(det > 0.0))
+        return false;
+    // det(II - k I) = 0: k = H -+ sqrt(H^2 - K).
+    const double H = 0.5 * (E * N - 2.0 * F * M + G * L) / det;
+    const double K = (L * N - M * M) / det;
+    const double disc = std::sqrt(std::max(0.0, H * H - K));
+    rOut.mK1 = H - disc;
+    rOut.mK2 = H + disc;
+    for (int c = 0; c < 3; ++c)
+        rOut.mN[c] = n[c];
+    // A direction (a, b) in the null space of II - k I, as a unit tangent.
+    const auto direction = [&](double k, double* pT) {
+        double a1 = M - k * F, b1 = -(L - k * E);  // from the first row
+        double a2 = N - k * G, b2 = -(M - k * F);  // from the second
+        const double l1 = a1 * a1 * E + 2.0 * a1 * b1 * F + b1 * b1 * G;
+        const double l2 = a2 * a2 * E + 2.0 * a2 * b2 * F + b2 * b2 * G;
+        const double a = l1 >= l2 ? a1 : a2, b = l1 >= l2 ? b1 : b2;
+        double t[3] = {a * su[0] + b * sv[0], a * su[1] + b * sv[1], a * su[2] + b * sv[2]};
+        const double lt = std::sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+        if (!(lt > 1e-12 * std::sqrt(E + G)))
+            return false;
+        for (int c = 0; c < 3; ++c)
+            pT[c] = t[c] / lt;
+        return true;
+    };
+    const bool umbilic = disc <= 1e-12 * (std::abs(H) + 1e-300);
+    if (umbilic || !direction(rOut.mK1, rOut.mT1)) {
+        const double lu = std::sqrt(E);
+        for (int c = 0; c < 3; ++c)
+            rOut.mT1[c] = su[c] / lu;
+    }
+    // The second direction completes the frame, so the two stay orthogonal.
+    rOut.mT2[0] = n[1] * rOut.mT1[2] - n[2] * rOut.mT1[1];
+    rOut.mT2[1] = n[2] * rOut.mT1[0] - n[0] * rOut.mT1[2];
+    rOut.mT2[2] = n[0] * rOut.mT1[1] - n[1] * rOut.mT1[0];
+    return true;
 }
 
 }  // namespace detail
@@ -93296,6 +93641,8 @@ FreeformAdaptiveResult freeform_adaptive_fit(const std::vector<PatchVec>& rPts,
             o.mMaxIterations = rungs[r].mIterations;
             o.mMaxTotalPoles = rOptions.mMaxTotalPoles;
             o.mMargin = rOptions.mMargin;
+            o.mSchedule = rOptions.mSchedule;
+            o.mObjective = rOptions.mObjective;
             // THB (experimental) where it meets the target, else knot lines,
             // so it never loses a face the knots would keep.
             ThbFitInfo thb;
@@ -244344,6 +244691,8 @@ detail::FreeformAdaptiveOptions fcn_adaptive_options(const FitCadOptions& rOptio
         o.mValidate = true;
         o.mMaxNormalDeg = kFitCadValidationNormalDeg;
     }
+    o.mSchedule = static_cast<int>(rOptions.mFreeformFitSchedule);
+    o.mObjective = static_cast<int>(rOptions.mFreeformObjective);
     return o;
 }
 
@@ -245517,6 +245866,12 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
                                     "layout_max_valence_deviation must be 1 to 3");
     if (rOptions.mResegmentRounds < 0)
         throw std::invalid_argument(std::string(kFcnPrefix) + "resegment_rounds must be >= 0");
+    if (static_cast<std::uint32_t>(rOptions.mFreeformFitSchedule) > 1u)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "freeform_fit_schedule must be 'legacy' or 'continuation'");
+    if (static_cast<std::uint32_t>(rOptions.mFreeformObjective) > 3u)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "freeform_objective must be 'default', 'pdm', 'tdm' or 'sdm'");
     // The freeform modes build on the general fit, and their faces run on
     // past their patches so an edge with an analytic neighbour is still an
     // intersection.
@@ -272527,6 +272882,10 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             keyword("ExtraordinaryVertex", "g1x", {"g0", "g1", "g1x", "g1xx"}));
         opts.mLocalRefine =
             static_cast<FitCadLocalRefine>(keyword("LocalRefine", "knots", {"knots", "thb"}));
+        opts.mFreeformFitSchedule = static_cast<FitCadFreeformFitSchedule>(
+            keyword("FreeformFitSchedule", "legacy", {"legacy", "continuation"}));
+        opts.mFreeformObjective = static_cast<FitCadFreeformObjective>(
+            keyword("FreeformObjective", "default", {"default", "pdm", "tdm", "sdm"}));
         opts.mFreeformG1ToleranceDeg = pipe_number(rStep, "FreeformG1ToleranceDeg", 1.0);
         opts.mFreeformMaxControlPoints =
             static_cast<std::int64_t>(pipe_number(rStep, "FreeformMaxControlPoints", 400.0));
@@ -310248,6 +310607,8 @@ FcHandle<Geom_Surface> fc_freeform_general(const std::vector<gp_Pnt>& rPts,
     o.mSmoothing = rOptions.mFreeformSmoothing;
     o.mMaxPoles = static_cast<std::size_t>(rOptions.mMaxFreeformPoles);
     o.mMaxIterations = static_cast<int>(rOptions.mMaxFreeformIterations);
+    o.mSchedule = static_cast<int>(rOptions.mFreeformFitSchedule);
+    o.mObjective = static_cast<int>(rOptions.mFreeformObjective);
     const detail::BsplineFitResult fit = detail::bspline_fit_patch(pts, tris, par.mU, par.mV, o);
     log::debug(
         "fit_cad: general freeform fit of a {}-triangle patch: {} after {} iteration(s), "

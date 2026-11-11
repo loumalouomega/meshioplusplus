@@ -2109,6 +2109,11 @@ end
     @test 0.0 <= validated.cad_to_mesh_max <= 1e-9
     @test validated.mesh_to_cad_max >= validated.mesh_to_cad_p95
     close(validated.mesh)
+    scheduled = fit_cad(cube; backend="native", freeform_fit_schedule="continuation",
+                        freeform_objective="sdm")
+    @test scheduled.num_faces == 6
+    close(scheduled.mesh)
+    @test_throws ArgumentError fit_cad(cube; backend="native", freeform_objective="nope")
     if has_occt()
         snapped = fit_cad(cube; snap_junctions=true, face_deviation=true)
         @test snapped.valid && snapped.closed

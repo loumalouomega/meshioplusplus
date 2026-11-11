@@ -1138,7 +1138,8 @@ static int32_t oc_fit_cad_keyword(const mxArray *value, const char *name,
  *         layout_target_patch_size, layout_max_valence_deviation,
  *         resegment_rounds, layout_snap_to_features,
  *         validate_by_surface_sampling, constrain_primitives, validation_report,
- *         validation_acceptance) -- 48 arguments, R's order exactly. */
+ *         validation_acceptance, freeform_fit_schedule, freeform_objective) -- 50
+ *         arguments, R's order exactly. */
 static mxArray *O_mio_fit_cad(const mxArray **a) {
     mio_fit_cad_opts opts;
     mio_fit_cad_opts_ex opts_ex;
@@ -1152,6 +1153,8 @@ static mxArray *O_mio_fit_cad(const mxArray **a) {
     static const char *const params[] = {"auto", "projection", "lscm", "harmonic", NULL};
     static const char *const evs[] = {"g0", "g1", "g1x", "g1xx", NULL};
     static const char *const refines[] = {"knots", "thb", NULL};
+    static const char *const schedules[] = {"legacy", "continuation", NULL};
+    static const char *const objectives[] = {"default", "pdm", "tdm", "sdm", NULL};
 
     mio_fit_cad_opts_init(&opts);
     mio_fit_cad_opts_ex_init(&opts_ex);
@@ -1161,6 +1164,8 @@ static mxArray *O_mio_fit_cad(const mxArray **a) {
         oc_fit_cad_keyword(a[35], "freeform_parameterization", params);
     opts_ex2.extraordinary_vertex = oc_fit_cad_keyword(a[36], "extraordinary_vertex", evs);
     opts_ex2.local_refine = oc_fit_cad_keyword(a[37], "local_refine", refines);
+    opts_ex2.freeform_fit_schedule = oc_fit_cad_keyword(a[48], "freeform_fit_schedule", schedules);
+    opts_ex2.freeform_objective = oc_fit_cad_keyword(a[49], "freeform_objective", objectives);
     opts_ex2.freeform_g1_tolerance_deg = mio_o_double(a[38], "freeform_g1_tolerance_deg");
     opts_ex2.freeform_max_control_points = mio_o_int64(a[39], "freeform_max_control_points");
     opts_ex2.layout_target_patch_size = mio_o_double(a[40], "layout_target_patch_size");
@@ -2154,7 +2159,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_fit_primitives, 14),
     MIO_O_ENTRY(mio_has_occt, 0),
     MIO_O_ENTRY(mio_refine_patches, 13),
-    MIO_O_ENTRY(mio_fit_cad, 48),
+    MIO_O_ENTRY(mio_fit_cad, 50),
     MIO_O_ENTRY(mio_region_adjacency, 2),
     MIO_O_ENTRY(mio_find_interface, 9),
     MIO_O_ENTRY(mio_contact_pairs, 6),

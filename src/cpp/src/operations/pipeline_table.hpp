@@ -82,7 +82,7 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "FreeformG1ToleranceDeg", "FreeformMaxControlPoints", "LayoutTargetPatchSize",
           "LayoutMaxValenceDeviation", "ResegmentRounds", "LayoutSnapToFeatures",
           "ValidateBySurfaceSampling", "ConstrainPrimitives", "ValidationReport",
-          "ValidationAcceptance"}},
+          "ValidationAcceptance", "FreeformFitSchedule", "FreeformObjective"}},
         {"RefinePatches",
          {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
           "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},

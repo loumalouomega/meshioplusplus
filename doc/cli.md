@@ -1680,6 +1680,8 @@ meshioplusplus to-cad [options] INFILE OUTFILE.step
 | `--constrain-primitives` | Fit related primitives together: coaxial surfaces share one axis, parallel and perpendicular planes and nearly equal radii are made exact ([constrained primitives](/fit_cad#constrained-primitives)) |
 | `--validation-report` | Measure the solid against the skin both ways, the normal deviation and the STEP file read back ([validation report](/fit_cad#validation-report)) |
 | `--validation-acceptance` | Hold every freeform face to the validation measures before accepting it |
+| `--freeform-fit-schedule legacy\|continuation` | The freeform B-spline fit's schedule ([the fit's schedule and objective](/fit_cad#the-fit-s-schedule-and-objective)) |
+| `--freeform-objective default\|pdm\|tdm\|sdm` | The error that fit minimises |
 | `--mesh-out FILE` | Also write the re-meshed solid |
 | `--cad-json FILE` | Also write the solid as [Kratos CAD JSON](formats/cad_json.md) (its faces as trimmed NURBS) |
 | `--json`, `-q/--quiet` | Machine-readable report, or no summary |

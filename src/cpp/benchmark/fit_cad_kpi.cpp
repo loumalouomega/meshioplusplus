@@ -122,6 +122,20 @@ bool kpi_option(FitCadOptions& rO, const std::string& rKey, const std::string& r
                  o.mLocalRefine = v == "thb" ? meshioplusplus::FitCadLocalRefine::Thb
                                              : meshioplusplus::FitCadLocalRefine::Knots;
              }},
+            {"freeform_fit_schedule",
+             [](FitCadOptions& o, const std::string& v, bool) {
+                 o.mFreeformFitSchedule =
+                     v == "continuation" ? meshioplusplus::FitCadFreeformFitSchedule::Continuation
+                                         : meshioplusplus::FitCadFreeformFitSchedule::Legacy;
+             }},
+            {"freeform_objective",
+             [](FitCadOptions& o, const std::string& v, bool) {
+                 o.mFreeformObjective = v == "pdm"   ? meshioplusplus::FitCadFreeformObjective::Pdm
+                                        : v == "tdm" ? meshioplusplus::FitCadFreeformObjective::Tdm
+                                        : v == "sdm"
+                                            ? meshioplusplus::FitCadFreeformObjective::Sdm
+                                            : meshioplusplus::FitCadFreeformObjective::Default;
+             }},
             {"resegment_rounds", [](FitCadOptions& o, const std::string& v,
                                     bool) { o.mResegmentRounds = std::stoll(v); }},
         };

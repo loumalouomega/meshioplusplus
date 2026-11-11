@@ -8360,6 +8360,8 @@ TEST(CApi, FitCad3FreeformModes) {
     mio_fit_cad_opts_ex2_init(&ex2);
     EXPECT_EQ(ex2.validation_report, 0);
     EXPECT_EQ(ex2.validation_acceptance, 0);
+    EXPECT_EQ(ex2.freeform_fit_schedule, MIO_FIT_SCHEDULE_LEGACY);
+    EXPECT_EQ(ex2.freeform_objective, MIO_OBJECTIVE_DEFAULT);
     mio_fit_cad_report_ex4 report_ex4;
     skin = mio_fit_cad4(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, nullptr,
                         &report_ex4);
@@ -8379,6 +8381,19 @@ TEST(CApi, FitCad3FreeformModes) {
     for (int64_t r : report_ex4.reserved)
         EXPECT_EQ(r, 0);
     mio_mesh_free(skin);
+    // The fit's schedule and objective (unreleased): in range they reach the
+    // core, out of range they are refused by name.
+    ex2.freeform_fit_schedule = MIO_FIT_SCHEDULE_CONTINUATION;
+    ex2.freeform_objective = MIO_OBJECTIVE_SDM;
+    skin =
+        mio_fit_cad4(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, nullptr, nullptr);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    mio_mesh_free(skin);
+    ex2.freeform_objective = 7;
+    EXPECT_EQ(
+        mio_fit_cad4(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, nullptr, nullptr),
+        nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("freeform_objective"), std::string::npos);
     mio_mesh_free(m);
 }
 

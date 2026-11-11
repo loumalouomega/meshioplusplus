@@ -430,6 +430,8 @@ detail::FreeformAdaptiveOptions fcn_adaptive_options(const FitCadOptions& rOptio
         o.mValidate = true;
         o.mMaxNormalDeg = kFitCadValidationNormalDeg;
     }
+    o.mSchedule = static_cast<int>(rOptions.mFreeformFitSchedule);
+    o.mObjective = static_cast<int>(rOptions.mFreeformObjective);
     return o;
 }
 
@@ -1603,6 +1605,12 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
                                     "layout_max_valence_deviation must be 1 to 3");
     if (rOptions.mResegmentRounds < 0)
         throw std::invalid_argument(std::string(kFcnPrefix) + "resegment_rounds must be >= 0");
+    if (static_cast<std::uint32_t>(rOptions.mFreeformFitSchedule) > 1u)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "freeform_fit_schedule must be 'legacy' or 'continuation'");
+    if (static_cast<std::uint32_t>(rOptions.mFreeformObjective) > 3u)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "freeform_objective must be 'default', 'pdm', 'tdm' or 'sdm'");
     // The freeform modes build on the general fit, and their faces run on
     // past their patches so an edge with an analytic neighbour is still an
     // intersection.
