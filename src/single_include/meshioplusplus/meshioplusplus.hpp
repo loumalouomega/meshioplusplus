@@ -120118,6 +120118,7 @@ std::vector<std::uint8_t> tet_flip_boundary_mask(std::size_t N,
 // ===== begin src/cpp/src/detail/tet_remesh.cpp =====
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <numeric>
 #include <stdexcept>
 #include <string>
@@ -227559,6 +227560,8 @@ void ndarray_heap_free(void* pPtr) noexcept {
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>

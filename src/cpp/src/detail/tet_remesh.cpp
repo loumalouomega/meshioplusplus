@@ -17,6 +17,7 @@
 // System includes
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <numeric>
 #include <stdexcept>
 #include <string>
