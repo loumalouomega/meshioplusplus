@@ -142,6 +142,49 @@ TEST(BrepDeviation, NormalDeviationSeesATiltedFacet) {
     EXPECT_NEAR(d.mCadToMeshMax, 0.2 / std::sqrt(1.04), 1e-9);
 }
 
+// A face with a hole and a second face filling it: a skin point over the
+// hole, whose nearest grid triangles belong to the holed face (its cells
+// overhang the hole), is measured to the face that holds it.
+TEST(BrepDeviation, PointOverAHoleFindsTheFaceFillingIt) {
+    std::vector<double> xyz;
+    std::vector<std::int64_t> tri;
+    bd_square(xyz, tri);
+    BrepInfo ring = bd_plane(1.0, 0.0, {{0, 0}, {1, 0}, {1, 1}, {0, 1}});
+    {
+        BrepLoop hole;
+        const std::vector<std::array<double, 2>> c = {
+            {0.3, 0.3}, {0.3, 0.7}, {0.7, 0.7}, {0.7, 0.3}};
+        for (std::size_t i = 0; i < c.size(); ++i) {
+            BrepTrim t;
+            t.mCurve.mDegree = 1;
+            t.mCurve.mKnots = {0.0, 0.0, 1.0, 1.0};
+            t.mCurve.mControlPoints = NDArray(DType::Float64, {2, 3});
+            const auto& a = c[i];
+            const auto& b = c[(i + 1) % c.size()];
+            const double uv[6] = {a[0], a[1], 0.0, b[0], b[1], 0.0};
+            for (int k = 0; k < 6; ++k)
+                t.mCurve.mControlPoints.As<double>()[k] = uv[k];
+            hole.mTrims.push_back(std::move(t));
+        }
+        hole.mType = "inner";
+        ring.mFaces[0].mLoops.push_back(std::move(hole));
+    }
+    // The filling face: the same plane trimmed to the hole.
+    BrepInfo fill = bd_plane(1.0, 0.0, {{0.3, 0.3}, {0.7, 0.3}, {0.7, 0.7}, {0.3, 0.7}});
+    ring.mPatches.push_back(fill.mPatches[0]);
+    fill.mFaces[0].mPatch = 1;
+    ring.mFaces.push_back(fill.mFaces[0]);
+    // Skin points over the hole: the centre of each facet, and one more.
+    xyz.insert(xyz.end(), {0.5, 0.5, 0.0});
+    const std::int64_t c = 4;
+    tri = {0, 1, c, 1, 3, c, 3, 2, c, 2, 0, c};
+    const detail::BrepDeviation d = detail::brep_deviation(ring, xyz, tri);
+    ASSERT_TRUE(d.mOk);
+    EXPECT_LE(d.mMeshToCadMax, 1e-12);
+    EXPECT_LE(d.mCadToMeshMax, 1e-12);
+    EXPECT_LE(d.mNormalMaxDeg, 1e-6);
+}
+
 TEST(BrepDeviation, NothingToMeasure) {
     std::vector<double> xyz;
     std::vector<std::int64_t> tri;

@@ -50,6 +50,10 @@ struct BdFace {
     /// parameter-space segment subdivided) and their parameters.
     std::vector<std::vector<Vec3>> mBoundary;
     std::vector<std::vector<std::array<double, 2>>> mBoundaryUv;
+    /// Its grid nodes inside the trims and their parameters: the starts of
+    /// an exhaustive projection.
+    std::vector<Vec3> mNodes;
+    std::vector<std::array<double, 2>> mNodeUv;
 };
 
 // A trimming curve as polyline points in its loop's direction, appended to
@@ -348,6 +352,8 @@ BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& r
                 if (inside[k]) {
                     samples.push_back(node[k]);
                     sample_face.push_back(fi);
+                    faces.back().mNodes.push_back(node[k]);
+                    faces.back().mNodeUv.push_back({nu[k], nv[k]});
                 }
             }
         // A cell a trim runs through joins too, so the face's triangles reach
@@ -427,23 +433,27 @@ BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& r
     copt.mSign = SdfSign::Unsigned;
     copt.mWatertightCheck = SdfWatertightCheck::Off;
     const DistanceQuery cad_query = build_distance_query(cad, copt);
-    const std::vector<SurfaceProjection> proj = query_surface_projections(cad_query, queries);
-    std::vector<double> m2c, normal_deg;
-    m2c.reserve(queries.size());
-    for (std::size_t q = 0; q < queries.size(); ++q) {
-        if (q < nv && !used[q])
-            continue;
-        const SurfaceProjection& h = proj[q];
-        if (!h.mFound || h.mTriangle < 0)
-            continue;
-        const std::size_t t = static_cast<std::size_t>(h.mTriangle);
-        const std::size_t fi = cad_face[t];
-        const BdFace& f = faces[fi];
-        // The foot's parameters, interpolated over the CAD triangle.
+    // Each query resolved against the face of the nearest grid triangle: its
+    // foot inside the trims, else its nearest trim point. A foot outside the
+    // trims (a point over a face's hole, where the grid's cells overhang it)
+    // tries the face of the nearest triangle of another face, up to
+    // `kBdTries` faces; the nearest result stands.
+    struct BdHit {
+        double mDist = std::numeric_limits<double>::infinity();
+        Vec3 mNormal{0.0, 0.0, 0.0};
+        std::size_t mFace = 0;
+        bool mInside = false;
+    };
+    const auto resolve = [&](const Vec3& rP, const SurfaceProjection& rH) {
+        BdHit r;
+        const std::size_t t = static_cast<std::size_t>(rH.mTriangle);
+        r.mFace = cad_face[t];
+        const BdFace& f = faces[r.mFace];
+        // The foot's parameters, interpolated over the grid triangle.
         const Vec3& a = cad.mCorners[3 * t];
         const Vec3& b = cad.mCorners[3 * t + 1];
         const Vec3& c = cad.mCorners[3 * t + 2];
-        const Vec3 e0 = vec3_sub(b, a), e1 = vec3_sub(c, a), ep = vec3_sub(h.mPoint, a);
+        const Vec3 e0 = vec3_sub(b, a), e1 = vec3_sub(c, a), ep = vec3_sub(rH.mPoint, a);
         const double d00 = MathUtils::Dot(e0, e0), d01 = MathUtils::Dot(e0, e1),
                      d11 = MathUtils::Dot(e1, e1);
         const double d20 = MathUtils::Dot(ep, e0), d21 = MathUtils::Dot(ep, e1);
@@ -456,40 +466,116 @@ BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& r
         const std::array<double, 6>& uv = cad_uv[t];
         double u = (1.0 - wb - wc) * uv[0] + wb * uv[2] + wc * uv[4];
         double v = (1.0 - wb - wc) * uv[1] + wb * uv[3] + wc * uv[5];
-        // The nearest point of a trimmed face is its foot inside the trims or
-        // a point of its boundary: the triangles only choose the face and the
-        // start. An untrimmed face's foot always counts.
-        Vec3 n_surface{0.0, 0.0, 0.0};
-        double d = std::numeric_limits<double>::infinity();
         Vec3 n_foot{0.0, 0.0, 0.0};
-        const double dn = bd_project(f, queries[q], rOptions.mMaxNewtonIterations, u, v, n_foot);
+        const double dn = bd_project(f, rP, rOptions.mMaxNewtonIterations, u, v, n_foot);
         if (bd_inside(f, u, v)) {
-            d = dn;
-            n_surface = n_foot;
+            r.mDist = dn;
+            r.mNormal = n_foot;
+            r.mInside = true;
         }
         if (!f.mBoundary.empty()) {
             double bu = 0.0, bv = 0.0;
-            const double db = bd_boundary_distance(f, queries[q], bu, bv);
-            if (db < d) {
-                d = db;
-                Vec3 s, su, sv;
-                bd_eval(f, bu, bv, s, su, sv);
-                n_surface = vec3_cross(su, sv);
+            const double db = bd_boundary_distance(f, rP, bu, bv);
+            if (db < r.mDist) {
+                r.mDist = db;
+                Vec3 sp, su, sv;
+                bd_eval(f, bu, bv, sp, su, sv);
+                r.mNormal = vec3_cross(su, sv);
             }
         }
-        if (!std::isfinite(d)) {
-            d = h.mDistance;
-            n_surface = h.mNormal;
+        if (!std::isfinite(r.mDist)) {
+            r.mDist = rH.mDistance;
+            r.mNormal = rH.mNormal;
         }
-        m2c.push_back(d);
-        BrepFaceDeviation& fd = out.mFaces[fi];
-        fd.mMeshToCadMax = std::max(fd.mMeshToCadMax, d);
+        return r;
+    };
+    constexpr int kBdTries = 3;
+    std::vector<BdHit> best(queries.size());
+    std::vector<std::vector<std::size_t>> tried(queries.size());
+    std::vector<std::size_t> pending;
+    {
+        const std::vector<SurfaceProjection> proj = query_surface_projections(cad_query, queries);
+        for (std::size_t q = 0; q < queries.size(); ++q) {
+            if ((q < nv && !used[q]) || !proj[q].mFound || proj[q].mTriangle < 0)
+                continue;
+            best[q] = resolve(queries[q], proj[q]);
+            tried[q].push_back(best[q].mFace);
+            if (!best[q].mInside)
+                pending.push_back(q);
+        }
+    }
+    for (int pass = 1; pass < kBdTries && !pending.empty(); ++pass) {
+        std::vector<Vec3> pts;
+        for (std::size_t q : pending)
+            pts.push_back(queries[q]);
+        const std::vector<SurfaceProjection> proj = query_surface_projections_filtered(
+            cad_query, pts,
+            [&](std::size_t K, std::int64_t T) {
+                const std::vector<std::size_t>& no = tried[pending[K]];
+                return std::find(no.begin(), no.end(), cad_face[static_cast<std::size_t>(T)]) ==
+                       no.end();
+            },
+            std::numeric_limits<double>::infinity());
+        std::vector<std::size_t> next;
+        for (std::size_t k = 0; k < pending.size(); ++k) {
+            const std::size_t q = pending[k];
+            // The grid's triangles sag from a curved face, so their distance
+            // bounds nothing: the next face is resolved whatever it is.
+            if (!proj[k].mFound || proj[k].mTriangle < 0)
+                continue;
+            const BdHit h = resolve(queries[q], proj[k]);
+            tried[q].push_back(h.mFace);
+            if (h.mDist < best[q].mDist)
+                best[q] = h;
+            if (!h.mInside)
+                next.push_back(q);
+        }
+        pending = std::move(next);
+    }
+    // What is still not over any face it tried: every face, each from its
+    // nearest grid node.
+    for (std::size_t q : pending) {
+        for (std::size_t fi = 0; fi < faces.size(); ++fi) {
+            const BdFace& f = faces[fi];
+            if (!f.mOk || f.mNodes.empty() ||
+                std::find(tried[q].begin(), tried[q].end(), fi) != tried[q].end())
+                continue;
+            std::size_t near = 0;
+            double nd = std::numeric_limits<double>::infinity();
+            for (std::size_t k = 0; k < f.mNodes.size(); ++k) {
+                const double d = MathUtils::Norm(vec3_sub(queries[q], f.mNodes[k]));
+                if (d < nd) {
+                    nd = d;
+                    near = k;
+                }
+            }
+            double u = f.mNodeUv[near][0], v = f.mNodeUv[near][1];
+            Vec3 n_foot{0.0, 0.0, 0.0};
+            const double dn =
+                bd_project(f, queries[q], rOptions.mMaxNewtonIterations, u, v, n_foot);
+            if (dn < best[q].mDist && bd_inside(f, u, v)) {
+                best[q].mDist = dn;
+                best[q].mNormal = n_foot;
+                best[q].mFace = fi;
+                best[q].mInside = true;
+            }
+        }
+    }
+    std::vector<double> m2c, normal_deg;
+    m2c.reserve(queries.size());
+    for (std::size_t q = 0; q < queries.size(); ++q) {
+        if (tried[q].empty())
+            continue;
+        const BdHit& h = best[q];
+        m2c.push_back(h.mDist);
+        BrepFaceDeviation& fd = out.mFaces[h.mFace];
+        fd.mMeshToCadMax = std::max(fd.mMeshToCadMax, h.mDist);
         if (q >= nv) {
             const std::size_t st = q - nv;
             const double ang = bd_angle_deg(
                 GeometryUtils::TriangleNormal(skin.mCorners[3 * st], skin.mCorners[3 * st + 1],
                                               skin.mCorners[3 * st + 2]),
-                n_surface);
+                h.mNormal);
             normal_deg.push_back(ang);
             fd.mNormalMaxDeg = std::max(fd.mNormalMaxDeg, ang);
         }
