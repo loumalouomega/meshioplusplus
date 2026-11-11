@@ -74,7 +74,7 @@ The input's boundary faces are the faces of one tetrahedron and the faces betwee
 - The least quality never drops below `min(the input's least, quality_min)`, and swaps and smoothing never lower it.
 - `max_boundary_deviation`, the symmetric Hausdorff distance between the output's boundary and the input's, measured with [`hausdorff_distance`](hausdorff.md) after the run, is at most `hausd` on the tests' sphere, box, cylinder and nested shells; the guard is sampled, so this is a measured bound, not a proof.
 - With `preserve_boundary` the boundary vertices and triangles are bit for bit those of the input and the volume is preserved to rounding.
-- The output is byte-identical across the mesh backends, the parallel backends and thread counts: every pass is serial in a fixed order with total-order keys, and only per-element measurements run in parallel.
+- The output is byte-identical across the mesh backends, the parallel backends and thread counts: every pass is serial in a fixed order with total-order keys, and only per-element measurements run in parallel. `tools/bench_ops.sh --hash` checks this on the `adapt_volume` row ([benchmarks](benchmarks.md#determinism-check)); on this change the digests agreed on SEQ and OpenMP at 1, 4 and 8 threads, for `adapt_volume`, `optimize_volume` and `octree_mesh_tet` at tiers S and M (TBB was not installed).
 
 ## What survives
 
