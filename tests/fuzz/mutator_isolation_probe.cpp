@@ -20,6 +20,10 @@ namespace {
         delete p_value;
         *p_value = 1;  // intentional ASan report in the mutator child
     }
+    if (mode && std::strcmp(mode, "segv") == 0) {
+        volatile int* p_null = nullptr;
+        *p_null = 1;  // a deadly signal libFuzzer would turn into a crash-* artifact
+    }
     std::raise(SIGABRT);
     std::abort();
 }

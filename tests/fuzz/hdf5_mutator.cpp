@@ -183,10 +183,10 @@ extern "C" std::size_t LLVMFuzzerCustomMutator(std::uint8_t* pData, std::size_t 
         // input, which is empty while mutating. A mutator failure should only
         // trigger the byte-mutation fallback; reader failures still report.
         __sanitizer_set_death_callback(nullptr);
-        // Its sanitizer reports are about HDF5's parser, not the reader: keep them
-        // out of fuzz.log, and let the default SIGALRM end a hung walk (itimers do
-        // not survive fork, so libFuzzer's timeout cannot do it for the child).
-        __sanitizer_set_report_path("/dev/null");
+        // Fatal signals take their default action (see hdfmut_default_signals), and
+        // the default SIGALRM ends a hung walk: itimers do not survive fork, so
+        // libFuzzer's timeout cannot do it for the child. A sanitizer report from
+        // the child stays in the log: it is not a finding, but it is evidence.
         hdfmut_default_signals();
         ::alarm(5);
         H5Eset_auto2(H5E_DEFAULT, nullptr, nullptr);
