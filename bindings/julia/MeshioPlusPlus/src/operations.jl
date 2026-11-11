@@ -324,7 +324,7 @@ function adapt_volume(m::Mesh; size_array=nothing, kwargs...)
               _handle(m), opts, report)
     end
     r = _check_ptr(ptr)
-    merge((mesh=Mesh(r),), _adapt_volume_named(report[]))
+    Base.merge((mesh=Mesh(r),), _adapt_volume_named(report[]))
 end
 
 # --- subsetting --------------------------------------------------------------
@@ -1899,7 +1899,7 @@ function adapt(mesh::Mesh; hsiz=nothing, size=nothing, metric=nothing, hmin::Rea
               _handle(mesh), Ref(opts), report)
     end
     out = Mesh(_check_ptr(ptr))
-    merge((mesh=out,), _mmg_report(report[]))
+    Base.merge((mesh=out,), _mmg_report(report[]))
 end
 
 """
@@ -1940,7 +1940,7 @@ function discretize_levelset(mesh::Mesh, level_set::AbstractString; isovalue::Re
               _handle(mesh), Ref(opts), report)
     end
     out = Mesh(_check_ptr(ptr))
-    merge((mesh=out,), _mmg_report(report[]))
+    Base.merge((mesh=out,), _mmg_report(report[]))
 end
 
 """
@@ -1977,7 +1977,7 @@ function mesh_domain(boundary::Mesh; hsiz=nothing, size=nothing, holes=(),
               _handle(boundary), Ref(opts), report, nsub, nholes)
     end
     out = Mesh(_check_ptr(ptr))
-    merge((mesh=out, num_subdomains=Int(nsub[]), num_holes=Int(nholes[])),
+    Base.merge((mesh=out, num_subdomains=Int(nsub[]), num_holes=Int(nholes[])),
           _mmg_report(report[]))
 end
 
@@ -2013,7 +2013,7 @@ function move(mesh::Mesh, displacement::AbstractString, moving; lagrangian::Inte
               _handle(mesh), Ref(opts), report)
     end
     out = Mesh(_check_ptr(ptr))
-    merge((mesh=out,), _mmg_report(report[]))
+    Base.merge((mesh=out,), _mmg_report(report[]))
 end
 
 """
